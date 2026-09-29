@@ -2054,8 +2054,14 @@ fn publish_run_process_identity(
         .write(true)
         .open(&lock_path)
         .map_err(|source| io_error("open run-record lock", &lock_path, source))?;
-    lock.lock_exclusive()
-        .map_err(|source| io_error("lock run record", &lock_path, source))?;
+    lock_exclusive_logged(
+        &lock,
+        &lock_path,
+        "the run-record lock",
+        Duration::from_secs(LOCK_WAIT_REPORT_SECONDS),
+        &report_to_stderr,
+    )
+    .map_err(|source| io_error("lock run record", &lock_path, source))?;
 
     let result = (|| {
         let content = fs::read_to_string(record)
@@ -3036,13 +3042,462 @@ fn validation_repository(root: &Path, kind: Kind) -> Result<Option<PathBuf>, Val
     }
 }
 
+/// How long the PRE-QUEUE freshness check waits for the shared Git lock before
+/// it defers and lets the run take its place in the queue.
+///
+/// ⚠️ AN UNBOUNDED WAIT HERE REORDERED THE QUEUE. The queue ranks runs by the
+/// time they reach it, and this check runs just before that. Measured
+/// 2026-09-29 (https://github.com/rrnewton/dev-hermit/issues/409): two
+/// supervisors started 64 s apart (07:00:11 and 07:01:15 UTC), both spent 8-9
+/// minutes before the queue with nothing in either log, and reached it one
+/// second apart with the LATER launch first. A bound turns "whichever waiter
+/// the kernel wakes first" back into launch order, to within this many seconds.
+///
+/// Deferring is safe because this check is an early refusal, not the admission
+/// gate. A queued run rechecks freshness every `CURRENT_MAIN_RECHECK_SECONDS`,
+/// and the boundary and final checks still run, unbounded and fail-closed,
+/// before any admission. The value equals the fetch timeout, so a peer's
+/// ordinary freshness fetch under this lock (at most about 31 s) normally
+/// finishes inside it.
+const PRE_QUEUE_GIT_LOCK_WAIT_SECONDS: u64 = CURRENT_MAIN_FETCH_TIMEOUT_SECONDS;
+/// How long a QUEUED run's periodic recheck waits for the same lock. Short,
+/// because the recheck stalls this waiter's queue poll, and a missed recheck
+/// only postpones the early eviction to the next one.
+const IN_QUEUE_GIT_LOCK_WAIT_SECONDS: u64 = POLL_SECONDS;
+/// How often a lock wait that is still blocked says so in the run log.
+const LOCK_WAIT_REPORT_SECONDS: u64 = 30;
+/// An internal guard is normally held for milliseconds, and every queued run
+/// takes it on every poll. Report a guard wait only once it lasts this long.
+const GUARD_WAIT_QUIET_MILLIS: u64 = 1_000;
+const LOCK_WAIT_POLL_MILLIS: u64 = 100;
+/// First token of the holder line this version writes into
+/// `<git-common-dir>/ci-hub-validate.lock` while it holds that lock.
+const GIT_LOCK_HOLDER_SCHEMA: &str = "ci-hub-validate-lock-holder/v1";
+const GIT_LOCK_HOLDER_MAX_BYTES: usize = 4096;
+
+/// Where lock-wait progress lines go. Production writes stderr, which
+/// start_unit sends to the run log; tests pass a capturing closure.
+type LockWaitReport<'a> = &'a (dyn Fn(&str) + Sync);
+
+fn report_to_stderr(line: &str) {
+    eprintln!("{line}");
+}
+
+/// The result of a lock wait that was allowed only a bounded time.
+#[derive(Debug)]
+enum LockWait {
+    Acquired,
+    /// The bound expired first. Carries the wait and the holder description.
+    TimedOut {
+        waited: Duration,
+        holder: String,
+    },
+}
+
+/// How a bounded lock wait reports itself.
+#[derive(Clone, Copy, Debug)]
+struct BoundedWait {
+    bound: Duration,
+    /// Silence before the first WAITING line; zero logs before the first sleep.
+    quiet: Duration,
+    /// Interval between "still WAITING" lines.
+    every: Duration,
+}
+
+/// The internal guards keep their existing bound and poll; only the report is
+/// new.
+fn guard_wait() -> BoundedWait {
+    BoundedWait {
+        bound: Duration::from_secs(GUARD_WAIT_SECONDS),
+        quiet: Duration::from_millis(GUARD_WAIT_QUIET_MILLIS),
+        every: Duration::from_secs(LOCK_WAIT_REPORT_SECONDS),
+    }
+}
+
+fn lock_wait_line(file: &File, path: &Path, what: &str, waited: Option<Duration>) -> String {
+    let holder = describe_lock_holder(file, path);
+    match waited {
+        None => format!(
+            "validate-lock: WAITING for {what} {}; {holder}",
+            path.display()
+        ),
+        Some(waited) => format!(
+            "validate-lock: still WAITING after {}s for {what} {}; {holder}",
+            waited.as_secs(),
+            path.display()
+        ),
+    }
+}
+
+fn lock_acquired_line(path: &Path, what: &str, waited: Duration) -> String {
+    format!(
+        "validate-lock: acquired {what} {} after {:.1}s",
+        path.display(),
+        waited.as_secs_f64()
+    )
+}
+
+/// Take an exclusive flock, blocking in the kernel exactly as
+/// `lock_exclusive` does, but never silently: a contended wait logs one line
+/// naming the lock and its holder BEFORE it blocks, a line every `every` while
+/// it is still blocked, and one line when it is granted. An uncontended lock
+/// logs nothing.
+fn lock_exclusive_logged(
+    file: &File,
+    path: &Path,
+    what: &str,
+    every: Duration,
+    report: LockWaitReport<'_>,
+) -> io::Result<()> {
+    match file.try_lock_exclusive() {
+        Ok(()) => return Ok(()),
+        Err(source) if source.kind() == io::ErrorKind::WouldBlock => {}
+        Err(source) => return Err(source),
+    }
+    let started = Instant::now();
+    report(&lock_wait_line(file, path, what, None));
+    let result = thread::scope(|scope| {
+        let (stop, stopped) = mpsc::channel::<()>();
+        scope.spawn(move || {
+            while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(every) {
+                report(&lock_wait_line(file, path, what, Some(started.elapsed())));
+            }
+        });
+        let result = file.lock_exclusive();
+        drop(stop);
+        result
+    });
+    result?;
+    report(&lock_acquired_line(path, what, started.elapsed()));
+    Ok(())
+}
+
+/// Take an exclusive flock, polling for at most `wait.bound`. It reports like
+/// `lock_exclusive_logged`, after `wait.quiet` of contention, and returns
+/// `LockWait::TimedOut` instead of waiting past the bound.
+fn lock_exclusive_within(
+    file: &File,
+    path: &Path,
+    what: &str,
+    wait: BoundedWait,
+    report: LockWaitReport<'_>,
+) -> io::Result<LockWait> {
+    let started = Instant::now();
+    let deadline = started + wait.bound;
+    let mut next_report = started + wait.quiet;
+    let mut announced = false;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => {
+                if announced {
+                    report(&lock_acquired_line(path, what, started.elapsed()));
+                }
+                return Ok(LockWait::Acquired);
+            }
+            Err(source) if source.kind() == io::ErrorKind::WouldBlock => {}
+            Err(source) => return Err(source),
+        }
+        let now = Instant::now();
+        if now >= next_report {
+            report(&lock_wait_line(
+                file,
+                path,
+                what,
+                announced.then(|| now - started),
+            ));
+            announced = true;
+            next_report = now + wait.every;
+        }
+        if now >= deadline {
+            return Ok(LockWait::TimedOut {
+                waited: now - started,
+                holder: describe_lock_holder(file, path),
+            });
+        }
+        let nap = Duration::from_millis(LOCK_WAIT_POLL_MILLIS)
+            .min(deadline - now)
+            .min(next_report.saturating_duration_since(now))
+            .max(Duration::from_millis(1));
+        thread::sleep(nap);
+    }
+}
+
+/// The holder line a validate-lock of this version wrote into a lock file.
+#[derive(Debug, Eq, PartialEq)]
+struct LockHolderRecord {
+    text: String,
+    pid: Option<i64>,
+    start_ticks: Option<u64>,
+}
+
+fn parse_lock_holder_record(content: &str) -> Option<LockHolderRecord> {
+    let text = content.lines().next().unwrap_or("").trim();
+    if text.is_empty() {
+        return None;
+    }
+    let mut pid = None;
+    let mut start_ticks = None;
+    let mut tokens = text.split_whitespace();
+    if tokens.next() == Some(GIT_LOCK_HOLDER_SCHEMA) {
+        for token in tokens {
+            match token.split_once('=') {
+                Some(("pid", value)) => pid = value.parse().ok(),
+                Some(("start_ticks", value)) => start_ticks = value.parse().ok(),
+                _ => {}
+            }
+        }
+    }
+    let text: String = text.chars().take(400).collect();
+    Some(LockHolderRecord {
+        text,
+        pid,
+        start_ticks,
+    })
+}
+
+fn read_lock_holder_record(file: &File) -> Option<LockHolderRecord> {
+    let mut buffer = vec![0; GIT_LOCK_HOLDER_MAX_BYTES];
+    let read = std::os::unix::fs::FileExt::read_at(file, &mut buffer, 0).ok()?;
+    parse_lock_holder_record(&String::from_utf8_lossy(&buffer[..read]))
+}
+
+/// The pids that HOLD (not wait for) a lock on `inode`, from /proc/locks text.
+///
+/// Matching ignores the device on purpose: btrfs reports a different device
+/// number in /proc/locks than stat does, so the caller confirms each pid
+/// through its open file descriptors instead.
+fn lock_holder_pids(locks: &str, inode: u64) -> Vec<i64> {
+    let mut pids = Vec::new();
+    for line in locks.lines() {
+        // "<id>: FLOCK ADVISORY WRITE <pid> <major>:<minor>:<inode> <start> <end>".
+        // A blocked waiter is listed as "<id>: -> FLOCK ..." and holds nothing.
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 6 || fields[1] == "->" {
+            continue;
+        }
+        let listed = fields[5]
+            .rsplit(':')
+            .next()
+            .and_then(|value| value.parse::<u64>().ok());
+        if listed != Some(inode) {
+            continue;
+        }
+        if let Ok(pid) = fields[4].parse::<i64>() {
+            if !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+    }
+    pids
+}
+
+/// Does `pid` have this exact file open? `None` when its fds are unreadable.
+fn process_has_file_open(pid: i64, metadata: &fs::Metadata) -> Option<bool> {
+    let entries = fs::read_dir(format!("/proc/{pid}/fd")).ok()?;
+    Some(entries.flatten().any(|entry| {
+        fs::metadata(entry.path())
+            .is_ok_and(|target| target.dev() == metadata.dev() && target.ino() == metadata.ino())
+    }))
+}
+
+fn process_command_line(pid: i64) -> String {
+    match fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(bytes) if !bytes.is_empty() => {
+            let text = String::from_utf8_lossy(&bytes).replace('\0', " ");
+            let text = text.trim();
+            if text.chars().count() > 200 {
+                format!("{}...", text.chars().take(200).collect::<String>())
+            } else {
+                text.to_string()
+            }
+        }
+        _ => "command line unavailable".into(),
+    }
+}
+
+/// Name who holds `file`'s flock, for a waiter's log line.
+///
+/// The kernel's /proc/locks is the authority. The holder line recorded in the
+/// file is trusted only when it names a pid (and start time) that the kernel
+/// lists as a holder. Older validate-lock versions and start_unit.py take the
+/// same lock without writing a line, and a holder that was killed leaves a
+/// stale one behind.
+fn describe_lock_holder(file: &File, path: &Path) -> String {
+    let record = read_lock_holder_record(file);
+    let metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => return format!("holder unknown (cannot stat {}: {error})", path.display()),
+    };
+    let listed = match fs::read_to_string("/proc/locks") {
+        Ok(text) => lock_holder_pids(&text, metadata.ino()),
+        Err(error) => {
+            return format!("holder unknown (cannot read /proc/locks: {error})");
+        }
+    };
+    let mut holders = Vec::new();
+    let mut record_matched = false;
+    for pid in listed {
+        if pid <= 0 {
+            holders.push(format!(
+                "a process outside this pid namespace (/proc/locks pid {pid})"
+            ));
+            continue;
+        }
+        let confirmed = match process_has_file_open(pid, &metadata) {
+            // Same inode number on another filesystem: not this lock.
+            Some(false) => continue,
+            Some(true) => "",
+            None => ", not confirmed through /proc/<pid>/fd",
+        };
+        let mut holder = format!("pid {pid} ({}){confirmed}", process_command_line(pid));
+        if let Some(record) = &record {
+            let same_start = match (record.start_ticks, u32::try_from(pid).ok()) {
+                (Some(recorded), Some(pid)) => {
+                    process_start_ticks(pid).map_or(true, |ticks| ticks == recorded)
+                }
+                _ => true,
+            };
+            if record.pid == Some(pid) && same_start {
+                record_matched = true;
+                holder.push_str(&format!(", recorded as: {}", record.text));
+            }
+        }
+        holders.push(holder);
+    }
+    let mut description = if holders.is_empty() {
+        "no holder visible in /proc/locks".to_string()
+    } else {
+        format!("held by {}", holders.join("; "))
+    };
+    match (&record, record_matched) {
+        (None, _) => description.push_str(
+            "; the lock file has no holder line (older validate-lock versions and start_unit.py write none)",
+        ),
+        (Some(record), false) => description.push_str(&format!(
+            "; the lock file's holder line does not name a current holder, so it is stale: {}",
+            record.text
+        )),
+        (Some(_), true) => {}
+    }
+    description
+}
+
+/// The shared Git lock, held by this process, which is named in the lock file
+/// until it releases the lock.
+///
+/// MIXED VERSIONS: older validate-lock opens this file without truncating and
+/// never reads it; start_unit.py opens it in append mode and never reads or
+/// writes it. Only this version writes, and it clears its line before
+/// unlocking, so between holders the file is empty. A holder killed while
+/// holding leaves its line behind, which is why `describe_lock_holder` trusts
+/// a line only when /proc/locks names the same process.
+struct HeldGitLock {
+    file: File,
+    path: PathBuf,
+    released: bool,
+}
+
+impl HeldGitLock {
+    fn record(
+        file: File,
+        path: PathBuf,
+        kind: Kind,
+        target: &str,
+        report: LockWaitReport<'_>,
+    ) -> Self {
+        let line = git_lock_holder_line(kind, target);
+        let written = file
+            .set_len(0)
+            .and_then(|()| std::os::unix::fs::FileExt::write_all_at(&file, line.as_bytes(), 0));
+        if let Err(error) = written {
+            // Diagnostic only: a missing line must not refuse a freshness check.
+            report(&format!(
+                "validate-lock: could not record this process as the holder of {}: {error}",
+                path.display()
+            ));
+        }
+        Self {
+            file,
+            path,
+            released: false,
+        }
+    }
+
+    fn release(mut self) -> Result<(), ValidateLockError> {
+        self.released = true;
+        // Clear BEFORE unlocking: once unlocked, the file belongs to the next
+        // holder. A failed clear leaves a line that readers recognize as stale.
+        let _ = self.file.set_len(0);
+        FileExt::unlock(&self.file)
+            .map_err(|source| io_error("unlock shared Git metadata", &self.path, source))
+    }
+}
+
+impl Drop for HeldGitLock {
+    fn drop(&mut self) {
+        // An early return still holds the lock here; closing the file below
+        // releases it, so clear the line first.
+        if !self.released {
+            let _ = self.file.set_len(0);
+        }
+    }
+}
+
+fn git_lock_holder_line(kind: Kind, target: &str) -> String {
+    let mut line = format!("{GIT_LOCK_HOLDER_SCHEMA} pid={}", std::process::id());
+    if let Ok(owner) = current_process_owner() {
+        line.push_str(&format!(
+            " start_ticks={} boot_id={} host={}",
+            owner.start_ticks, owner.boot_id, owner.host
+        ));
+    }
+    line.push_str(&format!(
+        " purpose=current-main-freshness kind={} target={target}",
+        kind.as_str()
+    ));
+    if let Ok(now) = epoch_seconds() {
+        line.push_str(&format!(" acquired_at={now}"));
+    }
+    line.push('\n');
+    line
+}
+
+/// A freshness check that may wait only a bounded time for the shared Git lock
+/// either ran, or deferred without fetching or deciding anything.
+#[derive(Debug)]
+enum FreshnessCheck {
+    Checked(Option<AdmissionFloor>),
+    /// Carries the lock path, how long it waited, and who held the lock.
+    Deferred(String),
+}
+
+/// The admission-grade freshness check: waits for the shared Git lock as long
+/// as it takes, logging while it waits.
 fn current_main_freshness_check(
     root: &Path,
     target: &str,
     kind: Kind,
 ) -> Result<Option<AdmissionFloor>, ValidateLockError> {
+    match current_main_freshness_check_within(root, target, kind, None, &report_to_stderr)? {
+        FreshnessCheck::Checked(floor) => Ok(floor),
+        // Only a bounded wait defers. Fail closed rather than trust that.
+        FreshnessCheck::Deferred(reason) => Err(ValidateLockError::StaleBase(format!(
+            "validate-lock: current-main freshness for {target} is UNRESOLVED: {reason}"
+        ))),
+    }
+}
+
+/// `git_lock_wait` of `None` waits for the shared Git lock without bound;
+/// `Some(bound)` returns `FreshnessCheck::Deferred` once the bound expires.
+fn current_main_freshness_check_within(
+    root: &Path,
+    target: &str,
+    kind: Kind,
+    git_lock_wait: Option<Duration>,
+    report: LockWaitReport<'_>,
+) -> Result<FreshnessCheck, ValidateLockError> {
     let Some(repository) = validation_repository(root, kind)? else {
-        return Ok(None);
+        return Ok(FreshnessCheck::Checked(None));
     };
 
     // Existing lock-only tests inject the immutable-floor command and do not
@@ -3051,7 +3506,7 @@ fn current_main_freshness_check(
     // brackets below exercise real repositories and real fetches.
     #[cfg(test)]
     if test_only_override(ADMIT_PREFLIGHT_CMD_ENV).is_some() && !repository.join(".git").exists() {
-        return Ok(None);
+        return Ok(FreshnessCheck::Checked(None));
     }
 
     // A frozen checkout deliberately rewrites its private origin/main to the
@@ -3089,9 +3544,36 @@ fn current_main_freshness_check(
         .write(true)
         .open(&git_lock_path)
         .map_err(|source| io_error("open shared Git mutation lock", &git_lock_path, source))?;
-    git_lock
-        .lock_exclusive()
-        .map_err(|source| io_error("lock shared Git metadata", &git_lock_path, source))?;
+    // Every hermit validation checkout shares one Git common directory, and
+    // start_unit.py holds this same lock while it prepares a checkout, which
+    // can take minutes. A wait on it is therefore never silent, and a queued
+    // or not-yet-queued caller bounds it.
+    let what = format!("the shared Git lock for the current-main freshness check of {target}");
+    let every = Duration::from_secs(LOCK_WAIT_REPORT_SECONDS);
+    match git_lock_wait {
+        None => lock_exclusive_logged(&git_lock, &git_lock_path, &what, every, report)
+            .map_err(|source| io_error("lock shared Git metadata", &git_lock_path, source))?,
+        Some(bound) => {
+            let wait = BoundedWait {
+                bound,
+                quiet: Duration::ZERO,
+                every,
+            };
+            match lock_exclusive_within(&git_lock, &git_lock_path, &what, wait, report)
+                .map_err(|source| io_error("lock shared Git metadata", &git_lock_path, source))?
+            {
+                LockWait::Acquired => {}
+                LockWait::TimedOut { waited, holder } => {
+                    return Ok(FreshnessCheck::Deferred(format!(
+                        "the shared Git lock {} was still held after {:.1}s; {holder}",
+                        git_lock_path.display(),
+                        waited.as_secs_f64()
+                    )));
+                }
+            }
+        }
+    }
+    let git_lock = HeldGitLock::record(git_lock, git_lock_path, kind, target, report);
     let mut fetch = Command::new("timeout");
     fetch.args(["--signal=TERM", "--kill-after=1s"]);
     fetch.arg(&fetch_timeout);
@@ -3124,10 +3606,21 @@ fn current_main_freshness_check(
     // this ancestry decision nor its eventual pin floor may follow that ref.
     let main = validation_object(&repository, "refs/remotes/origin/main^{commit}")?;
     let main_tree = validation_object(&repository, &format!("{main}^{{tree}}"))?;
-    FileExt::unlock(&git_lock)
-        .map_err(|source| io_error("unlock shared Git metadata", &git_lock_path, source))?;
+    git_lock.release()?;
     run_current_main_after_capture_hook();
+    current_main_ancestry_verdict(&repository, target, kind, main, main_tree)
+        .map(FreshnessCheck::Checked)
+}
 
+/// Decide freshness from the origin/main commit and tree captured under the
+/// shared Git lock.
+fn current_main_ancestry_verdict(
+    repository: &Path,
+    target: &str,
+    kind: Kind,
+    main: String,
+    main_tree: String,
+) -> Result<Option<AdmissionFloor>, ValidateLockError> {
     let output = Command::new("git")
         .arg("--no-replace-objects")
         .env("GIT_GRAFT_FILE", "/dev/null")
@@ -3397,20 +3890,16 @@ impl ValidateLock {
             .write(true)
             .open(&path)
             .map_err(|source| io_error("open global queue guard", &path, source))?;
-        let deadline = Instant::now() + Duration::from_secs(GUARD_WAIT_SECONDS);
-        loop {
-            match guard.try_lock_exclusive() {
-                Ok(()) => break,
-                Err(source) if source.kind() == io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        return Err(ValidateLockError::GuardTimeout);
-                    }
-                    thread::sleep(Duration::from_millis(100));
-                }
-                Err(source) => {
-                    return Err(io_error("lock global queue guard", &path, source));
-                }
-            }
+        match lock_exclusive_within(
+            &guard,
+            &path,
+            "the global queue guard",
+            guard_wait(),
+            &report_to_stderr,
+        ) {
+            Ok(LockWait::Acquired) => {}
+            Ok(LockWait::TimedOut { .. }) => return Err(ValidateLockError::GuardTimeout),
+            Err(source) => return Err(io_error("lock global queue guard", &path, source)),
         }
         let result = action();
         let unlock = FileExt::unlock(&guard)
@@ -3849,12 +4338,16 @@ impl ValidateLock {
         attribution: &str,
         consume_on_acquire: bool,
         root: &Path,
+        freshness_deferred: bool,
     ) -> Result<Option<(Vec<BoxExclusionAnchor>, usize)>, ValidateLockError> {
         let started = Instant::now();
         let mut last = String::new();
-        // The caller checked freshness immediately before entering the queue,
-        // so the clock starts now rather than at zero.
+        // The caller normally checked freshness immediately before entering
+        // the queue, so the clock starts now rather than at zero. A check that
+        // deferred on the shared Git lock decided nothing, so recheck at the
+        // first poll instead.
         let mut last_freshness = Instant::now();
+        let mut recheck_now = freshness_deferred;
         loop {
             match self.try_global_turn(args, owner, attribution, consume_on_acquire)? {
                 GlobalTurn::Acquired { anchors, slot } => return Ok(Some((anchors, slot))),
@@ -3940,9 +4433,27 @@ impl ValidateLock {
             // state in which waiting longer would have made this target fresh, so
             // an early eviction cannot be premature. That property is what makes
             // this a check rather than a policy.
-            if last_freshness.elapsed() >= Duration::from_secs(CURRENT_MAIN_RECHECK_SECONDS) {
+            if recheck_now
+                || last_freshness.elapsed() >= Duration::from_secs(CURRENT_MAIN_RECHECK_SECONDS)
+            {
+                recheck_now = false;
                 last_freshness = Instant::now();
-                if let Err(error) = current_main_freshness_check(root, &args.target, args.kind) {
+                // Bounded: this wait stalls the queue poll, and a deferral
+                // only postpones the eviction to the next recheck.
+                let checked = current_main_freshness_check_within(
+                    root,
+                    &args.target,
+                    args.kind,
+                    Some(Duration::from_secs(IN_QUEUE_GIT_LOCK_WAIT_SECONDS)),
+                    &report_to_stderr,
+                );
+                if let Ok(FreshnessCheck::Deferred(reason)) = &checked {
+                    eprintln!(
+                        "validate-lock: mid-wait freshness DEFERRED for target={}, keeping queue position: {reason}",
+                        args.target
+                    );
+                }
+                if let Err(error) = checked {
                     if stale_base_is_definite(&error) {
                         self.remove_own_global_waiter(args, owner)?;
                         if let ValidateLockError::StaleBase(message) = &error {
@@ -6019,9 +6530,28 @@ impl ValidateLock {
         ) {
             return stale_base_refusal_with_record(tool_root, &attribution, error);
         }
-        if let Err(error) = current_main_freshness_check(state_root, &args.target, args.kind) {
-            return stale_base_refusal_with_record(tool_root, &attribution, error);
-        }
+        // The wait for the shared Git lock is BOUNDED here. An unbounded wait
+        // let whichever waiter the kernel woke first reach the queue first,
+        // regardless of launch order; see `PRE_QUEUE_GIT_LOCK_WAIT_SECONDS`.
+        // A deferral decides nothing: the queued rechecks and the boundary and
+        // final checks below still run before admission.
+        let freshness_deferred = match current_main_freshness_check_within(
+            state_root,
+            &args.target,
+            args.kind,
+            Some(Duration::from_secs(PRE_QUEUE_GIT_LOCK_WAIT_SECONDS)),
+            &report_to_stderr,
+        ) {
+            Ok(FreshnessCheck::Checked(_)) => false,
+            Ok(FreshnessCheck::Deferred(reason)) => {
+                eprintln!(
+                    "validate-lock: pre-queue freshness DEFERRED for target={}: {reason}. Entering the queue now so launch order is kept; freshness is rechecked while queued and again, fail-closed, before admission.",
+                    args.target
+                );
+                true
+            }
+            Err(error) => return stale_base_refusal_with_record(tool_root, &attribution, error),
+        };
 
         let record_text = attribution.record.to_string_lossy();
         for (name, value) in [
@@ -6073,6 +6603,7 @@ impl ValidateLock {
             &anchor_attribution,
             false,
             state_root,
+            freshness_deferred,
         )? {
             Some(reservation) => reservation,
             None => {
@@ -6137,6 +6668,7 @@ impl ValidateLock {
                         &anchor_attribution,
                         false,
                         state_root,
+                        freshness_deferred,
                     )? {
                         Some(reservation) => reservation,
                         None => {
@@ -6507,18 +7039,16 @@ impl ValidateLock {
             .write(true)
             .open(&self.paths.guard)
             .map_err(|source| io_error("open guard", &self.paths.guard, source))?;
-        let deadline = Instant::now() + Duration::from_secs(GUARD_WAIT_SECONDS);
-        loop {
-            match guard.try_lock_exclusive() {
-                Ok(()) => break,
-                Err(source) if source.kind() == io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        return Err(ValidateLockError::GuardTimeout);
-                    }
-                    thread::sleep(Duration::from_millis(100));
-                }
-                Err(source) => return Err(io_error("lock guard", &self.paths.guard, source)),
-            }
+        match lock_exclusive_within(
+            &guard,
+            &self.paths.guard,
+            "the validate-lock guard",
+            guard_wait(),
+            &report_to_stderr,
+        ) {
+            Ok(LockWait::Acquired) => {}
+            Ok(LockWait::TimedOut { .. }) => return Err(ValidateLockError::GuardTimeout),
+            Err(source) => return Err(io_error("lock guard", &self.paths.guard, source)),
         }
         let result = operation();
         let unlock = FileExt::unlock(&guard)
@@ -11191,6 +11721,7 @@ exit 0
                 "fixture=memory-unknown",
                 true,
                 paths.lock.parent().unwrap(),
+                false,
             )
             .unwrap()
             .is_none());
@@ -12130,6 +12661,512 @@ exit 0
                 "UNRESOLVED must NOT evict -- a network blip is not a stale target: {unresolved}"
             );
         }
+    }
+
+    /// Holds a flock exactly as start_unit.py and validate-lock before
+    /// https://github.com/rrnewton/dev-hermit/issues/409 do: open in append
+    /// mode, lock, write nothing. Dropping it releases the lock.
+    struct OldStyleLockHolder {
+        child: Child,
+        pid: u32,
+        release: PathBuf,
+    }
+
+    impl OldStyleLockHolder {
+        fn spawn(lock: &Path, scratch: &Path) -> Self {
+            const SCRIPT: &str = r#"
+import fcntl, os, sys, time
+path, ready, release = sys.argv[1:4]
+with open(path, "a+") as lock:
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    with open(ready + ".tmp", "w") as out:
+        out.write(str(os.getpid()))
+    os.rename(ready + ".tmp", ready)
+    deadline = time.monotonic() + 120
+    while not os.path.exists(release) and time.monotonic() < deadline:
+        time.sleep(0.02)
+"#;
+            let ready = scratch.join("old-style-holder-ready");
+            let release = scratch.join("old-style-holder-release");
+            let _ = fs::remove_file(&ready);
+            let _ = fs::remove_file(&release);
+            let child = Command::new("python3")
+                .arg("-c")
+                .arg(SCRIPT)
+                .arg(lock)
+                .arg(&ready)
+                .arg(&release)
+                .spawn()
+                .unwrap();
+            let started = Instant::now();
+            while !ready.is_file() {
+                assert!(
+                    started.elapsed() < Duration::from_secs(30),
+                    "old-style lock holder never took {}",
+                    lock.display()
+                );
+                thread::sleep(Duration::from_millis(20));
+            }
+            // The interpreter may be a launcher that runs Python as its own
+            // child, so the holder is the pid the script reports, not
+            // `child.id()`.
+            let pid: u32 = fs::read_to_string(&ready).unwrap().trim().parse().unwrap();
+            Self {
+                child,
+                pid,
+                release,
+            }
+        }
+
+        fn finish(&mut self) {
+            let _ = fs::write(&self.release, "release\n");
+            match self.child.wait() {
+                Ok(status) => {
+                    assert!(status.success(), "old-style lock holder failed: {status:?}")
+                }
+                // `run` reaps every exited child of this process as a subreaper.
+                Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {}
+                Err(error) => panic!("old-style lock holder: {error}"),
+            }
+        }
+    }
+
+    impl Drop for OldStyleLockHolder {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.release, "release\n");
+            let _ = self.child.wait();
+        }
+    }
+
+    fn capture_lines() -> std::sync::Mutex<Vec<String>> {
+        std::sync::Mutex::new(Vec::new())
+    }
+
+    fn mentions_path(text: &str, path: &Path) -> bool {
+        text.contains(&path.display().to_string())
+            || fs::canonicalize(path)
+                .is_ok_and(|canonical| text.contains(&canonical.display().to_string()))
+    }
+
+    /// https://github.com/rrnewton/dev-hermit/issues/409, end to end through
+    /// `run`. An old-style process holds the shared Git lock, as start_unit.py
+    /// does while it prepares a checkout. The run must still reach the queue
+    /// while the lock is held; before the fix it waited, silently and without
+    /// bound, before the queue, so the queue ranked runs by whichever waiter
+    /// the kernel woke first. The run is then admitted normally once the lock
+    /// is released, because the boundary and final checks still decide
+    /// freshness.
+    #[test]
+    fn a_held_git_lock_does_not_keep_a_run_out_of_the_queue() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let stub = write_stub("git-lock-queue-admit", "#!/bin/sh\necho OK\nexit 0\n");
+        env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
+        let (paths, root, _seed, target) = current_main_fixture("git-lock-queue", "hermit");
+        let git_lock = root.join("hermit/.git/ci-hub-validate.lock");
+        let mut holder = OldStyleLockHolder::spawn(&git_lock, &root);
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        const AGENT: &str = "git-lock-queue-order";
+        // Give up well past the 30 s pre-queue bound, so that a run which
+        // never queues while the lock is held fails here instead of hanging.
+        let queue = lock.global_queue_path();
+        let release = holder.release.clone();
+        let watcher = thread::spawn(move || {
+            let started = Instant::now();
+            let mut queued_after = None;
+            while started.elapsed() < Duration::from_secs(45) {
+                if fs::read_to_string(&queue).is_ok_and(|text| text.contains(AGENT)) {
+                    queued_after = Some(started.elapsed());
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            fs::write(&release, "release\n").unwrap();
+            queued_after
+        });
+        let sentinel = root.join("child-ran");
+        let result = lock.run(
+            admission_boundary_args(
+                AGENT,
+                target,
+                vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "printf ran > \"$1\"".into(),
+                    "child".into(),
+                    sentinel.clone().into_os_string(),
+                ],
+            ),
+            &root,
+        );
+        let queued_while_held = watcher.join().unwrap();
+        holder.finish();
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        eprintln!("GIT LOCK QUEUE: queued while held after {queued_while_held:?}; run {result:?}");
+        assert!(
+            queued_while_held.is_some(),
+            "a run that could not take the shared Git lock must still reach the queue while \
+             pid {} holds that lock; it stayed out of the queue for 45 s",
+            holder.pid
+        );
+        assert_eq!(
+            result.unwrap(),
+            0,
+            "the fresh target must still be admitted once the lock is released"
+        );
+        assert!(sentinel.is_file(), "the admitted child must have run");
+        assert_eq!(
+            fs::read(&git_lock).unwrap(),
+            b"",
+            "a released shared Git lock must carry no holder line"
+        );
+        admission_boundary_assert_released(&paths);
+    }
+
+    #[test]
+    fn a_bounded_git_lock_wait_names_the_lock_and_its_holder_then_defers() {
+        let (_paths, root, _seed, target) = current_main_fixture("git-lock-deferred", "hermit");
+        let git_lock = root.join("hermit/.git/ci-hub-validate.lock");
+        let mut holder = OldStyleLockHolder::spawn(&git_lock, &root);
+        let lines = capture_lines();
+        let capture = |line: &str| lines.lock().unwrap().push(line.to_string());
+        let started = Instant::now();
+        let checked = current_main_freshness_check_within(
+            &root,
+            &target,
+            Kind::Validate,
+            Some(Duration::from_millis(1_500)),
+            &capture,
+        )
+        .unwrap();
+        let waited = started.elapsed();
+        let FreshnessCheck::Deferred(reason) = checked else {
+            panic!("a held Git lock must defer a bounded check, got {checked:?}");
+        };
+        assert!(
+            waited >= Duration::from_millis(1_500) && waited < Duration::from_secs(15),
+            "the wait must end at its bound, took {waited:?}"
+        );
+        let lines = lines.lock().unwrap().clone();
+        assert_eq!(
+            lines.len(),
+            1,
+            "one WAITING line before the wait: {lines:?}"
+        );
+        assert!(
+            lines[0].starts_with("validate-lock: WAITING for the shared Git lock"),
+            "{lines:?}"
+        );
+        let holder_pid = format!("held by pid {} (", holder.pid);
+        for text in [&lines[0], &reason] {
+            assert!(
+                mentions_path(text, &git_lock),
+                "must name the lock path: {text}"
+            );
+            assert!(
+                text.contains(&holder_pid),
+                "must name the holder pid: {text}"
+            );
+            assert!(
+                text.contains("no holder line"),
+                "an old-style holder writes no line and must be reported as such: {text}"
+            );
+        }
+        assert!(reason.contains("still held after"), "{reason}");
+        assert_eq!(
+            fs::read(&git_lock).unwrap(),
+            b"",
+            "a deferred check must not write the lock file it does not hold"
+        );
+
+        holder.finish();
+        let lines = capture_lines();
+        let capture = |line: &str| lines.lock().unwrap().push(line.to_string());
+        match current_main_freshness_check_within(
+            &root,
+            &target,
+            Kind::Validate,
+            Some(Duration::from_millis(1_500)),
+            &capture,
+        )
+        .unwrap()
+        {
+            FreshnessCheck::Checked(Some(floor)) => {
+                assert_eq!(floor.kind, AdmissionFloorKind::CurrentMain)
+            }
+            other => panic!("a free Git lock must let the check decide, got {other:?}"),
+        }
+        assert!(
+            lines.lock().unwrap().is_empty(),
+            "an uncontended lock must log nothing: {:?}",
+            lines.lock().unwrap()
+        );
+        assert_eq!(fs::read(&git_lock).unwrap(), b"");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_unbounded_lock_wait_reports_before_blocking_and_while_blocked() {
+        let paths = temp_paths("lock-wait-report");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let path = root.join("contended.lock");
+        let mut holder = OldStyleLockHolder::spawn(&path, &root);
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let lines = capture_lines();
+        let capture = |line: &str| lines.lock().unwrap().push(line.to_string());
+        let release = holder.release.clone();
+        let releaser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(1_300));
+            fs::write(release, "release\n").unwrap();
+        });
+        let started = Instant::now();
+        lock_exclusive_logged(
+            &file,
+            &path,
+            "the test lock",
+            Duration::from_millis(250),
+            &capture,
+        )
+        .unwrap();
+        let waited = started.elapsed();
+        releaser.join().unwrap();
+        holder.finish();
+        assert!(waited >= Duration::from_millis(1_000), "{waited:?}");
+        let lines = lines.lock().unwrap().clone();
+        let first = lines.first().expect("a contended wait must log");
+        assert!(
+            first.starts_with(&format!(
+                "validate-lock: WAITING for the test lock {}; held by pid {} (",
+                path.display(),
+                holder.pid
+            )),
+            "{lines:?}"
+        );
+        let periodic = lines
+            .iter()
+            .filter(|line| line.starts_with("validate-lock: still WAITING after"))
+            .count();
+        assert!(periodic >= 2, "a long wait must keep reporting: {lines:?}");
+        assert!(
+            lines.last().unwrap().starts_with(&format!(
+                "validate-lock: acquired the test lock {} after",
+                path.display()
+            )),
+            "{lines:?}"
+        );
+
+        // Uncontended: nothing is logged.
+        FileExt::unlock(&file).unwrap();
+        let quiet = capture_lines();
+        let capture = |line: &str| quiet.lock().unwrap().push(line.to_string());
+        lock_exclusive_logged(
+            &file,
+            &path,
+            "the test lock",
+            Duration::from_millis(250),
+            &capture,
+        )
+        .unwrap();
+        assert!(quiet.lock().unwrap().is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_git_lock_names_its_holder_only_while_held() {
+        let paths = temp_paths("git-lock-holder-line");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let path = root.join("ci-hub-validate.lock");
+        let open = || {
+            OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap()
+        };
+        let lines = capture_lines();
+        let capture = |line: &str| lines.lock().unwrap().push(line.to_string());
+        let file = open();
+        lock_exclusive_logged(
+            &file,
+            &path,
+            "the test lock",
+            Duration::from_secs(1),
+            &capture,
+        )
+        .unwrap();
+        let held = HeldGitLock::record(file, path.clone(), Kind::Validate, HEX_SHA, &capture);
+        let line = fs::read_to_string(&path).unwrap();
+        let own = std::process::id();
+        assert!(
+            line.starts_with(&format!("{GIT_LOCK_HOLDER_SCHEMA} pid={own} ")),
+            "{line}"
+        );
+        assert!(line.contains(&format!(" target={HEX_SHA}")), "{line}");
+        assert!(line.contains(" start_ticks="), "{line}");
+        assert_eq!(line.lines().count(), 1, "{line:?}");
+
+        // A second open file description is a waiter like any other process.
+        let observer = open();
+        assert!(
+            observer.try_lock_exclusive().is_err(),
+            "the lock must be held"
+        );
+        let described = describe_lock_holder(&observer, &path);
+        assert!(
+            described.starts_with(&format!("held by pid {own} (")),
+            "{described}"
+        );
+        assert!(
+            described.contains(&format!(
+                ", recorded as: {GIT_LOCK_HOLDER_SCHEMA} pid={own} "
+            )),
+            "the recorded line must be attached to the kernel's holder: {described}"
+        );
+
+        held.release().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"", "release must clear the line");
+        observer.try_lock_exclusive().unwrap();
+        FileExt::unlock(&observer).unwrap();
+
+        // An early return drops the hold without `release`; the line still goes.
+        let file = open();
+        lock_exclusive_logged(
+            &file,
+            &path,
+            "the test lock",
+            Duration::from_secs(1),
+            &capture,
+        )
+        .unwrap();
+        let held = HeldGitLock::record(file, path.clone(), Kind::Validate, HEX_SHA, &capture);
+        assert!(!fs::read(&path).unwrap().is_empty());
+        drop(held);
+        assert_eq!(fs::read(&path).unwrap(), b"", "drop must clear the line");
+        // Dropping releases by closing the descriptor. A child that a parallel
+        // test forks in the meantime briefly shares that descriptor until it
+        // execs, so allow the release a bounded moment.
+        let started = Instant::now();
+        while let Err(error) = observer.try_lock_exclusive() {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "dropping the hold must release the lock: {error}"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            lines.lock().unwrap().is_empty(),
+            "{:?}",
+            lines.lock().unwrap()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Mixed versions share this lock file for hours. A line left by a killed
+    /// holder must not be attributed to an older holder that writes none, and
+    /// the next line this version writes must replace it, not append to it.
+    #[test]
+    fn a_stale_holder_line_is_not_attributed_to_an_old_style_holder() {
+        let paths = temp_paths("git-lock-stale-line");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let path = root.join("ci-hub-validate.lock");
+        let stale = format!(
+            "{GIT_LOCK_HOLDER_SCHEMA} pid=999999999 start_ticks=1 boot_id=gone host=gone \
+             purpose=current-main-freshness kind=validate target={HEX_SHA} acquired_at=1\n"
+        );
+        fs::write(&path, &stale).unwrap();
+        let mut holder = OldStyleLockHolder::spawn(&path, &root);
+        let observer = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let described = describe_lock_holder(&observer, &path);
+        assert!(
+            described.starts_with(&format!("held by pid {} (", holder.pid)),
+            "{described}"
+        );
+        assert!(!described.contains("recorded as"), "{described}");
+        assert!(
+            described.contains("does not name a current holder, so it is stale")
+                && described.contains("pid=999999999"),
+            "{described}"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            stale,
+            "an old-style holder never writes the file"
+        );
+        holder.finish();
+
+        let lines = capture_lines();
+        let capture = |line: &str| lines.lock().unwrap().push(line.to_string());
+        lock_exclusive_logged(
+            &observer,
+            &path,
+            "the test lock",
+            Duration::from_secs(1),
+            &capture,
+        )
+        .unwrap();
+        let held = HeldGitLock::record(observer, path.clone(), Kind::Validate, HEX_SHA, &capture);
+        let line = fs::read_to_string(&path).unwrap();
+        assert!(
+            line.starts_with(&format!(
+                "{GIT_LOCK_HOLDER_SCHEMA} pid={} ",
+                std::process::id()
+            )),
+            "{line}"
+        );
+        assert!(
+            !line.contains("pid=999999999"),
+            "the stale line must be replaced: {line}"
+        );
+        held.release().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lock_holders_come_from_proc_locks_without_waiters() {
+        let locks = "\
+1: FLOCK  ADVISORY  WRITE 4242 00:2d:462148258 0 EOF
+1: -> FLOCK  ADVISORY  WRITE 5151 00:2d:462148258 0 EOF
+2: POSIX  ADVISORY  WRITE 777 fd:01:123 0 EOF
+3: FLOCK  ADVISORY  WRITE 4343 00:31:462148258 0 EOF
+4: FLOCK  ADVISORY  WRITE 4242 00:2d:462148258 0 EOF
+garbage
+";
+        assert_eq!(lock_holder_pids(locks, 462148258), vec![4242, 4343]);
+        assert_eq!(lock_holder_pids(locks, 123), vec![777]);
+        assert!(lock_holder_pids(locks, 5).is_empty());
+
+        assert_eq!(parse_lock_holder_record(""), None);
+        assert_eq!(parse_lock_holder_record("\n  \n"), None);
+        let record = parse_lock_holder_record(&format!(
+            "{GIT_LOCK_HOLDER_SCHEMA} pid=12 start_ticks=34 target=x\nignored\n"
+        ))
+        .unwrap();
+        assert_eq!((record.pid, record.start_ticks), (Some(12), Some(34)));
+        assert_eq!(
+            record.text,
+            format!("{GIT_LOCK_HOLDER_SCHEMA} pid=12 start_ticks=34 target=x")
+        );
+        let foreign = parse_lock_holder_record("pid=12 something else").unwrap();
+        assert_eq!(foreign.pid, None, "only this schema's pid is trusted");
     }
 
     fn git_success(repo: Option<&Path>, args: &[&str]) -> String {
