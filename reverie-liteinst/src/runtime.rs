@@ -6,6 +6,7 @@ use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use std::cell::Cell;
+use std::ffi::CStr;
 use std::ffi::OsStr;
 use std::io;
 use std::ptr;
@@ -32,6 +33,27 @@ use crate::COMPAT_EVENT_COOKIE_ENV;
 use crate::COMPAT_EVENT_FD_ENV;
 
 pub(crate) const HOST_RUNTIME_ENV: &str = "REVERIE_LITEINST_HOST_RUNTIME";
+/// [`HOST_RUNTIME_ENV`] for the non-allocating constructor check.
+const HOST_RUNTIME_ENV_C: &CStr = c"REVERIE_LITEINST_HOST_RUNTIME";
+const _: () = assert!(const_bytes_eq(
+    HOST_RUNTIME_ENV_C.to_bytes(),
+    HOST_RUNTIME_ENV.as_bytes()
+));
+
+const fn const_bytes_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
 pub(crate) const HOST_BEGIN_MARKER: u64 = 0x7265_766c_6900_0001;
 pub(crate) const HOST_READY_MARKER: u64 = 0x7265_766c_6900_0002;
 pub(crate) const HOST_HELPER_RETURN_MARKER: u64 = 0x7265_766c_6900_0003;
@@ -878,7 +900,14 @@ fn enable_instruction_faulting(subscriptions: InstructionSubscriptions) -> io::R
 }
 
 pub(crate) fn initialize_from_environment() -> io::Result<()> {
-    if std::env::var_os(HOST_RUNTIME_ENV).as_deref() == Some(OsStr::new("1")) {
+    // The host check must not allocate: `var_os` would return an owned string,
+    // and that single malloc before the constructor window initialises the
+    // guest's glibc heap before `main`. getenv only reads the environment.
+    // SAFETY: the loader runs constructors before application threads start,
+    // so nothing mutates the environment concurrently; the name is NUL-terminated.
+    let host_selector = unsafe { libc::getenv(HOST_RUNTIME_ENV_C.as_ptr()) };
+    // SAFETY: a non-null getenv result is a NUL-terminated environment value.
+    if !host_selector.is_null() && unsafe { CStr::from_ptr(host_selector) }.to_bytes() == b"1" {
         return initialize_host_runtime();
     }
     let tool_value = std::env::var_os("REVERIE_LITEINST_TOOL");
@@ -968,6 +997,11 @@ pub(crate) fn initialize_host_runtime_explicit(config: crate::HostRuntimeConfig)
 }
 
 fn initialize_host_runtime_with(prepare: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    // Everything this thread allocates from here to Ready comes from the
+    // reclaiming constructor heap, never glibc malloc: the guest heap must be
+    // as untouched at `main` as it is natively. Covers the constructor and the
+    // explicit initializer alike.
+    let init_allocation_scope = crate::patch_alloc::enter_init();
     if reverie_preload::trap::has_dispatcher()
         || crate::straddler::is_initialized()
         || SITES.get().is_some()
@@ -982,7 +1016,22 @@ fn initialize_host_runtime_with(prepare: impl FnOnce() -> io::Result<()>) -> io:
     // SAFETY: the launcher validates this exact DSO/RIP/frame before suppressing
     // the trap. The function returns normally after ptrace resumes the tracee.
     unsafe { reverie_liteinst_host_begin(&frame) };
-    if let Err(error) = prepare() {
+    let prepared = prepare();
+    // Close the window before Ready: the tracer may inject the install helper
+    // at the Ready stop, and after Ready the constructor heap is frozen.
+    drop(init_allocation_scope);
+    let prepared = if crate::patch_alloc::init_heap_exhausted() {
+        // Reported ahead of `prepared`: a miss can surface there only as a
+        // silently skipped arena (liteinst2's fallible reservation) or not at all.
+        Err(io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            "LiteInst constructor heap (16 MiB) exhausted during host-runtime \
+             preparation; the guest heap was touched before main",
+        ))
+    } else {
+        prepared
+    };
+    if let Err(error) = prepared {
         // SAFETY: identical handshake contract. Reporting the failure at the
         // ready trap site ends the bootstrap window the begin trap opened, so
         // whatever the caller runs next is not attributed to the runtime.
