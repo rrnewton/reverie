@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,73 @@ def registry_document(slots: dict[str, object]) -> dict[str, object]:
         "updated": "2026-08-28T00:00:00Z",
         "slots": slots,
     }
+
+
+REGISTRY_CHECKER = REPO / "scripts" / "check-worktree-registry.rs"
+# The first run of this rust-script checker from a checkout compiles it, and the
+# rust-script cache is keyed per script path, so every fresh worktree pays that
+# build once. It took 67 s at host load ~90 on devbig014 (2026-09-29). The 10 s
+# and 30 s bounds in the gate subprocess tests below bound the GATE; this bound
+# is for the build alone, and is generous because the rust-script build lock is
+# shared with every other checkout on the host.
+CHECKER_BUILD_BOUND_SECS = 900
+_checker_build: dict[str, str] = {}
+
+
+def require_built_registry_checker() -> None:
+    """Build the gate's registry checker once, or refuse naming the precondition.
+
+    A ``worktree-state.json`` fixture makes the gate call
+    ``worktree_registry.parse_registry_bytes``, which runs this checker with no
+    timeout. Without this step a cold rust-script cache turns a correct gate
+    into a subprocess timeout in whichever of those tests happens to run first.
+    """
+    if "refusal" in _checker_build:
+        raise RuntimeError(_checker_build["refusal"])
+    if "built" in _checker_build:
+        return
+    precondition = (
+        f"MISSING PRECONDITION: the worktree registry schema checker "
+        f"{REGISTRY_CHECKER} must run through rust-script on PATH (its "
+        f"#!/usr/bin/env rust-script line) and build within "
+        f"{CHECKER_BUILD_BOUND_SECS} s before the gate's own 10 s/30 s bounds "
+        f"mean anything; "
+    )
+    refusal = None
+    try:
+        proc = subprocess.Popen(
+            [str(REGISTRY_CHECKER), "--validate-state-stdin"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as error:
+        refusal = precondition + f"it could not be executed: {error}"
+    else:
+        try:
+            _, err = proc.communicate(
+                json.dumps(registry_document({})).encode(),
+                timeout=CHECKER_BUILD_BOUND_SECS,
+            )
+        except subprocess.TimeoutExpired:
+            # Kill rust-script's cargo and rustc children too, not only the
+            # process this test started.
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            refusal = precondition + "the build did not finish in time"
+        else:
+            if proc.returncode != 0:
+                detail = err.decode("utf-8", errors="replace").strip()[-2000:]
+                refusal = (
+                    precondition
+                    + f"it exited rc={proc.returncode} on an empty registry: "
+                    + (detail or "no diagnostic")
+                )
+    if refusal is not None:
+        _checker_build["refusal"] = refusal
+        raise RuntimeError(refusal)
+    _checker_build["built"] = str(REGISTRY_CHECKER)
 
 
 class DiskResidueBracketTest(unittest.TestCase):
@@ -737,6 +805,7 @@ class CapacityDenominatorTest(unittest.TestCase):
         )
 
     def test_owner_census_timeout_cannot_erase_known_cap_breach(self) -> None:
+        require_built_registry_checker()
         with tempfile.TemporaryDirectory() as raw:
             root = make_root(Path(raw), ["working"])
             (root / "ci-hub").mkdir()
@@ -886,6 +955,7 @@ class UnassessableOwnerBracketTest(unittest.TestCase):
     SLOTS = ["unassessable", "deadowner", "abandoned"]
 
     def _run(self) -> subprocess.CompletedProcess:
+        require_built_registry_checker()
         with tempfile.TemporaryDirectory() as raw:
             root = make_root(Path(raw), self.SLOTS)
             registry = root / "worktree-state.json"
