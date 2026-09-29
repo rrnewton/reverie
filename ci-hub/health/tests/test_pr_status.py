@@ -2122,7 +2122,13 @@ class RenderTests(unittest.TestCase):
         self.assertIn("critical=yes", report)
         self.assertIn("approval=partial", report)
         self.assertIn("canonical issue comments, inline review comments", report)
-        self.assertIn("reporting only, not merge admission", report)
+        # 42ba4fecf43f0cca1f2570a6ea8ccf26b70afc06 narrowed this disclosure to
+        # public evidence: explicit local review packets can now admit an
+        # ordinary landing, and this view does not discover them.
+        self.assertIn("public-only reporting, not merge admission", report)
+        self.assertIn(
+            "Explicit local review packets are not discovered by this view.", report
+        )
         self.assertIn("native reviews, and current GitHub actor permission", report)
         self.assertIn("the shared review authority", report)
         self.assertIn("review_permission_unavailable=0", report)
