@@ -13,6 +13,10 @@ from unittest import mock
 
 import pytest
 
+# --import-mode=importlib does not put this directory on sys.path. Insert it
+# here so the sibling test-module import below does not depend on another
+# module having inserted it earlier in the same session.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_validation_evidence import observation, policy10, receipt, row10
 
 

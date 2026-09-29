@@ -13,9 +13,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-import nonzero_result as nz
-
 HERE = Path(__file__).resolve().parent
+# --import-mode=importlib does not put this directory on sys.path, so the
+# sibling module import below needs it inserted explicitly.
+sys.path.insert(0, str(HERE))
+
+import nonzero_result as nz  # noqa: E402
+
 MODULE = HERE / "nonzero_result.py"
 
 

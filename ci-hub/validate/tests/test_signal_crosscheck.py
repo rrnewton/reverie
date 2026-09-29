@@ -5,12 +5,18 @@ import importlib.util
 import io
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+
+# --import-mode=importlib does not put this directory on sys.path. Insert it
+# here so the sibling test-module imports inside the tests below do not depend
+# on another module having inserted it earlier in the same session.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "signal_crosscheck.py"
 SPEC = importlib.util.spec_from_file_location("signal_crosscheck", MODULE_PATH)

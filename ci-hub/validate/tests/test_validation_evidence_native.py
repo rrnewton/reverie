@@ -14,6 +14,10 @@ from unittest import mock
 import pytest
 
 CI_HUB = Path(__file__).resolve().parents[2]
+# --import-mode=importlib does not put this directory on sys.path. Insert it
+# here so the sibling test-module import below does not depend on another
+# module having inserted it earlier in the same session.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(CI_HUB))
 sys.path.insert(0, str(CI_HUB / "ledger"))
 sys.path.insert(0, str(CI_HUB / "validate"))

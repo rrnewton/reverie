@@ -10,6 +10,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+# --import-mode=importlib does not put this directory on sys.path. Insert it
+# here so the sibling test-module imports inside the tests below do not depend
+# on another module having inserted it earlier in the same session.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import residue_sweep
 

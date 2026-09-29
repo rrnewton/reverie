@@ -19,6 +19,10 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 VALIDATE = HERE.parent
+# --import-mode=importlib does not put this directory on sys.path. Insert it
+# here so the sibling test-module import below does not depend on another
+# module having inserted it earlier in the same session.
+sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(VALIDATE))
 
 import reverie_node

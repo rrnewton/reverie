@@ -17,6 +17,10 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[3]
+# --import-mode=importlib does not put this directory on sys.path. Insert it
+# here so the sibling test-module imports inside the tests below do not depend
+# on another module having inserted it earlier in the same session.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / "ci-hub" / "validate"))
 
 import run_registry  # noqa: E402
