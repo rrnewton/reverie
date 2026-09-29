@@ -16620,6 +16620,9 @@ mod capture_identity;
 #[path = "support/captured_rights.rs"]
 mod captured_rights;
 
+#[path = "support/physical_stdio_rights.rs"]
+mod physical_stdio_rights;
+
 #[path = "support/cpuid_dispatch.rs"]
 mod cpuid_dispatch;
 
