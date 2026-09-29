@@ -102,13 +102,15 @@ ABSENT_CACHE_TTL = timedelta(days=7)
 # Tolerated clock skew for an entry stamped in the future; beyond it the entry is
 # not trusted and GitHub is asked again.
 ABSENT_CACHE_FUTURE_SKEW = timedelta(minutes=5)
-# tick-hub kills this gate at 30 s, and loading the ledger already takes most of
-# that: 5 of the 12 hourly runs up to 2026-09-28T23:29Z timed out before GitHub
-# was ever involved. So one run spends at most GITHUB_LOOKUP_BUDGET_SECONDS on
-# lookups (a lookup is only started while a whole per-lookup timeout still fits)
-# and one failed lookup stops the rest (see UpstreamAbsence.classify). A healthy
-# lookup measured 0.43 s; commits not reached are left for the next run, which
-# starts from the cache, and this run refuses meanwhile.
+# tick-hub kills this gate at the timeout_secs that ci-hub/health/tick-hub.yaml
+# declares for validate_wall_regression: 290 s since 2026-09-29, counting this
+# whole budget. Before that it inherited a 30 s default, and 5 of the 12 hourly
+# runs up to 2026-09-28T23:29Z timed out loading the ledger before GitHub was
+# ever involved. One run spends at most GITHUB_LOOKUP_BUDGET_SECONDS on lookups
+# (a lookup is only started while a whole per-lookup timeout still fits) and one
+# failed lookup stops the rest (see UpstreamAbsence.classify). A healthy lookup
+# measured 0.43 s; commits not reached are left for the next run, which starts
+# from the cache, and this run refuses meanwhile.
 GITHUB_LOOKUP_TIMEOUT_SECONDS = 5.0
 GITHUB_LOOKUP_BUDGET_SECONDS = 10.0
 
