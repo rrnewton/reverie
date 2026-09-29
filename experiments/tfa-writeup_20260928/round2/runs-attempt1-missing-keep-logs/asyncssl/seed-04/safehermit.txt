@@ -1,0 +1,24 @@
+safehermit: run_id=20260929T154558Z-371847
+safehermit: binary=/tmp/sub-tfa2-030/hermit-main/hermit-4101426a
+safehermit: binary_source=argv:positional-path
+safehermit: binary_sha256=b4b30c7d7e9d9569184e9bc05cd7f8945640342c5ad61230f4765e81ed147537
+safehermit: log_dir=/home/newton/work/dev-hermit/ignored/safehermit/20260929T154558Z-371847
+safehermit: log_file=/home/newton/work/dev-hermit/ignored/safehermit/20260929T154558Z-371847/hermit.log
+safehermit: unit=safehermit-20260929T154558Z-371847
+safehermit: bound.wall=APPLIED:300s
+safehermit: bound.cgroup=APPLIED:MemoryMax=16G MemorySwapMax=0
+safehermit: bound.disk=NOT_APPLIED:per-run subvolumes disabled; retained log directory is not capped
+safehermit: bound.bytes=APPLIED:67108864 (LETHAL: the run is cgroup-killed at the cap)
+safehermit: bound.logfilter=NOT_APPLIED:by owner ruling -- the emitter is left loud so a stuck run stays visible; the low byte cap is the mechanism that fires
+safehermit: env.forwarded=APPLIED:167 variables forwarded
+safehermit: note.run_record=/home/newton/work/dev-hermit/ignored/safehermit/registry/20260929T154558Z-371847.json (best-effort; nothing depends on it)
+safehermit: elapsed_secs=0
+safehermit: bytes_written=685
+safehermit: truncated=false
+safehermit: runner_exit_code=2
+safehermit: unit_result=exit-code
+safehermit: exec_main_pid=372159
+safehermit: exec_main_code=1
+safehermit: exec_main_status=2
+safehermit: exec_main_start_monotonic_usec=710456041964
+safehermit: exit_code=2

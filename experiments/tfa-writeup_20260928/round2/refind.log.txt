@@ -1,0 +1,19 @@
+{"case": "thrift", "seed": 0, "rc": 0, "elapsed_s": 4.7, "verify": "deterministic", "pass_markers": 1, "fail_markers": 0, "outcome": "PASS"}
+{"case": "thrift", "seed": 1, "rc": 0, "elapsed_s": 4.2, "verify": "deterministic", "pass_markers": 1, "fail_markers": 0, "outcome": "PASS"}
+{"case": "thrift", "seed": 2, "rc": 0, "elapsed_s": 4.5, "verify": "deterministic", "pass_markers": 1, "fail_markers": 0, "outcome": "PASS"}
+{"case": "thrift", "seed": 3, "rc": 1, "elapsed_s": 4.7, "verify": "deterministic", "pass_markers": 0, "fail_markers": 1, "outcome": "FAIL"}
+{"case": "thrift", "seed": 4, "rc": 66, "elapsed_s": 4.9, "verify": "deterministic", "pass_markers": 0, "fail_markers": 1, "outcome": "FAIL"}
+{"case": "thrift", "seed": 5, "rc": 0, "elapsed_s": 6.1, "verify": "deterministic", "pass_markers": 1, "fail_markers": 0, "outcome": "PASS"}
+{"case": "asyncssl", "seed": 1, "rc": 0, "elapsed_s": 3.3, "verify": "deterministic", "pass_markers": 1, "fail_markers": 0, "outcome": "PASS"}
+{"case": "asyncssl", "seed": 11, "rc": 1, "elapsed_s": 1.5, "verify": "deterministic", "pass_markers": 0, "fail_markers": 1, "outcome": "FAIL"}
+{"case": "asyncssl", "seed": 0, "rc": 1, "elapsed_s": 13.2, "verify": "deterministic", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "asyncssl", "seed": 2, "rc": 1, "elapsed_s": 17.8, "verify": "deterministic", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "asyncssl", "seed": 3, "rc": 0, "elapsed_s": 1.2, "verify": "deterministic", "pass_markers": 1, "fail_markers": 0, "outcome": "PASS"}
+{"case": "asyncssl", "seed": 4, "rc": 0, "elapsed_s": 1.2, "verify": "deterministic", "pass_markers": 1, "fail_markers": 0, "outcome": "PASS"}
+{"case": "httpcoro", "seed": 3, "rc": 0, "elapsed_s": 3.1, "verify": "deterministic", "pass_markers": 1, "fail_markers": 0, "outcome": "PASS"}
+{"case": "httpcoro", "seed": 0, "rc": 134, "elapsed_s": 70.4, "verify": "deterministic", "pass_markers": 0, "fail_markers": 1, "outcome": "FAIL"}
+{"case": "httpcoro", "seed": 1, "rc": 0, "elapsed_s": 4.5, "verify": "deterministic", "pass_markers": 1, "fail_markers": 0, "outcome": "PASS"}
+{"case": "httpcoro", "seed": 2, "rc": 134, "elapsed_s": 99.7, "verify": "deterministic", "pass_markers": 0, "fail_markers": 1, "outcome": "FAIL"}
+{"case": "httpcoro", "seed": 4, "rc": 0, "elapsed_s": 2.6, "verify": "deterministic", "pass_markers": 1, "fail_markers": 0, "outcome": "PASS"}
+{"case": "httpcoro", "seed": 5, "rc": 0, "elapsed_s": 17.8, "verify": "deterministic", "pass_markers": 1, "fail_markers": 0, "outcome": "PASS"}
+rc=0

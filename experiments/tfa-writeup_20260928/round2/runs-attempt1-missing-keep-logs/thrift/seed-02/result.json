@@ -1,0 +1,10 @@
+{
+ "case": "thrift",
+ "seed": 2,
+ "rc": 2,
+ "elapsed_s": 0.8,
+ "verify": "unknown",
+ "pass_markers": 0,
+ "fail_markers": 0,
+ "outcome": "OTHER"
+}

@@ -1,0 +1,10 @@
+{
+ "case": "httpcoro",
+ "seed": 0,
+ "rc": 134,
+ "elapsed_s": 70.4,
+ "verify": "deterministic",
+ "pass_markers": 0,
+ "fail_markers": 1,
+ "outcome": "FAIL"
+}

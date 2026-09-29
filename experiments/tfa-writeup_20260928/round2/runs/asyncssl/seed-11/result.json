@@ -1,0 +1,10 @@
+{
+ "case": "asyncssl",
+ "seed": 11,
+ "rc": 1,
+ "elapsed_s": 1.5,
+ "verify": "deterministic",
+ "pass_markers": 0,
+ "fail_markers": 1,
+ "outcome": "FAIL"
+}

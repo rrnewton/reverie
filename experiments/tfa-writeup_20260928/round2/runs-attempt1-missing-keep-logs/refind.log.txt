@@ -1,0 +1,19 @@
+{"case": "thrift", "seed": 0, "rc": 2, "elapsed_s": 0.6, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "thrift", "seed": 1, "rc": 2, "elapsed_s": 0.9, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "thrift", "seed": 2, "rc": 2, "elapsed_s": 0.8, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "thrift", "seed": 3, "rc": 2, "elapsed_s": 0.6, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "thrift", "seed": 4, "rc": 2, "elapsed_s": 0.4, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "thrift", "seed": 5, "rc": 2, "elapsed_s": 0.4, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "asyncssl", "seed": 1, "rc": 2, "elapsed_s": 0.4, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "asyncssl", "seed": 11, "rc": 2, "elapsed_s": 0.4, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "asyncssl", "seed": 0, "rc": 2, "elapsed_s": 0.4, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "asyncssl", "seed": 2, "rc": 2, "elapsed_s": 0.5, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "asyncssl", "seed": 3, "rc": 2, "elapsed_s": 0.4, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "asyncssl", "seed": 4, "rc": 2, "elapsed_s": 0.4, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "httpcoro", "seed": 3, "rc": 2, "elapsed_s": 0.4, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "httpcoro", "seed": 0, "rc": 2, "elapsed_s": 0.4, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "httpcoro", "seed": 1, "rc": 2, "elapsed_s": 0.4, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "httpcoro", "seed": 2, "rc": 2, "elapsed_s": 0.5, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "httpcoro", "seed": 4, "rc": 2, "elapsed_s": 1.0, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+{"case": "httpcoro", "seed": 5, "rc": 2, "elapsed_s": 0.5, "verify": "unknown", "pass_markers": 0, "fail_markers": 0, "outcome": "OTHER"}
+rc=0

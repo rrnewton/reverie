@@ -1,0 +1,6 @@
+error: the following required arguments were not provided:
+  --keep-logs
+
+Usage: hermit-4101426a run --verify --keep-logs --backend <BACKEND> --strict --chaos --chaos-per-thread-slowdown --chaos-slowdown-max-factor <double> --chaos-epoch-length-ns <nanos> --base-env <str> --env <name[=val]> --mount <path> --epoch <YYYY-MM-DDThh:mm:ssZ> --seed <uint64> --rng-seed <uint64> --sched-seed <uint64> --fuzz-seed <uint64> --sched-heuristic <str> --target-timeslice <virtual-nanoseconds> --max-timeslice <uint64|'disabled'> --clock-multiplier <float> --verify-strict --verify-allow <success|failure|both> --verify-log-dir <DIRECTORY> <PROGRAM> <ARGS>...
+
+For more information, try '--help'.

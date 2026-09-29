@@ -1,0 +1,10 @@
+{
+ "case": "httpcoro",
+ "seed": 4,
+ "rc": 2,
+ "elapsed_s": 1.0,
+ "verify": "unknown",
+ "pass_markers": 0,
+ "fail_markers": 0,
+ "outcome": "OTHER"
+}
