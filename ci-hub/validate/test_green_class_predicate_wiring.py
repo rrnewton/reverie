@@ -63,6 +63,9 @@ def qualifying_row(**over) -> dict:
         "executed_tests": 412,
         "passed_tests": 412,
         "schema_version": 5,
+        # A row without the release-builder pair is a Cargo run only if it
+        # finished before the first writer of the pair.
+        "finished_at": "2026-08-04T10:00:00Z",
         "producer": "hermit-validate-sh",
         "admission": "ci-hub-validate-lock",
         "concurrent_validates": 0,

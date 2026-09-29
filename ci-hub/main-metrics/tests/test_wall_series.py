@@ -38,6 +38,9 @@ def ledger_row(commit, finished, *, executed=1):
         "gates_expected": 1,
         "finished_at": finished,
         "started_at": finished,
+        # The oldest ledger schema: pre-count, pre-coverage, and one a writer
+        # emitted before the release-builder pair existed.
+        "schema_version": 1,
         "real_seconds": 10,
         "user_seconds": 5,
         "sys_seconds": 5,

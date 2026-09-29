@@ -47,6 +47,9 @@ def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
 def _qualifying_row() -> dict[str, object]:
     return {
         "schema_version": 5,
+        # A row without the release-builder pair is a Cargo run only if it
+        # finished before the first writer of the pair.
+        "finished_at": "2026-08-04T10:00:00Z",
         "profile": "full",
         "selection_mode": "full",
         "commit": SHA,

@@ -37,6 +37,9 @@ def _row(name: str = HEAD, finished: str = "2026-08-04T10:00:00Z", **over: objec
     row: dict[str, object] = {
         "commit": name,
         "finished_at": finished,
+        # The oldest ledger schema: pre-count, pre-coverage, and one a writer
+        # emitted before the release-builder pair existed.
+        "schema_version": 1,
         "result": "pass",
         "executed_tests": 10,
         "gates_run": 5,
