@@ -103,17 +103,19 @@ ABSENT_CACHE_TTL = timedelta(days=7)
 # not trusted and GitHub is asked again.
 ABSENT_CACHE_FUTURE_SKEW = timedelta(minutes=5)
 # tick-hub kills this gate at the timeout_secs that ci-hub/health/tick-hub.yaml
-# declares for validate_wall_regression and validate_wall_series_readiness: 26 s
-# each since 2026-09-29, counting this whole budget. That is their share of one
-# 77 s budget for the three ledger-replay gates, sized to fit the tick's 619 s
-# wall backstop; see the comment there. Before that both inherited a 30 s
-# default, and 5 of the 12 hourly validate_wall_regression runs up to
-# 2026-09-28T23:29Z timed out loading the ledger before GitHub was ever
-# involved. One run spends at most GITHUB_LOOKUP_BUDGET_SECONDS on lookups
-# (a lookup is only started while a whole per-lookup timeout still fits) and one
-# failed lookup stops the rest (see UpstreamAbsence.classify). A healthy lookup
-# measured 0.43 s; commits not reached are left for the next run, which starts
-# from the cache, and this run refuses meanwhile.
+# declares for validate_wall_regression and validate_wall_series_readiness: 82 s
+# each since 2026-09-29, which is ceil(3 x (17.01 + 10)), three times the
+# slowest ledger replay measured after the replay fix plus this whole budget;
+# see the comment there. Before that both inherited a 30 s default, and 5 of the
+# 12 hourly validate_wall_regression runs up to 2026-09-28T23:29Z timed out
+# loading the ledger before GitHub was ever involved. One run spends at most
+# GITHUB_LOOKUP_BUDGET_SECONDS on lookups (a lookup is only started while a
+# whole per-lookup timeout still fits) and one failed lookup stops the rest (see
+# UpstreamAbsence.classify). A healthy lookup measured 0.43 s; commits not
+# reached are left for the next run, which starts from the cache, and this run
+# refuses meanwhile. Each "no such commit" answer is written to the cache as it
+# arrives, so a run that tick-hub kills (SIGKILL, which skips every finally)
+# still keeps the answers it already got.
 GITHUB_LOOKUP_TIMEOUT_SECONDS = 5.0
 GITHUB_LOOKUP_BUDGET_SECONDS = 10.0
 
