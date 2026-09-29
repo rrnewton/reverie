@@ -855,10 +855,13 @@ impl Stopped {
             })
             .map_err(|err| self.map_err(err))?;
 
-        // PTRACE_GETREGSET modifies the length to the real length of the
-        // registers, but we should already know the exact number of registers
-        // for this architecture.
-        debug_assert_eq!(iov.iov_len, core::mem::size_of_val(&regs));
+        // GETREGSET selects the target's ABI, which may differ from the
+        // tracer's (for example, a compat PRSTATUS reply is shorter). Require
+        // the entire typed layout in every build before assuming initialization.
+        // Zero-filling the tail would not make a short reply a valid native ABI.
+        if iov.iov_len != core::mem::size_of_val(&regs) {
+            return Err(Error::Errno(Errno::EPROTO));
+        }
 
         Ok(unsafe { regs.assume_init() })
     }
@@ -1703,6 +1706,87 @@ mod test {
             Wait::Exited(pid, ExitStatus::Exited(42))
         );
 
+        Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    const PRSTATUS_BYTES: usize = core::mem::size_of::<libc::user_regs_struct>();
+    #[cfg(target_arch = "x86_64")]
+    const PRSTATUS_CS: usize = core::mem::offset_of!(libc::user_regs_struct, cs);
+
+    // Independent raw observation: this deliberately does not call
+    // Stopped::getregs or any decoder that assumes a native reply size.
+    #[cfg(target_arch = "x86_64")]
+    fn raw_prstatus(tid: i32) -> Result<([u8; PRSTATUS_BYTES], usize), Errno> {
+        let mut bytes = [0xa5u8; PRSTATUS_BYTES];
+        let mut iov = libc::iovec {
+            iov_base: bytes.as_mut_ptr().cast(),
+            iov_len: bytes.len(),
+        };
+        Errno::result(unsafe {
+            libc::ptrace(
+                libc::PTRACE_GETREGSET,
+                tid,
+                libc::NT_PRSTATUS as usize as *mut libc::c_void,
+                &mut iov as *mut libc::iovec,
+            )
+        })?;
+        Ok((bytes, iov.iov_len))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn set_native_prstatus(tid: i32, bytes: &[u8; PRSTATUS_BYTES]) -> Result<(), Errno> {
+        // On x86-64, PTRACE_SETREGS uses the native tracer layout even when the
+        // stopped target's current CS selects compat GETREGSET. This permits
+        // exact restoration without executing a single instruction in compat
+        // mode.
+        Errno::result(unsafe {
+            libc::ptrace(
+                libc::PTRACE_SETREGS,
+                tid,
+                std::ptr::null_mut::<libc::c_void>(),
+                bytes.as_ptr(),
+            )
+        })
+        .map(|_| ())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn generic_getregs_refuses_actual_compat_and_restores()
+    -> Result<(), Box<dyn std::error::Error + 'static>> {
+        let (pid, tracee) = trace(|| 42, Options::PTRACE_O_EXITKILL)?;
+        let tid = pid.as_raw();
+        let (original, length) = raw_prstatus(tid)?;
+        assert_eq!(length, PRSTATUS_BYTES);
+        assert_eq!(tracee.getregs()?.cs, 0x33);
+        let mut compat = original;
+        compat[PRSTATUS_CS..PRSTATUS_CS + 8].copy_from_slice(&0x23u64.to_ne_bytes());
+        set_native_prstatus(tid, &compat)?;
+        let (reply, length) = raw_prstatus(tid)?;
+        assert_eq!(length, 68, "actual short kernel PRSTATUS, never a mock");
+        assert_eq!(u16::from_ne_bytes(reply[52..54].try_into().unwrap()), 0x23);
+        assert!(reply[length..].iter().all(|byte| *byte == 0xa5));
+
+        // The fixed generic API must refuse before constructing Regs. Restore
+        // the native registers before asserting, so the child can exit
+        // normally. (Before the fix, debug builds panicked on the length
+        // assertion and release builds constructed Regs from 148
+        // uninitialized bytes.)
+        let result = tracee.getregs();
+        set_native_prstatus(tid, &original)?;
+        let (restored, length) = raw_prstatus(tid)?;
+        assert_eq!(length, PRSTATUS_BYTES);
+        assert_eq!(restored, original);
+        assert!(
+            matches!(result, Err(Error::Errno(Errno::EPROTO))),
+            "{result:?}"
+        );
+        assert_eq!(tracee.getregs()?.cs, 0x33);
+        assert_eq!(
+            tracee.resume(None)?.wait()?,
+            Wait::Exited(pid, ExitStatus::Exited(42))
+        );
         Ok(())
     }
 
