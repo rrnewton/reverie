@@ -1034,6 +1034,26 @@ static void mode_process_madvise(void) {
   close(pidfd);
 }
 
+/* T6c: the first call through tp_site is process_madvise(MADV_DONTNEED),
+ * through a pidfd for this process, on tp_site's own page. The tracer never
+ * patches a site at a process_madvise stop (patched there, a tail-injected
+ * call would run after the patch and drop the page copy that holds it), so
+ * the site still reads 0f 05 after the call; warm() then patches it through
+ * getpid. SITE returns the raw result, -EINVAL before Linux 6.13 (see
+ * mode_process_madvise). */
+static void mode_process_madvise_first(void) {
+  int pidfd = syscall(SYS_pidfd_open, getpid(), 0);
+  if (pidfd < 0)
+    die("pidfd_open");
+  struct iovec iov = {(void *)((unsigned long)tp_site & ~4095UL), 4096};
+  long r = SITE(SYS_process_madvise, pidfd, &iov, 1, MADV_DONTNEED, 0);
+  say("process_madvise first ret=%ld\n", r);
+  site_bytes("after process_madvise first");
+  warm();
+  site_bytes("after warm");
+  close(pidfd);
+}
+
 /* T6a, undecided: a thread (CLONE_VM|CLONE_THREAD) through the patched
  * site, whose recorded clone flags the test makes disagree with kcmp (no
  * CLONE_VM) or with the kind of new-child stop (CLONE_VFORK). The thread
@@ -2247,6 +2267,8 @@ int main(int argc, char **argv) {
     mode_vfork_undecided();
   else if (!strcmp(m, "process_madvise"))
     mode_process_madvise();
+  else if (!strcmp(m, "process_madvise_first"))
+    mode_process_madvise_first();
   else if (!strcmp(m, "vfork_spawn"))
     mode_vfork_spawn();
   else if (!strcmp(m, "guest_seccomp"))

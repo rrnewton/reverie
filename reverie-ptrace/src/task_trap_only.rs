@@ -297,6 +297,16 @@ fn nix_pid(pid: reverie::Pid) -> nix::unistd::Pid {
 /// Numbers whose site is never patched: executing them changes the table or
 /// the address space (P2 spec section 3 rule 3).
 ///
+/// Every number [`mapping_ranges`] can give a range for is one of them,
+/// `process_madvise` included (a unit test checks each number its arms
+/// name). A site is patched after the Tool has handled its stop, but a
+/// tail-injected call runs only at the final resume, after the patch: a
+/// first `process_madvise` through a site, with `MADV_DONTNEED` on that
+/// site's own page and a pidfd for the caller, would drop the page that has
+/// just received the patch. A site in a file-backed mapping would then read
+/// `0f 05` again (one in an anonymous mapping, a JIT's say, would read
+/// zeros) while the table holds it as live.
+///
 /// This screens only the number a site carries at the stop that would patch
 /// it. A generic site (a libc `syscall()` wrapper, say) can later carry any
 /// number through its `int 0x80`. Such a call is routed like any other
@@ -322,6 +332,7 @@ fn is_patchable_number(nr: Sysno) -> bool {
             | Sysno::mprotect
             | Sysno::pkey_mprotect
             | Sysno::madvise
+            | Sysno::process_madvise
             | Sysno::shmat
             | Sysno::remap_file_pages
             | Sysno::seccomp
@@ -1866,6 +1877,90 @@ mod mapping_range_tests {
         assert_eq!(
             ranges(Sysno::madvise, [0x5000_0010, 1, dontneed, 0, 0]),
             vec![(0x5000_0000, 0x5000_1000)]
+        );
+    }
+
+    /// Every number named by a `Sysno::` path in the body of
+    /// `mapping_ranges`, outside `//` comments and sorted by number. This is
+    /// read from the source text, so it finds an arm whatever its guard
+    /// tests. It misses only an arm that matches a number without naming it
+    /// there (through a glob import, or a constant or function defined
+    /// elsewhere).
+    fn numbers_named_in_mapping_ranges() -> Vec<Sysno> {
+        let source = include_str!("task_trap_only.rs");
+        let start = source
+            .find("\nfn mapping_ranges(")
+            .expect("task_trap_only.rs defines mapping_ranges");
+        let body = &source[start..];
+        let body = &body[..body.find("\n}\n").expect("mapping_ranges ends")];
+        let mut named: Vec<Sysno> = body
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or_default())
+            .flat_map(|code| code.split("Sysno::").skip(1))
+            .map(|rest| {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                name.parse::<Sysno>()
+                    .unwrap_or_else(|()| panic!("mapping_ranges names Sysno::{name}"))
+            })
+            .collect();
+        named.sort_by_key(|nr| nr.id());
+        named.dedup();
+        named
+    }
+
+    /// A site is never patched with a number whose call can change a mapping
+    /// (`process_madvise` among them). Two sources find those numbers, each
+    /// number found must be non-patchable, and each source must give exactly
+    /// the list below:
+    /// - the source text (`include_str!` of this file, so the text that was
+    ///   compiled): every number `mapping_ranges` names (see
+    ///   `numbers_named_in_mapping_ranges`), whatever its arm's guard tests;
+    /// - calls: every syscall number for which `mapping_ranges` gives a
+    ///   non-empty range with one of the argument sets in `probes`. Each
+    ///   guard today tests a flag bit, which all-ones arguments set and zero
+    ///   arguments clear, so the two sets reach every arm. An arm guarded by
+    ///   an argument's value (`a1 == X`) is not reached by them, so an arm
+    ///   of that kind with a new number fails the last comparison until an
+    ///   argument set that reaches it is added to `probes`.
+    ///
+    /// An arm with a new number, whatever its guard, is found by the source
+    /// scan: it fails the non-patchable check unless its number is in
+    /// `is_patchable_number`'s list, and the comparison of the scan with the
+    /// list below until it is added there.
+    #[test]
+    fn every_number_with_a_mapping_range_is_never_patched() {
+        assert!(!is_patchable_number(Sysno::process_madvise));
+        let named = numbers_named_in_mapping_ranges();
+        let probes = [[0; 5], [usize::MAX; 5]];
+        let reached: Vec<Sysno> = Sysno::iter()
+            .filter(|nr| probes.iter().any(|args| !ranges(*nr, *args).is_empty()))
+            .collect();
+        for nr in named.iter().chain(&reached) {
+            assert!(
+                !is_patchable_number(*nr),
+                "{nr} can change a mapping, but its site may be patched"
+            );
+        }
+        // The arms found, so that neither source can pass by finding none.
+        let mut arms = vec![
+            Sysno::mmap,
+            Sysno::mprotect,
+            Sysno::pkey_mprotect,
+            Sysno::munmap,
+            Sysno::madvise,
+            Sysno::process_madvise,
+            Sysno::remap_file_pages,
+            Sysno::mremap,
+            Sysno::shmat,
+        ];
+        arms.sort_by_key(|nr| nr.id());
+        assert_eq!(named, arms, "the numbers mapping_ranges names");
+        assert_eq!(
+            reached, arms,
+            "the numbers the probes reach (an arm they miss needs its own probe)"
         );
     }
 }
