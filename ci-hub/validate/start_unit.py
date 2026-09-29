@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import filecmp
+import errno
 import fcntl
 import hashlib
 import json
@@ -7743,6 +7745,613 @@ def _remove_temporary_tree_checked(
     return True, None
 
 
+def _mountinfo_rows(text: str) -> list[tuple[str, str, str, str, str]]:
+    """Return (mount ID, parent ID, major:minor, root, mount point) per line."""
+
+    rows: list[tuple[str, str, str, str, str]] = []
+    for line in text.splitlines():
+        fields = line.split(" - ", 1)[0].split()
+        if len(fields) < 5:
+            raise ValueError(f"malformed mountinfo line: {line!r}")
+        root, point = (
+            _MOUNTINFO_ESCAPE.sub(lambda match: chr(int(match.group(1), 8)), raw)
+            for raw in (fields[3], fields[4])
+        )
+        rows.append((fields[0], fields[1], fields[2], root, point))
+    return rows
+
+
+def _mountinfo_mounts(text: str) -> list[tuple[str, str, str]]:
+    """Return (major:minor, root within the filesystem, mount point) per line.
+
+    The table also lists mounts that a later mount covers; these are included.
+    """
+
+    return [(device, root, point) for _id, _parent, device, root, point in _mountinfo_rows(text)]
+
+
+def _path_is_at_or_under(path: str, parent: str) -> bool:
+    return parent == "/" or path == parent or path.startswith(parent + "/")
+
+
+def _join_mount_path(base: str, tail: str) -> str:
+    """Append ``tail`` ("" or starting with "/") to the absolute ``base``."""
+
+    tail = "" if tail == "/" else tail
+    if base == "/":
+        return tail or "/"
+    return base + tail
+
+
+def _checkout_views(device: str, fs_path: str, mountinfo: str) -> set[str]:
+    """Every path at which one mount table shows the checkout or a part of it.
+
+    ``fs_path`` is the checkout's path within the filesystem ``device``. A mount
+    of an ancestor of it shows the checkout below the mount point; a mount of
+    the checkout or of a directory inside it shows that part at the mount point.
+    """
+
+    views: set[str] = set()
+    for mount_device, root, point in _mountinfo_mounts(mountinfo):
+        if mount_device != device:
+            continue
+        if _path_is_at_or_under(fs_path, root):
+            views.add(_join_mount_path(point, fs_path if root == "/" else fs_path[len(root):]))
+        elif _path_is_at_or_under(root, fs_path):
+            views.add(point)
+    return views
+
+
+def _filesystem_location(path: str, mountinfo: str) -> tuple[str, str]:
+    """Return (major:minor, path within that filesystem) for an absolute path.
+
+    ``path`` must contain no symlink. The table still lists a mount that a
+    later mount covers, and the longest mount point that names ``path`` can be
+    such a hidden mount, which is not where ``path`` leads. So this follows the
+    mounts that path lookup crosses: from the root mount, component by
+    component, into the mount whose parent is the current mount and whose
+    mount point is the path so far, and up through mounts stacked there.
+    """
+
+    rows = _mountinfo_rows(mountinfo)
+    ids = {row[0] for row in rows}
+    above: dict[tuple[str, str], list[tuple[str, str, str, str, str]]] = {}
+    for row in rows:
+        if row[1] != row[0]:  # a namespace's first mount can name itself
+            above.setdefault((row[1], row[4]), []).append(row)
+    bases = [row for row in rows if row[4] == "/" and (row[1] not in ids or row[1] == row[0])]
+    if len(bases) != 1:
+        raise ValueError(f"the mount table has {len(bases)} root mounts, not 1")
+
+    def top(mount: tuple[str, str, str, str, str], point: str) -> tuple[str, str, str, str, str]:
+        crossed = {mount[0]}
+        while (stacked := above.get((mount[0], point), [])):
+            if len(stacked) > 1 or stacked[0][0] in crossed:
+                raise ValueError(f"the mount table does not show one mount at {point}")
+            mount = stacked[0]
+            crossed.add(mount[0])
+        return mount
+
+    mount = top(bases[0], "/")
+    reached = ""
+    for part in path.split("/"):
+        if part:
+            reached += "/" + part
+            mount = top(mount, reached)
+    return _location_in(mount, path)
+
+
+def _location_in(mount: tuple[str, str, str, str, str], path: str) -> tuple[str, str]:
+    """(major:minor, path within it) of ``path`` in a mount whose point names it."""
+
+    _id, _parent, device, fs_root, mount_point = mount
+    return device, _join_mount_path(
+        fs_root, path if mount_point == "/" else path[len(mount_point):]
+    )
+
+
+def _locations_under_every_cover(path: str, mountinfo: str) -> set[tuple[str, str]]:
+    """Every location ``path`` names in a mount that some lookup of it reaches.
+
+    Path lookup (see _filesystem_location) reaches one of them. Taking at each
+    component either the mount lookup is in or any mount on it there, however
+    deeply covered, gives the rest: where ``path`` would lead if covering mounts
+    were gone, including mounts hidden under a mount above ``path``'s parents.
+    """
+
+    rows = _mountinfo_rows(mountinfo)
+    ids = {row[0] for row in rows}
+    on: dict[tuple[str, str], list[tuple[str, str, str, str, str]]] = {}
+    for row in rows:
+        if row[1] != row[0]:
+            on.setdefault((row[1], row[4]), []).append(row)
+    reached_mounts = [
+        row for row in rows if row[4] == "/" and (row[1] not in ids or row[1] == row[0])
+    ]
+    seen = {row[0] for row in reached_mounts}
+
+    def spread(point: str) -> None:
+        for mount in reached_mounts:  # also visits the mounts appended here
+            for upper in on.get((mount[0], point), []):
+                if upper[0] not in seen:
+                    seen.add(upper[0])
+                    reached_mounts.append(upper)
+
+    spread("/")
+    reached = ""
+    for part in path.split("/"):
+        if part:
+            reached += "/" + part
+            spread(reached)
+    return {_location_in(mount, path) for mount in reached_mounts}
+
+
+def _table_mounts_part_of(device: str, fs_path: str, mountinfo: str) -> bool:
+    """Whether a mount table mounts ``fs_path``, or a directory inside it, anywhere."""
+
+    return any(
+        mount_device == device and _path_is_at_or_under(root, fs_path)
+        for mount_device, root, _point in _mountinfo_mounts(mountinfo)
+    )
+
+
+def mount_points_inside(tree: Path, *, proc_root: Path = Path("/proc")) -> list[str]:
+    """Mount points this process's mount table shows at or inside ``tree``.
+
+    ``rm -rf`` descends into a mount and deletes what the mounted filesystem
+    holds; ``--one-file-system`` does not stop it at a bind of the same
+    filesystem (measured 2026-09-29, GNU coreutils 8.32). KVM runs have left
+    loop-mounted filesystems under slot checkouts' target/ on devbig014, and
+    such a mount shows at every place the tree is visible (/home/newton/...
+    and /data/users/newton/dotsync-home/...), so every spelling is checked.
+    """
+
+    path = str(tree)
+    table = (proc_root / "self" / "mountinfo").read_text(
+        encoding="utf-8", errors="surrogateescape"
+    )
+    device, fs_path = _filesystem_location(path, table)
+    views = {path} | _checkout_views(device, fs_path, table)
+    return sorted(
+        {
+            point
+            for _device, _root, point in _mountinfo_mounts(table)
+            if any(_path_is_at_or_under(point, view) for view in views)
+        }
+    )
+
+
+def build_tree_storage_problem(
+    checkout: Path,
+    relative: Path,
+    evidence_root: Path,
+    *,
+    proc_root: Path = Path("/proc"),
+) -> str | None:
+    """Why ``checkout/relative`` may not be only that tree on disk, or None.
+
+    resolve() and the spelling comparison do not see bind mounts. A mount on
+    the checkout, or on a directory between it and the tree, can show other
+    storage (a run's evidence, say) under the tree's name; and ignored/validate,
+    or a filesystem mounted inside it, can be a bind of the tree or of a
+    directory in it. This process's mount table, which is the one rm uses, gives
+    each location as (major:minor, path within that filesystem): the tree must
+    sit at its spelled place below the checkout's parent, and must neither
+    contain nor lie inside anything that the table shows under ignored/validate.
+
+    A mount on ignored/validate, or on a directory above it, hides the evidence
+    at that name in this mount namespace while a bind elsewhere, over the
+    checkout's parent say, can still reach it. So the evidence counts at its
+    place in every mount that a lookup of ignored/validate could reach if
+    covering mounts were gone, not only in the one lookup reaches.
+    """
+
+    table = (proc_root / "self" / "mountinfo").read_text(
+        encoding="utf-8", errors="surrogateescape"
+    )
+    device, fs_path = _filesystem_location(str(checkout / relative), table)
+    parent_device, parent_path = _filesystem_location(str(checkout.parent), table)
+    expected = _join_mount_path(parent_path, "/" + "/".join((checkout.name, *relative.parts)))
+    if (device, fs_path) != (parent_device, expected):
+        return (
+            f"a mount lies on the checkout or between it and {relative}, which is "
+            f"{device}:{fs_path} on disk, not {parent_device}:{expected}"
+        )
+    evidence = str(evidence_root)
+    locations = _locations_under_every_cover(evidence, table)
+    views = {evidence}.union(
+        *(_checkout_views(held_on, held_at, table) for held_on, held_at in locations)
+    )
+    stored = locations | {
+        (mount_device, root)
+        for mount_device, root, point in _mountinfo_mounts(table)
+        if any(_path_is_at_or_under(point, view) for view in views)
+    }
+    for stored_device, stored_path in sorted(stored):
+        if stored_device == device and (
+            _path_is_at_or_under(fs_path, stored_path)
+            or _path_is_at_or_under(stored_path, fs_path)
+        ):
+            return (
+                f"{relative} is {device}:{fs_path} on disk, which overlaps "
+                f"validation evidence stored at {stored_device}:{stored_path}"
+            )
+    return None
+
+
+# The kernel's fixed inode numbers for its initial PID and user namespaces
+# (PROC_PID_INIT_INO and PROC_USER_INIT_INO in include/linux/proc_ns.h).
+INITIAL_NAMESPACE_INODES = {"pid": 0xEFFFFFFC, "user": 0xEFFFFFFD}
+
+# kcmp(2)'s syscall number per machine, and its KCMP_FS and KCMP_FILES types
+# (include/uapi/linux/kcmp.h).
+KCMP_SYSCALL = {"x86_64": 312, "aarch64": 272}
+KCMP_FS, KCMP_FILES = 3, 2
+_LIBC = ctypes.CDLL(None, use_errno=True)
+
+
+def thread_shares_leaders_entries(pid: int, tid: int) -> bool:
+    """Whether thread ``tid`` shares its leader's cwd, root and descriptor table.
+
+    Raises ProcessLookupError when either has exited and PermissionError when
+    this user may not inspect them; kcmp(2) missing raises OSError.
+    """
+
+    number = KCMP_SYSCALL.get(os.uname().machine)
+    if number is None:
+        raise OSError(errno.ENOSYS, f"no kcmp syscall number for {os.uname().machine}")
+    for kind in (KCMP_FS, KCMP_FILES):
+        order = _LIBC.syscall(*(ctypes.c_long(value) for value in (number, pid, tid, kind, 0, 0)))
+        if order < 0:
+            code = ctypes.get_errno()
+            raise OSError(code, f"kcmp({pid}, {tid}): {os.strerror(code)}")
+        if order != 0:
+            return False
+    return True
+
+
+def live_process_using_checkout(
+    checkout: Path, *, proc_root: Path = Path("/proc")
+) -> str | None:
+    """Name one live process that may be using ``checkout``, or return None.
+
+    A stopped validate unit does not prove its payload is gone: dagrun runs the
+    payload in dagrun.slice scopes, each build step in its own process group,
+    outside the service's cgroup. So this reads /proc for every process and
+    reports one whose cwd, root, executable, open file or memory map lies
+    inside ``checkout`` (hermit's validate.rs keeps its invocation lock open
+    under target/validation/ for a whole run). ``checkout`` must be a resolved
+    path.
+
+    The kernel spells those links as the process's own mount namespace sees
+    them. The hermetic lane runs a container that sees the checkout at /src,
+    and devbig014 shows the same directory at /home/newton/... and at
+    /data/users/newton/dotsync-home/.... So a process's paths are compared
+    with every place its mount table (/proc/<pid>/mountinfo) shows the
+    checkout's directory on the checkout's filesystem, and, for a process whose
+    root is not "/", with those places below its root. A process whose mount
+    table mounts the checkout, or a directory inside it, anywhere is reported
+    too, even when it holds nothing there; that table is readable for every
+    process, including ones whose other entries are not.
+
+    A thread group leader that exited before its other threads keeps its
+    process ID but no longer shows what the process holds; its live threads'
+    entries (task/<tid>) are read instead. A live leader's entries show its
+    threads too, except a thread that unshare(2) gave its own cwd and root or
+    its own descriptor table; kcmp(2) finds those, and their entries are read.
+    A zombie shows nothing and is skipped, as is this launcher. A process
+    whose entries this user cannot read is skipped the way lsof skips it in
+    wrkslots' full-checkout census; for a process of this user (the systemd
+    user manager, keyring daemons, sandboxed agent shells) that holds unless it
+    still has an address space and its cgroup is under dagrun.slice, where it
+    is reported. Reading a memory map takes the process's mmap lock, so that
+    read gives up after VALIDATE_ENTRY_HOLDER_READ_SECONDS and raises. Any other
+    read failure raises OSError, and a malformed mount table raises ValueError.
+
+    /proc lists only the processes of the reader's PID namespace, and from
+    inside a user namespace the entries of the host's processes cannot be
+    read, so it raises ValueError unless this process is in the host's own
+    (initial) PID and user namespaces.
+    """
+
+    for kind, initial in INITIAL_NAMESPACE_INODES.items():
+        link = os.readlink(proc_root / "self" / "ns" / kind)
+        if link != f"{kind}:[{initial}]":
+            raise ValueError(
+                f"this process is in {link}, not the host's {kind} namespace, "
+                "so /proc does not show every process to it"
+            )
+    prefix = str(checkout)
+    device, fs_path = _filesystem_location(
+        prefix,
+        (proc_root / "self" / "mountinfo").read_text(
+            encoding="utf-8", errors="surrogateescape"
+        ),
+    )
+    tables: dict[str, tuple[tuple[str, ...], bool]] = {}
+
+    def mount_table(entries: Path) -> str | None:
+        """The table, or None when the task has no mount namespace left."""
+
+        try:
+            return (entries / "mountinfo").read_text(
+                encoding="utf-8", errors="surrogateescape"
+            )
+        except OSError as error:
+            if error.errno == errno.EINVAL:
+                return None
+            raise
+
+    def user(entries: Path, mountinfo: str, label: str) -> str | None:
+        known = tables.get(mountinfo)
+        if known is None:
+            known = (
+                tuple(sorted({prefix} | _checkout_views(device, fs_path, mountinfo))),
+                _table_mounts_part_of(device, fs_path, mountinfo),
+            )
+            tables[mountinfo] = known
+        views, mounts_checkout = known
+        if mounts_checkout:
+            return f"{label} mount table"
+        root = os.readlink(entries / "root").removesuffix(" (deleted)")
+        if root != "/":
+            views = (*views, *(_join_mount_path(root, view) for view in views))
+
+        def inside(raw: str) -> bool:
+            target = raw.removesuffix(" (deleted)")
+            return any(_path_is_at_or_under(target, view) for view in views)
+
+        for name in ("cwd", "root", "exe"):
+            try:
+                if inside(os.readlink(entries / name)):
+                    return f"{label} {name}"
+            except FileNotFoundError:
+                pass  # no executable (kernel thread) or exited; fd/ decides
+        with os.scandir(entries / "fd") as descriptors:
+            links = [descriptor.path for descriptor in descriptors]
+        for link in links:
+            try:
+                if inside(os.readlink(link)):
+                    return f"{label} fd/{Path(link).name}"
+            except FileNotFoundError:
+                pass  # closed while listed
+        maps = _read_proc_bounded(str(entries / "maps"), VALIDATE_ENTRY_HOLDER_READ_SECONDS)
+        for line in maps.decode("utf-8", "surrogateescape").splitlines():
+            parts = line.split(maxsplit=5)
+            if len(parts) == 6 and inside(parts[5]):
+                return f"{label} map"
+        return None
+
+    def threads_apart(pid_dir: Path, pid: str) -> list[tuple[Path, str, str]]:
+        """A live leader's threads that keep their own cwd and root or files.
+
+        Threads share the leader's (CLONE_FS, CLONE_FILES), whose entries then
+        show them, until one calls unshare(2); a thread's own mount namespace
+        needs its own cwd and root too. kcmp(2) finds those threads without
+        listing every thread's descriptors: on 2026-09-29 that was 86,955,390
+        entries (108 s) across 53,788 non-leader threads, none of them apart,
+        while comparing them all took 0.36 s.
+        """
+
+        with os.scandir(pid_dir / "task") as listed:
+            tids = sorted(entry.name for entry in listed if entry.name != pid)
+        apart = []
+        for tid in tids:
+            try:
+                if thread_shares_leaders_entries(int(pid), int(tid)):
+                    continue
+                table = mount_table(pid_dir / "task" / tid)
+            except (FileNotFoundError, ProcessLookupError):
+                continue  # that thread exited
+            if table is not None:
+                apart.append((pid_dir / "task" / tid, table, f"PID {pid} thread {tid}"))
+        return apart
+
+    def first_use(tasks: list[tuple[Path, str, str]]) -> str | None:
+        for entries, table, label in tasks:
+            try:
+                found = user(entries, table, label)
+            except FileNotFoundError:
+                continue  # exited during the scan
+            if found is not None:
+                return found
+        return None
+
+    uid = str(os.getuid())
+    own_pid = os.getpid()
+    with os.scandir(proc_root) as entries:
+        pids = [entry.name for entry in entries if entry.name.isdigit()]
+    for pid in pids:
+        if int(pid) == own_pid:
+            continue
+        pid_dir = proc_root / pid
+        uids: list[str] = []
+        try:
+            with open(pid_dir / "status", encoding="utf-8", errors="replace") as status:
+                status_fields = {
+                    line.split(":", 1)[0]: line.split()[1:] for line in status if ":" in line
+                }
+            uids = status_fields.get("Uid", [])
+            mountinfo = mount_table(pid_dir)
+            if mountinfo is not None:
+                tasks = [(pid_dir, mountinfo, f"PID {pid}")]
+            else:
+                # No mount namespace left: a zombie, which has released its
+                # files, cwd and memory, or a leader that exited before its
+                # other threads, whose own entries no longer show what they
+                # hold. Each live thread shows it under task/<tid>.
+                with os.scandir(pid_dir / "task") as listed:
+                    tids = sorted(entry.name for entry in listed if entry.name != pid)
+                tasks = []
+                for tid in tids:
+                    try:
+                        table = mount_table(pid_dir / "task" / tid)
+                    except FileNotFoundError:
+                        continue  # that thread exited too
+                    if table is not None:
+                        tasks.append((pid_dir / "task" / tid, table, f"PID {pid} thread {tid}"))
+            found = first_use(tasks)
+            if found is None and mountinfo is not None and status_fields.get("Threads") != ["1"]:
+                found = first_use(threads_apart(pid_dir, pid))
+            if found is not None:
+                return found
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # exited during the scan
+        except PermissionError:
+            if uid not in uids:
+                continue  # another user's process, which this user cannot inspect
+            try:
+                status_now = (pid_dir / "status").read_text(encoding="utf-8", errors="replace")
+                cgroup = (pid_dir / "cgroup").read_text(encoding="utf-8", errors="replace")
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            # A zombie or exiting process has released its address space and
+            # files (status then has no VmSize), yet /proc/<pid>/fd still
+            # refuses; 10 of 40 scans on 2026-09-29 met such a zombie. A
+            # leader that exited ahead of its threads shows no VmSize either,
+            # but those threads keep theirs.
+            fields = [line.split() for line in status_now.splitlines()]
+            has_memory = any(
+                field[:1] == ["VmSize:"]
+                or (field[:1] == ["Threads:"] and field[1:2] not in (["0"], ["1"]))
+                for field in fields
+            )
+            if has_memory and "/dagrun.slice/" in cgroup:
+                return f"PID {pid}, unreadable, in dagrun.slice"
+    return None
+
+
+# The rebuildable Cargo and hermetic build output inside a finished validate
+# checkout: 38-65 GB per retained checkout, measured 2026-09-29. The checkout's
+# source and .git are kept, and nothing under the parent's ignored/validate is
+# touched.
+# https://github.com/rrnewton/dev-hermit/issues/439
+FINISHED_CHECKOUT_BUILD_TREES = (Path("target"), Path("ignored") / "hermetic")
+
+
+def remove_finished_checkout_build_trees(
+    root: Path,
+    checkout: Path,
+    *,
+    unit: str,
+    run: Runner,
+    full_removal_refused: bool = False,
+) -> list[str]:
+    """Delete a finished launch's build trees, even when its checkout stays.
+
+    Same-launch cleanup keeps the whole checkout whenever it cannot finish: a
+    lock wait times out, or a refused ledger publication keeps the checkout
+    registered for recovery. Recovery needs the source and .git, not the build
+    output, so the launcher calls this after its evidence is final. It removes
+    only ``target/`` and ``ignored/hermetic/`` inside ``checkout``, and only if
+    ``checkout`` is a fresh validate checkout, systemd shows ``unit`` is
+    stopped, and no live process uses the checkout. When the full removal ran
+    and did not confirm (``full_removal_refused``; wrkslots refuses, for one,
+    when its lsof census sees a user), that refusal stands and nothing is
+    removed. It returns the relative paths it removed.
+    """
+
+    removed: list[str] = []
+
+    def retain(detail: str) -> list[str]:
+        print(
+            f"validate-run: build trees RETAINED in {checkout}: {detail}",
+            file=sys.stderr,
+        )
+        return removed
+
+    if not (checkout.exists() or checkout.is_symlink()):
+        return removed  # full cleanup already removed the whole checkout
+    if full_removal_refused:
+        return retain("the full checkout removal ran and did not confirm; its refusal stands")
+    if checkout.is_symlink() or not checkout.is_dir():
+        return retain("the checkout is not a real directory")
+    # The two parents fresh checkouts are created under; see
+    # validate_checkout_parent and frozen_checkout_parent, which also mkdir.
+    parents = (
+        (root / "worktrees" / "validate").resolve(),
+        (root.parent / f".{root.name}-frozen-validate").resolve(),
+    )
+    resolved = _lexical_absolute_path(str(checkout)).resolve()
+    if resolved.parent not in parents:
+        return retain("the checkout is not a direct child of a validate checkout parent")
+    properties, absent = service_properties_with_absence(unit, run=run)
+    stopped = (
+        properties is not None and properties.get("ActiveState") in TERMINAL_STATES
+    ) or (properties is None and absent)
+    if not stopped:
+        return retain(f"systemd does not show {unit}.service as stopped")
+    try:
+        user = live_process_using_checkout(resolved)
+    except (OSError, ValueError) as error:
+        return retain(f"cannot establish that no process uses the checkout: {error}")
+    if user is not None:
+        return retain(f"a live process uses the checkout: {user}")
+    evidence_root = root / "ignored" / "validate"
+    for relative in FINISHED_CHECKOUT_BUILD_TREES:
+        path = resolved / relative
+        if not (path.exists() or path.is_symlink()):
+            continue
+        components = [
+            resolved.joinpath(*relative.parts[: depth + 1])
+            for depth in range(len(relative.parts))
+        ]
+        if any(part.is_symlink() for part in components) or not path.is_dir():
+            retain(f"{relative} is not a real directory")
+            continue
+        if _path_spellings_overlap(path, evidence_root):
+            retain(f"{relative} overlaps validation evidence")
+            continue
+        try:
+            mounts = mount_points_inside(path)
+        except (OSError, ValueError) as error:
+            retain(f"cannot read the mount table for {relative}: {error}")
+            continue
+        if mounts:
+            retain(f"{relative} has mounts inside it: {', '.join(mounts)}")
+            continue
+        try:
+            problem = build_tree_storage_problem(
+                resolved, relative, _lexical_absolute_path(str(evidence_root)).resolve()
+            )
+        except (OSError, ValueError) as error:
+            retain(f"cannot locate {relative} on disk: {error}")
+            continue
+        if problem is not None:
+            retain(problem)
+            continue
+        if relative != Path("target"):
+            # Full removal deletes target/ with the checkout without scanning it
+            # (RECEIPT_SCAN_PRUNE), so skipping the scan there keeps nothing
+            # less than full removal keeps; other trees get the same scan.
+            try:
+                orphans = orphaned_receipt_locations(path, run=run)
+            except OSError as error:
+                retain(f"cannot scan {relative} for receipts: {error}")
+                continue
+            if orphans:
+                retain(f"{relative} holds untracked *.jsonl files: {', '.join(orphans)}")
+                continue
+        ok, error = _remove_temporary_tree_checked(
+            path, role=f"finished checkout {relative}", run=run
+        )
+        if not ok:
+            # rm may have deleted part of the tree before it failed.
+            print(
+                f"validate-run: build tree {relative} in {checkout} may be partly "
+                f"removed: {error or 'removal was not confirmed'}",
+                file=sys.stderr,
+            )
+            continue
+        removed.append(str(relative))
+    if removed:
+        print(
+            f"validate-run: removed build trees {', '.join(removed)} from {checkout}",
+            file=sys.stderr,
+        )
+    return removed
+
+
 def cleanup_recorded_run_storage(
     root: Path,
     record_path: Path,
@@ -12896,6 +13505,39 @@ def main(
                 file=sys.stderr,
             )
 
+    def remove_own_build_trees(cleanup: RecordedRunStorageCleanup | None) -> None:
+        """After final evidence, drop this launch's checkout build output.
+
+        A no-op when cleanup already removed the checkout. When cleanup kept it
+        without trying to remove it (a lock wait timed out, or ``cleanup`` is
+        None because main kept the checkout for recovery), only the rebuildable
+        target/ and ignored/hermetic/ go. When the removal was tried and did
+        not confirm, nothing goes.
+        """
+
+        if fresh_checkout is None:
+            return
+        refused = (
+            cleanup is not None
+            and cleanup.checkout.receipt_classified
+            and not cleanup.checkout.removed
+        )
+        try:
+            remove_finished_checkout_build_trees(
+                state_root,
+                fresh_checkout,
+                unit=unit,
+                run=run,
+                full_removal_refused=refused,
+            )
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+            # The error may come after rm started, so do not call them retained.
+            print(
+                f"validate-run: removing build trees from {fresh_checkout} stopped, "
+                f"and part of them may be gone: {error}",
+                file=sys.stderr,
+            )
+
     try:
         github_executable = gh_route.executable(environment)
         if FD_TOOL_ROOT_RE.fullmatch(str(tool_root)) is not None:
@@ -13700,6 +14342,7 @@ def main(
                 )
             storage_cleanup = cleanup_current_storage()
             report_storage_cleanup(storage_cleanup)
+            remove_own_build_trees(storage_cleanup)
             if relayed_inner_refusal:
                 return inner_exit
             return could_not_determine(
@@ -13722,6 +14365,7 @@ def main(
             print(f"  {row[:160]}")
         storage_cleanup = cleanup_current_storage()
         report_storage_cleanup(storage_cleanup)
+        remove_own_build_trees(storage_cleanup)
         if storage_cleanup.record is not None:
             updated = storage_cleanup.record
         emit_report(
@@ -13773,6 +14417,7 @@ def main(
             )
             storage_cleanup = cleanup_current_storage()
             report_storage_cleanup(storage_cleanup)
+            remove_own_build_trees(storage_cleanup)
             return inner_exit
         print(f"validate-run: CANONICAL-VERDICT-UNAVAILABLE: {error}", file=sys.stderr)
         # This is still a terminal launch: dispose every row-owned target in
@@ -13780,6 +14425,7 @@ def main(
         # checkout here and defer Cargo to a second, racy pass.
         storage_cleanup = cleanup_current_storage()
         report_storage_cleanup(storage_cleanup)
+        remove_own_build_trees(storage_cleanup)
         if fresh_checkout is not None and source_checkout is not None:
             # Retention is for EVIDENCE, not for every failure. Retaining
             # unconditionally cost 26 MB per failed validate, and because
@@ -13945,6 +14591,7 @@ def main(
             "remains registered with wrkslots for recovery.",
             file=sys.stderr,
         )
+        remove_own_build_trees(None)
     else:
         # The normal completion path is deliberately one transaction from the
         # durable row through checkout removal, the fresh Cargo-owner census,
@@ -13957,6 +14604,7 @@ def main(
         report_storage_cleanup(storage_cleanup)
         if storage_cleanup.record is not None:
             updated = storage_cleanup.record
+        remove_own_build_trees(storage_cleanup)
     emit_report(
         {**updated, "event": "finished", "unit": f"{unit}.service"},
         json_output=args.json,

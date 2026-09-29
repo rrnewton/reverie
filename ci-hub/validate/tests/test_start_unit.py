@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import errno
 import fcntl
 import hashlib
@@ -10,6 +11,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -22,7 +24,7 @@ import pytest
 import runpy
 import unittest
 from unittest import mock
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 
@@ -73,6 +75,33 @@ def exercise_post_quiescence_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def completed(command: list[str], rc: int = 0, stdout: str = "", stderr: str = ""):
     return subprocess.CompletedProcess(command, rc, stdout, stderr)
+
+
+def census_seeing_only(test: unittest.TestCase, pids: Callable[[], Iterable[int]]) -> None:
+    """Make the build-tree census read a /proc that shows only ``pids``.
+
+    The census counts, to be safe, host processes it cannot rule out: an
+    unreadable dagrun step of another run, another user's container that
+    mounts a checkout. On a busy host an unrelated one would decide a test
+    about something else, so these tests show the census their own
+    processes, and PID 1 (another user's, on a host, whose entries refuse),
+    through links into the real /proc. LiveProcessUsingCheckoutTest covers
+    each rule on a fixture /proc.
+    """
+
+    real = start_unit.live_process_using_checkout
+
+    def census(checkout: Path, *, proc_root: Path = Path("/proc")) -> str | None:
+        view = Path(tempfile.mkdtemp(prefix="census-proc-"))
+        test.addCleanup(shutil.rmtree, view)
+        (view / "self").symlink_to(proc_root / "self")
+        for pid in {1, *pids()}:
+            (view / str(pid)).symlink_to(proc_root / str(pid))
+        return real(checkout, proc_root=view)
+
+    patcher = mock.patch.object(start_unit, "live_process_using_checkout", side_effect=census)
+    patcher.start()
+    test.addCleanup(patcher.stop)
 
 
 def wrkslots_action(command: list[str], action: str) -> bool:
@@ -1444,6 +1473,8 @@ class StartUnitTest(unittest.TestCase):
             git_patch = mock.patch.object(start_unit.unwrapped_git, name, value)
             git_patch.start()
             self.addCleanup(git_patch.stop)
+        self.census_pids: set[int] = set()
+        census_seeing_only(self, lambda: self.census_pids)
 
     def tearDown(self) -> None:
         start_unit.HOST_TMP_ROOT = self.original_host_tmp_root
@@ -17772,6 +17803,227 @@ else:
         )
         self.assert_record_storage_retained()
 
+    # ignored/hermetic/split/target is the hermetic lane's own cargo target
+    # (bound at /src/target in its container), about 60 GB by du -sb in each
+    # finished checkout measured on 2026-09-30, next to 63 GB in target/.
+    BUILD_TREE_FILES = (
+        "target/debug/hermit",
+        "target/validation/validate-invocation.lock",
+        "ignored/hermetic/split/cargo/registry/blob",
+        "ignored/hermetic/split/target/release/hermit",
+    )
+
+    def invoke_observing_build_tree_removal(
+        self,
+        invoke: Callable[[], tuple[int, str]],
+        *,
+        with_holder: bool = False,
+    ) -> tuple[int, str, dict[str, set[str]], subprocess.Popen[str] | None]:
+        """Plant build trees in the fresh checkout, run main, observe the strip.
+
+        ``with_holder`` starts a real process with its cwd inside the checkout
+        as soon as the checkout exists, standing in for a build step that
+        outlived the unit.
+        """
+
+        materialize = self.fake._materialize_fresh_checkout
+        holders: list[subprocess.Popen[str]] = []
+
+        def materialize_with_build_trees() -> None:
+            materialize()
+            assert self.fake.fresh is not None
+            for relative in self.BUILD_TREE_FILES:
+                path = self.fake.fresh / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("rebuildable build output\n")
+            if with_holder and not holders:
+                holder = subprocess.Popen(
+                    ["sleep", "60"], cwd=self.fake.fresh / "target", text=True
+                )
+                self.addCleanup(holder.wait)
+                self.addCleanup(holder.kill)
+                holders.append(holder)
+                self.census_pids.add(holder.pid)
+
+        def files_under(path: Path) -> set[str]:
+            return {
+                str(entry.relative_to(path))
+                for entry in path.rglob("*")
+                if entry.is_file() or entry.is_symlink()
+            }
+
+        evidence = self.root / "ignored" / "validate"
+        observed: dict[str, set[str]] = {}
+        real_remove = start_unit.remove_finished_checkout_build_trees
+
+        def observe_removal(root: Path, checkout: Path, **kwargs: object) -> list[str]:
+            observed["evidence_before"] = files_under(evidence)
+            observed["checkout_before"] = files_under(checkout)
+            removed = real_remove(root, checkout, **kwargs)
+            observed["evidence_after"] = files_under(evidence)
+            observed["checkout_after"] = files_under(checkout)
+            return removed
+
+        self.fake._materialize_fresh_checkout = materialize_with_build_trees
+        with mock.patch.object(
+            start_unit,
+            "remove_finished_checkout_build_trees",
+            side_effect=observe_removal,
+        ):
+            rc, error = invoke()
+        return rc, error, observed, holders[0] if holders else None
+
+    def assert_only_build_trees_removed(
+        self, error: str, observed: dict[str, set[str]]
+    ) -> None:
+        record_path = run_registry.record_path(self.root, "validate-test")
+        checkout = Path(run_registry.read_record(record_path)["checkout"])
+        for name in self.BUILD_TREE_FILES:
+            self.assertIn(name, observed["checkout_before"])
+        # Only the two build trees left the checkout.
+        self.assertFalse((checkout / "target").exists())
+        self.assertFalse((checkout / "ignored/hermetic").exists())
+        self.assertEqual(
+            {
+                name
+                for name in observed["checkout_before"]
+                if not name.startswith(("target/", "ignored/hermetic/"))
+            },
+            observed["checkout_after"],
+        )
+        for name in (".git", "scripts/validate.rs", "SCORECARD.md"):
+            self.assertIn(name, observed["checkout_after"])
+            self.assertTrue((checkout / name).is_file(), name)
+        # Nothing under the parent's ignored/validate was removed.
+        evidence = self.root / "ignored" / "validate"
+        self.assertIn(
+            str(record_path.relative_to(evidence)), observed["evidence_before"]
+        )
+        self.assertEqual(observed["evidence_before"], observed["evidence_after"])
+        self.assertTrue(record_path.is_file())
+        self.assertIn(
+            f"removed build trees target, ignored/hermetic from {checkout}", error
+        )
+
+    def test_timed_out_same_launch_cleanup_still_removes_build_trees(self) -> None:
+        # https://github.com/rrnewton/dev-hermit/issues/439: a retained
+        # checkout kept 38-65 GB of target/ and ignored/hermetic/ forever.
+        holders: list[subprocess.Popen[str]] = []
+
+        def invoke() -> tuple[int, str]:
+            rc, _output, error, holder = self.invoke_with_foreign_cleanup_lock(
+                "population", holder_seconds=2.0, wait_seconds=0.05
+            )
+            holders.append(holder)
+            return rc, error
+
+        rc, error, observed, _ = self.invoke_observing_build_tree_removal(invoke)
+
+        self.assertIsNone(holders[0].poll())
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn("waiting for run-population authority", error)
+        # Cleanup timed out, so the checkout, Cargo home and runtime root stay.
+        self.assert_record_storage_retained()
+        self.assert_only_build_trees_removed(error, observed)
+
+    def test_recovery_retention_still_removes_build_trees(self) -> None:
+        # The ledger row is not durable yet, so main keeps the whole checkout
+        # registered for recovery; recovery reads source and .git, not builds.
+        def invoke() -> tuple[int, str]:
+            with mock.patch.object(
+                start_unit, "cell_ledger_retirement_ready", return_value=False
+            ):
+                rc, _output, error = self.invoke(["--", "full"])
+            return rc, error
+
+        rc, error, observed, _ = self.invoke_observing_build_tree_removal(invoke)
+
+        self.assertIn("materialized target checkout RETAINED", error)
+        self.assertNotIn("checkout_removed_at", run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")))
+        self.assert_only_build_trees_removed(error, observed)
+        # Retaining for recovery does not change the run's verdict.
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+
+    def test_a_build_tree_removal_error_is_not_reported_as_retained(self) -> None:
+        # The error can come after rm started, so part of a tree may be gone.
+        with (
+            mock.patch.object(
+                start_unit, "cell_ledger_retirement_ready", return_value=False
+            ),
+            mock.patch.object(
+                start_unit,
+                "remove_finished_checkout_build_trees",
+                side_effect=OSError("rm was interrupted"),
+            ) as remove,
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        remove.assert_called_once()
+        checkout = remove.call_args.args[1]
+        self.assertIn(
+            f"validate-run: removing build trees from {checkout} stopped, "
+            "and part of them may be gone: rm was interrupted",
+            error,
+        )
+        self.assertNotIn("build trees RETAINED", error)
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+
+    def assert_nothing_removed(self, observed: dict[str, set[str]]) -> None:
+        self.assertEqual(observed["checkout_before"], observed["checkout_after"])
+        self.assertEqual(observed["evidence_before"], observed["evidence_after"])
+        assert self.fake.fresh is not None
+        for name in self.BUILD_TREE_FILES:
+            self.assertIn(name, observed["checkout_before"])
+            self.assertTrue((self.fake.fresh / name).is_file(), name)
+
+    def test_refused_full_removal_keeps_build_trees(self) -> None:
+        # wrkslots refused full removal (its lsof census saw a user); that
+        # refusal stands for the strip too, whatever the strip's own census.
+        self.fake.wrkslots_remove_rc = 3
+        self.fake.wrkslots_remove_stderr = "REFUSED: live process uses slot"
+
+        def invoke() -> tuple[int, str]:
+            rc, _output, error = self.invoke(["--", "full"])
+            return rc, error
+
+        _rc, error, observed, _ = self.invoke_observing_build_tree_removal(invoke)
+
+        self.assertIn("REFUSED: live process uses slot", error)
+        self.assertIn(
+            "the full checkout removal ran and did not confirm; its refusal stands",
+            error,
+        )
+        self.assertNotIn("removed build trees", error)
+        self.assert_nothing_removed(observed)
+
+    def test_surviving_build_step_keeps_build_trees_after_timed_out_cleanup(self) -> None:
+        # Cleanup timed out, so wrkslots never looked; a build step that
+        # outlived the unit still has its cwd in target/.
+        lock_holders: list[subprocess.Popen[str]] = []
+
+        def invoke() -> tuple[int, str]:
+            rc, _output, error, lock_holder = self.invoke_with_foreign_cleanup_lock(
+                "population", holder_seconds=2.0, wait_seconds=0.05
+            )
+            lock_holders.append(lock_holder)
+            return rc, error
+
+        rc, error, observed, holder = self.invoke_observing_build_tree_removal(
+            invoke, with_holder=True
+        )
+
+        assert holder is not None
+        self.assertIsNone(holder.poll())
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn("waiting for run-population authority", error)
+        self.assert_record_storage_retained()
+        self.assertIn(
+            f"a live process uses the checkout: PID {holder.pid} cwd", error
+        )
+        self.assertNotIn("removed build trees", error)
+        self.assert_nothing_removed(observed)
+
     def test_same_launch_cleanup_does_not_retry_its_own_generation_lock(self) -> None:
         with (
             start_unit.run_registry.run_writer_generation_lock(self.root),
@@ -19053,6 +19305,1330 @@ class ReverieCountFinalizerTests(unittest.TestCase):
                    and any(isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
                            and child.func.id == "finalize_reverie_counts" for child in ast.walk(node))}
         self.assertEqual({"main", "attach"}, callers)
+
+
+needs_bwrap = unittest.skipUnless(
+    shutil.which("bwrap")
+    and subprocess.run(
+        ["bwrap", "--ro-bind", "/", "/", "true"], capture_output=True
+    ).returncode == 0,
+    "needs an unprivileged bwrap",
+)
+
+
+class FinishedCheckoutBuildTreesTest(unittest.TestCase):
+    """remove_finished_checkout_build_trees, for
+    https://github.com/rrnewton/dev-hermit/issues/439."""
+
+    BUILD_FILES = (
+        "target/debug/hermit",
+        "ignored/hermetic/split/cargo/blob",
+        "ignored/hermetic/split/target/release/hermit",
+    )
+    KEPT_FILES = (".git", "scripts/validate.rs", "SCORECARD.md")
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve() / "dev-hermit"
+        self.checkout = self.root / "worktrees/validate/validate-fresh-aaaaaaaaaaaa-1-abcd"
+        self.evidence = self.root / "ignored/validate/runs/validate-test.json"
+        self.evidence.parent.mkdir(parents=True)
+        self.evidence.write_text("{}\n")
+        self.plant(self.checkout)
+        self.properties = (
+            "LoadState=loaded\nActiveState=inactive\nSubState=dead\n"
+            "InvocationID=fixture-invocation\n"
+        )
+        self.systemctl_rc = 0
+        self.commands: list[list[str]] = []
+        self.census_pids: set[int] = set()
+        census_seeing_only(self, lambda: self.census_pids)
+
+    def plant(self, checkout: Path) -> None:
+        for relative in (*self.KEPT_FILES, *self.BUILD_FILES):
+            path = checkout / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{relative}\n")
+
+    def fake_run(self, command: list[str], **_kwargs: object):
+        self.commands.append(list(command))
+        if command[:3] == ["systemctl", "--user", "show"]:
+            return completed(command, self.systemctl_rc, stdout=self.properties)
+        if command[:2] == ["rm", "-rf"]:
+            shutil.rmtree(command[-1])
+            return completed(command)
+        if command[-2:] == ["rev-parse", "--show-toplevel"]:
+            return completed(command, stdout=f"{self.checkout}\n")
+        if "ls-files" in command:
+            return completed(command, 1)
+        raise AssertionError(command)
+
+    def remove(
+        self, checkout: Path | None = None, *, full_removal_refused: bool = False
+    ) -> tuple[list[str], str]:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            removed = start_unit.remove_finished_checkout_build_trees(
+                self.root,
+                self.checkout if checkout is None else checkout,
+                unit="validate-test",
+                run=self.fake_run,
+                full_removal_refused=full_removal_refused,
+            )
+        return removed, err.getvalue()
+
+    def assert_kept(self, checkout: Path, *relatives: str) -> None:
+        for relative in relatives:
+            self.assertTrue((checkout / relative).is_file(), relative)
+        self.assertTrue(self.evidence.is_file())
+
+    def removals(self) -> list[list[str]]:
+        return [command for command in self.commands if command[:2] == ["rm", "-rf"]]
+
+    def test_stopped_unit_loses_only_its_build_trees(self) -> None:
+        removed, error = self.remove()
+        self.assertEqual(["target", "ignored/hermetic"], removed, error)
+        self.assertFalse((self.checkout / "target").exists())
+        self.assertFalse((self.checkout / "ignored/hermetic").exists())
+        self.assertTrue((self.checkout / "ignored").is_dir())
+        self.assert_kept(self.checkout, *self.KEPT_FILES)
+        self.assertEqual(
+            [
+                ["rm", "-rf", str(self.checkout / "target")],
+                ["rm", "-rf", str(self.checkout / "ignored/hermetic")],
+            ],
+            self.removals(),
+        )
+
+    def test_failed_removal_is_reported_as_partial_not_retained(self) -> None:
+        # rm deletes part of target/ and then fails: the log must not call the
+        # tree retained, target/ is not listed as removed, and ignored/hermetic
+        # is still handled.
+        real_run = self.fake_run
+
+        def failing_rm(command: list[str], **kwargs: object):
+            if command == ["rm", "-rf", str(self.checkout / "target")]:
+                self.commands.append(list(command))
+                (self.checkout / "target/debug/hermit").unlink()
+                return completed(command, 1, stderr="rm: cannot remove 'x': Permission denied")
+            return real_run(command, **kwargs)
+
+        self.fake_run = failing_rm  # type: ignore[method-assign]
+        removed, error = self.remove()
+        self.assertEqual(["ignored/hermetic"], removed, error)
+        self.assertIn(
+            f"build tree target in {self.checkout} may be partly removed: could not "
+            "remove finished checkout target: rm: cannot remove 'x': Permission denied",
+            error,
+        )
+        self.assertNotIn("RETAINED", error)
+        self.assertTrue((self.checkout / "target/debug").is_dir())
+        self.assertFalse((self.checkout / "ignored/hermetic").exists())
+        self.assert_kept(self.checkout, *self.KEPT_FILES)
+
+    def test_refused_full_removal_keeps_everything(self) -> None:
+        # The unit is stopped and nothing uses the checkout, yet the full
+        # removal's refusal stands: nothing is asked of systemd or rm.
+        removed, error = self.remove(full_removal_refused=True)
+        self.assertEqual([], removed)
+        self.assertIn(
+            "build trees RETAINED in "
+            f"{self.checkout}: the full checkout removal ran and did not confirm; "
+            "its refusal stands",
+            error,
+        )
+        self.assertEqual([], self.commands)
+        self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+
+    def test_failed_and_collected_units_count_as_stopped(self) -> None:
+        for name, properties in (
+            (
+                "failed",
+                "LoadState=loaded\nActiveState=failed\nInvocationID=fixture-invocation\n",
+            ),
+            (
+                "collected",
+                "LoadState=not-found\nActiveState=inactive\nInvocationID=\n",
+            ),
+        ):
+            with self.subTest(name):
+                self.plant(self.checkout)
+                self.properties = properties
+                removed, error = self.remove()
+                self.assertEqual(["target", "ignored/hermetic"], removed, error)
+                self.assert_kept(self.checkout, *self.KEPT_FILES)
+
+    def test_unit_not_shown_stopped_keeps_everything(self) -> None:
+        cases = [
+            (
+                state,
+                f"LoadState=loaded\nActiveState={state}\nInvocationID=fixture-invocation\n",
+                0,
+            )
+            for state in ("active", "activating", "deactivating", "reloading")
+        ]
+        cases += [
+            ("loaded-without-invocation", "LoadState=loaded\nActiveState=inactive\n", 0),
+            ("not-found-but-active", "LoadState=not-found\nActiveState=active\n", 0),
+            ("systemctl-failed", "", 1),
+        ]
+        for name, properties, returncode in cases:
+            with self.subTest(name):
+                self.commands.clear()
+                self.properties = properties
+                self.systemctl_rc = returncode
+                removed, error = self.remove()
+                self.assertEqual([], removed)
+                self.assertIn("build trees RETAINED", error)
+                self.assertIn("does not show validate-test.service as stopped", error)
+                self.assertEqual([], self.removals())
+                self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+
+    def test_checkout_outside_the_validate_parents_is_never_touched(self) -> None:
+        for relative in (
+            "hermit",
+            "worktrees/validate",
+            "worktrees/validate/slot/nested",
+            "worktrees/other/slot",
+            "ignored/validate/artifacts/validate-test",
+        ):
+            with self.subTest(relative):
+                self.commands.clear()
+                checkout = self.root / relative
+                self.plant(checkout)
+                removed, error = self.remove(checkout)
+                self.assertEqual([], removed)
+                self.assertIn("not a direct child of a validate checkout parent", error)
+                self.assertEqual([], self.commands)
+                self.assert_kept(checkout, *self.BUILD_FILES)
+
+    def test_symlinked_checkout_is_never_followed(self) -> None:
+        real = self.root / "ignored/validate/artifacts/validate-test/checkout"
+        self.plant(real)
+        link = self.root / "worktrees/validate/validate-fresh-bbbbbbbbbbbb-2-link"
+        link.symlink_to(real, target_is_directory=True)
+        removed, error = self.remove(link)
+        self.assertEqual([], removed)
+        self.assertIn("not a real directory", error)
+        self.assertEqual([], self.commands)
+        self.assert_kept(real, *self.KEPT_FILES, *self.BUILD_FILES)
+
+    def test_frozen_checkout_parent_is_accepted(self) -> None:
+        checkout = self.root.parent / ".dev-hermit-frozen-validate" / "validate-fresh-c"
+        self.plant(checkout)
+        removed, error = self.remove(checkout)
+        self.assertEqual(["target", "ignored/hermetic"], removed, error)
+        self.assert_kept(checkout, *self.KEPT_FILES)
+
+    def test_symlinked_build_tree_is_never_followed(self) -> None:
+        artifacts = self.root / "ignored/validate/artifacts/validate-test/e2e"
+        artifacts.mkdir(parents=True)
+        (artifacts / "cell.json").write_text("{}\n")
+        shutil.rmtree(self.checkout / "target")
+        (self.checkout / "target").symlink_to(artifacts, target_is_directory=True)
+        removed, error = self.remove()
+        self.assertEqual(["ignored/hermetic"], removed, error)
+        self.assertIn("target is not a real directory", error)
+        self.assertTrue((self.checkout / "target").is_symlink())
+        self.assertTrue((artifacts / "cell.json").is_file())
+
+        self.plant(self.checkout.parent / "other")
+        other = self.checkout.parent / "other"
+        shutil.rmtree(other / "ignored")
+        (other / "ignored").symlink_to(self.root / "ignored", target_is_directory=True)
+        hermetic_evidence = self.root / "ignored/hermetic/keep.json"
+        hermetic_evidence.parent.mkdir(parents=True)
+        hermetic_evidence.write_text("{}\n")
+        removed, error = self.remove(other)
+        self.assertEqual(["target"], removed, error)
+        self.assertIn("ignored/hermetic is not a real directory", error)
+        self.assertTrue(hermetic_evidence.is_file())
+
+    def test_hermetic_tree_with_an_untracked_jsonl_is_kept(self) -> None:
+        receipt = self.checkout / "ignored/hermetic/split/result.jsonl"
+        receipt.write_text("{}\n")
+        removed, error = self.remove()
+        self.assertEqual(["target"], removed, error)
+        self.assertIn("untracked *.jsonl files: split/result.jsonl", error)
+        self.assertTrue(receipt.is_file())
+        self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES[1:])
+
+    def test_removed_checkout_is_a_no_op(self) -> None:
+        shutil.rmtree(self.checkout)
+        removed, error = self.remove()
+        self.assertEqual(([], ""), (removed, error))
+        self.assertEqual([], self.commands)
+
+    def test_live_process_using_the_checkout_keeps_everything(self) -> None:
+        lock = self.checkout / "target/validation/validate-invocation.lock"
+        lock.parent.mkdir(parents=True)
+        lock.write_text("")
+        for name, cwd, kind in (
+            ("cwd in the checkout", self.checkout, "cwd"),
+            ("invocation lock held open", self.root, "fd/0"),
+        ):
+            with self.subTest(name):
+                self.commands.clear()
+                with lock.open() as held:
+                    holder = subprocess.Popen(["sleep", "60"], cwd=cwd, stdin=held)
+                self.addCleanup(holder.wait)
+                self.addCleanup(holder.kill)
+                self.census_pids.add(holder.pid)
+                removed, error = self.remove()
+                self.assertEqual([], removed)
+                self.assertIn(
+                    f"a live process uses the checkout: PID {holder.pid} {kind}", error
+                )
+                self.assertEqual([], self.removals())
+                self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+                self.assertTrue(lock.is_file())
+                holder.kill()
+                holder.wait()
+        # With the holders gone, the same checkout loses its build trees.
+        removed, error = self.remove()
+        self.assertEqual(["target", "ignored/hermetic"], removed, error)
+        self.assert_kept(self.checkout, *self.KEPT_FILES)
+
+    def start_namespaced_holder(
+        self, binds: list[str], chdir: str, script: str
+    ) -> int:
+        """Run ``script`` in its own mount namespace; return its PID.
+
+        bwrap forks once and the child execs ``script``, so the holder is the
+        bwrap process's only child. This kernel has no task/*/children file,
+        so the child is found by its parent PID.
+        """
+
+        sandbox = subprocess.Popen(
+            [
+                "bwrap", "--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev",
+                "--proc", "/proc", "--tmpfs", "/run", "--dir", "/run/vc",
+                *binds, "--chdir", chdir, "sh", "-c", script,
+            ]
+        )
+        self.addCleanup(sandbox.wait)
+        self.addCleanup(sandbox.kill)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            for entry in Path("/proc").iterdir():
+                if not entry.name.isdigit():
+                    continue
+                try:
+                    stat = (entry / "stat").read_text()
+                except OSError:
+                    continue
+                comm_end = stat.rindex(")")
+                parent = int(stat[comm_end + 2 :].split()[1])
+                if parent == sandbox.pid and stat[stat.index("(") + 1 : comm_end] == "sleep":
+                    return int(entry.name)
+            time.sleep(0.05)
+        self.fail("the namespaced holder did not start")
+
+    @needs_bwrap
+    def test_process_seeing_the_checkout_through_a_bind_mount_keeps_everything(
+        self,
+    ) -> None:
+        # The hermetic lane's container sees the checkout at /src, so its
+        # links never spell the host path; its mount table maps them back.
+        # A table that mounts the checkout, or a tree inside it, counts even
+        # when the process holds nothing there.
+        hermetic_target = self.checkout / "ignored/hermetic/split/target"
+        self.assertTrue(hermetic_target.is_dir())  # planted from BUILD_FILES
+        seen = f"/run/vc/w/{self.checkout.name}"
+        parent_bind = ["--bind", str(self.checkout.parent), "/run/vc/w"]
+        for name, binds, chdir, script, kind in (
+            (
+                "checkout parent bound at /run/vc/w, cwd inside",
+                parent_bind,
+                f"{seen}/target",
+                "exec sleep 60",
+                "cwd",
+            ),
+            (
+                "checkout parent bound at /run/vc/w, hermetic target held open",
+                parent_bind,
+                "/",
+                f"exec 3<{seen}/ignored/hermetic/split/target/.; exec sleep 60",
+                "fd/3",
+            ),
+            (
+                "checkout bound at /run/vc/src, nothing held",
+                ["--bind", str(self.checkout), "/run/vc/src"],
+                "/",
+                "exec sleep 60",
+                "mount table",
+            ),
+            (
+                "hermetic target bound at /run/vc/work, nothing held",
+                ["--bind", str(hermetic_target), "/run/vc/work"],
+                "/",
+                "exec sleep 60",
+                "mount table",
+            ),
+        ):
+            with self.subTest(name):
+                self.commands.clear()
+                pid = self.start_namespaced_holder(binds, chdir, script)
+                self.census_pids.add(pid)
+                self.assertNotEqual(
+                    os.readlink("/proc/self/ns/mnt"), os.readlink(f"/proc/{pid}/ns/mnt")
+                )
+                removed, error = self.remove()
+                self.assertEqual([], removed)
+                self.assertIn(f"a live process uses the checkout: PID {pid} {kind}", error)
+                self.assertEqual([], self.removals())
+                self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+                os.kill(pid, signal.SIGKILL)
+                while Path(f"/proc/{pid}").exists():
+                    time.sleep(0.05)
+
+    @unittest.skipUnless(
+        os.uname().machine in {"x86_64", "aarch64"}, "needs a known exit syscall number"
+    )
+    def test_exited_leader_with_live_threads_keeps_everything(self) -> None:
+        # A leader that exits alone leaves a zombie whose cwd, fds, maps and
+        # mount table are gone while its other thread still sits in target/;
+        # that thread's task entries show it.
+        marker = self.root / "leader.pid"
+        exit_thread = {"x86_64": 60, "aarch64": 93}[os.uname().machine]  # SYS_exit
+        # The script enters target/ itself, so a launcher process in front of
+        # the interpreter (if any) does not sit in the checkout.
+        script = (
+            "import ctypes, os, threading, time\n"
+            f"os.chdir({str(self.checkout / 'target')!r})\n"
+            "threading.Thread(target=time.sleep, args=(60,)).start()\n"
+            f"open({str(marker)!r}, 'w').write(str(os.getpid()))\n"
+            f"ctypes.CDLL(None).syscall({exit_thread}, 0)\n"
+        )
+        launcher = subprocess.Popen([sys.executable, "-c", script], cwd=self.root)
+        self.addCleanup(launcher.wait)
+        self.addCleanup(launcher.kill)
+        deadline = time.monotonic() + 20
+        pid = ""
+        while time.monotonic() < deadline:
+            pid = marker.read_text() if marker.exists() else ""
+            if pid and "\nState:\tZ" in Path(f"/proc/{pid}/status").read_text():
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("the leader did not exit ahead of its thread")
+        (tid,) = (task for task in os.listdir(f"/proc/{pid}/task") if task != pid)
+        self.census_pids.add(int(pid))
+        removed, error = self.remove()
+        self.assertEqual([], removed)
+        self.assertIn(
+            f"a live process uses the checkout: PID {pid} thread {tid} cwd", error
+        )
+        self.assertEqual([], self.removals())
+        self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+        os.kill(int(pid), signal.SIGKILL)
+        launcher.wait()
+        while Path(f"/proc/{pid}").exists():
+            time.sleep(0.05)
+        removed, error = self.remove()
+        self.assertEqual(["target", "ignored/hermetic"], removed, error)
+
+    @unittest.skipUnless(
+        os.uname().machine in start_unit.KCMP_SYSCALL, "needs a known kcmp syscall number"
+    )
+    def test_a_thread_with_its_own_cwd_or_descriptors_keeps_everything(self) -> None:
+        # unshare(2) gives one thread its own cwd (CLONE_FS) or its own
+        # descriptor table (CLONE_FILES). The live leader's entries then show
+        # neither; only that thread's task entries do.
+        target = self.checkout / "target"
+        for kind, flag, hold in (
+            ("cwd", 0x200, f"os.chdir({str(target)!r})"),
+            ("fd", 0x400, f"os.open({str(target)!r}, os.O_RDONLY)"),
+        ):
+            with self.subTest(kind):
+                self.plant(self.checkout)
+                marker = self.root / f"thread-{kind}.id"
+                script = (
+                    "import ctypes, os, threading, time\n"
+                    "def hold():\n"
+                    f"    if ctypes.CDLL(None, use_errno=True).unshare({flag}):\n"
+                    "        raise OSError(ctypes.get_errno(), 'unshare')\n"
+                    f"    held = {hold}\n"
+                    f"    marker = {str(marker)!r}\n"
+                    "    ids = f'{os.getpid()} {threading.get_native_id()} {held}'\n"
+                    "    open(marker + '.tmp', 'w').write(ids)\n"
+                    "    os.rename(marker + '.tmp', marker)\n"
+                    "    time.sleep(60)\n"
+                    "threading.Thread(target=hold, daemon=True).start()\n"
+                    "time.sleep(60)\n"
+                )
+                holder = subprocess.Popen([sys.executable, "-c", script], cwd=self.root)
+                self.addCleanup(holder.wait)
+                self.addCleanup(holder.kill)
+                deadline = time.monotonic() + 20
+                while not marker.exists():
+                    if time.monotonic() > deadline or holder.poll() is not None:
+                        self.fail("the thread did not take its own entries")
+                    time.sleep(0.05)
+                pid, tid, held = marker.read_text().split()
+                self.assertEqual(str(self.root), os.readlink(f"/proc/{pid}/cwd"))
+                self.assertNotIn(
+                    str(target), [os.readlink(fd) for fd in Path(f"/proc/{pid}/fd").iterdir()]
+                )
+                self.census_pids.add(int(pid))
+                removed, error = self.remove()
+                self.assertEqual([], removed)
+                label = "cwd" if kind == "cwd" else f"fd/{held}"
+                self.assertIn(
+                    f"a live process uses the checkout: PID {pid} thread {tid} {label}", error
+                )
+                self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+                os.kill(int(pid), signal.SIGKILL)
+                holder.kill()
+                holder.wait()
+                while Path(f"/proc/{pid}").exists():
+                    time.sleep(0.05)
+                removed, error = self.remove()
+                self.assertEqual(["target", "ignored/hermetic"], removed, error)
+
+    def strip_in_mount_namespace(self, *binds: tuple[Path, Path]) -> tuple[list[str], str]:
+        """Run the real removal, with real rm, where ``binds`` are mounted.
+
+        bwrap's own user and PID namespaces hide the host's processes, so the
+        census refuses in there (LiveProcessUsingCheckoutTest covers that); the
+        script swaps it for one that finds nobody, so the mount checks decide.
+        """
+        script = (
+            "import json, subprocess, sys\n"
+            "from pathlib import Path\n"
+            "sys.path[:0] = json.loads(sys.argv[1])\n"
+            "import start_unit\n"
+            "start_unit.live_process_using_checkout = lambda checkout, **kwargs: None\n"
+            "root, checkout = Path(sys.argv[2]), Path(sys.argv[3])\n"
+            "def run(command, **kwargs):\n"
+            "    if command[:3] == ['systemctl', '--user', 'show']:\n"
+            "        stdout = 'LoadState=loaded\\nActiveState=inactive\\nInvocationID=x\\n'\n"
+            "        return subprocess.CompletedProcess(command, 0, stdout, '')\n"
+            "    if command[-2:] == ['rev-parse', '--show-toplevel']:\n"
+            "        return subprocess.CompletedProcess(command, 0, f'{checkout}\\n', '')\n"
+            "    if 'ls-files' in command:\n"
+            "        return subprocess.CompletedProcess(command, 1, '', '')\n"
+            "    assert command[:2] == ['rm', '-rf'], command\n"
+            "    return subprocess.run(command, capture_output=True, text=True, **kwargs)\n"
+            "print(json.dumps(start_unit.remove_finished_checkout_build_trees(\n"
+            "    root, checkout, unit='validate-test', run=run)))\n"
+        )
+        base = str(self.root.parent)
+        mounts = [argument for source, target in binds for argument in ("--bind", str(source), str(target))]
+        result = subprocess.run(
+            [
+                "bwrap", "--die-with-parent", "--unshare-pid", "--ro-bind", "/", "/",
+                "--dev", "/dev", "--proc", "/proc", "--bind", base, base,
+                *mounts, "--chdir", "/",
+                sys.executable, "-c", script,
+                json.dumps(sys.path), str(self.root), str(self.checkout),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        return json.loads(result.stdout), result.stderr
+
+    def evidence_cell(self, name: str, *relatives: str) -> Path:
+        """A run's evidence directory under ignored/validate holding ``relatives``."""
+
+        cell = self.root / "ignored/validate/artifacts" / name
+        for relative in relatives:
+            (cell / relative).parent.mkdir(parents=True, exist_ok=True)
+            (cell / relative).write_text("{}\n")
+        return cell
+
+    def assert_evidence(self, cell: Path, *relatives: str) -> None:
+        for relative in relatives:
+            self.assertTrue((cell / relative).is_file(), cell / relative)
+
+    @needs_bwrap
+    def test_a_mount_inside_a_build_tree_keeps_that_tree(self) -> None:
+        # rm -rf would descend into the mount and delete what it shows, even
+        # with --one-file-system for a bind of the same filesystem. This runs
+        # the real removal in a mount namespace where evidence is bound inside
+        # target/, as the launcher would see a leaked mount.
+        evidence = self.evidence_cell("validate-test", "e2e/cell.json") / "e2e"
+        mount_point = self.checkout / "target/mnt"
+        mount_point.mkdir()
+        removed, error = self.strip_in_mount_namespace((evidence, mount_point))
+        self.assertEqual(["ignored/hermetic"], removed, error)
+        self.assertIn(f"target has mounts inside it: {mount_point}", error)
+        self.assertTrue((evidence / "cell.json").is_file())
+        self.assertFalse((self.checkout / "ignored/hermetic").exists())
+        self.assert_kept(self.checkout, *self.KEPT_FILES, self.BUILD_FILES[0])
+
+    @needs_bwrap
+    def test_a_mount_over_the_checkout_keeps_both_trees(self) -> None:
+        # Evidence bound over the checkout shows under the build trees' names;
+        # resolve() and the spelling comparison cannot see the bind.
+        files = ("target/debug/cell-result.json", "ignored/hermetic/split/cell.json")
+        cell = self.evidence_cell("validate-over", *self.KEPT_FILES, *files)
+        removed, error = self.strip_in_mount_namespace((cell, self.checkout))
+        self.assertEqual([], removed, error)
+        for relative in ("target", "ignored/hermetic"):
+            self.assertIn(
+                f"build trees RETAINED in {self.checkout}: a mount lies on the checkout "
+                f"or between it and {relative}, which is ",
+                error,
+            )
+        self.assert_evidence(cell, *files)
+        self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+
+    @needs_bwrap
+    def test_a_mount_over_the_checkouts_ignored_keeps_ignored_hermetic(self) -> None:
+        cell = self.evidence_cell("validate-ignored", "hermetic/split/cell.json")
+        removed, error = self.strip_in_mount_namespace((cell, self.checkout / "ignored"))
+        self.assertEqual(["target"], removed, error)
+        self.assertIn(
+            "a mount lies on the checkout or between it and ignored/hermetic, which is ",
+            error,
+        )
+        self.assert_evidence(cell, "hermetic/split/cell.json")
+        self.assertFalse((self.checkout / "target").exists())
+        self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES[1:])
+
+    @needs_bwrap
+    def test_evidence_bound_from_inside_a_build_tree_keeps_that_tree(self) -> None:
+        # The reverse: a directory inside target/ is what ignored/validate
+        # shows. That mount point is a place where part of target/ is visible,
+        # so the mounts-inside check refuses it.
+        keep = self.checkout / "target/keep"
+        keep.mkdir()
+        (keep / "result.json").write_text("{}\n")
+        mount_point = self.evidence_cell("validate-reverse")
+        mount_point.mkdir(parents=True)
+        removed, error = self.strip_in_mount_namespace((keep, mount_point))
+        self.assertEqual(["ignored/hermetic"], removed, error)
+        self.assertIn(f"target has mounts inside it: {mount_point}", error)
+        self.assertTrue((keep / "result.json").is_file())
+        self.assert_kept(self.checkout, *self.KEPT_FILES, self.BUILD_FILES[0])
+
+    @needs_bwrap
+    def test_a_checkout_parent_bound_from_the_evidence_keeps_both_trees(self) -> None:
+        # worktrees/validate shows a directory inside ignored/validate, so both
+        # trees are evidence on disk while every spelling says otherwise.
+        name = self.checkout.name
+        files = [f"{name}/{relative}" for relative in (*self.KEPT_FILES, *self.BUILD_FILES)]
+        cell = self.evidence_cell("validate-parent", *files)
+        removed, error = self.strip_in_mount_namespace((cell, self.checkout.parent))
+        self.assertEqual([], removed, error)
+        for relative in ("target", "ignored/hermetic"):
+            self.assertRegex(
+                error,
+                rf"build trees RETAINED in {re.escape(str(self.checkout))}: "
+                rf"{re.escape(relative)} is \S+ on disk, which overlaps validation "
+                r"evidence stored at ",
+            )
+        self.assert_evidence(cell, *files)
+        self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+
+    @needs_bwrap
+    def test_a_covered_bind_of_ignored_does_not_hide_a_mount_over_the_checkout(self) -> None:
+        # The mount table still lists the self-bind of ignored/ after evidence
+        # is bound over the checkout, and its mount point is the longest that
+        # names ignored/hermetic; rm reaches the evidence's copy instead.
+        files = ("target/debug/cell-result.json", "ignored/hermetic/split/cell.json")
+        cell = self.evidence_cell("validate-covered", *self.KEPT_FILES, *files)
+        ignored = self.checkout / "ignored"
+        removed, error = self.strip_in_mount_namespace((ignored, ignored), (cell, self.checkout))
+        self.assertEqual([], removed, error)
+        for relative in ("target", "ignored/hermetic"):
+            self.assertIn(
+                f"build trees RETAINED in {self.checkout}: a mount lies on the checkout "
+                f"or between it and {relative}, which is ",
+                error,
+            )
+        self.assert_evidence(cell, *files)
+        self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+
+    @needs_bwrap
+    def test_covered_binds_do_not_hide_that_the_checkout_is_evidence(self) -> None:
+        # ignored/ and worktrees/ are each covered by a bind of one directory,
+        # over self-binds of ignored/validate and worktrees/validate that the
+        # table still lists. What the launcher sees at the checkout is then
+        # inside what it sees at ignored/validate.
+        name = self.checkout.name
+        other = self.root.parent / "other"
+        stored = other / "validate/artifacts/validate-cell"
+        files = [f"validate/{name}/{relative}" for relative in (*self.KEPT_FILES, *self.BUILD_FILES)]
+        for relative in files:
+            (stored / relative).parent.mkdir(parents=True, exist_ok=True)
+            (stored / relative).write_text("{}\n")
+        evidence = self.root / "ignored/validate"
+        worktrees = self.root / "worktrees"
+        removed, error = self.strip_in_mount_namespace(
+            (evidence, evidence),
+            (other, self.root / "ignored"),
+            (worktrees / "validate", worktrees / "validate"),
+            (stored, worktrees),
+        )
+        self.assertEqual([], removed, error)
+        for relative in ("target", "ignored/hermetic"):
+            self.assertRegex(
+                error,
+                rf"build trees RETAINED in {re.escape(str(self.checkout))}: "
+                rf"{re.escape(relative)} is \S+ on disk, which overlaps validation "
+                # On disk, other/ may sit below a subvolume root, not at its path.
+                rf"evidence stored at \S+/{re.escape(other.parent.name)}/other/validate\n",
+            )
+        self.assert_evidence(stored, *files)
+        self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+
+    @needs_bwrap
+    def test_evidence_hidden_by_a_cover_is_kept_when_bound_over_the_checkout_parent(self) -> None:
+        # A mount on ignored/validate, or on ignored/, hides the evidence at its
+        # name here, while worktrees/validate shows a directory inside it. What
+        # the table shows at ignored/validate then holds nothing of the checkout.
+        name = self.checkout.name
+        files = [f"{name}/{relative}" for relative in (*self.KEPT_FILES, *self.BUILD_FILES)]
+        cell = self.evidence_cell("validate-hidden", *files)
+        cover = self.root.parent / "cover"
+        cover.mkdir()
+        for covered in ("ignored/validate", "ignored"):
+            with self.subTest(covered=covered):
+                removed, error = self.strip_in_mount_namespace(
+                    (cell, self.checkout.parent), (cover, self.root / covered)
+                )
+                self.assertEqual([], removed, error)
+                for relative in ("target", "ignored/hermetic"):
+                    self.assertRegex(
+                        error,
+                        rf"build trees RETAINED in {re.escape(str(self.checkout))}: "
+                        rf"{re.escape(relative)} is \S+/validate-hidden/{re.escape(name)}/"
+                        rf"{re.escape(relative)} on disk, which overlaps validation evidence "
+                        # On disk, the root may sit below a subvolume root.
+                        rf"stored at \S+/{re.escape(self.root.parent.name)}/dev-hermit/ignored/validate\n",
+                    )
+                self.assert_evidence(cell, *files)
+                self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+
+    def test_a_stalled_memory_map_read_keeps_everything(self) -> None:
+        bystander = subprocess.Popen(["sleep", "60"], cwd="/")
+        self.addCleanup(bystander.wait)
+        self.addCleanup(bystander.kill)
+        self.census_pids.add(bystander.pid)
+        with mock.patch.object(
+            start_unit,
+            "_read_proc_bounded",
+            side_effect=TimeoutError("reading maps did not finish within 1s"),
+        ):
+            removed, error = self.remove()
+        self.assertEqual([], removed)
+        self.assertIn(
+            "cannot establish that no process uses the checkout: "
+            "reading maps did not finish within 1s",
+            error,
+        )
+        self.assertEqual([], self.removals())
+        self.assert_kept(self.checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+
+    def test_evidence_reached_through_the_checkout_parent_is_never_removed(self) -> None:
+        # worktrees/validate resolving into ignored/validate makes every build
+        # tree evidence; the resolved-spelling overlap check refuses both.
+        parent = self.root / "worktrees/validate"
+        shutil.rmtree(parent)
+        inside_evidence = self.root / "ignored/validate/checkouts"
+        inside_evidence.mkdir()
+        parent.symlink_to(inside_evidence, target_is_directory=True)
+        checkout = parent / "validate-fresh-dddddddddddd-4-abcd"
+        self.plant(checkout)
+        removed, error = self.remove(checkout)
+        self.assertEqual([], removed)
+        self.assertIn("target overlaps validation evidence", error)
+        self.assertIn("ignored/hermetic overlaps validation evidence", error)
+        self.assertEqual([], self.removals())
+        self.assert_kept(checkout, *self.KEPT_FILES, *self.BUILD_FILES)
+
+
+class LiveProcessUsingCheckoutTest(unittest.TestCase):
+    """The /proc census behind remove_finished_checkout_build_trees, read from a
+    fixture /proc so each link kind and each skip is exercised on its own."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name).resolve()
+        self.proc = base / "proc"
+        self.checkout = base / "worktrees/validate/validate-fresh-e"
+        # One filesystem, 0:9, mounted whole at "/": the checkout's path within
+        # it is its host path.
+        self.host_table = "20 1 0:9 / / rw - fixturefs fixture rw\n"
+        self.reset_proc()
+        self.addCleanup(self.reset_proc)  # makes unreadable fd/ removable
+        self.next_pid = 900000000
+
+    def reset_proc(self, own_table: str | None = None) -> None:
+        if self.proc.exists():
+            for unreadable in self.proc.glob("**/fd"):
+                unreadable.chmod(0o700)
+            shutil.rmtree(self.proc)
+        (self.proc / "self" / "ns").mkdir(parents=True)
+        (self.proc / "self" / "mountinfo").write_text(
+            self.host_table if own_table is None else own_table
+        )
+        # The census reads these links' text; the fixture names the host's own
+        # namespaces, as /proc/self/ns does on the host.
+        for kind, inode in start_unit.INITIAL_NAMESPACE_INODES.items():
+            (self.proc / "self" / "ns" / kind).symlink_to(f"{kind}:[{inode}]")
+
+    def plant(
+        self,
+        directory: Path,
+        *,
+        links: dict[str, str] | None = None,
+        fds: dict[str, str] | None = None,
+        maps: str = "",
+        unreadable: bool = False,
+        mountinfo: str | None = None,
+    ) -> None:
+        """Plant one task's entries: its mount table, links, fds and maps."""
+
+        (directory / "fd").mkdir(parents=True)
+        (directory / "maps").write_text(maps)
+        (directory / "mountinfo").write_text(
+            self.host_table if mountinfo is None else mountinfo
+        )
+        for name, target in {"cwd": "/", "root": "/", "exe": "/usr/bin/true",
+                             **(links or {})}.items():
+            (directory / name).symlink_to(target)
+        for number, target in (fds or {}).items():
+            (directory / "fd" / number).symlink_to(target)
+        if unreadable:
+            (directory / "fd").chmod(0)  # reset_proc and cleanup restore it
+
+    def process(
+        self,
+        *,
+        uid: int | None = None,
+        cgroup: str = "0::/user.slice/app.slice/other.scope\n",
+        zombie: bool = False,
+        threads: list[dict[str, object]] | None = None,
+        live_threads: list[dict[str, object]] | None = None,
+        **entries: object,
+    ) -> str:
+        """Plant one fixture process and return its PID.
+
+        With ``threads`` (a list of ``plant`` arguments, one per live thread)
+        the leader has exited ahead of them: its mount table fails as a
+        zombie's does (EINVAL, through a real zombie's entry) and it has no
+        other entries; ``threads=[]`` is a plain zombie. ``live_threads`` are
+        planted the same way beside a live leader's own entries. Either way
+        the threads' IDs are PID * 10 + 1, + 2, ...
+        """
+
+        pid = str(self.next_pid)
+        self.next_pid += 1
+        directory = self.proc / pid
+        exited = threads is not None
+        self.assertFalse(exited and entries, "an exited leader has no entries")
+        owner = os.getuid() if uid is None else uid
+        if exited:
+            for task in (directory, directory / "task" / pid):
+                task.mkdir(parents=True, exist_ok=True)
+                (task / "mountinfo").symlink_to(self.zombie_mountinfo())
+            for tid, thread in enumerate(threads, start=int(pid) * 10 + 1):
+                self.plant(directory / "task" / str(tid), **thread)
+        else:
+            self.plant(directory, **entries)
+            for tid, thread in enumerate(live_threads or (), start=int(pid) * 10 + 1):
+                self.plant(directory / "task" / str(tid), **thread)
+        (directory / "status").write_text(
+            f"Name:\tfixture\nUid:\t{owner}\t{owner}\t{owner}\t{owner}\n"
+            + ("" if zombie or exited else "VmSize:\t   10000 kB\n")
+            + f"Threads:\t{1 + len(threads or live_threads or ())}\n"
+        )
+        (directory / "cgroup").write_text(cgroup)
+        return pid
+
+    def zombie_mountinfo(self) -> str:
+        """A real zombie's mountinfo, whose read fails with EINVAL."""
+
+        if not hasattr(self, "zombie"):
+            self.zombie = subprocess.Popen(["true"])
+            self.addCleanup(self.zombie.wait)
+            status = Path(f"/proc/{self.zombie.pid}/status")
+            deadline = time.monotonic() + 10
+            while "\nState:\tZ" not in status.read_text():
+                if time.monotonic() > deadline:
+                    self.fail("the child did not become a zombie")
+                time.sleep(0.01)
+        path = f"/proc/{self.zombie.pid}/mountinfo"
+        with self.assertRaises(OSError) as raised:
+            Path(path).read_text()
+        self.assertEqual(errno.EINVAL, raised.exception.errno)
+        return path
+
+    def census(self) -> str | None:
+        return start_unit.live_process_using_checkout(self.checkout, proc_root=self.proc)
+
+    def test_each_link_kind_inside_the_checkout_is_reported(self) -> None:
+        inside = f"{self.checkout}/target/debug/hermit"
+        for kind, arguments in (
+            ("cwd", {"links": {"cwd": str(self.checkout)}}),
+            ("root", {"links": {"root": f"{self.checkout}/ignored/hermetic"}}),
+            ("exe", {"links": {"exe": f"{inside} (deleted)"}}),
+            ("fd/7", {"fds": {"3": "pipe:[1]", "7": inside}}),
+            ("map", {"maps": f"7f00-7f01 r-xp 00000000 fd:01 12 {inside} (deleted)\n"}),
+        ):
+            with self.subTest(kind):
+                self.reset_proc()
+                pid = self.process(**arguments)
+                self.assertEqual(f"PID {pid} {kind}", self.census())
+
+    def test_processes_that_do_not_use_the_checkout_are_not_reported(self) -> None:
+        self.process(links={"cwd": f"{self.checkout}-other"})
+        self.process(fds={"1": f"{self.checkout.parent}/validate-fresh-ee/target/x"})
+        self.process(maps="7f00-7f01 r-xp 00000000 00:00 0 [vdso]\n")
+        (self.proc / "900000099").mkdir()  # exited: no status file
+        self.assertIsNone(self.census())
+
+    def test_readable_process_of_another_uid_is_reported(self) -> None:
+        # A rootless container's non-root user runs as a subordinate uid whose
+        # entries this user can read; if they are readable, they count.
+        pid = self.process(uid=os.getuid() + 1, links={"cwd": str(self.checkout)})
+        self.assertEqual(f"PID {pid} cwd", self.census())
+
+    def test_process_in_another_mount_namespace_is_matched_through_its_table(
+        self,
+    ) -> None:
+        # The container sees the validate parent at /w, so the checkout is
+        # /w/<name> there; /elsewhere is the same path on another filesystem.
+        name = self.checkout.name
+        container = (
+            "1 0 0:50 / / rw - overlay overlay rw\n"
+            f"2 1 0:9 {self.checkout.parent} /w rw - fixturefs fixture rw\n"
+            f"3 1 0:10 {self.checkout} /elsewhere rw - fixturefs other rw\n"
+        )
+        for kind, arguments in (
+            ("cwd", {"links": {"cwd": f"/w/{name}/target"}}),
+            ("fd/3", {"fds": {"3": f"/w/{name}/ignored/hermetic/split/target/x"}}),
+            ("map", {"maps": f"7f00-7f01 r-xp 00000000 fd:01 12 /w/{name}/target/h\n"}),
+            ("root", {"links": {"root": "/jail"}, "fds": {"3": f"/jail/w/{name}/target/x"}}),
+        ):
+            with self.subTest(kind):
+                self.reset_proc()
+                pid = self.process(mountinfo=container, **arguments)
+                expected = "fd/3" if kind == "root" else kind
+                self.assertEqual(f"PID {pid} {expected}", self.census())
+        with self.subTest("paths the table does not map to the checkout"):
+            self.reset_proc()
+            self.process(mountinfo=container, links={"cwd": "/elsewhere/target"})
+            self.process(mountinfo=container, links={"cwd": f"/w/{name}-other"})
+            self.process(mountinfo=container, links={"cwd": f"/wx/{name}"})
+            self.assertIsNone(self.census())
+        with self.subTest("the host spelling counts in any namespace"):
+            # In a namespace without the checkout mounted, the host-looking path
+            # is another directory; counting it only keeps the trees.
+            self.reset_proc()
+            pid = self.process(
+                mountinfo="1 0 0:50 / / rw - overlay overlay rw\n",
+                links={"cwd": str(self.checkout)},
+            )
+            self.assertEqual(f"PID {pid} cwd", self.census())
+
+    def test_process_whose_table_mounts_the_checkout_is_reported(self) -> None:
+        # The hermetic lane binds the checkout at /src and its build tree at
+        # /src/target. The table alone counts: the process may hold nothing
+        # there, and its other entries may be unreadable or another user's.
+        for name, mount in (
+            ("the checkout", f"2 1 0:9 {self.checkout} /src rw - fixturefs fixture rw\n"),
+            (
+                "a tree inside it",
+                f"2 1 0:9 {self.checkout}/ignored/hermetic/split/target /src/target"
+                " rw - fixturefs fixture rw\n",
+            ),
+        ):
+            with self.subTest(name):
+                self.reset_proc()
+                pid = self.process(
+                    uid=os.getuid() + 1,
+                    unreadable=True,
+                    mountinfo="1 0 0:50 / / rw - overlay overlay rw\n" + mount,
+                )
+                self.assertEqual(f"PID {pid} mount table", self.census())
+        with self.subTest("mounts of other directories"):
+            self.reset_proc()
+            self.process(
+                mountinfo=(
+                    "1 0 0:50 / / rw - overlay overlay rw\n"
+                    f"2 1 0:9 {self.checkout}-other /sibling rw - fixturefs fixture rw\n"
+                    f"3 1 0:10 {self.checkout} /elsewhere rw - fixturefs other rw\n"
+                    f"4 1 0:9 {self.checkout.parent} /w rw - fixturefs fixture rw\n"
+                )
+            )
+            self.assertIsNone(self.census())
+
+    def test_a_leader_that_exited_ahead_of_its_threads_is_read_through_them(
+        self,
+    ) -> None:
+        inside = str(self.checkout / "target")
+        self.process(threads=[])  # a zombie
+        self.process(threads=[{"links": {"cwd": f"{self.checkout}-other"}}])
+        self.assertIsNone(self.census())
+        mounts = f"2 1 0:9 {self.checkout} /src rw - fixturefs fixture rw\n"
+        for kind, threads in (
+            ("cwd", [{}, {"links": {"cwd": inside}}]),
+            ("fd/4", [{"fds": {"4": f"{inside}/lock"}}]),
+            ("mount table", [{"mountinfo": self.host_table + mounts}]),
+        ):
+            with self.subTest(kind):
+                self.reset_proc()
+                pid = self.process(uid=os.getuid() + 1, threads=threads)
+                tid = int(pid) * 10 + len(threads)
+                self.assertEqual(f"PID {pid} thread {tid} {kind}", self.census())
+
+    def test_a_live_leaders_thread_with_its_own_entries_is_read(self) -> None:
+        # The leader's entries show the threads that share its cwd, root and
+        # descriptors; kcmp(2) names the others, and their entries are read.
+        inside = str(self.checkout / "target")
+        mounts = f"2 1 0:9 {self.checkout} /src rw - fixturefs fixture rw\n"
+        compared: list[tuple[int, int]] = []
+        apart: set[int] = set()
+
+        def shares(pid: int, tid: int) -> bool:
+            compared.append((pid, tid))
+            return tid not in apart
+
+        with mock.patch.object(start_unit, "thread_shares_leaders_entries", side_effect=shares):
+            for kind, thread in (
+                ("cwd", {"links": {"cwd": inside}}),
+                ("fd/4", {"fds": {"4": f"{inside}/lock"}}),
+                ("mount table", {"mountinfo": self.host_table + mounts}),
+            ):
+                with self.subTest(kind):
+                    self.reset_proc()
+                    pid = self.process(uid=os.getuid() + 1, live_threads=[{}, thread])
+                    tid = int(pid) * 10 + 2
+                    apart.clear()
+                    apart.add(tid)
+                    compared.clear()
+                    self.assertEqual(f"PID {pid} thread {tid} {kind}", self.census())
+                    self.assertEqual([(int(pid), tid - 1), (int(pid), tid)], compared)
+            with self.subTest("a single-threaded process is not compared"):
+                self.reset_proc()
+                compared.clear()
+                self.process(links={"cwd": f"{self.checkout}-other"})
+                self.assertIsNone(self.census())
+                self.assertEqual([], compared)
+        self.reset_proc()
+        pid = self.process(live_threads=[{"links": {"cwd": inside}}, {"fds": {"4": inside}}])
+        with self.subTest("a thread that exited is skipped, not the process"):
+            exited = int(pid) * 10 + 1
+
+            def gone(_pid: int, tid: int) -> bool:
+                if tid == exited:
+                    raise ProcessLookupError(errno.ESRCH, "kcmp")
+                return False
+
+            with mock.patch.object(start_unit, "thread_shares_leaders_entries", side_effect=gone):
+                self.assertEqual(f"PID {pid} thread {exited + 1} fd/4", self.census())
+        with self.subTest("a kernel without kcmp raises"):
+            with mock.patch.object(
+                start_unit,
+                "thread_shares_leaders_entries",
+                side_effect=OSError(errno.ENOSYS, "kcmp"),
+            ):
+                with self.assertRaises(OSError) as raised:
+                    self.census()
+                self.assertEqual(errno.ENOSYS, raised.exception.errno)
+
+    @unittest.skipUnless(
+        os.uname().machine in start_unit.KCMP_SYSCALL, "needs a known kcmp syscall number"
+    )
+    def test_kcmp_tells_a_thread_with_its_own_cwd_from_one_that_shares(self) -> None:
+        own, shared = threading.Event(), threading.Event()
+        release = threading.Event()
+        ids: dict[str, int] = {}
+
+        def run(name: str, ready: threading.Event, flag: int) -> None:
+            if flag and ctypes.CDLL(None, use_errno=True).unshare(flag):
+                ids[name] = -ctypes.get_errno()
+            else:
+                ids[name] = threading.get_native_id()
+            ready.set()
+            release.wait(20)
+
+        workers = [
+            threading.Thread(target=run, args=("own", own, 0x200)),  # CLONE_FS
+            threading.Thread(target=run, args=("shared", shared, 0)),
+        ]
+        for worker in workers:
+            worker.start()
+        self.addCleanup(lambda: [release.set(), *(worker.join() for worker in workers)])
+        self.assertTrue(own.wait(20) and shared.wait(20))
+        self.assertGreater(ids["own"], 0, "unshare(CLONE_FS) failed")
+        pid = os.getpid()
+        self.assertFalse(start_unit.thread_shares_leaders_entries(pid, ids["own"]))
+        self.assertTrue(start_unit.thread_shares_leaders_entries(pid, ids["shared"]))
+        with self.assertRaises(ProcessLookupError):
+            start_unit.thread_shares_leaders_entries(pid, 2**22 + 1)
+
+    def test_a_stalled_memory_map_read_raises(self) -> None:
+        pid = self.process(maps="7f00-7f01 r-xp 00000000 00:00 0 [vdso]\n")
+        with mock.patch.object(
+            start_unit, "_read_proc_bounded", side_effect=TimeoutError("stalled")
+        ) as read:
+            with self.assertRaises(TimeoutError):
+                self.census()
+        read.assert_called_once_with(
+            str(self.proc / pid / "maps"), start_unit.VALIDATE_ENTRY_HOLDER_READ_SECONDS
+        )
+
+    def test_mount_points_inside_a_tree_are_found_in_every_view(self) -> None:
+        # devbig014's shape: the tree's filesystem is mounted whole at /data
+        # and a subtree of it at the checkout's base, so a mount made at either
+        # spelling shows up under the tree.
+        base = self.checkout.parents[2]
+        within = f"/users/n/{(self.checkout / 'target').relative_to(base)}"
+        host = (
+            "20 1 0:8 / / rw - btrfs root rw\n"
+            "21 20 0:9 / /data rw - btrfs home rw\n"
+            f"22 20 0:9 /users/n {base} rw - btrfs home rw\n"
+        )
+        cases = (
+            ("none", "", []),
+            ("loop mount under the /data view", f"30 21 7:1 / /data{within}/m rw - ext4 l rw\n",
+             [f"/data{within}/m"]),
+            ("tmpfs at the tree itself", f"30 22 0:60 / {self.checkout}/target rw - tmpfs t rw\n",
+             [f"{self.checkout}/target"]),
+            (
+                "mounts beside and above the tree",
+                f"30 22 7:1 / {self.checkout}-other/target/m rw - ext4 l rw\n"
+                f"31 22 7:2 / {self.checkout}/targetx rw - ext4 l rw\n"
+                f"32 22 7:3 / {self.checkout}/ignored rw - ext4 l rw\n",
+                [],
+            ),
+        )
+        for name, extra, expected in cases:
+            with self.subTest(name):
+                self.reset_proc(own_table=host + extra)
+                self.assertEqual(
+                    expected,
+                    start_unit.mount_points_inside(self.checkout / "target", proc_root=self.proc),
+                )
+        self.reset_proc(own_table="1 0 0:9\n")
+        with self.assertRaises(ValueError):
+            start_unit.mount_points_inside(self.checkout / "target", proc_root=self.proc)
+
+    def test_a_census_outside_the_host_pid_or_user_namespace_raises(self) -> None:
+        # From inside a PID namespace /proc lists only that namespace's
+        # processes; from inside a user namespace the host's entries cannot be
+        # read. Either way an empty census would read as "nobody".
+        self.assertIsNone(self.census())
+        for kind in ("pid", "user"):
+            with self.subTest(kind):
+                self.reset_proc()
+                link = self.proc / "self" / "ns" / kind
+                link.unlink()
+                link.symlink_to(f"{kind}:[4026532999]")
+                with self.assertRaisesRegex(
+                    ValueError,
+                    rf"this process is in {kind}:\[4026532999\], not the host's {kind} "
+                    "namespace, so /proc does not show every process to it",
+                ):
+                    self.census()
+
+    def test_a_build_tree_must_be_its_own_storage_and_not_evidence(self) -> None:
+        # devbig014's shape: one filesystem mounted whole at /data and a subtree
+        # of it at the checkout's base, so evidence can be reached at either.
+        base = self.checkout.parents[2]
+        evidence = base / "ignored/validate"
+        within = f"/users/n/{self.checkout.relative_to(base)}"
+        host = (
+            "20 1 0:8 / / rw - btrfs root rw\n"
+            "21 20 0:9 / /data rw - btrfs home rw\n"
+            f"22 20 0:9 /users/n {base} rw - btrfs home rw\n"
+        )
+        target, hermetic = Path("target"), Path("ignored/hermetic")
+        cases = (
+            ("no mounts", "", None, None),
+            (
+                "a bind over the checkout",
+                f"30 22 0:9 /users/n/ignored/validate/artifacts/x {self.checkout} rw - btrfs home rw\n",
+                "a mount lies on the checkout or between it and target, which is "
+                "0:9:/users/n/ignored/validate/artifacts/x/target on disk, not "
+                f"0:9:{within}/target",
+                "a mount lies on the checkout or between it and ignored/hermetic",
+            ),
+            (
+                "a bind over the checkout's ignored/",
+                f"30 22 0:9 /users/n/ignored/validate/artifacts/x {self.checkout}/ignored rw - btrfs home rw\n",
+                None,
+                "a mount lies on the checkout or between it and ignored/hermetic, which is "
+                "0:9:/users/n/ignored/validate/artifacts/x/hermetic on disk",
+            ),
+            (
+                "evidence at the /data spelling bound from inside target/",
+                f"30 21 0:9 {within}/target/keep /data/users/n/ignored/validate/artifacts/y rw - btrfs home rw\n",
+                f"target is 0:9:{within}/target on disk, which overlaps validation "
+                f"evidence stored at 0:9:{within}/target/keep",
+                None,
+            ),
+            (
+                "another filesystem's bind under the evidence",
+                f"30 22 7:1 / {evidence}/artifacts/z rw - ext4 l rw\n",
+                None,
+                None,
+            ),
+            (
+                # 30 is still listed but covered by 31: path lookup reaches 31.
+                "a covered bind of ignored/ under a bind over the checkout",
+                f"30 22 0:9 {within}/ignored {self.checkout}/ignored rw - btrfs home rw\n"
+                f"31 22 0:9 /users/n/ignored/validate/artifacts/x {self.checkout} rw - btrfs home rw\n",
+                "a mount lies on the checkout or between it and target, which is "
+                "0:9:/users/n/ignored/validate/artifacts/x/target on disk",
+                "a mount lies on the checkout or between it and ignored/hermetic, which is "
+                "0:9:/users/n/ignored/validate/artifacts/x/ignored/hermetic on disk",
+            ),
+            (
+                # 30 and 32 are covered by 31 and 33, so the checkout is inside
+                # what ignored/validate shows: /users/n/other/validate.
+                "covered binds of ignored/validate and worktrees/validate",
+                f"30 22 0:9 /users/n/ignored/validate {evidence} rw - btrfs home rw\n"
+                f"31 22 0:9 /users/n/other {base}/ignored rw - btrfs home rw\n"
+                f"32 22 0:9 /users/n/worktrees/validate {base}/worktrees/validate rw - btrfs home rw\n"
+                f"33 22 0:9 /users/n/other/validate/artifacts/c {base}/worktrees rw - btrfs home rw\n",
+                f"target is 0:9:/users/n/other/validate/artifacts/c/validate/{self.checkout.name}/target "
+                "on disk, which overlaps validation evidence stored at 0:9:/users/n/other/validate",
+                f"ignored/hermetic is 0:9:/users/n/other/validate/artifacts/c/validate/{self.checkout.name}"
+                "/ignored/hermetic on disk, which overlaps validation evidence stored at "
+                "0:9:/users/n/other/validate",
+            ),
+            (
+                # 30 hides the evidence at its name, and 31 shows a directory
+                # inside it at worktrees/validate.
+                "evidence hidden by a mount on ignored/validate",
+                f"30 22 0:10 / {evidence} rw - tmpfs t rw\n"
+                f"31 22 0:9 /users/n/ignored/validate/artifacts/c {base}/worktrees/validate rw - btrfs home rw\n",
+                f"target is 0:9:/users/n/ignored/validate/artifacts/c/{self.checkout.name}/target "
+                "on disk, which overlaps validation evidence stored at 0:9:/users/n/ignored/validate",
+                f"ignored/hermetic is 0:9:/users/n/ignored/validate/artifacts/c/{self.checkout.name}"
+                "/ignored/hermetic on disk, which overlaps validation evidence stored at "
+                "0:9:/users/n/ignored/validate",
+            ),
+            (
+                # 32, on the repository's parent, hides 22 and so the evidence;
+                # 33 shows a directory inside it at worktrees/validate.
+                "evidence hidden by a mount above the repository",
+                f"32 20 0:10 / {base.parent} rw - tmpfs t rw\n"
+                f"33 32 0:9 /users/n/ignored/validate/artifacts/c {base}/worktrees/validate rw - btrfs home rw\n",
+                f"target is 0:9:/users/n/ignored/validate/artifacts/c/{self.checkout.name}/target "
+                "on disk, which overlaps validation evidence stored at 0:9:/users/n/ignored/validate",
+                f"ignored/hermetic is 0:9:/users/n/ignored/validate/artifacts/c/{self.checkout.name}"
+                "/ignored/hermetic on disk, which overlaps validation evidence stored at "
+                "0:9:/users/n/ignored/validate",
+            ),
+            (
+                # 30 hides the evidence; 31, a filesystem inside it, is still
+                # seen at the /data spelling, and 32 binds part of it over
+                # worktrees/validate.
+                "a filesystem inside hidden evidence, seen at the /data spelling",
+                f"30 22 0:10 / {evidence} rw - tmpfs t rw\n"
+                "31 21 7:1 / /data/users/n/ignored/validate/artifacts/z rw - ext4 l rw\n"
+                f"32 22 7:1 /c {base}/worktrees/validate rw - ext4 l rw\n",
+                f"target is 7:1:/c/{self.checkout.name}/target on disk, which overlaps "
+                "validation evidence stored at 7:1:/",
+                f"ignored/hermetic is 7:1:/c/{self.checkout.name}/ignored/hermetic on disk, "
+                "which overlaps validation evidence stored at 7:1:/",
+            ),
+            (
+                "a mount on ignored/validate alone",
+                f"30 22 0:10 / {evidence} rw - tmpfs t rw\n",
+                None,
+                None,
+            ),
+            (
+                "the repository bound again under a mount above it",
+                f"32 20 0:10 / {base.parent} rw - tmpfs t rw\n"
+                f"33 32 0:9 /users/n {base} rw - btrfs home rw\n",
+                None,
+                None,
+            ),
+        )
+        for name, extra, target_problem, hermetic_problem in cases:
+            with self.subTest(name):
+                self.reset_proc(own_table=host + extra)
+                for relative, expected in ((target, target_problem), (hermetic, hermetic_problem)):
+                    problem = start_unit.build_tree_storage_problem(
+                        self.checkout, relative, evidence, proc_root=self.proc
+                    )
+                    if expected is None:
+                        self.assertIsNone(problem, relative)
+                    else:
+                        self.assertIsNotNone(problem, relative)
+                        self.assertIn(expected, problem)
+
+    def test_a_path_is_located_only_through_one_root_and_one_mount_per_place(self) -> None:
+        tree = f"{self.checkout}/target"
+        root = "20 1 0:8 / / rw - btrfs root rw\n"
+        self.assertEqual(
+            ("0:8", tree), start_unit._filesystem_location(tree, "20 20 0:8 / / rw - b r rw\n")
+        )
+        self.assertEqual(
+            ("0:9", f"/x{tree}"),
+            start_unit._filesystem_location(
+                tree, root + "21 20 0:7 / / rw - b s rw\n22 21 0:9 /x / rw - b s rw\n"
+            ),
+        )
+        refused = {
+            "no root mount": "21 20 0:9 / /data rw - btrfs home rw\n",
+            "two root mounts": root + "21 2 0:9 / / rw - btrfs home rw\n",
+            "two mounts on one place": (
+                root + "21 20 0:9 / /w rw - b h rw\n22 20 0:9 /x /w rw - b h rw\n"
+            ),
+        }
+        for name, table in refused.items():
+            with self.subTest(name):
+                with self.assertRaisesRegex(ValueError, "root mounts|one mount at /w"):
+                    start_unit._filesystem_location("/w/target", table)
+
+    def test_the_checkout_seen_through_another_host_mount_point_is_matched(self) -> None:
+        # devbig014's shape: /home/newton is a bind of /users/newton/... on one
+        # btrfs filesystem, which is also mounted whole at /data.
+        base = self.checkout.parents[2]
+        within = f"/users/n/{self.checkout.relative_to(base)}"
+        host = (
+            "20 1 0:8 / / rw - btrfs root rw\n"
+            "21 20 0:9 / /data rw - btrfs home rw\n"
+            f"22 20 0:9 /users/n {base} rw - btrfs home rw\n"
+        )
+        self.reset_proc(own_table=host)
+        pid = self.process(mountinfo=host, links={"cwd": f"/data{within}/target"})
+        self.assertEqual(f"PID {pid} cwd", self.census())
+        self.reset_proc(own_table=host)
+        pid = self.process(mountinfo=host, links={"cwd": f"/data/users/n{self.checkout}"})
+        self.assertIsNone(self.census(), "the host path under /data is another directory")
+
+    def test_a_malformed_mount_table_raises(self) -> None:
+        self.process(mountinfo="1 0 0:9\n")
+        with self.assertRaises(ValueError):
+            self.census()
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads mode-0 directories")
+    def test_unreadable_process_is_reported_only_in_dagrun_slice(self) -> None:
+        dagrun = "0::/user.slice/user@1.service/dagrun.slice/dagrun-7.scope/step-1\n"
+        self.process(unreadable=True)
+        # A zombie keeps its cgroup but holds no files, cwd or memory.
+        self.process(unreadable=True, zombie=True, cgroup=dagrun)
+        # Another user's unreadable process is not this user's to inspect.
+        self.process(uid=os.getuid() + 1, unreadable=True, cgroup=dagrun)
+        self.assertIsNone(self.census())
+        pid = self.process(unreadable=True, cgroup=dagrun)
+        self.assertEqual(f"PID {pid}, unreadable, in dagrun.slice", self.census())
+        # A leader that exited ahead of an unreadable thread has no VmSize,
+        # but the thread still has its memory.
+        self.reset_proc()
+        pid = self.process(cgroup=dagrun, threads=[{"unreadable": True}])
+        self.assertEqual(f"PID {pid}, unreadable, in dagrun.slice", self.census())
+
+    def test_an_unlistable_proc_raises(self) -> None:
+        with self.assertRaises(OSError):
+            start_unit.live_process_using_checkout(
+                self.checkout, proc_root=self.proc / "missing"
+            )
 
 
 if __name__ == "__main__":
