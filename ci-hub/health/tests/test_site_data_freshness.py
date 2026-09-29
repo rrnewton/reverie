@@ -606,6 +606,8 @@ OUTSIDE = [
     ("ledger-recovery/hermit/devbig014/2026-08/x.jsonl", "validation-ledger", "published", "outside the ledger files"),
     ("series/hermit/devbig014/2026-09.jsonl", "validation-ledger", "published", "outside the ledger files"),
     ("ledger/hermit/devbig031/2026-09.jsonl", "series", "published", "outside the ledger files"),
+    ("quarantine/series/hermit/devbig014/2026-09.jsonl", "series", "published", "outside the ledger files"),
+    ("series/hermit/devbig014/2026-09.jsonl", "series-quarantine", "published", "outside the ledger files"),
     ("ledger/../hermit/2026-09.jsonl", "validation-ledger", "published", "outside the ledger files"),
     ("/data/ledger/hermit/devbig014/2026-09.jsonl", "validation-ledger", "published", "outside the ledger files"),
     ("ledger/hermit/devbig031/2026-09.jsonl", "validation-ledger-v2", "published", "which this gate does not know"),
@@ -639,6 +641,8 @@ def test_every_layout_the_builder_reads_is_accepted(site, tmp_path, capsys):
         "ledger-recovery/hermit/devbig014/2026-08/4b681068b432ff230051fd7e105a60c0ae849a1b.jsonl": (
             "validation-ledger", "recovery", [recovery]),
         "series/hermit/devbig014/2026-09.jsonl": ("series", "published", [{"event_type": "series.observation"}]),
+        "quarantine/series/hermit/devbig014/2026-09.jsonl": (
+            "series-quarantine", "published", [{"event_type": "series.quarantine"}]),
     }
     assert run_gate(site, None, "--json", gate=False) == sdf.QUIET
     doc = json.loads(capsys.readouterr().out)
@@ -707,6 +711,11 @@ def test_classify_agrees_with_the_site_builder():
         "hermit_test_ledger/ledger/hermit/devbig014/2026-09.jsonl",
         "hermit_test_ledger/series/hermit/devbig014/2026-09.jsonl",
         "other/hermit/devbig014/2026-09.jsonl",
+        "quarantine/series/hermit/devbig014/2026-09.jsonl",
+        "quarantine/series/hermit/2026-09.jsonl",
+        "quarantine/series/hermit/devbig014/2026-09.json",
+        "quarantine/ledger/hermit/devbig014/2026-09.jsonl",
+        "hermit_test_ledger/quarantine/series/hermit/devbig014/2026-09.jsonl",
     ]
     for path in battery:
         assert sdf._classify(path) == exporter._input_store_and_location(path), path
@@ -871,6 +880,19 @@ def test_a_validation_history_reason_is_counted_but_not_a_series_warning(site, t
     assert doc["exclusions"]["unaccepted"] == 0
 
 
+def test_a_quarantined_census_attempt_is_its_own_count_not_a_series_warning(site, tmp_path, capsys):
+    site.rows = [ledger_row("r1", CURRENT_ROW)]
+    reason = "derived census attempt refused by the series writer: run r1 cell a/verify/ptrace attempt 2 (MalformedRow: x)"
+    site.exclusions.append({"schema": sdf.SERIES_QUARANTINE_SCHEMA, "reason": reason,
+                            "physical_row_count": 1, "represented_run_count": 1})
+    assert run_gate(site, None, "--json", gate=False) == sdf.QUIET
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["state"] == "current"
+    assert doc["exclusions"]["series_quarantine_reasons"] == {reason: 1}
+    assert reason not in doc["exclusions"]["validation_history_reasons"]
+    assert doc["exclusions"]["unaccepted"] == 0
+
+
 # -- F2: the reason strings are the builder's ----------------------------------
 
 RUST = HERE.parent / "lib" / "compatibility_website.rs"
@@ -928,6 +950,7 @@ def test_reason_strings_match_the_rust_builder():
     assert sdf.ACCEPTED_SERIES_REASONS == {
         NO_TERMINAL: "no_admitted_terminal", SCHEMA: "schema", V1_HOST_FACTS: "schema_v1_host_fields",
     }
+    assert f'const SERIES_QUARANTINE_SCHEMA: &str = "{sdf.SERIES_QUARANTINE_SCHEMA}";' in source
 
 
 def _pinned_hermit_file(relative: str) -> tuple[str | None, list[str]]:

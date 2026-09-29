@@ -391,6 +391,12 @@ def _input_store_and_location(relative: str) -> tuple[str, str] | None:
         return ("validation-ledger", "recovery")
     if len(parts) == 4 and parts[0] == "series" and parts[3].endswith(".jsonl"):
         return ("series", "published")
+    if (
+        len(parts) == 5
+        and parts[:2] == ("quarantine", "series")
+        and parts[4].endswith(".jsonl")
+    ):
+        return ("series-quarantine", "published")
     return None
 
 
@@ -439,6 +445,18 @@ def _git_input_files(
             data=_git(checkout, ["show", f"{commit}:{relative}"]),
         )
     return dict(sorted(sources.items()))
+
+
+def _series_quarantine_files(ledger: Path, commit: str) -> dict[str, GitSource]:
+    return {
+        path: source
+        for path, source in _git_input_files(ledger, commit, ("quarantine/series",)).items()
+        if source.store == "series-quarantine"
+    }
+
+
+def _snapshot_quarantine_paths(snapshot_root: Path) -> list[Path]:
+    return sorted((snapshot_root / "quarantine" / "series").glob("*/*/*.jsonl"))
 
 
 def _read_regular_file(path: Path) -> bytes:
@@ -1109,6 +1127,40 @@ def _series_export(
     }
 
 
+def _series_quarantine_export(
+    ledger: Path, commit: str, published_paths: list[Path],
+) -> dict[str, Any]:
+    """The series writer's published refusals at the series rows' own commit.
+
+    The projection needs them to account for a derived census attempt that the
+    public series omits, so they must come from the same ledger commit.
+    """
+    resolved, published = series_store.published_quarantine_at_repo(ledger, commit)
+    if resolved != commit:
+        raise ExportRefused(
+            f"series quarantine snapshot resolved {resolved}, expected {commit}"
+        )
+    copied = series_store.union_events(series_store.validate_quarantine_records(
+        [
+            series_store.parse_line(line)
+            for path in published_paths
+            for line in path.read_text(encoding="utf-8").split("\n")
+            if line.strip()
+        ],
+        public=True,
+    ))
+    if _canonical_bytes(copied) != _canonical_bytes(published):
+        raise ExportRefused(
+            "published series quarantine disagrees with the captured ledger commit files"
+        )
+    rows_jsonl = _opaque_jsonl(published, "series quarantine")
+    return {
+        "quarantine_row_count": len(published),
+        "quarantine_rows_jsonl": rows_jsonl.decode(),
+        "quarantine_rows_sha256": _sha256(rows_jsonl),
+    }
+
+
 def _provenance_sources(
     snapshot_root: Path,
     git_files: dict[str, GitSource],
@@ -1117,6 +1169,7 @@ def _provenance_sources(
     selected_paths = [
         *validation_ledger.shard_paths(snapshot_root),
         *sorted((snapshot_root / "series").glob("*/*/*.jsonl")),
+        *_snapshot_quarantine_paths(snapshot_root),
     ]
     sources: list[dict[str, Any]] = []
     for path in selected_paths:
@@ -1186,6 +1239,7 @@ def build_export(
         path: source for path, source in _git_input_files(ledger, series_commit, ("series",)).items()
         if source.store == "series"
     }
+    git_files.update(_series_quarantine_files(ledger, series_commit))
     if validation_history_commit is None:
         git_files.update(_git_input_files(parent, commit, ("ledger", "ledger-recovery")))
     mutable = [] if published_only else _capture_mutable_sources(state, data_root)
@@ -1229,6 +1283,9 @@ def build_export(
             local_series_paths,
             repository=series_store.LEDGER_REPOSITORY,
         )
+        series.update(_series_quarantine_export(
+            ledger, series_commit, _snapshot_quarantine_paths(snapshot_root),
+        ))
         sources = _provenance_sources(snapshot_root, git_files, mutable)
 
         result = {
@@ -1297,6 +1354,7 @@ def build_historical_export(
             raise ExportRefused("historical cell ledger revision differs from the requested commit")
         git_files = {path: source for path, source in git_files.items() if source.store != "series"}
         git_files.update(_git_input_files(ledger, series_commit, ("series",)))
+        git_files.update(_series_quarantine_files(ledger, series_commit))
 
     with tempfile.TemporaryDirectory(
         prefix="compatibility-website-historical-inputs-"
@@ -1317,6 +1375,10 @@ def build_historical_export(
             parent, series_commit or commit, published_series_paths, [],
             **({"repository": series_store.LEDGER_REPOSITORY} if ledger is not None else {}),
         )
+        if ledger is not None:
+            series.update(_series_quarantine_export(
+                ledger, series_commit, _snapshot_quarantine_paths(snapshot_root),
+            ))
         sources = _provenance_sources(snapshot_root, git_files, [])
         result = {
             "incomplete_data": _incomplete_data(),

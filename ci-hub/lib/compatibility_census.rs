@@ -57,7 +57,7 @@ fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn json_digest(value: &Value) -> String {
+pub(crate) fn json_digest(value: &Value) -> String {
     digest(&canonical(value))
 }
 

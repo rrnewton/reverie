@@ -760,6 +760,12 @@ struct CompatibilityWebsiteProjectionArgs {
     /// Complete canonical SeriesRow JSONL population.
     #[arg(long)]
     series_jsonl: PathBuf,
+    /// Complete series-quarantine/v2 JSONL population read from the same
+    /// ledger commit as --series-jsonl. It accounts for a derived census
+    /// attempt the public series lacks only when it holds that attempt's
+    /// exact original row.
+    #[arg(long)]
+    series_quarantine_jsonl: Option<PathBuf>,
     /// Complete Hermit checkout used only for current-main ancestry decisions.
     #[arg(long)]
     hermit_checkout: PathBuf,
@@ -4974,15 +4980,28 @@ fn run_compatibility_website_projection(
             args.series_jsonl.display()
         ))
     })?;
+    let series_quarantine = args
+        .series_quarantine_jsonl
+        .as_ref()
+        .map(|path| {
+            std::fs::read_to_string(path).map_err(|error| {
+                CiHubError::ValidateStatus(format!(
+                    "cannot read series quarantine input {}: {error}",
+                    path.display()
+                ))
+            })
+        })
+        .transpose()?;
     require_compatibility_projection_checkout(&args.hermit_checkout, &args.hermit_main_commit)
         .map_err(CiHubError::ValidateStatus)?;
     let historical_identity = args.record_id.as_deref().zip(args.run_id.as_deref());
     let retired_ids = compatibility_website::load_retired_ids(&args.hermit_checkout)
         .map_err(CiHubError::ValidateStatus)?;
-    let report = compatibility_website::project_with_retired_ids(
+    let report = compatibility_website::project_with_series_quarantine(
         &manifest,
         &history,
         &series,
+        series_quarantine.as_deref(),
         historical_identity,
         retired_ids.as_ref(),
         |tree| {
@@ -18471,6 +18490,7 @@ mod tests {
         assert_eq!(args.manifest_json, PathBuf::from("/tmp/manifest.json"));
         assert_eq!(args.history_jsonl, PathBuf::from("/tmp/history.jsonl"));
         assert_eq!(args.series_jsonl, PathBuf::from("/tmp/series.jsonl"));
+        assert_eq!(args.series_quarantine_jsonl, None);
         assert_eq!(args.hermit_checkout, PathBuf::from("/tmp/hermit"));
         assert_eq!(
             args.hermit_main_commit,
@@ -18478,6 +18498,31 @@ mod tests {
         );
         assert_eq!(args.record_id, None);
         assert_eq!(args.run_id, None);
+        let command = Cli::try_parse_from([
+            "ci-hub",
+            "compatibility-website-projection",
+            "--manifest-json",
+            "/tmp/manifest.json",
+            "--history-jsonl",
+            "/tmp/history.jsonl",
+            "--series-jsonl",
+            "/tmp/series.jsonl",
+            "--series-quarantine-jsonl",
+            "/tmp/series-quarantine.jsonl",
+            "--hermit-checkout",
+            "/tmp/hermit",
+            "--hermit-main-commit",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ])
+        .unwrap()
+        .command;
+        let HubCommand::CompatibilityWebsiteProjection(args) = command else {
+            panic!("wrong command variant")
+        };
+        assert_eq!(
+            args.series_quarantine_jsonl,
+            Some(PathBuf::from("/tmp/series-quarantine.jsonl"))
+        );
     }
 
     #[test]

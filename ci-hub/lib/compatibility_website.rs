@@ -4,7 +4,7 @@
 //! module owns only the deliberately lossy website view; it never stores cell
 //! state or a measured/not-measured flag.
 
-use crate::compatibility_census::DerivedCensus;
+use crate::compatibility_census::{json_digest, DerivedAttempt, DerivedCensus};
 use crate::failure_obligations::{self, CellResultsForWebsite};
 use crate::records::{
     CellIdentity, CellResult, CellResultsArtifact, CellResultsEvidence, CellVerdict,
@@ -12,6 +12,7 @@ use crate::records::{
     GateHistoryRow, HistoryRow, RequiredNullable,
 };
 use hermit_manifest_plan::ci_selection::{CiDisabledReasonData, CiDisabledResult};
+use hermit_manifest_plan::ledger::read_schema10_source_result;
 use hermit_manifest_plan::manifest_metadata::{
     BuildMetadata, CellMetadata, CurrentReproducer, DirectMetadata, ManifestMetadata,
     ObservationMetadata, TestMetadata,
@@ -171,16 +172,73 @@ where
     )
 }
 
-/// The public website projection. With `retired_ids`, a series row recorded
-/// under a retired test id is joined to its successor's manifest cell, so the
-/// cell's last-tested time and trend continue across the rename.
+#[cfg(test)]
 pub(crate) fn project_with_retired_ids<F>(
     manifest_json: &[u8],
     history_jsonl: &str,
     series_jsonl: &str,
     historical_identity: Option<(&str, &str)>,
     retired_ids: Option<&RetiredIds>,
+    current_main_ancestry: F,
+) -> Result<Value, String>
+where
+    F: FnMut(&str) -> Result<Option<bool>, String>,
+{
+    project_with_series_quarantine(
+        manifest_json,
+        history_jsonl,
+        series_jsonl,
+        None,
+        historical_identity,
+        retired_ids,
+        current_main_ancestry,
+    )
+}
+
+/// The public website projection. With `retired_ids`, a series row recorded
+/// under a retired test id is joined to its successor's manifest cell, so the
+/// cell's last-tested time and trend continue across the rename.
+///
+/// `series_quarantine_jsonl` holds the series writer's published refusals
+/// (`series-quarantine/v2` records) read from the same ledger commit as
+/// `series_jsonl`. A refusal accounts for a derived census attempt that the
+/// public series lacks only when it holds that attempt's exact original row;
+/// see [`validate_derived_series`]. The input is bound in the projection
+/// whenever it is supplied.
+pub(crate) fn project_with_series_quarantine<F>(
+    manifest_json: &[u8],
+    history_jsonl: &str,
+    series_jsonl: &str,
+    series_quarantine_jsonl: Option<&str>,
+    historical_identity: Option<(&str, &str)>,
+    retired_ids: Option<&RetiredIds>,
+    current_main_ancestry: F,
+) -> Result<Value, String>
+where
+    F: FnMut(&str) -> Result<Option<bool>, String>,
+{
+    project_with_series_quarantine_with(
+        manifest_json,
+        history_jsonl,
+        series_jsonl,
+        series_quarantine_jsonl,
+        historical_identity,
+        retired_ids,
+        current_main_ancestry,
+        crate::compatibility_census::load,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_with_series_quarantine_with<F>(
+    manifest_json: &[u8],
+    history_jsonl: &str,
+    series_jsonl: &str,
+    series_quarantine_jsonl: Option<&str>,
+    historical_identity: Option<(&str, &str)>,
+    retired_ids: Option<&RetiredIds>,
     mut current_main_ancestry: F,
+    load: impl Fn(&HistoryRow, &Value) -> Result<Option<DerivedCensus>, String>,
 ) -> Result<Value, String>
 where
     F: FnMut(&str) -> Result<Option<bool>, String>,
@@ -189,12 +247,17 @@ where
         .map_err(|error| format!("manifest metadata is invalid: {error}"))?;
     let history = parse_jsonl::<HistoryRow>(history_jsonl, "HistoryRow")?;
     let series = parse_jsonl::<SeriesRow>(series_jsonl, "SeriesRow")?;
+    let quarantine = series_quarantine_jsonl
+        .map(|input| parse_jsonl::<Value>(input, "series quarantine"))
+        .transpose()?
+        .unwrap_or_default();
     let history_input_row_count = history.len();
     let series_row_count = series.len();
     let manifest = project_manifest(manifest)?;
-    let mut history = project_history(&history, historical_identity)?;
+    let mut history = project_history_with(&history, historical_identity, load)?;
     let series = project_series(
         &series,
+        &quarantine,
         &manifest,
         &history,
         retired_ids,
@@ -266,6 +329,10 @@ where
         },
         "projection_exclusion_counts": exclusion_counts,
     });
+    if let Some(input) = series_quarantine_jsonl {
+        output["input"]["series_quarantine_rows"] =
+            input_binding(input.as_bytes(), Some(quarantine.len()));
+    }
     if let Some(historical) = historical {
         output["historical"] = historical;
     }
@@ -764,6 +831,7 @@ fn canonical_sorted_value(value: &Value) -> Value {
     }
 }
 
+#[cfg(test)]
 fn project_history(
     rows: &[Parsed<HistoryRow>],
     historical_identity: Option<(&str, &str)>,
@@ -1915,6 +1983,7 @@ fn extra_string<'a>(row: &'a HistoryRow, name: &str) -> Result<Option<&'a str>, 
 
 fn project_series<F>(
     rows: &[Parsed<SeriesRow>],
+    quarantine: &[Parsed<Value>],
     manifest: &Value,
     history: &HistoryProjection,
     retired_ids: Option<&RetiredIds>,
@@ -1924,7 +1993,7 @@ where
     F: FnMut(&str) -> Result<Option<bool>, String>,
 {
     let allowed_cells = manifest_cell_identities(manifest)?;
-    validate_derived_series(rows, &history.derived)?;
+    let quarantined = validate_derived_series(rows, quarantine, &history.derived)?;
     let physical_row_count = rows.len();
     let accumulation = accumulate_series(rows, history, &allowed_cells, retired_ids)?;
     let ancestry = series_ancestry(&accumulation.prepared, current_main_ancestry)?;
@@ -1937,10 +2006,21 @@ where
         represented_run_count,
         admitted_physical_row_count,
         admitted_represented_run_count,
-        excluded,
+        mut excluded,
         event_ids: _,
         run_cells: _,
     } = accumulation;
+    for (key, counts) in quarantined {
+        let target = excluded.entry(key).or_default();
+        target.0 = target
+            .0
+            .checked_add(counts.0)
+            .ok_or("excluded physical-row count overflow")?;
+        target.1 = target
+            .1
+            .checked_add(counts.1)
+            .ok_or("excluded represented-run count overflow")?;
+    }
     let rows = decorate_series_rows(prepared, &ancestry)?;
     Ok(SeriesProjection {
         physical_row_count,
@@ -1960,10 +2040,23 @@ where
 /// Join every public event span to the already authenticated original census.
 /// Interval membership alone is not coverage: sparse, overlapping, omitted or
 /// contradictory attempts refuse, including losslessly compressed retries.
+///
+/// A census attempt that no span covers is accounted for only by a published
+/// series-writer refusal that holds the attempt's exact original row (see
+/// [`QuarantinedCensusRow`]); each refusal accounts for one attempt. Every
+/// such attempt is returned as an exclusion count under a named reason, so
+/// the public audit shows it. Any other omitted attempt still refuses.
 fn validate_derived_series(
     rows: &[Parsed<SeriesRow>],
+    quarantine: &[Parsed<Value>],
     derived: &BTreeMap<String, DerivedCensus>,
-) -> Result<(), String> {
+) -> Result<BTreeMap<(String, String), (u64, u64)>, String> {
+    let refusals = quarantine
+        .iter()
+        .filter_map(|record| QuarantinedCensusRow::from_record(&record.raw))
+        .collect::<Vec<_>>();
+    let mut used = BTreeSet::new();
+    let mut quarantined = BTreeMap::<(String, String), (u64, u64)>::new();
     for (run_id, evidence) in derived {
         let mut remaining = evidence
             .attempts
@@ -2030,11 +2123,183 @@ fn validate_derived_series(
                 remaining.remove(&key);
             }
         }
-        if !remaining.is_empty() {
-            return Err("public series omits derived original attempts".into());
+        let mut unaccounted = Vec::new();
+        for ((cell, number), attempt) in remaining {
+            let refusal = refusals
+                .iter()
+                .enumerate()
+                .filter(|(index, refusal)| {
+                    !used.contains(index)
+                        && refusal.accounts_for(run_id, &evidence.hermit_sha, &cell, attempt)
+                })
+                .min_by(|left, right| left.1.event_id.cmp(&right.1.event_id));
+            let Some((index, refusal)) = refusal else {
+                unaccounted.push(format!("{cell} attempt {number}"));
+                continue;
+            };
+            used.insert(index);
+            let reason = format!(
+                "derived census attempt refused by the series writer: run {run_id} cell {cell} \
+                 attempt {number} ({}: {})",
+                refusal.error, refusal.reason
+            );
+            let target = quarantined
+                .entry((SERIES_QUARANTINE_SCHEMA.to_owned(), reason))
+                .or_default();
+            target.0 = target
+                .0
+                .checked_add(1)
+                .ok_or("excluded physical-row count overflow")?;
+            target.1 = target
+                .1
+                .checked_add(1)
+                .ok_or("excluded represented-run count overflow")?;
+        }
+        if !unaccounted.is_empty() {
+            return Err(format!(
+                "public series omits derived original attempts of {run_id} with no matching \
+                 series quarantine record: {}",
+                unaccounted.join(", ")
+            ));
         }
     }
-    Ok(())
+    Ok(quarantined)
+}
+
+/// Schema of the series writer's published refusal records.
+const SERIES_QUARANTINE_SCHEMA: &str = "series-quarantine/v2";
+
+/// The published record fields, exactly (`ci-hub/series/series.py`).
+const SERIES_QUARANTINE_FIELDS: [&str; 19] = [
+    "cell",
+    "emitted_at",
+    "error",
+    "event_id",
+    "event_type",
+    "host",
+    "inputs",
+    "legacy",
+    "owner_paths",
+    "producer",
+    "reason",
+    "row",
+    "row_event_id",
+    "run_id",
+    "schema",
+    "stage",
+    "team",
+    "tree",
+    "withheld",
+];
+
+/// A published series-writer refusal that can account for one derived census
+/// attempt: an exact, unredacted `series-quarantine/v2` record from the
+/// validate producer whose single received input is valid text, proven by
+/// its own digest and length, and whose event id is the writer's identity
+/// digest over that input. Any other record, including a withheld,
+/// owner-path-tokenized, legacy or post-projection record, accounts for
+/// nothing.
+struct QuarantinedCensusRow {
+    event_id: String,
+    run_id: String,
+    tree: String,
+    cell: String,
+    error: String,
+    reason: String,
+    source: Map<String, Value>,
+    source_row_sha256: String,
+}
+
+impl QuarantinedCensusRow {
+    fn from_record(record: &Value) -> Option<Self> {
+        let record = record.as_object()?;
+        if record.len() != SERIES_QUARANTINE_FIELDS.len()
+            || !SERIES_QUARANTINE_FIELDS
+                .iter()
+                .all(|field| record.contains_key(*field))
+        {
+            return None;
+        }
+        let text = |field: &str| record[field].as_str();
+        if text("schema")? != SERIES_QUARANTINE_SCHEMA
+            || text("event_type")? != "series.quarantine"
+            || text("team")? != "hermit"
+            || text("producer")? != "validate"
+            || !record["withheld"].is_null()
+            || !record["legacy"].is_null()
+            || !record["row"].is_null()
+            || !record["row_event_id"].is_null()
+            || !record["owner_paths"].as_array()?.is_empty()
+            || text("error")?.trim().is_empty()
+        {
+            return None;
+        }
+        let [input] = record["inputs"].as_array()?.as_slice() else {
+            return None;
+        };
+        let input = input.as_object()?;
+        let raw = input.get("raw")?.as_str()?;
+        let input_row = input.get("input_row")?;
+        let raw_sha256 = input.get("raw_sha256")?.as_str()?;
+        if input.len() != 5
+            || !input.get("raw_base64")?.is_null()
+            || input.get("raw_bytes")?.as_u64()? != raw.len() as u64
+            || raw_sha256 != sha256(raw.as_bytes())
+            || !(input_row.is_null() || input_row.as_u64().is_some_and(|row| row >= 1))
+        {
+            return None;
+        }
+        // The writer's identity digest (`_quarantine_event_id`): sorted keys,
+        // compact separators. Its ASCII escaping matches for ASCII identities;
+        // any other identity fails closed here.
+        let identity = serde_json::json!({
+            "inputs": [[input_row, raw_sha256]],
+            "producer": "validate",
+            "row_event_id": Value::Null,
+            "run_id": text("run_id")?,
+            "stage": text("stage")?,
+            "tree": text("tree")?,
+        });
+        let event_id = text("event_id")?;
+        if event_id != format!("series-quarantine-{}", sha256(&canonical_bytes(&identity))) {
+            return None;
+        }
+        let source = match read_schema10_source_result(raw.as_bytes()).ok()? {
+            Value::Object(source) => source,
+            _ => return None,
+        };
+        let source_row_sha256 = json_digest(&Value::Object(source.clone()));
+        Some(Self {
+            event_id: event_id.to_owned(),
+            run_id: text("run_id")?.to_owned(),
+            tree: text("tree")?.to_owned(),
+            cell: text("cell")?.to_owned(),
+            error: text("error")?.to_owned(),
+            reason: text("reason")?.to_owned(),
+            source,
+            source_row_sha256,
+        })
+    }
+
+    /// Whether this refusal holds exactly the original row of `attempt`,
+    /// recorded by the census of run `run_id` at `tree`: the record names the
+    /// run, tree and cell, and the refused row itself carries the same run,
+    /// tree, cell identity and attempt with the census's source-row digest.
+    fn accounts_for(&self, run_id: &str, tree: &str, cell: &str, attempt: &DerivedAttempt) -> bool {
+        let field = |name: &str| self.source.get(name).and_then(Value::as_str);
+        self.run_id == run_id
+            && self.tree == tree
+            && self.cell == cell
+            && self.source_row_sha256 == attempt.source_row_sha256
+            && field("run_id") == Some(run_id)
+            && field("hermit_sha") == Some(tree)
+            && field("lane") == Some(attempt.cell.lane.as_str())
+            && field("category") == Some(attempt.cell.category.as_str())
+            && field("test") == Some(attempt.cell.test.as_str())
+            && field("mode") == Some(attempt.cell.mode.as_str())
+            && field("backend") == Some(attempt.cell.backend.as_str())
+            && self.source.get("attempt").and_then(Value::as_u64) == Some(attempt.attempt)
+    }
 }
 
 fn manifest_cell_identities(manifest: &Value) -> Result<BTreeSet<String>, String> {
@@ -4109,6 +4374,525 @@ mod tests {
             );
             std::fs::remove_file(&path).unwrap();
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// One refusal exactly as `ci-hub/series/series.py` publishes it
+    /// (`quarantine_record`, then `portable_quarantine_record`): the validate
+    /// producer refused the original row of attempt 2 of
+    /// `fixture/test/verify/ptrace` in `run-q`.
+    const WRITER_SERIES_QUARANTINE: &str = r#"{"cell":"fixture/test/verify/ptrace","emitted_at":"2026-09-29T00:00:00Z","error":"MalformedRow","event_id":"series-quarantine-d741e359862c68c165a77ff0362069c515f1cfcc2c4f033117a6c139336562b4","event_type":"series.quarantine","host":"fixture-host","inputs":[{"input_row":7,"raw":"{\"run_id\":\"run-q\",\"hermit_sha\":\"ffffffffffffffffffffffffffffffffffffffff\",\"lane\":\"portable\",\"category\":\"fixture\",\"test\":\"fixture/test\",\"mode\":\"verify\",\"backend\":\"ptrace\",\"attempt\":2,\"result\":\"crash-error\",\"duration_ms\":12}","raw_base64":null,"raw_bytes":222,"raw_sha256":"959ac1bd4699438c4be6b795ccdf4514b7a4f68a6aa0bede0a4d62069d1f57b9"}],"legacy":null,"owner_paths":[],"producer":"validate","reason":"cell attempt 1 matched report is internally inconsistent","row":null,"row_event_id":null,"run_id":"run-q","schema":"series-quarantine/v2","stage":"projection","team":"hermit","tree":"ffffffffffffffffffffffffffffffffffffffff","withheld":null}"#;
+
+    /// Recompute what the writer derives from a record's content: with `raw`,
+    /// the received row's digest and length, and always the identity digest.
+    fn sign_series_quarantine(record: &mut Value, raw: bool) {
+        if raw {
+            let text = record["inputs"][0]["raw"].as_str().unwrap().to_owned();
+            record["inputs"][0]["raw_sha256"] = sha256(text.as_bytes()).into();
+            record["inputs"][0]["raw_bytes"] = text.len().into();
+        }
+        let input = &record["inputs"][0];
+        let identity = serde_json::json!({
+            "inputs": [[input["input_row"], input["raw_sha256"]]],
+            "producer": record["producer"],
+            "row_event_id": record["row_event_id"],
+            "run_id": record["run_id"],
+            "stage": record["stage"],
+            "tree": record["tree"],
+        });
+        record["event_id"] =
+            format!("series-quarantine-{}", sha256(&canonical_bytes(&identity))).into();
+    }
+
+    /// `record` holding a refused row with one field replaced, signed again.
+    fn with_refused_row_field(record: &Value, field: &str, value: Value) -> Value {
+        let mut record = record.clone();
+        let mut row: Map<String, Value> =
+            serde_json::from_str(record["inputs"][0]["raw"].as_str().unwrap()).unwrap();
+        row.insert(field.to_owned(), value);
+        record["inputs"][0]["raw"] = serde_json::to_string(&row).unwrap().into();
+        sign_series_quarantine(&mut record, true);
+        record
+    }
+
+    /// The census digest of the original row that `record` holds.
+    fn refused_row_digest(record: &Value) -> String {
+        let raw = record["inputs"][0]["raw"].as_str().unwrap();
+        json_digest(&read_schema10_source_result(raw.as_bytes()).unwrap())
+    }
+
+    /// The derived census of `run-q` with the given attempts of the fixture
+    /// cell: (attempt, original row digest, matched).
+    fn census_of_run_q(attempts: &[(u64, &str, bool)]) -> BTreeMap<String, DerivedCensus> {
+        BTreeMap::from([(
+            "run-q".to_owned(),
+            serde_json::from_value(run_q_census_operand(attempts)).unwrap(),
+        )])
+    }
+
+    /// The operand behind [`census_of_run_q`], with placeholder history and
+    /// raw census digests.
+    fn run_q_census_operand(attempts: &[(u64, &str, bool)]) -> Value {
+        let attempts = attempts
+            .iter()
+            .map(|&(number, digest, matched)| {
+                serde_json::json!({
+                    "input_path": "portable/results.jsonl", "input_line": number,
+                    "cell": cell_identity(), "attempt": number, "source_row_sha256": digest,
+                    "outcome": if matched { "PASS" } else { "FAIL" },
+                    "result": if matched { "pass" } else { "determinism-failure" },
+                    "failure_class": if matched { Value::Null } else { "product_failure".into() },
+                    "ordinary_verdict": {"state": if matched { "compared-and-matched" } else { "compared-and-diverged" },
+                        "comparison_tier": "canonical-bitwise", "comparison": comparison(),
+                        "bitwise_parity": matched, "compared_log_messages": {"left": 3, "right": 3}},
+                    "backend_parity": null,
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "schema": 1, "authority": "writer_verified_raw_census_v1", "run_id": "run-q",
+            "record_id": "record-q", "hermit_sha": "f".repeat(40),
+            "history_binding_sha256": "c".repeat(64), "raw_census_sha256": "d".repeat(64),
+            "attempts": attempts,
+        })
+    }
+
+    #[test]
+    fn a_census_attempt_missing_from_the_series_needs_its_exact_quarantined_row() {
+        let tree = "f".repeat(40);
+        let writer: Value = serde_json::from_str(WRITER_SERIES_QUARANTINE).unwrap();
+        let mut resigned = writer.clone();
+        sign_series_quarantine(&mut resigned, true);
+        assert_eq!(
+            resigned, writer,
+            "the fixture signer must reproduce the writer"
+        );
+        // The series covers attempt 1 only; attempt 2 is the refused row.
+        let rows =
+            parse_jsonl::<SeriesRow>(&jsonl(&[series("run-q", &tree, "event-q-1")]), "SeriesRow")
+                .unwrap();
+        let covered = "b".repeat(64);
+        let digest = refused_row_digest(&writer);
+        let derived = census_of_run_q(&[(1, &covered, true), (2, &digest, false)]);
+        let check = |records: &[Value], derived: &BTreeMap<String, DerivedCensus>| {
+            let quarantine = parse_jsonl::<Value>(&jsonl(records), "series quarantine").unwrap();
+            validate_derived_series(&rows, &quarantine, derived)
+        };
+        let unaccounted = |attempts: &str| {
+            format!(
+                "public series omits derived original attempts of run-q with no matching \
+                 series quarantine record: {attempts}"
+            )
+        };
+        let exempted = BTreeMap::from([(
+            (
+                "series-quarantine/v2".to_owned(),
+                "derived census attempt refused by the series writer: run run-q cell \
+                 fixture/test/verify/ptrace attempt 2 (MalformedRow: cell attempt 1 \
+                 matched report is internally inconsistent)"
+                    .to_owned(),
+            ),
+            (1, 1),
+        )]);
+
+        // The exact refused row accounts for its attempt, once, by name.
+        assert_eq!(
+            check(std::slice::from_ref(&writer), &derived),
+            Ok(exempted.clone())
+        );
+        // Without any quarantine record the missing attempt still refuses.
+        assert_eq!(
+            check(&[], &derived),
+            Err(unaccounted("fixture/test/verify/ptrace attempt 2"))
+        );
+        let mut no_input_row = writer.clone();
+        no_input_row["inputs"][0]["input_row"] = Value::Null;
+        sign_series_quarantine(&mut no_input_row, false);
+        assert_eq!(check(&[no_input_row], &derived), Ok(exempted.clone()));
+        // A change to a field outside the identity is re-digested by the same
+        // construction the identity cases below use, and still accounts.
+        let control = with_refused_row_field(&writer, "duration_ms", 13.into());
+        let control_digest = refused_row_digest(&control);
+        assert_eq!(
+            check(
+                &[control],
+                &census_of_run_q(&[(1, &covered, true), (2, &control_digest, false)])
+            ),
+            Ok(exempted.clone())
+        );
+
+        let edited = |change: &dyn Fn(&mut Value), sign: bool| {
+            let mut record = writer.clone();
+            change(&mut record);
+            if sign {
+                sign_series_quarantine(&mut record, false);
+            }
+            record
+        };
+        let other_run = edited(&|r| r["run_id"] = "run-other".into(), true);
+        let refusing = [
+            ("another run", other_run.clone()),
+            (
+                "another tree",
+                edited(&|r| r["tree"] = "e".repeat(40).into(), true),
+            ),
+            (
+                "another cell",
+                edited(&|r| r["cell"] = "fixture/test/verify/kvm".into(), true),
+            ),
+            (
+                "another original row",
+                with_refused_row_field(&writer, "duration_ms", 13.into()),
+            ),
+            (
+                "withheld",
+                edited(
+                    &|r| r["withheld"] = serde_json::json!({"reason": "fixture"}),
+                    true,
+                ),
+            ),
+            (
+                "owner paths tokenized",
+                edited(
+                    &|r| {
+                        r["owner_paths"] =
+                            serde_json::json!([{"token": "{{OWNER_HOME_1}}", "bytes": 12}])
+                    },
+                    true,
+                ),
+            ),
+            (
+                "bytes held as base64",
+                edited(
+                    &|r| {
+                        r["inputs"][0]["raw_base64"] = "e30=".into();
+                        r["inputs"][0]["raw"] = Value::Null;
+                    },
+                    true,
+                ),
+            ),
+            (
+                "identity digest not the writer's",
+                edited(
+                    &|r| r["event_id"] = format!("series-quarantine-{}", "0".repeat(64)).into(),
+                    false,
+                ),
+            ),
+            (
+                "raw digest not of the raw",
+                edited(
+                    &|r| r["inputs"][0]["raw_sha256"] = "0".repeat(64).into(),
+                    true,
+                ),
+            ),
+            (
+                "raw length not of the raw",
+                edited(&|r| r["inputs"][0]["raw_bytes"] = 223.into(), true),
+            ),
+            (
+                "input row zero",
+                edited(&|r| r["inputs"][0]["input_row"] = 0.into(), true),
+            ),
+            (
+                "extra input field",
+                edited(&|r| r["inputs"][0]["note"] = "x".into(), true),
+            ),
+            (
+                "two inputs",
+                edited(
+                    &|r| {
+                        let input = r["inputs"][0].clone();
+                        r["inputs"].as_array_mut().unwrap().push(input);
+                    },
+                    true,
+                ),
+            ),
+            (
+                "another producer",
+                edited(&|r| r["producer"] = "pressure".into(), true),
+            ),
+            (
+                "another team",
+                edited(&|r| r["team"] = "other".into(), true),
+            ),
+            (
+                "another event type",
+                edited(&|r| r["event_type"] = "series.observation".into(), true),
+            ),
+            (
+                "v1 schema",
+                edited(&|r| r["schema"] = "series-quarantine/v1".into(), true),
+            ),
+            (
+                "legacy content",
+                edited(&|r| r["legacy"] = serde_json::json!({"input_row": 7}), true),
+            ),
+            (
+                "post-projection row",
+                edited(&|r| r["row"] = serde_json::json!({"cell": "x"}), true),
+            ),
+            (
+                "post-projection row event",
+                edited(&|r| r["row_event_id"] = "event-q-2".into(), true),
+            ),
+            ("blank error", edited(&|r| r["error"] = " ".into(), true)),
+            ("extra field", edited(&|r| r["note"] = "x".into(), true)),
+            (
+                "missing field",
+                edited(
+                    &|r| {
+                        r.as_object_mut().unwrap().remove("host");
+                    },
+                    true,
+                ),
+            ),
+        ];
+        for (label, record) in refusing {
+            assert_eq!(
+                check(&[record], &derived),
+                Err(unaccounted("fixture/test/verify/ptrace attempt 2")),
+                "{label}"
+            );
+        }
+        // A record that accounts for nothing neither refuses nor disturbs one
+        // that does.
+        assert_eq!(check(&[other_run, writer.clone()], &derived), Ok(exempted));
+
+        // Each identity field of the refused row is checked on its own: even
+        // when the census digest is that of the altered row, the row must name
+        // the census's run, tree, lane, category, test, mode, backend and
+        // attempt.
+        for (field, value) in [
+            ("run_id", Value::from("run-other")),
+            ("hermit_sha", "e".repeat(40).into()),
+            ("lane", "privileged".into()),
+            ("category", "other".into()),
+            ("test", "fixture/other".into()),
+            ("mode", "run".into()),
+            ("backend", "kvm".into()),
+            ("attempt", 3.into()),
+        ] {
+            let record = with_refused_row_field(&writer, field, value);
+            let digest = refused_row_digest(&record);
+            assert_eq!(
+                check(
+                    &[record],
+                    &census_of_run_q(&[(1, &covered, true), (2, &digest, false)])
+                ),
+                Err(unaccounted("fixture/test/verify/ptrace attempt 2")),
+                "{field}"
+            );
+        }
+
+        // A refusal accounts only for the attempt its row names; any other
+        // omission is named.
+        let third = with_refused_row_field(&writer, "attempt", 3.into());
+        let third_digest = refused_row_digest(&third);
+        let three = census_of_run_q(&[
+            (1, &covered, true),
+            (2, &digest, false),
+            (3, &third_digest, false),
+        ]);
+        assert_eq!(
+            check(std::slice::from_ref(&writer), &three),
+            Err(unaccounted("fixture/test/verify/ptrace attempt 3"))
+        );
+        assert_eq!(
+            check(&[writer, third], &three).map(|found| found.len()),
+            Ok(2)
+        );
+    }
+
+    #[test]
+    fn the_series_quarantine_input_is_bound_only_when_supplied() {
+        let manifest = canonical_bytes(&manifest());
+        let never = |_: &str| -> Result<Option<bool>, String> {
+            panic!("empty series must not request ancestry")
+        };
+        let without =
+            project_with_series_quarantine(&manifest, "", "", None, None, None, never).unwrap();
+        assert!(without["input"].get("series_quarantine_rows").is_none());
+        assert_eq!(without, project(&manifest, "", "", None, never).unwrap());
+        let records = jsonl(&[serde_json::from_str::<Value>(WRITER_SERIES_QUARANTINE).unwrap()]);
+        let with = project_with_series_quarantine(
+            &manifest,
+            "",
+            "",
+            Some(records.as_str()),
+            None,
+            None,
+            never,
+        )
+        .unwrap();
+        assert_eq!(
+            with["input"]["series_quarantine_rows"],
+            serde_json::json!({
+                "bytes": records.len(),
+                "row_count": 1,
+                "sha256": sha256(records.as_bytes()),
+            })
+        );
+        assert_ne!(with["projection_sha256"], without["projection_sha256"]);
+        // A record no census attempt needs is bound, never counted.
+        assert_eq!(with["projection_exclusion_counts"], serde_json::json!([]));
+        let error =
+            project_with_series_quarantine(&manifest, "", "", Some("\n"), None, None, never)
+                .unwrap_err();
+        assert!(
+            error.contains("series quarantine input line 1 is blank"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_exempted_census_attempt_is_audited_outside_every_series_total() {
+        // Synthetic authenticated transport operands, as in
+        // writer_derived_historical_selectors_preserve_failed_record_and_authority.
+        // The census of run-q has a failed attempt 1 and a retried, passing
+        // attempt 2 of the fixture cell. The public series covers attempt 2,
+        // and the writer's record holds the refused row of attempt 1.
+        let commit = "f".repeat(40);
+        let writer: Value = serde_json::from_str(WRITER_SERIES_QUARANTINE).unwrap();
+        let writer = with_refused_row_field(&writer, "attempt", 1.into());
+        let mut row = history_row(8, "record-q", "run-q", &commit);
+        row["schema_version"] = 5.into();
+        row["commit_anchored"] = true.into();
+        row["result"] = "fail".into();
+        row["exit_code"] = 1.into();
+        row["validation_complete"] = false.into();
+        row["cell_results"] = Value::Null;
+        let cell = cell_identity();
+        let census = serde_json::json!({
+            "schema": 1, "run_id": "run-q", "hermit_sha": commit,
+            "files": [{"path": "portable/results.jsonl", "bytes": 10, "sha256": "a".repeat(64),
+                "rows": [{"line": 1, "cell": cell, "attempt": 1},
+                         {"line": 2, "cell": cell, "attempt": 2}]}],
+        });
+        row["raw_result_input_census_v1"] = census.clone();
+        let binding = [
+            "schema_version",
+            "run_id",
+            "record_id",
+            "commit",
+            "tree_dirty",
+            "commit_anchored",
+            "profile",
+            "selection_mode",
+            "started_at",
+            "finished_at",
+            "result",
+            "exit_code",
+            "validation_complete",
+            "raw_result_input_census_v1",
+        ]
+        .into_iter()
+        .map(|key| (key.to_owned(), row[key].clone()))
+        .collect::<Map<_, _>>();
+        let covered = "b".repeat(64);
+        let mut operand = run_q_census_operand(&[
+            (1, &refused_row_digest(&writer), false),
+            (2, &covered, true),
+        ]);
+        operand["raw_census_sha256"] = sha256(&canonical_bytes(&census)).into();
+        operand["history_binding_sha256"] =
+            sha256(&canonical_bytes(&Value::Object(binding))).into();
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-exempted-census-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let path = root.join(format!(
+            "ignored/validate/artifacts/run-q/website-derived-census-{}-{}.json",
+            operand["raw_census_sha256"].as_str().unwrap(),
+            operand["history_binding_sha256"].as_str().unwrap()
+        ));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut bytes = canonical_bytes(&operand);
+        bytes.push(b'\n');
+        std::fs::write(&path, bytes).unwrap();
+        let load = |row: &HistoryRow, raw: &Value| {
+            crate::compatibility_census::load_at(row, raw, Some(&root))
+        };
+
+        let manifest = canonical_bytes(&manifest());
+        let history = jsonl(&[row]);
+        let mut retry = series("run-q", &commit, "event-q-2");
+        retry["series"]["run_index"] = 2.into();
+        retry["series"]["attempt"] = 2.into();
+        retry["series"]["last_run_index"] = 2.into();
+        let series = jsonl(&[retry]);
+        let records = jsonl(std::slice::from_ref(&writer));
+        let project = |quarantine: Option<&str>| {
+            project_with_series_quarantine_with(
+                &manifest,
+                &history,
+                &series,
+                quarantine,
+                None,
+                None,
+                |_: &str| -> Result<Option<bool>, String> { Ok(Some(true)) },
+                load,
+            )
+        };
+        let projected = project(Some(records.as_str())).unwrap();
+        // The census row is the admitted terminal row that selects the one
+        // public series row.
+        assert_eq!(projected["counts"]["current_validation_run_row_count"], 1);
+        assert_eq!(
+            projected["validate_run_selection"],
+            serde_json::json!({"event-q-2": {"path": "recorded", "selected": true}})
+        );
+        // The exempted attempt is on the audit page, under its named reason.
+        assert_eq!(
+            projected["projection_exclusion_counts"],
+            serde_json::json!([{
+                "schema": "series-quarantine/v2",
+                "reason": "derived census attempt refused by the series writer: run run-q \
+                           cell fixture/test/verify/ptrace attempt 1 (MalformedRow: cell \
+                           attempt 1 matched report is internally inconsistent)",
+                "physical_row_count": 1,
+                "represented_run_count": 1,
+            }])
+        );
+        // It is not a series row: every series total counts the one input row.
+        let counts = &projected["counts"];
+        assert_eq!(projected["input"]["series_rows"]["row_count"], 1);
+        assert_eq!(projected["input"]["series_quarantine_rows"]["row_count"], 1);
+        assert_eq!(counts["series_physical_row_count"], 1);
+        assert_eq!(counts["series_represented_run_count"], 1);
+        assert_eq!(counts["projection_admitted_physical_row_count"], 1);
+        assert_eq!(counts["projection_admitted_represented_run_count"], 1);
+        assert_eq!(counts["projection_excluded_physical_row_count"], 0);
+        assert_eq!(counts["projection_excluded_represented_run_count"], 0);
+        assert_eq!(
+            counts["projection_admitted_physical_row_count"]
+                .as_u64()
+                .unwrap()
+                + counts["projection_excluded_physical_row_count"]
+                    .as_u64()
+                    .unwrap(),
+            projected["input"]["series_rows"]["row_count"]
+                .as_u64()
+                .unwrap()
+        );
+        assert_eq!(
+            projected["series_rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["event_id"].clone())
+                .collect::<Vec<_>>(),
+            vec![Value::from("event-q-2")]
+        );
+        // The same history and series without the record still refuse.
+        assert_eq!(
+            project(None),
+            Err(
+                "public series omits derived original attempts of run-q with no matching \
+                 series quarantine record: fixture/test/verify/ptrace attempt 1"
+                    .to_owned()
+            )
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

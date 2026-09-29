@@ -1570,6 +1570,131 @@ def test_projection_envelope_binds_exact_input_bytes() -> None:
         )
 
 
+def _without_fixture_fields(canonical: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in canonical.items() if not key.startswith("_fixture_")}
+
+
+def _with_series_quarantine(
+    canonical: dict[str, Any], records: list[dict[str, Any]]
+) -> dict[str, Any]:
+    encoded = _jsonl(records)
+    canonical = copy.deepcopy(canonical)
+    canonical["series"].update(
+        quarantine_row_count=len(records),
+        quarantine_rows_jsonl=encoded.decode(),
+        quarantine_rows_sha256=hashlib.sha256(encoded).hexdigest(),
+    )
+    return canonical
+
+
+QUARANTINE_RECORD = {"schema": "series-quarantine/v2", "event_id": "series-quarantine-fixture"}
+
+
+def test_series_quarantine_fields_bind_together_or_not_at_all() -> None:
+    canonical = _without_fixture_fields(canonical_input("1" * 40, []))
+    assert build_data._opaque_projection_inputs(canonical)[2] is None
+    empty = _with_series_quarantine(canonical, [])
+    assert build_data._opaque_projection_inputs(empty)[2] == b""
+    supplied = _with_series_quarantine(canonical, [QUARANTINE_RECORD])
+    assert build_data._opaque_projection_inputs(supplied)[2] == _jsonl([QUARANTINE_RECORD])
+    for missing in sorted(build_data._SERIES_QUARANTINE_FIELDS):
+        partial = copy.deepcopy(supplied)
+        del partial["series"][missing]
+        with pytest.raises(build_data.BuildRefused, match="supplied together"):
+            build_data._opaque_projection_inputs(partial)
+    tampered = copy.deepcopy(supplied)
+    tampered["series"]["quarantine_rows_jsonl"] = _jsonl(
+        [{**QUARANTINE_RECORD, "event_id": "series-quarantine-other"}]
+    ).decode()
+    with pytest.raises(build_data.BuildRefused, match="quarantine_rows_sha256 disagrees"):
+        build_data._opaque_projection_inputs(tampered)
+    miscounted = copy.deepcopy(supplied)
+    miscounted["series"]["quarantine_row_count"] = 2
+    with pytest.raises(build_data.BuildRefused, match="framing disagrees with quarantine_row_count"):
+        build_data._opaque_projection_inputs(miscounted)
+
+
+def test_projection_envelope_binds_the_series_quarantine_exactly_when_supplied() -> None:
+    manifest = build_data._canonical_bytes(manifest_metadata()) + b"\n"
+    empty = _jsonl([])
+    quarantine = _jsonl([QUARANTINE_RECORD])
+    unbound = _fixture_projection(
+        {
+            **canonical_input("1" * 40, []),
+            "_fixture_history_rows": [],
+            "_fixture_current_validation_rows": [],
+        },
+        manifest_metadata(),
+        "2" * 40,
+    )
+    bound = copy.deepcopy(unbound)
+    bound["input"]["series_quarantine_rows"] = {
+        "bytes": len(quarantine),
+        "row_count": 1,
+        "sha256": hashlib.sha256(quarantine).hexdigest(),
+    }
+    bound["projection_sha256"] = build_data._digest(
+        {key: value for key, value in bound.items() if key != "projection_sha256"}
+    )
+    assert (
+        build_data._validate_projection_envelope(
+            bound, manifest, empty, empty, None, quarantine
+        )["projection_sha256"]
+        == bound["projection_sha256"]
+    )
+    with pytest.raises(build_data.BuildRefused, match="missing field.*series_quarantine_rows"):
+        build_data._validate_projection_envelope(
+            unbound, manifest, empty, empty, None, quarantine
+        )
+    with pytest.raises(build_data.BuildRefused, match="unknown field.*series_quarantine_rows"):
+        build_data._validate_projection_envelope(bound, manifest, empty, empty, None)
+    with pytest.raises(
+        build_data.BuildRefused, match="series_quarantine_rows.bytes disagrees"
+    ):
+        build_data._validate_projection_envelope(
+            bound, manifest, empty, empty, None, quarantine + quarantine
+        )
+
+
+def test_real_rust_projection_binds_the_series_quarantine_it_is_given(
+    tmp_path: Path,
+) -> None:
+    _parent, _parent_commit, hermit, hermit_commit = make_checkouts(tmp_path)
+    row = validation_row(hermit_commit)
+    row["result"] = "pass"
+    canonical = _with_series_quarantine(
+        _without_fixture_fields(
+            canonical_input(
+                "1" * 40,
+                [series_row("real-projection-event", hermit_commit)],
+                validation_rows=[row],
+                current_validation_rows=[row],
+            )
+        ),
+        [QUARANTINE_RECORD],
+    )
+    result = build_data._run_projection(
+        captured(manifest_metadata()),
+        captured(canonical),
+        hermit,
+        hermit_commit,
+        None,
+    )
+    encoded = _jsonl([QUARANTINE_RECORD])
+    assert result["input"]["series_quarantine_rows"] == {
+        "bytes": len(encoded),
+        "row_count": 1,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+    # A record that accounts for no census attempt exempts nothing.
+    assert result["counts"]["series_physical_row_count"] == 1
+    assert not [
+        row
+        for row in result["projection_exclusion_counts"]
+        if row["schema"] == "series-quarantine/v2"
+    ]
+
+
 def test_real_rust_projection_is_the_only_source_interpretation_process(
     tmp_path: Path,
 ) -> None:

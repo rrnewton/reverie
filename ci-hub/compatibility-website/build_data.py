@@ -130,6 +130,9 @@ _PROJECTION_COUNT_FIELDS = frozenset(
         "validation_history_row_count",
     }
 )
+_SERIES_QUARANTINE_FIELDS = frozenset(
+    {"quarantine_row_count", "quarantine_rows_jsonl", "quarantine_rows_sha256"}
+)
 # These are the persisted Stage-1 schema-v3 fields consumed by the website.
 # They deliberately do not describe the Rust-owned source DTOs retained below
 # ``runs``; those rows stay opaque except for the identities needed to bind the
@@ -652,7 +655,9 @@ def _run_manifest_metadata(hermit: Path) -> CapturedJson:
     return CapturedJson(value=value, encoded=result.stdout)
 
 
-def _opaque_projection_inputs(canonical: Mapping[str, Any]) -> tuple[bytes, bytes]:
+def _opaque_projection_inputs(
+    canonical: Mapping[str, Any],
+) -> tuple[bytes, bytes, bytes | None]:
     _exact_object(
         canonical,
         "canonical input",
@@ -710,7 +715,21 @@ def _opaque_projection_inputs(canonical: Mapping[str, Any]) -> tuple[bytes, byte
         "row_count",
         "rows_sha256",
     )
-    return history, series
+    # The series writer's refusals, read from the same ledger commit as the
+    # rows. An export whose series comes from the ledger always carries them.
+    supplied = _SERIES_QUARANTINE_FIELDS & set(canonical["series"])
+    if not supplied:
+        return history, series, None
+    if supplied != _SERIES_QUARANTINE_FIELDS:
+        raise BuildRefused("series quarantine fields must be supplied together")
+    quarantine = bound_jsonl(
+        canonical["series"],
+        "series",
+        "quarantine_rows_jsonl",
+        "quarantine_row_count",
+        "quarantine_rows_sha256",
+    )
+    return history, series, quarantine
 
 
 def _bounded_projection_process(
@@ -774,6 +793,7 @@ def _validate_projection_envelope(
     history: bytes,
     series: bytes,
     historical_identity: tuple[str, str] | None,
+    series_quarantine: bytes | None = None,
 ) -> dict[str, Any]:
     optional = frozenset({"historical"})
     projection = _exact_object(
@@ -789,13 +809,21 @@ def _validate_projection_envelope(
     del unsigned["projection_sha256"]
     if _digest(unsigned) != expected_digest:
         raise BuildRefused("projection_sha256 disagrees with the exact projection")
+    required_inputs = {"manifest_metadata", "series_rows", "validation_history_rows"}
+    if series_quarantine is not None:
+        required_inputs.add("series_quarantine_rows")
     input_bindings = _exact_object(
         projection.get("input"),
         "projection.input",
-        required=frozenset(
-            {"manifest_metadata", "series_rows", "validation_history_rows"}
-        ),
+        required=frozenset(required_inputs),
     )
+    if series_quarantine is not None:
+        _projection_binding(
+            input_bindings["series_quarantine_rows"],
+            "projection.input.series_quarantine_rows",
+            series_quarantine,
+            series_quarantine.count(b"\n"),
+        )
     _projection_binding(
         input_bindings["manifest_metadata"],
         "projection.input.manifest_metadata",
@@ -886,7 +914,7 @@ def _run_projection(
     historical_identity: tuple[str, str] | None,
     *, state_root: Path | None = None,
 ) -> dict[str, Any]:
-    history, series = _opaque_projection_inputs(canonical.value)
+    history, series, series_quarantine = _opaque_projection_inputs(canonical.value)
     with tempfile.TemporaryDirectory(prefix="compatibility-website-projection-") as raw:
         root = Path(raw)
         manifest_path = root / "manifest.json"
@@ -909,6 +937,10 @@ def _run_projection(
             "--hermit-main-commit",
             hermit_main_commit,
         ]
+        if series_quarantine is not None:
+            series_quarantine_path = root / "series-quarantine.jsonl"
+            series_quarantine_path.write_bytes(series_quarantine)
+            command.extend(["--series-quarantine-jsonl", str(series_quarantine_path)])
         if historical_identity is not None:
             command.extend(
                 [
@@ -959,6 +991,7 @@ def _run_projection(
     value = _one_json_line(result.stdout, "compatibility website projection")
     projection = _validate_projection_envelope(
         value, manifest.encoded, history, series, historical_identity,
+        series_quarantine,
     )
     _require_current_carriers(canonical.value["provenance"], projection["current_validation_run_rows"])
     return projection

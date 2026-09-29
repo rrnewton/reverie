@@ -675,6 +675,9 @@ def test_empty_inputs_stay_empty_without_a_stored_measurement_state(tmp_path: Pa
         "history_rows_sha256": hashlib.sha256(b"").hexdigest(),
     }
     assert first["series"] == {
+        "quarantine_row_count": 0,
+        "quarantine_rows_jsonl": "",
+        "quarantine_rows_sha256": hashlib.sha256(b"").hexdigest(),
         "row_count": 0,
         "rows_jsonl": "",
         "rows_sha256": hashlib.sha256(b"").hexdigest(),
@@ -698,6 +701,104 @@ def test_published_only_export_never_discovers_local_spools(tmp_path, monkeypatc
     assert result["provenance"]["series_commit"] == git(repo / "hermit_test_ledger", "rev-parse", "HEAD")
     assert result["series"]["row_count"] == 0
     assert result["provenance"]["sources"] == []
+
+
+QUARANTINE_SHARD = "quarantine/series/hermit/hosta/2026-08.jsonl"
+
+
+def series_quarantine_record(run_id: str, raw: bytes = b'{"line":1}\n') -> dict[str, Any]:
+    return export_inputs.series_store.quarantine_record(
+        stage="batch", run_id=run_id, producer="validate", tree="a" * 40,
+        emitted_at="2026-08-30T01:00:00Z", error="SeriesError", reason="fixture refusal",
+        inputs=[export_inputs.series_store.quarantine_input(1, raw)],
+        cell="tests/hello/verify/ptrace", host="hosta",
+    )
+
+
+def publish_series_quarantine(ledger: Path, records: list[dict[str, Any]]) -> str:
+    path = ledger / QUARANTINE_SHARD
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("ab") as stream:
+        stream.write(b"".join(json.dumps(record).encode() + b"\n" for record in records))
+    git(ledger, "add", "quarantine")
+    git(ledger, "commit", "-qm", "publish series quarantine")
+    git(ledger, "update-ref", "refs/remotes/origin/main", "HEAD")
+    return git(ledger, "rev-parse", "HEAD")
+
+
+def test_export_binds_the_series_quarantine_published_at_the_series_commit(tmp_path):
+    repo, commit = repository(tmp_path)
+    ledger = repo / "hermit_test_ledger"
+    empty = export_inputs.build_export(repo, commit, published_only=True)["series"]
+    assert (empty["quarantine_row_count"], empty["quarantine_rows_jsonl"]) == (0, "")
+    assert empty["quarantine_rows_sha256"] == hashlib.sha256(b"").hexdigest()
+
+    record = series_quarantine_record("quarantined-run")
+    # A committed path outside the published shard layout is not a published
+    # refusal, and neither are working-tree bytes.
+    held = ledger / "quarantine/series/held/local.jsonl"
+    held.parent.mkdir(parents=True)
+    held.write_bytes(json.dumps(series_quarantine_record("held-run")).encode() + b"\n")
+    series_commit = publish_series_quarantine(ledger, [record])
+    with (ledger / QUARANTINE_SHARD).open("ab") as stream:
+        stream.write(json.dumps(series_quarantine_record("uncommitted-run")).encode() + b"\n")
+
+    result = export_inputs.build_export(repo, commit, published_only=True)
+    assert result["provenance"]["series_commit"] == series_commit
+    expected = json.dumps(record, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    assert result["series"]["quarantine_row_count"] == 1
+    assert result["series"]["quarantine_rows_jsonl"].encode() == expected
+    assert result["series"]["quarantine_rows_sha256"] == hashlib.sha256(expected).hexdigest()
+    published = subprocess.run(
+        ["git", "-C", str(ledger), "show", f"{series_commit}:{QUARANTINE_SHARD}"],
+        check=True, capture_output=True,
+    ).stdout
+    assert result["provenance"]["sources"] == [{
+        "bytes": len(published),
+        "git_object": git(ledger, "rev-parse", f"{series_commit}:{QUARANTINE_SHARD}"),
+        "line_count": 1,
+        "location": "published",
+        "path": QUARANTINE_SHARD,
+        "sha256": hashlib.sha256(published).hexdigest(),
+        "store": "series-quarantine",
+    }]
+
+    # A later refusal belongs to the later ledger commit only.
+    git(ledger, "checkout", "-q", "--", QUARANTINE_SHARD)
+    publish_series_quarantine(ledger, [series_quarantine_record("later-run", b'{"line":2}\n')])
+    pinned = export_inputs.build_export(repo, commit, series_commit, published_only=True)
+    assert pinned["series"] == result["series"]
+    current = export_inputs.build_export(repo, commit, published_only=True)["series"]
+    assert current["quarantine_row_count"] == 2
+    assert "later-run" in current["quarantine_rows_jsonl"]
+
+
+def test_export_refuses_series_quarantine_the_ledger_commit_does_not_hold(
+    tmp_path, monkeypatch,
+):
+    repo, commit = repository(tmp_path)
+    ledger = repo / "hermit_test_ledger"
+    series_commit = publish_series_quarantine(ledger, [series_quarantine_record("quarantined-run")])
+    reader = export_inputs.series_store.published_quarantine_at_repo
+
+    monkeypatch.setattr(export_inputs.series_store, "published_quarantine_at_repo",
+                        lambda repo, ref: (reader(repo, ref)[0], [series_quarantine_record("other-run")]))
+    with pytest.raises(export_inputs.ExportRefused, match="disagrees with the captured ledger commit files"):
+        export_inputs.build_export(repo, commit, published_only=True)
+
+    monkeypatch.setattr(export_inputs.series_store, "published_quarantine_at_repo",
+                        lambda repo, ref: ("f" * 40, reader(repo, ref)[1]))
+    with pytest.raises(export_inputs.ExportRefused, match=f"resolved {'f' * 40}, expected {series_commit}"):
+        export_inputs.build_export(repo, commit, published_only=True)
+
+    monkeypatch.setattr(export_inputs.series_store, "published_quarantine_at_repo", reader)
+    record = series_quarantine_record("malformed-run")
+    record["reason"] = 7
+    (ledger / QUARANTINE_SHARD).write_bytes(json.dumps(record).encode() + b"\n")
+    git(ledger, "commit", "-qam", "publish a malformed refusal")
+    git(ledger, "update-ref", "refs/remotes/origin/main", "HEAD")
+    with pytest.raises(export_inputs.series_store.MalformedQuarantine, match="reason must be a string"):
+        export_inputs.build_export(repo, commit, published_only=True)
 
 
 @pytest.mark.parametrize("historical", [False, True])
@@ -948,7 +1049,8 @@ def test_exporter_keeps_series_opaque_for_the_single_rust_projection(
         "dirty",
         "legacy",
     }
-    assert set(exported) == {"row_count", "rows_jsonl", "rows_sha256"}
+    assert set(exported) == {"row_count", "rows_jsonl", "rows_sha256", "quarantine_row_count",
+                             "quarantine_rows_jsonl", "quarantine_rows_sha256"}
     assert (
         exported["rows_sha256"]
         == hashlib.sha256(exported["rows_jsonl"].encode()).hexdigest()
@@ -1340,8 +1442,13 @@ def test_historical_export_reads_only_published_bytes_and_binds_one_row(
         return []
 
     monkeypatch.setattr(export_inputs.series_store, "union", published_union)
+    # Without a named ledger commit the series comes from the parent, so the
+    # ledger's current refusals must not be bound to it.
+    publish_series_quarantine(repo / "hermit_test_ledger", [series_quarantine_record("ledger-run")])
     value = export_inputs.build_historical_export(repo, commit, "record-1", "run-1")
 
+    assert not {"quarantine_row_count", "quarantine_rows_jsonl", "quarantine_rows_sha256"} & set(value["series"])
+    assert "series-quarantine" not in {source["store"] for source in value["provenance"]["sources"]}
     assert value["provenance"]["mode"] == "historical"
     assert value["provenance"]["published_only"] is True
     assert value["provenance"]["published_ref"] == commit
@@ -1734,12 +1841,12 @@ def test_fresh_history_capture_uses_real_state_after_public_ledger(tmp_path, mon
     real_namespace = export_inputs.validation_ledger.capture_committed_validation_namespace
 
     def capture_public(root, commit, prefixes):
-        assert root == ledger and commit == ledger_commit and prefixes == ("series",)
-        order.append("public-ledger")
+        assert root == ledger and commit == ledger_commit
+        order.append({("series",): "public-ledger", ("quarantine/series",): "public-quarantine"}[prefixes])
         return real_files(root, commit, prefixes)
 
     def capture_namespace(root, commit, *, state_root):
-        assert order == ["public-ledger"]
+        assert order == ["public-ledger", "public-quarantine"]
         assert root == state and commit == data_commit
         assert state_root != state and not (state_root / ".git").exists()
         order.append("canonical-parent")
@@ -1749,7 +1856,7 @@ def test_fresh_history_capture_uses_real_state_after_public_ledger(tmp_path, mon
     monkeypatch.setattr(export_inputs.validation_ledger, "capture_committed_validation_namespace", capture_namespace)
     output = export_inputs.build_export(tool, tool_commit, ledger_commit,
         published_only=True, state_root=state, validation_history_commit=data_commit)
-    assert order == ["public-ledger", "canonical-parent"]
+    assert order == ["public-ledger", "public-quarantine", "canonical-parent"]
     assert output["provenance"]["reader_commit"] == TEST_READER_STATE["commit"]
     assert output["provenance"]["parent_commit"] == output["provenance"]["published_ref"] == data_commit
     assert output["provenance"]["series_commit"] == ledger_commit
@@ -1872,13 +1979,18 @@ def test_historical_export_captures_schema5_proof_from_the_selected_ledger_commi
         hermit_tool_commit="6" * 40,
         snapshot={"source": {"commit": "7" * 40, "tree": "8" * 40}, "rows_sha256": "9" * 64})
     proof.stage_carrier(ledger, manifest, objects)
-    git(ledger, "add", "scorecard")
+    refusal = series_quarantine_record(row["run_id"])
+    (ledger / QUARANTINE_SHARD).parent.mkdir(parents=True)
+    (ledger / QUARANTINE_SHARD).write_bytes(json.dumps(refusal).encode() + b"\n")
+    git(ledger, "add", "scorecard", "quarantine")
     git(ledger, "commit", "-qm", "Synthetic historical proof")
     ledger_commit = git(ledger, "rev-parse", "HEAD")
     # Later HEAD and working-tree data cannot supply a missing historical proof.
     git(ledger, "rm", "-qr", "scorecard")
     (ledger / series_path).write_bytes(proof.canonical_bytes(series_row(event_id="later-event")) + b"\n")
-    git(ledger, "add", "series")
+    with (ledger / QUARANTINE_SHARD).open("ab") as stream:
+        stream.write(json.dumps(series_quarantine_record("later-refusal-run")).encode() + b"\n")
+    git(ledger, "add", "series", "quarantine")
     git(ledger, "commit", "-qm", "Later independent ledger state")
     later = git(ledger, "rev-parse", "HEAD")
     captured = export_inputs.build_historical_export(repo, parent_commit, row["record_id"], row["run_id"],
@@ -1893,8 +2005,15 @@ def test_historical_export_captures_schema5_proof_from_the_selected_ledger_commi
     assert selected_row["schema_version"] == 5 and selected_row["result"] == "fail"
     assert selected_row["validation_complete"] is False and selected_row["cell_results"] is None
     assert "later-event" not in json.dumps(captured["series"])
-    absent = export_inputs.build_historical_export(repo, parent_commit, row["record_id"], row["run_id"],
-                                                  series_commit=later)["provenance"]["finalized_proof"]
+    # The refusals come from the same named ledger commit as the series rows.
+    assert captured["series"]["quarantine_row_count"] == 1
+    assert json.loads(captured["series"]["quarantine_rows_jsonl"]) == refusal
+    assert ("series-quarantine", QUARANTINE_SHARD) in {
+        (source["store"], source["path"]) for source in provenance["sources"]}
+    absent_export = export_inputs.build_historical_export(repo, parent_commit, row["record_id"], row["run_id"],
+                                                         series_commit=later)
+    assert absent_export["series"]["quarantine_row_count"] == 2
+    absent = absent_export["provenance"]["finalized_proof"]
     assert absent["objects"] == {} and absent["missing_current_terminals"] == [selected["terminal"]]
     with pytest.raises(export_inputs.ExportRefused, match="full immutable"):
         export_inputs.build_historical_export(repo, parent_commit, row["record_id"], row["run_id"], series_commit="HEAD")

@@ -35,7 +35,8 @@ _classify(), which mirrors _input_store_and_location() in
 ci-hub/compatibility-website/export_inputs.py. Rows are filtered to the hermit
 team exactly as the builder filters them. Before anything is compared, every
 source build.json names must agree with that:
-  * a source whose store is neither `series` nor `validation-ledger`, whose
+  * a source whose store is not `series`, `series-quarantine` or
+    `validation-ledger`, whose
     recorded store/location is not what its path classifies as, or whose path
     lies outside the scanned layout (for example a writer that moved to
     hermit_test_ledger/ledger/...) is `unknown`: the build read data this gate
@@ -207,6 +208,10 @@ NO_TERMINAL_REASON = "validate series row has no admitted terminal validation ro
 COMMIT_MISMATCH_REASON = "validate series row and terminal validation row record different Hermit commits"
 CELL_NOT_SELECTED_REASON = "validate series row names a cell not selected by its validate path"
 V1_REASON = "stress-series/v1 does not record machine_shortname, kernel_version, and host_capabilities"
+# The schema under which the builder counts a derived census attempt that a
+# series-quarantine record accounts for (SERIES_QUARANTINE_SCHEMA in the same
+# Rust source, checked by the same test).
+SERIES_QUARANTINE_SCHEMA = "series-quarantine/v2"
 # The stress-series exclusion reasons that are counted without warning, each
 # under its own category. Old schemas and runs whose terminal row the site did
 # not admit are expected and large (2026-09-28: 35903 v3 rows without an
@@ -326,6 +331,7 @@ def categorize(block: dict) -> dict:
     not_in_manifest_cells: dict[str, int] = {}
     unaccepted: dict[str, int] = {}
     history: dict[str, int] = {}
+    quarantined: dict[str, int] = {}
     for entry in block["projection_exclusion_counts"]:
         if not isinstance(entry, dict):
             raise Unknown("runs.json exclusion entry is not an object")
@@ -336,6 +342,10 @@ def categorize(block: dict) -> dict:
             series["not_in_manifest"] += rows
             cell = reason[len(NOT_IN_MANIFEST_PREFIX):]
             not_in_manifest_cells[cell] = not_in_manifest_cells.get(cell, 0) + rows
+        elif schema == SERIES_QUARANTINE_SCHEMA:
+            # Derived census attempts the series writer refused to publish;
+            # they are not series rows, so no series total includes them.
+            quarantined[reason] = quarantined.get(reason, 0) + rows
         elif not schema.startswith("stress-series/"):
             history[reason] = history.get(reason, 0) + rows
         elif reason in ACCEPTED_SERIES_REASONS:
@@ -350,6 +360,7 @@ def categorize(block: dict) -> dict:
         # reasons counts twice, like every other per-reason count here.
         "unaccepted": sum(unaccepted.values()),
         "validation_history_reasons": dict(sorted(history.items())),
+        "series_quarantine_reasons": dict(sorted(quarantined.items())),
         "excluded_total": block["projection_excluded_physical_row_count"],
         "admitted_total": block["projection_admitted_physical_row_count"],
     }
@@ -465,6 +476,12 @@ def _classify(relative: str) -> tuple[str, str] | None:
         return ("validation-ledger", "recovery")
     if len(parts) == 4 and parts[0] == "series" and parts[3].endswith(".jsonl"):
         return ("series", "published")
+    if (
+        len(parts) == 5
+        and parts[:2] == ("quarantine", "series")
+        and parts[4].endswith(".jsonl")
+    ):
+        return ("series-quarantine", "published")
     return None
 
 
@@ -475,8 +492,9 @@ def _read_sources(build: dict, root: Path) -> dict[str, dict]:
     path this gate scans, every validation-ledger source exists in the tool root
     with exactly the recorded prefix (SHA-256 of its first `bytes` bytes and
     `line_count` newlines in them), and at least one of them is a published
-    ledger/hermit/ file. Series sources live in hermit_test_ledger, not in the
-    tool root, so only their classification is checked.
+    ledger/hermit/ file. Series and series-quarantine sources live in
+    hermit_test_ledger, not in the tool root, so only their classification is
+    checked.
     """
     provenance = (build.get("provenance") or {}).get("canonical_input_provenance") or {}
     sources = provenance.get("sources")
@@ -489,7 +507,7 @@ def _read_sources(build: dict, root: Path) -> dict[str, dict]:
         store, location, path = source.get("store"), source.get("location"), source.get("path")
         if not isinstance(path, str) or not path:
             raise Unknown(f"build.json input source has no path: {source!r}")
-        if store not in ("series", "validation-ledger"):
+        if store not in ("series", "series-quarantine", "validation-ledger"):
             raise Unknown(f"build.json reads {path} from store {store!r}, which this gate does not know")
         classified = _classify(path)
         if classified != (store, location):
