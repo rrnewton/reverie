@@ -108,6 +108,13 @@ pub(crate) struct CapturedPipeIdentities {
     pub(super) drop_probe: std::sync::Mutex<Option<CaptureDropProbe>>,
 }
 
+impl std::fmt::Debug for CapturedPipeIdentities {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CapturedPipeIdentities")
+            .finish_non_exhaustive()
+    }
+}
+
 impl CapturedPipeIdentities {
     pub(super) fn try_new() -> std::io::Result<Self> {
         let stdout = CapturePipe::try_new()?;
