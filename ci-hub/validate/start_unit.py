@@ -7358,6 +7358,48 @@ class FreshCheckoutCleanup:
     receipt_classified: bool = False
 
 
+REFUSAL_AUTHORITY_CONTRADICTION = "contradiction"
+REFUSAL_AUTHORITY_NO_DISPOSITION = "no-disposition"
+REFUSAL_AUTHORITY_CHECKOUT_EVIDENCE = "checkout-evidence"
+REFUSAL_AUTHORITY_UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class RefusalAuthorityFailure:
+    """Which check withheld a typed refusal's no-payload cleanup authority.
+
+    ``contradiction``: the durable handle is malformed, is contradicted by
+    payload evidence, or is not the canonical handle bound under the run-record
+    lock. The refusal itself cannot be trusted.
+
+    ``no-disposition`` and ``checkout-evidence``: the refusal is sound, but the
+    no-payload ledger disposition is missing, or the recorded checkout failed
+    the conservative ``*.jsonl`` receipt check
+    (https://github.com/rrnewton/dev-hermit/issues/415). Cleanup is withheld.
+
+    ``unavailable``: another writer held the run-record authority, so the check
+    did not run.
+    """
+
+    kind: str
+    detail: str
+
+    @property
+    def contradicts(self) -> bool:
+        return self.kind == REFUSAL_AUTHORITY_CONTRADICTION
+
+
+class RefusalAuthorityError(RuntimeError):
+    """Cleanup refused a typed refusal; carries which check failed."""
+
+    def __init__(self, failure: RefusalAuthorityFailure) -> None:
+        super().__init__(
+            "typed admission refusal lacks durable no-payload cleanup authority: "
+            f"{failure.detail}"
+        )
+        self.failure = failure
+
+
 @dataclass(frozen=True)
 class RecordedRunStorageCleanup:
     """One coupled disposition for a launcher's checkout and private storage."""
@@ -7367,6 +7409,7 @@ class RecordedRunStorageCleanup:
     runtime_removed: bool | None
     record: dict[str, Any] | None
     error: str | None = None
+    authority_failure: RefusalAuthorityFailure | None = None
 
     @property
     def complete(self) -> bool:
@@ -7397,6 +7440,82 @@ def _exact_recorded_cleanup_path(
             f"launch's {expected}"
         )
     return candidate
+
+
+@dataclass(frozen=True)
+class LaunchStorageIdentity:
+    """The storage one launch created, as its durable run handle must name it."""
+
+    checkout: Path
+    source_checkout: Path
+    temporary_checkout: bool
+    wrkslots: WrkslotsIdentity | None
+    cargo_home: Path
+    runtime_root: Path | None
+    started_at: str
+    unit: str
+
+
+def recorded_launch_storage(
+    durable: Mapping[str, Any],
+    launch: LaunchStorageIdentity,
+    *,
+    require_runtime: bool = False,
+) -> tuple[Path, Path, Path | None]:
+    """Require a durable run handle to name exactly this launch's storage.
+
+    Returns the recorded checkout, Cargo home and runtime root. Raises
+    ``RuntimeError`` or ``ValueError`` naming the first field that differs.
+    Cleanup and the refusal diagnosis both use this, so a remedy can never be
+    offered for storage that cleanup would have refused to touch.
+    """
+
+    durable_checkout = _exact_recorded_cleanup_path(
+        durable, "checkout", launch.checkout
+    )
+    _exact_recorded_cleanup_path(durable, "source_checkout", launch.source_checkout)
+    durable_cargo = _exact_recorded_cleanup_path(
+        durable, "cargo_home", launch.cargo_home
+    )
+    durable_runtime = (
+        _exact_recorded_cleanup_path(durable, "runtime_root", launch.runtime_root)
+        if launch.runtime_root is not None
+        else None
+    )
+    if require_runtime and durable_runtime is None:
+        raise RuntimeError("durable run record has no runtime_root cleanup identity")
+    if (
+        durable_runtime is not None
+        and (durable_runtime.exists() or durable_runtime.is_symlink())
+        and not runtime_root_identity_matches(
+            durable_runtime, durable.get("runtime_root_identity")
+        )
+    ):
+        raise RuntimeError(
+            "durable runtime-root inode identity does not match this launch; "
+            "retained"
+        )
+    if durable.get("temporary_checkout") is not launch.temporary_checkout:
+        raise RuntimeError(
+            "durable run record temporary_checkout does not match this launch"
+        )
+    if durable.get("unit") != f"{sanitize_unit(launch.unit)}.service":
+        raise RuntimeError("durable run record unit does not match this launch")
+    if durable.get("started_at") != launch.started_at:
+        raise RuntimeError(
+            "durable run record start identity does not match this launch"
+        )
+    if launch.temporary_checkout:
+        identity = recorded_wrkslots_identity(durable, durable_checkout)
+        if identity != launch.wrkslots:
+            raise RuntimeError(
+                "durable run record wrkslots identity does not match this launch"
+            )
+    elif launch.wrkslots is not None:
+        raise RuntimeError(
+            "in-place run unexpectedly has a wrkslots cleanup identity"
+        )
+    return durable_checkout, durable_cargo, durable_runtime
 
 
 def require_absent_cleanup_target(path: Path, *, role: str) -> None:
@@ -7644,13 +7763,17 @@ def cleanup_recorded_run_storage(
     runtime_removed: bool | None = None if not remove_runtime else False
     durable: dict[str, Any] | None = None
 
-    def outcome(error: str | None = None) -> RecordedRunStorageCleanup:
+    def outcome(
+        error: str | None = None,
+        authority_failure: RefusalAuthorityFailure | None = None,
+    ) -> RecordedRunStorageCleanup:
         return RecordedRunStorageCleanup(
             checkout_result,
             cargo_removed,
             runtime_removed,
             durable,
             error,
+            authority_failure,
         )
 
     try:
@@ -7665,72 +7788,38 @@ def cleanup_recorded_run_storage(
                 population_authority=population_authority,
             ) as record_authority:
                 durable = read_authorized_cleanup_record(record_authority)
-                durable_checkout = _exact_recorded_cleanup_path(
-                    durable, "checkout", expected_checkout
+                durable_checkout, durable_cargo, durable_runtime = (
+                    recorded_launch_storage(
+                        durable,
+                        LaunchStorageIdentity(
+                            checkout=expected_checkout,
+                            source_checkout=expected_source_checkout,
+                            temporary_checkout=expected_temporary_checkout,
+                            wrkslots=expected_wrkslots,
+                            cargo_home=expected_cargo_home,
+                            runtime_root=expected_runtime_root,
+                            started_at=expected_started_at,
+                            unit=unit,
+                        ),
+                        require_runtime=remove_runtime,
+                    )
                 )
-                _exact_recorded_cleanup_path(
-                    durable, "source_checkout", expected_source_checkout
-                )
-                durable_cargo = _exact_recorded_cleanup_path(
-                    durable, "cargo_home", expected_cargo_home
-                )
-                durable_runtime = (
-                    _exact_recorded_cleanup_path(
-                        durable, "runtime_root", expected_runtime_root
-                    )
-                    if expected_runtime_root is not None
-                    else None
-                )
-                if remove_runtime and durable_runtime is None:
-                    raise RuntimeError(
-                        "durable run record has no runtime_root cleanup identity"
-                    )
-                if (
-                    durable_runtime is not None
-                    and (durable_runtime.exists() or durable_runtime.is_symlink())
-                    and not runtime_root_identity_matches(
-                        durable_runtime, durable.get("runtime_root_identity")
-                    )
-                ):
-                    raise RuntimeError(
-                        "durable runtime-root inode identity does not match this launch; "
-                        "retained"
-                    )
-                if durable.get("temporary_checkout") is not expected_temporary_checkout:
-                    raise RuntimeError(
-                        "durable run record temporary_checkout does not match this launch"
-                    )
-                if durable.get("unit") != f"{sanitize_unit(unit)}.service":
-                    raise RuntimeError(
-                        "durable run record unit does not match this launch"
-                    )
-                if durable.get("started_at") != expected_started_at:
-                    raise RuntimeError(
-                        "durable run record start identity does not match this launch"
-                    )
-                if expected_temporary_checkout:
-                    identity = recorded_wrkslots_identity(durable, durable_checkout)
-                    if identity != expected_wrkslots:
+                if require_typed_refusal:
+                    if typed_admission_refusal(durable) is None:
                         raise RuntimeError(
-                            "durable run record wrkslots identity does not match this launch"
+                            "typed admission refusal lacks durable no-payload "
+                            "cleanup authority: the durable run handle is not a "
+                            "typed validate admission refusal"
                         )
-                elif expected_wrkslots is not None:
-                    raise RuntimeError(
-                        "in-place run unexpectedly has a wrkslots cleanup identity"
-                    )
-                if require_typed_refusal and (
-                    typed_admission_refusal(durable) is None
-                    or not cell_ledger_retirement_ready(
+                    failure = refused_admission_retirement_failure(
                         root,
                         record_path,
                         durable,
                         record_lock_held=True,
                         record_parent_identity=record_authority.parent_identity,
                     )
-                ):
-                    raise RuntimeError(
-                        "typed admission refusal lacks durable no-payload cleanup authority"
-                    )
+                    if failure is not None:
+                        raise RefusalAuthorityError(failure)
 
                 classified_checkout, checkout_error = classify_recorded_checkout(
                     root, durable
@@ -7916,6 +8005,8 @@ def cleanup_recorded_run_storage(
                             "runtime-root-removal bookkeeping readback changed"
                         )
                 return outcome()
+    except RefusalAuthorityError as error:
+        return outcome(str(error), error.failure)
     except (OSError, RuntimeError, ValueError) as error:
         return outcome(str(error))
 
@@ -9613,7 +9704,13 @@ def record_claims_refused_admission(record: Mapping[str, Any]) -> bool:
 ADMISSION_REFUSAL_LOG_TAIL_BYTES = 256 * 1024
 ADMISSION_REFUSAL_LINE_MAX_CHARS = 600
 VALIDATE_LOCK_EVICTED_PREFIX = "validate-lock: EVICTED "
-VALIDATE_LOCK_TIMEOUT_PREFIX = "validate-lock: TIMEOUT after "
+# `acquire_ordered` and the owner-watch yield print the first form. `run`'s
+# declared-priority queue, which every validate-run uses, prints the second when
+# its `--wait` expires (or at once under `--no-wait`); both are a timeout.
+VALIDATE_LOCK_TIMEOUT_PREFIXES = (
+    "validate-lock: TIMEOUT after ",
+    "REFUSED: declared-priority queue did not grant ",
+)
 VALIDATE_LOCK_REFUSAL_PREFIXES = ("REFUSE: ", "REFUSED: ")
 # validate-lock prints each fail-closed freshness or admission-object failure
 # (a `StaleBase` error that names no property of the target) as one line that
@@ -9714,7 +9811,7 @@ def admission_refusal_explanation(
                 f"never ran and no verdict exists (run log: {clipped(line)})",
                 rebase_remedy,
             )
-        if line.startswith(VALIDATE_LOCK_TIMEOUT_PREFIX):
+        if line.startswith(VALIDATE_LOCK_TIMEOUT_PREFIXES):
             return AdmissionRefusalExplanation(
                 "TIMEOUT",
                 "validate-lock gave up waiting for its turn; the validation "
@@ -9899,17 +9996,30 @@ def refusal_wait_observation_has_no_payload(
     return admission_refusal_has_no_payload_evidence(candidate)
 
 
-def _admission_refusal_is_authoritative_locked(
+def _admission_refusal_authority_failure_locked(
     root: Path,
     record_path: Path,
     record: Mapping[str, Any],
     *,
     record_parent_identity: tuple[int, ...] | None = None,
-) -> bool:
-    """Verify refusal evidence while the caller holds the run-record lock."""
+) -> RefusalAuthorityFailure | None:
+    """Verify refusal evidence while the caller holds the run-record lock.
 
+    Returns ``None`` when the evidence grants cleanup authority, otherwise the
+    check that withheld it. Every failure except the recorded checkout's
+    receipt check is a contradiction: the handle, its directory, or its
+    sidecar is not what a sound refusal leaves behind.
+    """
+
+    def contradiction(detail: str) -> RefusalAuthorityFailure:
+        return RefusalAuthorityFailure(REFUSAL_AUTHORITY_CONTRADICTION, detail)
+
+    payload_evidence = (
+        "the durable run handle records product execution, output, or archived "
+        "receipts"
+    )
     if not admission_refusal_has_no_payload_evidence(record):
-        return False
+        return contradiction(payload_evidence)
     handle = typed_admission_refusal(record)
     assert handle is not None
     record_identity_fields = (
@@ -9929,10 +10039,14 @@ def _admission_refusal_is_authoritative_locked(
         expected = run_registry.record_path(canonical_root, handle.unit)
         lexical = Path(os.path.abspath(os.fspath(record_path)))
         if lexical != expected:
-            return False
+            return contradiction(
+                f"the run handle {lexical} is not the canonical handle {expected}"
+            )
         parent = expected.parent
         if parent.resolve(strict=True) != parent:
-            return False
+            return contradiction(
+                f"the run-record directory {parent} is not canonical"
+            )
         parent_descriptor = os.open(
             parent,
             os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
@@ -9941,19 +10055,27 @@ def _admission_refusal_is_authoritative_locked(
             parent_before = os.fstat(parent_descriptor)
             parent_path_before = os.lstat(parent)
             if not stat.S_ISDIR(parent_before.st_mode):
-                return False
+                return contradiction(
+                    f"the run-record directory {parent} is not a directory"
+                )
             if record_parent_identity is not None and tuple(
                 int(getattr(parent_before, field))
                 for field in RUN_RECORD_PARENT_IDENTITY_FIELDS
             ) != record_parent_identity:
-                return False
+                return contradiction(
+                    f"the run-record directory {parent} is not the directory "
+                    "whose run-record lock is held"
+                )
             before = os.stat(
                 expected.name,
                 dir_fd=parent_descriptor,
                 follow_symlinks=False,
             )
             if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-                return False
+                return contradiction(
+                    f"the durable run handle {expected} is not a regular "
+                    "single-link file"
+                )
             descriptor = os.open(
                 expected.name,
                 os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW,
@@ -9973,7 +10095,10 @@ def _admission_refusal_is_authoritative_locked(
             )
             result_path = service_result.result_path(expected)
             if result_path.parent != parent:
-                return False
+                return contradiction(
+                    f"the framework result sidecar path {result_path} is not "
+                    f"in the run-record directory {parent}"
+                )
             try:
                 os.stat(
                     result_path.name,
@@ -9983,7 +10108,9 @@ def _admission_refusal_is_authoritative_locked(
             except FileNotFoundError:
                 pass
             else:
-                return False
+                return contradiction(
+                    f"a framework result sidecar exists at {result_path}"
+                )
             os.fsync(parent_descriptor)
             final = os.stat(
                 expected.name,
@@ -9995,32 +10122,107 @@ def _admission_refusal_is_authoritative_locked(
             run_registry.require_no_owner_watch_correction(canonical_root)
         finally:
             os.close(parent_descriptor)
-    except (FileNotFoundError, NotADirectoryError, OSError, RuntimeError, ValueError):
-        return False
+    except (
+        FileNotFoundError,
+        NotADirectoryError,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ) as error:
+        return contradiction(f"the durable run handle could not be verified: {error}")
     if any(
         getattr(before, field) != getattr(opened_before, field)
         or getattr(opened_before, field) != getattr(opened_after, field)
         or getattr(opened_after, field) != getattr(after, field)
         or getattr(after, field) != getattr(final, field)
         for field in record_identity_fields
-    ) or any(
+    ):
+        return contradiction("the durable run handle changed while it was read")
+    if any(
         getattr(parent_before, field) != getattr(parent_path_before, field)
         or getattr(parent_path_before, field) != getattr(parent_after, field)
         or getattr(parent_after, field) != getattr(parent_path_after, field)
         for field in RUN_RECORD_PARENT_IDENTITY_FIELDS
     ):
-        return False
+        return contradiction(
+            f"the run-record directory {parent} changed while the durable run "
+            "handle was read"
+        )
     try:
         durable = json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
-        return False
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as error:
+        return contradiction(f"the durable run handle could not be verified: {error}")
     if not isinstance(durable, dict):
-        return False
+        return contradiction("the durable run handle is not a JSON object")
+    if durable != dict(record):
+        return contradiction(
+            "the durable run handle differs from the one read after the wait"
+        )
+    if not admission_refusal_has_no_payload_evidence(durable):
+        return contradiction(payload_evidence)
+    if not admission_refusal_checkout_has_no_receipt_evidence(durable):
+        return RefusalAuthorityFailure(
+            REFUSAL_AUTHORITY_CHECKOUT_EVIDENCE,
+            "the recorded checkout failed the no-payload receipt check: it holds "
+            "*.jsonl files or could not be scanned "
+            "(https://github.com/rrnewton/dev-hermit/issues/415)",
+        )
+    return None
+
+
+def _admission_refusal_is_authoritative_locked(
+    root: Path,
+    record_path: Path,
+    record: Mapping[str, Any],
+    *,
+    record_parent_identity: tuple[int, ...] | None = None,
+) -> bool:
+    """Verify refusal evidence while the caller holds the run-record lock."""
+
     return (
-        durable == dict(record)
-        and admission_refusal_has_no_payload_evidence(durable)
-        and admission_refusal_checkout_has_no_receipt_evidence(durable)
+        _admission_refusal_authority_failure_locked(
+            root,
+            record_path,
+            record,
+            record_parent_identity=record_parent_identity,
+        )
+        is None
     )
+
+
+def admission_refusal_authority_failure(
+    root: Path, record_path: Path, record: Mapping[str, Any]
+) -> RefusalAuthorityFailure | None:
+    """Bind no-payload evidence under the canonical run-record writer lock.
+
+    Contention for the lock is ``unavailable``: the checks did not run. Any
+    other failure to take it, such as a symlinked or replaced run-record
+    directory, is a contradiction.
+    """
+
+    try:
+        with exclusive_cleanup_record(root, record_path) as record_authority:
+            return _admission_refusal_authority_failure_locked(
+                root,
+                record_path,
+                record,
+                record_parent_identity=record_authority.parent_identity,
+            )
+    except run_registry.RecordLocked as error:
+        return RefusalAuthorityFailure(
+            REFUSAL_AUTHORITY_UNAVAILABLE,
+            f"another writer holds its run-record authority ({error})",
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        return RefusalAuthorityFailure(
+            REFUSAL_AUTHORITY_CONTRADICTION,
+            f"its run-record authority could not be bound: {error}",
+        )
 
 
 def admission_refusal_is_authoritative(
@@ -10028,16 +10230,7 @@ def admission_refusal_is_authoritative(
 ) -> bool:
     """Bind no-payload evidence under the canonical run-record writer lock."""
 
-    try:
-        with exclusive_cleanup_record(root, record_path) as record_authority:
-            return _admission_refusal_is_authoritative_locked(
-                root,
-                record_path,
-                record,
-                record_parent_identity=record_authority.parent_identity,
-            )
-    except (OSError, RuntimeError, ValueError):
-        return False
+    return admission_refusal_authority_failure(root, record_path, record) is None
 
 
 def legacy_refused_admission_ledger_noop(publication: object) -> bool:
@@ -10118,6 +10311,38 @@ def admission_refusal_ledger_disposition_recorded(publication: object) -> bool:
     ) or legacy_refused_admission_ledger_noop(publication)
 
 
+def refused_admission_retirement_failure(
+    root: Path,
+    record_path: Path,
+    record: Mapping[str, Any],
+    *,
+    record_lock_held: bool = False,
+    record_parent_identity: tuple[int, ...] | None = None,
+) -> RefusalAuthorityFailure | None:
+    """Name the check that withholds a typed refusal's retirement, if any."""
+
+    publication = record.get("ledger_mirror")
+    if not admission_refusal_ledger_disposition_recorded(publication):
+        if publication is not None:
+            return RefusalAuthorityFailure(
+                REFUSAL_AUTHORITY_CONTRADICTION,
+                "the durable run handle records a cell-ledger publication, not "
+                "the no-payload disposition",
+            )
+        return RefusalAuthorityFailure(
+            REFUSAL_AUTHORITY_NO_DISPOSITION,
+            "the durable run handle records no no-payload cell-ledger disposition",
+        )
+    if record_lock_held:
+        return _admission_refusal_authority_failure_locked(
+            root,
+            record_path,
+            record,
+            record_parent_identity=record_parent_identity,
+        )
+    return admission_refusal_authority_failure(root, record_path, record)
+
+
 def refused_admission_ledger_retirement_ready(
     root: Path,
     record_path: Path,
@@ -10126,17 +10351,16 @@ def refused_admission_ledger_retirement_ready(
     record_lock_held: bool = False,
     record_parent_identity: tuple[int, ...] | None = None,
 ) -> bool:
-    publication = record.get("ledger_mirror")
-    if not admission_refusal_ledger_disposition_recorded(publication):
-        return False
-    if record_lock_held:
-        return _admission_refusal_is_authoritative_locked(
+    return (
+        refused_admission_retirement_failure(
             root,
             record_path,
             record,
+            record_lock_held=record_lock_held,
             record_parent_identity=record_parent_identity,
         )
-    return admission_refusal_is_authoritative(root, record_path, record)
+        is None
+    )
 
 
 def pre_dag_no_result_is_authoritative(
@@ -10272,8 +10496,9 @@ class RefusalNoPayloadDiagnosis:
     """Why one typed refusal's no-payload proof holds, is withheld, or fails.
 
     ``contradiction`` names evidence that the refusal is malformed, is
-    contradicted by payload evidence, or is not the durable canonical handle.
-    Storage is then retained and no removal is suggested.
+    contradicted by payload evidence, is not the durable canonical handle, or
+    does not name the storage this launch created. Storage is then retained
+    and no removal is suggested.
 
     ``blocked`` names the conservative conditions that withhold cleanup from an
     otherwise sound refusal: a missing no-payload ledger disposition, or
@@ -10282,7 +10507,9 @@ class RefusalNoPayloadDiagnosis:
 
     The receipt fields repeat the classification that same-launch cleanup runs
     before its own ``wrkslots remove``: only a ``*.jsonl`` that Git does not
-    track can be output of this run.
+    track can be output of this run. ``scanned`` is true only when that scan
+    walked the checkout to completion; a checkout that was not scanned, could
+    not be scanned, or does not exist never counts as clean.
     """
 
     contradiction: str | None
@@ -10291,6 +10518,8 @@ class RefusalNoPayloadDiagnosis:
     untracked_jsonl: tuple[str, ...] = ()
     tracked_jsonl: tuple[str, ...] = ()
     scan_error: str | None = None
+    scanned: bool = False
+    checkout_absent: bool = False
 
     @property
     def removal_safe(self) -> bool:
@@ -10298,6 +10527,7 @@ class RefusalNoPayloadDiagnosis:
 
         return (
             self.contradiction is None
+            and self.scanned
             and self.scan_error is None
             and not self.untracked_jsonl
         )
@@ -10318,10 +10548,20 @@ class RefusalNoPayloadDiagnosis:
                 f"track and that may be run output: {quoted_paths(self.untracked_jsonl)}; "
                 "inspect them before removing the checkout"
             )
+        if self.checkout_absent:
+            return (
+                f"The checkout {checkout} no longer exists, so no receipt scan "
+                "ran and no removal command applies"
+            )
         if self.scan_error is not None:
             return (
                 f"The retained checkout {checkout} could not be checked for "
                 f"result files ({self.scan_error}); inspect it before removing it"
+            )
+        if not self.scanned:
+            return (
+                f"The retained checkout {checkout} was not checked for result "
+                "files; inspect it before removing it"
             )
         if removal is None:
             return (
@@ -10354,6 +10594,8 @@ def diagnose_refusal_no_payload(
     *,
     run: Runner,
     identical: bool,
+    launch: LaunchStorageIdentity | None = None,
+    scan: bool = True,
 ) -> RefusalNoPayloadDiagnosis:
     """Name the evidence that grants or withholds a refusal's cleanup authority.
 
@@ -10363,6 +10605,12 @@ def diagnose_refusal_no_payload(
     have added fields since. The result is diagnostic text for a verdict; it
     never authorizes cleanup. Removal authority stays with
     `admission_refusal_is_authoritative` under the run-record lock.
+
+    With ``launch``, the durable handle must also name exactly that launch's
+    storage, by the same check cleanup applies, and the receipt scan runs on
+    the launch's own checkout: the directory a removal command would delete.
+    Without ``scan``, no receipt scan runs and ``removal_safe`` stays false;
+    callers that will print no removal command skip the walk.
     """
 
     checkout: Path | None = None
@@ -10384,11 +10632,21 @@ def diagnose_refusal_no_payload(
             return contradicted(
                 f"the run handle {lexical} is not the canonical handle {expected}"
             )
+        # `read_record` checks the handle file itself. The directory holding it
+        # must also be the canonical one (not reached through a symlink) and
+        # must not be replaced while the handle is read, as the locked
+        # authority check requires.
+        parent_identity = run_record_parent_identity(canonical_root, expected)
         run_registry.require_no_owner_watch_correction(canonical_root)
         sidecar = service_result.result_path(expected)
         if sidecar.exists() or sidecar.is_symlink():
             return contradicted(f"a framework result sidecar exists at {sidecar}")
         durable = run_registry.read_record(expected)
+        if run_record_parent_identity(canonical_root, expected) != parent_identity:
+            return contradicted(
+                f"the run-record directory {expected.parent} changed while the "
+                "durable run handle was read"
+            )
     except (OSError, RuntimeError, ValueError) as error:
         return contradicted(f"the durable run handle could not be verified: {error}")
     durable_handle = typed_admission_refusal(durable)
@@ -10417,6 +10675,13 @@ def diagnose_refusal_no_payload(
             "the durable run handle records a cell-ledger publication, not the "
             "no-payload disposition"
         )
+    if launch is not None:
+        try:
+            recorded_launch_storage(durable, launch)
+        except (OSError, RuntimeError, ValueError) as error:
+            return contradicted(
+                f"the durable run handle does not name this launch's storage: {error}"
+            )
     blocked: list[str] = []
     if not disposed:
         blocked.append(
@@ -10425,11 +10690,17 @@ def diagnose_refusal_no_payload(
     untracked: tuple[str, ...] = ()
     tracked: tuple[str, ...] = ()
     scan_error: str | None = None
-    raw_checkout = durable.get("checkout")
-    if not isinstance(raw_checkout, str) or not raw_checkout:
-        scan_error = "the durable run handle names no checkout"
+    scanned = False
+    checkout_absent = False
+    if launch is not None:
+        checkout = launch.checkout
     else:
-        checkout = Path(raw_checkout)
+        raw_checkout = durable.get("checkout")
+        if isinstance(raw_checkout, str) and raw_checkout:
+            checkout = Path(raw_checkout)
+        else:
+            scan_error = "the durable run handle names no checkout"
+    if checkout is not None and scan:
         if checkout.is_symlink():
             scan_error = f"the recorded checkout {checkout} is a symlink"
         elif checkout.is_dir():
@@ -10444,8 +10715,14 @@ def diagnose_refusal_no_payload(
                 scan_error = f"the receipt scan of {checkout} failed: {error}"
             else:
                 tracked = tuple(sorted(set(every) - set(untracked)))
+                scanned = True
         elif checkout.exists():
             scan_error = f"the recorded checkout {checkout} is not a directory"
+        else:
+            # Nothing is left to protect, and nothing was checked: an absent
+            # checkout never withholds cleanup, but it is not a clean scan.
+            checkout_absent = True
+            scan_error = f"the recorded checkout {checkout} does not exist"
     if untracked or tracked:
         found = sorted((*untracked, *tracked))
         blocked.append(
@@ -10454,7 +10731,7 @@ def diagnose_refusal_no_payload(
             "result evidence (https://github.com/rrnewton/dev-hermit/issues/415): "
             f"{quoted_paths(found)}"
         )
-    if scan_error is not None:
+    if scan_error is not None and not checkout_absent:
         blocked.append(scan_error)
     return RefusalNoPayloadDiagnosis(
         None,
@@ -10463,6 +10740,8 @@ def diagnose_refusal_no_payload(
         untracked,
         tracked,
         scan_error,
+        scanned,
+        checkout_absent,
     )
 
 
@@ -11526,23 +11805,29 @@ def attach(
         explanation = admission_refusal_explanation(
             reason, Path(raw_log) if isinstance(raw_log, str) and raw_log else None
         )
-        if not cell_ledger_retirement_ready(root, record_path, updated):
-            # Cleanup authority failed. Name why before choosing the verdict:
-            # a result sidecar, a changed or non-canonical durable handle, or a
-            # pending owner-watch correction contradicts the refusal itself.
-            # Only a missing no-payload disposition or checkout *.jsonl files
+        failure = refused_admission_retirement_failure(root, record_path, updated)
+        if failure is not None:
+            # Cleanup authority failed. The locked check names which of its
+            # checks failed; a result sidecar, a changed, non-canonical or
+            # symlink-reached durable handle, or a pending owner-watch
+            # correction contradicts the refusal itself. Only a missing
+            # no-payload disposition or checkout *.jsonl files
             # (https://github.com/rrnewton/dev-hermit/issues/415) leave the
-            # refusal sound and merely withhold cleanup.
+            # refusal sound and merely withhold cleanup, and a contended
+            # run-record lock means the check did not run at all.
             diagnosis = diagnose_refusal_no_payload(
                 root, record_path, updated, run=run, identical=True
             )
             contradiction = diagnosis.contradiction
-            if contradiction is None and not diagnosis.blocked:
-                contradiction = (
-                    "its no-payload cleanup authority could not be bound to the "
-                    "durable canonical handle, for a reason this check could "
-                    "not name"
-                )
+            if contradiction is None and failure.contradicts:
+                contradiction = failure.detail
+            blocked = list(diagnosis.blocked)
+            if failure.kind == REFUSAL_AUTHORITY_UNAVAILABLE:
+                blocked.insert(0, failure.detail)
+            elif not failure.contradicts and not blocked:
+                # The locked check withheld cleanup for a reason the unlocked
+                # re-check no longer sees; name the locked check's reason.
+                blocked.append(failure.detail)
             if contradiction is not None:
                 return could_not_determine(
                     "typed admission refusal is malformed, contradicts payload "
@@ -11552,15 +11837,25 @@ def attach(
                     "sidecar before retrying",
                 )
             checkout = diagnosis.checkout
-            retained = (
-                f"checkout retained at {checkout}"
-                if checkout is not None and checkout.exists()
-                else "checkout retained"
+            present = checkout is not None and (
+                checkout.exists() or checkout.is_symlink()
             )
             remedy = explanation.remedy
-            if checkout is not None and checkout.exists():
+            if checkout is not None and updated.get("temporary_checkout") is not True:
+                # An in-place run validated the caller's own checkout. Cleanup
+                # never removes it, so it is neither retained nor removable.
+                retained = (
+                    f"the in-place checkout {checkout} is not this run's to "
+                    "remove; Cargo home retained"
+                )
+            elif present:
+                assert checkout is not None
+                retained = f"checkout retained at {checkout} and Cargo home retained"
                 removal: str | None = None
-                if diagnosis.removal_safe:
+                if (
+                    diagnosis.removal_safe
+                    and failure.kind != REFUSAL_AUTHORITY_UNAVAILABLE
+                ):
                     try:
                         identity = recorded_wrkslots_identity(updated, checkout)
                     except ValueError:
@@ -11569,10 +11864,13 @@ def attach(
                         tool_root, root, checkout, identity
                     )
                 remedy += ". " + diagnosis.retained_checkout_remedy(checkout, removal)
+            elif checkout is not None:
+                retained = f"no checkout remains at {checkout}; Cargo home retained"
+            else:
+                retained = "checkout and Cargo home retained"
             return could_not_determine(
                 f"{explanation.describe(reason)}. Separately, cleanup was not "
-                f"attempted because {'; and '.join(diagnosis.blocked)}; "
-                f"{retained} and Cargo home retained",
+                f"attempted because {'; and '.join(blocked)}; {retained}",
                 remedy,
                 state=TYPED_REFUSAL_STATE,
             )
@@ -12341,6 +12639,54 @@ def main(
             launcher_generation.close()
             launcher_generation_active = False
             launcher_generation_authority = None
+
+    def current_launch_identity() -> LaunchStorageIdentity | None:
+        """The storage this launch created, or None while it is incomplete."""
+
+        if (
+            checkout is None
+            or source_checkout is None
+            or private_cargo_home is None
+            or runtime_root is None
+        ):
+            return None
+        return LaunchStorageIdentity(
+            checkout=checkout,
+            source_checkout=source_checkout,
+            temporary_checkout=fresh_checkout is not None,
+            wrkslots=fresh_wrkslots,
+            cargo_home=private_cargo_home,
+            runtime_root=runtime_root,
+            started_at=started_at,
+            unit=unit,
+        )
+
+    def retained_storage_suffix(cleanup: RecordedRunStorageCleanup) -> str:
+        """Name exactly the storage one cleanup attempt left in place."""
+
+        retained = [
+            name
+            for name, kept in (
+                (
+                    "checkout",
+                    fresh_checkout is not None and not cleanup.checkout.removed,
+                ),
+                (
+                    "Cargo home",
+                    private_cargo_home is not None and not cleanup.cargo_removed,
+                ),
+                (
+                    "runtime root",
+                    runtime_root is not None and cleanup.runtime_removed is False,
+                ),
+            )
+            if kept
+        ]
+        if not retained:
+            return ""
+        if len(retained) <= 2:
+            return f"; {' and '.join(retained)} retained"
+        return f"; {', '.join(retained[:-1])}, and {retained[-1]} retained"
 
     def cleanup_current_storage(
         *,
@@ -13117,27 +13463,52 @@ def main(
         # timed-out run-writer generation wait), or it may have acquired it and
         # then failed to read or parse the record; only the durable handle can
         # tell those apart, so its absence proves nothing.
+        #
+        # The durable handle must also name exactly the storage this launch
+        # created, by the same check cleanup applies: a removal command names
+        # this launch's checkout, so evidence read from any other record or
+        # directory cannot vouch for it.
+        retained_suffix = retained_storage_suffix(storage_cleanup)
         refused_handle = typed_admission_refusal(latest)
         if refused_handle is None:
             return could_not_determine(
                 "typed admission refusal is malformed, contradicts payload evidence, "
-                "or is not the durable canonical handle; checkout, Cargo home, and "
-                "runtime root retained",
+                "or is not the durable canonical handle" + retained_suffix,
                 "inspect the durable run handle and framework result sidecar before "
                 "retrying",
             )
+        launch = current_launch_identity()
+        if launch is None:
+            return could_not_determine(
+                "typed admission refusal could not be bound to this launch: its "
+                "storage identity is incomplete" + retained_suffix,
+                "inspect the durable run handle and the retained storage before "
+                "retrying",
+            )
         diagnosis = diagnose_refusal_no_payload(
-            state_root, record_path, latest, run=run, identical=False
+            state_root,
+            record_path,
+            latest,
+            run=run,
+            identical=False,
+            launch=launch,
+            # Only a retained temporary checkout can get a removal command, so
+            # only it is worth a receipt walk.
+            scan=fresh_checkout is not None and not storage_cleanup.checkout.removed,
         )
-        if diagnosis.contradiction is not None:
+        contradiction = diagnosis.contradiction
+        authority_failure = storage_cleanup.authority_failure
+        if (
+            contradiction is None
+            and authority_failure is not None
+            and authority_failure.contradicts
+        ):
+            contradiction = authority_failure.detail
+        if contradiction is not None:
             return could_not_determine(
                 "typed admission refusal is malformed, contradicts payload evidence, "
-                f"or is not the durable canonical handle: {diagnosis.contradiction}"
-                + (
-                    ""
-                    if storage_cleanup.complete
-                    else "; checkout, Cargo home, and runtime root retained"
-                ),
+                f"or is not the durable canonical handle: {contradiction}"
+                + retained_suffix,
                 "inspect the durable run handle and framework result sidecar before "
                 "retrying",
             )

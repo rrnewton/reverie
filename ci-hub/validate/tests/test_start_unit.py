@@ -12723,9 +12723,10 @@ else:
 
     def test_other_validation_lock_refusal_quotes_validate_lock(self) -> None:
         self.arrange_typed_eviction()
+        # validate_lock.rs prints this when memory admission cannot be read.
         refusal = (
-            "REFUSED: declared-priority queue did not grant agent=test "
-            f"target={SHA} within 7200s"
+            "REFUSED: validate memory admission is UNKNOWN: memory.max is "
+            "unreadable; absence is not permission"
         )
         self.fake.inner_log_lines = [refusal]
 
@@ -12904,9 +12905,155 @@ else:
         )
         self.assert_record_storage_retained()
 
+    def invoke_eviction_with_a_rebound_durable_handle(
+        self, *, receipt: bool, **fields: object
+    ) -> tuple[int, str, str]:
+        """Point the durable run handle elsewhere after the ledger step.
+
+        With ``receipt``, an untracked receipt sits in this launch's checkout
+        throughout. A diagnosis that trusted the rewritten handle would scan
+        some other directory, or none, and could then offer to delete this
+        checkout.
+        """
+
+        self.arrange_typed_eviction()
+        if receipt:
+            self.plant_orphan_receipt("ci/unexpected-receipt.jsonl")
+
+        def rebind(record_path: Path) -> None:
+            record = run_registry.read_record(record_path)
+            record.update(fields)
+            start_unit.run_registry.write_record(record_path, record)
+
+        return self.invoke_typed_refusal_around_ledger_step(after=rebind)
+
+    def assert_rebound_handle_retains_this_launch(
+        self, verdict: str, *, receipt: bool
+    ) -> None:
+        self.assertNotIn("found no untracked *.jsonl", verdict)
+        self.assertNotIn("no-evidence", verdict)
+        self.assertNotIn("holds no result evidence", verdict)
+        assert self.fake.fresh is not None
+        self.assertTrue(self.fake.fresh.is_dir())
+        self.assertEqual(
+            receipt, (self.fake.fresh / "ci/unexpected-receipt.jsonl").is_file()
+        )
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        for field in ("cargo_home", "runtime_root"):
+            self.assertTrue(Path(record[field]).is_dir(), field)
+
+    def test_eviction_whose_handle_names_another_checkout_offers_no_removal(
+        self,
+    ) -> None:
+        """The handle's checkout must be this launch's before anything vouches.
+
+        The rewritten handle names a clean directory, so a scan of the recorded
+        checkout would find nothing and a removal command for this launch's
+        checkout, which holds an untracked receipt, would follow.
+        """
+
+        assert self.root is not None
+        elsewhere = self.root / "elsewhere-clean-checkout"
+        elsewhere.mkdir()
+
+        rc, _output, error = self.invoke_eviction_with_a_rebound_durable_handle(
+            receipt=True, checkout=str(elsewhere)
+        )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        verdict = self.verdict_lines(error)
+        assert self.fake.fresh is not None
+        self.assert_malformed_refusal_without_removal(
+            verdict,
+            "the durable run handle does not name this launch's storage: durable "
+            f"run record checkout {elsewhere} does not match this launch's "
+            f"{self.fake.fresh}",
+        )
+        self.assert_rebound_handle_retains_this_launch(verdict, receipt=True)
+
+    def test_malformed_refusal_after_partial_cleanup_names_only_retained_storage(
+        self,
+    ) -> None:
+        """The verdict names what one cleanup attempt left, not a fixed list.
+
+        Cleanup removes the checkout and then fails on the Cargo home; a result
+        sidecar then appears. The checkout is gone, so the verdict must not say
+        it was retained.
+        """
+
+        self.arrange_typed_eviction()
+        real_cleanup = start_unit.cleanup_recorded_run_storage
+        sidecars: list[Path] = []
+
+        def cleanup_then_sidecar(root: Path, record_path: Path, **kwargs: object):
+            result = real_cleanup(root, record_path, **kwargs)
+            sidecar = start_unit.service_result.result_path(record_path)
+            sidecar.write_text("{}\n")
+            sidecars.append(sidecar)
+            return result
+
+        with (
+            mock.patch.object(
+                start_unit,
+                "_cleanup_recorded_cargo_home_impl",
+                return_value=(False, "injected Cargo-home failure"),
+            ),
+            mock.patch.object(
+                start_unit,
+                "cleanup_recorded_run_storage",
+                side_effect=cleanup_then_sidecar,
+            ),
+        ):
+            rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        verdict = self.verdict_lines(error)
+        assert self.fake.fresh is not None
+        self.assertFalse(self.fake.fresh.exists(), error)
+        self.assertIn(
+            "typed admission refusal is malformed, contradicts payload evidence, or "
+            "is not the durable canonical handle: a framework result sidecar exists "
+            f"at {sidecars[0]}; Cargo home and runtime root retained\n",
+            verdict,
+        )
+        self.assertNotIn("checkout, Cargo home", verdict)
+        self.assertNotIn("--validate-complete", verdict)
+
+    def test_eviction_whose_handle_names_another_start_offers_no_removal(
+        self,
+    ) -> None:
+        """A handle from another start cannot vouch for this launch's checkout.
+
+        The checkout is clean here, so only the start-identity binding stands
+        between this verdict and a removal command.
+        """
+
+        rc, _output, error = self.invoke_eviction_with_a_rebound_durable_handle(
+            receipt=False, started_at="2000-01-01T00:00:00+00:00"
+        )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        verdict = self.verdict_lines(error)
+        self.assert_malformed_refusal_without_removal(
+            verdict,
+            "the durable run handle does not name this launch's storage: durable "
+            "run record start identity does not match this launch",
+        )
+        self.assert_rebound_handle_retains_this_launch(verdict, receipt=False)
+
+    # The exact line `run`'s declared-priority queue prints when `--wait`
+    # expires (ci-hub/lib/validate_lock.rs, the `GlobalWait::Refused` return
+    # after `started.elapsed() >= Duration::from_secs(args.wait)`).
+    QUEUE_TIMEOUT_LINE = (
+        f"REFUSED: declared-priority queue did not grant agent=test target={SHA} "
+        "within 7200s"
+    )
+
     def test_queue_timeout_refusal_names_the_timeout(self) -> None:
         self.arrange_typed_eviction()
-        self.fake.inner_log_lines = ["validate-lock: TIMEOUT after 7200s"]
+        self.fake.inner_log_lines = [self.QUEUE_TIMEOUT_LINE]
 
         rc, _output, error = self.invoke()
 
@@ -12917,7 +13064,8 @@ else:
             "validate-lock gave up waiting for its turn",
             verdict,
         )
-        self.assertIn("(run log: validate-lock: TIMEOUT after 7200s)", verdict)
+        self.assertIn(f"(run log: {self.QUEUE_TIMEOUT_LINE})", verdict)
+        self.assertIn("remedy: queue the same head again", verdict)
         self.assertNotIn("no recognized refusal line", verdict)
         self.assert_record_storage_removed()
 
@@ -12965,27 +13113,32 @@ else:
         )
 
     def test_refusal_explanation_recognizes_a_queue_timeout(self) -> None:
-        # validate_lock.rs prints this line when the lock wait expires; the
-        # mid-wait line before it is diagnostic and must not decide.
+        # validate_lock.rs's `run` queue prints QUEUE_TIMEOUT_LINE when its wait
+        # expires; the mid-wait line before it is diagnostic and must not decide.
         unresolved_mid_wait = (
             f"validate-lock: mid-wait freshness UNRESOLVED for target={SHA}, keeping "
             "queue position: validate-lock: current origin/main fetch failed in /x "
             f"(git exit Some(128): boom); freshness for {SHA} is UNRESOLVED."
         )
         explanation = self.explain_log(
-            "timeout", unresolved_mid_wait, "validate-lock: TIMEOUT after 7200s"
+            "timeout", unresolved_mid_wait, self.QUEUE_TIMEOUT_LINE
         )
 
         self.assertEqual("TIMEOUT", explanation.label)
-        self.assertIn("(run log: validate-lock: TIMEOUT after 7200s)", explanation.detail)
+        self.assertIn(f"(run log: {self.QUEUE_TIMEOUT_LINE})", explanation.detail)
         self.assertIn("queue the same head again", explanation.remedy)
         self.assertNotIn("rebase", explanation.remedy)
 
-        yielding = self.explain_log(
-            "timeout-yield",
+        # `acquire_ordered`, the owner-watch yield, and a `--no-wait` queue
+        # print their own timeout lines.
+        for line in (
+            "validate-lock: TIMEOUT after 7200s",
             "validate-lock: TIMEOUT after 60s while yielding to owner watch",
-        )
-        self.assertEqual("TIMEOUT", yielding.label)
+            f"REFUSED: declared-priority queue did not grant agent=test target={SHA} "
+            "within 0s",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual("TIMEOUT", self.explain_log("timeout-other", line).label)
 
     def test_refusal_explanation_recognizes_fail_closed_freshness_lines(self) -> None:
         for line in (
@@ -14051,6 +14204,8 @@ else:
         checkout_jsonl: bool = False,
         jsonl_tracked: bool = False,
         sidecar: bool = False,
+        temporary_checkout: bool = True,
+        before_attach: Callable[[Path], None] | None = None,
     ) -> tuple[Path, int, str]:
         fresh, record = self.refused_admission_cleanup_record(suffix)
         durable = start_unit.run_registry.read_record(record)
@@ -14066,6 +14221,15 @@ else:
                 self.fake.fresh_tracked_jsonl = f"{self.ATTACH_CHECKOUT_JSONL}\n"
         if sidecar:
             start_unit.service_result.result_path(record).write_text("{}\n")
+        if not temporary_checkout:
+            durable = start_unit.run_registry.read_record(record)
+            durable["temporary_checkout"] = False
+            durable["materialized_target"] = False
+            for field in ("wrkslots_slot", "wrkslots_generation"):
+                durable.pop(field, None)
+            start_unit.run_registry.write_record(record, durable)
+        if before_attach is not None:
+            before_attach(record)
         self.fake.fresh = fresh
         error = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(error):
@@ -14167,6 +14331,77 @@ else:
             '"$$" --expected-generation 7',
             error,
         )
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_attach_refusal_through_a_symlinked_runs_directory_offers_no_removal(
+        self,
+    ) -> None:
+        """The attach diagnosis repeats the locked check's parent checks.
+
+        The runs directory is reached through a symlink, so the locked check
+        cannot bind no-payload authority, and finalization records no
+        disposition. The checkout's only ``*.jsonl`` is tracked, so a diagnosis
+        that skipped the parent checks would find nothing wrong and print a
+        removal command for a checkout named by a non-canonical handle.
+        """
+
+        def symlink_runs_directory(record: Path) -> None:
+            runs = record.parent
+            real = runs.with_name("runs-real")
+            runs.rename(real)
+            runs.symlink_to(real, target_is_directory=True)
+
+        fresh, rc, error = self.attach_evicted_refusal(
+            "admission-evicted-attach-symlinked-runs",
+            checkout_jsonl=True,
+            jsonl_tracked=True,
+            before_attach=symlink_runs_directory,
+        )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        self.assertTrue(fresh.is_dir(), error)
+        self.assertTrue((fresh / self.ATTACH_CHECKOUT_JSONL).is_file())
+        verdict = error[error.index("validate-run: COULD-NOT-DETERMINE: ") :]
+        self.assertIn(
+            "typed admission refusal is malformed, contradicts payload evidence, or "
+            "is not the durable canonical handle: ",
+            verdict,
+        )
+        self.assertIn("is not canonical", verdict)
+        self.assertIn("checkout and Cargo home retained", verdict)
+        self.assertNotIn("EVICTED", verdict)
+        self.assertNotIn("holds no result evidence", verdict)
+        self.assertNotIn("--validate-complete", verdict)
+        self.assertNotIn(start_unit.TYPED_REFUSAL_STATE, verdict)
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_attach_in_place_refusal_does_not_call_the_checkout_retained(
+        self,
+    ) -> None:
+        """Cleanup never removes an in-place checkout, so it is not "retained"."""
+
+        fresh, rc, error = self.attach_evicted_refusal(
+            "admission-evicted-attach-in-place",
+            checkout_jsonl=True,
+            temporary_checkout=False,
+        )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error)
+        self.assertTrue(fresh.is_dir(), error)
+        self.assertIn(
+            "typed admission refused (validation-lock-refusal): EVICTED", error
+        )
+        self.assertIn(
+            f"the in-place checkout {fresh} is not this run's to remove; Cargo "
+            "home retained",
+            error,
+        )
+        self.assertNotIn(f"checkout retained at {fresh}", error)
+        self.assertNotIn("--validate-complete", error)
         self.assertFalse(
             any(wrkslots_action(command, "remove") for command in self.fake.commands)
         )
