@@ -648,13 +648,20 @@ const PROCESS_CREATION_PROBE_LIMIT: Duration = Duration::from_secs(30);
 // through the parent's suspended dispatcher frames or starts one on a fresh
 // stack with none of them. Both must be refused, and traced, before the kernel
 // sees them.
+//
+// The guest makes the vfork call and seven clone3 calls through libc's
+// syscall() site, which is already hooked when they arrive. It then makes one
+// more vfork call and one more clone3 call, each from a site that has never
+// run, so those two reach the refusal through the first SIGSYS trap. The trace
+// counts separate a refusal in process_syscall from the SIGSYS handler's
+// untraced fallback, which returns the same errno.
 #[test]
 fn raw_vfork_and_clone3_are_refused_in_compatibility_and_strace_modes() {
     let guest = env!("CARGO_BIN_EXE_reverie-liteinst-fork-guest");
     let expected = format!(
         "unsafe process creation rejected: vfork={0} clone3={0} clone3-shared={0} \
          clone3-thread={0} clone3-stack={0} clone3-tls={0} clone3-flags={0} clone3-size={0} \
-         parent-canaries=unchanged\n",
+         fresh-site-vfork={0} fresh-site-clone3={0} parent-canaries=unchanged\n",
         libc::ENOTSUP
     );
 
@@ -677,8 +684,8 @@ fn raw_vfork_and_clone3_are_refused_in_compatibility_and_strace_modes() {
             .filter(|line| line.ends_with(&suffix))
             .count()
     };
-    assert_eq!(traced(libc::SYS_vfork), 1, "{events}");
-    assert_eq!(traced(libc::SYS_clone3), 7, "{events}");
+    assert_eq!(traced(libc::SYS_vfork), 2, "{events}");
+    assert_eq!(traced(libc::SYS_clone3), 8, "{events}");
     let pids: BTreeSet<_> = events
         .lines()
         .filter_map(|line| line.split_once(" pid=")?.1.split_once(" syscall="))
@@ -701,8 +708,8 @@ fn raw_vfork_and_clone3_are_refused_in_compatibility_and_strace_modes() {
             .filter(|line| line.contains(&prefix) && line.ends_with(&suffix))
             .count()
     };
-    assert_eq!(refused(libc::SYS_vfork), 1, "{stderr}");
-    assert_eq!(refused(libc::SYS_clone3), 7, "{stderr}");
+    assert_eq!(refused(libc::SYS_vfork), 2, "{stderr}");
+    assert_eq!(refused(libc::SYS_clone3), 8, "{stderr}");
     let pids: BTreeSet<_> = stderr
         .lines()
         .filter_map(|line| line.strip_prefix("[liteinst strace pid "))
