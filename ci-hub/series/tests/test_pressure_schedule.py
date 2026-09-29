@@ -169,6 +169,20 @@ class PressureScheduleTest(unittest.TestCase):
             checkout = Path(record["checkout"])
             self.assertEqual(checkout.parent, root / "worktrees" / "validate")
             self.assertTrue(checkout.name.startswith("pressure-aaaaaaaaaaaa-"))
+            # The recorded placement is the one the unit was launched with
+            # (https://github.com/rrnewton/hermit/issues/3265).
+            placement = record["cpu_placement"]
+            self.assertIsNone(
+                pressure_schedule.cpu_placement.validate_record(placement)
+            )
+            allowed = placement["allowed_cpus"]
+            self.assertIn(
+                f"--setenv=HERMIT_CI_ALLOWED_CPUS={allowed}", launched
+            )
+            self.assertEqual(
+                [f"--property=AllowedCPUs={allowed}"] if allowed else [],
+                [arg for arg in launched if arg.startswith("--property=AllowedCPUs=")],
+            )
 
     def test_manual_launch_keeps_stable_checkout_path(self):
         command = pressure_schedule.launch_command(

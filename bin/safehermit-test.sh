@@ -291,5 +291,72 @@ else
       || no "unit result" "unit_result='$res' on a run that was killed at its deadline; 'success' means --collect is back and the unit was garbage-collected before it could be read, 'UNREADABLE' means the query failed"
 fi
 
+# T13-T16 CPU PLACEMENT (https://github.com/rrnewton/hermit/issues/3265).
+# The fixture is a plain script given as the "binary", so the Cpus_allowed_list
+# it prints is the unit's real affinity. A Hermit guest cannot be used for this:
+# Hermit shows the guest a virtualized CPU view (it reads `0` whatever the unit
+# allows), so a guest-side read would pass without measuring anything.
+printf '#!/bin/sh\ngrep Cpus_allowed_list /proc/self/status\n' > "$t/affinity"
+chmod +x "$t/affinity"
+cpus_of() { sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' "$1"; }
+cpu_meet() {  # cpu_meet <kernel list> <kernel list>: print the CPUs in both
+    python3 - "$1" "$2" <<'PY'
+import sys
+def cpus(text):
+    out = set()
+    for part in filter(None, text.strip().split(",")):
+        low, _, high = part.partition("-")
+        out.update(range(int(low), int(high or low) + 1))
+    return out
+print(",".join(map(str, sorted(cpus(sys.argv[1]) & cpus(sys.argv[2])))))
+PY
+}
+cpu_in() { [ -n "$(cpu_meet "$1" "$2")" ]; }  # cpu_in <cpu> <kernel list>
+placement_root="$(cd "$(dirname "$SH")/.." && pwd)/ci-hub/validate"
+derived_excluded=$(env -u DEV_HERMIT_EXCLUDE_CPUS python3 "$placement_root/cpu_placement.py" --json 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["excluded_cpus"])' 2>/dev/null)
+cpuset_ok=0
+systemd-run --user --unit=sht-cpuset-$$ --collect --quiet --property=RuntimeMaxSec=10 \
+    --property=AllowedCPUs=0 --pipe --wait -- /bin/grep -q 'Cpus_allowed_list:[[:space:]]*0$' /proc/self/status \
+    >/dev/null 2>&1 && cpuset_ok=1
+
+# T13 the default is reported on every run, and where the host derives an
+# exclusion and the user manager enforces cpusets, it is APPLIED and the unit
+# really cannot reach an excluded CPU.
+env -u DEV_HERMIT_EXCLUDE_CPUS "$SH" "$t/affinity" run >"$t/13.out" 2>"$t/13.err"
+grep -qE 'placement\.cpus=(APPLIED|NOT_APPLIED):' "$t/13.err" \
+  && ok "CPU placement is reported as APPLIED or NOT_APPLIED with a reason" \
+  || no "placement reported" "no placement.cpus= line"
+if [ "$cpuset_ok" = 1 ] && [ -n "$derived_excluded" ]; then
+    seen=$(cpus_of "$t/13.out"); escaped=$(cpu_meet "$derived_excluded" "$seen")
+    grep -q 'placement.cpus=APPLIED:' "$t/13.err" && [ -n "$seen" ] && [ -z "$escaped" ] \
+      && ok "host-derived placement APPLIED: the unit's Cpus_allowed_list=$seen excludes $derived_excluded" \
+      || no "default placement" "excluded=$derived_excluded but the unit saw '$seen' (escaped: ${escaped:-none}); $(grep placement.cpus "$t/13.err")"
+fi
+
+# T14 the documented override to exclude nothing.
+DEV_HERMIT_EXCLUDE_CPUS=none "$SH" "$t/affinity" run >"$t/14.out" 2>"$t/14.err"
+grep -q 'placement.cpus=NOT_APPLIED:source=override-none excluded nothing' "$t/14.err" \
+  && cpu_in 0 "$(cpus_of "$t/14.out")" \
+  && ok "DEV_HERMIT_EXCLUDE_CPUS=none excludes nothing and the unit can reach CPU 0" \
+  || no "override none" "$(grep placement.cpus "$t/14.err"); unit saw '$(cpus_of "$t/14.out")'"
+
+# T15 an explicit list is honoured on any host whose user manager enforces
+# cpusets, PMU masks or not.
+if [ "$cpuset_ok" = 1 ]; then
+    DEV_HERMIT_EXCLUDE_CPUS=0 "$SH" "$t/affinity" run >"$t/15.out" 2>"$t/15.err"
+    seen=$(cpus_of "$t/15.out")
+    grep -q 'placement.cpus=APPLIED:' "$t/15.err" && [ -n "$seen" ] && ! cpu_in 0 "$seen" \
+      && ok "DEV_HERMIT_EXCLUDE_CPUS=0 is APPLIED and the unit's Cpus_allowed_list=$seen lacks CPU 0" \
+      || no "override list" "$(grep placement.cpus "$t/15.err"); unit saw '$seen'"
+fi
+
+# T16 a malformed override is a usage error before anything runs.
+DEV_HERMIT_EXCLUDE_CPUS=0-x "$SH" "$t/affinity" run >"$t/16.out" 2>"$t/16.err"
+rc16=$?
+[ "$rc16" -eq 2 ] && [ ! -s "$t/16.out" ] && grep -q 'DEV_HERMIT_EXCLUDE_CPUS' "$t/16.err" \
+  && ok "a malformed DEV_HERMIT_EXCLUDE_CPUS exits 2 before the child runs" \
+  || no "malformed override" "rc=$rc16, child stdout '$(cat "$t/16.out")', stderr: $(head -c 300 "$t/16.err")"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

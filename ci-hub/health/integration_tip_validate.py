@@ -1141,6 +1141,25 @@ def consumed_launcher_identity(
     }
 
 
+# validate-run derives the allowed CPU set from the host inside this launcher
+# unit (ci-hub/validate/cpu_placement.py). A transient unit does not inherit
+# the caller's environment, so an operator override must be forwarded or it
+# would silently not apply. Named literally rather than imported so this
+# module keeps its existing dependency closure; test_cpu_placement.py pins the
+# name to cpu_placement.OVERRIDE_ENV.
+CPU_PLACEMENT_OVERRIDE_ENV = "DEV_HERMIT_EXCLUDE_CPUS"
+
+
+def cpu_placement_override_setenv(
+    environ: Mapping[str, str] | None = None,
+) -> list[str]:
+    environ = os.environ if environ is None else environ
+    value = environ.get(CPU_PLACEMENT_OVERRIDE_ENV)
+    if value is None:
+        return []
+    return [f"--setenv={CPU_PLACEMENT_OVERRIDE_ENV}={value}"]
+
+
 def spawn_validate(
     settings: Settings,
     target: str,
@@ -1206,6 +1225,7 @@ def spawn_validate(
         f"--setenv=PATH={os.environ.get('PATH', '')}",
         f"--setenv=DEV_HERMIT_PARENT={settings.state_root}",
         *launcher_setenv_arguments(unit_setenv),
+        *cpu_placement_override_setenv(),
         "--",
         str(operational_tool),
         "--run-current-tool",

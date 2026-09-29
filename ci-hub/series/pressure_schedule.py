@@ -23,6 +23,7 @@ sys.path.insert(0, str(SOURCE_ROOT / "ci-hub" / "series"))
 sys.path.insert(0, str(SOURCE_ROOT / "ci-hub" / "validate"))
 import series  # noqa: E402
 import run_registry  # noqa: E402
+import cpu_placement  # noqa: E402
 
 
 STATE_ROOT = Path(
@@ -82,8 +83,14 @@ def launch_command(
     target: str,
     record: Path,
     environment: Mapping[str, str] | None = None,
+    placement: cpu_placement.CpuPlacement | None = None,
 ) -> list[str]:
     environment = os.environ if environment is None else environment
+    # Same placement as validate-run (https://github.com/rrnewton/hermit/issues/3265).
+    # A malformed DEV_HERMIT_EXCLUDE_CPUS raises CpuPlacementError, a ValueError,
+    # which launch() reports as a refusal before any unit exists.
+    if placement is None:
+        placement = cpu_placement.derive(environ=environment)
     log = log_path(root)
     operational_tool = environment.get("DEV_HERMIT_OPERATIONAL_TOOL", "")
     parent_sha = environment.get("DEV_HERMIT_TOOL_PARENT_SHA", "")
@@ -135,11 +142,23 @@ def launch_command(
         f"--property=RuntimeMaxSec={UNIT_RUNTIME_SECONDS}",
         f"--property=StandardOutput=append:{log}",
         f"--property=StandardError=append:{log}",
+        *(
+            [f"--property={placement.systemd_property()}"]
+            if placement.systemd_property()
+            else []
+        ),
         f"--working-directory={working_directory}",
         f"--setenv=PATH={environment.get('PATH', '')}",
         "--setenv=PYTHONUNBUFFERED=1",
         f"--setenv=DEV_HERMIT_PARENT={root}",
         f"--setenv=DEV_HERMIT_TOOL_ROOT={SOURCE_ROOT}",
+        # pressure-test.rs re-executes into a dagrun scope in another slice,
+        # where AllowedCPUs above no longer applies; safe_ci_scope reads these
+        # and applies the same list to that scope.
+        *(
+            f"--setenv={key}={value}"
+            for key, value in placement.environment().items()
+        ),
         "--",
         with_proxy,
         *worker,
@@ -307,7 +326,10 @@ def launch(
 
         record = run_registry.record_path(root, UNIT)
         try:
-            command = launch_command(root, systemd_run, with_proxy, target, record)
+            placement = cpu_placement.derive()
+            command = launch_command(
+                root, systemd_run, with_proxy, target, record, placement=placement
+            )
         except ValueError as error:
             emit("refused", str(error))
             return 1
@@ -334,6 +356,7 @@ def launch(
                 "started_at": started_at,
                 "producer": run_registry.PRODUCER,
                 "admission": "ci-hub validate-lock",
+                "cpu_placement": placement.record(),
             },
         )
         started = run(

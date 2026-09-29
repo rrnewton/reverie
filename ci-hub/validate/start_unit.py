@@ -38,6 +38,7 @@ import rust_toolchain
 import qualifying_receipt
 import pane_owner
 import run_registry
+import cpu_placement
 import reverie_node
 import tree_disposition
 import tree_disposition
@@ -7528,6 +7529,7 @@ def build_systemd_command(
     teardown_tool_prefix: Sequence[str] | None = None,
     driver_rust_toolchain: str | None = None,
     measured_rust_toolchain: str | None = None,
+    placement: cpu_placement.CpuPlacement | None = None,
 ) -> list[str]:
     state_root = root if state_root is None else state_root
     child_deadline = effective_child_deadline(repo, child_deadline)
@@ -7545,6 +7547,13 @@ def build_systemd_command(
                 f"RuntimeMaxSec={wait + child_deadline + HERMIT_SERVICE_STARTUP_RESERVE_SECONDS}"
             ),
         ]
+        # Placement, not budget (https://github.com/rrnewton/hermit/issues/3265):
+        # keep the service off the CPUs a PMU is bound to. The Hermit driver's
+        # dagrun scope lives in another slice, so this property alone does not
+        # reach the cells; the HERMIT_CI_* variables below carry the same list
+        # to safe_ci_scope, which applies it to that scope.
+        if placement is not None:
+            service_resource_properties.extend(placement.systemd_properties())
     home = environment.get("HOME", "")
     path = environment.get("PATH", "")
     if not home or not path:
@@ -7587,6 +7596,9 @@ def build_systemd_command(
             build_budget_env.extend(
                 ["--setenv", f"VALIDATE_SERVICE_RESULT_PATH={framework_result}"]
             )
+        if placement is not None:
+            for key, value in placement.environment().items():
+                build_budget_env.extend(["--setenv", f"{key}={value}"])
     # Last, so it cannot be shadowed by a caller-supplied CARGO_HOME: the whole
     # point is that this run does not share a package-cache lock with the box.
     if cargo_home is not None:
@@ -11506,9 +11518,15 @@ def main(
                 "schema": reverie_node.COUNT_SCHEMA, "nonce": secrets.token_hex(16),
                 "producer_files": reverie_node.count_source_hashes(tool_root),
             }
+        placement: cpu_placement.CpuPlacement | None = None
         if repo == "rrnewton/hermit":
+            # Derived from this host at launch; a malformed operator override
+            # raises here (CpuPlacementError is a ValueError) before any unit
+            # exists. Recorded whether or not anything was excluded.
+            placement = cpu_placement.derive(environ=environment)
             output_fields.update(
                 {
+                    "cpu_placement": placement.record(),
                     "e2e_result_root": str(e2e_result_root),
                     "safe_ci_dag_runner_log_dir": str(runner_log_dir),
                     "hermit_run_timeout_seconds": hermit_run_timeout,
@@ -11551,6 +11569,7 @@ def main(
             teardown_tool_prefix=service_teardown_prefix,
             driver_rust_toolchain=driver_rust_toolchain,
             measured_rust_toolchain=measured_rust_toolchain,
+            placement=placement,
         )
         if args.dry_run:
             pane = None
@@ -11638,6 +11657,9 @@ def main(
                 # A pane for a unit that has not launched can otherwise outlive
                 # a reservation refusal and manufacture an UNKNOWN result.
                 run_registry.reserve_log(log)
+                if placement is not None:
+                    with log.open("a", encoding="utf-8") as retained:
+                        print(f"validate-run: {placement.summary()}", file=retained)
                 if driver_rust_toolchain is not None:
                     with log.open("a", encoding="utf-8") as retained:
                         print(

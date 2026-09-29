@@ -131,6 +131,17 @@ class LedgerMirrorRecord(TypedDict, total=False):
     scorecard: dict[str, Any]
 
 
+class CpuPlacementRecord(TypedDict):
+    source: str
+    excluded_cpus: str
+    allowed_cpus: str
+    online_cpus: str
+    pmus: list[str]
+    skipped_pmus: list[str]
+    detail: str
+    override_env: str
+
+
 class TerminationRequestRecord(TypedDict, total=False):
     requested_at: str
     agent: str
@@ -205,6 +216,7 @@ class RunRecord(TypedDict, total=False):
     wrapper_exit_code: int
     commit_status_publication: CommitStatusPublicationRecord
     ledger_mirror: LedgerMirrorRecord
+    cpu_placement: CpuPlacementRecord
     termination_requests: list[TerminationRequestRecord]
     measured_result: str
     checkout_removed_at: str
@@ -385,10 +397,71 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "runtime_root_removed_at",
         "host",
         "termination_requests",
+        "cpu_placement",
     }
 )
 
-BENCH_FIELDS = COMMON_FIELDS | frozenset({"results", "cleanup_error"})
+BENCH_FIELDS = COMMON_FIELDS | frozenset(
+    {"results", "cleanup_error", "cpu_placement"}
+)
+
+# Written by ci-hub/validate/cpu_placement.py (CpuPlacement.record). Checked
+# here structurally rather than by importing that module: several exact-tool
+# authority fixtures copy this file with a fixed dependency set.
+# tests/test_cpu_placement.py pins this set to cpu_placement.RECORD_FIELDS.
+CPU_PLACEMENT_FIELDS = frozenset(
+    {
+        "source",
+        "excluded_cpus",
+        "allowed_cpus",
+        "online_cpus",
+        "pmus",
+        "skipped_pmus",
+        "detail",
+        "override_env",
+    }
+)
+# Pinned to cpu_placement.SOURCES and cpu_placement.MAX_CPU_NUMBER by the same
+# test, for the same reason.
+CPU_PLACEMENT_SOURCES = frozenset(
+    {
+        "sysfs-pmu-cpumask",
+        "sysfs-none",
+        "sysfs-too-broad",
+        "sysfs-malformed",
+        "override",
+        "override-none",
+    }
+)
+CPU_PLACEMENT_MAX_CPU = 8191
+_CPU_LIST_RE = re.compile(r"\A(?:(?:\d+(?:-\d+)?)(?:,\d+(?:-\d+)?)*)?\Z")
+
+
+def _cpu_list_set(field: str, text: str) -> frozenset[int]:
+    """Expand one recorded kernel CPU list, refusing any CPU above the ceiling
+    before a range is expanded."""
+    if _CPU_LIST_RE.fullmatch(text) is None:
+        raise _error(f"cpu_placement.{field}", "must be a kernel CPU list")
+    cpus: set[int] = set()
+    for part in filter(None, text.split(",")):
+        low_text, _, high_text = part.partition("-")
+        high_text = high_text or low_text
+        for number in (low_text, high_text):
+            digits = number.lstrip("0") or "0"
+            if (
+                len(digits) > len(str(CPU_PLACEMENT_MAX_CPU))
+                or int(digits) > CPU_PLACEMENT_MAX_CPU
+            ):
+                raise _error(
+                    f"cpu_placement.{field}",
+                    f"names CPU {number[:20]}, above {CPU_PLACEMENT_MAX_CPU}",
+                )
+        low, high = int(low_text), int(high_text)
+        if high < low:
+            raise _error(f"cpu_placement.{field}", "must be a kernel CPU list")
+        cpus.update(range(low, high + 1))
+    return frozenset(cpus)
+
 
 _OPTIONAL_TEXT_FIELDS = frozenset(
     {
@@ -499,6 +572,48 @@ def _commit_status_publication(value: Any) -> None:
         )
     for field in required - common:
         _required_text(value, field)
+
+
+def _cpu_placement(value: Any) -> None:
+    if not isinstance(value, dict):
+        raise _error("cpu_placement", "must be an object")
+    if set(value) != CPU_PLACEMENT_FIELDS:
+        raise _error(
+            "cpu_placement",
+            f"must contain exactly {', '.join(sorted(CPU_PLACEMENT_FIELDS))}",
+        )
+    for field in ("source", "detail", "override_env"):
+        if not isinstance(value.get(field), str) or not value[field]:
+            raise _error(f"cpu_placement.{field}", "must be a non-empty string")
+    if value["source"] not in CPU_PLACEMENT_SOURCES:
+        raise _error(
+            "cpu_placement.source",
+            f"{value['source']!r} is not one of {', '.join(sorted(CPU_PLACEMENT_SOURCES))}",
+        )
+    lists: dict[str, frozenset[int]] = {}
+    for field in ("excluded_cpus", "allowed_cpus", "online_cpus"):
+        text = value.get(field)
+        if not isinstance(text, str):
+            raise _error(f"cpu_placement.{field}", "must be a kernel CPU list")
+        lists[field] = _cpu_list_set(field, text)
+    for field in ("pmus", "skipped_pmus"):
+        items = value.get(field)
+        if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
+            raise _error(f"cpu_placement.{field}", "must be a list of strings")
+    excluded = lists["excluded_cpus"]
+    allowed = lists["allowed_cpus"]
+    online = lists["online_cpus"]
+    if bool(excluded) != bool(allowed):
+        raise _error(
+            "cpu_placement",
+            "allowed_cpus must be empty exactly when excluded_cpus is empty",
+        )
+    if excluded and not excluded <= online:
+        raise _error("cpu_placement", "excluded_cpus must be a subset of online_cpus")
+    if excluded and allowed != online - excluded:
+        raise _error(
+            "cpu_placement", "allowed_cpus must equal online_cpus minus excluded_cpus"
+        )
 
 
 def _ledger_mirror(value: Any) -> None:
@@ -1056,6 +1171,8 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
         _commit_status_publication(value.get("commit_status_publication"))
     if "ledger_mirror" in value:
         _ledger_mirror(value.get("ledger_mirror"))
+    if "cpu_placement" in value:
+        _cpu_placement(value.get("cpu_placement"))
 
     if kind is not RunKind.BENCH:
         if value.get("pane_role") != "observer-only":

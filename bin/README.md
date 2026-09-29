@@ -133,6 +133,23 @@ limits and records CPU-time, wall-time, OOM-kill, PID-limit, and lethal log-cap
 breaches; the parallel runner must compare those values with its own worker
 specification.
 
+**CPU placement.** The unit gets `AllowedCPUs=` with the CPUs that host PMU
+drivers bind their counters to removed, derived at launch by
+`ci-hub/validate/cpu_placement.py`, the same derivation `validate-run` uses (see
+`ci-hub/validate/README.md`, "CPU placement"). On devbig014 a ptrace stop costs
+far more kernel time on those CPUs: timed-progress-bar `--verify` costs 97.89 s
+of CPU on CPU 0 against about 28 s elsewhere
+(https://github.com/rrnewton/hermit/issues/3265). `hermit run --strict` pins
+itself to one random core from its allowed set, so an unplaced run occasionally
+draws such a CPU. `placement.cpus=` states `APPLIED` only after a probe unit shows
+the user manager enforcing the list; otherwise it states `NOT_APPLIED` with the
+reason, and the run proceeds on every CPU. `DEV_HERMIT_EXCLUDE_CPUS=none`
+excludes nothing, `DEV_HERMIT_EXCLUDE_CPUS=<cpu list>` excludes exactly that list,
+and a malformed value exits 2 before anything runs. Placement changes which CPUs
+the run may use and nothing else: no bound, deadline, argument or environment
+variable. A Hermit guest cannot see the placement, because Hermit shows it a
+virtualized CPU view; read the unit's threads from the host instead.
+
 Tests: `bin/safehermit-test.sh` and `bin/safehermit-resource-test.py`.
 
 ## Disk-bound scope

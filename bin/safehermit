@@ -515,6 +515,81 @@ if command -v systemd-run >/dev/null 2>&1; then
         systemd_ok=1
     fi
 fi
+# ---------------------------------------------------------------- (9) CPU placement
+# https://github.com/rrnewton/hermit/issues/3265: on devbig014 a ptrace stop on a
+# CPU that a PMU driver binds its counters to costs far more kernel time than on
+# an ordinary CPU (timed-progress-bar --verify: 97.89 s of CPU on CPU 0 against
+# about 28.1-28.6 s elsewhere, debug build). `hermit run --strict` pins itself to
+# ONE random core from its allowed set, so an unplaced run occasionally draws such
+# a CPU and a CPU-budgeted measurement moves for a reason unrelated to the program.
+# The unit therefore gets AllowedCPUs= with those CPUs removed, derived at launch
+# by ci-hub/validate/cpu_placement.py -- the same derivation validate-run uses.
+# It changes WHICH CPUs the run may use and nothing else: no bound, deadline,
+# argument or environment variable changes.
+#   DEV_HERMIT_EXCLUDE_CPUS=none    exclude nothing (e.g. to reproduce the cost)
+#   DEV_HERMIT_EXCLUDE_CPUS=<list>  exclude exactly that kernel CPU list
+# A malformed value is a usage error (exit 2) before anything runs. APPLIED is
+# claimed only after a probe unit shows the user manager enforcing the set.
+placement_args=()
+placement_state="NOT_APPLIED:systemd --user unavailable, so there is no unit to place"
+placement_dir="$ROOT/ci-hub/validate"
+if [ "$systemd_ok" = 1 ]; then
+    if [ ! -f "$placement_dir/cpu_placement.py" ]; then
+        placement_state="NOT_APPLIED:$placement_dir/cpu_placement.py is absent in this checkout"
+    else
+        placement_line="$(python3 - "$placement_dir" 2>"$log_dir/.cpu-placement.err" <<'PY'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import cpu_placement as cp
+
+try:
+    placement = cp.derive()
+except cp.CpuPlacementError as error:
+    print(f"{cp.OVERRIDE_ENV} refused: {error}", file=sys.stderr)
+    raise SystemExit(2)
+detail = " ".join(placement.detail.split())
+print("\x1f".join((cp.format_cpu_list(placement.allowed),
+                 cp.format_cpu_list(placement.excluded), placement.source, detail)))
+PY
+)"
+        placement_rc=$?
+        [ "$placement_rc" -ne 2 ] || die "$(cat "$log_dir/.cpu-placement.err")"
+        # \x1f, not a tab: a tab is IFS whitespace, so read collapses the empty
+        # allowed/excluded fields an override of "none" produces into the next one.
+        IFS=$'\x1f' read -r placement_allowed placement_excluded placement_source placement_detail \
+            <<<"$placement_line"
+        if [ "$placement_rc" -ne 0 ]; then
+            placement_state="NOT_APPLIED:cpu_placement.py exited $placement_rc: $(head -c 300 "$log_dir/.cpu-placement.err" | tr '\n' ' ')"
+        elif [ -z "$placement_allowed" ]; then
+            placement_state="NOT_APPLIED:source=$placement_source excluded nothing: $placement_detail"
+        else
+            # Named under the safehermit-probe- prefix every throwaway capability
+            # probe uses, so nothing treats it as the run's own safehermit-* unit.
+            placement_probe="$(timeout 20 systemd-run --user "--unit=safehermit-probe-cpus-$$" \
+                --collect --quiet --property=RuntimeMaxSec=10 \
+                "--property=AllowedCPUs=$placement_allowed" --pipe --wait -- \
+                /bin/grep Cpus_allowed_list /proc/self/status 2>/dev/null)"
+            placement_observed="${placement_probe#*:}"
+            placement_observed="${placement_observed//[[:space:]]/}"
+            if python3 - "$placement_dir" "$placement_observed" "$placement_allowed" <<'PY'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import cpu_placement as cp
+
+observed, allowed = cp.parse_cpu_list(sys.argv[2]), cp.parse_cpu_list(sys.argv[3])
+raise SystemExit(0 if observed and allowed and observed <= allowed else 1)
+PY
+            then
+                placement_args=("--property=AllowedCPUs=$placement_allowed")
+                placement_state="APPLIED:AllowedCPUs=$placement_allowed (source=$placement_source, excluded=$placement_excluded; a probe unit saw Cpus_allowed_list=$placement_observed)"
+            else
+                placement_state="NOT_APPLIED:the user manager did not enforce AllowedCPUs=$placement_allowed (a probe unit saw '${placement_observed:-nothing}'); the run may use every CPU"
+            fi
+        fi
+    fi
+fi
 env_state="NOT_APPLIED:no transient unit, so the child inherits this shell's environment directly"
 if [ "$systemd_ok" = 1 ]; then
     # FORWARD THE CALLER'S ENVIRONMENT EXPLICITLY. `systemd-run --user` does NOT
@@ -573,6 +648,7 @@ if [ "$systemd_ok" = 1 ]; then
                  "--property=CPUQuota=$((detached_cpu_cores * 100))%")
     fi
     [ "$no_deadline" = 1 ] || runner+=("--property=RuntimeMaxSec=$deadline")
+    runner+=("${placement_args[@]}")
     runner+=("--working-directory=$PWD" "${setenv_args[@]}" --pipe --wait --)
 else
     # NEVER fall back silently to an unbounded run.
@@ -940,6 +1016,7 @@ fi
 field bound.bytes     "$byte_bound_state"
 field bound.logfilter "$logfilter_state"
 field env.forwarded   "$env_state"
+field placement.cpus  "$placement_state"
 field note.run_record "$reg_state"
 if [ -n "$detached_report_file" ]; then
     field resource_report "$detached_report_file"

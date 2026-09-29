@@ -75,6 +75,71 @@ covers finalization separately. An enclosing caller must leave room for both
 service phases and its own setup/status work. Hitting any backstop is a failed
 run, not successful qualification.
 
+## CPU placement: validation stays off PMU-bound CPUs
+
+On devbig014 a ptrace-stop-heavy cell costs 7.6-7.9x the CPU on host CPU 0
+(https://github.com/rrnewton/hermit/issues/3265): the AMD uncore PMUs are bound
+there, and `amd_l3` is bound to the first CPU of each L3 complex. So a Hermit
+validation, `tick-pressure-test`, and the hourly integration-tip validation run
+on the online CPUs minus every CPU named by a
+`/sys/bus/event_source/devices/<pmu>/cpumask`. The list is derived from the
+host at every launch by `validate/cpu_placement.py`; nothing is hard-coded.
+Run `python3 ci-hub/validate/cpu_placement.py` to see what this host would
+exclude, or add `--json` to print the full record.
+
+This changes where the work runs. It does not change any budget, timeout, cell
+selection, or verdict.
+
+- **Fail-safe.** If no PMU has a cpumask, nothing is excluded (source
+  `sysfs-none`). If sysfs cannot be parsed, nothing is excluded
+  (`sysfs-malformed`). If the result would leave fewer than half the CPUs,
+  nothing is excluded (`sysfs-too-broad`). A mask covering more than a quarter
+  of the online CPUs, such as `power_core`, belongs to a per-core PMU; it is
+  skipped and listed.
+- **Override.** `DEV_HERMIT_EXCLUDE_CPUS=none` excludes nothing, and
+  `DEV_HERMIT_EXCLUDE_CPUS=0,16` excludes exactly that list. Set it in the
+  environment of `ci-hub validate-run`, of `pressure_schedule.py launch`, or of
+  the integration-tip tick, which forwards it to its launcher. A malformed list,
+  or one that would exclude every CPU, refuses the launch.
+- **Mechanism.** The service unit gets `AllowedCPUs=<list>`. The Hermit driver
+  runs in its own dagrun scope in another slice, where that property no longer
+  applies, so the launcher also sets `HERMIT_CI_ALLOWED_CPUS`,
+  `HERMIT_CI_EXCLUDED_CPUS` and `HERMIT_CI_CPU_PLACEMENT_SOURCE`. Hermit's
+  `safe_ci_scope` then applies the same list to that scope with
+  `systemctl --user set-property --runtime <scope> AllowedCPUs=<list>`, and
+  every step and container underneath inherits it. What carries the list to
+  the cells is that scope's cgroup cpuset, not per-process affinity: the
+  validate container runs with `podman run --cgroups=disabled --privileged`
+  (hermit `ci/hermetic/run-in-pinned-root.sh`), so its processes stay in the
+  placed scope's cgroup. Measured: a container started that way inside a scope
+  placed with `AllowedCPUs=1-315` read `Cpus_allowed_list=1-315`.
+  If the scope cannot be placed, the driver prints `CPU placement NOT APPLIED`
+  with the reason, records it, and runs unchanged: placement is never a gate.
+  `bin/safehermit` applies the same derivation to its own unit (see
+  `bin/README.md`).
+- **Evidence.** The run handle carries a `cpu_placement` object with the
+  source, the excluded, allowed and online lists, the contributing and skipped
+  PMUs, and a detail. The retained log's first lines include a
+  `validate-run: cpu placement ...` line. Hermit's ledger row carries a
+  `cpu_placement` extension with what the scope actually got (`applied`, the
+  effective cpuset, and the process's `Cpus_allowed_list`), and its
+  completed-run summary prints a `CPU placement: <status> (excluded CPUs:
+  ...)` line that the verdict does not read. Reverie validations are not
+  placed. Core collisions between concurrent cells and the other unplaced
+  launch paths are tracked in https://github.com/rrnewton/hermit/issues/3347.
+- **Older readers.** `run_registry.parse_current_record` refuses a field it
+  does not know, and `cpu_placement` is new. A run handle written by this
+  revision or later is therefore unreadable to a `run_registry.py` from an
+  older revision: `ci-hub validate-status` lists it as unreadable, and an
+  older `validate-run` treats it the way it treats any unreadable handle,
+  which retains storage and can refuse admission. It is never read as a
+  pass. The health tick and the integration-tip validation run through
+  `operational-tool --run-current-tool`, so they read with the current
+  parser. Anything else that reads the registry, including the shared
+  parent checkout's `ci-hub`, must run from a tool root at or after this
+  change, as the validate-run recipe already requires (launch from a
+  detached dev-hermit worktree at `origin/main`).
+
 ## Per-run output that survives the fresh checkout
 
 Disposable checkouts are created under `worktrees/validate/`. Private Cargo

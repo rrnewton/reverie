@@ -2428,6 +2428,62 @@ else:
         self.assertEqual(4800, record["validate_lock_child_deadline_seconds"])
         self.assertEqual(4200, record["hermit_run_timeout_seconds"])
 
+    def test_launch_carries_and_records_cpu_placement(self) -> None:
+        # https://github.com/rrnewton/hermit/issues/3265: an explicit override
+        # keeps this independent of the test host's PMU layout.
+        environment = {**self.environment, "DEV_HERMIT_EXCLUDE_CPUS": "0"}
+        rc, _output, error = self.invoke(["--", "full"], environment=environment)
+
+        self.assertEqual(0, rc, error)
+        systemd = next(
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        )
+        wrapper = systemd[: systemd.index("validate-lock")]
+        allowed = [
+            value.removeprefix("AllowedCPUs=")
+            for flag, value in zip(wrapper, wrapper[1:])
+            if flag == "--property" and value.startswith("AllowedCPUs=")
+        ]
+        self.assertEqual(1, len(allowed), wrapper)
+        allowed_cpus = start_unit.cpu_placement.parse_cpu_list(allowed[0])
+        self.assertIsNotNone(allowed_cpus)
+        assert allowed_cpus is not None
+        self.assertNotIn(0, allowed_cpus)
+        self.assertTrue(allowed_cpus)
+        self.assertIn(f"HERMIT_CI_ALLOWED_CPUS={allowed[0]}", wrapper)
+        self.assertIn("HERMIT_CI_EXCLUDED_CPUS=0", wrapper)
+        self.assertIn("HERMIT_CI_CPU_PLACEMENT_SOURCE=override", wrapper)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        placement = record["cpu_placement"]
+        self.assertEqual("override", placement["source"])
+        self.assertEqual("0", placement["excluded_cpus"])
+        self.assertEqual(allowed[0], placement["allowed_cpus"])
+        self.assertEqual("DEV_HERMIT_EXCLUDE_CPUS", placement["override_env"])
+        self.assertIn(
+            "validate-run: cpu placement source=override excluded=0 ",
+            (self.root / "run.log").read_text(encoding="utf-8"),
+        )
+
+    def test_malformed_cpu_placement_override_refuses_before_launch(self) -> None:
+        environment = {**self.environment, "DEV_HERMIT_EXCLUDE_CPUS": "0-x"}
+        rc, _output, error = self.invoke(["--", "full"], environment=environment)
+
+        self.assertEqual(2, rc, error)
+        self.assertIn(
+            "validate-run: REFUSED: DEV_HERMIT_EXCLUDE_CPUS='0-x' is not a CPU list",
+            error,
+        )
+        self.assertFalse(
+            any(
+                command[0] == "systemd-run" and "validate-lock" in command
+                for command in self.fake.commands
+            )
+        )
+
     def test_materialized_profile_artifact_survives_checkout_cleanup(self) -> None:
         profile = (
             self.root / "ignored/validate/artifacts/validate-test/dagrun-profiles/"
