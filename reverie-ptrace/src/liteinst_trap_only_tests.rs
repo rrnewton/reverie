@@ -556,7 +556,7 @@ async fn trap_only_and_the_preload_runtime_are_mutually_exclusive() {
     let mut command = Command::new(parity_guest());
     command.arg("touch").arg(&marker);
     let result = TracerBuilder::<RecordTool>::new(command)
-        .liteinst_runtime("/nonexistent/preload.so", 1, 2, 3, 4)
+        .liteinst_runtime("/nonexistent/preload.so", 1, 2, 3, 4, 5)
         .liteinst_trap_only(SitePatching::Off)
         .spawn()
         .await;

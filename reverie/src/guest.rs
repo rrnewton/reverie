@@ -104,6 +104,28 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         false
     }
 
+    /// Whether this task is executing a backend-owned, guest-resident
+    /// runtime's bootstrap on the guest's behalf, rather than guest code.
+    ///
+    /// A backend may return true only for the one thread that executed a
+    /// validated runtime-begin event, and only until the matching event that
+    /// ends the bootstrap of that exec generation: the runtime's ready report,
+    /// or its report that preparation failed. These events are trap points at
+    /// fixed positions in the traced program, so the window is deterministic.
+    /// Backends without a guest-resident runtime, every other thread or forked
+    /// process, and every task outside such a window, return false.
+    ///
+    /// The syscalls issued in this window are still delivered to the Tool,
+    /// which must still handle them: the Tool keeps full knowledge of the file
+    /// descriptors and mappings they create. A Tool that models guest-visible
+    /// resource consumption, such as a virtual clock charged per syscall, must
+    /// not attribute these syscalls to the guest. Otherwise the same program
+    /// observes a different state under a backend that performs no such
+    /// bootstrap.
+    fn is_backend_runtime_bootstrap(&self) -> bool {
+        false
+    }
+
     /// Reads and returns the auxv table for this process.
     fn auxv(&self) -> Auxv {
         Auxv::new(self.pid()).expect("failed to read auxv table")
@@ -590,6 +612,10 @@ where
 
     fn is_command_bootstrap(&self) -> bool {
         self.inner.is_command_bootstrap()
+    }
+
+    fn is_backend_runtime_bootstrap(&self) -> bool {
+        self.inner.is_backend_runtime_bootstrap()
     }
 
     fn is_main_thread(&self) -> bool {
