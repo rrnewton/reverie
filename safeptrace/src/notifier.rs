@@ -170,6 +170,48 @@ fn pause_retirement_for_test(slot: &Mutex<Option<BoundedTestPause>>) {
 
 #[cfg(test)]
 #[derive(Debug)]
+struct WorkerDoneWaitProbe {
+    checked: mpsc::SyncSender<()>,
+    publisher_attempted: Mutex<mpsc::Receiver<()>>,
+    published: Mutex<mpsc::Receiver<()>>,
+    observation: Mutex<Option<WorkerDoneWaitObservation>>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct WorkerDoneWaitObservation {
+    check_sent: bool,
+    publisher_attempted: Result<(), mpsc::RecvTimeoutError>,
+    published: Result<(), mpsc::RecvTimeoutError>,
+}
+
+#[cfg(test)]
+fn pause_worker_done_wait_for_test(slot: &Mutex<Option<Arc<WorkerDoneWaitProbe>>>) {
+    let probe = slot.lock().take();
+    if let Some(probe) = probe {
+        let check_sent = probe.checked.try_send(()).is_ok();
+        let publisher_attempted = probe
+            .publisher_attempted
+            .lock()
+            .recv_timeout(Duration::from_secs(1));
+        // A timeout here does not prove that the publisher is blocked on the
+        // completion mutex: it may instead have been descheduled. The retained
+        // observation distinguishes a forced pre-park publication from a run
+        // that did not demonstrate the losing interleaving.
+        let published = probe
+            .published
+            .lock()
+            .recv_timeout(Duration::from_millis(250));
+        *probe.observation.lock() = Some(WorkerDoneWaitObservation {
+            check_sent,
+            publisher_attempted,
+            published,
+        });
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
 struct ExactTestMember {
     pid: Pid,
     pidfd: OwnedFd,
@@ -466,6 +508,8 @@ struct Event {
     worker_state: AtomicI32,
     worker_done_lock: Mutex<()>,
     worker_done_changed: Condvar,
+    #[cfg(test)]
+    worker_done_wait_probe: Mutex<Option<Arc<WorkerDoneWaitProbe>>>,
 
     /// Serializes kernel wait-status ownership before either synchronous
     /// fallback/capture or notifier registration can inspect mutable state.
@@ -695,6 +739,8 @@ impl Event {
             worker_state: AtomicI32::new(WORKER_NOT_STARTED),
             worker_done_lock: Mutex::new(()),
             worker_done_changed: Condvar::new(),
+            #[cfg(test)]
+            worker_done_wait_probe: Mutex::new(None),
             cleanup_cancel_requested: AtomicBool::new(false),
             cleanup_claim_waiters: AtomicUsize::new(0),
             wait_owner: AtomicU8::new(WAIT_OWNER_NONE),
@@ -1443,6 +1489,8 @@ impl Event {
             if self.worker_state.load(Ordering::Acquire) == WORKER_DONE {
                 return true;
             }
+            #[cfg(test)]
+            pause_worker_done_wait_for_test(&self.worker_done_wait_probe);
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return false;
@@ -3412,6 +3460,7 @@ impl Future for ExitFuture {
 mod test {
     include!("stop_observation_tests.rs");
     include!("retirement_ack_tests.rs");
+    include!("completion_wakeup_tests.rs");
     use std::collections::hash_map::DefaultHasher;
     use std::env;
     use std::io;
