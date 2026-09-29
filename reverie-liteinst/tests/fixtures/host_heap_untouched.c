@@ -18,8 +18,8 @@
 /* Field 47 of /proc/<pid>/stat is start_brk.  Field 2 (comm) may contain
  * spaces and parentheses, so fields are counted after the LAST ')': the first
  * field after it is field 3.  Returns 0 on a parse failure. */
-static int parse_start_brk(const char *buffer, long length,
-                           unsigned long *start_brk) {
+static int
+parse_start_brk(const char* buffer, long length, unsigned long* start_brk) {
   long close_paren = -1;
   for (long i = 0; i < length; ++i) {
     if (buffer[i] == ')') {
@@ -64,14 +64,15 @@ int main(void) {
   unsigned long current_brk = (unsigned long)syscall(SYS_brk, 0);
 
   char buffer[4096];
-  long fd = syscall(SYS_openat, AT_FDCWD, "/proc/self/stat", O_RDONLY | O_CLOEXEC);
+  long fd =
+      syscall(SYS_openat, AT_FDCWD, "/proc/self/stat", O_RDONLY | O_CLOEXEC);
   if (fd < 0) {
     return 2;
   }
   long length = 0;
   for (;;) {
-    long got = syscall(SYS_read, fd, buffer + length,
-                       (long)sizeof(buffer) - 1 - length);
+    long got = syscall(
+        SYS_read, fd, buffer + length, (long)sizeof(buffer) - 1 - length);
     if (got < 0) {
       return 2;
     }
@@ -91,7 +92,10 @@ int main(void) {
 
   struct mallinfo2 info = mallinfo2();
 
-  printf("brk_delta=%ld arena=%zu mmapped=%zu\n",
-         (long)(current_brk - start_brk), info.arena, info.hblkhd);
+  printf(
+      "brk_delta=%ld arena=%zu mmapped=%zu\n",
+      (long)(current_brk - start_brk),
+      info.arena,
+      info.hblkhd);
   return 0;
 }

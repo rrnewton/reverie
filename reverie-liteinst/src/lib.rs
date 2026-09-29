@@ -270,10 +270,15 @@ pub unsafe extern "C" fn reverie_liteinst_initialize_host(
     }
     // SAFETY: required by the caller contract above; copy before initialization.
     let config = unsafe { *config };
-    match runtime::initialize_host_runtime_explicit(config) {
+    host_initialize_status(runtime::initialize_host_runtime_explicit(config))
+}
+
+/// Zero, or the negative errno that [`reverie_liteinst_initialize_host`] returns.
+fn host_initialize_status(result: std::io::Result<()>) -> libc::c_int {
+    match result {
         Ok(()) => 0,
         Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => {
-            // Constructor-heap exhaustion carries a message, not an errno.
+            // A constructor-heap miss carries a message, not an errno.
             -error.raw_os_error().unwrap_or(libc::ENOMEM)
         }
         Err(error) => -error.raw_os_error().unwrap_or(libc::EIO),
