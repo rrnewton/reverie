@@ -2714,6 +2714,74 @@ async fn restart_parity(
     (ptrace_stdout, ptrace_events)
 }
 
+/// Attempts `timer_restart_parity` may make when an attempt diverges.
+const SKID_ATTEMPTS: usize = 3;
+
+/// As `restart_parity`, for a plan whose Tool requests a precise timer, and
+/// also requiring plain ptrace's events to equal `expected` exactly. A
+/// precise timer that the PMU delivers past its programmed target
+/// (`reverie::SKID_OVERSHOOT_MARKER`) fires late, so its `timer +N` event
+/// exceeds the requested distance. The skid tail is heavy and no fixed
+/// margin covers it; reverie's documented policy is that a divergence may be
+/// retried if and only if the same run recorded an overshoot. An attempt
+/// that differs in any way is therefore retried only when
+/// `reverie::take_skid_overshoot_count` shows an overshoot during that
+/// attempt (both backends run in this process); any other divergence, and
+/// the last attempt, fails on the exact comparisons.
+async fn timer_restart_parity(
+    mode: &str,
+    plan: RestartPlan,
+    hooks: u64,
+    label: &str,
+    expected: &[&str],
+) -> String {
+    for attempt in 1..=SKID_ATTEMPTS {
+        let _ = reverie::take_skid_overshoot_count();
+        let (ptrace_stdout, ptrace_events) =
+            run_restart_fixture(RestartBackend::Ptrace, mode, plan)
+                .await
+                .unwrap();
+        let (hybrid_stdout, hybrid_events) =
+            run_restart_fixture(RestartBackend::HostHybrid, mode, plan)
+                .await
+                .unwrap();
+        let overshoots = reverie::take_skid_overshoot_count();
+        let expected_hybrid_stdout = ptrace_stdout.replace(
+            &restart_counts(RestartBackend::Ptrace, 1),
+            &restart_counts(RestartBackend::HostHybrid, hooks),
+        );
+        if hybrid_stdout == expected_hybrid_stdout
+            && hybrid_events == ptrace_events
+            && ptrace_events == expected
+        {
+            return ptrace_stdout;
+        }
+        if overshoots > 0 && attempt < SKID_ATTEMPTS {
+            eprintln!(
+                "{label}: attempt {attempt} recorded {overshoots} skid overshoot(s) and \
+                 diverged (ptrace {ptrace_events:?}, host-hybrid {hybrid_events:?}); retrying"
+            );
+            continue;
+        }
+        assert_eq!(
+            hybrid_stdout, expected_hybrid_stdout,
+            "{label}: host-hybrid output differs from plain ptrace \
+             (attempt {attempt}, {overshoots} skid overshoot(s))"
+        );
+        assert_eq!(
+            hybrid_events, ptrace_events,
+            "{label}: host-hybrid Tool events differ from plain ptrace \
+             (attempt {attempt}, {overshoots} skid overshoot(s))"
+        );
+        assert_eq!(
+            ptrace_events, expected,
+            "{label}: plain ptrace Tool events differ from the expected \
+             (attempt {attempt}, {overshoots} skid overshoot(s))"
+        );
+    }
+    unreachable!("the last attempt returns or fails an assertion")
+}
+
 /// A restart code with a signal whose guest handler lacks `SA_RESTART`
 /// follows Linux: `-ERESTARTSYS`, `-ERESTARTNOHAND` and
 /// `-ERESTART_RESTARTBLOCK` become `EINTR` after the handler runs, and
@@ -3247,26 +3315,22 @@ async fn host_hybrid_landing_stop_does_not_cancel_a_timer() {
             signal_timer: true,
             ..Default::default()
         };
-        let (stdout, events) = restart_parity(mode, plan, 1, mode).await;
-        let result = if restarted { RESTART_RESULT } else { -4 };
-        assert_eq!(
-            stdout,
-            format!("read-result={result} handled=1 nested-ok=0 traps=- hooks=-\n"),
-            "{mode}"
-        );
         let last = if restarted {
             "magic read(0x7e57,1)".to_owned()
         } else {
             format!("timer +{SIGNAL_TIMER_RCBS}")
         };
+        let expected = [
+            "read(warm)",
+            "magic read(0x7e57,1)",
+            "signal SIGUSR1",
+            last.as_str(),
+        ];
+        let stdout = timer_restart_parity(mode, plan, 1, mode, &expected).await;
+        let result = if restarted { RESTART_RESULT } else { -4 };
         assert_eq!(
-            events,
-            [
-                "read(warm)",
-                "magic read(0x7e57,1)",
-                "signal SIGUSR1",
-                &last
-            ],
+            stdout,
+            format!("read-result={result} handled=1 nested-ok=0 traps=- hooks=-\n"),
             "{mode}"
         );
     }
@@ -3294,26 +3358,22 @@ async fn host_hybrid_landing_inside_a_timer_step_window_keeps_the_timer() {
             signal_timer_near: true,
             ..Default::default()
         };
-        let (stdout, events) = restart_parity(mode, plan, 1, mode).await;
-        let result = if restarted { RESTART_RESULT } else { -4 };
-        assert_eq!(
-            stdout,
-            format!("read-result={result} handled=1 nested-ok=0 traps=- hooks=-\n"),
-            "{mode}"
-        );
         let last = if restarted {
             "magic read(0x7e57,1)".to_owned()
         } else {
             format!("timer +{SIGNAL_TIMER_NEAR_RCBS}")
         };
+        let expected = [
+            "read(warm)",
+            "magic read(0x7e57,1)",
+            "signal SIGUSR1",
+            last.as_str(),
+        ];
+        let stdout = timer_restart_parity(mode, plan, 1, mode, &expected).await;
+        let result = if restarted { RESTART_RESULT } else { -4 };
         assert_eq!(
-            events,
-            [
-                "read(warm)",
-                "magic read(0x7e57,1)",
-                "signal SIGUSR1",
-                &last
-            ],
+            stdout,
+            format!("read-result={result} handled=1 nested-ok=0 traps=- hooks=-\n"),
             "{mode}"
         );
     }
