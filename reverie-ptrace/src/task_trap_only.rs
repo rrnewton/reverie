@@ -416,6 +416,10 @@ fn mapping_ranges(nr: Sysno, args: &SyscallArgs) -> Vec<(u64, u64)> {
         // The segment's size is unknown to the tracer: SHM_REMAP may replace
         // any mapping. Without it an overlapping attach fails with EINVAL.
         Sysno::shmat if a2 & SHM_REMAP != 0 => vec![ALL_ADDRESSES],
+        // The ranges sit in a guest iovec array the guest can rewrite
+        // between this stop and the kernel's read of it, and the pidfd may
+        // name any process: reach every address of the caller's table.
+        Sysno::process_madvise => vec![ALL_ADDRESSES],
         _ => Vec::new(),
     }
 }
@@ -1504,6 +1508,19 @@ impl<L: Tool + 'static> TracedTask<L> {
                 flags
             }
         });
+        #[cfg(test)]
+        let recorded = recorded.map(|flags| {
+            if trap_only
+                .shared
+                .hooks
+                .flip_recorded_clone_vfork
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                flags ^ CLONE_VFORK
+            } else {
+                flags
+            }
+        });
         let vfork = op == safeptrace::ChildOp::Vfork;
         let shared_vm = shares_address_space(parent.pid(), child);
         let flags = recorded.filter(|flags| {
@@ -1879,6 +1896,33 @@ mod mapping_range_tests {
         assert_eq!(
             ranges(Sysno::munmap, [!(page - 1), 2 * page, 0, 0, 0]),
             vec![(!(PAGE_SIZE - 1), u64::MAX)]
+        );
+    }
+
+    #[test]
+    fn mapping_ranges_restore_every_address_for_process_madvise() {
+        let dontneed = libc::MADV_DONTNEED as usize;
+        let cold = libc::MADV_COLD as usize;
+        // (pidfd, iovec, vlen, advice, flags): whatever the iovec array,
+        // the advice or the process the pidfd names, every address.
+        for args in [
+            [3, 0x7ffc_0000_1000, 1, dontneed, 0],
+            [3, 0x7ffc_0000_1000, 1, cold, 0],
+            [3, 0x7ffc_0000_1000, 1024, dontneed, 0],
+            [3, 0, 1, dontneed, 0],
+            [3, 0x7ffc_0000_1000, 0, dontneed, 0],
+            [usize::MAX, 0x7ffc_0000_1000, 1, dontneed, 1],
+        ] {
+            assert_eq!(
+                ranges(Sysno::process_madvise, args),
+                vec![ALL_ADDRESSES],
+                "{args:x?}"
+            );
+        }
+        // madvise itself names its range directly.
+        assert_eq!(
+            ranges(Sysno::madvise, [0x5000_0010, 1, dontneed, 0, 0]),
+            vec![(0x5000_0000, 0x5000_1000)]
         );
     }
 }

@@ -34,16 +34,20 @@
 //! produced.
 //!
 //! The site-table lifecycle (P2 spec sections 4 and 5, in
-//! `task_trap_only.rs`) restores patched bytes before the guest changes
-//! them through the syscalls it can see at a seccomp stop:
-//! - one table per address space, shared by `CLONE_VM` children, copied on
-//!   fork and replaced on exec;
+//! `task_trap_only.rs`) keeps one table per address space, shared by
+//! `CLONE_VM` children, copied on fork and replaced on exec. It restores
+//! patched bytes at the seccomp stop of each syscall named in the bullets
+//! below, before that syscall runs. A change to the guest's text made any
+//! other way is not seen; the P2e gates below name the ways known so far.
 //! - before a syscall that creates a second executing task (a `CLONE_VM`
 //!   clone without `CLONE_VFORK`, or any `CLONE_UNTRACED` clone) runs, every
 //!   site is restored and the table is disabled for good;
 //! - before a mapping change (`mmap(MAP_FIXED)`, `munmap`, `mremap`,
 //!   `mprotect`, `pkey_mprotect`, `madvise`, `shmat`, `remap_file_pages`)
 //!   runs, the sites it can reach are restored;
+//! - before any `process_madvise` runs, every site of the caller's table is
+//!   restored: the tracer reads neither its `iovec` array nor which process
+//!   its pidfd names;
 //! - before the guest installs a seccomp filter or syscall user dispatch,
 //!   every site is restored and the table and all its descendants (fork,
 //!   clone and exec) are disabled.
@@ -63,9 +67,26 @@
 //!   changes to the file on that page, as it would under plain ptrace;
 //! - another process writing the guest's text (`process_vm_writev`,
 //!   `/proc/<pid>/mem`), which can race a restore's read and write;
+//! - the guest writing its own text through its `mem` file (a `write` or
+//!   `pwrite` to `/proc/self/mem`), whose stop restores nothing: a byte of a
+//!   site that the write leaves alone keeps the patch (`0x80` where plain
+//!   ptrace has `0x05`, after a write over the first byte only) until the
+//!   next restore, and that restore takes a byte the guest wrote with the
+//!   patch's own value back to the original;
 //! - a seccomp filter or syscall user dispatch installed before the tracee
 //!   starts (inherited from the launcher), which never reaches the lineage
 //!   check;
+//! - a `process_madvise` whose pidfd names a traced process with another
+//!   address space restores the caller's table, not the target's. When the
+//!   target's address space is not the caller's (`mm != current->mm`), the
+//!   kernel accepts only `MADV_COLD`, `MADV_PAGEOUT`, `MADV_WILLNEED` and
+//!   `MADV_COLLAPSE` (`process_madvise_remote_valid` in `mm/madvise.c`), and
+//!   each keeps a page's contents, so no difference from plain ptrace is
+//!   known; a kernel that accepted more advice would open one. A target that
+//!   shares the caller's address space (the parent a vfork child runs for,
+//!   or a process created with `CLONE_VM`) accepts any advice, but it uses
+//!   the caller's table, which the restore covers. No test names another
+//!   process;
 //! - syscalls a Tool injects bypass the lifecycle: a Tool that substitutes a
 //!   clone reaches the new-child stop with no recorded flags, which restores
 //!   and disables (the undecided path); one that substitutes a mapping
@@ -75,6 +96,12 @@
 //! `remap_file_pages`, `shmat(SHM_REMAP)` and `PROT_GROWSDOWN` rules (their
 //! ranges have a unit test only), a mapping syscall that fails (it restores
 //! anyway), and a new child when `kcmp(KCMP_VM)` cannot answer.
+//!
+//! Out of scope rather than a gate: `userfaultfd`'s `UFFDIO_MOVE`, which
+//! remaps pages without a mapping syscall. The kernel moves a page only
+//! between two anonymous mappings that are both writable (`VM_WRITE`) and
+//! have equal access flags, so it can neither take a page from patched text,
+//! which is `r-x`, nor put one over it.
 //!
 //! Gates on the P2d steps, which exercise the masked hop further: an
 //! asynchronous signal and an `ERESTART*` restart through an in-place hop
@@ -698,6 +725,12 @@ pub(crate) struct TrapOnlyTestHooks {
     /// space, a real thread as not sharing it. The creating stop itself
     /// still acts on the real flags.
     pub(crate) flip_recorded_clone_vm: std::sync::atomic::AtomicBool,
+    /// Flip `CLONE_VFORK` in the clone flags recorded at every creating
+    /// stop, as seen by the new-child stop only, so that they disagree with
+    /// the kind of new-child stop that arrives: a real fork or thread is
+    /// recorded as a vfork, a real vfork as not one. The creating stop
+    /// itself still acts on the real flags.
+    pub(crate) flip_recorded_clone_vfork: std::sync::atomic::AtomicBool,
     /// Make H4 see the slot exit stop's rip one byte past where the kernel
     /// left it (the tracee is not changed), to exercise `TrapOnlyHopExitRip`.
     pub(crate) displace_hop_exit_rip: std::sync::atomic::AtomicBool,
