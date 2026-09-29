@@ -2872,7 +2872,13 @@ def remove_fresh_checkouts_batch(
     for authority in (record_authorities or {}).values():
         require_cleanup_record_authority(authority)
     error = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
-    if result.returncode != 0:
+    # Exit 0 or 1 carries a JSON report that names every requested slot's
+    # outcome.  Newer wrkslots exit 1 when the batch retained at least one
+    # slot; older wrkslots exited 0 for that report too, so a valid exit-0
+    # report may still retain slots.  A crash or a launcher failure can also
+    # exit 1, without a report; that case, and every other status, retains
+    # every requested checkout.
+    if result.returncode not in (0, 1):
         return {str(path): error for path in requested.values()}
     try:
         value = json.loads(result.stdout)
@@ -2930,8 +2936,13 @@ def remove_fresh_checkouts_batch(
             or (counts[2] > 0 and counts[1] != 1)
         ):
             raise ValueError("batch census and outcomes disagree")
+        if result.returncode == 1 and removed_count == len(requested):
+            raise ValueError("exit 1 with every requested slot reported removed")
     except (json.JSONDecodeError, ValueError) as parse_error:
         error = f"wrkslots returned an invalid batch report: {parse_error}"
+        if result.returncode == 1:
+            stderr = result.stderr.strip() or "no stderr"
+            error = f"{error} (exit 1: {stderr})"
         return {str(path): error for path in requested.values()}
     return {
         str(path): (

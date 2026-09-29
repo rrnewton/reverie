@@ -220,6 +220,10 @@ class FakeRun:
         self.validate_batch_retained: dict[str, str] = {}
         self.validate_batch_output: str | None = None
         self.validate_batch_zero_census = False
+        # Exit status and stderr of the batch command.  Newer wrkslots exits 1
+        # when it retained a slot; the default 0 models the older client.
+        self.validate_batch_rc = 0
+        self.validate_batch_stderr = ""
         self.ownerless_batch_retained: dict[str, str] = {}
         self.ownerless_batch_nonblocking: set[str] = set()
         self.ownerless_batch_output: str | None = None
@@ -594,7 +598,12 @@ class FakeRun:
             and "remove-validate-batch" in command
         ):
             if self.validate_batch_output is not None:
-                return completed(command, stdout=self.validate_batch_output)
+                return completed(
+                    command,
+                    rc=self.validate_batch_rc,
+                    stdout=self.validate_batch_output,
+                    stderr=self.validate_batch_stderr,
+                )
             project_root = Path(command[command.index("--project-root") + 1])
             identities = [
                 value.rsplit("=", 1)
@@ -618,6 +627,8 @@ class FakeRun:
             shared_censuses = 0 if self.validate_batch_zero_census else 1
             return completed(
                 command,
+                rc=self.validate_batch_rc,
+                stderr=self.validate_batch_stderr,
                 stdout=json.dumps(
                     {
                         "schema": 1,
@@ -9014,6 +9025,154 @@ else:
         )
         self.assertNotIn(
             "checkout_removed_at", start_unit.run_registry.read_record(second_record)
+        )
+
+    def test_exit_one_mixed_batch_report_updates_only_the_removed_checkout(
+        self,
+    ) -> None:
+        """Newer wrkslots exits 1 when it retained a slot; its report still
+        names the slot it removed, and that removal must be recorded."""
+        first, first_record = self.managed_cleanup_record("exit-one-a")
+        second, second_record = self.managed_cleanup_record("exit-one-b")
+        self.fake.validate_batch_retained[second.name] = "live process still uses checkout"
+        self.fake.validate_batch_rc = 1
+        self.fake.validate_batch_stderr = (
+            "wrkslots: remove-validate-batch exited 1: it retained at least one slot"
+        )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([str(first)], report["removed"])
+        self.assertEqual(1, len(report["retained"]))
+        self.assertEqual(str(second), report["retained"][0]["checkout"])
+        self.assertEqual(
+            "live process still uses checkout", report["retained"][0]["reason"]
+        )
+        self.assertFalse(first.exists())
+        self.assertTrue(second.exists())
+        self.assertIn(
+            "checkout_removed_at", start_unit.run_registry.read_record(first_record)
+        )
+        self.assertNotIn(
+            "checkout_removed_at", start_unit.run_registry.read_record(second_record)
+        )
+
+    def test_exit_one_direct_mixed_report_names_each_outcome(self) -> None:
+        first = self.root / "worktrees/validate/validate-fresh-direct-a"
+        second = self.root / "worktrees/validate/validate-fresh-direct-b"
+        first.mkdir(parents=True)
+        second.mkdir(parents=True)
+        self.fake.validate_batch_retained[second.name] = "provider retained"
+        self.fake.validate_batch_rc = 1
+
+        outcomes = start_unit.remove_fresh_checkouts_batch(
+            self.root,
+            [
+                (first, start_unit.WrkslotsIdentity(first.name, 7)),
+                (second, start_unit.WrkslotsIdentity(second.name, 7)),
+            ],
+            run=self.fake,
+            tool_root=self.root,
+        )
+
+        self.assertEqual(
+            {str(first): None, str(second): "provider retained"}, outcomes
+        )
+        self.assertFalse(first.exists())
+        self.assertTrue(second.exists())
+
+    def test_exit_one_without_a_report_retains_every_checkout(self) -> None:
+        first, first_record = self.managed_cleanup_record("exit-one-crash-a")
+        second, second_record = self.managed_cleanup_record("exit-one-crash-b")
+        self.fake.validate_batch_output = ""
+        self.fake.validate_batch_rc = 1
+        self.fake.validate_batch_stderr = "Traceback (most recent call last): boom"
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertEqual(2, len(report["retained"]))
+        for row in report["retained"]:
+            self.assertIn("invalid batch report", row["reason"])
+            self.assertIn("exit 1: Traceback (most recent call last): boom", row["reason"])
+        for checkout, record_path in ((first, first_record), (second, second_record)):
+            self.assertTrue(checkout.exists())
+            self.assertNotIn(
+                "checkout_removed_at", start_unit.run_registry.read_record(record_path)
+            )
+
+    def test_exit_one_report_that_retains_nothing_is_invalid(self) -> None:
+        fresh = self.root / "worktrees/validate/validate-fresh-exit-one-all"
+        fresh.mkdir(parents=True)
+        self.fake.validate_batch_rc = 1
+        self.fake.validate_batch_output = json.dumps(
+            {
+                "schema": 1,
+                "batch_limit": 8,
+                "process_censuses": 1,
+                "shared_process_censuses": 1,
+                "same_uid_process_censuses": 1,
+                "requested": 1,
+                "removed": [{"slot": fresh.name, "generation": 7}],
+                "retained": [],
+            }
+        )
+
+        outcomes = start_unit.remove_fresh_checkouts_batch(
+            self.root,
+            [(fresh, start_unit.WrkslotsIdentity(fresh.name, 7))],
+            run=self.fake,
+            tool_root=self.root,
+        )
+
+        reason = outcomes[str(fresh)] or ""
+        self.assertIn("invalid batch report", reason)
+        self.assertIn("exit 1 with every requested slot reported removed", reason)
+
+    def test_other_nonzero_exit_ignores_a_report_and_retains_every_checkout(
+        self,
+    ) -> None:
+        first = self.root / "worktrees/validate/validate-fresh-exit-three-a"
+        second = self.root / "worktrees/validate/validate-fresh-exit-three-b"
+        first.mkdir(parents=True)
+        second.mkdir(parents=True)
+        self.fake.validate_batch_rc = 3
+        self.fake.validate_batch_stderr = "REFUSED: whole batch refused"
+        self.fake.validate_batch_output = json.dumps(
+            {
+                "schema": 1,
+                "batch_limit": 8,
+                "process_censuses": 1,
+                "shared_process_censuses": 1,
+                "same_uid_process_censuses": 1,
+                "requested": 2,
+                "removed": [{"slot": first.name, "generation": 7}],
+                "retained": [
+                    {"slot": second.name, "generation": 7, "reason": "retained"}
+                ],
+            }
+        )
+
+        outcomes = start_unit.remove_fresh_checkouts_batch(
+            self.root,
+            [
+                (first, start_unit.WrkslotsIdentity(first.name, 7)),
+                (second, start_unit.WrkslotsIdentity(second.name, 7)),
+            ],
+            run=self.fake,
+            tool_root=self.root,
+        )
+
+        self.assertEqual(
+            {
+                str(first): "REFUSED: whole batch refused",
+                str(second): "REFUSED: whole batch refused",
+            },
+            outcomes,
         )
 
     def test_unsafe_duplicate_record_vetoes_the_physical_checkout(self) -> None:

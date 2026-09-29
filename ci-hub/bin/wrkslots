@@ -275,6 +275,16 @@ if ((help_requested == 0 && host_removal == 1)); then
     exit 0
   else
     status=$?
+    if [[ $status == 1 && $command_name == remove-validate-batch ]]; then
+      # remove-validate-batch exits 1 when it retained at least one slot, after
+      # printing a report that names each slot's outcome. A crash or a launcher
+      # failure can also exit 1, without that report. Pass 1 through so the
+      # caller can read the report; a caller must treat 1 without a valid
+      # report as every slot retained.
+      printf '%s\n' \
+        "wrkslots: remove-validate-batch exited 1: it retained at least one slot, or it failed before it could report. When stdout holds its JSON report, that report names each slot's outcome; otherwise treat every requested slot as retained." >&2
+      exit 1
+    fi
     case "$status" in
       2|3) exit "$status" ;;
       *) refuse_unknown \

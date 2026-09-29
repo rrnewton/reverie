@@ -89,6 +89,7 @@ class WrkslotsLauncherTest(unittest.TestCase):
                     "proof_fd": os.environ.get("WRKSLOTS_REMOVE_PROOF_FD"),
                     "ancestry": ancestry(),
                 }))
+                sys.stdout.write(os.environ.get("FIXTURE_INNER_STDOUT", ""))
                 raise SystemExit(int(os.environ.get("FIXTURE_INNER_RC", "0")))
                 """
             ),
@@ -297,6 +298,58 @@ class WrkslotsLauncherTest(unittest.TestCase):
         )
         coordinator = record["argv"][record["argv"].index("--coordinator-pid") + 1]
         self.assertEqual(str(os.getpid()), coordinator)
+
+    def validate_batch_arguments(self) -> tuple[str, ...]:
+        return (
+            "--project-root",
+            str(self.root),
+            "remove-validate-batch",
+            "--slot",
+            "validate01=11",
+            "--coordinator-pid",
+            str(os.getpid()),
+            "--format",
+            "json",
+        )
+
+    def test_validate_batch_exit_one_passes_its_report_through(self) -> None:
+        report = '{"retained": [{"slot": "validate01"}]}\n'
+        completed = self.run_launcher(
+            *self.validate_batch_arguments(),
+            FIXTURE_INNER_RC="1",
+            FIXTURE_INNER_STDOUT=report,
+        )
+
+        self.assertEqual(1, completed.returncode, completed.stderr)
+        self.assertEqual(report, completed.stdout)
+        self.assertIn(
+            "remove-validate-batch exited 1: it retained at least one slot",
+            completed.stderr,
+        )
+        self.assertNotIn("state: UNKNOWN", completed.stderr)
+        self.assertTrue(self.record.exists())
+
+    def test_validate_batch_other_inner_failure_is_still_unknown(self) -> None:
+        completed = self.run_launcher(
+            *self.validate_batch_arguments(), FIXTURE_INNER_RC="4"
+        )
+
+        self.assertEqual(3, completed.returncode)
+        self.assertIn("state: UNKNOWN", completed.stderr)
+        self.assertIn("failed with exit 4", completed.stderr)
+
+    def test_exit_one_passes_through_only_for_the_validate_batch(self) -> None:
+        for arguments in (
+            self.removal_arguments(),
+            self.retirement_arguments(),
+            self.frozen_batch_arguments(),
+        ):
+            with self.subTest(command=arguments[2]):
+                completed = self.run_launcher(*arguments, FIXTURE_INNER_RC="1")
+
+                self.assertEqual(3, completed.returncode)
+                self.assertIn("state: UNKNOWN", completed.stderr)
+                self.assertNotIn("exited 1: it retained", completed.stderr)
 
     def test_retire_pending_uses_the_same_host_handoff(self) -> None:
         completed = self.run_launcher(*self.retirement_arguments())
