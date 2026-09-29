@@ -484,20 +484,28 @@ class DirectLedgerFixture(unittest.TestCase):
 
     def test_measured_head_move_refuses_derived_delivery_after_raw_publication(self):
         self.append("head-move")
-        network = mirror._network
+        run = mirror._run
+        renders = []
 
         def move_after_scorecard(command, **kwargs):
-            result = network(command, **kwargs)
-            if str(self.tool / "ci/compat-envelope/scorecard.rs") in command and command[-1] != "--help":
+            result = run(command, **kwargs)
+            # The renderer is run directly, never through the network wrapper.
+            if (command[0] == "rust-script" and str(self.tool / "ci/compat-envelope/scorecard.rs") in command
+                    and command[-1] != "--help"):
+                renders.append(command)
                 git(self.source, "commit", "--allow-empty", "-qm", "concurrent source change")
             return result
 
-        with mock.patch.object(mirror, "_network", side_effect=move_after_scorecard):
+        with mock.patch.object(mirror, "_run", side_effect=move_after_scorecard):
             report = self.publish()
+        self.assertEqual(1, len(renders))
         self.assertEqual("derived-failed", report["state"])
         self.assertIn("source HEAD changed", report["scorecard"]["error"])
         self.assertEqual([row("head-move")], self.remote_rows())
-        self.assertTrue((self.parent / mirror.WRITER_RELATIVE / "scorecard/SCORECARD.md").exists())
+        # The refused render stayed in its discarded copy.
+        writer = self.parent / mirror.WRITER_RELATIVE
+        self.assertEqual("legacy scorecard\n", (writer / "scorecard/SCORECARD.md").read_text())
+        self.assertEqual("", git(writer, "status", "--porcelain"))
 
     def test_unknown_dirty_writer_is_retained_without_reset(self):
         self.publish(publish_only=True)
@@ -704,11 +712,20 @@ class DirectLedgerFixture(unittest.TestCase):
         row_bytes = json.dumps({"run_id": "run-1", "record_id": "record-1",
                                 "started_at": "2026-09-21T12:00:00Z"}).encode()
         calls = []
-        original = mirror._network
+        original = mirror._run
+        writer = self.parent / mirror.WRITER_RELATIVE
 
         def inspect(command, **kwargs):
-            if str(self.tool / "ci/compat-envelope/scorecard.rs") in command and command[-1] != "--help":
+            if (command[0] == "rust-script" and str(self.tool / "ci/compat-envelope/scorecard.rs") in command
+                    and command[-1] != "--help"):
                 calls.append(command)
+                # Measured code gets a throwaway ledger copy, no routes and no credentials.
+                ledger = Path(kwargs["environment"][series.LEDGER_ROOT_ENV])
+                self.assertNotEqual(writer.resolve(), ledger.resolve())
+                self.assertTrue(ledger.parent.name.startswith(mirror.RENDER_COPY_PREFIX), ledger)
+                self.assertEqual(writer.parent, ledger.parent.parent)
+                self.assertEqual("true", kwargs["environment"]["CARGO_NET_OFFLINE"])
+                self.assertEqual(mirror.RENDERER_WITHHELD_ENV, kwargs["withhold"])
                 self.assertEqual(command[:5], [
                     "rust-script", "--force", "--toolchain",
                     "nightly-2026-07-12-x86_64-unknown-linux-gnu",
@@ -742,7 +759,7 @@ class DirectLedgerFixture(unittest.TestCase):
             return original(command, **kwargs)
 
         with mock.patch.object(mirror, "finalized_producer_row", return_value=row_bytes) as query, \
-                mock.patch.object(mirror, "_network", side_effect=inspect):
+                mock.patch.object(mirror, "_run", side_effect=inspect):
             report = mirror.mirror(self.parent, self.source, self.target, mirror.REMOTE_URL,
                                    net_wrapper="/usr/bin/env", tool_checkout=self.tool,
                                    results=self.root / "results", finalized_run_id="run-1")
@@ -750,6 +767,7 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual(2, query.call_count)
         self.assertEqual(1, len(calls))
         self.assertFalse(Path(calls[0][calls[0].index("--finalized-row") + 1]).exists())
+        self.assertEqual([], list(writer.parent.glob(mirror.RENDER_COPY_PREFIX + "*")))
 
     def test_canonical_run_change_refuses_derived_commit_without_losing_rows(self):
         self.append("finalized-cell")
@@ -764,7 +782,11 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertIn("changed during", report["scorecard"]["error"])
         self.assertEqual(before, git(self.remote, "rev-parse", "main:scorecard/cells.json"))
         self.assertEqual(["finalized-cell"], [row["event_id"] for row in self.remote_rows()])
-        self.assertTrue(git(self.parent / mirror.WRITER_RELATIVE, "status", "--porcelain"))
+        # The renderer ran in a scratch copy; a refused render copies nothing
+        # into the writer and leaves no copy behind.
+        writer = self.parent / mirror.WRITER_RELATIVE
+        self.assertEqual("", git(writer, "status", "--porcelain"))
+        self.assertEqual([], list(writer.parent.glob(mirror.RENDER_COPY_PREFIX + "*")))
 
     def portable_fixture(self):
         # The fast suite models canonical selection and the native writer. Exact
@@ -1557,17 +1579,26 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertIsNone(self.remote_latest())
         self.assertEqual([row("forged-path")], self.remote_rows())
 
-    def test_renderer_commit_in_the_writer_is_refused_before_push(self):
+    def test_renderer_commit_in_its_ledger_copy_is_refused_before_push(self):
+        # The ledger the renderer is given is a throwaway copy: a commit there,
+        # or a push from it, reaches neither the writer nor the remote.
         self.set_tool("(p/'SCORECARD.md').write_text('rendered\\n')\n"
                       "subprocess.run(['git','-C',str(ledger),'commit','--allow-empty','-qm','renderer forged commit'],"
-                      "check=True)\n")
+                      "check=True)\n"
+                      "pushed=subprocess.run(['git','-C',str(ledger),'push','origin','HEAD:refs/heads/forged'],"
+                      "capture_output=True)\n"
+                      "assert pushed.returncode != 0, pushed\n")
         self.append("forged-commit")
         report, _ = self.publish_at(self.target)
         self.assertEqual("derived-failed", report["state"])
-        self.assertIn("moved the ledger writer HEAD", report["scorecard"]["error"])
-        self.assertNotIn("renderer forged commit", git(self.remote, "log", "--format=%s", "main"))
+        self.assertIn("moved the HEAD of its ledger copy; nothing was copied", report["scorecard"]["error"])
+        self.assertNotIn("renderer forged commit", git(self.remote, "log", "--format=%s", "--all"))
         self.assertIsNone(self.remote_latest())
         self.assertEqual([row("forged-commit")], self.remote_rows())
+        writer = self.parent / mirror.WRITER_RELATIVE
+        self.assertEqual(report["series_commit"], git(writer, "rev-parse", "HEAD"))
+        self.assertEqual("", git(writer, "status", "--porcelain"))
+        self.assertEqual([], list(writer.parent.glob(mirror.RENDER_COPY_PREFIX + "*")))
 
     def test_scorecard_head_only_moves_forward_along_ancestry(self):
         self.use_head_renderer()
@@ -1694,8 +1725,8 @@ class DirectLedgerFixture(unittest.TestCase):
         return listed.splitlines()
 
     def test_failed_scorecard_still_publishes_the_derived_proof_and_stays_failed(self):
-        # The renderer writes, then fails: its partial output stays unstaged
-        # and retained, and only the carrier is committed beside the rows.
+        # The renderer writes, then fails: its partial output is discarded with
+        # its ledger copy, and only the carrier is committed beside the rows.
         self.set_tool("(p/'SCORECARD.md').write_text('partial render\\n')\nsys.exit('renderer exploded')\n")
         prepared, encoded = self.derived_fixture()
         calls = []
@@ -1723,22 +1754,40 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertIn("SCORECARD FAILED", stderr)
         self.assertIn("FINALIZED PROOF PUBLISHED", stderr)
         writer = self.parent / mirror.WRITER_RELATIVE
-        self.assertEqual("partial render\n", (writer / "scorecard/SCORECARD.md").read_text())
-        self.assertEqual({"scorecard/SCORECARD.md": " M"}, mirror._worktree_changes(writer))
+        self.assertEqual("legacy scorecard\n", (writer / "scorecard/SCORECARD.md").read_text())
+        self.assertEqual({}, mirror._worktree_changes(writer))
 
     def test_failed_scorecard_cannot_leave_files_where_the_carrier_is_written(self):
+        # A forged carrier in the renderer's own copy is discarded with it.
         self.set_tool("(p/'finalized/runs').mkdir(parents=True)\n"
                       "(p/'finalized/runs/forged.json').write_text('{}\\n')\nsys.exit('renderer exploded')\n")
         prepared, encoded = self.derived_fixture()
-        self.append("forged-before-proof")
+        self.append("forged-in-copy")
         with self.proof_doubles(prepared, encoded):
+            report, _ = self.publish_at(self.target, results=self.root / "results",
+                                        finalized_run_id=prepared["selection"]["row"]["run_id"])
+        self.assertEqual("derived-failed", report["state"])
+        self.assertEqual("published", report["portable_proof"]["state"], report)
+        carriers = self.carrier_paths()
+        self.assertEqual(1, len(carriers))
+        self.assertNotIn("scorecard/finalized/runs/forged.json", carriers)
+        # One planted in the real writer (reached past the copy) blocks the carrier.
+        writer = self.parent / mirror.WRITER_RELATIVE
+        self.set_tool(f"w=pathlib.Path({str(writer)!r})/'scorecard/finalized/runs'\n"
+                      "w.mkdir(parents=True, exist_ok=True)\n"
+                      "(w/'forged.json').write_text('{}\\n')\nsys.exit('renderer exploded')\n")
+        again, encoded_again = self.derived_fixture(run_id="another-run")
+        again["selection"]["terminal"]["event_id"] = "another-terminal"
+        self.append("forged-in-writer")
+        with self.proof_doubles(again, encoded_again):
             report, stderr = self.publish_at(self.target, results=self.root / "results",
-                                             finalized_run_id=prepared["selection"]["row"]["run_id"])
+                                             finalized_run_id="another-run")
         self.assertEqual("derived-failed", report["state"])
         self.assertEqual("failed", report["portable_proof"]["state"])
         self.assertIn("under the finalized proof directory", report["portable_proof"]["error"])
-        self.assertEqual([], self.carrier_paths())
+        self.assertEqual(carriers, self.carrier_paths())
         self.assertIn("finalized proof failed", stderr)
+        self.assertEqual({"scorecard/finalized/runs/forged.json": "??"}, mirror._worktree_changes(writer))
 
     def test_superseded_run_publishes_its_derived_proof_without_moving_the_head(self):
         self.use_head_renderer()
@@ -1772,27 +1821,86 @@ class DirectLedgerFixture(unittest.TestCase):
         scorecard.assert_not_called()
         self.assertEqual("published", report["state"], report)
         self.assertEqual({"state": "unbound", "latest_hermit_commit": None,
-                          "commit": report["series_commit"]}, report["existing_scorecard"])
+                          "commit": report["series_commit"], "retry_of": None}, report["existing_scorecard"])
         self.assertEqual("published", report["portable_proof"]["state"])
         self.assertEqual(report["commit"], report["portable_proof"]["commit"])
-        self.assertEqual(1, len(self.carrier_paths()))
+        carriers = self.carrier_paths()
+        self.assertEqual(1, len(carriers))
         self.assertIsNone(self.remote_latest())
         self.assertEqual("legacy scorecard\n", self.remote_file("scorecard/SCORECARD.md"))
         self.assertIn("without a scorecard", stderr)
-        # A second carrier for the same run, or the same terminal event under
-        # another run identity, is refused before any emission.
-        for label, updates in (("same run", {}), ("same event", {"run_id": "another-run"})):
+        published = git(self.remote, "rev-parse", "main")
+        files = {path: self.remote_file(path) for path in report["portable_proof"]["files"]}
+
+        def attach(prepared_again, encoded_again, emitted=None):
+            with self.proof_doubles(prepared_again, encoded_again, emitted):
+                return self.publish_at(self.target, results=self.root / "results",
+                                       finalized_run_id=prepared_again["selection"]["row"]["run_id"],
+                                       portable_proof_only=True)
+
+        # An exact retry of the same terminal reproduces the published carrier
+        # byte for byte and reports unchanged; nothing is pushed.
+        retry, retry_stderr = attach(*self.derived_fixture(commit_anchored=True, tree_dirty=False))
+        self.assertEqual("unchanged", retry["state"], retry)
+        self.assertEqual("unchanged", retry["portable_proof"]["state"], retry)
+        self.assertEqual(carriers[0], retry["existing_scorecard"]["retry_of"])
+        self.assertEqual(published, retry["portable_proof"]["commit"])
+        self.assertEqual(report["portable_proof"]["files"], retry["portable_proof"]["files"])
+        self.assertEqual(published, git(self.remote, "rev-parse", "main"))
+        self.assertEqual(files, {path: self.remote_file(path) for path in files})
+        self.assertIn("FINALIZED PROOF UNCHANGED", retry_stderr)
+        # The same terminal with different operands is refused, as is a second
+        # carrier for the same run or for the same event under another run.
+        changed, changed_encoded = self.derived_fixture(commit_anchored=True, tree_dirty=False)
+        changed_encoded = changed_encoded.replace(b'"b' + b"b" * 63 + b'"', b'"c' + b"c" * 63 + b'"')
+        refusals = (("changed operands", (changed, changed_encoded), "retry changes the same terminal or proof operands", 1),
+                    ("same event", self.derived_fixture(commit_anchored=True, tree_dirty=False, run_id="another-run"),
+                     "refusing a second carrier", 0))
+        for label, (again, encoded_again), message, emissions in refusals:
             with self.subTest(label):
-                again, encoded_again = self.derived_fixture(commit_anchored=True, tree_dirty=False, **updates)
                 emitted = []
-                with self.proof_doubles(again, encoded_again, emitted):
-                    refused, _ = self.publish_at(self.target, results=self.root / "results",
-                                                 finalized_run_id=again["selection"]["row"]["run_id"],
-                                                 portable_proof_only=True)
+                refused, _ = attach(again, encoded_again, emitted)
                 self.assertEqual("derived-failed", refused["state"])
-                self.assertIn("refusing a second carrier", refused["portable_proof"]["error"])
-                self.assertEqual([], emitted)
-                self.assertEqual(1, len(self.carrier_paths()))
+                self.assertIn(message, refused["portable_proof"]["error"])
+                self.assertEqual(emissions, len(emitted))
+                self.assertEqual(published, git(self.remote, "rev-parse", "main"))
+                self.assertEqual(carriers, self.carrier_paths())
+        other_event, other_encoded = self.derived_fixture(commit_anchored=True, tree_dirty=False)
+        other_event["selection"]["terminal"]["event_id"] = "another-terminal"
+        emitted = []
+        refused, _ = attach(other_event, other_encoded, emitted)
+        self.assertIn("refusing a second carrier for run", refused["portable_proof"]["error"])
+        self.assertEqual([], emitted)
+        self.assertEqual(published, git(self.remote, "rev-parse", "main"))
+
+    def test_unbound_retry_refuses_to_complete_a_published_carrier(self):
+        # A retry may only reproduce a complete published carrier; it never
+        # adds a file the published carrier is missing.
+        self.append("incomplete")
+        self.publish(publish_only=True)
+        prepared, encoded = self.derived_fixture(commit_anchored=True, tree_dirty=False)
+        with self.proof_doubles(prepared, encoded):
+            first, _ = self.publish_at(self.target, results=self.root / "results",
+                                       finalized_run_id=prepared["selection"]["row"]["run_id"],
+                                       portable_proof_only=True)
+        self.assertEqual("published", first["portable_proof"]["state"], first)
+        objects = [path for path in first["portable_proof"]["files"] if "/objects/" in path]
+        self.assertEqual(1, len(objects))
+        clone = self.root / "remove-object"
+        subprocess.run(["git", "clone", "-q", str(self.remote), str(clone)], check=True)
+        git(clone, "rm", "-q", objects[0])
+        git(clone, "commit", "-qm", "fixture: drop the carrier object")
+        git(clone, "push", "-q", "origin", "HEAD:main")
+        before = git(self.remote, "rev-parse", "main")
+        again, encoded_again = self.derived_fixture(commit_anchored=True, tree_dirty=False)
+        with self.proof_doubles(again, encoded_again):
+            refused, _ = self.publish_at(self.target, results=self.root / "results",
+                                         finalized_run_id=again["selection"]["row"]["run_id"],
+                                         portable_proof_only=True)
+        self.assertEqual("derived-failed", refused["state"], refused)
+        self.assertIn("the published carrier is incomplete", refused["portable_proof"]["error"])
+        self.assertIn(objects[0], refused["portable_proof"]["error"])
+        self.assertEqual(before, git(self.remote, "rev-parse", "main"))
 
     def test_unbound_proof_only_leaves_another_commits_scorecard_in_place(self):
         root = self.target
@@ -1830,6 +1938,318 @@ class DirectLedgerFixture(unittest.TestCase):
                 self.assertIn("requires a commit-anchored run of a clean tree", report["portable_proof"]["error"])
                 self.assertEqual([], emitted)
                 self.assertEqual([], self.carrier_paths())
+
+
+    # --- Round-2 review: https://github.com/rrnewton/dev-hermit/issues/394 ---
+
+    def test_renderer_commits_in_the_real_writer_never_reach_the_remote(self):
+        # F1: a renderer that reaches past its copy and commits in the real
+        # writer must not ride underneath the derived carrier's commit, whether
+        # it then fails or claims success.
+        writer = self.parent / mirror.WRITER_RELATIVE
+        forged_latest = json.dumps({"schema": mirror.METADATA_SCHEMA, "scorecard_hermit_commit": "f" * 40,
+                                    mirror.SCORECARD_HEAD_TIME_FIELD: 4102444800}) + "\n"
+        forgeries = {
+            "empty commit": "",
+            "forged latest.json": f"(w/'latest.json').write_text({forged_latest!r})\n",
+            "forged carrier": "(w/'scorecard/finalized/runs').mkdir(parents=True, exist_ok=True)\n"
+                              "(w/'scorecard/finalized/runs/forged.json').write_text('{}\\n')\n",
+        }
+        number = 0
+        for label, forge in forgeries.items():
+            for exploded in (True, False):
+                number += 1
+                with self.subTest(label, exploded=exploded):
+                    ending = ("sys.exit('renderer exploded')\n" if exploded
+                              else "(p/'SCORECARD.md').write_text('rendered\\n')\n")
+                    self.set_tool(f"w=pathlib.Path({str(writer)!r})\n" + forge
+                                  + "subprocess.run(['git','-C',str(w),'add','-A'],check=True)\n"
+                                  + f"subprocess.run(['git','-C',str(w),'commit','--allow-empty','-qm',"
+                                  + f"'renderer forged {number}'],check=True)\n" + ending)
+                    prepared, encoded = self.derived_fixture(run_id=f"forging-run-{number}")
+                    prepared["selection"]["terminal"]["event_id"] = f"forging-terminal-{number}"
+                    self.append(f"forged-{number}")
+                    with self.proof_doubles(prepared, encoded):
+                        report, stderr = self.publish_at(self.target, results=self.root / "results",
+                                                         finalized_run_id=f"forging-run-{number}")
+                    self.assertEqual("derived-failed", report["state"], report)
+                    self.assertEqual("failed", report["scorecard"]["state"])
+                    if not exploded:
+                        self.assertIn("the ledger writer HEAD moved while the scorecard tool ran",
+                                      report["scorecard"]["error"])
+                    self.assertEqual("failed", report["portable_proof"]["state"], report)
+                    self.assertIn(f"is not the published series commit {report['series_commit']}",
+                                  report["portable_proof"]["error"])
+                    self.assertIn("writer retained for recovery", report["portable_proof"]["error"])
+                    # The remote holds this run's rows and nothing else.
+                    self.assertEqual(report["series_commit"], git(self.remote, "rev-parse", "main"))
+                    self.assertIn(row(f"forged-{number}"), self.remote_rows())
+                    self.assertNotIn("renderer forged", git(self.remote, "log", "--all", "--format=%s"))
+                    self.assertIsNone(self.remote_latest())
+                    self.assertEqual([], self.carrier_paths())
+                    self.assertIn("SCORECARD FAILED", stderr)
+                    # The forged commit is retained in the writer, directly on the series commit.
+                    forged = git(writer, "rev-parse", "HEAD")
+                    self.assertEqual(f"renderer forged {number}", git(writer, "log", "-1", "--format=%s", forged))
+                    self.assertEqual([forged, report["series_commit"]],
+                                     git(writer, "rev-list", "--parents", "-n", "1", forged).split())
+                    # Operator recovery for the next subtest: drop the forged commit.
+                    git(writer, "checkout", "-q", "--detach", report["series_commit"])
+
+    def test_renderer_writes_in_the_real_writer_withhold_the_scorecard(self):
+        # F1/F4: a renderer that claims success after writing past its copy
+        # into the real writer's files (without committing) publishes no
+        # scorecard, even where its write would be overwritten by the copy;
+        # the derived carrier still publishes and the write stays in the writer.
+        writer = self.parent / mirror.WRITER_RELATIVE
+        legacy = self.remote_file("scorecard/SCORECARD.md")
+        self.assertEqual("legacy scorecard\n", legacy)
+        writes = {
+            "stray file": ("stray.txt", "(w/'stray.txt').write_text('stray\\n')\n", "??"),
+            "generated path": ("scorecard/SCORECARD.md",
+                               "(w/'scorecard/SCORECARD.md').write_text('forged in the writer\\n')\n", "M"),
+        }
+        for number, (label, (path, forge, status)) in enumerate(writes.items(), start=1):
+            with self.subTest(label):
+                self.set_tool(f"w=pathlib.Path({str(writer)!r})\n" + forge
+                              + "(p/'SCORECARD.md').write_text('rendered\\n')\n")
+                prepared, encoded = self.derived_fixture(run_id=f"writing-run-{number}")
+                prepared["selection"]["terminal"]["event_id"] = f"writing-terminal-{number}"
+                before = self.carrier_paths()
+                self.append(f"writing-{number}")
+                with self.proof_doubles(prepared, encoded):
+                    report, stderr = self.publish_at(self.target, results=self.root / "results",
+                                                     finalized_run_id=f"writing-run-{number}")
+                self.assertEqual("derived-failed", report["state"], report)
+                self.assertEqual("failed", report["scorecard"]["state"])
+                self.assertIn("the ledger writer changed while the scorecard tool ran; writer retained "
+                              f"for recovery: {path}", report["scorecard"]["error"])
+                self.assertEqual("published", report["portable_proof"]["state"], report)
+                self.assertEqual(report["portable_proof"]["commit"], git(self.remote, "rev-parse", "main"))
+                self.assertEqual(1, len(self.carrier_paths()) - len(before))
+                # Neither the write nor the rendered scorecard reached the remote.
+                self.assertIsNone(self.remote_latest())
+                self.assertEqual(legacy, self.remote_file("scorecard/SCORECARD.md"))
+                self.assertIsNone(self.remote_file("stray.txt"))
+                self.assertIn("SCORECARD FAILED", stderr)
+                self.assertEqual({path: status}, {key: value.strip() for key, value
+                                                  in mirror._worktree_changes(writer).items()})
+                # Operator recovery for the next subtest.
+                git(writer, "checkout", "-q", "--", ".")
+                git(writer, "clean", "-qfd")
+
+    def test_commit_and_push_only_pushes_one_commit_directly_on_its_base(self):
+        # F1 (second line of defence): every publication commit is checked
+        # against the base it was computed from before anything is pushed.
+        self.append("commit-base")
+        self.assertEqual("published", self.publish(publish_only=True)["state"])
+        writer = self.parent / mirror.WRITER_RELATIVE
+        base = git(writer, "rev-parse", "HEAD")
+        self.assertEqual(base, git(self.remote, "rev-parse", "main"))
+        real_git = mirror._git
+
+        def attempt(name, prepare=None, during_commit=None):
+            (writer / name).write_text(name + "\n")
+            if prepare is not None:
+                prepare()
+
+            def interfering(repo, *args, **kwargs):
+                if during_commit is not None and "commit" in args:
+                    during_commit()
+                return real_git(repo, *args, **kwargs)
+
+            with mock.patch.object(mirror, "_git", side_effect=interfering):
+                return mirror._commit_and_push(writer, [name], "fixture publication",
+                                               net_wrapper="/usr/bin/env", base=base)
+
+        def stage(name):
+            (writer / name).write_text("smuggled\n")
+            git(writer, "add", name)
+
+        refusals = (
+            ("moved head", {"prepare": lambda: git(writer, "commit", "--allow-empty", "-qm", "forged underneath")},
+             "is not the publication base"),
+            ("extra parent", {"during_commit": lambda: git(writer, "update-ref", "HEAD", git(
+                writer, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "raced underneath"))},
+             "does not sit directly on the publication base"),
+            ("extra path", {"during_commit": lambda: stage("smuggled-during-commit")},
+             "changes paths other than this publication"),
+            ("pre-staged path", {"prepare": lambda: stage("smuggled-before")},
+             "index holds paths outside this publication"),
+        )
+        for label, hooks, message in refusals:
+            with self.subTest(label):
+                with self.assertRaisesRegex(mirror.MirrorRefused, message):
+                    attempt(label.replace(" ", "-") + ".txt", **hooks)
+                self.assertEqual(base, git(self.remote, "rev-parse", "main"))
+                git(writer, "reset", "-q", "--hard", base)
+                git(writer, "clean", "-qfd")
+        commit = attempt("qualifying.txt")
+        self.assertEqual(commit, git(self.remote, "rev-parse", "main"))
+        self.assertEqual([commit, base], git(self.remote, "rev-list", "--parents", "-n", "1", commit).split())
+        self.assertEqual("qualifying.txt",
+                         git(self.remote, "diff-tree", "--no-commit-id", "--name-only", "-r", base, commit))
+
+    def test_renderer_gets_a_ledger_copy_without_routes_credentials_or_the_wrapper(self):
+        # F4: the renderer is measured code. It sees a throwaway ledger copy
+        # (its origin URL intact for scorecard.rs, its push URL dead), the real
+        # publication lock, no proxy or credential variables, none of the Git
+        # configuration that carries the host's proxy and credential helper,
+        # and is not run through the network wrapper.
+        writer = self.parent / mirror.WRITER_RELATIVE
+        dump = self.root / "renderer-view.json"
+        self.set_tool(
+            "import json\n"
+            "def config(*args):\n"
+            " return subprocess.run(['git','-C',str(ledger),'config',*args],"
+            "capture_output=True,text=True).stdout.strip()\n"
+            "lock=ledger/'.git'/'ci-hub-series-publication.lock'\n"
+            "json.dump({'env': dict(os.environ), 'ledger': str(ledger), 'url': config('--get','remote.origin.url'),"
+            " 'pushurl': config('--get','remote.origin.pushurl'),"
+            " 'config': config('--list'), 'lock': os.path.realpath(lock),"
+            " 'same_lock': os.path.samestat(os.fstat(fd), os.stat(lock))}, open("
+            + repr(str(dump)) + ", 'w'))\n"
+            "(p/'SCORECARD.md').write_text('rendered in a copy\\n')\n")
+        # The publisher's own Git configuration names a proxy and a credential
+        # helper, in its global file and through the environment. The fixture's
+        # remote mapping stays, so the publisher's own fetch and push still work.
+        global_config = self.root / "publisher-gitconfig"
+        global_config.write_text((self.root / "gitconfig").read_text()
+                                 + "[http]\n\tproxy = http://global.must-not-reach.invalid:1\n"
+                                 "\tproxysslcert = /must-not-reach/x509.pem\n"
+                                 "\tproxysslkey = /must-not-reach/x509.pem\n"
+                                 "[credential]\n\thelper = !echo must-not-reach-the-renderer\n")
+        system_config = self.root / "publisher-system-gitconfig"
+        system_config.write_text("[http]\n\tproxy = http://system.must-not-reach.invalid:1\n")
+        ambient = {name: "must-not-reach-the-renderer" for name in mirror.RENDERER_WITHHELD_ENV}
+        ambient.update({
+            "GIT_CONFIG_GLOBAL": str(global_config),
+            "GIT_CONFIG_SYSTEM": str(system_config), "GIT_CONFIG_NOSYSTEM": "0",
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.proxy",
+            "GIT_CONFIG_VALUE_0": "http://count.must-not-reach.invalid:1",
+            "GIT_CONFIG_PARAMETERS": "'credential.helper'='!echo parameters-must-not-reach'",
+        })
+        log = self.root / "wrapper.log"
+        wrapper = self.root / "bin/logging-wrapper"
+        wrapper.write_text("#!/usr/bin/python3\nimport json, os, sys\n"
+                           f"open({str(log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                           "os.execvp(sys.argv[1], sys.argv[1:])\n")
+        wrapper.chmod(0o755)
+        self.append("isolated-render")
+        with mock.patch.dict(os.environ, ambient):
+            report = mirror.mirror(self.parent, self.source, self.target, mirror.REMOTE_URL,
+                                   net_wrapper=str(wrapper), tool_checkout=self.tool)
+        self.assertEqual("published", report["state"], report)
+        seen = json.loads(dump.read_text())
+        self.assertEqual([], sorted(set(mirror.RENDERER_WITHHELD_ENV) & set(seen["env"])))
+        self.assertEqual("true", seen["env"]["CARGO_NET_OFFLINE"])
+        self.assertEqual("0", seen["env"]["GIT_TERMINAL_PROMPT"])
+        # Git on the fleet hosts may itself add request headers on its command
+        # line; no key may name a proxy or its client certificate (http.proxy,
+        # http.proxysslcert, http.proxysslkey, as ~/.gitconfig on devbig014
+        # sets), a client key or certificate, or a credential helper, and
+        # nothing the publisher configured may appear.
+        config_keys = [line.split("=", 1)[0].lower() for line in seen["config"].splitlines()]
+        self.assertEqual([], [key for key in config_keys if key.startswith("credential.")
+                              or key.rsplit(".", 1)[-1].startswith("proxy")
+                              or key.rsplit(".", 1)[-1] in ("sslkey", "sslcert")], seen["config"])
+        self.assertNotIn("must-not-reach", seen["config"])
+        self.assertEqual(os.devnull, seen["env"]["GIT_CONFIG_GLOBAL"])
+        self.assertEqual("1", seen["env"]["GIT_CONFIG_NOSYSTEM"])
+        ledger = Path(seen["ledger"])
+        self.assertNotEqual(writer.resolve(), ledger.resolve())
+        self.assertTrue(ledger.parent.name.startswith(mirror.RENDER_COPY_PREFIX), ledger)
+        self.assertEqual(writer.parent.resolve(), ledger.parent.parent.resolve())
+        self.assertEqual(mirror.REMOTE_URL, seen["url"])
+        self.assertTrue(seen["pushurl"].startswith(str(ledger)), seen["pushurl"])
+        self.assertTrue(seen["same_lock"])
+        common = Path(git(writer, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        self.assertEqual(str((common / mirror.PUBLICATION_LOCK).resolve()), seen["lock"])
+        self.assertFalse(ledger.exists(), "the copy is removed after the render")
+        self.assertEqual([], list(writer.parent.glob(mirror.RENDER_COPY_PREFIX + "*")))
+        invocations = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertTrue(any("push" in argv for argv in invocations), invocations)
+        tool = str(self.tool / "ci/compat-envelope/scorecard.rs")
+        self.assertTrue(any(tool in argv for argv in invocations), "prepare_scorecard uses the wrapper")
+        self.assertEqual([], [argv for argv in invocations if tool in argv and argv[-1] != "--help"])
+        self.assertEqual("rendered in a copy\n", self.remote_file("scorecard/SCORECARD.md"))
+        self.assertEqual("", git(writer, "status", "--porcelain"))
+
+    def test_stale_render_copy_from_a_killed_publisher_is_removed(self):
+        writer = self.parent / mirror.WRITER_RELATIVE
+        self.append("before-stale")
+        self.assertEqual("published", self.publish()["state"])
+        stale = writer.parent / (mirror.RENDER_COPY_PREFIX + "killed")
+        (stale / "hermit_test_ledger").mkdir(parents=True)
+        outside = writer.parent / "unrelated-render-state"
+        outside.mkdir()
+        self.append("after-stale")
+        self.assertEqual("published", self.publish()["state"])
+        self.assertFalse(stale.exists())
+        self.assertTrue(outside.exists())
+
+    def test_shallow_measured_checkout_still_publishes_one_derived_carrier(self):
+        # F2: a head order that cannot be decided withholds the scorecard, not
+        # the proof. The published head is the root; the measured checkout is
+        # a depth-1 clone of a descendant, so ancestry cannot be decided.
+        self.use_head_renderer()
+        self.append("scored-root")
+        self.assertEqual("published", self.publish_at(self.target)[0]["scorecard"]["state"])
+        before = {path: git(self.remote, "rev-parse", "main:" + path)
+                  for path in ("latest.json", "scorecard/SCORECARD.md", "scorecard/cells.json")}
+        child = self.source_commit("descendant", "2030-01-01T00:00:00Z")
+        shallow = self.root / "shallow-hermit"
+        subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{self.source}", str(shallow)], check=True)
+        self.assertEqual(child, git(shallow, "rev-parse", "HEAD"))
+        self.source = shallow
+        self.target = child
+        prepared, encoded = self.derived_fixture()
+        self.append("shallow-run")
+        with self.proof_doubles(prepared, encoded), \
+                mock.patch.object(mirror, "build_scorecard", wraps=mirror.build_scorecard) as renderer:
+            report, stderr = self.publish_at(child, results=self.root / "results",
+                                             finalized_run_id=prepared["selection"]["row"]["run_id"])
+        renderer.assert_not_called()
+        self.assertEqual("derived-failed", report["state"], report)
+        self.assertEqual("failed", report["scorecard"]["state"])
+        self.assertIn("scorecard head order cannot be decided: measured checkout is shallow",
+                      report["scorecard"]["error"])
+        self.assertEqual("published", report["portable_proof"]["state"], report)
+        self.assertEqual(report["commit"], report["portable_proof"]["commit"])
+        self.assertEqual(report["commit"], git(self.remote, "rev-parse", "main"))
+        self.assertEqual(1, len(self.carrier_paths()))
+        self.assertEqual(before, {path: git(self.remote, "rev-parse", "main:" + path) for path in before})
+        self.assertIn(row("shallow-run"), self.remote_rows())
+        self.assertIn("SCORECARD FAILED", stderr)
+        self.assertIn("finalized proof published", stderr)
+
+    def test_unordered_published_head_still_publishes_one_derived_carrier(self):
+        # F2: latest.json names a head this checkout cannot read and records
+        # no commit time (the pre-ordering format), so no order exists.
+        clone = self.root / "seed-latest"
+        subprocess.run(["git", "clone", "-q", str(self.remote), str(clone)], check=True)
+        (clone / "latest.json").write_text(json.dumps(
+            {"schema": mirror.METADATA_SCHEMA, "scorecard_hermit_commit": "e" * 40}, indent=2) + "\n")
+        git(clone, "add", "latest.json")
+        git(clone, "commit", "-qm", "fixture: an unreadable head with no recorded time")
+        git(clone, "push", "-q", "origin", "HEAD:main")
+        before = self.remote_file("latest.json")
+        prepared, encoded = self.derived_fixture()
+        self.append("unordered-run")
+        with self.proof_doubles(prepared, encoded), \
+                mock.patch.object(mirror, "build_scorecard", wraps=mirror.build_scorecard) as renderer:
+            report, stderr = self.publish_at(self.target, results=self.root / "results",
+                                             finalized_run_id=prepared["selection"]["row"]["run_id"])
+        renderer.assert_not_called()
+        self.assertEqual("derived-failed", report["state"], report)
+        self.assertIn("scorecard head order cannot be decided", report["scorecard"]["error"])
+        self.assertIn(f"records no {mirror.SCORECARD_HEAD_TIME_FIELD}", report["scorecard"]["error"])
+        self.assertEqual("published", report["portable_proof"]["state"], report)
+        self.assertEqual(report["commit"], git(self.remote, "rev-parse", "main"))
+        self.assertEqual(1, len(self.carrier_paths()))
+        self.assertEqual(before, self.remote_file("latest.json"))
+        self.assertEqual("legacy scorecard\n", self.remote_file("scorecard/SCORECARD.md"))
+        self.assertIn("SCORECARD FAILED", stderr)
 
 
 def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
@@ -2127,7 +2547,7 @@ def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
             preparations_ready = threading.Barrier(3)
             release_preparations = threading.Event()
             local = threading.local()
-            real_flock, real_network = mirror.fcntl.flock, mirror._network
+            real_flock, real_network, real_run = mirror.fcntl.flock, mirror._network, mirror._run
             lock_path = self.ledger / ".git" / mirror.PUBLICATION_LOCK
 
             def observed_flock(fd, operation):
@@ -2167,7 +2587,12 @@ def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
                 if command[0] == "git" and any(part in ("fetch", "push") for part in command):
                     self.assertEqual(git(kwargs["cwd"], "remote", "get-url", "--push", "origin"), str(self.remote))
                     self.assertEqual(os.environ["GIT_ALLOW_PROTOCOL"], "file")
-                if "project-and-observe-results" in command:
+                self.assertNotIn("project-and-observe-results", command, "the renderer never gets the wrapper")
+                return real_network(command, **kwargs)
+
+            def observed_run(command, **kwargs):
+                # The renderer runs directly (not through _network), in its ledger copy.
+                if command[0] == "rust-script" and "project-and-observe-results" in command:
                     selected = json.loads(Path(command[command.index("--finalized-row") + 1]).read_text())
                     self.assertEqual(selected["run_id"], local.name)
                     for option, suffix in (("--snapshot", "snapshot"), ("--finalized-row", "row")):
@@ -2176,7 +2601,7 @@ def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
                     if local.name == "finalized-a":
                         a_at_writer.set()
                         self.assertTrue(b_contended.wait(15), "B never contended on A's actual lock")
-                return real_network(command, **kwargs)
+                return real_run(command, **kwargs)
 
             def publish(name):
                 local.name = name
@@ -2185,6 +2610,7 @@ def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
 
             with mock.patch.object(mirror.fcntl, "flock", side_effect=observed_flock), \
                     mock.patch.object(mirror, "_network", side_effect=observed_network), \
+                    mock.patch.object(mirror, "_run", side_effect=observed_run), \
                     ThreadPoolExecutor(max_workers=2) as pool:
                 futures = [pool.submit(publish, name) for name in self.inputs]
                 try:

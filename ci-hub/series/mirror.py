@@ -5,14 +5,32 @@ The historical command name is retained for callers. Validation receipts stay
 in dev-hermit; cell series batches stay in its ignored spool until a freshly
 fetched ledger commit proves publication. One persistent linked worktree owns
 ledger writes. A scorecard failure does not undo published rows or change the
-validation verdict, and leaves its local work available for recovery.
+validation verdict, and leaves the writer and the spooled rows available for
+recovery. The renderer's own partial output is discarded with its copy (below);
+it is a function of the published series commit and the measured tree, so it
+is regenerated rather than recovered.
 
 The scorecard is rendered by the measured checkout's own scorecard.rs, so a
-renderer change travels with its SCORECARD.md. A derived portable proof is
-independent of that scorecard and publishes even when the scorecard fails. The
-public scorecard head (latest.json and the rendered "Last regenerated" notice)
-only moves forward: an older head publishes its rows and proof but not a
-scorecard.
+renderer change travels with its SCORECARD.md. That renderer is code under
+validation, so it never receives the writer: it runs against a throwaway copy
+of the ledger at the published series commit, without the network wrapper,
+proxy variables, GitHub credential variables, or the user's and system's Git
+configuration (the fleet's Git proxy and credential helper live there), and
+only its exact generated files are copied back (_render_copy). Every ledger commit is then checked to sit directly
+on that series commit and to change only the paths being published before it is
+pushed (_commit_and_push). This is not an operating-system sandbox: the
+renderer runs as the same Unix user, so a hostile renderer could still reach the
+writer path, read that user's stored credentials, or rebuild a network route
+itself. These checks stop the accidental
+and the in-band routes (writing through DEV_HERMIT_TEST_LEDGER_ROOT, committing
+in the ledger it was given, planting files beside a carrier), not a deliberate
+escape.
+
+A derived portable proof is independent of that scorecard and publishes even
+when the scorecard fails or its head order cannot be decided. The public
+scorecard head (latest.json and the rendered "Last regenerated" notice) only
+moves forward: an older head publishes its rows and proof but not a scorecard.
+The head is not required to be on Hermit main (see scorecard_order).
 """
 
 from __future__ import annotations
@@ -24,6 +42,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -57,14 +76,31 @@ SCORECARD_COMMANDS = (
     "observe-results", "import-results", "update-observations",
     "project-observations", "project-and-observe-results", "export-legacy",
 )
+# The renderer runs after prepare_scorecard fetched its dependencies, against a
+# ledger copy it cannot push from. None of these ambient routes or credentials
+# is needed, so none is passed on. Git configuration injected through the
+# environment is withheld too; build_scorecard also replaces the user's and the
+# system's Git configuration, which on the fleet hosts carry the forward proxy
+# and the GitHub credential helper.
+RENDERER_WITHHELD_ENV = (
+    "http_proxy", "https_proxy", "ftp_proxy", "all_proxy",
+    "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY",
+    "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+    "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK", "FLEET_REAL_GH",
+    "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+)
+RENDER_COPY_PREFIX = "test-ledger-render-"
 
 
 class MirrorRefused(RuntimeError):
     """Publication is incomplete; local inputs must be retained."""
 
 
-def _environment(extra: Mapping[str, str] | None = None) -> dict[str, str]:
+def _environment(extra: Mapping[str, str] | None = None,
+                 withhold: Sequence[str] = ()) -> dict[str, str]:
     environment = git_env.sanitized_git_env()
+    for name in withhold:
+        environment.pop(name, None)
     environment.setdefault("GIT_AUTHOR_NAME", "Hermit ledger publisher")
     environment.setdefault("GIT_AUTHOR_EMAIL", "hermit-ledger-publisher@example.invalid")
     environment.setdefault("GIT_COMMITTER_NAME", environment["GIT_AUTHOR_NAME"])
@@ -80,12 +116,12 @@ def _environment(extra: Mapping[str, str] | None = None) -> dict[str, str]:
 def _run(
     command: Sequence[str], *, cwd: Path | None = None, check: bool = True,
     timeout: int = DEFAULT_TIMEOUT_SECONDS, environment: Mapping[str, str] | None = None,
-    pass_fds: tuple[int, ...] = (),
+    pass_fds: tuple[int, ...] = (), withhold: Sequence[str] = (),
 ) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(
             list(command), cwd=cwd, capture_output=True, text=True, check=False,
-            timeout=timeout, env=_environment(environment), pass_fds=pass_fds,
+            timeout=timeout, env=_environment(environment, withhold), pass_fds=pass_fds,
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise MirrorRefused(f"cannot run {command[0]}: {error}") from error
@@ -143,14 +179,24 @@ def _worktree_changes(repo: Path) -> dict[str, str]:
 
 
 def _commit_and_push(writer: Path, paths: Sequence[str], message: str, *,
-                     net_wrapper: str) -> str | None:
-    """Commit exactly PATHS, push, and prove the commit reached origin/main.
+                     net_wrapper: str, base: str) -> str | None:
+    """Commit exactly PATHS directly on BASE, push, and prove it reached origin/main.
 
-    Returns None when none of PATHS changed. Refuses if the index holds any
-    other path, so unrelated dirty work in the writer is never swept in.
+    BASE is the published series commit this publication was computed from.
+    The writer must still be at BASE, and the new commit must have BASE as its
+    only parent and change exactly the staged PATHS; otherwise nothing is
+    pushed and the writer is retained. So a commit that anything else made in
+    the writer (an empty one, or one carrying a forged latest.json or carrier)
+    can never ride along underneath this publication. Returns None when none
+    of PATHS changed. Refuses if the index holds any other path. Hooks are
+    disabled: nothing planted in the ledger's Git directory runs here.
     """
     if not paths:
         return None
+    head = _git(writer, "rev-parse", "HEAD^{commit}")
+    if head != base:
+        raise MirrorRefused(f"ledger writer HEAD {head} is not the publication base {base}; "
+                            "nothing was pushed and the writer is retained for recovery")
     _git(writer, "add", "--", *paths)
     staged = {path for path in _run([
         "git", "-C", str(writer), "diff", "--cached", "--name-only", "-z",
@@ -161,9 +207,20 @@ def _commit_and_push(writer: Path, paths: Sequence[str], message: str, *,
             + ", ".join(sorted(staged - set(paths))))
     if not staged:
         return None
-    _git(writer, "commit", "--quiet", "-m", message)
+    _git(writer, "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "--no-verify", "-m", message)
     commit = _git(writer, "rev-parse", "HEAD^{commit}")
-    _network(["git", "push", "origin", "HEAD:refs/heads/main"], cwd=writer, wrapper=net_wrapper)
+    parents = _git(writer, "rev-list", "--parents", "-n", "1", commit).split()
+    if parents != [commit, base]:
+        raise MirrorRefused(f"ledger commit {commit} does not sit directly on the publication base "
+                            f"{base} (parents {parents[1:]}); nothing was pushed")
+    changed = {path for path in _run([
+        "git", "-C", str(writer), "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", base, commit,
+    ]).stdout.split("\0") if path}
+    if changed != staged:
+        raise MirrorRefused(f"ledger commit {commit} changes paths other than this publication: "
+                            + ", ".join(sorted(changed ^ staged)) + "; nothing was pushed")
+    _network(["git", "-c", "core.hooksPath=/dev/null", "push", "origin", f"{commit}:refs/heads/main"],
+             cwd=writer, wrapper=net_wrapper)
     _network(["git", "fetch", "--quiet", "origin", "main"], cwd=writer, wrapper=net_wrapper)
     _git(writer, "merge-base", "--is-ancestor", commit, "refs/remotes/origin/main")
     return commit
@@ -702,6 +759,71 @@ def prepare_scorecard(
     return commit, compiler
 
 
+@contextlib.contextmanager
+def _render_copy(writer: Path, base: str) -> Iterator[Path]:
+    """Yield a throwaway ledger checkout at BASE for the measured renderer.
+
+    The copy reads the writer's objects through alternates and writes its own,
+    so a commit, index, ref, config or hook change the renderer makes through
+    DEV_HERMIT_TEST_LEDGER_ROOT stays in the copy and is discarded. Its origin
+    URL is the ledger's (scorecard.rs checks it), its push URL is a path that
+    does not exist, and its publication lock is a link to the real one, which
+    the caller holds. Only the lock holder creates these copies, so one left
+    behind by a killed publisher is removed by the next. Each copy has a fresh
+    name, so a stale one that cannot be removed is inert and never reused.
+    """
+    common = Path(_git(writer, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    for stale in writer.parent.glob(RENDER_COPY_PREFIX + "*"):
+        if stale.is_dir() and not stale.is_symlink():
+            shutil.rmtree(stale, ignore_errors=True)
+    with tempfile.TemporaryDirectory(prefix=RENDER_COPY_PREFIX, dir=writer.parent,
+                                     ignore_cleanup_errors=True) as temporary:
+        copy = Path(temporary) / "hermit_test_ledger"
+        _run(["git", "init", "--quiet", "--template=", str(copy)])
+        (copy / ".git/objects/info").mkdir(parents=True, exist_ok=True)
+        (copy / ".git/objects/info/alternates").write_text(str(common / "objects") + "\n")
+        _git(copy, "config", "remote.origin.url", REMOTE_URL)
+        _git(copy, "config", "remote.origin.pushurl", str(copy / ".git/push-disabled"))
+        _git(copy, "checkout", "--quiet", "--detach", base)
+        (copy / ".git" / PUBLICATION_LOCK).symlink_to(common / PUBLICATION_LOCK)
+        if _git(copy, "rev-parse", "HEAD^{commit}") != base or _worktree_changes(copy):
+            raise MirrorRefused(f"cannot prepare a clean ledger copy at {base} for the scorecard tool")
+        yield copy
+
+
+def _copy_back(copy: Path, writer: Path, base: str, paths: Sequence[Path]) -> None:
+    """Move exactly the renderer's generated files from COPY into the writer."""
+    if _git(copy, "rev-parse", "HEAD^{commit}") != base:
+        raise MirrorRefused("scorecard tool moved the HEAD of its ledger copy; nothing was copied "
+                            "into the ledger writer")
+    expected = {path.as_posix() for path in paths}
+    unexpected = sorted(set(_worktree_changes(copy)) - expected)
+    if unexpected:
+        raise MirrorRefused(
+            "scorecard tool changed ledger paths outside its generated output; nothing was copied "
+            "into the ledger writer: " + ", ".join(unexpected))
+    # The copy is the only ledger the renderer was given; a change to the
+    # writer itself means something reached past it.
+    if _git(writer, "rev-parse", "HEAD^{commit}") != base:
+        raise MirrorRefused("the ledger writer HEAD moved while the scorecard tool ran; writer retained for recovery")
+    touched = _worktree_changes(writer)
+    if touched:
+        raise MirrorRefused("the ledger writer changed while the scorecard tool ran; writer retained for "
+                            "recovery: " + ", ".join(sorted(touched)))
+    generated = {}
+    for path in paths:
+        source = copy / path
+        if source.is_symlink() or not source.is_file():
+            raise MirrorRefused(f"scorecard tool output {path} is not a regular file")
+        generated[path] = source.read_bytes()
+    for path, encoded in generated.items():
+        destination = writer / path
+        if destination.is_symlink():
+            raise MirrorRefused(f"ledger writer path {path} is a symbolic link")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(encoded)
+
+
 def build_scorecard(
     source_checkout: Path, target: str, snapshot: Mapping[str, Any], writer: Path,
     *, lock_fd: int, net_wrapper: str, results: Path | None = None,
@@ -715,7 +837,7 @@ def build_scorecard(
         source_checkout, target, tool_checkout, state_root)
     if prepared_tool is not None and prepared_tool != (tool_commit, compiler):
         raise MirrorRefused("scorecard tool changed after compiler preparation")
-    environment.update({series.LEDGER_ROOT_ENV: str(writer), LOCK_FD_ENV: str(lock_fd)})
+    base = snapshot["source"]["commit"]
     print(
         f"ledger publication: scorecard tool {tool_commit} uses Rust {compiler}; "
         f"measured source {target}", file=sys.stderr,
@@ -723,6 +845,14 @@ def build_scorecard(
     commands = []
     finalized_row = None
     with contextlib.ExitStack() as temporary:
+        ledger = temporary.enter_context(_render_copy(writer, base))
+        # prepare_scorecard already fetched every dependency with the network;
+        # this run needs none, and gets neither network routes nor credentials.
+        environment.update({
+            series.LEDGER_ROOT_ENV: str(ledger), LOCK_FD_ENV: str(lock_fd),
+            "CARGO_NET_OFFLINE": "true", "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+        })
         if finalized_run_id is not None:
             if results is None or state_root is None or scorecard_command is not None:
                 raise MirrorRefused("finalized run publication requires results and the canonical state root")
@@ -750,43 +880,37 @@ def build_scorecard(
                 commands.append(["observe-results", "--results", str(results.resolve())])
             stamps = [row["emitted_at"] for row in snapshot["rows"]]
             commands.append([
-                "project-observations", "--series-root", str(writer / "series"),
+                "project-observations", "--series-root", str(ledger / "series"),
                 "--refreshed-at", max(stamps) if stamps else str(snapshot["source"]["commit"]),
             ])
         for command in commands:
-            result = _network(
+            result = _run(
                 ["rust-script", "--force", "--toolchain", compiler, str(tool), *command],
-                cwd=source_checkout, wrapper=net_wrapper,
-                environment=environment, pass_fds=(lock_fd,),
+                cwd=source_checkout, environment=environment, pass_fds=(lock_fd,),
+                withhold=RENDERER_WITHHELD_ENV,
             )
             if result.stdout:
                 print(result.stdout, end="", file=sys.stderr)
             if result.stderr:
                 print(result.stderr, end="", file=sys.stderr)
-    if finalized_row is not None and finalized_producer_row(
-        state_root, finalized_run_id, target, source_checkout,
-    ) != finalized_row:
-        raise MirrorRefused("canonical finalized producer changed during scorecard generation")
-    if _git(source_checkout, "rev-parse", "HEAD^{commit}") != target:
-        raise MirrorRefused("scorecard source HEAD changed during generation")
-    if _committed_tool_source(tool_checkout) != tool_commit:
-        raise MirrorRefused("scorecard tool HEAD changed during generation")
-    if scorecard_command == "export-legacy":
-        blob = _git(source_checkout, "rev-parse", "HEAD:ci/compat-envelope/cells.json")
-        paths = (Path(f"scorecard/legacy/{blob}.json"),
-                 Path(f"scorecard/legacy/{blob}.identity.json"))
-    else:
-        paths = MIRRORED_SCORECARD_PATHS
-    # The renderer is the measured tree's code. Its write authority is exactly
-    # the generated files; anything else it touched (including a forged proof
-    # carrier or a commit) is refused before the parent stages or pushes.
-    if _git(writer, "rev-parse", "HEAD^{commit}") != snapshot["source"]["commit"]:
-        raise MirrorRefused("scorecard tool moved the ledger writer HEAD; writer retained for recovery")
-    unexpected = sorted(set(_worktree_changes(writer)) - {path.as_posix() for path in paths})
-    if unexpected:
-        raise MirrorRefused(
-            "scorecard tool changed ledger paths outside its generated output; "
-            "writer retained for recovery: " + ", ".join(unexpected))
+        if finalized_row is not None and finalized_producer_row(
+            state_root, finalized_run_id, target, source_checkout,
+        ) != finalized_row:
+            raise MirrorRefused("canonical finalized producer changed during scorecard generation")
+        if _git(source_checkout, "rev-parse", "HEAD^{commit}") != target:
+            raise MirrorRefused("scorecard source HEAD changed during generation")
+        if _committed_tool_source(tool_checkout) != tool_commit:
+            raise MirrorRefused("scorecard tool HEAD changed during generation")
+        if scorecard_command == "export-legacy":
+            blob = _git(source_checkout, "rev-parse", "HEAD:ci/compat-envelope/cells.json")
+            paths = (Path(f"scorecard/legacy/{blob}.json"),
+                     Path(f"scorecard/legacy/{blob}.identity.json"))
+        else:
+            paths = MIRRORED_SCORECARD_PATHS
+        # The renderer is the measured tree's code. Its write authority is
+        # exactly the generated files, copied last so a failure above leaves
+        # the writer untouched.
+        _copy_back(ledger, writer, base, paths)
     return ({path.as_posix(): hashlib.sha256((writer / path).read_bytes()).hexdigest()
              for path in paths}, tool_commit)
 
@@ -835,6 +959,17 @@ def scorecard_order(writer: Path, source_checkout: Path, target: str) -> dict[st
     target advances only when strictly newer, so equal or older is superseded.
     A published head this repository cannot read is compared by the commit time
     latest.json records; without that record the order is unknown and refused.
+
+    Eligibility is deliberately not limited to Hermit main. This mirror runs
+    when a validation finishes, which is before a lander pushes the validated
+    commit to main, so a main-only rule would withhold every pre-landing
+    scorecard; and a lane rebased onto main is a descendant of main anyway, so
+    a descendant-of-main rule would not exclude lane commits either. The
+    consequence is that a validated lane-branch commit can own latest.json and
+    the "Last regenerated" notice (on 2026-09-28 the published head was
+    6580cd7386e7f91fcb05142dfa8695dfad563d4b, which is not on Hermit main)
+    until a strictly newer commit replaces it. latest.json names that commit
+    and its committer time, so a reader can always see which tree it was.
     """
     current = published_scorecard_head(writer)
     target_time = _commit_time(source_checkout, target)
@@ -914,21 +1049,32 @@ def unbound_proof_binding(writer: Path, snapshot: Mapping[str, Any], portable: M
                           head: Mapping[str, Any] | None) -> dict[str, Any]:
     """Admit a proof-only attachment for a run whose scorecard never published.
 
-    Only a commit-anchored, clean census terminal qualifies, and only while
-    the fetched ledger holds no carrier for its terminal event or run.
+    Only a commit-anchored, clean census terminal qualifies. The fetched
+    ledger may hold no other carrier for its terminal event or its run. A
+    carrier for this exact terminal (same repository, run, record, event and
+    event digest) is a retry: it is named in ``retry_of``, and the attachment
+    must then reproduce that carrier's path and every file byte for byte
+    (stage_carrier refuses changed operands), so it reports unchanged.
     """
     row = portable["selection"]["row"]
     terminal = portable["selection"]["terminal"]
     if row.get("commit_anchored") is not True or row.get("tree_dirty") is not False:
         raise MirrorRefused("unbound proof-only attachment requires a commit-anchored run of a clean tree")
     commit = snapshot["source"]["commit"]
-    for value in finalized_proof.read_carriers(writer, commit).values():
-        if (value["terminal"]["event_id"] == terminal["event_id"]
-                or value["terminal"]["run_id"] == terminal["run_id"]):
+    identity = finalized_proof.carrier_identity({"terminal": terminal})
+    retry_of = None
+    for key, value in finalized_proof.read_carriers(writer, commit).items():
+        if (value["terminal"]["event_id"] != terminal["event_id"]
+                and value["terminal"]["run_id"] != terminal["run_id"]):
+            continue
+        if key != identity:
             raise MirrorRefused(
-                f"ledger {commit} already carries a finalized proof for run {terminal['run_id']} "
-                f"(event {value['terminal']['event_id']}); refusing a second carrier")
-    return {"state": "unbound", "latest_hermit_commit": head and head["commit"], "commit": commit}
+                f"ledger {commit} already carries a finalized proof for run {value['terminal']['run_id']} "
+                f"(event {value['terminal']['event_id']}); refusing a second carrier for run "
+                f"{terminal['run_id']} (event {terminal['event_id']})")
+        retry_of = finalized_proof.carrier_path(value)
+    return {"state": "unbound", "latest_hermit_commit": head and head["commit"], "commit": commit,
+            "retry_of": retry_of}
 
 
 def mirror(
@@ -1057,8 +1203,12 @@ def _attach_proof_only(report: dict[str, Any], *, parent: Path, writer: Path,
         if again != binding:
             raise MirrorRefused("published scorecard changed during proof-only attachment")
         paths = _new_proof_paths(_worktree_changes(writer), hashes)
+        if not bound and binding["retry_of"] is not None and (paths or binding["retry_of"] not in hashes):
+            raise MirrorRefused(
+                f"retry of published carrier {binding['retry_of']} would add "
+                + (", ".join(paths) or "a different carrier") + "; the published carrier is incomplete")
         commit = _commit_and_push(writer, paths, "Attach verified finalized comparison operands",
-                                  net_wrapper=net_wrapper)
+                                  net_wrapper=net_wrapper, base=snapshot["source"]["commit"])
         if commit is not None:
             report["commit"] = commit
             report["state"] = "published"
@@ -1088,8 +1238,10 @@ def _publish_scorecard(report: dict[str, Any], *, parent: Path, writer: Path,
     Outcomes, all recorded in REPORT:
     - scorecard regenerated: scorecard files, latest.json and any carrier
       publish in one commit (a proof failure withholds all of them, as before);
-    - scorecard failed: a derived census carrier still publishes alone, and
-      the state stays derived-failed with both facts recorded separately;
+    - scorecard failed, including a head order that cannot be decided (a
+      shallow checkout, an unreadable head with no recorded time, a time
+      mismatch): a derived census carrier still publishes alone, and the state
+      stays derived-failed with both facts recorded separately;
     - scorecard superseded by a newer published head: rows and any derived
       carrier publish, latest.json and SCORECARD.md do not move.
     A schema-10 carrier depends on the scorecard's own native verification,
@@ -1099,23 +1251,29 @@ def _publish_scorecard(report: dict[str, Any], *, parent: Path, writer: Path,
     operation = "legacy_export" if legacy_export else "scorecard"
     series_commit = snapshot["source"]["commit"]
     derived = portable is not None and portable.get("derived") is True
-    order = None
+    # Without a prepared proof or a measured identity there is nothing to
+    # attach; every other refusal below still reaches the derived carrier.
     try:
         if preparation_error is not None:
             raise MirrorRefused(f"finalized proof preparation failed: {preparation_error}")
         if source_checkout is None or target is None:
             raise MirrorRefused("scorecard generation requires source checkout and target")
-        if not legacy_export:
-            order = scorecard_order(writer, source_checkout, target)
     except PUBLICATION_ERRORS as error:
         report["state"] = "derived-failed"
         report[operation] = {"state": "failed", "error": str(error)}
         return
-    superseded = order is not None and order["state"] == "superseded"
+    order = None
     scorecard_error = None
+    if not legacy_export:
+        try:
+            order = scorecard_order(writer, source_checkout, target)
+        except PUBLICATION_ERRORS as error:
+            # An unknown order withholds the scorecard, not the proof.
+            scorecard_error = MirrorRefused(f"scorecard head order cannot be decided: {error}")
+    superseded = order is not None and order["state"] == "superseded"
     hashes: dict[str, str] = {}
     tool_commit = None
-    if not superseded:
+    if not superseded and scorecard_error is None:
         try:
             if tool_preparation_error is not None:
                 raise MirrorRefused(f"scorecard tool preparation failed: {tool_preparation_error}")
@@ -1146,7 +1304,8 @@ def _publish_scorecard(report: dict[str, Any], *, parent: Path, writer: Path,
                     raise MirrorRefused(f"scorecard changed an unexpected path: {path}")
             message = ("Preserve exact legacy Hermit cell history" if legacy_export
                        else "Generate scorecard from published cell history")
-            commit = _commit_and_push(writer, sorted(changes), message, net_wrapper=net_wrapper)
+            commit = _commit_and_push(writer, sorted(changes), message, net_wrapper=net_wrapper,
+                                      base=series_commit)
             if commit is not None:
                 report["commit"] = commit
                 report["state"] = "published"
@@ -1178,6 +1337,13 @@ def _publish_scorecard(report: dict[str, Any], *, parent: Path, writer: Path,
                              f"schema-10 finalized proof requires the scorecard transaction; {reason}"}
         return
     try:
+        # The carrier is computed from the published series commit; a writer
+        # that has moved (for instance a renderer that committed in it) is
+        # retained and attaches nothing.
+        head = _git(writer, "rev-parse", "HEAD^{commit}")
+        if head != series_commit:
+            raise MirrorRefused(f"ledger writer HEAD {head} is not the published series commit "
+                                f"{series_commit}; no finalized proof attached; writer retained for recovery")
         # Whatever a failed renderer left behind stays unstaged and retained;
         # none of it may sit where the carrier is written.
         leftover = frozenset(_worktree_changes(writer))
@@ -1191,7 +1357,7 @@ def _publish_scorecard(report: dict[str, Any], *, parent: Path, writer: Path,
         paths = _new_proof_paths(_worktree_changes(writer), files, ignore=leftover)
         message = ("Attach verified finalized comparison operands; scorecard superseded" if superseded
                    else "Attach verified finalized comparison operands; scorecard generation failed")
-        commit = _commit_and_push(writer, paths, message, net_wrapper=net_wrapper)
+        commit = _commit_and_push(writer, paths, message, net_wrapper=net_wrapper, base=series_commit)
         if commit is not None:
             report["commit"] = commit
             if superseded:
