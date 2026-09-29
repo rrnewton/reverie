@@ -2238,16 +2238,36 @@ pub(crate) fn process_start_ticks(pid: u32) -> io::Result<u64> {
     process_stat_fields(pid).map(|(_, _, start_ticks)| start_ticks)
 }
 
-fn process_stat_fields(pid: u32) -> io::Result<(char, u32, u64)> {
-    let path = PathBuf::from(format!("/proc/{pid}/stat"));
-    let stat = fs::read_to_string(path)?;
-    let close = stat.rfind(')').ok_or_else(|| {
+/// The fields of a `/proc/<pid>/stat` line that follow the `comm` field.
+///
+/// ⚠️ `comm` IS BYTES, NOT TEXT. A process may name itself anything, and the
+/// kernel cuts a task name to 15 bytes, which can split a multi-byte UTF-8
+/// character. Reading the whole line with `read_to_string` failed with
+/// InvalidData for such a process. The census reads every `/proc` entry on
+/// the host, so one unrelated process with such a name made the scan fail,
+/// the census incomplete, and the run quarantine instead of releasing
+/// (devbig014, 2026-09-29, host pid 261192;
+/// https://github.com/rrnewton/dev-hermit/issues/434). Everything after the
+/// LAST `)` is a state letter and numbers.
+fn stat_fields_after_comm(stat: &[u8]) -> io::Result<&str> {
+    let close = stat.iter().rposition(|byte| *byte == b')').ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "process stat has no closing comm",
         )
     })?;
-    let fields: Vec<_> = stat[close + 1..].split_whitespace().collect();
+    std::str::from_utf8(&stat[close + 1..]).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("process stat fields after comm are not text: {error}"),
+        )
+    })
+}
+
+fn process_stat_fields(pid: u32) -> io::Result<(char, u32, u64)> {
+    let path = PathBuf::from(format!("/proc/{pid}/stat"));
+    let stat = fs::read(path)?;
+    let fields: Vec<_> = stat_fields_after_comm(&stat)?.split_whitespace().collect();
     let state = fields
         .first()
         .and_then(|value| value.chars().next())
@@ -3475,9 +3495,8 @@ fn exempt_from_teardown_signals(pid: u32) -> bool {
 /// names a later process, or its `stat` cannot be parsed. Reading the group and
 /// the start time from ONE `stat` read binds the answer to this generation.
 fn exact_process_group(identity: &ProcessIdentity) -> Option<u32> {
-    let stat = fs::read_to_string(format!("/proc/{}/stat", identity.pid)).ok()?;
-    let close = stat.rfind(')')?;
-    let fields: Vec<_> = stat[close + 1..].split_whitespace().collect();
+    let stat = fs::read(format!("/proc/{}/stat", identity.pid)).ok()?;
+    let fields: Vec<_> = stat_fields_after_comm(&stat).ok()?.split_whitespace().collect();
     let pgrp = fields.get(2)?.parse::<u32>().ok()?;
     let start_ticks = fields.get(19)?.parse::<u64>().ok()?;
     (start_ticks == identity.start_ticks).then_some(pgrp)
@@ -6634,6 +6653,59 @@ os._exit(exit_code)
         assert!(!paths.cleanup.exists());
         assert!(lock.read_holder().unwrap().is_none());
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    /// A host process whose `comm` is not valid UTF-8 must not fail the
+    /// `/proc` scan that every census and lineage observation runs
+    /// (https://github.com/rrnewton/dev-hermit/issues/434). Exec'ing a
+    /// symlink named 14 ASCII bytes and a 3-byte character gives a `comm` cut
+    /// to 15 bytes inside that character.
+    #[test]
+    fn a_process_whose_name_is_not_utf8_does_not_fail_the_proc_scan() {
+        use std::os::unix::ffi::OsStrExt;
+        struct KillOnDrop(Child);
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let root = env::temp_dir().join(format!(
+            "ci-hub-non-utf8-comm-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let mut name = b"aaaaaaaaaaaaaa".to_vec();
+        name.extend_from_slice("\u{20ac}".as_bytes());
+        let link = root.join(std::ffi::OsStr::from_bytes(&name));
+        std::os::unix::fs::symlink("/bin/sleep", &link).unwrap();
+        let child = KillOnDrop(Command::new(&link).arg("30").spawn().unwrap());
+        let pid = child.0.id();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let raw = loop {
+            let raw = fs::read(format!("/proc/{pid}/stat")).unwrap();
+            if raw.windows(14).any(|window| window == b"aaaaaaaaaaaaaa") {
+                break raw;
+            }
+            assert!(Instant::now() < deadline, "exec did not rename the child");
+            thread::sleep(Duration::from_millis(10));
+        };
+        // The fixture is what broke `read_to_string`.
+        assert!(
+            std::str::from_utf8(&raw).is_err(),
+            "the child's stat line is valid UTF-8: {raw:?}"
+        );
+        let start_ticks = process_start_ticks(pid).expect("a non-UTF-8 comm parses");
+        let table = scan_process_table(std::process::id())
+            .expect("the /proc scan survives a host process with a non-UTF-8 comm");
+        assert_eq!(
+            table.get(&pid).map(|&(_, parent, ticks)| (parent, ticks)),
+            Some((std::process::id(), start_ticks))
+        );
+        assert!(exact_process_group(&ProcessIdentity { pid, start_ticks }).is_some());
+        drop(child);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
