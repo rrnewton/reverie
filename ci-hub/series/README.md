@@ -612,7 +612,10 @@ test-harness parity export --e2e-root <run e2e root> \
 * Each appended run also writes one `parity.run` marker to
   `parity-runs/<team>/<host>/<YYYY-MM>.jsonl` (the row type cannot carry a
   run total). A node that never ran appears as `record-missing` rows whose
-  `source.post_pass_state` is `absent`.
+  `source.post_pass_state` is `absent`. A node whose post-pass outputs hermit
+  refused appears as `record-missing` rows whose `source.post_pass_state` is
+  `refused` and whose reason names the refusal. A row of either state with any
+  other verdict is refused.
 * A refused call that names a valid producer, run id and tree writes one
   `parity.refusal` event, alone in its own batch, to the same `parity-runs/`
   shard. It carries the input's SHA-256 and line count, the tree state, and the reason

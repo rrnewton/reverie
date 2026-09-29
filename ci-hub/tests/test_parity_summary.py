@@ -735,6 +735,55 @@ def test_a_mixed_corpus_renders_every_group_with_its_breakdown() -> None:
     assert {columns[5] for columns in no_golden} == {"none: no parity, outside the mean and the floor"}
 
 
+def _class_meanings(markup: str) -> list[list[tuple[str, str]]]:
+    """Each class legend of the panel, in order: its (class, meaning) entries."""
+    legends = re.findall(r'<dl class="facts compact-facts parity-class-meanings">(.*?)</dl>', markup, re.S)
+    return [
+        [(name, meaning.replace("&#x27;", "'").replace("&quot;", '"').replace("&amp;", "&"))
+         for name, meaning in re.findall(r"<dt><code>(.*?)</code></dt><dd>(.*?)</dd>", legend, re.S)]
+        for legend in legends
+    ]
+
+
+def test_every_class_the_tables_can_count_has_a_meaning() -> None:
+    assert tuple(render_page.PARITY_CLASS_MEANINGS) == (*NO_GOLDEN, *UNMEASURED)
+    assert tuple(render_page.PARITY_CLASS_MEANINGS) == (*summary_module.NO_GOLDEN_CLASSES,
+                                                        *summary_module.UNMEASURED_CLASSES)
+    assert all(isinstance(text, str) and text.strip() for text in render_page.PARITY_CLASS_MEANINGS.values())
+
+
+def test_the_panel_explains_each_class_it_counts_and_no_other() -> None:
+    document = _document([_cell(test_id, backend, **options) for test_id, backend, options in MIXED])
+    meaning = render_page.PARITY_CLASS_MEANINGS
+    assert _class_meanings(_panel(_carriage(document))) == [
+        [(name, meaning[name]) for name in ("determinism-mismatch", "timeout")],
+        [(name, meaning[name]) for name in ("log-not-retained", "no-result-row")],
+    ]
+    # Run 1953 has no cell without a golden and three with no result row.
+    assert _class_meanings(_panel(_carriage(_summary(_rows(_sources()))))) == [
+        [("no-result-row", meaning["no-result-row"])]]
+
+
+#: The definition of log-diff-failed that hermit's `UnavailableClass`
+#: documents, as S12 widened it (https://github.com/rrnewton/hermit/issues/3301).
+LOG_DIFF_FAILED_MEANING = (
+    "The parity tool could not produce a usable comparison of two deterministic, retained logs. There are three "
+    "cases. (1) log-diff returned a report that carries no verdict: NoResult, Refused, NoComparableMessages or "
+    "IdenticalSoFar. IdenticalSoFar should be impossible in one-shot mode, so seeing it means a tool defect. "
+    "(2) A matched or diverged report failed require_cross_backend_evidence. (3) from_comparison could not record "
+    "the report. Every other exit from compare is also this class: deadline, output directory, paths, spawn, time "
+    "bound, unreadable or contradictory report, and wrong inputs."
+)
+
+
+def test_a_log_diff_failed_cell_is_explained_with_the_widened_definition() -> None:
+    document = _document([
+        _cell("t/a", credit=0.5),
+        _cell("t/x", verdict="unavailable", unavailable_class="log-diff-failed", operand=None),
+    ])
+    assert _class_meanings(_panel(_carriage(document))) == [[("log-diff-failed", LOG_DIFF_FAILED_MEANING)]]
+
+
 def test_a_below_one_credit_never_prints_as_one() -> None:
     assert render_page._parity_credit(0.99996) == "0.9999"
     assert render_page._parity_credit(1.0) == "1.0000"
@@ -870,9 +919,15 @@ _MEASURED_DBT = f"dbt inputs cannot be equalized, so it reports no measured comp
          "reference-missing or candidate-missing"),
         ("kvm", dict(verdict="record-missing"), {"verdict": "unavailable"},
          "unavailable_class record-missing cannot go with verdict unavailable; it needs record-missing"),
-        ("kvm", _NO_ROW, {"verdict": "unavailable"},
-         "unavailable_class no-result-row cannot go with verdict unavailable; it needs reference-missing or "
+        ("kvm", _NO_ROW, {"verdict": "nondeterministic"},
+         "unavailable_class no-result-row cannot go with verdict nondeterministic; it needs unavailable or "
+         "reference-missing or candidate-missing"),
+        ("kvm", dict(verdict="candidate-missing", unavailable_class="log-unreadable", operand="candidate"),
+         {"verdict": "unavailable"},
+         "unavailable_class log-unreadable cannot go with verdict unavailable; it needs reference-missing or "
          "candidate-missing"),
+        ("kvm", dict(verdict="unavailable", unavailable_class="no-result-row", operand="reference"), {"operand": None},
+         "unavailable_class no-result-row needs operand reference or candidate, got null"),
         # dbt may have no golden, but no comparison is attempted, so nothing is unmeasured.
         ("dbt", _NONDETERMINISTIC, {"verdict": "unavailable", "unavailable_class": "log-not-retained"},
          "dbt inputs cannot be equalized, so no comparison is attempted and it carries no unmeasured class, "
@@ -900,6 +955,21 @@ def test_each_class_guard_refuses_its_own_tamper(backend: str, target: dict[str,
     cell, at = _named(document, 1)
     cell.update(change)
     _refused(document, f"{at}: {message}")
+
+
+@pytest.mark.parametrize("operand", ["reference", "candidate"])
+def test_an_unavailable_no_result_row_cell_is_unmeasured_on_either_side(operand: str) -> None:
+    # hermit's `retained_operand` makes a rejected row, or a retry history it
+    # refuses, `unavailable` with class no-result-row; its side is the operand.
+    cell = _cell("t/x", verdict="unavailable", unavailable_class="no-result-row", operand=operand)
+    document = _document([_cell("t/a", credit=0.5), cell])
+    total = document["producers"][0]["total"]
+    assert summary_module.cell_group(cell) == "unmeasured"
+    assert (total["unmeasured"], total["unmeasured_by_class"]["no-result-row"], total["floor_cells"]) == (1, 1, 2)
+    assert total["line"] == ("parity: 0/2 matched; mean 0.500 over 1 measured; floor 0.250 over 1 measured of 2 "
+                             "selected (0 no golden; 0 not compared; 1 unmeasured: no-result-row 1)")
+    assert (f"t/x@kvm | unmeasured | unavailable | no-result-row | {operand} | none: 0 in the floor |"
+            in _text(_panel(_carriage(document))))
 
 
 def test_a_declared_backend_has_no_measured_cell_in_its_run(run_1953: dict[str, Any]) -> None:

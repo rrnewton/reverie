@@ -989,6 +989,47 @@ def test_a_node_that_never_ran_publishes_as_record_missing(tmp_path, remote_and_
         ("portable", "complete", 190), ("privileged", "absent", 1)}
 
 
+def test_a_node_whose_outputs_were_refused_publishes_as_record_missing(tmp_path, remote_and_clone, parity_store):
+    # hermit's `parity::expected_ledger_sources`: each expected cell of a node
+    # whose post-pass outputs it refused is a record-missing row whose reason
+    # names the refusal and whose origin carries the refused files' digests.
+    parity = parity_store
+    bare, clone = remote_and_clone
+    portable = [s for s in _parity_sources(parity) if s["source"]["lane"] == "portable"]
+    origin = {"lane": "privileged", "node": "manifest_backend_parity_c", "post_pass_state": "refused",
+              "status_sha256": "5" * 64, "records_sha256": "6" * 64, "hermit_bin_sha256": None,
+              "scope_source": "expected-scope"}
+    refused = [
+        {"cell": f"backend-parity-c/refused-{n}@kvm", "test_id": f"backend-parity-c/refused-{n}",
+         "backend": "kvm", "verdict": "record-missing", "unavailable_class": "record-missing", "operand": None,
+         "reason": "parity post-pass outputs refused: fixture: parity.jsonl disagrees with parity.status.json",
+         "run_id": None, "hermit_sha": None, "source": dict(origin), "record": None}
+        for n in (1, 2)
+    ]
+    _spool_parity(parity, tmp_path / "parity-spool", _parity_events(parity, [*portable, *refused]))
+
+    out = publisher.publish(clone, tmp_path / "parity-spool", store="parity")
+
+    assert out["published"] == 193 and out["parity"]["published"] == 193, out  # 192 rows + marker
+    assert git(bare, "log", "-1", "--format=%s", "main").stdout.strip() == "parity: append 193 event(s)"
+    rows = [json.loads(line) for line in
+            _remote_text(bare, f"parity/{TEAM}/{HOST}/2026-09.jsonl").splitlines()]
+    published = [row for row in rows if row["verdict"] == "record-missing"]
+    assert sorted(row["cell"] for row in published) == [
+        "backend-parity-c/refused-1@kvm", "backend-parity-c/refused-2@kvm"]
+    for row in published:
+        assert (row["unavailable_class"], row["operand"], row["record"]) == ("record-missing", None, None)
+        assert row["source"] == origin
+        assert row["reason"].startswith("parity post-pass outputs refused: ")
+    (marker,) = [json.loads(line) for line in
+                 _remote_text(bare, f"parity-runs/{TEAM}/{HOST}/2026-09.jsonl").splitlines()]
+    assert marker["records"] == 192 and marker["verdicts"]["record-missing"] == 2
+    assert {(n["lane"], n["post_pass_state"], n["status_sha256"], n["records_sha256"], n["records"])
+            for n in marker["nodes"]} == {
+        ("portable", "complete", portable[0]["source"]["status_sha256"], portable[0]["source"]["records_sha256"], 190),
+        ("privileged", "refused", "5" * 64, "6" * 64, 2)}
+
+
 def test_a_spooled_row_whose_envelope_disagrees_with_its_record_is_refused(
         tmp_path, remote_and_clone, parity_store, capsys):
     parity = parity_store

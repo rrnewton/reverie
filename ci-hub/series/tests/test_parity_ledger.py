@@ -136,6 +136,24 @@ def record_missing(test_id: str = "backend-parity-c/never-ran", backend: str = "
     }
 
 
+REFUSED_STATUS_SHA256 = "5" * 64
+REFUSED_RECORDS_SHA256 = "6" * 64
+
+
+def refused_node_missing(test_id: str = "backend-parity-c/refused-node", backend: str = "kvm") -> dict:
+    """What `parity::expected_ledger_sources` emits for each expected cell of a
+    node whose post-pass outputs `node_ledger_sources` refused: a
+    record-missing row whose reason names the refusal and whose origin carries
+    the digests of the refused files. The refusal text is fixture text; the
+    prefix is hermit's."""
+    row = record_missing(test_id, backend)
+    row["reason"] = ("parity post-pass outputs refused: fixture: parity.jsonl disagrees with "
+                     "parity.status.json")
+    row["source"].update(post_pass_state="refused", status_sha256=REFUSED_STATUS_SHA256,
+                         records_sha256=REFUSED_RECORDS_SHA256)
+    return row
+
+
 class RealRunTransport(unittest.TestCase):
     def test_fixture_matches_its_provenance(self):
         provenance = json.loads((FIXTURE / "provenance.json").read_text(encoding="utf-8"))
@@ -422,6 +440,48 @@ class RecordMissingAndEmptySelection(unittest.TestCase):
                 parity.ParityLedgerError,
                 "a node that left no status can only owe record-missing rows, got diverged"):
             build([source])
+
+    def test_a_refused_node_owes_record_missing_rows_naming_the_refusal(self):
+        sources = [*fixture_sources()[:3], refused_node_missing(),
+                   refused_node_missing("backend-parity-c/refused-node-2", "liteinst")]
+        marker, rows = parity.validate_batch(build(sources))
+        self.assertEqual(2, marker["verdicts"]["record-missing"])
+        for row in rows[-2:]:
+            self.assertEqual(("record-missing", "record-missing", None, None),
+                             (row["verdict"], row["unavailable_class"], row["operand"], row["record"]))
+            self.assertEqual("refused", row["source"]["post_pass_state"])
+            self.assertTrue(row["reason"].startswith("parity post-pass outputs refused: "), row["reason"])
+        self.assertEqual(
+            [("portable", "manifest_backend_parity_c", "complete", 3),
+             ("privileged", "manifest_backend_parity_c", "refused", 2)],
+            [(node["lane"], node["node"], node["post_pass_state"], node["records"]) for node in marker["nodes"]])
+        refused = marker["nodes"][1]
+        self.assertEqual((REFUSED_STATUS_SHA256, REFUSED_RECORDS_SHA256, None, "expected-scope"),
+                         (refused["status_sha256"], refused["records_sha256"], refused["hermit_bin_sha256"],
+                          refused["scope_source"]))
+
+    def test_a_refused_node_can_owe_only_record_missing(self):
+        for backend, verdict in (("kvm", "diverged"), ("kvm", "candidate-missing"),
+                                 ("dbt", "inputs-not-equalized")):
+            with self.subTest(verdict):
+                index, source = first(fixture_sources(), backend, verdict)
+                source["source"] = dict(refused_node_missing()["source"])
+                with self.assertRaises(parity.ParityLedgerError) as caught:
+                    build([source])
+                self.assertIn(
+                    f"input row 1: parity ledger source {source['cell']}: a node whose outputs were "
+                    f"refused can only owe record-missing rows, got {verdict}", str(caught.exception))
+
+    def test_an_unknown_post_pass_state_is_refused(self):
+        for state in ("rejected", "Refused", None):
+            with self.subTest(state):
+                source = fixture_sources()[0]
+                source["source"]["post_pass_state"] = state
+                with self.assertRaises(parity.ParityLedgerError) as caught:
+                    build([source])
+                self.assertIn(
+                    f"parity ledger source {source['cell']}: source.post_pass_state must be one of "
+                    f"complete, failed, running, absent, refused, got {state!r}", str(caught.exception))
 
     def test_empty_stdin_is_a_marker_with_zero_records(self):
         # The store can record an empty call. No producer makes one today:
@@ -833,9 +893,9 @@ class TypedUnavailableClass(unittest.TestCase):
             ("determinism-mismatch", "unavailable",
              "unavailable_class determinism-mismatch cannot go with verdict unavailable; it needs "
              "nondeterministic"),
-            ("no-result-row", "unavailable",
-             "unavailable_class no-result-row cannot go with verdict unavailable; it needs "
-             "reference-missing or candidate-missing"),
+            ("no-result-row", "nondeterministic",
+             "unavailable_class no-result-row cannot go with verdict nondeterministic; it needs "
+             "unavailable or reference-missing or candidate-missing"),
             ("log-unreadable", "unavailable",
              "unavailable_class log-unreadable cannot go with verdict unavailable; it needs "
              "reference-missing or candidate-missing"),
@@ -854,6 +914,24 @@ class TypedUnavailableClass(unittest.TestCase):
         sources = [*fixture_sources()[:2], dict(record_missing(), unavailable_class="timeout", operand="candidate")]
         self.refuse(sources, "unavailable_class timeout cannot go with verdict record-missing; it needs "
                              "unavailable or reference-missing or candidate-missing")
+
+    def test_a_no_result_row_row_may_be_unavailable_and_names_its_side(self):
+        # hermit's `retained_operand` makes a row the caller rejected, or a
+        # retry history hermit refuses, `unavailable`: the side has a row but
+        # no usable one. `UnavailableClass::verdicts` lets no-result-row go
+        # with `unavailable` as well as with the verdict that names the side;
+        # with `unavailable` the operand alone names it, so it is required.
+        for operand in ("reference", "candidate"):
+            with self.subTest(operand=operand):
+                sources, index, source = self.row("no-result-row", verdict="unavailable", operand=operand)
+                marker, rows = parity.validate_batch(build(sources))
+                self.assertEqual(("unavailable", "no-result-row", operand),
+                                 (rows[index]["verdict"], rows[index]["unavailable_class"],
+                                  rows[index]["operand"]))
+                self.assertEqual((1, 174), (marker["verdicts"]["unavailable"], marker["verdicts"]["diverged"]))
+        sources, index, source = self.row("no-result-row", verdict="unavailable", operand=None)
+        self.refuse(sources, f"input row {index + 1}: parity ledger source {source['cell']}: "
+                             "unavailable_class no-result-row needs operand reference or candidate, got null")
 
     def test_the_operand_must_fit_the_class(self):
         cases = [

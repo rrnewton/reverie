@@ -27,7 +27,10 @@ called for the run (an older hermit, a producer that never calls it, or a run
 whose parity selection was empty: hermit's callers skip `append-parity` when
 nothing is in scope, so an empty selection is not told apart from an older
 hermit). A marker with `records: 0` is what an empty stdin records. A node
-that never ran shows up as `record-missing` rows whose origin says `absent`.
+that never ran shows up as `record-missing` rows whose origin says `absent`,
+and a node whose post-pass outputs hermit refused shows up as `record-missing`
+rows whose origin says `refused` and whose reason names the refusal
+(`parity::expected_ledger_sources`).
 
 A spooled batch is one file per run: the marker line, then the rows, in the
 canonical compact encoding. The batch is published whole or not at all. A
@@ -95,7 +98,10 @@ LEDGER_VERDICTS = (
 )
 RECORD_VERDICTS = LEDGER_VERDICTS[1:]
 MEASURED_VERDICTS = frozenset({"matched", "diverged"})
-POST_PASS_STATES = ("complete", "failed", "running", "absent")
+#: hermit's `LedgerPostPassState`: how far a node's post-pass got. `absent`:
+#: the node left no parity.status.json; `refused`: hermit refused the node's
+#: post-pass outputs. Either way the node owes only `record-missing` rows.
+POST_PASS_STATES = ("complete", "failed", "running", "absent", "refused")
 SCOPE_SOURCES = ("status-scope", "status-count", "expected-scope")
 #: hermit's `UnavailableClass`, in three groups, each in the order the
 #: scorecard prints it. NO GOLDEN: an operand's own outcome left no
@@ -139,14 +145,15 @@ INPUTS_NOT_EQUALIZABLE = {
         "cannot be given the ptrace cell's input paths"
     ),
 }
-#: The verdicts a class may go with. Any other class is an operand's failure
-#: or an unmeasured comparison.
+#: The verdicts a class may go with (hermit's `UnavailableClass::verdicts`).
+#: Any other class is an operand's failure or an unmeasured comparison, and
+#: goes with `unavailable` or with the verdict that names its side
+#: (`_OTHER_CLASS_VERDICTS`); `no-result-row` is one of those.
 _CLASS_VERDICTS = {
     "determinism-mismatch": ("nondeterministic",),
     "inputs-not-equalized": ("inputs-not-equalized",),
     RECORD_MISSING_CLASS: ("record-missing",),
     "log-unreadable": ("reference-missing", "candidate-missing"),
-    "no-result-row": ("reference-missing", "candidate-missing"),
 }
 _OTHER_CLASS_VERDICTS = ("unavailable", "reference-missing", "candidate-missing")
 #: The operands a class may name; None is null.
@@ -788,6 +795,10 @@ def _check_ledger_fields(
     if origin["post_pass_state"] == "absent" and verdict != "record-missing":
         raise ParityLedgerError(
             f"{at}: a node that left no status can only owe record-missing rows, got {verdict}"
+        )
+    if origin["post_pass_state"] == "refused" and verdict != "record-missing":
+        raise ParityLedgerError(
+            f"{at}: a node whose outputs were refused can only owe record-missing rows, got {verdict}"
         )
     if verdict == "record-missing":
         if record is not None:

@@ -1972,6 +1972,77 @@ PARITY_GROUP_LABELS = {
     "refused": "refused",
 }
 
+#: What each class in the two class tables means: the no-parity classes, then
+#: the unmeasured ones, in the order the tables print them. The text follows
+#: hermit's documentation of each `unavailable_class` value
+#: (https://github.com/rrnewton/hermit/issues/3301). The not-compared class
+#: and record-missing are explained where the panel counts them.
+PARITY_CLASS_MEANINGS = {
+    "determinism-mismatch": (
+        "The reference's or the candidate's verify cell gave different logs on its two runs in some attempt "
+        "(result determinism-failure), so it has no deterministic log to compare."
+    ),
+    "timeout": "The reference's or the candidate's final attempt timed out (result timeout).",
+    "crash": "The reference's or the candidate's final attempt crashed or exited wrongly (result crash-error).",
+    "oom": "The reference's or the candidate's final attempt ran out of memory (result oom).",
+    "infrastructure-error": (
+        "The reference's or the candidate's cell failed for an infrastructure cause (result infrastructure-error), "
+        "or its result row was refused for an evidence error."
+    ),
+    "sandbox-denied": (
+        "A sandbox denied an operation the reference's or the candidate's cell needed (result sandbox-denied)."
+    ),
+    "failed-untyped": (
+        "The reference's or the candidate's cell failed with no typed cause: no result, or a replay-failure or "
+        "parity-failure result. The cell's reason names the value."
+    ),
+    "ended": (
+        "The reference's or the candidate's cell ended with an outcome other than PASS, FAIL or HOST-INAPPLICABLE "
+        "and no typed cause. The cell's reason names the outcome and the error kind."
+    ),
+    "host-inapplicable": "The reference's or the candidate's cell was host-inapplicable, so it left no log.",
+    "log-not-retained": (
+        "The reference or the candidate passed but did not retain exactly one nonempty first-run log (no "
+        "--verify-log-dir, no readable directory, an empty log, or not exactly one)."
+    ),
+    "log-unreadable": (
+        "The single retained log of the reference or the candidate exists but cannot be resolved, read or hashed."
+    ),
+    "no-result-row": (
+        "The reference or the candidate has no usable result row: none in the run, a retry history hermit "
+        "refuses, or a row the caller rejected as invalid."
+    ),
+    "log-diff-failed": (
+        "The parity tool could not produce a usable comparison of two deterministic, retained logs. There are "
+        "three cases. (1) log-diff returned a report that carries no verdict: NoResult, Refused, "
+        "NoComparableMessages or IdenticalSoFar. IdenticalSoFar should be impossible in one-shot mode, so seeing "
+        "it means a tool defect. (2) A matched or diverged report failed require_cross_backend_evidence. "
+        "(3) from_comparison could not record the report. Every other exit from compare is also this class: "
+        "deadline, output directory, paths, spawn, time bound, unreadable or contradictory report, and wrong "
+        "inputs."
+    ),
+    "invalid-test-id": "The test id is not a plain relative path, so no golden log can be written below it.",
+    "golden-not-written": "The reference's golden log or its sidecar could not be written.",
+    "epoch-not-shared": (
+        "The reference and the candidate cannot be shown to share a HERMIT_EPOCH. The operand is the side that "
+        "recorded none when only one did; there is none when both recorded different values or neither recorded one."
+    ),
+}
+
+
+def _parity_present_classes(run: Mapping[str, Any], field: str, classes: Sequence[str]) -> list[str]:
+    """The classes of one group with at least one cell in the run's total, in order."""
+    return [name for name in classes if run["total"][field][name]]
+
+
+def _parity_class_meanings(names: Sequence[str]) -> str:
+    """What each listed class means (`PARITY_CLASS_MEANINGS`)."""
+    entries = "".join(
+        f'<div><dt><code>{_escape(name)}</code></dt><dd>{_escape(PARITY_CLASS_MEANINGS[name])}</dd></div>'
+        for name in names
+    )
+    return f'<dl class="facts compact-facts parity-class-meanings">{entries}</dl>'
+
 
 def _parity_class_table(run: Mapping[str, Any], field: str, classes: Sequence[str], caption: str, css: str) -> str:
     """One group's cells by typed class: a row per class with cells, a column per backend."""
@@ -1981,8 +2052,7 @@ def _parity_class_table(run: Mapping[str, Any], field: str, classes: Sequence[st
         f'<tr><th scope="row"><code>{_escape(name)}</code></th>'
         + "".join(f'<td>{_integer(run["per_backend"][b][field][name])}</td>' for b in backends)
         + f'<td>{_integer(total[field][name])}</td></tr>'
-        for name in classes
-        if total[field][name]
+        for name in _parity_present_classes(run, field, classes)
     )
     return (
         f'<div class="table-scroll"><table class="{css}"><caption>{caption}</caption>'
@@ -2112,6 +2182,7 @@ def _parity_run_section(run: Mapping[str, Any], carriage: Mapping[str, Any], sum
             "and the floor",
             "parity-no-golden",
         )
+        + _parity_class_meanings(_parity_present_classes(run, "no_golden_by_class", reader.NO_GOLDEN_CLASSES))
         if total["no_golden"] else "<p>No parity (no deterministic golden): 0 cells.</p>"
     )
     not_compared = [(b, run["per_backend"][b]["not_compared"]) for b in backends if run["per_backend"][b]["not_compared"]]
@@ -2127,6 +2198,7 @@ def _parity_run_section(run: Mapping[str, Any], carriage: Mapping[str, Any], sum
             f'Unmeasured: {_integer(total["unmeasured"])} cell(s) by class, each 0 in the floor',
             "parity-unmeasured",
         )
+        + _parity_class_meanings(_parity_present_classes(run, "unmeasured_by_class", reader.UNMEASURED_CLASSES))
         if total["unmeasured"] else "<p>Unmeasured: 0 cells.</p>"
     )
     divergence_rows = []
