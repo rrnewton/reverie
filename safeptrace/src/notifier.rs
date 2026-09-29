@@ -6069,6 +6069,24 @@ mod test {
             thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(queued(terminal.event.event()), [PTRACE_EVENT_EXEC_STOP]);
+        // While the tracee is still in its exec stop, the Exec decodes and
+        // is not consumed: only a death the kernel reports consumes it.
+        let live = terminal
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("the Exec is queued");
+        let decoded = live.decode();
+        assert!(
+            matches!(
+                decoded,
+                Ok(crate::Wait::Stopped(_, crate::Event::Exec(former))) if former == root.into()
+            ),
+            "a live exec decoded as {decoded:?}"
+        );
+        let Err(live) = live.consume_dead_exec() else {
+            panic!("a live Exec was consumed");
+        };
+        drop(live);
+        assert_eq!(queued(terminal.event.event()), [PTRACE_EVENT_EXEC_STOP]);
         assert_eq!(unsafe { libc::kill(root.as_raw(), libc::SIGKILL) }, 0);
         while !terminal.exit_stop_observed() {
             assert!(Instant::now() < deadline, "no exit stop observed");
