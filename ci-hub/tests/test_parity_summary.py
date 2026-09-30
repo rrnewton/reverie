@@ -1073,6 +1073,26 @@ def test_the_legacy_line_is_rendered_from_its_entries(run_1953: dict[str, Any]) 
                        "'legacy-rerun: no retired ptrace-rerun comparison is retained'")
 
 
+def test_the_panel_withholds_the_retired_placeholder_word_in_the_scorecards_texts() -> None:
+    """render_site refuses every page when one page holds the retired
+    placeholder word. The scorecard's texts reach the panel as written: a
+    refused row's message and reason, and each reason it dropped a legacy
+    observation for. The panel shows each with the word withheld."""
+    word = "Unavail" + "able"
+    reason = f"verdict {word} is not a ledger verdict; {word} is the Debug form of unavailable"
+    document = _document([_cell("t/a", credit=0.5), _cell("t/b", verdict="refused", reason=reason)])
+    document["legacy_dropped"] = {f"legacy verdict {word}": 2}
+    summary_module.validate_summary(document)
+    panel = _panel(_carriage(document))
+    assert word not in panel
+    shown = ("verdict [retired word withheld] is not a ledger verdict; [retired word withheld] is the Debug form "
+             "of unavailable")
+    assert f"<li><code>parity/rrnewton/fixturehost/2026-09.jsonl:1</code>: t/b@kvm: {shown}</li>" in panel
+    assert f'<td><code class="parity-message">{shown}</code></td></tr>' in panel
+    assert ("<p>Legacy observations dropped rather than shown as verdicts: "
+            "legacy verdict [retired word withheld] 2.</p>") in panel
+
+
 def test_a_headline_brief_agrees_with_its_run(run_1953: dict[str, Any]) -> None:
     for field, value in (("emitted_at", "2026-09-28T22:00:00Z"), ("hermit_sha", "e" * 40),
                          ("line", "parity: something else")):

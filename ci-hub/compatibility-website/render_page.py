@@ -1883,10 +1883,37 @@ def _short_sha(value: Any) -> str:
     return f'<code title="{_escape(value)}">{_escape(str(value)[:12])}</code>'
 
 
+#: The word the site retired as a placeholder for missing data, spelled in two
+#: parts so that this source never holds it
+#: (test_source_contains_no_retired_placeholder_literal). render_site refuses
+#: to publish any page when one page holds it.
+RETIRED_PLACEHOLDER = "Unavail" + "able"
+#: What the parity panel prints in place of that word inside a text it quotes.
+PARITY_WITHHELD_WORD = "[retired word withheld]"
+
+
+def _parity_quoted(value: Any) -> str:
+    """Escape a text the parity panel quotes but did not write.
+
+    Those texts are a cell's reason, log messages and differing field, the
+    carriage's refusal, each row refusal the summary lists, an append-parity
+    error, and a retired-rerun drop reason. render_site refuses every page
+    when one page holds the retired placeholder word, so a quoted text that
+    holds it would take the determinism pages down with the panel, which is
+    what confining a parity refusal to the panel rules out. Hermit does write
+    the word: its parity record check names a verdict in Rust's Debug form
+    ("<cell>: <Verdict> is unmeasured and carries no compared lengths"), and
+    each expected cell of a node whose records fail that check gets a
+    record-missing row whose reason quotes the failure. The panel prints the
+    rest of the text and marks the word withheld.
+    """
+    return _escape(value).replace(RETIRED_PLACEHOLDER, PARITY_WITHHELD_WORD)
+
+
 def _parity_message(value: Any) -> str:
     if value is None:
         return '<span class="secondary">none</span>'
-    return f'<code class="parity-message">{_escape(value)}</code>'
+    return f'<code class="parity-message">{_parity_quoted(value)}</code>'
 
 
 def _parity_optional(value: Any) -> str:
@@ -1937,7 +1964,7 @@ def _parity_refused_text(carriage: Mapping[str, Any]) -> str:
     return (
         '<div class="notice parity-refused"><p><strong>Parity summary refused; no parity figure is shown for this '
         "build.</strong> The determinism figures are unaffected.</p>"
-        f'<p><code class="parity-message">{_escape(carriage["refusal"])}</code></p>'
+        f'<p><code class="parity-message">{_parity_quoted(carriage["refusal"])}</code></p>'
         + (f'<p>Read at: {"; ".join(facts)}.</p>' if facts else "")
         + "</div>"
     )
@@ -1955,7 +1982,7 @@ def _parity_append_refusals(carriage: Mapping[str, Any] | None) -> str:
         + "".join(
             f'<li>{_escape(item["producer"])} run <code>{_escape(item["run_id"])}</code> at Hermit '
             f'{_short_sha(item["hermit_sha"])}, {_escape(item["emitted_at"])}: '
-            f'<code class="parity-message">{_escape(item["error"])}</code></li>'
+            f'<code class="parity-message">{_parity_quoted(item["error"])}</code></li>'
             for item in listed
         )
         + "</ul></div>"
@@ -2286,7 +2313,7 @@ def _parity_legacy_section(summary: Mapping[str, Any]) -> str:
     )
     dropped_text = (
         "<p>Legacy observations dropped rather than shown as verdicts: "
-        + "; ".join(f"{_escape(reason)} {_integer(count)}" for reason, count in sorted(dropped.items()))
+        + "; ".join(f"{_parity_quoted(reason)} {_integer(count)}" for reason, count in sorted(dropped.items()))
         + ".</p>"
         if dropped else ""
     )
@@ -2357,7 +2384,7 @@ def _parity_panel(model: Any) -> str:
             "run and cell stays in that run's selected count as refused.</p><ul>"
             + "".join(
                 f'<li><code>{_escape(refusal["path"])}{"" if refusal["line"] is None else ":" + str(refusal["line"])}</code>: '
-                f'{_escape(refusal["message"])}</li>'
+                f'{_parity_quoted(refusal["message"])}</li>'
                 for refusal in summary["refusals"][:LIST_PAGE_SIZE]
             )
             + "</ul></div>"
@@ -5132,7 +5159,7 @@ def render_site(
     for index, row in enumerate(model.history_rows):
         files[model.history_paths[index]] = _run_page(model, index, row)
     files = dict(sorted(files.items()))
-    retired_placeholder = b"Unavail" + b"able"
+    retired_placeholder = RETIRED_PLACEHOLDER.encode()
     if any(
         retired_placeholder in value
         for path, value in files.items()

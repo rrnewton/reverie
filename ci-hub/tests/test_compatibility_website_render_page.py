@@ -6382,13 +6382,21 @@ PARITY_RUN_1953_LINE = (
 )
 
 
-def _parity_carriage() -> dict[str, Any]:
+def _parity_carriage(*, sources_of: Any = None, summary_of: Any = None,
+                     append_refusals: tuple[dict[str, Any], ...] = (), state: str = "current") -> dict[str, Any]:
     """RUN 1953 as the exporter captures it: the rows in their `parity/` shard,
-    the summary of that store, and the digest recomputed from the shard."""
+    the summary of that store, and the digest recomputed from the shard.
+
+    `sources_of` rewrites the run's source rows before the batch is built,
+    `summary_of` edits the summary before it is encoded, `append_refusals`
+    are the listed append-parity refusals, and `state` is the carriage state
+    the capture must reach."""
     reader = render_page._parity_reader()
     ledger_store = reader.parity_ledger_module()
     text = (PARITY_FIXTURE / "ledger-sources-typed.jsonl").read_text(encoding="utf-8")
     sources = [ledger_store.loads(line, f"line {n}") for n, line in enumerate(text.splitlines(), 1)]
+    if sources_of is not None:
+        sources = sources_of(sources)
     batch = ledger_store.build_batch(
         sources, producer="validate",
         run_id="validate-coord-s17-d3a0a4ae3d16-1790649970094317174-3328074-da07a1da",
@@ -6397,7 +6405,10 @@ def _parity_carriage() -> dict[str, Any]:
     )
     rows = [row for row in batch if row["event_type"] == "parity.record"]
     store = {ledger_store.event_shard(rows[0]): ledger_store.encode_batch(rows).encode()}
-    data = reader.encode_summary(reader.summarize_rows(rows, store_sha256=reader.store_digest(store)))
+    summary = reader.summarize_rows(rows, store_sha256=reader.store_digest(store))
+    if summary_of is not None:
+        summary_of(summary)
+    data = reader.encode_summary(summary)
     blob = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
     def no_earlier_store(commit: str) -> Any:
@@ -6406,8 +6417,9 @@ def _parity_carriage() -> dict[str, Any]:
     carriage = reader.capture_carriage(
         PARITY_LEDGER_COMMIT, summary_object=blob, summary_data=data, store=store, store_files=1,
         run_marker_files=1, read_store_at=no_earlier_store, is_ancestor=lambda commit: False,
+        append_refusals=list(append_refusals), append_refusals_total=len(append_refusals),
     )
-    assert carriage["state"] == "current", carriage["refusal"]
+    assert carriage["state"] == state, carriage["refusal"]
     return carriage
 
 
@@ -6484,6 +6496,126 @@ def test_a_tampered_parity_carriage_still_produces_the_determinism_pages() -> No
     assert cells
     for name in cells:
         assert digest.sub(rb"\1", files[name]) == digest.sub(rb"\1", plain[name]), name
+
+
+#: The placeholder word render_site refuses to publish on any page, spelled
+#: here apart from render_page's own definition so that these tests do not
+#: share it.
+RETIRED_WORD = "Unavail" + "able"
+#: How the parity panel prints that word inside a text it quotes.
+PARITY_WITHHELD = "[retired word withheld]"
+#: The reason hermit gives each expected cell of a node whose `parity.jsonl`
+#: fails its record check (ci/manifest-plan/src/parity.rs): hermit's
+#: `expected_ledger_sources` prefixes the node's refusal, which names the file
+#: and line, and `ParityRecord::validate` names the verdict in Rust's Debug
+#: form (https://github.com/rrnewton/hermit/issues/3301).
+PARITY_REFUSED_NODE_REASON = (
+    "parity post-pass outputs refused: /results/privileged/manifest_backend_parity_c/parity.jsonl line 1: "
+    f"parity record backend-parity-c/cpuid-probe@kvm: {RETIRED_WORD} is unmeasured and carries no compared lengths"
+)
+#: RUN 1953 without the privileged node's two measured cells, whose credits
+#: are 0.12244897959183673 and 0.014792899408284023 of the run's 9.0726: 173
+#: measured cells hold 8.9353, a mean of 0.0516, and the floor divides the
+#: same sum by the 178 selected cells that are neither no-golden nor not
+#: compared (192 - 0 - 14), 0.0502.
+PARITY_NODE_REFUSED_LINE = (
+    "parity: 0/192 matched; mean 0.052 over 173 measured; floor 0.050 over 173 measured of 192 selected "
+    "(0 no golden; 14 not compared; 3 unmeasured: no-result-row 3; 2 record-missing) [inputs not equalized]"
+)
+
+
+def _privileged_node_refused(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """RUN 1953 as validate reports it when the privileged node's `parity.jsonl`
+    fails hermit's record check: each of the node's two expected cells is the
+    record-missing row hermit's `expected_ledger_sources` writes, with a
+    `refused` origin that keeps the node's status digest. The refused records
+    are not in the fixture, so their digest is a stand-in, as in
+    test_parity_ledger.refused_node_missing."""
+    rewritten = []
+    for source in sources:
+        if source["source"]["lane"] == "privileged":
+            source = dict(
+                source, verdict="record-missing", unavailable_class="record-missing", operand=None,
+                reason=PARITY_REFUSED_NODE_REASON, run_id=None, hermit_sha=None, record=None,
+                source=dict(source["source"], post_pass_state="refused", records_sha256="6" * 64,
+                            hermit_bin_sha256=None, scope_source="expected-scope"),
+            )
+        rewritten.append(source)
+    assert [source["cell"] for source in rewritten if source["verdict"] == "record-missing"] == [
+        "backend-parity-c/cpuid-probe@kvm", "backend-parity-c/cpuid-probe@liteinst"]
+    return rewritten
+
+
+def _append_refusal_of_a_debug_form_verdict() -> dict[str, Any]:
+    """An append-parity refusal as the carriage lists it: the ledger refuses a
+    batch whose one row names its verdict in Rust's Debug form, and series.py
+    records the ledger's own error (`_record_parity_refusal`)."""
+    reader = render_page._parity_reader()
+    ledger_store = reader.parity_ledger_module()
+    line = (PARITY_FIXTURE / "ledger-sources-typed.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    source = dict(ledger_store.loads(line, "stdin line 1"), verdict=RETIRED_WORD)
+    identity = dict(producer="validate", run_id="validate-fixture-debug-form-verdict",
+                    hermit_sha="d3a0a4ae3d168565595ae4157b25ab8efbb1861a", emitted_at="2026-09-28T22:00:00Z",
+                    source_tree_dirty=False, host="fixturehost")
+    with pytest.raises(ledger_store.ParityLedgerError) as refused:
+        ledger_store.build_batch([source], **identity)
+    event = ledger_store.build_refusal(
+        **identity, input_bytes=json.dumps(source, separators=(",", ":")).encode() + b"\n", input_lines=1,
+        error=refused.value,
+    )
+    return {field: event[field] for field in reader.APPEND_REFUSAL_FIELDS}
+
+
+def _pages_holding_the_retired_word(files: dict[str, bytes]) -> list[str]:
+    return [name for name, value in files.items() if name.endswith(".html") and RETIRED_WORD.encode() in value]
+
+
+def test_parity_texts_holding_the_retired_word_are_shown_with_the_word_withheld(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """render_site refuses every page when one page holds the retired
+    placeholder word, and hermit writes that word inside texts the parity
+    panel quotes. The panel withholds the word, so the site is published with
+    the parity that can be shown."""
+    carriage = _parity_carriage(sources_of=_privileged_node_refused,
+                                append_refusals=(_append_refusal_of_a_debug_form_verdict(),))
+    data = _data_with_parity(carriage)
+    _validated(data)
+    files = render_page.render_site(_build(data), data)
+    assert _pages_holding_the_retired_word(files) == []
+    overview = files["index.html"].decode()
+    panel = overview[overview.index('id="parity"'):overview.index('id="backend-history"')]
+    # The refused node's two cells are record-missing: out of the mean, 0 in the floor.
+    assert f'<p class="parity-line"><code>{PARITY_NODE_REFUSED_LINE}</code></p>' in panel
+    # Each is listed with hermit's reason, the word withheld.
+    reason = html.escape(PARITY_REFUSED_NODE_REASON.replace(RETIRED_WORD, PARITY_WITHHELD))
+    for cell in ("backend-parity-c/cpuid-probe@kvm", "backend-parity-c/cpuid-probe@liteinst"):
+        row = re.search(rf'<tr><th scope="row"><code>{re.escape(cell)}</code></th>(.*?)</tr>', panel, re.S)
+        assert row is not None, cell
+        assert row.group(1).endswith(f'<td><code class="parity-message">{reason}</code></td>'), row.group(1)
+    # The append refusal is listed with the ledger's error, the word withheld.
+    assert ("input row 1: parity ledger source backend-parity-c/aio-refusal@kvm: verdict must be one of "
+            "record-missing, nondeterministic, unavailable, reference-missing, candidate-missing, "
+            f"inputs-not-equalized, diverged, matched, got &#x27;{PARITY_WITHHELD}&#x27;</code></li>") in panel
+    # Quoted as written, those texts put the word on the overview, and the whole site is refused.
+    monkeypatch.setattr(render_page, "_parity_quoted", render_page._escape)
+    with pytest.raises(render_page.RenderRefused, match="rendered output contains a retired placeholder"):
+        render_page.render_site(_build(data), data)
+
+
+def test_a_parity_summary_refusal_quoting_the_retired_word_is_confined_to_the_panel() -> None:
+    def debug_form_verdict(summary: dict[str, Any]) -> None:
+        summary["producers"][0]["cells"][0]["verdict"] = RETIRED_WORD
+
+    carriage = _parity_carriage(summary_of=debug_form_verdict, state="refused")
+    assert f"got '{RETIRED_WORD}'" in carriage["refusal"]
+    files, plain = _refused_parity_site(_data_with_parity(carriage))
+    assert _pages_holding_the_retired_word(files) == []
+    overview = files["index.html"].decode()
+    assert overview.count("<strong>Parity summary refused; no parity figure is shown for this build.</strong>") == 1
+    assert html.escape(carriage["refusal"].replace(RETIRED_WORD, PARITY_WITHHELD)) in overview
+    # The determinism pages are all still published.
+    assert set(files) == set(plain)
 
 
 def test_build_admits_the_captured_parity_carriage_without_refusing_the_build() -> None:
