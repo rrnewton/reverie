@@ -414,6 +414,38 @@ impl FakeKernel {
         result
     }
 
+    /// Like [`thread_start`](Self::thread_start), but every wait of this
+    /// callback answered `Yielded` first runs `others`, as in
+    /// [`syscall_with_others`](Self::syscall_with_others).
+    pub fn thread_start_with_others<T: Tool + 'static>(
+        &self,
+        host: &FakeHost<T>,
+        tid: Pid,
+        others: &mut (dyn FnMut() + Send + Sync),
+    ) -> Result<LifecycleOutcome, NarfFatal> {
+        let result = self.in_callback(tid, || {
+            let mut services = self.services(tid, None);
+            services.others = Some(others);
+            host.handle_thread_start(&mut services)
+        });
+        self.report_exits(host);
+        result
+    }
+
+    /// Runs `tid`'s post-exec callback.
+    pub fn post_exec<T: Tool + 'static>(
+        &self,
+        host: &FakeHost<T>,
+        tid: Pid,
+    ) -> Result<LifecycleOutcome, NarfFatal> {
+        let result = self.in_callback(tid, || {
+            let mut services = self.services(tid, None);
+            host.handle_post_exec(&mut services)
+        });
+        self.report_exits(host);
+        result
+    }
+
     /// Runs `call` as `tid`'s callback: exits reported meanwhile skip `tid`.
     fn in_callback<R>(&self, tid: Pid, call: impl FnOnce() -> R) -> R {
         self.with(|world| world.in_callback.push(tid.as_raw()));

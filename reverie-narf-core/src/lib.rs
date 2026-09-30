@@ -30,11 +30,11 @@
 //!   ([`KernelServices::wait_for_repoll`]) and the core polls it again,
 //!   within the same interceptor entry, until it finishes, makes its
 //!   terminal transition, parks, fails, or the task is killed. Only the
-//!   kernel can bound that wait. Where the kernel cannot wait, such a future
-//!   fails closed with [`NarfFatal::ToolSuspended`] and is never polled
-//!   again, and so does one pending in thread start, post-exec, an exit
-//!   hook, an interrupted inject or `init_global_state`, which are polled
-//!   once;
+//!   kernel can bound that wait. Thread start and post-exec wait the same
+//!   way. Where the kernel cannot wait, such a future fails closed with
+//!   [`NarfFatal::ToolSuspended`] and is never polled again, and so does one
+//!   pending in an exit hook, an interrupted inject or `init_global_state`,
+//!   which are polled once;
 //! * on x86_64, `NarfToolHost::handle_rdtsc` delivers an RDTSC or RDTSCP the
 //!   task executed to the Tool's `handle_rdtsc_event` in the same way, for a
 //!   host built to deliver them. The instruction is not a syscall, so
