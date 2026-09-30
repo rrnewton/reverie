@@ -8212,8 +8212,10 @@ impl ValidateLock {
         // get it killed mid-run (review of
         // https://github.com/rrnewton/dev-hermit/issues/419). Each phase can
         // overshoot its share by one POLL_SECONDS sleep. After the child,
-        // teardown adds at most 5 s TERM grace + 6 s kill settling + 5 s
-        // empty-domain settle.
+        // teardown adds about 22 s at most: 5 s TERM grace + 6 s kill
+        // settling + up to 11 s of empty-domain settle (the settle stops
+        // starting new kill rounds after 5 s, but rounds started just before
+        // then still run their full 6 s).
         let budget = WaitBudget::start(args.wait);
 
         // Yield BEFORE taking the box-global anchor. A background waiter that
