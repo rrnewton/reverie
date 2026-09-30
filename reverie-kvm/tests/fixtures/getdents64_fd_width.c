@@ -259,8 +259,8 @@ static void cursor_controls(int fd, const char *path, int decoy,
   CHECK(inaccessible != MAP_FAILED);
   memset(inaccessible, 0xa5, 4096);
   // This descriptor control requires inaccessible-page rejection before any
-  // cursor advance. Read-only copyout is a separate existing backend gap; the
-  // failing read-only probe is retained as diagnostic evidence for that gap.
+  // cursor advance. The separate GETDENTS_COPYOUT_PROGRAM oracle in static_elf.rs
+  // checks read-only copyout against native Linux.
   CHECK(mprotect(inaccessible, 4096, PROT_NONE) == 0);
   int alias = dup(fd);
   CHECK(alias >= 0);
