@@ -1,7 +1,7 @@
 # Narf: unmodified Reverie tools inside the kernel (status)
 
 Maintained by sub-narf-opus, a worker under the dev-hermit coordinator
-coord2. Last updated 2026-09-30 at 09:28Z. This file is the Narf lane's durable
+coord2. Last updated 2026-09-30 at 20:05Z. This file is the Narf lane's durable
 record from 2026-09-29 on.
 
 Narf is Daniel Hodges' kernel, https://github.com/hodgesds/narf. On
@@ -18,51 +18,69 @@ hodgesds/narf. Every Narf commit below is signed.
 
 - High-water mark: unmodified Reverie tools run inside the Narf kernel,
   which hosts them at its syscall dispatcher. The tools are counter1,
-  counter2, strace and chaos from reverie-examples, plus the adapter's test
-  tools. They are compiled in only with the `reverie-narf-poc` build
-  feature. A boot hosts one only when the kernel command line names it
-  (`reverie_tool=<name>`).
+  counter2, strace and chaos from reverie-examples, Hermit's Detcore (M3),
+  and the adapter's test tools. They are compiled in only with the
+  `reverie-narf-poc` build feature. A boot hosts one only when the kernel
+  command line names it (`reverie_tool=<name>`).
 - With change 3 of the RDTSC work, a Tool that subscribes to RDTSC events
   also receives the `rdtsc` and `rdtscp` instructions of the tasks it
-  hosts, and its value completes them. This is exercised in kernel tests
-  only; the boot path does not install the RDTSC interceptor.
-- Hermit/Detcore has not run inside Narf. Milestone M2, started on
-  2026-09-30, makes Detcore compile without std in Hermit's tree: branch
-  `narf/detcore-nostd` of https://github.com/rrnewton/hermit, draft
-  https://github.com/rrnewton/hermit/pull/3401.
-  - At the branch head, 0ba3414ad, the no-std check has 9 errors left. It
-    had 141 when it first reached hermit-detcore. All 9 are the
-    scheduler's waits for outside progress.
-  - A patch that takes the check to 0 errors and 0 warnings, with the host
-    build unchanged, is posted for coord2's decision. It is not committed
-    (see "M2" below).
-  - The blockers for running Detcore in Narf are listed below.
+  hosts, and its value completes them. Kernel tests exercise this. Since
+  M3 the boot also installs the RDTSC interceptor when it hosts Detcore;
+  no boot run has yet shown an instruction reaching it.
+- Hermit's Detcore now runs inside Narf (milestone M3). A kernel built
+  with `reverie-narf-poc` and booted with `reverie_tool=detcore` hosts the
+  login shell's process tree under Detcore. Detcore is built without std
+  from Hermit's own sources and driven through its external-scheduler
+  entry.
+  - The musl-demo case `hello` runs to completion under it. Two runs at
+    each of two Narf heads, f0368066 and dcd7bf83, print the same 11
+    console lines from the command to the end of the report. With
+    Detcore's log printed, two runs print the same 242 lines, including
+    every scheduling decision and its virtual time (see "M3" below).
+  - Nothing more runs yet. hello_musl stops because Detcore synthesizes a
+    `SIGCHLD` for the shell that its kernel build cannot deliver. A second
+    command in the same shell stops because Narf reuses a PID that Detcore
+    still records as killed. Both need a decision on Detcore's semantics;
+    both are proposed below, and neither is changed.
+- M2 is done. At Hermit e4b123f44, Detcore type-checks without std with 0
+  errors and 0 warnings, and the host build is unchanged. Hermit 9abfa768
+  exports the no-std crates as a tree that Narf takes as a git dependency.
 - Change 3 is done: built at a2720197, all of its local evidence passes
-  (below), and sub-review-c3c approved it. The branch head, 502e7808,
-  only moves the adapter's Reverie dependency to GitHub at the same rev.
+  (below), and sub-review-c3c approved it. 502e7808, after it, only moved
+  the adapter's Reverie dependency to GitHub at the same rev.
 
 ## Where the code and evidence are
 
 - Narf: branch `sub-narf-opus/m1-counter1-boot` of
-  https://github.com/rrnewton-bots/narf, head 502e7808 (read back with
-  `git ls-remote` at 20:22Z). On devbig030 it is checked out in
-  `worktrees/slots/narf-opus-progress/ignored/narf-evidence/fixes-r5/wt-r25`.
-  At 502e7808 it is 127 commits on top of its merge base with Narf main,
-  26fce9ac.
-- Reverie fork: branch `sub-narf-opus/m14-rdtsc` of
-  https://github.com/rrnewton/reverie, at 82da2755 (read back at 20:10Z).
-- Hermit, for M2: branch `narf/detcore-nostd` of
+  https://github.com/rrnewton-bots/narf, head
+  dcd7bf8381e10065b4953b43c223f3c572628af6 (read back with
+  `git ls-remote` at 19:29Z on 2026-09-30). On devbig030 it is checked out
+  in `worktrees/slots/narf-opus-progress/ignored/narf-evidence/fixes-r5/wt-r25`.
+  At dcd7bf83 it is 131 commits on top of its merge base with Narf main,
+  26fce9ac: the 127 up to 502e7808, and M3's 4.
+- Reverie fork, for the RDTSC work: branch `sub-narf-opus/m14-rdtsc` of
+  https://github.com/rrnewton/reverie, at 82da2755 (read back at 20:10Z
+  on 2026-09-29).
+- Hermit, for M2 and M3: branch `narf/detcore-nostd` of
   https://github.com/rrnewton/hermit.
-  - Head 0ba3414adf02fefe24cf054b282d565af81b4615, read back with
-    `git ls-remote` at 09:19Z on 2026-09-30. That is 4 commits on hermit
+  - Head 9abfa76862616a6d98e21d79a1f8cfeabf642ed4, read back with
+    `git ls-remote` at 19:29Z on 2026-09-30. That is 6 commits on hermit
     main e454d6c28.
   - Draft pull request: https://github.com/rrnewton/hermit/pull/3401,
     `Owner: coord2`.
   - On devbig030: `worktrees/slots/narf-detcore`.
+- Hermit export, for M3: branch `narf/detcore-kernel-crates` of
+  https://github.com/rrnewton/hermit, at
+  73ba8dcf5c9d83d09fb557d7afdd41b259455345 (read back at 19:29Z). It is
+  the tree that `scripts/export-detcore-kernel-crates.sh` writes from
+  Hermit 9abfa768 with Reverie c6c047b6, and Narf's adapter pins it.
 - Reverie fork, for M2: branch `sub-narf-opus/m2-nostd-on-fba351a5` of
-  https://github.com/rrnewton/reverie, at 2d4e865e, read back at 09:19Z.
-  On devbig030, the slot `worktrees/slots/narf-opus-reverie` has this
-  branch checked out now.
+  https://github.com/rrnewton/reverie, at 2d4e865e (read back at 19:29Z).
+- Reverie fork, for M3: branch `sub-narf-opus/m3-lifecycle-wait` of
+  https://github.com/rrnewton/reverie, at c6c047b6, one commit on
+  2d4e865e (read back at 19:29Z). Narf's adapter pins it. On devbig030,
+  the slot `worktrees/slots/narf-opus-reverie` has this branch checked
+  out.
 - Evidence, on devbig030 only and untracked:
   `worktrees/slots/narf-opus-progress/ignored/narf-evidence/`.
   The running log is `backend-6.3/r25/STATUS-sub-narf-opus.md`, and the
@@ -70,7 +88,7 @@ hodgesds/narf. Every Narf commit below is signed.
   notes for each change, is `backend-6.3/m1/m1.3/step4-rdtsc-design.md`.
   Paths below that start with `adapter3/` are under
   `backend-6.3/m1/m1.3/step4/`. M2's evidence is under
-  `backend-6.3/m2-nostd/`.
+  `backend-6.3/m2-nostd/`, and M3's is under `backend-6.3/m3/`.
 
 ## Milestones
 
@@ -85,10 +103,304 @@ hodgesds/narf. Every Narf commit below is signed.
 | M1.3 step 3 | A Tool callback may wait: its task parks and the callback is polled again later. A global state can run a background future. | 5ef17368, 482bbdc8, a120efa8, b80d65bf, cb5fb1a3, 139e5bd6, 2919a424 | ec69a1dd, 426c6a2c | done, gated, reviewed |
 | M1.3 step 4, changes 1 and 2 | Kernel: an instruction interceptor (for `rdtsc`/`rdtscp`) may defer its answer to a callback that may wait. Reverie core: `handle_rdtsc`. | 83408f48, dadaefaa, 797df978 | be4b0d8a, 20d366c7, 82da2755 | done, gated, reviewed (approve) |
 | M1.3 step 4, change 3 | The adapter delivers hosted tasks' `rdtsc`/`rdtscp` to a Tool that subscribes. | a2720197 (second amend of f3eb25a8); 502e7808 changes only the pin's URL | pins 82da2755 | done: gated at a2720197, reviewed (approve) |
-| M2 Detcore without std | Detcore compiles for x86_64-unknown-none inside Hermit's tree; the std build is unchanged. | none in Narf; Hermit branch `narf/detcore-nostd`: 7598a29e9, 99580b17b, 9bad1bcfe, 0ba3414ad | 2d4e865e: the 31 commits rebased onto fba351a5 (18dac3e8), plus one that builds `RegDisplay` without std and relaxes the no-std `Config` bound | in progress: 9 errors left, all scheduler waits; a patch that reaches 0 awaits coord2's decision |
-| Detcore inside Narf | Hermit's deterministic scheduler as an optional kernel capability. | none | none | not started |
+| M2 Detcore without std | Detcore compiles for x86_64-unknown-none inside Hermit's tree; the std build is unchanged. | none in Narf; Hermit branch `narf/detcore-nostd`: 7598a29e9, 99580b17b, 9bad1bcfe, 0ba3414ad, e4b123f44 (the approved wait design), 9abfa7686 (the export) | 2d4e865e: the 31 commits rebased onto fba351a5 (18dac3e8), plus one that builds `RegDisplay` without std and relaxes the no-std `Config` bound | done: 0 errors and 0 warnings at e4b123f44; its deterministic-scheduling review was not run |
+| M3 Detcore inside Narf | Hermit's Detcore hosts the boot's process tree, as an optional kernel capability. | 2218b34b, 45294b95, f0368066, dcd7bf83; they pin Hermit's export 73ba8dcf | c6c047b6 | first deterministic run done: `hello`, 2 runs at each of two heads, gated at dcd7bf83; hello_musl and a second command are blocked on two Detcore semantics questions |
 
-## M2: Detcore without std, at 0ba3414ad
+## M3: Detcore inside Narf, at dcd7bf83
+
+coord2's goal for M3: Detcore as the Reverie Tool over the musl-demo
+`hello` guest, inside Narf under QEMU, with the guest running to
+completion and the same output in two runs. The kernel is built with
+`reverie-narf-poc` and the musl-demo harness's own features, `boot-init`
+and `firmware-allow-unsigned`, and boots with `reverie_tool=detcore`.
+The guest has 16 CPUs online. The evidence is under `backend-6.3/m3/`:
+kernels in `kernels/`, runs in `runs/` (a `<label>.log` and a
+`<label>.txt` record for each), gates in `gates/`.
+
+### The first deterministic run: `hello`
+
+- Kernel `kernels/detcore-poc-4`, built at dcd7bf83, sha256
+  14a25cbf.... The normal-build proof's musl-demo-poc build of the same
+  head has the same sha256.
+- Command, from `m3run.sh`: `cargo xtask musl-demo --prebuilt <kernel>
+  --case hello --reverie-tool detcore`. The harness boots the kernel,
+  types `hello` at the shell and then `exit`, and checks the report that
+  the boot prints.
+- Runs `hello-dcd7-1` and `hello-dcd7-2`: exit 0, in 4 s and 3 s. The
+  earlier runs `hello-plain-1` and `hello-plain-2`, at f0368066 with
+  kernel `detcore-poc-3` (sha256 00d9c83d...): exit 0, in 5 s and 4 s.
+- The report is the same in all four: 75 syscall entries, 21
+  re-executions, 54 expected events; 2 tasks started and exited, in 2
+  processes; events by task 2:51 and 3:3; syscalls by number 0:23 1:10
+  3:1 9:1 16:6 32:3 39:1 57:1 59:2 60:2 61:1 112:1 257:2;
+  `detcore-scheduler turns=1`.
+- The same output: the console from the harness's command banner to the
+  end of the report is 11 lines, with the same sha256 in all four runs
+  (4570b9af...). It holds the shell's echo of `hello`, the guest's line
+  `hello`, the prompt with the harness's own `ok` line after it, `exit`,
+  `shell: bye` and the report. The 40 lines
+  from "detcore installed at the syscall dispatcher" to the end of the
+  report match too (6f9e49a6...). The two logs at dcd7bf83, 680 lines
+  each, differ in 9 lines, all printed before Detcore starts: the
+  randomized kernel layout (2), boot-phase cycle counts (5), and the
+  wall clock read from CMOS and the local timer's calibration (2).
+- With Detcore's log. Kernel `detcore-poc-diag-2` is f0368066 plus
+  `diffs/detcore-log-info-stderr.diff` (sha256 e009ffaf...), which prints
+  Detcore's INFO log and its error output on the console. Runs
+  `hello-diag-1` and `hello-diag-2`, 6 s each, print the same 242 lines
+  from "detcore installed" to the end of the report (sha256
+  4b91a1a6...). Those include all 27 scheduler COMMIT records with their
+  virtual times. The last is at 1,767,225,601,162,625,000 ns, which is
+  1.162625 s after Detcore's epoch, 2026-01-01T00:00:00Z.
+- In that log, the guest writes 6 bytes to fd 1 whose sha256 is
+  5891b5b5..., the sha256 of `hello` and a newline. It then calls
+  exit(0), and the shell's wait4 returns Ok(3), the guest's PID.
+
+### What this run does not show
+
+- The harness's own check is not evidence. It looks for `hello` after
+  typing `hello`, and the shell's echo of the command already contains
+  it. The evidence that the guest printed is its line in the console
+  section and its write in Detcore's log. hello_musl's check is
+  stronger: `hello from musl` is not in its echo.
+- The exit status word. What is shown is the guest's exit(0) and the
+  value wait4 returned, in Detcore's log, not the status the shell
+  received.
+- A number of turns. `turns=1` says only that the scheduler completed a
+  turn: Detcore reports that milestone once, after its first turn, so
+  the count is 0 or 1. dcd7bf83 corrects the documentation. The message
+  of 45294b95, which added the line, still calls it a count of turns.
+- A group exit. `hello` and the shell both leave with exit (syscall 60),
+  not exit_group (231), and Detcore synthesizes a child's `SIGCHLD` only
+  for a group exit (detcore/src/scheduler.rs 4708-4720 at 9abfa768). So
+  this run does not reach blocker 1, and the shell learns of its child's
+  exit from Narf's own `SIGCHLD` and wait4.
+- A second command. The harness runs one command in this boot. A second
+  command in the same shell hits blocker 2.
+
+### The commits
+
+- Reverie c6c047b6 (4 files, +321/-24): the Narf core polls a pending
+  `handle_thread_start` or `handle_post_exec` again after each
+  `KernelServices::wait_for_repoll`, instead of failing it with
+  `ToolSuspended`. `NarfToolHost::with_global_state` and
+  `with_global_state_delivering_rdtsc` host a global state that the
+  caller built. The drive_tools suite passes 56 tests (51 before), and
+  the no-std gate passes.
+- Narf 2218b34b (5 files, +173/-18): the capability that the kernel lends
+  to `on_task_start` and `on_task_exec` implements `wait_for_repoll`, as
+  the instruction capability does. The adapter pins c6c047b6. New test
+  `reverie_narf_thread_start_waits_for_another_task`. A task killed
+  while its thread start waits dies at its next entry to the kernel, not
+  before its first user instruction.
+- Hermit e4b123f44 and 9abfa7686: see "M2" below. The exported tree is
+  commit 73ba8dcf of `narf/detcore-kernel-crates`.
+- Narf 45294b95 (7 files, +707/-33): `reverie_tool=detcore`. The adapter
+  takes Detcore from the exported tree and patches crates.io's rand_pcg
+  0.10.2 to it. `detcore-config.json` is Detcore's configuration. The
+  boot installs Detcore's RDTSC interceptor, and starts Detcore's
+  external scheduler as a background task once the root is hosted.
+  xtask accepts `--reverie-tool detcore`.
+- Narf f0368066 (7 files, +418/-33): a callback that waits first lets
+  the tasks it has created start. Without this the first fork hung: the
+  parent's fork callback waited for a scheduler turn that needed the
+  child's thread start, and the kernel held the child back until the
+  callback returned. `release_reported_spawns`
+  (userspace/src/user_task.rs) publishes the held children once the
+  interceptor has taken every one's record.
+  `NativeSyscallTransition::release_created_tasks`
+  (userspace/src/syscall.rs) exposes it, and the adapter's
+  `wait_for_repoll` hosts the created tasks before it releases them. New
+  tests `reverie_narf_release_publishes_a_reported_child` and
+  `reverie_narf_fork_callback_waits_for_its_child`.
+- Narf dcd7bf83 (4 files, +37/-12): Detcore's error output (its
+  `eprintln!`) is printed as `detcore-stderr: <line>`. Before, it went
+  nowhere, and a stop showed only a bare panic. The turn line's
+  documentation says 0 or 1.
+- In all, 502e7808..dcd7bf83 changes 12 files, +1323/-84. Two are kernel
+  files outside the adapter and not behind the feature:
+  userspace/src/syscall.rs and userspace/src/user_task.rs (see "A normal
+  build" below).
+
+### Gates at dcd7bf83
+
+24 gates, all pass, from 19:24:01Z to 19:41:52Z on 2026-09-30, with the
+tree clean afterwards (`gates/`, summary in `tmp/gates-dcd7-summary.txt`):
+- fmt; clippy -D warnings for the scheduler and userspace host crates;
+  clippy -D warnings for narf-frame on x86_64 and aarch64, each with six
+  feature sets (base, container, reverie-narf-poc, container with the
+  poc, kernel-test, and kernel-test with container and the poc);
+- kernel tests, as pass/fail/skip:
+
+| Gate | dcd7bf83 | a2720197 |
+|---|---|---|
+| reverie-narf, x86_64 | 49/0/0, 170 s | 46/0/0 |
+| reverie-narf, x86_64 at 2 CPUs | 49/0/0, 15 s | 46/0/0 |
+| focused userspace / syscall_abi, x86_64 | 544/0/3, 1813/0/2 | the same |
+| focused userspace / syscall_abi, aarch64 | 404/0/2, 1790/0/4 | the same |
+| full-x86_64 (cgroup-all, container) | 8572/0/82, 61 s | the same |
+| full-poc-x86_64 (adds reverie-narf-poc) | 8620/0/82, 70 s | 8618/0/81 |
+| slab-audit-poc-x86_64 | 2404/0/5, 188 s | 2401/0/5 |
+
+- The three new passes in reverie-narf are M3's tests. They pass in
+  full-poc and in the slab audit too.
+- In full-poc, `smoke_device_pm_drivers_register_at_probe_if_probed`
+  moves from pass to skip ("xhci not probed in this QEMU config"). This
+  is test order, not M3's behaviour. power/src/tests.rs runs its tests in
+  link order. At a2720197 this test ran first and passed, as in all 20
+  earlier full-poc logs. At dcd7bf83 it runs after
+  `smoke_device_pm_re_register_replaces`, which ends with
+  `__reset_for_test()` and so empties the list of registered devices
+  that this test reads. xhci is probed in both boots, and full-x86_64
+  skips the test in every log. It is a test-isolation bug in Narf's
+  power tests; it is not fixed, and not filed, since an issue on
+  hodgesds/narf needs the owner's approval.
+- Not run at dcd7bf83, though a2720197's 47-step chain ran them:
+  full-aarch64, full-poc-aarch64, xapic at 4 CPUs, focused memory and
+  modules, the IDT self-tests, the syscall-interception gate and the
+  repository's hook checks. The normal-build proof's boot smoke did run.
+
+### Detcore's configuration, and three questions about semantics
+
+`reverie-narf-adapter/src/detcore-config.json` is Hermit's
+`Config::default()` as the host build writes it out, with these changes;
+boot.rs's module documentation gives the reasons:
+- on: `sequentialize_threads`, `passthru_opt` and
+  `cancel_killed_thread_rpcs`;
+- off: `virtualize_cpuid`, `backend_runs_exit_robust_list` and
+  `backend_supports_parked_write_signal_interruption`;
+- no `max_timeslice`: Narf gives Detcore no performance counter to
+  preempt a thread with, so a thread runs until its next event.
+
+Three of these choose semantics. None has been decided:
+1. `passthru_opt`. Its documentation says: "This permits unlisted
+   syscalls to bypass Detcore and therefore weakens deterministic
+   accounting; leave it disabled for fail-closed execution". It is on
+   because Detcore's full subscription, `Subscription::all()`, includes
+   CPUID events, which the Narf core refuses. With it, a syscall outside
+   Detcore's policy runs natively and is not charged virtual time. The
+   alternative is CPUID delivery in Narf, so that Detcore can run
+   fail-closed.
+2. The epoch. Every boot starts guest time at Detcore's default,
+   2026-01-01T00:00:00Z (`DEFAULT_EPOCH_STR`, detcore-model/src/config.rs
+   line 1304), where `hermit run` captures the host's time
+   (hermit-cli/src/bin/hermit/run.rs line 2896).
+3. `cancel_killed_thread_rpcs`, on as for Hermit's DBT and KVM backends.
+   With Narf's PID allocation it causes blocker 2.
+
+### Blocker 1: the SIGCHLD of a group exit
+
+- Seen in `runs/musl-dcd7-1`: hello_musl alone, on a fresh boot of
+  `detcore-poc-4`. It prints `hello from musl`, then `detcore-stderr:
+  HERMIT_DEADLOCK: scheduler cannot deliver signal SIGCHLD to dettid 2
+  without its host thread pidfd`, and the kernel panics at
+  detcore/src/scheduler.rs:1767:5. The run takes 4 s and exits 1.
+- How, in detcore/src/scheduler.rs at 9abfa768 (the exported tree has
+  the same lines): hello_musl leaves with exit_group, a committed
+  `Exit { group: true }`. The reserve mode is uncontrolled, and the
+  parent has no registered pidfd (`should_synthesize_child_exit_signal`,
+  2066; the adapter registers none). So the scheduler queues a child-exit
+  `SIGCHLD` for the parent at the committed time plus 1 ns (4708-4720).
+  `step2b_process_timed` (3225) fires it (`fire_alarm`, 3245) through
+  `signal_guest` (3471). With no pidfd to send it through, the kernel
+  build records a terminal deadlock (3484), and `immediate_fatal_exit`
+  panics (1767: "the Narf kernel build of Detcore has no process to
+  exit").
+- Why Detcore synthesizes it (comment at 4686-4696): the host kernel's
+  `SIGCHLD` arrives at a host-timed moment, a known source of
+  nondeterminism (make -jN, redis --strict --verify). Detcore delivers
+  its own at a deterministic logical time instead.
+- Options, each a semantics decision:
+  - (a) Treat Narf like a backend with pidfds: Detcore synthesizes only
+    the wait readiness, and Narf's own `SIGCHLD` reaches Detcore as a
+    signal event through Reverie's signal hook, where Detcore orders it.
+    The adapter does not deliver signal events yet.
+  - (b) Keep the synthesis, and give Detcore's kernel build a way to
+    deliver a signal, through reverie-core or the adapter, with Narf
+    suppressing its own `SIGCHLD` to that parent.
+
+### Blocker 2: a reused PID that Detcore still records as killed
+
+- Seen in `runs/diag-hello-musl-1` (the diagnostic kernel): `hello`,
+  then hello_musl in the same shell. Detcore removes `hello` (PID 3)
+  when it exits (log line 842). The shell then forks for hello_musl
+  (892), and by Narf's allocation (below) the child gets PID 3 again.
+  Detcore then removes the shell from its scheduler (895), the adapter
+  aborts the hosted tree after a thread start fails with
+  `TailInjectOutsideSyscall` (896), and the harness sees no
+  `hello from musl` within 120 s (903).
+- How: with `cancel_killed_thread_rpcs`, `logically_kill_thread`
+  (scheduler.rs 2457) records every removed thread's ID (2459), and only
+  an exec that reuses it clears the record (2622). A Detcore thread ID
+  is the raw Linux thread ID. Narf's `alloc_pid` (userspace/src/lib.rs
+  267-288 at dcd7bf83) hands out the lowest free PID, and tool_global.rs 1219
+  refuses to register a child whose ID is recorded. That refusal is
+  logged at trace level, which the diagnostic kernel does not print, so
+  this rests on reading the code and on the INFO sequence (log lines
+  842, 852, 892, 895, 896, 903 and 907). The log does not print the
+  child's PID.
+- Options:
+  - (a) turn `cancel_killed_thread_rpcs` off for Narf, a Detcore
+    configuration and semantics change;
+  - (b) allocate PIDs cyclically in Narf, as Linux does, a kernel
+    change;
+  - (c) have Detcore clear the record when a new thread reuses the ID, a
+    Detcore change.
+
+### Other open items from M3
+
+- The deterministic-scheduling review was not run on e4b123f44.
+- `Backoff::further` uses XOR where it means a power (detcore/src/scheduler.rs
+  1210 and 1217 at 9abfa768; see "Hazards" under M2). coord2 files it.
+- Reverie's `take_created_task` documentation
+  (reverie-narf-core/src/services.rs 101-106 at c6c047b6) says the kernel
+  keeps a created task out of user mode until the creating call returns.
+  Since f0368066 a waiting callback can release it earlier, once the
+  core has registered it. The documentation needs a follow-up in the
+  Reverie fork; c6c047b6 is not changed.
+- A `clone(CLONE_VM|CLONE_VFORK)` child created inside a callback that
+  then waits can run, in the memory it shares with its parent, beside
+  the rest of that callback. The vfork wait itself still waits for the
+  callback's return.
+- A build mistake, with no evidence taken from it: `detcore-poc-2` was
+  built with `reverie-narf-poc` alone, without the harness's
+  `boot-init` and `firmware-allow-unsigned`. `detcore-poc-3` is the same
+  head built correctly.
+
+## M2: Detcore without std, done at e4b123f44
+
+This section was written at 0ba3414ad, with 9 errors left. coord2
+approved the proposal below, and e4b123f44 commits it (3 files,
++31/-5). There the no-std check reports 0 errors and 0 warnings in all
+five crates. The host gate passes with the same counts as at 0ba3414ad
+(853 unit tests; tests_misc 28 passed and 5 skipped; tests_parallelism 5
+passed and 11 skipped; detcore-model 98 passed), and the resolved
+feature graph is byte-identical to 0ba3414ad's. The
+deterministic-scheduling review was not run on e4b123f44.
+
+9abfa768 (3 files, +306/-74) adds
+`scripts/export-detcore-kernel-crates.sh`. It writes, from the committed
+head, a tree with no submodules that Narf can take as a git dependency:
+the sources unchanged, manifests of its own under `kernel/`, beside the
+generated ones and not in their place, and crates.io's rand_pcg 0.10.2
+with serde's default features off. The no-std manifests move to
+`scripts/detcore-nostd-manifests.sh`, which the check and the export
+both source.
+
+The no-std build uses a Reverie that can drop std: branch
+`sub-narf-opus/m2-nostd-on-fba351a5` of
+https://github.com/rrnewton/reverie. At 18dac3e8 that branch was the
+fork's 31 commits rebased onto fba351a5, Hermit's current pin (read back
+2026-09-30). On it, Reverie's no-std gate passes (the build, 6 of 6
+execution tests, and four negative controls that fail with E0463). A std
+check of eight crates, all targets, has 0 warnings, and reverie-process
+and reverie-syscalls pass 142 and 29 unit tests
+(`backend-6.3/m2-nostd/r-verify.log`). One conflict was resolved by hand,
+in reverie-process/src/lib.rs. 2d4e865e adds a commit that builds
+`RegDisplay` without std and drops the `Default` bound on
+`GlobalTool::Config` without std: Detcore's `Config` has a `Default` only
+through its command-line parser. M3's c6c047b6 is one commit on top of
+2d4e865e.
 
 ### How it is arranged
 
@@ -121,7 +433,7 @@ step 2 on (detcore-model had 104 at step 1).
 | 2: detcore-model | 99580b17b | 141 | 1 |
 | 3: host-only paths and stand-ins | 9bad1bcfe | 49, after 118, 89 and 67 | 1 |
 | 4: process, clock and scheduler-task stand-ins | 0ba3414ad | 9, after 16 and 11 | 0 |
-| Proposal, not committed | none | 0 | 0 |
+| 5: the approved wait design | e4b123f44 | 0 | 0 |
 
 rustc's counts are approximate: an unresolved import hides the errors in
 the code that uses it, and some lints, such as dead code, run only once a
@@ -146,7 +458,7 @@ The host gate runs with hermit's toolchain, offline. Its log is
 - A whole gate run took 121 s at step 3, 79 s at step 4 and 72 s with the
   revised proposal.
 
-### The 9 errors left, and the proposal
+### The last 9 errors, and the design that removed them
 
 All 9 are the scheduler's waits for outside progress:
 - 4 are in `Backoff::further`: std's yield and sleep on the blocking path
@@ -155,7 +467,7 @@ All 9 are the scheduler's waits for outside progress:
 - 5 are busy-waiting scheduler steps. Each yields the host thread and
   returns `SkipTurn` while it holds the scheduler lock.
 
-The proposal is for coord2 to decide:
+coord2 approved the proposal, and e4b123f44 commits it:
 https://github.com/rrnewton/hermit/pull/3401#issuecomment-5907877892,
 revised in
 https://github.com/rrnewton/hermit/pull/3401#issuecomment-5908125748.
@@ -190,13 +502,15 @@ The draft pull request's description lists them all. The main ones:
 - Where the host exits with a status, the kernel build panics.
 - A timed signal that the scheduler delivers through a host pidfd ends a
   kernel run as `HERMIT_DEADLOCK`: a child's `SIGCHLD`, and most alarm
-  and POSIX timer expiries.
+  and POSIX timer expiries. M3's hello_musl run hits the first of these
+  (blocker 1 under "M3").
 - There is no real-time clock.
 - The kernel build must start the scheduler with
   `init_for_external_scheduler` and `run_external_scheduler`.
 
 A host finding, not changed and not filed: `Backoff::further` sleeps
-`2 ^ round` microseconds, and `^` is XOR. After its first 10 yields it
+`2 ^ round` microseconds (detcore/src/scheduler.rs lines 1210 and 1217
+at 9abfa768), and `^` is XOR. After its first 10 yields it
 therefore sleeps 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14 and 15 µs, then
 10,000 µs. Powers of two would give 2 to 8,192 µs. It changes only how
 long the host sleeps between polls, not virtual time.
@@ -411,15 +725,45 @@ long the host sleeps between polls, not virtual time.
 
 ## A normal build neither requires nor activates Reverie
 
+- At dcd7bf83, after M3 (`backend-6.3/m3/normal-build/summary.txt`),
+  the same seven builds, all exit 0. M3 adds Hermit's Detcore crates
+  under the adapter, so these counts match "reverie" or "detcore":
+  - Without the `reverie-narf-poc` feature (the default, boot-smoke,
+    musl-demo and kt builds): 0 such packages in the dependency tree and
+    0 such symbols in the image. The four dependency trees are
+    byte-identical to a2720197's.
+  - The four images are not byte-identical to a2720197's (default:
+    fe0d9a32... against 0f0643eb...). M3 changes two kernel files outside
+    the adapter and not behind the feature, userspace/src/syscall.rs and
+    userspace/src/user_task.rs. What they add runs only inside an
+    interceptor call: a trait method whose default does nothing, a wait
+    for the capability lent to `on_task_start` and `on_task_exec`, and
+    the early release of a spawn hold's children. Only the adapter and
+    test code install an interceptor. The kernel-test suites without the
+    feature pass with a2720197's counts (see "Gates at dcd7bf83").
+  - The feature alone (poc): 17 package lines in the dependency tree, 12
+    distinct packages: Reverie's 7, as at a2720197, and Detcore's five
+    crates, which are new. The other 5 lines repeat a package with
+    `cargo tree`'s `(*)` marker (1 such line at a2720197). The image has 0
+    such symbols.
+  - kt-poc links 3003 such symbols (2696 at a2720197), none from Detcore:
+    only boot-init's start reaches the boot's Tool install, and kt-poc is
+    built without boot-init. musl-demo-poc links 3236 (747),
+    1795 of them from Detcore's crates: detcore 1621, detcore_model 139
+    and detcore_std 35. Its image, sha256 14a25cbf..., is the kernel of
+    M3's `hello` runs.
+  - boot-smoke (`m3/normal-build/boot-smoke.txt`): exit 0 in 3 s, 0 lines
+    mentioning Reverie, 1 clean-exit line, image sha256 2b78ed43....
 - At a2720197 (`backend-6.3/r25/normal-build/at-a2720197/summary.txt`),
   seven builds, all exit 0:
   - Without the `reverie-narf-poc` feature (the default, boot-smoke,
     musl-demo and kt builds): 0 Reverie packages in the dependency tree and
     0 Reverie symbols in the image. These four images are byte-identical to
     c0ca7ead's.
-  - The feature alone (poc): 8 Reverie packages in the dependency tree,
-    and 0 Reverie symbols in the image, which has neither kernel tests nor
-    boot-init to host a Tool.
+  - The feature alone (poc): 8 Reverie package lines in the dependency
+    tree, 7 distinct packages (`reverie-core` appears again with
+    `cargo tree`'s `(*)` marker), and 0 Reverie symbols in the image,
+    which has neither kernel tests nor boot-init to host a Tool.
   - Why the poc image changes when only the adapter changes (review-c3c
     left this open: d18c6edd... at a2720197 against 56a6e2e6... at
     c0ca7ead). Only symbol names and the build ID change
@@ -479,46 +823,18 @@ it; none is skipped.
   more. This blocks the Reverie test gate; the fix belongs upstream.
 - Detcore inside Narf. coord2 decided on 2026-09-28 that Detcore runs in
   the kernel, through its external-scheduler entry, as detcore-dbt does.
-  Before that can work:
-  - Detcore uses std and tokio throughout: 60 files, 76,428 lines. M2
-    has its no-std check at 9 errors (see "M2" above).
-  - Detcore's default subscription, `Subscription::all()`, includes CPUID
-    events, which the Narf core refuses. RDTSC delivery now exists
-    (change 3), through `with_rdtsc` only.
-  - The adapter documents Narf's `spawn_background` as the executor that
-    Detcore's `run_external_scheduler` expects. Nothing has run Detcore's
-    scheduler under it yet.
-  - Detcore's thread start cannot run yet. This was found by reading code
-    and has not been run:
-    - Narf polls `handle_thread_start` only once. If it is still pending,
-      the run ends with `ToolSuspended`, which kills the hosted tree
-      (reverie-narf-adapter/src/lib.rs, "Run aborts" and "Waiting
-      callbacks", at 502e7808).
-    - With `sequentialize_threads`, Detcore's thread start awaits the
-      global RPC `StartNewThread`. Its handler, `recv_start_new_thread`,
-      begins with `yield_once`, so it is pending on its first poll.
-    - Narf runs global RPCs inline: reverie-narf-core/src/guest.rs:523 at
-      Reverie 82da2755.
-    - Fixing it needs one of two changes: the adapter lets
-      `handle_thread_start` wait, as it lets syscall callbacks wait, or
-      Detcore's thread start stops waiting there.
+  It now runs `hello` (see "M3" above). Before it runs more:
+  - Blocker 1: the kernel build of Detcore panics when it delivers the
+    `SIGCHLD` it synthesizes for a group exit. Two options are proposed
+    under "M3".
+  - Blocker 2: Narf reuses the lowest free PID, and Detcore refuses a
+    thread whose ID it has recorded as killed. Three options are proposed
+    under "M3".
+  - Detcore's full subscription, `Subscription::all()`, includes CPUID
+    events, which the Narf core refuses, so the boot runs Detcore with
+    `passthru_opt` (question 1 under "M3").
   - `set_timer`, `set_timer_precise` and `read_clock` return ENOSYS, and
-    signal events are not delivered.
-  - The port now has a hermit write destination: the slot
-    `worktrees/slots/narf-detcore`, branch `narf/detcore-nostd` (M2).
-    It builds against a Reverie that can drop std: branch
-    `sub-narf-opus/m2-nostd-on-fba351a5` of
-    https://github.com/rrnewton/reverie, 18dac3e8. That branch is
-    the fork's 31 commits rebased onto fba351a5, Hermit's current pin (read
-    back 2026-09-30). On it, Reverie's no-std gate passes (the build, 6 of 6
-    execution tests, and four negative controls that fail with E0463).
-    A std check of eight crates, all targets, has 0 warnings, and
-    reverie-process and reverie-syscalls pass 142 and 29 unit tests
-    (`backend-6.3/m2-nostd/r-verify.log`). One conflict was resolved by
-    hand, in reverie-process/src/lib.rs. The branch is now at 2d4e865e,
-    which builds `RegDisplay` without std and drops the `Default` bound on
-    `GlobalTool::Config` without std. Detcore's `Config` has a `Default`
-    only through its command-line parser.
+    signal events are not delivered to the Tool.
 - Kernel-test boots drop a SIGKILL without a trace. This was found through
   control R4. The analysis is `adapter3/r4-lost-kill.md` (sub-r4-lost-kill,
   read-only). Its key code citations were re-read, and sub-review-c3c
