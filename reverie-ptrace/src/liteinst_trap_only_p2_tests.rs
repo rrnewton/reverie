@@ -1600,6 +1600,129 @@ async fn trap_only_p2_t7c_foreign_int_0x80_dies_of_sigsys() {
     );
 }
 
+/// T7c with a precise timer past its target: the fixture's `late_timer`
+/// child arms a timer far beyond any skid margin, blocks the timer's signal
+/// so that no notification is ever handled, and runs well past the target.
+/// A foreign `int 0x80` then records no skid-overshoot witness under
+/// trap-only, as under plain ptrace, whose filter kills the process with no
+/// stop. The control, an ordinary getpid in the same place, is a stop both
+/// backends report, and it records exactly one witness under each; it shows
+/// that the timer really was due when the child reached its last
+/// instruction.
+///
+/// The witness count is process-global and other tests in this binary can
+/// write it, so the runs happen in a fresh exact-test process, as in
+/// `tracer::tests::precise_timer_delivery_reaches_tool`.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t7c_foreign_int_0x80_past_a_timer_target_is_not_witnessed() {
+    const LATE_TIMER_CHILD: &str = "REVERIE_PTRACE_P2_LATE_TIMER_CHILD";
+    if std::env::var_os(LATE_TIMER_CHILD).is_some() {
+        compare_late_timer_witnesses().await;
+        return;
+    }
+    if !crate::perf::is_perf_supported() {
+        eprintln!("skipping: perf counters are not supported here");
+        return;
+    }
+    let (_, module) = module_path!()
+        .split_once("::")
+        .expect("the module path names the crate");
+    let output = std::process::Command::new(std::env::current_exe().expect("locate test binary"))
+        .args([
+            "--exact",
+            &format!(
+                "{module}::trap_only_p2_t7c_foreign_int_0x80_past_a_timer_target_is_not_witnessed"
+            ),
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(LATE_TIMER_CHILD, "1")
+        .output()
+        .expect("run the late-timer child test");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "late-timer child test failed:\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// The late-timer runs, in the exact-test child process that owns the
+/// witness count: each mode under plain ptrace and under trap-only, with the
+/// witnesses and the host-timed timer outcomes each run recorded. The only
+/// host-timed outcome expected is the control's: its getpid stop decides
+/// the event after the overflow was due and its signal was never handled.
+async fn compare_late_timer_witnesses() {
+    let preempted = crate::timer::HostTimedTimerEvents {
+        preempted_overflow: 1,
+        ..Default::default()
+    };
+    for (mode, child_report, witnesses, host_timed) in [
+        (
+            "late_timer_int80",
+            "child signaled=1 termsig=31 exited=0 status=0",
+            0,
+            Default::default(),
+        ),
+        (
+            "late_timer_getpid",
+            "child signaled=0 termsig=0 exited=1 status=0",
+            1,
+            preempted,
+        ),
+    ] {
+        let _ = reverie::take_skid_overshoot_count();
+        let _ = crate::timer::take_host_timed_timer_events();
+        let ptrace = run_p2(mode, None, false).await;
+        let ptrace_witnesses = reverie::take_skid_overshoot_count();
+        let ptrace_host_timed = crate::timer::take_host_timed_timer_events();
+        let trap_only = run_p2(mode, Some(SitePatching::On), false).await;
+        let trap_only_witnesses = reverie::take_skid_overshoot_count();
+        let trap_only_host_timed = crate::timer::take_host_timed_timer_events();
+        assert_patched(&trap_only, SiteState::Live);
+        assert!(
+            ptrace.report.contains(child_report),
+            "{mode}: {}",
+            ptrace.report
+        );
+        assert!(
+            !ptrace.report.contains("int80 returned"),
+            "{mode}: {}",
+            ptrace.report
+        );
+        assert_eq!(
+            ptrace.report.contains("late timer getpid=1"),
+            mode == "late_timer_getpid",
+            "{mode}: {}",
+            ptrace.report
+        );
+        assert_eq!(trap_only.status, ptrace.status, "{mode}");
+        assert_eq!(trap_only.report, ptrace.report, "{mode}");
+        assert!(
+            trap_only.tool_events == ptrace.tool_events,
+            "{mode}: {}",
+            first_divergence(&trap_only.tool_events, &ptrace.tool_events)
+        );
+        for run in [&ptrace, &trap_only] {
+            assert!(
+                timer_events(run).is_empty(),
+                "{mode}: {:#?}",
+                run.tool_events
+            );
+        }
+        assert_eq!(
+            (ptrace_witnesses, trap_only_witnesses),
+            (witnesses, witnesses),
+            "{mode}: skid-overshoot witnesses (plain ptrace, trap-only)"
+        );
+        assert_eq!(
+            (ptrace_host_timed, trap_only_host_timed),
+            (host_timed, host_timed),
+            "{mode}: host-timed timer outcomes (plain ptrace, trap-only)"
+        );
+    }
+}
+
 /// T8: rcx and r11 after a patched site, in a signal frame and in a fork
 /// child equal ptrace's, including with DF and AC set.
 #[tokio::test(flavor = "current_thread")]
