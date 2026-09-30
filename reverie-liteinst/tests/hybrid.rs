@@ -1595,6 +1595,42 @@ async fn sites_with_an_interior_entry_or_no_unwind_entry_stay_on_ptrace() {
     assert_eq!(global.delivered.load(Ordering::SeqCst), 49, "{output:?}");
 }
 
+/// A `syscall` site in an anonymous executable mapping that the guest makes
+/// after LiteInst initialized, as a JIT does, stays on ptrace and still returns
+/// the right result (https://github.com/rrnewton/reverie/issues/812).
+///
+/// LiteInst records its trampoline arenas when it initializes, so this mapping
+/// has none and the patch helper cannot patch the site whatever the tracer's
+/// entry census says. The census refuses the site as well, because it decodes
+/// only file-backed objects. This test therefore does not show the census
+/// refusing anything; `an_anonymous_syscall_site_stays_on_the_fallback_path`
+/// in `rpc_tool.rs` does, for an anonymous mapping that has an arena.
+#[tokio::test(flavor = "current_thread")]
+async fn a_site_in_an_executable_mapping_made_after_initialization_stays_on_ptrace() {
+    let (_directory, guest) = compile_fixture("hybrid_anonymous_site.c");
+    let (output, global) = LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+        Command::new(guest),
+        (),
+        preload_path(),
+    )
+    .await
+    .unwrap();
+
+    // The fixture exits nonzero if either site returns a result other than
+    // the process ID.
+    assert!(output.status.success(), "{output:?}");
+    // Each site's first syscall calls the patch helper once. The helper finds
+    // no arena for the anonymous site, so none of its 16 calls enters a hook;
+    // the control site takes its other 16 calls through the patch.
+    assert_eq!(
+        output.stdout, b"anonymous traps=1 hooks=0 control traps=1 hooks=16\n",
+        "{output:?}"
+    );
+    // All 33 calls reach the tool. With no hook entry at the anonymous site,
+    // its 16 calls arrived through ptrace stops.
+    assert_eq!(global.delivered.load(Ordering::SeqCst), 33, "{output:?}");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn cacheline_straddler_uses_quiescent_patch_and_is_counted() {
     let (_directory, guest) = compile_fixture("hybrid_straddler_site.c");

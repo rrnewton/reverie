@@ -315,6 +315,42 @@ fn fork_child_accounts_for_fallback_and_installed_dispatch() {
     );
 }
 
+/// A patchable `syscall` site in an anonymous executable mapping that exists
+/// when LiteInst initializes has an arena but no object for the entry census to
+/// decode, so it stays on the fallback path while a text site is patched
+/// (<https://github.com/rrnewton/reverie/issues/812>).
+#[test]
+fn an_anonymous_syscall_site_stays_on_the_fallback_path() {
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("coordinator.sock");
+    let mut coordinator = Command::new(binary)
+        .arg("coordinator")
+        .arg(&socket)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let ready = socket.exists();
+    let mut command = Command::new(binary);
+    command.arg("syscall-anonymous-site").arg(&socket);
+    let output = ready.then(|| output_with_timeout(command, Duration::from_secs(20)));
+    let _ = coordinator.kill();
+    let _ = coordinator.wait();
+    let output = output.expect("coordinator socket was not created");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "anonymous: calls=3 traps=3 hooks=0 fallback=3 bytes=unchanged \
+         control: calls=3 traps=1 hooks=6 fallback=0 bytes=patched\n"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
 #[test]
 fn fallback_refusal_is_counted_separately_from_tool_errors() {
     let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest"));

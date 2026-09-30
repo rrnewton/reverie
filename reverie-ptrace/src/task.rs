@@ -574,8 +574,6 @@ struct CensusObject {
 
 const NO_CENSUS_OBJECT: CensusError =
     CensusError("the executable mapping belongs to no identifiable object");
-const UNREADABLE_CENSUS_OBJECT: CensusError =
-    CensusError("the object's mappings cannot be read from the tracee");
 const CHANGED_CENSUS_OBJECT: CensusError =
     CensusError("the object's mappings changed while its census was built");
 
@@ -612,16 +610,25 @@ fn census_object(maps: &[GuestMap], site: u64) -> Result<CensusObject, CensusErr
 }
 
 /// Builds the census of `object` from the tracee's current bytes.
-fn read_census(task: &Stopped, object: &CensusObject) -> Result<Census, CensusError> {
+///
+/// The outer error is a failed read of the tracee's memory. That is a host
+/// failure, not a verdict about the object, so the caller must neither cache
+/// it nor turn it into a refusal: refusing sites because of it would move the
+/// guest's schedule without any report.
+fn read_census<M: MemoryAccess>(
+    memory: &M,
+    object: &CensusObject,
+) -> Result<Result<Census, CensusError>, Errno> {
     let mut contents = Vec::with_capacity(object.ranges.len());
     for &(start, end, _) in &object.ranges {
-        let len = end
+        let Some(len) = end
             .checked_sub(start)
             .and_then(|len| usize::try_from(len).ok())
-            .ok_or(CensusError::TRUNCATED)?;
+        else {
+            return Ok(Err(CensusError::TRUNCATED));
+        };
         let mut bytes = vec![0; len];
-        task.read_exact(start as usize, &mut bytes)
-            .map_err(|_| UNREADABLE_CENSUS_OBJECT)?;
+        memory.read_exact(start as usize, &mut bytes)?;
         contents.push(bytes);
     }
     let segments: Vec<Segment<'_>> = object
@@ -634,16 +641,35 @@ fn read_census(task: &Stopped, object: &CensusObject) -> Result<Census, CensusEr
             executable,
         })
         .collect();
-    Census::build(&segments, object.header, object.text)
+    Ok(Census::build(&segments, object.header, object.text))
+}
+
+/// Returns the entries of `site` in `census`, or why the site is refused.
+fn census_site_entries(
+    census: &Result<Census, CensusError>,
+    site: u64,
+) -> Result<SiteEntries, Refusal> {
+    let entries = census
+        .as_ref()
+        .map_err(|error| Refusal::NoCensus(*error))?
+        .site(site)?;
+    // The helper installs only two-byte `syscall` instructions.
+    if entries.len != 2 {
+        return Err(Refusal::InstructionMismatch);
+    }
+    Ok(entries)
+}
+
+fn read_guest_maps(pid: Pid) -> std::io::Result<Vec<GuestMap>> {
+    let maps = std::fs::read(format!("/proc/{pid}/maps"))?;
+    Ok(maps
+        .split(|byte| *byte == b'\n')
+        .filter_map(parse_guest_map)
+        .collect())
 }
 
 fn guest_maps(pid: Pid) -> Option<Vec<GuestMap>> {
-    let maps = std::fs::read(format!("/proc/{pid}/maps")).ok()?;
-    Some(
-        maps.split(|byte| *byte == b'\n')
-            .filter_map(parse_guest_map)
-            .collect(),
-    )
+    read_guest_maps(pid).ok()
 }
 
 fn next_proc_maps_field<'a>(line: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
@@ -1125,13 +1151,12 @@ impl LiteinstRuntimeState {
     }
 
     /// Enters Ready with the census snapshot taken from `maps`; see
-    /// [`Self::census_maps`]. Without maps, every site is refused.
-    fn enter_ready(&mut self, maps: Option<Vec<GuestMap>>) {
+    /// [`Self::census_maps`].
+    fn enter_ready(&mut self, maps: Vec<GuestMap>) {
         self.phase = LiteinstRuntimePhase::Ready;
         self.ready_generation = Some(self.generation);
         self.bootstrap_tid = None;
         self.census_maps = maps
-            .unwrap_or_default()
             .into_iter()
             .filter(|map| map.readable && map.inode != 0)
             .collect();
@@ -3991,7 +4016,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     return Err(error);
                 }
                 {
-                    let maps = guest_maps(task.pid());
+                    let maps = self.read_ready_guest_maps(&task, "LiteInst Ready")?;
                     let mut state = self.liteinst_runtime.lock().unwrap();
                     if state.phase != LiteinstRuntimePhase::Bootstrap {
                         return Err(Errno::EPROTO.into());
@@ -4177,6 +4202,24 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.global_state.liteinst_runtime.is_some()
             && self.liteinst_runtime.lock().unwrap().phase != LiteinstRuntimePhase::Ready
             && !test_activation_bypass
+    }
+
+    /// Reads the tracee's mappings for the census snapshot that Ready takes.
+    /// A failed read fails the run closed: entering Ready without the
+    /// mappings would refuse every site, which changes the guest's schedule
+    /// without any report.
+    fn read_ready_guest_maps(&mut self, task: &Stopped, at: &str) -> Result<Vec<GuestMap>, Errno> {
+        read_guest_maps(task.pid()).map_err(|error| {
+            self.record_liteinst_failure(
+                LiteinstActivationFailureReason::ReadGuestMaps,
+                Error::runtime(
+                    self.tid(),
+                    "read the tracee's mappings for the LiteInst entry census",
+                    format!("at {at}: {error}"),
+                ),
+            );
+            Errno::new(error.raw_os_error().unwrap_or(libc::EIO))
+        })
     }
 
     fn record_liteinst_failure(&mut self, reason: LiteinstActivationFailureReason, error: Error) {
@@ -4548,7 +4591,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Err(error);
             }
             {
-                let maps = guest_maps(task.pid());
+                let maps = self.read_ready_guest_maps(&task, "test LiteInst Ready")?;
                 self.liteinst_runtime.lock().unwrap().enter_ready(maps);
             }
         }
@@ -5547,10 +5590,27 @@ impl<L: Tool + 'static> TracedTask<L> {
         // A refused site still goes to the helper, which records the site's
         // trap and leaves it on ptrace, as for any other failed installation.
         let entry_limit = match self.liteinst_site_entries(&task, site) {
-            Ok(entries) => entries.limit,
-            Err(refusal) => {
+            Ok(Ok(entries)) => entries.limit,
+            Ok(Err(refusal)) => {
                 tracing::debug!("[liteinst] leaving syscall site {site:#x} unpatched: {refusal}");
                 REFUSED_ENTRY_LIMIT
+            }
+            // A failed read of the tracee's code says nothing about the site.
+            // Refusing the site would move the guest's schedule without any
+            // report, so the run fails closed instead. A tracee that is gone
+            // is not a LiteInst failure: its exit is reported as usual.
+            Err(errno) => {
+                if errno != Errno::ESRCH {
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::ReadCensusObject,
+                        Error::runtime(
+                            self.tid(),
+                            "read the tracee's code for the LiteInst entry census",
+                            format!("site {site:#x}: {errno}"),
+                        ),
+                    );
+                }
+                return Err(errno.into());
             }
         };
 
@@ -5574,15 +5634,23 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     /// Returns the census entries of `site`, building its object's census from
     /// the tracee's memory at the first site attempt in that object
-    /// (<https://github.com/rrnewton/reverie/issues/812>).
+    /// (<https://github.com/rrnewton/reverie/issues/812>). The outer error is
+    /// a failed read of the tracee; see [`read_census`].
     ///
     /// The census runs here rather than in the guest because it decodes every
     /// function of the object: about 12.9 million conditional branches for
     /// glibc 2.34's `libc.so.6`, which a guest's own instruction count would
     /// include.
-    fn liteinst_site_entries(&self, task: &Stopped, site: u64) -> Result<SiteEntries, Refusal> {
+    fn liteinst_site_entries(
+        &self,
+        task: &Stopped,
+        site: u64,
+    ) -> Result<Result<SiteEntries, Refusal>, Errno> {
         let maps = Arc::clone(&self.liteinst_runtime.lock().unwrap().census_maps);
-        let object = census_object(&maps, site).map_err(Refusal::NoCensus)?;
+        let object = match census_object(&maps, site) {
+            Ok(object) => object,
+            Err(error) => return Ok(Err(Refusal::NoCensus(error))),
+        };
         let cached = self
             .liteinst_runtime
             .lock()
@@ -5593,24 +5661,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         let census = match cached {
             Some(census) => census,
             None => {
-                let census = Arc::new(read_census(task, &object));
+                let census = Arc::new(read_census(task, &object)?);
                 let mut state = self.liteinst_runtime.lock().unwrap();
                 if !Arc::ptr_eq(&state.census_maps, &maps) {
-                    return Err(Refusal::NoCensus(CHANGED_CENSUS_OBJECT));
+                    return Ok(Err(Refusal::NoCensus(CHANGED_CENSUS_OBJECT)));
                 }
                 Arc::clone(state.censuses.entry(object.text.0).or_insert(census))
             }
         };
-        let entries = census
-            .as_ref()
-            .as_ref()
-            .map_err(|error| Refusal::NoCensus(*error))?
-            .site(site)?;
-        // The helper installs only two-byte `syscall` instructions.
-        if entries.len != 2 {
-            return Err(Refusal::InstructionMismatch);
-        }
-        Ok(entries)
+        Ok(census_site_entries(&census, site))
     }
 
     fn validate_liteinst_mapping_execution(
@@ -9706,7 +9765,7 @@ mod tests {
         const LIBC_TEXT: u64 = 0x7fff_f7c2_8000;
         const GUEST_TEXT: u64 = 0x5555_5555_6000;
         let mut state = LiteinstRuntimeState::default();
-        state.enter_ready(Some(census_test_maps()));
+        state.enter_ready(census_test_maps());
         // Only the readable file-backed mappings are kept: three of the
         // guest, five of libc, one of the other device and three of twice.so.
         assert_eq!(state.census_maps.len(), 12);
@@ -9742,6 +9801,85 @@ mod tests {
         // A range that the kernel would reject removes every object.
         state.forget_census_objects(u64::MAX - 1, 4, 4096);
         assert!(state.census_maps.is_empty() && state.censuses.is_empty());
+    }
+
+    /// Memory whose every access fails with `EIO`, standing in for a tracee
+    /// whose code cannot be read.
+    struct UnreadableMemory;
+
+    impl MemoryAccess for UnreadableMemory {
+        fn read_vectored(
+            &self,
+            _read_from: &[std::io::IoSlice],
+            _write_to: &mut [std::io::IoSliceMut],
+        ) -> Result<usize, Errno> {
+            Err(Errno::EIO)
+        }
+
+        fn write_vectored(
+            &mut self,
+            _read_from: &[std::io::IoSlice],
+            _write_to: &mut [std::io::IoSliceMut],
+        ) -> Result<usize, Errno> {
+            Err(Errno::EIO)
+        }
+    }
+
+    /// A failed read of the tracee's code is the outer error of
+    /// `read_census`, never a census refusal, so the caller fails the run
+    /// closed instead of refusing the site
+    /// (<https://github.com/rrnewton/reverie/pull/818> review finding F1).
+    /// A range that cannot be a mapping is still a refusal, decided before any
+    /// read.
+    #[test]
+    fn an_unreadable_census_object_is_a_host_error_not_a_refusal() {
+        let object = CensusObject {
+            text: (0x5555_5555_6000, 0x5555_5555_8000),
+            header: 0x5555_5555_4000,
+            ranges: vec![
+                (0x5555_5555_4000, 0x5555_5555_6000, false),
+                (0x5555_5555_6000, 0x5555_5555_8000, true),
+            ],
+        };
+        match read_census(&UnreadableMemory, &object) {
+            Err(errno) => assert_eq!(errno, Errno::EIO),
+            Ok(census) => panic!("an unreadable object gave a census: {:?}", census.err()),
+        }
+
+        let reversed = CensusObject {
+            ranges: vec![(0x5555_5555_6000, 0x5555_5555_4000, false)],
+            ..object
+        };
+        match read_census(&UnreadableMemory, &reversed) {
+            Ok(Err(error)) => assert_eq!(error, CensusError::TRUNCATED),
+            Ok(Ok(_)) => panic!("a reversed range gave a census"),
+            Err(errno) => panic!("a reversed range was read: {errno}"),
+        }
+    }
+
+    /// A census that could not be built refuses every site of its object with
+    /// the census's own error.
+    #[test]
+    fn a_failed_census_refuses_its_sites_with_its_error() {
+        assert_eq!(
+            census_site_entries(&Err(CensusError::TRUNCATED), 0x5555_5555_7000),
+            Err(Refusal::NoCensus(CensusError::TRUNCATED))
+        );
+    }
+
+    /// The maps read that Ready's census snapshot depends on reports a
+    /// failure instead of returning no mappings, which would refuse every
+    /// site without any report (review finding F1 on
+    /// <https://github.com/rrnewton/reverie/pull/818>).
+    #[test]
+    fn reading_the_maps_of_a_missing_process_is_an_error() {
+        // Linux caps pid_max at 2^22, so this pid never exists.
+        let error = read_guest_maps(Pid::from_raw(i32::MAX)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(guest_maps(Pid::from_raw(i32::MAX)).is_none());
+
+        let own = read_guest_maps(Pid::from_raw(std::process::id() as i32)).unwrap();
+        assert!(own.iter().any(|map| map.executable && map.inode != 0));
     }
 
     #[test]
