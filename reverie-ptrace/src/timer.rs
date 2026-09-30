@@ -167,6 +167,53 @@ const OVERTAKEN_WITH_NOTIFICATION_QUEUED_KEPT: usize = 1024;
 pub(crate) static CANCELLED_TIMER_SIGNALS_DISCARDED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// Whether timers check, at each disregarded stop that keeps a scheduled
+/// event, that the stop left the event's PMU programming as its request made
+/// it (see [`TimerImpl::check_kept_programming`]), for tests. Unit tests of
+/// this crate always check.
+pub(crate) static KEPT_PROGRAMMING_CHECKS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Disregarded stops at which a check (see [`KEPT_PROGRAMMING_CHECKS`])
+/// found that the kept event's programming was the one its request made, or
+/// not, for tests.
+pub(crate) static KEPT_PROGRAMMINGS_CHECKED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Disregarded stops of [`KEPT_PROGRAMMINGS_CHECKED`] after which the kept
+/// event's counter would overflow at a clock other than the one its request
+/// programmed, or would not overflow at all, for tests.
+pub(crate) static KEPT_PROGRAMMINGS_CHANGED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// The first stops counted in [`KEPT_PROGRAMMINGS_CHANGED`], at most
+/// [`KEPT_PROGRAMMINGS_CHANGED_KEPT`] of them since the list was last taken,
+/// for tests.
+pub(crate) static KEPT_PROGRAMMINGS_CHANGED_EVENTS: std::sync::Mutex<Vec<KeptProgramming>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// How many stops [`KEPT_PROGRAMMINGS_CHANGED_EVENTS`] keeps.
+const KEPT_PROGRAMMINGS_CHANGED_KEPT: usize = 1024;
+
+/// What a check of a kept event's programming found (see
+/// [`TimerImpl::check_kept_programming`]).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct KeptProgramming {
+    /// The event's target clock (for an imprecise event, its least clock).
+    pub target: u64,
+    /// The clock at which the event's request programmed its counter to
+    /// overflow: the target less the skid margin, for a precise event.
+    pub armed: u64,
+    /// The clock at which the counter overflows after the stop, or `None` if
+    /// its programming has ended or cannot be read.
+    pub found: Option<u64>,
+}
+
+/// Whether timers check kept programmings (see [`KEPT_PROGRAMMING_CHECKS`]).
+fn kept_programming_checks() -> bool {
+    cfg!(test) || KEPT_PROGRAMMING_CHECKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Whether the running kernel may be built with `PREEMPT_RT`. A kernel whose
 /// version cannot be read counts as one.
 fn kernel_is_preempt_rt() -> bool {
@@ -839,9 +886,20 @@ impl Timer {
     /// event's target, which includes every stop at which the programming has
     /// passed its period and every stop during the single steps, cancels the
     /// event as any stop does, and returns `None`.
+    ///
+    /// A stop that keeps a scheduled event leaves its PMU programming as the
+    /// request made it, so that the notification still comes a skid margin
+    /// before the target. Once a test has called
+    /// [`crate::testing::check_kept_timer_programming`], and always in this
+    /// crate's unit tests, each such stop checks and counts that (see
+    /// [`TimerImpl::check_kept_programming`]).
     pub(crate) fn disregard_stop(&mut self) -> Result<Option<Unfinished>, Errno> {
         match self.inner_mut_noinit() {
-            Some(timer) => timer.disregard_stop(),
+            Some(timer) => {
+                let unfinished = timer.disregard_stop();
+                timer.check_kept_programming();
+                unfinished
+            }
             None => Ok(None),
         }
     }
@@ -860,10 +918,15 @@ impl Timer {
     /// target less this processor's skid margin, so it too depends on the
     /// host. The keep margin is the same on every supported processor and
     /// places the decision at or before every processor's period, so the
-    /// guest's clock alone gives the stop its outcome.
+    /// guest's clock alone gives the stop its outcome. A kept event's
+    /// programming is checked as [`Timer::disregard_stop`] describes.
     pub(crate) fn disregard_stop_before_period(&mut self) -> Result<(), Errno> {
         match self.inner_mut_noinit() {
-            Some(timer) => timer.disregard_stop_before_period(),
+            Some(timer) => {
+                let result = timer.disregard_stop_before_period();
+                timer.check_kept_programming();
+                result
+            }
             None => Ok(()),
         }
     }
@@ -1168,6 +1231,20 @@ struct TimerImpl {
     /// stop found already reached. No stop has decided the event since, so
     /// the thread's exit records it (see [`TimerImpl::settle_at_exit`]).
     disregarded_missed: Option<MissedTarget>,
+
+    /// The clock at which the active event's request programmed `timer` to
+    /// overflow, if it programmed a notification while kept programmings
+    /// are checked (see [`KEPT_PROGRAMMING_CHECKS`]).
+    armed_overflow_point: Option<u64>,
+
+    /// The overflow point, as in `armed_overflow_point`, of the event that
+    /// the latest disregarded stop kept, until
+    /// [`TimerImpl::check_kept_programming`] checks it.
+    kept_overflow_point: Option<u64>,
+
+    /// Every check of a kept event's programming this timer made.
+    #[cfg(test)]
+    kept_programming_log: Vec<KeptProgramming>,
 
     #[cfg(test)]
     fail_next_notification: Option<Errno>,
@@ -1509,6 +1586,10 @@ impl TimerImpl {
             observed: None,
             notification_taken: false,
             disregarded_missed: None,
+            armed_overflow_point: None,
+            kept_overflow_point: None,
+            #[cfg(test)]
+            kept_programming_log: Vec::new(),
             #[cfg(test)]
             fail_next_notification: None,
             #[cfg(test)]
@@ -1532,6 +1613,7 @@ impl TimerImpl {
         {
             self.preempted_overflow_counted = false;
         }
+        self.armed_overflow_point = None;
         if self.initial_command != InitialCommand::Ordinary {
             self.event = Self::event_at(evt, self.read_clock() + delivery);
             self.held_initial_event = Some(self.event);
@@ -1542,6 +1624,12 @@ impl TimerImpl {
         self.prepare_notification(notification)?;
         self.event = Self::event_at(evt, self.read_clock() + delivery);
         self.set_status(EventStatus::Scheduled);
+        if kept_programming_checks() {
+            // The thread is stopped, so the clock is the request's.
+            self.armed_overflow_point = self
+                .overflow_period
+                .map(|period| self.read_clock() + period);
+        }
         Ok(())
     }
 
@@ -1554,6 +1642,7 @@ impl TimerImpl {
         self.interrupted = None;
         self.notification_taken = false;
         self.disregarded_missed = None;
+        self.kept_overflow_point = None;
     }
 
     fn prepare_notification(&mut self, notification: u64) -> Result<(), Errno> {
@@ -1895,6 +1984,9 @@ impl TimerImpl {
                 }
                 self.restore_before(&observed);
                 self.disregarded_missed = observed.missed;
+                if observed.before == EventStatus::Scheduled {
+                    self.kept_overflow_point = self.armed_overflow_point;
+                }
             }
             // Steps under way show that the notification came, and so that
             // the programming passed its period and the guest its keep point.
@@ -1959,6 +2051,52 @@ impl TimerImpl {
             // the programming passed its period, and so the guest its keep
             // point: steps end the programming.
             _ => self.retire(),
+        }
+    }
+
+    /// Checks, if the stop just disregarded kept a scheduled event whose
+    /// request programmed a notification while kept programmings are
+    /// checked (see [`KEPT_PROGRAMMING_CHECKS`]), that the stop left that
+    /// programming as the request made it, and counts the check: that `timer`
+    /// overflows at the clock at which the request programmed it to, its
+    /// period short of the clock at the request. A stop that re-programmed
+    /// the counter, reset it or ended its programming would move that clock
+    /// or leave none, and the event would fire late or not at all. Both
+    /// counters count the same event for the same thread, which is stopped,
+    /// so the clock less the count is the clock at which `timer` was last
+    /// reset, exactly.
+    fn check_kept_programming(&mut self) {
+        let Some(armed) = self.kept_overflow_point.take() else {
+            return;
+        };
+        let found = self.overflow_period.and_then(|period| {
+            let count = self.timer.ctr_value().ok()?;
+            Some(self.read_clock().checked_sub(count)? + period)
+        });
+        let target = match self.event {
+            ActiveEvent::Precise { clock_target, .. } => clock_target,
+            ActiveEvent::Imprecise { clock_min } => clock_min,
+        };
+        let check = KeptProgramming {
+            target,
+            armed,
+            found,
+        };
+        #[cfg(test)]
+        self.kept_programming_log.push(check);
+        KEPT_PROGRAMMINGS_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if found != Some(armed) {
+            warn!(
+                "A disregarded stop changed the programming of the timer event it kept: \
+                 {check:?}"
+            );
+            KEPT_PROGRAMMINGS_CHANGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut changed = KEPT_PROGRAMMINGS_CHANGED_EVENTS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if changed.len() < KEPT_PROGRAMMINGS_CHANGED_KEPT {
+                changed.push(check);
+            }
         }
     }
 
@@ -2039,8 +2177,19 @@ impl TimerImpl {
                     clock_target,
                     offset,
                     stop: "a stop that cannot finish it".to_owned(),
-                    // The stop's pending signals were read when it was
-                    // observed (`expire_overflow_records`).
+                    // What the overflow records show at the retire, after
+                    // anything injected for the stop, not when the stop was
+                    // observed: the stop's pending signals were read then
+                    // (`expire_overflow_records`), and before each injected
+                    // syscall, and a notification taken or discarded at an
+                    // injection since has consumed its records. No test
+                    // checks this attribution: `false` here (mutant r1b in
+                    // the review of https://github.com/rrnewton/reverie/pull/665)
+                    // fails none. That errs in the safe direction: the
+                    // event is witnessed either way, and only whether it
+                    // is counted as overtaken differs. It belongs with the
+                    // untested witness code in
+                    // https://github.com/rrnewton/reverie/issues/748.
                     notification_queued: self.own_notification_queued(),
                 }));
             }
@@ -3037,6 +3186,9 @@ mod tests {
                 observed: None,
                 notification_taken: false,
                 disregarded_missed: None,
+                armed_overflow_point: None,
+                kept_overflow_point: None,
+                kept_programming_log: Vec::new(),
                 fail_next_notification: None,
                 preempted_overflow_counted: false,
                 // A terminal close must not try to finalize the pending kick.
@@ -3736,6 +3888,247 @@ mod tests {
         timer.timer.unmap_sample_records();
 
         assert!(take_timer_signal_now().is_none());
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, core::ptr::null_mut());
+        }
+    }
+
+    /// A thread of this process that retires the conditional branches it is
+    /// asked for, and otherwise waits blocked in a `read`, where its counters
+    /// hold still, as a stopped guest thread's do.
+    struct BranchThread {
+        tid: reverie::Tid,
+        requests: libc::c_int,
+        done: libc::c_int,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl BranchThread {
+        /// Starts the thread, which inherits the caller's signal mask.
+        fn spawn() -> Self {
+            let pipe = || {
+                let mut fds = [0; 2];
+                assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+                fds
+            };
+            let ([requests_read, requests], [done, done_write]) = (pipe(), pipe());
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let thread = std::thread::spawn(move || {
+                sender
+                    .send(unsafe { libc::syscall(libc::SYS_gettid) } as i32)
+                    .unwrap();
+                loop {
+                    let mut request = [0u8; 8];
+                    let read = unsafe { libc::read(requests_read, request.as_mut_ptr().cast(), 8) };
+                    assert_eq!(read, 8);
+                    let branches = u64::from_ne_bytes(request);
+                    if branches == 0 {
+                        break;
+                    }
+                    crate::perf::do_branches(branches);
+                    assert_eq!(
+                        unsafe { libc::write(done_write, [1u8].as_ptr().cast(), 1) },
+                        1
+                    );
+                }
+                unsafe {
+                    libc::close(requests_read);
+                    libc::close(done_write);
+                }
+            });
+            let this = Self {
+                tid: reverie::Tid::from_raw(receiver.recv().unwrap()),
+                requests,
+                done,
+                thread: Some(thread),
+            };
+            this.wait_until_blocked();
+            this
+        }
+
+        /// Waits until the thread is blocked in its `read` (syscall 0 on
+        /// x86-64), after which it retires no branch until it is asked to.
+        fn wait_until_blocked(&self) {
+            let path = format!("/proc/self/task/{}/syscall", self.tid);
+            for _ in 0..10_000 {
+                let syscall = std::fs::read_to_string(&path).unwrap();
+                if syscall.starts_with(&format!("{} ", libc::SYS_read)) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            panic!("the branch thread did not block in its read");
+        }
+
+        /// Makes the thread retire `branches` (at least 1) conditional
+        /// branches, and a few of its loop's, and waits until it is blocked
+        /// again.
+        fn run(&self, branches: u64) {
+            assert!(branches > 0);
+            let request = branches.to_ne_bytes();
+            assert_eq!(
+                unsafe { libc::write(self.requests, request.as_ptr().cast(), 8) },
+                8
+            );
+            let mut done = [0u8; 1];
+            assert_eq!(
+                unsafe { libc::read(self.done, done.as_mut_ptr().cast(), 1) },
+                1
+            );
+            self.wait_until_blocked();
+        }
+    }
+
+    impl Drop for BranchThread {
+        fn drop(&mut self) {
+            let stop = 0u64.to_ne_bytes();
+            unsafe { libc::write(self.requests, stop.as_ptr().cast(), 8) };
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+            unsafe {
+                libc::close(self.requests);
+                libc::close(self.done);
+            }
+        }
+    }
+
+    // A disregarded stop that keeps a scheduled precise event leaves the
+    // event's PMU programming as the request made it: the counter overflows
+    // at the clock at which the request programmed it to, the target less
+    // the skid margin, so the notification still comes a skid margin before
+    // the target. Both ways a Timer disregards a stop check this and count
+    // the check (`TimerImpl::check_kept_programming`), and the check tells a
+    // stop that re-programmed the counter for its period, or reset it, from
+    // one that did not. The guest is a thread of this process blocked in a
+    // read between steps, so its counters hold still whenever they are read,
+    // and every clock here is exact.
+    #[test]
+    fn a_kept_event_keeps_the_overflow_point_its_request_programmed() {
+        use reverie::Pid;
+
+        use super::EventStatus;
+        use super::KeptProgramming;
+        use super::Timer;
+        use super::TimerEventRequest;
+        use super::TimerImpl;
+
+        // A notification is not expected, but one must not kill the process.
+        let mut blocked: libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, super::MARKER_SIGNAL as i32);
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, core::ptr::null_mut()),
+                0
+            );
+        }
+        let guest = BranchThread::spawn();
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let mut timer = Timer {
+            inner: Some(
+                TimerImpl::new(pid, guest.tid, false).expect("control requires a working PMU"),
+            ),
+        };
+        guest.run(1_000);
+        const TARGET: u64 = 1_000_000;
+        let config = super::get_pmu_config();
+        let period = TARGET - config.skid_margin();
+        fn inner(timer: &mut Timer) -> &mut TimerImpl {
+            timer.inner.as_mut().unwrap()
+        }
+        // Requests the event, and returns what a check of its programming
+        // finds after a stop that leaves it as it is.
+        let request = |timer: &mut Timer| {
+            timer
+                .request_event(TimerEventRequest::Precise(TARGET))
+                .unwrap();
+            let timer = inner(timer);
+            let clock = timer.read_clock();
+            assert_eq!(timer.overflow_period, Some(period));
+            assert_eq!(timer.armed_overflow_point, Some(clock + period));
+            KeptProgramming {
+                target: clock + TARGET,
+                armed: clock + period,
+                found: Some(clock + period),
+            }
+        };
+
+        // A stop that nothing continues keeps the event short of its keep
+        // point, and so does a stop whose unfinished work is handed on.
+        let armed = request(&mut timer);
+        guest.run(TARGET / 4);
+        inner(&mut timer).tick_observed();
+        assert_eq!(timer.disregard_stop_before_period(), Ok(()));
+        assert_eq!(inner(&mut timer).timer_status, EventStatus::Scheduled);
+        assert_eq!(inner(&mut timer).kept_programming_log, [armed]);
+        guest.run(TARGET / 4);
+        inner(&mut timer).tick_observed();
+        assert!(matches!(timer.disregard_stop(), Ok(None)));
+        assert_eq!(inner(&mut timer).timer_status, EventStatus::Scheduled);
+        assert_eq!(inner(&mut timer).kept_programming_log, [armed, armed]);
+
+        // The check sees a keeping stop that re-programs the counter for its
+        // period: the event would then fire that period after the stop.
+        guest.run(1_000);
+        let stop_clock = inner(&mut timer).read_clock();
+        inner(&mut timer).tick_observed();
+        assert!(matches!(inner(&mut timer).disregard_stop(), Ok(None)));
+        inner(&mut timer).prepare_notification(period).unwrap();
+        inner(&mut timer).check_kept_programming();
+        assert_eq!(
+            inner(&mut timer).kept_programming_log.last(),
+            Some(&KeptProgramming {
+                found: Some(stop_clock + period),
+                ..armed
+            })
+        );
+        assert_ne!(stop_clock + period, armed.armed);
+        // And one that resets it.
+        let armed = request(&mut timer);
+        guest.run(1_000);
+        let stop_clock = inner(&mut timer).read_clock();
+        inner(&mut timer).tick_observed();
+        assert!(matches!(inner(&mut timer).disregard_stop(), Ok(None)));
+        inner(&mut timer).timer.reset().unwrap();
+        inner(&mut timer).check_kept_programming();
+        assert_eq!(
+            inner(&mut timer).kept_programming_log.last(),
+            Some(&KeptProgramming {
+                found: Some(stop_clock + period),
+                ..armed
+            })
+        );
+        // And one that ends it.
+        let armed = request(&mut timer);
+        inner(&mut timer).tick_observed();
+        assert!(matches!(inner(&mut timer).disregard_stop(), Ok(None)));
+        inner(&mut timer).timer.disable().unwrap();
+        inner(&mut timer).overflow_period = None;
+        inner(&mut timer).check_kept_programming();
+        assert_eq!(
+            inner(&mut timer).kept_programming_log.last(),
+            Some(&KeptProgramming {
+                found: None,
+                ..armed
+            })
+        );
+
+        // A stop at the keep point cancels the event, and checks nothing.
+        request(&mut timer);
+        guest.run(TARGET - config.keep_margin());
+        let checks = inner(&mut timer).kept_programming_log.len();
+        inner(&mut timer).tick_observed();
+        assert_eq!(timer.disregard_stop_before_period(), Ok(()));
+        assert_eq!(inner(&mut timer).timer_status, EventStatus::Cancelled);
+        assert_eq!(inner(&mut timer).kept_programming_log.len(), checks);
+        assert_eq!(inner(&mut timer).kept_overflow_point, None);
+
+        assert_eq!(timer.cancel(), Ok(()));
+        drop(timer);
+        drop(guest);
+        // A notification of an overflow at the keep point, if any, went to
+        // the branch thread, which has exited.
         unsafe {
             libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, core::ptr::null_mut());
         }
