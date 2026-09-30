@@ -41,8 +41,11 @@ LOGICAL_PATH = "scorecard/cells.json"
 PARTS_DIRECTORY = "scorecard/cells"
 MANIFEST_PATH = f"{PARTS_DIRECTORY}/manifest.json"
 MANIFEST_SCHEMA = "hermit-test-ledger-scorecard-cells/v1"
-# Every file a scorecard publication commits stays at or under this size:
+# A publication that writes the scorecard history refuses, before the writer
+# changes, any generated file or history part over this size (mirror._copy_back):
 # more than twice below GitHub's 100 MiB refusal, and below its 50 MiB warning.
+# latest.json, which mirror.py writes itself, and a legacy export's archive are
+# not checked.
 FILE_CEILING_BYTES = 48 * 1024 * 1024
 PART_MAX_BYTES = FILE_CEILING_BYTES
 MAX_PARTS = 10_000

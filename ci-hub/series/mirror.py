@@ -971,8 +971,10 @@ def _copy_back(copy: Path, writer: Path, base: str, paths: Sequence[Path], view:
     """Move exactly the renderer's generated files from COPY into the writer.
 
     The generated scorecard/cells.json is stored in parts (scorecard_cells).
-    Every file a scorecard publication writes is checked against
-    scorecard_cells.FILE_CEILING_BYTES before anything is written.
+    When the renderer generated it, every generated file and every part is
+    checked against scorecard_cells.FILE_CEILING_BYTES before anything is
+    written. A legacy export (no history) keeps its archive whole and
+    unchecked, and latest.json is written later, by the caller.
     """
     if _copy_git(copy, "rev-parse", "HEAD^{commit}") != base:
         raise MirrorRefused("scorecard tool moved the HEAD of its ledger copy; nothing was copied "

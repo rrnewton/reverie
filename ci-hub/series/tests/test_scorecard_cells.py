@@ -265,6 +265,27 @@ class CommitTests(unittest.TestCase):
                     cells.read_commit(self.repo, forged, environment=ENVIRONMENT)
                 git(self.repo, "reset", "-q", stored)
 
+    def test_read_commit_reads_the_stored_bytes_whatever_a_replacement_shows(self):
+        # In the render copy the view replaces the commit; read_commit must
+        # still read what the commit itself stores, through the tree and blobs.
+        stored = self.split_commit()
+        git(self.repo, "rm", "-rq", "--", cells.PARTS_DIRECTORY)
+        (self.repo / cells.LOGICAL_PATH).write_bytes(b"forged history\n")
+        git(self.repo, "add", cells.LOGICAL_PATH)
+        other_commit = git(self.repo, "commit-tree", git(self.repo, "write-tree"), "-m", "other history")
+        git(self.repo, "reset", "-q", "--hard", stored)
+        (self.root / "other-part").write_bytes(b"x" * 16)
+        other_part = git(self.repo, "hash-object", "-w", str(self.root / "other-part"))
+        part = git(self.repo, "rev-parse", f"{stored}:{cells.part_path(1)}")
+        for label, replaced, replacement in (("commit", stored, other_commit), ("part blob", part, other_part)):
+            with self.subTest(label):
+                git(self.repo, "replace", replaced, replacement)
+                try:
+                    self.assertEqual({replaced: replacement}, cells.replacements(self.repo, ENVIRONMENT))
+                    self.assertEqual(self.data, cells.read_commit(self.repo, stored, environment=ENVIRONMENT))
+                finally:
+                    git(self.repo, "replace", "-d", replaced)
+
     def test_render_view_shows_the_single_file_under_the_same_commit_name(self):
         stored = self.split_commit()
         copy = self.root / "copy"

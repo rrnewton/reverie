@@ -2184,6 +2184,132 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual(b'{"legacy":"preserve"}\n', stored_history(self.remote))
         self.assertIn(row("forged-part"), self.remote_rows())
 
+    def test_parts_view_survives_every_setting_that_would_hide_it(self):
+        # Each setting would make Git in the render copy ignore the view (or
+        # file it outside refs/replace/), so the renderer would find parts
+        # where it reads scorecard/cells.json. The copy's Git never sees them.
+        self.append("hidden-view-base")
+        self.assertEqual("published", self.publish()["state"])
+        config = Path(os.environ["GIT_CONFIG_GLOBAL"])
+        user_config = config.read_text()
+        settings = (
+            ("GIT_NO_REPLACE_OBJECTS", {"GIT_NO_REPLACE_OBJECTS": "1"}, ""),
+            ("GIT_REPLACE_REF_BASE", {"GIT_REPLACE_REF_BASE": "refs/elsewhere/"}, ""),
+            ("user configuration", {}, "[core]\n useReplaceRefs = false\n"),
+            ("GIT_CONFIG_COUNT", {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.useReplaceRefs",
+                                  "GIT_CONFIG_VALUE_0": "false"}, ""),
+        )
+        for step, (label, variables, configuration) in enumerate(settings):
+            with self.subTest(label):
+                self.append(f"hidden-view-{step}")
+                config.write_text(user_config + configuration)
+                try:
+                    with mock.patch.dict(os.environ, variables):
+                        report = self.publish()
+                finally:
+                    config.write_text(user_config)
+                self.assertEqual("published", report["state"], report)
+                self.assertEqual(b'{"legacy":"preserve"}\n', stored_history(self.remote))
+                self.assertIn(row(f"hidden-view-{step}"), self.remote_rows())
+
+    def test_renderer_changing_its_copys_replacements_is_refused_before_push(self):
+        # The view must stay the copy's only replacement: a renderer that
+        # deletes it, or adds one of its own, is refused before anything is
+        # copied into the writer.
+        self.append("replacements-base")
+        self.assertEqual("published", self.publish()["state"])
+        writer = self.parent / mirror.WRITER_RELATIVE
+        edits = (("deleted", "['replace','-d','HEAD']"), ("added", "['replace','--graft','HEAD~1']"))
+        for label, arguments in edits:
+            with self.subTest(label):
+                before = self.published_projection()
+                self.set_tool(f"subprocess.run(['git','-C',str(ledger),*{arguments}],check=True)\n"
+                              "(p/'SCORECARD.md').write_text('rendered\\n')\n")
+                self.append(f"replacement-{label}")
+                report = self.publish()
+                self.assertEqual("derived-failed", report["state"], report)
+                self.assertIn("the ledger copy's replacement objects changed", report["scorecard"]["error"])
+                self.assertIn("nothing was copied into the ledger writer", report["scorecard"]["error"])
+                self.assertEqual(before, self.published_projection())
+                self.assertIn(row(f"replacement-{label}"), self.remote_rows())
+                self.assertEqual(report["series_commit"], git(writer, "rev-parse", "HEAD"))
+                self.assertEqual("", git(writer, "status", "--porcelain"))
+
+    def forged_view(self, forged: bytes):
+        """An install_render_view whose view shows FORGED as the history, not what the commit stores."""
+        real_install = mirror.scorecard_cells.install_render_view
+        real_git = mirror.scorecard_cells._git
+
+        def forging_git(repo, *args, data=None, **kwargs):
+            if args == ("hash-object", "-w", "--stdin"):
+                data = forged
+            return real_git(repo, *args, data=data, **kwargs)
+
+        def install(repo, commit, environment):
+            with mock.patch.object(mirror.scorecard_cells, "_git", side_effect=forging_git):
+                return real_install(repo, commit, environment)
+        return install
+
+    def test_a_view_showing_other_bytes_is_refused_before_rendering(self):
+        # The checked-out bytes are compared first. The copy is checked clean,
+        # so the view's `HEAD:scorecard/cells.json` check would refuse this
+        # view too; the message names the check that refused it.
+        self.append("forged-view-base")
+        self.assertEqual("published", self.publish()["state"])
+        before = self.published_projection()
+        marker = self.root / "renderer-ran"
+        self.set_tool(f"pathlib.Path({str(marker)!r}).write_text('ran\\n')\n"
+                      "(p/'SCORECARD.md').write_text('rendered\\n')\n")
+        self.append("forged-view")
+        with mock.patch.object(mirror.scorecard_cells, "install_render_view",
+                               side_effect=self.forged_view(b'{"forged":"view"}\n')):
+            report = self.publish()
+        self.assertEqual("derived-failed", report["state"], report)
+        self.assertIn(f"the ledger copy's checked-out scorecard history differs from {report['series_commit']}",
+                      report["scorecard"]["error"])
+        self.assertFalse(marker.exists())
+        self.assertEqual(before, self.published_projection())
+        self.assertIn(row("forged-view"), self.remote_rows())
+
+    def test_after_rendering_the_copy_must_still_show_the_stored_history(self):
+        # After the render the checked-out file is the renderer's output, so
+        # the view is checked through `HEAD:scorecard/cells.json` alone.
+        self.append("shown-history-base")
+        self.assertEqual("published", self.publish()["state"])
+        writer = self.parent / mirror.WRITER_RELATIVE
+        base = git(writer, "rev-parse", "HEAD")
+        with mirror._render_copy(writer, base) as (copy, view):
+            self.assertIsNotNone(view)
+            mirror._require_render_view(copy, base, view, rendered=True)
+            environment = mirror._copy_environment()
+            subprocess.run(["git", "-C", str(copy), "replace", "-d", base], check=True, capture_output=True,
+                           env=environment)
+            forged = self.forged_view(b'{"forged":"view"}\n')(copy, base, environment)
+            self.assertEqual({base: forged}, mirror.scorecard_cells.replacements(copy, environment))
+            with self.assertRaisesRegex(mirror.MirrorRefused,
+                                        f"the ledger copy does not show the scorecard history stored at {base}"):
+                mirror._require_render_view(copy, base, forged, rendered=True)
+
+    def test_writer_storing_other_bytes_than_generated_is_refused_before_commit(self):
+        writer = self.parent / mirror.WRITER_RELATIVE
+        real_replace = mirror.scorecard_cells.replace_tree
+
+        def forging_replace(root, files):
+            return real_replace(root, mirror.scorecard_cells.split(b'{"forged":"stored"}\n'))
+
+        self.append("forged-store")
+        with mock.patch.object(mirror.scorecard_cells, "replace_tree", side_effect=forging_replace):
+            report = self.publish()
+        self.assertEqual("derived-failed", report["state"], report)
+        self.assertIn("the scorecard history stored in the ledger writer differs from the generated document",
+                      report["scorecard"]["error"])
+        self.assertEqual(report["series_commit"], git(writer, "rev-parse", "HEAD"))
+        self.assertNotEqual("", git(writer, "status", "--porcelain"))
+        self.assertEqual('{"legacy":"preserve"}', git(self.remote, "show", "main:scorecard/cells.json"))
+        self.assertEqual("", git(self.remote, "ls-tree", "main", "--", "scorecard/cells"))
+        self.assertEqual("legacy scorecard", git(self.remote, "show", "main:scorecard/SCORECARD.md"))
+        self.assertEqual([row("forged-store")], self.remote_rows())
+
     def test_scorecard_head_only_moves_forward_along_ancestry(self):
         self.use_head_renderer()
         root = self.target
@@ -2666,11 +2792,21 @@ class DirectLedgerFixture(unittest.TestCase):
                 self.assertEqual(base, git(self.remote, "rev-parse", "main"))
                 git(writer, "reset", "-q", "--hard", base)
                 git(writer, "clean", "-qfd")
+        # The push sends one commit to main and nothing else: a replace ref in
+        # the writer (the render copy's view is the only one production makes,
+        # and never there) is not published, nor is its replacement object.
+        replaced = git(writer, "rev-parse", f"{base}^")
+        replacement = git(writer, "commit-tree", f"{base}^{{tree}}", "-m", "replacement never published")
+        git(writer, "replace", replaced, replacement)
         commit = attempt("qualifying.txt")
         self.assertEqual(commit, git(self.remote, "rev-parse", "main"))
         self.assertEqual([commit, base], git(self.remote, "rev-list", "--parents", "-n", "1", commit).split())
         self.assertEqual("qualifying.txt",
                          git(self.remote, "diff-tree", "--no-commit-id", "--name-only", "-r", base, commit))
+        self.assertEqual("refs/heads/main", git(self.remote, "for-each-ref", "--format=%(refname)"))
+        missing = subprocess.run(["git", "-C", str(self.remote), "cat-file", "-e", replacement],
+                                 capture_output=True, check=False)
+        self.assertNotEqual(0, missing.returncode)
 
     def test_renderer_gets_a_ledger_copy_without_routes_credentials_or_the_wrapper(self):
         # F4: the renderer is measured code. It sees a throwaway ledger copy
