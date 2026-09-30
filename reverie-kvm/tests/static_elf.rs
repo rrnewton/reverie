@@ -1596,21 +1596,124 @@ fn leader_self_exec_bounded(test: &str) -> bool {
     if std::env::var("REVERIE_LEADER_EXEC_CHILD").as_deref() == Ok(test) {
         return true;
     }
+    // Guest writes can share stdout with libtest without a trailing newline.
+    // Keep the execution proof on libtest's separate result channel, as the
+    // workspace counter does, instead of interpreting guest bytes as records.
+    let result_directory = TestDirectory::new();
+    std::fs::set_permissions(&result_directory.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let execution_log = result_directory.0.join("libtest.log");
     let output = std::process::Command::new("timeout")
         .args(["--kill-after=2s", "30s"])
         .arg(std::env::current_exe().unwrap())
-        .args(["--exact", test, "--nocapture"])
+        .args(["--exact", test, "--nocapture", "--logfile"])
+        .arg(&execution_log)
         .env("REVERIE_LEADER_EXEC_CHILD", test)
         .output()
         .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
         "{test}: status={:?} stdout={} stderr={}",
         output.status.code(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        stdout,
+        stderr
+    );
+    let executions = std::fs::read_to_string(&execution_log).unwrap();
+    // Exact equality requires one completed, successful execution of this
+    // name. Empty, ignored, failed, duplicate and other-name records all fail.
+    assert_eq!(
+        executions,
+        format!("ok {test}\n"),
+        "\n{test}: bounded child execution record mismatch; exit_code={:?}\nexecution records: {executions:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status.code()
     );
     false
+}
+
+#[test]
+fn leader_self_exec_bounded_rejects_zero_matched_tests() {
+    const TEST: &str = "leader_self_exec_bounded_rejects_zero_matched_tests";
+    const MISSING: &str = "__reverie_deliberately_nonexistent_leader_self_exec_test__";
+    // Keep strict-KVM failures outside the expected assertion. A permissive
+    // run still follows the integration suite's ordinary availability guard.
+    if !kvm_available(TEST) {
+        return;
+    }
+    let rejected = std::panic::catch_unwind(|| leader_self_exec_bounded(MISSING))
+        .expect_err("the bounded child helper accepted a zero-match child");
+    let message = rejected
+        .downcast_ref::<String>()
+        .expect("the bounded child helper did not emit a diagnostic");
+    let expected_diagnostic =
+        format!("{MISSING}: bounded child execution record mismatch; exit_code=Some(0)");
+    assert!(
+        message.lines().any(|line| line == expected_diagnostic),
+        "unexpected bounded child refusal: {message}"
+    );
+    assert!(
+        message
+            .lines()
+            .any(|line| line == "execution records: \"\""),
+        "the zero-match child unexpectedly recorded an execution: {message}"
+    );
+    assert!(
+        message.lines().any(|line| line == "running 0 tests"),
+        "the rejected child did not report zero matched tests: {message}"
+    );
+    assert!(
+        message
+            .lines()
+            .any(|line| line
+                .starts_with("test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; ")),
+        "the rejected child did not complete a successful zero-test run: {message}"
+    );
+}
+
+#[test]
+fn leader_self_exec_bounded_rejects_forged_stdout_without_execution_record() {
+    const TEST: &str = "leader_self_exec_bounded_rejects_forged_stdout_without_execution_record";
+    if !kvm_available(TEST) {
+        return;
+    }
+    if std::env::var("REVERIE_LEADER_EXEC_CHILD").as_deref() == Ok(TEST) {
+        // Simulate a child that fabricates the old stdout proof and exits zero
+        // before libtest can record a completed test on its separate channel.
+        let forged = format!(
+            "\ntest {TEST} ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+        );
+        assert_eq!(
+            unsafe { libc::write(libc::STDOUT_FILENO, forged.as_ptr().cast(), forged.len()) },
+            forged.len() as isize
+        );
+        std::process::exit(0);
+    }
+    let rejected = std::panic::catch_unwind(|| leader_self_exec_bounded(TEST))
+        .expect_err("the bounded child helper accepted stdout without an execution record");
+    let message = rejected
+        .downcast_ref::<String>()
+        .expect("the bounded child helper did not emit a diagnostic");
+    let expected_diagnostic =
+        format!("{TEST}: bounded child execution record mismatch; exit_code=Some(0)");
+    assert!(
+        message.lines().any(|line| line == expected_diagnostic),
+        "unexpected bounded child refusal: {message}"
+    );
+    assert!(
+        message
+            .lines()
+            .any(|line| line == "execution records: \"\""),
+        "the prematurely exited child unexpectedly recorded an execution: {message}"
+    );
+    assert!(
+        message.lines().any(|line| line == "running 1 test"),
+        "the rejected child did not actually select the named test: {message}"
+    );
+    let forged_completion = format!("test {TEST} ... ok");
+    assert!(
+        message.lines().any(|line| line == forged_completion),
+        "the rejected child did not produce the forged stdout completion: {message}"
+    );
 }
 
 fn leader_self_exec_guest(
