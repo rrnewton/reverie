@@ -118,6 +118,7 @@ use crate::stack::GuestStack;
 use crate::timer::HandleFailure;
 use crate::timer::Timer;
 use crate::timer::TimerEventRequest;
+use crate::timer::Unfinished;
 use crate::tracer::FatalNewborn;
 use crate::tracer::FatalTaskStop;
 use crate::tracer::HeldRootStop;
@@ -3175,6 +3176,17 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Returns `true` if the signal was actually meant for the timer, and
     /// therefore should not be forwarded to the tool / guest.
     async fn handle_timer(&mut self, task: Stopped) -> Result<(bool, Stopped), TraceError> {
+        self.drive_timer(task, None).await
+    }
+
+    /// Drives a timer event to completion from its timer signal, or from what
+    /// of it a disregarded stop left `unfinished`, and makes the Tool's timer
+    /// callback.
+    async fn drive_timer(
+        &mut self,
+        task: Stopped,
+        unfinished: Option<Unfinished>,
+    ) -> Result<(bool, Stopped), TraceError> {
         let armer = self.liteinst_root_stop_armer(&task);
         let held_root_stop = armer
             .as_ref()
@@ -3186,11 +3198,19 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             Ok(())
         };
-        let task = match self
-            .timer
-            .handle_signal(task, &mut step, &mut observe)
-            .await
-        {
+        let result = match unfinished {
+            None => {
+                self.timer
+                    .handle_signal(task, &mut step, &mut observe)
+                    .await
+            }
+            Some(unfinished) => {
+                self.timer
+                    .continue_stepping(task, unfinished, &mut step, &mut observe)
+                    .await
+            }
+        };
+        let task = match result {
             Err(HandleFailure::ImproperSignal(task)) => return Ok((false, task)),
             Err(HandleFailure::Cancelled(task)) => return Ok((true, task)),
             Err(HandleFailure::TraceError(e)) => {
@@ -3836,6 +3856,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
         } else {
+            // The trap is not delivered and makes no Tool callback, so it
+            // leaves the timer event as it was, and what of the event nothing
+            // else will drive, the single steps toward it that it interrupted
+            // or a lost notification, is finished here.
+            let task = match self.timer.disregard_stop()? {
+                Some(unfinished) => self.drive_timer(task, Some(unfinished)).await?.1,
+                None => task,
+            };
             let running = self.resume_stopped(task, None)?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
         })
