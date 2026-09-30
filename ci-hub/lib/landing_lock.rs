@@ -6854,57 +6854,82 @@ os._exit(exit_code)
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
-    /// A host process whose `comm` is not valid UTF-8 must not fail the
-    /// `/proc` scan that every census and lineage observation runs
-    /// (https://github.com/rrnewton/dev-hermit/issues/434). Exec'ing a
-    /// symlink named 14 ASCII bytes and a 3-byte character gives a `comm` cut
-    /// to 15 bytes inside that character.
+    /// A process whose `comm` is not valid UTF-8 must not fail the `/proc`
+    /// reads that every census and lineage observation runs
+    /// (https://github.com/rrnewton/dev-hermit/issues/434). A 14-byte ASCII
+    /// name followed by a 3-byte character is cut by the kernel to 15 bytes,
+    /// inside that character.
+    ///
+    /// ⚠️ THE FIXTURE IS A THREAD OF THIS TEST, NOT A PROCESS. A ci-hub built
+    /// before 42ddf70e3b4b8476b1de68487eb6967d5e0220e0 fails its whole `/proc`
+    /// scan on such a name and quarantines its run, and every process on the
+    /// host is in that scan. A process in a private PID namespace would not
+    /// help: the host's `/proc` lists it too. A thread is not listed by
+    /// `readdir("/proc")`, which only names thread-group leaders, so no scan
+    /// of any version reads it, while `/proc/<tid>/stat` still carries the
+    /// thread's own name. The test asserts both halves.
     #[test]
     fn a_process_whose_name_is_not_utf8_does_not_fail_the_proc_scan() {
-        use std::os::unix::ffi::OsStrExt;
-        struct KillOnDrop(Child);
-        impl Drop for KillOnDrop {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let root = env::temp_dir().join(format!(
-            "ci-hub-non-utf8-comm-{}-{}",
-            std::process::id(),
-            epoch_seconds().unwrap()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let mut name = b"aaaaaaaaaaaaaa".to_vec();
-        name.extend_from_slice("\u{20ac}".as_bytes());
-        let link = root.join(std::ffi::OsStr::from_bytes(&name));
-        std::os::unix::fs::symlink("/bin/sleep", &link).unwrap();
-        let child = KillOnDrop(Command::new(&link).arg("30").spawn().unwrap());
-        let pid = child.0.id();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let raw = loop {
-            let raw = fs::read(format!("/proc/{pid}/stat")).unwrap();
-            if raw.windows(14).any(|window| window == b"aaaaaaaaaaaaaa") {
-                break raw;
-            }
-            assert!(Instant::now() < deadline, "exec did not rename the child");
-            thread::sleep(Duration::from_millis(10));
-        };
+        let (tid_tx, tid_rx) = mpsc::channel::<u32>();
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let renamed = thread::spawn(move || {
+            let mut name = b"aaaaaaaaaaaaaa".to_vec();
+            name.extend_from_slice("\u{20ac}".as_bytes());
+            name.push(0);
+            // SAFETY: `name` is NUL-terminated and outlives the call;
+            // PR_SET_NAME renames only the calling thread.
+            let renamed = unsafe { libc::prctl(libc::PR_SET_NAME, name.as_ptr()) };
+            assert_eq!(renamed, 0, "PR_SET_NAME failed");
+            // SAFETY: gettid has no arguments and only reads this thread's id.
+            let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+            tid_tx.send(u32::try_from(tid).unwrap()).unwrap();
+            // Ends when the test drops or sends on `stop_tx`, including when
+            // an assertion below unwinds.
+            let _ = stop_rx.recv_timeout(Duration::from_secs(60));
+        });
+        let tid = tid_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the renamed thread reports its id");
+        let raw = fs::read(format!("/proc/{tid}/stat")).unwrap();
+        let listed = fs::read_dir("/proc")
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.file_name().to_str() == Some(tid.to_string().as_str()));
+        let fields = process_stat_fields(tid);
+        let start_ticks = process_start_ticks(tid);
+        let scanned = scan_process_stat_fields(tid);
+        let group = start_ticks.as_ref().ok().and_then(|&start_ticks| {
+            exact_process_group(&ProcessIdentity {
+                pid: tid,
+                start_ticks,
+            })
+        });
+        let _ = stop_tx.send(());
+        renamed.join().unwrap();
+
+        assert!(
+            raw.windows(14).any(|window| window == b"aaaaaaaaaaaaaa"),
+            "the thread was not renamed: {raw:?}"
+        );
         // The fixture is what broke `read_to_string`.
         assert!(
             std::str::from_utf8(&raw).is_err(),
-            "the child's stat line is valid UTF-8: {raw:?}"
+            "the thread's stat line is valid UTF-8: {raw:?}"
         );
-        let start_ticks = process_start_ticks(pid).expect("a non-UTF-8 comm parses");
-        let table = scan_process_table(std::process::id())
-            .expect("the /proc scan survives a host process with a non-UTF-8 comm");
+        assert!(
+            !listed,
+            "readdir(/proc) listed thread {tid}, so a host-wide scan would read it"
+        );
+        let fields = fields.expect("a non-UTF-8 comm parses");
+        assert_ne!(fields.0, 'Z');
+        assert_eq!(start_ticks.expect("start ticks parse"), fields.2);
         assert_eq!(
-            table.get(&pid).map(|&(_, parent, ticks)| (parent, ticks)),
-            Some((std::process::id(), start_ticks))
+            scanned.expect("the per-entry read of the /proc scan parses a non-UTF-8 comm"),
+            fields
         );
-        assert!(exact_process_group(&ProcessIdentity { pid, start_ticks }).is_some());
-        drop(child);
-        let _ = fs::remove_dir_all(&root);
+        // SAFETY: getpgid(0) only reads this process's own process-group id.
+        let own_group = u32::try_from(unsafe { libc::getpgid(0) }).unwrap();
+        assert_eq!(group, Some(own_group));
     }
 
     #[test]
