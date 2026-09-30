@@ -4324,6 +4324,211 @@ mod tests {
         );
     }
 
+    /// render_page.py reads the projection's attempts, never the ledger's.
+    /// Rows that Hermit's series writer admits go through the projection, and
+    /// its output goes into the page's attempt check as the page reads it. The
+    /// check must accept that output, and refuse it with one field altered.
+    #[test]
+    fn page_renderer_accepts_projected_attempts_and_refuses_altered_ones() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        // Load render_page.py the way its own tests do, and answer for each
+        // case whether its attempt check accepts the rows or refuses them.
+        const DRIVER: &str = r#"
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("render_page", sys.argv[1])
+render_page = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = render_page
+spec.loader.exec_module(render_page)
+answers = {}
+for name, rows in json.load(sys.stdin).items():
+    try:
+        answers[name] = "accepted: " + render_page._attempt_evidence_summary(rows)
+    except render_page.RenderRefused as error:
+        answers[name] = "refused: " + str(error)
+json.dump(answers, sys.stdout)
+"#;
+        let ledger_row = |event_id: &str,
+                          outcome: SeriesOutcome,
+                          result: Option<ObservedResult>,
+                          failure_class: FailureClass,
+                          attempt: SeriesAttemptDisposition| {
+            let mut row: SeriesRow =
+                serde_json::from_value(series(event_id, &"d".repeat(40), event_id)).unwrap();
+            row.producer = SeriesProducer::PressureTest;
+            row.series.outcome = outcome;
+            row.series.result = result;
+            row.series.failure_class = Some(failure_class);
+            row.series.last_run_index = None;
+            row.series.no_verdict_evidence = Some(SeriesNoVerdictEvidence {
+                evidence_sha256: "b".repeat(64),
+                attempts: vec![attempt],
+            });
+            row.validate_for_write().unwrap();
+            serde_json::to_value(&row).unwrap()
+        };
+        let rows = [
+            // No detail, which the ledger row omits. The stored ledger at
+            // 57234c77 holds 1,124 rows with attempt evidence, one attempt
+            // each and none with a detail. 771 of them are not_run attempts
+            // with this outcome, disposition, error kind and status.
+            ledger_row(
+                "event-attempt-without-detail",
+                SeriesOutcome::NoResult,
+                None,
+                FailureClass::NoResult,
+                SeriesAttemptDisposition {
+                    index: "1".into(),
+                    kind: SeriesNoVerdictKind::NotRun,
+                    detail: None,
+                    attempt_outcome: "ERROR".into(),
+                    disposition: SeriesOutcome::NoResult,
+                    error_kind: Some("incomplete-verification-evidence".into()),
+                    status: Some(125),
+                    signal: None,
+                    timed_out: false,
+                    verification_report_sha256: Some("c".repeat(64)),
+                },
+            ),
+            // The runner's own reason for a failed declared stdout.
+            ledger_row(
+                "event-attempt-failed-match",
+                SeriesOutcome::Errored,
+                Some(ObservedResult::CrashError),
+                FailureClass::ProductFailure,
+                SeriesAttemptDisposition {
+                    index: "1".into(),
+                    kind: SeriesNoVerdictKind::FailedMatch,
+                    detail: Some(
+                        hermit_manifest_plan::runner::expected_stdout_mismatch_reason(
+                            "first",
+                            22,
+                            &"a".repeat(64),
+                            22,
+                            &"d".repeat(64),
+                        ),
+                    ),
+                    attempt_outcome: "FAIL".into(),
+                    disposition: SeriesOutcome::Errored,
+                    error_kind: None,
+                    status: Some(0),
+                    signal: None,
+                    timed_out: false,
+                    verification_report_sha256: Some("c".repeat(64)),
+                },
+            ),
+            ledger_row(
+                "event-attempt-comparison-refused",
+                SeriesOutcome::NoResult,
+                None,
+                FailureClass::NoResult,
+                SeriesAttemptDisposition {
+                    index: "1".into(),
+                    kind: SeriesNoVerdictKind::ComparisonRefused,
+                    detail: Some(
+                        "the second log was truncated at the configured size bound".into(),
+                    ),
+                    attempt_outcome: "ERROR".into(),
+                    disposition: SeriesOutcome::NoResult,
+                    error_kind: Some("incomplete-verification-evidence".into()),
+                    status: Some(125),
+                    signal: None,
+                    timed_out: false,
+                    verification_report_sha256: Some("c".repeat(64)),
+                },
+            ),
+        ];
+        let value = project(
+            &canonical_bytes(&manifest()),
+            "",
+            &jsonl(&rows),
+            None,
+            |_| Ok(Some(true)),
+        )
+        .unwrap();
+        let projected = value["series_rows"].as_array().unwrap();
+        assert_eq!(projected.len(), rows.len());
+
+        type Edit = fn(&mut Map<String, Value>);
+        let edits: [(&str, Edit); 4] = [
+            ("detail a number", |attempt| {
+                attempt.insert("detail".into(), Value::from(7));
+            }),
+            ("an unknown key", |attempt| {
+                attempt.insert("unexpected".into(), Value::Null);
+            }),
+            ("a blank detail", |attempt| {
+                attempt.insert("detail".into(), Value::from("   "));
+            }),
+            ("the nine keys without detail", |attempt| {
+                attempt.remove("detail");
+            }),
+        ];
+        let mut cases = Map::new();
+        let mut expected = BTreeMap::new();
+        for row in projected {
+            let event_id = row["event_id"].as_str().unwrap();
+            cases.insert(event_id.into(), Value::Array(vec![row.clone()]));
+            expected.insert(event_id.to_owned(), true);
+            for (label, edit) in edits {
+                let mut altered = row.clone();
+                edit(
+                    altered["series"]["no_verdict_evidence"]["attempts"][0]
+                        .as_object_mut()
+                        .unwrap(),
+                );
+                let name = format!("{event_id} with {label}");
+                cases.insert(name.clone(), Value::Array(vec![altered]));
+                expected.insert(name, false);
+            }
+        }
+
+        let root = crate::workspace_root().unwrap();
+        let mut child = Command::new("python3")
+            .arg("-B")
+            .arg("-c")
+            .arg(DRIVER)
+            .arg(root.join("ci-hub/compatibility-website/render_page.py"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&serde_json::to_vec(&cases).unwrap())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "render_page.py failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let answers: BTreeMap<String, String> = serde_json::from_slice(&output.stdout).unwrap();
+        let wrong = expected
+            .iter()
+            .filter(|(name, accepted)| {
+                let answer = answers.get(*name).map(String::as_str).unwrap_or_default();
+                if **accepted {
+                    !answer.starts_with("accepted: Recorded attempt evidence: ")
+                } else {
+                    answer != "refused: recorded no-verdict attempt evidence is malformed"
+                }
+            })
+            .map(|(name, _)| format!("{name}: {:?}", answers.get(name)))
+            .collect::<Vec<_>>();
+        assert!(
+            wrong.is_empty(),
+            "render_page.py disagrees with the projection on {} of {} cases:\n{}",
+            wrong.len(),
+            expected.len(),
+            wrong.join("\n")
+        );
+    }
+
     #[test]
     fn declared_guest_exit_projection_retains_the_full_attempt_audit() {
         let audit = serde_json::json!({
