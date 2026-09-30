@@ -8237,6 +8237,8 @@ def build_systemd_command(
     measured_rust_toolchain: str | None = None,
     placement: cpu_placement.CpuPlacement | None = None,
     git_config: Sequence[tuple[str, str]] = (),
+    child_path: str | None = None,
+    network_git: str | None = None,
 ) -> list[str]:
     state_root = root if state_root is None else state_root
     child_deadline = effective_child_deadline(repo, child_deadline)
@@ -8394,6 +8396,26 @@ def build_systemd_command(
             )
 
     child = ["/usr/bin/env"]
+    if child_path is not None:
+        # The unwrapped-git PATH (ci-hub/validate/unwrapped_git.py) reaches
+        # only validate-lock's child, the validation driver and its DAG.
+        # validate-lock itself and ExecStopPost (the retire path, including
+        # the ledger mirror's network push and fetch) keep the unit's PATH
+        # and so the host wrapper. `network_git` names that wrapper for DAG
+        # steps that make network calls and honour the variable.
+        if not child_path or "\0" in child_path:
+            raise ValueError("the validation child's PATH must be a non-empty string")
+        child.append(f"PATH={child_path}")
+        if network_git is not None:
+            if not os.path.isabs(network_git):
+                raise ValueError(
+                    f"{unwrapped_git.NETWORK_GIT_ENV} must be absolute, got {network_git!r}"
+                )
+            child.append(f"{unwrapped_git.NETWORK_GIT_ENV}={network_git}")
+    elif network_git is not None:
+        raise ValueError(
+            f"{unwrapped_git.NETWORK_GIT_ENV} is only set with a substituted child PATH"
+        )
     if pr is not None:
         child.append(f"PR_NUMBER={pr}")
     if allow_owner_validate_symlink:
@@ -13040,19 +13062,22 @@ def main(
             }
         placement: cpu_placement.CpuPlacement | None = None
         git_substitution: unwrapped_git.GitSubstitution | None = None
-        unit_environment: Mapping[str, str] = environment
         if repo == "rrnewton/hermit":
             # Derived from this host at launch; a malformed operator override
             # raises here (CpuPlacementError is a ValueError) before any unit
             # exists. Recorded whether or not anything was excluded.
             placement = cpu_placement.derive(environ=environment)
             # Run the validation's git as the binary the host telemetry
-            # wrapper execs, when PATH's git is provably that wrapper and both
-            # report the same version (ci-hub/validate/unwrapped_git.py). The
-            # directory holds one `git` symlink inside this run's private
-            # runtime root, which every refusal and completion path removes.
-            # A dry run plans without creating it. Any failed check leaves
-            # PATH unchanged; the run handle and the retained log say which.
+            # wrapper execs, when PATH's git is provably that wrapper, the
+            # wrapper's configuration names that binary, and both report the
+            # same version (ci-hub/validate/unwrapped_git.py). The directory
+            # holds one `git` symlink inside this run's private runtime root,
+            # which every refusal and completion path removes. A dry run
+            # plans without creating it. Only validate-lock's child (the
+            # driver and its DAG) gets the new PATH; see
+            # build_systemd_command. Any failed check leaves PATH unchanged.
+            # The decision reaches the run handle and the retained log only
+            # once systemd has accepted the unit.
             git_substitution = unwrapped_git.plan(
                 environment.get("PATH", ""),
                 _unwrapped_git_directory(runtime_root),
@@ -13060,11 +13085,9 @@ def main(
             )
             if not args.dry_run:
                 git_substitution = unwrapped_git.materialize(git_substitution)
-            unit_environment = {**environment, "PATH": git_substitution.path}
             output_fields.update(
                 {
                     "cpu_placement": placement.record(),
-                    "git_substitution": git_substitution.record(),
                     "e2e_result_root": str(e2e_result_root),
                     "safe_ci_dag_runner_log_dir": str(runner_log_dir),
                     "hermit_run_timeout_seconds": hermit_run_timeout,
@@ -13090,7 +13113,7 @@ def main(
             wait=args.wait,
             hold=args.hold,
             child_deadline=child_deadline,
-            environment=unit_environment,
+            environment=environment,
             make_validate=args.make_validate,
             allow_owner_validate_symlink=args.allow_owner_validate_symlink,
             cargo_home=private_cargo_home,
@@ -13110,6 +13133,16 @@ def main(
             placement=placement,
             git_config=(
                 () if fresh_registration is None else fresh_registration.git_config()
+            ),
+            child_path=(
+                git_substitution.path
+                if git_substitution is not None and git_substitution.applied
+                else None
+            ),
+            network_git=(
+                git_substitution.resolved_git
+                if git_substitution is not None and git_substitution.applied
+                else None
             ),
         )
         if args.dry_run:
@@ -13201,12 +13234,6 @@ def main(
                 if placement is not None:
                     with log.open("a", encoding="utf-8") as retained:
                         print(f"validate-run: {placement.summary()}", file=retained)
-                if git_substitution is not None:
-                    with log.open("a", encoding="utf-8") as retained:
-                        print(
-                            f"validate-run: {git_substitution.summary()}",
-                            file=retained,
-                        )
                 if driver_rust_toolchain is not None:
                     with log.open("a", encoding="utf-8") as retained:
                         print(
@@ -13255,7 +13282,34 @@ def main(
             # onward systemd owns a live unit, so no bookkeeping or observer
             # failure may claim that it never started or delete its inputs.
             service_acceptance = ServiceAcceptance.POST_ACCEPT
-            run_registry.update_record(record_path, state="running")
+            # The git decision is recorded only now: a refused launch removed
+            # the runtime root, so it never ran with the substitution.
+            run_registry.update_record(
+                record_path,
+                state="running",
+                **(
+                    {"git_substitution": git_substitution.record()}
+                    if git_substitution is not None
+                    else {}
+                ),
+            )
+            if git_substitution is not None:
+                # The unit already appends to this log, so this line can
+                # follow the unit's first lines. The handle above is the
+                # authority; a failed append must not turn an accepted run
+                # into a bookkeeping failure.
+                try:
+                    with log.open("a", encoding="utf-8") as retained:
+                        print(
+                            f"validate-run: {git_substitution.summary()}",
+                            file=retained,
+                        )
+                except OSError as error:
+                    print(
+                        f"validate-run: could not append the git substitution "
+                        f"line to {log}: {error}",
+                        file=sys.stderr,
+                    )
             # Start the observer only after systemd accepted the unit. It reads
             # the durable log from offset zero, so this loses no output and
             # makes a pane for a never-launched service impossible.
@@ -13367,6 +13421,19 @@ def main(
         "producer": "systemd-user-v1",
         "pane_role": "observer-only",
         **output_fields,
+        # A dry run created no directory, so it reports the plan
+        # (planned_directory, created=false), not a run-record field.
+        **(
+            {
+                "git_substitution": (
+                    unwrapped_git.decision(git_substitution)
+                    if args.dry_run
+                    else git_substitution.record()
+                )
+            }
+            if git_substitution is not None
+            else {}
+        ),
         **(
             {
                 "admission": FROZEN_RESULT_ADMISSION,

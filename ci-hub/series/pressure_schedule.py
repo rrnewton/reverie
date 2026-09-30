@@ -64,7 +64,7 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 # git with the unwrapped binary. run_campaign uses it for its one network
 # call, the submodule fetch, so that call keeps the telemetry wrapper and its
 # retry of HTTP 429 responses, as it had before the substitution.
-NETWORK_GIT_ENV = "DEV_HERMIT_NETWORK_GIT"
+NETWORK_GIT_ENV = unwrapped_git.NETWORK_GIT_ENV
 
 
 def utc_now() -> str:
@@ -83,9 +83,14 @@ def launch_lock_path(root: Path) -> Path:
     return root / "ignored" / "ci-hub" / "pressure-test-launch.lock"
 
 
+def unwrapped_git_root(root: Path) -> Path:
+    """Where every pressure test's private git directory lives, one per slot."""
+    return root / "ignored" / "ci-hub" / "pressure-test-git"
+
+
 def unwrapped_git_directory(root: Path, slot: str) -> Path:
     """This run's private PATH entry holding only a `git` symlink."""
-    return root / "ignored" / "ci-hub" / "pressure-test-git" / slot
+    return unwrapped_git_root(root) / slot
 
 
 def network_git(environment: Mapping[str, str] | None = None) -> str:
@@ -117,6 +122,55 @@ def remove_unwrapped_git_directory(
     if not isinstance(real_git, str) or not real_git:
         return f"run record names no unwrapped git for {directory}; left in place"
     return unwrapped_git.remove(directory, real_git)
+
+
+def remove_recorded_unwrapped_git_directory(
+    root: Path, substitution: object
+) -> str | None:
+    """remove_unwrapped_git_directory for a run record that names no slot.
+
+    The slot is taken from the recorded directory, which must be a direct
+    child of unwrapped_git_root; anything else is left in place.
+    """
+    if not isinstance(substitution, Mapping) or substitution.get("applied") is not True:
+        return None
+    recorded = substitution.get("directory")
+    if not isinstance(recorded, str) or Path(recorded).parent != unwrapped_git_root(root):
+        return (
+            f"run record names git directory {recorded!r}, which is not a slot "
+            f"under {unwrapped_git_root(root)}; left in place"
+        )
+    return remove_unwrapped_git_directory(root, Path(recorded).name, substitution)
+
+
+def sweep_unwrapped_git_directories(root: Path) -> tuple[list[str], list[str]]:
+    """Remove every leftover slot directory; returns (removed, problems).
+
+    Only launch() calls this, holding the launch lock after systemd reports
+    the pressure unit inactive: the directories belong to that unit's
+    campaign, so none is in use. It catches what run_campaign could not
+    remove itself, for example after the unit was killed at RuntimeMaxSec.
+    Each entry goes through unwrapped_git.remove with the host's unwrapped
+    git, so only the exact shape launch() creates is deleted. Anything else
+    (another link target, extra entries, a file) is left in place and named
+    in `problems`.
+    """
+    parent = unwrapped_git_root(root)
+    try:
+        names = sorted(os.listdir(parent))
+    except FileNotFoundError:
+        return [], []
+    except OSError as error:
+        return [], [f"cannot list {parent}: {error}"]
+    removed: list[str] = []
+    problems: list[str] = []
+    for name in names:
+        problem = unwrapped_git.remove(parent / name, unwrapped_git.REAL_GIT)
+        if problem is None:
+            removed.append(name)
+        else:
+            problems.append(problem)
+    return removed, problems
 
 
 def emit(state: str, summary: str) -> None:
@@ -362,6 +416,22 @@ def launch(
             )
             return 1
 
+        # The unit is inactive and this process holds the launch lock, so no
+        # campaign can be using a pressure-test-git directory.
+        swept, sweep_problems = sweep_unwrapped_git_directories(root)
+        sweep_error = "; ".join(sweep_problems) or None
+        if swept or sweep_problems:
+            with log.open("a", encoding="utf-8") as retained:
+                print(
+                    f"{utc_now()} pressure_schedule: swept "
+                    f"{unwrapped_git_root(root)}: removed={swept} "
+                    f"left={sweep_problems}",
+                    file=retained,
+                )
+
+        def with_sweep(summary: str) -> str:
+            return summary + (f" cleanup_error={sweep_error}" if sweep_error else "")
+
         fetched = run(
             [
                 with_proxy,
@@ -381,7 +451,9 @@ def launch(
             detail = (fetched.stderr or fetched.stdout).strip() or "no output"
             emit(
                 "refused",
-                f"recurring pressure test could not fetch Hermit main: {detail}",
+                with_sweep(
+                    f"recurring pressure test could not fetch Hermit main: {detail}"
+                ),
             )
             return 1
         resolved = run(
@@ -395,7 +467,9 @@ def launch(
             detail = resolved.stderr.strip() or target or f"exit {resolved.returncode}"
             emit(
                 "refused",
-                f"recurring pressure test could not resolve Hermit main: {detail}",
+                with_sweep(
+                    f"recurring pressure test could not resolve Hermit main: {detail}"
+                ),
             )
             return 1
 
@@ -422,7 +496,7 @@ def launch(
                 path=planned.path,
             )
         except ValueError as error:
-            emit("refused", str(error))
+            emit("refused", with_sweep(str(error)))
             return 1
         git_substitution = unwrapped_git.materialize(planned)
         previous = read_state(root)
@@ -502,8 +576,10 @@ def launch(
             )
             emit(
                 "refused",
-                f"recurring pressure test was not launched: {detail}"
-                + (f" cleanup_error={cleanup_error}" if cleanup_error else ""),
+                with_sweep(
+                    f"recurring pressure test was not launched: {detail}"
+                    + (f" cleanup_error={cleanup_error}" if cleanup_error else "")
+                ),
             )
             return 1
         run_registry.update_record(record, state="running")
@@ -516,10 +592,14 @@ def launch(
             )
         emit(
             "launched",
-            f"recurring pressure test launched as {UNIT}; "
-            f"output appended to {log}{prior}",
+            with_sweep(
+                f"recurring pressure test launched as {UNIT}; "
+                f"output appended to {log}{prior}"
+            ),
         )
-        return 1 if prior else 0
+        # A directory the sweep had to leave needs a person, so the health
+        # tick reports it the same way it reports a failed previous sample.
+        return 1 if prior or sweep_error else 0
 
 
 def wrkslots_failure_detail(completed: subprocess.CompletedProcess) -> str:
@@ -576,15 +656,27 @@ def run_campaign(target: str, record: Path, root: Path = STATE_ROOT) -> int:
     durable = run_registry.read_record(record)
     raw_checkout = durable.get("checkout")
     if not isinstance(raw_checkout, str):
+        # No slot and no worktree, but launch() may have created the git
+        # directory the record names.
+        git_cleanup_error = remove_recorded_unwrapped_git_directory(
+            root, durable.get("git_substitution")
+        )
         raise RuntimeError(
             "pressure-test run record lacks its wrkslots checkout; "
             "state: REFUSED -- no worktree was created and no pressure test ran. "
             "remedy: relaunch the recurring pressure test to write a complete run record"
+            + (f" cleanup_error={git_cleanup_error}" if git_cleanup_error else "")
         )
     checkout = Path(raw_checkout)
     slot = checkout.name
     if checkout.exists():
-        raise RuntimeError(f"refusing existing pressure-test checkout {checkout}")
+        git_cleanup_error = remove_unwrapped_git_directory(
+            root, slot, durable.get("git_substitution")
+        )
+        raise RuntimeError(
+            f"refusing existing pressure-test checkout {checkout}"
+            + (f" cleanup_error={git_cleanup_error}" if git_cleanup_error else "")
+        )
 
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     results = root / "ignored" / "compat-envelope" / f"pressure-{target[:12]}-{stamp}"

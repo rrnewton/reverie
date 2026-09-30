@@ -151,6 +151,8 @@ class GitSubstitutionRecord(TypedDict):
     real_git: str
     effective_git: str | None
     effective_version: str | None
+    wrapper_config: str | None
+    wrapper_config_git: str | None
     directory: str | None
 
 
@@ -491,6 +493,8 @@ GIT_SUBSTITUTION_FIELDS = frozenset(
         "real_git",
         "effective_git",
         "effective_version",
+        "wrapper_config",
+        "wrapper_config_git",
         "directory",
     }
 )
@@ -503,6 +507,8 @@ GIT_SUBSTITUTION_CODES = frozenset(
         "real-git-unavailable",
         "already-unwrapped",
         "not-the-wrapper",
+        "wrapper-config-unreadable",
+        "wrapper-config-mismatch",
         "version-probe-failed",
         "version-mismatch",
         "materialize-failed",
@@ -688,6 +694,8 @@ def _git_substitution(value: Any) -> None:
         "resolved_git_realpath",
         "effective_git",
         "effective_version",
+        "wrapper_config",
+        "wrapper_config_git",
         "directory",
     ):
         item = value[field]
@@ -716,6 +724,14 @@ def _git_substitution(value: Any) -> None:
                 "git_substitution.effective_git",
                 "an applied substitution runs real_git",
             )
+        for field in ("wrapper_config", "wrapper_config_git"):
+            item = value[field]
+            if item is None or not Path(item).is_absolute():
+                raise _error(
+                    f"git_substitution.{field}",
+                    "an applied substitution must name the wrapper configuration "
+                    "and the absolute git path it names",
+                )
     else:
         if value["directory"] is not None:
             raise _error(

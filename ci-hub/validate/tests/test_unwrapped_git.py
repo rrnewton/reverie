@@ -7,6 +7,7 @@ host's /usr/local/bin is never executed.
 """
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import stat
@@ -41,8 +42,22 @@ def version_script(path: Path, version: str) -> Path:
     )
 
 
+def write_wrapper_config(path: Path, git: object) -> Path:
+    """A wrapper configuration shaped like /etc/scm-telemetry.toml."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '[binaries]\narc = "/usr/local/bin/arc2.real"\n'
+        f"git = {json.dumps(git)}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 class Fixture:
-    """local/git (the wrapper) beside local/git.meta.real; plain/git elsewhere."""
+    """local/git (the wrapper) beside local/git.meta.real; plain/git elsewhere.
+
+    config/scm-telemetry.toml maps the wrapper to local/git.meta.real.
+    """
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -51,10 +66,15 @@ class Fixture:
         self.wrapper = version_script(self.local / "git", META_VERSION)
         self.real = version_script(self.local / "git.meta.real", META_VERSION)
         self.plain_git = version_script(self.plain / "git", PLAIN_VERSION)
+        self.config = write_wrapper_config(
+            root / "config" / "scm-telemetry.toml", str(self.real)
+        )
         self.directory = root / "run-state" / "unit-a" / "unwrapped-git"
         self.path = f"{self.local}{os.pathsep}{self.plain}"
 
     def plan(self, path: str | None = None, **kwargs: object) -> ug.GitSubstitution:
+        if "env" not in kwargs:
+            kwargs.setdefault("wrapper_config", self.config)
         return ug.plan(
             self.path if path is None else path,
             kwargs.pop("directory", self.directory),  # type: ignore[arg-type]
@@ -89,6 +109,8 @@ class UnwrappedGitTest(unittest.TestCase):
         self.assertEqual(str(self.fx.wrapper), planned.resolved_git)
         self.assertEqual(str(self.fx.real), planned.effective_git)
         self.assertEqual(META_VERSION, planned.effective_version)
+        self.assertEqual(str(self.fx.config), planned.wrapper_config)
+        self.assertEqual(str(self.fx.real), planned.wrapper_config_git)
         # Planning alone creates nothing: a dry run can show this PATH.
         self.assertFalse(self.fx.directory.exists())
 
@@ -151,7 +173,10 @@ class UnwrappedGitTest(unittest.TestCase):
     def test_a_second_launch_inside_a_substituted_run_changes_nothing(self) -> None:
         first = ug.materialize(self.fx.plan())
         self.assertTrue(first.applied)
-        nested = ug.plan(first.path, self.fx.root / "nested", real_git=self.fx.real)
+        nested = ug.plan(
+            first.path, self.fx.root / "nested", real_git=self.fx.real,
+            wrapper_config=self.fx.config,
+        )
         self.assertEqual(ug.ALREADY_UNWRAPPED, nested.code)
         self.assertEqual(first.path, nested.path)
 
@@ -175,6 +200,104 @@ class UnwrappedGitTest(unittest.TestCase):
         self.assertTrue(substitution.applied, substitution.reason)
         self.assertEqual(str(linked / "git"), substitution.resolved_git)
         self.assertEqual(str(self.fx.wrapper), substitution.resolved_git_realpath)
+
+    # The wrapper's configuration must name the unwrapped binary.
+
+    def test_not_applied_when_the_wrapper_config_names_another_git(self) -> None:
+        # Chef repoints the wrapper: it would now exec plain/git, so running
+        # git.meta.real would change the program, not only drop the wrapper.
+        write_wrapper_config(self.fx.config, str(self.fx.plain_git))
+        substitution = self.fx.plan()
+        self.assertEqual(ug.WRAPPER_CONFIG_MISMATCH, substitution.code)
+        self.assertIn(str(self.fx.config), substitution.reason)
+        self.assertIn(str(self.fx.plain_git), substitution.reason)
+        record = substitution.record()
+        self.assertEqual(str(self.fx.config), record["wrapper_config"])
+        self.assertEqual(str(self.fx.plain_git), record["wrapper_config_git"])
+        self.assertEqual(str(self.fx.wrapper), substitution.effective_git)
+        self.assertEqual(META_VERSION, substitution.effective_version)
+        self.assert_unchanged(substitution, self.fx.path)
+
+    def test_the_wrapper_config_is_matched_by_file_identity(self) -> None:
+        alias = self.fx.root / "alias" / "git.meta.real"
+        alias.parent.mkdir()
+        alias.symlink_to(self.fx.real)
+        write_wrapper_config(self.fx.config, str(alias))
+        substitution = self.fx.plan()
+        self.assertTrue(substitution.applied, substitution.reason)
+        self.assertEqual(str(alias), substitution.wrapper_config_git)
+        # The same bytes in another file are another program.
+        copy = self.fx.root / "copy" / "git.meta.real"
+        copy.parent.mkdir()
+        copy.write_bytes(self.fx.real.read_bytes())
+        copy.chmod(0o755)
+        write_wrapper_config(self.fx.config, str(copy))
+        self.assertEqual(ug.WRAPPER_CONFIG_MISMATCH, self.fx.plan().code)
+
+    def test_a_relative_wrapper_config_git_is_a_mismatch(self) -> None:
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(self.fx.local)
+        write_wrapper_config(self.fx.config, "git.meta.real")
+        substitution = self.fx.plan()
+        self.assertEqual(ug.WRAPPER_CONFIG_MISMATCH, substitution.code)
+        self.assertEqual("git.meta.real", substitution.wrapper_config_git)
+        self.assert_unchanged(substitution, self.fx.path)
+
+    def test_an_unreadable_wrapper_config_leaves_path_unchanged(self) -> None:
+        cases = {
+            "missing": None,
+            "not toml": "[binaries\ngit = 1\n",
+            "no binaries table": 'git = "/usr/local/bin/git.meta.real"\n',
+            "git not a string": "[binaries]\ngit = 7\n",
+            "empty git": '[binaries]\ngit = ""\n',
+        }
+        for label, text in cases.items():
+            with self.subTest(label):
+                if text is None:
+                    self.fx.config.unlink(missing_ok=True)
+                else:
+                    self.fx.config.write_text(text, encoding="utf-8")
+                substitution = self.fx.plan()
+                self.assertEqual(ug.WRAPPER_CONFIG_UNREADABLE, substitution.code)
+                self.assertIn(str(self.fx.config), substitution.reason)
+                self.assertEqual(str(self.fx.config), substitution.wrapper_config)
+                self.assertIsNone(substitution.wrapper_config_git)
+                self.assertEqual(META_VERSION, substitution.effective_version)
+                self.assert_unchanged(substitution, self.fx.path)
+
+    def test_the_environment_selects_the_wrapper_config(self) -> None:
+        # SCM_TELEMETRY_CONFIG replaces the default file, as it does for the
+        # wrapper; the default here names another git and must not be read.
+        default = write_wrapper_config(
+            self.fx.root / "etc" / "scm-telemetry.toml", str(self.fx.plain_git)
+        )
+        with mock.patch.object(ug, "WRAPPER_CONFIG", default):
+            chosen = self.fx.plan(env={ug.WRAPPER_CONFIG_ENV: str(self.fx.config)})
+            fallback = self.fx.plan(env={})
+            empty = self.fx.plan(env={ug.WRAPPER_CONFIG_ENV: ""})
+            relative = self.fx.plan(env={ug.WRAPPER_CONFIG_ENV: "scm-telemetry.toml"})
+        self.assertTrue(chosen.applied, chosen.reason)
+        self.assertEqual(str(self.fx.config), chosen.wrapper_config)
+        self.assertEqual(ug.WRAPPER_CONFIG_MISMATCH, fallback.code)
+        self.assertEqual(str(default), fallback.wrapper_config)
+        # An empty variable makes the wrapper read no file and run its
+        # built-in default, so there is no configuration to record.
+        self.assertEqual(ug.WRAPPER_CONFIG_UNREADABLE, empty.code)
+        self.assertIsNone(empty.wrapper_config)
+        self.assertIn("set but empty", empty.reason)
+        self.assertEqual(ug.WRAPPER_CONFIG_UNREADABLE, relative.code)
+        self.assertIn("relative path", relative.reason)
+        for substitution in (fallback, empty, relative):
+            self.assert_unchanged(substitution, self.fx.path)
+
+    def test_the_wrapper_config_is_read_only_for_the_wrapper(self) -> None:
+        self.fx.config.unlink()
+        path = f"{self.fx.plain}{os.pathsep}{self.fx.local}"
+        substitution = self.fx.plan(path)
+        self.assertEqual(ug.NOT_THE_WRAPPER, substitution.code)
+        self.assertIsNone(substitution.wrapper_config)
+        self.assertIsNone(substitution.wrapper_config_git)
 
     # Every other refusal leaves PATH unchanged and says why.
 
@@ -424,6 +547,8 @@ class UnwrappedGitTest(unittest.TestCase):
                 "real_git",
                 "effective_git",
                 "effective_version",
+                "wrapper_config",
+                "wrapper_config_git",
                 "directory",
             },
             set(self.fx.plan().record()),
@@ -440,13 +565,46 @@ class UnwrappedGitTest(unittest.TestCase):
         out = io.StringIO()
         err = io.StringIO()
         with mock.patch.object(ug, "REAL_GIT", self.fx.real), \
+                mock.patch.object(ug, "WRAPPER_CONFIG", self.fx.config), \
+                mock.patch.dict(os.environ), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            os.environ.pop(ug.WRAPPER_CONFIG_ENV, None)
             rc = ug.main(["--path", self.fx.path, "--directory", str(self.fx.directory),
                           "--print-path"])
         self.assertEqual(0, rc)
         self.assertEqual(f"{self.fx.directory}{os.pathsep}{self.fx.path}\n", out.getvalue())
         self.assertIn("git substitution APPLIED", err.getvalue())
         self.assertTrue(stat.S_ISLNK(os.lstat(self.fx.directory / "git").st_mode))
+
+    def test_cli_decide_only_prints_a_plan_not_a_record(self) -> None:
+        import contextlib
+        import io
+
+        placeholder = self.fx.root / "tmp"
+        placeholder.mkdir()
+        outputs = {}
+        for label, path in (("applied", self.fx.path), ("kept", str(self.fx.plain))):
+            out = io.StringIO()
+            with mock.patch.object(ug, "REAL_GIT", self.fx.real), \
+                    mock.patch.object(ug, "WRAPPER_CONFIG", self.fx.config), \
+                    mock.patch.object(ug.tempfile, "gettempdir", return_value=str(placeholder)), \
+                    mock.patch.dict(os.environ), contextlib.redirect_stdout(out):
+                os.environ.pop(ug.WRAPPER_CONFIG_ENV, None)
+                self.assertEqual(0, ug.main(["--path", path]))
+            outputs[label] = json.loads(out.getvalue())
+        applied, kept = outputs["applied"], outputs["kept"]
+        self.assertEqual(True, applied["applied"])
+        self.assertNotIn("directory", applied)
+        self.assertEqual(str(placeholder / "unwrapped-git"), applied["planned_directory"])
+        self.assertIs(False, applied["created"])
+        self.assertEqual(False, kept["applied"])
+        self.assertIsNone(kept["planned_directory"])
+        self.assertIs(False, kept["created"])
+        # Nothing was created, and neither output passes as a run record.
+        self.assertEqual([], os.listdir(placeholder))
+        for output in (applied, kept):
+            with self.assertRaisesRegex(RuntimeError, "must contain exactly"):
+                run_registry._git_substitution(output)
 
 
 class RunRecordContractTest(unittest.TestCase):
@@ -466,11 +624,18 @@ class RunRecordContractTest(unittest.TestCase):
         self.assertTrue(applied.applied, applied.reason)
         failed = ug.materialize(self.fx.plan())  # the directory now exists
         self.assertEqual(ug.MATERIALIZE_FAILED, failed.code)
+        write_wrapper_config(self.fx.config, str(self.fx.plain_git))
+        repointed = self.fx.plan()
+        self.assertEqual(ug.WRAPPER_CONFIG_MISMATCH, repointed.code)
+        empty_config = self.fx.plan(env={ug.WRAPPER_CONFIG_ENV: ""})
+        self.assertEqual(ug.WRAPPER_CONFIG_UNREADABLE, empty_config.code)
         return [
             applied.record(),
             failed.record(),
             self.fx.plan(str(self.fx.plain)).record(),
             self.fx.plan(str(self.fx.root / "nowhere")).record(),
+            repointed.record(),
+            empty_config.record(),
         ]
 
     def test_field_names_and_codes_match_the_producer(self) -> None:
@@ -492,7 +657,7 @@ class RunRecordContractTest(unittest.TestCase):
                 run_registry._git_substitution(record)
 
     def test_damaged_records_are_refused(self) -> None:
-        applied, _failed, kept, _absent = self.records()
+        applied, _failed, kept, _absent, _repointed, _empty = self.records()
         damaged: list[tuple[str, object]] = [
             ("not an object", ["applied"]),
             ("extra field", {**applied, "extra": 1}),
@@ -508,6 +673,11 @@ class RunRecordContractTest(unittest.TestCase):
             ("kept with a directory", {**kept, "directory": str(self.fx.directory)}),
             ("kept running real_git", {**kept, "effective_git": kept["real_git"]}),
             ("empty optional string", {**kept, "effective_version": ""}),
+            ("applied without a wrapper config", {**applied, "wrapper_config": None}),
+            ("applied without the configured git", {**applied, "wrapper_config_git": None}),
+            ("applied with a relative configured git",
+             {**applied, "wrapper_config_git": "git.meta.real"}),
+            ("empty wrapper config", {**kept, "wrapper_config": ""}),
         ]
         for label, value in damaged:
             with self.subTest(label):

@@ -1301,6 +1301,40 @@ class HermitServiceResourcesTest(unittest.TestCase):
         self.assertIn("HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS=4200", command)
         self.assertFalse(any("DAGRUN_OUTER_MEMORY_MAX_BYTES" in value for value in command))
 
+    def test_a_substituted_path_reaches_only_the_validation_child(self) -> None:
+        child_path = "/run/user/1/validate-x/unwrapped-git:/usr/bin:/bin"
+        command = self.command(child_path=child_path, network_git="/usr/local/bin/git")
+        setenv = [command[index + 1] for index, value in enumerate(command[:-1])
+                  if value == "--setenv"]
+        # validate-lock and ExecStopPost keep the unit's PATH (the wrapper).
+        self.assertIn("PATH=/usr/bin:/bin", setenv)
+        self.assertFalse(any(value.startswith(("DEV_HERMIT_NETWORK_GIT=",))
+                             for value in setenv))
+        child = command[command.index("/usr/bin/env"):]
+        self.assertEqual(
+            ["/usr/bin/env", f"PATH={child_path}",
+             "DEV_HERMIT_NETWORK_GIT=/usr/local/bin/git"],
+            child[:3],
+        )
+        self.assertEqual(1, sum(item.startswith("PATH=") for item in child))
+        # Without a substitution the child command is unchanged.
+        plain = self.command()
+        self.assertFalse(any(item.startswith(("PATH=", "DEV_HERMIT_NETWORK_GIT="))
+                             for item in plain[plain.index("/usr/bin/env"):]))
+
+    def test_a_malformed_child_path_or_network_git_is_refused(self) -> None:
+        for label, overrides, message in (
+            ("network git alone", {"network_git": "/usr/local/bin/git"},
+             "only set with a substituted child PATH"),
+            ("empty child path", {"child_path": ""}, "non-empty"),
+            ("nul in child path", {"child_path": "/a\0/b"}, "non-empty"),
+            ("relative network git",
+             {"child_path": "/a:/usr/bin", "network_git": "git"}, "must be absolute"),
+        ):
+            with self.subTest(label):
+                with self.assertRaisesRegex(ValueError, message):
+                    self.command(**overrides)
+
     def test_wall_encloses_effective_child_and_requested_queue_wait(self) -> None:
         for wait, requested_child, effective_child in [(1, 120, 120), (7200, 3600, 3600), (120, 7200, 4800)]:
             with self.subTest(wait=wait, child=requested_child):
@@ -2572,8 +2606,16 @@ else:
             script = directory / name
             script.write_text(f"#!/bin/sh\necho '{version}'\n", encoding="utf-8")
             script.chmod(0o755)
+        # The wrapper's configuration, naming the fake git.meta.real.
+        config = self.root / "fake-etc" / "scm-telemetry.toml"
+        config.parent.mkdir(exist_ok=True)
+        config.write_text(
+            f'[binaries]\ngit = "{local / "git.meta.real"}"\n', encoding="utf-8"
+        )
+        self.wrapper_config = config
         for name, value in (
             ("REAL_GIT", local / "git.meta.real"),
+            ("WRAPPER_CONFIG", config),
             ("probe_version", self.original_probe_version),
         ):
             git_patch = mock.patch.object(start_unit.unwrapped_git, name, value)
@@ -2582,9 +2624,32 @@ else:
         return local, local / "git.meta.real", plain
 
     def unit_path_value(self, command: list[str]) -> str:
-        values = [item.removeprefix("PATH=") for item in command if item.startswith("PATH=")]
+        """The unit's PATH: what validate-lock and ExecStopPost run with."""
+        values = [
+            item.removeprefix("PATH=")
+            for previous, item in zip(command, command[1:])
+            if previous == "--setenv" and item.startswith("PATH=")
+        ]
         self.assertEqual(1, len(values), command)
         return values[0]
+
+    def child_environment(self, command: list[str]) -> dict[str, str]:
+        """The assignments `/usr/bin/env` gives validate-lock's child."""
+        self.assertEqual(1, command.count("/usr/bin/env"), command)
+        assignments: dict[str, str] = {}
+        for item in command[command.index("/usr/bin/env") + 1:]:
+            name, equals, value = item.partition("=")
+            if not equals or not name.replace("_", "").isalnum():
+                break
+            self.assertNotIn(name, assignments, command)
+            assignments[name] = value
+        return assignments
+
+    def child_path_value(self, command: list[str]) -> str:
+        """The PATH the validation driver and its DAG steps run with."""
+        return self.child_environment(command).get(
+            "PATH", self.unit_path_value(command)
+        )
 
     def unwrapped_git_directory(self) -> Path:
         # Inside the launch's private runtime root, which every refusal,
@@ -2618,16 +2683,40 @@ else:
             seen["link"] = os.readlink(directory / "git")
             return None
 
+        # What the log and the handle said when systemd-run was called.
+        original_call = FakeRun.__call__
+
+        def at_systemd_run(fake: FakeRun, command: list[str], **kwargs: object):
+            if command[0] == "systemd-run" and "validate-lock" in command:
+                seen["log_before_accept"] = (self.root / "run.log").read_text(
+                    encoding="utf-8"
+                )
+                seen["handle_before_accept"] = start_unit.run_registry.read_record(
+                    self.root / "ignored/validate/runs/validate-test.json"
+                )
+            return original_call(fake, command, **kwargs)
+
         with mock.patch.object(
             start_unit.pane_owner, "create_pane", side_effect=observe_directory
-        ):
+        ), mock.patch.object(FakeRun, "__call__", at_systemd_run):
             rc, _output, error = self.invoke(["--", "full"], environment=environment)
 
         self.assertEqual(0, rc, error)
+        # Nothing claimed the substitution before systemd accepted the unit.
+        self.assertNotIn("git substitution", seen.pop("log_before_accept"))
+        self.assertNotIn("git_substitution", seen.pop("handle_before_accept"))
         directory = self.unwrapped_git_directory()
+        command = self.launched_systemd_command()
+        # Only validate-lock's child gets the substituted PATH, with the
+        # wrapper named for network calls; validate-lock and ExecStopPost
+        # (the ledger mirror's push and fetch) keep the wrapper.
+        self.assertEqual(f"{local}:/usr/bin:/bin", self.unit_path_value(command))
         self.assertEqual(
-            f"{directory}:{local}:/usr/bin:/bin",
-            self.unit_path_value(self.launched_systemd_command()),
+            {
+                "PATH": f"{directory}:{local}:/usr/bin:/bin",
+                "DEV_HERMIT_NETWORK_GIT": str(local / "git"),
+            },
+            self.child_environment(command),
         )
         self.assertEqual({"entries": ["git"], "link": str(real)}, seen)
         # Removed with the runtime root when the run completed.
@@ -2637,11 +2726,14 @@ else:
         self.assertIn(f'"effective_git": "{real}"', log)
         self.assertIn('"effective_version": "git version 2.53.0-Meta"', log)
         self.assertIn(f'"resolved_git": "{local / "git"}"', log)
+        self.assertIn(f'"wrapper_config": "{self.wrapper_config}"', log)
         # The run handle carries the same decision, machine-readably.
         substitution = self.record_git_substitution()
         self.assertEqual(True, substitution["applied"])
         self.assertEqual("applied", substitution["code"])
         self.assertEqual(str(directory), substitution["directory"])
+        self.assertEqual(str(self.wrapper_config), substitution["wrapper_config"])
+        self.assertEqual(str(real), substitution["wrapper_config_git"])
         self.assertEqual(str(real), substitution["real_git"])
         self.assertEqual(str(real), substitution["effective_git"])
         self.assertEqual(str(local / "git"), substitution["resolved_git"])
@@ -2654,7 +2746,9 @@ else:
         rc, _output, error = self.invoke(["--", "full"], environment=environment)
 
         self.assertEqual(0, rc, error)
-        self.assertEqual(path, self.unit_path_value(self.launched_systemd_command()))
+        command = self.launched_systemd_command()
+        self.assertEqual(path, self.unit_path_value(command))
+        self.assertEqual({}, self.child_environment(command))
         self.assertFalse(self.unwrapped_git_directory().exists())
         log = (self.root / "run.log").read_text(encoding="utf-8")
         self.assertIn("validate-run: git substitution NOT-APPLIED: ", log)
@@ -2683,7 +2777,9 @@ else:
             rc, _output, error = self.invoke(["--", "full"], environment=environment)
 
         self.assertEqual(0, rc, error)
-        self.assertEqual(path, self.unit_path_value(self.launched_systemd_command()))
+        command = self.launched_systemd_command()
+        self.assertEqual(path, self.unit_path_value(command))
+        self.assertEqual({}, self.child_environment(command))
         log = (self.root / "run.log").read_text(encoding="utf-8")
         self.assertIn("validate-run: git substitution NOT-APPLIED: ", log)
         self.assertIn('"code": "materialize-failed"', log)
@@ -2714,7 +2810,10 @@ else:
             self.root / "ignored/validate/runs/validate-test.json"
         )
         self.assertEqual("refused", record["state"])
-        self.assertEqual("applied", record["git_substitution"]["code"])
+        # The unit never ran, so neither the handle nor the log may say that
+        # it ran with the substitution.
+        self.assertNotIn("git_substitution", record)
+        self.assertNotIn("git substitution", error)
 
     def test_reverie_launch_leaves_path_and_git_alone(self) -> None:
         local, _real, _plain = self.fake_host_gits()
@@ -2761,6 +2860,7 @@ else:
         ]
         self.assertEqual(1, len(systemd), error)
         self.assertEqual(path, self.unit_path_value(systemd[0]))
+        self.assertEqual({}, self.child_environment(systemd[0]))
         self.assertFalse(self.unwrapped_git_directory().exists())
         self.assertNotIn("git substitution", (self.root / "run.log").read_text())
         record = start_unit.run_registry.read_record(
@@ -2793,11 +2893,38 @@ else:
         ]
         self.assertEqual(1, len(command_lines), output)
         directory = self.unwrapped_git_directory()
+        command = shlex.split(command_lines[0])
+        self.assertEqual(f"{local}:/usr/bin:/bin", self.unit_path_value(command))
         self.assertEqual(
-            f"{directory}:{local}:/usr/bin:/bin",
-            self.unit_path_value(shlex.split(command_lines[0])),
+            f"{directory}:{local}:/usr/bin:/bin", self.child_path_value(command)
         )
         self.assertFalse(directory.exists())
+
+    def test_dry_run_json_reports_a_plan_not_a_run_record(self) -> None:
+        local, _real, _plain = self.fake_host_gits()
+        environment = {**self.environment, "PATH": f"{local}:/usr/bin:/bin"}
+        with mock.patch.object(
+            start_unit.unwrapped_git, "materialize",
+            side_effect=AssertionError("a dry run must not create the directory"),
+        ):
+            rc, output, error = self.invoke(
+                ["--dry-run", "--json", "--", "full"], environment=environment
+            )
+        self.assertEqual(0, rc, error)
+        handle = json.loads(output)
+        self.assertEqual("would-start", handle["event"])
+        directory = self.unwrapped_git_directory()
+        self.assertEqual(
+            f"{directory}:{local}:/usr/bin:/bin", self.child_path_value(handle["command"])
+        )
+        planned = handle["git_substitution"]
+        self.assertEqual(True, planned["applied"])
+        self.assertNotIn("directory", planned)
+        self.assertEqual(str(directory), planned["planned_directory"])
+        self.assertIs(False, planned["created"])
+        self.assertFalse(directory.exists())
+        with self.assertRaisesRegex(RuntimeError, "must contain exactly"):
+            start_unit.run_registry._git_substitution(planned)
 
     def test_malformed_cpu_placement_override_refuses_before_launch(self) -> None:
         environment = {**self.environment, "DEV_HERMIT_EXCLUDE_CPUS": "0-x"}

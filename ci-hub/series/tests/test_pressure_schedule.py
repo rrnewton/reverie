@@ -36,7 +36,22 @@ def fake_host_gits(root):
         script = directory / name
         script.write_text(f"#!/bin/sh\necho '{version}'\n")
         script.chmod(0o755)
+    # The wrapper's configuration, naming the fake git.meta.real; tests patch
+    # unwrapped_git.WRAPPER_CONFIG to wrapper_config(root).
+    config = wrapper_config(root)
+    config.parent.mkdir(exist_ok=True)
+    config.write_text(f'[binaries]\ngit = "{local / "git.meta.real"}"\n')
     return local, local / "git.meta.real", plain
+
+
+def wrapper_config(root):
+    return root / "fake-etc" / "scm-telemetry.toml"
+
+
+def patch_wrapper_config(root):
+    return mock.patch.object(
+        pressure_schedule.unwrapped_git, "WRAPPER_CONFIG", wrapper_config(root)
+    )
 
 
 class PressureScheduleTest(unittest.TestCase):
@@ -736,13 +751,13 @@ class PressureScheduleTest(unittest.TestCase):
 class UnwrappedGitLaunchTest(unittest.TestCase):
     """launch() hands the unit a PATH whose git is git.meta.real, or PATH unchanged."""
 
-    def launch(self, root, path, systemd_rc=0, **patches):
+    def launch(self, root, path, systemd_rc=0, active_rc=3, **patches):
         calls = []
 
         def run(command, **kwargs):
             calls.append(command)
             if command[0] == "/bin/systemctl":
-                return subprocess.CompletedProcess(command, 3, "", "")
+                return subprocess.CompletedProcess(command, active_rc, "", "")
             if "rev-parse" in command:
                 return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
             if command[0] == "/bin/systemd-run" and systemd_rc:
@@ -772,6 +787,7 @@ class UnwrappedGitLaunchTest(unittest.TestCase):
                     pressure_schedule.unwrapped_git, "REAL_GIT", patches.pop("real")
                 )
             )
+            stack.enter_context(patch_wrapper_config(root))
             stack.enter_context(
                 mock.patch.object(
                     pressure_schedule.unwrapped_git,
@@ -950,7 +966,7 @@ class UnwrappedGitLaunchTest(unittest.TestCase):
                     side_effect=lambda name: f"/bin/{name}",
                 ), mock.patch.object(
                     pressure_schedule.unwrapped_git, "REAL_GIT", real
-                ), mock.patch.object(
+                ), patch_wrapper_config(root), mock.patch.object(
                     pressure_schedule.unwrapped_git,
                     "probe_version",
                     ORIGINAL_PROBE_VERSION,
@@ -1014,7 +1030,7 @@ class UnwrappedGitLaunchTest(unittest.TestCase):
 
                 with mock.patch.object(
                     pressure_schedule.unwrapped_git, "REAL_GIT", real
-                ), mock.patch.object(
+                ), patch_wrapper_config(root), mock.patch.object(
                     pressure_schedule.unwrapped_git,
                     "probe_version",
                     ORIGINAL_PROBE_VERSION,
@@ -1031,6 +1047,125 @@ class UnwrappedGitLaunchTest(unittest.TestCase):
             self.assertFalse(any(command[0] == "/bin/systemd-run" for command in calls))
             self.assertFalse((root / "ignored/ci-hub/pressure-test-git").exists())
 
+    def leftover(self, root, real, slot):
+        """A slot directory of exactly the shape launch() creates."""
+        planned = pressure_schedule.unwrapped_git.plan(
+            f"{real.parent}:/bin",
+            pressure_schedule.unwrapped_git_directory(root, slot),
+            real_git=real,
+            wrapper_config=wrapper_config(root),
+        )
+        made = pressure_schedule.unwrapped_git.materialize(planned)
+        self.assertTrue(made.applied, made.reason)
+        return Path(made.directory)
+
+    def test_launch_sweeps_leftover_git_directories(self):
+        # A campaign killed at RuntimeMaxSec never reaches its finally block,
+        # so its directory is still there at the next launch.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            local, real, plain = fake_host_gits(root)
+            exact = self.leftover(root, real, "pressure-old-exact")
+            rc, launched, output = self.launch(root, f"{plain}:{local}:/bin", real=real)
+
+            self.assertEqual(0, rc, output)
+            self.assertEqual(1, len(launched))
+            self.assertFalse(exact.exists())
+            self.assertNotIn("cleanup_error", output)
+            log = pressure_schedule.log_path(root).read_text()
+            self.assertIn(
+                f"pressure_schedule: swept {root / 'ignored/ci-hub/pressure-test-git'}: "
+                "removed=['pressure-old-exact'] left=[]",
+                log,
+            )
+
+    def test_launch_leaves_and_reports_foreign_entries_it_cannot_sweep(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            local, real, plain = fake_host_gits(root)
+            exact = self.leftover(root, real, "pressure-old-exact")
+            extra = self.leftover(root, real, "pressure-old-extra")
+            (extra / "intruder").write_text("not ours\n")
+            other = pressure_schedule.unwrapped_git_directory(root, "pressure-old-other")
+            other.mkdir()
+            (other / "git").symlink_to(plain / "git")
+            stray = pressure_schedule.unwrapped_git_root(root) / "stray-file"
+            stray.write_text("a file, not a slot\n")
+
+            rc, launched, output = self.launch(root, f"{plain}:{local}:/bin", real=real)
+
+            # The test still launches; the leftovers need a person, so the
+            # health tick sees a nonzero exit and the named paths.
+            self.assertEqual(1, rc, output)
+            self.assertEqual(1, len(launched))
+            self.assertIn("state=launched", output)
+            self.assertFalse(exact.exists())
+            self.assertEqual(["git", "intruder"], sorted(p.name for p in extra.iterdir()))
+            self.assertEqual(str(plain / "git"), pressure_schedule.os.readlink(other / "git"))
+            self.assertEqual("a file, not a slot\n", stray.read_text())
+            summary = next(
+                line for line in output.splitlines() if line.startswith("summary=")
+            )
+            self.assertIn(" cleanup_error=", summary)
+            for leftover in (extra, other, stray):
+                self.assertIn(str(leftover), summary)
+            log = pressure_schedule.log_path(root).read_text()
+            self.assertIn("removed=['pressure-old-exact'] left=[", log)
+
+    def test_a_refused_launch_still_reports_what_the_sweep_left(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            local, real, plain = fake_host_gits(root)
+            extra = self.leftover(root, real, "pressure-old-extra")
+            (extra / "intruder").write_text("not ours\n")
+            rc, _launched, output = self.launch(
+                root, f"{plain}:{local}:/bin", systemd_rc=1, real=real
+            )
+            self.assertEqual(1, rc, output)
+            self.assertIn("state=refused", output)
+            self.assertIn(f"cleanup_error=", output)
+            self.assertIn(str(extra), output)
+
+    def test_launch_sweeps_nothing_while_the_unit_is_active(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            local, real, plain = fake_host_gits(root)
+            exact = self.leftover(root, real, "pressure-running")
+            rc, launched, output = self.launch(
+                root, f"{plain}:{local}:/bin", active_rc=0, real=real
+            )
+            self.assertEqual(0, rc, output)
+            self.assertEqual([], launched)
+            self.assertIn("state=running", output)
+            self.assertEqual(["git"], sorted(p.name for p in exact.iterdir()))
+            self.assertNotIn("swept", pressure_schedule.log_path(root).read_text()
+                             if pressure_schedule.log_path(root).exists() else "")
+
+    def test_sweep_uses_the_hosts_unwrapped_git(self):
+        # A directory linking to what REAL_GIT named at an earlier launch is
+        # not this host's shape now, so it is reported, not deleted.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _local, real, _plain = fake_host_gits(root)
+            exact = self.leftover(root, real, "pressure-old")
+            with mock.patch.object(
+                pressure_schedule.unwrapped_git, "REAL_GIT", root / "moved/git.meta.real"
+            ):
+                removed, problems = pressure_schedule.sweep_unwrapped_git_directories(root)
+            self.assertEqual([], removed)
+            self.assertEqual(1, len(problems), problems)
+            self.assertIn(str(exact), problems[0])
+            self.assertTrue(exact.exists())
+            with mock.patch.object(pressure_schedule.unwrapped_git, "REAL_GIT", real):
+                self.assertEqual(
+                    (["pressure-old"], []),
+                    pressure_schedule.sweep_unwrapped_git_directories(root),
+                )
+            # No parent directory at all is nothing to do.
+            pressure_schedule.unwrapped_git_root(root).rmdir()
+            self.assertEqual(
+                ([], []), pressure_schedule.sweep_unwrapped_git_directories(root)
+            )
 
 
 class RunCampaignGitDirectoryTest(unittest.TestCase):
@@ -1046,7 +1181,8 @@ class RunCampaignGitDirectoryTest(unittest.TestCase):
             self.root, self.slot
         )
         planned = pressure_schedule.unwrapped_git.plan(
-            f"{self.local}:/bin", self.git_directory, real_git=self.real
+            f"{self.local}:/bin", self.git_directory, real_git=self.real,
+            wrapper_config=wrapper_config(self.root),
         )
         self.substitution = pressure_schedule.unwrapped_git.materialize(planned)
         self.assertTrue(self.substitution.applied, self.substitution.reason)
@@ -1132,6 +1268,58 @@ class RunCampaignGitDirectoryTest(unittest.TestCase):
         state = pressure_schedule.read_state(self.root)
         self.assertEqual("failed", state["state"])
         self.assertNotIn("cleanup_error", state)
+
+    def test_an_existing_checkout_refusal_removes_the_git_directory(self):
+        checkout = self.root / "worktrees/validate" / self.slot
+        checkout.mkdir(parents=True)
+        (checkout / "keep").write_text("someone else's checkout\n")
+        with mock.patch.object(pressure_schedule.subprocess, "run") as run, \
+                self.assertRaises(RuntimeError) as raised:
+            pressure_schedule.run_campaign("a" * 40, self.record, self.root)
+        self.assertEqual(
+            f"refusing existing pressure-test checkout {checkout}", str(raised.exception)
+        )
+        run.assert_not_called()
+        self.assertFalse(self.git_directory.exists())
+        self.assertEqual("someone else's checkout\n", (checkout / "keep").read_text())
+
+    def test_an_existing_checkout_refusal_reports_a_foreign_git_directory(self):
+        (self.root / "worktrees/validate" / self.slot).mkdir(parents=True)
+        (self.git_directory / "intruder").write_text("not ours\n")
+        with self.assertRaisesRegex(RuntimeError, "cleanup_error=.*left in place"):
+            pressure_schedule.run_campaign("a" * 40, self.record, self.root)
+        self.assertEqual(
+            ["git", "intruder"], sorted(p.name for p in self.git_directory.iterdir())
+        )
+
+    def without_checkout(self, **changes):
+        record = pressure_schedule.run_registry.read_record(self.record)
+        record.pop("checkout")
+        record.update(changes)
+        return mock.patch.object(
+            pressure_schedule.run_registry, "read_record", return_value=record
+        )
+
+    def test_a_record_without_checkout_removes_the_recorded_git_directory(self):
+        with self.without_checkout(), \
+                mock.patch.object(pressure_schedule.subprocess, "run") as run, \
+                self.assertRaises(RuntimeError) as raised:
+            pressure_schedule.run_campaign("a" * 40, self.record, self.root)
+        self.assertIn("lacks its wrkslots checkout", str(raised.exception))
+        self.assertNotIn("cleanup_error", str(raised.exception))
+        run.assert_not_called()
+        self.assertFalse(self.git_directory.exists())
+
+    def test_a_record_without_checkout_leaves_a_directory_outside_the_root(self):
+        outside = self.root / "elsewhere" / self.slot
+        outside.mkdir(parents=True)
+        (outside / "git").symlink_to(self.real)
+        substitution = {**self.substitution.record(), "directory": str(outside)}
+        with self.without_checkout(git_substitution=substitution), \
+                self.assertRaisesRegex(RuntimeError, "cleanup_error=.*left in place"):
+            pressure_schedule.run_campaign("a" * 40, self.record, self.root)
+        self.assertTrue((outside / "git").is_symlink())
+        self.assertTrue(self.git_directory.exists())
 
     def test_network_git_is_the_recorded_absolute_path_or_plain_git(self):
         env = pressure_schedule.NETWORK_GIT_ENV
