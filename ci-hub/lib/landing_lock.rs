@@ -3531,7 +3531,9 @@ fn exact_process_group(identity: &ProcessIdentity) -> Option<u32> {
 
 /// Whether `pid`'s readable environment names a DIFFERENT payload domain.
 /// That is a nested supervisor's payload or an adopted stranger that labels
-/// itself, and no teardown of this payload may signal it.
+/// itself, and no teardown of this payload may signal it. Any value other than
+/// `domain_token` counts; nothing checks that a live run owns it (see the NOT
+/// COVERED list on [`PayloadLineage`]).
 fn carries_other_payload_token(pid: u32, domain_token: &str) -> bool {
     let Ok(raw) = fs::read(format!("/proc/{pid}/environ")) else {
         return false;
@@ -3564,9 +3566,10 @@ fn carries_other_payload_token(pid: u32, domain_token: &str) -> bool {
 ///     teardown sent was what created the escapee.
 ///
 /// So [`PayloadLineage::observe`] runs before the first teardown signal and at
-/// every teardown poll, and records every live process that started no earlier
-/// than the payload leader, does not carry a DIFFERENT payload's token, and is
-/// one of:
+/// every teardown poll. Each call is ONE `/proc` snapshot, and it records every
+/// process live in that snapshot that started no earlier than the payload
+/// leader, does not carry a `CI_HUB_PAYLOAD_DOMAIN` value other than this
+/// run's own, and is one of:
 ///   - a payload-token member beneath this subreaper (the census rule);
 ///   - a surviving member of the original group `payload_pgid`
 ///     ([`in_original_group`]);
@@ -3606,8 +3609,14 @@ fn carries_other_payload_token(pid: u32, domain_token: &str) -> bool {
 ///   - a direct child of this subreaper that moved into the supervisor's own
 ///     process group and dropped the token, and its descendants unless another
 ///     rule selects them;
-///   - a process that carries a DIFFERENT payload's token, which is left to
-///     that payload's supervisor;
+///   - a process whose `CI_HUB_PAYLOAD_DOMAIN` is ANY value other than this
+///     run's own. [`carries_other_payload_token`] does not ask whether a live
+///     run owns that value, so a payload process that sets the variable to an
+///     arbitrary string is skipped exactly like a nested run's payload;
+///   - a process that forks and exits faster than one `/proc` scan. Every
+///     generation is gone before a snapshot sees it, so no snapshot records
+///     it, whether or not it carries the token. The token-only census missed
+///     it the same way before the lineage existed;
 ///   - a process whose start time is before the leader's.
 pub(crate) struct PayloadLineage {
     supervisor_pid: u32,

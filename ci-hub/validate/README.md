@@ -83,10 +83,11 @@ status` prints it. No new validation starts while any record exists, and that
 includes records in this repository's other slots.
 
 At normal exit, teardown sends SIGTERM, waits up to 5 s, and then sends
-SIGKILL. Before the first signal and at every poll after it, teardown
-records by exact identity (pid and start time) every process that started no
-earlier than the payload leader, does not carry another run's payload token,
-and is one of these:
+SIGKILL. Teardown takes one snapshot of `/proc` before the first signal and
+one at every poll after it. From each snapshot it records by exact identity
+(pid and start time) every process present in that snapshot that started no
+earlier than the payload leader, does not carry a `CI_HUB_PAYLOAD_DOMAIN`
+value other than this run's own, and is one of these:
 
 - a process carrying the run's payload token (`CI_HUB_PAYLOAD_DOMAIN`);
 - a process still in the payload's original process group;
@@ -108,10 +109,21 @@ ignores SIGTERM keeps the 5 s wait polling to its end: on devbig014 on
 payload ignored SIGTERM spent 3.5 to 4.1 s of supervisor CPU in total,
 against 1.0 to 1.9 s for one whose payload exited on SIGTERM.
 
-Not reached: a process that is not a descendant of the supervisor at all
-(for example one started through `systemd-run`), a direct child of the
-supervisor that dropped the token and moved into the supervisor's own process
-group, and a process carrying another run's token.
+Not reached:
+
+- a process that is not a descendant of the supervisor at all, for example
+  one started through `systemd-run`;
+- a direct child of the supervisor that dropped the token and moved into the
+  supervisor's own process group;
+- a process whose `CI_HUB_PAYLOAD_DOMAIN` is any value other than this run's
+  own. Teardown skips it whether or not a live run owns that value, so a
+  payload process that sets the variable to an arbitrary string is never
+  signalled;
+- a process that forks and exits faster than one `/proc` scan. Each
+  generation is gone before a snapshot can see it, so no snapshot records it,
+  with or without the token. The token-based census before this change missed
+  it in the same way.
+
 <https://github.com/rrnewton/dev-hermit/issues/428> tracks cgroup-based
 teardown for those cases.
 
