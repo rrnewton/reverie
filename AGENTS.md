@@ -149,6 +149,27 @@ and the privileged self-hosted jobs (KVM and other device-dependent tests), is
   self-hosted jobs included. It now does everything the `rrnewton` account used
   to do.
 
+# Reach GitHub through `herdr-run`
+
+Owner directive, 2026-09-30: `hermit/agent-utils/bin/herdr-run` is the
+**approved** way to run `git` and `gh` against GitHub for agents whose own
+egress filter blocks github.com (Claude Code sessions, agentcloud agents).
+This is how agentcloud agents reach GitHub. It is not "routing around" the
+filter in the sense of the internet-access skill.
+
+```bash
+hermit/agent-utils/bin/herdr-run --agent <your-name> run --timeout 120 'git fetch -q origin main'
+hermit/agent-utils/bin/herdr-run --agent <your-name> run --timeout 120 'with-proxy gh pr view <pr-url> --json state'
+```
+
+- One command per call; wrapping several in a script is refused. `gh`
+  needs the `with-proxy` prefix inside the quoted command.
+- Push to `https://github.com/rrnewton/<repo>` without a `.git` suffix: a
+  `~/.gitconfig` rewrite points the `.git` form of some repositories at stale
+  local mirrors. Read the push's `To` line, then verify with `git ls-remote`.
+- The allowed commands are in `.herdr-run.yaml`. Exit 75 means the pane is
+  busy with another command: wait and retry. Exit 77 means the command was refused.
+
 # Directory management and concurrency
 
 **Every task starts with an explicit write destination.** The dispatch names the repository, checkout or clone, directory tree, branch, and whether the agent may write. “No slot” is not permission to write somewhere else.
