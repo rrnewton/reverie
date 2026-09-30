@@ -3025,56 +3025,33 @@ impl Tool for UnsubscribedHookTimerTool {
 // `reverie_ptrace::testing::assert_at_target_unless_witnessed`: an event may
 // fire past its target only as a skid overshoot that Reverie witnessed.
 // Whether a trap that keeps an event left its PMU programming as the request
-// made it is checked exactly, at the trap, by `KeptProgrammingChecks`, and
-// not inferred from how many events fire late: the notification's latency
-// on a loaded host makes a few events late, in bursts, whatever the trap
-// does. `assert_late_within_backstop` only fails a run in which half or more
-// of the events were late, and prints how many were, and how many more than
-// `LATE_OVERSHOOT_REPORTED` RCBs past the target. These counts are process
+// made it is checked at the trap, and again at the thread's next stop, by
+// `KeptProgrammingChecks`, and not inferred from how many events fire late:
+// the notification's latency on a loaded host makes some events late, in
+// bursts, whatever the trap does. `assert_late_within_backstop` fails only a
+// run whose events were all late, at a margin at which that is not seen, or
+// all grossly late (see there), and prints how many were late, and how many
+// more than `GROSS_OVERSHOOT_RCBS` past the target. These counts are process
 // global, so these tests run with `--test-threads=1`.
 
-/// The kept timer events whose PMU programming Reverie checked in one run
-/// (see `reverie_ptrace::testing::check_kept_timer_programming`): at every
-/// hook trap without a Tool callback that keeps a scheduled event, the
-/// counter must still overflow at the clock at which the event's request
-/// programmed it to, the target less the skid margin, exactly. A trap that
-/// re-programmed the counter for its period, or reset it, would move that
-/// clock by the branches since the request, and the event would fire late.
-/// This does not depend on host timing: both counters hold still while the
-/// guest is stopped at the trap.
-struct KeptProgrammingChecks {
-    checked: u64,
-    changed: u64,
-}
-
-impl KeptProgrammingChecks {
-    /// Starts checking, and counting from here. Process global; see above.
-    fn start() -> Self {
-        reverie_ptrace::testing::check_kept_timer_programming();
-        let _ = reverie_ptrace::testing::take_kept_timer_programmings_changed();
-        Self {
-            checked: reverie_ptrace::testing::kept_timer_programmings_checked(),
-            changed: reverie_ptrace::testing::kept_timer_programmings_changed(),
-        }
-    }
-
-    /// Asserts that no trap since `start` changed the programming of an
-    /// event it kept, prints how many kept events were checked, and returns
-    /// that count.
-    fn keeps(self) -> u64 {
-        let checked = reverie_ptrace::testing::kept_timer_programmings_checked() - self.checked;
-        let changed = reverie_ptrace::testing::kept_timer_programmings_changed() - self.changed;
-        let listed = reverie_ptrace::testing::take_kept_timer_programmings_changed();
-        assert!(
-            changed == 0 && listed.is_empty(),
-            "{changed} of {checked} kept timer events had their PMU programming changed by the \
-             trap that kept them, which must leave the counter overflowing where the request \
-             programmed it: {listed:?}"
-        );
-        eprintln!("kept events whose programming was checked unchanged: {checked}");
-        checked
-    }
-}
+// The kept timer events whose PMU programming Reverie checked in one run
+// (see `reverie_ptrace::testing::check_kept_timer_programming`). At every
+// hook trap without a Tool callback that keeps a scheduled event, no call
+// that changes the counter's programming (enable, disable, refresh, reset,
+// period or signal delivery) may have been made on it since the event's
+// request, and the counter must still overflow at the clock at which the
+// request programmed it to, the target less the skid margin, exactly. At
+// the thread's next stop, or the event's next request or retirement, no
+// such call may have been made since either, which covers the rest of the
+// trap's handling. A trap that re-programmed the counter, reset it, changed
+// only its period (which re-arms it without moving its count), disabled it
+// or ended its programming would be counted as a change, and the event
+// would fire late or not at all. Neither check depends on host timing: the
+// calls are counted, and both counters hold still while the guest is
+// stopped at the trap. `keeps` asserts that no check found a change and that
+// every kept event was checked again, none having been handed on to single
+// steps, and returns the keeps.
+use reverie_ptrace::testing::KeptTimerProgrammingChecks as KeptProgrammingChecks;
 
 /// Runs `hybrid_unsubscribed_hook_timer.c` with a precise timer `rcbs` RCBs
 /// past each getpid, which the guest follows with `before + i % leads`
@@ -3474,8 +3451,9 @@ struct SigreturnHookTimerRun {
     /// Each round's request, by round, with the guest's RCB clock at it.
     requests: std::collections::BTreeMap<u64, u64>,
     /// The kept events whose programming was checked unchanged at the trap
-    /// that kept them (see `KeptProgrammingChecks`): one per rt_sigreturn
-    /// hook trap that kept its round's event.
+    /// that kept them and again at the thread's next stop (see
+    /// `KeptProgrammingChecks`): one per rt_sigreturn hook trap that kept its
+    /// round's event.
     keeps: u64,
 }
 
@@ -3603,64 +3581,74 @@ fn assert_overtaken_within_cap(overtaken: &std::collections::BTreeMap<u64, u64>,
 }
 
 /// The overshoot past its target, in RCBs, beyond which
-/// `assert_late_within_backstop` counts a late event separately, so that
-/// every run reports how many events were far past their target. It fails
-/// nothing. It is twice the skid margin of 1000 RCBs of devbig014, an AMD
-/// EPYC 9D85, and under half of the overshoot of an event that is
-/// re-programmed for a full notification period at a keeping trap, about
-/// 4200 RCBs past the target in `an_rt_sigreturn_hook_trap_keeps_the_timer_event`
-/// and 9771 or more in the sweeps. No bound under that overshoot holds for
-/// every event on a loaded host. In 400 runs of these tests at the head of
-/// the round-6 review of https://github.com/rrnewton/reverie/pull/665, on
-/// devbig014 at load averages of 25 to 130, 7 of about 21560 fired events at
-/// a margin of 1000 or 10000 were more than 2000 RCBs past the target, at
-/// 3227, 3684, 5555, 11053, 12764, 30050 and 42765 RCBs, and no other was
-/// more than 1138 RCBs past it. Later, a single run of
+/// `late_events_within_backstop` counts an event as grossly late, and fails a
+/// run all of whose events were, at any skid margin. It is twice the skid
+/// margin of 1000 RCBs of devbig014, an AMD EPYC 9D85, and under half of the
+/// overshoot of an event that is re-programmed for a full notification period
+/// at a keeping trap, about 4200 RCBs past the target in
+/// `an_rt_sigreturn_hook_trap_keeps_the_timer_event` and 9771 or more in the
+/// sweeps. No bound under that overshoot holds for every event on a loaded
+/// host. In 400 runs of these tests at the head of the round-6 review of
+/// https://github.com/rrnewton/reverie/pull/665, on devbig014 at load
+/// averages of 25 to 130, 7 of about 21560 fired events at a margin of 1000
+/// or 10000 were more than 2000 RCBs past the target, at 3227, 3684, 5555,
+/// 11053, 12764, 30050 and 42765 RCBs, and no other was more than 1138 RCBs
+/// past it. Later, a single run of
 /// `an_rt_sigreturn_hook_trap_decides_the_timer_by_the_guest_clock` had 8 of
 /// its 182 events more than 2000 RCBs past the target, up to 7271, all
-/// witnessed, in the round-6 DSR review of that pull request. Those are
-/// notifications serviced only at a later kernel entry, as for the overtaken
-/// rounds (see `overtaken_cap`), and they come in bursts, so a count of them
-/// per event, or a cap on it from a rate, does not bound a run.
-const LATE_OVERSHOOT_REPORTED: u64 = 2_000;
+/// witnessed, in the round-6 DSR review of that pull request, and a run of
+/// `an_rt_sigreturn_hook_trap_keeps_the_timer_event` in its round-7 DSR
+/// review had 5 of its 16, up to 7536. Those are notifications serviced only
+/// at a later kernel entry, as for the overtaken rounds (see
+/// `overtaken_cap`), and they come in bursts, so a count of them per event,
+/// or a cap on it from a rate, does not bound a run.
+const GROSS_OVERSHOOT_RCBS: u64 = 2_000;
 
-/// The least skid margin at which `late_events_within_backstop` fails a run.
-/// At a smaller margin the notification's latency often exceeds the margin:
-/// on devbig014 at a margin of 100, 175 of 240 events were past the target,
-/// and up to 15 of the 16 of one run.
+/// The least skid margin at which `late_events_within_backstop` fails a run
+/// all of whose events fired past their target, however little. At a
+/// smaller margin the notification's latency often exceeds the margin: on
+/// devbig014 at a margin of 100, 175 of 240 events were past the target, and
+/// all 16 of two runs.
 const LATE_BACKSTOP_LEAST_MARGIN: u64 = 1_000;
 
 /// Checks the RCBs from each request to its fired event, `clocks`, whose
-/// target is `rcbs`, at a skid margin of `margin`, against a backstop: at a
-/// margin of `LATE_BACKSTOP_LEAST_MARGIN` or more, strictly fewer than half
-/// of the events may have fired past their target. Returns what it counted,
-/// or why the events fail. Whether each event past its target is witnessed
-/// is `assert_at_target_unless_witnessed`'s to check, and whether a trap
-/// that kept an event changed its programming is `KeptProgrammingChecks`'s:
-/// the backstop is not what tells a correct keep from one that re-programs
-/// the counter, which makes every kept event late, only a last check that
-/// the events are mostly on time.
+/// target is `rcbs`, at a skid margin of `margin`, against a backstop: at any
+/// margin, not every event may have fired more than `GROSS_OVERSHOOT_RCBS`
+/// past its target, and at a margin of `LATE_BACKSTOP_LEAST_MARGIN` or more,
+/// not every event may have fired past its target at all. Returns what it
+/// counted, or why the events fail. Whether each event past its target is
+/// witnessed is `assert_at_target_unless_witnessed`'s to check, and whether
+/// a trap that kept an event changed its programming is
+/// `KeptProgrammingChecks`'s, which counts every call that changes it: the
+/// backstop is not what tells a correct keep from one that re-programs the
+/// counter, only a last check that a run's events are not all late.
 ///
 /// Late events come from the notification's latency on the host, which
-/// comes in bursts within a run, so the backstop is set per run rather than
-/// from a rate per event. In every round-6 campaign of
-/// https://github.com/rrnewton/reverie/pull/665 on devbig014, an AMD EPYC
-/// 9D85, at a margin of 1000 and load averages up to 130, in 652 logs with
-/// 821 groups of events that the caps checked and 119 counted before them,
-/// the largest fraction of one group's events fired past the target was 2 of 16, 0.125, in
-/// `an_rt_sigreturn_hook_trap_keeps_the_timer_event` and
-/// `a_held_signal_past_a_delivered_or_cancelled_event_is_not_witnessed`, and
-/// 18 of 182, 0.099, in the run of
-/// `an_rt_sigreturn_hook_trap_decides_the_timer_by_the_guest_clock` that
-/// failed the count caps this backstop replaces (see
-/// `LATE_OVERSHOOT_REPORTED`). A trap that re-programs the kept event's
-/// counter for a full period made 16 of 16, 44 of 44 and 182 of 182 late.
+/// comes in bursts within a run, so the backstop is set per run, and only at
+/// all of a run's events, rather than from a rate per event or a fraction of
+/// a run. Round 7 of https://github.com/rrnewton/reverie/pull/665 failed a
+/// run in which half or more of the events fired past the target, and its
+/// DSR review then saw a correct run of
+/// `an_rt_sigreturn_hook_trap_keeps_the_timer_event` at a margin of 1000
+/// fire 8 of its 16 events past the target, by 1259 to 7536 RCBs, all
+/// witnessed, which failed that backstop. In the 542 logs of the round-7
+/// campaigns and of both round-7 reviews on devbig014, at load averages up
+/// to 130, 1850 groups of events counted at a margin of 1000 had at most 8
+/// of 16, 4 of 44, 3 of 181 and 15 of 182 past the target, and none had
+/// every event past it; at a margin of 100, 2 of 4 groups of 16 had every
+/// event past it; and at no margin did a group have every event more than
+/// 2000 RCBs past it. A trap that re-programs every kept event's counter for
+/// a full period made 16 of 16 and 182 of 182 more than 4000 RCBs late at a
+/// margin of 1000, and 16 of 16 and 182 of 182 at a margin of 100. A trap
+/// that re-arms the counter of one kept event in four with a period change
+/// made 11 of 44 late, which no backstop on how many events are late tells
+/// from latency; the programming checks count it.
 fn late_events_within_backstop(clocks: &[u64], rcbs: u64, margin: u64) -> Result<String, String> {
     let events = clocks.len() as u64;
     let late = clocks.iter().filter(|&&clock| clock > rcbs).count() as u64;
     let beyond = clocks
         .iter()
-        .filter(|&&clock| clock > rcbs + LATE_OVERSHOOT_REPORTED)
+        .filter(|&&clock| clock > rcbs + GROSS_OVERSHOOT_RCBS)
         .count() as u64;
     let fraction = if events == 0 {
         0.0
@@ -3669,20 +3657,27 @@ fn late_events_within_backstop(clocks: &[u64], rcbs: u64, margin: u64) -> Result
     };
     let counted = format!(
         "{late} of {events} events fired past the target {rcbs} at a skid margin of {margin}, \
-         a fraction of {fraction:.3}, {beyond} of them more than {LATE_OVERSHOOT_REPORTED} RCBs \
+         a fraction of {fraction:.3}, {beyond} of them more than {GROSS_OVERSHOOT_RCBS} RCBs \
          past it"
     );
+    if events > 0 && beyond == events {
+        return Err(format!(
+            "{counted}: not every event may fire more than {GROSS_OVERSHOOT_RCBS} RCBs past the \
+             target: {clocks:?}"
+        ));
+    }
     if margin < LATE_BACKSTOP_LEAST_MARGIN {
         return Ok(format!(
-            "{counted}; the backstop applies from a skid margin of {LATE_BACKSTOP_LEAST_MARGIN}"
+            "{counted}; not all more than {GROSS_OVERSHOOT_RCBS} RCBs past it, and the backstop \
+             on all late applies from a skid margin of {LATE_BACKSTOP_LEAST_MARGIN}"
         ));
     }
-    if events > 0 && 2 * late >= events {
+    if events > 0 && late == events {
         return Err(format!(
-            "{counted}: fewer than half of the events may fire past the target: {clocks:?}"
+            "{counted}: not every event may fire past the target: {clocks:?}"
         ));
     }
-    Ok(format!("{counted}, fewer than half"))
+    Ok(format!("{counted}, not all"))
 }
 
 /// Asserts `late_events_within_backstop` at this process's skid margin,
@@ -3714,17 +3709,28 @@ fn the_late_event_backstop_rejects_a_full_period_overshoot() {
     // 4200 RCBs past its target in every round, witnessed.
     let full_period: Vec<u64> = (0..16).map(|round| rcbs + 4203 + 4 * round).collect();
     let seven = [3477, 2709, 687, 7271, 223, 30_050, 10];
-    for margin in [1000, 10_000] {
+    // The run of the round-7 DSR review of
+    // https://github.com/rrnewton/reverie/pull/665 that failed round 7's
+    // backstop, which counted half or more late.
+    let dsr_run_010 = [2540, 2869, 1282, 1339, 3838, 1259, 4356, 7536];
+    for margin in [100, 1000, 10_000] {
         assert!(late_events_within_backstop(&full_period, rcbs, margin).is_err());
-        assert!(late_events_within_backstop(&at(16, &[4203; 8]), rcbs, margin).is_err());
+        assert!(late_events_within_backstop(&at(16, &[2001; 16]), rcbs, margin).is_err());
+        assert!(late_events_within_backstop(&at(182, &[4641; 182]), rcbs, margin).is_err());
+        assert!(late_events_within_backstop(&at(182, &[4641; 181]), rcbs, margin).is_ok());
+        assert!(late_events_within_backstop(&at(16, &[4203; 15]), rcbs, margin).is_ok());
+        assert!(late_events_within_backstop(&at(16, &[3; 15]), rcbs, margin).is_ok());
+        assert!(late_events_within_backstop(&at(16, &dsr_run_010), rcbs, margin).is_ok());
         assert!(late_events_within_backstop(&at(16, &seven), rcbs, margin).is_ok());
-        assert!(late_events_within_backstop(&at(182, &[4641; 91]), rcbs, margin).is_err());
-        assert!(late_events_within_backstop(&at(182, &[4641; 90]), rcbs, margin).is_ok());
         assert!(late_events_within_backstop(&at(16, &[]), rcbs, margin).is_ok());
         assert!(late_events_within_backstop(&[], rcbs, margin).is_ok());
     }
-    assert!(late_events_within_backstop(&full_period, rcbs, 100).is_ok());
-    assert!(late_events_within_backstop(&at(16, &[3; 15]), rcbs, 100).is_ok());
+    for margin in [1000, 10_000] {
+        assert!(late_events_within_backstop(&at(16, &[3; 16]), rcbs, margin).is_err());
+        assert!(late_events_within_backstop(&at(16, &[2000; 16]), rcbs, margin).is_err());
+    }
+    assert!(late_events_within_backstop(&at(16, &[3; 16]), rcbs, 100).is_ok());
+    assert!(late_events_within_backstop(&at(16, &[2000; 16]), rcbs, 100).is_ok());
 }
 
 /// Runs `hybrid_sigreturn_hook_timer.c` with `args`, for `rounds` signals,
