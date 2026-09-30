@@ -47,7 +47,9 @@ use reverie::Tool;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
+use reverie_ptrace::PmuConfig;
 use reverie_ptrace::ret_without_perf;
+use reverie_ptrace::testing::KeptTimerProgrammingChecks;
 use reverie_ptrace::testing::assert_at_target_unless_witnessed;
 use reverie_ptrace::testing::check_fn_with_config;
 use serde::Deserialize;
@@ -289,8 +291,8 @@ impl Between {
     }
 }
 
-/// The skid witness counter is process global; each case owns it while it
-/// runs.
+/// The skid witness counter and the kept programming checks are process
+/// global; each case owns them while it runs.
 static WITNESS: Mutex<()> = Mutex::new(());
 
 /// The clock from the request to each timer event, where each timer event
@@ -299,9 +301,27 @@ struct Run {
     clocks: Vec<u64>,
     places: Vec<Place>,
     witnesses: u64,
+    /// The traps that kept the event while it waited for its PMU
+    /// notification, each of which must have left its programming as the
+    /// request made it, at the trap and, unless it handed the event on, at
+    /// the thread's next stop (see `KeptTimerProgrammingChecks`). A trap
+    /// among the steps is not one.
+    keeps: u64,
+    /// The traps of `keeps` that handed the event on, having found its
+    /// notification lost, to single steps.
+    handed_on: u64,
 }
 
 impl Run {
+    /// Asserts that `keeps` traps kept the event, and that none handed it on.
+    fn assert_kept(&self, keeps: u64) {
+        assert_eq!(
+            (self.keeps, self.handed_on),
+            (keeps, 0),
+            "traps that kept the event, and of them handed it on"
+        );
+    }
+
     /// Checks that the timer fired once, at its target `rcbs` RCBs past the
     /// request: exactly there if an artificial signal delivered it, and past
     /// it only with a witnessed skid overshoot if a PMU notification did.
@@ -330,11 +350,15 @@ fn run(guest: impl FnOnce() + Send + 'static, schedule: Schedule) -> Run {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _ = reverie::take_skid_overshoot_count();
+    let checks = KeptTimerProgrammingChecks::start();
     let events = check_fn_with_config::<PreciseTimerTool, _>(guest, schedule, true);
+    let (keeps, handed_on) = checks.keeps_and_handed_on();
     Run {
         clocks: events.0.into_inner().unwrap(),
         places: events.1.into_inner().unwrap(),
         witnesses: reverie::take_skid_overshoot_count(),
+        keeps,
+        handed_on,
     }
 }
 
@@ -362,8 +386,17 @@ fn timer_events(between: Between, schedule: Schedule, before: u64) -> Run {
 #[test_case(Between::IcebpAfterLoadsOfSs, LESS_RCBS; "icebp after loads of SS")]
 fn a_trap_before_the_target_does_not_cancel_the_timer(between: Between, rcbs: u64) {
     ret_without_perf!();
-    timer_events(between, Schedule::rcbs(rcbs), rcbs - 1)
-        .assert_fired_once_at(rcbs, "at its target after the trap");
+    let run = timer_events(between, Schedule::rcbs(rcbs), rcbs - 1);
+    run.assert_fired_once_at(rcbs, "at its target after the trap");
+    if rcbs == LESS_RCBS {
+        // The steps start at the request, so the trap is among them.
+        run.assert_kept(0);
+    } else {
+        // The trap is past the period, and among the steps unless the host
+        // delivered the notification only after it, when the trap keeps the
+        // event, or finds the notification lost and hands the event on.
+        assert!(run.keeps <= 1, "{} traps kept the event", run.keeps);
+    }
 }
 
 // Each guest traps one conditional branch after the request, 29,999 before
@@ -375,8 +408,9 @@ fn a_trap_before_the_target_does_not_cancel_the_timer(between: Between, rcbs: u6
 #[test_case(Between::Tgkill; "tgkill")]
 fn a_trap_before_the_perf_signal_does_not_cancel_the_timer(between: Between) {
     ret_without_perf!();
-    timer_events(between, Schedule::rcbs(PERF_RCBS), 1)
-        .assert_fired_once_at(PERF_RCBS, "at its target after the trap");
+    let run = timer_events(between, Schedule::rcbs(PERF_RCBS), 1);
+    run.assert_fired_once_at(PERF_RCBS, "at its target after the trap");
+    run.assert_kept(1);
 }
 
 // The same guests without a trap, where the timer fires one branch after the
@@ -387,8 +421,9 @@ fn a_trap_before_the_perf_signal_does_not_cancel_the_timer(between: Between) {
 #[test_case(Between::SyscallAfterLoadsOfSs, LESS_RCBS; "syscall after loads of SS")]
 fn the_timer_fires_without_a_trap(between: Between, rcbs: u64) {
     ret_without_perf!();
-    timer_events(between, Schedule::rcbs(rcbs), rcbs - 1)
-        .assert_fired_once_at(rcbs, "at its target");
+    let run = timer_events(between, Schedule::rcbs(rcbs), rcbs - 1);
+    run.assert_fired_once_at(rcbs, "at its target");
+    run.assert_kept(0);
 }
 
 // The trap is the instruction just past the target, so the timer fires before
@@ -400,8 +435,9 @@ fn the_timer_fires_without_a_trap(between: Between, rcbs: u64) {
 #[test_case(Between::Tgkill; "tgkill")]
 fn a_trap_past_the_target_does_not_cancel_the_timer(between: Between) {
     ret_without_perf!();
-    timer_events(between, Schedule::rcbs(LESS_RCBS), LESS_RCBS)
-        .assert_fired_once_at(LESS_RCBS, "before the trap");
+    let run = timer_events(between, Schedule::rcbs(LESS_RCBS), LESS_RCBS);
+    run.assert_fired_once_at(LESS_RCBS, "before the trap");
+    run.assert_kept(0);
 }
 
 // The timer's target is `instructions` steps past the last branch of the
@@ -424,6 +460,7 @@ fn a_trap_among_the_instructions_past_the_target_counts_once(between: Between, i
     };
     let run = timer_events(between, schedule, LESS_RCBS);
     run.assert_fired_once_at(LESS_RCBS, "before the second loop's first branch");
+    run.assert_kept(0);
     let places = run.places;
     assert_eq!(places.len(), 1, "the timer must fire once: {places:?}");
     assert_ne!(places[0].second_loop_branch, 0);
@@ -461,8 +498,24 @@ fn int3_loop(rounds: u64) {
 #[test_case(PERF_RCBS; "perf signal")]
 fn the_timer_fires_in_a_loop_that_traps_in_every_round(rcbs: u64) {
     ret_without_perf!();
-    run(move || int3_loop(2 * rcbs), Schedule::rcbs(rcbs))
-        .assert_fired_once_at(rcbs, "at its target inside the loop");
+    let run = run(move || int3_loop(2 * rcbs), Schedule::rcbs(rcbs));
+    run.assert_fired_once_at(rcbs, "at its target inside the loop");
+    if rcbs == LESS_RCBS {
+        run.assert_kept(0);
+    } else {
+        // Every trap from the request's clock up to the period, the skid
+        // margin short of the target, keeps the event. The trap at the
+        // period keeps it too unless the notification stopped the guest
+        // first, and, if it finds the notification not yet queued, hands the
+        // event on as lost; the steps then begin there.
+        let period = rcbs - PmuConfig::new().skid_margin();
+        assert!(
+            (period..=period + 1).contains(&run.keeps) && run.handed_on <= 1,
+            "{} traps kept the event, and {} handed it on, with the period at {period}",
+            run.keeps,
+            run.handed_on
+        );
+    }
 }
 
 /// Makes the `clock_getres` at which the Tool requests the timer, then
@@ -513,4 +566,5 @@ fn an_observed_stop_cancels_the_timer_in_a_loop_that_traps_in_every_round(getppi
         run.witnesses, 0,
         "the event was cancelled before it was due"
     );
+    run.assert_kept(0);
 }
