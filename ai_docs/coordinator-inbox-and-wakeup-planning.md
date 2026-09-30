@@ -58,9 +58,10 @@ Terms used below:
    - agentcloud coordinator: `agentcloudctl notify --mode cli-script --idempotency-key …`
      (TESTED: attributed, delivered mid-turn, exactly-once per key).
    - local Claude Code coordinator: agentctl's existing verified-typing path (`send`/`drain`), used
-     only when the coordinator pane is idle and the owner has not typed recently. Worker-to-coordinator
-     messages should move from raw `herdr agent prompt coord` to Claude Code's native cross-session
-     `SendMessage` (TESTED on this host: attributed, queued natively, starts a turn when idle).
+     only when the coordinator pane is idle and the owner has not typed recently. Claude Code's
+     native cross-session `SendMessage` is **not** a fleet transport: between sessions in different
+     permission modes each message waits for a human to approve it on the receiving side (MEASURED
+     by coord, section 4.8).
    - Claude `--channels`: **not usable** under the Meta wrapper (TESTED, section 4.1).
 5. **Owner first, never merged.** Owner Chat messages keep their own path (the chat bridge, owned by
    the `chat-bridge` agent). The inbox yields to it and shares its per-pane delivery lock, so the two
@@ -282,7 +283,7 @@ waiting for the turn to end. `--mode system-notification` (the default) would de
 operator system-reminder instead. This is the best delivery primitive available when the coordinator
 runs on agentcloud.
 
-### 4.3 Claude Code cross-session messaging: works locally
+### 4.3 Claude Code cross-session messaging: works only without a permission-mode boundary
 
 - `ListAgents` from this session listed 10 peer sessions on the host. `claude agents --json` returned
   13 (11 interactive with `pid`, `sessionId`, `status`, 2 background with `state`).
@@ -295,13 +296,12 @@ runs on agentcloud.
   (manual permission mode): the receiver started a new turn at once and showed
   `Message from @dev-hermit-de: …`. Its model treated the text as peer input and asked its human before
   acting. That is the right trust level for notifications and the wrong one for commands.
-- The idle notice did not come back, because it is delivered only within the same permission class.
-- **Not tested**: delivery into a `--dangerously-skip-permissions` receiver (the coordinator's mode).
-  The auto-mode classifier refused launching a bypass-mode scratch session, and the coordinator itself
-  was not used as a target. The tool documentation says a receiver in a different permission mode
-  *holds* messages for its user's approval. If that applies, worker → coordinator SendMessage would sit
-  unapproved while the owner is away. This must be tested before recommending it fleet-wide
-  (open question Q1).
+- The idle notice did arrive, though the subscription reply said it would only be logged across
+  permission classes. It arrived at 2026-09-30 02:07Z for an idle event at 2026-09-29 20:54Z, about
+  5 h 13 min later. It came at the start of this session's next turn, after one long turn ended, and
+  not during that turn.
+- Delivery *from* the bypass-mode coordinator to ordinary sessions is held for approval; see 4.8.
+  Delivery the other way, and bypass to bypass, remain untested.
 
 ### 4.4 herdr push events
 
@@ -347,6 +347,17 @@ reachable from inside it. `herdr agent prompt coord` therefore works *from* it, 
 `internet_mode=disabled`, so its GitHub traffic depends on `herdr-run`. At 21:09Z that route refused
 because the `agent-cmds` workspace was at its 32-pane cap with no tab provably finished.
 
+Root cause of that refusal, found by coord: `py/herdr_run/reap.py` counts a pane as finished only
+when its shell has exited, but herdr-run tabs keep an idle bash alive forever, so no pane ever
+qualifies. It also considers only panes named in run records, which expire after 4 days; 20 of the
+32 panes had no record. A coordinator subagent closed 29 of the 32 idle panes at about 21:20Z.
+
+Messages sent *to* this session with agentctl behave the same way. Coord's messages sent at 21:25Z,
+23:00Z and 01:22Z all arrived together at 02:07Z, at the start of the next turn. The long turn in
+between had delivered none of them. agentctl's help says it delivers to an agentcloud agent with
+`agentcloudctl send --end-of-turn`, which would explain this; that mechanism is read from the help
+text, not observed. `agentcloudctl notify` (4.2) is the path that landed mid-turn.
+
 ### 4.7 herdr reports working Claude Code panes as idle
 
 Found 2026-09-29 21:30Z while measuring idle detection, and filed as
@@ -374,8 +385,38 @@ working and received two prompts. Consequences:
 - `agentctl wait` and agentctl's ready-before-typing check can pass while a worker is mid-turn.
 - Any idle notifier built on herdr status alone would announce working agents as idle.
 
-The chat-bridge agent was told by cross-session `SendMessage`; no link to
-https://github.com/rrnewton/agent-utils/issues/175 has been shown.
+I tried to tell the chat-bridge agent by cross-session `SendMessage`. Coord later measured that such
+messages are held for approval (4.8), so chat-bridge probably never saw it, and coord relayed it
+through herdr. No link to https://github.com/rrnewton/agent-utils/issues/175 has been shown.
+
+### 4.8 Mid-turn delivery into a Claude coordinator: what coord measured
+
+Coord measured these on 2026-09-29 from its own session (pid 1142801,
+`--dangerously-skip-permissions`) and relayed them. They are measured constraints on the design.
+
+- **Cross-session `SendMessage` from coord to ordinary sessions is held for human approval.**
+  - Coord sent 7 messages between 21:06Z and 21:15Z.
+  - For each one, coord's harness said: "Your message to another session was held for the recipient
+    user's approval … Not delivered to that session's Claude yet; its user must approve first."
+  - The receivers' transcripts show a `system` entry, "Held peer message — from
+    uds:/run/user/212630/cc-socks/1142801.sock [verified pid 1142801]", at level warning. For
+    example, mega-lander (session 1911f7bb, auto mode) at 21:06:13Z and perm-hook at 21:14:25Z.
+  - None became a user turn: 1 expired unapproved (pid 518539) and 6 were denied (pids 2611063,
+    2737474, 2743769, 2620191, 1795543, 2293495).
+
+  So it is a per-message approval gate on the receiving side and cannot carry unattended fleet
+  traffic. Not measured: an ordinary session sending to coord, and bypass to bypass.
+- **`herdr agent prompt` into a busy Claude pane is queued, not delivered.**
+  - The pane shows "Press up to edit queued messages", and delivery waits for the turn to end.
+  - mega-lander's turn ran from about 16:30Z. Six coord messages sent between 16:37Z and 19:58Z
+    stayed queued until 21:20:49Z, when its transcript shows six `queue-operation remove` rows.
+  - ctrl+x ctrl+s ("send now") at 21:17:08Z logged a `dequeue` row but did not visibly deliver
+    them.
+- **Consequence:** no path measured so far delivers mid-turn into a busy local Claude TUI.
+  `agentcloudctl notify` into an agentcloud session (4.2) is the only mid-turn path measured. A local
+  coordinator therefore gets inbox batches at its turn boundaries (typed delivery when idle, or its
+  own cron running `agentctl inbox deliver --via print`). A coordinator hosted on agentcloud would
+  get them mid-turn.
 
 ## 5. Design: `agentctl watch` and `agentctl inbox`
 
@@ -480,7 +521,7 @@ supports them.
 |---|---|---|---|---|
 | agentcloud session | `agentcloudctl notify --mode cli-script --idempotency-key inbox-<coord>-<batch>` | "cli-script" (peer) | yes (TESTED) | per key (TESTED) |
 | local Claude TUI (herdr) | agentctl verified send (`inbox/`→`inflight/`→`failed/`) with `message_id = inbox-<batch>`, only when idle | text prefix only (unauthenticated) | no, waits for idle | agentctl refuses a reused message id; ambiguous typing is quarantined, not retried |
-| local Claude TUI, from Claude workers directly | Claude `SendMessage` to the coordinator's session name | native `from=` | between tool calls | native dedup; **bypass-mode hold untested (Q1)** |
+| ~~local Claude TUI, from Claude workers directly~~ | Claude `SendMessage` | native `from=` | — | **rejected: held for per-message human approval across permission modes (4.8)** |
 | Codex coordinator | herdr verified send when idle; later app-server `thread/inject_items` | prefix | inject_items: yes | by message id |
 | any | print to stdout (`agentctl inbox render`) for a cron/`/loop` tick to read | n/a | n/a | n/a |
 
@@ -612,9 +653,9 @@ tool gets `quickstart`, `userguide` and `RELATED_WORK.md`.
 
 ## 7. Open questions and untested points
 
-- **Q1.** Does Claude cross-session `SendMessage` into a `--dangerously-skip-permissions` coordinator
-  deliver, or is it held for approval? Test with a scratch bypass session (it needs a human-approved
-  launch, since the classifier refused one here), or with coord's consent on the real coordinator.
+- **Q1 — answered by coord's measurement (4.8)** for bypass → ordinary: held for approval, and
+  in practice denied or expired. Still open: ordinary → bypass (a worker messaging coord), and
+  bypass → bypass.
 - **Q2.** Does herdr debounce `agent_status_changed` during the short gaps between tool calls? This
   matters less than expected: for current Claude Code panes herdr's `idle` is wrong anyway (4.7), so
   the watcher uses herdr events only as wake-ups and asks Claude for the state. Still open for Codex
