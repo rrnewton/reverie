@@ -165,8 +165,11 @@ int main(int argc, char** argv) {
     require(
         result == 0 && readies == 1, "actual initialization did not finish");
     require(failures == 0, "successful initialization reported a failure");
-    int64_t (*install)(uint64_t) = (void*)(uintptr_t)saved_frame.install_helper;
-    int64_t tail = install((uintptr_t)test_syscall_site);
+    /* The second argument is the tracer census's lowest entry after the
+     * site. Nothing branches into test_syscall_site, so it is UINT64_MAX. */
+    int64_t (*install)(uint64_t, uint64_t) =
+        (void*)(uintptr_t)saved_frame.install_helper;
+    int64_t tail = install((uintptr_t)test_syscall_site, UINT64_MAX);
     const struct install_result* installed =
         (void*)(uintptr_t)saved_frame.install_result;
     require(tail > 0, "actual patch helper failed");

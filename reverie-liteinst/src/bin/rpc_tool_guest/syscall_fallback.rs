@@ -355,6 +355,77 @@ pub(super) fn run_fork(path: &Path, installed: bool) {
     );
 }
 
+/// A `syscall` site long enough to patch, in an anonymous executable mapping
+/// made before LiteInst initializes, beside the text control site
+/// (<https://github.com/rrnewton/reverie/issues/812>). LiteInst records an
+/// arena for the mapping, so only the entry census can refuse the site: no
+/// object owns the bytes, the census has nothing to decode, and the site must
+/// stay on the fallback path while the control is patched.
+pub(super) fn run_anonymous(path: &Path) {
+    const CODE: [u8; 6] = [0x0f, 0x05, 0x90, 0x90, 0x90, 0xc3];
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+    let mapping = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            page,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(mapping, libc::MAP_FAILED);
+    let anonymous = unsafe { mapping.cast::<u8>().add(64) };
+    unsafe { std::ptr::copy_nonoverlapping(CODE.as_ptr(), anonymous, CODE.len()) };
+    assert_eq!(
+        unsafe { libc::mprotect(mapping, page, libc::PROT_READ | libc::PROT_EXEC) },
+        0
+    );
+    let control = core::ptr::addr_of!(fallback_installed_site).cast_mut();
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(control, 5) },
+        &CODE[..5]
+    );
+    let native_pid = unsafe { libc::getpid() };
+    assert_ne!(native_pid, 424_242);
+    NATIVE_PID.store(native_pid as usize, Ordering::Relaxed);
+    unsafe { reverie_liteinst::install_tool::<FallbackTool>(path) }.unwrap();
+    let mut counts = [(0, 0, 0); 2];
+    for (site, count) in [anonymous, control].into_iter().zip(&mut counts) {
+        SITE.store(site as usize, Ordering::Relaxed);
+        let fallback = reverie_liteinst::reverie_liteinst_fallback_dispatch_count();
+        for _ in 0..3 {
+            assert_eq!(
+                unsafe { fallback_test_call(site as usize, libc::SYS_getpid) },
+                424_242
+            );
+        }
+        *count = (
+            reverie_liteinst::reverie_liteinst_site_trap_count(site as u64),
+            reverie_liteinst::reverie_liteinst_site_hook_count(site as u64),
+            reverie_liteinst::reverie_liteinst_fallback_dispatch_count() - fallback,
+        );
+    }
+    let bytes = |site: *mut u8| {
+        if unsafe { std::slice::from_raw_parts(site, 5) } == &CODE[..5] {
+            "unchanged"
+        } else {
+            "patched"
+        }
+    };
+    let [
+        (traps, hooks, fallback),
+        (control_traps, control_hooks, control_fallback),
+    ] = counts;
+    println!(
+        "anonymous: calls=3 traps={traps} hooks={hooks} fallback={fallback} bytes={} \
+         control: calls=3 traps={control_traps} hooks={control_hooks} \
+         fallback={control_fallback} bytes={}",
+        bytes(anonymous),
+        bytes(control)
+    );
+}
+
 pub(super) fn run_refusal() {
     let (site, _) = prepare_site();
     unsafe {

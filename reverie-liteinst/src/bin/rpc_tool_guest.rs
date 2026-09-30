@@ -1336,6 +1336,7 @@ fn main() {
         Some("syscall-fallback") => syscall_fallback_guest::run(Path::new(&path)),
         Some("syscall-fallback-xstate") => syscall_fallback_guest::run_xstate(Path::new(&path)),
         Some("syscall-fallback-refusal") => syscall_fallback_guest::run_refusal(),
+        Some("syscall-anonymous-site") => syscall_fallback_guest::run_anonymous(Path::new(&path)),
         Some("syscall-fallback-fork") => syscall_fallback_guest::run_fork(Path::new(&path), false),
         Some("syscall-installed-fork") => syscall_fallback_guest::run_fork(Path::new(&path), true),
         Some("syscall-fallback-pkey") => syscall_fallback_guest::run_pkey(Path::new(&path)),

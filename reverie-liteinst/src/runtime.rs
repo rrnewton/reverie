@@ -563,8 +563,8 @@ struct RuntimeArena {
     executable_end: u64,
     arena: TrampolineArena,
     /// The object that owned this executable mapping at initialization, or
-    /// `None` for an anonymous mapping or one whose object cannot be
-    /// identified.
+    /// `None` for an anonymous mapping, one whose object cannot be identified,
+    /// or any mapping when the tracer builds the census ([`EntryCensus::Tracer`]).
     image: Option<ObjectImage>,
     /// Built by the first installation that needs it; see [`Self::census`].
     census: OnceLock<Result<Census, CensusError>>,
@@ -1041,7 +1041,7 @@ fn host_handshake_frame() -> HostHandshakeFrame {
 }
 
 fn initialize_host_runtime() -> io::Result<()> {
-    initialize_host_runtime_with(prepare_instrumentation)
+    initialize_host_runtime_with(|| prepare_instrumentation(EntryCensus::Tracer))
 }
 
 pub(crate) fn initialize_host_runtime_explicit(config: crate::HostRuntimeConfig) -> io::Result<()> {
@@ -1051,7 +1051,7 @@ pub(crate) fn initialize_host_runtime_explicit(config: crate::HostRuntimeConfig)
     let staleness = liteinst2::patcher::StalenessBudget::new(config.straddler_staleness_ticks);
     initialize_host_runtime_with(|| {
         crate::straddler::initialize(staleness)?;
-        prepare_instrumentation_state()
+        prepare_instrumentation_state(EntryCensus::Tracer)
     })
 }
 
@@ -1178,7 +1178,7 @@ fn install_runtime(
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
 ) -> io::Result<()> {
     PATCH_PUBLICATION.store(publication as u8, Ordering::Release);
-    prepare_instrumentation()?;
+    prepare_instrumentation(EntryCensus::InGuest)?;
     install_vdso_sites(vdso_sites)?;
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-254): Review launcher-selected RuntimeConfig at the install seam.
@@ -1391,17 +1391,31 @@ fn discover_arena_aliases(
     }
 }
 
-fn prepare_instrumentation() -> io::Result<()> {
+/// Which side builds the entry census that proves a `syscall` site safe to
+/// patch (<https://github.com/rrnewton/reverie/issues/812>).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EntryCensus {
+    /// The in-guest dispatcher builds it on first use, from the object image
+    /// each arena records at initialization.
+    InGuest,
+    /// The ptrace tracer builds it and passes each site's entry limit to the
+    /// install call. The arenas record no object image, so initialization does
+    /// not parse `/proc/self/maps` for one: that parse would add branches, whose
+    /// count depends on the map text, to the counted bootstrap.
+    Tracer,
+}
+
+fn prepare_instrumentation(census: EntryCensus) -> io::Result<()> {
     crate::straddler::initialize_from_environment()?;
     // Ordinary initialization retains the guard router for modes that may
     // publish concurrently. The explicit host path calls state preparation
     // directly: its stopped tracee is quiescent and its existing SIGTRAP
     // handler owns the Begin/Ready traps.
     prepare_live_patching().map_err(|error| io::Error::other(error.to_string()))?;
-    prepare_instrumentation_state()
+    prepare_instrumentation_state(census)
 }
 
-fn prepare_instrumentation_state() -> io::Result<()> {
+fn prepare_instrumentation_state(census: EntryCensus) -> io::Result<()> {
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     let page_size = u64::try_from(page_size)
         .ok()
@@ -1418,7 +1432,10 @@ fn prepare_instrumentation_state() -> io::Result<()> {
         .map_err(|_| io::Error::other("LiteInst site registry initialized twice"))?;
 
     let maps = std::fs::read_to_string("/proc/self/maps")?;
-    let objects = parse_runtime_maps(&maps);
+    let objects = match census {
+        EntryCensus::InGuest => parse_runtime_maps(&maps),
+        EntryCensus::Tracer => Vec::new(),
+    };
     let mut arenas = Vec::new();
     for line in maps.lines() {
         let mut fields = line.split_whitespace();
@@ -1470,7 +1487,10 @@ fn prepare_instrumentation_state() -> io::Result<()> {
             executable_start: executable.start,
             executable_end: executable.end,
             arena,
-            image: object_image(&objects, mapping_start, mapping_end),
+            image: match census {
+                EntryCensus::InGuest => object_image(&objects, mapping_start, mapping_end),
+                EntryCensus::Tracer => None,
+            },
             census: OnceLock::new(),
         });
     }

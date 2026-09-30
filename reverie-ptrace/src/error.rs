@@ -68,6 +68,11 @@ pub(crate) enum LiteinstActivationFailureReason {
     NewbornIdentity,
     VforkUnsupported,
     TerminatedBeforeHandshake,
+    /// `/proc/<pid>/maps` could not be read for the entry census snapshot
+    /// taken at Ready.
+    ReadGuestMaps,
+    /// The tracee's code could not be read to build a site's entry census.
+    ReadCensusObject,
 }
 
 impl LiteinstActivationFailureReason {
