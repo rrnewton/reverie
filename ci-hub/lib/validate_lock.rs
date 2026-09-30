@@ -12803,6 +12803,148 @@ wait
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
+    /// Review finding d on https://github.com/rrnewton/dev-hermit/issues/419:
+    /// the census freezes only the token members it captures. A recorded
+    /// survivor without the token is outside the census, so nothing froze it:
+    /// it can still fork, and a child it forks is named nowhere. Its record
+    /// must say the domain capture was incomplete, so that once the named
+    /// survivor is gone and the holder is dead, the record needs an operator's
+    /// census instead of being discharged by the next acquirer.
+    /// [`escaped_payload_quarantine_refuses_consumers_until_exact_recovery`] is
+    /// the opposing control: the same escapee WITH the token is frozen by the
+    /// census, its capture is complete, and the next acquirer discharges it.
+    #[test]
+    fn an_unfrozen_tokenless_survivor_leaves_a_record_only_an_operator_census_clears() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let paths = temp_paths("unfrozen-survivor");
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let identity_path = paths.lock.parent().unwrap().join("escaped.identity");
+        // CI_HUB_TEST_UNKILLABLE stands in for a process SIGKILL cannot
+        // remove. The escapee ignores TERM and HUP and ends by itself after
+        // 300 s, so a failed assertion leaks it for no longer than that.
+        let script = format!(
+            r#"
+trap 'exit 0' TERM
+env -u {PAYLOAD_DOMAIN_ENV} CI_HUB_TEST_UNKILLABLE=1 setsid /bin/bash -c '
+  trap "" TERM HUP
+  pid=$BASHPID
+  start=$(awk "{{print \$22}}" "/proc/$pid/stat")
+  printf "%s %s\n" "$pid" "$start" > "$1"
+  exec sleep 300
+' escaped-child "$1" &
+while [ ! -s "$1" ]; do sleep 0.01; done
+wait
+"#
+        );
+        let run_error = lock
+            .run(
+                RunArgs {
+                    agent: "unfrozen-validate".into(),
+                    kind: Kind::Bench,
+                    target: "sha-unfrozen".into(),
+                    run_record: None,
+                    no_wait: false,
+                    skip_if_recorded: false,
+                    wait: 0,
+                    hold: 30,
+                    child_deadline: 1,
+                    max: 1,
+                    skip_base_check: false,
+                    child: vec![
+                        OsString::from("/bin/bash"),
+                        OsString::from("-c"),
+                        OsString::from(script),
+                        OsString::from("unfrozen-leader"),
+                        identity_path.clone().into_os_string(),
+                    ],
+                },
+                paths.lock.parent().unwrap(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(run_error, ValidateLockError::CleanupQuarantined(_)),
+            "a live recorded survivor must quarantine, got {run_error:?}"
+        );
+
+        let identity = fs::read_to_string(&identity_path).unwrap();
+        let fields: Vec<_> = identity.split_whitespace().collect();
+        let escaped = ProcessIdentity {
+            pid: fields[0].parse().unwrap(),
+            start_ticks: fields[1].parse().unwrap(),
+        };
+        assert!(matches!(exact_process_liveness(&escaped), Ok(true)));
+        // The shape under test: the survivor carries no payload token, so the
+        // census neither attributes nor freezes it.
+        let environ = fs::read(format!("/proc/{}/environ", escaped.pid)).unwrap();
+        let token_prefix = format!("{PAYLOAD_DOMAIN_ENV}=");
+        assert!(
+            !environ
+                .split(|byte| *byte == 0)
+                .any(|entry| entry.starts_with(token_prefix.as_bytes())),
+            "the survivor must carry no payload token"
+        );
+        let record = CleanupRecord::parse(&fs::read_to_string(&paths.cleanup).unwrap()).unwrap();
+        let residuals = match &record.phase {
+            CleanupPhase::Residual {
+                domain_complete: false,
+                residuals,
+                ..
+            } => residuals.clone(),
+            phase => panic!(
+                "a survivor the census did not freeze must leave an INCOMPLETE residual phase, \
+                 got {phase:?}"
+            ),
+        };
+        assert!(
+            residuals.contains(&escaped),
+            "the residual record {residuals:?} must name the survivor {escaped:?}"
+        );
+
+        // The holder's supervisor is dead and the named survivor is gone.
+        let mut owner = lock.read_process_owner().unwrap().unwrap();
+        owner.pid = u32::MAX;
+        write_truncated(&paths.owner, owner.render().as_bytes()).unwrap();
+        for residual in &residuals {
+            let _ = signal_exact_process(residual, libc::SIGKILL);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            reap_exited_children();
+            if residuals
+                .iter()
+                .all(|identity| matches!(exact_process_liveness(identity), Ok(false)))
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(residuals
+            .iter()
+            .all(|identity| matches!(exact_process_liveness(identity), Ok(false))));
+        let verification = lock.cleanup_verification(lock.read_holder().unwrap().as_ref());
+        assert!(
+            matches!(verification, CleanupVerification::Uncensused { .. }),
+            "absence of the named survivor must not prove the domain empty, got {verification:?}"
+        );
+        // So neither an acquirer nor reclaim-dead may discharge the record.
+        let cleanup_before = fs::read(&paths.cleanup).unwrap();
+        assert!(matches!(
+            lock.acquire("replacement-validate", Kind::Validate, "sha-next", 0, 30),
+            Err(ValidateLockError::CleanupQuarantined(_))
+        ));
+        assert_eq!(fs::read(&paths.cleanup).unwrap(), cleanup_before);
+        assert!(matches!(
+            lock.reclaim_dead(),
+            Err(ValidateLockError::ReclaimNotProven(_))
+        ));
+        assert_eq!(fs::read(&paths.cleanup).unwrap(), cleanup_before);
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
     #[test]
     fn hard_death_run_subprocess_entry() {
         let Some(root) = env::var_os(HARD_DEATH_ROOT_ENV).map(PathBuf::from) else {

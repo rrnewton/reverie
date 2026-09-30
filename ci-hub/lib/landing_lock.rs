@@ -4200,7 +4200,9 @@ const TEARDOWN_POLL_MILLIS: u64 = 20;
 /// PLUS every recorded lineage identity still alive after the last round,
 /// including one the census rule no longer attributes because it carries no
 /// token and was reparented. Both quarantine the box: nothing is admitted while
-/// any process this teardown attributed to the old payload is alive. What the
+/// any process this teardown attributed to the old payload is alive. A
+/// survivor of the second kind was never frozen, so it also marks the capture
+/// incomplete (see the comment at the end of the body). What the
 /// lineage does not attribute is listed on [`PayloadLineage`] and tracked in
 /// https://github.com/rrnewton/dev-hermit/issues/428. Unclassifiable
 /// descendants the lineage did not record are not killed and keep the capture
@@ -4292,6 +4294,14 @@ pub(crate) fn kill_payload_domain(lineage: &mut PayloadLineage, label: &str) -> 
     // or not the census rule still attributes it. That includes an exempt
     // (test-unkillable) identity, which was left out of the kill targets
     // only.
+    //
+    // ⚠️ SUCH A SURVIVOR ALSO MAKES THE CAPTURE INCOMPLETE. The census froze
+    // only its own token members. A survivor outside the census was not
+    // stopped, so it can still fork, and its children are named nowhere. A
+    // complete capture would let a dead holder's record turn Recoverable (and
+    // be auto-reclaimed by the next acquirer) as soon as the named survivor
+    // exits, while those children run. Incomplete, the record turns
+    // Uncensused instead and needs the operator's census.
     let (survivors, observed) = match final_observation {
         Some(observation) => observation,
         None => lineage.observe_or_recorded(),
@@ -4306,10 +4316,12 @@ pub(crate) fn kill_payload_domain(lineage: &mut PayloadLineage, label: &str) -> 
     if !unrecorded.is_empty() {
         eprintln!(
             "{label}: {} recorded payload process(es) outside the census survived SIGKILL and \
-             are recorded as exact residuals: {}",
+             are recorded as exact residuals; the census did not freeze them, so the domain \
+             capture is incomplete: {}",
             unrecorded.len(),
             describe_identities(&unrecorded)
         );
+        capture.complete = false;
         capture.identities.extend(unrecorded);
         capture.identities.sort();
         capture.identities.dedup();
