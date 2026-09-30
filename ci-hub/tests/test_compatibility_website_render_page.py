@@ -6376,10 +6376,24 @@ def test_writer_derived_recorded_population_keeps_failed_run_and_retry_verdicts(
 
 PARITY_FIXTURE = REPOSITORY / "ci-hub/tests/fixtures/parity-run-1953"
 PARITY_LEDGER_COMMIT = "e" * 40
+#: The Hermit commit every row of RUN 1953 names.
+PARITY_HERMIT_SHA = "d3a0a4ae3d168565595ae4157b25ab8efbb1861a"
+#: RUN 1953 reported all 192 cells its commit selects, and no other.
 PARITY_RUN_1953_LINE = (
-    "parity: 0/192 matched; mean 0.052 over 175 measured; floor 0.051 over 175 measured of 192 selected "
+    "parity: 0/192 matched; selected 192 of 192 committed; mean 0.052 over 175 measured; "
+    "floor 0.051 over 175 measured of 192 selected "
     "(0 no golden; 14 not compared; 3 unmeasured: no-result-row 3) [inputs not equalized]"
 )
+
+
+def _parity_committed_of(sha: str) -> list[tuple[str, str]] | None:
+    """The committed selection at a commit, as hermit's scorecard reads it:
+    RUN 1953's at its own commit (`committed-cells.json`, provenance beside
+    it), and unreadable at any other."""
+    if sha != PARITY_HERMIT_SHA:
+        return None
+    names = json.loads((PARITY_FIXTURE / "committed-cells.json").read_text(encoding="utf-8"))
+    return [tuple(name.rsplit("@", 1)) for name in names]
 
 
 def _parity_carriage(*, sources_of: Any = None, summary_of: Any = None,
@@ -6400,12 +6414,13 @@ def _parity_carriage(*, sources_of: Any = None, summary_of: Any = None,
     batch = ledger_store.build_batch(
         sources, producer="validate",
         run_id="validate-coord-s17-d3a0a4ae3d16-1790649970094317174-3328074-da07a1da",
-        hermit_sha="d3a0a4ae3d168565595ae4157b25ab8efbb1861a", emitted_at="2026-09-28T21:40:00Z",
+        hermit_sha=PARITY_HERMIT_SHA, emitted_at="2026-09-28T21:40:00Z",
         source_tree_dirty=False, host="fixturehost",
     )
     rows = [row for row in batch if row["event_type"] == "parity.record"]
     store = {ledger_store.event_shard(rows[0]): ledger_store.encode_batch(rows).encode()}
-    summary = reader.summarize_rows(rows, store_sha256=reader.store_digest(store))
+    summary = reader.summarize_rows(rows, store_sha256=reader.store_digest(store),
+                                    committed_of=_parity_committed_of)
     if summary_of is not None:
         summary_of(summary)
     data = reader.encode_summary(summary)
@@ -6442,12 +6457,16 @@ def test_overview_renders_the_parity_panel_from_the_carried_summary() -> None:
     overview = files["index.html"].decode()
     assert '<section id="parity"><h2>Parity (measured after determinism)</h2>' in overview
     assert f'<p class="parity-line"><code>{PARITY_RUN_1953_LINE}</code></p>' in overview
+    assert ('<p class="parity-committed">Committed selection: the 192 cell(s) that '
+            '<code>ci/compat-envelope/parity-cells.json</code> selects at Hermit commit '
+            f'<code title="{PARITY_HERMIT_SHA}">{PARITY_HERMIT_SHA[:12]}</code>. This run reported all 192. '
+            'It reported no cell outside it.</p>') in overview
     # The leaderboard shows no parity: the panel is the only parity display.
     board = overview[overview.index('id="backends"'):overview.index('id="parity"')]
     assert "Parity w/partial" not in overview
     assert 'aria-label="Explain Parity' not in board and PARITY_RUN_1953_LINE not in board
-    # The line is the panel's headline and its TOTAL row's coverage, and
-    # appears nowhere else.
+    # The line is the panel's headline and its TOTAL row's line, and appears
+    # nowhere else.
     panel = overview[overview.index('id="parity"'):overview.index('id="backend-history"')]
     assert overview.count(PARITY_RUN_1953_LINE) == panel.count(PARITY_RUN_1953_LINE) == 2
     assert "Parity summary refused" not in overview
@@ -6519,7 +6538,8 @@ PARITY_REFUSED_NODE_REASON = (
 #: same sum by the 178 selected cells that are neither no-golden nor not
 #: compared (192 - 0 - 14), 0.0502.
 PARITY_NODE_REFUSED_LINE = (
-    "parity: 0/192 matched; mean 0.052 over 173 measured; floor 0.050 over 173 measured of 192 selected "
+    "parity: 0/192 matched; selected 192 of 192 committed; mean 0.052 over 173 measured; "
+    "floor 0.050 over 173 measured of 192 selected "
     "(0 no golden; 14 not compared; 3 unmeasured: no-result-row 3; 2 record-missing) [inputs not equalized]"
 )
 

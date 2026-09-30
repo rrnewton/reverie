@@ -7,6 +7,20 @@
   },
   "copied_on": "devbig014, 2026-09-28, paths relative to the dev-hermit parent checkout",
   "derived_files": {
+    "committed-cells.json": {
+      "bytes": 8588,
+      "derived_from": {
+        "bytes": 407862,
+        "git_blob": "18aea875460ed11e173bd48deecde8906599dd95",
+        "hermit_commit": "d3a0a4ae3d168565595ae4157b25ab8efbb1861a",
+        "path": "ci/compat-envelope/parity-cells.json",
+        "sha256": "b63039c0915ea2b2e32e1a8dd4cf140c95b3c7fbcccd647cf6edc38b334f50e7"
+      },
+      "lines": 194,
+      "rule": "Read derived_from (git show <hermit_commit>:<path>; its git blob and sha256 are recorded above), keep each entry of its cells list whose selected is true, name it <test_id>@<backend>, order the names by test id as UTF-8 bytes and then by backend in the order dbt, kvm, liteinst, sabre, and write json.dumps(names, indent=1) plus a newline. The file lists 192 cells: dbt 14, kvm 77, liteinst 99, sabre 2, the counts.all.selected and counts.by_backend.*.selected of derived_from.",
+      "sha256": "42551cc6d15c7e1e952a9d95d68da4cca7567efc1034f56a64e5009c20b10f64",
+      "why": "A parity summary reports, for each run, how many of the cells its Hermit commit selects the run reported (https://github.com/rrnewton/hermit/issues/3301). The committed selection is ci/compat-envelope/parity-cells.json at the run's commit, which RUN 1953 names in every row (d3a0a4ae3d16). Those 192 names are the 192 cells ledger-sources.jsonl reports, so RUN 1953 reported its whole committed selection. The list is kept here so the tests read the run's own selection rather than restating it; the full file is 407862 bytes and every other field of it is unused."
+    },
     "ledger-sources-typed.jsonl": {
       "bytes": 370957,
       "derived_from": "ledger-sources.jsonl",

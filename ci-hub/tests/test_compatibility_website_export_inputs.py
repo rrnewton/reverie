@@ -2074,6 +2074,18 @@ def test_historical_export_captures_schema5_proof_from_the_selected_ledger_commi
 # --- parity capture (https://github.com/rrnewton/hermit/issues/3301) -----------------
 
 PARITY_FIXTURE = REPOSITORY / "ci-hub/tests/fixtures/parity-run-1953"
+#: The Hermit commit every row of RUN 1953 names.
+PARITY_HERMIT_SHA = "d3a0a4ae3d168565595ae4157b25ab8efbb1861a"
+
+
+def _parity_committed_of(sha: str) -> list[tuple[str, str]] | None:
+    """The committed selection at a commit, as hermit's scorecard reads it:
+    RUN 1953's at its own commit (`committed-cells.json`, provenance beside
+    it), and unreadable at any other."""
+    if sha != PARITY_HERMIT_SHA:
+        return None
+    names = json.loads((PARITY_FIXTURE / "committed-cells.json").read_text(encoding="utf-8"))
+    return [tuple(name.rsplit("@", 1)) for name in names]
 
 
 def _parity_run_1953_shards() -> dict[str, bytes]:
@@ -2085,7 +2097,7 @@ def _parity_run_1953_shards() -> dict[str, bytes]:
     batch = ledger_store.build_batch(
         sources, producer="validate",
         run_id="validate-coord-s17-d3a0a4ae3d16-1790649970094317174-3328074-da07a1da",
-        hermit_sha="d3a0a4ae3d168565595ae4157b25ab8efbb1861a", emitted_at="2026-09-28T21:40:00Z",
+        hermit_sha=PARITY_HERMIT_SHA, emitted_at="2026-09-28T21:40:00Z",
         source_tree_dirty=False, host="fixturehost",
     )
     shards: dict[str, bytes] = {}
@@ -2108,7 +2120,8 @@ def _parity_run_1953_summary_bytes(shards: dict[str, bytes] | None = None, serie
     rows = [event for path, data in _store(shards).items()
             for event in ledger_store.parse_lines(data.decode(), path) if event["event_type"] == "parity.record"]
     return reader.encode_summary(reader.summarize_rows(
-        rows, store_sha256=reader.store_digest(_store(shards)), series_commit=series_commit))
+        rows, store_sha256=reader.store_digest(_store(shards)), series_commit=series_commit,
+        committed_of=_parity_committed_of))
 
 
 def _commit_ledger_parity(repo: Path, files: dict[str, bytes]) -> str:
@@ -2123,8 +2136,10 @@ def _commit_ledger_parity(repo: Path, files: dict[str, bytes]) -> str:
     return git(ledger, "rev-parse", "HEAD")
 
 
+#: RUN 1953 reported all 192 cells its commit selects, and no other.
 RUN_1953_LINE = (
-    "parity: 0/192 matched; mean 0.052 over 175 measured; floor 0.051 over 175 measured of 192 selected "
+    "parity: 0/192 matched; selected 192 of 192 committed; mean 0.052 over 175 measured; "
+    "floor 0.051 over 175 measured of 192 selected "
     "(0 no golden; 14 not compared; 3 unmeasured: no-result-row 3) [inputs not equalized]"
 )
 

@@ -1883,6 +1883,11 @@ def _short_sha(value: Any) -> str:
     return f'<code title="{_escape(value)}">{_escape(str(value)[:12])}</code>'
 
 
+def _parity_at_hermit(value: Any) -> str:
+    """Where a parity run measured: at its Hermit commit, if it names one."""
+    return "with no Hermit commit recorded" if value is None else f"at Hermit {_short_sha(value)}"
+
+
 #: The word the site retired as a placeholder for missing data, spelled in two
 #: parts so that this source never holds it
 #: (test_source_contains_no_retired_placeholder_literal). render_site refuses
@@ -2117,13 +2122,79 @@ def _parity_cell_credit(reader: Any, cell: Mapping[str, Any]) -> str:
     return "none: 0 in the floor"
 
 
+#: How many cells the committed-selection paragraph names from each of a run's
+#: two lists before it counts the rest.
+PARITY_LISTED_CELLS = 20
+
+
+def _parity_cell_names(names: Sequence[str], carriage: Mapping[str, Any]) -> str:
+    """The first `PARITY_LISTED_CELLS` of a run's listed cells, and a count of
+    the rest, which the summary lists."""
+    shown = ", ".join(f"<code>{_escape(name)}</code>" for name in names[:PARITY_LISTED_CELLS])
+    rest = len(names) - PARITY_LISTED_CELLS
+    if rest > 0:
+        shown += f', and {_integer(rest)} more (<code>{_escape(carriage["path"])}</code> lists every one)'
+    return shown
+
+
+def _parity_measured_at(run: Mapping[str, Any]) -> str:
+    """The Hermit commit a run measured, for its data-as-of paragraph."""
+    if run["hermit_sha"] is not None:
+        return f'Hermit commit {_short_sha(run["hermit_sha"])} measured'
+    conflicting = run["conflicting_hermit_shas"]
+    if conflicting:
+        return (
+            f"no single Hermit commit measured: its rows name {_integer(len(conflicting))} Hermit commits "
+            f'({", ".join(_short_sha(sha) for sha in conflicting)}), so none of its rows is admitted'
+        )
+    return "Hermit commit not recorded"
+
+
+def _parity_committed_text(run: Mapping[str, Any], carriage: Mapping[str, Any]) -> str:
+    """How much of its committed selection a run reported: the cells
+    `parity_summary.PARITY_CELLS_PATH` selects at the run's Hermit commit.
+
+    The run's line gives the counts; this names the cells behind them, or
+    says why the selection is unknown.
+    """
+    if run["committed_unknown"] is not None:
+        return (
+            '<p class="parity-committed">Committed selection unknown: '
+            f'<code class="parity-message">{_parity_quoted(run["committed_unknown"])}</code>. The panel cannot say '
+            "how much of it this run reported, or whether the run reported a cell outside it.</p>"
+        )
+    total = run["total"]
+    without_row = run["committed_cells_without_row"]
+    outside = run["cells_outside_committed"]
+    text = (
+        f'Committed selection: the {_integer(total["committed"])} cell(s) that '
+        f"<code>{_escape(_parity_reader().PARITY_CELLS_PATH)}</code> selects at Hermit commit "
+        f'{_short_sha(run["hermit_sha"])}.'
+    )
+    if without_row:
+        text += (
+            f' This run reported {_integer(total["committed_selected"])} of them. The '
+            f"{_integer(len(without_row))} with no row: {_parity_cell_names(without_row, carriage)}."
+        )
+    elif total["committed"]:
+        text += f' This run reported all {_integer(total["committed"])}.'
+    if outside:
+        text += (
+            f' It{" also" if total["committed"] else ""} reported {_integer(len(outside))} cell(s) outside the '
+            f"selection: {_parity_cell_names(outside, carriage)}."
+        )
+    else:
+        text += " It reported no cell outside it."
+    return f'<p class="parity-committed">{text}</p>'
+
+
 def _parity_run_section(run: Mapping[str, Any], carriage: Mapping[str, Any], summary: Mapping[str, Any]) -> str:
     reader = _parity_reader()
     total = run["total"]
     generated = summary["generated_from"]
     as_of = (
         f'<p class="parity-as-of">Data as of: last parity record emitted {_time_element(run["emitted_at"], "parity emitted_at")}; '
-        f'Hermit commit {_short_sha(run["hermit_sha"])} measured; '
+        f"{_parity_measured_at(run)}; "
         + (
             f'parity store at ledger commit {_short_sha(carriage["summarized_commit"])} (stale: '
             f'{_integer(carriage["unsummarized_records"])} newer record line(s) at ledger commit '
@@ -2168,7 +2239,7 @@ def _parity_run_section(run: Mapping[str, Any], carriage: Mapping[str, Any], sum
         _column_heading(title, help_text)
         for title, help_text in (
             ("Candidate backend", "The backend whose log is compared with the ptrace reference log, unless its inputs cannot be equalized."),
-            ("Selected", "Cells the parity selection named for this run: measured + no parity + not compared + unmeasured + record-missing + refused."),
+            ("Selected", "Cells this run reported: measured + no parity + not compared + unmeasured + record-missing + refused. The paragraph above the table says which of the committed selection's cells it did not report, and which cells it reported outside it."),
             ("Measured", "Cells whose two logs were compared: matched + diverged. The mean credit's denominator."),
             ("Matched", "Cells whose candidate log matched the reference log completely (credit 1)."),
             ("Diverged", "Cells whose logs differ; credit is the matched prefix over the longer log, below 1."),
@@ -2180,7 +2251,7 @@ def _parity_run_section(run: Mapping[str, Any], carriage: Mapping[str, Any], sum
             ("Mean credit (over measured)", "Credit sum over the measured cells; n/a when none was measured."),
             ("Floor credit (over floor cells)", "Credit sum over the floor cells; n/a when there are none."),
             ("Floor cells", "The floor credit's denominator: the selected cells less the no-parity and not-compared ones, and less every cell of a backend whose inputs cannot be equalized."),
-            ("Coverage", "The scorecard's line: each credit with the cells it is over."),
+            ("Line", "The scorecard's line: each credit with the cells it is over, and how many of the committed selection's cells the run reported."),
         )
     )
     rows = []
@@ -2288,6 +2359,7 @@ def _parity_run_section(run: Mapping[str, Any], carriage: Mapping[str, Any], sum
         f'<h3>{_escape(run["producer"])} run <code>{_escape(run["run_id"])}</code></h3>'
         + as_of
         + f'<p class="parity-line"><code>{_escape(run["line"])}</code></p>'
+        + _parity_committed_text(run, carriage)
         + basis + table + no_golden_table + not_compared_text + unmeasured_table + divergence_table + cell_table
     )
 
@@ -2295,6 +2367,7 @@ def _parity_run_section(run: Mapping[str, Any], carriage: Mapping[str, Any], sum
 def _parity_legacy_section(summary: Mapping[str, Any]) -> str:
     legacy = summary["legacy_rerun"]
     dropped = summary["legacy_dropped"]
+    dropped_cells = summary["legacy_dropped_cells"]
     rows = "".join(
         f'<tr><th scope="row"><code>{_escape(entry["cell"])}</code></th>'
         f'<td>{_escape(entry["verdict"])}</td><td>{_integer(entry["compared_records"])}</td>'
@@ -2313,7 +2386,10 @@ def _parity_legacy_section(summary: Mapping[str, Any]) -> str:
     )
     dropped_text = (
         "<p>Legacy observations dropped rather than shown as verdicts: "
-        + "; ".join(f"{_parity_quoted(reason)} {_integer(count)}" for reason, count in sorted(dropped.items()))
+        + "; ".join(
+            f"{_parity_quoted(reason)}: {_integer(rows)} row(s) for {_integer(dropped_cells[reason])} cell(s)"
+            for reason, rows in sorted(dropped.items())
+        )
         + ".</p>"
         if dropped else ""
     )
@@ -2366,8 +2442,8 @@ def _parity_panel(model: Any) -> str:
         parts.append(
             f"<details><summary>{_integer(len(others))} earlier parity run(s) in the store</summary><ul>"
             + "".join(
-                f'<li>{_escape(brief["producer"])} run <code>{_escape(brief["run_id"])}</code> at Hermit '
-                f'{_short_sha(brief["hermit_sha"])}: <code>{_escape(brief["line"])}</code></li>'
+                f'<li>{_escape(brief["producer"])} run <code>{_escape(brief["run_id"])}</code> '
+                f'{_parity_at_hermit(brief["hermit_sha"])}: <code>{_escape(brief["line"])}</code></li>'
                 for brief in others
             )
             + "</ul></details>"

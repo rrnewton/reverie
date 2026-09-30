@@ -159,14 +159,19 @@ class RealRunTransport(unittest.TestCase):
         provenance = json.loads((FIXTURE / "provenance.json").read_text(encoding="utf-8"))
         import hashlib
         bindings = {**provenance["files"], **provenance["derived_files"]}
-        self.assertEqual({VERBATIM, TYPED, "portable/parity.jsonl", "portable/parity.status.json",
-                          "privileged/parity.jsonl", "privileged/parity.status.json"}, set(bindings))
+        self.assertEqual({VERBATIM, TYPED, "committed-cells.json", "portable/parity.jsonl",
+                          "portable/parity.status.json", "privileged/parity.jsonl",
+                          "privileged/parity.status.json"}, set(bindings))
         for name, binding in bindings.items():
             data = (FIXTURE / name).read_bytes()
             self.assertEqual(binding["sha256"], hashlib.sha256(data).hexdigest(), name)
             self.assertEqual(binding["bytes"], len(data), name)
             self.assertEqual(binding["lines"], data.count(b"\n"), name)
         self.assertEqual(VERBATIM, provenance["derived_files"][TYPED]["derived_from"])
+        # The committed selection is read at the run's own Hermit commit.
+        committed = provenance["derived_files"]["committed-cells.json"]["derived_from"]
+        self.assertEqual((HERMIT_SHA, "ci/compat-envelope/parity-cells.json"),
+                         (committed["hermit_commit"], committed["path"]))
         self.assertEqual(HERMIT_SHA, provenance["hermit_sha"])
         self.assertEqual(RUN_ID, provenance["validate_unit"])
 

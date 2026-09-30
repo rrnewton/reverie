@@ -6,8 +6,15 @@ The real-shaped data is RUN 1953, the first validate whose
 sources, with the typed `unavailable_class` and `operand` their untyped
 verdicts imply (`ledger-sources-typed.jsonl`; provenance.json records the
 derivation), are wrapped exactly as `series.py append-parity` wraps them,
-then summarized by the Python reference of hermit's `summarize_parity`; the
-figures asserted below are that run's, not invented ones.
+then summarized by the Python reference of hermit's `summarize_parity` against
+the run's committed selection (`committed-cells.json`: the cells hermit
+d3a0a4ae3d16's `ci/compat-envelope/parity-cells.json` selects, the commit every
+row of the run names); the figures asserted below are that run's, not invented
+ones.
+
+The line format is the one hermit's scorecard shares with this checker (the
+S12/D5 format text, sha256 2eae2eb1945b...); `test_format_line_is_byte_for_byte`
+holds all twelve of its reference lines.
 
 See https://github.com/rrnewton/hermit/issues/3301 for the parity design.
 """
@@ -16,8 +23,10 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import html
 import importlib.util
 import json
+import math
 import re
 import sys
 from fractions import Fraction
@@ -37,8 +46,10 @@ LEDGER_COMMIT = "b" * 40
 #: RUN 1953: 175 measured cells, all diverged; dbt's 14 cells not compared;
 #: 3 candidate cells with no result row, unmeasured and 0 in the floor. The
 #: floor is the credit sum over 192 - 14 = 178 cells, the mean over the 175.
+#: The run reported all 192 cells its commit selects, and no other.
 RUN_1953_LINE = (
-    "parity: 0/192 matched; mean 0.052 over 175 measured; floor 0.051 over 175 measured of 192 selected "
+    "parity: 0/192 matched; selected 192 of 192 committed; mean 0.052 over 175 measured; "
+    "floor 0.051 over 175 measured of 192 selected "
     "(0 no golden; 14 not compared; 3 unmeasured: no-result-row 3) [inputs not equalized]"
 )
 #: The typed classes, written out here so a class moved between groups in the
@@ -101,10 +112,27 @@ STORE = {SHARD: b'{"line": 1}\n{"line": 2}\n'}
 EARLIER_COMMIT = "e" * 40
 
 
-def _summary(rows: list[dict[str, Any]], store: dict[str, bytes] = STORE) -> dict[str, Any]:
+#: RUN 1953's committed selection: the cells `ci/compat-envelope/parity-cells.json`
+#: selects at the run's Hermit commit (provenance.json records the derivation).
+COMMITTED_1953 = FIXTURE / "committed-cells.json"
+
+
+def _committed_1953() -> list[tuple[str, str]]:
+    names = json.loads(COMMITTED_1953.read_text(encoding="utf-8"))
+    return [tuple(name.rsplit("@", 1)) for name in names]
+
+
+def _committed_of(sha: str) -> list[tuple[str, str]] | None:
+    """The committed selection at a commit, as the scorecard reads it: RUN
+    1953's at its own commit, and unreadable at any other."""
+    return _committed_1953() if sha == HERMIT_SHA else None
+
+
+def _summary(rows: list[dict[str, Any]], store: dict[str, bytes] = STORE,
+             committed_of: Any = _committed_of) -> dict[str, Any]:
     return summary_module.summarize_rows(
         rows, store_sha256=summary_module.store_digest(store), series_commit=LEDGER_COMMIT,
-        tool_hermit_commit="c" * 40,
+        tool_hermit_commit="c" * 40, committed_of=committed_of,
     )
 
 
@@ -232,18 +260,48 @@ def _cell(test_id: str, backend: str = "kvm", *, verdict: str = "diverged", cred
     }
 
 
-def _document(cells: list[dict[str, Any]]) -> dict[str, Any]:
-    """A one-run parity-summary/v1 document whose tallies come from `tally`."""
+def _names(keys: Any) -> list[str]:
+    """(test id, backend) pairs as a run lists them: `<test>@<backend>`, in
+    hermit's cell order."""
+    return [f"{test_id}@{backend}" for test_id, backend in sorted(keys, key=summary_module._cell_order)]
+
+
+def _document(cells: list[dict[str, Any]], committed: Any = _IMPLIED, *, hermit_sha: str | None = HERMIT_SHA,
+              conflicting: tuple[str, ...] = (), unknown: str | None = None) -> dict[str, Any]:
+    """A one-run parity-summary/v1 document whose tallies come from `tally`.
+
+    `committed` is the run's committed selection as (test id, backend) pairs:
+    by default the cells reported, unless `unknown` gives the reason the
+    selection is unknown; None makes it unknown for want of the file at
+    `hermit_sha`. `conflicting` lists the Hermit commits of a run whose rows
+    named more than one.
+    """
+    reported = {(cell["test_id"], cell["backend"]) for cell in cells}
+    assert unknown is None or committed in (None, _IMPLIED)
+    if committed is _IMPLIED:
+        committed = None if unknown is not None else frozenset(reported)
+    elif committed is not None:
+        committed = frozenset(committed)
+    if committed is None and unknown is None:
+        unknown = f"this checkout cannot read {summary_module.PARITY_CELLS_PATH} at {hermit_sha}"
     per_backend = {
-        backend: summary_module.tally([cell for cell in cells if cell["backend"] == backend])
+        backend: summary_module.tally(
+            [cell for cell in cells if cell["backend"] == backend],
+            None if committed is None else {key for key in committed if key[1] == backend},
+        )
         for backend in summary_module.BACKENDS
     }
-    total = summary_module.tally(cells)
+    total = summary_module.tally(cells, committed)
     line = summary_module.render_line(total)
     run = {
-        "producer": "validate", "run_id": RUN_ID, "hermit_sha": HERMIT_SHA, "depth": None,
-        "emitted_at": EMITTED_AT, "line": line, "per_backend": per_backend, "total": total, "cells": cells,
+        "producer": "validate", "run_id": RUN_ID, "hermit_sha": hermit_sha,
+        "conflicting_hermit_shas": list(conflicting), "depth": None, "emitted_at": EMITTED_AT, "line": line,
+        "committed_unknown": unknown,
+        "committed_cells_without_row": [] if committed is None else _names(committed - reported),
+        "cells_outside_committed": [] if committed is None else _names(reported - committed),
+        "per_backend": per_backend, "total": total, "cells": cells,
     }
+    assert tuple(run) == summary_module.RUN_FIELDS
     baseline = _summary(_rows(_sources()[:1]))
     document = copy.deepcopy(baseline)
     refused = [cell for cell in cells if cell["verdict"] == "refused"]
@@ -251,7 +309,7 @@ def _document(cells: list[dict[str, Any]]) -> dict[str, Any]:
         rows_read=len(cells), producers=[run], duplicate_rows=0, refused_rows=len(refused),
         refusals=[{"path": "parity/rrnewton/fixturehost/2026-09.jsonl", "line": index + 1,
                    "message": f"{cell['cell']}: {cell['reason']}"} for index, cell in enumerate(refused)],
-        runs=[{"producer": "validate", "run_id": RUN_ID, "hermit_sha": HERMIT_SHA, "depth": None,
+        runs=[{"producer": "validate", "run_id": RUN_ID, "hermit_sha": hermit_sha, "depth": None,
                "emitted_at": EMITTED_AT, "headline": True, "line": line}],
     )
     summary_module.validate_summary(document)
@@ -292,18 +350,32 @@ def test_run_1953_total_line_is_the_committed_figure(run_1953: dict[str, Any]) -
     assert total["credit_sum"] == 9.072559709158929
     assert total["mean_credit"] == total["credit_sum"] / 175
     assert total["floor_credit"] == total["credit_sum"] / 178
+    # No credited cell had equal inputs, so the whole sum is unequalized.
+    assert (total["clean_credit_sum"], total["unequalized_credit_sum"]) == (0.0, total["credit_sum"])
+    assert (total["clean_mean_credit"], total["unequalized_mean_credit"]) == (None, total["mean_credit"])
+    # The commit every row names selects exactly the 192 cells the run reported.
+    assert (total["committed"], total["committed_selected"], total["outside_committed"]) == (192, 192, 0)
+    assert (run["committed_unknown"], run["committed_cells_without_row"], run["cells_outside_committed"],
+            run["conflicting_hermit_shas"]) == (None, [], [], [])
+    assert {backend: (run["per_backend"][backend]["committed"], run["per_backend"][backend]["committed_selected"])
+            for backend in summary_module.BACKENDS} == {
+        "dbt": (14, 14), "kvm": (77, 77), "liteinst": (99, 99), "sabre": (2, 2)}
 
 
 def test_run_1953_per_backend_and_first_divergences(run_1953: dict[str, Any]) -> None:
     [run] = run_1953["producers"]
     lines = {backend: summary_module.render_line(run["per_backend"][backend]) for backend in summary_module.BACKENDS}
     assert lines == {
-        "dbt": "parity: not compared: 0 measured of 14 selected (inputs cannot be equalized)",
-        "kvm": "parity: 0/77 matched; mean 0.101 over 76 measured; floor 0.100 over 76 measured of 77 selected "
+        "dbt": "parity: not compared: 0 measured of 14 selected (inputs cannot be equalized); "
+               "selected 14 of 14 committed",
+        "kvm": "parity: 0/77 matched; selected 77 of 77 committed; mean 0.101 over 76 measured; "
+               "floor 0.100 over 76 measured of 77 selected "
                "(0 no golden; 0 not compared; 1 unmeasured: no-result-row 1) [inputs not equalized]",
-        "liteinst": "parity: 0/99 matched; mean 0.014 over 98 measured; floor 0.014 over 98 measured of 99 "
+        "liteinst": "parity: 0/99 matched; selected 99 of 99 committed; mean 0.014 over 98 measured; "
+                    "floor 0.014 over 98 measured of 99 "
                     "selected (0 no golden; 0 not compared; 1 unmeasured: no-result-row 1) [inputs not equalized]",
-        "sabre": "parity: 0/2 matched; mean 0.020 over 1 measured; floor 0.010 over 1 measured of 2 selected "
+        "sabre": "parity: 0/2 matched; selected 2 of 2 committed; mean 0.020 over 1 measured; "
+                 "floor 0.010 over 1 measured of 2 selected "
                  "(0 no golden; 0 not compared; 1 unmeasured: no-result-row 1) [inputs not equalized]",
     }
     assert {backend: run["per_backend"][backend]["line"] for backend in summary_module.BACKENDS} == lines
@@ -337,6 +409,9 @@ def test_run_1953_panel_quotes_the_line_and_the_data_as_of(run_1953: dict[str, A
     assert RUN_1953_LINE in text
     assert f"validate run {RUN_ID}" in text
     assert "Hermit commit d3a0a4ae3d16 measured" in text
+    assert (f"{RUN_1953_LINE}\nCommitted selection: the 192 cell(s) that ci/compat-envelope/parity-cells.json "
+            "selects at Hermit commit d3a0a4ae3d16. This run reported all 192. It reported no cell outside it.\n"
+            "Mean credit 0.0518 ") in text
     assert "parity store at ledger commit bbbbbbbbbbbb (scorecard/parity.json" in text
     assert "Stale:" not in text and "Parity summary refused" not in text
     assert ("Mean credit 0.0518 is the credit sum 9.0726 over the 175 measured cell(s); floor credit 0.0510 is "
@@ -429,8 +504,8 @@ def test_each_class_is_counted_in_its_group(name: str) -> None:
         "record-missing": "0 no golden; 0 not compared; 1 record-missing",
     }[group]
     floor = "0.500" if group in ("no-golden", "not-compared") else "0.250"
-    assert total["line"] == (f"parity: 0/2 matched; mean 0.500 over 1 measured; floor {floor} over 1 measured "
-                             f"of 2 selected ({part})")
+    assert total["line"] == (f"parity: 0/2 matched; selected 2 of 2 committed; mean 0.500 over 1 measured; "
+                             f"floor {floor} over 1 measured of 2 selected ({part})")
 
 
 def test_an_unknown_class_is_refused_and_is_in_no_group() -> None:
@@ -474,16 +549,17 @@ def test_a_cell_reported_twice_keeps_its_most_adverse_report() -> None:
         "record": None,
     }
     portable = _unmeasured_like(copy.deepcopy(measured), "nondeterministic", "determinism-mismatch", "reference")
+    selection = [(measured["test_id"], measured["backend"])]
     for pair, verdict, lane, line in (
         ((measured, nondeterministic), "nondeterministic", "privileged",
-         "parity: 0/1 matched; mean n/a over 0 measured; floor n/a over 0 measured of 1 selected "
-         "(1 no golden: determinism-mismatch 1; 0 not compared)"),
+         "parity: 0/1 matched; selected 1 of 1 committed; mean n/a over 0 measured; floor n/a over 0 measured "
+         "of 1 selected (1 no golden: determinism-mismatch 1; 0 not compared)"),
         ((missing, portable), "record-missing", "privileged",
-         "parity: 0/1 matched; mean n/a over 0 measured; floor 0.000 over 0 measured of 1 selected "
-         "(0 no golden; 0 not compared; 1 record-missing)"),
+         "parity: 0/1 matched; selected 1 of 1 committed; mean n/a over 0 measured; floor 0.000 over 0 measured "
+         "of 1 selected (0 no golden; 0 not compared; 1 record-missing)"),
     ):
         for order in (pair, pair[::-1]):
-            document = _summary(_rows(list(order)))
+            document = _summary(_rows(list(order)), committed_of=lambda sha: selection)
             summary_module.validate_summary(document)
             [run] = document["producers"]
             [cell] = run["cells"]
@@ -498,8 +574,8 @@ def test_zero_of_twelve_renders_as_zero_of_twelve_with_its_floor() -> None:
     cells = [_cell(f"t/{n:02d}", credit=0.5) for n in range(12)]
     document = _document(cells)
     line = document["producers"][0]["line"]
-    assert line == ("parity: 0/12 matched; mean 0.500 over 12 measured; floor 0.500 over 12 measured of "
-                    "12 selected (0 no golden; 0 not compared)")
+    assert line == ("parity: 0/12 matched; selected 12 of 12 committed; mean 0.500 over 12 measured; "
+                    "floor 0.500 over 12 measured of 12 selected (0 no golden; 0 not compared)")
     text = _text(_panel(_carriage(document)))
     assert line in text
     assert "kvm | 12 | 12 | 0 | 12 | 0 | 0 | 0 | 0 | 0 | 0.5000 | 0.5000 | 12 |" in text
@@ -513,8 +589,8 @@ def test_record_missing_keeps_the_denominator_and_lowers_the_floor() -> None:
     assert (total["selected"], total["measured"], total["record_missing"], total["credited"],
             total["floor_cells"]) == (12, 9, 3, 9, 12)
     assert document["producers"][0]["line"] == (
-        "parity: 0/12 matched; mean 0.500 over 9 measured; floor 0.375 over 9 measured of 12 selected "
-        "(0 no golden; 0 not compared; 3 record-missing)")
+        "parity: 0/12 matched; selected 12 of 12 committed; mean 0.500 over 9 measured; "
+        "floor 0.375 over 9 measured of 12 selected (0 no golden; 0 not compared; 3 record-missing)")
     text = _text(_panel(_carriage(document)))
     assert "t/11@kvm | record-missing | record-missing | record-missing | none | none: 0 in the floor |" in text
     assert ("Mean credit 0.5000 is the credit sum 4.5000 over the 9 measured cell(s); floor credit 0.3750 is the "
@@ -541,8 +617,10 @@ def test_the_mean_is_over_the_measured_cells_and_the_floor_leaves_out_no_golden_
     # count as 0 in it, the no-golden cell as nothing at all.
     assert result["mean_credit"] == 0.25
     assert result["floor_credit"] == 0.1
+    # A tally given no committed selection says so.
     assert summary_module.render_line(result) == (
-        "parity: 0/6 matched; mean 0.250 over 2 measured (1 credited); floor 0.100 over 2 measured of 6 selected "
+        "parity: 0/6 matched; committed selection unknown; mean 0.250 over 2 measured (1 credited); "
+        "floor 0.100 over 2 measured of 6 selected "
         "(1 no golden: determinism-mismatch 1; 0 not compared; 1 unmeasured: no-result-row 1; 1 record-missing; "
         "1 refused)")
     text = _text(_panel(_carriage(_document(cells))))
@@ -551,11 +629,13 @@ def test_the_mean_is_over_the_measured_cells_and_the_floor_leaves_out_no_golden_
             "cell(s) less 1 with no parity (no deterministic golden) and 0 not compared") in text
     unmeasured = summary_module.tally([_classed("t/g", "no-result-row")])
     assert (unmeasured["mean_credit"], unmeasured["floor_credit"]) == (None, 0.0)
-    assert unmeasured["line"] == ("parity: 0/1 matched; mean n/a over 0 measured; floor 0.000 over 0 measured of "
+    assert unmeasured["line"] == ("parity: 0/1 matched; committed selection unknown; mean n/a over 0 measured; "
+                                  "floor 0.000 over 0 measured of "
                                   "1 selected (0 no golden; 0 not compared; 1 unmeasured: no-result-row 1)")
     no_golden = summary_module.tally([_classed("t/h", "determinism-mismatch")])
     assert (no_golden["mean_credit"], no_golden["floor_credit"]) == (None, None)
-    assert no_golden["line"] == ("parity: 0/1 matched; mean n/a over 0 measured; floor n/a over 0 measured of "
+    assert no_golden["line"] == ("parity: 0/1 matched; committed selection unknown; mean n/a over 0 measured; "
+                                 "floor n/a over 0 measured of "
                                  "1 selected (1 no golden: determinism-mismatch 1; 0 not compared)")
 
 
@@ -577,7 +657,8 @@ def test_every_credit_is_printed_with_the_cells_it_is_over() -> None:
     cells = [_cell("t/matched", verdict="matched"),
              *(_classed(f"t/{name}", name) for name in NO_GOLDEN)]
     document = _document(cells)
-    line = ("parity: 1/10 matched; mean 1.000 over 1 measured; floor 1.000 over 1 measured of 10 selected "
+    line = ("parity: 1/10 matched; selected 10 of 10 committed; mean 1.000 over 1 measured; "
+            "floor 1.000 over 1 measured of 10 selected "
             "(9 no golden: determinism-mismatch 1, timeout 1, crash 1, oom 1, infrastructure-error 1, "
             "sandbox-denied 1, failed-untyped 1, ended 1, host-inapplicable 1; 0 not compared)")
     run = document["producers"][0]
@@ -603,7 +684,7 @@ def test_a_backend_whose_inputs_cannot_be_equalized_enters_no_mean_or_floor() ->
     # Every selected dbt cell not compared.
     document, text = _dbt_run(not_compared)
     run = document["producers"][0]
-    line = "parity: not compared: 0 measured of 14 selected (inputs cannot be equalized)"
+    line = "parity: not compared: 0 measured of 14 selected (inputs cannot be equalized); selected 14 of 14 committed"
     assert run["line"] == run["total"]["line"] == run["per_backend"]["dbt"]["line"] == line
     assert f"dbt | 14 | 0 | 0 | 0 | 0 | 14 | 0 | 0 | 0 | n/a | n/a | 0 | {line} |" in text
     assert ("Mean credit is n/a: no selected cell was measured; floor credit is n/a: no cell is in the floor, "
@@ -615,7 +696,8 @@ def test_a_backend_whose_inputs_cannot_be_equalized_enters_no_mean_or_floor() ->
                                _classed("d/nondet-1", "determinism-mismatch", "dbt"), *not_compared[2:]])
     dbt = document["producers"][0]["per_backend"]["dbt"]
     assert (dbt["selected"], dbt["no_golden"], dbt["not_compared"], dbt["floor_cells"]) == (14, 2, 12, 0)
-    assert dbt["line"] == ("parity: 0/14 matched; mean n/a over 0 measured; floor n/a over 0 measured of "
+    assert dbt["line"] == ("parity: 0/14 matched; selected 14 of 14 committed; mean n/a over 0 measured; "
+                           "floor n/a over 0 measured of "
                            "14 selected (2 no golden: determinism-mismatch 2; 12 not compared)")
     assert "dbt | 14 | 0 | 0 | 0 | 2 | 12 | 0 | 0 | 0 | n/a | n/a | 0 |" in text
     # Its record-missing and refused cells stay counted, and stay out of every
@@ -628,12 +710,14 @@ def test_a_backend_whose_inputs_cannot_be_equalized_enters_no_mean_or_floor() ->
     assert (dbt["selected"], dbt["not_compared"], dbt["record_missing"], dbt["refused"], dbt["floor_cells"]) == (
         14, 12, 1, 1, 0)
     assert (dbt["mean_credit"], dbt["floor_credit"]) == (None, None)
-    assert dbt["line"] == ("parity: 0/14 matched; mean n/a over 0 measured; floor n/a over 0 measured of "
+    assert dbt["line"] == ("parity: 0/14 matched; selected 14 of 14 committed; mean n/a over 0 measured; "
+                           "floor n/a over 0 measured of "
                            "14 selected (0 no golden; 12 not compared; 1 record-missing; 1 refused; floor excludes "
                            "2 record-missing or refused cell(s) whose inputs cannot be equalized)")
     assert (total["selected"], total["floor_cells"], total["mean_credit"], total["floor_credit"]) == (
         15, 1, 1.0, 1.0)
-    assert run["line"] == ("parity: 1/15 matched; mean 1.000 over 1 measured; floor 1.000 over 1 measured of "
+    assert run["line"] == ("parity: 1/15 matched; selected 15 of 15 committed; mean 1.000 over 1 measured; "
+                           "floor 1.000 over 1 measured of "
                            "15 selected (0 no golden; 12 not compared; 1 record-missing; 1 refused; floor excludes "
                            "2 record-missing or refused cell(s) whose inputs cannot be equalized)")
     assert ("floor credit 1.0000 is the same sum over the 1 floor cell(s): the 15 selected cell(s) less 0 with "
@@ -672,17 +756,25 @@ MIXED = [
     *((f"m/ine-{n:02d}", "dbt", dict(verdict="inputs-not-equalized")) for n in range(12)),
 ]
 MIXED_LINES = {
-    "kvm": "parity: 1/5 matched; mean 0.650 over 2 measured; floor 0.325 over 2 measured of 5 selected "
+    "kvm": "parity: 1/5 matched; selected 5 of 5 committed; mean 0.650 over 2 measured; "
+           "floor 0.325 over 2 measured of 5 selected "
            "(1 no golden: determinism-mismatch 1; 0 not compared; 1 unmeasured: no-result-row 1; 1 record-missing)",
-    "liteinst": "parity: 0/3 matched; mean 0.500 over 1 measured; floor 0.250 over 1 measured of 3 selected "
+    "liteinst": "parity: 0/3 matched; selected 3 of 3 committed; mean 0.500 over 1 measured; "
+                "floor 0.250 over 1 measured of 3 selected "
                 "(1 no golden: timeout 1; 0 not compared; 1 unmeasured: log-not-retained 1) [inputs not equalized]",
-    "sabre": "parity: 0/2 matched; mean 0.400 over 1 measured; floor 0.200 over 1 measured of 2 selected "
+    "sabre": "parity: 0/2 matched; selected 2 of 2 committed; mean 0.400 over 1 measured; "
+             "floor 0.200 over 1 measured of 2 selected "
              "(0 no golden; 0 not compared; 1 refused)",
-    "dbt": "parity: 0/14 matched; mean n/a over 0 measured; floor n/a over 0 measured of 14 selected "
+    "dbt": "parity: 0/14 matched; selected 14 of 14 committed; mean n/a over 0 measured; "
+           "floor n/a over 0 measured of 14 selected "
            "(2 no golden: determinism-mismatch 2; 12 not compared)",
-    "TOTAL": "parity: 1/24 matched; mean 0.550 over 4 measured; floor 0.275 over 4 measured of 24 selected "
+    # Three credited cells had equal inputs (1.0, 0.3, 0.4: mean 0.567) and one
+    # had not (0.5): the marker gives each mean over its own cells.
+    "TOTAL": "parity: 1/24 matched; selected 24 of 24 committed; mean 0.550 over 4 measured; "
+             "floor 0.275 over 4 measured of 24 selected "
              "(4 no golden: determinism-mismatch 3, timeout 1; 12 not compared; 2 unmeasured: log-not-retained 1, "
-             "no-result-row 1; 1 record-missing; 1 refused) [inputs equalized for 3 of 4 credited]",
+             "no-result-row 1; 1 record-missing; 1 refused) [inputs equalized for 3 of 4 credited: "
+             "mean 0.567 over 3 with equal inputs; mean 0.500 over 1 with unequal inputs]",
 }
 
 
@@ -1009,7 +1101,8 @@ def test_an_unavailable_no_result_row_cell_is_unmeasured_on_either_side(operand:
     total = document["producers"][0]["total"]
     assert summary_module.cell_group(cell) == "unmeasured"
     assert (total["unmeasured"], total["unmeasured_by_class"]["no-result-row"], total["floor_cells"]) == (1, 1, 2)
-    assert total["line"] == ("parity: 0/2 matched; mean 0.500 over 1 measured; floor 0.250 over 1 measured of 2 "
+    assert total["line"] == ("parity: 0/2 matched; selected 2 of 2 committed; mean 0.500 over 1 measured; "
+                             "floor 0.250 over 1 measured of 2 "
                              "selected (0 no golden; 0 not compared; 1 unmeasured: no-result-row 1)")
     assert (f"t/x@kvm | unmeasured | unavailable | no-result-row | {operand} | none: 0 in the floor |"
             in _text(_panel(_carriage(document))))
@@ -1080,11 +1173,17 @@ def test_every_tally_field_is_recomputed_from_the_cells(run_1953: dict[str, Any]
 
 
 def test_the_credit_sum_is_the_sum_of_the_cells_credits(run_1953: dict[str, Any]) -> None:
+    # Every kvm credit of RUN 1953 is unequalized, so the unequalized part
+    # moves with the sum and its mean with it: the sub-sum and mean guards
+    # still hold, and only the recompute from the cells is crossed.
     document = copy.deepcopy(run_1953)
     kvm = document["producers"][0]["per_backend"]["kvm"]
     true_sum = kvm["credit_sum"]
+    assert (kvm["clean_credit_sum"], kvm["unequalized_credit_sum"]) == (0.0, true_sum)
     kvm["credit_sum"] = true_sum + 0.5
+    kvm["unequalized_credit_sum"] = true_sum + 0.5
     kvm["mean_credit"] = kvm["credit_sum"] / kvm["measured"]
+    kvm["unequalized_mean_credit"] = kvm["unequalized_credit_sum"] / kvm["unequalized_credited"]
     kvm["floor_credit"] = kvm["credit_sum"] / kvm["floor_cells"]
     kvm["line"] = summary_module.render_line(kvm)
     _refused(document, f"{RUN_AT}.per_backend.kvm: credit_sum {kvm['credit_sum']!r} disagrees with its cells, "
@@ -1294,6 +1393,7 @@ def test_the_panel_withholds_the_retired_placeholder_word_in_the_scorecards_text
     reason = f"verdict {word} is not a ledger verdict; {word} is the Debug form of unavailable"
     document = _document([_cell("t/a", credit=0.5), _cell("t/b", verdict="refused", reason=reason)])
     document["legacy_dropped"] = {f"legacy verdict {word}": 2}
+    document["legacy_dropped_cells"] = {f"legacy verdict {word}": 1}
     summary_module.validate_summary(document)
     panel = _panel(_carriage(document))
     assert word not in panel
@@ -1302,7 +1402,7 @@ def test_the_panel_withholds_the_retired_placeholder_word_in_the_scorecards_text
     assert f"<li><code>parity/rrnewton/fixturehost/2026-09.jsonl:1</code>: t/b@kvm: {shown}</li>" in panel
     assert f'<td><code class="parity-message">{shown}</code></td></tr>' in panel
     assert ("<p>Legacy observations dropped rather than shown as verdicts: "
-            "legacy verdict [retired word withheld] 2.</p>") in panel
+            "legacy verdict [retired word withheld]: 2 row(s) for 1 cell(s).</p>") in panel
 
 
 def test_a_headline_brief_agrees_with_its_run(run_1953: dict[str, Any]) -> None:
@@ -1368,8 +1468,8 @@ def test_a_headline_credit_below_one_never_prints_as_one() -> None:
     document = _document([*(_cell(f"t/{n}", verdict="matched") for n in range(3)), _cell("t/d", credit=0.999)])
     run = document["producers"][0]
     assert f"{run['total']['mean_credit']:.3f}" == "1.000" and run["total"]["mean_credit"] < 1.0
-    assert run["line"] == ("parity: 3/4 matched; mean 0.999 over 4 measured; floor 0.999 over 4 measured of "
-                           "4 selected (0 no golden; 0 not compared)")
+    assert run["line"] == ("parity: 3/4 matched; selected 4 of 4 committed; mean 0.999 over 4 measured; "
+                           "floor 0.999 over 4 measured of 4 selected (0 no golden; 0 not compared)")
 
 
 def test_duplicate_keys_and_non_finite_numbers_are_refused() -> None:
@@ -1707,12 +1807,16 @@ def test_record_missing_source_survives_into_the_panel() -> None:
                    "scope_source": "expected-scope"},
         "record": None,
     }
-    document = _summary(_rows([*_sources()[:3], missing]))
+    sources = [*_sources()[:3], missing]
+    selection = [(source["test_id"], source["backend"]) for source in sources]
+    document = _summary(_rows(sources), committed_of=lambda sha: selection if sha == HERMIT_SHA else None)
     run = document["producers"][0]
     total = run["total"]
     assert (total["selected"], total["record_missing"], total["credited"], total["floor_cells"]) == (4, 1, 3, 4)
-    assert run["line"] == ("parity: 0/4 matched; mean 0.069 over 3 measured; floor 0.052 over 3 measured of "
-                           "4 selected (0 no golden; 0 not compared; 1 record-missing) [inputs not equalized]")
+    assert (total["committed"], total["committed_selected"], total["outside_committed"]) == (4, 4, 0)
+    assert run["line"] == ("parity: 0/4 matched; selected 4 of 4 committed; mean 0.069 over 3 measured; "
+                           "floor 0.052 over 3 measured of 4 selected (0 no golden; 0 not compared; "
+                           "1 record-missing) [inputs not equalized]")
     [cell] = [cell for cell in run["cells"] if cell["verdict"] == "record-missing"]
     assert cell["credit"] is None and cell["lane"] == "privileged"
     assert (cell["unavailable_class"], cell["operand"]) == ("record-missing", None)
@@ -1733,15 +1837,18 @@ def test_record_missing_source_survives_into_the_panel() -> None:
 # copied byte for byte from hermit (provenance.json names the commit and every
 # file's digest).
 #
-# That commit predates the typed `unavailable_class` and `operand` fields, so this
-# reader refuses its summary and its rows. The byte-for-byte comparison with the
-# Rust writer needs the fixture re-vendored from the typed S12 commit; until then
-# the tests below prove the refusal, and that the reference over the same rows,
-# typed, agrees with S12 on everything the typed accounting did not change.
+# That commit predates the typed `unavailable_class` and `operand` fields and the
+# shared format (the summary's `legacy_dropped_cells`, each run's committed
+# selection, each tally's coverage and credit parts), so this reader refuses its
+# summary, at the first field it lacks, and its rows. The byte-for-byte comparison
+# with the Rust writer needs the fixture re-vendored from the S12 commit that
+# writes the shared format; until then the tests below prove the refusal, and that
+# the reference over the same rows, typed, agrees with S12 on everything the typed
+# accounting and the shared format did not change.
 
 S12 = REPOSITORY / "ci-hub/tests/fixtures/parity-s12-69feeee188e"
 S12_COMMIT = "69feeee188e8480c34645716b57bc87f3f857cc5"
-S12_REFUSAL = f"parity summary.producers[0] (validate run {RUN_ID}).cells[0] is missing field(s): operand"
+S12_REFUSAL = "parity summary is missing field(s): legacy_dropped_cells"
 
 
 def _s12() -> tuple[bytes, bytes, dict[str, Any]]:
@@ -1875,7 +1982,11 @@ def test_the_reference_over_typed_s12_rows_agrees_with_s12_but_for_the_typed_acc
     theirs = json.loads(data)
     digest = summary_module.store_digest({provenance["store_shard"]: rows})
     typed = _typed_s12_rows(ledger.parse_lines(rows.decode(), "S12 rows.jsonl"))
-    mine, count = _catalogue_renamed(summary_module.summarize_rows(typed, store_sha256=digest))
+    # Every S12 row names RUN 1953's commit, so the reference reads the
+    # committed selection there.
+    assert {row["hermit_sha"] for row in typed} == {HERMIT_SHA}
+    mine, count = _catalogue_renamed(
+        summary_module.summarize_rows(typed, store_sha256=digest, committed_of=_committed_of))
     assert count == 192
     summary_module.validate_summary(mine)
     [run], [s12] = mine["producers"], theirs["producers"]
@@ -1907,10 +2018,847 @@ def test_the_reference_over_typed_s12_rows_agrees_with_s12_but_for_the_typed_acc
     assert run["total"]["floor_credit"] == run["total"]["credit_sum"] / 178
     assert (s12["per_backend"]["dbt"]["floor_credit"], run["per_backend"]["dbt"]["floor_credit"]) == (0.0, None)
     # Everything else is the same: the document around the producers, each
-    # run's identity, and each brief but for its line.
-    assert {key: value for key, value in mine.items() if key not in ("producers", "runs")} == {
+    # run's identity, and each brief but for its line. The shared format's
+    # fields, which S12 did not write yet, hold what RUN 1953 gives: no dropped
+    # legacy cell, one Hermit commit, and a committed selection it reported in
+    # full.
+    shared = ("legacy_dropped_cells",)
+    assert mine["legacy_dropped_cells"] == {} and "legacy_dropped_cells" not in theirs
+    assert {key: value for key, value in mine.items() if key not in ("producers", "runs", *shared)} == {
         key: value for key, value in theirs.items() if key not in ("producers", "runs")}
+    shared_run = ("conflicting_hermit_shas", "committed_unknown", "committed_cells_without_row",
+                  "cells_outside_committed")
+    assert [run[field] for field in shared_run] == [[], None, [], []]
+    assert not set(shared_run) & set(s12)
     identity = ("line", "per_backend", "total", "cells")
-    assert {key: value for key, value in run.items() if key not in identity} == {
+    assert {key: value for key, value in run.items() if key not in (*identity, *shared_run)} == {
         key: value for key, value in s12.items() if key not in identity}
     assert [dict(brief, line=None) for brief in mine["runs"]] == [dict(brief, line=None) for brief in theirs["runs"]]
+
+
+# --- The shared S12/D5 format ---------------------------------------------------------
+#
+# hermit's scorecard (slice S12 of https://github.com/rrnewton/hermit/issues/3301)
+# and this checker (slice D5) work from one format text, approved by parity-green
+# on 2026-09-30 (sha256 2eae2eb1945bf396f6e75e56ff9e12d3bf6520eed14e0abdbd0c7578a0498969).
+# Its section 5 gives twelve cases, each a tally and the line its reference code
+# renders for it. FORMAT_CASES_TEXT is that section byte for byte, from its first
+# case heading to its last line; `_format_case` gives cells whose tally is each
+# case's.
+
+#: Section 5 of the shared format text.
+FORMAT_CASES_TEXT = """\
+### A. A normal backend (kvm; one no-golden cell; every committed cell reported)
+
+Tally: selected=77, measured=76, matched=0, diverged=76, no_golden=1, not_compared=0, unmeasured=0, record_missing=0, refused=0, credited=76, clean_credited=0, unequalized_credited=76, floor_cells=76, committed=77, committed_selected=77, outside_committed=0; no_golden_by_class: determinism-mismatch 1.
+  credit_sum=7.599999999999989, clean_credit_sum=0.0, unequalized_credit_sum=7.599999999999989, mean_credit=0.09999999999999985, clean_mean_credit=null, unequalized_mean_credit=0.09999999999999985, floor_credit=0.09999999999999985.
+
+    parity: 0/77 matched; selected 77 of 77 committed; mean 0.100 over 76 measured; floor 0.100 over 76 measured of 77 selected (1 no golden: determinism-mismatch 1; 0 not compared) [inputs not equalized]
+
+### B. A normal backend with every clause
+
+This case has partial coverage, one cell outside the selection, mixed inputs,
+one divergence without a prefix (so it is measured but not credited),
+no-golden cells, an unmeasured cell, a record-missing cell and a refused cell.
+
+Tally: selected=10, measured=5, matched=2, diverged=3, no_golden=2, not_compared=0, unmeasured=1, record_missing=1, refused=1, credited=4, clean_credited=3, unequalized_credited=1, floor_cells=8, committed=12, committed_selected=9, outside_committed=1; no_golden_by_class: timeout 1, crash 1; unmeasured_by_class: log-diff-failed 1.
+  credit_sum=2.75, clean_credit_sum=1.75, unequalized_credit_sum=1.0, mean_credit=0.55, clean_mean_credit=0.5833333333333334, unequalized_mean_credit=1.0, floor_credit=0.34375.
+
+    parity: 2/10 matched; selected 9 of 12 committed (partial); 1 outside the committed selection; mean 0.550 over 5 measured (4 credited); floor 0.344 over 5 measured of 10 selected (2 no golden: timeout 1, crash 1; 0 not compared; 1 unmeasured: log-diff-failed 1; 1 record-missing; 1 refused) [inputs equalized for 3 of 4 credited: mean 0.583 over 3 with equal inputs; mean 1.000 over 1 with unequal inputs]
+
+### C. DBT, every selected cell not compared
+
+Tally: selected=14, measured=0, matched=0, diverged=0, no_golden=0, not_compared=14, unmeasured=0, record_missing=0, refused=0, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=0, committed=14, committed_selected=14, outside_committed=0.
+  credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=null.
+
+    parity: not compared: 0 measured of 14 selected (inputs cannot be equalized); selected 14 of 14 committed
+
+### C2. DBT with some no-golden cells: the ordinary line, floor n/a
+
+Tally: selected=14, measured=0, matched=0, diverged=0, no_golden=2, not_compared=12, unmeasured=0, record_missing=0, refused=0, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=0, committed=14, committed_selected=14, outside_committed=0; no_golden_by_class: determinism-mismatch 2.
+  credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=null.
+
+    parity: 0/14 matched; selected 14 of 14 committed; mean n/a over 0 measured; floor n/a over 0 measured of 14 selected (2 no golden: determinism-mismatch 2; 12 not compared)
+
+### C3. DBT with a record-missing cell, which is outside every floor
+
+Tally: selected=14, measured=0, matched=0, diverged=0, no_golden=0, not_compared=13, unmeasured=0, record_missing=1, refused=0, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=0, committed=14, committed_selected=14, outside_committed=0.
+  credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=null.
+
+    parity: 0/14 matched; selected 14 of 14 committed; mean n/a over 0 measured; floor n/a over 0 measured of 14 selected (0 no golden; 13 not compared; 1 record-missing; floor excludes 1 record-missing or refused cell(s) whose inputs cannot be equalized)
+
+### D. A backend with nothing measured and a cell in the floor: floor 0.000, mean n/a
+
+Tally: selected=2, measured=0, matched=0, diverged=0, no_golden=1, not_compared=0, unmeasured=1, record_missing=0, refused=0, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=1, committed=2, committed_selected=2, outside_committed=0; no_golden_by_class: timeout 1; unmeasured_by_class: no-result-row 1.
+  credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=0.0.
+
+    parity: 0/2 matched; selected 2 of 2 committed; mean n/a over 0 measured; floor 0.000 over 0 measured of 2 selected (1 no golden: timeout 1; 0 not compared; 1 unmeasured: no-result-row 1)
+
+### D2. A backend with nothing measured and nothing in the floor: both n/a
+
+Tally: selected=2, measured=0, matched=0, diverged=0, no_golden=2, not_compared=0, unmeasured=0, record_missing=0, refused=0, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=0, committed=2, committed_selected=2, outside_committed=0; no_golden_by_class: timeout 1, crash 1.
+  credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=null.
+
+    parity: 0/2 matched; selected 2 of 2 committed; mean n/a over 0 measured; floor n/a over 0 measured of 2 selected (2 no golden: timeout 1, crash 1; 0 not compared)
+
+### D3. A backend the run reported no cell for, which its commit selects
+
+Tally: selected=0, measured=0, matched=0, diverged=0, no_golden=0, not_compared=0, unmeasured=0, record_missing=0, refused=0, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=0, committed=2, committed_selected=0, outside_committed=0.
+  credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=null.
+
+    parity: 0/0 matched; selected 0 of 2 committed (partial); mean n/a over 0 measured; floor n/a over 0 measured of 0 selected (0 no golden; 0 not compared)
+
+### E. Committed selection unknown: 13 refused rows (a run whose rows name two Hermit commits)
+
+Tally: selected=13, measured=0, matched=0, diverged=0, no_golden=0, not_compared=0, unmeasured=0, record_missing=0, refused=13, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=13, committed=null, committed_selected=null, outside_committed=null.
+  credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=0.0.
+
+    parity: 0/13 matched; committed selection unknown; mean n/a over 0 measured; floor 0.000 over 0 measured of 13 selected (0 no golden; 0 not compared; 13 refused)
+
+### E2. Committed selection unknown: an ordinary measured run
+
+Tally: selected=12, measured=12, matched=0, diverged=12, no_golden=0, not_compared=0, unmeasured=0, record_missing=0, refused=0, credited=12, clean_credited=0, unequalized_credited=12, floor_cells=12, committed=null, committed_selected=null, outside_committed=null.
+  credit_sum=1.2, clean_credit_sum=0.0, unequalized_credit_sum=1.2, mean_credit=0.09999999999999999, clean_mean_credit=null, unequalized_mean_credit=0.09999999999999999, floor_credit=0.09999999999999999.
+
+    parity: 0/12 matched; committed selection unknown; mean 0.100 over 12 measured; floor 0.100 over 12 measured of 12 selected (0 no golden; 0 not compared) [inputs not equalized]
+
+### E3. Committed selection unknown: DBT not compared
+
+Tally: selected=14, measured=0, matched=0, diverged=0, no_golden=0, not_compared=14, unmeasured=0, record_missing=0, refused=0, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=0, committed=null, committed_selected=null, outside_committed=null.
+  credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=null.
+
+    parity: not compared: 0 measured of 14 selected (inputs cannot be equalized); committed selection unknown
+
+### F. A run total that includes DBT's record-missing cell: the total's floor excludes it
+
+Tally: selected=7, measured=4, matched=0, diverged=4, no_golden=0, not_compared=2, unmeasured=0, record_missing=1, refused=0, credited=4, clean_credited=0, unequalized_credited=4, floor_cells=4, committed=7, committed_selected=7, outside_committed=0.
+  credit_sum=0.4, clean_credit_sum=0.0, unequalized_credit_sum=0.4, mean_credit=0.1, clean_mean_credit=null, unequalized_mean_credit=0.1, floor_credit=0.1.
+
+    parity: 0/7 matched; selected 7 of 7 committed; mean 0.100 over 4 measured; floor 0.100 over 4 measured of 7 selected (0 no golden; 2 not compared; 1 record-missing; floor excludes 1 record-missing or refused cell(s) whose inputs cannot be equalized) [inputs not equalized]
+"""
+FORMAT_CASES_SHA256 = "1dbddb0dda536b180e8fea7a2d451e2924b6a9c40c00e1bab5235fe43d262bb0"
+FORMAT_CASES = ("A", "B", "C", "C2", "C3", "D", "D2", "D3", "E", "E2", "E3", "F")
+#: The file whose selection at a run's own commit is the run's committed
+#: selection (hermit ci/manifest-plan/src/parity.rs `PARITY_CELLS_PATH`).
+CELLS_FILE = "ci/compat-envelope/parity-cells.json"
+LATER = "2026-09-28T22:00:00Z"
+LATER_RUN_ID = "validate-fixture-later"
+
+
+def _format_texts() -> dict[str, dict[str, str]]:
+    """Each case's `Tally:` text, its sums and its line, as section 5 prints
+    them."""
+    texts: dict[str, dict[str, str]] = {}
+    case = None
+    for line in FORMAT_CASES_TEXT.splitlines():
+        if line.startswith("### "):
+            case = line[len("### "):].split(". ", 1)[0]
+            assert case not in texts, case
+            texts[case] = {}
+            continue
+        if line.startswith("Tally: "):
+            key, text = "tally", line[len("Tally: "):]
+        elif line.startswith("  credit_sum="):
+            key, text = "sums", line[len("  "):]
+        elif line.startswith("    parity: "):
+            key, text = "line", line[len("    "):]
+        else:
+            continue
+        assert case is not None and key not in texts[case], (case, key)
+        texts[case][key] = text
+    assert tuple(texts) == FORMAT_CASES
+    assert all(set(case_texts) == {"tally", "sums", "line"} for case_texts in texts.values())
+    return texts
+
+
+FORMAT_TEXTS = _format_texts()
+
+
+def _format_figures(*texts: str) -> dict[str, Any]:
+    """The `name=value` figures of a case's `Tally:` and sums texts, each value
+    as the text prints it, and its `<field>: <class> <n>, ...` class counts as
+    (class, count) pairs in the order printed."""
+    figures: dict[str, Any] = {}
+    for text in texts:
+        assert text.endswith("."), text
+        first, *by_class = text[:-1].split("; ")
+        for pair in first.split(", "):
+            name, value = pair.split("=")
+            assert name not in figures, name
+            figures[name] = value
+        for clause in by_class:
+            field, counts = clause.split(": ")
+            assert field in ("no_golden_by_class", "unmeasured_by_class") and field not in figures, clause
+            figures[field] = [(name, int(count)) for name, count in (entry.rsplit(" ", 1) for entry in counts.split(", "))]
+    return figures
+
+
+def _shown(value: Any) -> str:
+    """A figure as section 5 prints it: `null`, or Python's repr, which is the
+    shortest text that reads back as the same number."""
+    return "null" if value is None else repr(value)
+
+
+def _t(number: int) -> str:
+    return f"c-programs/t{number}"
+
+
+#: A diverged cell credited 0.1, measured on unequal inputs.
+_TENTH = dict(credit=0.1, basis="unequalized")
+#: hermit's scorecard's reason for a run whose rows name two Hermit commits.
+_TWO_COMMITS = "the run's rows name more than one Hermit commit"
+
+
+def _kvm_tenths(numbers: Any) -> list[dict[str, Any]]:
+    return [_cell(_t(number), "kvm", **_TENTH) for number in numbers]
+
+
+def _dbt_not_compared(numbers: Any) -> list[dict[str, Any]]:
+    return [_cell(_t(number), "dbt", **_NOT_COMPARED) for number in numbers]
+
+
+def _format_case(case: str) -> tuple[list[dict[str, Any]], set[tuple[str, str]] | None]:
+    """A case's cells and its committed selection, None when that is unknown.
+
+    The selection is the cells reported, but for B (t10 reported outside it,
+    t11 to t13 in it without a row) and D3 (two sabre cells, neither
+    reported); every E case's is unknown.
+    """
+    if case == "A":
+        cells = _kvm_tenths(range(76)) + [_cell(_t(76), "kvm", **_NONDETERMINISTIC)]
+    elif case == "B":
+        backend = "liteinst"
+        cells = [
+            _cell(_t(1), backend, verdict="matched"),
+            _cell(_t(2), backend, verdict="matched", basis="unequalized"),
+            _cell(_t(3), backend, credit=0.5),
+            _cell(_t(4), backend, credit=0.25),
+            # Diverged without a matched prefix: measured, and not credited.
+            _cell(_t(5), backend, credit=None),
+            _cell(_t(6), backend, **_TIMEOUT),
+            _cell(_t(7), backend, verdict="candidate-missing", unavailable_class="crash", operand="candidate"),
+            _cell(_t(8), backend, verdict="unavailable", unavailable_class="log-diff-failed", operand=None),
+            _cell(_t(9), backend, verdict="record-missing"),
+            _cell(_t(10), backend, verdict="refused"),
+        ]
+    elif case == "C":
+        cells = _dbt_not_compared(range(14))
+    elif case == "C2":
+        cells = _dbt_not_compared(range(12)) + [_cell(_t(number), "dbt", **_NONDETERMINISTIC) for number in (12, 13)]
+    elif case == "C3":
+        cells = _dbt_not_compared(range(13)) + [_cell(_t(13), "dbt", verdict="record-missing")]
+    elif case == "D":
+        cells = [_cell(_t(1), "sabre", **_TIMEOUT), _cell(_t(2), "sabre", **_NO_ROW)]
+    elif case == "D2":
+        cells = [
+            _cell(_t(1), "sabre", **_TIMEOUT),
+            _cell(_t(2), "sabre", verdict="reference-missing", unavailable_class="crash", operand="reference"),
+        ]
+    elif case == "D3":
+        cells = []
+    elif case == "E":
+        cells = [_cell(_t(number), "kvm", verdict="refused") for number in range(13)]
+    elif case == "E2":
+        cells = _kvm_tenths(range(12))
+    elif case == "E3":
+        cells = _dbt_not_compared(range(14))
+    else:
+        assert case == "F", case
+        cells = _kvm_tenths(range(4)) + _dbt_not_compared((4, 5)) + [_cell(_t(6), "dbt", verdict="record-missing")]
+    committed: set[tuple[str, str]] | None = {(cell["test_id"], cell["backend"]) for cell in cells}
+    if case == "B":
+        committed = (committed - {(_t(10), "liteinst")}) | {(_t(number), "liteinst") for number in (11, 12, 13)}
+    elif case == "D3":
+        committed = {(_t(1), "sabre"), (_t(2), "sabre")}
+    elif case.startswith("E"):
+        committed = None
+    return cells, committed
+
+
+def test_the_format_text_holds_twelve_cases_with_distinct_lines() -> None:
+    assert hashlib.sha256(FORMAT_CASES_TEXT.encode("utf-8")).hexdigest() == FORMAT_CASES_SHA256
+    assert len(FORMAT_TEXTS) == len({texts["line"] for texts in FORMAT_TEXTS.values()}) == 12
+
+
+@pytest.mark.parametrize("case", FORMAT_CASES)
+def test_format_line_is_byte_for_byte(case: str) -> None:
+    # Every figure section 5 prints for the case, and its line, from the
+    # tally of the case's cells.
+    stated = summary_module.tally(*_format_case(case))
+    texts = FORMAT_TEXTS[case]
+    assert stated["line"] == summary_module.render_line(stated) == texts["line"]
+    figures = _format_figures(texts["tally"], texts["sums"])
+    for field, classes in (("no_golden_by_class", NO_GOLDEN), ("unmeasured_by_class", UNMEASURED)):
+        # Every class of the group is counted, and the text lists the nonzero
+        # ones in the group's order.
+        assert tuple(stated[field]) == classes, field
+        assert figures.pop(field, []) == [(name, count) for name, count in stated[field].items() if count], field
+    for field in summary_module.TALLY_FIELDS:
+        if field not in ("no_golden_by_class", "unmeasured_by_class", "first_divergence", "line"):
+            assert _shown(stated[field]) == figures.pop(field), field
+    assert figures == {}
+
+
+def test_the_format_names_every_field_in_its_order() -> None:
+    # Section 1's 27 tally fields, in the order hermit writes them; section
+    # 2's run fields; section 3's summary field.
+    assert tuple(summary_module.tally([])) == summary_module.TALLY_FIELDS == (
+        "selected", "measured", "matched", "diverged", "no_golden", "no_golden_by_class", "not_compared",
+        "unmeasured", "unmeasured_by_class", "record_missing", "refused", "credited", "clean_credited",
+        "unequalized_credited", "credit_sum", "clean_credit_sum", "unequalized_credit_sum", "floor_cells",
+        "mean_credit", "clean_mean_credit", "unequalized_mean_credit", "floor_credit", "committed",
+        "committed_selected", "outside_committed", "first_divergence", "line",
+    )
+    assert summary_module.RUN_FIELDS == (
+        "producer", "run_id", "hermit_sha", "conflicting_hermit_shas", "depth", "emitted_at", "line",
+        "committed_unknown", "committed_cells_without_row", "cells_outside_committed", "per_backend", "total",
+        "cells",
+    )
+    assert summary_module.SUMMARY_FIELDS[-2:] == ("legacy_dropped", "legacy_dropped_cells")
+    assert (summary_module.NO_GOLDEN_CLASSES, summary_module.UNMEASURED_CLASSES) == (NO_GOLDEN, UNMEASURED)
+    assert summary_module.PARITY_CELLS_PATH == CELLS_FILE
+
+
+def test_the_format_rounds_a_credit_as_its_section_4_says() -> None:
+    # Three decimals, ties to even, as Rust's `{:.3}` prints them too; a
+    # credit below 1 that would print 1.000 prints 0.999.
+    assert [summary_module.credit_text(value) for value in (0.0625, 0.34375, 0.1875, None)] == [
+        "0.062", "0.344", "0.188", "n/a"]
+    assert (f"{0.9995:.3f}", summary_module.credit_text(0.9995)) == ("1.000", "0.999")
+
+
+def test_every_credit_sum_is_a_plain_left_to_right_sum() -> None:
+    # Since Python 3.12 the built-in sum() of floats is compensated; hermit's
+    # Rust adds with a plain `+=`, and 76 credits of 0.1 is where the two part.
+    # Section 5's case A states the plain sum, and a tally gives exactly it.
+    plain = 0.0
+    for _ in range(76):
+        plain += 0.1
+    assert plain == 7.599999999999989 != math.fsum([0.1] * 76) == 7.6000000000000005
+    assert sum([0.1] * 76) == (7.6000000000000005 if sys.version_info >= (3, 12) else plain)
+    stated = summary_module.tally(*_format_case("A"))
+    assert stated["credit_sum"] == stated["unequalized_credit_sum"] == plain
+    assert stated["mean_credit"] == stated["floor_credit"] == plain / 76 == 0.09999999999999985
+    # A checker that adds in another order may state a sum this far off.
+    assert summary_module.CREDIT_SUM_TOLERANCE == 1e-9
+
+
+#: The tallies of a case's one-run document that carry the case's line.
+_FORMAT_SCOPES = {
+    "A": ("kvm", "total"), "B": ("liteinst", "total"), "C": ("dbt", "total"), "C2": ("dbt", "total"),
+    "C3": ("dbt", "total"), "D": ("sabre", "total"), "D2": ("sabre", "total"), "D3": ("sabre",),
+    "E": ("kvm", "total"), "E2": ("kvm", "total"), "E3": ("dbt", "total"), "F": ("total",),
+}
+
+
+def _format_document(case: str) -> dict[str, Any]:
+    """A validated one-run document of the case's cells, in hermit's cell
+    order. D3's run reports one kvm cell besides the two sabre cells it owes;
+    E's rows name two Hermit commits."""
+    cells, committed = _format_case(case)
+    cells = sorted(cells, key=lambda cell: summary_module._cell_order((cell["test_id"], cell["backend"])))
+    if case == "D3":
+        assert committed is not None
+        return _document([_cell(_t(0), "kvm", **_TENTH)], {(_t(0), "kvm"), *committed})
+    if case == "E":
+        return _document(cells, hermit_sha=None, conflicting=(HERMIT_SHA, EARLIER_COMMIT), unknown=_TWO_COMMITS)
+    return _document(cells, committed)
+
+
+def _scope(run: dict[str, Any], scope: str) -> dict[str, Any]:
+    return run["total"] if scope == "total" else run["per_backend"][scope.removeprefix("per_backend.")]
+
+
+@pytest.mark.parametrize("case", FORMAT_CASES)
+def test_a_documents_tallies_carry_the_format_lines(case: str) -> None:
+    document = _format_document(case)
+    [run] = document["producers"]
+    line = FORMAT_TEXTS[case]["line"]
+    for scope in _FORMAT_SCOPES[case]:
+        assert _scope(run, scope)["line"] == line, scope
+    if "total" in _FORMAT_SCOPES[case]:
+        assert run["line"] == document["runs"][0]["line"] == line
+    # Section 1: where the selection is known, each tally's coverage agrees
+    # with the run's two lists, in the total and per backend.
+    for scope in ("total", *summary_module.BACKENDS):
+        stated = _scope(run, scope)
+        without_row, outside = (
+            [name for name in run[field] if scope == "total" or name.endswith(f"@{scope}")]
+            for field in ("committed_cells_without_row", "cells_outside_committed")
+        )
+        if stated["committed"] is None:
+            assert run["committed_unknown"] is not None and without_row == outside == [], scope
+        else:
+            assert stated["outside_committed"] == len(outside), scope
+            assert stated["committed"] == stated["committed_selected"] + len(without_row), scope
+    lists = (run["committed_cells_without_row"], run["cells_outside_committed"])
+    if case == "B":
+        assert lists == ([f"{_t(number)}@liteinst" for number in (11, 12, 13)], [f"{_t(10)}@liteinst"])
+    elif case == "D3":
+        assert lists == ([f"{_t(1)}@sabre", f"{_t(2)}@sabre"], [])
+    else:
+        assert lists == ([], [])
+    if case == "E":
+        assert (run["hermit_sha"], run["conflicting_hermit_shas"], run["committed_unknown"]) == (
+            None, [HERMIT_SHA, EARLIER_COMMIT], _TWO_COMMITS)
+
+
+def _restate(stated: dict[str, Any], **figures: Any) -> None:
+    """Change a tally's figures and restate what follows from them: each mean
+    and the floor from the stated sums, and the line."""
+    stated.update(figures)
+    stated["mean_credit"] = stated["credit_sum"] / stated["measured"] if stated["measured"] else None
+    stated["floor_credit"] = stated["credit_sum"] / stated["floor_cells"] if stated["floor_cells"] else None
+    for name in ("clean", "unequalized"):
+        count = stated[f"{name}_credited"]
+        stated[f"{name}_mean_credit"] = stated[f"{name}_credit_sum"] / count if count else None
+    stated["line"] = summary_module.render_line(stated)
+
+
+def _restate_total(document: dict[str, Any], **figures: Any) -> None:
+    """`_restate` the run's total, and the run's line and its brief's with it."""
+    run = document["producers"][0]
+    _restate(run["total"], **figures)
+    run["line"] = document["runs"][0]["line"] = run["total"]["line"]
+
+
+def test_a_credit_sum_within_the_tolerance_of_its_cells_is_accepted() -> None:
+    # Case A's sum as a compensated sum gives it, 2 ulps above the plain one.
+    compensated = math.fsum([0.1] * 76)
+    document = _format_document("A")
+    _restate_total(document, credit_sum=compensated, unequalized_credit_sum=compensated)
+    summary_module.validate_summary(document)
+    assert document["producers"][0]["total"]["mean_credit"] == compensated / 76 == 0.1
+    document = _format_document("A")
+    _restate_total(document, credit_sum=compensated)
+    summary_module.validate_summary(document)
+
+
+def test_a_credit_sum_beyond_the_tolerance_is_refused() -> None:
+    beyond = 7.599999999999989 + 2e-9
+    document = _format_document("A")
+    _restate_total(document, credit_sum=beyond, unequalized_credit_sum=beyond)
+    _refused(document, f"{RUN_AT}.total: credit_sum {beyond!r} disagrees with its cells, which give 7.599999999999989")
+    # The unequalized part left as its cells give it: the parts no longer make
+    # up the sum.
+    document = _format_document("A")
+    _restate_total(document, credit_sum=beyond)
+    _refused(document, f"{RUN_AT}.total: clean_credit_sum 0.0 + unequalized_credit_sum 7.599999999999989 is not "
+                       f"credit_sum {beyond!r}")
+
+
+def test_each_part_sum_is_held_to_its_cells_within_the_tolerance() -> None:
+    # Case B's three sums moved so that the parts still make up the sum within
+    # the tolerance, and each mean and the line are restated: the sum and the
+    # clean part are 0.9e-9 off their cells, inside it, and the unequalized
+    # part 1.7e-9 off, outside it. Its mean is below 1 and prints as 0.999.
+    low = 1.0 - 1.7e-9
+    document = _format_document("B")
+    _restate_total(document, credit_sum=2.75 - 0.9e-9, clean_credit_sum=1.75 + 0.9e-9, unequalized_credit_sum=low)
+    assert "mean 0.999 over 1 with unequal inputs]" in document["producers"][0]["line"]
+    _refused(document, f"{RUN_AT}.total: unequalized_credit_sum {low!r} disagrees with its cells, which give 1.0")
+
+
+# Each of these is refused by its own guard before any recompute from the
+# cells. A restated tamper changes each mean, the floor and the line with its
+# figures, so only the recompute is crossed. Case B's tallies: 10 selected, 9
+# of them in a committed selection of 12 and 1 outside it; 4 credited, 3 clean
+# (sum 1.75) and 1 unequalized (sum 1.0).
+@pytest.mark.parametrize(
+    ("case", "scope", "figures", "restate", "message"),
+    [
+        ("B", "total", {"committed_selected": None}, False,
+         "committed, committed_selected and outside_committed must all be set or all be null"),
+        ("B", "total", {"committed": None, "committed_selected": None, "outside_committed": None}, False,
+         "committed None must be null exactly when the run's committed_unknown is set, and it is not set"),
+        ("E2", "total", {"committed": 12, "committed_selected": 12, "outside_committed": 0}, False,
+         "committed 12 must be null exactly when the run's committed_unknown is set, and it is set"),
+        ("B", "total", {"outside_committed": 0}, False, "committed_selected 9 + outside_committed 0 is not selected 10"),
+        ("B", "total", {"committed": 8}, False, "committed_selected 9 exceeds committed 8"),
+        ("B", "total", {"committed": 13}, True,
+         "committed 13 disagrees with its cells and the run's committed-selection lists, which give 12"),
+        ("B", "per_backend.liteinst", {"committed": 13}, True,
+         "committed 13 disagrees with its cells and the run's committed-selection lists, which give 12"),
+        ("B", "per_backend.liteinst", {"committed_selected": 10, "outside_committed": 0}, True,
+         "committed_selected 10 disagrees with its cells and the run's committed-selection lists, which give 9"),
+        ("B", "total", {"clean_credit_sum": 1.5}, False,
+         "clean_credit_sum 1.5 + unequalized_credit_sum 1.0 is not credit_sum 2.75"),
+        ("B", "total", {"clean_mean_credit": 0.5}, False,
+         "clean_mean_credit 0.5 is not clean_credit_sum / clean_credited = 0.5833333333333334"),
+        ("B", "total", {"unequalized_mean_credit": 0.5}, False,
+         "unequalized_mean_credit 0.5 is not unequalized_credit_sum / unequalized_credited = 1.0"),
+        ("A", "total", {"clean_mean_credit": 0.0}, False,
+         "clean_mean_credit 0.0 is not clean_credit_sum / clean_credited = None"),
+        # Credit moved from the unequal-inputs part to the clean one: the parts
+        # still make up the sum, and only the recompute sees the move.
+        ("B", "total", {"clean_credit_sum": 2.0, "unequalized_credit_sum": 0.75}, True,
+         "clean_credit_sum 2.0 disagrees with its cells, which give 1.75"),
+    ],
+    ids=["coverage-all-or-none", "coverage-null-when-known", "coverage-set-when-unknown", "coverage-split",
+         "coverage-exceeds-committed", "committed-total", "committed-per-backend", "committed-selected",
+         "part-sums", "clean-mean", "unequalized-mean", "clean-mean-without-cells", "part-sum-recompute"],
+)
+def test_each_format_tally_guard_refuses_its_own_tamper(case: str, scope: str, figures: dict[str, Any],
+                                                        restate: bool, message: str) -> None:
+    document = _format_document(case)
+    run = document["producers"][0]
+    stated = _scope(run, scope)
+    if restate:
+        _restate(stated, **figures)
+        if scope == "total":
+            run["line"] = document["runs"][0]["line"] = stated["line"]
+    else:
+        stated.update(figures)
+    _refused(document, f"{RUN_AT}.{scope}: {message}")
+
+
+def _set(field: str, value: Any) -> Any:
+    def tamper(run: dict[str, Any]) -> None:
+        run[field] = value
+    return tamper
+
+
+def _replace_first_cell(run: dict[str, Any]) -> None:
+    run["cells"][0] = _cell(_t(0), "kvm", **_TENTH)
+
+
+@pytest.mark.parametrize(
+    ("case", "tamper", "message"),
+    [
+        ("E", _set("hermit_sha", HERMIT_SHA),
+         f": its rows name 2 Hermit commits, so its hermit_sha must be null, got {HERMIT_SHA!r}"),
+        ("E", _set("committed_unknown", None),
+         ": a run with no hermit_sha has no commit to read its committed selection at, so committed_unknown must "
+         "say why it is unknown"),
+        ("E2", _set("committed_cells_without_row", [f"{_t(12)}@kvm"]),
+         ": its committed selection is unknown, so it lists no committed_cells_without_row or "
+         "cells_outside_committed"),
+        ("E2", _set("cells_outside_committed", [f"{_t(0)}@kvm"]),
+         ": its committed selection is unknown, so it lists no committed_cells_without_row or "
+         "cells_outside_committed"),
+        ("E", _replace_first_cell,
+         f": its rows name 2 Hermit commits, so none of them is admitted, but cell {_t(0)}@kvm is diverged"),
+        ("B", _set("cells_outside_committed", [f"{_t(99)}@liteinst"]),
+         f".cells_outside_committed names {_t(99)}@liteinst, which the run did not report"),
+        ("B", _set("committed_cells_without_row", [f"{_t(number)}@liteinst" for number in (1, 11, 12, 13)]),
+         f".committed_cells_without_row names {_t(1)}@liteinst, which the run reported"),
+        # A selected cell without a row dropped from its list, or a reported
+        # cell outside the selection dropped from its: the selection the lists
+        # imply is not the one the tallies were counted over.
+        ("B", _set("committed_cells_without_row", [f"{_t(number)}@liteinst" for number in (11, 12)]),
+         ".per_backend.liteinst: committed 12 disagrees with its cells and the run's committed-selection lists, "
+         "which give 11"),
+        ("B", _set("cells_outside_committed", []),
+         ".per_backend.liteinst: committed 12 disagrees with its cells and the run's committed-selection lists, "
+         "which give 13"),
+    ],
+    ids=["conflicting-with-sha", "no-sha-no-reason", "unknown-without-row", "unknown-outside",
+         "conflicting-admitted-cell", "outside-not-reported", "without-row-reported", "without-row-dropped",
+         "outside-dropped"],
+)
+def test_each_format_run_guard_refuses_its_own_tamper(case: str, tamper: Any, message: str) -> None:
+    document = _format_document(case)
+    tamper(document["producers"][0])
+    _refused(document, f"{RUN_AT}{message}")
+
+
+@pytest.mark.parametrize("field", ["committed_cells_without_row", "cells_outside_committed"])
+def test_a_runs_committed_selection_lists_name_each_cell_once_in_hermits_order(field: str) -> None:
+    at = f"{RUN_AT}.{field}"
+    listed = _format_document("B")["producers"][0][field]
+    for value, message in (
+        ({}, f"{at} must be a list"),
+        ([5], f"{at}[0] must be a non-empty string, got 5"),
+        ([f"{_t(11)}@qemu"], f"{at}[0] must be <test>@<backend> with a backend of dbt, kvm, liteinst, sabre, "
+                             f"got '{_t(11)}@qemu'"),
+        (["@kvm"], f"{at}[0] must be <test>@<backend> with a backend of dbt, kvm, liteinst, sabre, got '@kvm'"),
+        ([listed[0], *listed], f"{at} must name each cell once, in order of test id and then backend"),
+        # Out of order by test id, and by backend under one test id.
+        (["t/b@kvm", "t/a@kvm"], f"{at} must name each cell once, in order of test id and then backend"),
+        (["t/a@kvm", "t/a@dbt"], f"{at} must name each cell once, in order of test id and then backend"),
+    ):
+        document = _format_document("B")
+        document["producers"][0][field] = value
+        _refused(document, message)
+
+
+def test_hermits_cell_order_puts_a_test_id_before_one_it_begins() -> None:
+    # `t/y@kvm` sorts before `t/y-b@kvm`: by the test id's bytes, then the
+    # backend. The byte order of the joined names is the reverse.
+    committed = {("t/a", "kvm"), ("t/y", "kvm"), ("t/y-b", "kvm")}
+    document = _document([_cell("t/a", credit=0.5)], committed)
+    run = document["producers"][0]
+    assert run["committed_cells_without_row"] == ["t/y@kvm", "t/y-b@kvm"] != sorted(["t/y@kvm", "t/y-b@kvm"])
+    run["committed_cells_without_row"].reverse()
+    _refused(document, f"{RUN_AT}.committed_cells_without_row must name each cell once, in order of test id "
+                       "and then backend")
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("x", " must be a list"),
+        ([None, EARLIER_COMMIT], "[0] must be set"),
+        (["X" * 40, EARLIER_COMMIT], f"[0] must be 40 lowercase hex digits, got {'X' * 40!r}"),
+        ([HERMIT_SHA], " must be empty or name two or more commits, sorted, each once"),
+        ([EARLIER_COMMIT, HERMIT_SHA], " must be empty or name two or more commits, sorted, each once"),
+        ([HERMIT_SHA, HERMIT_SHA], " must be empty or name two or more commits, sorted, each once"),
+    ],
+    ids=["not-a-list", "null", "not-a-commit", "one", "unsorted", "twice"],
+)
+def test_a_runs_conflicting_commits_are_two_or_more_sorted_commits(value: Any, message: str) -> None:
+    document = _format_document("E")
+    document["producers"][0]["conflicting_hermit_shas"] = value
+    _refused(document, f"{RUN_AT}.conflicting_hermit_shas{message}")
+
+
+@pytest.mark.parametrize(
+    ("cells", "message"),
+    [
+        ([], " must be an object"),
+        ({}, " is missing the reason(s) legacy_dropped counts: r"),
+        ({"r": 1, "s": 1}, " counts reason(s) legacy_dropped does not: s"),
+        ({"r": -1}, ".r must be a non-negative integer, got -1"),
+        ({"r": 0}, ".r counts 0 cell(s) for 2 dropped row(s); it must be between 1 and 2"),
+        ({"r": 3}, ".r counts 3 cell(s) for 2 dropped row(s); it must be between 1 and 2"),
+    ],
+    ids=["not-an-object", "missing-reason", "unknown-reason", "negative", "no-cell", "more-cells-than-rows"],
+)
+def test_each_legacy_dropped_cells_guard_refuses_its_own_tamper(cells: Any, message: str) -> None:
+    document = _format_document("A")
+    document.update(legacy_dropped={"r": 2}, legacy_dropped_cells=cells)
+    _refused(document, f"parity summary.legacy_dropped_cells{message}")
+
+
+def test_a_dropped_reason_counts_between_one_cell_and_one_cell_per_row() -> None:
+    for rows, cells in ((2, 1), (2, 2), (0, 0)):
+        document = _format_document("A")
+        document.update(legacy_dropped={"r": rows}, legacy_dropped_cells={"r": cells})
+        summary_module.validate_summary(document)
+
+
+def _no_tree(sha: str) -> Any:
+    raise summary_module.ParitySummaryError(f"fixture: no tree at {sha}")
+
+
+def _lost_tree(sha: str) -> Any:
+    raise KeyError(sha)
+
+
+UNREADABLE = f"this checkout cannot read {CELLS_FILE} at {HERMIT_SHA}"
+
+
+@pytest.mark.parametrize(
+    ("committed_of", "unknown"),
+    [
+        (None, UNREADABLE),
+        (lambda sha: None, UNREADABLE),
+        (lambda sha: 5, f"{CELLS_FILE} is not a readable cell list: got 5"),
+        (lambda sha: ["t@kvm"], f"{CELLS_FILE} is not a readable cell list: it names 't@kvm'"),
+        (lambda sha: [("t", "qemu")], f"{CELLS_FILE} is not a readable cell list: it names test 't' on backend 'qemu'"),
+        (lambda sha: [("", "kvm")], f"{CELLS_FILE} is not a readable cell list: it names test '' on backend 'kvm'"),
+        (lambda sha: [("t", "kvm"), ("t", "kvm")], f"{CELLS_FILE} selects t@kvm twice"),
+        (_no_tree, f"fixture: no tree at {HERMIT_SHA}"),
+    ],
+    ids=["no-reader", "unreadable", "not-a-list", "not-a-pair", "unknown-backend", "empty-test", "twice", "error"],
+)
+def test_a_committed_selection_that_cannot_be_read_is_unknown_and_says_why(committed_of: Any, unknown: str) -> None:
+    summary = _summary(_rows(_sources()[:1]), committed_of=committed_of)
+    summary_module.validate_summary(summary)
+    [run] = summary["producers"]
+    assert (run["committed_unknown"], run["committed_cells_without_row"], run["cells_outside_committed"]) == (
+        unknown, [], [])
+    for stated in (run["total"], *run["per_backend"].values()):
+        assert (stated["committed"], stated["committed_selected"], stated["outside_committed"]) == (None, None, None)
+    assert "; committed selection unknown; " in run["line"]
+
+
+def test_a_committed_selection_is_read_from_any_iterable_and_other_errors_propagate() -> None:
+    summary = _summary(_rows(_sources()[:1]), committed_of=lambda sha: (key for key in _committed_1953()))
+    summary_module.validate_summary(summary)
+    [run] = summary["producers"]
+    assert run["committed_unknown"] is None and len(run["committed_cells_without_row"]) == 191
+    assert (run["total"]["committed"], run["total"]["committed_selected"], run["total"]["outside_committed"]) == (
+        192, 1, 0)
+    assert "; selected 1 of 192 committed (partial); " in run["line"]
+    with pytest.raises(KeyError):
+        _summary(_rows(_sources()[:1]), committed_of=_lost_tree)
+
+
+def _for_run(sources: list[dict[str, Any]], run_id: str) -> list[dict[str, Any]]:
+    """The sources as another run of the same commit reports them."""
+    moved = copy.deepcopy(sources)
+    for source in moved:
+        source["run_id"] = run_id
+        if source["record"] is not None:
+            source["record"]["run_id"] = run_id
+    return moved
+
+
+@pytest.mark.parametrize(
+    ("first", "later", "headline"),
+    [
+        # A run that reported its whole committed selection heads one that
+        # reported less of it, however much later that one was emitted.
+        (192, 191, RUN_ID),
+        # Of two partial runs, the one that reported more of it.
+        (191, 190, RUN_ID),
+        # The same coverage: the later emission.
+        (191, 191, LATER_RUN_ID),
+    ],
+    ids=["complete-first", "more-coverage-first", "later-emission"],
+)
+def test_the_headline_run_is_the_one_that_covers_the_most_of_its_committed_selection(
+        first: int, later: int, headline: str) -> None:
+    sources = _sources()
+    rows = _rows(sources[:first]) + _rows(_for_run(sources[:later], LATER_RUN_ID), run_id=LATER_RUN_ID,
+                                          emitted_at=LATER)
+    summary = _summary(rows)
+    summary_module.validate_summary(summary)
+    [run] = summary["producers"]
+    assert run["run_id"] == headline
+    assert [(brief["run_id"], brief["emitted_at"], brief["headline"]) for brief in summary["runs"]] == [
+        (RUN_ID, EMITTED_AT, headline == RUN_ID), (LATER_RUN_ID, LATER, headline == LATER_RUN_ID)]
+
+
+def test_the_headline_order_counts_an_unknown_selection_as_no_coverage_then_breaks_ties_by_run_id() -> None:
+    def run(committed: int | None, reported: int | None, emitted_at: str | None, run_id: str) -> dict[str, Any]:
+        return {"total": {"committed": committed, "committed_selected": reported}, "emitted_at": emitted_at,
+                "run_id": run_id}
+
+    key = summary_module._headline_key
+    assert key(run(None, None, LATER, "b")) == (False, 0, LATER, "b")
+    assert key(run(2, 2, None, "a")) == (True, 0, "", "a")
+    assert key(run(2, 1, EMITTED_AT, "a")) > key(run(None, None, LATER, "b"))
+    assert key(run(2, 1, EMITTED_AT, "b")) > key(run(2, 1, EMITTED_AT, "a"))
+
+
+# --- The panel: each run's committed selection and its Hermit commit ----------------
+
+
+def _committed_paragraph(markup: str) -> str:
+    """The panel's one committed-selection paragraph, which follows the run's
+    line."""
+    found = re.findall(r'<p class="parity-line">.*?</p>(<p class="parity-committed">.*?</p>)', markup, re.S)
+    assert len(found) == markup.count('class="parity-committed"') == 1, found
+    return found[0]
+
+
+#: How the panel names the Hermit commit a run's selection is read at.
+_AT_HERMIT = f'<code title="{HERMIT_SHA}">{HERMIT_SHA[:12]}</code>'
+_SELECTS = f"cell(s) that <code>{CELLS_FILE}</code> selects at Hermit commit {_AT_HERMIT}."
+_UNKNOWN_TAIL = (". The panel cannot say how much of it this run reported, or whether the run reported a cell "
+                 "outside it.</p>")
+
+
+def test_the_panel_names_the_committed_cells_a_run_did_not_report_and_the_cells_outside_them() -> None:
+    # Case B: 9 of the 12 committed cells reported, and 1 cell outside them.
+    markup = _panel(_carriage(_format_document("B")))
+    line = FORMAT_TEXTS["B"]["line"]
+    assert f'<p class="parity-line"><code>{line}</code></p>' in markup
+    assert _committed_paragraph(markup) == (
+        f'<p class="parity-committed">Committed selection: the 12 {_SELECTS} This run reported 9 of them. The 3 '
+        "with no row: <code>c-programs/t11@liteinst</code>, <code>c-programs/t12@liteinst</code>, "
+        "<code>c-programs/t13@liteinst</code>. It also reported 1 cell(s) outside the selection: "
+        "<code>c-programs/t10@liteinst</code>.</p>"
+    )
+    table = _parity_table(markup)
+    assert table["liteinst"][-1] == table["TOTAL"][-1] == line
+
+
+def test_the_panel_names_the_cells_a_backend_owes_although_the_run_reported_none_of_them() -> None:
+    # Case D3: the run reported one kvm cell and neither sabre cell its
+    # commit selects; the sabre row carries the case's line.
+    markup = _panel(_carriage(_format_document("D3")))
+    assert _committed_paragraph(markup) == (
+        f'<p class="parity-committed">Committed selection: the 3 {_SELECTS} This run reported 1 of them. The 2 '
+        "with no row: <code>c-programs/t1@sabre</code>, <code>c-programs/t2@sabre</code>. It reported no cell "
+        "outside it.</p>"
+    )
+    table = _parity_table(markup)
+    assert table["sabre"] == ["0", "0", "0", "0", "0", "0", "0", "0", "0", "n/a", "n/a", "0",
+                              FORMAT_TEXTS["D3"]["line"]]
+
+
+def test_the_panel_names_twenty_cells_of_a_list_and_counts_the_rest() -> None:
+    # RUN 1953's first record alone, against the 192 cells its commit selects.
+    summary = _summary(_rows(_sources()[:1]))
+    [run] = summary["producers"]
+    without_row = run["committed_cells_without_row"]
+    assert len(without_row) == 191 and run["cells_outside_committed"] == []
+    shown = ", ".join(f"<code>{html.escape(name, quote=True)}</code>" for name in without_row[:20])
+    assert _committed_paragraph(_panel(_carriage(summary))) == (
+        f'<p class="parity-committed">Committed selection: the 192 {_SELECTS} This run reported 1 of them. The '
+        f"191 with no row: {shown}, and 171 more (<code>scorecard/parity.json</code> lists every one). It "
+        "reported no cell outside it.</p>"
+    )
+
+
+def test_a_run_whose_commit_selects_no_cell_reported_every_cell_outside_the_selection() -> None:
+    document = _document([_cell(f"t/{number:02d}", credit=0.5) for number in range(22)], set())
+    total = document["producers"][0]["total"]
+    assert (total["committed"], total["committed_selected"], total["outside_committed"]) == (0, 0, 22)
+    shown = ", ".join(f"<code>t/{number:02d}@kvm</code>" for number in range(20))
+    assert _committed_paragraph(_panel(_carriage(document))) == (
+        f'<p class="parity-committed">Committed selection: the 0 {_SELECTS} It reported 22 cell(s) outside the '
+        f"selection: {shown}, and 2 more (<code>scorecard/parity.json</code> lists every one).</p>"
+    )
+
+
+def test_a_run_whose_rows_name_two_commits_shows_both_and_an_unknown_selection() -> None:
+    # Case E: every row refused, no commit measured, the selection unknown.
+    markup = _panel(_carriage(_format_document("E")))
+    text = _text(markup)
+    assert (f"; no single Hermit commit measured: its rows name 2 Hermit commits ({HERMIT_SHA[:12]}, "
+            f"{EARLIER_COMMIT[:12]}), so none of its rows is admitted; parity store at ledger commit ") in text
+    assert "Hermit commit not recorded" not in text
+    assert _committed_paragraph(markup) == (
+        '<p class="parity-committed">Committed selection unknown: <code class="parity-message">'
+        f"{html.escape(_TWO_COMMITS, quote=True)}</code>{_UNKNOWN_TAIL}"
+    )
+    assert f"<code>{FORMAT_TEXTS['E']['line']}</code>" in markup
+
+
+def test_a_run_whose_selection_cannot_be_read_says_why() -> None:
+    markup = _panel(_carriage(_format_document("E2")))
+    assert f"; Hermit commit {HERMIT_SHA[:12]} measured; parity store at ledger commit " in _text(markup)
+    assert _committed_paragraph(markup) == (
+        f'<p class="parity-committed">Committed selection unknown: <code class="parity-message">{UNREADABLE}'
+        f"</code>{_UNKNOWN_TAIL}"
+    )
+
+
+def test_a_run_and_a_brief_that_name_no_commit_say_so() -> None:
+    reason = "no admitted row names the run's Hermit commit"
+    document = _document([_cell("t/a", credit=0.5)], hermit_sha=None, unknown=reason)
+    line = document["producers"][0]["line"]
+    document["runs"].append(dict(document["runs"][0], run_id="validate-earlier-fixture-run", headline=False))
+    summary_module.validate_summary(document)
+    text = _text(_panel(_carriage(document)))
+    assert "; Hermit commit not recorded; parity store at ledger commit " in text
+    assert f"Committed selection unknown: {reason}. The panel cannot say" in text
+    assert ("1 earlier parity run(s) in the store\nvalidate run validate-earlier-fixture-run with no Hermit "
+            f"commit recorded: {line}\n") in text
+    assert "not recorded measured" not in text and "at Hermit not recorded" not in text
+
+
+def test_the_earlier_runs_list_names_each_runs_commit_and_line() -> None:
+    # Two runs of RUN 1953's commit: the one that reported its whole
+    # committed selection heads the one that reported all but one cell.
+    sources = _sources()
+    summary = _summary(_rows(sources) + _rows(_for_run(sources[:191], LATER_RUN_ID), run_id=LATER_RUN_ID,
+                                              emitted_at=LATER))
+    [earlier] = [brief for brief in summary["runs"] if not brief["headline"]]
+    assert earlier["run_id"] == LATER_RUN_ID and "; selected 191 of 192 committed (partial); " in earlier["line"]
+    text = _text(_panel(_carriage(summary)))
+    assert (f"1 earlier parity run(s) in the store\nvalidate run {LATER_RUN_ID} at Hermit {HERMIT_SHA[:12]}: "
+            f"{earlier['line']}\n") in text
+
+
+def test_the_panel_counts_each_dropped_reasons_rows_and_cells() -> None:
+    document = _format_document("A")
+    document.update(legacy_dropped={"retired rerun": 3, "no cell id": 2},
+                    legacy_dropped_cells={"retired rerun": 2, "no cell id": 1})
+    summary_module.validate_summary(document)
+    assert ("<p>Legacy observations dropped rather than shown as verdicts: no cell id: 2 row(s) for 1 cell(s); "
+            "retired rerun: 3 row(s) for 2 cell(s).</p>") in _panel(_carriage(document))

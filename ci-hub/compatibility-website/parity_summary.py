@@ -30,13 +30,31 @@ floor as 0 too. The mean is over the measured cells. A backend hermit
 declares inputs-not-equalizable (only dbt) enters no mean or floor at all,
 per backend or in the total.
 
+Every tally also says how much of the run's committed selection it covers.
+The committed selection is the set of cells that `PARITY_CELLS_PATH`, read at
+the run's own Hermit commit, selects. In each tally, `committed` counts the
+cells of the tally's scope that the selection names, `committed_selected`
+counts how many of those the run reported, and `outside_committed` counts the
+reported cells the selection does not name. All three are null when the run's
+`committed_unknown` gives the reason the selection is unknown. The run lists
+the cells behind both differences (`committed_cells_without_row` and
+`cells_outside_committed`), so the checker recomputes all three counts from
+the run's cells and those two lists.
+
+Every credit sum is a plain left-to-right addition over the cells, as
+hermit's Rust `+=` adds. Python's built-in `sum()` of floats is compensated
+since 3.12 and can differ from it in the last bits. A stated sum is compared
+with the recomputed sum within `CREDIT_SUM_TOLERANCE`. Each mean must equal
+its stated sum divided by its count exactly.
+
 The website carries the summary as its exact committed bytes (a "carriage",
 `CARRIAGE_FIELDS`), so the same checks run when the export captures it, when
 the build admits it, and when a page is rendered from a stored build.
 
 `summarize_rows` is a Python reference of the scorecard's summary over ledger
-rows, without the parts that need hermit's catalogue (retired-id
-canonicalization, commit depth, legacy history). The website never calls it;
+rows. It leaves out the parts that need hermit's catalogue (retired-id
+canonicalization, commit depth, legacy history) and hermit's checkout: the
+caller supplies each run's committed selection. The website never calls it;
 the fixture and cross-check tests use it to build a summary from real rows.
 """
 
@@ -49,11 +67,15 @@ import math
 import re
 import sys
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import AbstractSet, Any, Callable, Iterable, Mapping, Sequence
 
 
 SCHEMA = "parity-summary/v1"
 LEDGER_PATH = "scorecard/parity.json"
+#: The file in hermit that lists the cells its parity post-pass selects
+#: (hermit `PARITY_CELLS_PATH`). A run's committed selection is this file
+#: read at the run's own Hermit commit.
+PARITY_CELLS_PATH = "ci/compat-envelope/parity-cells.json"
 #: The ledger stores the summary is computed from (see parity_ledger.py).
 ROW_STORE = "parity"
 RUN_STORE = "parity-runs"
@@ -135,15 +157,20 @@ SUMMARY_FIELDS = (
     "refusals",
     "legacy_rerun",
     "legacy_dropped",
+    "legacy_dropped_cells",
 )
 GENERATED_FROM_FIELDS = ("store_sha256", "series_commit", "tool_hermit_commit")
 RUN_FIELDS = (
     "producer",
     "run_id",
     "hermit_sha",
+    "conflicting_hermit_shas",
     "depth",
     "emitted_at",
     "line",
+    "committed_unknown",
+    "committed_cells_without_row",
+    "cells_outside_committed",
     "per_backend",
     "total",
     "cells",
@@ -166,9 +193,16 @@ TALLY_FIELDS = (
     "clean_credited",
     "unequalized_credited",
     "credit_sum",
+    "clean_credit_sum",
+    "unequalized_credit_sum",
     "floor_cells",
     "mean_credit",
+    "clean_mean_credit",
+    "unequalized_mean_credit",
     "floor_credit",
+    "committed",
+    "committed_selected",
+    "outside_committed",
     "first_divergence",
     "line",
 )
@@ -190,6 +224,19 @@ _TALLY_COUNTS = (
 )
 #: The tally fields that count by class, with their classes.
 _TALLY_BY_CLASS = (("no_golden_by_class", NO_GOLDEN_CLASSES), ("unmeasured_by_class", UNMEASURED_CLASSES))
+#: The tally fields that give its coverage of the run's committed selection:
+#: all three counts, or all three null when that selection is unknown.
+_TALLY_COVERAGE = ("committed", "committed_selected", "outside_committed")
+#: The credit sums, which a recomputation in another order may change in the
+#: last bits.
+_TALLY_SUMS = ("credit_sum", "clean_credit_sum", "unequalized_credit_sum")
+#: The tally fields a checker compares with a recomputation by another rule
+#: than exact equality: the sums within the tolerance, each mean and the floor
+#: exactly against the stated sums, the line against the stated tally.
+_TALLY_NOT_EXACT = frozenset(
+    _TALLY_SUMS
+    + ("mean_credit", "clean_mean_credit", "unequalized_mean_credit", "floor_credit", "line")
+)
 GROUP_FIELDS = (
     "first_divergent_record",
     "syscall",
@@ -405,23 +452,70 @@ def _class_counts(by_class: Mapping[str, int], classes: Sequence[str]) -> str:
     return ", ".join(f"{name} {by_class[name]}" for name in classes if by_class[name] > 0)
 
 
+def coverage_text(tally: Mapping[str, Any]) -> str:
+    """How much of the run's committed selection a tally covers.
+
+    `selected R of C committed`, with ` (partial)` when the run reported
+    fewer than the C cells its commit selects and `; O outside the committed
+    selection` when it reported O cells the selection does not name; or
+    `committed selection unknown`.
+    """
+    committed = tally["committed"]
+    reported = tally["committed_selected"]
+    outside = tally["outside_committed"]
+    if committed is None:
+        if reported is not None or outside is not None:
+            raise ParitySummaryError(
+                "committed, committed_selected and outside_committed must all be set or all be null"
+            )
+        return "committed selection unknown"
+    text = f"selected {reported} of {committed} committed"
+    if reported < committed:
+        text += " (partial)"
+    if outside > 0:
+        text += f"; {outside} outside the committed selection"
+    return text
+
+
+def inputs_marker(tally: Mapping[str, Any]) -> str:
+    """The line's closing note on the credited cells' inputs.
+
+    ` [inputs not equalized]` when no credited cell had equal inputs. When
+    some had and some had not, both means, each over its own cells:
+    ` [inputs equalized for c of n credited: mean A over c with equal inputs;
+    mean B over u with unequal inputs]`. Otherwise nothing.
+    """
+    if tally["credited"] > 0 and tally["clean_credited"] == 0:
+        return " [inputs not equalized]"
+    if tally["unequalized_credited"] > 0:
+        return (
+            f" [inputs equalized for {tally['clean_credited']} of {tally['credited']} credited: "
+            f"mean {credit_text(tally['clean_mean_credit'])} over {tally['clean_credited']} with equal inputs; "
+            f"mean {credit_text(tally['unequalized_mean_credit'])} over {tally['unequalized_credited']} "
+            "with unequal inputs]"
+        )
+    return ""
+
+
 def render_line(tally: Mapping[str, Any]) -> str:
     """hermit's `ParityTally::line`: the one-line summary of a tally.
 
     A tally whose every selected cell is not compared (a backend whose inputs
     cannot be equalized) prints `parity: not compared: 0 measured of N
-    selected (inputs cannot be equalized)`. Any other tally prints its matched
-    count, its mean over the measured cells, and its floor with the coverage
-    it is over: `floor F over N measured of M selected (K no golden: <class
-    counts>; J not compared; ...)`, where the parenthesis names every cell
-    the floor's denominator leaves out or counts as 0. A mean or floor with
-    nothing to divide by prints `n/a`, never 0.
+    selected (inputs cannot be equalized); <coverage>`. Any other tally
+    prints its matched count, its coverage of the committed selection
+    (`coverage_text`), its mean over the measured cells, and its floor with
+    the cells it is over: `floor F over N measured of M selected (K no
+    golden: <class counts>; J not compared; ...)`, where the parenthesis
+    names every cell the floor's denominator leaves out or counts as 0, then
+    the inputs note (`inputs_marker`). A mean or floor with nothing to divide
+    by prints `n/a`, never 0.
     """
     selected = tally["selected"]
     if selected > 0 and tally["not_compared"] == selected:
         return (
             f"parity: not compared: {tally['measured']} measured of {selected} selected "
-            "(inputs cannot be equalized)"
+            f"(inputs cannot be equalized); {coverage_text(tally)}"
         )
     no_golden = f"{tally['no_golden']} no golden"
     if tally["no_golden"] > 0:
@@ -445,19 +539,11 @@ def render_line(tally: Mapping[str, Any]) -> str:
             "cannot be equalized"
         )
     credited = f" ({tally['credited']} credited)" if tally["credited"] != tally["measured"] else ""
-    if tally["credited"] > 0 and tally["clean_credited"] == 0:
-        inputs = " [inputs not equalized]"
-    elif tally["unequalized_credited"] > 0:
-        inputs = (
-            f" [inputs equalized for {tally['clean_credited']} of {tally['credited']} credited]"
-        )
-    else:
-        inputs = ""
     return (
-        f"parity: {tally['matched']}/{selected} matched; "
+        f"parity: {tally['matched']}/{selected} matched; {coverage_text(tally)}; "
         f"mean {credit_text(tally['mean_credit'])} over {tally['measured']} measured{credited}; "
         f"floor {credit_text(tally['floor_credit'])} over {tally['measured']} measured of "
-        f"{selected} selected ({'; '.join(parts)}){inputs}"
+        f"{selected} selected ({'; '.join(parts)}){inputs_marker(tally)}"
     )
 
 
@@ -510,7 +596,9 @@ def in_a_floor(cell: Mapping[str, Any]) -> bool:
     return cell_group(cell) not in _OUTSIDE_THE_FLOOR and cell["backend"] not in INPUTS_NOT_EQUALIZABLE_BACKENDS
 
 
-def tally(cells: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+def tally(
+    cells: Iterable[Mapping[str, Any]], committed: AbstractSet[tuple[str, str]] | None = None
+) -> dict[str, Any]:
     """hermit's `ParityTally::over`: counts and credit over some cells.
 
     `selected = measured + no_golden + not_compared + unmeasured +
@@ -521,7 +609,19 @@ def tally(cells: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     `in_a_floor` (every selected cell but the no-golden and not-compared ones
     and any cell of a backend whose inputs cannot be equalized), null when
     there is none. Neither ever counts a null credit as anything but 0 in a
-    sum, and neither is 0 for want of a denominator.
+    sum, and neither is 0 for want of a denominator. The clean and
+    unequalized credit sums and means split the credited cells by
+    `credit_basis`, each mean null when its count is 0.
+
+    Every sum is a plain left-to-right `+=` over `cells`, in their order, as
+    hermit's Rust adds; the built-in `sum()` of floats is compensated since
+    Python 3.12 and can differ from it in the last bits.
+
+    `committed` is the committed selection of the tally's scope, as (test
+    id, backend) pairs, or None when the run's committed selection is
+    unknown. With it, `committed` counts its cells, `committed_selected` the
+    cells here that it names and `outside_committed` the rest; without it,
+    all three are null.
     """
     result: dict[str, Any] = {
         "selected": 0,
@@ -539,15 +639,25 @@ def tally(cells: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         "clean_credited": 0,
         "unequalized_credited": 0,
         "credit_sum": 0.0,
+        "clean_credit_sum": 0.0,
+        "unequalized_credit_sum": 0.0,
         "floor_cells": 0,
         "mean_credit": None,
+        "clean_mean_credit": None,
+        "unequalized_mean_credit": None,
         "floor_credit": None,
+        "committed": None,
+        "committed_selected": None,
+        "outside_committed": None,
         "first_divergence": None,
         "line": "",
     }
     groups: dict[tuple, list[Mapping[str, Any]]] = {}
+    reported_committed = 0
     for cell in cells:
         result["selected"] += 1
+        if committed is not None and (cell["test_id"], cell["backend"]) in committed:
+            reported_committed += 1
         group = cell_group(cell)
         if group == "measured":
             result["measured"] += 1
@@ -575,12 +685,22 @@ def tally(cells: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             result["credit_sum"] += cell["credit"]
             if cell["credit_basis"] == "clean":
                 result["clean_credited"] += 1
+                result["clean_credit_sum"] += cell["credit"]
             else:
                 result["unequalized_credited"] += 1
+                result["unequalized_credit_sum"] += cell["credit"]
     if result["measured"] > 0:
         result["mean_credit"] = result["credit_sum"] / result["measured"]
+    if result["clean_credited"] > 0:
+        result["clean_mean_credit"] = result["clean_credit_sum"] / result["clean_credited"]
+    if result["unequalized_credited"] > 0:
+        result["unequalized_mean_credit"] = result["unequalized_credit_sum"] / result["unequalized_credited"]
     if result["floor_cells"] > 0:
         result["floor_credit"] = result["credit_sum"] / result["floor_cells"]
+    if committed is not None:
+        result["committed"] = len(committed)
+        result["committed_selected"] = reported_committed
+        result["outside_committed"] = result["selected"] - reported_committed
     best = None
     for key in sorted(groups):
         if best is None or len(groups[key]) > len(groups[best]):
@@ -681,22 +801,34 @@ def _same_number(left: float | None, right: float | None) -> bool:
 
 
 def _validate_tally(
-    value: Any, cells: Sequence[Mapping[str, Any]], at: str, backend: str | None = None
+    value: Any,
+    cells: Sequence[Mapping[str, Any]],
+    at: str,
+    backend: str | None,
+    committed: AbstractSet[tuple[str, str]] | None,
 ) -> Mapping[str, Any]:
     """Check one tally against its own arithmetic and its cells.
 
     `backend` is the backend of a per-backend tally and None for a run's
-    total.
+    total. `committed` is the committed selection of the tally's scope, from
+    the run's cells and its two committed-selection lists, or None when the
+    run's committed selection is unknown.
     """
     stated = _exact(value, TALLY_FIELDS, at)
     for field in _TALLY_COUNTS:
         _count(stated[field], f"{at}.{field}")
+    for field in _TALLY_COVERAGE:
+        _optional_count(stated[field], f"{at}.{field}")
     for field, classes in _TALLY_BY_CLASS:
         by_class = _exact(stated[field], classes, f"{at}.{field}")
         for name in classes:
             _count(by_class[name], f"{at}.{field}.{name}")
     credit_sum = _number(stated["credit_sum"], f"{at}.credit_sum")
+    clean_sum = _number(stated["clean_credit_sum"], f"{at}.clean_credit_sum")
+    unequalized_sum = _number(stated["unequalized_credit_sum"], f"{at}.unequalized_credit_sum")
     mean = _credit_value(stated["mean_credit"], f"{at}.mean_credit")
+    clean_mean = _credit_value(stated["clean_mean_credit"], f"{at}.clean_mean_credit")
+    unequalized_mean = _credit_value(stated["unequalized_mean_credit"], f"{at}.unequalized_mean_credit")
     floor = _credit_value(stated["floor_credit"], f"{at}.floor_credit")
     if stated["first_divergence"] is not None:
         group = _exact(stated["first_divergence"], GROUP_FIELDS, f"{at}.first_divergence")
@@ -760,20 +892,65 @@ def _validate_tally(
         raise ParitySummaryError(
             f"{at}: floor_credit {floor!r} is not credit_sum / floor_cells = {expected_floor!r}"
         )
+    # The credited cells split by the basis of their credit: the two sums
+    # make up the credit sum, and each mean is its own sum over its own
+    # count, null when that count is 0.
+    if abs(clean_sum + unequalized_sum - credit_sum) > CREDIT_SUM_TOLERANCE:
+        raise ParitySummaryError(
+            f"{at}: clean_credit_sum {clean_sum!r} + unequalized_credit_sum {unequalized_sum!r} "
+            f"is not credit_sum {credit_sum!r}"
+        )
+    for name, part_sum, part_mean in (
+        ("clean", clean_sum, clean_mean),
+        ("unequalized", unequalized_sum, unequalized_mean),
+    ):
+        count = stated[f"{name}_credited"]
+        expected = part_sum / count if count else None
+        if not _same_number(part_mean, expected):
+            raise ParitySummaryError(
+                f"{at}: {name}_mean_credit {part_mean!r} is not {name}_credit_sum / {name}_credited "
+                f"= {expected!r}"
+            )
+    # The coverage of the run's committed selection: all three counts or none,
+    # none exactly when the run says why the selection is unknown, and the
+    # reported cells split into the committed ones and the rest.
+    reported_committed, outside = stated["committed_selected"], stated["outside_committed"]
+    coverage = [stated[field] is None for field in _TALLY_COVERAGE]
+    if any(coverage) != all(coverage):
+        raise ParitySummaryError(
+            f"{at}: committed, committed_selected and outside_committed must all be set or all be null"
+        )
+    if (stated["committed"] is None) != (committed is None):
+        raise ParitySummaryError(
+            f"{at}: committed {stated['committed']!r} must be null exactly when the run's committed_unknown is set, "
+            f"and it is {'set' if committed is None else 'not set'}"
+        )
+    if stated["committed"] is not None:
+        if reported_committed + outside != selected:
+            raise ParitySummaryError(
+                f"{at}: committed_selected {reported_committed} + outside_committed {outside} is not "
+                f"selected {selected}"
+            )
+        if reported_committed > stated["committed"]:
+            raise ParitySummaryError(
+                f"{at}: committed_selected {reported_committed} exceeds committed {stated['committed']}"
+            )
     if line != render_line(stated):
         raise ParitySummaryError(f"{at}: line {line!r} is not its tally's {render_line(stated)!r}")
-    recomputed = tally(cells)
+    recomputed = tally(cells, committed)
     for field in TALLY_FIELDS:
-        if field in {"credit_sum", "mean_credit", "floor_credit", "line"}:
+        if field in _TALLY_NOT_EXACT:
             continue
         if stated[field] != recomputed[field]:
+            source = "its cells and the run's committed-selection lists" if field in _TALLY_COVERAGE else "its cells"
+            raise ParitySummaryError(
+                f"{at}: {field} {stated[field]!r} disagrees with {source}, which give {recomputed[field]!r}"
+            )
+    for field in _TALLY_SUMS:
+        if abs(stated[field] - recomputed[field]) > CREDIT_SUM_TOLERANCE:
             raise ParitySummaryError(
                 f"{at}: {field} {stated[field]!r} disagrees with its cells, which give {recomputed[field]!r}"
             )
-    if abs(credit_sum - recomputed["credit_sum"]) > CREDIT_SUM_TOLERANCE:
-        raise ParitySummaryError(
-            f"{at}: credit_sum {credit_sum!r} disagrees with its cells, which give {recomputed['credit_sum']!r}"
-        )
     return stated
 
 
@@ -799,14 +976,75 @@ def _check_declared_measurability(cells: Sequence[Mapping[str, Any]], at: str) -
             )
 
 
+def _cell_order(key: tuple[str, str]) -> tuple[bytes, int]:
+    """hermit's order of a (test id, backend) cell: the test id's bytes, then
+    the backend in `ParityBackend`'s declaration order (its derived `Ord`).
+
+    This differs from the byte order of `<test>@<backend>` when one test id
+    begins with another: `a@kvm` sorts before `a-b@kvm` here.
+    """
+    return key[0].encode("utf-8"), BACKENDS.index(key[1])
+
+
+def _cell_list(value: Any, at: str) -> list[tuple[str, str]]:
+    """A run's list of `<test>@<backend>` cells as (test id, backend) pairs:
+    each cell once, in `_cell_order`."""
+    if not isinstance(value, list):
+        raise ParitySummaryError(f"{at} must be a list")
+    keys = []
+    for index, item in enumerate(value):
+        name = _string(item, f"{at}[{index}]")
+        test_id, _separator, backend = name.rpartition("@")
+        if not test_id or backend not in BACKENDS:
+            raise ParitySummaryError(
+                f"{at}[{index}] must be <test>@<backend> with a backend of {', '.join(BACKENDS)}, got {name!r}"
+            )
+        keys.append((test_id, backend))
+    if keys != sorted(set(keys), key=_cell_order):
+        raise ParitySummaryError(f"{at} must name each cell once, in order of test id and then backend")
+    return keys
+
+
+def _conflicting_commits(value: Any, at: str) -> list[str]:
+    """The Hermit commits a run's rows named when they named more than one:
+    none, or two or more, sorted, each once."""
+    if not isinstance(value, list):
+        raise ParitySummaryError(f"{at} must be a list")
+    for index, sha in enumerate(value):
+        if _commit(sha, f"{at}[{index}]") is None:
+            raise ParitySummaryError(f"{at}[{index}] must be set")
+    if len(value) == 1 or value != sorted(set(value)):
+        raise ParitySummaryError(f"{at} must be empty or name two or more commits, sorted, each once")
+    return value
+
+
 def _validate_run(value: Any, at: str) -> Mapping[str, Any]:
     run = _exact(value, RUN_FIELDS, at)
     producer = _choice(run["producer"], PRODUCERS, f"{at}.producer")
     run_id = _string(run["run_id"], f"{at}.run_id")
     at = f"{at} ({producer} run {run_id})"
-    _commit(run["hermit_sha"], f"{at}.hermit_sha")
+    hermit_sha = _commit(run["hermit_sha"], f"{at}.hermit_sha")
+    conflicting = _conflicting_commits(run["conflicting_hermit_shas"], f"{at}.conflicting_hermit_shas")
+    if conflicting and hermit_sha is not None:
+        raise ParitySummaryError(
+            f"{at}: its rows name {len(conflicting)} Hermit commits, so its hermit_sha must be null, "
+            f"got {hermit_sha!r}"
+        )
     _depth(run["depth"], f"{at}.depth")
     _optional_string(run["emitted_at"], f"{at}.emitted_at")
+    unknown = _optional_string(run["committed_unknown"], f"{at}.committed_unknown")
+    if hermit_sha is None and unknown is None:
+        raise ParitySummaryError(
+            f"{at}: a run with no hermit_sha has no commit to read its committed selection at, so "
+            "committed_unknown must say why it is unknown"
+        )
+    without_row = _cell_list(run["committed_cells_without_row"], f"{at}.committed_cells_without_row")
+    outside = _cell_list(run["cells_outside_committed"], f"{at}.cells_outside_committed")
+    if unknown is not None and (without_row or outside):
+        raise ParitySummaryError(
+            f"{at}: its committed selection is unknown, so it lists no committed_cells_without_row "
+            "or cells_outside_committed"
+        )
     raw_cells = run["cells"]
     if not isinstance(raw_cells, list):
         raise ParitySummaryError(f"{at}.cells must be a list")
@@ -817,6 +1055,27 @@ def _validate_run(value: Any, at: str) -> Mapping[str, Any]:
         if key in seen:
             raise ParitySummaryError(f"{at}: cell {cell['cell']} is reported twice")
         seen.add(key)
+    if conflicting:
+        for cell in cells:
+            if cell["verdict"] != "refused":
+                raise ParitySummaryError(
+                    f"{at}: its rows name {len(conflicting)} Hermit commits, so none of them is admitted, "
+                    f"but cell {cell['cell']} is {cell['verdict']}"
+                )
+    # The committed selection is what the two lists and the reported cells
+    # imply: the reported cells, less the ones outside it, and the ones
+    # without a row.
+    for test_id, backend in outside:
+        if (test_id, backend) not in seen:
+            raise ParitySummaryError(
+                f"{at}.cells_outside_committed names {test_id}@{backend}, which the run did not report"
+            )
+    for test_id, backend in without_row:
+        if (test_id, backend) in seen:
+            raise ParitySummaryError(
+                f"{at}.committed_cells_without_row names {test_id}@{backend}, which the run reported"
+            )
+    committed = None if unknown is not None else (seen - set(outside)) | set(without_row)
     _check_declared_measurability(cells, at)
     per_backend = _exact(run["per_backend"], BACKENDS, f"{at}.per_backend")
     for backend in BACKENDS:
@@ -825,8 +1084,9 @@ def _validate_run(value: Any, at: str) -> Mapping[str, Any]:
             [cell for cell in cells if cell["backend"] == backend],
             f"{at}.per_backend.{backend}",
             backend,
+            None if committed is None else {key for key in committed if key[1] == backend},
         )
-    total = _validate_tally(run["total"], cells, f"{at}.total")
+    total = _validate_tally(run["total"], cells, f"{at}.total", None, committed)
     line = _string(run["line"], f"{at}.line")
     if line != render_line(total):
         raise ParitySummaryError(f"{at}: line {line!r} is not its total's {render_line(total)!r}")
@@ -965,6 +1225,28 @@ def validate_summary(value: Any) -> Mapping[str, Any]:
     for reason, count in dropped.items():
         _string(reason, f"{at}.legacy_dropped key")
         _count(count, f"{at}.legacy_dropped.{reason}")
+    # The distinct cells behind each reason's dropped rows: the same reasons,
+    # and between one cell and one per row (none for a reason with no row).
+    dropped_cells = summary["legacy_dropped_cells"]
+    if not isinstance(dropped_cells, Mapping):
+        raise ParitySummaryError(f"{at}.legacy_dropped_cells must be an object")
+    missing = [reason for reason in dropped if reason not in dropped_cells]
+    if missing:
+        raise ParitySummaryError(
+            f"{at}.legacy_dropped_cells is missing the reason(s) legacy_dropped counts: {', '.join(missing)}"
+        )
+    unknown = [reason for reason in dropped_cells if reason not in dropped]
+    if unknown:
+        raise ParitySummaryError(
+            f"{at}.legacy_dropped_cells counts reason(s) legacy_dropped does not: {', '.join(map(str, unknown))}"
+        )
+    for reason, rows in dropped.items():
+        cells = _count(dropped_cells[reason], f"{at}.legacy_dropped_cells.{reason}")
+        if not min(rows, 1) <= cells <= rows:
+            raise ParitySummaryError(
+                f"{at}.legacy_dropped_cells.{reason} counts {cells} cell(s) for {rows} dropped row(s); "
+                f"it must be between {min(rows, 1)} and {rows}"
+            )
     return summary
 
 
@@ -1346,12 +1628,64 @@ def _rank(cell: Mapping[str, Any]) -> int:
     return CELL_VERDICTS.index(cell["verdict"])
 
 
+CommittedOf = Callable[[str], "Iterable[tuple[str, str]] | None"]
+
+
+def _committed_selection(
+    committed_of: CommittedOf | None, sha: str
+) -> tuple[frozenset[tuple[str, str]] | None, str | None]:
+    """A run's committed selection, or None and the reason it is unknown, in
+    the words of hermit's scorecard."""
+    unreadable = f"this checkout cannot read {PARITY_CELLS_PATH} at {sha}"
+    if committed_of is None:
+        return None, unreadable
+    try:
+        listed = committed_of(sha)
+        if listed is None:
+            return None, unreadable
+        try:
+            items = list(listed)
+        except TypeError:
+            raise ParitySummaryError(f"{PARITY_CELLS_PATH} is not a readable cell list: got {listed!r}") from None
+        selection: set[tuple[str, str]] = set()
+        for item in items:
+            if not isinstance(item, (tuple, list)) or len(item) != 2:
+                raise ParitySummaryError(f"{PARITY_CELLS_PATH} is not a readable cell list: it names {item!r}")
+            test_id, backend = item
+            if not isinstance(test_id, str) or not test_id or backend not in BACKENDS:
+                raise ParitySummaryError(
+                    f"{PARITY_CELLS_PATH} is not a readable cell list: it names test {test_id!r} "
+                    f"on backend {backend!r}"
+                )
+            if (test_id, backend) in selection:
+                raise ParitySummaryError(f"{PARITY_CELLS_PATH} selects {test_id}@{backend} twice")
+            selection.add((test_id, backend))
+    except ParitySummaryError as error:
+        return None, str(error)
+    return frozenset(selection), None
+
+
+def _headline_key(run: Mapping[str, Any]) -> tuple:
+    """hermit's headline order without commit depth: a run that reported its
+    whole committed selection first, then one that reported more of it, then
+    the latest emission, then the greater run id."""
+    total = run["total"]
+    complete = total["committed"] is not None and total["committed_selected"] == total["committed"]
+    return (
+        complete,
+        0 if complete else (total["committed_selected"] or 0),
+        run["emitted_at"] or "",
+        run["run_id"],
+    )
+
+
 def summarize_rows(
     rows: Sequence[Mapping[str, Any]],
     *,
     store_sha256: str | None = None,
     series_commit: str | None = None,
     tool_hermit_commit: str | None = None,
+    committed_of: CommittedOf | None = None,
 ) -> dict[str, Any]:
     """A `parity-summary/v1` document over already admitted ledger rows.
 
@@ -1359,9 +1693,17 @@ def summarize_rows(
     `parity_ledger.validate_row`: one run per (producer, run_id), the most
     adverse report of a cell kept, every tally from `tally`. It has no
     catalogue, so a test id is its own canonical id, no run has a depth, the
-    headline of a producer is its latest emission, and the legacy history is
-    empty. A row that does not validate raises; the scorecard's refusal
-    accounting is not reproduced here.
+    headline of a producer is the run that covers the most of its committed
+    selection and then the latest emission, and the legacy history is empty.
+    A row that does not validate raises, and so does a run whose rows name
+    two Hermit commits; the scorecard's refusal accounting is not reproduced
+    here.
+
+    `committed_of(sha)` gives the cells `PARITY_CELLS_PATH` selects at a
+    run's Hermit commit, as (test id, backend) pairs. It returns None when
+    that file cannot be read there, and raises `ParitySummaryError` when it is
+    not a cell list; either way the run's committed selection is unknown, as
+    it is for every run without `committed_of`.
     """
     ledger = parity_ledger_module()
     runs: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1391,18 +1733,32 @@ def summarize_rows(
     summaries = []
     for (producer, run_id) in sorted(runs, key=lambda key: (PRODUCERS.index(key[0]), key[1])):
         run = runs[(producer, run_id)]
-        cells = [run["cells"][key] for key in sorted(run["cells"], key=lambda key: (key[0].encode(), key[1]))]
-        total = tally(cells)
+        cells = [run["cells"][key] for key in sorted(run["cells"], key=_cell_order)]
+        committed, unknown = _committed_selection(committed_of, run["hermit_sha"])
+        reported = set(run["cells"])
+        without_row: list[tuple[str, str]] = []
+        outside: list[tuple[str, str]] = []
+        if committed is not None:
+            without_row = sorted(committed - reported, key=_cell_order)
+            outside = sorted(reported - committed, key=_cell_order)
+        total = tally(cells, committed)
         summaries.append(
             {
                 "producer": producer,
                 "run_id": run_id,
                 "hermit_sha": run["hermit_sha"],
+                "conflicting_hermit_shas": [],
                 "depth": None,
                 "emitted_at": run["emitted_at"],
                 "line": render_line(total),
+                "committed_unknown": unknown,
+                "committed_cells_without_row": [f"{test_id}@{backend}" for test_id, backend in without_row],
+                "cells_outside_committed": [f"{test_id}@{backend}" for test_id, backend in outside],
                 "per_backend": {
-                    backend: tally(cell for cell in cells if cell["backend"] == backend)
+                    backend: tally(
+                        [cell for cell in cells if cell["backend"] == backend],
+                        None if committed is None else {key for key in committed if key[1] == backend},
+                    )
                     for backend in BACKENDS
                 },
                 "total": total,
@@ -1412,10 +1768,7 @@ def summarize_rows(
     headline: dict[str, int] = {}
     for index, run in enumerate(summaries):
         current = headline.get(run["producer"])
-        if current is None or (run["emitted_at"] or "", run["run_id"]) > (
-            summaries[current]["emitted_at"] or "",
-            summaries[current]["run_id"],
-        ):
+        if current is None or _headline_key(run) > _headline_key(summaries[current]):
             headline[run["producer"]] = index
     chosen = set(headline.values())
     return {
@@ -1453,6 +1806,7 @@ def summarize_rows(
             "entries": [],
         },
         "legacy_dropped": {},
+        "legacy_dropped_cells": {},
     }
 
 
