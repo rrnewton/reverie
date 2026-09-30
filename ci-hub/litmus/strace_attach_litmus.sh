@@ -45,7 +45,7 @@ usage() {
     cat >&2 <<USAGE
 usage: $0 --backend <be> [--mode wrap|attach] [--timeout N] [--keep-log] -- <guest argv...>
 
-  --mode wrap    (default) run \`strace -f hermit run --backend <be> -- <guest>\`.
+  --mode wrap    (default) run \`strace -f hermit --backend <be> run -- <guest>\`.
                  Exercises the one-tracer rule directly: strace claims the
                  guest first, so a backend that needs to ptrace it cannot.
   --mode attach  start hermit, then attach strace to the live hermit pid and
@@ -179,7 +179,7 @@ classify_wrap() {
 
 run_wrap() {
     timeout "$TIMEOUT" "$STRACE" -f -qq -o "$log" \
-        "$HERMIT" run --backend "$BACKEND" -- "${GUEST[@]}" \
+        "$HERMIT" --backend "$BACKEND" run -- "${GUEST[@]}" \
         >/dev/null 2>"$hermit_err"
     local rc=$?
     if ((rc == 124)); then
@@ -190,7 +190,7 @@ run_wrap() {
 }
 
 run_attach() {
-    timeout "$TIMEOUT" "$HERMIT" run --backend "$BACKEND" -- "${GUEST[@]}" \
+    timeout "$TIMEOUT" "$HERMIT" --backend "$BACKEND" run -- "${GUEST[@]}" \
         >/dev/null 2>"$hermit_err" &
     local pid=$!
     # Give the run time to reach a steady state before probing.

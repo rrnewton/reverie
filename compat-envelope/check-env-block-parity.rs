@@ -374,7 +374,7 @@ fn measure(options: &Options, arm: &str, guest: &Path) -> Arm {
     // so the same backend can appear twice (see the control arm).
     let backend = arm.split('#').next().unwrap_or(arm);
     let mut command = Command::new(&options.hermit);
-    command.arg("run").arg("--backend").arg(backend);
+    command.arg("--backend").arg(backend).arg("run");
     // A pinned base env is the precondition for the comparison meaning
     // anything: with `--base-env host` the two arms would differ by whatever
     // the two shells happened to carry.
@@ -403,7 +403,7 @@ fn measure(options: &Options, arm: &str, guest: &Path) -> Arm {
         let tail: Vec<&str> = stderr.lines().rev().take(3).collect();
         return Arm::Unavailable {
             reason: format!(
-                "hermit run --backend {backend} exited {:?}: {}",
+                "hermit --backend {backend} run exited {:?}: {}",
                 output.status.code(),
                 tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
             ),

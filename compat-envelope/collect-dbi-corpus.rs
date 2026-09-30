@@ -202,9 +202,9 @@ fn hermit_bin(repo: &Path) -> PathBuf {
 fn hermit_argv(hermit: &Path, backend: &str, verify: bool, guest: &[String]) -> Vec<String> {
     let mut argv = vec![
         hermit.to_string_lossy().into_owned(),
-        "run".into(),
         "--backend".into(),
         backend.into(),
+        "run".into(),
         "--strict".into(),
     ];
     if verify {
@@ -672,7 +672,7 @@ fn push_row(
     };
     let has_parity = parity.is_some();
     let profile_flags = serde_json::json!({
-        "comparison": ["hermit", "run", "--strict", "--backend", backend],
+        "comparison": ["hermit", "--backend", backend, "run", "--strict"],
         "reference_backend": "ptrace",
         "candidate_backend": backend,
         "observable": "guest-stdout-sha256"

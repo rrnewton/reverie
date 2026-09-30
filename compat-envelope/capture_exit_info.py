@@ -79,7 +79,7 @@ def run_cell(hermit: str, guest: list[str], backend: str, lane: str = "portable"
         logp = os.path.join(tmp, "info.log")
         cmd = ["timeout", f"{timeout_s}s", hermit,
                "--log=info", f"--log-file={logp}",
-               "run", "--backend", backend, "--strict",
+               "--backend", backend, "run", "--strict",
                "--base-env", "minimal", "-e", "LC_ALL=C", "-e", "TZ=UTC"]
         if lane == "portable":
             cmd += ["--no-virtualize-cpuid", "--max-timeslice=disabled"]

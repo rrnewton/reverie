@@ -186,9 +186,9 @@ fn profile_flags(lane: &str, bucket: &str, backend: &str, mode: &str) -> String 
         "--include-manual"
     };
     let mut comparison = vec![
-        "run".to_string(),
         "--backend".to_string(),
         backend.to_string(),
+        "run".to_string(),
         "--strict".to_string(),
         "--summary".to_string(),
         "--base-env".to_string(),
@@ -1158,9 +1158,9 @@ fn capture_verify_verdict(
     let mut cmd = Command::new("timeout");
     cmd.arg("120s")
         .arg(hermit_bin(repo))
-        .arg("run")
         .arg("--backend")
         .arg(backend)
+        .arg("run")
         .arg("--strict")
         .arg("--verify")
         .arg("--verify-allow")
@@ -1363,9 +1363,9 @@ fn backend_unavailable_reason(repo: &Path, backend: &str) -> Option<String> {
     let out = Command::new("timeout")
         .arg("60s")
         .arg(&hermit)
-        .arg("run")
         .arg("--backend")
         .arg(backend)
+        .arg("run")
         .arg("--")
         .arg("/bin/true")
         .current_dir(repo)
@@ -1875,9 +1875,9 @@ fn run_and_hash(
     let mut cmd = Command::new("timeout");
     cmd.arg("120s")
         .arg(&hermit)
-        .arg("run")
         .arg("--backend")
         .arg(backend)
+        .arg("run")
         .arg("--strict");
     // Pin the GUEST environment. `--base-env` defaults to `host`, which passes every one of
     // hermit's own variables through to the guest. The kernel builds the initial stack from

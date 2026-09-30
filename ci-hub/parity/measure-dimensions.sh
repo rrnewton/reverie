@@ -52,7 +52,7 @@ done
 status=0
 for entry in "${DIMS[@]}"; do
   dim=${entry%% *}; src=${entry#* }
-  timeout 300 "$H" --log=info --log-file="$OUT/$dim.log" run --backend "$BACKEND" \
+  timeout 300 "$H" --log=info --log-file="$OUT/$dim.log" --backend "$BACKEND" run \
       --strict --detlog-heap --detlog-stack --base-env minimal \
       -- "$OUT/bin/$dim" >"$OUT/$dim.out" 2>"$OUT/$dim.err"
   rc=$?

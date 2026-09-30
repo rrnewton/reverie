@@ -68,7 +68,7 @@ prologue_len() { # $1=prefix -> number of leading records that are process/loade
 run() { # $1=backend $2=tag $3.. = guest argv
   local be="$1" tag="$2"; shift 2
   timeout 240 "$H" --log=info --log-file="$OUT/$tag.$be.log" \
-      run --backend "$be" -- "$@" >/dev/null 2>"$OUT/$tag.$be.err"
+      --backend "$be" run -- "$@" >/dev/null 2>"$OUT/$tag.$be.err"
   echo $?
 }
 
