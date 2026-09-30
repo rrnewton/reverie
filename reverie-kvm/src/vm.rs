@@ -4506,8 +4506,12 @@ impl KvmBackend {
     }
 
     pub(crate) fn clear_registered_worker_tid_before_exit(&mut self, executor: &mut ElfExecutor) {
+        #[cfg(test)]
+        clear_tid_diagnostic::begin();
         self.release_thread_slot();
         let Some(address) = executor.take_clear_child_tid() else {
+            #[cfg(test)]
+            clear_tid_diagnostic::stopped("no registered address");
             return;
         };
         debug_assert!(self.thread_slot.is_none());
@@ -4522,12 +4526,16 @@ impl KvmBackend {
         // route_entry_outcome folds it into the exiting thread's outcome.
         let _ = self.memory.user().put_user_i32(address, 0);
         if self.memory.user().user_accessible_prefix(address, 4).ok() != Some(4) {
+            #[cfg(test)]
+            clear_tid_diagnostic::stopped("accessible prefix was not four bytes");
             return;
         }
         let Ok(operand) = self.memory.user().retain_translated_range(address, 4) else {
+            #[cfg(test)]
+            clear_tid_diagnostic::stopped("translation failed");
             return;
         };
-        unsafe {
+        let _wake_result = unsafe {
             libc::syscall(
                 libc::SYS_futex,
                 operand.address(),
@@ -4536,8 +4544,17 @@ impl KvmBackend {
                 0,
                 0,
                 0,
-            );
-        }
+            )
+        };
+        #[cfg(test)]
+        let wake_errno = if _wake_result == -1 {
+            // Read this thread's errno before any other operation can replace it.
+            Some(unsafe { *libc::__errno_location() })
+        } else {
+            None
+        };
+        #[cfg(test)]
+        clear_tid_diagnostic::woke(operand.address(), _wake_result, wake_errno);
     }
 
     pub(crate) fn restore_rt_sigreturn(
@@ -5459,22 +5476,104 @@ fn write_tid_best_effort(memory: &mut GuestMemory, address: Option<u64>, tid: i3
     }
 }
 
+#[cfg(test)]
+mod clear_tid_diagnostic {
+    // This opt-in record has no allocation, callback, lock, or syscall. The
+    // test initializes it before enrollment and formats it after joining the
+    // waiter. It observes the existing helper; it does not repair enrollment.
+    #[derive(Clone, Copy)]
+    pub(super) struct Wake {
+        invocations: usize,
+        stage: &'static str,
+        address: Option<usize>,
+        result: Option<libc::c_long>,
+        errno: Option<i32>,
+    }
+
+    impl std::fmt::Debug for Wake {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("Wake")
+                .field("invocations", &self.invocations)
+                .field("stage", &self.stage)
+                .field("address", &self.address.map(|address| address as *const i32))
+                .field("result", &self.result)
+                .field("errno", &self.errno)
+                .finish()
+        }
+    }
+
+    std::thread_local! {
+        static WAKE: std::cell::Cell<Option<Wake>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn arm() {
+        WAKE.set(Some(Wake {
+            invocations: 0,
+            stage: "not called",
+            address: None,
+            result: None,
+            errno: None,
+        }));
+    }
+
+    pub(super) fn begin() {
+        if let Some(mut wake) = WAKE.get() {
+            wake.invocations = wake.invocations.saturating_add(1);
+            wake.stage = "entered, not completed";
+            wake.address = None;
+            wake.result = None;
+            wake.errno = None;
+            WAKE.set(Some(wake));
+        }
+    }
+
+    pub(super) fn stopped(stage: &'static str) {
+        if let Some(mut wake) = WAKE.get() {
+            wake.stage = stage;
+            WAKE.set(Some(wake));
+        }
+    }
+
+    pub(super) fn woke(address: usize, result: libc::c_long, errno: Option<i32>) {
+        if let Some(mut wake) = WAKE.get() {
+            wake.stage = "wake returned";
+            wake.address = Some(address);
+            wake.result = Some(result);
+            wake.errno = errno;
+            WAKE.set(Some(wake));
+        }
+    }
+
+    pub(super) fn take() -> Option<Wake> {
+        WAKE.take()
+    }
+}
+
 // TODO-HUMAN-REVIEW(PR-172): Review CHILD_CLEARTID store and shared futex wake ordering.
 pub(crate) fn clear_tid_and_wake(memory: &mut GuestMemory, address: Option<u64>) {
+    #[cfg(test)]
+    clear_tid_diagnostic::begin();
     let Some(address) = address else {
+        #[cfg(test)]
+        clear_tid_diagnostic::stopped("no registered address");
         return;
     };
     // Linux treats a failed CHILD_CLEARTID store as best-effort and skips the
     // wake when the user address is invalid.
     if memory.user().write(address, &0_i32.to_le_bytes()).is_err() {
+        #[cfg(test)]
+        clear_tid_diagnostic::stopped("store failed");
         return;
     }
     let Ok(operand) = memory.user().retain_translated_range(address, 4) else {
+        #[cfg(test)]
+        clear_tid_diagnostic::stopped("translation failed");
         return;
     };
     // SAFETY: the successful write above validates the complete futex word,
     // and GuestMemory keeps its shared host mapping alive for this call.
-    unsafe {
+    let _wake_result = unsafe {
         libc::syscall(
             libc::SYS_futex,
             operand.address(),
@@ -5483,8 +5582,17 @@ pub(crate) fn clear_tid_and_wake(memory: &mut GuestMemory, address: Option<u64>)
             0,
             0,
             0,
-        );
-    }
+        )
+    };
+    #[cfg(test)]
+    let wake_errno = if _wake_result == -1 {
+        // Read this thread's errno before any other operation can replace it.
+        Some(unsafe { *libc::__errno_location() })
+    } else {
+        None
+    };
+    #[cfg(test)]
+    clear_tid_diagnostic::woke(operand.address(), _wake_result, wake_errno);
 }
 
 fn supported_hypercall_instruction(cpuid: &CpuId) -> Result<[u8; 3]> {
@@ -10867,19 +10975,27 @@ mod tests {
                     .user()
                     .retain_translated_range(PARK, 4)
                     .unwrap();
+                clear_tid_diagnostic::arm();
                 let waiter = std::thread::spawn(move || {
                     let timeout = libc::timespec {
                         tv_sec: 5,
                         tv_nsec: 0,
                     };
-                    host_futex(
+                    let result = host_futex(
                         waiting.address(),
                         libc::FUTEX_WAIT,
                         0,
                         std::ptr::from_ref(&timeout) as usize,
                         0,
                         0,
-                    )
+                    );
+                    let errno = if result == -1 {
+                        // errno belongs to this waiter, not the joining thread.
+                        Some(unsafe { *libc::__errno_location() })
+                    } else {
+                        None
+                    };
+                    (result, errno)
                 });
                 let deadline = Instant::now() + Duration::from_secs(2);
                 loop {
@@ -10898,8 +11014,10 @@ mod tests {
                     assert!(Instant::now() < deadline, "clear-TID waiter was not queued");
                     std::thread::yield_now();
                 }
-                // Requeue's return of one establishes the actual kernel waiter
-                // on WORD before either production clear function is invoked.
+                // Requeue establishes enrollment only at that instant. An
+                // internal FUTEX_WAIT restart can later return to PARK; see
+                // https://github.com/rrnewton/reverie/issues/696. Keep requiring
+                // an actual wake and record what the production helper did.
                 if registered_worker {
                     executor.set_clear_child_tid(Some(WORD));
                     backend.clear_registered_worker_tid_before_exit(&mut executor);
@@ -10907,6 +11025,7 @@ mod tests {
                 } else {
                     clear_tid_and_wake(&mut backend.memory, Some(WORD));
                 }
+                let wake = clear_tid_diagnostic::take();
                 let mut bytes = [0; 4];
                 backend.memory.read_raw(WORD, &mut bytes).unwrap();
                 let stored = policy != 2 && (!registered_worker || policy == 0);
@@ -10930,10 +11049,12 @@ mod tests {
                         1
                     );
                 }
+                let (wait_result, wait_errno) = waiter.join().unwrap();
                 assert_eq!(
-                    waiter.join().unwrap(),
-                    0,
-                    "expected an actual wake, never a timeout"
+                    wait_result, 0,
+                    "expected an actual wake, never a timeout; \
+                     registered_worker={registered_worker} policy={policy} \
+                     wait_errno={wait_errno:?} wake={wake:?}"
                 );
             }
             // An unaligned word crosses writable and readonly pages. Futex
