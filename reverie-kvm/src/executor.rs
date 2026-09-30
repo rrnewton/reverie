@@ -38444,16 +38444,28 @@ mod tests {
             assert_eq!(observation.case, Case::AtomicCollision);
             // After the finite allocator contention observation is sealed,
             // ordinary guest access and the shared descriptor can continue.
+            // Directory cookies are opaque: sample the native EOF transition
+            // instead of assuming EOF leaves its earlier cursor unchanged.
+            let mut after_continuation = expected_bytes.clone();
+            after_continuation[length - 1] = b'x';
+            let mut native_continuation = after_continuation.clone();
+            assert_eq!(read_native(&native, &mut native_continuation), 0);
+            assert_eq!(
+                native_continuation, after_continuation,
+                "native EOF preserves the complete buffer"
+            );
+            let native_eof_cursor = native.stream_position().unwrap();
             memory.write_raw(length as u64 - 1, b"x").unwrap();
             assert_eq!(
                 getdents64(&mut memory, &state, &[1, 0, length as u64, 0, 0, 0]),
                 0
             );
-            assert_eq!(directory.stream_position().unwrap(), native_cursor);
-            assert_eq!(duplicate.stream_position().unwrap(), native_cursor);
+            assert_eq!(directory.stream_position().unwrap(), native_eof_cursor);
+            assert_eq!(duplicate.stream_position().unwrap(), native_eof_cursor);
+            eprintln!(
+                "\nnative getdents EOF cursor before={native_cursor} after={native_eof_cursor}"
+            );
             assert!(memory.entry_gate().pending_failure().is_none());
-            let mut after_continuation = expected_bytes.clone();
-            after_continuation[length - 1] = b'x';
             observer.read_raw(0, &mut actual).unwrap();
             assert_eq!(
                 actual, after_continuation,
