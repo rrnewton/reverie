@@ -169,8 +169,10 @@ pub(crate) static CANCELLED_TIMER_SIGNALS_DISCARDED: std::sync::atomic::AtomicU6
 
 /// Whether timers check, at each disregarded stop that keeps a scheduled
 /// event, that the stop left the event's PMU programming as its request made
-/// it (see [`TimerImpl::check_kept_programming`]), for tests. Unit tests of
-/// this crate always check.
+/// it (see [`TimerImpl::check_kept_programming`]), and check again at the
+/// thread's next stop that nothing programmed the counter while the stop was
+/// handled (see [`TimerImpl::recheck_kept_programming`]), for tests. Unit
+/// tests of this crate always check.
 pub(crate) static KEPT_PROGRAMMING_CHECKS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -180,23 +182,44 @@ pub(crate) static KEPT_PROGRAMMING_CHECKS: std::sync::atomic::AtomicBool =
 pub(crate) static KEPT_PROGRAMMINGS_CHECKED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Disregarded stops of [`KEPT_PROGRAMMINGS_CHECKED`] after which the kept
-/// event's counter would overflow at a clock other than the one its request
-/// programmed, or would not overflow at all, for tests.
+/// Disregarded stops of [`KEPT_PROGRAMMINGS_CHECKED`] whose check found the
+/// kept programming unchanged and that handed nothing on, whose programming
+/// was checked again at the thread's next stop, or when the event was next
+/// requested, cancelled or retired, or the thread exited, whichever came
+/// first (see [`TimerImpl::recheck_kept_programming`]), for tests.
+pub(crate) static KEPT_PROGRAMMINGS_RECHECKED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Disregarded stops of [`KEPT_PROGRAMMINGS_CHECKED`] that handed the kept
+/// event on, as single steps or a lost notification for
+/// [`Timer::continue_stepping`] to finish, or that failed, and so were not
+/// checked again at the thread's next stop, which the finishing reaches by
+/// programming the counter, for tests.
+pub(crate) static KEPT_PROGRAMMINGS_HANDED_ON: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Checks of [`KEPT_PROGRAMMINGS_CHECKED`] and rechecks of
+/// [`KEPT_PROGRAMMINGS_RECHECKED`] that found the kept event's counter
+/// programmed since its request (see [`KeptProgramming::reprogrammed`]), or,
+/// at the stop itself, overflowing at a clock other than the one its request
+/// programmed, or not at all, for tests.
 pub(crate) static KEPT_PROGRAMMINGS_CHANGED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// The first stops counted in [`KEPT_PROGRAMMINGS_CHANGED`], at most
+/// The first checks counted in [`KEPT_PROGRAMMINGS_CHANGED`], at most
 /// [`KEPT_PROGRAMMINGS_CHANGED_KEPT`] of them since the list was last taken,
 /// for tests.
 pub(crate) static KEPT_PROGRAMMINGS_CHANGED_EVENTS: std::sync::Mutex<Vec<KeptProgramming>> =
     std::sync::Mutex::new(Vec::new());
 
-/// How many stops [`KEPT_PROGRAMMINGS_CHANGED_EVENTS`] keeps.
+/// How many checks [`KEPT_PROGRAMMINGS_CHANGED_EVENTS`] keeps.
 const KEPT_PROGRAMMINGS_CHANGED_KEPT: usize = 1024;
 
 /// What a check of a kept event's programming found (see
-/// [`TimerImpl::check_kept_programming`]).
+/// [`TimerImpl::check_kept_programming`] and
+/// [`TimerImpl::recheck_kept_programming`]). The programming is unchanged
+/// only if `reprogrammed` is zero and, at the stop itself, `found` is
+/// `armed`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct KeptProgramming {
     /// The event's target clock (for an imprecise event, its least clock).
@@ -204,9 +227,62 @@ pub struct KeptProgramming {
     /// The clock at which the event's request programmed its counter to
     /// overflow: the target less the skid margin, for a precise event.
     pub armed: u64,
-    /// The clock at which the counter overflows after the stop, or `None` if
-    /// its programming has ended or cannot be read.
+    /// The clock at which the counter overflows after the stop, as inferred
+    /// from its count and its last programmed period, or `None` if its
+    /// programming has ended or cannot be read. A recheck at the next stop
+    /// does not read it, and leaves it `None`.
     pub found: Option<u64>,
+    /// The calls that changed the counter's programming (enable, disable,
+    /// refresh, reset, period or signal delivery) made since the event's
+    /// request programmed it. A period change re-arms the counter without
+    /// moving its count, so `found` alone cannot show one.
+    pub reprogrammed: u64,
+    /// Whether this is the recheck at the thread's next stop, or at the
+    /// event's next request, cancellation or retirement, or the thread's
+    /// exit, rather than the check at the stop that kept the event.
+    pub at_next_stop: bool,
+}
+
+impl KeptProgramming {
+    /// Whether the check found the programming changed.
+    pub fn changed(&self) -> bool {
+        self.reprogrammed != 0 || (!self.at_next_stop && self.found != Some(self.armed))
+    }
+}
+
+/// The programming a request made for a timer event (see
+/// [`KEPT_PROGRAMMING_CHECKS`]).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct ArmedProgramming {
+    /// The clock at which `timer` overflows.
+    overflow_point: u64,
+    /// [`PerfCounter::programmings`] of `timer` once the request programmed
+    /// it.
+    programmings: u64,
+}
+
+/// Counts a check of a kept programming, and records it if it found the
+/// programming changed.
+fn count_kept_programming_check(check: KeptProgramming) {
+    let counter = if check.at_next_stop {
+        &KEPT_PROGRAMMINGS_RECHECKED
+    } else {
+        &KEPT_PROGRAMMINGS_CHECKED
+    };
+    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if check.changed() {
+        warn!(
+            "The programming of a timer event that a disregarded stop kept was changed: \
+             {check:?}"
+        );
+        KEPT_PROGRAMMINGS_CHANGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut changed = KEPT_PROGRAMMINGS_CHANGED_EVENTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if changed.len() < KEPT_PROGRAMMINGS_CHANGED_KEPT {
+            changed.push(check);
+        }
+    }
 }
 
 /// Whether timers check kept programmings (see [`KEPT_PROGRAMMING_CHECKS`]).
@@ -892,12 +968,14 @@ impl Timer {
     /// before the target. Once a test has called
     /// [`crate::testing::check_kept_timer_programming`], and always in this
     /// crate's unit tests, each such stop checks and counts that (see
-    /// [`TimerImpl::check_kept_programming`]).
+    /// [`TimerImpl::check_kept_programming`]), and, if it hands nothing on,
+    /// the thread's next stop checks and counts that nothing programmed the
+    /// counter in between (see [`TimerImpl::recheck_kept_programming`]).
     pub(crate) fn disregard_stop(&mut self) -> Result<Option<Unfinished>, Errno> {
         match self.inner_mut_noinit() {
             Some(timer) => {
                 let unfinished = timer.disregard_stop();
-                timer.check_kept_programming();
+                timer.check_kept_programming(matches!(unfinished, Ok(None)));
                 unfinished
             }
             None => Ok(None),
@@ -924,7 +1002,7 @@ impl Timer {
         match self.inner_mut_noinit() {
             Some(timer) => {
                 let result = timer.disregard_stop_before_period();
-                timer.check_kept_programming();
+                timer.check_kept_programming(result.is_ok());
                 result
             }
             None => Ok(()),
@@ -1232,15 +1310,21 @@ struct TimerImpl {
     /// the thread's exit records it (see [`TimerImpl::settle_at_exit`]).
     disregarded_missed: Option<MissedTarget>,
 
-    /// The clock at which the active event's request programmed `timer` to
-    /// overflow, if it programmed a notification while kept programmings
-    /// are checked (see [`KEPT_PROGRAMMING_CHECKS`]).
-    armed_overflow_point: Option<u64>,
+    /// The programming the active event's request made, if it programmed a
+    /// notification while kept programmings are checked (see
+    /// [`KEPT_PROGRAMMING_CHECKS`]).
+    armed_programming: Option<ArmedProgramming>,
 
-    /// The overflow point, as in `armed_overflow_point`, of the event that
-    /// the latest disregarded stop kept, until
+    /// The programming, as in `armed_programming`, of the event that the
+    /// latest disregarded stop kept, until
     /// [`TimerImpl::check_kept_programming`] checks it.
-    kept_overflow_point: Option<u64>,
+    kept_programming: Option<ArmedProgramming>,
+
+    /// The programming, as in `armed_programming`, of the event that a
+    /// disregarded stop kept and found unchanged, until
+    /// [`TimerImpl::recheck_kept_programming`] checks it again at the
+    /// thread's next stop.
+    resumed_programming: Option<ArmedProgramming>,
 
     /// Every check of a kept event's programming this timer made.
     #[cfg(test)]
@@ -1586,8 +1670,9 @@ impl TimerImpl {
             observed: None,
             notification_taken: false,
             disregarded_missed: None,
-            armed_overflow_point: None,
-            kept_overflow_point: None,
+            armed_programming: None,
+            kept_programming: None,
+            resumed_programming: None,
             #[cfg(test)]
             kept_programming_log: Vec::new(),
             #[cfg(test)]
@@ -1613,7 +1698,8 @@ impl TimerImpl {
         {
             self.preempted_overflow_counted = false;
         }
-        self.armed_overflow_point = None;
+        self.recheck_kept_programming();
+        self.armed_programming = None;
         if self.initial_command != InitialCommand::Ordinary {
             self.event = Self::event_at(evt, self.read_clock() + delivery);
             self.held_initial_event = Some(self.event);
@@ -1626,9 +1712,10 @@ impl TimerImpl {
         self.set_status(EventStatus::Scheduled);
         if kept_programming_checks() {
             // The thread is stopped, so the clock is the request's.
-            self.armed_overflow_point = self
-                .overflow_period
-                .map(|period| self.read_clock() + period);
+            self.armed_programming = self.overflow_period.map(|period| ArmedProgramming {
+                overflow_point: self.read_clock() + period,
+                programmings: self.timer.programmings(),
+            });
         }
         Ok(())
     }
@@ -1642,7 +1729,8 @@ impl TimerImpl {
         self.interrupted = None;
         self.notification_taken = false;
         self.disregarded_missed = None;
-        self.kept_overflow_point = None;
+        self.kept_programming = None;
+        self.resumed_programming = None;
     }
 
     fn prepare_notification(&mut self, notification: u64) -> Result<(), Errno> {
@@ -1859,6 +1947,7 @@ impl TimerImpl {
     /// then ticks the status, as every stop does. The previous stop, if not
     /// disregarded, decided the event.
     fn tick_observed(&mut self) {
+        self.recheck_kept_programming();
         self.settle_stop();
         // A taken notification is handed on before the next stop, except on a
         // path that fails before it; the stop then decides the event.
@@ -1923,6 +2012,7 @@ impl TimerImpl {
     /// mask or by interrupt latency, past the target, and the thread exited
     /// with no stop after the target that could decide the event.
     fn settle_at_exit(&mut self) {
+        self.recheck_kept_programming();
         self.settle_stop();
         let missed = self.disregarded_missed.take().or_else(|| {
             let ActiveEvent::Precise {
@@ -1985,7 +2075,7 @@ impl TimerImpl {
                 self.restore_before(&observed);
                 self.disregarded_missed = observed.missed;
                 if observed.before == EventStatus::Scheduled {
-                    self.kept_overflow_point = self.armed_overflow_point;
+                    self.kept_programming = self.armed_programming;
                 }
             }
             // Steps under way show that the notification came, and so that
@@ -2057,46 +2147,77 @@ impl TimerImpl {
     /// Checks, if the stop just disregarded kept a scheduled event whose
     /// request programmed a notification while kept programmings are
     /// checked (see [`KEPT_PROGRAMMING_CHECKS`]), that the stop left that
-    /// programming as the request made it, and counts the check: that `timer`
+    /// programming as the request made it, and counts the check. The check
+    /// requires both that no call changed the programming of `timer` since
+    /// the request (see [`PerfCounter::programmings`]), and that `timer`
     /// overflows at the clock at which the request programmed it to, its
-    /// period short of the clock at the request. A stop that re-programmed
-    /// the counter, reset it or ended its programming would move that clock
-    /// or leave none, and the event would fire late or not at all. Both
-    /// counters count the same event for the same thread, which is stopped,
-    /// so the clock less the count is the clock at which `timer` was last
-    /// reset, exactly.
-    fn check_kept_programming(&mut self) {
-        let Some(armed) = self.kept_overflow_point.take() else {
+    /// period short of the clock at the request. The first shows a
+    /// re-programming that the second cannot, such as a period change,
+    /// which re-arms the counter without moving its count, or a disable that
+    /// leaves its period recorded. The second shows a change made other than
+    /// through `timer`'s calls. Both counters count the same event for the
+    /// same thread, which is stopped, so the clock less the count is the
+    /// clock at which `timer` was last reset, exactly.
+    ///
+    /// If the check finds the programming unchanged and `resumed` holds,
+    /// which is when the stop hands nothing on, the thread's next stop checks
+    /// it again (see [`TimerImpl::recheck_kept_programming`]). If `resumed`
+    /// does not hold, the stop is counted as handing the event on (see
+    /// [`KEPT_PROGRAMMINGS_HANDED_ON`]).
+    fn check_kept_programming(&mut self, resumed: bool) {
+        let Some(armed) = self.kept_programming.take() else {
             return;
         };
         let found = self.overflow_period.and_then(|period| {
             let count = self.timer.ctr_value().ok()?;
             Some(self.read_clock().checked_sub(count)? + period)
         });
+        let check = self.kept_programming_check(armed, found, false);
+        if !resumed {
+            KEPT_PROGRAMMINGS_HANDED_ON.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else if check.reprogrammed == 0 && found == Some(armed.overflow_point) {
+            self.resumed_programming = Some(armed);
+        }
+        #[cfg(test)]
+        self.kept_programming_log.push(check);
+        count_kept_programming_check(check);
+    }
+
+    /// Checks again, at the first stop of the thread after a disregarded
+    /// stop that kept an event and found its programming unchanged, or at
+    /// the event's next request, cancellation or retirement, or the thread's
+    /// exit if one of those comes first, that nothing has changed the
+    /// programming of `timer` since the event's request (see
+    /// [`PerfCounter::programmings`]), and counts the check. This covers
+    /// what the rest of the disregarded stop's handling did, after
+    /// [`TimerImpl::check_kept_programming`], until the guest ran. It does
+    /// not read the overflow point.
+    fn recheck_kept_programming(&mut self) {
+        let Some(armed) = self.resumed_programming.take() else {
+            return;
+        };
+        let check = self.kept_programming_check(armed, None, true);
+        #[cfg(test)]
+        self.kept_programming_log.push(check);
+        count_kept_programming_check(check);
+    }
+
+    fn kept_programming_check(
+        &self,
+        armed: ArmedProgramming,
+        found: Option<u64>,
+        at_next_stop: bool,
+    ) -> KeptProgramming {
         let target = match self.event {
             ActiveEvent::Precise { clock_target, .. } => clock_target,
             ActiveEvent::Imprecise { clock_min } => clock_min,
         };
-        let check = KeptProgramming {
+        KeptProgramming {
             target,
-            armed,
+            armed: armed.overflow_point,
             found,
-        };
-        #[cfg(test)]
-        self.kept_programming_log.push(check);
-        KEPT_PROGRAMMINGS_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if found != Some(armed) {
-            warn!(
-                "A disregarded stop changed the programming of the timer event it kept: \
-                 {check:?}"
-            );
-            KEPT_PROGRAMMINGS_CHANGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let mut changed = KEPT_PROGRAMMINGS_CHANGED_EVENTS
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if changed.len() < KEPT_PROGRAMMINGS_CHANGED_KEPT {
-                changed.push(check);
-            }
+            reprogrammed: self.timer.programmings() - armed.programmings,
+            at_next_stop,
         }
     }
 
@@ -2134,6 +2255,7 @@ impl TimerImpl {
         &mut self,
         signal: &libc::siginfo_t,
     ) -> Result<Option<OwnNotification>, Errno> {
+        self.recheck_kept_programming();
         if !self.owns_overflow_signal(signal) {
             return Ok(None);
         }
@@ -2153,6 +2275,7 @@ impl TimerImpl {
     }
 
     fn retire(&mut self) -> Result<(), Errno> {
+        self.recheck_kept_programming();
         // Only an event that no stop has decided is recorded here, as at the
         // thread's exit. An Armed one was decided: delivered (its stale
         // target stays in `event` until the next request), or cancelled by
@@ -2233,6 +2356,7 @@ impl TimerImpl {
     }
 
     pub fn schedule_cancellation(&mut self) {
+        self.recheck_kept_programming();
         self.set_status(EventStatus::Cancelled);
     }
 
@@ -2326,6 +2450,7 @@ impl TimerImpl {
     }
 
     fn consume_overflow_signal(&mut self, signal: &libc::siginfo_t) -> Result<bool, Errno> {
+        self.recheck_kept_programming();
         if !self.owns_overflow_signal(signal) {
             return Ok(false);
         }
@@ -2378,6 +2503,7 @@ impl TimerImpl {
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
+        self.recheck_kept_programming();
         let signal = task.getsiginfo()?;
         #[cfg(test)]
         EXEC_SIGNAL_OBSERVATIONS.with(|slot| {
@@ -3186,8 +3312,9 @@ mod tests {
                 observed: None,
                 notification_taken: false,
                 disregarded_missed: None,
-                armed_overflow_point: None,
-                kept_overflow_point: None,
+                armed_programming: None,
+                kept_programming: None,
+                resumed_programming: None,
                 kept_programming_log: Vec::new(),
                 fail_next_notification: None,
                 preempted_overflow_counted: false,
@@ -3994,19 +4121,25 @@ mod tests {
     }
 
     // A disregarded stop that keeps a scheduled precise event leaves the
-    // event's PMU programming as the request made it: the counter overflows
+    // event's PMU programming as the request made it: no call has changed
+    // the counter's programming since the request, and the counter overflows
     // at the clock at which the request programmed it to, the target less
     // the skid margin, so the notification still comes a skid margin before
     // the target. Both ways a Timer disregards a stop check this and count
-    // the check (`TimerImpl::check_kept_programming`), and the check tells a
-    // stop that re-programmed the counter for its period, or reset it, from
-    // one that did not. The guest is a thread of this process blocked in a
-    // read between steps, so its counters hold still whenever they are read,
-    // and every clock here is exact.
+    // the check (`TimerImpl::check_kept_programming`), and the thread's next
+    // stop, or the event's next request or retirement, checks again that no
+    // call changed the programming (`TimerImpl::recheck_kept_programming`).
+    // The checks tell a stop that re-programmed the counter, reset it,
+    // changed only its period, disabled it or ended its programming, or
+    // whose later handling did any of these, from one that did not. The
+    // guest is a thread of this process blocked in a read between steps, so
+    // its counters hold still whenever they are read, and every clock here
+    // is exact.
     #[test]
     fn a_kept_event_keeps_the_overflow_point_its_request_programmed() {
         use reverie::Pid;
 
+        use super::ArmedProgramming;
         use super::EventStatus;
         use super::KeptProgramming;
         use super::Timer;
@@ -4037,53 +4170,80 @@ mod tests {
         fn inner(timer: &mut Timer) -> &mut TimerImpl {
             timer.inner.as_mut().unwrap()
         }
+        fn take_log(timer: &mut Timer) -> Vec<KeptProgramming> {
+            std::mem::take(&mut inner(timer).kept_programming_log)
+        }
         // Requests the event, and returns what a check of its programming
         // finds after a stop that leaves it as it is.
         let request = |timer: &mut Timer| {
+            let before = inner(timer).timer.programmings();
             timer
                 .request_event(TimerEventRequest::Precise(TARGET))
                 .unwrap();
             let timer = inner(timer);
             let clock = timer.read_clock();
             assert_eq!(timer.overflow_period, Some(period));
-            assert_eq!(timer.armed_overflow_point, Some(clock + period));
+            // A reset, a period and an enable.
+            assert_eq!(timer.timer.programmings(), before + 3);
+            assert_eq!(
+                timer.armed_programming,
+                Some(ArmedProgramming {
+                    overflow_point: clock + period,
+                    programmings: before + 3,
+                })
+            );
             KeptProgramming {
                 target: clock + TARGET,
                 armed: clock + period,
                 found: Some(clock + period),
+                reprogrammed: 0,
+                at_next_stop: false,
             }
+        };
+        // What a recheck finds when nothing changed the programming.
+        let rechecked = |armed: KeptProgramming| KeptProgramming {
+            found: None,
+            at_next_stop: true,
+            ..armed
         };
 
         // A stop that nothing continues keeps the event short of its keep
-        // point, and so does a stop whose unfinished work is handed on.
+        // point, and so does a stop whose unfinished work is handed on. The
+        // next stop checks each again, and so does the next request.
         let armed = request(&mut timer);
         guest.run(TARGET / 4);
         inner(&mut timer).tick_observed();
         assert_eq!(timer.disregard_stop_before_period(), Ok(()));
         assert_eq!(inner(&mut timer).timer_status, EventStatus::Scheduled);
-        assert_eq!(inner(&mut timer).kept_programming_log, [armed]);
+        assert_eq!(take_log(&mut timer), [armed]);
         guest.run(TARGET / 4);
         inner(&mut timer).tick_observed();
         assert!(matches!(timer.disregard_stop(), Ok(None)));
         assert_eq!(inner(&mut timer).timer_status, EventStatus::Scheduled);
-        assert_eq!(inner(&mut timer).kept_programming_log, [armed, armed]);
+        assert_eq!(take_log(&mut timer), [rechecked(armed), armed]);
+        assert!(!armed.changed() && !rechecked(armed).changed());
+        request(&mut timer);
+        assert_eq!(take_log(&mut timer), [rechecked(armed)]);
 
         // The check sees a keeping stop that re-programs the counter for its
         // period: the event would then fire that period after the stop.
+        let armed = request(&mut timer);
         guest.run(1_000);
         let stop_clock = inner(&mut timer).read_clock();
         inner(&mut timer).tick_observed();
         assert!(matches!(inner(&mut timer).disregard_stop(), Ok(None)));
         inner(&mut timer).prepare_notification(period).unwrap();
-        inner(&mut timer).check_kept_programming();
-        assert_eq!(
-            inner(&mut timer).kept_programming_log.last(),
-            Some(&KeptProgramming {
-                found: Some(stop_clock + period),
-                ..armed
-            })
-        );
+        inner(&mut timer).check_kept_programming(true);
+        let check = KeptProgramming {
+            found: Some(stop_clock + period),
+            reprogrammed: 3,
+            ..armed
+        };
+        assert_eq!(take_log(&mut timer), [check]);
+        assert!(check.changed());
         assert_ne!(stop_clock + period, armed.armed);
+        // A changed programming is not checked again.
+        assert_eq!(inner(&mut timer).resumed_programming, None);
         // And one that resets it.
         let armed = request(&mut timer);
         guest.run(1_000);
@@ -4091,38 +4251,94 @@ mod tests {
         inner(&mut timer).tick_observed();
         assert!(matches!(inner(&mut timer).disregard_stop(), Ok(None)));
         inner(&mut timer).timer.reset().unwrap();
-        inner(&mut timer).check_kept_programming();
-        assert_eq!(
-            inner(&mut timer).kept_programming_log.last(),
-            Some(&KeptProgramming {
-                found: Some(stop_clock + period),
-                ..armed
-            })
-        );
+        inner(&mut timer).check_kept_programming(true);
+        let check = KeptProgramming {
+            found: Some(stop_clock + period),
+            reprogrammed: 1,
+            ..armed
+        };
+        assert_eq!(take_log(&mut timer), [check]);
+        assert!(check.changed());
+        // And one that only changes its period, which re-arms the counter
+        // without moving its count, so the overflow point read from the count
+        // is the one the request programmed: only the calls show it.
+        let armed = request(&mut timer);
+        guest.run(1_000);
+        inner(&mut timer).tick_observed();
+        assert!(matches!(inner(&mut timer).disregard_stop(), Ok(None)));
+        inner(&mut timer).timer.set_period(period).unwrap();
+        inner(&mut timer).check_kept_programming(true);
+        let check = KeptProgramming {
+            reprogrammed: 1,
+            ..armed
+        };
+        assert_eq!(take_log(&mut timer), [check]);
+        assert_eq!(check.found, Some(check.armed));
+        assert!(check.changed());
+        // And one that disables it but leaves its period recorded, which the
+        // count cannot show either.
+        let armed = request(&mut timer);
+        inner(&mut timer).tick_observed();
+        assert!(matches!(inner(&mut timer).disregard_stop(), Ok(None)));
+        inner(&mut timer).timer.disable().unwrap();
+        inner(&mut timer).check_kept_programming(true);
+        let check = KeptProgramming {
+            reprogrammed: 1,
+            ..armed
+        };
+        assert_eq!(take_log(&mut timer), [check]);
+        assert!(check.changed());
         // And one that ends it.
         let armed = request(&mut timer);
         inner(&mut timer).tick_observed();
         assert!(matches!(inner(&mut timer).disregard_stop(), Ok(None)));
         inner(&mut timer).timer.disable().unwrap();
         inner(&mut timer).overflow_period = None;
-        inner(&mut timer).check_kept_programming();
-        assert_eq!(
-            inner(&mut timer).kept_programming_log.last(),
-            Some(&KeptProgramming {
-                found: None,
-                ..armed
-            })
-        );
+        inner(&mut timer).check_kept_programming(true);
+        let check = KeptProgramming {
+            found: None,
+            reprogrammed: 1,
+            ..armed
+        };
+        assert_eq!(take_log(&mut timer), [check]);
+        assert!(check.changed());
+
+        // The next stop sees what the stop's handling did to the counter
+        // after the stop was disregarded and checked, here a disable.
+        let armed = request(&mut timer);
+        guest.run(1_000);
+        inner(&mut timer).tick_observed();
+        assert!(matches!(timer.disregard_stop(), Ok(None)));
+        assert_eq!(take_log(&mut timer), [armed]);
+        assert_eq!(timer.cancel(), Ok(()));
+        guest.run(1_000);
+        inner(&mut timer).tick_observed();
+        let recheck = KeptProgramming {
+            reprogrammed: 1,
+            ..rechecked(armed)
+        };
+        assert_eq!(take_log(&mut timer), [recheck]);
+        assert!(recheck.changed());
+
+        // Retiring a kept event checks it again first, so the retirement's
+        // own disable is not taken for a change.
+        let armed = request(&mut timer);
+        guest.run(1_000);
+        inner(&mut timer).tick_observed();
+        assert!(matches!(timer.disregard_stop(), Ok(None)));
+        inner(&mut timer).retire().unwrap();
+        assert_eq!(take_log(&mut timer), [armed, rechecked(armed)]);
+        assert_eq!(inner(&mut timer).resumed_programming, None);
 
         // A stop at the keep point cancels the event, and checks nothing.
         request(&mut timer);
         guest.run(TARGET - config.keep_margin());
-        let checks = inner(&mut timer).kept_programming_log.len();
         inner(&mut timer).tick_observed();
         assert_eq!(timer.disregard_stop_before_period(), Ok(()));
         assert_eq!(inner(&mut timer).timer_status, EventStatus::Cancelled);
-        assert_eq!(inner(&mut timer).kept_programming_log.len(), checks);
-        assert_eq!(inner(&mut timer).kept_overflow_point, None);
+        assert_eq!(take_log(&mut timer), []);
+        assert_eq!(inner(&mut timer).kept_programming, None);
+        assert_eq!(inner(&mut timer).resumed_programming, None);
 
         assert_eq!(timer.cancel(), Ok(()));
         drop(timer);
