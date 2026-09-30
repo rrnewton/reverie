@@ -2139,8 +2139,8 @@ def _commit_ledger_parity(repo: Path, files: dict[str, bytes]) -> str:
 #: RUN 1953 reported all 192 cells its commit selects, and no other.
 RUN_1953_LINE = (
     "parity: 0/192 matched; selected 192 of 192 committed; mean 0.052 over 175 measured; "
-    "floor 0.051 over 175 measured of 192 selected "
-    "(0 no golden; 14 not compared; 3 unmeasured: no-result-row 3) [inputs not equalized]"
+    "floor 0.051 over 178 of 192 selected "
+    "(counted as 0: 3 unmeasured: no-result-row 3; excluded: 0 no golden; 14 not compared) [inputs not equalized]"
 )
 
 

@@ -6651,9 +6651,12 @@ def _cmd_append_parity(argv: list[str]) -> int:
 
     Exit 0 when the batch was written or was already recorded identically,
     1 when the rows were refused, 2 for a usage error or an unwritable spool.
-    A refusal of a call that names a valid producer, run and tree is spooled
-    as a `parity.refusal` (see parity_ledger.py), so the run reads as refused
-    rather than as never attempted.
+    When the call names a valid producer, run and tree, refused rows (exit 1)
+    and a missing or invalid `--source-tree-dirty` (exit 2) are spooled as a
+    `parity.refusal` (see parity_ledger.py), so the run reads as refused
+    rather than as never attempted. Every other usage error, such as an
+    unknown or repeated flag or help with other arguments, exits 2 before
+    anything is recorded.
 
     `--help` or `-h` alone prints APPEND_PARITY_USAGE on stdout, exits 0 and
     reads and writes nothing: hermit's parity export probes the writer that

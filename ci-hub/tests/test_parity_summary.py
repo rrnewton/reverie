@@ -13,8 +13,9 @@ row of the run names); the figures asserted below are that run's, not invented
 ones.
 
 The line format is the one hermit's scorecard shares with this checker (the
-S12/D5 format text, sha256 2eae2eb1945b...); `test_format_line_is_byte_for_byte`
-holds all twelve of its reference lines.
+S12/D5 format text, version 2: ai_docs/parity-summary-format-v2.md, sha256
+65e8bd4100db...); `test_format_line_is_byte_for_byte` holds all fourteen of
+its reference lines.
 
 See https://github.com/rrnewton/hermit/issues/3301 for the parity design.
 """
@@ -49,8 +50,8 @@ LEDGER_COMMIT = "b" * 40
 #: The run reported all 192 cells its commit selects, and no other.
 RUN_1953_LINE = (
     "parity: 0/192 matched; selected 192 of 192 committed; mean 0.052 over 175 measured; "
-    "floor 0.051 over 175 measured of 192 selected "
-    "(0 no golden; 14 not compared; 3 unmeasured: no-result-row 3) [inputs not equalized]"
+    "floor 0.051 over 178 of 192 selected "
+    "(counted as 0: 3 unmeasured: no-result-row 3; excluded: 0 no golden; 14 not compared) [inputs not equalized]"
 )
 #: The typed classes, written out here so a class moved between groups in the
 #: code fails a test instead of moving silently with it.
@@ -369,14 +370,14 @@ def test_run_1953_per_backend_and_first_divergences(run_1953: dict[str, Any]) ->
         "dbt": "parity: not compared: 0 measured of 14 selected (inputs cannot be equalized); "
                "selected 14 of 14 committed",
         "kvm": "parity: 0/77 matched; selected 77 of 77 committed; mean 0.101 over 76 measured; "
-               "floor 0.100 over 76 measured of 77 selected "
-               "(0 no golden; 0 not compared; 1 unmeasured: no-result-row 1) [inputs not equalized]",
+               "floor 0.100 over 77 of 77 selected (counted as 0: 1 unmeasured: no-result-row 1; "
+               "excluded: 0 no golden; 0 not compared) [inputs not equalized]",
         "liteinst": "parity: 0/99 matched; selected 99 of 99 committed; mean 0.014 over 98 measured; "
-                    "floor 0.014 over 98 measured of 99 "
-                    "selected (0 no golden; 0 not compared; 1 unmeasured: no-result-row 1) [inputs not equalized]",
+                    "floor 0.014 over 99 of 99 selected (counted as 0: 1 unmeasured: no-result-row 1; "
+                    "excluded: 0 no golden; 0 not compared) [inputs not equalized]",
         "sabre": "parity: 0/2 matched; selected 2 of 2 committed; mean 0.020 over 1 measured; "
-                 "floor 0.010 over 1 measured of 2 selected "
-                 "(0 no golden; 0 not compared; 1 unmeasured: no-result-row 1) [inputs not equalized]",
+                 "floor 0.010 over 2 of 2 selected (counted as 0: 1 unmeasured: no-result-row 1; "
+                 "excluded: 0 no golden; 0 not compared) [inputs not equalized]",
     }
     assert {backend: run["per_backend"][backend]["line"] for backend in summary_module.BACKENDS} == lines
     assert {backend: run["per_backend"][backend]["floor_cells"] for backend in summary_module.BACKENDS} == {
@@ -498,14 +499,15 @@ def test_each_class_is_counted_in_its_group(name: str) -> None:
     assert total["mean_credit"] == 0.5
     assert total["floor_credit"] == (0.5 if group in ("no-golden", "not-compared") else 0.25)
     part = {
-        "no-golden": f"1 no golden: {name} 1; 0 not compared",
-        "not-compared": "0 no golden; 1 not compared",
-        "unmeasured": f"0 no golden; 0 not compared; 1 unmeasured: {name} 1",
-        "record-missing": "0 no golden; 0 not compared; 1 record-missing",
+        "no-golden": f"excluded: 1 no golden: {name} 1; 0 not compared",
+        "not-compared": "excluded: 0 no golden; 1 not compared",
+        "unmeasured": f"counted as 0: 1 unmeasured: {name} 1; excluded: 0 no golden; 0 not compared",
+        "record-missing": "counted as 0: 1 record-missing; excluded: 0 no golden; 0 not compared",
     }[group]
     floor = "0.500" if group in ("no-golden", "not-compared") else "0.250"
+    floor_cells = 1 if group in ("no-golden", "not-compared") else 2
     assert total["line"] == (f"parity: 0/2 matched; selected 2 of 2 committed; mean 0.500 over 1 measured; "
-                             f"floor {floor} over 1 measured of 2 selected ({part})")
+                             f"floor {floor} over {floor_cells} of 2 selected ({part})")
 
 
 def test_an_unknown_class_is_refused_and_is_in_no_group() -> None:
@@ -552,11 +554,11 @@ def test_a_cell_reported_twice_keeps_its_most_adverse_report() -> None:
     selection = [(measured["test_id"], measured["backend"])]
     for pair, verdict, lane, line in (
         ((measured, nondeterministic), "nondeterministic", "privileged",
-         "parity: 0/1 matched; selected 1 of 1 committed; mean n/a over 0 measured; floor n/a over 0 measured "
-         "of 1 selected (1 no golden: determinism-mismatch 1; 0 not compared)"),
+         "parity: 0/1 matched; selected 1 of 1 committed; mean n/a over 0 measured; floor n/a over 0 of 1 "
+         "selected (excluded: 1 no golden: determinism-mismatch 1; 0 not compared)"),
         ((missing, portable), "record-missing", "privileged",
-         "parity: 0/1 matched; selected 1 of 1 committed; mean n/a over 0 measured; floor 0.000 over 0 measured "
-         "of 1 selected (0 no golden; 0 not compared; 1 record-missing)"),
+         "parity: 0/1 matched; selected 1 of 1 committed; mean n/a over 0 measured; floor 0.000 over 1 of 1 "
+         "selected (counted as 0: 1 record-missing; excluded: 0 no golden; 0 not compared)"),
     ):
         for order in (pair, pair[::-1]):
             document = _summary(_rows(list(order)), committed_of=lambda sha: selection)
@@ -575,7 +577,7 @@ def test_zero_of_twelve_renders_as_zero_of_twelve_with_its_floor() -> None:
     document = _document(cells)
     line = document["producers"][0]["line"]
     assert line == ("parity: 0/12 matched; selected 12 of 12 committed; mean 0.500 over 12 measured; "
-                    "floor 0.500 over 12 measured of 12 selected (0 no golden; 0 not compared)")
+                    "floor 0.500 over 12 of 12 selected (excluded: 0 no golden; 0 not compared)")
     text = _text(_panel(_carriage(document)))
     assert line in text
     assert "kvm | 12 | 12 | 0 | 12 | 0 | 0 | 0 | 0 | 0 | 0.5000 | 0.5000 | 12 |" in text
@@ -590,7 +592,7 @@ def test_record_missing_keeps_the_denominator_and_lowers_the_floor() -> None:
             total["floor_cells"]) == (12, 9, 3, 9, 12)
     assert document["producers"][0]["line"] == (
         "parity: 0/12 matched; selected 12 of 12 committed; mean 0.500 over 9 measured; "
-        "floor 0.375 over 9 measured of 12 selected (0 no golden; 0 not compared; 3 record-missing)")
+        "floor 0.375 over 12 of 12 selected (counted as 0: 3 record-missing; excluded: 0 no golden; 0 not compared)")
     text = _text(_panel(_carriage(document)))
     assert "t/11@kvm | record-missing | record-missing | record-missing | none | none: 0 in the floor |" in text
     assert ("Mean credit 0.5000 is the credit sum 4.5000 over the 9 measured cell(s); floor credit 0.3750 is the "
@@ -620,9 +622,9 @@ def test_the_mean_is_over_the_measured_cells_and_the_floor_leaves_out_no_golden_
     # A tally given no committed selection says so.
     assert summary_module.render_line(result) == (
         "parity: 0/6 matched; committed selection unknown; mean 0.250 over 2 measured (1 credited); "
-        "floor 0.100 over 2 measured of 6 selected "
-        "(1 no golden: determinism-mismatch 1; 0 not compared; 1 unmeasured: no-result-row 1; 1 record-missing; "
-        "1 refused)")
+        "floor 0.100 over 5 of 6 selected "
+        "(counted as 0: 1 unmeasured: no-result-row 1; 1 record-missing; 1 refused; "
+        "excluded: 1 no golden: determinism-mismatch 1; 0 not compared)")
     text = _text(_panel(_carriage(_document(cells))))
     assert ("Mean credit 0.2500 is the credit sum 0.5000 over the 2 measured cell(s), 1 of them without a credit "
             "and counted as 0; floor credit 0.1000 is the same sum over the 5 floor cell(s): the 6 selected "
@@ -630,13 +632,13 @@ def test_the_mean_is_over_the_measured_cells_and_the_floor_leaves_out_no_golden_
     unmeasured = summary_module.tally([_classed("t/g", "no-result-row")])
     assert (unmeasured["mean_credit"], unmeasured["floor_credit"]) == (None, 0.0)
     assert unmeasured["line"] == ("parity: 0/1 matched; committed selection unknown; mean n/a over 0 measured; "
-                                  "floor 0.000 over 0 measured of "
-                                  "1 selected (0 no golden; 0 not compared; 1 unmeasured: no-result-row 1)")
+                                  "floor 0.000 over 1 of 1 selected (counted as 0: 1 unmeasured: no-result-row 1; "
+                                  "excluded: 0 no golden; 0 not compared)")
     no_golden = summary_module.tally([_classed("t/h", "determinism-mismatch")])
     assert (no_golden["mean_credit"], no_golden["floor_credit"]) == (None, None)
     assert no_golden["line"] == ("parity: 0/1 matched; committed selection unknown; mean n/a over 0 measured; "
-                                 "floor n/a over 0 measured of "
-                                 "1 selected (1 no golden: determinism-mismatch 1; 0 not compared)")
+                                 "floor n/a over 0 of 1 selected "
+                                 "(excluded: 1 no golden: determinism-mismatch 1; 0 not compared)")
 
 
 def test_a_mean_that_averages_an_unmeasured_cell_as_zero_is_refused() -> None:
@@ -658,12 +660,12 @@ def test_every_credit_is_printed_with_the_cells_it_is_over() -> None:
              *(_classed(f"t/{name}", name) for name in NO_GOLDEN)]
     document = _document(cells)
     line = ("parity: 1/10 matched; selected 10 of 10 committed; mean 1.000 over 1 measured; "
-            "floor 1.000 over 1 measured of 10 selected "
-            "(9 no golden: determinism-mismatch 1, timeout 1, crash 1, oom 1, infrastructure-error 1, "
+            "floor 1.000 over 1 of 10 selected "
+            "(excluded: 9 no golden: determinism-mismatch 1, timeout 1, crash 1, oom 1, infrastructure-error 1, "
             "sandbox-denied 1, failed-untyped 1, ended 1, host-inapplicable 1; 0 not compared)")
     run = document["producers"][0]
     assert run["line"] == run["total"]["line"] == run["per_backend"]["kvm"]["line"] == line
-    coverage = "over 1 measured of 10 selected (9 no golden: "
+    coverage = "over 1 of 10 selected (excluded: 9 no golden: "
     # The summary: the run's line, its total's and kvm's, and the run's brief.
     assert summary_module.encode_summary(document).decode().count(coverage) == 4
     # The panel: the headline and the kvm and TOTAL rows' coverage.
@@ -697,8 +699,8 @@ def test_a_backend_whose_inputs_cannot_be_equalized_enters_no_mean_or_floor() ->
     dbt = document["producers"][0]["per_backend"]["dbt"]
     assert (dbt["selected"], dbt["no_golden"], dbt["not_compared"], dbt["floor_cells"]) == (14, 2, 12, 0)
     assert dbt["line"] == ("parity: 0/14 matched; selected 14 of 14 committed; mean n/a over 0 measured; "
-                           "floor n/a over 0 measured of "
-                           "14 selected (2 no golden: determinism-mismatch 2; 12 not compared)")
+                           "floor n/a over 0 of 14 selected "
+                           "(excluded: 2 no golden: determinism-mismatch 2; 12 not compared)")
     assert "dbt | 14 | 0 | 0 | 0 | 2 | 12 | 0 | 0 | 0 | n/a | n/a | 0 |" in text
     # Its record-missing and refused cells stay counted, and stay out of every
     # floor: dbt's own, and the total's beside a measured kvm cell.
@@ -711,15 +713,15 @@ def test_a_backend_whose_inputs_cannot_be_equalized_enters_no_mean_or_floor() ->
         14, 12, 1, 1, 0)
     assert (dbt["mean_credit"], dbt["floor_credit"]) == (None, None)
     assert dbt["line"] == ("parity: 0/14 matched; selected 14 of 14 committed; mean n/a over 0 measured; "
-                           "floor n/a over 0 measured of "
-                           "14 selected (0 no golden; 12 not compared; 1 record-missing; 1 refused; floor excludes "
-                           "2 record-missing or refused cell(s) whose inputs cannot be equalized)")
+                           "floor n/a over 0 of 14 selected "
+                           "(excluded: 0 no golden; 12 not compared; 1 record-missing and 1 refused whose inputs "
+                           "cannot be equalized)")
     assert (total["selected"], total["floor_cells"], total["mean_credit"], total["floor_credit"]) == (
         15, 1, 1.0, 1.0)
     assert run["line"] == ("parity: 1/15 matched; selected 15 of 15 committed; mean 1.000 over 1 measured; "
-                           "floor 1.000 over 1 measured of "
-                           "15 selected (0 no golden; 12 not compared; 1 record-missing; 1 refused; floor excludes "
-                           "2 record-missing or refused cell(s) whose inputs cannot be equalized)")
+                           "floor 1.000 over 1 of 15 selected "
+                           "(excluded: 0 no golden; 12 not compared; 1 record-missing and 1 refused whose inputs "
+                           "cannot be equalized)")
     assert ("floor credit 1.0000 is the same sum over the 1 floor cell(s): the 15 selected cell(s) less 0 with "
             "no parity (no deterministic golden) and 12 not compared, and less 2 record-missing or refused "
             "cell(s) whose inputs cannot be equalized.") in text
@@ -757,24 +759,25 @@ MIXED = [
 ]
 MIXED_LINES = {
     "kvm": "parity: 1/5 matched; selected 5 of 5 committed; mean 0.650 over 2 measured; "
-           "floor 0.325 over 2 measured of 5 selected "
-           "(1 no golden: determinism-mismatch 1; 0 not compared; 1 unmeasured: no-result-row 1; 1 record-missing)",
+           "floor 0.325 over 4 of 5 selected (counted as 0: 1 unmeasured: no-result-row 1; 1 record-missing; "
+           "excluded: 1 no golden: determinism-mismatch 1; 0 not compared)",
     "liteinst": "parity: 0/3 matched; selected 3 of 3 committed; mean 0.500 over 1 measured; "
-                "floor 0.250 over 1 measured of 3 selected "
-                "(1 no golden: timeout 1; 0 not compared; 1 unmeasured: log-not-retained 1) [inputs not equalized]",
+                "floor 0.250 over 2 of 3 selected (counted as 0: 1 unmeasured: log-not-retained 1; "
+                "excluded: 1 no golden: timeout 1; 0 not compared) [inputs not equalized]",
     "sabre": "parity: 0/2 matched; selected 2 of 2 committed; mean 0.400 over 1 measured; "
-             "floor 0.200 over 1 measured of 2 selected "
-             "(0 no golden; 0 not compared; 1 refused)",
+             "floor 0.200 over 2 of 2 selected "
+             "(counted as 0: 1 refused; excluded: 0 no golden; 0 not compared)",
     "dbt": "parity: 0/14 matched; selected 14 of 14 committed; mean n/a over 0 measured; "
-           "floor n/a over 0 measured of 14 selected "
-           "(2 no golden: determinism-mismatch 2; 12 not compared)",
+           "floor n/a over 0 of 14 selected "
+           "(excluded: 2 no golden: determinism-mismatch 2; 12 not compared)",
     # Three credited cells had equal inputs (1.0, 0.3, 0.4: mean 0.567) and one
     # had not (0.5): the marker gives each mean over its own cells.
     "TOTAL": "parity: 1/24 matched; selected 24 of 24 committed; mean 0.550 over 4 measured; "
-             "floor 0.275 over 4 measured of 24 selected "
-             "(4 no golden: determinism-mismatch 3, timeout 1; 12 not compared; 2 unmeasured: log-not-retained 1, "
-             "no-result-row 1; 1 record-missing; 1 refused) [inputs equalized for 3 of 4 credited: "
-             "mean 0.567 over 3 with equal inputs; mean 0.500 over 1 with unequal inputs]",
+             "floor 0.275 over 8 of 24 selected "
+             "(counted as 0: 2 unmeasured: log-not-retained 1, no-result-row 1; 1 record-missing; 1 refused; "
+             "excluded: 4 no golden: determinism-mismatch 3, timeout 1; 12 not compared) "
+             "[inputs equalized for 3 of 4 credited: mean 0.567 over 3 with equal inputs; "
+             "mean 0.500 over 1 with unequal inputs]",
 }
 
 
@@ -1102,8 +1105,8 @@ def test_an_unavailable_no_result_row_cell_is_unmeasured_on_either_side(operand:
     assert summary_module.cell_group(cell) == "unmeasured"
     assert (total["unmeasured"], total["unmeasured_by_class"]["no-result-row"], total["floor_cells"]) == (1, 1, 2)
     assert total["line"] == ("parity: 0/2 matched; selected 2 of 2 committed; mean 0.500 over 1 measured; "
-                             "floor 0.250 over 1 measured of 2 "
-                             "selected (0 no golden; 0 not compared; 1 unmeasured: no-result-row 1)")
+                             "floor 0.250 over 2 of 2 selected (counted as 0: 1 unmeasured: no-result-row 1; "
+                             "excluded: 0 no golden; 0 not compared)")
     assert (f"t/x@kvm | unmeasured | unavailable | no-result-row | {operand} | none: 0 in the floor |"
             in _text(_panel(_carriage(document))))
 
@@ -1469,7 +1472,7 @@ def test_a_headline_credit_below_one_never_prints_as_one() -> None:
     run = document["producers"][0]
     assert f"{run['total']['mean_credit']:.3f}" == "1.000" and run["total"]["mean_credit"] < 1.0
     assert run["line"] == ("parity: 3/4 matched; selected 4 of 4 committed; mean 0.999 over 4 measured; "
-                           "floor 0.999 over 4 measured of 4 selected (0 no golden; 0 not compared)")
+                           "floor 0.999 over 4 of 4 selected (excluded: 0 no golden; 0 not compared)")
 
 
 def test_duplicate_keys_and_non_finite_numbers_are_refused() -> None:
@@ -1815,8 +1818,8 @@ def test_record_missing_source_survives_into_the_panel() -> None:
     assert (total["selected"], total["record_missing"], total["credited"], total["floor_cells"]) == (4, 1, 3, 4)
     assert (total["committed"], total["committed_selected"], total["outside_committed"]) == (4, 4, 0)
     assert run["line"] == ("parity: 0/4 matched; selected 4 of 4 committed; mean 0.069 over 3 measured; "
-                           "floor 0.052 over 3 measured of 4 selected (0 no golden; 0 not compared; "
-                           "1 record-missing) [inputs not equalized]")
+                           "floor 0.052 over 4 of 4 selected (counted as 0: 1 record-missing; "
+                           "excluded: 0 no golden; 0 not compared) [inputs not equalized]")
     [cell] = [cell for cell in run["cells"] if cell["verdict"] == "record-missing"]
     assert cell["credit"] is None and cell["lane"] == "privileged"
     assert (cell["unavailable_class"], cell["operand"]) == ("record-missing", None)
@@ -2039,9 +2042,13 @@ def test_the_reference_over_typed_s12_rows_agrees_with_s12_but_for_the_typed_acc
 # --- The shared S12/D5 format ---------------------------------------------------------
 #
 # hermit's scorecard (slice S12 of https://github.com/rrnewton/hermit/issues/3301)
-# and this checker (slice D5) work from one format text, approved by parity-green
-# on 2026-09-30 (sha256 2eae2eb1945bf396f6e75e56ff9e12d3bf6520eed14e0abdbd0c7578a0498969).
-# Its section 5 gives twelve cases, each a tally and the line its reference code
+# and this checker (slice D5) work from one format text. Version 2, written by S12
+# and reviewed by parity-green on 2026-09-30, is tracked byte for byte as
+# ai_docs/parity-summary-format-v2.md (sha256
+# 65e8bd4100dbca9ce00fc53571a14711e57fdd1267c792357000c21437e210d7).
+# Version 1 (sha256 2eae2eb1945bf396f6e75e56ff9e12d3bf6520eed14e0abdbd0c7578a0498969)
+# is superseded; version 2 lists its changes at the top.
+# Its section 5 gives fourteen cases, each a tally and the line its reference code
 # renders for it. FORMAT_CASES_TEXT is that section byte for byte, from its first
 # case heading to its last line; `_format_case` gives cells whose tally is each
 # case's.
@@ -2053,7 +2060,7 @@ FORMAT_CASES_TEXT = """\
 Tally: selected=77, measured=76, matched=0, diverged=76, no_golden=1, not_compared=0, unmeasured=0, record_missing=0, refused=0, credited=76, clean_credited=0, unequalized_credited=76, floor_cells=76, committed=77, committed_selected=77, outside_committed=0; no_golden_by_class: determinism-mismatch 1.
   credit_sum=7.599999999999989, clean_credit_sum=0.0, unequalized_credit_sum=7.599999999999989, mean_credit=0.09999999999999985, clean_mean_credit=null, unequalized_mean_credit=0.09999999999999985, floor_credit=0.09999999999999985.
 
-    parity: 0/77 matched; selected 77 of 77 committed; mean 0.100 over 76 measured; floor 0.100 over 76 measured of 77 selected (1 no golden: determinism-mismatch 1; 0 not compared) [inputs not equalized]
+    parity: 0/77 matched; selected 77 of 77 committed; mean 0.100 over 76 measured; floor 0.100 over 76 of 77 selected (excluded: 1 no golden: determinism-mismatch 1; 0 not compared) [inputs not equalized]
 
 ### B. A normal backend with every clause
 
@@ -2064,7 +2071,7 @@ no-golden cells, an unmeasured cell, a record-missing cell and a refused cell.
 Tally: selected=10, measured=5, matched=2, diverged=3, no_golden=2, not_compared=0, unmeasured=1, record_missing=1, refused=1, credited=4, clean_credited=3, unequalized_credited=1, floor_cells=8, committed=12, committed_selected=9, outside_committed=1; no_golden_by_class: timeout 1, crash 1; unmeasured_by_class: log-diff-failed 1.
   credit_sum=2.75, clean_credit_sum=1.75, unequalized_credit_sum=1.0, mean_credit=0.55, clean_mean_credit=0.5833333333333334, unequalized_mean_credit=1.0, floor_credit=0.34375.
 
-    parity: 2/10 matched; selected 9 of 12 committed (partial); 1 outside the committed selection; mean 0.550 over 5 measured (4 credited); floor 0.344 over 5 measured of 10 selected (2 no golden: timeout 1, crash 1; 0 not compared; 1 unmeasured: log-diff-failed 1; 1 record-missing; 1 refused) [inputs equalized for 3 of 4 credited: mean 0.583 over 3 with equal inputs; mean 1.000 over 1 with unequal inputs]
+    parity: 2/10 matched; selected 9 of 12 committed (partial); 1 outside the committed selection; mean 0.550 over 5 measured (4 credited); floor 0.344 over 8 of 10 selected (counted as 0: 1 unmeasured: log-diff-failed 1; 1 record-missing; 1 refused; excluded: 2 no golden: timeout 1, crash 1; 0 not compared) [inputs equalized for 3 of 4 credited: mean 0.583 over 3 with equal inputs; mean 1.000 over 1 with unequal inputs]
 
 ### C. DBT, every selected cell not compared
 
@@ -2078,49 +2085,49 @@ Tally: selected=14, measured=0, matched=0, diverged=0, no_golden=0, not_compared
 Tally: selected=14, measured=0, matched=0, diverged=0, no_golden=2, not_compared=12, unmeasured=0, record_missing=0, refused=0, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=0, committed=14, committed_selected=14, outside_committed=0; no_golden_by_class: determinism-mismatch 2.
   credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=null.
 
-    parity: 0/14 matched; selected 14 of 14 committed; mean n/a over 0 measured; floor n/a over 0 measured of 14 selected (2 no golden: determinism-mismatch 2; 12 not compared)
+    parity: 0/14 matched; selected 14 of 14 committed; mean n/a over 0 measured; floor n/a over 0 of 14 selected (excluded: 2 no golden: determinism-mismatch 2; 12 not compared)
 
-### C3. DBT with a record-missing cell, which is outside every floor
+### C3. DBT with a record-missing cell, which is excluded from every floor
 
 Tally: selected=14, measured=0, matched=0, diverged=0, no_golden=0, not_compared=13, unmeasured=0, record_missing=1, refused=0, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=0, committed=14, committed_selected=14, outside_committed=0.
   credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=null.
 
-    parity: 0/14 matched; selected 14 of 14 committed; mean n/a over 0 measured; floor n/a over 0 measured of 14 selected (0 no golden; 13 not compared; 1 record-missing; floor excludes 1 record-missing or refused cell(s) whose inputs cannot be equalized)
+    parity: 0/14 matched; selected 14 of 14 committed; mean n/a over 0 measured; floor n/a over 0 of 14 selected (excluded: 0 no golden; 13 not compared; 1 record-missing whose inputs cannot be equalized)
 
 ### D. A backend with nothing measured and a cell in the floor: floor 0.000, mean n/a
 
 Tally: selected=2, measured=0, matched=0, diverged=0, no_golden=1, not_compared=0, unmeasured=1, record_missing=0, refused=0, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=1, committed=2, committed_selected=2, outside_committed=0; no_golden_by_class: timeout 1; unmeasured_by_class: no-result-row 1.
   credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=0.0.
 
-    parity: 0/2 matched; selected 2 of 2 committed; mean n/a over 0 measured; floor 0.000 over 0 measured of 2 selected (1 no golden: timeout 1; 0 not compared; 1 unmeasured: no-result-row 1)
+    parity: 0/2 matched; selected 2 of 2 committed; mean n/a over 0 measured; floor 0.000 over 1 of 2 selected (counted as 0: 1 unmeasured: no-result-row 1; excluded: 1 no golden: timeout 1; 0 not compared)
 
 ### D2. A backend with nothing measured and nothing in the floor: both n/a
 
 Tally: selected=2, measured=0, matched=0, diverged=0, no_golden=2, not_compared=0, unmeasured=0, record_missing=0, refused=0, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=0, committed=2, committed_selected=2, outside_committed=0; no_golden_by_class: timeout 1, crash 1.
   credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=null.
 
-    parity: 0/2 matched; selected 2 of 2 committed; mean n/a over 0 measured; floor n/a over 0 measured of 2 selected (2 no golden: timeout 1, crash 1; 0 not compared)
+    parity: 0/2 matched; selected 2 of 2 committed; mean n/a over 0 measured; floor n/a over 0 of 2 selected (excluded: 2 no golden: timeout 1, crash 1; 0 not compared)
 
 ### D3. A backend the run reported no cell for, which its commit selects
 
 Tally: selected=0, measured=0, matched=0, diverged=0, no_golden=0, not_compared=0, unmeasured=0, record_missing=0, refused=0, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=0, committed=2, committed_selected=0, outside_committed=0.
   credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=null.
 
-    parity: 0/0 matched; selected 0 of 2 committed (partial); mean n/a over 0 measured; floor n/a over 0 measured of 0 selected (0 no golden; 0 not compared)
+    parity: 0/0 matched; selected 0 of 2 committed (partial); mean n/a over 0 measured; floor n/a over 0 of 0 selected (excluded: 0 no golden; 0 not compared)
 
 ### E. Committed selection unknown: 13 refused rows (a run whose rows name two Hermit commits)
 
 Tally: selected=13, measured=0, matched=0, diverged=0, no_golden=0, not_compared=0, unmeasured=0, record_missing=0, refused=13, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=13, committed=null, committed_selected=null, outside_committed=null.
   credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=0.0.
 
-    parity: 0/13 matched; committed selection unknown; mean n/a over 0 measured; floor 0.000 over 0 measured of 13 selected (0 no golden; 0 not compared; 13 refused)
+    parity: 0/13 matched; committed selection unknown; mean n/a over 0 measured; floor 0.000 over 13 of 13 selected (counted as 0: 13 refused; excluded: 0 no golden; 0 not compared)
 
 ### E2. Committed selection unknown: an ordinary measured run
 
 Tally: selected=12, measured=12, matched=0, diverged=12, no_golden=0, not_compared=0, unmeasured=0, record_missing=0, refused=0, credited=12, clean_credited=0, unequalized_credited=12, floor_cells=12, committed=null, committed_selected=null, outside_committed=null.
   credit_sum=1.2, clean_credit_sum=0.0, unequalized_credit_sum=1.2, mean_credit=0.09999999999999999, clean_mean_credit=null, unequalized_mean_credit=0.09999999999999999, floor_credit=0.09999999999999999.
 
-    parity: 0/12 matched; committed selection unknown; mean 0.100 over 12 measured; floor 0.100 over 12 measured of 12 selected (0 no golden; 0 not compared) [inputs not equalized]
+    parity: 0/12 matched; committed selection unknown; mean 0.100 over 12 measured; floor 0.100 over 12 of 12 selected (excluded: 0 no golden; 0 not compared) [inputs not equalized]
 
 ### E3. Committed selection unknown: DBT not compared
 
@@ -2134,10 +2141,35 @@ Tally: selected=14, measured=0, matched=0, diverged=0, no_golden=0, not_compared
 Tally: selected=7, measured=4, matched=0, diverged=4, no_golden=0, not_compared=2, unmeasured=0, record_missing=1, refused=0, credited=4, clean_credited=0, unequalized_credited=4, floor_cells=4, committed=7, committed_selected=7, outside_committed=0.
   credit_sum=0.4, clean_credit_sum=0.0, unequalized_credit_sum=0.4, mean_credit=0.1, clean_mean_credit=null, unequalized_mean_credit=0.1, floor_credit=0.1.
 
-    parity: 0/7 matched; selected 7 of 7 committed; mean 0.100 over 4 measured; floor 0.100 over 4 measured of 7 selected (0 no golden; 2 not compared; 1 record-missing; floor excludes 1 record-missing or refused cell(s) whose inputs cannot be equalized) [inputs not equalized]
+    parity: 0/7 matched; selected 7 of 7 committed; mean 0.100 over 4 measured; floor 0.100 over 4 of 7 selected (excluded: 0 no golden; 2 not compared; 1 record-missing whose inputs cannot be equalized) [inputs not equalized]
+
+### G. DBT with a record-missing and a refused cell, both excluded (committed selection unknown)
+
+The DBT backend of S12's test
+`unequalizable_record_missing_and_refused_cells_are_excluded_from_the_floor`:
+one record-missing cell and one refused cell (a measured dbt row, which
+`check_class` refuses). Both kinds are excluded, so the line names each.
+
+Tally: selected=2, measured=0, matched=0, diverged=0, no_golden=0, not_compared=0, unmeasured=0, record_missing=1, refused=1, credited=0, clean_credited=0, unequalized_credited=0, floor_cells=0, committed=null, committed_selected=null, outside_committed=null.
+  credit_sum=0.0, clean_credit_sum=0.0, unequalized_credit_sum=0.0, mean_credit=null, clean_mean_credit=null, unequalized_mean_credit=null, floor_credit=null.
+
+    parity: 0/2 matched; committed selection unknown; mean n/a over 0 measured; floor n/a over 0 of 2 selected (excluded: 0 no golden; 0 not compared; 1 record-missing and 1 refused whose inputs cannot be equalized)
+
+### H. A run total with record-missing and refused cells on both sides of the floor (committed selection unknown)
+
+The run total of the same test: kvm has one diverged cell credited 0.1 on
+unequal inputs and one record-missing cell; dbt has G's two cells. kvm's
+record-missing cell is counted as 0 and dbt's two cells are excluded. The
+tally does not say which kind each side's cells are, so the line gives
+each side's sum.
+
+Tally: selected=4, measured=1, matched=0, diverged=1, no_golden=0, not_compared=0, unmeasured=0, record_missing=2, refused=1, credited=1, clean_credited=0, unequalized_credited=1, floor_cells=2, committed=null, committed_selected=null, outside_committed=null.
+  credit_sum=0.1, clean_credit_sum=0.0, unequalized_credit_sum=0.1, mean_credit=0.1, clean_mean_credit=null, unequalized_mean_credit=0.1, floor_credit=0.05.
+
+    parity: 0/4 matched; committed selection unknown; mean 0.100 over 1 measured; floor 0.050 over 2 of 4 selected (counted as 0: 1 record-missing or refused; excluded: 0 no golden; 0 not compared; 2 record-missing or refused whose inputs cannot be equalized) [inputs not equalized]
 """
-FORMAT_CASES_SHA256 = "1dbddb0dda536b180e8fea7a2d451e2924b6a9c40c00e1bab5235fe43d262bb0"
-FORMAT_CASES = ("A", "B", "C", "C2", "C3", "D", "D2", "D3", "E", "E2", "E3", "F")
+FORMAT_CASES_SHA256 = "bb921ad196d762eac685eea8e3638a89ca53ae9d68dbbd6ebc0ffee76fe7c5b5"
+FORMAT_CASES = ("A", "B", "C", "C2", "C3", "D", "D2", "D3", "E", "E2", "E3", "F", "G", "H")
 #: The file whose selection at a run's own commit is the run's committed
 #: selection (hermit ci/manifest-plan/src/parity.rs `PARITY_CELLS_PATH`).
 CELLS_FILE = "ci/compat-envelope/parity-cells.json"
@@ -2222,7 +2254,7 @@ def _format_case(case: str) -> tuple[list[dict[str, Any]], set[tuple[str, str]] 
 
     The selection is the cells reported, but for B (t10 reported outside it,
     t11 to t13 in it without a row) and D3 (two sabre cells, neither
-    reported); every E case's is unknown.
+    reported); every E case's, G's and H's is unknown.
     """
     if case == "A":
         cells = _kvm_tenths(range(76)) + [_cell(_t(76), "kvm", **_NONDETERMINISTIC)]
@@ -2262,22 +2294,30 @@ def _format_case(case: str) -> tuple[list[dict[str, Any]], set[tuple[str, str]] 
         cells = _kvm_tenths(range(12))
     elif case == "E3":
         cells = _dbt_not_compared(range(14))
-    else:
-        assert case == "F", case
+    elif case == "F":
         cells = _kvm_tenths(range(4)) + _dbt_not_compared((4, 5)) + [_cell(_t(6), "dbt", verdict="record-missing")]
+    elif case == "G":
+        cells = [_cell(_t(0), "dbt", verdict="record-missing"), _cell(_t(1), "dbt", verdict="refused")]
+    else:
+        assert case == "H", case
+        cells = _kvm_tenths(range(1)) + [
+            _cell(_t(1), "kvm", verdict="record-missing"),
+            _cell(_t(2), "dbt", verdict="record-missing"),
+            _cell(_t(3), "dbt", verdict="refused"),
+        ]
     committed: set[tuple[str, str]] | None = {(cell["test_id"], cell["backend"]) for cell in cells}
     if case == "B":
         committed = (committed - {(_t(10), "liteinst")}) | {(_t(number), "liteinst") for number in (11, 12, 13)}
     elif case == "D3":
         committed = {(_t(1), "sabre"), (_t(2), "sabre")}
-    elif case.startswith("E"):
+    elif case.startswith("E") or case in ("G", "H"):
         committed = None
     return cells, committed
 
 
-def test_the_format_text_holds_twelve_cases_with_distinct_lines() -> None:
+def test_the_format_text_holds_fourteen_cases_with_distinct_lines() -> None:
     assert hashlib.sha256(FORMAT_CASES_TEXT.encode("utf-8")).hexdigest() == FORMAT_CASES_SHA256
-    assert len(FORMAT_TEXTS) == len({texts["line"] for texts in FORMAT_TEXTS.values()}) == 12
+    assert len(FORMAT_TEXTS) == len({texts["line"] for texts in FORMAT_TEXTS.values()}) == 14
 
 
 @pytest.mark.parametrize("case", FORMAT_CASES)
@@ -2348,6 +2388,7 @@ _FORMAT_SCOPES = {
     "A": ("kvm", "total"), "B": ("liteinst", "total"), "C": ("dbt", "total"), "C2": ("dbt", "total"),
     "C3": ("dbt", "total"), "D": ("sabre", "total"), "D2": ("sabre", "total"), "D3": ("sabre",),
     "E": ("kvm", "total"), "E2": ("kvm", "total"), "E3": ("dbt", "total"), "F": ("total",),
+    "G": ("dbt", "total"), "H": ("total",),
 }
 
 

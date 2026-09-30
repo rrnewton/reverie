@@ -500,16 +500,22 @@ def inputs_marker(tally: Mapping[str, Any]) -> str:
 def render_line(tally: Mapping[str, Any]) -> str:
     """hermit's `ParityTally::line`: the one-line summary of a tally.
 
+    This is section 4 of the format text S12 and D5 share, version 2:
+    ai_docs/parity-summary-format-v2.md (sha256 65e8bd4100dbca9ce00fc53571a14711e57fdd1267c792357000c21437e210d7).
+
     A tally whose every selected cell is not compared (a backend whose inputs
     cannot be equalized) prints `parity: not compared: 0 measured of N
     selected (inputs cannot be equalized); <coverage>`. Any other tally
     prints its matched count, its coverage of the committed selection
-    (`coverage_text`), its mean over the measured cells, and its floor with
-    the cells it is over: `floor F over N measured of M selected (K no
-    golden: <class counts>; J not compared; ...)`, where the parenthesis
-    names every cell the floor's denominator leaves out or counts as 0, then
-    the inputs note (`inputs_marker`). A mean or floor with nothing to divide
-    by prints `n/a`, never 0.
+    (`coverage_text`), its mean over the measured cells, and its floor over
+    the cells the floor counts: `floor F over <floor_cells> of M selected
+    (counted as 0: ...; excluded: ...)`, then the inputs note
+    (`inputs_marker`). `counted as 0:` names the unmeasured, record-missing
+    and refused cells the floor counts as 0, and is omitted when there are
+    none. `excluded:` names the cells no floor counts: the no-golden and
+    not-compared cells, and the record-missing and refused cells of a
+    backend whose inputs cannot be equalized. A mean or floor with nothing to
+    divide by prints `n/a`, never 0.
     """
     selected = tally["selected"]
     if selected > 0 and tally["not_compared"] == selected:
@@ -517,33 +523,42 @@ def render_line(tally: Mapping[str, Any]) -> str:
             f"parity: not compared: {tally['measured']} measured of {selected} selected "
             f"(inputs cannot be equalized); {coverage_text(tally)}"
         )
+    counted_as_zero = []
+    if tally["unmeasured"] > 0:
+        counted_as_zero.append(
+            f"{tally['unmeasured']} unmeasured: {_class_counts(tally['unmeasured_by_class'], UNMEASURED_CLASSES)}"
+        )
     no_golden = f"{tally['no_golden']} no golden"
     if tally["no_golden"] > 0:
         no_golden += f": {_class_counts(tally['no_golden_by_class'], NO_GOLDEN_CLASSES)}"
-    parts = [no_golden, f"{tally['not_compared']} not compared"]
-    if tally["unmeasured"] > 0:
-        parts.append(
-            f"{tally['unmeasured']} unmeasured: {_class_counts(tally['unmeasured_by_class'], UNMEASURED_CLASSES)}"
-        )
+    excluded = [no_golden, f"{tally['not_compared']} not compared"]
+    kinds = []
     if tally["record_missing"] > 0:
-        parts.append(f"{tally['record_missing']} record-missing")
+        kinds.append(f"{tally['record_missing']} record-missing")
     if tally["refused"] > 0:
-        parts.append(f"{tally['refused']} refused")
-    # A record-missing or refused cell of a backend whose inputs cannot be
-    # equalized is in no floor; say so, or the parenthesis would imply a
-    # larger denominator than the floor's.
-    unequalizable = selected - tally["no_golden"] - tally["not_compared"] - tally["floor_cells"]
-    if unequalizable > 0:
-        parts.append(
-            f"floor excludes {unequalizable} record-missing or refused cell(s) whose inputs "
-            "cannot be equalized"
-        )
+        kinds.append(f"{tally['refused']} refused")
+    # The record-missing and refused cells of a backend whose inputs cannot be
+    # equalized are excluded; the rest are counted as 0. Nothing else is
+    # outside the no-golden, not-compared and floor cells (section 1).
+    unequalizable = max(0, selected - tally["no_golden"] - tally["not_compared"] - tally["floor_cells"])
+    missing_or_refused = tally["record_missing"] + tally["refused"]
+    if unequalizable == 0:
+        counted_as_zero.extend(kinds)
+    elif unequalizable == missing_or_refused:
+        excluded.append(" and ".join(kinds) + " whose inputs cannot be equalized")
+    else:
+        # The tally's fields do not say which kind each side's cells are.
+        in_floor = max(0, missing_or_refused - unequalizable)
+        counted_as_zero.append(f"{in_floor} record-missing or refused")
+        excluded.append(f"{unequalizable} record-missing or refused whose inputs cannot be equalized")
+    groups = [f"counted as 0: {'; '.join(counted_as_zero)}"] if counted_as_zero else []
+    groups.append(f"excluded: {'; '.join(excluded)}")
     credited = f" ({tally['credited']} credited)" if tally["credited"] != tally["measured"] else ""
     return (
         f"parity: {tally['matched']}/{selected} matched; {coverage_text(tally)}; "
         f"mean {credit_text(tally['mean_credit'])} over {tally['measured']} measured{credited}; "
-        f"floor {credit_text(tally['floor_credit'])} over {tally['measured']} measured of "
-        f"{selected} selected ({'; '.join(parts)}){inputs_marker(tally)}"
+        f"floor {credit_text(tally['floor_credit'])} over {tally['floor_cells']} of "
+        f"{selected} selected ({'; '.join(groups)}){inputs_marker(tally)}"
     )
 
 

@@ -621,8 +621,10 @@ test-harness parity export --e2e-root <run e2e root> \
   refused appears as `record-missing` rows whose `source.post_pass_state` is
   `refused` and whose reason names the refusal. A row of either state with any
   other verdict is refused.
-* A refused call that names a valid producer, run id and tree writes one
-  `parity.refusal` event, alone in its own batch, to the same `parity-runs/`
+* Usage errors such as an unknown or repeated flag, or help with other
+  arguments, exit 2 before anything is recorded. When a call names a valid
+  producer, run id and tree, refused rows (exit 1) and a missing or invalid
+  `--source-tree-dirty` (exit 2) write one `parity.refusal` event, alone in its own batch, to the same `parity-runs/`
   shard. It carries the input's SHA-256 and line count, the tree state, and the reason
   (bounded to 4000 characters, with the owner's home directory replaced by
   `<owner home>`); its `event_id`
