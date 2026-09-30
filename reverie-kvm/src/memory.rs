@@ -301,23 +301,35 @@ struct WriteAliasExtent {
 
 /// Owns only virtual addresses; every accessible page aliases retained guest
 /// backing. The numeric address is passed to the kernel, never dereferenced as
-/// a Rust slice spanning the distinct MAP_FIXED mappings.
+/// a Rust slice spanning its distinct shared mappings.
 struct WriteAliasMapping {
     address: usize,
     length: usize,
+    // Byte offsets of the one extent released but not yet reacquired. Every
+    // address outside this interval remains owned, including protected pages.
+    unowned: Option<(usize, usize)>,
     _extents: Vec<WriteAliasExtent>,
 }
 
 impl Drop for WriteAliasMapping {
     fn drop(&mut self) {
-        if self.length != 0 {
-            // SAFETY: this entire reserved range belongs to this value, including
-            // any subranges replaced by shared mappings during construction.
-            unsafe {
-                libc::munmap(
-                    std::ptr::with_exposed_provenance_mut::<libc::c_void>(self.address),
-                    self.length,
-                );
+        let (prefix_length, suffix_offset) = self.unowned.unwrap_or((self.length, self.length));
+        for (offset, length) in [
+            (0, prefix_length),
+            (suffix_offset, self.length - suffix_offset),
+        ] {
+            if length != 0 {
+                // SAFETY: these disjoint ranges are still owned by this value.
+                // The released extent may belong to another host allocator and
+                // is excluded even when its replacement mmap returned an error.
+                unsafe {
+                    libc::munmap(
+                        std::ptr::with_exposed_provenance_mut::<libc::c_void>(
+                            self.address + offset,
+                        ),
+                        length,
+                    );
+                }
             }
         }
     }
@@ -1796,22 +1808,40 @@ impl UserMemory {
                 }
                 mapping.expose_provenance()
             };
-            let mapping = WriteAliasMapping {
+            let mut mapping = WriteAliasMapping {
                 address: mapping_address,
                 length: mapping_length,
+                unowned: None,
                 _extents: extents,
             };
             for extent in &mapping._extents {
                 let target = mapping.address + extent.offset;
-                // SAFETY: the checked extent is page-aligned, wholly within the
-                // owned reservation, and backed by a retained live memfd slice.
-                // No Rust reference is formed over any replaced mapping.
+                let unowned = (extent.offset, extent.offset + extent.slice.length);
+                // MAP_FIXED can remove the reservation before a later failure:
+                // Linux 5.15 mmap_region, and Linux 7.1 __mmap_setup followed by
+                // __mmap_new_vma/vms_abort_munmap_vmas, leave that interval empty.
+                // Explicitly release it, record the ownership change without
+                // allocation or fallible arithmetic, then claim only empty pages.
+                // SAFETY: this aligned extent is wholly within our owned range.
+                let released = unsafe {
+                    libc::munmap(
+                        std::ptr::with_exposed_provenance_mut::<libc::c_void>(target),
+                        extent.slice.length,
+                    )
+                };
+                if released != 0 {
+                    return Err(Error::MemoryMapping(io::Error::last_os_error()));
+                }
+                mapping.unowned = Some(unowned);
+                // SAFETY: the memfd slice remains retained. NOREPLACE cannot
+                // replace a foreign allocation made after the explicit unmap.
+                // No Rust reference is formed over this kernel-only mapping.
                 let installed = unsafe {
                     libc::mmap(
                         std::ptr::with_exposed_provenance_mut::<libc::c_void>(target),
                         extent.slice.length,
                         libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_SHARED | libc::MAP_FIXED,
+                        libc::MAP_SHARED | libc::MAP_FIXED_NOREPLACE,
                         extent.slice.backing.fd.as_raw_fd(),
                         extent.slice.offset as libc::off_t,
                     )
@@ -1819,6 +1849,16 @@ impl UserMemory {
                 if installed == libc::MAP_FAILED {
                     return Err(Error::MemoryMapping(io::Error::last_os_error()));
                 }
+                if installed.expose_provenance() != target {
+                    // Older kernels may ignore NOREPLACE. Only the returned
+                    // allocation is ours; the requested interval remains unowned.
+                    // SAFETY: mmap returned this live mapping of the stated size.
+                    unsafe { libc::munmap(installed, extent.slice.length) };
+                    return Err(Error::MemoryMapping(io::Error::other(
+                        "MAP_FIXED_NOREPLACE installed a writable alias at an unexpected address",
+                    )));
+                }
+                mapping.unowned = None;
             }
             Ok(UserWriteAlias {
                 mapping,
@@ -5193,6 +5233,78 @@ mod tests {
         let mut actual = [0; 3 * PAGE_SIZE];
         memory.read_raw(0, &mut actual).unwrap();
         assert_eq!(actual, [0xa5; 3 * PAGE_SIZE]);
+    }
+
+    #[test]
+    fn writable_alias_foreign_mapping_preserves_ownership() {
+        writable_alias_ownership_failure_case(
+            "memory::tests::writable_alias_foreign_mapping_preserves_ownership",
+            crate::alias_failure::Case::Foreign,
+        );
+    }
+
+    #[test]
+    fn writable_alias_noreplace_collision_preserves_ownership() {
+        writable_alias_ownership_failure_case(
+            "memory::tests::writable_alias_noreplace_collision_preserves_ownership",
+            crate::alias_failure::Case::Collision,
+        );
+    }
+
+    #[test]
+    fn writable_alias_explicit_unmap_failure_preserves_ownership() {
+        writable_alias_ownership_failure_case(
+            "memory::tests::writable_alias_explicit_unmap_failure_preserves_ownership",
+            crate::alias_failure::Case::Unmap,
+        );
+    }
+
+    #[test]
+    fn writable_alias_unexpected_address_preserves_ownership() {
+        writable_alias_ownership_failure_case(
+            "memory::tests::writable_alias_unexpected_address_preserves_ownership",
+            crate::alias_failure::Case::WrongAddress,
+        );
+    }
+
+    #[test]
+    fn writable_alias_middle_extent_preserves_ownership() {
+        writable_alias_ownership_failure_case(
+            "memory::tests::writable_alias_middle_extent_preserves_ownership",
+            crate::alias_failure::Case::MiddleExtent,
+        );
+    }
+
+    fn writable_alias_ownership_failure_case(test: &str, case: crate::alias_failure::Case) {
+        let Some(fault) = crate::alias_failure::child_case(test, case) else {
+            return;
+        };
+        let length = fault.pages() * PAGE_SIZE;
+        let expected = vec![0xa5; length];
+        let memory = GuestMemory::new(0, length).unwrap();
+        memory.write_raw(0, &expected).unwrap();
+        for page in (0..fault.pages()).step_by(2) {
+            memory
+                .map_user_range((page * PAGE_SIZE) as u64, PAGE_SIZE as u64, false)
+                .unwrap();
+        }
+        memory.enable_user_access();
+        fault.arm();
+        let user = memory.user();
+        // Zero count still checks admission but must leave the fixture dormant.
+        user.writable_alias(u64::MAX, 0).unwrap().finish().unwrap();
+        let error = user.writable_alias(0, length).err().unwrap();
+        assert!(matches!(&error, Error::MemoryMapping(_)), "{error:?}");
+        let cause = fault.cause(&error).unwrap_or_else(|| panic!("{error:?}"));
+        assert!(std::ptr::eq(cause, &error));
+        fault.assert_fired();
+        assert_eq!(memory.entry_gate().test_state().copies, 0);
+        assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
+        assert!(memory.mapping.address_space.try_lock().is_ok());
+        assert!(memory.mapping.slice.backing.host_access.try_lock().is_ok());
+        let mut actual = vec![0; length];
+        memory.read_raw(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[test]
