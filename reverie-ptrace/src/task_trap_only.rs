@@ -609,9 +609,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         if !live {
             // Plain ptrace reports no stop here: its filter kills the process
             // (SECCOMP_RET_KILL_PROCESS), which `trap_only_foreign_i386`
-            // reproduces. The tick is not Tool-observable, because the
-            // process dies of SIGSYS before any Tool event.
-            self.timer.observe_event(&Event::Seccomp);
+            // reproduces. So, as for the Allow-class hop (O4 rule 3), the
+            // timer is left untouched: a scheduled event retires unrecorded
+            // at the thread's exit, as under plain ptrace, instead of being
+            // decided here, where a counter already past its target would
+            // record a skid overshoot that plain ptrace never records.
             return self
                 .trap_only_foreign_i386(task, regs)
                 .await

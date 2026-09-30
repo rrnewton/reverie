@@ -3246,9 +3246,10 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
         // A trap-only seccomp stop may be the int 0x80 stop of an Allow-class
-        // number at a patched site, which plain ptrace never produces: it
-        // must not advance the timer's cancellation state (O4 rule 3), so
-        // `trap_only_route` observes every other seccomp stop itself.
+        // number at a patched site, or of a foreign int 0x80, neither of
+        // which plain ptrace produces: they must not advance the timer's
+        // cancellation state (O4 rule 3), so `trap_only_route` observes
+        // itself exactly the seccomp stops plain ptrace also reports.
         if !(self.trap_only.is_some() && matches!(event, Event::Seccomp)) {
             self.timer.observe_event(&event);
         }
