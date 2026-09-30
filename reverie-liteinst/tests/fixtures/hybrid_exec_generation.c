@@ -18,6 +18,7 @@ __asm__(
     ".global exec_generation_syscall\n"
     ".type exec_generation_syscall,@function\n"
     "exec_generation_syscall:\n"
+    ".cfi_startproc\n"
     "mov %rdi, %rax\n"
     "mov %rsi, %rdi\n"
     "mov %rdx, %rsi\n"
@@ -32,6 +33,7 @@ __asm__(
     "nop\n"
     ".endr\n"
     "ret\n"
+    ".cfi_endproc\n"
     ".size exec_generation_syscall, .-exec_generation_syscall\n");
 
 extern long exec_generation_syscall(long, long, long, long, long, long, long);

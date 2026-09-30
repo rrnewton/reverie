@@ -40,7 +40,8 @@ static volatile sig_atomic_t begins, readies, failures, reentry_result;
 extern char test_syscall_site[];
 __asm__(
     ".text\n.p2align 6\n.global test_syscall_site\n"
-    "test_syscall_site:\n syscall\n nop\n nop\n nop\n nop\n nop\n nop\n ret\n");
+    "test_syscall_site:\n .cfi_startproc\n"
+    " syscall\n nop\n nop\n nop\n nop\n nop\n nop\n ret\n .cfi_endproc\n");
 
 static void trap(int sig, siginfo_t* info, void* opaque) {
   (void)info;
@@ -49,7 +50,7 @@ static void trap(int sig, siginfo_t* info, void* opaque) {
   uint64_t rip = context->uc_mcontext.gregs[REG_RIP];
   const struct host_frame* frame =
       (const void*)(uintptr_t)context->uc_mcontext.gregs[REG_RDI];
-  if (sig != SIGTRAP || !frame || frame->version != 4)
+  if (sig != SIGTRAP || !frame || frame->version != 5)
     _exit(80);
   if (marker == UINT64_C(0x7265766c69000001)) {
     if (begins || readies || rip != frame->begin_rip)

@@ -461,6 +461,7 @@ global_asm!(
     .hidden reverie_liteinst_rpc_getpid
     .type reverie_liteinst_rpc_getpid,@function
 reverie_liteinst_rpc_getpid:
+    .cfi_startproc
     mov eax, 39
     .global reverie_liteinst_rpc_getpid_site
     .hidden reverie_liteinst_rpc_getpid_site
@@ -470,6 +471,7 @@ reverie_liteinst_rpc_getpid_site:
     nop
     nop
     ret
+    .cfi_endproc
     .size reverie_liteinst_rpc_getpid, .-reverie_liteinst_rpc_getpid
 
     .p2align 4
@@ -477,6 +479,7 @@ reverie_liteinst_rpc_getpid_site:
     .hidden reverie_liteinst_rpc_getuid
     .type reverie_liteinst_rpc_getuid,@function
 reverie_liteinst_rpc_getuid:
+    .cfi_startproc
     mov eax, 102
     .global reverie_liteinst_rpc_getuid_site
     .hidden reverie_liteinst_rpc_getuid_site
@@ -486,6 +489,7 @@ reverie_liteinst_rpc_getuid_site:
     nop
     nop
     ret
+    .cfi_endproc
     .size reverie_liteinst_rpc_getuid, .-reverie_liteinst_rpc_getuid
 
     .p2align 4
@@ -493,6 +497,7 @@ reverie_liteinst_rpc_getuid_site:
     .hidden reverie_liteinst_rpc_sigprocmask
     .type reverie_liteinst_rpc_sigprocmask,@function
 reverie_liteinst_rpc_sigprocmask:
+    .cfi_startproc
     mov r10, rcx
     mov eax, 14
     .global reverie_liteinst_rpc_sigprocmask_site
@@ -503,6 +508,7 @@ reverie_liteinst_rpc_sigprocmask_site:
     nop
     nop
     ret
+    .cfi_endproc
     .size reverie_liteinst_rpc_sigprocmask, .-reverie_liteinst_rpc_sigprocmask
 
     .p2align 4
@@ -510,6 +516,7 @@ reverie_liteinst_rpc_sigprocmask_site:
     .hidden reverie_liteinst_rpc_wait4
     .type reverie_liteinst_rpc_wait4,@function
 reverie_liteinst_rpc_wait4:
+    .cfi_startproc
     mov r10, rcx
     mov eax, 61
     .global reverie_liteinst_rpc_wait4_site
@@ -520,6 +527,7 @@ reverie_liteinst_rpc_wait4_site:
     nop
     nop
     ret
+    .cfi_endproc
     .size reverie_liteinst_rpc_wait4, .-reverie_liteinst_rpc_wait4
 
     .p2align 4
@@ -527,12 +535,14 @@ reverie_liteinst_rpc_wait4_site:
     .hidden reverie_liteinst_rpc_execve
     .type reverie_liteinst_rpc_execve,@function
 reverie_liteinst_rpc_execve:
+    .cfi_startproc
     mov eax, 59
     syscall
     nop
     nop
     nop
     ret
+    .cfi_endproc
     .size reverie_liteinst_rpc_execve, .-reverie_liteinst_rpc_execve
 
     .p2align 4
@@ -540,12 +550,14 @@ reverie_liteinst_rpc_execve:
     .hidden reverie_liteinst_rpc_sigaltstack
     .type reverie_liteinst_rpc_sigaltstack,@function
 reverie_liteinst_rpc_sigaltstack:
+    .cfi_startproc
     mov eax, 131
     syscall
     nop
     nop
     nop
     ret
+    .cfi_endproc
     .size reverie_liteinst_rpc_sigaltstack, .-reverie_liteinst_rpc_sigaltstack
 
     .p2align 4
@@ -553,6 +565,7 @@ reverie_liteinst_rpc_sigaltstack:
     .hidden reverie_liteinst_rpc_raise_sigsys
     .type reverie_liteinst_rpc_raise_sigsys,@function
 reverie_liteinst_rpc_raise_sigsys:
+    .cfi_startproc
     mov eax, 39
     syscall
     mov rdi, rax
@@ -565,6 +578,7 @@ reverie_liteinst_rpc_raise_sigsys:
     mov eax, 234
     syscall
     ret
+    .cfi_endproc
     .size reverie_liteinst_rpc_raise_sigsys, .-reverie_liteinst_rpc_raise_sigsys
 
     # A raw `SYS_fork` (x86-64 __NR_fork = 57) that never enters libc, so no
@@ -576,6 +590,7 @@ reverie_liteinst_rpc_raise_sigsys:
     .hidden reverie_liteinst_rpc_raw_fork
     .type reverie_liteinst_rpc_raw_fork,@function
 reverie_liteinst_rpc_raw_fork:
+    .cfi_startproc
     mov eax, 57
     .global reverie_liteinst_rpc_raw_fork_site
     .hidden reverie_liteinst_rpc_raw_fork_site
@@ -585,6 +600,7 @@ reverie_liteinst_rpc_raw_fork_site:
     nop
     nop
     ret
+    .cfi_endproc
     .size reverie_liteinst_rpc_raw_fork, .-reverie_liteinst_rpc_raw_fork
 
     # One stable CPUID site is deliberately used both outside and inside a Tool
