@@ -13162,8 +13162,8 @@ exit 0
     // supervisor's process-group kill missed it, the census froze it with
     // SIGSTOP, and the box stayed quarantined for 23.5 minutes while two queued
     // waiters exited 3. The fixture reproduces that shape: a setsid'd process
-    // and its child, both ignoring TERM and blocked opening a FIFO that nothing
-    // will ever write.
+    // and its child, both ignoring TERM and blocked for at most 300 s reading a
+    // FIFO that nothing will ever write.
     const SETSID_PIPE_BLOCKED_PAYLOAD: &str = r#"
 setsid /bin/bash -c '
   trap "" TERM HUP
@@ -13171,9 +13171,9 @@ setsid /bin/bash -c '
     local pid=$BASHPID
     printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
   }
-  ( trap "" TERM HUP; record "$1"; read -r line < "$2" ) &
+  ( trap "" TERM HUP; record "$1"; read -r -t 300 line <> "$2" ) &
   record "$1"
-  read -r line < "$2"
+  read -r -t 300 line <> "$2"
 ' escaped-publication "$1" "$2" &
 while [ "$(wc -l < "$1")" -lt 2 ]; do sleep 0.01; done
 if [ "$3" = wait ]; then

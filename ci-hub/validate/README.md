@@ -102,7 +102,11 @@ A recorded process stays recorded after its parent dies. The teardown kills
 it, and if it is still alive after the last kill round the run quarantines
 instead of releasing. Each poll is one scan of `/proc`, which can take over a
 second on a loaded host, so polls run every 20 ms or, when the previous scan
-took longer than that, after a pause as long as that scan.
+took longer than that, after a pause as long as that scan. A process that
+ignores SIGTERM keeps the 5 s wait polling to its end: on devbig014 on
+2026-09-29, with about 4,500 processes, a `--child-deadline 1` run whose
+payload ignored SIGTERM spent 3.5 to 4.1 s of supervisor CPU in total,
+against 1.0 to 1.9 s for one whose payload exited on SIGTERM.
 
 Not reached: a process that is not a descendant of the supervisor at all
 (for example one started through `systemd-run`), a direct child of the

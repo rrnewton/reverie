@@ -3932,6 +3932,19 @@ fn signal_identities(
 /// early end and [`pace_teardown_poll`], that run scans 5 times again: a
 /// payload that exits on SIGTERM costs the scan before the signal plus one
 /// scan per poll until it is gone, usually one.
+///
+/// A payload process that IGNORES SIGTERM is the expensive case. The grace
+/// then runs to its end, and because each poll waits only as long as the
+/// scan before it, about half of the grace is spent scanning. On devbig014
+/// on 2026-09-29, with 4,431 to 4,654 processes at load average 97 to 173, a
+/// `--child-deadline 1` landing run of `bash -c "trap '' TERM; exec sleep 30"`
+/// spent 3.5 to 4.1 s of supervisor CPU (user plus system, whole run, three
+/// runs each) with this loop, against 0.7 to 2.4 s at
+/// 0539a4b915f2d4dc7253cfc6b30890f0f41e1f3e, whose grace slept without
+/// scanning. The review of https://github.com/rrnewton/dev-hermit/issues/419
+/// measured 3 to 4 s against 0.6 to 0.9 s with about 4,300 processes. That is
+/// the price of recording, during the grace, processes started after the
+/// signal, such as one forked by a SIGTERM handler; the pacing is unchanged.
 pub(crate) fn term_payload_group(
     lineage: &mut PayloadLineage,
     pgid: u32,
@@ -4041,9 +4054,14 @@ pub(crate) fn describe_identities(identities: &[ProcessIdentity]) -> String {
 /// https://github.com/rrnewton/dev-hermit/issues/419: the leader backgrounds
 /// a helper that STAYS in the payload's original process group (no setsid)
 /// but runs under `helper_env` (for example `env -u CI_HUB_PAYLOAD_DOMAIN`),
-/// ignores TERM and HUP, and blocks opening a FIFO nobody writes; the leader
+/// ignores TERM and HUP, and blocks reading a FIFO nobody writes; the leader
 /// then exits 0. Arguments: `$1` identity file (`pid start_ticks`), `$2` the
 /// FIFO, `$3` the helper's `pgrp token-or-unset`, `$4` the leader's pgrp.
+///
+/// Every fixture process that ignores TERM blocks with `read -t 300 ... <>`:
+/// opening a FIFO read-write never blocks on Linux, and the read gives up
+/// after 300 s, so a test runner killed before its cleanup leaks such a
+/// process for at most that long instead of forever.
 #[cfg(test)]
 pub(crate) fn same_group_helper_payload(helper_env: &str) -> String {
     format!(
@@ -4053,7 +4071,7 @@ pub(crate) fn same_group_helper_payload(helper_env: &str) -> String {
   pid=$BASHPID
   printf "%s %s\n" "$pid" "$(awk "{{print \$22}}" "/proc/$pid/stat")" >> "$1"
   printf "%s %s\n" "$(awk "{{print \$5}}" "/proc/$pid/stat")" "${{{PAYLOAD_DOMAIN_ENV}-unset}}" >> "$3"
-  read -r line < "$2"
+  read -r -t 300 line <> "$2"
 ' same-group-helper "$1" "$2" "$3" &
 while [ "$(wc -l < "$1")" -lt 1 ] || [ "$(wc -l < "$3")" -lt 1 ]; do sleep 0.01; done
 awk "{{print \$5}}" /proc/$$/stat > "$4"
@@ -4065,7 +4083,7 @@ exit 0
 /// Test payload for the parent-waits shape on [`PayloadLineage`]: the leader
 /// backgrounds a `setsid`'d PARENT that keeps the payload token, ignores TERM
 /// and HUP, and waits in the foreground on a GRANDCHILD started as
-/// `{grandchild_env} setsid ...`, which blocks opening a FIFO nobody writes and
+/// `{grandchild_env} setsid ...`, which blocks reading a FIFO nobody writes and
 /// inherits the ignored TERM and HUP. `grandchild_env` must drop the token (for
 /// example `env -u CI_HUB_PAYLOAD_DOMAIN`), so the grandchild is attributable
 /// only through its parent. Arguments: `$1` identity file (`pid start_ticks`,
@@ -4086,7 +4104,7 @@ grandchild_script='
   pid=$BASHPID
   printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
   printf "%s %s\n" "$(awk "{print \$6, \$5, \$4}" "/proc/$pid/stat")" "${@TOKEN_VAR@-unset}" >> "$3"
-  read -r line < "$2"
+  read -r -t 300 line <> "$2"
 '
 setsid /bin/bash -c "$parent_script" parent-waits-parent "$1" "$2" "$3" "$grandchild_script" &
 while [ "$(wc -l < "$1")" -lt 2 ] || [ "$(wc -l < "$3")" -lt 1 ]; do sleep 0.01; done
@@ -4103,7 +4121,7 @@ exit 0
 
 /// Test payload for the escape-on-term shape on [`PayloadLineage`]: the leader
 /// backgrounds a HELPER that drops the payload token but stays in the payload's
-/// original process group and blocks opening a FIFO nobody writes. Its SIGTERM
+/// original process group and blocks reading a FIFO nobody writes. Its SIGTERM
 /// handler ignores TERM and HUP, starts an ESCAPEE with `setsid` (tokenless,
 /// its own session, inheriting the ignored TERM and HUP, blocked on the same
 /// FIFO), waits until the escapee has recorded itself, and exits 0. The leader
@@ -4118,7 +4136,7 @@ escapee_script='
   pid=$BASHPID
   printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
   printf "%s %s\n" "$(awk "{print \$6, \$5}" "/proc/$pid/stat")" "${@TOKEN_VAR@-unset}" >> "$2"
-  read -r line < "$3"
+  read -r -t 300 line <> "$3"
 '
 helper_script='
   fifo=$2 escapee_ids=$3 escapee=$4 escapee_facts=$5
@@ -4134,7 +4152,7 @@ helper_script='
   pid=$BASHPID
   printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
   printf "%s %s\n" "$(awk "{print \$5}" "/proc/$pid/stat")" "${@TOKEN_VAR@-unset}" >> "$6"
-  read -r line < "$fifo"
+  read -r -t 300 line <> "$fifo"
 '
 env -u @TOKEN_VAR@ /bin/bash -c "$helper_script" escape-on-term-helper "$1" "$2" "$3" "$escapee_script" "$4" "$5" &
 while [ "$(wc -l < "$1")" -lt 1 ] || [ "$(wc -l < "$5")" -lt 1 ]; do sleep 0.01; done
@@ -7482,9 +7500,10 @@ exit 0
     }
 
     /// https://github.com/rrnewton/dev-hermit/issues/419: a setsid'd payload
-    /// process and its child, both ignoring TERM and blocked opening a FIFO
-    /// nobody writes, escape the landing supervisor's process-group kill. The
-    /// teardown must kill them by payload token instead of quarantining.
+    /// process and its child, both ignoring TERM and blocked for at most 300 s
+    /// reading a FIFO nobody writes, escape the landing supervisor's
+    /// process-group kill. The teardown must kill them by payload token
+    /// instead of quarantining.
     fn run_setsid_pipe_payload(name: &str, mode: &str, child_deadline: u64) {
         let Some(_domain_guard) = process_domain_test_guard() else {
             return;
@@ -7507,9 +7526,9 @@ setsid /bin/bash -c '
     local pid=$BASHPID
     printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
   }
-  ( trap "" TERM HUP; record "$1"; read -r line < "$2" ) &
+  ( trap "" TERM HUP; record "$1"; read -r -t 300 line <> "$2" ) &
   record "$1"
-  read -r line < "$2"
+  read -r -t 300 line <> "$2"
 ' escaped-publication "$1" "$2" &
 while [ "$(wc -l < "$1")" -lt 2 ]; do sleep 0.01; done
 if [ "$3" = wait ]; then
