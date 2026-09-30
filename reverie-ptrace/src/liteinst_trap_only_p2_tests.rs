@@ -1615,9 +1615,20 @@ async fn trap_only_p2_t7c_foreign_int_0x80_dies_of_sigsys() {
 /// at that stop, with one preempted overflow; it shows that the timer really
 /// was due when the child reached its last instruction.
 ///
-/// The witness count is process-global and other tests in this binary can
-/// write it, so the runs happen in a fresh exact-test process, as in
-/// `tracer::tests::precise_timer_delivery_reaches_tool`.
+/// Neither count says WHERE the `int 0x80` witness was recorded, and a stop
+/// can decide the event without counting a preempted overflow: retiring it
+/// (`Timer::retire`) at the trap records the same one witness and cancels
+/// the event, so the exit then records nothing. What tells the two apart is
+/// whether the witness was overtaken with its notification queued. The
+/// fixture blocks the timer's signal, so at every stop the notification is
+/// queued and a stop that decides the event counts it as overtaken, as the
+/// control's getpid stop does under each backend; the exit cannot read the
+/// exited thread's pending signals and never counts it. So the `int 0x80`
+/// mode must count no overtaken event under either backend.
+///
+/// The witness and overtaken counts are process-global and other tests in
+/// this binary can write them, so the runs happen in a fresh exact-test
+/// process, as in `tracer::tests::precise_timer_delivery_reaches_tool`.
 #[tokio::test(flavor = "current_thread")]
 async fn trap_only_p2_t7c_foreign_int_0x80_past_a_timer_target_is_witnessed_at_exit() {
     const LATE_TIMER_CHILD: &str = "REVERIE_PTRACE_P2_LATE_TIMER_CHILD";
@@ -1653,39 +1664,50 @@ async fn trap_only_p2_t7c_foreign_int_0x80_past_a_timer_target_is_witnessed_at_e
 }
 
 /// The late-timer runs, in the exact-test child process that owns the
-/// witness count: each mode under plain ptrace and under trap-only, with the
-/// witnesses and the host-timed timer outcomes each run recorded. Each mode
-/// records one witness under each backend: the `int 0x80` mode at the
-/// thread's exit, the control at its getpid stop. The only host-timed
-/// outcome expected is the control's: its getpid stop decides the event
-/// after the overflow was due and its signal was never handled.
+/// witness and overtaken counts: each mode under plain ptrace and under
+/// trap-only, with the witnesses, the events overtaken with their
+/// notification queued and the host-timed timer outcomes each run recorded.
+/// Each mode records one witness under each backend: the `int 0x80` mode at
+/// the thread's exit, which counts no overtaken event, the control at its
+/// getpid stop, which counts one. The only host-timed outcome expected is
+/// the control's: its getpid stop decides the event after the overflow was
+/// due and its signal was never handled.
 async fn compare_late_timer_witnesses() {
     let preempted = crate::timer::HostTimedTimerEvents {
         preempted_overflow: 1,
         ..Default::default()
     };
-    for (mode, child_report, witnesses, host_timed) in [
+    for (mode, child_report, witnesses, overtaken, host_timed) in [
         (
             "late_timer_int80",
             "child signaled=1 termsig=31 exited=0 status=0",
             1,
+            0,
             Default::default(),
         ),
         (
             "late_timer_getpid",
             "child signaled=0 termsig=0 exited=1 status=0",
             1,
+            1,
             preempted,
         ),
     ] {
         let _ = reverie::take_skid_overshoot_count();
         let _ = crate::timer::take_host_timed_timer_events();
+        let overtaken_before = crate::testing::precise_events_overtaken_with_notification_queued();
         let ptrace = run_p2(mode, None, false).await;
         let ptrace_witnesses = reverie::take_skid_overshoot_count();
         let ptrace_host_timed = crate::timer::take_host_timed_timer_events();
+        let overtaken_after_ptrace =
+            crate::testing::precise_events_overtaken_with_notification_queued();
         let trap_only = run_p2(mode, Some(SitePatching::On), false).await;
         let trap_only_witnesses = reverie::take_skid_overshoot_count();
         let trap_only_host_timed = crate::timer::take_host_timed_timer_events();
+        let overtaken_after_trap_only =
+            crate::testing::precise_events_overtaken_with_notification_queued();
+        let ptrace_overtaken = overtaken_after_ptrace - overtaken_before;
+        let trap_only_overtaken = overtaken_after_trap_only - overtaken_after_ptrace;
         assert_patched(&trap_only, SiteState::Live);
         assert!(
             ptrace.report.contains(child_report),
@@ -1721,6 +1743,11 @@ async fn compare_late_timer_witnesses() {
             (ptrace_witnesses, trap_only_witnesses),
             (witnesses, witnesses),
             "{mode}: skid-overshoot witnesses (plain ptrace, trap-only)"
+        );
+        assert_eq!(
+            (ptrace_overtaken, trap_only_overtaken),
+            (overtaken, overtaken),
+            "{mode}: events overtaken with their notification queued (plain ptrace, trap-only)"
         );
         assert_eq!(
             (ptrace_host_timed, trap_only_host_timed),
