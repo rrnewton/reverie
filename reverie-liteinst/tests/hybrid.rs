@@ -967,6 +967,70 @@ fn build_path(name: &str, compile_time: &str) -> PathBuf {
     std::env::var_os(name).map_or_else(|| PathBuf::from(compile_time), PathBuf::from)
 }
 
+/// What `SteppedHookTool` tells its global state.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+enum SteppedHookNote {
+    /// The guest's RCB clock at a getpid.
+    Getpid(u64),
+    TimerEvent,
+}
+
+#[derive(Debug, Default)]
+struct SteppedHookEvents {
+    /// The guest's RCB clock at each getpid, in order.
+    getpid_clocks: std::sync::Mutex<Vec<u64>>,
+    timer_events: AtomicU64,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for SteppedHookEvents {
+    type Request = SteppedHookNote;
+    type Response = ();
+    /// The timer's RCBs from each getpid to its target.
+    type Config = u64;
+
+    async fn receive_rpc(&self, _from: Tid, note: SteppedHookNote) {
+        match note {
+            SteppedHookNote::Getpid(clock) => self.getpid_clocks.lock().unwrap().push(clock),
+            SteppedHookNote::TimerEvent => {
+                self.timer_events.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+}
+
+/// Answers every getpid itself, with 0x4242, and requests a precise timer
+/// there.
+#[derive(Default)]
+struct SteppedHookTool;
+
+#[reverie::tool]
+impl Tool for SteppedHookTool {
+    type GlobalState = SteppedHookEvents;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &u64) -> Subscription {
+        [Sysno::getpid].into_iter().collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        assert_eq!(syscall.number(), Sysno::getpid);
+        let clock = guest.read_clock()?;
+        guest.send_rpc(SteppedHookNote::Getpid(clock)).await;
+        let rcbs = *guest.config();
+        guest.set_timer_precise(TimerSchedule::Rcbs(rcbs))?;
+        Ok(0x4242)
+    }
+
+    async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
+        guest.send_rpc(SteppedHookNote::TimerEvent).await;
+    }
+}
+
 fn preload_path() -> PathBuf {
     let launcher = build_path(
         "CARGO_BIN_EXE_reverie-liteinst-strace",
@@ -2782,4 +2846,80 @@ async fn runtime_bootstrap_window_excludes_another_thread_of_the_process() {
         "the second thread's tagged call was not inside the bootstrap window: {}",
         describe(image)
     );
+}
+
+/// Runs `hybrid_stepped_hook.c` with a precise timer `rcbs` RCBs past each
+/// getpid. Returns the guest's output, the number of timer events, and the RCBs
+/// from each getpid to the next.
+async fn run_stepped_hook(rcbs: u64) -> (String, u64, Vec<u64>) {
+    let (_directory, guest) = compile_fixture("hybrid_stepped_hook.c");
+    let (output, global) = tokio::time::timeout(
+        Duration::from_secs(60),
+        LiteinstBackend::run_host_with_output_and_preload::<SteppedHookTool>(
+            Command::new(guest),
+            rcbs,
+            preload_path(),
+        ),
+    )
+    .await
+    .expect("the stepped hook guest did not complete")
+    .unwrap();
+    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+    let clocks = global.getpid_clocks.into_inner().unwrap();
+    let distances = clocks.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    (
+        String::from_utf8(output.stdout).unwrap(),
+        global.timer_events.load(Ordering::SeqCst),
+        distances,
+    )
+}
+
+// A precise timer single-steps the guest toward its target, and the steps must
+// pass a LiteInst hook's `int3` on to Reverie. If they took the trap's stop for
+// a step's, the hook's syscall would not reach the Tool: the getpid would
+// return its syscall number, 39, and the timer would fire as if no hook had run.
+//
+// Each getpid's timer is 200 RCBs away, and the next getpid's hook traps 111
+// RCBs later in a debug build on an AMD EPYC 9D85. 200 RCBs is within the skid
+// margin of every AMD processor in Reverie's PMU table, so there the timer is
+// delivered with an artificial signal, the steps start at the getpid, and they
+// run the next hook's trap. On Intel the timer uses the PMU, and the steps
+// start at most 100 or 125 RCBs before the target.
+#[tokio::test(flavor = "current_thread")]
+async fn a_hook_trap_in_the_timer_steps_reaches_the_tool() {
+    reverie_ptrace::ret_without_perf!();
+    let rcbs = 200;
+    let (stdout, timer_events, distances) = run_stepped_hook(rcbs).await;
+    assert_eq!(
+        stdout, "calls=64 wrong=0 last_wrong=0\n",
+        "timer_events={timer_events} distances={distances:?}"
+    );
+    assert_eq!(distances.len(), 63);
+    assert!(
+        distances.iter().all(|&distance| distance < rcbs),
+        "each hook must trap before the previous getpid's timer target: {distances:?}"
+    );
+    // Each hook's trap cancels the previous getpid's timer, and only the last
+    // getpid's timer fires, after the loop.
+    assert_eq!(timer_events, 1);
+}
+
+// The control: each getpid's timer is 50 RCBs away, before the next hook's
+// trap, so every timer fires. 50 RCBs is within every skid margin in the table,
+// so the steps start at the getpid on every host.
+#[tokio::test(flavor = "current_thread")]
+async fn a_timer_before_the_next_hook_trap_fires() {
+    reverie_ptrace::ret_without_perf!();
+    let rcbs = 50;
+    let (stdout, timer_events, distances) = run_stepped_hook(rcbs).await;
+    assert_eq!(
+        stdout, "calls=64 wrong=0 last_wrong=0\n",
+        "timer_events={timer_events} distances={distances:?}"
+    );
+    assert_eq!(distances.len(), 63);
+    assert!(
+        distances.iter().all(|&distance| distance > rcbs),
+        "each getpid's timer target must come before the next hook's trap: {distances:?}"
+    );
+    assert_eq!(timer_events, 64);
 }
