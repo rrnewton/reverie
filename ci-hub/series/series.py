@@ -108,6 +108,36 @@ options:
   --parent <dev-hermit root>  workspace containing the ledger checkout and local spool
   --output <run-scoped.json>  new snapshot path; an existing different file refuses
   -h, --help                  show this help and exit successfully"""
+#: `series.py append-parity`'s valued flags and the option each sets. Its
+#: usage below names every one; a test holds the two together.
+APPEND_PARITY_FLAGS = {
+    "--parent": "parent", "--producer": "producer", "--run-id": "run_id",
+    "--tree": "tree", "--emitted-at": "emitted_at",
+    "--source-tree-dirty": "source_tree_dirty",
+}
+APPEND_PARITY_USAGE = """usage:
+  series.py append-parity --parent <dev-hermit root> --producer <validate|pressure-test>
+      --run-id <id> --tree <40-hex sha> --source-tree-dirty <true|false>
+      [--emitted-at <YYYY-MM-DDTHH:MM:SSZ>] < parity-ledger-sources.jsonl
+
+Spool one run's parity rows, one hermit ParityLedgerSource JSON object per
+stdin line, as one batch behind a run marker in the parent's UNPUBLISHED
+parity spool. Empty stdin records a zero-record marker. When the call names a
+valid producer, run and tree, refused rows or a missing or invalid
+--source-tree-dirty are spooled as a parity.refusal carrying the message.
+
+options:
+  --parent <dev-hermit root>           workspace whose local parity spool receives the batch
+  --producer <validate|pressure-test>  the producer that measured the rows
+  --run-id <id>                        the producing run; a row naming another run is refused
+  --tree <40-hex sha>                  the Hermit tree; a row naming another tree is refused
+  --source-tree-dirty <true|false>     whether that tree had uncommitted changes; never defaulted
+  --emitted-at <YYYY-MM-DDTHH:MM:SSZ>  the batch's emission time in UTC; defaults to now
+  -h, --help                           show this help and exit successfully
+
+exit status: 0 when the batch was written or was already recorded identically,
+1 when the rows were refused, 2 for a usage error or an unwritable spool.
+Help alone writes nothing; help with any other argument is a usage error."""
 READABLE_ENVELOPE_VERSIONS = frozenset({
     LEGACY_ENVELOPE_VERSION,
     HOST_FACTS_ENVELOPE_VERSION,
@@ -6624,13 +6654,19 @@ def _cmd_append_parity(argv: list[str]) -> int:
     A refusal of a call that names a valid producer, run and tree is spooled
     as a `parity.refusal` (see parity_ledger.py), so the run reads as refused
     rather than as never attempted.
+
+    `--help` or `-h` alone prints APPEND_PARITY_USAGE on stdout, exits 0 and
+    reads and writes nothing: hermit's parity export probes the writer that
+    way before it sends rows. Help with any other argument is a usage error
+    (exit 2), and nothing is read or written either.
     """
+    if argv in (["--help"], ["-h"]):
+        print(APPEND_PARITY_USAGE)
+        return 0
+    if any(argument in {"-h", "--help"} for argument in argv):
+        return _append_parity_usage_error("help cannot be combined with other arguments")
     options: dict[str, str] = {}
-    flags = {
-        "--parent": "parent", "--producer": "producer", "--run-id": "run_id",
-        "--tree": "tree", "--emitted-at": "emitted_at",
-        "--source-tree-dirty": "source_tree_dirty",
-    }
+    flags = APPEND_PARITY_FLAGS
     i = 0
     while i < len(argv):
         name = flags.get(argv[i])
@@ -7257,6 +7293,13 @@ def _snapshot_usage_error(message: str) -> int:
     print(f"series: {message}", file=sys.stderr)
     print("Run `series.py snapshot --help` for the supported flags.", file=sys.stderr)
     print(SCORECARD_SNAPSHOT_USAGE, file=sys.stderr)
+    return 2
+
+
+def _append_parity_usage_error(message: str) -> int:
+    print(f"series: {message}", file=sys.stderr)
+    print("Run `series.py append-parity --help` for the supported flags.", file=sys.stderr)
+    print(APPEND_PARITY_USAGE, file=sys.stderr)
     return 2
 
 

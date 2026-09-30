@@ -605,6 +605,11 @@ test-harness parity export --e2e-root <run e2e root> \
   state is evidence: a row stamped clean without the caller saying so would
   be admitted as clean by every reader that excludes dirty rows. A missing or
   malformed value is a usage error (exit 2).
+* `append-parity --help` (or `-h`) alone prints the usage, which names every
+  flag, on stdout and exits 0 without reading stdin or writing anything.
+  hermit's `append_ledger_rows` probes the writer this way before it sends
+  rows, and leaves them unsent on any other exit. Help combined with any other
+  argument is a usage error (exit 2).
 * Rows go to `parity/<team>/<host>/<YYYY-MM>.jsonl`. Their fields are exactly
   hermit's `ParityLedgerRow` (it refuses unknown fields). `event_id` is
   `sha256(producer \0 run_id \0 cell \0 lane \0 node)`, so a run is keyed by

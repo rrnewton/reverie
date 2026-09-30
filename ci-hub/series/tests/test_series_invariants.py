@@ -2469,6 +2469,106 @@ class AppendParityCli(unittest.TestCase):
         ((marker, rows),) = self._recorded()
         self.assertEqual({True}, {marker["source_tree_dirty"], *(row["source_tree_dirty"] for row in rows)})
 
+    # hermit's parity export (append_ledger_rows in ci/manifest-plan/src/parity.rs)
+    # probes the writer with `append-parity --help`, stdin /dev/null, and sends
+    # no rows unless that exits 0.
+
+    def _series(self, *arguments, stdin=subprocess.DEVNULL):
+        return subprocess.run(
+            [sys.executable, str(Path(series.__file__).resolve()), *arguments],
+            stdin=stdin, capture_output=True, timeout=60, check=False)
+
+    def test_help_prints_the_usage_naming_every_flag_on_stdout_and_exits_0(self):
+        shown = self._series("append-parity", "--help")
+        self.assertEqual(0, shown.returncode, shown.stderr.decode())
+        self.assertEqual(b"", shown.stderr)
+        self.assertEqual((series.APPEND_PARITY_USAGE + "\n").encode(), shown.stdout)
+        usage = shown.stdout.decode()
+        self.assertIn("--source-tree-dirty <true|false>", usage)
+        # Its options list is exactly the flags the parser accepts, plus help.
+        self.assertEqual(
+            {*series.APPEND_PARITY_FLAGS, "-h, --help"},
+            set(re.findall(r"^  (--[a-z-]+|-h, --help) ", usage, re.MULTILINE)))
+        producers = "|".join(series.parity_ledger_module().PRODUCERS)
+        self.assertIn(f"--producer <{producers}>", usage)
+        self.assertFalse(self.spool.exists())
+
+    def test_short_help_is_the_same_help(self):
+        short = self._series("append-parity", "-h")
+        self.assertEqual(0, short.returncode, short.stderr.decode())
+        self.assertEqual(b"", short.stderr)
+        self.assertIn(b"--source-tree-dirty", short.stdout)
+        self.assertEqual(self._series("append-parity", "--help").stdout, short.stdout)
+
+    def test_help_with_another_argument_is_a_usage_error_that_writes_nothing(self):
+        for arguments in (("--help", "--parent", "/x"), ("--parent", "/x", "-h")):
+            mixed = self._series("append-parity", *arguments)
+            self.assertEqual(2, mixed.returncode, arguments)
+            self.assertEqual(b"", mixed.stdout, arguments)
+            stderr = mixed.stderr.decode()
+            self.assertIn("series: help cannot be combined with other arguments", stderr)
+            self.assertIn("Run `series.py append-parity --help` for the supported flags.", stderr)
+            self.assertIn(series.APPEND_PARITY_USAGE, stderr)
+        # Help inside a complete call with rows on stdin reads and spools nothing.
+        complete = self._run((self.FIXTURE / self.TYPED).read_bytes(), "--help")
+        self.assertEqual(2, complete.returncode)
+        self.assertEqual(b"", complete.stdout)
+        self.assertIn("series: help cannot be combined with other arguments",
+                      complete.stderr.decode())
+        self.assertFalse(self.spool.exists())
+
+    def test_a_bare_unknown_flag_is_still_a_usage_error(self):
+        bare = self._series("append-parity", "--bogus")
+        self.assertEqual(2, bare.returncode)
+        self.assertEqual(b"", bare.stdout)
+        self.assertIn("series: unknown append-parity argument '--bogus'", bare.stderr.decode())
+
+    def test_hermits_exact_call_for_each_producer_and_tree_state(self):
+        """append_ledger_rows' argv, which has no --emitted-at, with its rows on
+        stdin from a regular file: hermit's own export lines, one compact
+        ParityLedgerSource per line."""
+        parity = series.parity_ledger_module()
+        staging = tempfile.TemporaryDirectory()
+        self.addCleanup(staging.cleanup)
+        lines = (self.FIXTURE / self.TYPED).read_text().splitlines()[:2]
+        sent = {}
+        for producer in parity.PRODUCERS:
+            for dirty in ("false", "true"):
+                run_id = f"{producer}-hermit-call-dirty-{dirty}"
+                # RUN 1953's lines, renamed to this run wherever they name it:
+                # the row's run_id, its record's run_id and the record's log path.
+                renamed = [line.replace(self.RUN_ID, run_id) for line in lines]
+                sent[run_id] = [json.loads(line) for line in renamed]
+                self.assertEqual(
+                    [run_id] * 4,
+                    [value for source in sent[run_id]
+                     for value in (source["run_id"], source["record"]["run_id"])])
+                rows = Path(staging.name) / f"{run_id}.jsonl"
+                rows.write_text("".join(line + "\n" for line in renamed))
+                with rows.open("rb") as stdin:
+                    appended = self._series(
+                        "append-parity", "--parent", str(self.parent), "--producer", producer,
+                        "--run-id", run_id, "--tree", self.TREE, "--source-tree-dirty", dirty,
+                        stdin=stdin)
+                self.assertEqual(0, appended.returncode, appended.stderr.decode())
+                stdout = appended.stdout.decode()
+                self.assertTrue(stdout.startswith("parity: appended 2 record(s) ("), stdout)
+                self.assertIn(f" for {producer} run {run_id} -> ", stdout)
+        recorded = {marker["run_id"]: (marker, rows) for marker, rows in self._recorded()}
+        self.assertEqual(sorted(sent), sorted(recorded))
+        for run_id, (marker, rows) in recorded.items():
+            producer, dirty = marker["producer"], marker["source_tree_dirty"]
+            self.assertEqual(run_id, f"{producer}-hermit-call-dirty-{str(dirty).lower()}")
+            self.assertEqual((2, self.TREE), (marker["records"], marker["hermit_sha"]))
+            self.assertRegex(marker["emitted_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+            for source, row in zip(sent[run_id], rows, strict=True):
+                # Every field hermit sent arrives unchanged, under the call's identity.
+                self.assertEqual(source, {field: row[field] for field in source})
+                self.assertEqual(
+                    (producer, run_id, self.TREE, dirty, marker["emitted_at"]),
+                    (row["producer"], row["run_id"], row["hermit_sha"],
+                     row["source_tree_dirty"], row["emitted_at"]))
+
 
 class WriteBoundaryCli(unittest.TestCase):
     """The CLI exists so a producer can CALL `validate_row` rather than
