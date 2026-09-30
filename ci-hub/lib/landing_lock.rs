@@ -2215,16 +2215,35 @@ fn parse_unsigned(name: &str, value: &str) -> Result<u64, LandLockError> {
     })
 }
 
+/// This host's short name from `hostname -s`, or `"unknown"` when that fails.
+///
+/// ⚠️ THE FIRST SUCCESSFUL ANSWER IS KEPT FOR THE LIFE OF THE PROCESS. A run
+/// supervisor's heartbeat thread calls this while the payload runs and while
+/// it is torn down. Each uncached call spawned `hostname` as a direct child of
+/// the supervisor in its own process group (`bounded_output` spawns with
+/// `process_group(0)`), which is exactly the shape [`PayloadLineage`] records
+/// as a payload process whose parent exited, and the supervisor's
+/// `waitpid(-1)` loops could reap that child before `bounded_output` did.
+/// `arm_run` needs a real host name before any payload exists, so once a run
+/// is armed no later call spawns anything. A failure is not kept, so a
+/// transient one does not make every later record say `"unknown"`.
 pub(crate) fn current_host() -> String {
-    Command::new("hostname")
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(host) = HOST.get() {
+        return host.clone();
+    }
+    let host = Command::new("hostname")
         .arg("-s")
         .bounded_output()
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .map(|host| host.trim().to_string())
-        .filter(|host| !host.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
+        .filter(|host| !host.is_empty());
+    match host {
+        Some(host) => HOST.get_or_init(|| host).clone(),
+        None => "unknown".to_string(),
+    }
 }
 
 fn current_boot_id() -> Result<String, LandLockError> {
@@ -3245,8 +3264,10 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// Replace the next `/proc` scan's read of `pid` on THIS thread with `reader`.
+/// The reader is taken out before it runs, so it may arm the next one.
 #[cfg(test)]
-fn inject_scan_stat_reader(
+pub(crate) fn inject_scan_stat_reader(
     pid: u32,
     reader: impl FnOnce() -> io::Result<(char, u32, u64)> + 'static,
 ) {
@@ -3257,6 +3278,12 @@ fn inject_scan_stat_reader(
         );
         *slot.borrow_mut() = Some((pid, Box::new(reader)));
     });
+}
+
+/// Disarm this thread's scan reader, returning whether one was still armed.
+#[cfg(test)]
+pub(crate) fn disarm_scan_stat_reader() -> bool {
+    SCAN_STAT_READER.with(|slot| slot.borrow_mut().take().is_some())
 }
 
 #[cfg(test)]
@@ -3545,12 +3572,28 @@ fn carries_other_payload_token(pid: u32, domain_token: &str) -> bool {
 ///     ([`in_original_group`]);
 ///   - a child, in the same `/proc` scan, of an identity already selected, so a
 ///     child is recorded while its parent's link is still visible;
-///   - a direct child of this subreaper that was not one when teardown began
-///     and is not in the subreaper's own process group. Nothing the supervisor
-///     starts during teardown leaves its own group, so such a process was
-///     reparented here from a payload process that exited while teardown ran
-///     -- for example one forked by a SIGTERM handler that exited before the
-///     next poll.
+///   - a direct child of this subreaper that is not in the subreaper's own
+///     process group. Such a process is either the payload leader or was
+///     reparented here from a payload process that exited -- for example one
+///     forked by a SIGTERM handler, or a tokenless daemon that detached while
+///     the payload ran.
+///
+/// ⚠️ WHY THE DIRECT-CHILD RULE HAS NO BASELINE. It used to exempt every
+/// direct child present at the FIRST observation, on the theory that anything
+/// already reparented then predated teardown. A tokenless helper that got
+/// SIGTERM from outside before teardown began -- `systemctl stop` with
+/// `KillMode=control-group`, or `kill -TERM -<pgid>` -- could start a setsid'd
+/// escapee from its handler and exit, and the escapee was reparented here
+/// before the first observation. It was then exempt and survived a released
+/// lock (review of https://github.com/rrnewton/dev-hermit/issues/419). A failed
+/// first observation made it worse: the next successful one took the baseline
+/// instead. The baseline taken when the payload is spawned is exactly the
+/// leader, and the leader is a payload process every other rule selects too,
+/// so no baseline is kept at all.
+///
+/// That relies on the supervisor starting no process outside its own group
+/// while the payload runs or is torn down. [`current_host`] keeps its answer
+/// for that reason, and `arm_run` asks for it before the payload exists.
 ///
 /// A recorded identity stays recorded after it is reparented. Each is a
 /// teardown target, and one still alive when [`kill_payload_domain`] finishes
@@ -3558,10 +3601,14 @@ fn carries_other_payload_token(pid: u32, domain_token: &str) -> bool {
 /// census residual.
 ///
 /// NOT COVERED, tracked in https://github.com/rrnewton/dev-hermit/issues/428:
-/// a process that dropped the token and left the original group and was
-/// ALREADY reparented to this subreaper when teardown began (for example a
-/// tokenless daemon detached before the leader exited), its descendants, and
-/// anything that is not a descendant of this subreaper at all.
+///   - anything that is not a descendant of this subreaper at all, for example
+///     a process started through `systemd-run` or another service manager;
+///   - a direct child of this subreaper that moved into the supervisor's own
+///     process group and dropped the token, and its descendants unless another
+///     rule selects them;
+///   - a process that carries a DIFFERENT payload's token, which is left to
+///     that payload's supervisor;
+///   - a process whose start time is before the leader's.
 pub(crate) struct PayloadLineage {
     supervisor_pid: u32,
     payload_start_ticks: u64,
@@ -3569,8 +3616,6 @@ pub(crate) struct PayloadLineage {
     payload_pgid: u32,
     /// The supervisor's own process group.
     supervisor_pgid: Option<u32>,
-    /// Direct children of the supervisor at the first successful observation.
-    baseline_children: Option<BTreeSet<ProcessIdentity>>,
     recorded: BTreeSet<ProcessIdentity>,
     /// Identities already sent SIGTERM, or already reached by the payload
     /// group's SIGTERM, so no process gets that signal twice.
@@ -3594,7 +3639,6 @@ impl PayloadLineage {
             domain_token: domain_token.to_string(),
             payload_pgid,
             supervisor_pgid,
-            baseline_children: None,
             recorded: BTreeSet::new(),
             termed: BTreeSet::new(),
         }
@@ -3618,11 +3662,6 @@ impl PayloadLineage {
             .filter(|pid| matches!(table.get(pid), Some(&(_, parent, _)) if parent == self.supervisor_pid))
             .filter_map(|pid| live_identity(*pid))
             .collect();
-        let teardown_began_earlier = self.baseline_children.is_some();
-        if !teardown_began_earlier {
-            self.baseline_children = Some(direct_children.clone());
-        }
-        let baseline = self.baseline_children.as_ref().expect("baseline set above");
         let original_generation = original_group_generation_is_live(self.payload_pgid, floor);
 
         let mut selected = BTreeSet::new();
@@ -3637,9 +3676,7 @@ impl PayloadLineage {
                         !carries_other_payload_token(pid, &self.domain_token)
                             && ((original_generation
                                 && in_original_group(&identity, self.payload_pgid))
-                                || (teardown_began_earlier
-                                    && direct_children.contains(&identity)
-                                    && !baseline.contains(&identity)
+                                || (direct_children.contains(&identity)
                                     && exact_process_group(&identity) != self.supervisor_pgid))
                     }
                 };

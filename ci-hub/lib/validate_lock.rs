@@ -13869,6 +13869,455 @@ exit 0
         assert!(!holder_left, "teardown left the lock held");
     }
 
+    /// Test payload for a SIGTERM that reaches a payload process from OUTSIDE
+    /// before teardown begins (`systemctl stop` with `KillMode=control-group`,
+    /// or `kill -TERM -<pgid>`), from the review of
+    /// https://github.com/rrnewton/dev-hermit/issues/419. The leader backgrounds
+    /// a HELPER that drops the payload token and stays in the original process
+    /// group. The helper's SIGTERM handler ignores TERM and HUP, starts a
+    /// tokenless setsid'd ESCAPEE, waits until the escapee has recorded itself,
+    /// and exits 0, so the escapee is reparented to the supervisor. The leader
+    /// records itself, exits 0 on SIGTERM, and otherwise sleeps for at most
+    /// 300 s; the helper and the escapee read a FIFO nobody writes for at most
+    /// 300 s. Arguments: `$1` the helper's identity, `$2` the FIFO, `$3` the
+    /// escapee's identity, `$4` the leader's identity.
+    const EXTERNAL_TERM_ESCAPE_PAYLOAD: &str = r#"
+escapee_script='
+  pid=$BASHPID
+  printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
+  read -r -t 300 line <> "$2"
+'
+helper_script='
+  fifo=$2 escapee_ids=$3 escapee=$4
+  on_term() {
+    trap "" TERM HUP
+    setsid /bin/bash -c "$escapee" external-term-escapee "$escapee_ids" "$fifo" &
+    while [ "$(wc -l < "$escapee_ids")" -lt 1 ]; do sleep 0.01; done
+    exit 0
+  }
+  trap on_term TERM
+  pid=$BASHPID
+  printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
+  read -r -t 300 line <> "$fifo"
+'
+env -u @TOKEN_VAR@ /bin/bash -c "$helper_script" external-term-helper "$1" "$2" "$3" "$escapee_script" &
+trap 'exit 0' TERM
+printf "%s %s\n" "$$" "$(awk "{print \$22}" "/proc/$$/stat")" > "$4"
+i=0
+while [ "$i" -lt 6000 ]; do sleep 0.05; i=$((i + 1)); done
+exit 0
+"#;
+
+    fn external_term_escape_payload() -> String {
+        EXTERNAL_TERM_ESCAPE_PAYLOAD.replace("@TOKEN_VAR@", PAYLOAD_DOMAIN_ENV)
+    }
+
+    /// Wait up to 30 s for `path` to hold at least `lines` complete lines.
+    fn wait_for_lines(path: &Path, lines: usize) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if fs::read_to_string(path).is_ok_and(|text| text.lines().count() >= lines) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The parent pid of `identity`, while that exact process is alive.
+    fn parent_of(identity: &ProcessIdentity) -> Option<u32> {
+        let raw = fs::read(format!("/proc/{}/stat", identity.pid)).ok()?;
+        let close = raw.iter().rposition(|byte| *byte == b')')?;
+        let rest = String::from_utf8_lossy(&raw[close + 1..]).into_owned();
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        // After the name: field 3 (state) is index 0, field 4 (parent) index
+        // 1, field 22 (start time) index 19.
+        let start_ticks: u64 = fields.get(19)?.parse().ok()?;
+        (start_ticks == identity.start_ticks)
+            .then(|| fields.get(1)?.parse().ok())
+            .flatten()
+    }
+
+    /// Wait up to `within` for `identity` to be a child of `parent`.
+    fn becomes_child_of(identity: &ProcessIdentity, parent: u32, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        loop {
+            if parent_of(identity) == Some(parent) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// How the run in [`run_external_term_escape`] ends after the helper got
+    /// its outside SIGTERM.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum ExternalTermEnd {
+        /// The supervisor is told to stop once the escapee is its child.
+        SupervisorStopAfterReparent,
+        /// The supervisor is told to stop right after the helper's SIGTERM,
+        /// racing the handler.
+        SupervisorStopAtOnce,
+        /// The leader gets SIGTERM, and exits 0, once the escapee is the
+        /// supervisor's child, so teardown takes the normal-exit path.
+        LeaderExitAfterReparent,
+    }
+
+    /// Run [`EXTERNAL_TERM_ESCAPE_PAYLOAD`] through the real `run` path, send
+    /// the helper SIGTERM from outside, end the run as `end` says, and require
+    /// that the escapee does not outlive the released lock.
+    fn run_external_term_escape(name: &str, end: ExternalTermEnd) {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let paths = temp_paths(name);
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let (helper_path, fifo) = setsid_pipe_fixture(&root);
+        let escapee_path = root.join("escapee.identities");
+        let leader_path = root.join("leader.identity");
+        fs::write(&escapee_path, b"").unwrap();
+        let supervisor = std::process::id();
+        let (helper_probe, escapee_probe, leader_probe) = (
+            helper_path.clone(),
+            escapee_path.clone(),
+            leader_path.clone(),
+        );
+        SUPERVISOR_TERMINATION_SIGNAL.store(0, Ordering::SeqCst);
+        // Returns whether the escapee was already the supervisor's child when
+        // the run was told to end. Every path ends the run, so a fixture that
+        // breaks cannot leave it waiting for its deadline.
+        let driver = thread::spawn(move || -> Result<bool, String> {
+            let driven = (|| {
+                if !wait_for_lines(&helper_probe, 1) || !wait_for_lines(&leader_probe, 1) {
+                    return Err("the helper or the leader never recorded itself".to_string());
+                }
+                let helper = read_fixture_identities(&helper_probe)[0].clone();
+                // Stands in for the SIGTERM a service manager sends every
+                // process in the unit, which reaches the helper before the
+                // supervisor has begun any teardown.
+                if !matches!(signal_exact_process(&helper, libc::SIGTERM), Ok(true)) {
+                    return Err(format!("could not SIGTERM the helper {helper:?}"));
+                }
+                if end == ExternalTermEnd::SupervisorStopAtOnce {
+                    return Ok(false);
+                }
+                if !wait_for_lines(&escapee_probe, 1) {
+                    return Err("the helper's handler never started the escapee".to_string());
+                }
+                let escapee = read_fixture_identities(&escapee_probe)[0].clone();
+                Ok(becomes_child_of(
+                    &escapee,
+                    supervisor,
+                    Duration::from_secs(10),
+                ))
+            })();
+            if end == ExternalTermEnd::LeaderExitAfterReparent && driven.is_ok() {
+                let leader = read_fixture_identities(&leader_probe)[0].clone();
+                let _ = signal_exact_process(&leader, libc::SIGTERM);
+            } else {
+                SUPERVISOR_TERMINATION_SIGNAL.store(libc::SIGTERM, Ordering::SeqCst);
+            }
+            driven
+        });
+        let result = lock.run(
+            lineage_run_args(
+                name,
+                120,
+                external_term_escape_payload(),
+                &[&helper_path, &fifo, &escapee_path, &leader_path],
+                None,
+            ),
+            &root,
+        );
+        let driven = driver.join().unwrap();
+        SUPERVISOR_TERMINATION_SIGNAL.store(0, Ordering::SeqCst);
+        let helper = read_fixture_identities(&helper_path);
+        let escapee = read_fixture_identities(&escapee_path);
+        let mut everything = helper.clone();
+        everything.extend(escapee.iter().cloned());
+        if leader_path.exists() {
+            everything.extend(read_fixture_identities(&leader_path));
+        }
+        let survivors = surviving_fixture_identities(&everything);
+        let cleanup_left = paths.cleanup.exists();
+        let holder_left = lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+
+        let reparented_first = driven.unwrap_or_else(|problem| {
+            panic!("{end:?}: fixture failed: {problem} (run result {result:?})")
+        });
+        assert_eq!(helper.len(), 1, "{end:?}: fixture must record the helper");
+        assert_eq!(
+            escapee.len(),
+            1,
+            "{end:?}: the helper's SIGTERM handler must have started the escapee \
+             (run result {result:?})"
+        );
+        if end != ExternalTermEnd::SupervisorStopAtOnce {
+            assert!(
+                reparented_first,
+                "{end:?}: the escapee must already be the supervisor's child when the run \
+                 is told to end, or this is not the shape under test"
+            );
+        }
+        assert!(
+            survivors.is_empty(),
+            "{end:?}: a process started by an outside SIGTERM survived teardown: \
+             {survivors:?} (run result {result:?}, cleanup_left={cleanup_left}, \
+             holder_left={holder_left})"
+        );
+        let expected = if end == ExternalTermEnd::LeaderExitAfterReparent {
+            0
+        } else {
+            128 + libc::SIGTERM
+        };
+        assert_eq!(result.unwrap(), expected, "{end:?}");
+        assert!(
+            !cleanup_left,
+            "{end:?}: teardown left a cleanup quarantine behind"
+        );
+        assert!(!holder_left, "{end:?}: teardown left the lock held");
+    }
+
+    /// Review of https://github.com/rrnewton/dev-hermit/issues/419 (outside
+    /// SIGTERM): the escapee a helper's handler started was already the
+    /// supervisor's child at the first teardown observation, which took it
+    /// into the direct-child baseline, so it survived a released lock.
+    #[test]
+    fn a_supervisor_stop_kills_an_escapee_an_outside_sigterm_started_earlier() {
+        run_external_term_escape(
+            "external-term-stop",
+            ExternalTermEnd::SupervisorStopAfterReparent,
+        );
+    }
+
+    /// The same shape with the supervisor told to stop while the helper's
+    /// handler may still be running, so the escapee is either the helper's
+    /// child or already the supervisor's at the first observation.
+    #[test]
+    fn a_supervisor_stop_racing_an_outside_sigterm_kills_the_escapee() {
+        run_external_term_escape("external-term-race", ExternalTermEnd::SupervisorStopAtOnce);
+    }
+
+    /// The same shape ending on the normal-exit path: the leader exits 0 after
+    /// the escapee was reparented.
+    #[test]
+    fn normal_exit_kills_an_escapee_an_outside_sigterm_started_earlier() {
+        run_external_term_escape(
+            "external-term-exit",
+            ExternalTermEnd::LeaderExitAfterReparent,
+        );
+    }
+
+    /// Test payload for a tokenless daemon that detached while the payload
+    /// ran: the leader starts, with `env -u CI_HUB_PAYLOAD_DOMAIN setsid`, a
+    /// process that ignores TERM and HUP and reads a FIFO nobody writes for at
+    /// most 300 s, waits until it has recorded itself, and exits 0, so the
+    /// daemon is already the supervisor's child when teardown begins.
+    /// Arguments: `$1` the daemon's identity, `$2` the FIFO, `$3` the daemon's
+    /// `sid pgrp token-or-unset`.
+    const DETACHED_DAEMON_PAYLOAD: &str = r#"
+env -u @TOKEN_VAR@ setsid /bin/bash -c '
+  trap "" TERM HUP
+  pid=$BASHPID
+  printf "%s %s\n" "$pid" "$(awk "{print \$22}" "/proc/$pid/stat")" >> "$1"
+  printf "%s %s\n" "$(awk "{print \$6, \$5}" "/proc/$pid/stat")" "${@TOKEN_VAR@-unset}" >> "$3"
+  read -r -t 300 line <> "$2"
+' detached-daemon "$1" "$2" "$3" &
+while [ "$(wc -l < "$1")" -lt 1 ] || [ "$(wc -l < "$3")" -lt 1 ]; do sleep 0.01; done
+exit 0
+"#;
+
+    /// https://github.com/rrnewton/dev-hermit/issues/428 listed a tokenless
+    /// daemon that detached before the leader exited as NOT COVERED: it was
+    /// already the supervisor's child at the first teardown observation, so
+    /// the direct-child baseline exempted it and the run released Ok(0) with
+    /// it alive. With no baseline it is killed.
+    #[test]
+    fn normal_exit_kills_a_tokenless_daemon_that_detached_before_the_leader_exited() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let name = "detached-daemon";
+        let paths = temp_paths(name);
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let (daemon_path, fifo) = setsid_pipe_fixture(&root);
+        let facts_path = root.join("daemon.facts");
+        fs::write(&facts_path, b"").unwrap();
+        let result = lock.run(
+            lineage_run_args(
+                name,
+                60,
+                DETACHED_DAEMON_PAYLOAD.replace("@TOKEN_VAR@", PAYLOAD_DOMAIN_ENV),
+                &[&daemon_path, &fifo, &facts_path],
+                None,
+            ),
+            &root,
+        );
+        let daemon = read_fixture_identities(&daemon_path);
+        let survivors = surviving_fixture_identities(&daemon);
+        let facts = read_lineage_facts(&facts_path, 3);
+        let cleanup_left = paths.cleanup.exists();
+        let holder_left = lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(daemon.len(), 1, "fixture must record the daemon");
+        let daemon_pid = daemon[0].pid.to_string();
+        assert_eq!(facts[0], daemon_pid, "the daemon must lead its own session");
+        assert_eq!(facts[1], daemon_pid, "the daemon must lead its own group");
+        assert_eq!(facts[2], "unset", "the daemon must carry no payload token");
+        assert!(
+            survivors.is_empty(),
+            "a tokenless daemon that detached before the leader exited survived teardown: \
+             {survivors:?} (run result {result:?})"
+        );
+        assert_eq!(result.unwrap(), 0);
+        assert!(!cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(!holder_left, "teardown left the lock held");
+    }
+
+    /// Shared by the scan readers [`arm_failed_first_teardown_scan`] arms.
+    struct FailedFirstScan {
+        escapee_path: PathBuf,
+        supervisor: u32,
+        /// The scan before the group SIGTERM was failed.
+        failed: std::sync::atomic::AtomicBool,
+        /// The escapee was the supervisor's child before the first scan that
+        /// succeeded after the group SIGTERM began.
+        reparented: std::sync::atomic::AtomicBool,
+    }
+
+    /// Arm this thread's next `/proc` read of pid 1. Until the supervisor has
+    /// been told to stop, that read reports pid 1 gone and arms the next one,
+    /// so every scan still succeeds. The first read after that fails its whole
+    /// scan -- the teardown's observation before the group SIGTERM -- and arms
+    /// one for the first grace poll, which waits until the escapee the group
+    /// SIGTERM started is the supervisor's child and fails that scan too. The
+    /// first successful scan therefore starts listing `/proc` after the
+    /// escapee was reparented; a scan whose listing began earlier could miss
+    /// the escapee's pid and leave it out of a baseline by luck.
+    fn arm_failed_first_teardown_scan(probe: std::sync::Arc<FailedFirstScan>) {
+        crate::landing_lock::inject_scan_stat_reader(1, move || {
+            if SUPERVISOR_TERMINATION_SIGNAL.load(Ordering::SeqCst) == 0 {
+                arm_failed_first_teardown_scan(probe);
+                return Err(io::Error::from(io::ErrorKind::NotFound));
+            }
+            probe.failed.store(true, Ordering::SeqCst);
+            crate::landing_lock::inject_scan_stat_reader(1, move || {
+                let reparented = wait_for_lines(&probe.escapee_path, 1)
+                    && becomes_child_of(
+                        &read_fixture_identities(&probe.escapee_path)[0],
+                        probe.supervisor,
+                        Duration::from_secs(10),
+                    );
+                probe.reparented.store(reparented, Ordering::SeqCst);
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            });
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        });
+    }
+
+    /// Review of https://github.com/rrnewton/dev-hermit/issues/419 (failed
+    /// first observation): the direct-child baseline was taken at the first
+    /// SUCCESSFUL observation. When the one before the group SIGTERM failed,
+    /// the first to succeed ran after that SIGTERM, and an escapee the
+    /// helper's handler had started, already reparented to the supervisor,
+    /// went into the baseline and survived a released lock.
+    #[test]
+    fn a_supervisor_stop_kills_an_escapee_reparented_after_a_failed_first_scan() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let name = "failed-first-scan";
+        let paths = temp_paths(name);
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let (helper_path, fifo) = setsid_pipe_fixture(&root);
+        let escapee_path = root.join("escapee.identities");
+        let leader_path = root.join("leader.identity");
+        fs::write(&escapee_path, b"").unwrap();
+        let probe = std::sync::Arc::new(FailedFirstScan {
+            escapee_path: escapee_path.clone(),
+            supervisor: std::process::id(),
+            failed: std::sync::atomic::AtomicBool::new(false),
+            reparented: std::sync::atomic::AtomicBool::new(false),
+        });
+        SUPERVISOR_TERMINATION_SIGNAL.store(0, Ordering::SeqCst);
+        arm_failed_first_teardown_scan(std::sync::Arc::clone(&probe));
+        let (helper_probe, leader_probe) = (helper_path.clone(), leader_path.clone());
+        let flagger = thread::spawn(move || {
+            let recorded = wait_for_lines(&helper_probe, 1) && wait_for_lines(&leader_probe, 1);
+            SUPERVISOR_TERMINATION_SIGNAL.store(libc::SIGTERM, Ordering::SeqCst);
+            recorded
+        });
+        let result = lock.run(
+            lineage_run_args(
+                name,
+                120,
+                external_term_escape_payload(),
+                &[&helper_path, &fifo, &escapee_path, &leader_path],
+                None,
+            ),
+            &root,
+        );
+        let recorded = flagger.join().unwrap();
+        SUPERVISOR_TERMINATION_SIGNAL.store(0, Ordering::SeqCst);
+        let reader_left = crate::landing_lock::disarm_scan_stat_reader();
+        let helper = read_fixture_identities(&helper_path);
+        let escapee = read_fixture_identities(&escapee_path);
+        let mut everything = helper.clone();
+        everything.extend(escapee.iter().cloned());
+        if leader_path.exists() {
+            everything.extend(read_fixture_identities(&leader_path));
+        }
+        let survivors = surviving_fixture_identities(&everything);
+        let cleanup_left = paths.cleanup.exists();
+        let holder_left = lock.read_holder().unwrap().is_some();
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(recorded, "the helper or the leader never recorded itself");
+        assert!(
+            probe.failed.load(Ordering::SeqCst),
+            "no scan failed after the stop, so the first teardown observation succeeded"
+        );
+        assert!(
+            !reader_left,
+            "a scan reader was still armed, so no scan followed the failed one"
+        );
+        assert_eq!(
+            escapee.len(),
+            1,
+            "the group SIGTERM must have run the helper's handler and started the escapee \
+             (run result {result:?})"
+        );
+        assert!(
+            probe.reparented.load(Ordering::SeqCst),
+            "the escapee was not the supervisor's child at the first successful observation, \
+             so this is not the shape under test"
+        );
+        assert!(
+            survivors.is_empty(),
+            "an escapee reparented after a failed first scan survived teardown: {survivors:?} \
+             (run result {result:?}, cleanup_left={cleanup_left}, holder_left={holder_left})"
+        );
+        assert_eq!(result.unwrap(), 128 + libc::SIGTERM);
+        assert!(!cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(!holder_left, "teardown left the lock held");
+    }
+
     fn quarantined_holder_fixture(
         name: &str,
         target: &str,

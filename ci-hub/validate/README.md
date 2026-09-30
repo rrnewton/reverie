@@ -92,9 +92,11 @@ and is one of these:
 - a process still in the payload's original process group;
 - a child of a process already recorded, which catches a child started with
   `env -u CI_HUB_PAYLOAD_DOMAIN setsid` while its parent still exists;
-- a new direct child of the supervisor outside the supervisor's own process
-  group, which catches a process whose parent exited during teardown, for
-  example one started by a SIGTERM handler.
+- a direct child of the supervisor outside the supervisor's own process
+  group, which catches a process whose parent exited, for example one
+  started by a SIGTERM handler or a tokenless daemon that detached while the
+  payload ran. The supervisor starts nothing outside its own group while the
+  payload runs, so every such process came from the payload.
 
 A recorded process stays recorded after its parent dies. The teardown kills
 it, and if it is still alive after the last kill round the run quarantines
@@ -102,10 +104,12 @@ instead of releasing. Each poll is one scan of `/proc`, which can take over a
 second on a loaded host, so polls run every 20 ms or, when the previous scan
 took longer than that, after a pause as long as that scan.
 
-One case is not reached: a process that dropped the token, left the original
-group, and was already detached from its parent before teardown began.
+Not reached: a process that is not a descendant of the supervisor at all
+(for example one started through `systemd-run`), a direct child of the
+supervisor that dropped the token and moved into the supervisor's own process
+group, and a process carrying another run's token.
 <https://github.com/rrnewton/dev-hermit/issues/428> tracks cgroup-based
-teardown for that case.
+teardown for those cases.
 
 An acquirer with `--wait N` (N > 0) classifies the record on every poll:
 
