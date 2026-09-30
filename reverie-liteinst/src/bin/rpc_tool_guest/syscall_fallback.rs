@@ -162,7 +162,27 @@ pub(super) fn run(path: &Path) {
 
 unsafe extern "C" {
     fn fallback_test_call(site: usize, number: i64) -> i64;
+    static fallback_installed_site: u8;
 }
+
+global_asm!(
+    r#"
+    .text
+    .p2align 6
+    .global fallback_installed_site
+    .hidden fallback_installed_site
+    .type fallback_installed_site,@function
+fallback_installed_site:
+    .cfi_startproc
+    syscall
+    nop
+    nop
+    nop
+    ret
+    .cfi_endproc
+    .size fallback_installed_site, .-fallback_installed_site
+"#
+);
 
 global_asm!(
     r#"
@@ -264,26 +284,10 @@ pub(super) fn run_pkey(path: &Path) {
 
 pub(super) fn run_fork(path: &Path, installed: bool) {
     let (site, _) = if installed {
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
-        let mapping = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                page,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        assert_ne!(mapping, libc::MAP_FAILED);
-        let site = unsafe { mapping.cast::<u8>().add(64) };
-        unsafe {
-            std::ptr::copy_nonoverlapping([0x0f, 0x05, 0x90, 0x90, 0x90, 0xc3].as_ptr(), site, 6)
-        };
-        assert_eq!(
-            unsafe { libc::mprotect(mapping, page, libc::PROT_READ | libc::PROT_EXEC) },
-            0
-        );
+        // The site is in this executable's own text, with an unwind-table
+        // entry, because LiteInst patches a syscall only where its entry
+        // census proves that nothing branches into the displaced bytes.
+        let site = core::ptr::addr_of!(fallback_installed_site).cast_mut();
         let pid = unsafe { libc::getpid() };
         SITE.store(site as usize, Ordering::Relaxed);
         NATIVE_PID.store(pid as usize, Ordering::Relaxed);

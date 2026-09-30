@@ -813,6 +813,42 @@ impl GlobalTool for ExitRecorder {
     }
 }
 
+/// Passes through `futex` and the calls that create a task, so that the hybrid
+/// discovers the `futex` sites of glibc's timed waits.
+#[derive(Default)]
+struct PassthroughFutexAndTaskCreation;
+
+#[reverie::tool]
+impl Tool for PassthroughFutexAndTaskCreation {
+    type GlobalState = EventCounter;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        [
+            Sysno::futex,
+            Sysno::clone,
+            Sysno::clone3,
+            Sysno::fork,
+            Sysno::vfork,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        if syscall.number() == Sysno::futex {
+            guest.send_rpc(1).await;
+        } else {
+            guest.send_rpc(1_u64 << 57).await;
+        }
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
 #[derive(Default)]
 struct PassthroughTaskCreationAndRecordExits;
 
@@ -1525,6 +1561,40 @@ async fn first_site_is_installed_once_and_hot_calls_use_liteinst() {
     assert!(output.status.success(), "{output:?}");
 }
 
+/// A site is patched only when the entry census proves that no known control
+/// transfer lands inside the bytes the patch displaces
+/// (https://github.com/rrnewton/reverie/issues/812). The fixture branches to
+/// two bytes past one syscall, as glibc's posix_madvise does; patching that
+/// site made the branch execute the middle of the patch jump.
+#[tokio::test(flavor = "current_thread")]
+async fn sites_with_an_interior_entry_or_no_unwind_entry_stay_on_ptrace() {
+    let (_directory, guest) = compile_fixture("hybrid_interior_entry.c");
+    let interior = symbol_address(&guest, "reverie_liteinst_interior_site");
+    assert_eq!(
+        symbol_address(&guest, "reverie_liteinst_interior_after"),
+        interior + 2,
+        "the fixture branch must target the byte after the two-byte syscall"
+    );
+    let (output, global) = LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+        Command::new(guest),
+        (),
+        preload_path(),
+    )
+    .await
+    .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    // Each site's first syscall calls the patch helper once. The two refused
+    // sites then stay on ptrace for all 16 calls; the control site takes its
+    // other 16 calls through the patch.
+    assert_eq!(
+        output.stdout,
+        b"interior traps=1 hooks=0 unlisted traps=1 hooks=0 control traps=1 hooks=16\n",
+        "{output:?}"
+    );
+    assert_eq!(global.delivered.load(Ordering::SeqCst), 49, "{output:?}");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn cacheline_straddler_uses_quiescent_patch_and_is_counted() {
     let (_directory, guest) = compile_fixture("hybrid_straddler_site.c");
@@ -1777,6 +1847,19 @@ async fn hybrid_follows_a_created_thread() {
         global.task_creation_events.load(Ordering::SeqCst) > 0,
         "the task-subscribing tool did not observe the clone lifecycle"
     );
+}
+
+/// A timed wait before the first thread and another after it both time out.
+/// On glibc 2.34 the multithreaded wait jumps to the instruction after the
+/// single-threaded wait's `syscall`, so the entry census must leave that site
+/// on ptrace (<https://github.com/rrnewton/reverie/issues/812>).
+#[tokio::test(flavor = "current_thread")]
+async fn timed_waits_before_and_after_the_first_thread_both_time_out() {
+    run_multi_task_fixture::<PassthroughFutexAndTaskCreation>(
+        "hybrid_timed_wait_thread.c",
+        "timed-waits-timed-out\n",
+    )
+    .await;
 }
 
 /// The task-subscribing tool remains active without manufacturing a task event

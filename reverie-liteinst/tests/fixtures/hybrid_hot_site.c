@@ -27,7 +27,10 @@ __asm__(
     ".global reverie_liteinst_hybrid_getpid\n"
     ".type reverie_liteinst_hybrid_getpid,@function\n"
     "reverie_liteinst_hybrid_getpid:\n"
+    ".cfi_startproc\n"
     "push %r12\n"
+    ".cfi_adjust_cfa_offset 8\n"
+    ".cfi_rel_offset %r12, 0\n"
     "movabs $0x00123456789abcde, %r12\n"
     "movdqu reverie_liteinst_hybrid_simd_expected(%rip), %xmm0\n"
     "mov $39, %eax\n"
@@ -39,10 +42,15 @@ __asm__(
     "nop\n"
     "movdqu %xmm0, reverie_liteinst_hybrid_simd_observed(%rip)\n"
     "pushfq\n"
+    ".cfi_adjust_cfa_offset 8\n"
     "pop %rcx\n"
+    ".cfi_adjust_cfa_offset -8\n"
     "mov %rcx, reverie_liteinst_hybrid_flags(%rip)\n"
     "pop %r12\n"
+    ".cfi_adjust_cfa_offset -8\n"
+    ".cfi_restore %r12\n"
     "ret\n"
+    ".cfi_endproc\n"
     ".size reverie_liteinst_hybrid_getpid, .-reverie_liteinst_hybrid_getpid\n");
 
 extern long reverie_liteinst_hybrid_getpid(void);
