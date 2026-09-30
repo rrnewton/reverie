@@ -1630,6 +1630,61 @@ static long __attribute__((noinline)) getpid_once(void) {
   return r;
 }
 
+/* A precise timer armed in a forked child at the patched getppid, far beyond
+ * any skid margin, whose signal the child blocks: no notification is ever
+ * handled, the limiting case of a late interrupt, as in
+ * reverie-ptrace/tests/precise_timer_overtaken.rs. The child then runs well
+ * past the target and ends with a foreign int 0x80 (`foreign`), which plain
+ * ptrace's filter kills with no stop, or with an ordinary x86_64 getpid,
+ * whose stop both backends report. The child's other setup is T7c's. */
+#define LATE_TIMER_RCBS 100000
+static void mode_late_timer(int foreign) {
+  warm();
+  sigset_t chld;
+  sigemptyset(&chld);
+  sigaddset(&chld, SIGCHLD);
+  if (sigprocmask(SIG_BLOCK, &chld, NULL) != 0)
+    die("block SIGCHLD");
+  pid_t child = fork();
+  if (child < 0)
+    die("fork");
+  if (child == 0) {
+    struct rlimit none = {0, 0};
+    setrlimit(RLIMIT_CORE, &none);
+    install(SIGSYS, 0, handler);
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGSYS);
+    /* reverie-ptrace's timer signal (PERF_EVENT_SIGNAL). */
+    sigaddset(&set, SIGSTKFLT);
+    if (sigprocmask(SIG_BLOCK, &set, NULL) != 0)
+      die("block SIGSYS and SIGSTKFLT");
+    SITEM(SYS_getppid, 0, 0, 0, 0, LATE_TIMER_RCBS, ARM_TIMER);
+    for (volatile int j = 0; j < 2 * LATE_TIMER_RCBS; j++)
+      ;
+    if (foreign) {
+      long ret;
+      __asm__ volatile("int $0x80" : "=a"(ret) : "a"(20L) : "memory");
+      /* Reached only if the IA-32 syscall was serviced. */
+      say("int80 returned handler_ran=%d\n", nrec);
+      _exit(0);
+    }
+    long r = getpid_once();
+    say("late timer getpid=%d\n", r > 0);
+    _exit(0);
+  }
+  int status;
+  if (waitpid(child, &status, 0) != child)
+    die("waitpid");
+  say("child signaled=%d termsig=%d exited=%d status=%d\n",
+      WIFSIGNALED(status),
+      WIFSIGNALED(status) ? WTERMSIG(status) : 0,
+      WIFEXITED(status),
+      WIFEXITED(status) ? WEXITSTATUS(status) : 0);
+  if (sigprocmask(SIG_UNBLOCK, &chld, NULL) != 0)
+    die("unblock SIGCHLD");
+}
+
 /* The same counting-phase timer, cancelled by a Tool-visible stop before
  * the branch loop: first a patched-site getpid, then an ordinary x86_64
  * getpid. A last timer with no stop before its loop fires, so the run's one
@@ -2497,6 +2552,10 @@ int main(int argc, char** argv) {
     mode_fork_family();
   else if (!strcmp(m, "foreign_int80"))
     mode_foreign_int80();
+  else if (!strcmp(m, "late_timer_int80"))
+    mode_late_timer(1);
+  else if (!strcmp(m, "late_timer_getpid"))
+    mode_late_timer(0);
   else if (!strcmp(m, "rcx_r11"))
     mode_rcx_r11();
   else if (!strcmp(m, "resume_signal"))
