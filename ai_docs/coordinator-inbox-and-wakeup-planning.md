@@ -548,10 +548,44 @@ tool gets `quickstart`, `userguide` and `RELATED_WORK.md`.
    base, and upstream abd443ab fixed them. There are 22 unit tests, including CLI tests with a fake
    agentcloudctl. End to end, `deliver --via agentcloud-notify` into a live agentcloud session
    arrived mid-turn from `cli-script`.
-2. **Watcher** (`agentctl watch --coordinator NAME`): herdr `events.subscribe` (reusing
-   `chat_events.rs` framing), the 30 s sweep over `herdr agent list`, the Claude pid/session resolution,
-   tier-0 extraction from Claude JSONL, and `fleet --watch` for agentcloud agents. Tests use a fake herdr
-   socket and fixture transcripts.
+2. **Watcher — LANDED** as `agentctl inbox watch --to COORDINATOR [--once | --interval 30]` at
+   agent-utils main 134972555a213a40552d0b60782f2b1bb6497d5b (commits 80849d56..13497255,
+   `rs/agentctl/src/inbox/watch.rs`).
+
+   How it samples:
+   - It polls `herdr agent list`; the herdr push subscription and the agentcloud `fleet --watch`
+     source are not built yet.
+   - Claude panes take their state from `claude agents --json`, joined to the pane by pid through
+     `/proc/<pid>/environ` `HERDR_PANE_ID` (4.7).
+   - If `claude` fails, a Claude pane's state is unknown for that sample and is not taken from the
+     screen.
+   - Other panes need two consecutive idle samples.
+
+   What it posts:
+   - `blocked`, `idle`, `working` (which withdraws), `still-idle` (30/60/120 min, at most 3) and
+     `exited` (3 consecutive absences, judged on Herdr's whole list).
+   - A first-seen idle worker is recorded quietly.
+   - An idle notice carries the last assistant message written to the Claude transcript since the
+     previous notice, with that byte range as its cursor; otherwise it carries the terminal tail.
+   - A worker's record is committed only after its notice posts, so a failed post is decided again.
+     Delivery is at-least-once.
+
+   The adversarial review took five rounds and approved the whole series. Rounds 1–4 found and
+   fixed:
+   - a blocked notice left standing after a one-sample idle blip;
+   - a priority-1 `exited` after one missing sample;
+   - Herdr's false idle used when `claude` failed, re-sending old transcript text;
+   - two panes with one name sharing a record;
+   - notice loss on a failed post;
+   - the last worker's exit never announced;
+   - a quiet worker's return that did not withdraw its exited notice.
+
+   Round 3 also showed that the inbox tests could fail in the full crate suite under load. A child
+   forked by another test thread inherits a just-released `flock` until its exec. The fix is a
+   500 ms retry compiled only into tests; production still reports busy immediately (measured at
+   10–11 ms). `make validate` passed 24 of 24 on the pushed head.
+   https://github.com/rrnewton/agent-utils/issues/182 tracks six older agentctl load flakes (chat
+   and agent tests) that fail the same way on main before the inbox existed.
 3. **Delivery** (`agentctl inbox deliver --via agentcloud-notify|print`): **landed with step 1.**
    The agentcloud adapter uses the key `agentctl-inbox-<coordinator>-<batch>`, where the batch id
    hashes the adapter, the session and the notice ids, under a 120 s notify timeout. The typed herdr
@@ -560,8 +594,21 @@ tool gets `quickstart`, `userguide` and `RELATED_WORK.md`.
 4. **Tier-1 summaries**: an optional async worker using a configured command (default
    `claude -p --model haiku …`) with the fixed NOW/NEW/NEEDS contract and a cache. Measured before and
    after on real deltas.
-5. **Trial**: run the watcher in print mode beside the existing 10-minute cron for a day, compare what
-   each would have told the coordinator, and only then ask coord about switching.
+5. **Trial — two hours so far**, watch-only into a scratch registry on the fleet host, with no
+   delivery. It ran the build before the last two review fixes, 2026-09-29 23:45Z to 2026-09-30
+   01:45Z, with 9–11 agent panes and one sample a minute: 114 samples, no errors. Notices posted:
+   - 7 idle;
+   - 5 working (withdrawn);
+   - 1 blocked;
+   - 3 exited (short-lived panes);
+   - 3 no-op `working` (the quiet-start wart, fixed since).
+
+   That is about 16 meaningful notices in two hours for about 10 workers, compared with the
+   scrollback cron's dump of every pane every 10 minutes. An earlier trial on the first build also
+   caught still-idle reminders for workers never announced idle; the review fixed that. Next: ask
+   coord whether the coordinator's 10-minute cron should run
+   `agentctl inbox watch --to coord --once && agentctl inbox deliver --to coord --via print` beside
+   (then instead of) `coord-scrollback-delta.py`.
 
 ## 7. Open questions and untested points
 
