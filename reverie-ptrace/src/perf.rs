@@ -881,6 +881,13 @@ impl PerfCounter {
         Some(samples)
     }
 
+    /// Whether a sample record buffer is mapped, so that
+    /// [`PerfCounter::take_sample_records`] reports the overflows the kernel
+    /// handles.
+    pub(crate) fn has_sample_records(&self) -> bool {
+        self.records.is_some()
+    }
+
     /// Remove the sample record mapping, leaving the counter without overflow
     /// evidence.
     #[cfg(test)]
