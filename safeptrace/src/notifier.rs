@@ -3525,7 +3525,7 @@ impl TerminalCleanup {
     ///
     /// This is a cancellation-only escape hatch for the ptracer thread that
     /// owns this exact event generation. The FIFO front remains present and
-    /// unavailable to other consumers until [`PendingStatusReservation::commit`].
+    /// unavailable to other consumers until the reservation is committed.
     /// Dropping the reservation performs an allocation-free rollback without
     /// changing FIFO order.
     pub fn reserve_pending_for_cleanup(
