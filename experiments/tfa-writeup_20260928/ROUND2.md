@@ -9,7 +9,7 @@ This round was dispatched by coord2 on 2026-09-29 at 15:39Z, working from the ow
 | Goal | Status | Result |
 |---|---|---|
 | 1. Curated phase-two evidence copy | done | dev-hermit main `30bb84e0f1e3d7343b6b2f7fa7b83cbf864768f1`: 9,327 text files (28.1 MB) in [evidence/phase2/](evidence/phase2/), plus a 60.9 MB archive of 214 large logs outside git |
-| 2. Fix the loader bug (https://github.com/rrnewton/hermit/issues/3328) | fixed in an approved PR; **not landed** | https://github.com/rrnewton/hermit/pull/3374, APPROVE at exact head `558df1a7f`; the new test fails without the fix (EFAULT, exit 101) and passes with it, and I re-ran both myself; the PR head is now `c6867781` (rebased onto main `98a621f42`, re-approved); the required full local validation could not be started from this session (section 2), so it was handed to coord2 |
+| 2. Fix the loader bug (https://github.com/rrnewton/hermit/issues/3328) | fixed in an approved PR; not landed during round 2. **Update, 2026-09-30:** coord2 landed it as hermit main `3b5f7cdc43247abad79585feae1469e23b69f241`. | https://github.com/rrnewton/hermit/pull/3374, APPROVE at exact head `558df1a7f`; the new test fails without the fix (EFAULT, exit 101) and passes with it, and I re-ran both myself; the PR head is now `c6867781` (rebased onto main `98a621f42`, re-approved); the required full local validation could not be started from this session (section 2), so it was handed to coord2 |
 | 3. Re-find seeds on current Hermit main | done | a passing and a failing seed for all 3 tests on main `4101426a`, 18 of 18 trials deterministic, 4 min 25 s in all (section 3) |
 
 ## 1. Curated phase-two evidence copy

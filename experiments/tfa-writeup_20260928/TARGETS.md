@@ -106,6 +106,8 @@ inference).
 | Unknown or harness-only evidence | 6 | 1 | 0 | 1 (row 19) | 0 | 5 | 1 (row 19) |
 | **Total** | **30** | **10** | **3** | **4** | **3** | **20** | **4** |
 
+**Update, 2026-09-30.** The loader bug behind rows 9, 13 and 19 is fixed on hermit main by `3b5f7cdc` (https://github.com/rrnewton/hermit/pull/3374). Those rows are not yet retested; the plan is in [RETEST_PLAN.md](RETEST_PLAN.md).
+
 The revised README (section 3.2) and its Figure 1 group the same seven stops differently. The data are the same row for row. The README splits them into three groups: the loader bug (rows 9, 13, 19); another Hermit defect or limit (row 7, the stray timer signal; row 20, the TLS terminator, whose trials were all discarded because of Hermit; and row 3, EventTracker, stopped by the 120 s limit because Hermit's ptrace path is slow); and ran but never failed (row 5). Figure 1 merges the last two groups as "stopped otherwise" (4 targets). That is a different set from this table's "stopped by something other than a single Hermit defect" column (3 targets).
 
 Of the 4 in the last column, none has any evidence that it would then fail on some seed:

@@ -9,10 +9,10 @@ Outcome of each of the 30 registry targets in the kernel-7.1 campaign
 (experiments/tfa-kernel71-*_20260921), derived only from targets.csv columns:
   both_seeds      main_k71_outcome starts with "SUCCESS" (a repeatable passing
                   seed and a repeatable failing seed, strict verify).
-  loader_bug_fix_pending  attempted, and stopped by the Hermit loader bug (injected
+  loader_bug_since_fixed  attempted, and stopped by the Hermit loader bug (injected
                   fstat turns a successful openat into EFAULT; why_not_both_seeds
-                  names EFAULT). Fix approved, not landed as of 2026-09-29:
-                  https://github.com/rrnewton/hermit/pull/3374.
+                  names EFAULT). Fixed on hermit main 3b5f7cdc on 2026-09-30
+                  (https://github.com/rrnewton/hermit/pull/3374); not yet retested.
   blocked_other   attempted and stopped by anything else (a harder Hermit defect
                   or gap, ptrace speed, or no failing seed found).
   not_attempted   main_k71_attempted == "N".
@@ -25,7 +25,7 @@ SRC = os.path.join(HERE, "..", "targets.csv")
 
 CATS = [  # key, legend label, light fill, dark fill, label ink light, label ink dark
     ("both_seeds", "Both seeds found", "#2a78d6", "#3987e5", "#ffffff", "#ffffff"),
-    ("loader_bug_fix_pending", "Stopped by Hermit loader bug (fix approved, not landed)", "#eb6834", "#d95926", "#0b0b0b", "#ffffff"),
+    ("loader_bug_since_fixed", "Stopped by Hermit loader bug (since fixed, not retested)", "#eb6834", "#d95926", "#0b0b0b", "#ffffff"),
     ("blocked_other", "Stopped otherwise", "#1baf7a", "#199e70", "#0b0b0b", "#ffffff"),
     ("not_attempted", "Not attempted", "#c3c2b7", "#52514e", "#0b0b0b", "#ffffff"),
 ]
@@ -44,7 +44,7 @@ def outcome(row):
     if row["main_k71_outcome"].startswith("SUCCESS"):
         return "both_seeds"
     if "EFAULT" in row["why_not_both_seeds"]:
-        return "loader_bug_fix_pending"
+        return "loader_bug_since_fixed"
     return "blocked_other"
 
 
@@ -94,7 +94,7 @@ def write_svg(order, counts):
     a = out.append
     a(f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-labelledby="t d">')
     a('<title id="t">30 flaky test targets by likely flakiness cause, and what Hermit did with each</title>')
-    a('<desc id="d">Stacked horizontal bars, one per cause bucket, counting targets whose kernel-7.1 campaign outcome was: both seeds found, stopped by the Hermit loader bug (fix approved in PR 3374, not landed), stopped otherwise, or not attempted. Data: cause_buckets.csv.</desc>')
+    a('<desc id="d">Stacked horizontal bars, one per cause bucket, counting targets whose kernel-7.1 campaign outcome was: both seeds found, stopped by the Hermit loader bug (since fixed by PR 3374, not retested), stopped otherwise, or not attempted. Data: cause_buckets.csv.</desc>')
     css = ["<style>",
            ".bg{fill:#fcfcfb}.ink{fill:#0b0b0b}.ink2{fill:#52514e}.mute{fill:#898781}.grid{stroke:#e1e0d9;stroke-width:1}.base{stroke:#c3c2b7;stroke-width:1}"]
     for i, (k, _, lf, df, li, di) in enumerate(CATS):

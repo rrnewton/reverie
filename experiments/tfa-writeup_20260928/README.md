@@ -13,7 +13,7 @@ seed trials and 76 minutes of Hermit time.
 
 Hermit found both seeds for **3 of the 10**: 2 of the 4 attempted thread races and 1 of the 5 attempted
 timing flakes. Each failing seed prints the assertion that CI records for that test. A Hermit loader bug
-stopped 3 more targets before their tests ran; a fix is approved but not yet landed. The other 4
+stopped 3 more targets before their tests ran; its fix has since landed, but they are not yet retested. The other 4
 attempted targets were stopped by harder Hermit defects, by ptrace speed, or by never failing. Eight days
 later, current Hermit main re-found a passing and a failing seed for all 3 successes, in 18 of 18
 deterministic trials.
@@ -115,7 +115,7 @@ directory and the time limit changed. Every failure was checked by hand against 
 Hermit defect or limit, and 1 that ran but never failed. Data: [figures/cause_buckets.csv](figures/cause_buckets.csv),
 generated from [targets.csv](targets.csv) by [figures/make_cause_buckets.py](figures/make_cause_buckets.py).*
 
-| Likely cause | Targets | Attempted | Both seeds | Stopped by loader bug (fix approved) | Stopped by other Hermit defect or limit | Ran, no failing seed | Not attempted |
+| Likely cause | Targets | Attempted | Both seeds | Stopped by loader bug (since fixed) | Stopped by other Hermit defect or limit | Ran, no failing seed | Not attempted |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Timer, timeout or wall-clock | 11 | 5 | 1 | 2 | 1 | 1 | 6 |
 | Thread or async-ordering race | 7 | 4 | 2 | 0 | 2 | 0 | 3 |
@@ -128,7 +128,7 @@ The seven attempted targets without a success:
 
 | Target | Bucket | What stopped it | Easy fix? |
 |---|---|---|---|
-| LogStore retry (logdevice) | timing | Hermit loader bug: a successful `openat` of a shared library became EFAULT | fix approved in https://github.com/rrnewton/hermit/pull/3374, not yet landed; may then hit the time limit before its test (inference) |
+| LogStore retry (logdevice) | timing | Hermit loader bug: a successful `openat` of a shared library became EFAULT | fixed on hermit main `3b5f7cdc` (https://github.com/rrnewton/hermit/pull/3374), not yet retested; may then hit the time limit before its test (inference) |
 | McRefill (mcrouter) | timing | same loader bug | same fix; no test output natively by 25 s, 6 server processes, so likely too slow |
 | Transport monitor (proxygen) | unknown | same loader bug | same fix; should then reach its test (untested), but it has no competing threads, so a failure is unlikely |
 | Health monitor (logdevice) | race | Hermit's own timer signal killed 96 of 98 threads (strong inference) | no: https://github.com/rrnewton/reverie/issues/747, and 657 native threads make ptrace impractical |
@@ -138,7 +138,7 @@ The seven attempted targets without a success:
 
 **Answer to the owner's question.** Hermit produced both seeds for 3 of the 10 attempted targets (3 of
 30 in the registry): 2 of 4 races and 1 of 5 timing flakes. One real Hermit bug stopped 3 more, and its
-fix is written and approved. But no fourth success is proven to be one easy fix away: of those three,
+fix has landed. But no fourth success is proven to be one easy fix away: of those three,
 one probably cannot fail and two will probably need a longer time limit (inference). An earlier easy fix
 did matter. The pilot's RLIMIT_CORE fix was necessary, though not sufficient, for two of the three
 successes.
@@ -213,14 +213,13 @@ seeds, ask an AI agent for a fix and draft a diff, covers only these 3 tests; we
 
 **Next steps** (the estimates are ours):
 
-1. **Land the loader fix,** https://github.com/rrnewton/hermit/pull/3374. The coordinating agent, coord2,
-   is running its exact-head validation.
-2. **Retest the three loader-blocked targets** after it lands. This needs their Buck test binaries rebuilt
-   on an OnDemand node, because two were evicted from buck-out. Then run the campaign configurations with
-   up to 6 seeds and a longer limit for LogStore and McRefill. About half a day to a day.
-3. **Re-find seeds on every Hermit change,** with a small script-driven loop in dev-hermit (where it lives
+1. **Retest the three loader-blocked targets** on fixed Hermit (hermit main `3b5f7cdc`, where
+   https://github.com/rrnewton/hermit/pull/3374 landed on 2026-09-30). This needs their Buck test binaries rebuilt
+   on an OnDemand node, then up to 12 seeds each. About half a day to a day. The plan is in
+   [RETEST_PLAN.md](RETEST_PLAN.md); it has not started, pending the owner.
+2. **Re-find seeds on every Hermit change,** with a small script-driven loop in dev-hermit (where it lives
    is decided).
-4. **Fix the three open determinism defects** in section 3.4. Together they explain 39 of the 44
+3. **Fix the three open determinism defects** in section 3.4. Together they explain 39 of the 44
    differing-run trials.
 
 Four decisions remain the owner's ([WAY_FORWARD.md](WAY_FORWARD.md)):
@@ -242,6 +241,7 @@ Every number above comes from the files below; paths are relative to this direct
 | [EXPERIMENTS.md](EXPERIMENTS.md) | every experiment and all 25 configurations, with counts and times |
 | [HERMIT_DEFECTS.md](HERMIT_DEFECTS.md) | Hermit defects with evidence and GitHub records; discarded-trial and cost detail |
 | [ROUND2.md](ROUND2.md), [round2/](round2/) | the 2026-09-29 round: evidence copy, loader fix and its reviews, replication runs |
+| [RETEST_PLAN.md](RETEST_PLAN.md) | the plan (not started) for retesting the three loader-blocked targets |
 | [STACK_STATE.md](STACK_STATE.md), [WAY_FORWARD.md](WAY_FORWARD.md) | the 22-diff prototype and the way forward |
 | [evidence/](evidence/MANIFEST.md) | copies of non-repository sources, with redaction records |
 | [SOURCES.md](SOURCES.md) | the source keys the appendices cite (for example `[CAMP §5]`) and the first draft's provenance |

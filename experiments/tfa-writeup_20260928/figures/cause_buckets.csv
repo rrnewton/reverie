@@ -1,7 +1,7 @@
-cause_bucket,targets,attempted,both_seeds,loader_bug_fix_pending,blocked_other,not_attempted,targets_by_outcome
-"Timer, timeout or wall-clock",11,5,1,2,2,6,both_seeds: HTTPCoroSessionTests; loader_bug_fix_pending: log_store_test mc_refill_route_wrapper_test; blocked_other: event-tracker-test timerfd_timeout_manager_test
+cause_bucket,targets,attempted,both_seeds,loader_bug_since_fixed,blocked_other,not_attempted,targets_by_outcome
+"Timer, timeout or wall-clock",11,5,1,2,2,6,both_seeds: HTTPCoroSessionTests; loader_bug_since_fixed: log_store_test mc_refill_route_wrapper_test; blocked_other: event-tracker-test timerfd_timeout_manager_test
 Thread-interleaving or async-ordering race,7,4,2,0,2,3,both_seeds: async_ssl_socket_test InstrumentationTest; blocked_other: health_monitor:tests tls_terminator_test
-Unknown or harness-only evidence,6,1,0,1,0,5,loader_bug_fix_pending: proxygen_transport_monitor_test
+Unknown or harness-only evidence,6,1,0,1,0,5,loader_bug_since_fixed: proxygen_transport_monitor_test
 "External service, environment or resource",5,0,0,0,0,5,
 Kernel feature,1,0,0,0,0,1,
 TOTAL,30,10,3,3,4,20,

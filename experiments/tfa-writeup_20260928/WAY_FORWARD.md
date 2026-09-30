@@ -93,7 +93,8 @@ runs a test twice with one seed and requires identical logs.
   sweep, and a report. Estimate 200-500 lines of script (inference) [S3].
 - Hermit fixes that matter most:
   1. Hermit's injected `fstat` makes the loader's `openat` fail (EFAULT). It stopped 3 of 7 misses. Filed as
-     https://github.com/rrnewton/hermit/issues/3328; the fix looks easy [S8].
+     https://github.com/rrnewton/hermit/issues/3328; the fix looks easy [S8]. (Update 2026-09-30: fixed on hermit main
+     `3b5f7cdc` by https://github.com/rrnewton/hermit/pull/3374.)
   2. Hermit determinism gaps. 93 of the 294 trials were discarded: 42 were real test failures other than
      the declared one, and 49 were stopped by Hermit. In 44 of those 49, the two strict-verify runs
      differed. Causes: thread teardown order after an abort (added to
@@ -118,9 +119,9 @@ lands and fbsource gets a current Hermit.
 | 1 | Leave the 22 drafts unpublished, or abandon them (owner only: decision 1) | minutes |
 | 2 | Copy RESULTS.md, the 3 patches and the Codex receipts into a tracked `experiments/` directory (owner decision 9; time-sensitive, because the files sit under another agent's slot and in `/tmp/tfa-phase2`) | 1-2 hours |
 | 3 | Done 2026-09-28 (project policy, no owner approval needed): https://github.com/rrnewton/hermit/issues/3328, https://github.com/rrnewton/hermit/issues/3329, https://github.com/rrnewton/hermit/issues/3330, plus evidence comments on https://github.com/rrnewton/hermit/issues/3247 and https://github.com/rrnewton/reverie/issues/747 | done |
-| 4 | Fix the loader bug; `experiments/tfa-openat-stack-size-20260917/` already holds a test probe | 1-2 days |
+| 4 | Fix the loader bug. Done 2026-09-30: https://github.com/rrnewton/hermit/pull/3374, hermit main `3b5f7cdc`; retest plan in [RETEST_PLAN.md](RETEST_PLAN.md) | done |
 | 5 | OnDemand check (the containment suite already ran on devvm895): tracing, namespaces, CPU counters; build Hermit main and one test | 1-2 days |
-| 6 | Re-find PASS and FAIL seeds for the 3 tests on Hermit main (the campaign's Hermit commit was never on main, and a seed can change when the test's file paths change [S5 §4]) | about 1 day |
+| 6 | Re-find PASS and FAIL seeds for the 3 tests on Hermit main (the campaign's Hermit commit was never on main, and a seed can change when the test's file paths change [S5 §4]). Done 2026-09-29 ([ROUND2.md](ROUND2.md) section 3) | done |
 | 7 | Loop script: test ID, build, sweep, PASS/FAIL table, report | 3-5 days |
 | 8 | Run the other 27 tests in small batches | 1-2 weeks |
 | 9 | Sandcastle: land D121815443 (owner only: decision 7), refresh fbsource Hermit, get a bot identity | weeks |

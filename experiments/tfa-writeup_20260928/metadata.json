@@ -1,7 +1,7 @@
 {
  "schema": "tfa-writeup-metadata/v1",
  "title": "Can Hermit make real flaky tests pass and fail on demand? A small experiment on 30 Meta flaky tests",
- "revised_utc": "2026-09-29",
+ "revised_utc": "2026-09-30",
  "author": "sub-tfa2-030 (Claude, agentcloud session on devbig030) for the owner; coordinated by coord2",
  "short_hostname": "devbig030",
  "host": {
@@ -60,9 +60,10 @@
    "first_draft": "24e90ece253d94776353feccd90faf87d87c46ef",
    "phase2_evidence_copy": "30bb84e0f1e3d7343b6b2f7fa7b83cbf864768f1",
    "round2_record": "125c1959ee53a21854fa3cbfbc173912a3aff5c1",
-   "round2_update": "9029b0d5e2568b661b0a214e3961d67c706e5509"
+   "round2_update": "9029b0d5e2568b661b0a214e3961d67c706e5509",
+   "mini_paper": "8028ba6ab0c76047c3bb4db9d32aeae617304671"
   },
-  "revision_base": "deecdead1db067a94d86f0d4f574c0eac1e72414"
+  "revision_base": "bde3bc614988c9ac522008673ce85edbe2795d1b"
  },
  "runs": {
   "pilot": {
@@ -119,7 +120,6 @@
   "reached_test": 5,
   "valid_pass_or_fail": 4,
   "both_seeds": 3,
-  "stopped_by_loader_bug": 3,
   "stopped_by_other_hermit_defect_or_limit": 3,
   "ran_no_failing_seed": 1,
   "not_attempted": 20,
@@ -202,7 +202,8 @@
    "time_limit": 2,
    "hermit_stopped": 49,
    "differing_runs_explained_by_open_defects": 39
-  }
+  },
+  "stopped_by_loader_bug_since_fixed": 3
  },
  "loader_fix": {
   "issue": "https://github.com/rrnewton/hermit/issues/3328",
@@ -212,17 +213,26 @@
    "eebc63f336466f63f973c620990779eae8cbe66a",
    "c6867781717df87837b268a0310d901be4c5bb4c"
   ],
-  "state_at_revision": "open, not landed. Reviewer approvals at 558df1a7f, eebc63f33 and c6867781. coord2 then rebuilt the branch as head 307a0ef1: a rustdoc fix (e2d00e65, a third commit on the PR branch, not on hermit main) plus the PR's own two commits, unchanged. coord2 is running exact-head validation.",
-  "current_head": "307a0ef13041fe00e59e445b28473428445f191e"
+  "state_at_revision": "landed on hermit main as 3b5f7cdc (PR 3374 merged 2026-09-30T01:29:10Z); the three loader-blocked targets are not yet retested (RETEST_PLAN.md, not started)",
+  "current_head": "502b1f4c0bf9b755ed8e7f45064d423a4e587975",
+  "landed": {
+   "hermit_main_commit": "3b5f7cdc43247abad79585feae1469e23b69f241",
+   "tests_commit": "d0d730a9e979824a62e8d2860a4f05d90d0d834b",
+   "merged_utc": "2026-09-30T01:29:10Z",
+   "validated_head": "502b1f4c0bf9b755ed8e7f45064d423a4e587975",
+   "validation_as_reported_by_coord2": "278/278 nodes, 3840/3840 tests, 34m36s",
+   "verified_by_sub_tfa2_030": "detcore/src/syscalls/files.rs, detcore/tests/misc/tight_stack_openat.rs and detcore/tests/misc/mod.rs have identical blob ids at 3b5f7cdc and at the reviewed head c6867781; 3b5f7cdc is an ancestor of hermit origin/main (fetched 2026-09-30)",
+   "issue_3328_state": "closed 2026-09-30T01:29:11Z"
+  }
  },
  "figure": {
   "script": "figures/make_cause_buckets.py",
-  "script_sha256": "a60b669cdb552c93c0191062a038b766c0f3e63fb4ae8dd7986a5824dbba1735",
+  "script_sha256": "02b0fa72088b00bdc10546ab33a3b0863fc84218fb137376dd5866749127fc50",
   "input": "targets.csv",
   "input_sha256": "43001d392c1fc4d1d061d88d3c4e31daa301f5e4ed1214184db81555da5c2638",
   "outputs": {
-   "figures/cause_buckets.csv": "32dee2fcf5eb867637c8d12425847f8e7e881dfc9e573e6405faf5ffcfae5f71",
-   "figures/cause_buckets.svg": "ed6a9e48696d133d266b5af1ff63bbb8d940d1f3df0139f7e900e567b0a1b976"
+   "figures/cause_buckets.csv": "5993596b41e9c6c110b7dee80976ad8f964c87ab71e64322a84fc213ba1ba903",
+   "figures/cause_buckets.svg": "e2b40923181383b91310a8fe34ca170fd4186bc477e4444d3184872a3f859c5e"
   },
   "palette": "dataviz reference categorical slots 1-3 (#2a78d6, #eb6834, #1baf7a; dark #3987e5, #d95926, #199e70) plus neutral #c3c2b7/#52514e; validate_palette.js --pairs all passes in both modes (light contrast WARN for #1baf7a relieved by direct labels and the table)"
  },
@@ -243,5 +253,10 @@
    "sha256": "92b68b4d7456bac5dae12b1a63747e97ad98e265810cf6444a17fe1f4a664c7b",
    "files": 214
   }
+ },
+ "retest_plan": {
+  "file": "RETEST_PLAN.md",
+  "status": "not started; coord2 confirming with the owner",
+  "estimate": "about half a day to a day of agent time on an OnDemand node"
  }
 }
