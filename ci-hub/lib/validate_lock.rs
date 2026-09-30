@@ -42,22 +42,21 @@ use thiserror::Error;
 // Reuse the PURE, stateless primitives from landing_lock rather than copy tricky
 // code. None of these carry a LandLockError or print a `landing-lock:` message,
 // so they are safe to share verbatim across both locks.
-#[cfg(test)]
-use crate::landing_lock::{census_recorded_domain, signal_group};
 use crate::landing_lock::{
     box_exclusion_anchor_path as box_exclusion_anchor_at, census_cleanup_domain,
-    census_disposition, current_host, enable_child_subreaper,
-    exact_process_liveness, exact_process_state, exit_status_code, foreign_box_claim_excluding,
-    foreign_box_quarantine_excluding,
-    heartbeat_test_helper_delay, kill_payload_domain, operation_is_validation,
-    print_census_recovery, print_cleanup_record,
+    census_disposition, current_host, enable_child_subreaper, exact_process_liveness,
+    exact_process_state, exit_status_code, foreign_box_claim_excluding,
+    foreign_box_quarantine_excluding, heartbeat_test_helper_delay, kill_payload_domain,
+    kill_payload_group, operation_is_validation, print_census_recovery, print_cleanup_record,
     process_group_exists, process_start_ticks, reap_exited_children, reap_while_supervising,
-    register_box_claim, remove_cleanup_record_and_claim, repository_lock_root,
-    kill_payload_group, spawn_gated_child, suffix, tear_down_payload_domain, term_payload_group,
-    verify_cleanup_record, write_cleanup_record, BoxAnchorObservation, BoxExclusionAnchor,
-    CleanupDomain, CleanupPhase, CleanupRecord, CleanupVerification, DomainAttestation,
-    DomainEvidence, GatedChild, PayloadLineage, ProcessIdentity, ResidualCapture,
+    register_box_claim, remove_cleanup_record_and_claim, repository_lock_root, spawn_gated_child,
+    suffix, tear_down_payload_domain, term_payload_group, verify_cleanup_record,
+    write_cleanup_record, BoxAnchorObservation, BoxExclusionAnchor, CleanupDomain, CleanupPhase,
+    CleanupRecord, CleanupVerification, DomainAttestation, DomainEvidence, GatedChild,
+    PayloadLineage, ProcessIdentity, ResidualCapture,
 };
+#[cfg(test)]
+use crate::landing_lock::{census_recorded_domain, signal_group};
 
 const DEFAULT_WAIT_SECONDS: u64 = 1_800;
 const DEFAULT_HOLD_SECONDS: u64 = 900;
@@ -5419,10 +5418,7 @@ impl ValidateLock {
     /// original `enqueued_at` and priority, unless the run is already queued.
     /// Used when a run that left the queue at a settled boundary must wait
     /// again: it keeps its place instead of going to the tail.
-    fn restore_own_global_waiter(
-        &self,
-        entry: GlobalQueueEntry,
-    ) -> Result<(), ValidateLockError> {
+    fn restore_own_global_waiter(&self, entry: GlobalQueueEntry) -> Result<(), ValidateLockError> {
         let now = epoch_seconds()?;
         self.with_global_queue_guard(|| {
             let mut queue = self.read_global_queue()?;
@@ -5571,12 +5567,10 @@ impl ValidateLock {
                 });
                 match admission {
                     Ok(QuarantineAdmission::Clear) => {}
-                    Ok(QuarantineAdmission::Reclaimed) => {
-                        return Ok(SiblingQuarantine::Reclaimed)
-                    }
-                    Ok(QuarantineAdmission::Wait(reason)) => {
-                        waiting.push(format!("same-repository validation slot {sibling}: {reason}"))
-                    }
+                    Ok(QuarantineAdmission::Reclaimed) => return Ok(SiblingQuarantine::Reclaimed),
+                    Ok(QuarantineAdmission::Wait(reason)) => waiting.push(format!(
+                        "same-repository validation slot {sibling}: {reason}"
+                    )),
                     Err(ValidateLockError::CleanupQuarantined(message)) => {
                         return Err(ValidateLockError::CleanupQuarantined(format!(
                             "same-repository validation slot {sibling}: {message}"
@@ -5843,14 +5837,14 @@ impl ValidateLock {
             CleanupVerification::Active { reason, .. } => Err(
                 ValidateLockError::CleanupQuarantined(format!("ACTIVE: {reason}")),
             ),
-            CleanupVerification::Uncensused { reason, .. } => Err(
-                ValidateLockError::CleanupQuarantined(format!(
+            CleanupVerification::Uncensused { reason, .. } => {
+                Err(ValidateLockError::CleanupQuarantined(format!(
                     "FLEET-WIDE validate quarantine: every validate-lock acquisition is refused. \
                      Discharge with `validate-lock census-orphaned-domain` using the exact command \
                      printed by `validate-lock status`, then run `validate-lock reclaim-dead`: \
                      {reason}"
-                )),
-            ),
+                )))
+            }
             // Since https://github.com/rrnewton/dev-hermit/issues/419 every
             // acquisition attempt, with or without --wait, discharges this
             // record itself once the holder's supervisor is proven dead
@@ -5858,14 +5852,14 @@ impl ValidateLock {
             // which `try_acquire_ordered` runs on every attempt. This text is
             // what renew, release, arm and an acquirer that cannot prove the
             // death see, so it names both ways out.
-            CleanupVerification::Recoverable { reason, .. } => Err(
-                ValidateLockError::CleanupQuarantined(format!(
+            CleanupVerification::Recoverable { reason, .. } => {
+                Err(ValidateLockError::CleanupQuarantined(format!(
                     "payload absence is proven but the record remains; the next acquisition \
                      attempt, waiting or not, discharges it once the holder's supervisor is proven \
                      dead (released_by auto-reclaim:<agent>), or run `validate-lock reclaim-dead`: \
                      {reason}"
-                )),
-            ),
+                )))
+            }
             CleanupVerification::Unknown { reason, .. } => Err(
                 ValidateLockError::CleanupQuarantined(format!("UNVERIFIABLE: {reason}")),
             ),
@@ -6024,9 +6018,9 @@ impl ValidateLock {
                 "the supervisor is dead and its census never completed, so absence cannot be \
                  proven when the payload exits",
             ),
-            (_, CleanupVerification::Armed { .. }) => refuse(
-                "the supervisor is dead and the run never published a payload identity",
-            ),
+            (_, CleanupVerification::Armed { .. }) => {
+                refuse("the supervisor is dead and the run never published a payload identity")
+            }
             (_, CleanupVerification::Uncensused { .. }) => refuse(
                 "the recorded census is incomplete, so absence cannot be proven without \
                  operator action",
@@ -8328,7 +8322,9 @@ impl ValidateLock {
                             timing,
                             &report_to_stderr,
                         )? {
-                            WaitAgain::Global(GlobalWait::Granted { anchors, slot }) => (anchors, slot),
+                            WaitAgain::Global(GlobalWait::Granted { anchors, slot }) => {
+                                (anchors, slot)
+                            }
                             WaitAgain::Global(GlobalWait::Refused) => {
                                 return refusal_before_admission(
                                     tool_root,
@@ -8337,7 +8333,11 @@ impl ValidateLock {
                                 )
                             }
                             WaitAgain::Global(GlobalWait::FreshnessRefused(error)) => {
-                                return stale_base_refusal_with_record(tool_root, &attribution, error);
+                                return stale_base_refusal_with_record(
+                                    tool_root,
+                                    &attribution,
+                                    error,
+                                );
                             }
                             WaitAgain::YieldRefused(code) => {
                                 return refusal_before_admission(tool_root, &attribution, code)
@@ -13437,7 +13437,11 @@ exit 0
         let holder_left = lock.read_holder().unwrap().is_some();
         let _ = fs::remove_dir_all(&root);
 
-        assert_eq!(identities.len(), 2, "fixture must record both escaped processes");
+        assert_eq!(
+            identities.len(),
+            2,
+            "fixture must record both escaped processes"
+        );
         assert!(
             survivors.is_empty(),
             "setsid'd payload processes survived teardown: {survivors:?} (run result {result:?})"
@@ -13475,7 +13479,11 @@ exit 0
         let holder_left = lock.read_holder().unwrap().is_some();
         let _ = fs::remove_dir_all(&root);
 
-        assert_eq!(identities.len(), 2, "fixture must record both escaped processes");
+        assert_eq!(
+            identities.len(),
+            2,
+            "fixture must record both escaped processes"
+        );
         assert!(
             survivors.is_empty(),
             "setsid'd payload processes survived teardown: {survivors:?} (run result {result:?})"
@@ -13634,12 +13642,19 @@ exit 0
             "same-group-tokenless",
             &format!("env -u {PAYLOAD_DOMAIN_ENV}"),
         );
-        assert_eq!(outcome.identities.len(), 1, "fixture must record the helper");
+        assert_eq!(
+            outcome.identities.len(),
+            1,
+            "fixture must record the helper"
+        );
         assert_eq!(
             outcome.helper_group, outcome.leader_group,
             "the helper must stay in the payload's original process group"
         );
-        assert_eq!(outcome.helper_token, "unset", "the helper must carry no payload token");
+        assert_eq!(
+            outcome.helper_token, "unset",
+            "the helper must carry no payload token"
+        );
         assert!(
             outcome.survivors.is_empty(),
             "a token-less member of the original group survived teardown: {:?} (run result {:?})",
@@ -13647,7 +13662,10 @@ exit 0
             outcome.result
         );
         assert_eq!(outcome.result.unwrap(), 0);
-        assert!(!outcome.cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(
+            !outcome.cleanup_left,
+            "teardown left a cleanup quarantine behind"
+        );
         assert!(!outcome.holder_left, "teardown left the lock held");
     }
 
@@ -13664,7 +13682,11 @@ exit 0
             "same-group-foreign-token",
             &format!("env {PAYLOAD_DOMAIN_ENV}=some-other-payload-9999"),
         );
-        assert_eq!(outcome.identities.len(), 1, "fixture must record the helper");
+        assert_eq!(
+            outcome.identities.len(),
+            1,
+            "fixture must record the helper"
+        );
         assert_eq!(outcome.helper_group, outcome.leader_group);
         assert_eq!(outcome.helper_token, "some-other-payload-9999");
         assert_eq!(
@@ -13673,7 +13695,10 @@ exit 0
             outcome.result
         );
         assert!(
-            matches!(outcome.result, Err(ValidateLockError::CleanupQuarantined(_))),
+            matches!(
+                outcome.result,
+                Err(ValidateLockError::CleanupQuarantined(_))
+            ),
             "a still-populated original group must quarantine: {:?}",
             outcome.result
         );
@@ -13850,7 +13875,10 @@ exit 0
             outcome.result
         );
         assert_eq!(outcome.result.unwrap(), 0);
-        assert!(!outcome.cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(
+            !outcome.cleanup_left,
+            "teardown left a cleanup quarantine behind"
+        );
         assert!(!outcome.holder_left, "teardown left the lock held");
     }
 
@@ -13876,7 +13904,10 @@ exit 0
             outcome.result
         );
         assert_eq!(outcome.result.unwrap(), CHILD_DEADLINE_EXIT_CODE);
-        assert!(!outcome.cleanup_left, "teardown left a cleanup quarantine behind");
+        assert!(
+            !outcome.cleanup_left,
+            "teardown left a cleanup quarantine behind"
+        );
         assert!(!outcome.holder_left, "teardown left the lock held");
     }
 
@@ -13898,7 +13929,10 @@ exit 0
         assert_parent_waits_shape(&outcome);
         let grandchild = outcome.identities[1].clone();
         assert!(
-            matches!(outcome.result, Err(ValidateLockError::CleanupQuarantined(_))),
+            matches!(
+                outcome.result,
+                Err(ValidateLockError::CleanupQuarantined(_))
+            ),
             "a live recorded grandchild must quarantine, got {:?}",
             outcome.result
         );
@@ -14571,9 +14605,16 @@ exit 0
             "waiter gave up its FIFO place while the quarantine cleared"
         );
         assert!(manual.is_ok(), "reclaim-dead failed: {manual:?}");
-        assert_eq!(result.unwrap(), 0, "waiter was not admitted after the quarantine cleared");
+        assert_eq!(
+            result.unwrap(),
+            0,
+            "waiter was not admitted after the quarantine cleared"
+        );
         assert!(elapsed < Duration::from_secs(60));
-        assert_eq!(holder.map(|holder| holder.agent).as_deref(), Some("queued-waiter"));
+        assert_eq!(
+            holder.map(|holder| holder.agent).as_deref(),
+            Some("queued-waiter")
+        );
     }
 
     #[test]
@@ -14604,7 +14645,9 @@ exit 0
         let mut released_by = None;
         while Instant::now() < deadline && !waiter.is_finished() {
             let record = lock.read_release_record().unwrap();
-            if let Some(record) = record.filter(|record| record.released_by.starts_with("auto-reclaim:")) {
+            if let Some(record) =
+                record.filter(|record| record.released_by.starts_with("auto-reclaim:"))
+            {
                 released_by = Some(record.released_by.clone());
                 break;
             }
@@ -14631,7 +14674,10 @@ exit 0
         assert_eq!(released_by.as_deref(), Some("auto-reclaim:auto-waiter"));
         assert!(!cleanup_left);
         assert_eq!(result.unwrap(), 0);
-        assert_eq!(holder.map(|holder| holder.agent).as_deref(), Some("auto-waiter"));
+        assert_eq!(
+            holder.map(|holder| holder.agent).as_deref(),
+            Some("auto-waiter")
+        );
     }
 
     /// The incident path itself: both RUN 1959 waiters were `validate-lock run`
@@ -14780,7 +14826,10 @@ exit 0
         kill_residual(residual, &identity);
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
 
-        assert_eq!(lock_after, lock_before, "a live quarantine must never be displaced");
+        assert_eq!(
+            lock_after, lock_before,
+            "a live quarantine must never be displaced"
+        );
         assert_eq!(cleanup_after, cleanup_before);
         let error = result.expect_err("a quarantine that never clears must not admit");
         assert!(matches!(error, ValidateLockError::CleanupQuarantined(_)));
@@ -14996,8 +15045,10 @@ exit 0
         let marker = root.join("payload-ran");
         let (run_paths, run_root, run_marker) = (paths.clone(), root.clone(), marker.clone());
         let waiter = thread::spawn(move || {
-            ValidateLock { paths: run_paths }
-                .run(quarantine_run_args("yield-waiter", 60, &run_marker), &run_root)
+            ValidateLock { paths: run_paths }.run(
+                quarantine_run_args("yield-waiter", 60, &run_marker),
+                &run_root,
+            )
         });
         thread::sleep(Duration::from_millis(1500));
         let held_at_quarantine = !all_slot_anchors_free(&paths);
@@ -15038,7 +15089,10 @@ exit 0
         let ran = marker.exists();
         let _ = fs::remove_dir_all(&root);
 
-        assert!(held_at_quarantine, "the waiter must hold its anchors while the quarantine is waited out");
+        assert!(
+            held_at_quarantine,
+            "the waiter must hold its anchors while the quarantine is waited out"
+        );
         assert_eq!(released_by.as_deref(), Some("auto-reclaim:yield-waiter"));
         assert!(
             !finished_during_yield,
@@ -15077,8 +15131,10 @@ exit 0
         let marker = root.join("payload-ran");
         let (run_paths, run_root, run_marker) = (paths.clone(), root.clone(), marker.clone());
         let waiter = thread::spawn(move || {
-            ValidateLock { paths: run_paths }
-                .run(quarantine_run_args("sibling-waiter", 60, &run_marker), &run_root)
+            ValidateLock { paths: run_paths }.run(
+                quarantine_run_args("sibling-waiter", 60, &run_marker),
+                &run_root,
+            )
         });
         thread::sleep(Duration::from_millis(1500));
         let exited_at_quarantine = waiter.is_finished();
@@ -15116,8 +15172,14 @@ exit 0
         assert_eq!(released_by.as_deref(), Some("auto-reclaim:sibling-waiter"));
         assert_eq!(result.unwrap(), 0);
         assert!(ran, "the admitted payload never ran");
-        assert!(!sibling_cleanup_left, "the sibling's record was not discharged");
-        assert!(!sibling_holder_left, "the sibling's dead lease was not discharged");
+        assert!(
+            !sibling_cleanup_left,
+            "the sibling's record was not discharged"
+        );
+        assert!(
+            !sibling_holder_left,
+            "the sibling's dead lease was not discharged"
+        );
     }
 
     /// An unrecoverable sibling-slot quarantine still refuses at once, but
@@ -15151,7 +15213,10 @@ exit 0
         let _ = fs::remove_dir_all(&root);
 
         let error = result.expect_err("an unrecoverable sibling quarantine must refuse");
-        assert!(matches!(error, ValidateLockError::CleanupQuarantined(_)), "{error}");
+        assert!(
+            matches!(error, ValidateLockError::CleanupQuarantined(_)),
+            "{error}"
+        );
         let message = error.to_string();
         assert!(
             message.contains("same-repository validation slot 1"),
@@ -15193,7 +15258,9 @@ exit 0
         let lock = ValidateLock {
             paths: paths.clone(),
         };
-        let status = lock.immediate_admission_status(&admission_status_args()).unwrap();
+        let status = lock
+            .immediate_admission_status(&admission_status_args())
+            .unwrap();
         let cleanup_still_there = slot_lock.paths.cleanup.exists();
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
 
@@ -15208,7 +15275,10 @@ exit 0
             !rendered.contains("another repository"),
             "status blamed another repository: {rendered}"
         );
-        assert!(cleanup_still_there, "a status query must not discharge anything");
+        assert!(
+            cleanup_still_there,
+            "a status query must not discharge anything"
+        );
     }
 
     /// Review of https://github.com/rrnewton/dev-hermit/issues/419: a bare
@@ -15261,13 +15331,19 @@ exit 0
         kill_residual(residual, &identity);
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
 
-        assert!(queued, "the waiter never joined the FIFO behind the quarantine");
+        assert!(
+            queued,
+            "the waiter never joined the FIFO behind the quarantine"
+        );
         let error = result.expect_err("an unknown-owner quarantine must refuse");
         assert!(
             error.to_string().contains("cannot be recovered by waiting"),
             "{error}"
         );
-        assert!(!still_queued, "the refused waiter left its FIFO entry behind");
+        assert!(
+            !still_queued,
+            "the refused waiter left its FIFO entry behind"
+        );
     }
 
     /// Review of https://github.com/rrnewton/dev-hermit/issues/419: residuals
@@ -15285,7 +15361,11 @@ exit 0
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline
             && fs::read_to_string(format!("/proc/{}/stat", stopped_identity.pid))
-                .map(|stat| !stat.rsplit_once(") ").is_some_and(|(_, rest)| rest.starts_with('T')))
+                .map(|stat| {
+                    !stat
+                        .rsplit_once(") ")
+                        .is_some_and(|(_, rest)| rest.starts_with('T'))
+                })
                 .unwrap_or(true)
         {
             thread::sleep(Duration::from_millis(10));
@@ -15317,8 +15397,14 @@ exit 0
         assert!(reason.contains(&stopped_name), "{reason}");
         assert!(reason.contains("cannot exit on their own"), "{reason}");
         assert!(reason.contains("operator must SIGKILL"), "{reason}");
-        assert!(reason.contains(&format!("{running_name} (state ")), "{reason}");
-        assert!(cleanup_still_there, "a waitable quarantine must not be discharged");
+        assert!(
+            reason.contains(&format!("{running_name} (state ")),
+            "{reason}"
+        );
+        assert!(
+            cleanup_still_there,
+            "a waitable quarantine must not be discharged"
+        );
     }
 
     /// With no recorded identity alive, an ACTIVE residual record is held up
@@ -18746,7 +18832,11 @@ garbage
                 .is_some_and(|holder| holder.agent == "boundary-foreground")
             })
             .collect::<Vec<_>>();
-        assert_eq!(held.len(), 1, "foreground must hold exactly one slot: {held:?}");
+        assert_eq!(
+            held.len(),
+            1,
+            "foreground must hold exactly one slot: {held:?}"
+        );
         let lock = ValidateLock {
             paths: paths.for_slot(held[0]),
         };

@@ -3526,7 +3526,10 @@ fn exempt_from_teardown_signals(pid: u32) -> bool {
 /// the start time from ONE `stat` read binds the answer to this generation.
 fn exact_process_group(identity: &ProcessIdentity) -> Option<u32> {
     let stat = fs::read(format!("/proc/{}/stat", identity.pid)).ok()?;
-    let fields: Vec<_> = stat_fields_after_comm(&stat).ok()?.split_whitespace().collect();
+    let fields: Vec<_> = stat_fields_after_comm(&stat)
+        .ok()?
+        .split_whitespace()
+        .collect();
     let pgrp = fields.get(2)?.parse::<u32>().ok()?;
     let start_ticks = fields.get(19)?.parse::<u64>().ok()?;
     (start_ticks == identity.start_ticks).then_some(pgrp)
@@ -3543,9 +3546,8 @@ fn carries_other_payload_token(pid: u32, domain_token: &str) -> bool {
     };
     let prefix = format!("{PAYLOAD_DOMAIN_ENV}=");
     let own = format!("{PAYLOAD_DOMAIN_ENV}={domain_token}");
-    raw.split(|byte| *byte == 0).any(|entry| {
-        entry.starts_with(prefix.as_bytes()) && entry != own.as_bytes()
-    })
+    raw.split(|byte| *byte == 0)
+        .any(|entry| entry.starts_with(prefix.as_bytes()) && entry != own.as_bytes())
 }
 
 /// Every process the teardown of ONE run has attributed to its payload, kept by
@@ -7612,7 +7614,11 @@ exit 0
         let holder_left = lock.read_holder().unwrap().is_some();
         let _ = fs::remove_dir_all(&root);
 
-        assert_eq!(identities.len(), 2, "fixture must record both escaped processes");
+        assert_eq!(
+            identities.len(),
+            2,
+            "fixture must record both escaped processes"
+        );
         assert!(
             survivors.is_empty(),
             "setsid'd payload processes survived teardown: {survivors:?} (run result {result:?})"
@@ -7715,7 +7721,10 @@ exit 0
             leader_group.trim(),
             "the helper must stay in the payload's original process group"
         );
-        assert_eq!(helper_fields[1], "unset", "the helper must carry no payload token");
+        assert_eq!(
+            helper_fields[1], "unset",
+            "the helper must carry no payload token"
+        );
         assert!(
             survivors.is_empty(),
             "a token-less member of the original group survived teardown: {survivors:?} (run result {result:?})"
