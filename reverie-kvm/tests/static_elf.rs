@@ -122,20 +122,123 @@ fn getdents64_alias_resource_failure_stops_tool_and_guest() {
     );
 }
 
+#[test]
+fn getdents64_alias_foreign_mapping_stops_direct_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_foreign_mapping_stops_direct_guest",
+        false,
+        Some(alias_failure::Case::Foreign),
+    );
+}
+
+#[test]
+fn getdents64_alias_foreign_mapping_stops_tool_and_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_foreign_mapping_stops_tool_and_guest",
+        true,
+        Some(alias_failure::Case::Foreign),
+    );
+}
+
+#[test]
+fn getdents64_alias_noreplace_collision_stops_direct_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_noreplace_collision_stops_direct_guest",
+        false,
+        Some(alias_failure::Case::Collision),
+    );
+}
+
+#[test]
+fn getdents64_alias_noreplace_collision_stops_tool_and_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_noreplace_collision_stops_tool_and_guest",
+        true,
+        Some(alias_failure::Case::Collision),
+    );
+}
+
+#[test]
+fn getdents64_alias_explicit_unmap_failure_stops_direct_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_explicit_unmap_failure_stops_direct_guest",
+        false,
+        Some(alias_failure::Case::Unmap),
+    );
+}
+
+#[test]
+fn getdents64_alias_explicit_unmap_failure_stops_tool_and_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_explicit_unmap_failure_stops_tool_and_guest",
+        true,
+        Some(alias_failure::Case::Unmap),
+    );
+}
+
+#[test]
+fn getdents64_alias_unexpected_address_stops_direct_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_unexpected_address_stops_direct_guest",
+        false,
+        Some(alias_failure::Case::WrongAddress),
+    );
+}
+
+#[test]
+fn getdents64_alias_unexpected_address_stops_tool_and_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_unexpected_address_stops_tool_and_guest",
+        true,
+        Some(alias_failure::Case::WrongAddress),
+    );
+}
+
+#[test]
+fn getdents64_alias_middle_extent_stops_direct_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_middle_extent_stops_direct_guest",
+        false,
+        Some(alias_failure::Case::MiddleExtent),
+    );
+}
+
+#[test]
+fn getdents64_alias_middle_extent_stops_tool_and_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_middle_extent_stops_tool_and_guest",
+        true,
+        Some(alias_failure::Case::MiddleExtent),
+    );
+}
+
 fn getdents64_alias_failure_case(test: &str, with_tool: bool) {
+    getdents64_alias_failure_case_selected(test, with_tool, None);
+}
+
+fn getdents64_alias_failure_case_selected(
+    test: &str,
+    with_tool: bool,
+    case: Option<alias_failure::Case>,
+) {
     if !kvm_available(test) {
         return;
     }
-    let Some(fault) = alias_failure::child(test) else {
+    let fault = match case {
+        Some(case) => alias_failure::child_case(test, case),
+        None => alias_failure::child(test),
+    };
+    let Some(fault) = fault else {
         return;
     };
     let directory = TestDirectory::new();
     std::fs::create_dir(directory.0.join("empty")).unwrap();
-    let program = compile_c_program(
-        &directory.0,
-        "alias-failure",
+    let program_source = format!(
+        "#define ALIAS_PAGE_COUNT {}\n{}",
+        fault.pages(),
         GETDENTS_ALIAS_FAILURE_PROGRAM,
     );
+    let program = compile_c_program(&directory.0, "alias-failure", &program_source);
     let marker = directory.0.join("guest-continued");
     let native = std::process::Command::new("timeout")
         .args(["--kill-after=2s", "10s"])
@@ -170,7 +273,7 @@ fn getdents64_alias_failure_case(test: &str, with_tool: bool) {
         marker.exists(),
     );
     let error = result.unwrap_err();
-    let cause = alias_failure::mapping_cause(&error).unwrap_or_else(|| panic!("{error:?}"));
+    let cause = fault.cause(&error).unwrap_or_else(|| panic!("{error:?}"));
     assert!(!marker.exists(), "guest resumed after supervisor failure");
     assert_eq!(
         ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst),
@@ -184,7 +287,9 @@ fn getdents64_alias_failure_case(test: &str, with_tool: bool) {
         .unwrap_err();
     assert!(std::ptr::eq(
         cause,
-        alias_failure::mapping_cause(&refused).unwrap_or_else(|| panic!("{refused:?}"))
+        fault
+            .cause(&refused)
+            .unwrap_or_else(|| panic!("{refused:?}"))
     ));
     eprintln!(
         "terminal alias failure with_tool={with_tool}: {error}; callbacks={} resumed=false",
@@ -199,17 +304,22 @@ const GETDENTS_ALIAS_FAILURE_PROGRAM: &str = r#"
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#ifndef ALIAS_PAGE_COUNT
+#define ALIAS_PAGE_COUNT 3
+#endif
+#define ALIAS_BYTES (ALIAS_PAGE_COUNT * 4096)
 #define CHECK(x) do { if (!(x)) return 93; } while (0)
 int main(void) {
     CHECK(close(0) == 0);
     int fd = open("empty", O_RDONLY | O_DIRECTORY);
     CHECK(fd == 0);
-    unsigned char *p = mmap(0, 12288, PROT_READ | PROT_WRITE,
+    unsigned char *p = mmap(0, ALIAS_BYTES, PROT_READ | PROT_WRITE,
                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(p != MAP_FAILED);
-    memset(p, 0xa5, 12288);
-    CHECK(mprotect(p + 4096, 4096, PROT_NONE) == 0);
-    (void)syscall(SYS_getdents64, fd, p, 12288);
+    memset(p, 0xa5, ALIAS_BYTES);
+    for (int page = 1; page < ALIAS_PAGE_COUNT; page += 2)
+        CHECK(mprotect(p + page * 4096, 4096, PROT_NONE) == 0);
+    (void)syscall(SYS_getdents64, fd, p, ALIAS_BYTES);
     int marker = open("guest-continued", O_WRONLY | O_CREAT | O_EXCL, 0600);
     CHECK(marker >= 0 && write(marker, "resumed", 7) == 7);
     return 0;
