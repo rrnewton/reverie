@@ -278,25 +278,31 @@ if ((help_requested == 0 && host_removal == 1)); then
     exit 0
   else
     status=$?
+    # Exit 1 does not say whether the inner command ran. systemd-run itself
+    # exits 1 when it cannot start the service, and when the service ends with
+    # a result other than an exit status (for example oom-kill or timeout).
+    # The inner command also exits 1 from an uncaught exception, possibly after
+    # removing earlier slots, with a traceback and no report. So without a
+    # valid report on stdout the state is unknown, and neither note below may
+    # name one.
     if [[ $status == 1 && $command_name == remove-validate-batch ]]; then
       # remove-validate-batch exits 1 when it retained at least one slot, after
-      # printing a report that names each slot's outcome. A crash or a launcher
-      # failure can also exit 1, without that report. Pass 1 through so the
-      # caller can read the report; a caller must treat 1 without a valid
-      # report as every slot retained.
+      # printing a report that names each slot's outcome. Pass 1 through so the
+      # caller can read the report. Without a valid report, slots the command
+      # removed before it failed stay removed and others may still be present.
       printf '%s\n' \
-        "wrkslots: remove-validate-batch exited 1: it retained at least one slot, or it failed before it could report. When stdout holds its JSON report, that report names each slot's outcome; otherwise treat every requested slot as retained." >&2
+        "wrkslots: remove-validate-batch exited 1: it retained at least one slot, or it or the host process handoff failed before it could report. When stdout holds its JSON report, that report names each slot's outcome; otherwise treat every requested slot as possibly removed or still present, and read 'wrkslots status' and the wrkslots journal before acting on any of them." >&2
       exit 1
     fi
     if [[ $status == 1 && $command_name == remove-agent-batch ]]; then
       # remove-agent-batch exits 1 when it refused at least one slot, or stopped
       # on an unexpected error, after printing a report that names each slot's
       # outcome. Each slot it removed before that is already gone, so exit 1 can
-      # mean a partial batch. A crash before its report, or a launcher failure,
-      # also exits 1; then some slots may already be removed and the caller must
-      # read 'wrkslots status' before acting on any of them.
+      # mean a partial batch. Without a valid report, some slots may already be
+      # removed and the caller must read 'wrkslots status' before acting on any
+      # of them.
       printf '%s\n' \
-        "wrkslots: remove-agent-batch exited 1: it refused at least one slot, or it failed before it could report. When stdout holds its JSON report, that report names each slot's outcome; otherwise treat every requested slot as possibly removed or still present, and read 'wrkslots status' before acting on any of them." >&2
+        "wrkslots: remove-agent-batch exited 1: it refused at least one slot, or it or the host process handoff failed before it could report. When stdout holds its JSON report, that report names each slot's outcome; otherwise treat every requested slot as possibly removed or still present, and read 'wrkslots status' before acting on any of them." >&2
       exit 1
     fi
     case "$status" in

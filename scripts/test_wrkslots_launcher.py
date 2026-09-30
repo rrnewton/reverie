@@ -105,7 +105,7 @@ class WrkslotsLauncherTest(unittest.TestCase):
                 #!/usr/bin/env bash
                 set -euo pipefail
                 if [[ ${FIXTURE_SYSTEMD_FAIL:-0} == 1 ]]; then
-                  exit 19
+                  exit "${FIXTURE_SYSTEMD_FAIL_RC:-19}"
                 fi
                 : >"$SYSTEMD_RECORD"
                 for argument in "$@"; do
@@ -328,6 +328,79 @@ class WrkslotsLauncherTest(unittest.TestCase):
         )
         self.assertNotIn("state: UNKNOWN", completed.stderr)
         self.assertTrue(self.record.exists())
+
+    def assert_exit_one_note_names_no_state(
+        self, command: str, completed: subprocess.CompletedProcess[str]
+    ) -> None:
+        """Exit 1 without a report must not claim what happened to any slot."""
+
+        self.assertEqual(1, completed.returncode, completed.stderr)
+        self.assertEqual("", completed.stdout)
+        self.assertIn(f"wrkslots: {command} exited 1:", completed.stderr)
+        self.assertIn(
+            "or it or the host process handoff failed before it could report",
+            completed.stderr,
+        )
+        self.assertIn(
+            "otherwise treat every requested slot as possibly removed or still "
+            "present, and read 'wrkslots status'",
+            completed.stderr,
+        )
+        self.assertNotIn("treat every requested slot as retained", completed.stderr)
+        self.assertNotIn(
+            "no worktree or lifecycle record was changed", completed.stderr
+        )
+
+    def test_batch_inner_exit_one_without_report_names_no_state(self) -> None:
+        # An uncaught exception in either batch command exits 1 with a
+        # traceback and no report, possibly after it removed earlier slots.
+        for command, arguments in (
+            ("remove-validate-batch", self.validate_batch_arguments()),
+            ("remove-agent-batch", self.agent_batch_arguments()),
+        ):
+            with self.subTest(command=command):
+                self.record.unlink(missing_ok=True)
+                completed = self.run_launcher(*arguments, FIXTURE_INNER_RC="1")
+
+                self.assert_exit_one_note_names_no_state(command, completed)
+                self.assertTrue(self.record.exists())
+                if command == "remove-validate-batch":
+                    self.assertIn(
+                        "read 'wrkslots status' and the wrkslots journal before "
+                        "acting",
+                        completed.stderr,
+                    )
+
+    def test_batch_systemd_run_exit_one_names_no_state(self) -> None:
+        # systemd-run itself exits 1 when it cannot start the service, and when
+        # the service ends with a result other than an exit status. The inner
+        # command never ran here, but the launcher cannot tell that from exit
+        # 1, so the note must name no state.
+        for command, arguments in (
+            ("remove-validate-batch", self.validate_batch_arguments()),
+            ("remove-agent-batch", self.agent_batch_arguments()),
+        ):
+            with self.subTest(command=command):
+                self.record.unlink(missing_ok=True)
+                completed = self.run_launcher(
+                    *arguments, FIXTURE_SYSTEMD_FAIL="1", FIXTURE_SYSTEMD_FAIL_RC="1"
+                )
+
+                self.assert_exit_one_note_names_no_state(command, completed)
+                self.assertFalse(self.record.exists())
+
+    def test_single_removal_systemd_run_exit_one_is_unknown(self) -> None:
+        completed = self.run_launcher(
+            *self.removal_arguments(),
+            FIXTURE_SYSTEMD_FAIL="1",
+            FIXTURE_SYSTEMD_FAIL_RC="1",
+        )
+
+        self.assertEqual(3, completed.returncode)
+        self.assertIn("handoff or command failed with exit 1", completed.stderr)
+        self.assertIn("state: UNKNOWN", completed.stderr)
+        self.assertNotIn("exited 1:", completed.stderr)
+        self.assertFalse(self.record.exists())
 
     def test_validate_batch_other_inner_failure_is_still_unknown(self) -> None:
         completed = self.run_launcher(
@@ -756,13 +829,50 @@ class WrkslotsLauncherTest(unittest.TestCase):
         self.assertFalse(slot.exists())
         self.assertEqual([], lifecycle.active_slots(project))
 
+    def real_parser_has_command(self, command: str) -> bool:
+        """Ask the copied real wrkslots package's parser for ``command``.
+
+        Exit 0 from ``COMMAND --help`` means the parser has it; argparse's exit
+        2 naming it as an invalid choice means it does not. Anything else fails
+        the test rather than skipping it.
+        """
+
+        probe = subprocess.run(
+            [sys.executable, "-m", "wrkslots", command, "--help"],
+            cwd=self.temporary.name,
+            env=os.environ
+            | {"PYTHONPATH": str(self.root / "hermit/agent-utils/py")},
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        if probe.returncode == 0:
+            return True
+        if (
+            probe.returncode == 2
+            and "invalid choice" in probe.stderr
+            and repr(command) in probe.stderr
+        ):
+            return False
+        self.fail(
+            f"cannot tell whether the pinned wrkslots parser has {command}: "
+            f"exit {probe.returncode}: {probe.stderr}"
+        )
+
     def test_real_agent_batch_runs_every_item_in_the_host_handoff(self) -> None:
-        if not hasattr(lifecycle, "dead_agent_batch_project"):
-            self.skipTest(
-                "the pinned agent-utils has no remove-agent-batch; this test runs once "
-                "the pin includes it"
-            )
         self.use_real_wrkslots_package()
+        if not self.real_parser_has_command("remove-agent-batch"):
+            self.skipTest(
+                "the pinned agent-utils parser has no remove-agent-batch; this test "
+                "runs once the pin includes it"
+            )
+        self.assertTrue(
+            hasattr(lifecycle, "dead_agent_batch_project"),
+            "the pinned agent-utils parser has remove-agent-batch, but its "
+            "test_lifecycle.py has no dead_agent_batch_project helper, so this "
+            "end-to-end test cannot build its slots",
+        )
         lifecycle_root = Path(self.temporary.name) / "lifecycle"
         lifecycle_root.mkdir()
         project, _repository, slots = lifecycle.dead_agent_batch_project(

@@ -2875,9 +2875,13 @@ def remove_fresh_checkouts_batch(
     # Exit 0 or 1 carries a JSON report that names every requested slot's
     # outcome.  Newer wrkslots exit 1 when the batch retained at least one
     # slot; older wrkslots exited 0 for that report too, so a valid exit-0
-    # report may still retain slots.  A crash or a launcher failure can also
-    # exit 1, without a report; that case, and every other status, retains
-    # every requested checkout.
+    # report may still retain slots.  A crash, or a failure of the launcher's
+    # host process handoff, can also exit 1 without a report.  Then, and for
+    # every other status, every requested checkout is returned with a reason,
+    # which means "not reported as removed", not that the checkout still
+    # exists: slots the command removed before it failed stay removed.  Such a
+    # checkout keeps its removal intent without checkout_removed_at, and a
+    # later cleanup that finds it absent records the stamp.
     if result.returncode not in (0, 1):
         return {str(path): error for path in requested.values()}
     try:
