@@ -4319,6 +4319,7 @@ def test_omission_summary_reports_typed_attempt_evidence_without_inference() -> 
             "attempts": [
                 {
                     "attempt_outcome": "ERROR",
+                    "detail": None,
                     "disposition": "timeout",
                     "error_kind": "incomplete-verification-evidence",
                     "index": "seed-1",
@@ -4370,6 +4371,7 @@ def test_omission_summary_does_not_call_a_compressed_row_an_attempt_row() -> Non
             "attempts": [
                 {
                     "attempt_outcome": "ERROR",
+                    "detail": None,
                     "disposition": "timeout",
                     "error_kind": "incomplete-verification-evidence",
                     "index": "seed-1",
@@ -4419,6 +4421,122 @@ def test_omission_summary_does_not_call_a_compressed_row_an_attempt_row() -> Non
         in summary
     )
     assert "other attempt row" not in summary
+
+
+def _projected_attempt(**changes: Any) -> dict[str, Any]:
+    # One attempt exactly as project_attempt_disposition projects it: the
+    # projection writes every field, `detail` included, as null when absent.
+    attempt: dict[str, Any] = {
+        "attempt_outcome": "ERROR",
+        "detail": None,
+        "disposition": "timeout",
+        "error_kind": "incomplete-verification-evidence",
+        "index": "seed-1",
+        "kind": "missing_report_timeout",
+        "signal": 15,
+        "status": None,
+        "timed_out": True,
+        "verification_report_sha256": None,
+    }
+    attempt.update(changes)
+    return attempt
+
+
+def _omission_summary_with_attempts(attempts: list[Any]) -> str:
+    data = data_with_all_three_states_and_one_omitted_row()
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    omission = data["projection_audit"]["deliberate_omissions"][0]
+    source = copy.deepcopy(model.series_by_event["event-without-result"])
+    source["series"].update(
+        attempt=1,
+        outcome="no_result",
+        failure_class="no_result",
+        no_verdict_evidence={"attempts": attempts, "evidence_sha256": "a" * 64},
+    )
+    model = replace(
+        model,
+        series_by_event={**model.series_by_event, source["event_id"]: source},
+        series_rows=tuple(
+            source if row["event_id"] == source["event_id"] else row
+            for row in model.series_rows
+        ),
+    )
+    return render_page._omission_summary(model, omission)
+
+
+@pytest.mark.parametrize(
+    "attempt",
+    [
+        _projected_attempt(),
+        _projected_attempt(
+            kind="failed_match",
+            detail="verify stdout differs from the declared stdout",
+        ),
+    ],
+    ids=["detail-null", "detail-string"],
+)
+def test_omission_summary_accepts_projected_attempt_evidence(
+    attempt: dict[str, Any],
+) -> None:
+    # The site reads projected rows, whose attempts always carry `detail`.
+    # https://github.com/rrnewton/hermit/actions/runs/36663872276 refused
+    # exactly this shape (detail null) and published nothing.
+    summary = _omission_summary_with_attempts([attempt])
+
+    reason = str(attempt["kind"]).replace("_", " ")
+    assert (
+        "Recorded attempt evidence: attempt outcome ERROR; disposition timeout; "
+        f"reason {reason}; error kind incomplete-verification-evidence; "
+        "signal 15; timed out yes." in summary
+    )
+
+
+@pytest.mark.parametrize(
+    "attempt",
+    [
+        {
+            key: value
+            for key, value in _projected_attempt().items()
+            if key != "detail"
+        },
+        _projected_attempt(unexpected=None),
+        _projected_attempt(detail=""),
+        _projected_attempt(detail="   "),
+        _projected_attempt(detail=7),
+        sorted(_projected_attempt()),
+    ],
+    ids=[
+        "stored-ledger-shape-without-detail",
+        "unknown-key",
+        "empty-detail",
+        "blank-detail",
+        "non-string-detail",
+        "non-object-listing-the-fields",
+    ],
+)
+def test_omission_summary_refuses_attempts_outside_the_projected_shape(
+    attempt: Any,
+) -> None:
+    with pytest.raises(
+        render_page.RenderRefused,
+        match="^recorded no-verdict attempt evidence is malformed$",
+    ):
+        _omission_summary_with_attempts([attempt])
+
+
+def test_projected_attempt_fields_match_the_rust_projection() -> None:
+    source = (REPOSITORY / "ci-hub/lib/compatibility_website.rs").read_text()
+    body = re.search(
+        r"\nfn project_attempt_disposition\(.*?\n\}\n", source, flags=re.DOTALL
+    )
+    assert body is not None
+    projected = re.search(
+        r"serde_json::json!\(\{(.*?)\}\)", body.group(0), flags=re.DOTALL
+    )
+    assert projected is not None
+    keys = re.findall(r'^\s*"([a-z_0-9]+)":', projected.group(1), flags=re.MULTILINE)
+    assert len(keys) == len(set(keys))
+    assert set(keys) == render_page.PROJECTED_NO_VERDICT_ATTEMPT_FIELDS
 
 
 def test_stage1_build_bound_covers_authentic_size_and_refuses_over_bound(

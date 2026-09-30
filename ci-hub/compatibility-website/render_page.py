@@ -60,6 +60,25 @@ MISSING_CENSUS_ATTEMPT_SCHEMA = "census-attempt-missing-from-series/v1"
 # The main page lists at most this many runs' missing attempts; the projection
 # audit lists every run.
 MISSING_ATTEMPT_RUNS_LISTED = 10
+# The exact keys of one projected no-verdict attempt: the object that
+# project_attempt_disposition in ci-hub/lib/compatibility_website.rs writes
+# (a test checks that the two agree). The projection always writes `detail`,
+# as null when the ledger row has none; the ledger row itself omits a null
+# `detail`. This page reads projected rows only.
+PROJECTED_NO_VERDICT_ATTEMPT_FIELDS = frozenset(
+    {
+        "attempt_outcome",
+        "detail",
+        "disposition",
+        "error_kind",
+        "index",
+        "kind",
+        "signal",
+        "status",
+        "timed_out",
+        "verification_report_sha256",
+    }
+)
 DIVERGENCE_COORDINATES = (
     ("first_divergent_record", "First divergent record"),
     ("first_divergent_syscall", "First divergent syscall"),
@@ -1980,19 +1999,15 @@ def _attempt_evidence_summary(rows: Sequence[Mapping[str, Any]]) -> str:
         evidence_rows.extend(evidence["attempts"])
     if not evidence_rows:
         return "No narrower cause was recorded for this evidence."
-    attempt_fields = {
-        "attempt_outcome",
-        "disposition",
-        "error_kind",
-        "index",
-        "kind",
-        "signal",
-        "status",
-        "timed_out",
-        "verification_report_sha256",
-    }
     if any(
-        not isinstance(attempt, Mapping) or set(attempt) != attempt_fields
+        not isinstance(attempt, Mapping)
+        or set(attempt) != PROJECTED_NO_VERDICT_ATTEMPT_FIELDS
+        # Hermit's SeriesAttemptDisposition: null (the projection's form of
+        # an absent detail) or a nonblank string.
+        or not (
+            attempt["detail"] is None
+            or (isinstance(attempt["detail"], str) and attempt["detail"].strip())
+        )
         for attempt in evidence_rows
     ):
         raise RenderRefused("recorded no-verdict attempt evidence is malformed")
