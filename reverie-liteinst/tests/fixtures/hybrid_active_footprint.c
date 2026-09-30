@@ -15,6 +15,7 @@ __asm__(
     ".global reverie_liteinst_footprint_getpid\n"
     ".type reverie_liteinst_footprint_getpid,@function\n"
     "reverie_liteinst_footprint_getpid:\n"
+    ".cfi_startproc\n"
     "mov $39, %eax\n"
     ".global reverie_liteinst_footprint_site\n"
     "reverie_liteinst_footprint_site:\n"
@@ -23,6 +24,7 @@ __asm__(
     "nop\n"
     ".endr\n"
     "ret\n"
+    ".cfi_endproc\n"
     ".size reverie_liteinst_footprint_getpid, .-reverie_liteinst_footprint_getpid\n"
     ".text\n");
 

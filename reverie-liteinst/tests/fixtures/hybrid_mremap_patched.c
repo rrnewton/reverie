@@ -9,6 +9,7 @@ __asm__(
     ".global reverie_liteinst_movable_getpid\n"
     ".type reverie_liteinst_movable_getpid,@function\n"
     "reverie_liteinst_movable_getpid:\n"
+    ".cfi_startproc\n"
     "mov $39, %eax\n"
     ".global reverie_liteinst_movable_getpid_site\n"
     "reverie_liteinst_movable_getpid_site:\n"
@@ -17,6 +18,7 @@ __asm__(
     "nop\n"
     ".endr\n"
     "ret\n"
+    ".cfi_endproc\n"
     ".size reverie_liteinst_movable_getpid, .-reverie_liteinst_movable_getpid\n"
     ".text\n");
 
