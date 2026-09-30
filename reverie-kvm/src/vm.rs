@@ -5496,7 +5496,10 @@ mod clear_tid_diagnostic {
                 .debug_struct("Wake")
                 .field("invocations", &self.invocations)
                 .field("stage", &self.stage)
-                .field("address", &self.address.map(|address| address as *const i32))
+                .field(
+                    "address",
+                    &self.address.map(|address| address as *const i32),
+                )
                 .field("result", &self.result)
                 .field("errno", &self.errno)
                 .finish()
