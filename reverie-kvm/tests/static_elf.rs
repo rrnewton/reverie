@@ -324,6 +324,18 @@ fn getdents64_alias_failure_case_selected(
             &directory.0,
         )
         .unwrap();
+    // The loader maps the stack through guest_end(), while its strings and
+    // initial stack grow down from guest_end() - 4096. This fixture never
+    // writes the zero-filled top-page headroom. Probe one real mapped byte
+    // before arming, then require the same access/value after completion.
+    let memory_probe_address = backend.memory().unwrap().guest_end() - 1;
+    let mut before_run_memory = [0xff];
+    backend
+        .memory()
+        .unwrap()
+        .read(memory_probe_address, &mut before_run_memory)
+        .unwrap();
+    assert_eq!(before_run_memory, [0]);
     fault.arm();
     let result = if with_tool {
         futures::executor::block_on(backend.run_static_elf_with_tool::<AliasFailureTool>((), true))
@@ -350,7 +362,13 @@ fn getdents64_alias_failure_case_selected(
         assert_eq!(std::fs::read(&marker).unwrap(), b"resumed");
         assert_eq!(completions, u64::from(with_tool));
         assert_eq!(resumed, with_tool);
-        backend.memory().unwrap().read(0, &mut [0]).unwrap();
+        let mut after_run_memory = [0xff];
+        backend
+            .memory()
+            .unwrap()
+            .read(memory_probe_address, &mut after_run_memory)
+            .unwrap();
+        assert_eq!(after_run_memory, before_run_memory);
         drop(backend);
         fault.assert_fired();
         eprintln!(
@@ -369,20 +387,36 @@ fn getdents64_alias_failure_case_selected(
     // Neither the failed syscall nor its Tool injection may resume afterwards.
     assert_eq!(completions, u64::from(with_tool) * preceding_calls);
     assert_eq!(resumed, with_tool && preceding_calls != 0);
+    let mut refused_memory = [0xff];
     let refused = backend
         .memory()
         .expect("completed alias-failure run must release memory access admission")
-        .read(0, &mut [0])
+        .read(memory_probe_address, &mut refused_memory)
         .unwrap_err();
+    assert_eq!(
+        refused_memory,
+        [0xff],
+        "terminal refusal must precede copying"
+    );
     assert!(std::ptr::eq(
         cause,
         fault
             .cause(&refused)
             .unwrap_or_else(|| panic!("{refused:?}"))
     ));
+    // Retain the original invalid-address control as well: terminal poison
+    // must take precedence over the otherwise inaccessible null address.
+    let invalid_refused = backend.memory().unwrap().read(0, &mut [0]).unwrap_err();
+    assert!(std::ptr::eq(
+        cause,
+        fault
+            .cause(&invalid_refused)
+            .unwrap_or_else(|| panic!("{invalid_refused:?}"))
+    ));
     eprintln!(
         "terminal alias failure with_tool={with_tool}: {error}; callbacks={callbacks} completions={completions} preceding_calls={preceding_calls}"
     );
+    drop(invalid_refused);
     drop(refused);
     drop(error);
     drop(backend);
