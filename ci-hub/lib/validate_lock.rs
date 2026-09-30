@@ -5851,17 +5851,19 @@ impl ValidateLock {
                      {reason}"
                 )),
             ),
-            // Since https://github.com/rrnewton/dev-hermit/issues/419 an
-            // acquirer that is waiting discharges this record itself once the
-            // holder's supervisor is proven dead (released_by
-            // `auto-reclaim:<agent>`); see `quarantine_admission`. This text
-            // is what a caller that does not wait (or cannot prove the death)
-            // sees, so it names both ways out.
+            // Since https://github.com/rrnewton/dev-hermit/issues/419 every
+            // acquisition attempt, with or without --wait, discharges this
+            // record itself once the holder's supervisor is proven dead
+            // (released_by `auto-reclaim:<agent>`); see `quarantine_admission`,
+            // which `try_acquire_ordered` runs on every attempt. This text is
+            // what renew, release, arm and an acquirer that cannot prove the
+            // death see, so it names both ways out.
             CleanupVerification::Recoverable { reason, .. } => Err(
                 ValidateLockError::CleanupQuarantined(format!(
-                    "payload absence is proven but the record remains; an acquirer waiting with \
-                     --wait discharges it once the holder's supervisor is proven dead (released_by \
-                     auto-reclaim:<agent>), or run `validate-lock reclaim-dead`: {reason}"
+                    "payload absence is proven but the record remains; the next acquisition \
+                     attempt, waiting or not, discharges it once the holder's supervisor is proven \
+                     dead (released_by auto-reclaim:<agent>), or run `validate-lock reclaim-dead`: \
+                     {reason}"
                 )),
             ),
             CleanupVerification::Unknown { reason, .. } => Err(
@@ -7686,8 +7688,9 @@ impl ValidateLock {
             }
             CleanupVerification::Recoverable { record, reason } => {
                 println!(
-                    "QUARANTINED (absence proven; a waiting acquirer discharges it once the \
-                     holder's supervisor is proven dead, or run reclaim-dead):"
+                    "QUARANTINED (absence proven; the next acquisition attempt, waiting or not, \
+                     discharges it once the holder's supervisor is proven dead, or run \
+                     reclaim-dead):"
                 );
                 print_cleanup_record(&record, &reason);
             }
