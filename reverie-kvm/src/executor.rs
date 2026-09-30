@@ -15498,11 +15498,11 @@ fn synthetic_guest_fd_symlink_statx(guest_fd: libc::c_int) -> libc::statx {
 }
 
 fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    // Linux consumes the descriptor register's low 32 bits.
+    // Linux consumes both descriptor and count as unsigned 32-bit arguments.
+    // Narrow count before applying our host I/O cap: high register bits must
+    // not turn a zero or undersized Linux buffer into a 16 MiB request.
     let fd = args[0] as libc::c_int;
-    let Ok(requested_length) = usize::try_from(args[2]) else {
-        return negative_errno(libc::EINVAL);
-    };
+    let requested_length = (args[2] as u32) as usize;
     let length = requested_length.min(MAX_HOST_IO);
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
@@ -15523,13 +15523,10 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     let user = memory.user();
     let alias = match user.writable_alias(args[1], length) {
         Ok(alias) => alias,
-        Err(error @ crate::Error::MemoryMapping(_)) => {
-            // Alias construction has already released every mapping, lock and
-            // operand. Host resource failure is terminal, not a guest errno:
-            // result publication/injection resume must observe this cause.
-            memory.entry_gate().poison(memory.entry_origin(), error);
-            return negative_errno(libc::EFAULT);
-        }
+        // Construction finalizes ownership and releases memory locks before
+        // publishing any infrastructure failure to the gate. The driver must
+        // observe that terminal cause before guest/Tool continuation; do not
+        // publish it a second time merely because its cleanup was retained.
         Err(_) => return negative_errno(libc::EFAULT),
     };
     // SAFETY: file owns a live descriptor; alias retains the current backing,
@@ -15549,6 +15546,9 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         count as i64
     };
     if alias.finish().is_err() {
+        // Refused physical retirement is already a sticky backend failure,
+        // including after a successful host syscall. This placeholder errno
+        // cannot authorize guest/Tool continuation past the driver's recheck.
         return negative_errno(libc::EFAULT);
     }
     result
@@ -38131,63 +38131,36 @@ mod tests {
         ) else {
             return;
         };
-        let root = TestDir::new();
-        let mut state = test_state(&root.0);
-        let mut directory = std::fs::File::open(&root.0).unwrap();
-        state.files.insert(0, directory.try_clone().unwrap());
-        let mut memory = GuestMemory::new(0, 3 * PAGE_SIZE as usize).unwrap();
-        memory
-            .write_raw(0, &[0xa5; 3 * PAGE_SIZE as usize])
-            .unwrap();
-        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
-        memory
-            .map_user_range(2 * PAGE_SIZE, PAGE_SIZE, false)
-            .unwrap();
-        memory.enable_user_access();
-        let before = directory.stream_position().unwrap();
-        fault.arm();
-        let _transport_only = getdents64(&mut memory, &state, &[0, 0, 3 * PAGE_SIZE, 0, 0, 0]);
-        fault.assert_fired();
-        let pending = memory.entry_gate().pending_failure().unwrap();
-        let error = pending.error();
-        let cause =
-            crate::alias_failure::mapping_cause(&error).unwrap_or_else(|| panic!("{error:?}"));
-        assert_eq!(directory.stream_position().unwrap(), before);
-        assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
-        let refused = memory.write_raw(0, b"ordinary result").unwrap_err();
-        assert!(std::ptr::eq(
-            cause,
-            crate::alias_failure::mapping_cause(&refused).unwrap_or_else(|| panic!("{refused:?}"))
-        ));
+        getdents64_alias_lifecycle_case(fault);
     }
 
     #[test]
     fn getdents64_alias_foreign_mapping_is_terminal_before_directory_io() {
-        getdents64_alias_ownership_failure_case(
+        getdents64_alias_selected_case(
             "executor::tests::getdents64_alias_foreign_mapping_is_terminal_before_directory_io",
             crate::alias_failure::Case::Foreign,
         );
     }
 
     #[test]
-    fn getdents64_alias_noreplace_collision_is_terminal_before_directory_io() {
-        getdents64_alias_ownership_failure_case(
-            "executor::tests::getdents64_alias_noreplace_collision_is_terminal_before_directory_io",
-            crate::alias_failure::Case::Collision,
+    fn getdents64_alias_atomic_contention_preserves_directory_io() {
+        getdents64_alias_selected_case(
+            "executor::tests::getdents64_alias_atomic_contention_preserves_directory_io",
+            crate::alias_failure::Case::AtomicCollision,
         );
     }
 
     #[test]
-    fn getdents64_alias_explicit_unmap_failure_is_terminal_before_directory_io() {
-        getdents64_alias_ownership_failure_case(
-            "executor::tests::getdents64_alias_explicit_unmap_failure_is_terminal_before_directory_io",
-            crate::alias_failure::Case::Unmap,
+    fn getdents64_alias_cleanup_failure_after_directory_io_is_terminal() {
+        getdents64_alias_selected_case(
+            "executor::tests::getdents64_alias_cleanup_failure_after_directory_io_is_terminal",
+            crate::alias_failure::Case::CleanupAfterSuccess,
         );
     }
 
     #[test]
     fn getdents64_alias_unexpected_address_is_terminal_before_directory_io() {
-        getdents64_alias_ownership_failure_case(
+        getdents64_alias_selected_case(
             "executor::tests::getdents64_alias_unexpected_address_is_terminal_before_directory_io",
             crate::alias_failure::Case::WrongAddress,
         );
@@ -38195,46 +38168,371 @@ mod tests {
 
     #[test]
     fn getdents64_alias_middle_extent_is_terminal_before_directory_io() {
-        getdents64_alias_ownership_failure_case(
+        getdents64_alias_selected_case(
             "executor::tests::getdents64_alias_middle_extent_is_terminal_before_directory_io",
             crate::alias_failure::Case::MiddleExtent,
         );
     }
 
-    fn getdents64_alias_ownership_failure_case(test: &str, case: crate::alias_failure::Case) {
+    #[test]
+    fn getdents64_alias_cleanup_failure_at_eof_is_terminal() {
+        getdents64_alias_selected_case(
+            "executor::tests::getdents64_alias_cleanup_failure_at_eof_is_terminal",
+            crate::alias_failure::Case::CleanupAtEof,
+        );
+    }
+
+    #[test]
+    fn getdents64_alias_construction_cleanup_failure_retains_both_causes() {
+        getdents64_alias_selected_case(
+            "executor::tests::getdents64_alias_construction_cleanup_failure_retains_both_causes",
+            crate::alias_failure::Case::ConstructionCleanup,
+        );
+    }
+
+    #[test]
+    fn getdents64_alias_suffix_cleanup_failure_preserves_retired_prefix() {
+        getdents64_alias_selected_case(
+            "executor::tests::getdents64_alias_suffix_cleanup_failure_preserves_retired_prefix",
+            crate::alias_failure::Case::SuffixCleanup,
+        );
+    }
+
+    fn getdents64_alias_selected_case(test: &str, case: crate::alias_failure::Case) {
         let Some(fault) = crate::alias_failure::child_case(test, case) else {
             return;
         };
+        getdents64_alias_lifecycle_case(fault);
+    }
+
+    fn getdents64_alias_ledger(
+        fault: &crate::alias_failure::Fault,
+    ) -> Vec<crate::memory::RetainedWriteAliasSnapshot> {
+        use crate::alias_failure::Case;
+        let snapshots = crate::memory::retained_write_aliases_for_test();
+        let case = fault.case();
+        if matches!(case, Case::Reservation | Case::AtomicCollision) {
+            assert!(snapshots.is_empty(), "{case:?}: {snapshots:?}");
+            return snapshots;
+        }
+        assert_eq!(snapshots.len(), 1, "{case:?}: {snapshots:?}");
+        let record = &snapshots[0];
+        let addresses = fault.addresses();
+        let page = PAGE_SIZE as usize;
+        assert_ne!(record.retention_id, 0);
+        assert_ne!(addresses.base, 0);
+        assert_eq!(addresses.length, fault.pages() * page);
+        let cleanup = match case {
+            Case::CleanupAfterSuccess | Case::CleanupAtEof => {
+                Some((0, addresses.base, addresses.length))
+            }
+            Case::ConstructionCleanup => Some((0, addresses.base, 2 * page)),
+            Case::SuffixCleanup => Some((1, addresses.base + 3 * page, 2 * page)),
+            Case::PersistentCleanup => {
+                panic!("three independent persistent cases belong in memory tests")
+            }
+            _ => None,
+        };
+        let ambiguous = matches!(
+            case,
+            Case::SecondExtent
+                | Case::Foreign
+                | Case::WrongAddress
+                | Case::MiddleExtent
+                | Case::ConstructionCleanup
+                | Case::SuffixCleanup
+        );
+        assert_eq!(
+            addresses.ambiguous,
+            if ambiguous {
+                addresses.base + 2 * page
+            } else {
+                0
+            }
+        );
+        let mut owned_ranges = [None; 3];
+        let mut cleanup_errors = [None; 3];
+        if let Some((slot, address, length)) = cleanup {
+            owned_ranges[slot] = Some((address, length));
+            cleanup_errors[slot] = Some((address, length, libc::ENOMEM));
+        }
+        let expected = crate::memory::RetainedWriteAliasSnapshot {
+            retention_id: record.retention_id,
+            address: addresses.base,
+            length: addresses.length,
+            ambiguous: ambiguous.then_some((addresses.base + 2 * page, page)),
+            unexpected: (case == Case::WrongAddress).then_some((addresses.wrong, page)),
+            unexpected_bounds_valid: case == Case::WrongAddress,
+            owned_ranges,
+            cleanup_errors,
+            backing_count: if case == Case::CleanupAtEof {
+                0
+            } else {
+                fault.pages().div_ceil(2)
+            },
+        };
+        assert_eq!(
+            record, &expected,
+            "complete retained ownership for {case:?}"
+        );
+        if case == Case::WrongAddress {
+            assert_ne!(addresses.wrong, 0);
+            assert!(
+                addresses.wrong + page <= addresses.base
+                    || addresses.wrong >= addresses.base + addresses.length
+            );
+        } else {
+            assert_eq!(addresses.wrong, 0);
+        }
+        snapshots
+    }
+
+    fn getdents64_alias_exact_cause<'a>(
+        fault: &crate::alias_failure::Fault,
+        snapshots: &[crate::memory::RetainedWriteAliasSnapshot],
+        error: &'a crate::Error,
+    ) -> &'a crate::Error {
+        let cause = if let Some(record) = snapshots.first() {
+            fault.cause_with_retention(error, record.retention_id)
+        } else {
+            fault.cause(error)
+        };
+        cause.unwrap_or_else(|| panic!("{:?}: {error:?}", fault.case()))
+    }
+
+    // Called only after the preselected case oracle has validated the complete
+    // error. Preserve context tags while comparing every distinct leaf owner;
+    // this is not a context-erasing replacement for that strict classifier.
+    fn getdents64_alias_cause_owners(
+        error: &crate::Error,
+    ) -> Vec<(Option<&'static str>, *const crate::Error)> {
+        fn visit(
+            error: &crate::Error,
+            phase: Option<&'static str>,
+            owners: &mut Vec<(Option<&'static str>, *const crate::Error)>,
+        ) {
+            match error {
+                crate::Error::MemoryMapping(_) | crate::Error::WriteAliasCleanup { .. } => {
+                    let owner = (phase, std::ptr::from_ref(error));
+                    if !owners.contains(&owner) {
+                        owners.push(owner);
+                    }
+                }
+                crate::Error::SharedFailure(error) => visit(error, phase, owners),
+                crate::Error::WithCleanup { primary, cleanup } => {
+                    visit(primary, phase, owners);
+                    for error in cleanup {
+                        visit(error, phase, owners);
+                    }
+                }
+                crate::Error::Cleanup {
+                    phase: observed,
+                    error,
+                } => {
+                    assert!(phase.is_none(), "nested ambiguity context: {error:?}");
+                    assert_eq!(*observed, crate::alias_failure::AMBIGUOUS_PHASE);
+                    visit(error, Some(*observed), owners);
+                }
+                _ => panic!("unexpected alias cause or context: {error:?}"),
+            }
+        }
+        let mut owners = Vec::new();
+        visit(error, None, &mut owners);
+        owners
+    }
+
+    fn getdents64_alias_lifecycle_case(fault: crate::alias_failure::Fault) {
+        use crate::alias_failure::Case;
+        let case = fault.case();
+        assert_ne!(case, Case::PersistentCleanup);
+        assert!(crate::memory::retained_write_aliases_for_test().is_empty());
         let root = TestDir::new();
+        std::fs::write(root.0.join("entry"), b"directory control").unwrap();
         let mut state = test_state(&root.0);
         let mut directory = std::fs::File::open(&root.0).unwrap();
+        let mut duplicate = directory.try_clone().unwrap();
         state.files.insert(0, directory.try_clone().unwrap());
+        state.files.insert(1, duplicate.try_clone().unwrap());
         let length = fault.pages() * PAGE_SIZE as usize;
+        let sentinel = vec![0xa5; length];
         let mut memory = GuestMemory::new(0, length).unwrap();
-        memory.write_raw(0, &vec![0xa5; length]).unwrap();
-        for page in (0..fault.pages()).step_by(2) {
-            memory
-                .map_user_range(page as u64 * PAGE_SIZE, PAGE_SIZE, false)
-                .unwrap();
+        memory.write_raw(0, &sentinel).unwrap();
+        if case != Case::CleanupAtEof {
+            for page in (0..fault.pages()).step_by(2) {
+                memory
+                    .map_user_range(page as u64 * PAGE_SIZE, PAGE_SIZE, false)
+                    .unwrap();
+            }
         }
         memory.enable_user_access();
+        // This observer has an independent gate over the same initial backing.
+        // It cannot turn poisoned ordinary guest access into successful access.
+        let observer = memory.test_alias_backing_observer();
+        let memory_owners = memory.test_mapping_owners();
+        let observer_owners = observer.test_mapping_owners();
+        assert_eq!(memory_owners(), 1);
+        assert_eq!(observer_owners(), 1);
+
+        // Independent native file description, no executor helper or alias.
+        // The exact same unchanged directory supplies bytes and opaque cookies.
+        let mut native = std::fs::File::open(&root.0).unwrap();
+        let mut expected_bytes = sentinel.clone();
+        let read_native = |file: &std::fs::File, bytes: &mut [u8]| {
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_getdents64,
+                    file.as_raw_fd(),
+                    bytes.as_mut_ptr(),
+                    bytes.len(),
+                )
+            };
+            assert!(
+                result >= 0,
+                "native getdents64: {:?}",
+                std::io::Error::last_os_error()
+            );
+            result as i64
+        };
+        let first = read_native(&native, &mut expected_bytes);
+        assert!(first > 0 && first < PAGE_SIZE as i64);
+        assert_getdents64_names(
+            &checked_dirents64(&expected_bytes[..first as usize]),
+            "entry",
+        );
+        let expected_result = if case == Case::CleanupAtEof {
+            let eof = native.stream_position().unwrap();
+            assert!(eof > 0);
+            assert_eq!(directory.seek(SeekFrom::Start(eof)).unwrap(), eof);
+            expected_bytes.copy_from_slice(&sentinel);
+            assert_eq!(read_native(&native, &mut expected_bytes), 0);
+            assert_eq!(expected_bytes, sentinel);
+            0
+        } else {
+            first
+        };
+        let native_cursor = native.stream_position().unwrap();
         let before = directory.stream_position().unwrap();
+        assert_eq!(duplicate.stream_position().unwrap(), before);
         fault.arm();
-        let _transport_only = getdents64(&mut memory, &state, &[0, 0, length as u64, 0, 0, 0]);
-        fault.assert_fired();
-        let pending = memory.entry_gate().pending_failure().unwrap();
-        let error = pending.error();
-        let cause = fault.cause(&error).unwrap_or_else(|| panic!("{error:?}"));
-        assert_eq!(directory.stream_position().unwrap(), before);
+        let transport = getdents64(&mut memory, &state, &[0, 0, length as u64, 0, 0, 0]);
+        let snapshots = getdents64_alias_ledger(&fault);
+        let expected_cursor = if fault.setup_succeeds() {
+            native_cursor
+        } else {
+            before
+        };
+        assert_eq!(directory.stream_position().unwrap(), expected_cursor);
+        assert_eq!(duplicate.stream_position().unwrap(), expected_cursor);
+        let mut actual = vec![0; length];
+        observer.read_raw(0, &mut actual).unwrap();
+        let wanted_bytes = if fault.setup_succeeds() {
+            &expected_bytes
+        } else {
+            &sentinel
+        };
+        assert_eq!(
+            &actual, wanted_bytes,
+            "native full buffer/guard effects for {case:?}"
+        );
         assert_eq!(memory.entry_gate().test_state().copies, 0);
         assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
+
+        if fault.succeeds() {
+            assert_eq!(transport, expected_result);
+            assert!(memory.entry_gate().pending_failure().is_none());
+            let observation = fault.assert_fired();
+            assert_eq!(observation.case, Case::AtomicCollision);
+            // After the finite allocator contention observation is sealed,
+            // ordinary guest access and the shared descriptor can continue.
+            memory.write_raw(length as u64 - 1, b"x").unwrap();
+            assert_eq!(
+                getdents64(&mut memory, &state, &[1, 0, length as u64, 0, 0, 0]),
+                0
+            );
+            assert_eq!(directory.stream_position().unwrap(), native_cursor);
+            assert_eq!(duplicate.stream_position().unwrap(), native_cursor);
+            assert!(memory.entry_gate().pending_failure().is_none());
+            let mut after_continuation = expected_bytes.clone();
+            after_continuation[length - 1] = b'x';
+            observer.read_raw(0, &mut actual).unwrap();
+            assert_eq!(
+                actual, after_continuation,
+                "EOF continuation preserves all other bytes"
+            );
+            assert_eq!(crate::memory::retained_write_aliases_for_test(), snapshots);
+            drop(memory);
+            drop(observer);
+            assert_eq!(memory_owners(), 0);
+            assert_eq!(observer_owners(), 0);
+            assert_eq!(crate::memory::retained_write_aliases_for_test(), snapshots);
+            eprintln!(
+                "\natomic getdents case={case:?} result={transport} native={expected_result} cursor={native_cursor} continuation=true"
+            );
+            return;
+        }
+
+        assert_eq!(transport, negative_errno(libc::EFAULT));
+        let pending = memory.entry_gate().pending_failure().unwrap();
+        let error = pending.error();
+        let cause = getdents64_alias_exact_cause(&fault, &snapshots, &error);
+        let cause_owners = getdents64_alias_cause_owners(&error);
+        assert_eq!(
+            cause_owners.len(),
+            if matches!(case, Case::ConstructionCleanup | Case::SuffixCleanup) {
+                2
+            } else {
+                1
+            }
+        );
         let refused = memory.write_raw(0, b"ordinary result").unwrap_err();
         assert!(std::ptr::eq(
             cause,
-            fault
-                .cause(&refused)
-                .unwrap_or_else(|| panic!("{refused:?}"))
+            getdents64_alias_exact_cause(&fault, &snapshots, &refused)
         ));
+        assert_eq!(getdents64_alias_cause_owners(&refused), cause_owners);
+        // A second dispatch must stop at the sticky gate before directory I/O.
+        assert_eq!(
+            getdents64(&mut memory, &state, &[1, 0, length as u64, 0, 0, 0]),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(directory.stream_position().unwrap(), expected_cursor);
+        assert_eq!(duplicate.stream_position().unwrap(), expected_cursor);
+        let again = memory.entry_gate().pending_failure().unwrap().error();
+        assert!(std::ptr::eq(
+            cause,
+            getdents64_alias_exact_cause(&fault, &snapshots, &again)
+        ));
+        assert_eq!(getdents64_alias_cause_owners(&again), cause_owners);
+        observer.read_raw(0, &mut actual).unwrap();
+        assert_eq!(&actual, wanted_bytes);
+        assert_eq!(memory.entry_gate().test_state().copies, 0);
+        assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
+        assert_eq!(crate::memory::retained_write_aliases_for_test(), snapshots);
+        eprintln!(
+            "\natomic getdents case={case:?} transport={transport} native={expected_result} cursor={expected_cursor} continuation=false retained={} bytes_match=true ledger={snapshots:?} cause_owners={cause_owners:?}",
+            snapshots.len()
+        );
+        // All pointer/context comparisons and diagnostics are complete. Drop
+        // the ordinary error owners too before observing terminal retention.
+        drop(again);
+        drop(refused);
+        drop(error);
+        drop(pending);
+        drop(cause_owners);
+        drop(memory);
+        drop(observer);
+        assert_eq!(memory_owners(), 0);
+        assert_eq!(observer_owners(), 0);
+        assert_eq!(crate::memory::retained_write_aliases_for_test(), snapshots);
+        // Covers actual no-retry, foreign-prefix reuse and retained mapping
+        // observations after the last ordinary memory handle has been dropped.
+        let observation = fault.assert_fired();
+        assert_eq!(observation.case, case);
+        assert_eq!(crate::memory::retained_write_aliases_for_test(), snapshots);
+        eprintln!(
+            "atomic getdents teardown case={case:?} ordinary_errors_dropped=true mapping_handles=0 retained={}",
+            snapshots.len()
+        );
     }
 
     const GETDENTS64_UPPER_WORDS: [u64; 5] = [
