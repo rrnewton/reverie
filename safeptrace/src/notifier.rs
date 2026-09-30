@@ -1801,6 +1801,8 @@ impl WorkerIdentity {
     fn capture_process(pid: Pid) -> Result<Self, Errno> {
         let before = worker_proc_snapshot(pid).map_err(io_errno)?;
         #[cfg(test)]
+        adoption_native_tests::pause_capture(pid);
+        #[cfg(test)]
         if let Some(pause) = CAPTURE_AFTER_FIRST_SNAPSHOT_PAUSES.lock().remove(&pid) {
             pause.captured.wait();
             pause.resume.wait();
@@ -2521,6 +2523,9 @@ impl Notifier {
                 drop(pids);
                 continue;
             }
+            // Capture may have raced adoption of the retained caller. Only
+            // the canonical authority belongs in the registry.
+            let requested = requested.resolved_handle();
             if let Some(occupied) = pids.get(&pid)
                 && occupied.identity.same_live_generation(&current)?
             {
@@ -2705,6 +2710,15 @@ impl Notifier {
         requested: &Arc<Event>,
         owner: NotifierWaitOwner<'_>,
     ) -> Result<EventRegistration, Errno> {
+        // Adoption redirects the retained handle, not its pointer identity.
+        // Retry registration with that canonical generation, while retaining
+        // the exact Event whose provisional wait claim we actually acquired.
+        let canonical = handle.resolved_handle();
+        let handle = &canonical;
+        if !Arc::ptr_eq(handle.event(), requested) {
+            drop(owner);
+            return Ok(EventRegistration::Adopted);
+        }
         if requested.is_terminal() {
             owner.commit();
             return Ok(EventRegistration::Registered(handle.resolved_handle()));
@@ -2773,6 +2787,12 @@ impl Notifier {
             }
 
             let mut pids = self.pids.lock();
+            // All production adoption holds pids. Recheck after capture,
+            // before publishing STARTING or committing this exact claim.
+            if !Arc::ptr_eq(handle.event(), requested) {
+                drop(owner);
+                return Ok(EventRegistration::Adopted);
+            }
             match current.pidfd_is_live() {
                 Ok(true) => {}
                 Ok(false) => {
@@ -2803,7 +2823,7 @@ impl Notifier {
             }
             let mut worker_identity = None;
             let event_handle = match pids.entry(pid) {
-                Entry::Occupied(occupied) if occupied.get().handle == *handle => {
+                Entry::Occupied(occupied) if occupied.get().handle.resolved_handle() == *handle => {
                     match occupied.get().identity.same_live_generation(&current) {
                         Ok(true) => {}
                         Ok(false) => {
@@ -2826,8 +2846,8 @@ impl Notifier {
                     match occupied.get().identity.same_live_generation(&current) {
                         Ok(true) => {
                             let authoritative = occupied.get().handle.clone();
-                            drop(pids);
                             handle.adopt_authoritative(&authoritative)?;
+                            drop(pids);
                             drop(owner);
                             return Ok(EventRegistration::Adopted);
                         }
@@ -2858,7 +2878,7 @@ impl Notifier {
                 }
             };
             let pending_worker = if let Some(identity) = worker_identity {
-                match spawn_worker(pid, Arc::clone(event_handle.event()), Arc::clone(&identity)) {
+                match spawn_worker(pid, Arc::clone(requested), Arc::clone(&identity)) {
                     Ok(worker) => {
                         requested.mark_worker_running();
                         Some(worker)
@@ -2866,7 +2886,8 @@ impl Notifier {
                     Err(error) => {
                         requested.rollback_worker_start();
                         if pids.get(&pid).is_some_and(|entry| {
-                            entry.handle == *handle && entry.identity.same_generation(&identity)
+                            Arc::ptr_eq(entry.handle.event(), requested)
+                                && entry.identity.same_generation(&identity)
                         }) {
                             pids.remove(&pid);
                         }
@@ -3741,6 +3762,9 @@ impl Future for ExitFuture {
         }
     }
 }
+
+#[cfg(test)]
+mod adoption_native_tests;
 
 #[cfg(test)]
 mod test {
