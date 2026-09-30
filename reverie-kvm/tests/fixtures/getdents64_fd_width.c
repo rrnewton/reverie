@@ -534,12 +534,17 @@ static void count_width_controls(int directory, int regular, int path_only) {
   struct records records;
   parse_records(arena + GUARD, (size_t)result, &records);
   exact_names(directory, 0, &records);
-  const off_t eof = lseek(directory, 0, SEEK_CUR);
-  CHECK(eof > 0 && lseek(alias, 0, SEEK_CUR) == eof);
+  const off_t after_entries = lseek(directory, 0, SEEK_CUR);
+  CHECK(after_entries > 0 && lseek(alias, 0, SEEK_CUR) == after_entries);
   memset(arena, 0xa5, sizeof(arena));
   CHECK(raw_getdents(alias, arena + GUARD, RAW_BUFFER) == 0 && errno == 0);
   CHECK(all_bytes(arena, sizeof(arena), 0xa5));
-  CHECK(lseek(directory, 0, SEEK_CUR) == eof && lseek(alias, 0, SEEK_CUR) == eof);
+  // Directory cookies are opaque. In particular, btrfs_real_readdir in
+  // fs/btrfs/inode.c can change the cursor again on a zero-byte EOF read.
+  // Sample this transition instead of assuming the previous cookie survives.
+  // The complete native/KVM row comparison still requires exact cursors.
+  const off_t eof = lseek(directory, 0, SEEK_CUR);
+  CHECK(eof > 0 && lseek(alias, 0, SEEK_CUR) == eof);
 
   for (size_t high = 0; high < 4; ++high)
     for (size_t count = 0; count < 5; ++count)
