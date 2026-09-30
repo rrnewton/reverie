@@ -121,6 +121,7 @@ done
 
 host_removal=0
 if [[ $command_name == remove || $command_name == remove-validate-batch \
+      || $command_name == remove-agent-batch \
       || $command_name == retire-pending \
       || $command_name == recover-ownerless-validate-batch \
       || $command_name == recover ]]; then
@@ -131,7 +132,9 @@ fi
 # recover may resume a frozen-checkout journal, so its arguments alone cannot
 # prove that no removal will occur. Moving only the registered-liveness probe
 # would leave the exact-owner and path/cgroup scans in the caller's potentially
-# restricted PID namespace.
+# restricted PID namespace. remove-agent-batch runs ordinary remove for each of
+# its slots, and its shared lsof scan decides process use for all of them, so
+# it needs the same host process view as remove.
 if ((help_requested == 0 && host_removal == 1)); then
   process_view_probe="$checkout_root/ci-hub/health/host_process_context.py"
   [[ -f $process_view_probe ]] || refuse \
@@ -283,6 +286,17 @@ if ((help_requested == 0 && host_removal == 1)); then
       # report as every slot retained.
       printf '%s\n' \
         "wrkslots: remove-validate-batch exited 1: it retained at least one slot, or it failed before it could report. When stdout holds its JSON report, that report names each slot's outcome; otherwise treat every requested slot as retained." >&2
+      exit 1
+    fi
+    if [[ $status == 1 && $command_name == remove-agent-batch ]]; then
+      # remove-agent-batch exits 1 when it refused at least one slot, or stopped
+      # on an unexpected error, after printing a report that names each slot's
+      # outcome. Each slot it removed before that is already gone, so exit 1 can
+      # mean a partial batch. A crash before its report, or a launcher failure,
+      # also exits 1; then some slots may already be removed and the caller must
+      # read 'wrkslots status' before acting on any of them.
+      printf '%s\n' \
+        "wrkslots: remove-agent-batch exited 1: it refused at least one slot, or it failed before it could report. When stdout holds its JSON report, that report names each slot's outcome; otherwise treat every requested slot as possibly removed or still present, and read 'wrkslots status' before acting on any of them." >&2
       exit 1
     fi
     case "$status" in

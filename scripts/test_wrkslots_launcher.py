@@ -338,7 +338,109 @@ class WrkslotsLauncherTest(unittest.TestCase):
         self.assertIn("state: UNKNOWN", completed.stderr)
         self.assertIn("failed with exit 4", completed.stderr)
 
-    def test_exit_one_passes_through_only_for_the_validate_batch(self) -> None:
+    def agent_batch_arguments(self) -> tuple[str, ...]:
+        return (
+            "--project-root",
+            str(self.root),
+            "remove-agent-batch",
+            "--slot",
+            "slot01=7",
+            "--slot",
+            "slot02=9",
+            "--coordinator-pid",
+            str(os.getpid()),
+            "--format",
+            "json",
+        )
+
+    def test_agent_batch_uses_the_same_host_handoff(self) -> None:
+        completed = self.run_launcher(*self.agent_batch_arguments())
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        record = json.loads(self.record.read_text())
+        self.assertIn("remove-agent-batch", record["argv"])
+        slots = [
+            record["argv"][position + 1]
+            for position, argument in enumerate(record["argv"])
+            if argument == "--slot"
+        ]
+        self.assertEqual(["slot01=7", "slot02=9"], slots)
+        coordinator = record["argv"][record["argv"].index("--coordinator-pid") + 1]
+        self.assertEqual(str(os.getpid()), coordinator)
+        self.assertIsNotNone(record["runner_pid"])
+        self.assertIsNotNone(record["coordinator_start_ticks"])
+        self.assertEqual("0", record["proof_fd"])
+        self.assertIn(int(record["runner_pid"]), record["ancestry"])
+        properties = self.systemd_record.read_text().splitlines()
+        self.assertIn("--property=PrivateUsers=no", properties)
+        self.assertIn("--property=PrivateMounts=no", properties)
+        self.assertIn("--property=ProtectProc=default", properties)
+        self.assertIn("--property=ProcSubset=all", properties)
+
+    def test_agent_batch_failed_host_handoff_never_falls_back(self) -> None:
+        completed = self.run_launcher(
+            *self.agent_batch_arguments(), FIXTURE_SYSTEMD_FAIL="1"
+        )
+
+        self.assertEqual(3, completed.returncode)
+        self.assertIn("handoff or command failed with exit 19", completed.stderr)
+        self.assertIn("state: UNKNOWN", completed.stderr)
+        self.assertFalse(self.record.exists())
+
+    def test_agent_batch_refuses_restricted_reentry(self) -> None:
+        completed = self.run_launcher(
+            *self.agent_batch_arguments(), FIXTURE_PROCESS_VIEW_RC="2"
+        )
+
+        self.assertEqual(3, completed.returncode)
+        self.assertIn("does not have a verified full process view", completed.stderr)
+        self.assertFalse(self.record.exists())
+
+    def test_agent_batch_exit_one_passes_its_report_through(self) -> None:
+        report = (
+            '{"removed": [{"slot": "slot01"}], '
+            '"refused": [{"slot": "slot02"}], "error": null}\n'
+        )
+        completed = self.run_launcher(
+            *self.agent_batch_arguments(),
+            FIXTURE_INNER_RC="1",
+            FIXTURE_INNER_STDOUT=report,
+        )
+
+        self.assertEqual(1, completed.returncode, completed.stderr)
+        self.assertEqual(report, completed.stdout)
+        self.assertIn(
+            "remove-agent-batch exited 1: it refused at least one slot",
+            completed.stderr,
+        )
+        self.assertIn("read 'wrkslots status'", completed.stderr)
+        self.assertNotIn("state: UNKNOWN", completed.stderr)
+        self.assertNotIn("retained at least one slot", completed.stderr)
+        self.assertTrue(self.record.exists())
+
+    def test_agent_batch_other_inner_failure_is_still_unknown(self) -> None:
+        for status in ("4", "125"):
+            with self.subTest(status=status):
+                completed = self.run_launcher(
+                    *self.agent_batch_arguments(), FIXTURE_INNER_RC=status
+                )
+
+                self.assertEqual(3, completed.returncode)
+                self.assertIn("state: UNKNOWN", completed.stderr)
+                self.assertIn(f"failed with exit {status}", completed.stderr)
+                self.assertNotIn("exited 1:", completed.stderr)
+
+    def test_agent_batch_inner_refusal_is_preserved(self) -> None:
+        completed = self.run_launcher(
+            *self.agent_batch_arguments(), FIXTURE_INNER_RC="3"
+        )
+
+        self.assertEqual(3, completed.returncode)
+        self.assertNotIn("exited 1:", completed.stderr)
+        self.assertTrue(self.record.exists())
+        self.assertTrue(self.systemd_record.exists())
+
+    def test_exit_one_passes_through_only_for_the_removal_batches(self) -> None:
         for arguments in (
             self.removal_arguments(),
             self.retirement_arguments(),
@@ -350,6 +452,7 @@ class WrkslotsLauncherTest(unittest.TestCase):
                 self.assertEqual(3, completed.returncode)
                 self.assertIn("state: UNKNOWN", completed.stderr)
                 self.assertNotIn("exited 1: it retained", completed.stderr)
+                self.assertNotIn("exited 1: it refused", completed.stderr)
 
     def test_retire_pending_uses_the_same_host_handoff(self) -> None:
         completed = self.run_launcher(*self.retirement_arguments())
@@ -651,6 +754,88 @@ class WrkslotsLauncherTest(unittest.TestCase):
 
         self.assertEqual(0, dead.returncode, dead.stderr)
         self.assertFalse(slot.exists())
+        self.assertEqual([], lifecycle.active_slots(project))
+
+    def test_real_agent_batch_runs_every_item_in_the_host_handoff(self) -> None:
+        if not hasattr(lifecycle, "dead_agent_batch_project"):
+            self.skipTest(
+                "the pinned agent-utils has no remove-agent-batch; this test runs once "
+                "the pin includes it"
+            )
+        self.use_real_wrkslots_package()
+        lifecycle_root = Path(self.temporary.name) / "lifecycle"
+        lifecycle_root.mkdir()
+        project, _repository, slots = lifecycle.dead_agent_batch_project(
+            lifecycle_root, count=3
+        )
+
+        def batch(*names: str) -> subprocess.CompletedProcess[str]:
+            return self.run_launcher(
+                "--project-root",
+                str(project),
+                "remove-agent-batch",
+                "--coordinator-pid",
+                str(os.getpid()),
+                *(f"--slot={name}=1" for name in names),
+                "--format",
+                "json",
+            )
+
+        def remove_leftovers() -> None:
+            # A slot left active may hold a mounted slot image, which the
+            # temporary directory cannot delete. Remove it even when an
+            # assertion failed first.
+            leftovers = [row["slot"] for row in lifecycle.active_slots(project)]
+            if leftovers:
+                batch(*leftovers)
+
+        self.addCleanup(remove_leftovers)
+        held = lifecycle.checkout(project, "slot02")
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            cwd=held,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(lifecycle.terminate_process, holder)
+        try:
+            completed = batch(*slots)
+        finally:
+            lifecycle.terminate_process(holder)
+
+        # Exit 1 is a partial batch: the launcher passes the report through.
+        self.assertEqual(1, completed.returncode, completed.stderr)
+        self.assertIn(
+            "remove-agent-batch exited 1: it refused at least one slot",
+            completed.stderr,
+        )
+        self.assertTrue(self.systemd_record.exists())
+        payload = json.loads(completed.stdout)
+        self.assertEqual(
+            ["slot01", "slot03"], [row["slot"] for row in payload["removed"]]
+        )
+        self.assertEqual(["slot02"], [row["slot"] for row in payload["refused"]])
+        self.assertIn(
+            f"live process {holder.pid} uses slot", payload["refused"][0]["reason"]
+        )
+        self.assertIsNone(payload["error"])
+        self.assertFalse(payload["recovery_required"])
+        self.assertTrue(held.is_dir())
+        self.assertFalse(lifecycle.checkout(project, "slot01").exists())
+        self.assertFalse(lifecycle.checkout(project, "slot03").exists())
+        self.assertEqual(
+            ["slot02"], [row["slot"] for row in lifecycle.active_slots(project)]
+        )
+
+        # With its holder gone, a second batch removes the refused slot.
+        retried = batch("slot02")
+
+        self.assertEqual(0, retried.returncode, retried.stderr)
+        self.assertNotIn("exited 1:", retried.stderr)
+        self.assertEqual(
+            ["slot02"], [row["slot"] for row in json.loads(retried.stdout)["removed"]]
+        )
+        self.assertFalse(held.exists())
         self.assertEqual([], lifecycle.active_slots(project))
 
 
