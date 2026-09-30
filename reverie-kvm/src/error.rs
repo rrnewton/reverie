@@ -266,6 +266,25 @@ pub enum Error {
     #[error("failed to allocate guest memory: {0}")]
     MemoryMapping(#[source] std::io::Error),
 
+    /// A writable syscall alias could not be physically retired. This is a
+    /// terminal backend failure, never a guest errno. A process-lifetime ledger
+    /// owns the exact refused range and its backing until host process exit;
+    /// repeated independent failed VMs can accumulate retained resources.
+    #[error(
+        "writable alias munmap at {address:#x} for {length} bytes failed: {source} (ownership retained until process exit; record {retention_id:#x})"
+    )]
+    WriteAliasCleanup {
+        /// Original munmap error, including its errno.
+        #[source]
+        source: std::io::Error,
+        /// Start of the confirmed-owned range whose cleanup was refused.
+        address: usize,
+        /// Length of that range in bytes.
+        length: usize,
+        /// Stable identity of the process-lifetime ownership record.
+        retention_id: usize,
+    },
+
     /// Live backing replacement requires KVM to observe host mmap changes.
     #[error("KVM does not support synchronous host memory-map updates")]
     SynchronousMmuUnsupported,
