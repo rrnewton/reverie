@@ -79,6 +79,7 @@ mod alias_failure;
 
 static ALIAS_FAILURE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 static ALIAS_FAILURE_CALLBACK_RESUMED: AtomicBool = AtomicBool::new(false);
+static ALIAS_FAILURE_CALLBACK_COMPLETIONS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Default)]
 struct AliasFailureTool;
@@ -102,6 +103,7 @@ impl Tool for AliasFailureTool {
         ALIAS_FAILURE_CALLBACKS.fetch_add(1, Ordering::SeqCst);
         let result = guest.inject(syscall).await;
         ALIAS_FAILURE_CALLBACK_RESUMED.store(true, Ordering::SeqCst);
+        ALIAS_FAILURE_CALLBACK_COMPLETIONS.fetch_add(1, Ordering::SeqCst);
         Ok(result?)
     }
 }
@@ -141,38 +143,38 @@ fn getdents64_alias_foreign_mapping_stops_tool_and_guest() {
 }
 
 #[test]
-fn getdents64_alias_noreplace_collision_stops_direct_guest() {
+fn getdents64_alias_atomic_collision_completes_direct_guest() {
     getdents64_alias_failure_case_selected(
-        "getdents64_alias_noreplace_collision_stops_direct_guest",
+        "getdents64_alias_atomic_collision_completes_direct_guest",
         false,
-        Some(alias_failure::Case::Collision),
+        Some(alias_failure::Case::AtomicCollision),
     );
 }
 
 #[test]
-fn getdents64_alias_noreplace_collision_stops_tool_and_guest() {
+fn getdents64_alias_atomic_collision_completes_tool_and_guest() {
     getdents64_alias_failure_case_selected(
-        "getdents64_alias_noreplace_collision_stops_tool_and_guest",
+        "getdents64_alias_atomic_collision_completes_tool_and_guest",
         true,
-        Some(alias_failure::Case::Collision),
+        Some(alias_failure::Case::AtomicCollision),
     );
 }
 
 #[test]
-fn getdents64_alias_explicit_unmap_failure_stops_direct_guest() {
+fn getdents64_alias_cleanup_failure_stops_direct_guest() {
     getdents64_alias_failure_case_selected(
-        "getdents64_alias_explicit_unmap_failure_stops_direct_guest",
+        "getdents64_alias_cleanup_failure_stops_direct_guest",
         false,
-        Some(alias_failure::Case::Unmap),
+        Some(alias_failure::Case::CleanupAfterSuccess),
     );
 }
 
 #[test]
-fn getdents64_alias_explicit_unmap_failure_stops_tool_and_guest() {
+fn getdents64_alias_cleanup_failure_stops_tool_and_guest() {
     getdents64_alias_failure_case_selected(
-        "getdents64_alias_explicit_unmap_failure_stops_tool_and_guest",
+        "getdents64_alias_cleanup_failure_stops_tool_and_guest",
         true,
-        Some(alias_failure::Case::Unmap),
+        Some(alias_failure::Case::CleanupAfterSuccess),
     );
 }
 
@@ -212,6 +214,60 @@ fn getdents64_alias_middle_extent_stops_tool_and_guest() {
     );
 }
 
+#[test]
+fn getdents64_alias_construction_cleanup_stops_direct_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_construction_cleanup_stops_direct_guest",
+        false,
+        Some(alias_failure::Case::ConstructionCleanup),
+    );
+}
+
+#[test]
+fn getdents64_alias_construction_cleanup_stops_tool_and_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_construction_cleanup_stops_tool_and_guest",
+        true,
+        Some(alias_failure::Case::ConstructionCleanup),
+    );
+}
+
+#[test]
+fn getdents64_alias_suffix_cleanup_stops_direct_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_suffix_cleanup_stops_direct_guest",
+        false,
+        Some(alias_failure::Case::SuffixCleanup),
+    );
+}
+
+#[test]
+fn getdents64_alias_suffix_cleanup_stops_tool_and_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_suffix_cleanup_stops_tool_and_guest",
+        true,
+        Some(alias_failure::Case::SuffixCleanup),
+    );
+}
+
+#[test]
+fn getdents64_alias_eof_cleanup_stops_direct_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_eof_cleanup_stops_direct_guest",
+        false,
+        Some(alias_failure::Case::CleanupAtEof),
+    );
+}
+
+#[test]
+fn getdents64_alias_eof_cleanup_stops_tool_and_guest() {
+    getdents64_alias_failure_case_selected(
+        "getdents64_alias_eof_cleanup_stops_tool_and_guest",
+        true,
+        Some(alias_failure::Case::CleanupAtEof),
+    );
+}
+
 fn getdents64_alias_failure_case(test: &str, with_tool: bool) {
     getdents64_alias_failure_case_selected(test, with_tool, None);
 }
@@ -233,9 +289,14 @@ fn getdents64_alias_failure_case_selected(
     };
     let directory = TestDirectory::new();
     std::fs::create_dir(directory.0.join("empty")).unwrap();
+    assert_eq!(ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst), 0);
+    assert_eq!(ALIAS_FAILURE_CALLBACK_COMPLETIONS.load(Ordering::SeqCst), 0);
+    assert!(!ALIAS_FAILURE_CALLBACK_RESUMED.load(Ordering::SeqCst));
+    let at_eof = fault.case() == alias_failure::Case::CleanupAtEof;
     let program_source = format!(
-        "#define ALIAS_PAGE_COUNT {}\n{}",
+        "#define ALIAS_PAGE_COUNT {}\n#define ALIAS_AT_EOF {}\n{}",
         fault.pages(),
+        u8::from(at_eof),
         GETDENTS_ALIAS_FAILURE_PROGRAM,
     );
     let program = compile_c_program(&directory.0, "alias-failure", &program_source);
@@ -247,6 +308,11 @@ fn getdents64_alias_failure_case_selected(
         .output()
         .unwrap();
     assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert!(native.stderr.is_empty(), "{native:?}");
+    assert!(
+        !native.stdout.is_empty(),
+        "native alias oracle emitted no result"
+    );
     assert_eq!(std::fs::read(&marker).unwrap(), b"resumed");
     std::fs::remove_file(&marker).unwrap();
     let mut backend = KvmBackend::new(64 * 1024 * 1024).unwrap();
@@ -265,21 +331,44 @@ fn getdents64_alias_failure_case_selected(
     } else {
         backend.run_static_elf_captured()
     };
-    fault.assert_fired();
+    let preceding_calls = if at_eof { 2 } else { 0 };
+    let callbacks = ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst);
+    let completions = ALIAS_FAILURE_CALLBACK_COMPLETIONS.load(Ordering::SeqCst);
+    let resumed = ALIAS_FAILURE_CALLBACK_RESUMED.load(Ordering::SeqCst);
+    assert_eq!(callbacks, u64::from(with_tool) * (preceding_calls + 1));
+    if fault.succeeds() {
+        // The host allocator really contended for the still-owned target and
+        // received EEXIST. The guest syscall must nonetheless complete with
+        // exactly the native bytes and directory cursor, through either path.
+        let (code, stdout, stderr) = result.unwrap();
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&stdout));
+        assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(
+            stdout, native.stdout,
+            "atomic allocator contention changed copyout"
+        );
+        assert_eq!(std::fs::read(&marker).unwrap(), b"resumed");
+        assert_eq!(completions, u64::from(with_tool));
+        assert_eq!(resumed, with_tool);
+        backend.memory().unwrap().read(0, &mut [0]).unwrap();
+        drop(backend);
+        fault.assert_fired();
+        eprintln!(
+            "atomic alias completed with_tool={with_tool}: callbacks={callbacks} completions={completions} guest_marker=true"
+        );
+        return;
+    }
     eprintln!(
-        "alias refusal observation: result={result:?} callbacks={} resumed={} guest_marker={}",
-        ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst),
-        ALIAS_FAILURE_CALLBACK_RESUMED.load(Ordering::SeqCst),
+        "\nalias refusal observation: result={result:?} callbacks={callbacks} completions={completions} resumed={resumed} guest_marker={}",
         marker.exists(),
     );
     let error = result.unwrap_err();
     let cause = fault.cause(&error).unwrap_or_else(|| panic!("{error:?}"));
     assert!(!marker.exists(), "guest resumed after supervisor failure");
-    assert_eq!(
-        ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst),
-        u64::from(with_tool)
-    );
-    assert!(!ALIAS_FAILURE_CALLBACK_RESUMED.load(Ordering::SeqCst));
+    // The EOF setup has two successful small reads before the targeted alias.
+    // Neither the failed syscall nor its Tool injection may resume afterwards.
+    assert_eq!(completions, u64::from(with_tool) * preceding_calls);
+    assert_eq!(resumed, with_tool && preceding_calls != 0);
     let refused = backend
         .memory()
         .expect("completed alias-failure run must release memory access admission")
@@ -292,20 +381,29 @@ fn getdents64_alias_failure_case_selected(
             .unwrap_or_else(|| panic!("{refused:?}"))
     ));
     eprintln!(
-        "terminal alias failure with_tool={with_tool}: {error}; callbacks={} resumed=false",
-        ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst)
+        "terminal alias failure with_tool={with_tool}: {error}; callbacks={callbacks} completions={completions} preceding_calls={preceding_calls}"
     );
+    drop(refused);
+    drop(error);
+    drop(backend);
+    // Keep interception live through ordinary teardown: an erroneous later
+    // cleanup must still fail the exact ownership/duplicate-attempt counters.
+    fault.assert_fired();
 }
 
 const GETDENTS_ALIAS_FAILURE_PROGRAM: &str = r#"
 #define _GNU_SOURCE
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #ifndef ALIAS_PAGE_COUNT
 #define ALIAS_PAGE_COUNT 3
+#endif
+#ifndef ALIAS_AT_EOF
+#define ALIAS_AT_EOF 0
 #endif
 #define ALIAS_BYTES (ALIAS_PAGE_COUNT * 4096)
 #define CHECK(x) do { if (!(x)) return 93; } while (0)
@@ -317,9 +415,27 @@ int main(void) {
                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(p != MAP_FAILED);
     memset(p, 0xa5, ALIAS_BYTES);
-    for (int page = 1; page < ALIAS_PAGE_COUNT; page += 2)
-        CHECK(mprotect(p + page * 4096, 4096, PROT_NONE) == 0);
-    (void)syscall(SYS_getdents64, fd, p, ALIAS_BYTES);
+    if (ALIAS_AT_EOF) {
+        unsigned char small[256];
+        long count = syscall(SYS_getdents64, fd, small, sizeof(small));
+        CHECK(count > 0 && count <= (long)sizeof(small));
+        CHECK(syscall(SYS_getdents64, fd, small, sizeof(small)) == 0);
+        CHECK(mprotect(p, ALIAS_BYTES, PROT_NONE) == 0);
+    } else {
+        for (int page = 1; page < ALIAS_PAGE_COUNT; page += 2)
+            CHECK(mprotect(p + page * 4096, 4096, PROT_NONE) == 0);
+    }
+    long count = syscall(SYS_getdents64, fd, p, ALIAS_BYTES);
+    CHECK(ALIAS_AT_EOF ? count == 0 : count > 0 && count <= 4096);
+    off_t cursor = lseek(fd, 0, SEEK_CUR);
+    CHECK(cursor > 0);
+    printf("count=%ld cursor=%lld\n", count, (long long)cursor);
+    if (!ALIAS_AT_EOF) {
+        for (int page = 0; page < ALIAS_PAGE_COUNT; page += 2) {
+            for (int i = 0; i < 4096; i++) printf("%02x", p[page * 4096 + i]);
+            putchar('\n');
+        }
+    }
     int marker = open("guest-continued", O_WRONLY | O_CREAT | O_EXCL, 0600);
     CHECK(marker >= 0 && write(marker, "resumed", 7) == 7);
     return 0;
@@ -11038,6 +11154,22 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "getdents64_consumes_low_descriptor_words_on_kvm",
         "getdents64_alias_resource_failure_stops_direct_guest",
         "getdents64_alias_resource_failure_stops_tool_and_guest",
+        "getdents64_alias_foreign_mapping_stops_direct_guest",
+        "getdents64_alias_foreign_mapping_stops_tool_and_guest",
+        "getdents64_alias_atomic_collision_completes_direct_guest",
+        "getdents64_alias_atomic_collision_completes_tool_and_guest",
+        "getdents64_alias_cleanup_failure_stops_direct_guest",
+        "getdents64_alias_cleanup_failure_stops_tool_and_guest",
+        "getdents64_alias_unexpected_address_stops_direct_guest",
+        "getdents64_alias_unexpected_address_stops_tool_and_guest",
+        "getdents64_alias_middle_extent_stops_direct_guest",
+        "getdents64_alias_middle_extent_stops_tool_and_guest",
+        "getdents64_alias_construction_cleanup_stops_direct_guest",
+        "getdents64_alias_construction_cleanup_stops_tool_and_guest",
+        "getdents64_alias_suffix_cleanup_stops_direct_guest",
+        "getdents64_alias_suffix_cleanup_stops_tool_and_guest",
+        "getdents64_alias_eof_cleanup_stops_direct_guest",
+        "getdents64_alias_eof_cleanup_stops_tool_and_guest",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
@@ -11067,7 +11199,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
                     .contains(&format!("skipping {test}: cannot open /dev/kvm")),
                 "{optional:?}"
             );
-            eprintln!("device-denial contract {test}: required=101 optional=0");
+            eprintln!("\ndevice-denial contract {test}: required=101 optional=0");
         }
     }
 }
@@ -18665,10 +18797,107 @@ fn getdents64_consumes_low_descriptor_words_on_kvm() {
          getdents64 policy=synthetic-proc rows=100 zero-before-buffer unchanged\n\
          getdents64 checked calls=874\n"
     );
+    // Retain the exact legacy prefix. The additive raw-count rows contain the
+    // complete native arena and continuation bytes, not a digest or filtered
+    // field comparison. C also compares each raw count to its canonical pair.
+    let raw_native = native_text.strip_prefix(native_expected.as_str()).unwrap();
+    assert!(raw_native.len() <= 512 * 1024, "bounded raw-count output");
+    let mut raw_prefixes = Vec::new();
+    let mut add_raw_prefix =
+        |kind: &str, upper: u64, low: u32, start: i32, pointer: i32, prefix: u32, protect: i32| {
+            let row = raw_prefixes.len();
+            raw_prefixes.push((
+                format!(
+                    "getdents64 raw-count row={row:03} kind={kind} upper={upper:016x} low={low} \
+                     start={start} pointer={pointer} prefix={prefix} protect={protect} "
+                ),
+                if protect < 0 { 288 } else { 8192 },
+            ));
+        };
+    for upper in [0_u64, 1_u64 << 32, 1_u64 << 63, 0xffff_ffff_0000_0000] {
+        for low in [0, 1, 23, 24, 128] {
+            for start in [0, 1] {
+                for pointer in [0, 1] {
+                    add_raw_prefix("directory", upper, low, start, pointer, 16, -1);
+                }
+            }
+        }
+    }
+    for upper in [0_u64, 1_u64 << 32, 1_u64 << 63, 0xffff_ffff_0000_0000] {
+        for low in [0, 1, 24, 128] {
+            for kind in ["closed", "opath", "regular"] {
+                for pointer in [0, 1] {
+                    add_raw_prefix(kind, upper, low, 0, pointer, 16, -1);
+                }
+            }
+        }
+    }
+    for protect in [0, 1] {
+        for prefix in [0, 24, 48] {
+            for start in [0, 1] {
+                add_raw_prefix("partial", 1_u64 << 32, 128, start, 0, prefix, protect);
+            }
+        }
+    }
+    assert_eq!(raw_prefixes.len(), 188);
+    let mut raw_lines = raw_native.split('\n');
+    let check_hex = |value: &str, digits: usize| {
+        assert_eq!(value.len(), digits);
+        assert!(
+            value
+                .bytes()
+                .all(|byte| { byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte) })
+        );
+    };
+    for (prefix, arena_bytes) in &raw_prefixes {
+        let row = raw_lines
+            .next()
+            .unwrap()
+            .strip_prefix(prefix.as_str())
+            .unwrap();
+        let (returned, bytes) = row.split_once(" bytes=").unwrap();
+        let returned: Vec<_> = returned.split(' ').collect();
+        assert_eq!(returned.len(), 3);
+        let result = returned[0]
+            .strip_prefix("result=")
+            .unwrap()
+            .parse::<i64>()
+            .unwrap();
+        assert!((-1..=128).contains(&result));
+        let errno = returned[1]
+            .strip_prefix("errno=")
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        assert!(errno >= 0);
+        let cursor = returned[2].strip_prefix("cursor=").unwrap();
+        check_hex(cursor, 16);
+        assert!(u64::from_str_radix(cursor, 16).unwrap() <= i64::MAX as u64);
+        let (arena, retry) = bytes.split_once(" retry=").unwrap();
+        check_hex(arena, 2 * arena_bytes);
+        let (retried, retry_bytes) = retry.split_once(" retry_bytes=").unwrap();
+        let retried: Vec<_> = retried.split(' ').collect();
+        assert_eq!(retried.len(), 3);
+        let retry_result = retried[0].parse::<i64>().unwrap();
+        assert!((0..=256).contains(&retry_result));
+        assert_eq!(retried[1], "errno=0");
+        let retry_cursor = retried[2].strip_prefix("cursor=").unwrap();
+        check_hex(retry_cursor, 16);
+        assert!(u64::from_str_radix(retry_cursor, 16).unwrap() <= i64::MAX as u64);
+        check_hex(retry_bytes, 2 * 288);
+    }
+    assert_eq!(
+        raw_lines.next(),
+        Some("getdents64 raw-count checked rows=188 calls=754")
+    );
+    assert_eq!(raw_lines.next(), Some(""));
+    assert_eq!(raw_lines.next(), None);
+    let native_expected = format!("{native_expected}{raw_native}");
+    let guest_expected = format!("{guest_expected}{raw_native}");
     assert_eq!(native.stdout, native_expected.as_bytes());
     assert!(native.stderr.is_empty(), "{native:?}");
     eprintln!(
-        "getdents64 native calls=874 seconds={} stdout={}",
+        "getdents64 native calls=874 raw_count_calls=754 total=1628 seconds={} stdout={}",
         start.elapsed().as_secs_f64(),
         String::from_utf8_lossy(&native.stdout)
     );
@@ -18694,7 +18923,7 @@ fn getdents64_consumes_low_descriptor_words_on_kvm() {
             .unwrap();
         // StraceTool reinjects the syscall's unchanged raw arguments; typed
         // getters do not rewrite their storage. Both modes therefore exercise
-        // high descriptor bits, with Tool callback counts checked separately.
+        // high descriptor/count bits, with exact Tool callback totals checked.
         let (code, stdout, stderr, tool_calls) = if tool_owned {
             let (log, code, stdout, stderr) = futures::executor::block_on(
                 backend.run_static_elf_with_tool::<StraceTool>((), true),
@@ -18727,11 +18956,15 @@ fn getdents64_consumes_low_descriptor_words_on_kvm() {
             "tool_owned={tool_owned} repetition={repetition}: {stderr:?}"
         );
         if let Some(calls) = tool_calls {
-            assert_eq!(calls, 874, "actual getdents64 Tool callbacks");
+            assert_eq!(
+                calls,
+                874 + 754,
+                "legacy plus raw-count getdents64 Tool callbacks"
+            );
         }
         eprintln!(
             "getdents64 tool_owned={tool_owned} repetition={repetition} \
-             calls=874 tool_calls={tool_calls:?} seconds={} stdout={}",
+             calls=874 raw_count_calls=754 total=1628 tool_calls={tool_calls:?} seconds={} stdout={}",
             start.elapsed().as_secs_f64(),
             String::from_utf8_lossy(&stdout)
         );
