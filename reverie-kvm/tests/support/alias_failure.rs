@@ -6,6 +6,36 @@ pub(crate) struct Fault {
     count: unsafe extern "C" fn(i32) -> libc::c_ulong,
 }
 
+struct TestDirectory {
+    path: std::path::PathBuf,
+    removed: bool,
+}
+
+impl TestDirectory {
+    fn new(path: std::path::PathBuf) -> std::io::Result<Self> {
+        std::fs::create_dir(&path)?;
+        Ok(Self {
+            path,
+            removed: false,
+        })
+    }
+
+    fn close(mut self) -> std::io::Result<()> {
+        std::fs::remove_dir_all(&self.path)?;
+        self.removed = true;
+        Ok(())
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        if !self.removed {
+            // Keep the original failure if compilation or child setup panics.
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 pub(crate) fn child(test: &str) -> Option<Fault> {
     if std::env::var("REVERIE_ALIAS_FAILURE_TEST").as_deref() == Ok(test) {
         let stage = std::env::var("REVERIE_ALIAS_FAILURE_STAGE")
@@ -27,13 +57,20 @@ pub(crate) fn child(test: &str) -> Option<Fault> {
         };
         return Some(Fault { stage, arm, count });
     }
-    let directory = std::env::temp_dir().join(format!(
+    let directory = TestDirectory::new(std::env::temp_dir().join(format!(
         "reverie-alias-failure-{}-{}",
         std::process::id(),
         test.replace(':', "_")
-    ));
-    std::fs::create_dir(&directory).unwrap();
-    let library = directory.join("fault.so");
+    )))
+    .unwrap();
+    let library = directory.path.join("fault.so");
+    // A remotely built test may run with fixtures under a different root.
+    let source = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+            std::path::PathBuf::from,
+        )
+        .join("tests/fixtures/getdents_alias_failure.c");
     let build = std::process::Command::new("timeout")
         .args([
             "--kill-after=2s",
@@ -43,10 +80,7 @@ pub(crate) fn child(test: &str) -> Option<Fault> {
             "-shared",
             "-fPIC",
         ])
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/getdents_alias_failure.c"
-        ))
+        .arg(source)
         .arg("-o")
         .arg(&library)
         .output()
@@ -63,7 +97,7 @@ pub(crate) fn child(test: &str) -> Option<Fault> {
             .output()
             .unwrap()
     });
-    std::fs::remove_dir_all(directory).unwrap();
+    directory.close().unwrap();
     for (stage, output) in outputs.iter().enumerate() {
         eprintln!("stage={} {output:?}", stage + 1);
     }
