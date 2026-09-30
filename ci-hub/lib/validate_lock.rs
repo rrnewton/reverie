@@ -15664,6 +15664,20 @@ exit 0
         assert_eq!(duplicate.state, ImmediateAdmissionState::Busy);
         assert_eq!(duplicate.reason_code, "exact-target-already-running");
         drop(exact);
+        // The next bracket needs slot zero FREE with a cleanup record on it. A
+        // dropped anchor stays held while any other thread of this test binary
+        // is between `fork` and `exec` with a copy of its descriptor; see
+        // `box_anchor_admits_one_and_refuses_the_second`. Wait out that window
+        // with the same 5 s bound, so the bracket measures the record and not
+        // the window.
+        let released_by = Instant::now() + Duration::from_secs(5);
+        while BoxExclusionAnchor::observe(&paths.slot_anchor(0)) != BoxAnchorObservation::Free {
+            assert!(
+                Instant::now() < released_by,
+                "slot zero was still held 5 s after the fixture dropped it"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
 
         let unregistered_cleanup = CleanupRecord::new(
             "interrupted-slot-zero",
@@ -16046,6 +16060,39 @@ exit 0
         let _ = fs::remove_dir_all(record.parent().unwrap());
     }
 
+    /// Take a global turn right after the test dropped the previous holder.
+    ///
+    /// A dropped anchor stays held while any other thread of this test binary
+    /// is between `fork` and `exec` with a copy of its descriptor; see
+    /// `box_anchor_admits_one_and_refuses_the_second`. Only `Held` is retried,
+    /// for at most 5 s, exactly as
+    /// `lower_priority_yields_without_preempting_live_holder` does; every other
+    /// outcome is the answer under test and fails at once.
+    fn acquire_after_release(
+        lock: &ValidateLock,
+        args: &RunArgs,
+        owner: &ProcessOwner,
+        attribution: &str,
+        failure: &str,
+    ) -> Vec<BoxExclusionAnchor> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match lock
+                .try_global_turn(args, owner, attribution, true)
+                .unwrap()
+            {
+                GlobalTurn::Acquired { anchors, .. } => return anchors,
+                GlobalTurn::Held(_) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                GlobalTurn::Held(holders) => {
+                    panic!("{failure}: still held 5 s after the release: {holders}")
+                }
+                _ => panic!("{failure}"),
+            }
+        }
+    }
+
     fn global_queue_run_args(agent: &str, target: &str) -> RunArgs {
         RunArgs {
             agent: agent.into(),
@@ -16187,13 +16234,13 @@ exit 0
         assert_eq!(queue[1].agent, routine.agent);
 
         drop(routine_anchor);
-        let watch_anchor = match lock
-            .try_global_turn(&watch, &owner, "fixture=watch", true)
-            .unwrap()
-        {
-            GlobalTurn::Acquired { anchors, .. } => anchors,
-            _ => panic!("owner watch did not jump the retained waiter"),
-        };
+        let watch_anchor = acquire_after_release(
+            &lock,
+            &watch,
+            &owner,
+            "fixture=watch",
+            "owner watch did not jump the retained waiter",
+        );
         assert!(lock
             .read_global_queue()
             .unwrap()
@@ -16201,13 +16248,13 @@ exit 0
             .any(|entry| entry.matches(&routine.agent, routine.kind, &routine.target)));
         drop(watch_anchor);
 
-        let resumed = match lock
-            .try_global_turn(&routine, &owner, "fixture=routine", true)
-            .unwrap()
-        {
-            GlobalTurn::Acquired { anchors, .. } => anchors,
-            _ => panic!("retained waiter did not resume after owner watch release"),
-        };
+        let resumed = acquire_after_release(
+            &lock,
+            &routine,
+            &owner,
+            "fixture=routine",
+            "retained waiter did not resume after owner watch release",
+        );
         assert!(lock.read_global_queue().unwrap().is_empty());
         drop(resumed);
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
