@@ -184,43 +184,30 @@ inspect the running system and prove that no live agent process uses the slot;
 moving a live slot invalidates the session's hook paths while the agent is still
 running. If liveness cannot be established, leave the slot in place.
 
-## ⚠️ Never commit to `dev-hermit` from the shared parent checkout
+## Commit dev-hermit work from the shared parent checkout
 
-`/home/newton/work/dev-hermit` is the tree every agent reaches for first. It is
-routinely dirty with **several agents' uncommitted work at once** and drifts a
-long way behind the remote — measured on 2026-08-25: four foreign modified paths
-and **166 commits behind** `origin/main`, at the same moment three agents were
-pushing. **Three of that night's worst incidents came out of this checkout.**
+Owner directive, 2026-09-30: `/home/newton/work/dev-hermit` is the team's shared
+working tree, used almost like a shared network file system. Commit parent work
+(new experiments, `ai_docs/`, tooling) directly from it, and **push and pull
+frequently**, so the output of the teams on devbig014 and devbig030 is merged
+on `origin/main`. `dev-hermit` and `agent-utils` are **main-only**: there is no
+pull request, so the push is the review.
 
-Committing from it is how a neighbour's half-finished edit gets swept into an
-unrelated landing, and how a landing arrives on top of a base nobody tested.
-Neither is visible in the diff you are reading.
+Keep the shared tree safe while you use it:
 
-**Land from a clean detached worktree instead.** One command, no cost:
+- Pull before you start and again right before you commit
+  (`git fetch origin main && git merge --ff-only origin/main`, or
+  `git pull --rebase`), so every commit sits on a current base.
+- Stage only the paths you changed (`git add <paths>`; never `git add -A` or
+  `git commit -a`), and check that `git diff --cached --stat` shows nothing of
+  anyone else's.
+- Push with `ci-hub/bin/git-push-verified origin HEAD:main`, which lists dirty
+  paths that are not part of your push, then read the result back from
+  `origin/main`.
+- Use a detached worktree only for an especially risky change, or when the
+  shared checkout is mid-rebase or has conflicting edits in the paths you need.
 
-```bash
-git worktree add --detach /tmp/<name> origin/main
-cd /tmp/<name>
-# make your change
-git add <only the paths you own>     # never `git add -A` in a shared tree
-git commit -F <message-file>
-ci-hub/bin/git-push-verified origin HEAD:main
-git worktree remove /tmp/<name>
-```
-
-A clean worktree at `origin/main` **cannot** pick up a neighbour's edit, because
-the neighbour's edit is not in it. You also get a current base instead of a stale
-one, and `git status` becomes a real signal again.
-
-This applies to `dev-hermit` and `agent-utils`, which are **main-only** — there is
-no pull request to catch the mistake, so the push is the whole review.
-
-`ci-hub/bin/git-push-verified` now names the condition immediately before pushing,
-listing the dirty paths that are **not part of your push**. It warns; it does not
-block, because a tree is sometimes dirty for good reasons. Treat the warning as
-the weaker instrument and use the worktree.
-
-Two related rules that fail the same way:
+Two landing rules:
 
 - **`gh pr merge` has no push-verified equivalent.** After any merge, read the
   tree: diff the files the branch touched against `origin/main` and require
