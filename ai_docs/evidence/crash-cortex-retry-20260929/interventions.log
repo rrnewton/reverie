@@ -1,0 +1,2 @@
+2026-09-29T23:18:35Z INTERVENTION: killed investigating agent's Bash child 'find / -maxdepth 7 -name clang-[0-9]* -type f' (pid 2212238), running since ~23:03:1xZ (~14 min, crawling Eden mounts); agent otherwise untouched
+2026-09-30T00:02:14Z INTERVENTION 2: killed investigating agent's Bash child 'find / -path /proc -prune -o -iname kverify*.md -print' (pid 3003824), running ~12.5 min (agent looking for the /kverify prompt, which is not an installed skill); agent otherwise untouched

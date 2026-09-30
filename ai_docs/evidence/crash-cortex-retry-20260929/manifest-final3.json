@@ -1,0 +1,103 @@
+{
+  "agent_secs": 0.0,
+  "child_cpu_sys_secs": 0.010817,
+  "child_cpu_user_secs": 0.010445,
+  "generated_at": 1790730946.9250836,
+  "kernel_checkout": "/home/newton/local/linux",
+  "kernel_worktree": "",
+  "log_dir": "/tmp/kinv-logs/4594a5b341d127cd2b03b68e269b9a23",
+  "mid": "4594a5b341d127cd2b03b68e269b9a23",
+  "outputs": [
+    {
+      "kind": "local_file",
+      "location": "/tmp/kinv-logs/4594a5b341d127cd2b03b68e269b9a23/report.md",
+      "size_bytes": 17256
+    },
+    {
+      "kind": "local_file",
+      "location": "/tmp/kinv-logs/4594a5b341d127cd2b03b68e269b9a23/kernel_fix.patch",
+      "size_bytes": 2806
+    },
+    {
+      "kind": "local_file",
+      "location": "/tmp/kinv-logs/4594a5b341d127cd2b03b68e269b9a23/theories.md",
+      "size_bytes": 3504
+    },
+    {
+      "kind": "local_file",
+      "location": "/tmp/kinv-logs/4594a5b341d127cd2b03b68e269b9a23/baseline_full_serial.log",
+      "size_bytes": 47866
+    },
+    {
+      "kind": "local_file",
+      "location": "/tmp/kinv-logs/4594a5b341d127cd2b03b68e269b9a23/baseline_result.txt",
+      "size_bytes": 4543
+    },
+    {
+      "kind": "local_file",
+      "location": "/tmp/kinv-logs/4594a5b341d127cd2b03b68e269b9a23/fix_full_serial.log",
+      "size_bytes": 29598
+    },
+    {
+      "kind": "local_file",
+      "location": "/tmp/kinv-logs/4594a5b341d127cd2b03b68e269b9a23/fix_result.txt",
+      "size_bytes": 2314
+    }
+  ],
+  "project_dirs_touched": [
+    "-data-users-newton-linux-worktrees-4594a5b341d127cd"
+  ],
+  "schema_version": "1",
+  "sessions": [
+    {
+      "agent_type": "",
+      "models": [
+        "claude-opus-4-8"
+      ],
+      "parent_session_id": "",
+      "phase": "investigate",
+      "project_dir": "-data-users-newton-linux-worktrees-4594a5b341d127cd",
+      "role": "leadagent",
+      "session_id": "2aa5bcf2-5f70-4936-a509-4304fbe3dc8a",
+      "transcript_path": "/home/newton/.claude/projects/-data-users-newton-linux-worktrees-4594a5b341d127cd/2aa5bcf2-5f70-4936-a509-4304fbe3dc8a.jsonl",
+      "usage": {
+        "cache_creation_tokens": 376513,
+        "cache_read_tokens": 23043251,
+        "input_tokens": 184,
+        "output_tokens": 195648,
+        "records": 92,
+        "total": 23615596
+      }
+    },
+    {
+      "agent_type": "general-purpose",
+      "models": [
+        "claude-opus-4-8"
+      ],
+      "parent_session_id": "2aa5bcf2-5f70-4936-a509-4304fbe3dc8a",
+      "phase": "investigate",
+      "project_dir": "-data-users-newton-linux-worktrees-4594a5b341d127cd",
+      "role": "subagent",
+      "session_id": "agent-aebe614fa3badfb6e",
+      "transcript_path": "/home/newton/.claude/projects/-data-users-newton-linux-worktrees-4594a5b341d127cd/2aa5bcf2-5f70-4936-a509-4304fbe3dc8a/subagents/agent-aebe614fa3badfb6e.jsonl",
+      "usage": {
+        "cache_creation_tokens": 58588,
+        "cache_read_tokens": 342629,
+        "input_tokens": 18,
+        "output_tokens": 30,
+        "records": 9,
+        "total": 401265
+      }
+    }
+  ],
+  "totals": {
+    "cache_creation_tokens": 435101,
+    "cache_read_tokens": 23385880,
+    "input_tokens": 202,
+    "output_tokens": 195678,
+    "records": 101,
+    "total": 24016861
+  },
+  "unattributed_transcripts": [],
+  "wall_secs": 5389.743083000183
+}
