@@ -1603,18 +1603,23 @@ async fn trap_only_p2_t7c_foreign_int_0x80_dies_of_sigsys() {
 /// T7c with a precise timer past its target: the fixture's `late_timer`
 /// child arms a timer far beyond any skid margin, blocks the timer's signal
 /// so that no notification is ever handled, and runs well past the target.
-/// A foreign `int 0x80` then records no skid-overshoot witness under
-/// trap-only, as under plain ptrace, whose filter kills the process with no
-/// stop. The control, an ordinary getpid in the same place, is a stop both
-/// backends report, and it records exactly one witness under each; it shows
-/// that the timer really was due when the child reached its last
-/// instruction.
+/// A foreign `int 0x80` then ends the child under plain ptrace with no stop:
+/// its filter kills the process. The event is still undecided when the
+/// thread exits, so `Timer::settle_at_exit` records exactly one
+/// skid-overshoot witness. Trap-only must leave the event to that same exit
+/// rather than decide it at the `int 0x80` trap, a stop plain ptrace never
+/// reports: it too records exactly one witness and, like plain ptrace, no
+/// host-timed outcome, where deciding the event at the trap would count a
+/// preempted overflow. The control, an ordinary getpid in the same place, is
+/// a stop both backends report: it records exactly one witness under each,
+/// at that stop, with one preempted overflow; it shows that the timer really
+/// was due when the child reached its last instruction.
 ///
 /// The witness count is process-global and other tests in this binary can
 /// write it, so the runs happen in a fresh exact-test process, as in
 /// `tracer::tests::precise_timer_delivery_reaches_tool`.
 #[tokio::test(flavor = "current_thread")]
-async fn trap_only_p2_t7c_foreign_int_0x80_past_a_timer_target_is_not_witnessed() {
+async fn trap_only_p2_t7c_foreign_int_0x80_past_a_timer_target_is_witnessed_at_exit() {
     const LATE_TIMER_CHILD: &str = "REVERIE_PTRACE_P2_LATE_TIMER_CHILD";
     if std::env::var_os(LATE_TIMER_CHILD).is_some() {
         compare_late_timer_witnesses().await;
@@ -1631,7 +1636,7 @@ async fn trap_only_p2_t7c_foreign_int_0x80_past_a_timer_target_is_not_witnessed(
         .args([
             "--exact",
             &format!(
-                "{module}::trap_only_p2_t7c_foreign_int_0x80_past_a_timer_target_is_not_witnessed"
+                "{module}::trap_only_p2_t7c_foreign_int_0x80_past_a_timer_target_is_witnessed_at_exit"
             ),
             "--nocapture",
             "--test-threads=1",
@@ -1649,9 +1654,11 @@ async fn trap_only_p2_t7c_foreign_int_0x80_past_a_timer_target_is_not_witnessed(
 
 /// The late-timer runs, in the exact-test child process that owns the
 /// witness count: each mode under plain ptrace and under trap-only, with the
-/// witnesses and the host-timed timer outcomes each run recorded. The only
-/// host-timed outcome expected is the control's: its getpid stop decides
-/// the event after the overflow was due and its signal was never handled.
+/// witnesses and the host-timed timer outcomes each run recorded. Each mode
+/// records one witness under each backend: the `int 0x80` mode at the
+/// thread's exit, the control at its getpid stop. The only host-timed
+/// outcome expected is the control's: its getpid stop decides the event
+/// after the overflow was due and its signal was never handled.
 async fn compare_late_timer_witnesses() {
     let preempted = crate::timer::HostTimedTimerEvents {
         preempted_overflow: 1,
@@ -1661,7 +1668,7 @@ async fn compare_late_timer_witnesses() {
         (
             "late_timer_int80",
             "child signaled=1 termsig=31 exited=0 status=0",
-            0,
+            1,
             Default::default(),
         ),
         (
