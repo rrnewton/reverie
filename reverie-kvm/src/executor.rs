@@ -38161,6 +38161,82 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn getdents64_alias_foreign_mapping_is_terminal_before_directory_io() {
+        getdents64_alias_ownership_failure_case(
+            "executor::tests::getdents64_alias_foreign_mapping_is_terminal_before_directory_io",
+            crate::alias_failure::Case::Foreign,
+        );
+    }
+
+    #[test]
+    fn getdents64_alias_noreplace_collision_is_terminal_before_directory_io() {
+        getdents64_alias_ownership_failure_case(
+            "executor::tests::getdents64_alias_noreplace_collision_is_terminal_before_directory_io",
+            crate::alias_failure::Case::Collision,
+        );
+    }
+
+    #[test]
+    fn getdents64_alias_explicit_unmap_failure_is_terminal_before_directory_io() {
+        getdents64_alias_ownership_failure_case(
+            "executor::tests::getdents64_alias_explicit_unmap_failure_is_terminal_before_directory_io",
+            crate::alias_failure::Case::Unmap,
+        );
+    }
+
+    #[test]
+    fn getdents64_alias_unexpected_address_is_terminal_before_directory_io() {
+        getdents64_alias_ownership_failure_case(
+            "executor::tests::getdents64_alias_unexpected_address_is_terminal_before_directory_io",
+            crate::alias_failure::Case::WrongAddress,
+        );
+    }
+
+    #[test]
+    fn getdents64_alias_middle_extent_is_terminal_before_directory_io() {
+        getdents64_alias_ownership_failure_case(
+            "executor::tests::getdents64_alias_middle_extent_is_terminal_before_directory_io",
+            crate::alias_failure::Case::MiddleExtent,
+        );
+    }
+
+    fn getdents64_alias_ownership_failure_case(test: &str, case: crate::alias_failure::Case) {
+        let Some(fault) = crate::alias_failure::child_case(test, case) else {
+            return;
+        };
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut directory = std::fs::File::open(&root.0).unwrap();
+        state.files.insert(0, directory.try_clone().unwrap());
+        let length = fault.pages() * PAGE_SIZE as usize;
+        let mut memory = GuestMemory::new(0, length).unwrap();
+        memory.write_raw(0, &vec![0xa5; length]).unwrap();
+        for page in (0..fault.pages()).step_by(2) {
+            memory
+                .map_user_range(page as u64 * PAGE_SIZE, PAGE_SIZE, false)
+                .unwrap();
+        }
+        memory.enable_user_access();
+        let before = directory.stream_position().unwrap();
+        fault.arm();
+        let _transport_only = getdents64(&mut memory, &state, &[0, 0, length as u64, 0, 0, 0]);
+        fault.assert_fired();
+        let pending = memory.entry_gate().pending_failure().unwrap();
+        let error = pending.error();
+        let cause = fault.cause(&error).unwrap_or_else(|| panic!("{error:?}"));
+        assert_eq!(directory.stream_position().unwrap(), before);
+        assert_eq!(memory.entry_gate().test_state().copies, 0);
+        assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
+        let refused = memory.write_raw(0, b"ordinary result").unwrap_err();
+        assert!(std::ptr::eq(
+            cause,
+            fault
+                .cause(&refused)
+                .unwrap_or_else(|| panic!("{refused:?}"))
+        ));
+    }
+
     const GETDENTS64_UPPER_WORDS: [u64; 5] = [
         0,
         1 << 32,
