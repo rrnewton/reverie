@@ -44,8 +44,10 @@ MANIFEST_SCHEMA = "hermit-test-ledger-scorecard-cells/v1"
 # A publication that writes the scorecard history refuses, before the writer
 # changes, any generated file or history part over this size (mirror._copy_back):
 # more than twice below GitHub's 100 MiB refusal, and below its 50 MiB warning.
-# latest.json, which mirror.py writes itself, and a legacy export's archive are
-# not checked.
+# The same commit's other files are not checked against it: latest.json, which
+# mirror._publish_scorecard writes itself; the finalized-proof carrier files,
+# which finalized_proof bounds only at ARTIFACT_BYTES_PER_ROW (256 MiB); and a
+# legacy export's archive.
 FILE_CEILING_BYTES = 48 * 1024 * 1024
 PART_MAX_BYTES = FILE_CEILING_BYTES
 MAX_PARTS = 10_000

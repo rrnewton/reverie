@@ -973,8 +973,10 @@ def _copy_back(copy: Path, writer: Path, base: str, paths: Sequence[Path], view:
     The generated scorecard/cells.json is stored in parts (scorecard_cells).
     When the renderer generated it, every generated file and every part is
     checked against scorecard_cells.FILE_CEILING_BYTES before anything is
-    written. A legacy export (no history) keeps its archive whole and
-    unchecked, and latest.json is written later, by the caller.
+    written. Nothing else in the commit is checked against it: a legacy
+    export (no history) keeps its archive whole, and _publish_scorecard later
+    writes latest.json and, through finish_portable_proof, any finalized-proof
+    carrier files.
     """
     if _copy_git(copy, "rev-parse", "HEAD^{commit}") != base:
         raise MirrorRefused("scorecard tool moved the HEAD of its ledger copy; nothing was copied "

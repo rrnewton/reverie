@@ -2192,12 +2192,15 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual("published", self.publish()["state"])
         config = Path(os.environ["GIT_CONFIG_GLOBAL"])
         user_config = config.read_text()
+        system_config = self.root / "system-gitconfig"
+        system_config.write_text("[core]\n useReplaceRefs = false\n")
         settings = (
             ("GIT_NO_REPLACE_OBJECTS", {"GIT_NO_REPLACE_OBJECTS": "1"}, ""),
             ("GIT_REPLACE_REF_BASE", {"GIT_REPLACE_REF_BASE": "refs/elsewhere/"}, ""),
             ("user configuration", {}, "[core]\n useReplaceRefs = false\n"),
             ("GIT_CONFIG_COUNT", {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.useReplaceRefs",
                                   "GIT_CONFIG_VALUE_0": "false"}, ""),
+            ("system configuration", {"GIT_CONFIG_SYSTEM": str(system_config), "GIT_CONFIG_NOSYSTEM": "0"}, ""),
         )
         for step, (label, variables, configuration) in enumerate(settings):
             with self.subTest(label):
@@ -2251,25 +2254,51 @@ class DirectLedgerFixture(unittest.TestCase):
         return install
 
     def test_a_view_showing_other_bytes_is_refused_before_rendering(self):
-        # The checked-out bytes are compared first. The copy is checked clean,
-        # so the view's `HEAD:scorecard/cells.json` check would refuse this
-        # view too; the message names the check that refused it.
+        # The checked-out bytes are compared first. [forged view]: the view
+        # itself shows other bytes, so the `HEAD:scorecard/cells.json` check
+        # would refuse it too; the message names the check that refused it.
+        # [attributes file]: only the checked-out bytes differ. Git reads a
+        # user attributes file even with GIT_CONFIG_GLOBAL=/dev/null, and
+        # `text eol=crlf` makes the checkout write CRLF; `git status` compares
+        # after the check-in conversion, so the copy is still clean, and the
+        # view still shows the stored history. Without the comparison the
+        # renderer reads the converted bytes and they are published.
         self.append("forged-view-base")
         self.assertEqual("published", self.publish()["state"])
-        before = self.published_projection()
-        marker = self.root / "renderer-ran"
-        self.set_tool(f"pathlib.Path({str(marker)!r}).write_text('ran\\n')\n"
-                      "(p/'SCORECARD.md').write_text('rendered\\n')\n")
-        self.append("forged-view")
-        with mock.patch.object(mirror.scorecard_cells, "install_render_view",
-                               side_effect=self.forged_view(b'{"forged":"view"}\n')):
-            report = self.publish()
-        self.assertEqual("derived-failed", report["state"], report)
-        self.assertIn(f"the ledger copy's checked-out scorecard history differs from {report['series_commit']}",
-                      report["scorecard"]["error"])
-        self.assertFalse(marker.exists())
-        self.assertEqual(before, self.published_projection())
-        self.assertIn(row("forged-view"), self.remote_rows())
+        with self.subTest("forged view"):
+            before = self.published_projection()
+            marker = self.root / "renderer-ran"
+            self.set_tool(f"pathlib.Path({str(marker)!r}).write_text('ran\\n')\n"
+                          "(p/'SCORECARD.md').write_text('rendered\\n')\n")
+            self.append("forged-view")
+            with mock.patch.object(mirror.scorecard_cells, "install_render_view",
+                                   side_effect=self.forged_view(b'{"forged":"view"}\n')):
+                report = self.publish()
+            self.assertEqual("derived-failed", report["state"], report)
+            self.assertIn(f"the ledger copy's checked-out scorecard history differs from {report['series_commit']}",
+                          report["scorecard"]["error"])
+            self.assertFalse(marker.exists())
+            self.assertEqual(before, self.published_projection())
+            self.assertIn(row("forged-view"), self.remote_rows())
+        with self.subTest("attributes file"):
+            history = stored_history(self.remote)
+            before = self.published_projection()
+            marker = self.root / "converted-renderer-ran"
+            attributes = self.root / "xdg" / "git" / "attributes"
+            attributes.parent.mkdir(parents=True)
+            attributes.write_text(f"{mirror.scorecard_cells.LOGICAL_PATH} text eol=crlf\n")
+            self.set_tool(f"pathlib.Path({str(marker)!r}).write_text('ran\\n')\n"
+                          "(p/'SCORECARD.md').write_text('rendered\\n')\n")
+            self.append("converted-view")
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.root / "xdg")}):
+                report = self.publish()
+            self.assertEqual("derived-failed", report["state"], report)
+            self.assertIn(f"the ledger copy's checked-out scorecard history differs from {report['series_commit']}",
+                          report["scorecard"]["error"])
+            self.assertFalse(marker.exists())
+            self.assertEqual(history, stored_history(self.remote))
+            self.assertEqual(before, self.published_projection())
+            self.assertIn(row("converted-view"), self.remote_rows())
 
     def test_after_rendering_the_copy_must_still_show_the_stored_history(self):
         # After the render the checked-out file is the renderer's output, so
