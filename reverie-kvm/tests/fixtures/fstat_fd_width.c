@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,11 +81,101 @@ static void check_free_counts(const struct statfs *value) {
   CHECK(value->f_ffree <= value->f_files);
 }
 
-static void assert_same(unsigned operation, int guest,
+static int same_fstat(int guest, int proc_root,
+                      const struct observation *plain,
+                      const struct observation *wide) {
+  if (plain->result != wide->result || plain->error != wide->error)
+    return 0;
+  if (guest || !proc_root || plain->result != 0 || plain->error != 0)
+    return memcmp(&plain->output, &wide->output, sizeof(plain->output)) == 0;
+
+  // Linux fs/proc/root.c::proc_root_getattr sets
+  // nlink = proc_root.nlink + nr_processes(); host process starts/exits change it.
+  // Its u32 kstat.nlink is zero-extended into the x86-64 stat field. Only this
+  // native live field can differ across calls; guest proc metadata stays exact.
+  if (plain->output.stat.st_nlink > UINT32_MAX ||
+      wide->output.stat.st_nlink > UINT32_MAX)
+    return 0;
+  const size_t offset = offsetof(struct stat, st_nlink);
+  const size_t end = offset + sizeof(plain->output.stat.st_nlink);
+  const unsigned char *left = (const unsigned char *)&plain->output;
+  const unsigned char *right = (const unsigned char *)&wide->output;
+  return memcmp(left, right, offset) == 0 &&
+         memcmp(left + end, right + end, sizeof(plain->output) - end) == 0;
+}
+
+static void check_fstat_comparison_controls(void) {
+  struct observation plain = {0}, wide;
+  memset(&plain.output, 0, sizeof(plain.output));
+  plain.output.stat.st_nlink = 2;
+  memcpy(&wide, &plain, sizeof(wide));
+  CHECK(same_fstat(0, 1, &plain, &wide));
+  CHECK(same_fstat(1, 1, &plain, &wide));
+  CHECK(same_fstat(0, 0, &plain, &wide));
+
+  wide.output.stat.st_nlink = 3;
+  CHECK(same_fstat(0, 1, &plain, &wide));
+  CHECK(same_fstat(0, 1, &wide, &plain));
+  CHECK(!same_fstat(1, 1, &plain, &wide));
+  CHECK(!same_fstat(0, 0, &plain, &wide));
+  for (size_t index = 0; index < 2; ++index) {
+    wide.output.stat.st_nlink = index == 0 ? 0 : UINT32_MAX;
+    CHECK(same_fstat(0, 1, &plain, &wide));
+    CHECK(same_fstat(0, 1, &wide, &plain));
+  }
+  const uint64_t invalid[] = {UINT64_C(1) << 32, UINT64_C(1) << 63, UINT64_MAX};
+  for (size_t index = 0; index < sizeof(invalid) / sizeof(invalid[0]); ++index) {
+    wide.output.stat.st_nlink = invalid[index];
+    CHECK(!same_fstat(0, 1, &plain, &wide));
+    CHECK(!same_fstat(0, 1, &wide, &plain));
+    CHECK(!same_fstat(0, 1, &wide, &wide));
+  }
+
+  memcpy(&wide, &plain, sizeof(wide));
+  wide.result = -1;
+  CHECK(!same_fstat(0, 1, &plain, &wide));
+  CHECK(!same_fstat(0, 1, &wide, &plain));
+  wide.result = 0;
+  wide.error = EIO;
+  CHECK(!same_fstat(0, 1, &plain, &wide));
+  CHECK(!same_fstat(0, 1, &wide, &plain));
+  plain.error = EIO;
+  wide.output.stat.st_nlink = 3;
+  CHECK(!same_fstat(0, 1, &plain, &wide));
+  plain.error = 0;
+  plain.result = -1;
+  plain.error = EBADF;
+  CHECK(same_fstat(0, 1, &plain, &plain));
+  plain.result = plain.error = 0;
+
+  const size_t offset = offsetof(struct stat, st_nlink);
+  const size_t end = offset + sizeof(plain.output.stat.st_nlink);
+  for (size_t index = 0; index < sizeof(plain.output); ++index) {
+    memcpy(&wide, &plain, sizeof(wide));
+    ((unsigned char *)&wide.output)[index] ^= 1;
+    CHECK(!same_fstat(1, 1, &plain, &wide));
+    CHECK(!same_fstat(0, 0, &plain, &wide));
+    plain.result = wide.result = -1;
+    plain.error = wide.error = EBADF;
+    CHECK(!same_fstat(0, 1, &plain, &wide));
+    plain.result = plain.error = 0;
+    wide.result = wide.error = 0;
+    if (index < offset || index >= end) {
+      wide.output.stat.st_nlink = 3;
+      CHECK(!same_fstat(0, 1, &plain, &wide));
+    }
+  }
+}
+
+static void assert_same(unsigned operation, int guest, int proc_root,
                         const struct observation *plain,
                         const struct observation *wide) {
   CHECK(plain->result == wide->result && plain->error == wide->error);
-  if (operation == 0 || guest || plain->result != 0) {
+  if (operation == 0) {
+    CHECK(same_fstat(guest, proc_root, plain, wide));
+    return;
+  }
+  if (guest || plain->result != 0) {
     CHECK(memcmp(&plain->output, &wide->output, sizeof(plain->output)) == 0);
     return;
   }
@@ -152,6 +243,7 @@ static void check_guest_statfs(const struct statfs *value) {
 int main(int argc, char **argv) {
   CHECK(argc == 3);
   CHECK(strcmp(argv[1], "guest") == 0 || strcmp(argv[1], "native") == 0);
+  check_fstat_comparison_controls();
   const int guest = strcmp(argv[1], "guest") == 0;
   const char contents[] = "low-word-metadata";
   int file = open(argv[2], O_CREAT | O_TRUNC | O_RDWR, 0600);
@@ -192,7 +284,7 @@ int main(int argc, char **argv) {
       if (upper == 0)
         plain = observed;
       else
-        assert_same(0, guest, &plain, &observed);
+        assert_same(0, guest, objects[object].fd == proc_root, &plain, &observed);
       if (guest)
         check_guest_stat(&observed.output.stat, objects[object].captured,
                          objects[object].proc, objects[object].directory);
@@ -203,7 +295,7 @@ int main(int argc, char **argv) {
       stdout_stat = plain;
       CHECK(S_ISFIFO(plain.output.stat.st_mode));
     } else if (object == 1) {
-      assert_same(0, guest, &stdout_stat, &plain);
+      assert_same(0, guest, 0, &stdout_stat, &plain);
     } else if (object == 2) {
       CHECK(S_ISFIFO(plain.output.stat.st_mode));
       CHECK(plain.output.stat.st_dev == stdout_stat.output.stat.st_dev);
@@ -224,7 +316,7 @@ int main(int argc, char **argv) {
       if (upper == 0)
         plain = observed;
       else
-        assert_same(1, guest, &plain, &observed);
+        assert_same(1, guest, 0, &plain, &observed);
       if (guest)
         check_guest_statfs(&observed.output.statfs);
       observe(1, objects[object].name, (uint32_t)objects[object].fd,
