@@ -880,6 +880,49 @@ def test_an_unmeasured_cell_carries_no_lengths_or_divergence(run_1953: dict[str,
     _refused(document, f"{at}: a candidate-missing cell is unmeasured and carries no compared lengths or divergence")
 
 
+def test_a_cell_is_named_by_its_test_and_backend(run_1953: dict[str, Any]) -> None:
+    document = copy.deepcopy(run_1953)
+    cell, _ = _named(document, 0)
+    cell["cell"] = "backend-parity-c/other@kvm"
+    _refused(document, f"{RUN_AT}.cells[0] (backend-parity-c/other@kvm): cell must be "
+                       "backend-parity-c/aio-refusal@kvm")
+
+
+def test_a_credit_and_its_basis_are_set_together(run_1953: dict[str, Any]) -> None:
+    # Every RUN 1953 credit is unequalized, and a tally counts a credit without
+    # a basis as unequalized, so dropping cells[0]'s basis changes no tally.
+    document = copy.deepcopy(run_1953)
+    cell, at = _named(document, 0)
+    assert (cell["credit"], cell["credit_basis"]) == (0.11320754716981132, "unequalized")
+    cell["credit_basis"] = None
+    _refused(document, f"{at}: credit and credit_basis must both be set or both be null")
+    document = copy.deepcopy(run_1953)
+    cell, at = _named(document, 59)
+    cell["credit_basis"] = "clean"
+    _refused(document, f"{at}: credit and credit_basis must both be set or both be null")
+
+
+@pytest.mark.parametrize("field", ["first_difference_field", "reference_message", "candidate_message"])
+def test_a_cells_texts_are_strings_or_null(run_1953: dict[str, Any], field: str) -> None:
+    document = copy.deepcopy(run_1953)
+    cell, at = _named(document, 0)
+    cell[field] = 12
+    _refused(document, f"{at}.{field} must be a string or null")
+
+
+def test_a_refused_cell_carries_its_refusal_and_no_lane_or_node() -> None:
+    document = _with_one_refused_cell()
+    cell, at = _named(document, 1)
+    assert (cell["verdict"], cell["reason"], cell["lane"], cell["node"]) == ("refused", "fixture", None, None)
+    cell["reason"] = None
+    _refused(document, f"{at}: a refused cell must carry its refusal as its reason")
+    for field, value in (("lane", "portable"), ("node", "manifest_backend_parity_c")):
+        document = _with_one_refused_cell()
+        cell, at = _named(document, 1)
+        cell[field] = value
+        _refused(document, f"{at}: a refused cell names no lane or node")
+
+
 _TIMEOUT = dict(verdict="unavailable", unavailable_class="timeout", operand="candidate")
 _NO_ROW = dict(verdict="candidate-missing", unavailable_class="no-result-row", operand="candidate")
 _NONDETERMINISTIC = dict(verdict="nondeterministic", unavailable_class="determinism-mismatch", operand="reference")
@@ -1048,6 +1091,66 @@ def test_the_credit_sum_is_the_sum_of_the_cells_credits(run_1953: dict[str, Any]
                        f"which give {true_sum!r}")
 
 
+# A tally's own arithmetic is checked before its fields are recomputed from
+# its cells, so the recompute would refuse each of these tampers too, with
+# another message. Each case asserts its own guard's message. RUN 1953's total:
+# 192 selected = 175 measured (0 matched + 175 diverged) + 0 no golden + 14 not
+# compared + 3 unmeasured (no-result-row 3) + 0 record-missing + 0 refused;
+# 175 credited = 0 clean + 175 unequalized.
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        (lambda total: total.update(selected=193),
+         "selected 193 is not measured + no golden + not compared + unmeasured + record-missing + refused"),
+        (lambda total: total["no_golden_by_class"].update(timeout=1), "no_golden 0 is not the sum of its classes"),
+        (lambda total: total["unmeasured_by_class"].update({"log-not-retained": 1}),
+         "unmeasured 3 is not the sum of its classes"),
+        (lambda total: total.update(clean_credited=1), "credited is not clean_credited + unequalized_credited"),
+        # credited and its unequalized part move together, so the sum above
+        # still holds and only this guard is crossed.
+        (lambda total: total.update(credited=176, unequalized_credited=176),
+         "176 credited cell(s) exceed 175 measured"),
+    ],
+    ids=["selected", "no-golden-classes", "unmeasured-classes", "credited-parts", "credited-exceeds-measured"],
+)
+def test_each_tally_guard_refuses_its_own_tamper(run_1953: dict[str, Any], tamper: Any, message: str) -> None:
+    document = copy.deepcopy(run_1953)
+    total = document["producers"][0]["total"]
+    assert (total["selected"], total["measured"], total["no_golden"], total["unmeasured"], total["credited"],
+            total["clean_credited"], total["unequalized_credited"]) == (192, 175, 0, 3, 175, 0, 175)
+    tamper(total)
+    _refused(document, f"{RUN_AT}.total: {message}")
+
+
+@pytest.mark.parametrize("tally_at", ["per_backend.kvm", "total"])
+def test_a_tallys_line_is_rendered_from_its_figures(run_1953: dict[str, Any], tally_at: str) -> None:
+    # A run's own line is checked against its total's figures, not against
+    # the total's line, so only this guard reads a tally's line.
+    document = copy.deepcopy(run_1953)
+    run = document["producers"][0]
+    stated = run["total"] if tally_at == "total" else run["per_backend"]["kvm"]
+    good = stated["line"]
+    stated["line"] = bad = good.replace("parity: 0/", "parity: 1/", 1)
+    assert bad != good
+    _refused(document, f"{RUN_AT}.{tally_at}: line {bad!r} is not its tally's {good!r}")
+
+
+def test_a_runs_cells_are_a_list(run_1953: dict[str, Any]) -> None:
+    document = copy.deepcopy(run_1953)
+    run = document["producers"][0]
+    run["cells"] = {cell["cell"]: cell for cell in run["cells"]}
+    _refused(document, f"{RUN_AT}.cells must be a list")
+
+
+def test_a_cell_is_reported_once_per_run() -> None:
+    # t/a twice under tallies of t/a and t/b: the two diverged at the same
+    # record for the same credit, so every tally still agrees with the cells.
+    document = _document([_cell("t/a", credit=0.5), _cell("t/b", credit=0.5)])
+    cells = document["producers"][0]["cells"]
+    cells[1] = copy.deepcopy(cells[0])
+    _refused(document, f"{RUN_AT}: cell t/a@kvm is reported twice")
+
+
 def _with_one_refused_cell() -> dict[str, Any]:
     document = _document([_cell("t/a", credit=0.5), _cell("t/b", verdict="refused")])
     assert (document["refused_rows"], len(document["refusals"])) == (1, 1)
@@ -1066,11 +1169,120 @@ def test_a_run_counts_no_more_refused_cells_than_the_store_refused() -> None:
     _refused(document, f"parity summary: validate run {RUN_ID} counts more refused cells than the store refused")
 
 
+def test_a_summary_refuses_no_more_rows_than_it_read() -> None:
+    document = _with_one_refused_cell()
+    assert document["rows_read"] == 2
+    document["rows_read"] = 0
+    _refused(document, "parity summary: 1 refused row(s) exceed the 0 read")
+
+
+PRESSURE_RUN_ID = "pressure-test-fixture-run"
+
+
+def _two_producer_document() -> dict[str, Any]:
+    """A summary with a validate run and a pressure-test run, each the
+    headline of its producer, listed in producer order."""
+    document = _document([_cell("t/a", credit=0.5), _cell("t/b", verdict="matched")])
+    pressure = dict(copy.deepcopy(document["producers"][0]), producer="pressure-test", run_id=PRESSURE_RUN_ID)
+    document["producers"].append(pressure)
+    document["runs"].append(dict(document["runs"][0], producer="pressure-test", run_id=PRESSURE_RUN_ID))
+    document["rows_read"] += len(pressure["cells"])
+    summary_module.validate_summary(document)
+    return document
+
+
+def test_the_producers_hold_one_run_per_producer_in_producer_order() -> None:
+    document = _two_producer_document()
+    document["producers"].reverse()
+    _refused(document, "parity summary.producers must hold one run per producer, in producer order")
+    # The validate run twice, in place of the pressure-test run. Both runs
+    # still find a headline brief, so the pressure-test brief would otherwise
+    # stand for a run the summary does not hold.
+    document = _two_producer_document()
+    document["producers"][1] = copy.deepcopy(document["producers"][0])
+    _refused(document, "parity summary.producers must hold one run per producer, in producer order")
+
+
+def test_runs_mark_one_headline_per_producer_run() -> None:
+    document = _document([_cell("t/a", credit=0.5)])
+    earlier = dict(document["runs"][0], run_id="validate-earlier-fixture-run", headline=False)
+    document["runs"].append(earlier)
+    summary_module.validate_summary(document)
+    earlier["headline"] = True
+    _refused(document, "parity summary: 2 headline run(s) in runs but 1 in producers")
+    earlier["headline"] = False
+    document["runs"][0]["headline"] = False
+    _refused(document, "parity summary: 0 headline run(s) in runs but 1 in producers")
+
+
 def test_the_legacy_line_is_rendered_from_its_entries(run_1953: dict[str, Any]) -> None:
     document = copy.deepcopy(run_1953)
     document["legacy_rerun"]["line"] = "legacy-rerun: 3 matched"
     _refused(document, "parity summary.legacy_rerun.line 'legacy-rerun: 3 matched' is not "
                        "'legacy-rerun: no retired ptrace-rerun comparison is retained'")
+
+
+LEGACY_EARLIER, LEGACY_DEEPEST = "a" * 40, "b" * 40
+LEGACY_LINE = "legacy-rerun (retired ptrace rerun, last at bbbbbbbbbbbb): 1 matched / 1 diverged"
+
+
+def _legacy_entry(test_id: str, verdict: str, first_divergent_record: int | None, sha: str, commits: int,
+                  first_parent: int) -> dict[str, Any]:
+    """One retired ptrace-rerun comparison, shaped as hermit's `LegacyRerunEntry`."""
+    return {
+        "cell": f"{test_id}@kvm", "test_id": test_id, "backend": "kvm", "verdict": verdict,
+        "compared_records": 50, "first_divergent_record": first_divergent_record, "hermit_sha": sha,
+        "run_id": f"legacy-rerun-fixture-{commits}", "depth": {"commits": commits, "first_parent": first_parent},
+        "determinism": "measured-and-passed", "current_parity_verdict": None, "label": "legacy-rerun",
+    }
+
+
+def _with_legacy_history(run_1953: dict[str, Any]) -> dict[str, Any]:
+    """RUN 1953 with two retired comparisons: golden-1 matched at depth 10 and
+    golden-2 diverged at record 13 at depth 12, the deepest, so the history is
+    last at golden-2's commit."""
+    document = copy.deepcopy(run_1953)
+    document["legacy_rerun"] = {
+        "label": "legacy-rerun", "line": LEGACY_LINE, "matched": 1, "diverged": 1,
+        "last_hermit_sha": LEGACY_DEEPEST, "superseded": 0,
+        "entries": [_legacy_entry("c-programs/golden-1", "matched", None, LEGACY_EARLIER, 10, 8),
+                    _legacy_entry("c-programs/golden-2", "diverged", 13, LEGACY_DEEPEST, 12, 9)],
+    }
+    summary_module.validate_summary(document)
+    return document
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        (lambda legacy: legacy.update(label="rerun"), "legacy_rerun.label must be legacy-rerun, got 'rerun'"),
+        (lambda legacy: legacy.update(matched=2), "legacy_rerun.matched 2 disagrees with its 1 matched entries"),
+        (lambda legacy: legacy.update(diverged=2), "legacy_rerun.diverged disagrees with its entries"),
+        (lambda legacy: legacy["entries"][0].update(depth=None), "legacy_rerun.entries[0].depth must be set"),
+        (lambda legacy: legacy["entries"][0].update(label="rerun"),
+         "legacy_rerun.entries[0].label must be legacy-rerun"),
+        # The line names the earlier commit as well, so it agrees with the
+        # stated last commit and only the deepest-entry guard is crossed.
+        (lambda legacy: legacy.update(last_hermit_sha=LEGACY_EARLIER,
+                                      line=LEGACY_LINE.replace("bbbbbbbbbbbb", "aaaaaaaaaaaa")),
+         "legacy_rerun.last_hermit_sha is not the commit of its deepest entry"),
+    ],
+    ids=["label", "matched", "diverged", "entry-depth", "entry-label", "last-commit"],
+)
+def test_each_legacy_guard_refuses_its_own_tamper(run_1953: dict[str, Any], tamper: Any, message: str) -> None:
+    document = _with_legacy_history(run_1953)
+    tamper(document["legacy_rerun"])
+    _refused(document, f"parity summary.{message}")
+
+
+def test_an_empty_legacy_history_is_a_list_and_names_no_commit(run_1953: dict[str, Any]) -> None:
+    document = copy.deepcopy(run_1953)
+    assert document["legacy_rerun"]["entries"] == []
+    document["legacy_rerun"]["entries"] = {}
+    _refused(document, "parity summary.legacy_rerun.entries must be a list")
+    document = copy.deepcopy(run_1953)
+    document["legacy_rerun"]["last_hermit_sha"] = LEGACY_DEEPEST
+    _refused(document, "parity summary.legacy_rerun.last_hermit_sha must be null without entries")
 
 
 def test_the_panel_withholds_the_retired_placeholder_word_in_the_scorecards_texts() -> None:
@@ -1107,6 +1319,41 @@ def test_a_summary_without_a_store_reports_nothing(run_1953: dict[str, Any]) -> 
     document = copy.deepcopy(run_1953)
     document["store_present"] = False
     _refused(document, "parity summary: a summary without a parity store reports no rows or runs")
+
+
+def test_the_store_digest_is_64_lowercase_hex_digits(run_1953: dict[str, Any]) -> None:
+    digest = run_1953["generated_from"]["store_sha256"]
+    for stated in (digest.upper(), digest[:40], 5):
+        document = copy.deepcopy(run_1953)
+        document["generated_from"]["store_sha256"] = stated
+        _refused(document, "parity summary.generated_from.store_sha256 must be 64 lowercase hex digits")
+
+
+@pytest.mark.parametrize("field", ["refusals", "producers", "runs"])
+def test_the_summarys_sequences_are_lists(run_1953: dict[str, Any], field: str) -> None:
+    document = copy.deepcopy(run_1953)
+    document[field] = {str(index): item for index, item in enumerate(document[field])}
+    _refused(document, f"parity summary.{field} must be a list")
+
+
+def test_runs_name_each_run_once(run_1953: dict[str, Any]) -> None:
+    # The copy is not a headline, so the headline count still agrees.
+    document = copy.deepcopy(run_1953)
+    document["runs"].append(dict(document["runs"][0], headline=False))
+    _refused(document, "parity summary.runs names a run twice")
+
+
+def test_a_producers_run_is_a_headline_in_runs(run_1953: dict[str, Any]) -> None:
+    # Still one headline brief for one run, but it names another run.
+    document = copy.deepcopy(run_1953)
+    document["runs"][0]["run_id"] = "validate-other-fixture-run"
+    _refused(document, f"parity summary: validate run {RUN_ID} is not a headline in runs")
+
+
+def test_the_dropped_legacy_counts_are_an_object(run_1953: dict[str, Any]) -> None:
+    document = copy.deepcopy(run_1953)
+    document["legacy_dropped"] = []
+    _refused(document, "parity summary.legacy_dropped must be an object")
 
 
 def test_a_headline_credit_below_one_never_prints_as_one() -> None:

@@ -366,6 +366,17 @@ class MalformedRecordsAreRefusedLoudly(unittest.TestCase):
                     f"parity record {source['cell']}: CandidateMissing is unmeasured and carries no "
                     "credit or divergence")
 
+    def test_an_unmeasured_record_carries_no_compared_lengths(self):
+        for length in ("left_len", "right_len"):
+            with self.subTest(length=length):
+                sources = fixture_sources()
+                _, source = first(sources, "kvm", "candidate-missing")
+                self.assertIsNone(source["record"][length])
+                source["record"][length] = 106
+                self.refuse(sources,
+                            f"parity record {source['cell']}: CandidateMissing is unmeasured and carries no "
+                            "compared lengths")
+
     def test_a_match_must_be_full_credit(self):
         # credit(12, 106, 106) is the stated amount, so only the match rule
         # can refuse it.
@@ -378,6 +389,130 @@ class MalformedRecordsAreRefusedLoudly(unittest.TestCase):
         self.refuse(sources,
                     f"parity record {source['cell']}: a match must be full credit, got "
                     f"Some({record['unequalized_credit']})")
+
+    # One tamper per `ParityRecord::validate` rule not refused above. Each
+    # starts from the fixture, which the store admits, changes the field its
+    # rule covers, and asserts that rule's message. RUN 1953's first kvm row,
+    # backend-parity-c/aio-refusal, diverged at 12 of 106 | 106 with unequal
+    # inputs: unequalized_credit 12/106, both logs named.
+
+    def diverged_kvm(self):
+        sources = fixture_sources()
+        _, source = first(sources, "kvm", "diverged")
+        record = source["record"]
+        self.assertEqual((record["matched_prefix"], record["left_len"], record["right_len"],
+                          record["inputs_equalized"], record["credit"], record["unequalized_credit"]),
+                         (12, 106, 106, False, None, 12 / 106))
+        return sources, source
+
+    def test_a_record_of_another_schema_is_refused(self):
+        sources, source = self.diverged_kvm()
+        self.assertEqual(parity.RECORD_SCHEMA, source["record"]["schema"])
+        source["record"]["schema"] = 2
+        self.refuse(sources, f"parity record {source['cell']}: schema must be 1, got 2")
+
+    def test_a_record_names_its_test_and_its_run(self):
+        # A blank test id names the cell ` @kvm`, and the message does too.
+        for field, blank in (("test_id", " "), ("run_id", "")):
+            with self.subTest(field=field):
+                sources, source = self.diverged_kvm()
+                source["record"][field] = blank
+                self.refuse(sources, f"parity record {source['record']['test_id']}@kvm: test_id and run_id "
+                                     "must be non-empty")
+
+    def test_a_record_names_its_hermit_commit_in_lowercase_hex(self):
+        sources, source = self.diverged_kvm()
+        source["record"]["hermit_sha"] = HERMIT_SHA.upper()
+        self.refuse(sources, f"parity record {source['cell']}: hermit_sha must be 40 lowercase hex digits, "
+                             f'got "{HERMIT_SHA.upper()}"')
+
+    def test_a_credit_is_within_zero_and_one(self):
+        # Either credit field: unequalized as the record stands, clean once its
+        # inputs are equalized.
+        for field, amount, equalized in (("unequalized_credit", 1.5, False), ("credit", -0.25, True)):
+            with self.subTest(field=field):
+                sources, source = self.diverged_kvm()
+                record = source["record"]
+                record.update(credit=None, unequalized_credit=None, inputs_equalized=equalized)
+                record[field] = amount
+                self.refuse(sources, f"parity record {source['cell']}: credit {amount} is outside [0, 1]")
+
+    def test_clean_and_unequalized_credit_are_exclusive(self):
+        sources, source = self.diverged_kvm()
+        record = source["record"]
+        record["credit"] = record["unequalized_credit"]
+        self.refuse(sources, f"parity record {source['cell']}: credit and unequalized_credit are exclusive")
+
+    def test_clean_credit_needs_equalized_inputs(self):
+        # The same amount, moved: the matched prefix still gives it, so only
+        # this rule can refuse it.
+        sources, source = self.diverged_kvm()
+        record = source["record"]
+        record.update(credit=record["unequalized_credit"], unequalized_credit=None)
+        self.refuse(sources, f"parity record {source['cell']}: credit is clean credit and needs equalized "
+                             "inputs; this measurement belongs in unequalized_credit")
+
+    def test_unequalized_credit_means_the_inputs_were_not_equalized(self):
+        sources, source = self.diverged_kvm()
+        source["record"]["inputs_equalized"] = True
+        self.refuse(sources, f"parity record {source['cell']}: unequalized_credit is set but the inputs "
+                             "were equalized")
+
+    def test_a_measured_record_carries_no_reason(self):
+        # The row states the same reason, so the row and its record agree and
+        # only this rule can refuse it.
+        sources, source = self.diverged_kvm()
+        source["reason"] = source["record"]["reason"] = "fixture: a reason on a measured record"
+        self.refuse(sources, f"parity record {source['cell']}: a measured verdict carries no reason")
+
+    def test_a_measured_record_needs_both_lengths_and_both_logs(self):
+        for field, message in (("left_len", "a measured verdict needs both lengths"),
+                               ("right_len", "a measured verdict needs both lengths"),
+                               ("reference_log", "a measured verdict needs both log paths"),
+                               ("candidate_log", "a measured verdict needs both log paths")):
+            with self.subTest(field=field):
+                sources, source = self.diverged_kvm()
+                source["record"][field] = None
+                self.refuse(sources, f"parity record {source['cell']}: {message}")
+
+    def test_a_matched_prefix_is_within_the_shorter_stream(self):
+        # A match of 106 | 106 whose prefix claims 107: credit(107, 106, 106)
+        # is still full credit, so only this rule can refuse it.
+        sources, source = self.diverged_kvm()
+        matched_like(source)
+        source["record"]["matched_prefix"] = 107
+        self.assertEqual(1.0, parity.credit(107, 106, 106))
+        self.refuse(sources, f"parity record {source['cell']}: matched prefix 107 exceeds the shorter "
+                             "compared stream of 106 | 106")
+
+    def test_a_match_carries_no_divergence_position(self):
+        for field in ("first_divergent_record", "first_difference"):
+            with self.subTest(field=field):
+                sources, source = self.diverged_kvm()
+                position = source["record"][field]
+                matched_like(source)
+                source["record"][field] = position
+                self.refuse(sources, f"parity record {source['cell']}: a match carries no divergence position")
+
+    def test_an_unmeasured_record_needs_a_reason(self):
+        # The row keeps its reason, so the row's own rule holds.
+        for blank in (None, "  "):
+            with self.subTest(reason=blank):
+                sources = fixture_sources()
+                _, source = first(sources, "kvm", "candidate-missing")
+                source["record"]["reason"] = blank
+                self.refuse(sources, f"parity record {source['cell']}: CandidateMissing needs a reason")
+
+    def test_a_missing_verdict_never_names_the_log_it_says_is_missing(self):
+        for verdict, unavailable_class, operand, log, name in (
+                ("candidate-missing", "no-result-row", "candidate", "candidate_log", "CandidateMissing"),
+                ("reference-missing", "log-not-retained", "reference", "reference_log", "ReferenceMissing")):
+            with self.subTest(verdict=verdict):
+                sources, source = self.diverged_kvm()
+                path = source["record"][log]
+                unmeasured_like(source, verdict, unavailable_class, operand)
+                source["record"][log] = path
+                self.refuse(sources, f"parity record {source['cell']}: {name} names the log it says is missing")
 
     def test_record_missing_row_that_carries_a_record(self):
         sources = fixture_sources()
