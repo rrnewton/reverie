@@ -153,6 +153,9 @@ impl DbtEvidenceLogLevel {
 pub struct DbtEvidence {
     records: Vec<Vec<u8>>,
     initialization_records: usize,
+    /// Position in the full authenticated stream of each initialization
+    /// record counted by `initialization_records`, in increasing order.
+    initialization_positions: Vec<usize>,
 }
 
 impl DbtEvidence {
@@ -160,9 +163,34 @@ impl DbtEvidence {
     ///
     /// Process image initialization records remain authenticated in the
     /// artifact but are represented by [`Self::initialization_records`]
-    /// instead.
+    /// instead. [`Self::all_records`] keeps them at their arrival positions.
     pub fn records(&self) -> &[Vec<u8>] {
         &self.records
+    }
+
+    /// Every authenticated record in arrival order, with each process image
+    /// initialization record at the position where it arrived.
+    ///
+    /// The decoder admits only initialization records that are byte-for-byte
+    /// the protocol constant, so this returns the authenticated bytes and
+    /// invents no record or position. Across process images, positions follow
+    /// the order in which the host accepted their frames, so comparing this
+    /// stream between runs also compares that order.
+    ///
+    /// Initialization records prove that the transport started, not that the
+    /// guest did anything. A stream holding only initialization records is
+    /// returned here while [`Self::records`] is empty, so a consumer that
+    /// requires guest evidence must count [`Self::records`] instead.
+    pub fn all_records(&self) -> Vec<&[u8]> {
+        let mut all = Vec::with_capacity(self.records.len() + self.initialization_positions.len());
+        let mut records = self.records.iter().map(Vec::as_slice);
+        for &position in &self.initialization_positions {
+            // The comparable records that arrived before this initialization.
+            all.extend(records.by_ref().take(position - all.len()));
+            all.push(INITIALIZATION_RECORD);
+        }
+        all.extend(records);
+        all
     }
 
     /// Number of validated process image initialization records in the artifact.
@@ -242,13 +270,15 @@ pub fn decode_evidence(bytes: &[u8]) -> io::Result<DbtEvidence> {
 
     let mut records = Vec::with_capacity(raw_records.len());
     let mut initialization_records = 0_usize;
-    for record in raw_records {
+    let mut initialization_positions = Vec::new();
+    for (position, record) in raw_records.into_iter().enumerate() {
         match classify_initialization_record(&record) {
             InitializationRecord::Exact => {
                 initialization_records =
                     initialization_records.checked_add(1).ok_or_else(|| {
                         invalid_data("DBT evidence initialization record count overflowed")
                     })?;
+                initialization_positions.push(position);
             }
             InitializationRecord::Lookalike => {
                 return Err(invalid_data(
@@ -266,6 +296,7 @@ pub fn decode_evidence(bytes: &[u8]) -> io::Result<DbtEvidence> {
     Ok(DbtEvidence {
         records,
         initialization_records,
+        initialization_positions,
     })
 }
 
@@ -1504,6 +1535,145 @@ mod tests {
         let evidence = decode_evidence(&bytes).unwrap();
         assert_eq!(evidence.initialization_records(), 2);
         assert_eq!(evidence.records(), [FIRST_RECORD, SECOND_RECORD]);
+    }
+
+    #[test]
+    fn all_records_keeps_each_initialization_record_at_its_arrival_position() {
+        let streams: [&[&[u8]]; 5] = [
+            &[INITIALIZATION_RECORD, FIRST_RECORD, SECOND_RECORD],
+            &[
+                INITIALIZATION_RECORD,
+                INITIALIZATION_RECORD,
+                FIRST_RECORD,
+                SECOND_RECORD,
+            ],
+            &[
+                INITIALIZATION_RECORD,
+                FIRST_RECORD,
+                INITIALIZATION_RECORD,
+                SECOND_RECORD,
+            ],
+            &[
+                INITIALIZATION_RECORD,
+                FIRST_RECORD,
+                SECOND_RECORD,
+                INITIALIZATION_RECORD,
+            ],
+            // The decoder also accepts a comparable record before the first
+            // initialization record, which the collector never writes.
+            &[FIRST_RECORD, INITIALIZATION_RECORD, SECOND_RECORD],
+        ];
+        for raw_records in streams {
+            let evidence = decode_evidence(&encode_artifact(raw_records)).unwrap();
+            assert_eq!(evidence.all_records(), raw_records);
+            assert_eq!(evidence.records(), [FIRST_RECORD, SECOND_RECORD]);
+            assert_eq!(
+                evidence.initialization_records(),
+                raw_records
+                    .iter()
+                    .filter(|record| **record == INITIALIZATION_RECORD)
+                    .count()
+            );
+        }
+    }
+
+    #[test]
+    fn all_records_returns_an_initialization_only_stream_with_no_comparable_record() {
+        for count in 1..=3 {
+            let raw_records = vec![INITIALIZATION_RECORD; count];
+            let evidence = decode_evidence(&encode_artifact(&raw_records)).unwrap();
+            assert_eq!(evidence.all_records(), raw_records);
+            assert!(evidence.records().is_empty());
+            assert_eq!(evidence.initialization_records(), count);
+        }
+    }
+
+    #[test]
+    fn all_records_distinguishes_initialization_positions_that_the_count_hides() {
+        let early = decode_evidence(&encode_artifact(&[
+            INITIALIZATION_RECORD,
+            INITIALIZATION_RECORD,
+            FIRST_RECORD,
+            SECOND_RECORD,
+        ]))
+        .unwrap();
+        let late = decode_evidence(&encode_artifact(&[
+            INITIALIZATION_RECORD,
+            FIRST_RECORD,
+            INITIALIZATION_RECORD,
+            SECOND_RECORD,
+        ]))
+        .unwrap();
+
+        assert_eq!(early.records(), late.records());
+        assert_eq!(
+            early.initialization_records(),
+            late.initialization_records()
+        );
+        assert_ne!(early.all_records(), late.all_records());
+        // Equality covers the positions too, so it agrees with all_records.
+        assert_ne!(early, late);
+    }
+
+    #[test]
+    fn all_records_keeps_the_collector_accept_order_across_parent_and_child_images() {
+        const CHILD_RECORD: &[u8] = b"1970-01-01T00:00:00.000000Z INFO detcore: child\n";
+        let parent = ProcessKey {
+            pid: 41,
+            start_time: 43,
+        };
+        let child = ProcessKey {
+            pid: 47,
+            start_time: 53,
+        };
+        let mut child_payload = Vec::from(child.pid.to_le_bytes());
+        child_payload.extend_from_slice(&child.start_time.to_le_bytes());
+
+        let mut collector = Collector::new();
+        start_and_initialize(&mut collector, parent);
+        collector
+            .absorb(FRAME_DATA, parent, 2, &encode_records(&[FIRST_RECORD]))
+            .unwrap();
+        collector
+            .absorb(FRAME_CHILD, parent, 3, &child_payload)
+            .unwrap();
+        start_and_initialize(&mut collector, child);
+        collector
+            .absorb(FRAME_DATA, parent, 4, &encode_records(&[SECOND_RECORD]))
+            .unwrap();
+        collector
+            .absorb(FRAME_DATA, child, 2, &encode_records(&[CHILD_RECORD]))
+            .unwrap();
+        collector
+            .absorb(FRAME_FINAL, child, 3, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
+        collector
+            .absorb(FRAME_FINAL, parent, 5, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
+
+        let collected = collector.finish().unwrap();
+        let mut output = tempfile::tempfile().unwrap();
+        publish(&mut output, collected).unwrap();
+        output.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        output.read_to_end(&mut bytes).unwrap();
+        let evidence = decode_evidence(&bytes).unwrap();
+
+        assert_eq!(
+            evidence.all_records(),
+            [
+                INITIALIZATION_RECORD,
+                FIRST_RECORD,
+                INITIALIZATION_RECORD,
+                SECOND_RECORD,
+                CHILD_RECORD,
+            ]
+        );
+        assert_eq!(
+            evidence.records(),
+            [FIRST_RECORD, SECOND_RECORD, CHILD_RECORD]
+        );
+        assert_eq!(evidence.initialization_records(), 2);
     }
 
     #[test]
