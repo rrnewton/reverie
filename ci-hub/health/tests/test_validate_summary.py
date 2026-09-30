@@ -38,12 +38,20 @@ def _load():
     # is the package validate_rows imports; `<root>/ledger` holds the tracked shards.
     # Whichever is found first on sys.path wins, and under pytest the repo root is
     # already there -- so the data directory resolves as an empty namespace package
-    # and the import fails with "unknown location". Put ci-hub first and drop any
-    # cached binding before loading.
+    # and the import fails with "unknown location". Put ci-hub first and drop a
+    # cached binding that is not ci-hub/ledger/ledger.py before loading. Keep one
+    # that is: an earlier test module in the same session may have imported
+    # validate_rows and publisher, which took their names from it, and a second
+    # copy of ledger would give that module exception classes validate_rows
+    # never raises.
     import sys
     sys.path.insert(0, str(LEDGER.parent))        # ci-hub/ledger -- holds ledger.py
     sys.path.insert(0, str(LEDGER.parent.parent))  # ci-hub
-    sys.modules.pop("ledger", None)
+    cached = sys.modules.get("ledger")
+    cached_file = getattr(cached, "__file__", None)
+    real = (LEDGER.parent / "ledger.py").resolve()
+    if cached is not None and (cached_file is None or pathlib.Path(cached_file).resolve() != real):
+        del sys.modules["ledger"]
     loader = importlib.machinery.SourceFileLoader("validate_rows_under_test", str(LEDGER))
     spec = importlib.util.spec_from_loader("validate_rows_under_test", loader)
     module = importlib.util.module_from_spec(spec)
