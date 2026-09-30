@@ -89,6 +89,46 @@ pub fn cancelled_timer_signals_discarded() -> u64 {
     crate::timer::CANCELLED_TIMER_SIGNALS_DISCARDED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+pub use crate::timer::KeptProgramming;
+
+/// Makes the timers of this process check, from now on, at every disregarded
+/// stop (a stop without a Tool callback, such as a LiteInst hook trap) that
+/// keeps a scheduled timer event whose request programmed a PMU notification,
+/// that the stop left that programming as the request made it: that the
+/// counter still overflows at the clock at which the request programmed it
+/// to, the target less the skid margin for a precise event. A stop that
+/// re-programmed or reset the counter would move that clock, and the event
+/// would fire late. The check reads both counters once per such stop.
+pub fn check_kept_timer_programming() {
+    crate::timer::KEPT_PROGRAMMING_CHECKS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The number of kept timer events whose programming this process has
+/// checked (see [`check_kept_timer_programming`]). Concurrent tests in one
+/// process share the count.
+pub fn kept_timer_programmings_checked() -> u64 {
+    crate::timer::KEPT_PROGRAMMINGS_CHECKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The number of kept timer events whose check (see
+/// [`check_kept_timer_programming`]) found their counter overflowing at
+/// another clock than their request programmed, or not at all. Concurrent
+/// tests in one process share the count.
+pub fn kept_timer_programmings_changed() -> u64 {
+    crate::timer::KEPT_PROGRAMMINGS_CHANGED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Takes the checks counted by [`kept_timer_programmings_changed`] since the
+/// last call, the first 1024 at most. Concurrent tests in one process share
+/// the list.
+pub fn take_kept_timer_programmings_changed() -> Vec<KeptProgramming> {
+    std::mem::take(
+        &mut *crate::timer::KEPT_PROGRAMMINGS_CHANGED_EVENTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
 /// Checks that each of a run's precise timer events that a PMU notification
 /// delivered fired at its target, `target` RCBs past its request, except
 /// where Reverie witnessed a skid overshoot: `witnesses` is the change in
