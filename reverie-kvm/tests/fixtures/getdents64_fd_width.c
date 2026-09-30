@@ -392,6 +392,197 @@ static void proc_policy(int guest) {
              : "getdents64 policy=native-proc rows=100 records-and-errors checked");
 }
 
+// Count-width coverage is additive: calls and the original 874-call matrix are
+// unchanged. Keep the full register value until Linux or the backend decodes it.
+#define RAW_BUFFER 256
+#define RAW_SMALL (GUARD + RAW_BUFFER + GUARD)
+#define RAW_PAGES 8192
+static unsigned raw_calls, raw_rows;
+static const uint64_t count_upper_words[] = {
+    0, UINT64_C(1) << 32, UINT64_C(1) << 63,
+    UINT64_C(0xffffffff00000000)};
+static const unsigned count_low_words[] = {0, 1, 23, 24, 128};
+
+struct count_result {
+  long result, retry_result;
+  int error, retry_error;
+  off_t cursor, retry_cursor;
+  unsigned char bytes[RAW_PAGES], retry[RAW_SMALL];
+};
+
+static long raw_getdents(int fd, void *buffer, uint64_t raw_count) {
+  ++raw_calls;
+  errno = 0;
+  return syscall(SYS_getdents64, (uint64_t)(uint32_t)fd, buffer, raw_count,
+                 UINT64_C(0x123456789abcdef0), UINT64_MAX,
+                 UINT64_C(0x800000005a5a5a5a));
+}
+
+static void raw_bytes(const unsigned char *bytes, size_t length) {
+  for (size_t i = 0; i < length; ++i)
+    printf("%02x", bytes[i]);
+}
+
+static void capture_count(int fd, int directory, int alias, uint64_t raw_count,
+                          off_t start, int invalid_pointer,
+                          unsigned char *arena, size_t size, size_t offset,
+                          int protection, struct count_result *result) {
+  CHECK(size <= sizeof(result->bytes) && offset < size);
+  CHECK(lseek(directory, start, SEEK_SET) == start &&
+        lseek(alias, 0, SEEK_CUR) == start);
+  memset(arena, 0xa5, size);
+  if (protection >= 0) {
+    CHECK(size == RAW_PAGES);
+    CHECK(mprotect(arena + 4096, 4096,
+                   protection ? PROT_READ : PROT_NONE) == 0);
+  }
+  void *output = invalid_pointer ? (void *)(uintptr_t)UINTPTR_MAX : arena + offset;
+  result->result = raw_getdents(fd, output, raw_count);
+  result->error = errno; // Capture before lseek/mprotect can change errno.
+  result->cursor = lseek(directory, 0, SEEK_CUR);
+  CHECK(result->cursor >= 0 && lseek(alias, 0, SEEK_CUR) == result->cursor);
+  if (protection >= 0)
+    CHECK(mprotect(arena + 4096, 4096, PROT_READ | PROT_WRITE) == 0);
+  memcpy(result->bytes, arena, size);
+
+  // The duplicate must resume at exactly the position left by this call,
+  // including after partial copyout. Retain every retry byte and both cursors.
+  memset(result->retry, 0xa5, sizeof(result->retry));
+  result->retry_result = raw_getdents(alias, result->retry + GUARD, RAW_BUFFER);
+  result->retry_error = errno;
+  CHECK(result->retry_result >= 0 && result->retry_result <= RAW_BUFFER &&
+        result->retry_error == 0);
+  CHECK(all_bytes(result->retry, GUARD, 0xa5));
+  CHECK(all_bytes(result->retry + GUARD + result->retry_result,
+                  RAW_BUFFER + GUARD - (size_t)result->retry_result, 0xa5));
+  result->retry_cursor = lseek(directory, 0, SEEK_CUR);
+  CHECK(result->retry_cursor >= 0 &&
+        lseek(alias, 0, SEEK_CUR) == result->retry_cursor);
+}
+
+static void count_pair(const char *kind, int fd, int directory, int alias,
+                       uint64_t upper, unsigned low, int start_index,
+                       off_t start, int invalid_pointer, unsigned char *arena,
+                       size_t size, unsigned prefix, int protection,
+                       int expected_error) {
+  const size_t offset = protection < 0 ? GUARD : 4096 - prefix;
+  struct count_result expected, actual;
+  capture_count(fd, directory, alias, (uint64_t)low, start, invalid_pointer,
+                arena, size, offset, protection, &expected);
+  if (expected_error) {
+    CHECK(expected.result == -1 && expected.error == expected_error);
+    CHECK(all_bytes(expected.bytes, size, 0xa5));
+  } else if (start_index == 1) {
+    CHECK(expected.result == 0 && expected.error == 0);
+    CHECK(all_bytes(expected.bytes, size, 0xa5));
+  } else if (protection < 0) {
+    CHECK(expected.result > 0 && (unsigned long)expected.result <= low &&
+          expected.error == 0);
+    if (low == 24)
+      CHECK(expected.result == 24);
+    CHECK(all_bytes(expected.bytes, GUARD, 0xa5));
+    CHECK(all_bytes(expected.bytes + GUARD + expected.result,
+                    RAW_BUFFER + GUARD - (size_t)expected.result, 0xa5));
+    struct records records;
+    parse_records(expected.bytes + GUARD, (size_t)expected.result, &records);
+  }
+  const uint64_t raw_count = upper | low;
+  capture_count(fd, directory, alias, raw_count, start, invalid_pointer,
+                arena, size, offset, protection, &actual);
+  if (actual.result != expected.result || actual.error != expected.error ||
+      actual.cursor != expected.cursor ||
+      actual.retry_result != expected.retry_result ||
+      actual.retry_error != expected.retry_error ||
+      actual.retry_cursor != expected.retry_cursor ||
+      memcmp(actual.bytes, expected.bytes, size) != 0 ||
+      memcmp(actual.retry, expected.retry, sizeof(actual.retry)) != 0) {
+    fprintf(stderr,
+            "getdents64 raw-count mismatch row=%u kind=%s raw=%016lx "
+            "expected=%ld/%d cursor=%016lx actual=%ld/%d cursor=%016lx\n",
+            raw_rows, kind, (unsigned long)raw_count, expected.result,
+            expected.error, (unsigned long)expected.cursor, actual.result,
+            actual.error, (unsigned long)actual.cursor);
+    exit(94);
+  }
+  printf("getdents64 raw-count row=%03u kind=%s upper=%016lx low=%u "
+         "start=%d pointer=%d prefix=%u protect=%d result=%ld errno=%d "
+         "cursor=%016lx bytes=",
+         raw_rows++, kind, (unsigned long)upper, low, start_index,
+         invalid_pointer, prefix, protection, actual.result, actual.error,
+         (unsigned long)actual.cursor);
+  raw_bytes(actual.bytes, size);
+  printf(" retry=%ld errno=%d cursor=%016lx retry_bytes=", actual.retry_result,
+         actual.retry_error, (unsigned long)actual.retry_cursor);
+  raw_bytes(actual.retry, sizeof(actual.retry));
+  putchar('\n');
+}
+
+static void count_width_controls(int directory, int regular, int path_only) {
+  const unsigned legacy_calls = calls;
+  errno = 0;
+  CHECK(fcntl(300, F_GETFD) == -1 && errno == EBADF);
+  int alias = dup(directory);
+  CHECK(alias >= 0 && alias != 300);
+  unsigned char arena[RAW_SMALL];
+  memset(arena, 0xa5, sizeof(arena));
+  rewind_directory(directory);
+  long result = raw_getdents(directory, arena + GUARD, RAW_BUFFER);
+  CHECK(result > 0 && result <= RAW_BUFFER && errno == 0);
+  CHECK(all_bytes(arena, GUARD, 0xa5));
+  CHECK(all_bytes(arena + GUARD + result, RAW_BUFFER + GUARD - (size_t)result,
+                  0xa5));
+  struct records records;
+  parse_records(arena + GUARD, (size_t)result, &records);
+  exact_names(directory, 0, &records);
+  const off_t eof = lseek(directory, 0, SEEK_CUR);
+  CHECK(eof > 0 && lseek(alias, 0, SEEK_CUR) == eof);
+  memset(arena, 0xa5, sizeof(arena));
+  CHECK(raw_getdents(alias, arena + GUARD, RAW_BUFFER) == 0 && errno == 0);
+  CHECK(all_bytes(arena, sizeof(arena), 0xa5));
+  CHECK(lseek(directory, 0, SEEK_CUR) == eof && lseek(alias, 0, SEEK_CUR) == eof);
+
+  for (size_t high = 0; high < 4; ++high)
+    for (size_t count = 0; count < 5; ++count)
+      for (int start = 0; start < 2; ++start)
+        for (int invalid = 0; invalid < 2; ++invalid) {
+          const unsigned low = count_low_words[count];
+          const int error = start ? 0 : low < 24 ? EINVAL : invalid ? EFAULT : 0;
+          count_pair("directory", directory, directory, alias,
+                     count_upper_words[high], low, start, start ? eof : 0,
+                     invalid, arena, sizeof(arena), GUARD, -1, error);
+        }
+  CHECK(raw_rows == 80);
+
+  const int descriptors[] = {300, path_only, regular};
+  const int errors[] = {EBADF, EBADF, ENOTDIR};
+  const char *kinds[] = {"closed", "opath", "regular"};
+  const unsigned error_counts[] = {0, 1, 24, 128};
+  for (size_t high = 0; high < 4; ++high)
+    for (size_t count = 0; count < 4; ++count)
+      for (size_t descriptor = 0; descriptor < 3; ++descriptor)
+        for (int invalid = 0; invalid < 2; ++invalid)
+          count_pair(kinds[descriptor], descriptors[descriptor], directory,
+                     alias, count_upper_words[high], error_counts[count], 0, 0,
+                     invalid, arena, sizeof(arena), GUARD, -1,
+                     errors[descriptor]);
+  CHECK(raw_rows == 176);
+
+  unsigned char *pages = mmap(NULL, RAW_PAGES, PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  CHECK(pages != MAP_FAILED);
+  const unsigned prefixes[] = {0, 24, 48};
+  for (int protection = 0; protection < 2; ++protection)
+    for (size_t prefix = 0; prefix < 3; ++prefix)
+      for (int start = 0; start < 2; ++start)
+        count_pair("partial", directory, directory, alias, UINT64_C(1) << 32,
+                   128, start, start ? eof : 0, 0, pages, RAW_PAGES,
+                   prefixes[prefix], protection, 0);
+  CHECK(munmap(pages, RAW_PAGES) == 0 && close(alias) == 0);
+  CHECK(calls == legacy_calls && calls == 874);
+  CHECK(raw_rows == 188 && raw_calls == 754);
+  printf("getdents64 raw-count checked rows=%u calls=%u\n", raw_rows, raw_calls);
+}
+
 int main(int argc, char **argv) {
   CHECK(argc == 5);
   int guest = strcmp(argv[1], "kvm") == 0;
@@ -429,9 +620,11 @@ int main(int argc, char **argv) {
   staging_boundary(&baselines[1]);
   proc_path_open_policy(guest, proc_path_only);
   proc_policy(guest);
+  CHECK(calls == 874);
+  printf("getdents64 checked calls=%u\n", calls);
+  count_width_controls(3, regular, path_only);
   CHECK(close(regular) == 0 && close(path_only) == 0 && close(proc_path_only) == 0);
   CHECK(close(0) == 0 && close(3) == 0 && close(257) == 0);
   CHECK(calls == 874);
-  printf("getdents64 checked calls=%u\n", calls);
   return 0;
 }
