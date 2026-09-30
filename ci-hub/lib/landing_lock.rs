@@ -3618,7 +3618,8 @@ pub(crate) struct PayloadLineage {
     supervisor_pgid: Option<u32>,
     recorded: BTreeSet<ProcessIdentity>,
     /// Identities already sent SIGTERM, or already reached by the payload
-    /// group's SIGTERM, so no process gets that signal twice.
+    /// group's SIGTERM (see [`GroupTerm`]), so no process gets that signal
+    /// from teardown twice.
     termed: BTreeSet<ProcessIdentity>,
 }
 
@@ -3745,28 +3746,26 @@ impl PayloadLineage {
     }
 
     /// Observe, then SIGTERM every live recorded identity that has not had
-    /// SIGTERM yet. With `group_signalled`, identities currently in that
-    /// process group are counted as already signalled, because the caller
-    /// just sent the group SIGTERM. Returns the identities signalled here.
-    fn term_unsignalled(&mut self, group_signalled: Option<u32>) -> Vec<ProcessIdentity> {
+    /// SIGTERM yet. No group signal was sent, so every identity is signalled
+    /// by itself. Returns the identities signalled here.
+    fn term_unsignalled(&mut self) -> Vec<ProcessIdentity> {
         let live = self.live_or_recorded();
-        self.term_listed(&live, group_signalled)
+        self.term_listed(&live, GroupTerm::NotSent)
     }
 
-    /// [`Self::term_unsignalled`] on `live`, identities an observation the
-    /// caller already made returned, without scanning `/proc` again.
-    fn term_listed(
-        &mut self,
-        live: &[ProcessIdentity],
-        group_signalled: Option<u32>,
-    ) -> Vec<ProcessIdentity> {
+    /// SIGTERM each of `live`, identities an observation the caller already
+    /// made returned, that has not had SIGTERM yet, without scanning `/proc`
+    /// again. An identity the group signal described by `group` already
+    /// reached is counted as signalled and not sent a second SIGTERM. Returns
+    /// the identities signalled here.
+    fn term_listed(&mut self, live: &[ProcessIdentity], group: GroupTerm) -> Vec<ProcessIdentity> {
         let mut reached = Vec::new();
         for identity in live.iter().cloned() {
             if self.termed.contains(&identity) || exempt_from_teardown_signals(identity.pid) {
                 continue;
             }
             self.termed.insert(identity.clone());
-            if group_signalled.is_some() && exact_process_group(&identity) == group_signalled {
+            if group.reached(&identity) {
                 continue;
             }
             if matches!(signal_exact_process(&identity, libc::SIGTERM), Ok(true)) {
@@ -3775,6 +3774,74 @@ impl PayloadLineage {
         }
         reached
     }
+}
+
+/// Whether, and when, [`term_payload_group`] sent SIGTERM to the payload's
+/// process group, so [`PayloadLineage::term_listed`] sends no identity a
+/// second SIGTERM and misses none.
+///
+/// ⚠️ A GROUP MEMBER FIRST SEEN AFTER THE GROUP SIGNAL MAY NOT HAVE HAD IT. The
+/// grace polls used to count every current member of the group as signalled.
+/// A member started after the group signal -- for example a child forked by
+/// a SIGTERM handler -- then got no SIGTERM at all and ran until the SIGKILL
+/// that ends the grace (review of
+/// https://github.com/rrnewton/dev-hermit/issues/419). The normal-exit
+/// teardown sends such a process its own SIGTERM, so the deadline path now
+/// does too.
+#[derive(Clone, Copy, Debug)]
+enum GroupTerm {
+    /// No group signal was sent.
+    NotSent,
+    /// The group `pgid` was sent SIGTERM after the identities were observed,
+    /// so an identity in the group existed, and was reached, when it was sent.
+    SentAfterObservation { pgid: u32 },
+    /// The group `pgid` was sent SIGTERM before the identities were observed,
+    /// with the boot clock at `sent_at_ticks` just before the signal (see
+    /// [`boot_clock_ticks`]). A member that started before that tick was
+    /// reached. One that started at or after it may have been forked after
+    /// the signal and is signalled by itself; one forked in that same tick
+    /// just before the signal therefore gets SIGTERM twice.
+    SentBeforeObservation { pgid: u32, sent_at_ticks: u64 },
+}
+
+impl GroupTerm {
+    fn reached(self, identity: &ProcessIdentity) -> bool {
+        match self {
+            Self::NotSent => false,
+            Self::SentAfterObservation { pgid } => exact_process_group(identity) == Some(pgid),
+            Self::SentBeforeObservation {
+                pgid,
+                sent_at_ticks,
+            } => {
+                identity.start_ticks < sent_at_ticks && exact_process_group(identity) == Some(pgid)
+            }
+        }
+    }
+}
+
+/// The boot clock in the units of a `/proc/<pid>/stat` start time (field 22),
+/// or `None` when it cannot be read. The kernel derives that field from the
+/// same clock (`CLOCK_BOOTTIME`, including a time namespace's offset) divided
+/// the same way, so a process whose start time is below a value read here
+/// started before the read.
+fn boot_clock_ticks() -> Option<u64> {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a valid, writable timespec for the duration of the call.
+    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut now) } != 0 {
+        return None;
+    }
+    // SAFETY: sysconf only reads a system configuration value.
+    let ticks_per_second = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
+        .ok()
+        .filter(|ticks| *ticks > 0 && *ticks <= 1_000_000_000)?;
+    let nanos = u64::try_from(now.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u64::try_from(now.tv_nsec).ok()?)?;
+    Some(nanos / (1_000_000_000 / ticks_per_second))
 }
 
 /// Whether the number `payload_pgid` still names the payload's ORIGINAL
@@ -3836,8 +3903,10 @@ fn signal_identities(
 
 /// Deadline and supervisor-signal path, first half: SIGTERM the payload's
 /// process group `pgid` and, by exact identity, every recorded payload process
-/// outside it, then keep recording for up to `grace` and SIGTERM each process
-/// found during it.
+/// outside it, then keep recording for up to `grace` and SIGTERM, by exact
+/// identity, each process found during it that the group signal did not
+/// reach: one outside the group, or a member that started no earlier than the
+/// group signal ([`GroupTerm`]).
 ///
 /// The lineage is observed BEFORE the first signal, so a child of a process
 /// about to be signalled is recorded while its parent link is visible. That
@@ -3874,8 +3943,12 @@ pub(crate) fn term_payload_group(
     // The first poll is paced by this scan too, which gives processes that
     // exit on SIGTERM that long to do so before they are looked for.
     let mut last_scan = scan_started.elapsed();
+    // Read before the signal, so every process forked after it has a start
+    // time at or above this. Unreadable, 0 makes every member found during
+    // the grace get its own SIGTERM, which can only duplicate one.
+    let sent_at_ticks = boot_clock_ticks().unwrap_or(0);
     signal_group(libc::SIGTERM, pgid);
-    let reached = lineage.term_listed(&live, Some(pgid));
+    let reached = lineage.term_listed(&live, GroupTerm::SentAfterObservation { pgid });
     if !reached.is_empty() {
         eprintln!(
             "{label}: SIGTERM {} payload process(es) outside process group -{pgid}: {}",
@@ -3889,7 +3962,13 @@ pub(crate) fn term_payload_group(
         let scan_started = Instant::now();
         let (live, observed) = lineage.observe_or_recorded();
         last_scan = scan_started.elapsed();
-        let reached = lineage.term_listed(&live, Some(pgid));
+        let reached = lineage.term_listed(
+            &live,
+            GroupTerm::SentBeforeObservation {
+                pgid,
+                sent_at_ticks,
+            },
+        );
         if !reached.is_empty() {
             eprintln!(
                 "{label}: SIGTERM {} further payload process(es) found during the grace period: {}",
@@ -4234,7 +4313,7 @@ pub(crate) fn tear_down_payload_domain(
     label: &str,
 ) -> ResidualCapture {
     reap_exited_children();
-    let termed = lineage.term_unsignalled(None);
+    let termed = lineage.term_unsignalled();
     if !termed.is_empty() {
         eprintln!(
             "{label}: {} payload process(es) outlived the payload leader: {}; \
@@ -4247,7 +4326,7 @@ pub(crate) fn tear_down_payload_domain(
         loop {
             reap_exited_children();
             let scan_started = Instant::now();
-            let more = lineage.term_unsignalled(None);
+            let more = lineage.term_unsignalled();
             let last_scan = scan_started.elapsed();
             if !more.is_empty() {
                 eprintln!(
@@ -7806,6 +7885,60 @@ exit 0
             signal,
             Some(libc::SIGKILL),
             "the payload leader must die of SIGKILL"
+        );
+    }
+
+    /// Review of https://github.com/rrnewton/dev-hermit/issues/419: a member
+    /// of the payload's process group forked AFTER the group SIGTERM -- here
+    /// by the leader's own SIGTERM handler -- never had that signal. The grace
+    /// polls counted every group member as signalled, so it ran until the
+    /// SIGKILL that ends the grace, which took the waiting leader with it. It
+    /// must get its own SIGTERM, which lets the handler finish.
+    #[test]
+    fn deadline_grace_sigterms_a_group_member_forked_after_the_group_signal() {
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
+        let paths = temp_paths("grace-late-group-member");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let ready = root.join("trap-installed");
+        let status = root.join("late-member.status");
+        let grace = Duration::from_secs(10);
+        let (emptied, elapsed, signal) = deadline_grace_outcome(
+            "/bin/bash",
+            &[
+                OsString::from("-c"),
+                OsString::from(
+                    r#"status=$2
+on_term() { /bin/sleep 30 & child=$!; wait "$child"; echo "$?" > "$status"; exit 0; }
+trap on_term TERM
+: > "$1"
+i=0
+while [ "$i" -lt 6000 ]; do sleep 0.05; i=$((i + 1)); done
+"#,
+                ),
+                OsString::from("grace-late-group-member"),
+                ready.clone().into_os_string(),
+                status.clone().into_os_string(),
+            ],
+            Some(&ready),
+            grace,
+        );
+        let late_status = fs::read_to_string(&status).ok();
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(
+            late_status.as_deref().map(str::trim),
+            Some("143"),
+            "the group member forked by the SIGTERM handler did not die of its own SIGTERM \
+             (grace emptied={emptied} after {elapsed:?}, leader signal {signal:?})"
+        );
+        assert_eq!(
+            signal, None,
+            "the leader must exit on its own once its late child is gone"
+        );
+        assert!(
+            emptied,
+            "the grace ran to its end after {elapsed:?} although every process exited"
         );
     }
 
