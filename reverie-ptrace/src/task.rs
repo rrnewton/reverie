@@ -98,6 +98,12 @@ use crate::gdbstub::StopEvent;
 use crate::gdbstub::StopReason;
 use crate::gdbstub::StoppedInferior;
 use crate::injected_syscall::InjectedSyscallFrame;
+use crate::liteinst_census::Census;
+use crate::liteinst_census::CensusError;
+use crate::liteinst_census::REFUSED_ENTRY_LIMIT;
+use crate::liteinst_census::Refusal;
+use crate::liteinst_census::Segment;
+use crate::liteinst_census::SiteEntries;
 use crate::liteinst_stats::LiteinstPatchOutcome;
 use crate::liteinst_trap_only::TrapOnlyTask;
 use crate::poll_on_wake::PollOnWake;
@@ -525,7 +531,7 @@ pub(crate) struct InjectedSyscallProvenance {
     pub(crate) patched_site_addresses: Arc<[u64]>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct GuestMap {
     start: u64,
     end: u64,
@@ -548,6 +554,87 @@ impl GuestMap {
     fn contains_range(&self, range: GuestRange) -> bool {
         self.start <= range.start && range.end <= self.end
     }
+
+    /// The file this mapping maps: its device and inode.
+    fn file(&self) -> (u64, u64, u64) {
+        (self.device_major, self.device_minor, self.inode)
+    }
+}
+
+/// Where an object whose code the tracer censuses is mapped.
+#[derive(Debug, Eq, PartialEq)]
+struct CensusObject {
+    /// The executable mapping that holds the site.
+    text: (u64, u64),
+    /// The address of the object's ELF header.
+    header: u64,
+    /// `(start, end, executable)` for each readable mapping of the object.
+    ranges: Vec<(u64, u64, bool)>,
+}
+
+const NO_CENSUS_OBJECT: CensusError =
+    CensusError("the executable mapping belongs to no identifiable object");
+const UNREADABLE_CENSUS_OBJECT: CensusError =
+    CensusError("the object's mappings cannot be read from the tracee");
+const CHANGED_CENSUS_OBJECT: CensusError =
+    CensusError("the object's mappings changed while its census was built");
+
+/// Returns the readable mappings of the file that `maps` maps executable over
+/// `site`, with the address of its ELF header. This is the tracer's copy of the
+/// LiteInst runtime's `object_image`
+/// (<https://github.com/rrnewton/reverie/issues/812>).
+///
+/// Mappings belong to one object when they share the text mapping's device and
+/// inode. The header is the single such mapping at file offset zero. A file
+/// that is mapped twice has two, so it gets no object, and neither does an
+/// anonymous mapping.
+fn census_object(maps: &[GuestMap], site: u64) -> Result<CensusObject, CensusError> {
+    let text = maps
+        .iter()
+        .find(|map| map.executable && map.contains(site))
+        .filter(|map| map.inode != 0)
+        .ok_or(NO_CENSUS_OBJECT)?;
+    let object = maps
+        .iter()
+        .filter(|map| map.readable && map.file() == text.file());
+    let mut headers = object.clone().filter(|map| map.offset == 0);
+    let header = match (headers.next(), headers.next()) {
+        (Some(header), None) => header.start,
+        _ => return Err(NO_CENSUS_OBJECT),
+    };
+    Ok(CensusObject {
+        text: (text.start, text.end),
+        header,
+        ranges: object
+            .map(|map| (map.start, map.end, map.executable))
+            .collect(),
+    })
+}
+
+/// Builds the census of `object` from the tracee's current bytes.
+fn read_census(task: &Stopped, object: &CensusObject) -> Result<Census, CensusError> {
+    let mut contents = Vec::with_capacity(object.ranges.len());
+    for &(start, end, _) in &object.ranges {
+        let len = end
+            .checked_sub(start)
+            .and_then(|len| usize::try_from(len).ok())
+            .ok_or(CensusError::TRUNCATED)?;
+        let mut bytes = vec![0; len];
+        task.read_exact(start as usize, &mut bytes)
+            .map_err(|_| UNREADABLE_CENSUS_OBJECT)?;
+        contents.push(bytes);
+    }
+    let segments: Vec<Segment<'_>> = object
+        .ranges
+        .iter()
+        .zip(&contents)
+        .map(|(&(address, _, executable), bytes)| Segment {
+            address,
+            bytes,
+            executable,
+        })
+        .collect();
+    Census::build(&segments, object.header, object.text)
 }
 
 fn guest_maps(pid: Pid) -> Option<Vec<GuestMap>> {
@@ -946,6 +1033,16 @@ struct LiteinstRuntimeState {
     attempted_sites: HashSet<u64>,
     fallback_sites: HashMap<u64, LiteinstPatchOutcome>,
     active_hooks: HashMap<u64, ActiveHookFootprint>,
+    /// The readable file-backed mappings when the runtime became Ready. The
+    /// tracer builds an object's entry census from these mappings at the first
+    /// site attempt in its code
+    /// (<https://github.com/rrnewton/reverie/issues/812>). A later mapping
+    /// change that touches any mapping of an object removes the whole object,
+    /// and nothing adds it back, so no census is built from text that a
+    /// `syscall` patch has already changed.
+    census_maps: Arc<[GuestMap]>,
+    /// Entry censuses by the start of their text mapping.
+    censuses: HashMap<u64, Arc<Result<Census, CensusError>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -965,6 +1062,8 @@ impl Default for LiteinstRuntimeState {
             attempted_sites: HashSet::new(),
             fallback_sites: HashMap::new(),
             active_hooks: HashMap::new(),
+            census_maps: Vec::new().into(),
+            censuses: HashMap::new(),
         }
     }
 }
@@ -1023,6 +1122,62 @@ impl LiteinstRuntimeState {
             });
         }
         false
+    }
+
+    /// Enters Ready with the census snapshot taken from `maps`; see
+    /// [`Self::census_maps`]. Without maps, every site is refused.
+    fn enter_ready(&mut self, maps: Option<Vec<GuestMap>>) {
+        self.phase = LiteinstRuntimePhase::Ready;
+        self.ready_generation = Some(self.generation);
+        self.bootstrap_tid = None;
+        self.census_maps = maps
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|map| map.readable && map.inode != 0)
+            .collect();
+        self.censuses.clear();
+    }
+
+    /// Removes every object with a mapping in the pages that `start` and `len`
+    /// name, and its census.
+    fn forget_census_objects(&mut self, start: u64, len: u64, page_size: u64) {
+        let range = match kernel_page_range(start, len, page_size) {
+            Ok(Some(range)) if range.start < range.end => range,
+            Ok(None) => return,
+            _ => {
+                self.forget_all_census_objects();
+                return;
+            }
+        };
+        let touched: HashSet<(u64, u64, u64)> = self
+            .census_maps
+            .iter()
+            .filter(|map| {
+                GuestRange {
+                    start: map.start,
+                    end: map.end,
+                }
+                .overlaps(range)
+            })
+            .map(GuestMap::file)
+            .collect();
+        if touched.is_empty() {
+            return;
+        }
+        self.census_maps = self
+            .census_maps
+            .iter()
+            .filter(|map| !touched.contains(&map.file()))
+            .cloned()
+            .collect();
+        let maps = &self.census_maps;
+        self.censuses
+            .retain(|text, _| maps.iter().any(|map| map.executable && map.start == *text));
+    }
+
+    fn forget_all_census_objects(&mut self) {
+        self.census_maps = Vec::new().into();
+        self.censuses.clear();
     }
 
     fn invalidate_attempted_pages(&mut self, start: u64, len: u64, page_size: u64) {
@@ -3570,7 +3725,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let config = self.global_state.liteinst_runtime.as_ref()?;
         let address = Addr::from_raw(frame_address)?;
         let frame: LiteinstHandshakeFrame = task.read_value(address).ok()?;
-        if frame.version != 4
+        if frame.version != 5
             || frame.helper_stack_top < 8
             || frame.helper_stack_top & 0xf != 0
             || trap_rip
@@ -3836,13 +3991,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                     return Err(error);
                 }
                 {
+                    let maps = guest_maps(task.pid());
                     let mut state = self.liteinst_runtime.lock().unwrap();
                     if state.phase != LiteinstRuntimePhase::Bootstrap {
                         return Err(Errno::EPROTO.into());
                     }
-                    state.phase = LiteinstRuntimePhase::Ready;
-                    state.ready_generation = Some(state.generation);
-                    state.bootstrap_tid = None;
+                    state.enter_ready(maps);
                 }
                 return Ok(HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
@@ -4394,10 +4548,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Err(error);
             }
             {
-                let mut state = self.liteinst_runtime.lock().unwrap();
-                state.phase = LiteinstRuntimePhase::Ready;
-                state.ready_generation = Some(state.generation);
-                state.bootstrap_tid = None;
+                let maps = guest_maps(task.pid());
+                self.liteinst_runtime.lock().unwrap().enter_ready(maps);
             }
         }
 
@@ -5047,12 +5199,17 @@ impl<L: Tool + 'static> TracedTask<L> {
         ))
     }
 
+    /// Runs the runtime's installation helper for `site`. `entry_limit` is the
+    /// lowest entry that the tracer's census found in the 64 bytes after the
+    /// site, `u64::MAX` if there is none, or [`REFUSED_ENTRY_LIMIT`] if the
+    /// census refused the site.
     #[cfg(target_arch = "x86_64")]
     async fn call_liteinst_install_helper(
         &mut self,
         task: Stopped,
         frame: LiteinstHandshakeFrame,
         site: u64,
+        entry_limit: u64,
     ) -> Result<(Stopped, Option<(u64, ActiveHookFootprint)>), Error> {
         let helper_return_marker = self
             .global_state
@@ -5112,6 +5269,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         *helper_regs.ip_mut() = frame.install_helper;
         *helper_regs.stack_ptr_mut() = frame.helper_stack_top - 8;
         helper_regs.rdi = site;
+        helper_regs.rsi = entry_limit;
         *helper_regs.orig_syscall_mut() = -1_i64 as u64;
         helper_regs.eflags = liteinst_helper_entry_rflags(saved.regs.eflags);
         if let Err(error) = task.setregs(&helper_regs) {
@@ -5322,6 +5480,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         _task: Stopped,
         _frame: LiteinstHandshakeFrame,
         _site: u64,
+        _entry_limit: u64,
     ) -> Result<(Stopped, Option<(u64, ActiveHookFootprint)>), Error> {
         Err(Error::runtime(
             self.tid(),
@@ -5385,11 +5544,23 @@ impl<L: Tool + 'static> TracedTask<L> {
             stats.lock().unwrap().record_first_site_seccomp();
         }
 
+        // A refused site still goes to the helper, which records the site's
+        // trap and leaves it on ptrace, as for any other failed installation.
+        let entry_limit = match self.liteinst_site_entries(&task, site) {
+            Ok(entries) => entries.limit,
+            Err(refusal) => {
+                tracing::debug!("[liteinst] leaving syscall site {site:#x} unpatched: {refusal}");
+                REFUSED_ENTRY_LIMIT
+            }
+        };
+
         // Convert the active seccomp stop into an ordinary stopped state before
         // calling arbitrary tracee code. The original event is still serviced
         // exactly once by the host Tool below.
         let task = self.skip_seccomp_syscall(task).await?;
-        let (task, install) = self.call_liteinst_install_helper(task, frame, site).await?;
+        let (task, install) = self
+            .call_liteinst_install_helper(task, frame, site, entry_limit)
+            .await?;
         let relocated_tail = install.as_ref().map(|(address, _)| *address);
         if let Some((_, footprint)) = install {
             self.liteinst_runtime
@@ -5399,6 +5570,47 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .insert(site, footprint);
         }
         Ok((task, true, relocated_tail))
+    }
+
+    /// Returns the census entries of `site`, building its object's census from
+    /// the tracee's memory at the first site attempt in that object
+    /// (<https://github.com/rrnewton/reverie/issues/812>).
+    ///
+    /// The census runs here rather than in the guest because it decodes every
+    /// function of the object: about 12.9 million conditional branches for
+    /// glibc 2.34's `libc.so.6`, which a guest's own instruction count would
+    /// include.
+    fn liteinst_site_entries(&self, task: &Stopped, site: u64) -> Result<SiteEntries, Refusal> {
+        let maps = Arc::clone(&self.liteinst_runtime.lock().unwrap().census_maps);
+        let object = census_object(&maps, site).map_err(Refusal::NoCensus)?;
+        let cached = self
+            .liteinst_runtime
+            .lock()
+            .unwrap()
+            .censuses
+            .get(&object.text.0)
+            .cloned();
+        let census = match cached {
+            Some(census) => census,
+            None => {
+                let census = Arc::new(read_census(task, &object));
+                let mut state = self.liteinst_runtime.lock().unwrap();
+                if !Arc::ptr_eq(&state.census_maps, &maps) {
+                    return Err(Refusal::NoCensus(CHANGED_CENSUS_OBJECT));
+                }
+                Arc::clone(state.censuses.entry(object.text.0).or_insert(census))
+            }
+        };
+        let entries = census
+            .as_ref()
+            .as_ref()
+            .map_err(|error| Refusal::NoCensus(*error))?
+            .site(site)?;
+        // The helper installs only two-byte `syscall` instructions.
+        if entries.len != 2 {
+            return Err(Refusal::InstructionMismatch);
+        }
+        Ok(entries)
     }
 
     fn validate_liteinst_mapping_execution(
@@ -5435,24 +5647,36 @@ impl<L: Tool + 'static> TracedTask<L> {
         let Ok(page_size) = host_page_size() else {
             state.attempted_sites.clear();
             state.fallback_sites.clear();
+            state.forget_all_census_objects();
             return;
         };
+        // A protection change leaves an object's bytes where they are, and the
+        // installation helper makes one for every patch, so only the calls
+        // that map, unmap or move pages remove census objects.
         match nr {
             // AUTONOMOUS-BOT-IMPLEMENTED
             Sysno::mmap => {
                 if let Ok(start) = u64::try_from(result) {
                     state.invalidate_attempted_pages(start, args.arg1 as u64, page_size);
+                    state.forget_census_objects(start, args.arg1 as u64, page_size);
                 }
             }
             // AUTONOMOUS-BOT-IMPLEMENTED
-            Sysno::munmap | Sysno::mprotect | Sysno::pkey_mprotect => {
+            Sysno::munmap => {
+                state.invalidate_attempted_pages(args.arg0 as u64, args.arg1 as u64, page_size);
+                state.forget_census_objects(args.arg0 as u64, args.arg1 as u64, page_size);
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            Sysno::mprotect | Sysno::pkey_mprotect => {
                 state.invalidate_attempted_pages(args.arg0 as u64, args.arg1 as u64, page_size);
             }
             // AUTONOMOUS-BOT-IMPLEMENTED
             Sysno::mremap => {
                 state.invalidate_attempted_pages(args.arg0 as u64, args.arg1 as u64, page_size);
+                state.forget_census_objects(args.arg0 as u64, args.arg1 as u64, page_size);
                 if let Ok(start) = u64::try_from(result) {
                     state.invalidate_attempted_pages(start, args.arg2 as u64, page_size);
+                    state.forget_census_objects(start, args.arg2 as u64, page_size);
                 }
             }
             _ => {}
@@ -9398,6 +9622,126 @@ mod tests {
         state.invalidate_attempted_pages(0x401000, 1, 4096);
 
         assert_eq!(state.attempted_sites, HashSet::from([0x402005]));
+    }
+
+    const CENSUS_TEST_MAPS: &str = concat!(
+        "555555554000-555555556000 r--p 00000000 00:1f 11 /usr/bin/guest\n",
+        "555555556000-555555558000 r-xp 00002000 00:1f 11 /usr/bin/guest\n",
+        "555555558000-55555555a000 rw-p 00004000 00:1f 11 /usr/bin/guest\n",
+        "55555555a000-55555557b000 rw-p 00000000 00:00 0 [heap]\n",
+        "7ffff7c00000-7ffff7c28000 r--p 00000000 00:1f 22 /usr/lib64/libc.so.6\n",
+        "7ffff7c28000-7ffff7db0000 r-xp 00028000 00:1f 22 /usr/lib64/libc.so.6\n",
+        "7ffff7db0000-7ffff7dff000 r--p 001b0000 00:1f 22 /usr/lib64/libc.so.6\n",
+        "7ffff7dff000-7ffff7e00000 ---p 001ff000 00:1f 22 /usr/lib64/libc.so.6\n",
+        "7ffff7e00000-7ffff7e04000 r--p 001ff000 00:1f 22 /usr/lib64/libc.so.6\n",
+        "7ffff7e04000-7ffff7e06000 rw-p 00203000 00:1f 22 /usr/lib64/libc.so.6\n",
+        "7ffff7e06000-7ffff7e13000 rw-p 00000000 00:00 0\n",
+        "7ffff7f00000-7ffff7f01000 r-xp 00000000 00:00 0\n",
+        "7ffff7f10000-7ffff7f11000 r--p 00000000 00:2a 22 /other/device/same-inode\n",
+        "7ffff7f20000-7ffff7f21000 r--p 00000000 00:1f 33 /twice.so\n",
+        "7ffff7f21000-7ffff7f22000 r-xp 00001000 00:1f 33 /twice.so\n",
+        "7ffff7f30000-7ffff7f31000 r--p 00000000 00:1f 33 /twice.so\n",
+    );
+
+    fn census_test_maps() -> Vec<GuestMap> {
+        CENSUS_TEST_MAPS
+            .lines()
+            .filter_map(|line| parse_guest_map(line.as_bytes()))
+            .collect()
+    }
+
+    /// The tracer's census reads an object through the mappings recorded at
+    /// Ready (https://github.com/rrnewton/reverie/issues/812), so those must be
+    /// exactly the readable mappings of the text mapping's file. The LiteInst
+    /// runtime's object_image test checks its own copy of this rule against
+    /// the same maps.
+    #[test]
+    fn census_object_records_the_readable_mappings_of_the_text_file() {
+        let maps = census_test_maps();
+
+        // The gap mapping (---p), the anonymous .bss continuation and the
+        // mapping of another device's inode 22 are all left out.
+        assert_eq!(
+            census_object(&maps, 0x7fff_f7c3_0000),
+            Ok(CensusObject {
+                text: (0x7fff_f7c2_8000, 0x7fff_f7db_0000),
+                header: 0x7fff_f7c0_0000,
+                ranges: vec![
+                    (0x7fff_f7c0_0000, 0x7fff_f7c2_8000, false),
+                    (0x7fff_f7c2_8000, 0x7fff_f7db_0000, true),
+                    (0x7fff_f7db_0000, 0x7fff_f7df_f000, false),
+                    (0x7fff_f7e0_0000, 0x7fff_f7e0_4000, false),
+                    (0x7fff_f7e0_4000, 0x7fff_f7e0_6000, false),
+                ],
+            })
+        );
+        assert_eq!(
+            census_object(&maps, 0x5555_5555_7ffe),
+            Ok(CensusObject {
+                text: (0x5555_5555_6000, 0x5555_5555_8000),
+                header: 0x5555_5555_4000,
+                ranges: vec![
+                    (0x5555_5555_4000, 0x5555_5555_6000, false),
+                    (0x5555_5555_6000, 0x5555_5555_8000, true),
+                    (0x5555_5555_8000, 0x5555_5555_a000, false),
+                ],
+            })
+        );
+        // Anonymous text, a file mapped twice (two headers), a mapping that is
+        // not executable, and an unmapped address have no object.
+        for site in [0x7fff_f7f0_0010, 0x7fff_f7f2_1010, 0x7fff_f7c0_0010, 0x1000] {
+            assert_eq!(
+                census_object(&maps, site),
+                Err(NO_CENSUS_OBJECT),
+                "{site:#x}"
+            );
+        }
+    }
+
+    /// A mapping change that touches any page of an object removes every
+    /// mapping of that object and its census, so the census is never rebuilt
+    /// from text that was patched before the change.
+    #[test]
+    fn a_mapping_change_forgets_every_census_object_it_touches() {
+        const LIBC_TEXT: u64 = 0x7fff_f7c2_8000;
+        const GUEST_TEXT: u64 = 0x5555_5555_6000;
+        let mut state = LiteinstRuntimeState::default();
+        state.enter_ready(Some(census_test_maps()));
+        // Only the readable file-backed mappings are kept: three of the
+        // guest, five of libc, one of the other device and three of twice.so.
+        assert_eq!(state.census_maps.len(), 12);
+        state
+            .censuses
+            .insert(LIBC_TEXT, Arc::new(Err(CensusError::TRUNCATED)));
+        state
+            .censuses
+            .insert(GUEST_TEXT, Arc::new(Err(CensusError::TRUNCATED)));
+
+        // A range with no recorded mapping changes nothing.
+        state.forget_census_objects(0x5555_5555_a000, 0x1000, 4096);
+        assert_eq!(state.census_maps.len(), 12);
+        assert_eq!(state.censuses.len(), 2);
+
+        // One byte of libc's data mapping removes all of libc.
+        state.forget_census_objects(0x7fff_f7e0_5fff, 1, 4096);
+        assert_eq!(state.census_maps.len(), 7);
+        assert_eq!(
+            census_object(&state.census_maps, LIBC_TEXT),
+            Err(NO_CENSUS_OBJECT)
+        );
+        assert_eq!(
+            state.censuses.keys().copied().collect::<Vec<_>>(),
+            [GUEST_TEXT]
+        );
+        assert!(census_object(&state.census_maps, GUEST_TEXT).is_ok());
+
+        // An exec starts over without any object.
+        let next = state.after_exec().unwrap();
+        assert!(next.census_maps.is_empty() && next.censuses.is_empty());
+
+        // A range that the kernel would reject removes every object.
+        state.forget_census_objects(u64::MAX - 1, 4, 4096);
+        assert!(state.census_maps.is_empty() && state.censuses.is_empty());
     }
 
     #[test]

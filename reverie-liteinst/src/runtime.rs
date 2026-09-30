@@ -31,6 +31,14 @@ use reverie_preload::trap::raw_syscall6;
 
 use crate::COMPAT_EVENT_COOKIE_ENV;
 use crate::COMPAT_EVENT_FD_ENV;
+use crate::interior_entry::Census;
+use crate::interior_entry::CensusError;
+use crate::interior_entry::ObjectImage;
+use crate::interior_entry::REFUSED_ENTRY_LIMIT;
+use crate::interior_entry::Refusal;
+use crate::interior_entry::SiteEntries;
+use crate::interior_entry::prove;
+use crate::interior_entry::prove_within;
 
 pub(crate) const HOST_RUNTIME_ENV: &str = "REVERIE_LITEINST_HOST_RUNTIME";
 /// [`HOST_RUNTIME_ENV`] for the non-allocating constructor check.
@@ -60,7 +68,7 @@ pub(crate) const HOST_HELPER_RETURN_MARKER: u64 = 0x7265_766c_6900_0003;
 pub(crate) const HOST_SYSCALL_MARKER: u64 = 0x7265_766c_6900_0004;
 /// RAX at the ready trap site when preparation failed after the begin trap.
 pub(crate) const HOST_FAILED_MARKER: u64 = 0x7265_766c_6900_0005;
-const HOST_HANDSHAKE_VERSION: u64 = 4;
+const HOST_HANDSHAKE_VERSION: u64 = 5;
 const HOST_INSTALL_RESULT_VERSION: u64 = 2;
 const HOST_HELPER_STACK_BYTES: usize = 256 * 1024;
 
@@ -554,6 +562,57 @@ struct RuntimeArena {
     executable_start: u64,
     executable_end: u64,
     arena: TrampolineArena,
+    /// The object that owned this executable mapping at initialization, or
+    /// `None` for an anonymous mapping or one whose object cannot be
+    /// identified.
+    image: Option<ObjectImage>,
+    /// Built by the first installation that needs it; see [`Self::census`].
+    census: OnceLock<Result<Census, CensusError>>,
+}
+
+impl RuntimeArena {
+    /// Returns the entry census of this arena's executable mapping, building it
+    /// on first use (<https://github.com/rrnewton/reverie/issues/812>).
+    ///
+    /// Call only while holding the installation lock inside a patch allocation
+    /// scope: the build allocates, and the census is kept for the life of the
+    /// process.
+    fn census(&self) -> Result<&Census, Refusal> {
+        self.census
+            .get_or_init(|| {
+                let image = self.image.as_ref().ok_or(NO_OBJECT_IMAGE)?;
+                // SAFETY: the image records the readable mappings of the object
+                // that mapped this arena's text when LiteInst initialized.
+                // Those are the executable and its load-time libraries, which
+                // the dynamic loader never unmaps. arena_for already relies on
+                // the text mapping itself staying in place.
+                unsafe { image.census((self.mapping_start, self.mapping_end)) }
+            })
+            .as_ref()
+            .map_err(|error| Refusal::NoCensus(*error))
+    }
+}
+
+const NO_OBJECT_IMAGE: CensusError =
+    CensusError("the executable mapping belongs to no identifiable object");
+
+/// Whether an installation must first prove that no known control transfer
+/// enters the bytes its patch displaces.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EntryProof {
+    /// A `syscall` site in an object's code: the census must prove it.
+    Required,
+    /// A `syscall` site that the ptrace tracer's census has already listed.
+    /// The value is the lowest entry the census found in the 64 bytes after
+    /// the site, or `u64::MAX` if there is none. The tracer builds the census
+    /// so that the guest's own instruction count does not include it.
+    Limit(u64),
+    /// A `syscall` site that the ptrace tracer's census refused.
+    Refused,
+    /// A site the census does not list. vDSO stubs are written by reverie
+    /// itself and have no object image. CPUID, RDTSC and RDTSCP sites are not
+    /// `syscall` instructions, so the census has no record of them.
+    NotListed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1231,9 +1290,13 @@ fn compatibility_event_channel() -> io::Result<Option<CompatibilityEventChannel>
 }
 
 fn read_runtime_maps() -> io::Result<Vec<RuntimeMap>> {
-    let maps = std::fs::read_to_string("/proc/self/maps")?;
-    Ok(maps
-        .lines()
+    Ok(parse_runtime_maps(&std::fs::read_to_string(
+        "/proc/self/maps",
+    )?))
+}
+
+fn parse_runtime_maps(maps: &str) -> Vec<RuntimeMap> {
+    maps.lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
             let (range, permissions, offset, device, inode) = (
@@ -1257,7 +1320,35 @@ fn read_runtime_maps() -> io::Result<Vec<RuntimeMap>> {
                 shared: permissions.get(3) == Some(&b's'),
             })
         })
-        .collect())
+        .collect()
+}
+
+/// Returns the readable mappings of the file that `maps` maps executable at
+/// `[text_start, text_end)`, with the address of its ELF header.
+///
+/// Mappings belong to one object when they share the text mapping's device and
+/// inode. The header is the single such mapping at file offset zero. A file
+/// that is mapped twice has two, so it gets no image, and neither does an
+/// anonymous mapping.
+fn object_image(maps: &[RuntimeMap], text_start: u64, text_end: u64) -> Option<ObjectImage> {
+    let text = maps
+        .iter()
+        .find(|map| map.start == text_start && map.end == text_end && map.executable)?;
+    if text.inode == 0 {
+        return None;
+    }
+    let object = maps
+        .iter()
+        .filter(|map| map.readable && map.device == text.device && map.inode == text.inode);
+    let mut headers = object.clone().filter(|map| map.offset == 0);
+    let header = match (headers.next(), headers.next()) {
+        (Some(header), None) => header.start,
+        _ => return None,
+    };
+    let ranges = object
+        .map(|map| (map.start, map.end, map.executable))
+        .collect();
+    Some(ObjectImage::new(header, ranges))
 }
 
 fn discover_arena_aliases(
@@ -1327,6 +1418,7 @@ fn prepare_instrumentation_state() -> io::Result<()> {
         .map_err(|_| io::Error::other("LiteInst site registry initialized twice"))?;
 
     let maps = std::fs::read_to_string("/proc/self/maps")?;
+    let objects = parse_runtime_maps(&maps);
     let mut arenas = Vec::new();
     for line in maps.lines() {
         let mut fields = line.split_whitespace();
@@ -1378,6 +1470,8 @@ fn prepare_instrumentation_state() -> io::Result<()> {
             executable_start: executable.start,
             executable_end: executable.end,
             arena,
+            image: object_image(&objects, mapping_start, mapping_end),
+            census: OnceLock::new(),
         });
     }
     if arenas.is_empty() {
@@ -1791,6 +1885,7 @@ unsafe fn install_site_hook(
     publication: PatchPublication,
     expected_instruction: &[u8],
     manage_protection: bool,
+    entry_proof: EntryProof,
 ) -> io::Result<HostInstallResult> {
     let _install_guard = lock_installation()?;
     let _allocation_scope = crate::patch_alloc::enter();
@@ -1821,6 +1916,23 @@ unsafe fn install_site_hook(
     let scan = scanner
         .scan_prefix(candidate, address, liteinst2::patcher::WORD_PATCH_BYTES)
         .map_err(|error| io::Error::other(error.to_string()))?;
+    // A refusal here precedes the candidate metadata below, so the ptrace
+    // controller classifies it as an ordinary fallback, not a straddler bail.
+    let proof = match entry_proof {
+        EntryProof::Required => arena
+            .census()
+            .and_then(|census| prove(census, address, scan.instructions())),
+        EntryProof::Limit(limit) => {
+            prove_within(address, SiteEntries { len: 2, limit }, scan.instructions())
+        }
+        EntryProof::Refused => {
+            return Err(io::Error::other(
+                "the tracer's entry census refused the syscall site",
+            ));
+        }
+        EntryProof::NotListed => Ok(()),
+    };
+    proof.map_err(|refusal| io::Error::other(refusal.to_string()))?;
     let instruction_len = scan
         .instructions()
         .first()
@@ -1988,6 +2100,7 @@ fn install_vdso_sites(sites: &[reverie_ptrace::VdsoSyscallSite]) -> io::Result<(
                 PatchPublication::Quiescent,
                 &[0x0f, 0x05],
                 false,
+                EntryProof::NotListed,
             )
         }
         .map_err(|error| {
@@ -2020,8 +2133,15 @@ fn vdso_callback(number: i64) -> io::Result<liteinst2::trampoline::HookCallback>
 }
 
 // TODO-HUMAN-REVIEW(PR-270): Review stopped-tracee patch helper ABI.
+/// `entry_limit` is the lowest entry that the tracer's census found in the 64
+/// bytes after `address`, `u64::MAX` if there is none, or
+/// [`REFUSED_ENTRY_LIMIT`] if the census refused the site
+/// (<https://github.com/rrnewton/reverie/issues/812>).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace(address: u64) -> i64 {
+pub unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace(
+    address: u64,
+    entry_limit: u64,
+) -> i64 {
     // SAFETY: the ptrace helper is serialized and the controller reads this
     // fixed-size record only after the helper-return trap.
     unsafe {
@@ -2060,6 +2180,11 @@ pub unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace(address: u64) 
                 PatchPublication::Quiescent,
                 &[0x0f, 0x05],
                 true,
+                if entry_limit == REFUSED_ENTRY_LIMIT {
+                    EntryProof::Refused
+                } else {
+                    EntryProof::Limit(entry_limit)
+                },
             )
         } {
             Ok(result) => install_result = Some(result),
@@ -2585,6 +2710,7 @@ unsafe extern "C" fn instruction_sigsegv_handler(
                 patch_publication(),
                 expected,
                 true,
+                EntryProof::NotListed,
             )
         }
         .is_err()
@@ -3030,6 +3156,7 @@ impl LiteinstDispatcher {
                         self.publication,
                         &[0x0f, 0x05],
                         true,
+                        EntryProof::Required,
                     )
                 });
                 let restored = unsafe { set_all_instruction_native(false) };
@@ -3617,6 +3744,7 @@ mod tests {
     use super::FallbackCounters;
     use super::LiteinstDispatcher;
     use super::MAX_PATCH_SITES;
+    use super::ObjectImage;
     use super::RCB_CLOCK;
     use super::RCB_CLOCK_OWNER;
     use super::RCB_CLOCK_UNAVAILABLE;
@@ -3638,6 +3766,8 @@ mod tests {
     use super::init_heap_miss_error;
     use super::initialize_rcb_clock_with;
     use super::mark_site_range_stale;
+    use super::object_image;
+    use super::parse_runtime_maps;
     use super::prepare_in_init_window;
     use super::raw_syscall6;
     use super::record_fallback_dispatch;
@@ -3977,6 +4107,78 @@ mod tests {
              heap had no free 4194304-byte block and no room to carve one; capacity \
              8388608 bytes, high-water mark 8388608 bytes; that request went to the \
              system allocator, so the guest heap was touched"
+        );
+    }
+
+    /// The census reads an object through the mappings recorded at
+    /// initialization (https://github.com/rrnewton/reverie/issues/812), so
+    /// those must be exactly the readable mappings of the text mapping's file.
+    #[test]
+    fn object_image_records_the_readable_mappings_of_the_text_file() {
+        let maps = parse_runtime_maps(concat!(
+            "555555554000-555555556000 r--p 00000000 00:1f 11 /usr/bin/guest\n",
+            "555555556000-555555558000 r-xp 00002000 00:1f 11 /usr/bin/guest\n",
+            "555555558000-55555555a000 rw-p 00004000 00:1f 11 /usr/bin/guest\n",
+            "55555555a000-55555557b000 rw-p 00000000 00:00 0 [heap]\n",
+            "7ffff7c00000-7ffff7c28000 r--p 00000000 00:1f 22 /usr/lib64/libc.so.6\n",
+            "7ffff7c28000-7ffff7db0000 r-xp 00028000 00:1f 22 /usr/lib64/libc.so.6\n",
+            "7ffff7db0000-7ffff7dff000 r--p 001b0000 00:1f 22 /usr/lib64/libc.so.6\n",
+            "7ffff7dff000-7ffff7e00000 ---p 001ff000 00:1f 22 /usr/lib64/libc.so.6\n",
+            "7ffff7e00000-7ffff7e04000 r--p 001ff000 00:1f 22 /usr/lib64/libc.so.6\n",
+            "7ffff7e04000-7ffff7e06000 rw-p 00203000 00:1f 22 /usr/lib64/libc.so.6\n",
+            "7ffff7e06000-7ffff7e13000 rw-p 00000000 00:00 0\n",
+            "7ffff7f00000-7ffff7f01000 r-xp 00000000 00:00 0\n",
+            "7ffff7f10000-7ffff7f11000 r--p 00000000 00:2a 22 /other/device/same-inode\n",
+            "7ffff7f20000-7ffff7f21000 r--p 00000000 00:1f 33 /twice.so\n",
+            "7ffff7f21000-7ffff7f22000 r-xp 00001000 00:1f 33 /twice.so\n",
+            "7ffff7f30000-7ffff7f31000 r--p 00000000 00:1f 33 /twice.so\n",
+        ));
+
+        // The gap mapping (---p), the anonymous .bss continuation and the
+        // mapping of another device's inode 22 are all left out.
+        assert_eq!(
+            object_image(&maps, 0x7fff_f7c2_8000, 0x7fff_f7db_0000),
+            Some(ObjectImage::new(
+                0x7fff_f7c0_0000,
+                vec![
+                    (0x7fff_f7c0_0000, 0x7fff_f7c2_8000, false),
+                    (0x7fff_f7c2_8000, 0x7fff_f7db_0000, true),
+                    (0x7fff_f7db_0000, 0x7fff_f7df_f000, false),
+                    (0x7fff_f7e0_0000, 0x7fff_f7e0_4000, false),
+                    (0x7fff_f7e0_4000, 0x7fff_f7e0_6000, false),
+                ]
+                .into_boxed_slice(),
+            ))
+        );
+        assert_eq!(
+            object_image(&maps, 0x5555_5555_6000, 0x5555_5555_8000),
+            Some(ObjectImage::new(
+                0x5555_5555_4000,
+                vec![
+                    (0x5555_5555_4000, 0x5555_5555_6000, false),
+                    (0x5555_5555_6000, 0x5555_5555_8000, true),
+                    (0x5555_5555_8000, 0x5555_5555_a000, false),
+                ]
+                .into_boxed_slice(),
+            ))
+        );
+        // Anonymous text, a file mapped twice (two headers), and a range that
+        // is not an executable mapping have no image.
+        assert_eq!(
+            object_image(&maps, 0x7fff_f7f0_0000, 0x7fff_f7f0_1000),
+            None
+        );
+        assert_eq!(
+            object_image(&maps, 0x7fff_f7f2_1000, 0x7fff_f7f2_2000),
+            None
+        );
+        assert_eq!(
+            object_image(&maps, 0x7fff_f7c0_0000, 0x7fff_f7c2_8000),
+            None
+        );
+        assert_eq!(
+            object_image(&maps, 0x7fff_f7c2_8000, 0x7fff_f7d0_0000),
+            None
         );
     }
 }

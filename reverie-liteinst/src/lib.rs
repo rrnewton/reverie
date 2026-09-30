@@ -10,6 +10,7 @@ use std::process::Command;
 compile_error!("reverie-liteinst requires Linux x86-64");
 
 mod backend;
+mod interior_entry;
 mod patch_alloc;
 mod stats;
 mod straddler;

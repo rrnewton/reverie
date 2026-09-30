@@ -33,6 +33,7 @@ global_asm!(
     .hidden reverie_liteinst_lifecycle_getpid
     .type reverie_liteinst_lifecycle_getpid,@function
 reverie_liteinst_lifecycle_getpid:
+    .cfi_startproc
     mov eax, 39
     .global reverie_liteinst_lifecycle_getpid_site
     .hidden reverie_liteinst_lifecycle_getpid_site
@@ -42,6 +43,7 @@ reverie_liteinst_lifecycle_getpid_site:
     nop
     nop
     ret
+    .cfi_endproc
     .size reverie_liteinst_lifecycle_getpid, .-reverie_liteinst_lifecycle_getpid
 
     .p2align 4
@@ -49,6 +51,7 @@ reverie_liteinst_lifecycle_getpid_site:
     .hidden reverie_liteinst_lifecycle_read
     .type reverie_liteinst_lifecycle_read,@function
 reverie_liteinst_lifecycle_read:
+    .cfi_startproc
     xor eax, eax
     mov edi, -1
     xor esi, esi
@@ -58,6 +61,7 @@ reverie_liteinst_lifecycle_read:
     nop
     nop
     ret
+    .cfi_endproc
     .size reverie_liteinst_lifecycle_read, .-reverie_liteinst_lifecycle_read
 "#
 );

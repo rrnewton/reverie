@@ -238,14 +238,15 @@ fn syscall_hook_preserves_displaced_self_relative_address() {
     assert_eq!(native.stderr, b"");
     assert_eq!(
         native.stdout,
-        b"pc-relative native: calls=32 addresses=32\n"
+        b"pc-relative native: calls=32 addresses=32 start_addresses=32\n"
     );
 
     let hooked = run_pc_relative_guest(true);
     assert!(hooked.status.success(), "hooked guest: {hooked:?}");
     assert_eq!(
         hooked.stdout,
-        b"pc-relative hooked: calls=32 addresses=32 traps=1 hooks=32\n"
+        b"pc-relative hooked: calls=32 addresses=32 traps=32 hooks=0 \
+          start_addresses=32 start_traps=1 start_hooks=32\n"
     );
 }
 
