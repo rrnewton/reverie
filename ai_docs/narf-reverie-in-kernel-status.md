@@ -1,7 +1,7 @@
 # Narf: unmodified Reverie tools inside the kernel (status)
 
 Maintained by sub-narf-opus, a worker under the dev-hermit coordinator
-coord2. Last updated 2026-09-29 at 21:10Z. This file is the Narf lane's durable
+coord2. Last updated 2026-09-30 at 06:10Z. This file is the Narf lane's durable
 record from 2026-09-29 on.
 
 Narf is Daniel Hodges' kernel, https://github.com/hodgesds/narf. On
@@ -26,8 +26,11 @@ hodgesds/narf. Every Narf commit below is signed.
   also receives the `rdtsc` and `rdtscp` instructions of the tasks it
   hosts, and its value completes them. This is exercised in kernel tests
   only; the boot path does not install the RDTSC interceptor.
-- Hermit/Detcore has not run inside Narf. The Detcore port has not
-  started; its blockers are listed below.
+- Hermit/Detcore has not run inside Narf. Milestone M2 started on
+  2026-09-30: make Detcore compile without std, in Hermit's tree, on the
+  hermit slot `worktrees/slots/narf-detcore`, branch
+  `narf/detcore-nostd` of https://github.com/rrnewton/hermit. The
+  blockers for running it are listed below.
 - Change 3 is done: built at a2720197, all of its local evidence passes
   (below), and sub-review-c3c approved it. The branch head, 502e7808,
   only moves the adapter's Reverie dependency to GitHub at the same rev.
@@ -64,6 +67,7 @@ hodgesds/narf. Every Narf commit below is signed.
 | M1.3 step 3 | A Tool callback may wait: its task parks and the callback is polled again later. A global state can run a background future. | 5ef17368, 482bbdc8, a120efa8, b80d65bf, cb5fb1a3, 139e5bd6, 2919a424 | ec69a1dd, 426c6a2c | done, gated, reviewed |
 | M1.3 step 4, changes 1 and 2 | Kernel: an instruction interceptor (for `rdtsc`/`rdtscp`) may defer its answer to a callback that may wait. Reverie core: `handle_rdtsc`. | 83408f48, dadaefaa, 797df978 | be4b0d8a, 20d366c7, 82da2755 | done, gated, reviewed (approve) |
 | M1.3 step 4, change 3 | The adapter delivers hosted tasks' `rdtsc`/`rdtscp` to a Tool that subscribes. | a2720197 (second amend of f3eb25a8); 502e7808 changes only the pin's URL | pins 82da2755 | done: gated at a2720197, reviewed (approve) |
+| M2 Detcore without std | Detcore compiles for x86_64-unknown-none inside Hermit's tree; the std build is unchanged. | none (Hermit branch `narf/detcore-nostd`) | 18dac3e8 (31 commits rebased onto fba351a5) | in progress |
 | Detcore inside Narf | Hermit's deterministic scheduler as an optional kernel capability. | none | none | not started |
 
 ## Change 3: a2720197
@@ -109,7 +113,35 @@ hodgesds/narf. Every Narf commit below is signed.
     without `--offline` resolve all six to the GitHub source, and
     reverie-narf at 2 CPUs compiled them from it and passed 46/0/0 in
     50 s (`backend-6.3/r25/https-pin/`). The gate chain was not rerun at
-    502e7808.
+    502e7808; coord2 ruled on 2026-09-30 that a source-only change needs
+    the fresh-home gate in the next bullet instead.
+- 502e7808 from a fresh CARGO_HOME (2026-09-30, `backend-6.3/r25/fresh-home/`,
+  script `g1-build.sh`, log `g1.log`). Fresh means: a new CARGO_HOME with
+  no config.toml, no git database and no git checkouts, and an empty
+  target directory. The crates.io registry was a copy-on-write copy of the
+  host's, because this shell cannot reach crates.io; Cargo.lock's
+  checksums pin those crates.
+  - GitHub source. This shell's own requests to github.com get a proxy
+    403. So herdr-run fetched the seven commits the build takes from
+    GitHub (Reverie 82da2755 and six nested submodule commits) from
+    github.com into local mirrors (`fetch-mirrors.sh`, all rc=0). The build's git
+    config maps exactly those seven URLs to the mirrors and every other
+    GitHub URL to a path that does not exist, so a fetch from anywhere
+    else fails. The URLs drop the `.git` suffix, because the host's global
+    git config redirects the `.git` forms to local clones.
+  - Result, run 2 (05:53-05:58Z): `cargo fetch` rc=0 in 9 s, leaving one
+    git database, whose 82da2755 is "Correct the RDTSC outcome docs from
+    the fix-commit review". `cargo xtask build --features reverie-narf-poc`
+    rc=0 in 105 s (image sha256 18ce2b8f..., 220871 KASLR sites; the
+    hash differs from earlier builds because paths are embedded).
+    reverie-narf at 2 CPUs: 46 pass, 0 fail, 0 skip in 168 s. The
+    worktree stayed clean at 502e7808 throughout, Cargo.lock included.
+  - Run 1 (05:22-05:46Z) does not count, and the fault was the harness's,
+    not Narf's (`FINDING-run1.md`). It pointed CARGO_TARGET_DIR at a new
+    directory, but xtask always reads and boots `<workspace>/target/...`
+    (`build/xtask/src/main.rs` 2604). So it booted a stale non-test image
+    in the old target directory, which ran no test and hung to the 1200 s
+    QEMU timeout. Its fetch and compile steps did pass (rc=0).
 - The hang, and the fix in a2720197. The RDTSC test harness cleared the
   kernel's interceptor after every run. The clear waits until every
   online CPU acknowledges it (`lib/src/smp.rs` lines 481 and 502, no
@@ -326,8 +358,18 @@ it; none is skipped.
     ends such a wait with `ToolSuspended`, which kills the hosted tree.
   - `set_timer`, `set_timer_precise` and `read_clock` return ENOSYS, and
     signal events are not delivered.
-  - The port needs a hermit write destination (a slot and a branch), which
-    the lane does not have.
+  - The port now has a hermit write destination: the slot
+    `worktrees/slots/narf-detcore`, branch `narf/detcore-nostd` (M2).
+    It builds against a Reverie that can drop std: branch
+    `sub-narf-opus/m2-nostd-on-fba351a5` of
+    https://github.com/rrnewton/reverie, 18dac3e8. That branch is
+    the fork's 31 commits rebased onto fba351a5, Hermit's current pin (read
+    back 2026-09-30). On it, Reverie's no-std gate passes (the build, 6 of 6
+    execution tests, and four negative controls that fail with E0463).
+    A std check of eight crates, all targets, has 0 warnings, and
+    reverie-process and reverie-syscalls pass 142 and 29 unit tests
+    (`backend-6.3/m2-nostd/r-verify.log`). One conflict was resolved by
+    hand, in reverie-process/src/lib.rs.
 - Kernel-test boots drop a SIGKILL without a trace. This was found through
   control R4. The analysis is `adapter3/r4-lost-kill.md` (sub-r4-lost-kill,
   read-only). Its key code citations were re-read, and sub-review-c3c
