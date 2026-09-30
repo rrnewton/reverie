@@ -1,7 +1,7 @@
 # Narf: unmodified Reverie tools inside the kernel (status)
 
 Maintained by sub-narf-opus, a worker under the dev-hermit coordinator
-coord2. Last updated 2026-09-30 at 06:10Z. This file is the Narf lane's durable
+coord2. Last updated 2026-09-30 at 09:28Z. This file is the Narf lane's durable
 record from 2026-09-29 on.
 
 Narf is Daniel Hodges' kernel, https://github.com/hodgesds/narf. On
@@ -26,11 +26,17 @@ hodgesds/narf. Every Narf commit below is signed.
   also receives the `rdtsc` and `rdtscp` instructions of the tasks it
   hosts, and its value completes them. This is exercised in kernel tests
   only; the boot path does not install the RDTSC interceptor.
-- Hermit/Detcore has not run inside Narf. Milestone M2 started on
-  2026-09-30: make Detcore compile without std, in Hermit's tree, on the
-  hermit slot `worktrees/slots/narf-detcore`, branch
-  `narf/detcore-nostd` of https://github.com/rrnewton/hermit. The
-  blockers for running it are listed below.
+- Hermit/Detcore has not run inside Narf. Milestone M2, started on
+  2026-09-30, makes Detcore compile without std in Hermit's tree: branch
+  `narf/detcore-nostd` of https://github.com/rrnewton/hermit, draft
+  https://github.com/rrnewton/hermit/pull/3401.
+  - At the branch head, 0ba3414ad, the no-std check has 9 errors left. It
+    had 141 when it first reached hermit-detcore. All 9 are the
+    scheduler's waits for outside progress.
+  - A patch that takes the check to 0 errors and 0 warnings, with the host
+    build unchanged, is posted for coord2's decision. It is not committed
+    (see "M2" below).
+  - The blockers for running Detcore in Narf are listed below.
 - Change 3 is done: built at a2720197, all of its local evidence passes
   (below), and sub-review-c3c approved it. The branch head, 502e7808,
   only moves the adapter's Reverie dependency to GitHub at the same rev.
@@ -45,14 +51,26 @@ hodgesds/narf. Every Narf commit below is signed.
   26fce9ac.
 - Reverie fork: branch `sub-narf-opus/m14-rdtsc` of
   https://github.com/rrnewton/reverie, at 82da2755 (read back at 20:10Z).
-  On devbig030: `worktrees/slots/narf-opus-reverie`.
+- Hermit, for M2: branch `narf/detcore-nostd` of
+  https://github.com/rrnewton/hermit.
+  - Head 0ba3414adf02fefe24cf054b282d565af81b4615, read back with
+    `git ls-remote` at 09:19Z on 2026-09-30. That is 4 commits on hermit
+    main e454d6c28.
+  - Draft pull request: https://github.com/rrnewton/hermit/pull/3401,
+    `Owner: coord2`.
+  - On devbig030: `worktrees/slots/narf-detcore`.
+- Reverie fork, for M2: branch `sub-narf-opus/m2-nostd-on-fba351a5` of
+  https://github.com/rrnewton/reverie, at 2d4e865e, read back at 09:19Z.
+  On devbig030, the slot `worktrees/slots/narf-opus-reverie` has this
+  branch checked out now.
 - Evidence, on devbig030 only and untracked:
   `worktrees/slots/narf-opus-progress/ignored/narf-evidence/`.
   The running log is `backend-6.3/r25/STATUS-sub-narf-opus.md`, and the
   plan is `backend-6.3/m1/PLAN.md`. The RDTSC design, with "As built"
   notes for each change, is `backend-6.3/m1/m1.3/step4-rdtsc-design.md`.
   Paths below that start with `adapter3/` are under
-  `backend-6.3/m1/m1.3/step4/`.
+  `backend-6.3/m1/m1.3/step4/`. M2's evidence is under
+  `backend-6.3/m2-nostd/`.
 
 ## Milestones
 
@@ -67,8 +85,121 @@ hodgesds/narf. Every Narf commit below is signed.
 | M1.3 step 3 | A Tool callback may wait: its task parks and the callback is polled again later. A global state can run a background future. | 5ef17368, 482bbdc8, a120efa8, b80d65bf, cb5fb1a3, 139e5bd6, 2919a424 | ec69a1dd, 426c6a2c | done, gated, reviewed |
 | M1.3 step 4, changes 1 and 2 | Kernel: an instruction interceptor (for `rdtsc`/`rdtscp`) may defer its answer to a callback that may wait. Reverie core: `handle_rdtsc`. | 83408f48, dadaefaa, 797df978 | be4b0d8a, 20d366c7, 82da2755 | done, gated, reviewed (approve) |
 | M1.3 step 4, change 3 | The adapter delivers hosted tasks' `rdtsc`/`rdtscp` to a Tool that subscribes. | a2720197 (second amend of f3eb25a8); 502e7808 changes only the pin's URL | pins 82da2755 | done: gated at a2720197, reviewed (approve) |
-| M2 Detcore without std | Detcore compiles for x86_64-unknown-none inside Hermit's tree; the std build is unchanged. | none (Hermit branch `narf/detcore-nostd`) | 18dac3e8 (31 commits rebased onto fba351a5) | in progress |
+| M2 Detcore without std | Detcore compiles for x86_64-unknown-none inside Hermit's tree; the std build is unchanged. | none in Narf; Hermit branch `narf/detcore-nostd`: 7598a29e9, 99580b17b, 9bad1bcfe, 0ba3414ad | 2d4e865e: the 31 commits rebased onto fba351a5 (18dac3e8), plus one that builds `RegDisplay` without std and relaxes the no-std `Config` bound | in progress: 9 errors left, all scheduler waits; a patch that reaches 0 awaits coord2's decision |
 | Detcore inside Narf | Hermit's deterministic scheduler as an optional kernel capability. | none | none | not started |
+
+## M2: Detcore without std, at 0ba3414ad
+
+### How it is arranged
+
+- Kernel mode is `cfg(target_os = "none")`. There, `detcore` and
+  `detcore-model` are `#![no_std]`, and they bind two new workspace
+  members as `std` and `libc`:
+  - `detcore-std`: the parts of std they use, over core and alloc;
+  - `detcore-libc`: Reverie's no-std libc through reverie-core, which is
+    Detcore's only allowed Reverie dependency.
+- A third new member, `detcore-clap`, is a procedural macro that stands
+  in for clap's `Parser` derive: it accepts the `#[clap(...)]` attributes
+  and generates nothing.
+- Only the no-std check binds the three new members. `detcore-std` and
+  `detcore-libc` are empty on every other target.
+- The generated manifests `detcore/Cargo.toml` and
+  `detcore-model/Cargo.toml` are not edited.
+- `scripts/check-detcore-nostd.sh` writes its own manifests under
+  `target/detcore-nostd` and type-checks for `x86_64-unknown-none` with
+  nightly-2025-09-14 (rustc 1.91.0-nightly 02c7b1a7a).
+
+### Errors in the no-std check
+
+The table counts hermit-detcore. The other four crates have 0 errors from
+step 2 on (detcore-model had 104 at step 1).
+
+| Step | Commit | hermit-detcore errors | Warnings |
+|---|---|---|---|
+| Sizing (M1.3) | none | 116 or more | |
+| 1: stand-ins and the check | 7598a29e9 | not reached | |
+| 2: detcore-model | 99580b17b | 141 | 1 |
+| 3: host-only paths and stand-ins | 9bad1bcfe | 49, after 118, 89 and 67 | 1 |
+| 4: process, clock and scheduler-task stand-ins | 0ba3414ad | 9, after 16 and 11 | 0 |
+| Proposal, not committed | none | 0 | 0 |
+
+rustc's counts are approximate: an unresolved import hides the errors in
+the code that uses it, and some lints, such as dead code, run only once a
+crate type-checks.
+
+### Host build at each step
+
+The host gate runs with hermit's toolchain, offline. Its log is
+`backend-6.3/m2-nostd/std-gate.log`.
+
+- `cargo build --workspace`, clippy
+  `--workspace --all-targets --all-features -D warnings`, fmt, doc
+  `-D warnings` and `check-detcore-backend-abstraction.sh` all return
+  rc 0.
+- The resolved feature graph differs from main's only by the new members.
+- Detcore's tests, with the validation DAG's nextest selections, pass
+  with main's counts, plus the five unit tests that step 4 adds:
+  - unit tests: 848 at main, 853 from step 4;
+  - tests_misc: 28 passed, 5 skipped;
+  - tests_parallelism: 5 passed, 11 skipped;
+  - detcore-model: 98 passed.
+- A whole gate run took 121 s at step 3, 79 s at step 4 and 72 s with the
+  revised proposal.
+
+### The 9 errors left, and the proposal
+
+All 9 are the scheduler's waits for outside progress:
+- 4 are in `Backoff::further`: std's yield and sleep on the blocking path
+  that `run_external_scheduler` uses, and tokio's on the spawned
+  scheduler, which is host-only.
+- 5 are busy-waiting scheduler steps. Each yields the host thread and
+  returns `SkipTurn` while it holds the scheduler lock.
+
+The proposal is for coord2 to decide:
+https://github.com/rrnewton/hermit/pull/3401#issuecomment-5907877892,
+revised in
+https://github.com/rrnewton/hermit/pull/3401#issuecomment-5908125748.
+- In the kernel build, `Backoff::further` awaits `tool_global::yield_once`,
+  which is pending once after waking its own task. The five step waits
+  yield only on the host.
+- Both drivers of `run_external_scheduler` poll a pending scheduler again
+  without waiting for a wake; each polls with a no-op waker. They are
+  detcore-dbt's `run_cooperative` and Narf's `spawn_background`.
+- The cost: the kernel build never sleeps in real time, so the scheduler's
+  CPU does not idle while it waits. Narf's driver already works that way.
+- Measured with the revised patch (`wait-proposal-v2.patch`, sha256
+  f4f31ea1...): 0 errors and 0 warnings, and the host gate passes with the
+  same counts.
+- Alternatives considered:
+  - `core::hint::spin_loop`: it livelocks when what the scheduler waits
+    for needs the scheduler's CPU, and the step waits would spin while
+    holding the lock;
+  - `yield_now` and `sleep` hooks that the host installs in detcore-std:
+    the step waits would call them under the spin lock, and they break
+    detcore-std's rule that `thread` is absent;
+  - a wait API in reverie-core's backend, which changes Reverie;
+  - awaitable step waits, which change the scheduler more than returning
+    `SkipTurn` does.
+
+### Hazards
+
+The draft pull request's description lists them all. The main ones:
+- `f64::powf` is libm's `pow` in the kernel build and glibc's on the
+  host. The two can differ in the last place. This branch does not change
+  the host, and changing it needs the owner.
+- Where the host exits with a status, the kernel build panics.
+- A timed signal that the scheduler delivers through a host pidfd ends a
+  kernel run as `HERMIT_DEADLOCK`: a child's `SIGCHLD`, and most alarm
+  and POSIX timer expiries.
+- There is no real-time clock.
+- The kernel build must start the scheduler with
+  `init_for_external_scheduler` and `run_external_scheduler`.
+
+A host finding, not changed and not filed: `Backoff::further` sleeps
+`2 ^ round` microseconds, and `^` is XOR. After its first 10 yields it
+therefore sleeps 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14 and 15 µs, then
+10,000 µs. Powers of two would give 2 to 8,192 µs. It changes only how
+long the host sleeps between polls, not virtual time.
 
 ## Change 3: a2720197
 
@@ -349,13 +480,28 @@ it; none is skipped.
 - Detcore inside Narf. coord2 decided on 2026-09-28 that Detcore runs in
   the kernel, through its external-scheduler entry, as detcore-dbt does.
   Before that can work:
-  - Detcore uses std and tokio throughout: 60 files, 76,428 lines. A
-    no-std sizing build stops at 116 errors, which is a lower bound.
+  - Detcore uses std and tokio throughout: 60 files, 76,428 lines. M2
+    has its no-std check at 9 errors (see "M2" above).
   - Detcore's default subscription, `Subscription::all()`, includes CPUID
     events, which the Narf core refuses. RDTSC delivery now exists
     (change 3), through `with_rdtsc` only.
-  - Detcore's scheduler waits on a future that tokio drives; the Narf core
-    ends such a wait with `ToolSuspended`, which kills the hosted tree.
+  - The adapter documents Narf's `spawn_background` as the executor that
+    Detcore's `run_external_scheduler` expects. Nothing has run Detcore's
+    scheduler under it yet.
+  - Detcore's thread start cannot run yet. This was found by reading code
+    and has not been run:
+    - Narf polls `handle_thread_start` only once. If it is still pending,
+      the run ends with `ToolSuspended`, which kills the hosted tree
+      (reverie-narf-adapter/src/lib.rs, "Run aborts" and "Waiting
+      callbacks", at 502e7808).
+    - With `sequentialize_threads`, Detcore's thread start awaits the
+      global RPC `StartNewThread`. Its handler, `recv_start_new_thread`,
+      begins with `yield_once`, so it is pending on its first poll.
+    - Narf runs global RPCs inline: reverie-narf-core/src/guest.rs:523 at
+      Reverie 82da2755.
+    - Fixing it needs one of two changes: the adapter lets
+      `handle_thread_start` wait, as it lets syscall callbacks wait, or
+      Detcore's thread start stops waiting there.
   - `set_timer`, `set_timer_precise` and `read_clock` return ENOSYS, and
     signal events are not delivered.
   - The port now has a hermit write destination: the slot
@@ -369,7 +515,10 @@ it; none is skipped.
     A std check of eight crates, all targets, has 0 warnings, and
     reverie-process and reverie-syscalls pass 142 and 29 unit tests
     (`backend-6.3/m2-nostd/r-verify.log`). One conflict was resolved by
-    hand, in reverie-process/src/lib.rs.
+    hand, in reverie-process/src/lib.rs. The branch is now at 2d4e865e,
+    which builds `RegDisplay` without std and drops the `Default` bound on
+    `GlobalTool::Config` without std. Detcore's `Config` has a `Default`
+    only through its command-line parser.
 - Kernel-test boots drop a SIGKILL without a trace. This was found through
   control R4. The analysis is `adapter3/r4-lost-kill.md` (sub-r4-lost-kill,
   read-only). Its key code citations were re-read, and sub-review-c3c
