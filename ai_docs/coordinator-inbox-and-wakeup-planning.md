@@ -405,7 +405,12 @@ Coord measured these on 2026-09-29 from its own session (pid 1142801,
     2737474, 2743769, 2620191, 1795543, 2293495).
 
   So it is a per-message approval gate on the receiving side and cannot carry unattended fleet
-  traffic. Not measured: an ordinary session sending to coord, and bypass to bypass.
+  traffic.
+- **The reverse direction is gated the same way.** This agentcloud session (not bypass mode) sent
+  one message at 2026-09-30 02:11Z with coord's consent: `SendMessage` to `dev-hermit-e4` (coord,
+  pid 1142801), token `PLOVER-8317-Q1`, msg_id 89e03831. The sender received two notices: first
+  "held for the recipient user's approval", then "denied by the recipient user". Nothing reached
+  coord's Claude. Only bypass to bypass remains unmeasured.
 - **`herdr agent prompt` into a busy Claude pane is queued, not delivered.**
   - The pane shows "Press up to edit queued messages", and delivery waits for the turn to end.
   - mega-lander's turn ran from about 16:30Z. Six coord messages sent between 16:37Z and 19:58Z
@@ -653,9 +658,9 @@ tool gets `quickstart`, `userguide` and `RELATED_WORK.md`.
 
 ## 7. Open questions and untested points
 
-- **Q1 — answered by coord's measurement (4.8)** for bypass → ordinary: held for approval, and
-  in practice denied or expired. Still open: ordinary → bypass (a worker messaging coord), and
-  bypass → bypass.
+- **Q1 — answered (4.8).** Bypass → ordinary is held for approval, and in practice denied or
+  expired (coord's measurement). Ordinary → bypass (a worker messaging coord) was held, then denied
+  (measured 02:11Z). Bypass → bypass is untested.
 - **Q2.** Does herdr debounce `agent_status_changed` during the short gaps between tool calls? This
   matters less than expected: for current Claude Code panes herdr's `idle` is wrong anyway (4.7), so
   the watcher uses herdr events only as wake-ups and asks Claude for the state. Still open for Codex
