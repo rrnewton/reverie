@@ -610,10 +610,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             // Plain ptrace reports no stop here: its filter kills the process
             // (SECCOMP_RET_KILL_PROCESS), which `trap_only_foreign_i386`
             // reproduces. So, as for the Allow-class hop (O4 rule 3), the
-            // timer is left untouched: a scheduled event retires unrecorded
-            // at the thread's exit, as under plain ptrace, instead of being
-            // decided here, where a counter already past its target would
-            // record a skid overshoot that plain ptrace never records.
+            // timer is left untouched: a scheduled event is left to the
+            // thread's exit, as under plain ptrace, where
+            // `Timer::settle_at_exit` records it if the guest reached its
+            // delivery point, instead of being decided here, at a stop plain
+            // ptrace never reports, where a counter already past its target
+            // would also count a preempted overflow.
             return self
                 .trap_only_foreign_i386(task, regs)
                 .await
