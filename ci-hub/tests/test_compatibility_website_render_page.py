@@ -3511,17 +3511,19 @@ def test_grouped_validate_attempts_authenticate_determinism_evidence() -> None:
     assert render_page._exact_validation_cell(bad, kvm, first["event_id"]) is None
 
 
-def test_backend_parity_is_not_repeat_bitwise_parity() -> None:
+def test_legacy_backend_parity_witness_yields_no_parity_metric() -> None:
     model, _ = _typed_kvm_model(matched=True, parity=True)
     row = next(row for row in render_page._backend_rows(model) if row["backend"] == "kvm")
     # A record that still carries a verified legacy backend_parity witness
-    # yields determinism and no parity metric.
+    # yields determinism and no parity metric; so does the same record with
+    # its comparison_authority or backend_parity field removed.
     assert row["determinism"]["full"] == 1 and "parity" not in row
     for field in ("comparison_authority", "backend_parity"):
         history = copy.deepcopy(model.history_rows[0])
         del history["cell_results"]["recorded"]["cells"][1][field]
         row = next(row for row in render_page._backend_rows(replace(model, history_rows=(history,))) if row["backend"] == "kvm")
         assert row["determinism"]["full"] == 1
+        assert "parity" not in row
 
 
 def test_backend_typed_divergence_retains_same_anchor_partial_only() -> None:

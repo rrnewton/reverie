@@ -3024,6 +3024,36 @@ class DirectLedgerFixture(unittest.TestCase):
         path.write_text(parity.encode_batch(events), encoding="utf-8")
         return path
 
+    def spool_torn_refusal(self, run_id: str) -> Path:
+        """Spool another run's refusal batch, torn before its final newline."""
+        parity = series.parity_ledger_module()
+        refusal = parity.build_refusal(
+            producer="validate", run_id=run_id, hermit_sha=self.PARITY_TREE,
+            emitted_at="2026-09-21T12:00:00Z", source_tree_dirty=False, host="fixture",
+            input_bytes=b"{}\n", input_lines=1, error="input row 1: fixture refusal")
+        spool = series.parity_spool_dir(self.parent)
+        spool.mkdir(parents=True, exist_ok=True)
+        path = spool / parity.batch_name(refusal)
+        path.write_text(parity.encode_batch([refusal])[:-1], encoding="utf-8")
+        return path
+
+    def commit_parity(self, writer: Path, events: list[dict]) -> str:
+        """Commit EVENTS to the writer's parity shards as the publisher does,
+        and push nothing: what a crash between commit and push leaves."""
+        parity = series.parity_ledger_module()
+        shards: list[str] = []
+        for event in events:
+            relative = parity.event_shard(event)
+            shard = writer / relative
+            shard.parent.mkdir(parents=True, exist_ok=True)
+            with shard.open("a", encoding="utf-8") as handle:
+                handle.write(parity.canonical_line(event) + "\n")
+            if relative not in shards:
+                shards.append(relative)
+        git(writer, "add", "--", *shards)
+        git(writer, "commit", "-qm", f"parity: append {len(events)} event(s)")
+        return git(writer, "rev-parse", "HEAD")
+
     def run_registry(self):
         sys.path.insert(0, str(mirror.TOOL_ROOT / "ci-hub/validate"))
         sys.path.insert(0, str(mirror.TOOL_ROOT / "ci-hub"))
@@ -3292,6 +3322,98 @@ class DirectLedgerFixture(unittest.TestCase):
                     self.assertIn("parity outcome not recorded: "
                                   "validation-run-handle-ledger_mirror.raw_publication.parity.joint",
                                   mirrored["detail"])
+
+    def test_recovery_skips_an_unreadable_parity_batch_the_unpublished_commit_does_not_need(self):
+        # A crash between commit and push left the writer on a parity commit
+        # whose events are all in a readable spooled batch. An unrelated
+        # spooled batch that cannot be read no longer blocks its recovery: the
+        # publisher names that batch as refused and it stays spooled.
+        parity = series.parity_ledger_module()
+        self.publish(publish_only=True)
+        writer = self.parent / mirror.WRITER_RELATIVE
+        batch = self.spool_parity()
+        marker, rows = parity.read_batch(batch)
+        crashed = self.commit_parity(writer, [marker, *rows])
+        torn = self.spool_torn_refusal("validate-unrelated-run")
+        with self.assertRaises(parity.ParityLedgerError) as unreadable:
+            parity.read_batch(torn)
+        self.assertEqual(f"{torn.name}: final line has no newline terminator", str(unreadable.exception))
+        self.append("run-beside-unreadable-parity")
+        report = self.publish(publish_only=True, finalized_run_id=self.PARITY_RUN)
+        self.assertEqual("published", report["state"], report)
+        recovered = report["raw_publication"]["recovered_ref"]
+        self.assertEqual(f"refs/heads/recovery/cell-series-{crashed}", recovered)
+        self.assertEqual(crashed, git(writer, "rev-parse", recovered))
+        head = git(self.remote, "rev-parse", "main")
+        self.assertEqual({
+            "schema": "parity-publication/v1", "published": 193, "already_published": 0,
+            "commit": head, "joint": True, "batches": [batch.name],
+            "refused": [{"batch": torn.name, "error": str(unreadable.exception)}],
+            "error": None, "pending_batches": 1, "historic_invalid": 0,
+            "run": {"producer": "validate", "run_id": self.PARITY_RUN,
+                    "state": "published", "records": 192, "refusal": None},
+        }, report["raw_publication"]["parity"])
+        self.assertEqual([row("run-beside-unreadable-parity")], self.remote_rows())
+        self.assertEqual(192, len(self.remote_file("parity/hermit/fixture/2026-09.jsonl").splitlines()))
+        self.assertTrue(torn.exists() and not batch.exists(), "the unreadable batch stays spooled")
+
+    def test_recovery_refuses_a_parity_event_whose_only_spooled_copy_is_unreadable(self):
+        # Skipping an unreadable batch still fails closed. The unpublished
+        # commit adds events whose only spooled copy is a batch torn before
+        # its final newline, so they are not pending and the commit is kept.
+        parity = series.parity_ledger_module()
+        self.publish(publish_only=True)
+        writer = self.parent / mirror.WRITER_RELATIVE
+        batch = self.spool_parity()
+        marker, rows = parity.read_batch(batch)
+        crashed = self.commit_parity(writer, [marker, *rows])
+        batch.write_text(parity.encode_batch([marker, *rows])[:-1], encoding="utf-8")
+        with self.assertRaises(parity.ParityLedgerError) as unreadable:
+            parity.read_batch(batch)
+        self.assertEqual(f"{batch.name}: final line has no newline terminator", str(unreadable.exception))
+        series_batch = self.append("run-beside-torn-parity")
+        with self.assertRaises(mirror.MirrorRefused) as caught:
+            self.publish(publish_only=True)
+        self.assertEqual(
+            f"unpublished ledger commit {crashed} is not an unchanged spooled parity append; retained",
+            str(caught.exception))
+        self.assertEqual(crashed, git(writer, "rev-parse", "HEAD"))
+        self.assertEqual([], self.remote_rows())
+        self.assertIsNone(self.remote_file("parity/hermit/fixture/2026-09.jsonl"))
+        self.assertTrue(batch.exists() and series_batch.exists())
+
+    def test_recovery_refuses_when_the_parity_state_of_either_commit_cannot_be_read(self):
+        # An error reading the parity state at the published base or at the
+        # unpublished commit is still a refusal; only spooled batches are
+        # skipped when they cannot be read.
+        parity = series.parity_ledger_module()
+        self.publish(publish_only=True)
+        writer = self.parent / mirror.WRITER_RELATIVE
+        batch = self.spool_parity()
+        marker, rows = parity.read_batch(batch)
+        crashed = self.commit_parity(writer, [marker, *rows])
+        base = git(writer, "rev-parse", "refs/remotes/origin/main")
+        series_batch = self.append("run-beside-unreadable-parity-state")
+        real = parity.published_parity_at_repo
+        for name, unreadable in (("published base", base), ("unpublished commit", crashed)):
+            with self.subTest(name):
+                error = f"cannot read {unreadable}:parity/hermit/fixture/2026-09.jsonl: fixture: object missing"
+
+                def published_parity_at_repo(repo, ref):
+                    if ref == unreadable:
+                        raise parity.ParityLedgerError(error)
+                    return real(repo, ref)
+
+                with mock.patch.object(parity, "published_parity_at_repo",
+                                       side_effect=published_parity_at_repo), \
+                        self.assertRaises(mirror.MirrorRefused) as caught:
+                    self.publish(publish_only=True)
+                self.assertEqual(f"cannot check unpublished parity at {crashed}: {error}",
+                                 str(caught.exception))
+                self.assertEqual(crashed, git(writer, "rev-parse", "HEAD"))
+                self.assertEqual([], self.remote_rows())
+                self.assertIsNone(self.remote_file("parity/hermit/fixture/2026-09.jsonl"))
+                self.assertTrue(batch.exists() and series_batch.exists())
 
 
 def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:

@@ -345,12 +345,21 @@ def recover_spooled_commit(writer: Path, parent: Path) -> str | None:
         try:
             was = parity.published_parity_at_repo(writer, base).events
             now = parity.published_parity_at_repo(writer, head).events
-            waiting = {}
-            for batch in parity.batch_paths(series.parity_spool_dir(parent)):
-                marker, rows = parity.read_batch(batch)
-                waiting.update((event["event_id"], event) for event in (marker, *rows))
+            batches = parity.batch_paths(series.parity_spool_dir(parent))
         except parity.ParityLedgerError as error:
             raise MirrorRefused(f"cannot check unpublished parity at {head}: {error}") from error
+        waiting = {}
+        for batch in batches:
+            # A batch that cannot be read is skipped, as run_refusals does; the
+            # publisher names it as refused and it stays spooled, so refusing
+            # here would block every later run. This still fails closed: an
+            # added event whose only copy is in an unreadable batch is not
+            # waiting, so the check below refuses the commit.
+            try:
+                marker, rows = parity.read_batch(batch)
+            except parity.ParityLedgerError:
+                continue
+            waiting.update((event["event_id"], event) for event in (marker, *rows))
         if (any(now.get(key) != value for key, value in was.items())
                 or any(waiting.get(key) != value for key, value in now.items() if key not in was)):
             raise MirrorRefused(f"unpublished ledger commit {head} is not an unchanged spooled parity append; retained")
