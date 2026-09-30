@@ -411,6 +411,22 @@ Coord measured these on 2026-09-29 from its own session (pid 1142801,
   pid 1142801), token `PLOVER-8317-Q1`, msg_id 89e03831. The sender received two notices: first
   "held for the recipient user's approval", then "denied by the recipient user". Nothing reached
   coord's Claude. Only bypass to bypass remains unmeasured.
+- **What the receiving side recorded (coord, 02:11:26.326Z).** One `system` / informational entry
+  at level warning:
+
+  > Held peer message — from uds:/run/user/212630/cc-socks/2687817.sock [verified pid 2687817]
+  > (peer claims name: dev-hermit-de); preview: «… token PLOVER-8317-Q1 …» — not delivered to
+  > Claude (1 held). The sending session's permission mode class doesn't match this session's.
+  > Review it below, or set "crossSessionInbound" to "accept".
+
+  Three facts follow from it:
+  - The gate is a permission-mode-class mismatch: bypass on one side, non-bypass on the other.
+  - The receiving side's setting `"crossSessionInbound": "accept"` would let such messages
+    through.
+  - An agentcloud-launched session announces an auto-generated name (`dev-hermit-de`), not its
+    agent name. Launching sessions with `claude -n <agent-name>` would fix that.
+
+  Coord did not deny the message and saw no dialog. What produced the "denied" notice is unknown.
 - **`herdr agent prompt` into a busy Claude pane is queued, not delivered.**
   - The pane shows "Press up to edit queued messages", and delivery waits for the turn to end.
   - mega-lander's turn ran from about 16:30Z. Six coord messages sent between 16:37Z and 19:58Z
@@ -677,6 +693,15 @@ Follow-ups noted by the review and not yet done: a documented recovery step for 
 `claimed/` record (today it fails closed and needs a hand move); and keeping the reason when a
 `blocked` notice is replaced by `progress`. The merged notice keeps priority 1 but shows only the
 newer text.
+
+### Open question for the owner
+
+- **Q7 (owner decision).** Should the coordinator set `"crossSessionInbound": "accept"`? That
+  would let any local Claude session, whatever its permission mode, put a message into the
+  coordinator's conversation. Messages arrive attributed, at peer trust. This is a trust decision,
+  and coord has deliberately not made it. Without it, cross-session `SendMessage` cannot reach the
+  bypass-mode coordinator. The inbox (`agentctl inbox post`, then delivery at the coordinator's
+  turn boundary) does not need it.
 
 ## Appendix: where things are
 
