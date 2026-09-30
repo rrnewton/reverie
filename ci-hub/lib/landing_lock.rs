@@ -2220,13 +2220,16 @@ fn parse_unsigned(name: &str, value: &str) -> Result<u64, LandLockError> {
 /// ⚠️ THE FIRST SUCCESSFUL ANSWER IS KEPT FOR THE LIFE OF THE PROCESS. A run
 /// supervisor's heartbeat thread calls this while the payload runs and while
 /// it is torn down. Each uncached call spawned `hostname` as a direct child of
-/// the supervisor in its own process group (`bounded_output` spawns with
-/// `process_group(0)`), which is exactly the shape [`PayloadLineage`] records
-/// as a payload process whose parent exited, and the supervisor's
-/// `waitpid(-1)` loops could reap that child before `bounded_output` did.
-/// `arm_run` needs a real host name before any payload exists, so once a run
-/// is armed no later call spawns anything. A failure is not kept, so a
-/// transient one does not make every later record say `"unknown"`.
+/// the supervisor. `bounded_output` does not give it a process group of its
+/// own, so it stays in the supervisor's group and [`PayloadLineage`] does not
+/// select it. The spawn was still wrong in two ways. The supervisor's
+/// `waitpid(-1, WNOHANG)` loops reap any exited direct child, so one could
+/// consume `hostname`'s status before `bounded_output` waited for it, and the
+/// lookup then failed. And every renewal forked a process while teardown was
+/// scanning and signalling. `arm_run` needs a real host name before any
+/// payload exists, so once a run is armed no later call spawns anything. A
+/// failure is not kept, so a transient one does not make every later record
+/// say `"unknown"`.
 pub(crate) fn current_host() -> String {
     static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     if let Some(host) = HOST.get() {
@@ -3596,7 +3599,9 @@ fn carries_other_payload_token(pid: u32, domain_token: &str) -> bool {
 ///
 /// That relies on the supervisor starting no process outside its own group
 /// while the payload runs or is torn down. [`current_host`] keeps its answer
-/// for that reason, and `arm_run` asks for it before the payload exists.
+/// from `arm_run` on, so a heartbeat forks nothing during the run; its doc
+/// says why that spawn had to go even though it stayed in the supervisor's
+/// group.
 ///
 /// A recorded identity stays recorded after it is reparented. Each is a
 /// teardown target, and one still alive when [`kill_payload_domain`] finishes
