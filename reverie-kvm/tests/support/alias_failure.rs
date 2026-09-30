@@ -6,10 +6,14 @@ pub(crate) enum Case {
     Reservation = 1,
     SecondExtent = 2,
     Foreign = 3,
-    Collision = 4,
-    Unmap = 5,
+    AtomicCollision = 4,
+    CleanupAfterSuccess = 5,
     WrongAddress = 6,
     MiddleExtent = 7,
+    ConstructionCleanup = 8,
+    SuffixCleanup = 9,
+    PersistentCleanup = 10,
+    CleanupAtEof = 11,
 }
 
 impl Case {
@@ -18,13 +22,33 @@ impl Case {
             1 => Self::Reservation,
             2 => Self::SecondExtent,
             3 => Self::Foreign,
-            4 => Self::Collision,
-            5 => Self::Unmap,
+            4 => Self::AtomicCollision,
+            5 => Self::CleanupAfterSuccess,
             6 => Self::WrongAddress,
             7 => Self::MiddleExtent,
+            8 => Self::ConstructionCleanup,
+            9 => Self::SuffixCleanup,
+            10 => Self::PersistentCleanup,
+            11 => Self::CleanupAtEof,
             _ => panic!("unknown alias failure stage: {stage}"),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AliasAddresses {
+    pub(crate) base: usize,
+    pub(crate) length: usize,
+    pub(crate) wrong: usize,
+    pub(crate) ambiguous: usize,
+    pub(crate) operation: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct AliasObservation {
+    pub(crate) case: Case,
+    pub(crate) addresses: AliasAddresses,
+    pub(crate) counters: [u64; 32],
 }
 
 pub(crate) struct Fault {
@@ -32,6 +56,8 @@ pub(crate) struct Fault {
     arm: unsafe extern "C" fn(i32),
     finish: unsafe extern "C" fn(),
     count: unsafe extern "C" fn(i32) -> libc::c_ulong,
+    address: unsafe extern "C" fn(i32) -> usize,
+    operation: std::cell::Cell<usize>,
 }
 
 struct TestDirectory {
@@ -84,16 +110,23 @@ fn child_cases(test: &str, cases: &[Case]) -> Option<Fault> {
         assert!(cases.contains(&case), "unselected alias case: {case:?}");
         // SAFETY: the child retains our explicitly loaded fixture. These
         // exported symbols have the exact signatures below.
-        let (arm, finish, count) = unsafe {
+        let (arm, finish, count, address) = unsafe {
             let arm = libc::dlsym(libc::RTLD_DEFAULT, c"reverie_alias_failure_arm".as_ptr());
             let finish = libc::dlsym(libc::RTLD_DEFAULT, c"reverie_alias_failure_finish".as_ptr());
             let count = libc::dlsym(libc::RTLD_DEFAULT, c"reverie_alias_failure_count".as_ptr());
-            assert!(!arm.is_null() && !finish.is_null() && !count.is_null());
+            let address = libc::dlsym(
+                libc::RTLD_DEFAULT,
+                c"reverie_alias_failure_address".as_ptr(),
+            );
+            assert!(!arm.is_null() && !finish.is_null() && !count.is_null() && !address.is_null());
             (
                 std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn(i32)>(arm),
                 std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn()>(finish),
                 std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn(i32) -> libc::c_ulong>(
                     count,
+                ),
+                std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn(i32) -> usize>(
+                    address,
                 ),
             )
         };
@@ -102,6 +135,8 @@ fn child_cases(test: &str, cases: &[Case]) -> Option<Fault> {
             arm,
             finish,
             count,
+            address,
+            operation: std::cell::Cell::new(0),
         });
     }
     assert!(!cases.is_empty(), "an alias child must select a case");
@@ -185,49 +220,278 @@ fn child_cases(test: &str, cases: &[Case]) -> Option<Fault> {
 }
 
 impl Fault {
+    pub(crate) fn case(&self) -> Case {
+        self.case
+    }
+    pub(crate) fn succeeds(&self) -> bool {
+        self.case == Case::AtomicCollision
+    }
+    pub(crate) fn setup_succeeds(&self) -> bool {
+        matches!(
+            self.case,
+            Case::AtomicCollision
+                | Case::CleanupAfterSuccess
+                | Case::PersistentCleanup
+                | Case::CleanupAtEof
+        )
+    }
     pub(crate) fn arm(&self) {
-        // SAFETY: resolved from the retained fixture.
+        let operation = self.operation.get() + 1;
+        assert!(operation == 1 || (self.case == Case::PersistentCleanup && operation <= 3));
+        self.operation.set(operation);
+        // SAFETY: symbols belong to the retained, bounded child fixture.
         unsafe { (self.arm)(self.case as i32) };
     }
-
     pub(crate) fn pages(&self) -> usize {
-        if self.case == Case::MiddleExtent {
+        if matches!(self.case, Case::MiddleExtent | Case::SuffixCleanup) {
             5
         } else {
             3
         }
     }
-
-    pub(crate) fn cause<'a>(&self, error: &'a crate::Error) -> Option<&'a crate::Error> {
-        // The caller selected this case before any observed error existed.
-        match self.case {
-            Case::Collision => mapping_collision_cause(error),
-            Case::WrongAddress => mapping_unexpected_address_cause(error),
-            _ => mapping_cause(error),
+    pub(crate) fn addresses(&self) -> AliasAddresses {
+        // SAFETY: the fixture returns scalar addresses, never Rust references.
+        let values = std::array::from_fn::<_, 5, _>(|i| unsafe { (self.address)(i as i32) });
+        assert_eq!(values[4], self.operation.get());
+        AliasAddresses {
+            base: values[0],
+            length: values[1],
+            wrong: values[2],
+            ambiguous: values[3],
+            operation: values[4],
         }
     }
-
-    pub(crate) fn assert_fired(&self) {
-        // Finish observes the foreign marker before its owner releases it.
-        // SAFETY: resolved from the retained fixture; this method is called once.
-        unsafe { (self.finish)() };
-        // Columns match the fixed C enum; the first five preserve the old oracle.
-        // reserve, extent, fired, cleanup, first-bytes, prep, released, page-mask,
-        // worker-created/joined, foreign-created/before/after/finish/released,
-        // real-EEXIST, wrong-created/released, distinct-thread, bad-cleanup.
-        let counts = std::array::from_fn::<_, 20, _>(|i| unsafe { (self.count)(i as i32) });
-        let expected = match self.case {
-            Case::Reservation => [1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            Case::SecondExtent => [1, 2, 1, 1, 1, 2, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            Case::Foreign => [1, 2, 1, 1, 1, 2, 2, 3, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0],
-            Case::Collision => [1, 2, 1, 1, 1, 2, 2, 3, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0],
-            Case::Unmap => [1, 1, 1, 1, 1, 2, 1, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            Case::WrongAddress => [1, 2, 1, 1, 1, 2, 2, 3, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
-            Case::MiddleExtent => [1, 2, 1, 2, 1, 2, 2, 27, 1, 1, 1, 2, 2, 1, 1, 0, 0, 0, 1, 0],
-        };
-        assert_eq!(counts, expected, "alias case {:?}", self.case);
-        eprintln!("\nalias failure case={:?} counters={counts:?}", self.case);
+    pub(crate) fn cause<'a>(&self, error: &'a crate::Error) -> Option<&'a crate::Error> {
+        self.cause_expected(error, None)
     }
+    /// Native unit tests bind this ID to an independently queried ledger record.
+    pub(crate) fn cause_with_retention<'a>(
+        &self,
+        error: &'a crate::Error,
+        id: usize,
+    ) -> Option<&'a crate::Error> {
+        if id == 0 {
+            return None;
+        }
+        self.cause_expected(error, Some(id))
+    }
+    fn cause_expected<'a>(
+        &self,
+        error: &'a crate::Error,
+        retention_id: Option<usize>,
+    ) -> Option<&'a crate::Error> {
+        let addresses = self.addresses();
+        let expected = CaseCause::for_case(self.case, addresses, retention_id)?;
+        alias_case_cause(error, expected)
+    }
+    pub(crate) fn assert_fired(&self) -> AliasObservation {
+        // Finish observes before the fixture's own allocator releases its marker.
+        unsafe { (self.finish)() };
+        let counts = std::array::from_fn::<_, 32, _>(|i| unsafe { (self.count)(i as i32) as u64 });
+        let mut expected = match self.case {
+            Case::Reservation => [
+                1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0,
+            ],
+            Case::SecondExtent => [
+                1, 2, 1, 1, 0, 1, 1, 0, 3, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+                0, 0, 0, 0,
+            ],
+            Case::Foreign => [
+                1, 2, 1, 1, 1, 1, 1, 0, 3, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+                0, 0, 0, 0,
+            ],
+            Case::AtomicCollision => [
+                1, 2, 2, 0, 0, 1, 1, 0, 7, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+                0, 0, 0, 0,
+            ],
+            Case::CleanupAfterSuccess => [
+                1, 2, 2, 0, 0, 1, 0, 1, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0,
+                0, 0, 0, 0,
+            ],
+            Case::WrongAddress => [
+                1, 2, 1, 1, 1, 2, 2, 0, 3, 0, 1, 1, 1, 1, 2, 2, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1,
+                0, 0, 0, 0,
+            ],
+            Case::MiddleExtent => [
+                1, 2, 1, 1, 1, 2, 2, 0, 27, 0, 1, 1, 1, 1, 2, 2, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+                1, 0, 0, 0, 0,
+            ],
+            Case::ConstructionCleanup => [
+                1, 2, 1, 1, 0, 1, 0, 1, 0, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 0, 0,
+                0, 0, 0, 0,
+            ],
+            Case::SuffixCleanup => [
+                1, 2, 1, 1, 0, 2, 1, 1, 3, 24, 1, 1, 1, 1, 1, 2, 1, 1, 0, 0, 0, 0, 1, 24, 0, 0, 0,
+                1, 1, 0, 0, 0,
+            ],
+            Case::PersistentCleanup => [
+                1, 2, 2, 0, 0, 1, 0, 1, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0,
+                0, 0, 0, 0,
+            ],
+            Case::CleanupAtEof => [
+                1, 0, 0, 0, 0, 1, 0, 1, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0,
+                0, 0, 0, 0,
+            ],
+        };
+        if self.case == Case::PersistentCleanup {
+            expected[29] = (self.operation.get() - 1) as u64;
+        }
+        assert_eq!(counts, expected, "atomic alias case {:?}", self.case);
+        let addresses = self.addresses();
+        eprintln!(
+            "\natomic alias case={:?} operation={} counters={counts:?} addresses={addresses:?}",
+            self.case,
+            self.operation.get()
+        );
+        AliasObservation {
+            case: self.case,
+            addresses,
+            counters: counts,
+        }
+    }
+}
+
+pub(crate) const AMBIGUOUS_PHASE: &str =
+    "failed writable-alias MAP_FIXED target retained until process exit (ownership unknown)";
+
+#[derive(Clone, Copy)]
+struct CaseCause {
+    mapping: Option<ExpectedCause>,
+    ambiguous: bool,
+    cleanup_range: Option<(usize, usize)>,
+    retention_id: Option<usize>,
+}
+impl CaseCause {
+    fn for_case(
+        case: Case,
+        addresses: AliasAddresses,
+        retention_id: Option<usize>,
+    ) -> Option<Self> {
+        let mapping = match case {
+            Case::AtomicCollision => return None,
+            Case::CleanupAfterSuccess | Case::PersistentCleanup | Case::CleanupAtEof => None,
+            Case::WrongAddress => Some(ExpectedCause::UnexpectedAddress),
+            _ => Some(ExpectedCause::Errno(libc::ENOMEM)),
+        };
+        let ambiguous = matches!(
+            case,
+            Case::SecondExtent
+                | Case::Foreign
+                | Case::WrongAddress
+                | Case::MiddleExtent
+                | Case::ConstructionCleanup
+                | Case::SuffixCleanup
+        );
+        let cleanup_range = match case {
+            Case::CleanupAfterSuccess | Case::PersistentCleanup | Case::CleanupAtEof => {
+                Some((addresses.base, addresses.length))
+            }
+            Case::ConstructionCleanup => Some((addresses.base, 2 * 4096)),
+            Case::SuffixCleanup => Some((addresses.base + 3 * 4096, 2 * 4096)),
+            _ => None,
+        };
+        Some(Self {
+            mapping,
+            ambiguous,
+            cleanup_range,
+            retention_id,
+        })
+    }
+}
+
+// Only the fixed ambiguous-target context is admitted, only on cases which
+// deliberately create ambiguity, and only around their construction cause.
+// Other context wrappers remain rejected. Each distinct leaf kind must retain
+// its exact object identity across every repeated occurrence.
+fn alias_case_cause(error: &crate::Error, expected: CaseCause) -> Option<&crate::Error> {
+    struct Seen<'a> {
+        mapping: Option<&'a crate::Error>,
+        cleanup: Option<&'a crate::Error>,
+        primary: Option<&'a crate::Error>,
+    }
+    fn same<'a>(slot: &mut Option<&'a crate::Error>, error: &'a crate::Error) -> bool {
+        if let Some(previous) = slot {
+            std::ptr::eq(*previous, error)
+        } else {
+            *slot = Some(error);
+            true
+        }
+    }
+    fn visit<'a>(
+        error: &'a crate::Error,
+        expected: CaseCause,
+        seen: &mut Seen<'a>,
+        context: bool,
+        primary: bool,
+    ) -> bool {
+        match error {
+            crate::Error::MemoryMapping(io) => {
+                let matches = match expected.mapping {
+                    Some(ExpectedCause::Errno(errno)) => io.raw_os_error() == Some(errno),
+                    Some(ExpectedCause::UnexpectedAddress) => {
+                        io.raw_os_error().is_none()
+                            && io.kind() == std::io::ErrorKind::Other
+                            && io.to_string() == UNEXPECTED_ADDRESS
+                    }
+                    None => false,
+                };
+                matches
+                    && context == expected.ambiguous
+                    && same(&mut seen.mapping, error)
+                    && (!primary || same(&mut seen.primary, error))
+            }
+            crate::Error::WriteAliasCleanup {
+                source,
+                address,
+                length,
+                retention_id,
+            } => {
+                !context
+                    && expected.cleanup_range == Some((*address, *length))
+                    && source.raw_os_error() == Some(libc::ENOMEM)
+                    && *retention_id != 0
+                    && expected.retention_id.is_none_or(|id| id == *retention_id)
+                    && same(&mut seen.cleanup, error)
+                    && (!primary || same(&mut seen.primary, error))
+            }
+            crate::Error::SharedFailure(cause) => visit(cause, expected, seen, context, primary),
+            crate::Error::WithCleanup {
+                primary: cause,
+                cleanup,
+            } => {
+                visit(cause, expected, seen, context, primary)
+                    && cleanup
+                        .iter()
+                        .all(|cause| visit(cause, expected, seen, context, false))
+            }
+            crate::Error::Cleanup { phase, error } => {
+                expected.ambiguous
+                    && !context
+                    && *phase == AMBIGUOUS_PHASE
+                    && visit(error, expected, seen, true, primary)
+            }
+            _ => false,
+        }
+    }
+    let mut seen = Seen {
+        mapping: None,
+        cleanup: None,
+        primary: None,
+    };
+    if !visit(error, expected, &mut seen, false, true)
+        || seen.mapping.is_some() != expected.mapping.is_some()
+        || seen.cleanup.is_some() != expected.cleanup_range.is_some()
+    {
+        return None;
+    }
+    let wanted = if expected.mapping.is_some() {
+        seen.mapping?
+    } else {
+        seen.cleanup?
+    };
+    seen.primary
+        .filter(|primary| std::ptr::eq(*primary, wanted))
 }
 
 // Ownership may repeat a cause, but every leaf must retain that exact cause.
@@ -236,14 +500,13 @@ pub(crate) fn mapping_cause(error: &crate::Error) -> Option<&crate::Error> {
     mapping_cause_for_errno(error, libc::ENOMEM)
 }
 
-// A distinct collision control expects exactly EEXIST. Existing resource
-// failure controls continue to call the ENOMEM-only mapping_cause above.
+// Historical pure EEXIST predicate control remains strict. AtomicCollision
+// is a successful operation and never calls this failure classifier.
 pub(crate) fn mapping_collision_cause(error: &crate::Error) -> Option<&crate::Error> {
     mapping_cause_for_errno(error, libc::EEXIST)
 }
 
-const UNEXPECTED_ADDRESS: &str =
-    "MAP_FIXED_NOREPLACE installed a writable alias at an unexpected address";
+const UNEXPECTED_ADDRESS: &str = "MAP_FIXED installed a writable alias at an unexpected address";
 
 pub(crate) fn mapping_unexpected_address_cause(error: &crate::Error) -> Option<&crate::Error> {
     mapping_cause_expected(error, ExpectedCause::UnexpectedAddress)
@@ -586,6 +849,218 @@ fn mapping_unexpected_address_oracle_keeps_all_causes_and_context() {
         };
         assert!(
             mapping_unexpected_address_cause(&negative).is_none(),
+            "{negative:?}"
+        );
+    }
+}
+
+#[test]
+fn atomic_alias_cause_oracle_requires_exact_context_ranges_and_identity() {
+    use std::sync::Arc;
+
+    use crate::Error;
+    const BASE: usize = 0x10000;
+    const ID: usize = 17;
+    let addresses = AliasAddresses {
+        base: BASE,
+        length: 3 * 4096,
+        wrong: 0,
+        ambiguous: BASE + 2 * 4096,
+        operation: 1,
+    };
+    let expected = CaseCause::for_case(Case::ConstructionCleanup, addresses, Some(ID)).unwrap();
+    let mapping = Arc::new(Error::MemoryMapping(std::io::Error::from_raw_os_error(
+        libc::ENOMEM,
+    )));
+    let wrapped = Arc::new(Error::Cleanup {
+        phase: AMBIGUOUS_PHASE,
+        error: mapping.clone(),
+    });
+    let cleanup = Arc::new(Error::WriteAliasCleanup {
+        source: std::io::Error::from_raw_os_error(libc::ENOMEM),
+        address: BASE,
+        length: 2 * 4096,
+        retention_id: ID,
+    });
+    let positive = Error::WithCleanup {
+        primary: wrapped.clone(),
+        cleanup: vec![cleanup.clone()],
+    };
+    assert!(std::ptr::eq(
+        alias_case_cause(&positive, expected).unwrap(),
+        &*mapping
+    ));
+    let repeated = Error::WithCleanup {
+        primary: Arc::new(Error::SharedFailure(wrapped.clone())),
+        cleanup: vec![wrapped.clone(), cleanup.clone(), cleanup.clone()],
+    };
+    assert!(std::ptr::eq(
+        alias_case_cause(&repeated, expected).unwrap(),
+        &*mapping
+    ));
+    // Same diagnostic values in a different allocation do not preserve cause identity.
+    for extra in [
+        Error::Cleanup {
+            phase: AMBIGUOUS_PHASE,
+            error: Arc::new(Error::MemoryMapping(std::io::Error::from_raw_os_error(
+                libc::ENOMEM,
+            ))),
+        },
+        Error::WriteAliasCleanup {
+            source: std::io::Error::from_raw_os_error(libc::ENOMEM),
+            address: BASE,
+            length: 2 * 4096,
+            retention_id: ID,
+        },
+        Error::UnexpectedVcpuExit("unrelated cleanup".to_owned()),
+        Error::WorkerFailure {
+            tid: 3,
+            error: mapping.clone(),
+        },
+        Error::Cleanup {
+            phase: "unrelated cleanup context",
+            error: mapping.clone(),
+        },
+        Error::ExecWorkerTeardown(Box::new(Error::SharedFailure(mapping.clone()))),
+    ] {
+        let negative = Error::WithCleanup {
+            primary: wrapped.clone(),
+            cleanup: vec![cleanup.clone(), Arc::new(extra)],
+        };
+        assert!(
+            alias_case_cause(&negative, expected).is_none(),
+            "{negative:?}"
+        );
+    }
+    for primary in [
+        mapping.clone(),
+        Arc::new(Error::Cleanup {
+            phase: "wrong phase",
+            error: mapping.clone(),
+        }),
+        Arc::new(Error::Cleanup {
+            phase: AMBIGUOUS_PHASE,
+            error: wrapped.clone(),
+        }),
+        Arc::new(Error::Cleanup {
+            phase: AMBIGUOUS_PHASE,
+            error: Arc::new(Error::MemoryMapping(std::io::Error::from_raw_os_error(
+                libc::EACCES,
+            ))),
+        }),
+    ] {
+        let negative = Error::WithCleanup {
+            primary,
+            cleanup: vec![cleanup.clone()],
+        };
+        assert!(
+            alias_case_cause(&negative, expected).is_none(),
+            "{negative:?}"
+        );
+    }
+    for (address, length, retention_id, errno) in [
+        (BASE + 4096, 8192, ID, libc::ENOMEM),
+        (BASE, 4096, ID, libc::ENOMEM),
+        (BASE, 8192, 0, libc::ENOMEM),
+        (BASE, 8192, ID + 1, libc::ENOMEM),
+        (BASE, 8192, ID, libc::EACCES),
+    ] {
+        let negative = Error::WithCleanup {
+            primary: wrapped.clone(),
+            cleanup: vec![Arc::new(Error::WriteAliasCleanup {
+                source: std::io::Error::from_raw_os_error(errno),
+                address,
+                length,
+                retention_id,
+            })],
+        };
+        assert!(
+            alias_case_cause(&negative, expected).is_none(),
+            "{negative:?}"
+        );
+    }
+    assert!(alias_case_cause(&Error::SharedFailure(wrapped.clone()), expected).is_none());
+    let reversed = Error::WithCleanup {
+        primary: cleanup,
+        cleanup: vec![wrapped.clone()],
+    };
+    assert!(
+        alias_case_cause(&reversed, expected).is_none(),
+        "construction cause lost precedence"
+    );
+    let plain = CaseCause::for_case(Case::Reservation, addresses, None).unwrap();
+    assert!(alias_case_cause(&Error::SharedFailure(wrapped), plain).is_none());
+    assert!(CaseCause::for_case(Case::AtomicCollision, addresses, None).is_none());
+}
+
+#[test]
+fn atomic_alias_cleanup_primary_and_wrong_address_oracles_are_exact() {
+    use std::sync::Arc;
+
+    use crate::Error;
+    const BASE: usize = 0x20000;
+    const ID: usize = 29;
+    let addresses = AliasAddresses {
+        base: BASE,
+        length: 3 * 4096,
+        wrong: 0x40000,
+        ambiguous: BASE + 2 * 4096,
+        operation: 1,
+    };
+    for case in [
+        Case::CleanupAfterSuccess,
+        Case::PersistentCleanup,
+        Case::CleanupAtEof,
+    ] {
+        let expected = CaseCause::for_case(case, addresses, Some(ID)).unwrap();
+        let original = Arc::new(Error::WriteAliasCleanup {
+            source: std::io::Error::from_raw_os_error(libc::ENOMEM),
+            address: BASE,
+            length: 3 * 4096,
+            retention_id: ID,
+        });
+        let repeated = Error::WithCleanup {
+            primary: original.clone(),
+            cleanup: vec![original.clone()],
+        };
+        assert!(std::ptr::eq(
+            alias_case_cause(&repeated, expected).unwrap(),
+            &*original
+        ));
+        let context = Error::Cleanup {
+            phase: AMBIGUOUS_PHASE,
+            error: original,
+        };
+        assert!(alias_case_cause(&context, expected).is_none());
+        let wrong_kind = Error::MemoryMapping(std::io::Error::from_raw_os_error(libc::ENOMEM));
+        assert!(alias_case_cause(&wrong_kind, expected).is_none());
+    }
+    let expected = CaseCause::for_case(Case::WrongAddress, addresses, None).unwrap();
+    let original = Arc::new(Error::MemoryMapping(std::io::Error::other(
+        UNEXPECTED_ADDRESS,
+    )));
+    let positive = Error::Cleanup {
+        phase: AMBIGUOUS_PHASE,
+        error: original.clone(),
+    };
+    assert!(std::ptr::eq(
+        alias_case_cause(&positive, expected).unwrap(),
+        &*original
+    ));
+    for wrong in [
+        std::io::Error::from_raw_os_error(libc::EACCES),
+        std::io::Error::from_raw_os_error(libc::ENOMEM),
+        std::io::Error::other(
+            "MAP_FIXED_NOREPLACE installed a writable alias at an unexpected address",
+        ),
+        std::io::Error::other("another mapping protocol error"),
+    ] {
+        let negative = Error::Cleanup {
+            phase: AMBIGUOUS_PHASE,
+            error: Arc::new(Error::MemoryMapping(wrong)),
+        };
+        assert!(
+            alias_case_cause(&negative, expected).is_none(),
             "{negative:?}"
         );
     }
