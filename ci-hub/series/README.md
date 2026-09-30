@@ -53,6 +53,17 @@ The stable tool reads the measured Hermit checkout and writes only the ledger's
 separately. A derived-scorecard failure records incomplete delivery and retains
 inputs while preserving both the measured verdict and any published raw rows.
 
+The renderer's detailed history, `scorecard/cells.json`, is stored as
+consecutive byte ranges of at most 48 MiB, `scorecard/cells/part-NNNN`, with
+`scorecard/cells/manifest.json` recording each part's size and SHA-256 and the
+whole document's. GitHub refuses any pushed file over 100 MiB, and the single
+file passed that on 2026-09-30. Read the history with `scorecard_cells.read_commit`
+or `read_tree`, which check every size and digest before returning the
+reassembled bytes; `git show <commit>:scorecard/cells.json` finds nothing at a
+commit in this layout. The renderer still reads and writes the single file,
+because the publisher's throwaway copy of the ledger shows it one
+(`scorecard_cells.py` explains how).
+
 Before the first Hermit catalogue trim, `scorecard.rs export-legacy` archives the
 exact old cells document and its source identity in `scorecard/legacy/` in this
 same repository. No conversion fabricates missing historical measurement fields.

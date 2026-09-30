@@ -26,6 +26,12 @@ and the in-band routes (writing through DEV_HERMIT_TEST_LEDGER_ROOT, committing
 in the ledger it was given, planting files beside a carrier), not a deliberate
 escape.
 
+The renderer's detailed history, scorecard/cells.json, outgrew the largest
+file GitHub accepts, so the ledger stores it in parts with a manifest
+(scorecard_cells). The renderer never sees the parts: its copy shows it the
+single file, and _copy_back splits the file it writes before anything reaches
+the writer.
+
 A derived portable proof is independent of that scorecard and publishes even
 when the scorecard fails or its head order cannot be decided. The public
 scorecard head (latest.json and the rendered "Last regenerated" notice) only
@@ -59,6 +65,7 @@ import rust_toolchain  # noqa: E402
 import series  # noqa: E402
 import publisher  # noqa: E402
 import finalized_proof  # noqa: E402
+import scorecard_cells  # noqa: E402
 
 REMOTE_URL = series.LEDGER_REPOSITORY
 REMOTE_BRANCH = "main"
@@ -88,7 +95,13 @@ RENDERER_WITHHELD_ENV = (
     "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
     "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK", "FLEET_REAL_GH",
     "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+    # Either would hide the render copy's replacement view of the published
+    # scorecard history (scorecard_cells.install_render_view) from Git.
+    "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE",
 )
+# Every Git command on the render copy runs with the renderer's configuration:
+# no user or system file, so core.useReplaceRefs cannot be turned off there.
+COPY_GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 RENDER_COPY_PREFIX = "test-ledger-render-"
 
 
@@ -162,14 +175,15 @@ def submodule_remote(parent: Path) -> str:
     return configured
 
 
-def _worktree_changes(repo: Path) -> dict[str, str]:
+def _worktree_changes(repo: Path, *, environment: Mapping[str, str] | None = None,
+                      withhold: Sequence[str] = ()) -> dict[str, str]:
     """Map every staged, unstaged or untracked path to its two-letter status.
 
     A rename or copy names two paths; both are reported. Paths are read with
     -z, so quoting cannot hide or disguise a name.
     """
     output = _run(["git", "-C", str(repo), "status", "--porcelain=v1", "-z",
-                   "--untracked-files=all"]).stdout
+                   "--untracked-files=all"], environment=environment, withhold=withhold).stdout
     entries = output.split("\0")
     changes: dict[str, str] = {}
     index = 0
@@ -210,8 +224,10 @@ def _commit_and_push(writer: Path, paths: Sequence[str], message: str, *,
         raise MirrorRefused(f"ledger writer HEAD {head} is not the publication base {base}; "
                             "nothing was pushed and the writer is retained for recovery")
     _git(writer, "add", "--", *paths)
+    # --no-renames: a staged rename must list its source path too, as
+    # diff-tree below does.
     staged = {path for path in _run([
-        "git", "-C", str(writer), "diff", "--cached", "--name-only", "-z",
+        "git", "-C", str(writer), "diff", "--cached", "--no-renames", "--name-only", "-z",
     ]).stdout.split("\0") if path}
     if not staged <= set(paths):
         raise MirrorRefused(
@@ -750,10 +766,21 @@ def published_scorecard_binding(writer: Path, snapshot: Mapping[str, Any], targe
     for path, digest in hashes.items():
         finalized_proof._relative(path)
         finalized_proof._hash(digest, "scorecard file digest")
-        if not path.startswith("scorecard/") or hashlib.sha256(finalized_proof._read_local(writer, path)).hexdigest() != digest:
+        if not path.startswith("scorecard/") or hashlib.sha256(_scorecard_bytes(writer, path)).hexdigest() != digest:
             raise MirrorRefused("published scorecard bytes differ from metadata; preserve the refusal and regenerate normally")
     return {"commit": snapshot["source"]["commit"],
             "latest_sha256": hashlib.sha256(encoded).hexdigest(), "files": hashes}
+
+
+def _scorecard_bytes(writer: Path, path: str) -> bytes:
+    """The bytes of scorecard file PATH in the writer; the history is reassembled.
+
+    latest.json records the digest of the renderer's scorecard/cells.json, the
+    document the ledger stores in parts (scorecard_cells).
+    """
+    if path == scorecard_cells.LOGICAL_PATH:
+        return _stored_history(writer)
+    return finalized_proof._read_local(writer, path)
 
 
 def finish_portable_proof(prepared: Mapping[str, Any], parent: Path, writer: Path,
@@ -841,9 +868,63 @@ def prepare_scorecard(
     return commit, compiler
 
 
+def _copy_environment() -> dict[str, str]:
+    return _environment(COPY_GIT_ENV, RENDERER_WITHHELD_ENV)
+
+
+def _copy_git(copy: Path, *args: str) -> str:
+    return _run(["git", "-C", str(copy), *args], environment=COPY_GIT_ENV,
+                withhold=RENDERER_WITHHELD_ENV).stdout.strip()
+
+
+def _copy_changes(copy: Path) -> dict[str, str]:
+    return _worktree_changes(copy, environment=COPY_GIT_ENV, withhold=RENDERER_WITHHELD_ENV)
+
+
+def _stored_history(root: Path) -> bytes:
+    """The scorecard history stored in the files under ROOT, reassembled."""
+    try:
+        document = scorecard_cells.read_tree(root)
+    except scorecard_cells.CellsRefused as error:
+        raise MirrorRefused(f"cannot read the scorecard history in {root}: {error}") from error
+    if document is None:
+        raise MirrorRefused(f"{root} holds no {scorecard_cells.LOGICAL_PATH}")
+    return document
+
+
+def _blob_name(copy: Path, data: bytes) -> str:
+    algorithm = _copy_git(copy, "rev-parse", "--show-object-format")
+    return hashlib.new(algorithm, b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def _require_render_view(copy: Path, base: str, view: str | None, *, rendered: bool) -> None:
+    """Require the copy to show the renderer exactly the history BASE stores.
+
+    VIEW must be the copy's only replacement, for BASE, and `git show
+    HEAD:scorecard/cells.json` there (the renderer's retirement check) must
+    read the stored history. Before the render the checked-out file must be
+    those bytes too; after it, the file is the renderer's output.
+    """
+    environment = _copy_environment()
+    try:
+        found = scorecard_cells.replacements(copy, environment)
+        stored = scorecard_cells.read_commit(copy, base, environment=environment)
+        checked_out = None if rendered else scorecard_cells.read_tree(copy)
+    except scorecard_cells.CellsRefused as error:
+        raise MirrorRefused(f"cannot verify the scorecard tool's view of {base}: {error}") from error
+    if found != ({} if view is None else {base: view}):
+        raise MirrorRefused(f"the ledger copy's replacement objects changed: {found}; nothing was copied "
+                            "into the ledger writer")
+    if not rendered and checked_out != stored:
+        raise MirrorRefused(f"the ledger copy's checked-out scorecard history differs from {base}")
+    if stored is not None and _copy_git(
+            copy, "rev-parse", f"HEAD:{scorecard_cells.LOGICAL_PATH}") != _blob_name(copy, stored):
+        raise MirrorRefused(f"the ledger copy does not show the scorecard history stored at {base}")
+
+
 @contextlib.contextmanager
-def _render_copy(writer: Path, base: str) -> Iterator[Path]:
-    """Yield a throwaway ledger checkout at BASE for the measured renderer.
+def _render_copy(writer: Path, base: str) -> Iterator[tuple[Path, str | None]]:
+    """Yield a throwaway ledger checkout at BASE for the measured renderer, and its view.
 
     The copy reads the writer's objects through alternates and writes its own,
     so a commit, index, ref, config or hook change the renderer makes through
@@ -853,6 +934,13 @@ def _render_copy(writer: Path, base: str) -> Iterator[Path]:
     the caller holds. Only the lock holder creates these copies, so one left
     behind by a killed publisher is removed by the next. Each copy has a fresh
     name, so a stale one that cannot be removed is inert and never reused.
+
+    When BASE stores the scorecard history in parts, the copy also holds a
+    replacement for BASE whose tree has the reassembled scorecard/cells.json
+    in their place (scorecard_cells.install_render_view), so the renderer reads
+    and rewrites the single file it has always used. That replacement is the
+    yielded view; it is None when BASE stores the single file or no history.
+    It exists only in the copy's refs, which nothing fetches or pushes.
     """
     common = Path(_git(writer, "rev-parse", "--path-format=absolute", "--git-common-dir"))
     for stale in writer.parent.glob(RENDER_COPY_PREFIX + "*"):
@@ -864,22 +952,34 @@ def _render_copy(writer: Path, base: str) -> Iterator[Path]:
         _run(["git", "init", "--quiet", "--template=", str(copy)])
         (copy / ".git/objects/info").mkdir(parents=True, exist_ok=True)
         (copy / ".git/objects/info/alternates").write_text(str(common / "objects") + "\n")
-        _git(copy, "config", "remote.origin.url", REMOTE_URL)
-        _git(copy, "config", "remote.origin.pushurl", str(copy / ".git/push-disabled"))
-        _git(copy, "checkout", "--quiet", "--detach", base)
+        _copy_git(copy, "config", "remote.origin.url", REMOTE_URL)
+        _copy_git(copy, "config", "remote.origin.pushurl", str(copy / ".git/push-disabled"))
+        try:
+            view = scorecard_cells.install_render_view(copy, base, _copy_environment())
+        except scorecard_cells.CellsRefused as error:
+            raise MirrorRefused(f"cannot show the scorecard history stored at {base} to the "
+                                f"scorecard tool: {error}") from error
+        _copy_git(copy, "checkout", "--quiet", "--detach", base)
         (copy / ".git" / PUBLICATION_LOCK).symlink_to(common / PUBLICATION_LOCK)
-        if _git(copy, "rev-parse", "HEAD^{commit}") != base or _worktree_changes(copy):
+        if _copy_git(copy, "rev-parse", "HEAD^{commit}") != base or _copy_changes(copy):
             raise MirrorRefused(f"cannot prepare a clean ledger copy at {base} for the scorecard tool")
-        yield copy
+        _require_render_view(copy, base, view, rendered=False)
+        yield copy, view
 
 
-def _copy_back(copy: Path, writer: Path, base: str, paths: Sequence[Path]) -> None:
-    """Move exactly the renderer's generated files from COPY into the writer."""
-    if _git(copy, "rev-parse", "HEAD^{commit}") != base:
+def _copy_back(copy: Path, writer: Path, base: str, paths: Sequence[Path], view: str | None) -> None:
+    """Move exactly the renderer's generated files from COPY into the writer.
+
+    The generated scorecard/cells.json is stored in parts (scorecard_cells).
+    Every file a scorecard publication writes is checked against
+    scorecard_cells.FILE_CEILING_BYTES before anything is written.
+    """
+    if _copy_git(copy, "rev-parse", "HEAD^{commit}") != base:
         raise MirrorRefused("scorecard tool moved the HEAD of its ledger copy; nothing was copied "
                             "into the ledger writer")
+    _require_render_view(copy, base, view, rendered=True)
     expected = {path.as_posix() for path in paths}
-    unexpected = sorted(set(_worktree_changes(copy)) - expected)
+    unexpected = sorted(set(_copy_changes(copy)) - expected)
     if unexpected:
         raise MirrorRefused(
             "scorecard tool changed ledger paths outside its generated output; nothing was copied "
@@ -897,13 +997,37 @@ def _copy_back(copy: Path, writer: Path, base: str, paths: Sequence[Path]) -> No
         source = copy / path
         if source.is_symlink() or not source.is_file():
             raise MirrorRefused(f"scorecard tool output {path} is not a regular file")
-        generated[path] = source.read_bytes()
+        generated[path.as_posix()] = source.read_bytes()
+    document = generated.pop(scorecard_cells.LOGICAL_PATH, None)
+    stored = {}
+    if document is not None:
+        try:
+            stored = scorecard_cells.split(document)
+        except scorecard_cells.CellsRefused as error:
+            raise MirrorRefused(f"cannot store the generated scorecard history: {error}; nothing was "
+                                "copied into the ledger writer") from error
+        # A legacy export (no history) keeps its archive whole, as before.
+        oversized = sorted(path for path, encoded in {**generated, **stored}.items()
+                           if len(encoded) > scorecard_cells.FILE_CEILING_BYTES)
+        if oversized:
+            raise MirrorRefused(f"scorecard output {', '.join(oversized)} exceeds "
+                                f"{scorecard_cells.FILE_CEILING_BYTES} bytes; nothing was copied into "
+                                "the ledger writer")
+    for path in generated:
+        if (writer / path).is_symlink():
+            raise MirrorRefused(f"ledger writer path {path} is a symbolic link")
+    if document is not None:
+        try:
+            scorecard_cells.replace_tree(writer, stored)
+        except scorecard_cells.CellsRefused as error:
+            raise MirrorRefused(f"cannot store the scorecard history in the ledger writer: {error}") from error
     for path, encoded in generated.items():
         destination = writer / path
-        if destination.is_symlink():
-            raise MirrorRefused(f"ledger writer path {path} is a symbolic link")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(encoded)
+    if document is not None and _stored_history(writer) != document:
+        raise MirrorRefused("the scorecard history stored in the ledger writer differs from the generated "
+                            "document; writer retained for recovery")
 
 
 def build_scorecard(
@@ -927,7 +1051,7 @@ def build_scorecard(
     commands = []
     finalized_row = None
     with contextlib.ExitStack() as temporary:
-        ledger = temporary.enter_context(_render_copy(writer, base))
+        ledger, view = temporary.enter_context(_render_copy(writer, base))
         # prepare_scorecard already fetched every dependency with the network;
         # this run needs none, and gets neither network routes nor credentials.
         environment.update({
@@ -992,8 +1116,10 @@ def build_scorecard(
         # The renderer is the measured tree's code. Its write authority is
         # exactly the generated files, copied last so a failure above leaves
         # the writer untouched.
-        _copy_back(ledger, writer, base, paths)
-    return ({path.as_posix(): hashlib.sha256((writer / path).read_bytes()).hexdigest()
+        _copy_back(ledger, writer, base, paths, view)
+    return ({path.as_posix(): hashlib.sha256(
+                _stored_history(writer) if path.as_posix() == scorecard_cells.LOGICAL_PATH
+                else (writer / path).read_bytes()).hexdigest()
              for path in paths}, tool_commit)
 
 
@@ -1384,7 +1510,10 @@ def _publish_scorecard(report: dict[str, Any], *, parent: Path, writer: Path,
                 write_metadata(writer, snapshot, target, series_commit, hashes, tool_commit, order)
             changes = _worktree_changes(writer)
             for path in changes:
-                allowed = path in hashes or (not legacy_export and path == "latest.json")
+                # The renderer's scorecard/cells.json is committed as its parts.
+                allowed = path in hashes or (not legacy_export and (
+                    path == "latest.json" or (scorecard_cells.LOGICAL_PATH in hashes
+                                              and scorecard_cells.is_storage_path(path))))
                 if not allowed:
                     raise MirrorRefused(f"scorecard changed an unexpected path: {path}")
             message = ("Preserve exact legacy Hermit cell history" if legacy_export

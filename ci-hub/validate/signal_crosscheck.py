@@ -35,6 +35,7 @@ sys.path.insert(0, str(CI_HUB / "validate"))
 import ledger as ledger_store  # noqa: E402
 import reverie_node  # noqa: E402
 import run_registry  # noqa: E402
+import scorecard_cells  # noqa: E402
 import series as canonical_series  # noqa: E402
 import service_result  # noqa: E402
 import validate_rows as canonical_ledger  # noqa: E402
@@ -696,9 +697,21 @@ def _scorecard_documents(root, hermit, content_sha, published):
     if published.repository != canonical_series.LEDGER_REPOSITORY:
         raise CrosscheckError("catalogue history requires an exact published ledger snapshot")
     ledger = canonical_series.ledger_root(root)
-    detailed = _json_object(
-        git_text(ledger, "show", f"{published.commit}:scorecard/cells.json"), "ledger cells.json"
-    )
+    # The ledger may store this document in parts (scorecard_cells).
+    try:
+        stored = scorecard_cells.read_commit(
+            ledger, published.commit, environment=_git_environment()
+        )
+        raw = None if stored is None else stored.decode("utf-8")
+    except (scorecard_cells.CellsRefused, UnicodeDecodeError) as error:
+        raise CrosscheckError(
+            f"cannot read the scorecard history at ledger commit {published.commit}: {error}"
+        ) from error
+    if raw is None:
+        raise CrosscheckError(
+            f"ledger commit {published.commit} holds no {scorecard_cells.LOGICAL_PATH}"
+        )
+    detailed = _json_object(raw, "ledger cells.json")
 
     def selection(document):
         entries = document.get("cells")

@@ -77,6 +77,17 @@ def _apply_case(row: dict, case: dict) -> dict:
 
 
 
+def stored_history(repo: Path, commit: str = "main") -> bytes | None:
+    """The scorecard history the ledger stores at COMMIT, in either layout."""
+    return mirror.scorecard_cells.read_commit(repo, commit)
+
+
+def history_entries(repo: Path, commit: str = "main") -> str:
+    """Every tree entry storing the scorecard history at COMMIT: mode, blob name and path."""
+    return git(repo, "ls-tree", "-r", "--full-tree", commit, "--",
+               mirror.scorecard_cells.LOGICAL_PATH, mirror.scorecard_cells.PARTS_DIRECTORY)
+
+
 class DirectLedgerFixture(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="direct-ledger-test-")
@@ -166,12 +177,16 @@ class DirectLedgerFixture(unittest.TestCase):
             "RUSTUP_AUTO_INSTALL": "1",
         }))
         # A Python fixture child exercises inherited authority and output routing.
-        tool.write_text("#!/usr/bin/python3\nimport os, pathlib, sys\n"
+        # Like scorecard.rs, it also reads the history at HEAD, whichever layout
+        # the ledger stores it in.
+        tool.write_text("#!/usr/bin/python3\nimport os, pathlib, subprocess, sys\n"
                         + HELP_FIXTURE +
                         "fd=int(os.environ['DEV_HERMIT_TEST_LEDGER_PUBLISH_LOCK_FD'])\n"
                         "os.fstat(fd)\n"
                         "p=pathlib.Path(os.environ['DEV_HERMIT_TEST_LEDGER_ROOT'])/'scorecard'\n"
                         "assert (p/'cells.json').read_text() == '{\"legacy\":\"preserve\"}\\n'\n"
+                        "assert subprocess.check_output(['git','-C',str(p.parent),'show','HEAD:scorecard/cells.json'])"
+                        " == b'{\"legacy\":\"preserve\"}\\n'\n"
                         "(p/'SCORECARD.md').write_text('derived from existing history\\n')\n")
         tool.chmod(0o755)
         git(self.tool, "add", "ci", "rust-toolchain.toml")
@@ -192,6 +207,14 @@ class DirectLedgerFixture(unittest.TestCase):
         payload = git(self.remote, "show", "main:series/hermit/fixture/2026-09.jsonl")
         return [json.loads(line) for line in payload.splitlines()]
 
+    def published_projection(self) -> dict[str, str]:
+        """The blob names main publishes for latest.json, SCORECARD.md and the stored history."""
+        projection = {path: git(self.remote, "rev-parse", "main:" + path)
+                      for path in ("latest.json", "scorecard/SCORECARD.md")}
+        projection[mirror.scorecard_cells.LOGICAL_PATH] = history_entries(self.remote)
+        self.assertTrue(projection[mirror.scorecard_cells.LOGICAL_PATH], "main stores no history")
+        return projection
+
     def test_direct_publication_preserves_parent_and_legacy_history(self):
         self.append("run-one")
         report = self.publish()
@@ -204,10 +227,15 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual(git(self.tool, "rev-parse", "HEAD"), report["scorecard"]["tool_hermit_commit"])
         self.assertNotEqual(self.target, report["scorecard"]["tool_hermit_commit"])
         self.assertFalse((self.source / "target").exists())
-        self.assertEqual('{"legacy":"preserve"}', git(self.remote, "show", "main:scorecard/cells.json"))
+        # The first publication stores the preserved history in parts.
+        self.assertEqual(b'{"legacy":"preserve"}\n', stored_history(self.remote))
+        self.assertEqual(["scorecard/cells/manifest.json", "scorecard/cells/part-0000"],
+                         git(self.remote, "ls-tree", "-r", "--name-only", "main", "--",
+                             "scorecard/cells.json", "scorecard/cells").splitlines())
         self.assertEqual([], list(series.spool_dir(self.parent).glob("*.jsonl")))
         self.assertTrue(list((series.spool_dir(self.parent) / "published").glob("*.jsonl")))
         again = self.publish()
+        self.assertEqual(b'{"legacy":"preserve"}\n', stored_history(self.remote))
         self.assertEqual([row("run-one")], self.remote_rows())
         self.assertEqual(report["series_commit"], report["source_commit"])
         self.assertEqual(0, again["raw_publication"]["published"])
@@ -1367,8 +1395,7 @@ class DirectLedgerFixture(unittest.TestCase):
         self.append("existing-finalized-cell")
         original = self.publish()
         self.assertEqual("published", original["state"], original)
-        before = {path: git(self.remote, "rev-parse", "main:" + path)
-                  for path in ("latest.json", "scorecard/cells.json", "scorecard/SCORECARD.md")}
+        before = self.published_projection()
         prepared, encoded = self.derived_fixture()
         selected = prepared["selection"]
         native_calls = []
@@ -1391,7 +1418,7 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertNotIn("scorecard", report)
         self.assertEqual(1, len(native_calls))
         scorecard.assert_not_called()
-        self.assertEqual(before, {path: git(self.remote, "rev-parse", "main:" + path) for path in before})
+        self.assertEqual(before, self.published_projection())
         self.assertEqual(original["commit"], report["existing_scorecard"]["commit"])
         self.assertEqual(["existing-finalized-cell"], [value["event_id"] for value in self.remote_rows()])
         self.assertEqual("fail", selected["row"]["result"])
@@ -1405,8 +1432,20 @@ class DirectLedgerFixture(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(mirror.MirrorRefused):
                 mirror.published_scorecard_binding(writer, snapshot, self.target)
         (writer / "latest.json").write_text(json.dumps(metadata))
-        (writer / "scorecard/cells.json").write_text("changed")
-        with self.assertRaises(mirror.MirrorRefused):
+        # The writer stores the bound history in parts; a changed document and
+        # a part that no longer matches its manifest are both refused.
+        stored = mirror.scorecard_cells.read_tree(writer)
+        self.assertEqual(stored_history(self.remote), stored)
+        self.assertFalse((writer / mirror.scorecard_cells.LOGICAL_PATH).exists())
+        mirror.published_scorecard_binding(writer, snapshot, self.target)
+        mirror.scorecard_cells.replace_tree(writer, mirror.scorecard_cells.split(b"changed"))
+        with self.assertRaisesRegex(mirror.MirrorRefused, "bytes differ"):
+            mirror.published_scorecard_binding(writer, snapshot, self.target)
+        mirror.scorecard_cells.replace_tree(writer, mirror.scorecard_cells.split(stored))
+        mirror.published_scorecard_binding(writer, snapshot, self.target)
+        part = writer / mirror.scorecard_cells.part_path(0)
+        part.write_bytes(part.read_bytes()[:-1] + b"X")
+        with self.assertRaisesRegex(mirror.MirrorRefused, "part-0000 differs from its manifest entry"):
             mirror.published_scorecard_binding(writer, snapshot, self.target)
 
     def test_proof_only_attachment_after_raw_append_keeps_both_source_bindings(self):
@@ -1415,8 +1454,7 @@ class DirectLedgerFixture(unittest.TestCase):
         self.append("frozen-scorecard-cell")
         original = self.publish()
         self.assertEqual("published", original["state"], original)
-        before = {path: git(self.remote, "rev-parse", "main:" + path)
-                  for path in ("latest.json", "scorecard/cells.json", "scorecard/SCORECARD.md")}
+        before = self.published_projection()
         self.append("later-raw-cell")
         appended = self.publish(publish_only=True)
         self.assertEqual("published", appended["state"], appended)
@@ -1441,7 +1479,7 @@ class DirectLedgerFixture(unittest.TestCase):
                                   portable_proof_only=True)
         self.assertEqual("published", report["state"], report)
         scorecard.assert_not_called()
-        self.assertEqual(before, {path: git(self.remote, "rev-parse", "main:" + path) for path in before})
+        self.assertEqual(before, self.published_projection())
         self.assertEqual(current_rows, self.remote_rows())
         self.assertEqual(appended["commit"], report["series_commit"])
         carrier_paths = [path for path in report["portable_proof"]["files"]
@@ -1484,12 +1522,15 @@ class DirectLedgerFixture(unittest.TestCase):
         with self.assertRaisesRegex(mirror.MirrorRefused, "immutable raw source"):
             mirror.published_scorecard_binding(writer, snapshot, self.target)
         metadata_path.write_bytes(encoded)
-        scorecard = writer / "scorecard/cells.json"
-        scorecard_bytes = scorecard.read_bytes()
-        scorecard.write_bytes(scorecard_bytes + b" ")
+        # The history is stored in parts: store a valid split of other bytes.
+        self.assertFalse((writer / mirror.scorecard_cells.LOGICAL_PATH).exists())
+        scorecard_bytes = mirror.scorecard_cells.read_tree(writer)
+        self.assertIsNotNone(scorecard_bytes)
+        mirror.scorecard_cells.replace_tree(writer, mirror.scorecard_cells.split(scorecard_bytes + b" "))
         with self.assertRaisesRegex(mirror.MirrorRefused, "bytes differ"):
             mirror.published_scorecard_binding(writer, snapshot, self.target)
-        scorecard.write_bytes(scorecard_bytes)
+        mirror.scorecard_cells.replace_tree(writer, mirror.scorecard_cells.split(scorecard_bytes))
+        self.assertEqual("", git(writer, "status", "--porcelain"))
         shard = writer / "series/hermit/fixture/2026-09.jsonl"
         for original_rows in ([row("original-cell", "diverged")], []):
             shard.write_text("".join(json.dumps(value) + "\n" for value in [*original_rows, row("later-cell")]))
@@ -2006,6 +2047,143 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual("", git(writer, "status", "--porcelain"))
         self.assertEqual([], list(writer.parent.glob(mirror.RENDER_COPY_PREFIX + "*")))
 
+    # --- Scorecard history stored in parts (scorecard_cells) ---------------
+
+    def test_parts_layout_renders_through_a_view_that_never_leaves_the_copy(self):
+        # The first publication stores the history in parts. The renderer of the
+        # second sees the single file at the same commit name, through a
+        # replacement that exists only in its throwaway copy.
+        self.append("first-parts")
+        self.assertEqual("published", self.publish()["state"])
+        seen = self.root / "renderer-saw.json"
+        rendered = b'{"rendered":"from parts"}\n'
+        self.set_tool(
+            "import json\n"
+            "def run(*args, **kwargs):\n"
+            " return subprocess.run(['git','-C',str(ledger),*args],capture_output=True,**kwargs)\n"
+            "stored=(p/'cells.json').read_bytes()\n"
+            "real=run('ls-tree','-r','--name-only','HEAD','scorecard',"
+            "env={**os.environ,'GIT_NO_REPLACE_OBJECTS':'1'})\n"
+            "pushed=run('push','origin','refs/replace/*:refs/replace/*')\n"
+            f"pathlib.Path({str(seen)!r}).write_text(json.dumps({{"
+            "'stored':stored.decode(),'shown':run('show','HEAD:scorecard/cells.json').stdout.decode(),"
+            "'head':run('rev-parse','HEAD').stdout.decode().strip(),"
+            "'replacements':run('for-each-ref','--format=%(refname) %(objectname)','refs/replace')"
+            ".stdout.decode().splitlines(),"
+            "'real':real.stdout.decode().splitlines(),'pushed':pushed.returncode,"
+            "'parts_on_disk':(p/'cells').exists()}))\n"
+            f"(p/'cells.json').write_bytes({rendered!r})\n"
+            "(p/'SCORECARD.md').write_text('rendered from parts\\n')\n")
+        self.append("second-parts")
+        report = self.publish()
+        self.assertEqual("published", report["state"], report)
+        saw = json.loads(seen.read_text())
+        base = report["series_commit"]
+        self.assertEqual(base, report["source_commit"])
+        self.assertEqual('{"legacy":"preserve"}\n', saw["stored"])
+        self.assertEqual(saw["stored"], saw["shown"])
+        self.assertEqual(base, saw["head"])
+        self.assertEqual(1, len(saw["replacements"]), saw)
+        replaced, view = saw["replacements"][0].split()
+        self.assertEqual(f"refs/replace/{base}", replaced)
+        self.assertEqual(["scorecard/SCORECARD.md", "scorecard/cells/manifest.json",
+                          "scorecard/cells/part-0000"], saw["real"])
+        self.assertNotEqual(0, saw["pushed"])
+        self.assertFalse(saw["parts_on_disk"])
+        self.assertEqual(rendered, stored_history(self.remote))
+        self.assertEqual("", git(self.remote, "ls-tree", "--name-only", "main", "--", "scorecard/cells.json"))
+        self.assertEqual("rendered from parts", git(self.remote, "show", "main:scorecard/SCORECARD.md"))
+        # latest.json keeps naming the history by its logical path, with the
+        # digest of the whole reassembled document.
+        self.assertEqual(hashlib.sha256(rendered).hexdigest(),
+                         json.loads(git(self.remote, "show", "main:latest.json"))["scorecard"]["scorecard/cells.json"])
+        writer = self.parent / mirror.WRITER_RELATIVE
+        for repository in (self.remote, self.ledger, writer):
+            with self.subTest(repository=repository.name):
+                self.assertEqual("", git(repository, "for-each-ref", "refs/replace"))
+                missing = subprocess.run(["git", "-C", str(repository), "cat-file", "-e", view],
+                                         capture_output=True, check=False)
+                self.assertNotEqual(0, missing.returncode)
+        self.assertEqual("", git(writer, "status", "--porcelain"))
+        self.assertEqual([], list(writer.parent.glob(mirror.RENDER_COPY_PREFIX + "*")))
+
+    def test_history_parts_follow_the_rendered_size(self):
+        # A history one byte over the part ceiling needs two parts. When it
+        # shrinks, the part it no longer needs is deleted in the same commit.
+        ceiling = mirror.scorecard_cells.FILE_CEILING_BYTES
+        size_file = self.root / "history-size"
+        self.set_tool(f"size=int(pathlib.Path({str(size_file)!r}).read_text())\n"
+                      "(p/'cells.json').write_bytes(b'{' + b' ' * (size - 2) + b'}')\n"
+                      "(p/'SCORECARD.md').write_text('sized %d\\n' % size)\n")
+        for step, (size, parts) in enumerate(((ceiling + 1, [ceiling, 1]), (7, [7]))):
+            with self.subTest(size=size):
+                size_file.write_text(str(size))
+                self.append(f"sized-{step}")
+                report = self.publish()
+                self.assertEqual("published", report["state"], report)
+                self.assertEqual(b"{" + b" " * (size - 2) + b"}", stored_history(self.remote))
+                manifest = json.loads(git(self.remote, "show", "main:scorecard/cells/manifest.json"))
+                self.assertEqual(parts, [part["bytes"] for part in manifest["parts"]])
+                self.assertEqual(["scorecard/cells/manifest.json",
+                                  *[mirror.scorecard_cells.part_path(index) for index in range(len(parts))]],
+                                 git(self.remote, "ls-tree", "-r", "--name-only", "main", "--",
+                                     "scorecard/cells.json", "scorecard/cells").splitlines())
+        self.assertIn("D\tscorecard/cells/part-0001",
+                      git(self.remote, "diff-tree", "--no-commit-id", "--name-status", "-r", "main").splitlines())
+
+    def test_oversized_scorecard_output_is_refused_before_the_writer_changes(self):
+        ceiling = mirror.scorecard_cells.FILE_CEILING_BYTES
+        self.set_tool(f"(p/'SCORECARD.md').write_bytes(b'x' * {ceiling + 1})\n")
+        self.append("oversized")
+        report = self.publish()
+        self.assertEqual("derived-failed", report["state"])
+        self.assertIn(f"scorecard output scorecard/SCORECARD.md exceeds {ceiling} bytes; nothing was copied "
+                      "into the ledger writer", report["scorecard"]["error"])
+        writer = self.parent / mirror.WRITER_RELATIVE
+        self.assertEqual(report["series_commit"], git(writer, "rev-parse", "HEAD"))
+        self.assertEqual("", git(writer, "status", "--porcelain"))
+        self.assertEqual("legacy scorecard", git(self.remote, "show", "main:scorecard/SCORECARD.md"))
+        self.assertEqual('{"legacy":"preserve"}', git(self.remote, "show", "main:scorecard/cells.json"))
+        self.assertEqual("", git(self.remote, "ls-tree", "main", "--", "scorecard/cells"))
+        self.assertEqual([row("oversized")], self.remote_rows())
+
+    def test_a_ledger_storing_both_layouts_is_refused_before_rendering(self):
+        seed = self.root / "seed"
+        for path, encoded in mirror.scorecard_cells.split(b'{"legacy":"preserve"}\n').items():
+            (seed / path).parent.mkdir(parents=True, exist_ok=True)
+            (seed / path).write_bytes(encoded)
+        git(seed, "add", "scorecard")
+        git(seed, "commit", "-qm", "both history layouts")
+        git(seed, "push", "-q", "origin", "main")
+        marker = self.root / "renderer-ran"
+        self.set_tool(f"pathlib.Path({str(marker)!r}).write_text('ran\\n')\n"
+                      "(p/'SCORECARD.md').write_text('rendered\\n')\n")
+        self.append("both-layouts")
+        report = self.publish()
+        self.assertEqual("derived-failed", report["state"])
+        self.assertIn("both scorecard/cells.json and scorecard/cells/ are present", report["scorecard"]["error"])
+        self.assertFalse(marker.exists())
+        self.assertEqual([row("both-layouts")], self.remote_rows())
+        self.assertEqual("legacy scorecard", git(self.remote, "show", "main:scorecard/SCORECARD.md"))
+
+    def test_renderer_writing_history_parts_is_refused_before_push(self):
+        # In a copy of a parts commit the renderer sees only the single file;
+        # a part it writes is outside its generated output.
+        self.append("parts-before-forgery")
+        self.assertEqual("published", self.publish()["state"])
+        before = self.published_projection()
+        self.set_tool("(p/'cells').mkdir()\n"
+                      "(p/'cells/part-0000').write_bytes(b'forged')\n"
+                      "(p/'SCORECARD.md').write_text('rendered\\n')\n")
+        self.append("forged-part")
+        report = self.publish()
+        self.assertEqual("derived-failed", report["state"])
+        self.assertIn("changed ledger paths outside its generated output", report["scorecard"]["error"])
+        self.assertIn("scorecard/cells/part-0000", report["scorecard"]["error"])
+        self.assertEqual(before, self.published_projection())
+        self.assertEqual(b'{"legacy":"preserve"}\n', stored_history(self.remote))
+        self.assertIn(row("forged-part"), self.remote_rows())
+
     def test_scorecard_head_only_moves_forward_along_ancestry(self):
         self.use_head_renderer()
         root = self.target
@@ -2020,8 +2198,7 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual("published", advanced["scorecard"]["state"], advanced)
         self.assertEqual(child, self.remote_latest()["scorecard_hermit_commit"])
         self.assertEqual(f"rendered at {child}\n", self.remote_file("scorecard/SCORECARD.md"))
-        before = {path: git(self.remote, "rev-parse", "main:" + path)
-                  for path in ("latest.json", "scorecard/SCORECARD.md", "scorecard/cells.json")}
+        before = self.published_projection()
         self.append("late-older-run")
         with mock.patch.object(mirror, "build_scorecard", wraps=mirror.build_scorecard) as renderer:
             older, stderr = self.publish_at(root)
@@ -2031,7 +2208,7 @@ class DirectLedgerFixture(unittest.TestCase):
                          {key: older["scorecard"][key] for key in ("state", "hermit_commit", "current_hermit_commit")})
         self.assertIn("ancestor of the published head", older["scorecard"]["detail"])
         self.assertIn("SCORECARD SUPERSEDED", stderr)
-        self.assertEqual(before, {path: git(self.remote, "rev-parse", "main:" + path) for path in before})
+        self.assertEqual(before, self.published_projection())
         self.assertIn(row("late-older-run"), self.remote_rows())
         self.assertEqual(older["commit"], git(self.remote, "rev-parse", "main"))
 
@@ -2312,8 +2489,7 @@ class DirectLedgerFixture(unittest.TestCase):
         root = self.target
         self.append("scored-elsewhere")
         self.assertEqual("published", self.publish_at(root)[0]["state"])
-        before = {path: git(self.remote, "rev-parse", "main:" + path)
-                  for path in ("latest.json", "scorecard/SCORECARD.md", "scorecard/cells.json")}
+        before = self.published_projection()
         self.target = self.source_commit("unscored run", "2030-01-01T00:00:00Z")
         prepared, encoded = self.derived_fixture(commit_anchored=True, tree_dirty=False)
         with self.proof_doubles(prepared, encoded):
@@ -2323,7 +2499,7 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual("published", report["state"], report)
         self.assertEqual(root, report["existing_scorecard"]["latest_hermit_commit"])
         self.assertEqual(self.target, report["portable_proof"]["hermit_commit"])
-        self.assertEqual(before, {path: git(self.remote, "rev-parse", "main:" + path) for path in before})
+        self.assertEqual(before, self.published_projection())
         self.assertEqual(1, len(self.carrier_paths()))
 
     def test_unbound_proof_only_requires_a_commit_anchored_clean_run(self):
@@ -2601,8 +2777,7 @@ class DirectLedgerFixture(unittest.TestCase):
         self.use_head_renderer()
         self.append("scored-root")
         self.assertEqual("published", self.publish_at(self.target)[0]["scorecard"]["state"])
-        before = {path: git(self.remote, "rev-parse", "main:" + path)
-                  for path in ("latest.json", "scorecard/SCORECARD.md", "scorecard/cells.json")}
+        before = self.published_projection()
         child = self.source_commit("descendant", "2030-01-01T00:00:00Z")
         shallow = self.root / "shallow-hermit"
         subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{self.source}", str(shallow)], check=True)
@@ -2624,7 +2799,7 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual(report["commit"], report["portable_proof"]["commit"])
         self.assertEqual(report["commit"], git(self.remote, "rev-parse", "main"))
         self.assertEqual(1, len(self.carrier_paths()))
-        self.assertEqual(before, {path: git(self.remote, "rev-parse", "main:" + path) for path in before})
+        self.assertEqual(before, self.published_projection())
         self.assertIn(row("shallow-run"), self.remote_rows())
         self.assertIn("SCORECARD FAILED", stderr)
         self.assertIn("finalized proof published", stderr)
@@ -3046,7 +3221,7 @@ def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
             expected = [value["series"][0] for value in self.inputs.values()]
             self.assertEqual(sorted(raw_rows, key=lambda item: item["event_id"]),
                              sorted(expected, key=lambda item: item["event_id"]))
-            cells = json.loads(git(self.remote, "show", "main:scorecard/cells.json"))
+            cells = json.loads(stored_history(self.remote))
             cell = next(cell for cell in cells["cells"] if all(cell[k] == v for k, v in self.cell.items()))
             observations = cell["observations"]
             invocations = [invocation for observation in observations for invocation in observation["invocations"]]
@@ -3060,7 +3235,9 @@ def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
             self.assertEqual(metadata["rows"], 2)
             self.assertEqual(metadata["source_commit"], cells["projection"]["source_commit"])
             for path, digest in metadata["scorecard"].items():
-                content = subprocess.check_output(["git", "-C", str(self.remote), "show", f"main:{path}"])
+                # latest.json names the history by its logical path; main stores it in parts.
+                content = (stored_history(self.remote) if path == mirror.scorecard_cells.LOGICAL_PATH
+                           else subprocess.check_output(["git", "-C", str(self.remote), "show", f"main:{path}"]))
                 self.assertEqual(hashlib.sha256(content).hexdigest(), digest, path)
             self.assertEqual(git(self.remote, "show", "main:retained-before.txt"), "Existing unrelated ledger data")
             git(self.remote, "merge-base", "--is-ancestor", self.seed, "main")

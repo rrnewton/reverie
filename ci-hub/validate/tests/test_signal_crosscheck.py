@@ -140,9 +140,17 @@ class SignalCrosscheckTests(unittest.TestCase):
             if repo == Path("hermit"):
                 return json.dumps(catalogue)
             self.assertEqual(Path("ledger"), repo)
-            self.assertTrue(args[-1].startswith("b" * 40 + ":scorecard/"))
-            return json.dumps(detailed) if args[-1].endswith("cells.json") else "published table"
+            self.assertEqual(("show", "b" * 40 + ":scorecard/SCORECARD.md"), args)
+            return "published table"
+        def history(repo, commit, *, environment):
+            # The detailed history is read through scorecard_cells, which
+            # reassembles it when the ledger stores it in parts.
+            calls.append((repo, ("history", commit)))
+            self.assertEqual((Path("ledger"), "b" * 40), (repo, commit))
+            self.assertEqual("1", environment["GIT_CONFIG_NOSYSTEM"])
+            return json.dumps(detailed).encode()
         with mock.patch.object(signal_crosscheck, "git_text", side_effect=read), mock.patch.object(
+                signal_crosscheck.scorecard_cells, "read_commit", side_effect=history), mock.patch.object(
                 signal_crosscheck.canonical_series, "ledger_root", return_value=Path("ledger")):
             cells, markdown, source = signal_crosscheck._scorecard_documents(
                 Path("parent"), Path("hermit"), "a" * 40, snapshot)
@@ -165,6 +173,71 @@ class SignalCrosscheckTests(unittest.TestCase):
             catalogue["history"]["repository"] = "https://example.invalid/foreign"
             with self.assertRaisesRegex(signal_crosscheck.CrosscheckError, "unsupported"):
                 signal_crosscheck._scorecard_documents(Path("parent"), Path("hermit"), "a" * 40, snapshot)
+
+    def test_catalogue_history_reads_a_ledger_commit_that_stores_it_in_parts(self):
+        url = signal_crosscheck.canonical_series.LEDGER_REPOSITORY
+        identity = {"lane": "portable", "category": "c-programs", "test": "c-programs/hello",
+                    "mode": "verify", "backend": "ptrace", "status": "green"}
+        catalogue = {"schema": 9, "history": {"repository": url, "path": "scorecard/cells.json"},
+                     "cells": [identity]}
+        detailed = {"schema": 8, "cells": [{**identity, "observations": [{"preserved": True}],
+                                            "measurement": "measured-and-passed"}]}
+        document = json.dumps(detailed).encode()
+        parts = signal_crosscheck.scorecard_cells.split(document, part_max_bytes=16)
+        self.assertGreater(len(parts), 3)
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+
+            def git(repo: Path, *args: str) -> str:
+                return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True,
+                                      text=True).stdout.strip()
+
+            def commit(repo: Path, files: dict, removed: tuple = ()) -> str:
+                if not repo.exists():
+                    repo.mkdir()
+                    git(repo, "init", "-q", "-b", "main")
+                    git(repo, "config", "user.email", "crosscheck@example.invalid")
+                    git(repo, "config", "user.name", "crosscheck")
+                for path, data in files.items():
+                    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+                    (repo / path).write_bytes(data)
+                for path in removed:
+                    git(repo, "rm", "-r", "-q", path)
+                git(repo, "add", "-A")
+                git(repo, "commit", "-q", "--allow-empty", "-m", "fixture")
+                return git(repo, "rev-parse", "HEAD")
+
+            hermit, ledger = fixture / "hermit", fixture / "ledger"
+            content = commit(hermit, {"ci/compat-envelope/cells.json": json.dumps(catalogue).encode()})
+
+            def documents(stored: str):
+                snapshot = signal_crosscheck.canonical_series.PublishedSnapshot(
+                    stored, [], repository=url)
+                with mock.patch.object(signal_crosscheck.canonical_series, "ledger_root",
+                                       return_value=ledger):
+                    return signal_crosscheck._scorecard_documents(fixture, hermit, content, snapshot)
+
+            single = commit(ledger, {"scorecard/cells.json": document,
+                                     "scorecard/SCORECARD.md": b"published table"})
+            split = commit(ledger, parts, removed=("scorecard/cells.json",))
+            for stored in (single, split):
+                cells, markdown, source = documents(stored)
+                self.assertEqual(detailed, cells)
+                self.assertEqual("published table", markdown)
+                self.assertEqual({"repository": url, "commit": stored, "path": "scorecard/cells.json",
+                                  "catalogue_schema": 9}, source)
+            corrupt = commit(ledger, {"scorecard/cells/part-0001": b"x" * 16})
+            with self.assertRaisesRegex(signal_crosscheck.CrosscheckError,
+                                        "part-0001 differs from its manifest entry"):
+                documents(corrupt)
+            both = commit(ledger, {"scorecard/cells/part-0001": parts["scorecard/cells/part-0001"],
+                                   "scorecard/cells.json": document})
+            with self.assertRaisesRegex(signal_crosscheck.CrosscheckError, "both scorecard/cells.json"):
+                documents(both)
+            missing = commit(ledger, {}, removed=("scorecard/cells.json", "scorecard/cells"))
+            with self.assertRaisesRegex(signal_crosscheck.CrosscheckError,
+                                        f"ledger commit {missing} holds no scorecard/cells.json"):
+                documents(missing)
 
     def test_scorecard_population_wording_refuses_ambiguous_or_malformed_forms(
         self,
