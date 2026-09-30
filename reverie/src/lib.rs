@@ -80,7 +80,6 @@ pub mod pmu;
 mod process_signal_control;
 #[cfg(target_arch = "x86_64")]
 mod rdtsc;
-#[cfg(feature = "std")]
 mod regs;
 mod signal;
 mod signal_observation;
@@ -100,9 +99,7 @@ pub use process::ExitStatus;
 pub use process::Pid;
 #[cfg(target_arch = "x86_64")]
 pub use rdtsc::*;
-#[cfg(feature = "std")]
 pub use regs::RegDisplay;
-#[cfg(feature = "std")]
 pub use regs::RegDisplayOptions;
 pub use reverie_process as process;
 pub use signal::*;

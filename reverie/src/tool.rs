@@ -127,7 +127,16 @@ pub trait GlobalTool: Send + Sync + Default {
 
     /// Static, read-only configuration data that is available everywhere the
     /// tool runs code.
+    #[cfg(feature = "std")]
     type Config: Serialize + DeserializeOwned + Send + Sync + Clone + Default;
+
+    /// Static, read-only configuration data that is available everywhere the
+    /// tool runs code.
+    ///
+    /// Without `std`, the host that embeds the tool always supplies the
+    /// configuration, so it need not have a `Default`.
+    #[cfg(not(feature = "std"))]
+    type Config: Serialize + DeserializeOwned + Send + Sync + Clone;
 
     /// Initialize the tool, allocating the global state.
     async fn init_global_state(_cfg: &Self::Config) -> Self {

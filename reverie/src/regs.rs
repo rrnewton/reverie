@@ -8,6 +8,8 @@
 
 //! Common code associated with ['libc::user_regs_struct']
 
+use crate::libc;
+
 /// Trait providing reusable display formatting for registers
 pub trait RegDisplay {
     /// Returns a display object associated with a trait implementor
@@ -30,14 +32,14 @@ impl RegDisplay for libc::user_regs_struct {
 }
 
 /// Options for how [`libc::user_regs_struct`] can be formatted for the
-/// [`std::fmt::Display`] implementation.
+/// [`core::fmt::Display`] implementation.
 #[derive(Default)]
 pub struct RegDisplayOptions {
     /// whether to display registers in a single line or format on multiple lines
     pub multiline: bool,
 }
 
-/// A wrapper defers and implements [`std::fmt::Display`] for
+/// A wrapper defers and implements [`core::fmt::Display`] for
 /// [`libc::user_regs_struct`] according to the options represented by
 /// [`RegDisplayOptions`].
 pub struct Display<'a> {
@@ -47,7 +49,7 @@ pub struct Display<'a> {
 
 impl<'a> Display<'a> {
     #[cfg(target_arch = "x86_64")]
-    fn fmt_single_line_x86(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt_single_line_x86(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "rax {:#x} rbx {:#x} rcx {:#x} rdx {:#x}",
@@ -81,7 +83,7 @@ impl<'a> Display<'a> {
         write!(f, " fs {:#x} gs {:#x}", self.regs.fs, self.regs.gs)
     }
     #[cfg(target_arch = "x86_64")]
-    fn fmt_multi_line_x86(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt_multi_line_x86(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         writeln!(
             f,
             " rax {:#16x} rbx {:#16x} rcx {:#16x} rdx {:#16x}",
@@ -117,8 +119,8 @@ impl<'a> Display<'a> {
 }
 
 #[cfg(target_arch = "x86_64")]
-impl<'a> std::fmt::Display for Display<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<'a> core::fmt::Display for Display<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self.options.multiline {
             self.fmt_multi_line_x86(f)
         } else {
@@ -128,8 +130,8 @@ impl<'a> std::fmt::Display for Display<'a> {
 }
 
 #[cfg(target_arch = "aarch64")]
-impl<'a> std::fmt::Display for Display<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<'a> core::fmt::Display for Display<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{:?}", self.regs)
     }
 }
