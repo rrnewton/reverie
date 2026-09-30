@@ -5734,6 +5734,41 @@ int main(void) {
 }
 
 #[test]
+fn recvmsg_flags_native_and_kvm_match() {
+    if !kvm_available("recvmsg_flags_native_and_kvm_match") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "recvmsg-flags",
+        include_str!("fixtures/recvmsg_flags.c"),
+    );
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "15s"])
+        .arg(&executable)
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert!(native.stderr.is_empty(), "{native:?}");
+    assert_eq!(native.stdout, b"recvmsg flags=00000000\nrecvmsg flags=40000000\nrecvmmsg flags=00000000\nrecvmmsg flags=40000000\n");
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_file_with_context(
+            std::fs::File::open(&executable).unwrap(),
+            &[executable.to_str().unwrap()],
+            &[],
+            &directory.0,
+        )
+        .unwrap();
+    let (status, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(status, 0, "{}", String::from_utf8_lossy(&stderr));
+    assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+    assert_eq!(stdout, native.stdout);
+}
+
+#[test]
 fn real_glibc_scm_rights_translate_across_thread_and_fork_tables() {
     match Kvm::new() {
         Ok(_) => {}
