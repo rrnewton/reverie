@@ -412,25 +412,6 @@ fn is_group_stop(task: &Stopped, sig: Signal) -> Result<bool, TraceError> {
     }
 }
 
-/// Whether `task` is in a signal-delivery stop, where a signal passed on
-/// resume is delivered without another stop. At a syscall stop Linux queues
-/// that signal instead, so the main loop meets it at a later signal-delivery
-/// stop; at a ptrace event stop or a group stop Linux drops it. The kernel
-/// gives a syscall or event stop the siginfo SIGTRAP with code
-/// `SIGTRAP | 0x80` or `SIGTRAP | (event << 8)`, and a group stop none.
-fn is_signal_delivery_stop(task: &Stopped) -> Result<bool, TraceError> {
-    let info = match task.getsiginfo() {
-        Ok(info) => info,
-        Err(safeptrace::Error::Errno(Errno::EINVAL)) => return Ok(false),
-        Err(err) => return Err(err),
-    };
-    let code = info.si_code;
-    let trace_stop = info.si_signo == libc::SIGTRAP
-        && code > 0
-        && (code == libc::SIGTRAP | 0x80 || (code & 0xff == libc::SIGTRAP && code >> 8 != 0));
-    Ok(!trace_stop)
-}
-
 /// The bit for `sig` in a kernel signal mask as read by `PTRACE_GETSIGMASK`.
 fn signal_mask_bit(sig: Signal) -> u64 {
     1u64 << (sig as i32 - 1)
@@ -2449,6 +2430,27 @@ pub struct TracedTask<L: Tool> {
     /// completion or reported as an unexpected trap.
     stale_private_step_trap: bool,
 
+    /// The stop an injection last ended at since the current stop was
+    /// dispatched (`handle_stop_event`), as its wait status classifies it:
+    /// `Some(Some(sig))` for a signal-delivery stop of `sig`, `Some(None)`
+    /// for any other stop, `None` if no injection has completed. Set by
+    /// `status_to_result`. Siginfo cannot classify the stop, because a guest
+    /// may queue itself a SIGTRAP whose `si_code` mimics a syscall stop.
+    latest_injection_stop: Option<Option<Signal>>,
+
+    /// Signals the Tool passed through unchanged at a resume where the kernel
+    /// requeued them instead of delivering them (`note_requeued_report`), one
+    /// bit per signal as in `signal_mask_bit`. The Tool has already decided
+    /// that delivery, so it is passed on without a second report.
+    reported_requeued_signals: u64,
+
+    /// Whether `Tool::handle_signal_event` is running (`report_signal`). A
+    /// syscall the callback injects then restores the guest's return
+    /// register as well (`status_to_result`): the stop belongs to the
+    /// guest's own code, often an interrupted syscall whose `-ERESTART*`
+    /// value decides whether the kernel restarts it.
+    in_signal_callback: bool,
+
     /// A channel to allow short-circuiting the next state to main run loop. This
     /// is useful inside of `inject` or `tail_inject` where we might need to
     /// cancel a future early.
@@ -2637,6 +2639,9 @@ impl<L: Tool> TracedTask<L> {
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
             stale_private_step_trap: false,
+            latest_injection_stop: None,
+            reported_requeued_signals: 0,
+            in_signal_callback: false,
             child_procs: Arc::new(Mutex::new(Children::new())),
             child_threads: Arc::new(Mutex::new(Children::new())),
             orphanage,
@@ -2704,6 +2709,9 @@ impl<L: Tool> TracedTask<L> {
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
             stale_private_step_trap: false,
+            latest_injection_stop: None,
+            reported_requeued_signals: 0,
+            in_signal_callback: false,
             child_procs: self.child_procs.clone(),
             child_threads: self.child_threads.clone(),
             orphanage: self.orphanage.clone(),
@@ -2770,6 +2778,9 @@ impl<L: Tool> TracedTask<L> {
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
             stale_private_step_trap: false,
+            latest_injection_stop: None,
+            reported_requeued_signals: 0,
+            in_signal_callback: false,
             child_procs: Arc::new(Mutex::new(Children::new())),
             child_threads: Arc::new(Mutex::new(Children::new())),
             orphanage: self.orphanage.clone(),
@@ -3697,6 +3708,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Postconditions:
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
+        self.latest_injection_stop = None;
         // A trap-only seccomp stop may be the int 0x80 stop of an Allow-class
         // number at a patched site, or of a foreign int 0x80, neither of
         // which plain ptrace produces: they must not advance the timer's
@@ -3905,7 +3917,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             let signal = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeInjectedSyscall,
             )?;
-            let signal = self.report_held_signal(&task, signal).await?;
+            let signal = self
+                .report_held_signal(&task, Some(Signal::SIGTRAP), signal)
+                .await?;
             return self.resume_stopped(task, signal)?.next_state().await;
         }
 
@@ -3963,7 +3977,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             let signal = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeInterceptedInjectedSyscall,
             )?;
-            let signal = self.report_held_signal(&task, signal).await?;
+            let signal = self
+                .report_held_signal(&task, Some(Signal::SIGTRAP), signal)
+                .await?;
             let wait = self.resume_stopped(task, signal)?.next_state().await?;
             tracing::trace!(
                 target: "reverie_ptrace::syscall",
@@ -4519,7 +4535,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     /// Reports a signal taken from `pending_signal` to `Tool::handle_signal_event`
-    /// and returns the Tool's verdict for the resume.
+    /// and returns the Tool's verdict for the resume. `stop_signal` is the
+    /// signal of the delivery stop the callback started at, `None` if that
+    /// stop is not a signal-delivery stop.
     ///
     /// A signal is held when it stopped an injected syscall's step (see
     /// `status_to_result`), which consumed the kernel's copy. The callback's
@@ -4532,26 +4550,39 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// (https://github.com/rrnewton/hermit/issues/3468).
     ///
     /// From any other stop the signal is passed on unreported, because the
-    /// resume does not deliver it there (`is_signal_delivery_stop`). A signal
-    /// the guest's mask blocks by now is also passed on unreported:
-    /// `ptrace_signal` requeues a resumed signal that `task->blocked` blocks,
-    /// and the main loop reports it when it is delivered after an unblock.
-    /// This happens when a later injection's step let the kernel restore a
-    /// mask-swapping syscall's saved mask. SIGSTOP and the timer signal are
-    /// also passed on unreported, as before: `handle_signal` never reports
-    /// SIGSTOP to the Tool, and a held timer signal is
-    /// https://github.com/rrnewton/reverie/issues/747.
+    /// resume does not deliver it there: at a syscall stop Linux queues it,
+    /// so the main loop meets it at a later signal-delivery stop, and at a
+    /// ptrace event stop or a group stop Linux drops it. The stop is the
+    /// latest injection's (`latest_injection_stop`) or else the callback's
+    /// own. A signal the guest's mask blocks by now is also passed on
+    /// unreported: `ptrace_signal` requeues a resumed signal that
+    /// `task->blocked` blocks, and the main loop reports it when it is
+    /// delivered after an unblock. This happens when a later injection's step
+    /// let the kernel restore a mask-swapping syscall's saved mask. A signal
+    /// the Tool already passed through at such a requeue
+    /// (`note_requeued_report`) is passed on unreported. SIGSTOP and the
+    /// timer signal are also passed on unreported, as before:
+    /// `handle_signal` never reports SIGSTOP to the Tool, and a held timer
+    /// signal is https://github.com/rrnewton/reverie/issues/747.
     async fn report_held_signal(
         &mut self,
         task: &Stopped,
+        stop_signal: Option<Signal>,
         signal: Option<Signal>,
     ) -> Result<Option<Signal>, TraceError> {
         let Some(sig) = signal else {
             return Ok(None);
         };
+        let delivery = self.latest_injection_stop.unwrap_or(stop_signal);
+        if self.take_requeued_report(sig) {
+            // If this resume requeues it again, the Tool's decision still
+            // stands for its next delivery.
+            self.note_requeued_report(task, delivery, sig, Some(sig))?;
+            return Ok(Some(sig));
+        }
         if sig == Signal::SIGSTOP
             || sig == Timer::signal_type()
-            || !is_signal_delivery_stop(task)?
+            || delivery.is_none()
             || blocked_signal_mask(task.pid())? & signal_mask_bit(sig) != 0
         {
             return Ok(Some(sig));
@@ -4561,17 +4592,73 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.tid(),
             sig
         );
+        let verdict = self.report_signal(sig).await?;
+        let delivery = self.latest_injection_stop.unwrap_or(stop_signal);
+        self.note_requeued_report(task, delivery, sig, verdict)?;
+        Ok(verdict)
+    }
+
+    /// Runs `Tool::handle_signal_event` for `sig` and returns its verdict.
+    async fn report_signal(&mut self, sig: Signal) -> Result<Option<Signal>, TraceError> {
+        let outer = std::mem::replace(&mut self.in_signal_callback, true);
         let result = self
             .process_state
             .clone()
             .handle_signal_event(self, sig)
             .await;
-        let sig = self
+        self.in_signal_callback = outer;
+        let verdict = self
             .ordinary_callback_errno("ptrace signal callback", result)
             .await?;
         self.ordinary_trace_continuation()?;
         self.timer.finalize_requests();
-        Ok(sig)
+        Ok(verdict)
+    }
+
+    /// Records that resuming `task` from the stop `delivery` (as in
+    /// `report_held_signal`) with the reported `sig` requeues it rather than
+    /// delivering it, when the Tool's `verdict` passed it through unchanged.
+    ///
+    /// A callback that injects a syscall resumes the guest, which lets the
+    /// kernel restore a mask-swapping syscall's saved mask before the final
+    /// resume. From the injection's step SIGTRAP, `ptrace_signal` gives the
+    /// resumed signal a fresh `SI_USER` siginfo and, as `task->blocked` now
+    /// blocks it, queues it on the thread's private queue. Without this
+    /// record its eventual delivery would be reported again, and a hook that
+    /// injects every time would run again at each restart of the interrupted
+    /// syscall. A replacement signal is not recorded: the Tool has not been
+    /// told about it.
+    fn note_requeued_report(
+        &mut self,
+        task: &Stopped,
+        delivery: Option<Signal>,
+        sig: Signal,
+        verdict: Option<Signal>,
+    ) -> Result<(), TraceError> {
+        if verdict == Some(sig)
+            && delivery.is_some_and(|stop| stop != sig)
+            && blocked_signal_mask(task.pid())? & signal_mask_bit(sig) != 0
+        {
+            self.reported_requeued_signals |= signal_mask_bit(sig);
+        }
+        Ok(())
+    }
+
+    /// Takes the record `note_requeued_report` left for `sig`, if any.
+    ///
+    /// The record is per thread and per signal number and is taken at the
+    /// thread's next delivery of `sig`. A standard signal is queued at most
+    /// once and the private queue is dequeued first, so that delivery is the
+    /// requeued one unless the guest consumed it without a delivery
+    /// (`sigwaitinfo`, `signalfd`, or a switch to `SIG_IGN`). `handle_signal`
+    /// then still reports a later instance that does not carry `SI_USER`; a
+    /// held one is passed on unreported, as its siginfo is gone. Several
+    /// queued instances of a realtime signal can still be reported twice.
+    fn take_requeued_report(&mut self, sig: Signal) -> bool {
+        let bit = signal_mask_bit(sig);
+        let recorded = self.reported_requeued_signals & bit != 0;
+        self.reported_requeued_signals &= !bit;
+        recorded
     }
 
     fn validate_nested_liteinst_activation_signal(
@@ -4656,6 +4743,20 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
             }
         }
+        if sig != Signal::SIGSTOP && is_group_stop(&task, sig)? {
+            // A group stop follows a stop signal's delivery, which reported
+            // it to the Tool on the thread that took it. Reporting the group
+            // stop as well would report one signal twice, and once more on
+            // every other thread of the group. A restarted ptraced tracee
+            // does not honor the stop, so it is resumed without a signal.
+            // Like a trap that `handle_sigtrap` discards, it makes no Tool
+            // callback and leaves the timer event as it was.
+            let task = match self.timer.disregard_stop()? {
+                Some(unfinished) => self.drive_timer(task, Some(unfinished)).await?.1,
+                None => task,
+            };
+            return self.resume_stopped(task, None)?.next_state().await;
+        }
         let result = match sig {
             Signal::SIGSEGV => self.handle_sigsegv(task).await?,
             Signal::SIGSTOP => self.handle_sigstop(task).await?,
@@ -4676,17 +4777,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         match result {
             HandleSignalResult::SignalSuppressed(wait) => Ok(wait),
             HandleSignalResult::SignalToDeliver(task, sig) => {
-                let result = self
-                    .process_state
-                    .clone()
-                    .handle_signal_event(self, sig)
-                    .await;
-                let sig = self
-                    .ordinary_callback_errno("ptrace signal callback", result)
-                    .await?;
-                self.ordinary_trace_continuation()?;
-                self.timer.finalize_requests();
-                Ok(self.resume_stopped(task, sig)?.next_state().await?)
+                // The requeue `note_requeued_report` records carries
+                // `SI_USER`; another code is a different instance.
+                if self.take_requeued_report(sig) && task.getsiginfo()?.si_code == libc::SI_USER {
+                    return self.resume_stopped(task, Some(sig))?.next_state().await;
+                }
+                let verdict = self.report_signal(sig).await?;
+                let delivery = self.latest_injection_stop.unwrap_or(Some(sig));
+                self.note_requeued_report(&task, delivery, sig, verdict)?;
+                Ok(self.resume_stopped(task, verdict)?.next_state().await?)
             }
         }
     }
@@ -6285,7 +6384,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.pre_syscall_for_test(&regs, PreSyscallPoint::Late)
                     .await;
             }
-            let sig = self.report_held_signal(&task, sig).await?;
+            let sig = self.report_held_signal(&task, None, sig).await?;
             let running = self
                 .resume_stopped(task, sig)
                 .tracee_context(tid, "resume after seccomp stop")?;
@@ -8556,10 +8655,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///   before the `syscall` this executes it; after it, the kernel next
     ///   dequeues the step SIGTRAP that syscall exit already queued. Linux
     ///   checks for a pending group stop before dequeuing any signal, so this
-    ///   stop can arrive after the syscall completed. Unlike a group stop in
-    ///   the main loop, it is not reported to `Tool::handle_signal_event`:
-    ///   honoring it is impossible either way, and resuming the step without
-    ///   a signal is what the main loop's forwarded stop amounts to.
+    ///   stop can arrive after the syscall completed. As in the main loop
+    ///   (`handle_signal`), it is not reported to `Tool::handle_signal_event`:
+    ///   honoring it is impossible either way.
     /// - A stale step SIGTRAP before the `syscall` executed: the single-step
     ///   report of an earlier injection whose step ended at a held signal
     ///   (below), recognized by its siginfo (`si_addr` just past the private
@@ -8814,6 +8912,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             let address = AddrMut::from_raw(cp::PRIVATE_PAGE_OFFSET).ok_or(Errno::EFAULT)?;
             stopped_writer.write_value(address, &mutated_stub)?;
         }
+        if let Wait::Stopped(stopped, event) = &wait_status {
+            self.latest_injection_stop = Some(match event {
+                Event::Signal(sig) if !is_group_stop(stopped, *sig)? => Some(*sig),
+                _ => None,
+            });
+        }
         match wait_status {
             Wait::Stopped(stopped, event) => match event {
                 Event::Signal(sig) if context.is_none() => {
@@ -8883,8 +8987,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                             // Restore syscall args to original values. This is
                             // needed when we convert syscalls like SYS_open ->
                             // SYS_openat, syscall args are modified need to restore
-                            // it back.
-                            restore_context(&stopped, context, None, false)?;
+                            // it back. A signal callback's injection keeps the
+                            // guest's return register too (`in_signal_callback`).
+                            let retval = self.in_signal_callback.then(|| context.ret());
+                            restore_context(&stopped, context, retval, false)?;
                         }
                     }
                     Ok(result)
