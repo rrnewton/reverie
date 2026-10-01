@@ -33,6 +33,47 @@
 
 #define section_hashfn(n) jhash(n, strlen(n), 0) & (sectionhash_size - 1)
 
+// Section and symbol records, and the name strings copied for them, are never
+// freed. load() sets M_MMAP_THRESHOLD to 0 so that SaBRe's malloc never shares
+// the client's brk arena, which turns each of these small allocations into a
+// separate mmap: about 85% of a guest's system calls. Instead they are carved
+// from anonymous chunks of METADATA_CHUNK bytes, which keep away from the brk
+// arena in the same way. Anything that is freed must keep using malloc.
+#define METADATA_CHUNK ((size_t)1 << 20)
+#define METADATA_ALIGN ((size_t)16)
+
+static char *metadata_next, *metadata_end;
+static bool metadata_lock;
+
+static void *metadata_mmap(size_t size) {
+  void *chunk = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (chunk == MAP_FAILED)
+    _nx_fatal_printf("rewriter: cannot map %zu bytes of metadata: %s\n", size,
+                     strerror(errno));
+  return chunk;
+}
+
+// Returns size bytes, aligned like malloc's, that live until the process ends.
+static void *metadata_alloc(size_t size) {
+  size = (size + METADATA_ALIGN - 1) & ~(METADATA_ALIGN - 1);
+  // An object larger than a chunk gets a mapping of its own, so that the rest
+  // of the current chunk stays in use.
+  if (size > METADATA_CHUNK)
+    return metadata_mmap(size);
+
+  while (__atomic_test_and_set(&metadata_lock, __ATOMIC_ACQUIRE))
+    ;
+  if ((size_t)(metadata_end - metadata_next) < size) {
+    metadata_next = metadata_mmap(METADATA_CHUNK);
+    metadata_end = metadata_next + METADATA_CHUNK;
+  }
+  void *object = metadata_next;
+  metadata_next += size;
+  __atomic_clear(&metadata_lock, __ATOMIC_RELEASE);
+  return object;
+}
+
 static inline void section_init(struct section *s, const char *name,
                                 ElfW(Shdr) shdr) {
   s->name = name;
@@ -324,7 +365,7 @@ static const char *library_copy(struct library *lib, ElfW(Addr) offset) {
 
   size_t len =
       stop - start + 1; // stop == \0 thus +1 to include NULL termination
-  char *string = malloc(len);
+  char *string = metadata_alloc(len);
   memcpy(string, start, len);
 
   assert(string[len - 1] == '\0');
@@ -354,7 +395,7 @@ static const char *library_copy_original(struct library *l, ElfW(Addr) offset) {
           library_buf_get_original(l, stop - l->image, NULL, 1);
       }
       size_t len = stop - start;
-      char *string = malloc(len + 1);
+      char *string = metadata_alloc(len + 1);
       _nx_debug_printf("library_copy_original: copy 0x%lx from %p to %p\n", len,
                        start, string);
       *((char *)memcpy(string, start, len) + len) = '\0';
@@ -707,7 +748,7 @@ static bool parse_symbols(struct library *lib) {
       if (!strlen(name))
         continue;
 
-      struct symbol *ls = malloc(sizeof(*ls));
+      struct symbol *ls = metadata_alloc(sizeof(*ls));
       symbol_init(ls, name, sym);
       symbol_add(lib->symbol_hash, ls);
       _nx_debug_printf("parse_symbols: symbol %s (%p)\n", name, (void *)addr);
@@ -745,7 +786,7 @@ static bool parse_elf(struct library *lib, const char *prog_name) {
             lib, lib->ehdr.e_shoff + i * lib->ehdr.e_shentsize, &shdr))
       continue;
 
-    struct section *scn = malloc(sizeof(*scn));
+    struct section *scn = metadata_alloc(sizeof(*scn));
     section_init(scn,
                  library_copy_original(lib, str_shdr.sh_offset + shdr.sh_name),
                  shdr);
