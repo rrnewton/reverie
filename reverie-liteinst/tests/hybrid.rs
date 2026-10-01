@@ -1113,6 +1113,37 @@ fn compile_fixture_with(name: &str, extra: &[&str]) -> (tempfile::TempDir, PathB
     (directory, output)
 }
 
+/// Compiles the fixture `name` into the shared object `lib<library>.so`, in a
+/// new temporary directory, with its executable segment on pages of its own.
+fn compile_shared_fixture(name: &str, library: &str) -> (tempfile::TempDir, PathBuf) {
+    let directory = tempfile::tempdir().unwrap();
+    let source = build_path("CARGO_MANIFEST_DIR", env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    let output = directory.path().join(format!("lib{library}.so"));
+    let compiler = std::env::var_os("CC").unwrap_or_else(|| OsString::from("cc"));
+    let result = ProcessCommand::new(compiler)
+        .args([
+            "-std=gnu11",
+            "-O0",
+            "-shared",
+            "-fPIC",
+            "-Wl,-z,separate-code",
+        ])
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "failed to compile {}:\n{}",
+        source.display(),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    (directory, output)
+}
+
 fn compile_static_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
     let directory = tempfile::tempdir().unwrap();
     let source = build_path("CARGO_MANIFEST_DIR", env!("CARGO_MANIFEST_DIR"))
@@ -1629,6 +1660,106 @@ async fn a_site_in_an_executable_mapping_made_after_initialization_stays_on_ptra
     // All 33 calls reach the tool. With no hook entry at the anonymous site,
     // its 16 calls arrived through ptrace stops.
     assert_eq!(global.delivered.load(Ordering::SeqCst), 33, "{output:?}");
+}
+
+/// A site in a shared object whose file the guest truncated after LiteInst
+/// initialized stays on ptrace, and the run goes on (review finding F7 on
+/// https://github.com/rrnewton/reverie/pull/818).
+///
+/// The guest cuts the file at the start of the object's untouched data pages,
+/// so they lie past the end of its file and fault when read. The tracer's
+/// entry census for the library site reads them through `/proc/<pid>/mem` and
+/// gets `EIO`. The fault is the guest's own doing, so the census refuses the
+/// object's sites instead of failing the run. The object's code and unwind
+/// table stay in the file, so the site is refused because of the fault: a
+/// census that read the cut pages as zeros would patch it. The `keep` run
+/// leaves the file alone, and the same site is patched.
+#[tokio::test(flavor = "current_thread")]
+async fn a_site_in_an_object_cut_short_by_its_guest_stays_on_ptrace() {
+    for (mode, expected) in [
+        (
+            "truncate",
+            &b"library traps=1 hooks=0 control traps=1 hooks=16\n"[..],
+        ),
+        (
+            "keep",
+            &b"library traps=1 hooks=15 control traps=1 hooks=16\n"[..],
+        ),
+    ] {
+        let (library_directory, library) = compile_shared_fixture(
+            "hybrid_truncated_object_lib.c",
+            "reverie_liteinst_truncated",
+        );
+        let library_directory = library_directory.path().to_str().unwrap().to_owned();
+        let (_directory, guest) = compile_fixture_with(
+            "hybrid_truncated_object.c",
+            &[
+                "-L",
+                &library_directory,
+                "-lreverie_liteinst_truncated",
+                &format!("-Wl,-rpath,{library_directory}"),
+                // Binds the call into the library at load time, before the
+                // guest cuts the file that holds the library's symbol tables.
+                "-Wl,-z,now",
+            ],
+        );
+        let mut command = Command::new(guest);
+        command.arg(&library).arg(mode);
+        let (output, global) =
+            LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+                command,
+                (),
+                preload_path(),
+            )
+            .await
+            .unwrap();
+
+        // The fixture exits nonzero if either site returns a result other
+        // than the process ID, or if its own read of the untouched pages
+        // through /proc/self/mem does not fail with EIO after the cut and
+        // succeed without it.
+        assert!(output.status.success(), "{mode}: {output:?}");
+        // Each site's first call calls the patch helper once. The control
+        // site takes its other 16 calls through the patch; the library site
+        // takes its other 15 through the patch only when its file is whole.
+        assert_eq!(output.stdout, expected, "{mode}: {output:?}");
+        assert_eq!(
+            global.delivered.load(Ordering::SeqCst),
+            33,
+            "{mode}: {output:?}"
+        );
+    }
+}
+
+/// A site whose object has a page that the guest made `PROT_NONE` after
+/// LiteInst initialized is patched like any other (review finding F7 on
+/// https://github.com/rrnewton/reverie/pull/818).
+///
+/// The tracer's entry census reads the object through `/proc/<pid>/mem`, which
+/// reads a page whatever its protection, so the guest's `mprotect` neither
+/// refuses the site nor fails the run. A census read through
+/// `process_vm_readv`, which honours the protection, fails at that page.
+#[tokio::test(flavor = "current_thread")]
+async fn a_site_in_an_object_with_a_page_made_unreadable_is_patched() {
+    let (_directory, guest) = compile_fixture("hybrid_unreadable_object_page.c");
+    let (output, global) = LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+        Command::new(guest),
+        (),
+        preload_path(),
+    )
+    .await
+    .unwrap();
+
+    // The fixture exits nonzero if the site returns a result other than the
+    // process ID.
+    assert!(output.status.success(), "{output:?}");
+    // The site's first call calls the patch helper once, and its other 16
+    // calls enter the hook. The guarded page still holds its first byte.
+    assert_eq!(
+        output.stdout, b"control traps=1 hooks=16 guarded=1\n",
+        "{output:?}"
+    );
+    assert_eq!(global.delivered.load(Ordering::SeqCst), 17, "{output:?}");
 }
 
 #[tokio::test(flavor = "current_thread")]
