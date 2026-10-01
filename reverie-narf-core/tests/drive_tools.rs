@@ -2389,3 +2389,455 @@ mod rdtsc_events {
         assert_eq!(kernel.natives().len(), 1, "only the parked read ran");
     }
 }
+
+mod signal_events {
+    use core::cell::RefCell;
+
+    use reverie::Signal;
+    use reverie_narf_core::SignalOutcome;
+    use serde::Deserialize;
+    use serde::Serialize;
+
+    use super::*;
+
+    /// What `SigScript` does with each signal before it answers.
+    #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+    enum Plan {
+        /// Deliver the signal.
+        #[default]
+        Deliver,
+        /// Suppress the signal.
+        Suppress,
+        /// Deliver `SIGUSR2` instead.
+        Replace,
+        /// Fail with `EPERM`.
+        Fail,
+        /// Wait once for other tasks, then deliver.
+        YieldOnce,
+        /// Never finish, holding a guard whose drop glue reads the tid.
+        Wait,
+        /// Inject `kill(getpid(), SIGKILL)`.
+        InjectKill,
+        /// Inject a read of the empty pipe, which parks.
+        InjectRead,
+        /// Inject an `execve`, which replaces the image without ending the
+        /// task.
+        InjectExecve,
+        /// Tail-inject `getpid`.
+        TailGetpid,
+    }
+
+    /// The run's count of answered signals; each request counts one.
+    #[derive(Default)]
+    struct Answers(AtomicU64);
+
+    #[async_trait]
+    impl GlobalTool for Answers {
+        type Request = ();
+        type Response = ();
+        type Config = Plan;
+
+        async fn receive_rpc(&self, _from: Pid, _request: ()) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Seen {
+        Inject(Result<i64, i32>),
+        Signal(Signal),
+    }
+
+    std::thread_local! {
+        /// What `SigScript` saw on this test's thread, in order.
+        static SEEN: RefCell<Vec<Seen>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn seen() -> Vec<Seen> {
+        SEEN.with_borrow(|seen| seen.clone())
+    }
+
+    /// Reads the calling task's tid through the guest from its drop glue.
+    struct TidOnDropSig<'g, G: Guest<SigScript>>(&'g mut G);
+
+    impl<G: Guest<SigScript>> Drop for TidOnDropSig<'_, G> {
+        fn drop(&mut self) {
+            DROP_TID.set(self.0.tid().as_raw());
+        }
+    }
+
+    /// Answers each signal after its configured plan, counting the answer
+    /// in the global state. Injects each `read`, recording the result; every
+    /// other syscall is unsubscribed.
+    #[derive(Default)]
+    struct SigScript;
+
+    #[async_trait]
+    impl Tool for SigScript {
+        type GlobalState = Answers;
+        type ThreadState = ();
+
+        fn subscriptions(_cfg: &Plan) -> Subscription {
+            let mut subscription = Subscription::none();
+            subscription.syscall(Sysno::read);
+            subscription
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            let result = guest.inject(syscall).await;
+            SEEN.with_borrow_mut(|seen| {
+                seen.push(Seen::Inject(result.map_err(|errno| errno.into_raw())))
+            });
+            Ok(result?)
+        }
+
+        async fn handle_signal_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            signal: Signal,
+        ) -> Result<Option<Signal>, Errno> {
+            SEEN.with_borrow_mut(|seen| seen.push(Seen::Signal(signal)));
+            let pid = guest.pid().as_raw() as usize;
+            let kill = Syscall::from_raw(
+                Sysno::kill,
+                SyscallArgs::new(pid, Signal::SIGKILL as usize, 0, 0, 0, 0),
+            );
+            let read = Syscall::from_raw(
+                Sysno::read,
+                SyscallArgs::new(PIPE_FD as usize, BASE + 0x100, 1, 0, 0, 0),
+            );
+            let getpid = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+            let execve =
+                Syscall::from_raw(Sysno::execve, SyscallArgs::new(BASE + 0x100, 0, 0, 0, 0, 0));
+            let mut answer = Some(signal);
+            match *guest.config() {
+                Plan::Deliver => {}
+                Plan::Suppress => answer = None,
+                Plan::Replace => answer = Some(Signal::SIGUSR2),
+                Plan::Fail => return Err(Errno::EPERM),
+                Plan::YieldOnce => YieldOnce(false).await,
+                Plan::Wait => {
+                    let _guard = TidOnDropSig(guest);
+                    let _ = Forever.await;
+                    unreachable!("Forever never finishes");
+                }
+                Plan::InjectKill => {
+                    guest.inject(kill).await?;
+                }
+                Plan::InjectRead => {
+                    guest.inject(read).await?;
+                }
+                Plan::InjectExecve => {
+                    guest.inject(execve).await?;
+                }
+                Plan::TailGetpid => guest.tail_inject(getpid).await,
+            }
+            guest.send_rpc(()).await;
+            Ok(answer)
+        }
+    }
+
+    /// Delivers every signal; every syscall is unsubscribed.
+    #[derive(Default)]
+    struct SigOnly;
+
+    #[async_trait]
+    impl Tool for SigOnly {
+        type GlobalState = Answers;
+        type ThreadState = ();
+
+        fn subscriptions(_cfg: &Plan) -> Subscription {
+            Subscription::none()
+        }
+
+        async fn handle_signal_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            signal: Signal,
+        ) -> Result<Option<Signal>, Errno> {
+            guest.send_rpc(()).await;
+            Ok(Some(signal))
+        }
+    }
+
+    fn signal_host<T: Tool<GlobalState = Answers> + 'static>(plan: Plan) -> FakeHost<T> {
+        match FakeHost::<T>::new(plan) {
+            Ok(host) => host,
+            Err(fatal) => panic!("host: {fatal:?}"),
+        }
+    }
+
+    fn delivered(result: Result<SignalOutcome, NarfFatal>) -> Signal {
+        match result {
+            Ok(SignalOutcome::Deliver(signal)) => signal,
+            other => panic!("expected a delivered signal, got {other:?}"),
+        }
+    }
+
+    fn ended(result: Result<SignalOutcome, NarfFatal>) {
+        match result {
+            Ok(SignalOutcome::ContextManaged) => {}
+            other => panic!("expected a context-managed signal, got {other:?}"),
+        }
+    }
+
+    fn answers<T: Tool<GlobalState = Answers> + 'static>(host: &FakeHost<T>) -> u64 {
+        host.global().0.load(Ordering::SeqCst)
+    }
+
+    fn pipe_read() -> NarfSyscallRequest {
+        request(Sysno::read, [PIPE_FD, (BASE + 0x100) as u64, 1, 0, 0, 0])
+    }
+
+    fn self_kill() -> NarfSyscallRequest {
+        request(Sysno::kill, [1000, Signal::SIGKILL as u64, 0, 0, 0, 0])
+    }
+
+    #[test]
+    fn signal_reaches_the_tool_and_is_delivered() {
+        let host = signal_host::<SigScript>(Plan::Deliver);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        let signal = delivered(kernel.signal(&host, root, Signal::SIGCHLD));
+        assert_eq!(signal, Signal::SIGCHLD);
+        assert_eq!(seen(), [Seen::Signal(Signal::SIGCHLD)]);
+        assert_eq!(answers(&host), 1);
+        assert_eq!(kernel.natives(), [], "nothing ran natively");
+        assert_eq!(kernel.repoll_waits(), []);
+        assert_eq!(kernel.violations(), []);
+        assert_eq!(host.with_thread_state(root, |_| ()), Some(()));
+    }
+
+    #[test]
+    fn signal_the_tool_suppresses_is_discarded() {
+        let host = signal_host::<SigScript>(Plan::Suppress);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        let result = kernel.signal(&host, root, Signal::SIGCHLD);
+        assert_eq!(result.ok(), Some(SignalOutcome::Suppress));
+        assert_eq!(answers(&host), 1);
+        assert_eq!(kernel.violations(), []);
+    }
+
+    #[test]
+    fn signal_the_tool_replaces_is_delivered_as_its_replacement() {
+        let host = signal_host::<SigScript>(Plan::Replace);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        let signal = delivered(kernel.signal(&host, root, Signal::SIGCHLD));
+        assert_eq!(signal, Signal::SIGUSR2);
+        assert_eq!(seen(), [Seen::Signal(Signal::SIGCHLD)]);
+    }
+
+    #[test]
+    fn signal_errno_fails_closed_and_checks_the_task_back_in() {
+        let host = signal_host::<SigScript>(Plan::Fail);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        let result = kernel.signal(&host, root, Signal::SIGCHLD);
+        assert!(
+            matches!(result, Err(NarfFatal::Signal(Errno::EPERM))),
+            "{result:?}"
+        );
+        assert_eq!(host.with_thread_state(root, |_| ()), Some(()));
+        assert_eq!(answers(&host), 0);
+    }
+
+    #[test]
+    fn signal_errno_of_a_task_being_killed_ends_the_callback() {
+        let host = signal_host::<SigScript>(Plan::Fail);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        // Another task's SIGKILL is pending when the Tool fails: the errno
+        // ends the callback instead of the run, as for RDTSC.
+        kernel.sigkill(root);
+        ended(kernel.signal(&host, root, Signal::SIGCHLD));
+        assert_eq!(seen(), [Seen::Signal(Signal::SIGCHLD)]);
+        assert_eq!(kernel.violations(), []);
+        assert_teardowns(&kernel, &[(1000, exited(true))]);
+    }
+
+    #[test]
+    fn signal_tool_waiting_for_other_tasks_is_polled_again() {
+        let host = signal_host::<SigScript>(Plan::YieldOnce);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+        kernel.script_repoll(&[RepollWait::Yielded]);
+
+        let signal = delivered(kernel.signal(&host, root, Signal::SIGCHLD));
+        assert_eq!(signal, Signal::SIGCHLD);
+        assert_eq!(kernel.repoll_waits(), [1000], "one wait, between the polls");
+        assert_eq!(answers(&host), 1);
+        assert_eq!(kernel.violations(), []);
+    }
+
+    #[test]
+    fn signal_tool_the_kernel_cannot_wait_for_fails_closed() {
+        let host = signal_host::<SigScript>(Plan::YieldOnce);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        // Unscripted, the wait is `Unsupported`: the Tool never answers, and
+        // the kernel must not guess whether to deliver the signal.
+        let result = kernel.signal(&host, root, Signal::SIGCHLD);
+        assert!(
+            matches!(result, Err(NarfFatal::ToolSuspended)),
+            "{result:?}"
+        );
+        assert_eq!(kernel.repoll_waits(), [1000]);
+        assert_eq!(host.with_thread_state(root, |_| ()), Some(()));
+    }
+
+    #[test]
+    fn signal_tool_killed_while_waiting_is_dropped_under_its_frame() {
+        let host = signal_host::<SigScript>(Plan::Wait);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+        kernel.script_repoll(&[RepollWait::Yielded, RepollWait::Killed]);
+
+        ended(kernel.signal(&host, root, Signal::SIGCHLD));
+        assert_eq!(
+            FOREVER.get(),
+            (2, 1),
+            "polled before each wait, dropped once"
+        );
+        assert_eq!(DROP_TID.get(), 1000, "drop glue reached the guest");
+        assert_eq!(kernel.repoll_waits(), [1000, 1000]);
+        assert_eq!(kernel.natives(), [], "nothing ran natively");
+        assert_eq!(kernel.violations(), []);
+        assert_teardowns(&kernel, &[(1000, exited(true))]);
+    }
+
+    #[test]
+    fn signal_inject_that_kills_the_task_ends_the_callback() {
+        let host = signal_host::<SigScript>(Plan::InjectKill);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        ended(kernel.signal(&host, root, Signal::SIGCHLD));
+        assert_eq!(
+            kernel.natives(),
+            [Native {
+                tid: 1000,
+                request: self_kill(),
+                via: Via::Injected
+            }]
+        );
+        assert_eq!(answers(&host), 0, "never answered");
+        assert_eq!(kernel.violations(), []);
+        assert_teardowns(&kernel, &[(1000, exited(true))]);
+    }
+
+    #[test]
+    fn signal_inject_that_parks_fails_closed() {
+        let host = signal_host::<SigScript>(Plan::InjectRead);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        let result = kernel.signal(&host, root, Signal::SIGCHLD);
+        let read = Sysno::read.id() as u32;
+        assert!(
+            matches!(result, Err(NarfFatal::InjectParked { number }) if number == read),
+            "{result:?}"
+        );
+        assert_eq!(host.with_thread_state(root, |_| ()), Some(()));
+        assert!(!kernel.exited(root));
+    }
+
+    #[test]
+    fn signal_inject_that_replaces_the_image_fails_closed() {
+        let host = signal_host::<SigScript>(Plan::InjectExecve);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        // The execve ended the task's context but not the task, and only a
+        // task that is ending may leave the signal without an answer.
+        let result = kernel.signal(&host, root, Signal::SIGCHLD);
+        assert!(
+            matches!(result, Err(NarfFatal::SignalContextManaged)),
+            "{result:?}"
+        );
+        assert!(!kernel.exited(root));
+        assert_eq!(answers(&host), 0, "never answered");
+    }
+
+    #[test]
+    fn signal_tail_inject_that_returns_is_refused() {
+        let host = signal_host::<SigScript>(Plan::TailGetpid);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        let result = kernel.signal(&host, root, Signal::SIGCHLD);
+        assert!(
+            matches!(result, Err(NarfFatal::TailInjectOutsideSyscall)),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn signal_interrupts_a_parked_inject_before_the_tool_sees_it() {
+        let host = signal_host::<SigScript>(Plan::Deliver);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        // The Tool's inject of the read parks the task.
+        context_managed(kernel.syscall(&host, root, pipe_read()));
+        // A signal is pending at the parked read's return: the inject
+        // returns ERESTARTSYS first, as ptrace stops the syscall's exit
+        // before the signal's delivery.
+        let signal = delivered(kernel.signal(&host, root, Signal::SIGCHLD));
+        assert_eq!(signal, Signal::SIGCHLD);
+        let restart = Errno::ERESTARTSYS.into_raw();
+        assert_eq!(
+            seen(),
+            [Seen::Inject(Err(restart)), Seen::Signal(Signal::SIGCHLD)]
+        );
+
+        // After the handler the kernel restarts the read as a new entry.
+        kernel.push_pipe(b"x");
+        assert_eq!(complete(kernel.syscall(&host, root, pipe_read())), 1);
+        assert_eq!(
+            seen(),
+            [
+                Seen::Inject(Err(restart)),
+                Seen::Signal(Signal::SIGCHLD),
+                Seen::Inject(Ok(1))
+            ]
+        );
+        assert_eq!(kernel.peek(root, BASE + 0x100, 1), b"x");
+        assert_eq!(kernel.natives().len(), 2, "the parked read and its restart");
+        assert_eq!(kernel.violations(), []);
+    }
+
+    #[test]
+    fn signal_forgets_a_parked_tail_transition() {
+        let host = signal_host::<SigOnly>(Plan::Deliver);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        // The unsubscribed read parks as the core's tail transition.
+        context_managed(kernel.syscall(&host, root, pipe_read()));
+        let signal = delivered(kernel.signal(&host, root, Signal::SIGCHLD));
+        assert_eq!(signal, Signal::SIGCHLD);
+        assert_eq!(answers(&host), 1);
+
+        // Narf dropped its park record at the signal, so it never flags this
+        // read as a re-execution; if it did, the core would have nothing to
+        // re-issue.
+        let result = kernel.enter(&host, root, SyscallEntry::reexecution(pipe_read()));
+        assert!(
+            matches!(result, Err(NarfFatal::UnexpectedReexecution)),
+            "{result:?}"
+        );
+        assert_eq!(kernel.natives().len(), 1, "only the parked read ran");
+    }
+}

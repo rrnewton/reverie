@@ -29,6 +29,7 @@ use reverie::Pid;
 use reverie::Rdtsc;
 #[cfg(target_arch = "x86_64")]
 use reverie::RdtscResult;
+use reverie::Signal;
 use reverie::ThreadOwnership;
 use reverie::Tool;
 use reverie::syscalls::Errno;
@@ -77,9 +78,9 @@ pub enum NarfFatal {
     /// transition.
     TransitionAfterTerminal,
     /// A non-tail `inject` of this wire number parked the task where the
-    /// Tool's continuation cannot be kept: in a lifecycle or RDTSC callback,
-    /// which has no guest syscall for the kernel to re-execute, or in a Tool
-    /// that completed without awaiting the parked inject.
+    /// Tool's continuation cannot be kept: in a lifecycle, RDTSC or signal
+    /// callback, which has no guest syscall for the kernel to re-execute, or
+    /// in a Tool that completed without awaiting the parked inject.
     InjectParked {
         /// Wire number of the injected request.
         number: u32,
@@ -126,8 +127,8 @@ pub enum NarfFatal {
     DaemonizeRefused(Errno),
     /// `handle_post_exec` failed with this errno.
     PostExec(Errno),
-    /// A lifecycle or RDTSC callback tail-injected a syscall that returned;
-    /// there is no guest syscall to deliver the value to.
+    /// A lifecycle, RDTSC or signal callback tail-injected a syscall that
+    /// returned; there is no guest syscall to deliver the value to.
     TailInjectOutsideSyscall,
     /// `handle_rdtsc_event` failed with this errno while the task was not
     /// ending ([`KernelServices::killed`]). reverie-ptrace, without a
@@ -146,6 +147,13 @@ pub enum NarfFatal {
     /// them: one not built with `NarfToolHost::new_delivering_rdtsc`, or one
     /// whose Tool did not subscribe to RDTSC events.
     UnexpectedRdtsc,
+    /// `handle_signal_event` failed with this errno while the task was not
+    /// ending ([`KernelServices::killed`]), as [`Self::Rdtsc`] is for RDTSC.
+    Signal(Errno),
+    /// A signal callback's transition made the task context-managed although
+    /// the task was not ending, as [`Self::RdtscContextManaged`] is for
+    /// RDTSC.
+    SignalContextManaged,
 }
 
 impl fmt::Debug for NarfFatal {
@@ -189,6 +197,8 @@ impl fmt::Debug for NarfFatal {
             Self::Rdtsc(errno) => f.debug_tuple("Rdtsc").field(errno).finish(),
             Self::RdtscContextManaged => f.write_str("RdtscContextManaged"),
             Self::UnexpectedRdtsc => f.write_str("UnexpectedRdtsc"),
+            Self::Signal(errno) => f.debug_tuple("Signal").field(errno).finish(),
+            Self::SignalContextManaged => f.write_str("SignalContextManaged"),
         }
     }
 }
@@ -237,6 +247,25 @@ pub enum RdtscOutcome {
     ContextManaged,
 }
 
+/// What the kernel does with a signal the Tool saw before its delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SignalOutcome {
+    /// Deliver this signal, which the Tool returned. It may differ from the
+    /// signal the kernel reported; the kernel decides what a replacement
+    /// means. As for an RDTSC the Tool answered, the core returns this
+    /// whenever the Tool answered and no fatal error was recorded during the
+    /// callback, even for a task that is ending: the kernel still carries
+    /// out a pending kill.
+    Deliver(Signal),
+    /// The Tool suppressed the signal: the kernel discards it.
+    Suppress,
+    /// The task is ending ([`KernelServices::killed`]) and the Tool gave no
+    /// answer: it failed with an errno, an inject or tail inject ended the
+    /// task, or the task was killed while the Tool waited for another task.
+    /// The kernel owns the task's context.
+    ContextManaged,
+}
+
 /// What a task exit tore down.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TaskExit {
@@ -282,6 +311,13 @@ type ToolFuture = Pin<Box<dyn Future<Output = Result<i64, Error>> + Send>>;
 /// A lifecycle hook's future, its Tool error already mapped to the fatal
 /// the hook reports.
 type LifecycleFuture = Pin<Box<dyn Future<Output = Result<(), NarfFatal>> + Send>>;
+
+/// The future of a Tool callback for an event that is not a syscall.
+type EventFuture<O> = Pin<Box<dyn Future<Output = Result<O, Errno>> + Send>>;
+
+/// An event callback's call state, its last poll, and whether the task is
+/// ending.
+type EventEnd<O> = (CallState, Poll<Result<O, Errno>>, bool);
 
 /// A Tool future suspended in a non-tail inject whose syscall parked the
 /// task, kept until the kernel re-executes that syscall.
@@ -1075,6 +1111,79 @@ where
         state: &mut T::ThreadState,
         suspended: Option<Suspended>,
     ) -> Result<RdtscOutcome, NarfFatal> {
+        let (call, poll, ending) =
+            self.dispatch_event(tool, kernel, state, suspended, move |tool, guest| {
+                Box::pin(async move {
+                    let mut guest = guest;
+                    tool.handle_rdtsc_event(&mut guest, request).await
+                })
+            })?;
+        settle_rdtsc(call, poll, ending)
+    }
+
+    /// Reports a signal the kernel is about to deliver to the current task
+    /// to the Tool's `handle_signal_event`, before the delivery, so that the
+    /// Tool can order it, suppress it, or replace it. The kernel calls this
+    /// where the task can wait, after a syscall has finished and before the
+    /// task returns to user mode.
+    ///
+    /// The Tool may use the guest as in an RDTSC callback
+    /// ([`Self::handle_rdtsc`]), with the same limits: it may inject
+    /// syscalls and wait for other tasks; nothing re-executes a syscall for
+    /// the event; and a callback that ends without an answer returns
+    /// [`SignalOutcome::ContextManaged`] if the task is ending and fails
+    /// closed otherwise, with [`NarfFatal::Signal`] for a Tool errno and
+    /// [`NarfFatal::SignalContextManaged`] or [`NarfFatal::InjectParked`]
+    /// for a transition that leaves the task context-managed. The same three
+    /// failures end the run whether or not the task is ending.
+    ///
+    /// A Tool future suspended in a parked inject of this task is first
+    /// interrupted, and a parked tail transition is forgotten, as for RDTSC:
+    /// the kernel discards its record of the parked syscall when it reports
+    /// the signal, so the syscall's restart arrives as a new entry.
+    pub fn handle_signal<K>(
+        &self,
+        kernel: &mut K,
+        signal: Signal,
+    ) -> Result<SignalOutcome, NarfFatal>
+    where
+        K: KernelServices,
+        K::Memory: 'static,
+    {
+        let tid = kernel.tid();
+        let Checkout {
+            tool,
+            mut state,
+            parked,
+        } = self.tasks.with(|table| table.checkout(tid))?;
+        let result = self
+            .dispatch_event(&tool, kernel, &mut state, parked, move |tool, guest| {
+                Box::pin(async move {
+                    let mut guest = guest;
+                    tool.handle_signal_event(&mut guest, signal).await
+                })
+            })
+            .and_then(|(call, poll, ending)| settle_signal(call, poll, ending));
+        let checkin = self.tasks.with(|table| table.checkin(tid, state, None));
+        let outcome = result?;
+        checkin?;
+        Ok(outcome)
+    }
+
+    /// Runs the Tool's callback for an event that is not a syscall (an
+    /// RDTSC, a signal) to its end, and returns its call state, its last
+    /// poll, and whether the task is ending, for the event's own settling.
+    fn dispatch_event<M, O>(
+        &self,
+        tool: &Arc<T>,
+        kernel: &mut dyn KernelServices<Memory = M>,
+        state: &mut T::ThreadState,
+        suspended: Option<Suspended>,
+        start: impl FnOnce(Arc<T>, NarfGuest<T, L, M>) -> EventFuture<O>,
+    ) -> Result<EventEnd<O>, NarfFatal>
+    where
+        M: MemoryAccess + Send + 'static,
+    {
         match suspended {
             // The task left its parked syscall: the Tool's inject returns
             // ERESTARTSYS first, as at a new syscall entry.
@@ -1093,13 +1202,7 @@ where
             call: CallState::new(None),
         };
         let slot = Arc::new(FrameSlot::default());
-        let guest = NarfGuest::<T, L, M>::new(slot.clone());
-        let tool = tool.clone();
-        let mut future: Pin<Box<dyn Future<Output = Result<RdtscResult, Errno>> + Send>> =
-            Box::pin(async move {
-                let mut guest = guest;
-                tool.handle_rdtsc_event(&mut guest, request).await
-            });
+        let mut future = start(tool.clone(), NarfGuest::<T, L, M>::new(slot.clone()));
         let (poll, killed_in_wait) = match poll_repolling(&mut frame, &slot, &mut future) {
             Some(poll) => (poll, false),
             None => {
@@ -1114,7 +1217,7 @@ where
         // Drop glue may still reach the guest, so the frame stays published.
         slot.enter(&mut frame, move || drop(future));
         let ending = killed_in_wait || frame.kernel.killed();
-        settle_rdtsc(frame.call, poll, ending)
+        Ok((frame.call, poll, ending))
     }
 }
 
@@ -1347,6 +1450,39 @@ fn settle_rdtsc(
                 outcome: NarfSyscallOutcome::ContextManaged,
                 ..
             }) => Err(NarfFatal::RdtscContextManaged),
+            None => Err(NarfFatal::ToolSuspended),
+        },
+    }
+}
+
+/// Turns one polled signal callback into the kernel's outcome, as
+/// [`settle_rdtsc`] does for RDTSC.
+fn settle_signal(
+    mut call: CallState,
+    poll: Poll<Result<Option<Signal>, Errno>>,
+    ending: bool,
+) -> Result<SignalOutcome, NarfFatal> {
+    if let Some(fatal) = call.fatal.take() {
+        return Err(fatal);
+    }
+    match poll {
+        Poll::Ready(Ok(Some(signal))) => Ok(SignalOutcome::Deliver(signal)),
+        Poll::Ready(Ok(None)) => Ok(SignalOutcome::Suppress),
+        Poll::Ready(Err(_)) if ending => Ok(SignalOutcome::ContextManaged),
+        Poll::Ready(Err(errno)) => Err(NarfFatal::Signal(errno)),
+        Poll::Pending => match call.terminal.take() {
+            Some(Terminal {
+                outcome: NarfSyscallOutcome::Returned(_),
+                ..
+            }) => Err(NarfFatal::TailInjectOutsideSyscall),
+            Some(Terminal {
+                outcome: NarfSyscallOutcome::ContextManaged,
+                ..
+            }) if ending => Ok(SignalOutcome::ContextManaged),
+            Some(Terminal {
+                outcome: NarfSyscallOutcome::ContextManaged,
+                ..
+            }) => Err(NarfFatal::SignalContextManaged),
             None => Err(NarfFatal::ToolSuspended),
         },
     }
