@@ -184,3 +184,73 @@ fn unstarted_echild_ack_follows_registry_release() {
 fn unstarted_raw_cleanup_ack_follows_registry_release() {
     unstarted_retirement_ack(true);
 }
+
+#[test]
+fn wait_after_sigkill_waits_for_retirement_after_terminal_status() {
+    let (pid, mut cleanup) = spawn_stopped_process(None).expect("spawn killed child");
+    let running = Running::new(pid.into());
+    cleanup
+        .bind_running_notifier(&running)
+        .expect("register worker");
+    let terminal = cleanup.terminal().unwrap();
+    let event = Arc::clone(terminal.event.event());
+    let (before_done, release_done) = arm_retirement_pause(&event.worker_identity_retirement_pause);
+    let (parking, parked) = mpsc::sync_channel(1);
+    assert!(
+        event
+            .worker_done_park_signal
+            .lock()
+            .replace(parking)
+            .is_none()
+    );
+    pidfd_send_signal(&cleanup.pidfd, libc::SIGKILL).expect("terminate exact child");
+    before_done
+        .recv_timeout(TRACEE_WAIT_TIMEOUT)
+        .expect("worker reached identity drop");
+    // The worker has published the terminal status and removed the registry
+    // entry. It withholds DONE until release_done is sent, or until its own
+    // pause bound passes.
+    let observed = terminal.observed_exit_status();
+    let pending_empty = terminal.pending_is_empty();
+    let early_ack = terminal.wait(Duration::ZERO);
+    // Release the worker only after the method announces that it will park
+    // for DONE with time remaining. A zero-timeout DONE check never reaches
+    // that announcement. The Event holds the only announcement sender, and
+    // this thread takes it out only after the method returns, so a
+    // disconnection means that the method returned without parking.
+    let releaser = thread::spawn(move || {
+        let parked = parked.recv().is_ok();
+        let released = release_done.send(()).is_ok();
+        (parked, released)
+    });
+    let started = Instant::now();
+    let result = terminal.wait_after_sigkill();
+    let elapsed = started.elapsed();
+    drop(event.worker_done_park_signal.lock().take());
+    let (parked, released) = releaser.join().expect("join retirement releaser");
+    let acknowledged = terminal.wait(TRACEE_WAIT_TIMEOUT);
+    cleanup.disarm();
+    eprintln!(
+        "WAIT_AFTER_SIGKILL_RECEIPT result={result:?} parked={parked} released={released} \
+         early_ack={early_ack} pending_empty={pending_empty} elapsed_us={} \
+         acknowledged={acknowledged}",
+        elapsed.as_micros(),
+    );
+    assert!(matches!(
+        observed,
+        Ok(Some(crate::ExitStatus::Signaled(Signal::SIGKILL, _)))
+    ));
+    assert!(pending_empty, "a nonterminal status was queued after SIGKILL");
+    assert!(!early_ack, "DONE was published while the worker was paused");
+    assert!(
+        result.is_ok(),
+        "wait_after_sigkill failed while the worker withheld DONE: {result:?}"
+    );
+    assert!(
+        parked,
+        "wait_after_sigkill returned without waiting for DONE with time remaining"
+    );
+    assert!(acknowledged, "worker did not acknowledge retirement");
+    drop(running);
+    drop(cleanup);
+}
