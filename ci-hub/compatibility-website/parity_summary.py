@@ -1283,6 +1283,8 @@ def load_summary(text: str) -> Mapping[str, Any]:
         value = json.loads(text, object_pairs_hook=unique, parse_constant=constant)
     except json.JSONDecodeError as error:
         raise ParitySummaryError(f"{LEDGER_PATH} is not JSON: {error}") from error
+    except RecursionError as error:
+        raise ParitySummaryError(f"{LEDGER_PATH} nests too deeply to decode") from error
     return validate_summary(value)
 
 
@@ -1329,16 +1331,17 @@ def append_refusals_from(run_shards: Mapping[str, bytes]) -> tuple[list[dict[str
                 continue
             try:
                 event = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 continue
             if not isinstance(event, dict):
                 continue
             if event.get("event_type") == ledger.RUN_EVENT_TYPE:
-                markers.add((event.get("producer"), event.get("run_id")))
+                if isinstance(event.get("producer"), str) and isinstance(event.get("run_id"), str):
+                    markers.add((event["producer"], event["run_id"]))
             elif event.get("event_type") == ledger.REFUSAL_EVENT_TYPE:
                 try:
                     ledger.validate_refusal(event)
-                except ledger.ParityLedgerError:
+                except (ledger.ParityLedgerError, RecursionError):
                     continue
                 refusals.setdefault(event["event_id"], event)
     open_refusals = sorted(

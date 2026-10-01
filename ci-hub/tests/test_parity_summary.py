@@ -1781,6 +1781,38 @@ def test_append_refusals_are_shown_in_every_state(run_1953: dict[str, Any]) -> N
                 "no parity node reported a status") in text
 
 
+def test_a_run_marker_naming_its_run_by_a_list_is_skipped() -> None:
+    # Published lines are indexed, not revalidated: a marker that names its run
+    # by a list closes no refusal and stops nothing.
+    refusal = _refusal("run-c", "2026-09-28T03:00:00Z")
+    marker = {"event_type": "parity.run", "producer": ["validate"], "run_id": "run-c"}
+    shards = {"parity-runs/hermit/fixturehost/2026-09.jsonl": b"".join(
+        json.dumps(event).encode() + b"\n" for event in (marker, refusal))}
+    assert summary_module.append_refusals_from(shards) == ([_listed(refusal)], 1)
+
+
+def test_a_parity_runs_line_nested_too_deeply_is_skipped() -> None:
+    # Python's decoder and the ledger's owner-path walk both recurse, so a deep
+    # enough line raises RecursionError rather than a decode or ledger error:
+    # one line too deep to decode, and one refusal too deep to check.
+    refusal = _refusal("run-c", "2026-09-28T03:00:00Z")
+    nested = json.dumps(dict(_refusal("run-d", "2026-09-28T04:00:00Z"), event_id="NESTED")).replace(
+        '"NESTED"', "[" * 800 + '"x"' + "]" * 800)
+    shards = {"parity-runs/hermit/fixturehost/2026-09.jsonl": b"\n".join(
+        (json.dumps(refusal).encode(), b"[" * 100000, nested.encode(), b""))}
+    assert summary_module.append_refusals_from(shards) == ([_listed(refusal)], 1)
+
+
+def test_a_summary_nested_too_deeply_to_decode_is_refused(run_1953: dict[str, Any]) -> None:
+    assert _refused_by(_capture(None, data=b"[" * 100000)) == "scorecard/parity.json nests too deeply to decode"
+    text = "[" * 100000
+    carriage = dict(_carriage(run_1953), summary_json=text, bytes=len(text),
+                    sha256=hashlib.sha256(text.encode()).hexdigest())
+    refused, summary = summary_module.admit_carriage(carriage, LEDGER_COMMIT, "runs.parity")
+    assert summary is None and refused["refusal"] == (
+        "runs.parity is refused: scorecard/parity.json nests too deeply to decode")
+
+
 # --- absence is never zero ----------------------------------------------------------
 
 

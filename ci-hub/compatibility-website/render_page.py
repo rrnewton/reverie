@@ -1985,8 +1985,8 @@ def _parity_append_refusals(carriage: Mapping[str, Any] | None) -> str:
         f"not later recorded ({_integer(len(listed))} newest listed).</strong> These runs are not in any figure "
         "below.</p><ul>"
         + "".join(
-            f'<li>{_escape(item["producer"])} run <code>{_escape(item["run_id"])}</code> at Hermit '
-            f'{_short_sha(item["hermit_sha"])}, {_escape(item["emitted_at"])}: '
+            f'<li>{_parity_quoted(item["producer"])} run <code>{_parity_quoted(item["run_id"])}</code> at Hermit '
+            f'{_short_sha(item["hermit_sha"])}, {_parity_quoted(item["emitted_at"])}: '
             f'<code class="parity-message">{_parity_quoted(item["error"])}</code></li>'
             for item in listed
         )

@@ -48,6 +48,10 @@ SCHEMA_VERSION = 1
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _MONTH_RE = re.compile(r"^[0-9]{4}-[0-9]{2}$")
 _OWNER_PATH_NEEDLE = "/" + "home" + "/"
+# Any absolute path, even one cut short inside its first part: a slash before
+# a part, following no word character, dot, tilde or slash (so not a slash
+# inside a URL or a relative path).
+_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.~/])/[^\s/]")
 _HISTORICAL_TEST_ENVIRONMENT = (
     "CI_HUB_VALIDATE_LEDGER_TEST_ROOT",
     "HERMIT_VALIDATE_STOP_TEST_MODE",
@@ -859,6 +863,16 @@ def _contains_string(value: Any, needle: str) -> bool:
     return False
 
 
+def _contains_absolute_path(value: Any) -> bool:
+    if isinstance(value, str):
+        return _ABSOLUTE_PATH_RE.search(value) is not None
+    if isinstance(value, dict):
+        return any(_contains_absolute_path(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_absolute_path(item) for item in value)
+    return False
+
+
 def _replace_string(value: Any, old: str, new: str) -> Any:
     """Return a copy with one exact captured-root string made portable."""
     if isinstance(value, str):
@@ -1083,6 +1097,43 @@ def _parity_capture(ledger: Path, series_commit: str) -> dict[str, Any]:
         append_refusals=refusals,
         append_refusals_total=refusals_total,
     )
+
+
+def _parity_without_paths(
+    carriage: dict[str, Any], series_commit: str, checkouts: Mapping[str, Path],
+) -> dict[str, Any]:
+    """The parity carriage, naming each checkout by its role rather than its path.
+
+    A git failure names the checkout it ran in, and the export refuses any
+    text holding the absolute parent checkout path or an owner path. So the
+    refusal names each checkout by its role, and a carriage that still holds
+    such a path is replaced by a refusal that does not: a parity refusal stays
+    in the parity panel and never refuses the export.
+
+    A refusal quotes at most _MAX_PROCESS_DETAIL_BYTES of git's output, which
+    can cut a checkout path short so that no role matches it. So a refused
+    carriage that still holds any absolute path is replaced too. Only a
+    refused one: a summary quotes the guest's own absolute paths (a
+    determinism log's "/etc/...", for one), which must not refuse the panel.
+    """
+    reader = _parity_reader()
+    roles: dict[str, str] = {}
+    for role, checkout in checkouts.items():
+        for path in (str(checkout), str(checkout.resolve())):
+            roles.setdefault(path, f"the {role} checkout")
+    refusal = carriage.get("refusal")
+    if isinstance(refusal, str):
+        for path in sorted(roles, key=len, reverse=True):
+            refusal = refusal.replace(path, roles[path])
+        carriage = {**carriage, "refusal": refusal}
+    holds_path = any(_contains_string(carriage, needle) for needle in (*roles, _OWNER_PATH_NEEDLE))
+    if holds_path or (carriage.get("state") == "refused" and _contains_absolute_path(carriage)):
+        return reader.refused_carriage(
+            series_commit,
+            f"ledger commit {series_commit} parity data is refused: it holds an absolute path",
+            append_refusals_total=None,
+        )
+    return carriage
 
 
 def _proof_reader() -> Any:
@@ -1478,7 +1529,10 @@ def build_export(
             ledger, series_commit, _snapshot_quarantine_paths(snapshot_root),
         ))
         sources = _provenance_sources(snapshot_root, git_files, mutable)
-        parity = _parity_capture(ledger, series_commit)
+        parity = _parity_without_paths(
+            _parity_capture(ledger, series_commit), series_commit,
+            {"ledger": ledger, "parent": parent, "shared": data_root},
+        )
 
         result = {
             "incomplete_data": _incomplete_data(),

@@ -6626,6 +6626,24 @@ def test_parity_texts_holding_the_retired_word_are_shown_with_the_word_withheld(
         render_page.render_site(_build(data), data)
 
 
+def test_an_append_refusal_run_id_holding_the_retired_word_is_shown_with_the_word_withheld() -> None:
+    """The ledger admits any non-empty run id, and the panel lists each append
+    refusal's run id as well as its error."""
+    reader = render_page._parity_reader()
+    event = reader.parity_ledger_module().build_refusal(
+        producer="validate", run_id=f"validate-{RETIRED_WORD}-run",
+        hermit_sha="d3a0a4ae3d168565595ae4157b25ab8efbb1861a", emitted_at="2026-09-28T22:00:00Z",
+        source_tree_dirty=None, host="fixturehost", input_bytes=b"x", input_lines=1,
+        error="--source-tree-dirty is required",
+    )
+    carriage = _parity_carriage(append_refusals=({field: event[field] for field in reader.APPEND_REFUSAL_FIELDS},))
+    data = _data_with_parity(carriage)
+    _validated(data)
+    files = render_page.render_site(_build(data), data)
+    assert _pages_holding_the_retired_word(files) == []
+    assert f"<li>validate run <code>validate-{PARITY_WITHHELD}-run</code> at Hermit " in files["index.html"].decode()
+
+
 def test_a_parity_summary_refusal_quoting_the_retired_word_is_confined_to_the_panel() -> None:
     def debug_form_verdict(summary: dict[str, Any]) -> None:
         summary["producers"][0]["cells"][0]["verdict"] = RETIRED_WORD
