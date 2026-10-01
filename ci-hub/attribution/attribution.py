@@ -50,7 +50,7 @@ without needing hermit or a loaded host.  The CLI builds `Evidence` from a
 captured bundle (and, optionally, from a low-load control re-run and a
 `hermit log-diff` of two traces) and prints the verdict.
 
-Design mirrors the sibling ci-hub tools (operational_health.py, stress_store.py):
+Design mirrors the sibling ci-hub tools (operational_health.py; formerly also ci-hub/stress/stress_store.py, deleted 2026-10-01):
 stdlib only, exit code carries the signal, loud + structured on every path.
 """
 
@@ -157,7 +157,7 @@ _MISMATCH_MARKERS = (
     "replay diverged",
 )
 
-# Harness/build failure tokens (matches the stress-burst CSV STATUS vocabulary).
+# Harness/build failure tokens (the former ci-hub/stress burst CSV STATUS vocabulary).
 _HARNESS_MARKERS = (
     "BUILD_FAIL",
     "WT_FAIL",

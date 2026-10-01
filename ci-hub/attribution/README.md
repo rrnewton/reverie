@@ -96,13 +96,13 @@ support with evidence.
 
 ## Wiring into a harness
 
-`STRESS_CAPTURE_DIR` is the standard env knob. When set, the shared burst
-primitives (`ci-hub/stress/stress-burst`, the nightly's `matched.sh`) route each
-instance through `capture-run.sh`, and `ci-hub/stress/nightly.sh` folds
-`attribution.py report` into every P0 alarm — so the alarm states a **cause**,
-not just a rate, and drops a full per-bundle `*.attribution.txt` sidecar next to
-the alarm marker. Off by default elsewhere; the hot loop stays byte-identical
-when unset.
+`STRESS_CAPTURE_DIR` is the standard env knob. When set, a burst primitive such
+as the multisect experiment's `matched.sh` routes each instance through
+`capture-run.sh`. Off by default; the hot loop stays byte-identical when unset.
+The former `ci-hub/stress/` nightly that folded reports into its alarm was
+deleted on 2026-10-01; the flake census now runs through Hermit's
+`ci/compat-envelope/pressure-test.rs --no-retry` and `scripts/stress-test.sh`
+(see `ai_docs/stress/2026-10-01-e2e-10x-flake-census.md`).
 
 `ATTR_CAPTURE_MAX` caps preserved bundles (default 200); overflow is **counted**
 in a `.dropped-over-cap` file, never silently dropped. `ATTR_PROC_PATTERN`

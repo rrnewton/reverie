@@ -81,7 +81,6 @@ DEFAULT_SUITES = (
     ("ci-hub/series/tests", 159),
     ("ci-hub/stranded/tests", 19),
     ("ci-hub/greentime/tests", 17),
-    ("ci-hub/stress", 16),
     ("ci-hub/taskgraph/tests", 15),
     ("ci-hub/parity/tests", 13),
     #
