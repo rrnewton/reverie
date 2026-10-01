@@ -2007,15 +2007,73 @@ unsafe fn requeue_then_consume(consume: Consume) -> String {
     }
 }
 
+/// How the guest sends itself the second SIGSYS after its requeued first one
+/// was consumed.
+#[derive(Clone, Copy)]
+enum Resend {
+    /// `kill`, after no intercepted syscall.
+    Kill,
+    /// `rt_tgsigqueueinfo`, after no intercepted syscall, with the siginfo
+    /// `ptrace_signal` gives a signal the tracer resumes from another
+    /// signal's stop (`SI_USER` from the tracer's PID, procfs `TracerPid` in
+    /// this PID namespace), so that the siginfo's contents cannot tell it
+    /// from a requeued instance.
+    Lookalike,
+    /// As `Lookalike`, after an intercepted `getppid` marker, which retires
+    /// the consumed requeue's record first.
+    LookalikeAfterSyscall,
+}
+
+/// Sends the calling thread SIGSYS as `resend` says.
+///
+/// # Safety
+/// Sends a signal to the calling thread, which must be the leader.
+unsafe fn resend_sigsys(resend: Resend) {
+    unsafe {
+        if let Resend::Kill = resend {
+            assert_eq!(libc::kill(libc::getpid(), libc::SIGSYS), 0);
+            return;
+        }
+        if let Resend::LookalikeAfterSyscall = resend {
+            libc::syscall(libc::SYS_write, GETPPID_FD, std::ptr::null::<u8>(), 0usize);
+        }
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let tracer: libc::pid_t = status
+            .lines()
+            .find_map(|line| line.strip_prefix("TracerPid:"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        info.si_signo = libc::SIGSYS;
+        info.si_code = libc::SI_USER;
+        // `si_pid` and `si_uid` open the union after the three ints.
+        let fields = (&mut info as *mut libc::siginfo_t).cast::<u8>().add(16);
+        fields.cast::<libc::pid_t>().write(tracer);
+        fields.add(4).cast::<libc::uid_t>().write(libc::getuid());
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_rt_tgsigqueueinfo,
+                libc::getpid(),
+                libc::syscall(libc::SYS_gettid),
+                libc::SIGSYS,
+                &mut info as *mut libc::siginfo_t,
+            ),
+            0
+        );
+    }
+}
+
 /// The SIGSYS requeued after the hook passed it through is consumed without a
-/// delivery. A later SIGSYS that the guest sends itself with `kill`, with no
-/// intercepted syscall in between, is a different instance, which the hook
-/// has not seen: it is reported on its ordinary delivery when the guest
-/// unblocks it. Untraced Linux runs the handler once, for the second SIGSYS.
-fn consumed_requeue_then_kill_is_reported(consume: Consume) {
+/// delivery. A later SIGSYS that the guest sends itself as `resend` says is a
+/// different instance, which the hook has not seen: it is reported on its
+/// ordinary delivery when the guest unblocks it. Untraced Linux runs the
+/// handler once, for the second SIGSYS.
+fn consumed_requeue_then_resend_is_reported(consume: Consume, resend: Resend) {
     let (output, log) = test_fn::<InjectInFirstSignalHook, _>(move || unsafe {
         let first = requeue_then_consume(consume);
-        assert_eq!(libc::kill(libc::getpid(), libc::SIGSYS), 0);
+        resend_sigsys(resend);
         unblock(libc::SIGSYS);
         println!(
             "{first} {} {}",
@@ -2045,9 +2103,12 @@ fn consumed_requeue_then_kill_is_reported(consume: Consume) {
         fields, "0 1 0 1",
         "the requeued SIGSYS is pending, then consumed; the second runs the handler once"
     );
+    let mut expected = vec![Err(Errno::ERESTARTNOHAND.into_raw()), Ok(pid)];
+    if let Resend::LookalikeAfterSyscall = resend {
+        expected.push(Ok(std::process::id() as i64));
+    }
     assert_eq!(
-        *injected,
-        vec![Err(Errno::ERESTARTNOHAND.into_raw()), Ok(pid)],
+        *injected, expected,
         "ppoll is interrupted and the first hook's getpid runs"
     );
     assert_eq!(
@@ -2059,64 +2120,29 @@ fn consumed_requeue_then_kill_is_reported(consume: Consume) {
 
 #[test]
 fn requeue_consumed_by_sigtimedwait_does_not_hide_a_later_signal() {
-    consumed_requeue_then_kill_is_reported(Consume::Sigtimedwait);
+    consumed_requeue_then_resend_is_reported(Consume::Sigtimedwait, Resend::Kill);
 }
 
 #[test]
 fn requeue_discarded_by_sig_ign_does_not_hide_a_later_signal() {
-    consumed_requeue_then_kill_is_reported(Consume::Ignore);
+    consumed_requeue_then_resend_is_reported(Consume::Ignore, Resend::Kill);
 }
 
-/// How the guest sends the second SIGSYS of `consumed_requeue_then_held`.
-#[derive(Clone, Copy)]
-enum Resend {
-    /// `kill`, after no intercepted syscall.
-    Kill,
-    /// After an intercepted `getppid` marker, `rt_tgsigqueueinfo` with the
-    /// siginfo the requeue itself carried (`SI_USER` from the tracer's PID,
-    /// procfs `TracerPid` in this PID namespace), so that only the retirement
-    /// of the consumed requeue's record tells the two apart.
-    LookalikeAfterSyscall,
+/// No retirement point passes between the consumption and the lookalike, so
+/// only the requeue's tag tells the two apart.
+#[test]
+fn requeue_consumed_by_sigtimedwait_does_not_hide_a_lookalike_signal() {
+    consumed_requeue_then_resend_is_reported(Consume::Sigtimedwait, Resend::Lookalike);
 }
 
-/// As `consumed_requeue_then_kill_is_reported`, but the second SIGSYS is held
+/// As `consumed_requeue_then_resend_is_reported`, but the second SIGSYS is held
 /// by the injected `ppoll` of another marker, whose temporary mask lets it
 /// through, and reported before the resume that delivers it. Untraced Linux
 /// interrupts that `ppoll` with EINTR and runs the handler once.
 fn consumed_requeue_then_held(resend: Resend) {
     let (output, log) = test_fn::<InjectInFirstSignalHook, _>(move || unsafe {
         let first = requeue_then_consume(Consume::Sigtimedwait);
-        match resend {
-            Resend::Kill => assert_eq!(libc::kill(libc::getpid(), libc::SIGSYS), 0),
-            Resend::LookalikeAfterSyscall => {
-                libc::syscall(libc::SYS_write, GETPPID_FD, std::ptr::null::<u8>(), 0usize);
-                let status = std::fs::read_to_string("/proc/self/status").unwrap();
-                let tracer: libc::pid_t = status
-                    .lines()
-                    .find_map(|line| line.strip_prefix("TracerPid:"))
-                    .unwrap()
-                    .trim()
-                    .parse()
-                    .unwrap();
-                let mut info: libc::siginfo_t = std::mem::zeroed();
-                info.si_signo = libc::SIGSYS;
-                info.si_code = libc::SI_USER;
-                // `si_pid` and `si_uid` open the union after the three ints.
-                let fields = (&mut info as *mut libc::siginfo_t).cast::<u8>().add(16);
-                fields.cast::<libc::pid_t>().write(tracer);
-                fields.add(4).cast::<libc::uid_t>().write(libc::getuid());
-                assert_eq!(
-                    libc::syscall(
-                        libc::SYS_rt_tgsigqueueinfo,
-                        libc::getpid(),
-                        libc::syscall(libc::SYS_gettid),
-                        libc::SIGSYS,
-                        &mut info as *mut libc::siginfo_t,
-                    ),
-                    0
-                );
-            }
-        }
+        resend_sigsys(resend);
         let mut args: PpollArgs = std::mem::zeroed();
         libc::sigemptyset(&mut args.mask);
         args.timeout.tv_sec = 5;
@@ -2179,6 +2205,200 @@ fn consumed_requeue_does_not_hide_a_later_held_signal() {
 #[test]
 fn consumed_requeue_retires_before_a_lookalike_held_signal() {
     consumed_requeue_then_held(Resend::LookalikeAfterSyscall);
+}
+
+/// Writes `line` to stdout with `writev` and exits with `exit_group`,
+/// neither of which the tools intercept, so no callback follows.
+///
+/// # Safety
+/// Ends the process.
+unsafe fn print_and_exit_unintercepted(line: &str) -> ! {
+    unsafe {
+        let iov = libc::iovec {
+            iov_base: line.as_ptr() as *mut libc::c_void,
+            iov_len: line.len(),
+        };
+        assert_eq!(libc::writev(1, &iov, 1), line.len() as isize);
+        libc::syscall(libc::SYS_exit_group, 0);
+        unreachable!("exit_group returned");
+    }
+}
+
+/// One injected `rt_sigprocmask` unblocks two pending signals. SIGSYS,
+/// queued with a positive `si_code`, is dequeued ahead of the step SIGTRAP
+/// and held. SIGUSR1, sent by `tgkill`, is not synchronous-class and stays
+/// queued. The hook for SIGSYS injects `getpid`, and SIGUSR1 stops that step
+/// before its `syscall`, so SIGUSR1 is held while the callback for SIGSYS is
+/// still running. The guest then exits without another intercepted syscall,
+/// so no later callback could hand SIGUSR1 back. Both signals are reported,
+/// and each handler runs once, as on untraced Linux, where the unblock
+/// returns 0 and delivers both.
+#[test]
+fn signal_held_by_a_signal_hook_injection_is_reported_and_delivered() {
+    let (output, log) = test_fn::<InjectInFirstSignalHook, _>(|| unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        SIGUSR1_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        install_counter(libc::SIGUSR1, count_sigusr1);
+        let set = block(&[libc::SIGSYS, libc::SIGUSR1]);
+        queue_to_self(libc::SIGSYS, 1);
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_tgkill,
+                libc::getpid(),
+                libc::syscall(libc::SYS_gettid),
+                libc::SIGUSR1
+            ),
+            0
+        );
+        let ret = libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_FD,
+            &set as *const libc::sigset_t,
+            0usize,
+        );
+        print_and_exit_unintercepted(&format!(
+            "{ret} {} {} {}\n",
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+            SIGUSR1_HANDLER_CALLS.load(Ordering::Relaxed),
+            libc::getpid()
+        ));
+    })
+    .expect("run hook-held signal guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE hook-held guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    let (fields, _pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
+    assert_eq!(
+        fields, "0 1 1",
+        "the unblock succeeds and each handler runs once"
+    );
+    assert_eq!(
+        *injected,
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
+        "the unblock completes; SIGUSR1 interrupts the hook's getpid before it runs"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS, libc::SIGUSR1],
+        "each signal reaches the tool once"
+    );
+}
+
+/// The program `requeued_signal_follows_a_nonleader_exec` executes. It
+/// prints whether SIGSYS is blocked and pending, installs a handler,
+/// unblocks SIGSYS, and prints the handler's run count and the PID.
+const UNBLOCK_SIGSYS_PY: &std::ffi::CStr = c"import os, signal
+runs = []
+blocked = int(signal.SIGSYS in signal.pthread_sigmask(signal.SIG_BLOCK, []))
+pending = int(signal.SIGSYS in signal.sigpending())
+signal.signal(signal.SIGSYS, lambda *_: runs.append(1))
+signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGSYS])
+print(blocked, pending, len(runs), os.getpid())
+";
+
+/// A worker thread's SIGSYS, sent by `tgkill`, interrupts an injected
+/// `ppoll` whose temporary mask lets it through; the tool returns 0, so
+/// `ppoll` is not restarted. The hook's `getpid` lets the kernel restore the
+/// saved mask, so its pass-through verdict is requeued on the worker's
+/// private queue, blocked. The worker then executes another program, which
+/// takes the leader's TID and keeps the worker's private queue, and that
+/// program unblocks SIGSYS. Its delivery is the one the hook already decided,
+/// so the hook does not run again.
+#[test]
+fn requeued_signal_follows_a_nonleader_exec() {
+    extern "C" fn worker(_: *mut libc::c_void) -> *mut libc::c_void {
+        // SAFETY: plain libc calls on this thread's signal state and on
+        // buffers that outlive each call.
+        unsafe {
+            block(&[libc::SIGSYS]);
+            assert_eq!(
+                libc::syscall(
+                    libc::SYS_tgkill,
+                    libc::getpid(),
+                    libc::syscall(libc::SYS_gettid),
+                    libc::SIGSYS
+                ),
+                0
+            );
+            let mut args: PpollArgs = std::mem::zeroed();
+            libc::sigemptyset(&mut args.mask);
+            args.timeout.tv_sec = 5;
+            let ret = libc::syscall(
+                libc::SYS_write,
+                PPOLL_THEN_ZERO_FD,
+                &mut args as *mut PpollArgs,
+                0usize,
+            );
+            assert_eq!(ret, 0);
+            let path = c"/usr/bin/python3";
+            let argv = [
+                c"python3".as_ptr(),
+                c"-c".as_ptr(),
+                UNBLOCK_SIGSYS_PY.as_ptr(),
+                std::ptr::null(),
+            ];
+            let envp = [std::ptr::null()];
+            libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr());
+            libc::_exit(3);
+        }
+    }
+    let (output, log) = test_fn::<InjectInFirstSignalHook, _>(|| unsafe {
+        install_counter(libc::SIGSYS, count_sigsys);
+        let mut thread: libc::pthread_t = 0;
+        assert_eq!(
+            libc::pthread_create(&mut thread, std::ptr::null(), worker, std::ptr::null_mut()),
+            0
+        );
+        // The worker's exec ends this thread.
+        libc::pthread_join(thread, std::ptr::null_mut());
+        libc::_exit(4);
+    })
+    .expect("run nonleader-exec guest");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE nonleader-exec guest={} injected={:?} signals={:?} stderr={}",
+        stdout.trim(),
+        *injected,
+        *signals,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("program pid");
+    assert_eq!(
+        fields, "1 1 1",
+        "SIGSYS stays blocked and pending across the exec, then runs the handler once"
+    );
+    let pid: i64 = pid.parse().expect("program pid");
+    assert_eq!(
+        *injected,
+        vec![Err(Errno::ERESTARTNOHAND.into_raw()), Ok(pid)],
+        "ppoll is interrupted and the hook's getpid runs"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS],
+        "the hook runs once for the one SIGSYS"
+    );
 }
 
 /// A held SIGUSR1 (as in `signal_pending_before_injected_syscall_interrupts_it`)
