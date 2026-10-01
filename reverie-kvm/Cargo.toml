@@ -23,6 +23,7 @@ reverie = { version = "0.4.0", path = "../reverie", package = "reverie-core" }
 thiserror = "2.0.18"
 
 [dev-dependencies]
+io-uring = "0.7.11"
 serde = { version = "1.0.219", features = ["derive"] }
 
 [build-dependencies]
