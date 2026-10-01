@@ -413,28 +413,29 @@ instruction! {
         // to operate on `u32` values. We also can't reuse `JGE64` and `JLE64`
         // because the jump offsets would be incorrect.
 
-        // STEP1: if !(begin > arg) goto NOMATCH;
+        // STEP1: require arg >= begin.
 
-        // if (begin_hi > arg.hi) goto Step2; */
+        // If arg.hi > begin_hi, the lower bound already matches.
         BPF_JUMP(BPF_JMP + BPF_JGT + BPF_K, bhi, 4 /* goto STEP2 */, 0);
-        // if (begin_hi != arg.hi) goto NOMATCH;
+        // Otherwise require equal high words before comparing the low words.
         BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, bhi, 0, 9 /* goto NOMATCH */);
         // Load M[0] to operate on the low bits of the IP.
         BPF_STMT(BPF_LD + BPF_MEM, 0);
-        // if (begin_lo >= arg.lo) goto MATCH;
+        // Require arg.lo >= begin_lo.
         BPF_JUMP(BPF_JMP + BPF_JGE + BPF_K, blo, 0, 7 /* goto NOMATCH */);
         // Load M[1] because the next instruction expects the high bits of the
         // IP.
         BPF_STMT(BPF_LD + BPF_MEM, 1);
 
-        // STEP2: if !(arg > end) goto NOMATCH;
+        // STEP2: require arg < end.
 
-        // if (end_hi < arg.hi) goto MATCH;
-        BPF_JUMP(BPF_JMP + BPF_JGT + BPF_K, ehi, 0, 4 /* goto MATCH */);
-        // if (end_hi != arg.hi) goto NOMATCH;
+        // Only arg.hi < end_hi can match without comparing low words.
+        // Equality must continue to the end_lo check, not jump to MATCH.
+        BPF_JUMP(BPF_JMP + BPF_JGE + BPF_K, ehi, 0, 4 /* goto MATCH */);
+        // Reject arg.hi > end_hi; the accumulator already holds the high word.
         BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ehi, 0, 5 /* goto NOMATCH */);
         BPF_STMT(BPF_LD + BPF_MEM, 0);
-        // if (end_lo < arg.lo) goto MATCH;
+        // Reject arg.lo >= end_lo, making the upper bound exclusive.
         BPF_JUMP(BPF_JMP + BPF_JGE + BPF_K, elo, 2 /* goto NOMATCH */, 0);
         BPF_STMT(BPF_LD + BPF_MEM, 1);
 
@@ -449,8 +450,8 @@ instruction! {
 /// Checks if the instruction pointer is between a certain range. If so, executes
 /// `action`. Otherwise, fall through.
 ///
-/// Note that if `ip == end`, this will not match. That is, the interval closed
-/// at the end.
+/// Matches the half-open interval `begin <= ip && ip < end`. In particular,
+/// `ip == end` does not match, and empty or reversed intervals never match.
 ///
 /// Precondition: The instruction pointer must be loaded with [`LOAD_SYSCALL_IP`]
 /// first.
@@ -466,6 +467,162 @@ pub fn IP_RANGE(begin: u64, end: u64, action: sock_filter) -> impl ByteCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // This models only the actual emitted classic-BPF instruction array. It
+    // never installs a filter or represents a kernel/tracer observation.
+    fn modeled_action(filter: &Filter, ip: u64, arch: u32) -> u32 {
+        let mut accumulator = 0;
+        let mut memory = [0u32; 16];
+        let mut pc = 0;
+        for _ in 0..filter.len() {
+            let insn = &filter.instructions()[pc];
+            pc += 1;
+            match insn.code {
+                0x20 => {
+                    accumulator = match insn.k {
+                        SECCOMP_DATA_OFFSET_ARCH => arch,
+                        SECCOMP_DATA_OFFSET_IP_LO => ip as u32,
+                        SECCOMP_DATA_OFFSET_IP_HI => (ip >> 32) as u32,
+                        offset => panic!("unexpected seccomp-data offset {offset}"),
+                    };
+                }
+                0x02 => memory[insn.k as usize] = accumulator,
+                0x60 => accumulator = memory[insn.k as usize],
+                0x15 | 0x25 | 0x35 => {
+                    let yes = match insn.code {
+                        0x15 => accumulator == insn.k,
+                        0x25 => accumulator > insn.k,
+                        _ => accumulator >= insn.k,
+                    };
+                    pc += if yes { insn.jt } else { insn.jf } as usize;
+                }
+                0x06 => return insn.k,
+                code => panic!("unexpected classic-BPF opcode {code:#x}"),
+            }
+        }
+        panic!("filter failed to return within its instruction bound");
+    }
+
+    fn range_filter(begin: u64, end: u64) -> Filter {
+        seccomp_bpf![
+            VALIDATE_ARCH(AUDIT_ARCH_X86_64),
+            LOAD_SYSCALL_IP(),
+            IP_RANGE(begin, end, ALLOW),
+            DENY,
+        ]
+    }
+
+    #[test]
+    fn ip_range_matches_half_open_u64_interval() {
+        for (begin, end) in [
+            (0, 1),
+            (0x1000, 0x2000),
+            (0xffff_fffe, 0x1_0000_0002),
+            (0x1_0000_1000, 0x1_0000_2000),
+            (0x1_0000_0000, 0x2_0000_0000),
+            (u64::MAX - 2, u64::MAX),
+            (0, u64::MAX),
+            (0, 0),
+            (0x1800, 0x1800),
+            (u64::MAX, u64::MAX),
+            (0x2000, 0x1000),
+            (0x1_0000_0001, 0xffff_ffff),
+            (u64::MAX, 0),
+        ] {
+            let mut probes = std::collections::BTreeSet::from([
+                0,
+                1,
+                0xfff,
+                0x1000,
+                0x1800,
+                0x1fff,
+                0x2000,
+                0x3000,
+                0xffff_ffff,
+                0x1_0000_0000,
+                u64::MAX - 1,
+                u64::MAX,
+            ]);
+            for bound in [begin, end] {
+                probes.insert(bound);
+                probes.extend(bound.checked_sub(1));
+                probes.extend(bound.checked_add(1));
+            }
+            if begin < end {
+                probes.insert(begin + (end - begin) / 2);
+            }
+            let filter = range_filter(begin, end);
+            for ip in probes {
+                assert_eq!(
+                    modeled_action(&filter, ip, AUDIT_ARCH_X86_64),
+                    if begin <= ip && ip < end {
+                        ALLOW.k
+                    } else {
+                        DENY.k
+                    },
+                    "half-open IP range [{begin:#x},{end:#x}) misclassified {ip:#x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chained_ip_ranges_restore_high_word_after_nonmatch() {
+        let ranges = [
+            (0x1_0000_1000, 0x1_0000_2000, TRACE(7)),
+            (0x1_0000_3000, 0x1_0000_4000, ERRNO(Errno::EIO)),
+            (0x1_ffff_fffe, 0x2_0000_0002, ALLOW),
+        ];
+        let mut filter = seccomp_bpf![VALIDATE_ARCH(AUDIT_ARCH_X86_64), LOAD_SYSCALL_IP()];
+        for &(begin, end, action) in &ranges {
+            IP_RANGE(begin, end, action).into_bpf(&mut filter);
+        }
+        TRAP.into_bpf(&mut filter);
+        for ip in [
+            0,
+            0x1_0000_0fff,
+            0x1_0000_1000,
+            0x1_0000_1fff,
+            0x1_0000_2000,
+            0x1_0000_2500,
+            0x1_0000_2fff,
+            0x1_0000_3000,
+            0x1_0000_3500,
+            0x1_0000_3fff,
+            0x1_0000_4000,
+            0x1_ffff_fffd,
+            0x1_ffff_fffe,
+            0x1_ffff_ffff,
+            0x2_0000_0000,
+            0x2_0000_0001,
+            0x2_0000_0002,
+            u64::MAX,
+        ] {
+            let expected = ranges
+                .iter()
+                .find(|&&(begin, end, _)| begin <= ip && ip < end)
+                .map_or(TRAP.k, |&(_, _, action)| action.k);
+            assert_eq!(
+                modeled_action(&filter, ip, AUDIT_ARCH_X86_64),
+                expected,
+                "chained range lost nonmatch/accumulator at {ip:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn ip_range_cannot_bypass_architecture_check() {
+        let filter = range_filter(0x1000, 0x2000);
+        for ip in [0, 0x1000, 0x1800, 0x2000, 0x3000, u64::MAX] {
+            for arch in [0, AUDIT_ARCH_AARCH64] {
+                assert_eq!(
+                    modeled_action(&filter, ip, arch),
+                    libc::SECCOMP_RET_KILL_PROCESS,
+                    "IP range bypassed architecture at {ip:#x}, arch {arch:#x}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn smoke() {
