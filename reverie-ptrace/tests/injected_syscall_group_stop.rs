@@ -36,12 +36,15 @@ use reverie::Tool;
 use reverie::syscalls::Addr;
 use reverie::syscalls::AddrMut;
 use reverie::syscalls::Errno;
+use reverie::syscalls::Fork;
 use reverie::syscalls::Getpid;
 use reverie::syscalls::Getppid;
+use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Ppoll;
 use reverie::syscalls::RtSigprocmask;
 use reverie::syscalls::RtTgsigqueueinfo;
 use reverie::syscalls::Syscall;
+use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::Sysno;
 use reverie_ptrace::testing::test_fn;
 use serde::Deserialize;
@@ -75,6 +78,11 @@ const PPOLL_THEN_ZERO_FD: i32 = 907;
 /// &buf.set, NULL)`, then `getpid`, then `rt_tgsigqueueinfo(self, self,
 /// SIGTRAP, &buf.info)`, each reported; the tool returns the last result.
 const UNBLOCK_GETPID_THEN_TRAP_FD: i32 = 908;
+/// `rt_sigprocmask(SIG_UNBLOCK, buf, NULL)`, then `getpid`, then `fork`, each
+/// reported; the tool returns 0 to the guest.
+const UNBLOCK_GETPID_FORK_THEN_ZERO_FD: i32 = 909;
+/// `ExecInSignalHook` keeps `buf`, an `ExecArgs`, for its signal hook.
+const EXEC_ARGS_FD: i32 = 910;
 
 /// Guest memory for the injected `ppoll`.
 #[repr(C)]
@@ -248,6 +256,32 @@ where
                 .await;
             Ok(result?)
         }
+        Syscall::Write(write)
+            if write.fd() == UNBLOCK_GETPID_FORK_THEN_ZERO_FD && write.len() == 0 =>
+        {
+            let set = write.buf().and_then(|buf| Addr::from_raw(buf.as_raw()));
+            let result = guest
+                .inject(
+                    RtSigprocmask::new()
+                        .with_how(libc::SIG_UNBLOCK)
+                        .with_set(set)
+                        .with_oldset(None)
+                        .with_sigsetsize(8),
+                )
+                .await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            let result = guest.inject(Getpid::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            let result = guest.inject(Fork::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            Ok(0)
+        }
         Syscall::Write(write) if write.fd() == UNBLOCK_GETPID_THEN_TRAP_FD && write.len() == 0 => {
             let base = write.buf().map_or(0, |buf| buf.as_raw());
             let result = guest
@@ -320,6 +354,124 @@ impl Tool for InjectInFirstSignalHook {
         *guest.thread_state_mut() += 1;
         if *guest.thread_state_mut() == 1 {
             let result = guest.inject(Getpid::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+        }
+        Ok(Some(signal))
+    }
+}
+
+/// Like `InjectInFirstSignalHook`, but the first signal hook injects `fork`.
+#[derive(Clone, Copy, Debug, Default)]
+struct ForkInFirstSignalHook;
+
+#[reverie::tool]
+impl Tool for ForkInFirstSignalHook {
+    type GlobalState = Log;
+    /// Signal hooks run on this thread so far.
+    type ThreadState = u64;
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        replace_marker(guest, syscall).await
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        *guest.thread_state_mut() += 1;
+        if *guest.thread_state_mut() == 1 {
+            let result = guest.inject(Fork::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+        }
+        Ok(Some(signal))
+    }
+}
+
+/// Guest memory naming the program `ExecInSignalHook` executes.
+#[repr(C)]
+struct ExecArgs {
+    path: *const libc::c_char,
+    argv: *const *const libc::c_char,
+    envp: *const *const libc::c_char,
+}
+
+/// Keeps the `ExecArgs` a zero-length write to `EXEC_ARGS_FD` names, and
+/// executes them from the signal hook of the next SIGUSR2. In any program,
+/// `geteuid` is replaced with `getpid`.
+#[derive(Clone, Copy, Debug, Default)]
+struct ExecInSignalHook;
+
+#[reverie::tool]
+impl Tool for ExecInSignalHook {
+    type GlobalState = Log;
+    /// The address of the kept `ExecArgs`.
+    type ThreadState = usize;
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription.syscall(Sysno::geteuid);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        match syscall {
+            Syscall::Write(write) if write.fd() == EXEC_ARGS_FD && write.len() == 0 => {
+                *guest.thread_state_mut() = write.buf().map_or(0, |buf| buf.as_raw());
+                Ok(0)
+            }
+            Syscall::Geteuid(_) => guest.tail_inject(Getpid::new()).await,
+            other => Ok(guest.inject(other).await?),
+        }
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        let base = *guest.thread_state_mut();
+        if signal == Signal::SIGUSR2 && base != 0 {
+            let field = |offset: usize| base + offset;
+            let mut args = [0usize; 3];
+            for (i, offset) in [
+                std::mem::offset_of!(ExecArgs, path),
+                std::mem::offset_of!(ExecArgs, argv),
+                std::mem::offset_of!(ExecArgs, envp),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let addr = Addr::<usize>::from_raw(field(offset)).ok_or(Errno::EFAULT)?;
+                args[i] = guest.memory().read_value(addr)?;
+            }
+            let execve = Syscall::from_raw(
+                Sysno::execve,
+                SyscallArgs::new(args[0], args[1], args[2], 0, 0, 0),
+            );
+            // Returns only if the exec fails.
+            let result = guest.inject(execve).await;
             guest
                 .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
                 .await;
@@ -1794,4 +1946,498 @@ fn injected_syscall_trapped_by_guest_seccomp_reports_enosys() {
         vec![libc::SIGSYS, libc::SIGSYS],
         "each SIGSYS reaches the tool"
     );
+}
+
+/// How a guest disposes of a requeued SIGSYS without its delivery.
+#[derive(Clone, Copy)]
+enum Consume {
+    /// `rt_sigtimedwait`, which the tool does not intercept.
+    Sigtimedwait,
+    /// A switch to `SIG_IGN` and back, which discards the pending signal.
+    Ignore,
+}
+
+/// Leaves the requeued SIGSYS of
+/// `signal_hook_injecting_after_a_held_signal_reports_it_once_after_unblock`
+/// pending, consumes it as `consume` says, and prints the `ppoll` marker's
+/// result and whether SIGSYS was pending before and after.
+///
+/// # Safety
+/// Changes the calling thread's signal state.
+unsafe fn requeue_then_consume(consume: Consume) -> String {
+    unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        let set = block(&[libc::SIGSYS]);
+        queue_to_self(libc::SIGSYS, 1);
+        let mut args: PpollArgs = std::mem::zeroed();
+        libc::sigemptyset(&mut args.mask);
+        args.timeout.tv_sec = 5;
+        let ret = libc::syscall(
+            libc::SYS_write,
+            PPOLL_THEN_ZERO_FD,
+            &mut args as *mut PpollArgs,
+            0usize,
+        );
+        let before = is_pending(libc::SIGSYS);
+        match consume {
+            Consume::Sigtimedwait => {
+                let mut info: libc::siginfo_t = std::mem::zeroed();
+                let timeout = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                };
+                assert_eq!(
+                    libc::syscall(
+                        libc::SYS_rt_sigtimedwait,
+                        &set as *const libc::sigset_t,
+                        &mut info as *mut libc::siginfo_t,
+                        &timeout as *const libc::timespec,
+                        8usize,
+                    ),
+                    libc::SIGSYS as libc::c_long
+                );
+            }
+            Consume::Ignore => {
+                assert_ne!(libc::signal(libc::SIGSYS, libc::SIG_IGN), libc::SIG_ERR);
+                install_counter(libc::SIGSYS, count_sigsys);
+            }
+        }
+        format!("{ret} {before} {}", is_pending(libc::SIGSYS))
+    }
+}
+
+/// The SIGSYS requeued after the hook passed it through is consumed without a
+/// delivery. A later SIGSYS that the guest sends itself with `kill`, with no
+/// intercepted syscall in between, is a different instance, which the hook
+/// has not seen: it is reported on its ordinary delivery when the guest
+/// unblocks it. Untraced Linux runs the handler once, for the second SIGSYS.
+fn consumed_requeue_then_kill_is_reported(consume: Consume) {
+    let (output, log) = test_fn::<InjectInFirstSignalHook, _>(move || unsafe {
+        let first = requeue_then_consume(consume);
+        assert_eq!(libc::kill(libc::getpid(), libc::SIGSYS), 0);
+        unblock(libc::SIGSYS);
+        println!(
+            "{first} {} {}",
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+            libc::getpid()
+        );
+    })
+    .expect("run consumed-requeue guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE consumed-requeue-kill guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
+    let pid: i64 = pid.parse().expect("guest pid");
+    assert_eq!(
+        fields, "0 1 0 1",
+        "the requeued SIGSYS is pending, then consumed; the second runs the handler once"
+    );
+    assert_eq!(
+        *injected,
+        vec![Err(Errno::ERESTARTNOHAND.into_raw()), Ok(pid)],
+        "ppoll is interrupted and the first hook's getpid runs"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS, libc::SIGSYS],
+        "the hook runs once for each SIGSYS"
+    );
+}
+
+#[test]
+fn requeue_consumed_by_sigtimedwait_does_not_hide_a_later_signal() {
+    consumed_requeue_then_kill_is_reported(Consume::Sigtimedwait);
+}
+
+#[test]
+fn requeue_discarded_by_sig_ign_does_not_hide_a_later_signal() {
+    consumed_requeue_then_kill_is_reported(Consume::Ignore);
+}
+
+/// How the guest sends the second SIGSYS of `consumed_requeue_then_held`.
+#[derive(Clone, Copy)]
+enum Resend {
+    /// `kill`, after no intercepted syscall.
+    Kill,
+    /// After an intercepted `getppid` marker, `rt_tgsigqueueinfo` with the
+    /// siginfo the requeue itself carried (`SI_USER` from the tracer's PID,
+    /// procfs `TracerPid` in this PID namespace), so that only the retirement
+    /// of the consumed requeue's record tells the two apart.
+    LookalikeAfterSyscall,
+}
+
+/// As `consumed_requeue_then_kill_is_reported`, but the second SIGSYS is held
+/// by the injected `ppoll` of another marker, whose temporary mask lets it
+/// through, and reported before the resume that delivers it. Untraced Linux
+/// interrupts that `ppoll` with EINTR and runs the handler once.
+fn consumed_requeue_then_held(resend: Resend) {
+    let (output, log) = test_fn::<InjectInFirstSignalHook, _>(move || unsafe {
+        let first = requeue_then_consume(Consume::Sigtimedwait);
+        match resend {
+            Resend::Kill => assert_eq!(libc::kill(libc::getpid(), libc::SIGSYS), 0),
+            Resend::LookalikeAfterSyscall => {
+                libc::syscall(libc::SYS_write, GETPPID_FD, std::ptr::null::<u8>(), 0usize);
+                let status = std::fs::read_to_string("/proc/self/status").unwrap();
+                let tracer: libc::pid_t = status
+                    .lines()
+                    .find_map(|line| line.strip_prefix("TracerPid:"))
+                    .unwrap()
+                    .trim()
+                    .parse()
+                    .unwrap();
+                let mut info: libc::siginfo_t = std::mem::zeroed();
+                info.si_signo = libc::SIGSYS;
+                info.si_code = libc::SI_USER;
+                // `si_pid` and `si_uid` open the union after the three ints.
+                let fields = (&mut info as *mut libc::siginfo_t).cast::<u8>().add(16);
+                fields.cast::<libc::pid_t>().write(tracer);
+                fields.add(4).cast::<libc::uid_t>().write(libc::getuid());
+                assert_eq!(
+                    libc::syscall(
+                        libc::SYS_rt_tgsigqueueinfo,
+                        libc::getpid(),
+                        libc::syscall(libc::SYS_gettid),
+                        libc::SIGSYS,
+                        &mut info as *mut libc::siginfo_t,
+                    ),
+                    0
+                );
+            }
+        }
+        let mut args: PpollArgs = std::mem::zeroed();
+        libc::sigemptyset(&mut args.mask);
+        args.timeout.tv_sec = 5;
+        let ret = libc::syscall(
+            libc::SYS_write,
+            PPOLL_FD,
+            &mut args as *mut PpollArgs,
+            0usize,
+        );
+        let errno = *libc::__errno_location();
+        println!(
+            "{first} {ret} {errno} {} {} {}",
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+            is_pending(libc::SIGSYS),
+            libc::getpid()
+        );
+    })
+    .expect("run consumed-requeue guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE consumed-requeue-held guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
+    let pid: i64 = pid.parse().expect("guest pid");
+    assert_eq!(
+        fields,
+        format!("0 1 0 -1 {} 1 0", libc::EINTR),
+        "the second SIGSYS interrupts the ppoll marker and runs the handler once"
+    );
+    let restart = Err(Errno::ERESTARTNOHAND.into_raw());
+    let mut expected = vec![restart, Ok(pid)];
+    if let Resend::LookalikeAfterSyscall = resend {
+        expected.push(Ok(std::process::id() as i64));
+    }
+    expected.push(restart);
+    assert_eq!(*injected, expected, "both ppolls are interrupted");
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS, libc::SIGSYS],
+        "the hook runs once for each SIGSYS"
+    );
+}
+
+#[test]
+fn consumed_requeue_does_not_hide_a_later_held_signal() {
+    consumed_requeue_then_held(Resend::Kill);
+}
+
+#[test]
+fn consumed_requeue_retires_before_a_lookalike_held_signal() {
+    consumed_requeue_then_held(Resend::LookalikeAfterSyscall);
+}
+
+/// A held SIGUSR1 (as in `signal_pending_before_injected_syscall_interrupts_it`)
+/// stays held while the same callback injects `fork`, and the callback
+/// returns 0. The child's dispatch steps the parent to a signal-delivery stop
+/// (its step SIGTRAP), from which the final resume delivers SIGUSR1 without
+/// another stop, so it is reported before that resume.
+#[test]
+fn held_signal_is_reported_after_a_fork_injection() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        SIGUSR1_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGUSR1, count_sigusr1);
+        // The child's exit SIGCHLD stays pending rather than stopping the
+        // parent at a time that depends on the child.
+        block(&[libc::SIGCHLD]);
+        let set = block(&[libc::SIGUSR1]);
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_tgkill,
+                libc::getpid(),
+                libc::syscall(libc::SYS_gettid),
+                libc::SIGUSR1
+            ),
+            0
+        );
+        let pid = libc::getpid();
+        let ret = libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_GETPID_FORK_THEN_ZERO_FD,
+            &set as *const libc::sigset_t,
+            0usize,
+        );
+        if libc::getpid() != pid {
+            libc::_exit(0);
+        }
+        let calls = SIGUSR1_HANDLER_CALLS.load(Ordering::Relaxed);
+        let mut status = 0;
+        let child = libc::waitpid(-1, &mut status, 0);
+        println!("{ret} {calls} {child} {status}");
+    })
+    .expect("run held-fork guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE held-fork guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    let fields: Vec<&str> = stdout.trim().split(' ').collect();
+    assert_eq!(injected.len(), 3, "unblock, getpid and fork are injected");
+    let Ok(child) = injected[2] else {
+        panic!("fork failed: {:?}", injected[2]);
+    };
+    assert_eq!(
+        injected[..2],
+        [Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
+        "the unblock completes; SIGUSR1 interrupts getpid before it runs"
+    );
+    assert_eq!(
+        fields,
+        ["0", "1", &child.to_string(), "0"],
+        "the guest sees 0, runs the handler once, and reaps the forked child"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGUSR1],
+        "the held signal is reported once before it is delivered"
+    );
+}
+
+/// `signal_hook_injecting_after_a_held_signal_reports_it_once` with a hook
+/// that injects `fork`: the guest's interrupted `ppoll` keeps its
+/// `-ERESTARTNOHAND` rather than the child's PID, so it is restarted as
+/// before. Untraced Linux prints "-1 4 1 1 0 1".
+#[test]
+fn signal_hook_forking_after_a_held_signal_keeps_the_guest_result() {
+    let (output, log) = test_fn::<ForkInFirstSignalHook, _>(|| unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        block(&[libc::SIGSYS, libc::SIGCHLD]);
+        queue_to_self(libc::SIGSYS, 1);
+        let mut args: PpollArgs = std::mem::zeroed();
+        libc::sigemptyset(&mut args.mask);
+        libc::sigaddset(&mut args.mask, libc::SIGCHLD);
+        args.timeout.tv_sec = 5;
+        let pid = libc::getpid();
+        let ret = libc::syscall(
+            libc::SYS_write,
+            PPOLL_FD,
+            &mut args as *mut PpollArgs,
+            0usize,
+        );
+        if libc::getpid() != pid {
+            libc::_exit(0);
+        }
+        let errno = *libc::__errno_location();
+        print_fork_hook_outcome(ret, errno);
+    })
+    .expect("run signal-hook fork guest");
+    let child = check_fork_hook_outcome(&output, &log, "hook-fork-held");
+    let restart = Err(Errno::ERESTARTNOHAND.into_raw());
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![restart, Ok(child), restart],
+        "ppoll is interrupted, the hook's fork runs, and the restarted ppoll is interrupted"
+    );
+}
+
+/// `signal_hook_injecting_at_a_delivery_stop_reports_it_once` with a hook
+/// that injects `fork`. Untraced Linux prints "-1 4 1 1 0 1".
+#[test]
+fn signal_hook_forking_at_a_delivery_stop_keeps_the_guest_result() {
+    let (output, log) = test_fn::<ForkInFirstSignalHook, _>(|| unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        block(&[libc::SIGSYS, libc::SIGCHLD]);
+        queue_to_self(libc::SIGSYS, 1);
+        let mut mask: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut mask);
+        libc::sigaddset(&mut mask, libc::SIGCHLD);
+        let timeout = libc::timespec {
+            tv_sec: 5,
+            tv_nsec: 0,
+        };
+        let pid = libc::getpid();
+        let ret = libc::syscall(
+            libc::SYS_ppoll,
+            0usize,
+            0usize,
+            &timeout as *const libc::timespec,
+            &mask as *const libc::sigset_t,
+            8usize,
+        );
+        if libc::getpid() != pid {
+            libc::_exit(0);
+        }
+        let errno = *libc::__errno_location();
+        print_fork_hook_outcome(ret, errno);
+    })
+    .expect("run signal-hook fork guest");
+    let child = check_fork_hook_outcome(&output, &log, "hook-fork-ordinary");
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(child)],
+        "the hook's fork runs once"
+    );
+}
+
+/// Prints a fork-hook guest's syscall result, errno, SIGSYS handler runs,
+/// SIGSYS blocked and pending, handler runs after unblocking, and the child
+/// it reaped.
+///
+/// # Safety
+/// Changes the calling thread's signal mask and reaps a child.
+unsafe fn print_fork_hook_outcome(ret: libc::c_long, errno: libc::c_int) {
+    unsafe {
+        let calls = SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed);
+        let blocked = is_blocked(libc::SIGSYS);
+        let pending = is_pending(libc::SIGSYS);
+        unblock(libc::SIGSYS);
+        let mut status = 0;
+        let child = libc::waitpid(-1, &mut status, 0);
+        println!(
+            "{ret} {errno} {calls} {blocked} {pending} {} {child}",
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+        );
+    }
+}
+
+/// Checks `print_fork_hook_outcome`'s line and the one hook report, and
+/// returns the reaped child.
+fn check_fork_hook_outcome(output: &reverie::process::Output, log: &Log, probe: &str) -> i64 {
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE {probe} guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    let (fields, child) = stdout.trim().rsplit_once(' ').expect("reaped child");
+    let child: i64 = child.parse().expect("reaped child");
+    assert!(child > 0, "the guest reaps the hook's child");
+    assert_eq!(
+        fields,
+        format!("-1 {} 1 1 0 1", libc::EINTR),
+        "guest sees EINTR, one handler run, and SIGSYS blocked and not pending"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGSYS],
+        "the hook runs once for the one SIGSYS"
+    );
+    child
+}
+
+/// A signal hook executes another program. The replacement program's
+/// `geteuid`, which the tool replaces with `getpid`, gets the PID: the
+/// callback that injected the exec never resumed, and nothing of it, notably
+/// that a signal callback was running (whose injections keep the guest's
+/// return register), outlives it.
+#[test]
+fn exec_from_a_signal_hook_ends_the_callback() {
+    let (output, log) = test_fn::<ExecInSignalHook, _>(|| unsafe {
+        let path = c"/usr/bin/id";
+        let argv = [c"id".as_ptr(), c"-u".as_ptr(), std::ptr::null()];
+        let envp = [std::ptr::null()];
+        let args = ExecArgs {
+            path: path.as_ptr(),
+            argv: argv.as_ptr(),
+            envp: envp.as_ptr(),
+        };
+        libc::syscall(
+            libc::SYS_write,
+            EXEC_ARGS_FD,
+            &args as *const ExecArgs,
+            0usize,
+        );
+        use std::io::Write;
+        println!("{}", libc::getpid());
+        std::io::stdout().flush().unwrap();
+        libc::kill(libc::getpid(), libc::SIGUSR2);
+        // Reached only if the hook did not execute the program.
+        libc::_exit(3);
+    })
+    .expect("run exec-from-hook guest");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE exec-hook guest={:?} injected={:?} signals={:?} stderr={}",
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 2, "the guest's PID, then id's output");
+    assert_eq!(
+        lines[1], lines[0],
+        "id's geteuid, replaced with getpid, returns the PID"
+    );
+    assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR2]);
+    assert!(log.injected.lock().unwrap().is_empty(), "the exec succeeds");
 }

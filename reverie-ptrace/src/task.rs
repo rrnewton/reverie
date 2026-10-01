@@ -433,6 +433,29 @@ fn blocked_signal_mask(tid: Pid) -> Result<u64, TraceError> {
         .ok_or_else(|| Errno::EPROTO.into())
 }
 
+/// The `si_pid` that `ptrace_signal` gives a signal the tracer resumes the
+/// stopped thread `tid` with from a stop of another signal: the tracer
+/// thread's PID in `tid`'s PID namespace (`task_pid_vnr`), 0 where the
+/// tracer is not visible.
+///
+/// procfs `TracerPid` names the tracer in this process's namespace. A tracee
+/// in another namespace is in a descendant one, which cannot see the tracer.
+fn tracer_pid_seen_by(tid: Pid) -> Result<i32, TraceError> {
+    use std::os::unix::fs::MetadataExt;
+    let io = |err: std::io::Error| Errno::new(err.raw_os_error().unwrap_or(libc::EIO));
+    let ours = std::fs::metadata("/proc/thread-self/ns/pid").map_err(io)?;
+    let theirs = std::fs::metadata(format!("/proc/{tid}/ns/pid")).map_err(io)?;
+    if (ours.dev(), ours.ino()) != (theirs.dev(), theirs.ino()) {
+        return Ok(0);
+    }
+    let status = std::fs::read_to_string(format!("/proc/{tid}/status")).map_err(io)?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("TracerPid:"))
+        .and_then(|value| value.trim().parse().ok())
+        .ok_or_else(|| Errno::EPROTO.into())
+}
+
 /// `si_code` of a SIGSYS raised by a seccomp filter's `SECCOMP_RET_TRAP`.
 const SYS_SECCOMP: libc::c_int = 1;
 
@@ -2423,6 +2446,11 @@ pub struct TracedTask<L: Tool> {
     /// syscall got interrupted (by signal)
     pending_signal: Option<Signal>,
 
+    /// Whether `pending_signal` is the instance `note_requeued_report`
+    /// recorded, which the Tool has already been told about. Decided when the
+    /// signal is held (`take_requeued_report`), as its siginfo is gone later.
+    pending_signal_requeued: bool,
+
     /// Whether an injected syscall's single step ended at a held signal
     /// (`step_private_syscall`) before collecting its step SIGTRAP, which the
     /// kernel therefore still has queued. The next SIGTRAP stop carrying that
@@ -2443,6 +2471,11 @@ pub struct TracedTask<L: Tool> {
     /// bit per signal as in `signal_mask_bit`. The Tool has already decided
     /// that delivery, so it is passed on without a second report.
     reported_requeued_signals: u64,
+
+    /// The `si_pid` of the requeues `reported_requeued_signals` records
+    /// (`tracer_pid_seen_by`), which tells them from a later instance that a
+    /// guest thread sent with `kill`.
+    requeued_si_pid: i32,
 
     /// Whether `Tool::handle_signal_event` is running (`report_signal`). A
     /// syscall the callback injects then restores the guest's return
@@ -2638,9 +2671,11 @@ impl<L: Tool> TracedTask<L> {
             },
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
+            pending_signal_requeued: false,
             stale_private_step_trap: false,
             latest_injection_stop: None,
             reported_requeued_signals: 0,
+            requeued_si_pid: 0,
             in_signal_callback: false,
             child_procs: Arc::new(Mutex::new(Children::new())),
             child_threads: Arc::new(Mutex::new(Children::new())),
@@ -2708,9 +2743,11 @@ impl<L: Tool> TracedTask<L> {
             timer: Timer::new(self.pid, child),
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
+            pending_signal_requeued: false,
             stale_private_step_trap: false,
             latest_injection_stop: None,
             reported_requeued_signals: 0,
+            requeued_si_pid: 0,
             in_signal_callback: false,
             child_procs: self.child_procs.clone(),
             child_threads: self.child_threads.clone(),
@@ -2777,9 +2814,11 @@ impl<L: Tool> TracedTask<L> {
             timer: Timer::new(child, child),
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
+            pending_signal_requeued: false,
             stale_private_step_trap: false,
             latest_injection_stop: None,
             reported_requeued_signals: 0,
+            requeued_si_pid: 0,
             in_signal_callback: false,
             child_procs: Arc::new(Mutex::new(Children::new())),
             child_threads: Arc::new(Mutex::new(Children::new())),
@@ -3914,11 +3953,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                     None => task,
                 }
             };
-            let signal = self.take_pending_signal_for_resume(
+            let (signal, requeued) = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeInjectedSyscall,
             )?;
             let signal = self
-                .report_held_signal(&task, Some(Signal::SIGTRAP), signal)
+                .report_held_signal(&task, Some(Signal::SIGTRAP), signal, requeued)
                 .await?;
             return self.resume_stopped(task, signal)?.next_state().await;
         }
@@ -3974,11 +4013,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.pending_syscall = None;
             self.pending_syscall_already_skipped = false;
             self.injected_syscall_frame = None;
-            let signal = self.take_pending_signal_for_resume(
+            let (signal, requeued) = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeInterceptedInjectedSyscall,
             )?;
             let signal = self
-                .report_held_signal(&task, Some(Signal::SIGTRAP), signal)
+                .report_held_signal(&task, Some(Signal::SIGTRAP), signal, requeued)
                 .await?;
             let wait = self.resume_stopped(task, signal)?.next_state().await?;
             tracing::trace!(
@@ -4514,11 +4553,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         Errno::EPROTO.into()
     }
 
+    /// Takes `pending_signal` and whether it is the recorded requeue
+    /// (`pending_signal_requeued`).
     fn take_pending_signal_for_resume(
         &mut self,
         operation: LiteinstActivationOperation,
-    ) -> Result<Option<Signal>, TraceError> {
+    ) -> Result<(Option<Signal>, bool), TraceError> {
         let signal = self.pending_signal.take();
+        let requeued = std::mem::take(&mut self.pending_signal_requeued);
         if self.liteinst_activation_in_progress()
             && let Some(sig) = signal
         {
@@ -4531,7 +4573,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 ),
             ));
         }
-        Ok(signal)
+        Ok((signal, requeued))
     }
 
     /// Reports a signal taken from `pending_signal` to `Tool::handle_signal_event`
@@ -4560,7 +4602,8 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// delivered after an unblock. This happens when a later injection's step
     /// let the kernel restore a mask-swapping syscall's saved mask. A signal
     /// the Tool already passed through at such a requeue
-    /// (`note_requeued_report`) is passed on unreported. SIGSTOP and the
+    /// (`note_requeued_report`), which `requeued` says this one is, is passed
+    /// on unreported. SIGSTOP and the
     /// timer signal are also passed on unreported, as before:
     /// `handle_signal` never reports SIGSTOP to the Tool, and a held timer
     /// signal is https://github.com/rrnewton/reverie/issues/747.
@@ -4569,12 +4612,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: &Stopped,
         stop_signal: Option<Signal>,
         signal: Option<Signal>,
+        requeued: bool,
     ) -> Result<Option<Signal>, TraceError> {
         let Some(sig) = signal else {
             return Ok(None);
         };
         let delivery = self.latest_injection_stop.unwrap_or(stop_signal);
-        if self.take_requeued_report(sig) {
+        if requeued {
             // If this resume requeues it again, the Tool's decision still
             // stands for its next delivery.
             self.note_requeued_report(task, delivery, sig, Some(sig))?;
@@ -4639,26 +4683,63 @@ impl<L: Tool + 'static> TracedTask<L> {
             && delivery.is_some_and(|stop| stop != sig)
             && blocked_signal_mask(task.pid())? & signal_mask_bit(sig) != 0
         {
+            self.requeued_si_pid = tracer_pid_seen_by(task.pid())?;
             self.reported_requeued_signals |= signal_mask_bit(sig);
         }
         Ok(())
     }
 
-    /// Takes the record `note_requeued_report` left for `sig`, if any.
+    /// Takes the record `note_requeued_report` left for `sig`, if any, at
+    /// the thread's next dequeue of `sig`, whose siginfo is `siginfo`, and
+    /// returns whether that instance is the requeued one.
     ///
-    /// The record is per thread and per signal number and is taken at the
-    /// thread's next delivery of `sig`. A standard signal is queued at most
-    /// once and the private queue is dequeued first, so that delivery is the
-    /// requeued one unless the guest consumed it without a delivery
-    /// (`sigwaitinfo`, `signalfd`, or a switch to `SIG_IGN`). `handle_signal`
-    /// then still reports a later instance that does not carry `SI_USER`; a
-    /// held one is passed on unreported, as its siginfo is gone. Several
-    /// queued instances of a realtime signal can still be reported twice.
-    fn take_requeued_report(&mut self, sig: Signal) -> bool {
+    /// The record is per thread and per signal number. While it stands, the
+    /// requeued instance is pending on the thread's private queue
+    /// (`retire_consumed_requeues`). A standard signal is queued at most once
+    /// per queue and the private queue is dequeued first, so the next dequeue
+    /// is the requeued instance. It carries `SI_USER` and the tracer's PID
+    /// (`requeued_si_pid`); an instance without both is another one, which
+    /// the guest dequeued since the last retirement point. A sender outside
+    /// the guest's PID namespace, which `kill` reports as PID 0, is not told
+    /// from a tracer outside it. Several queued instances of a realtime
+    /// signal can still be reported twice.
+    fn take_requeued_report(&mut self, sig: Signal, siginfo: &libc::siginfo_t) -> bool {
         let bit = signal_mask_bit(sig);
         let recorded = self.reported_requeued_signals & bit != 0;
         self.reported_requeued_signals &= !bit;
+        // SAFETY: `SI_USER` fills `si_pid`.
         recorded
+            && siginfo.si_code == libc::SI_USER
+            && unsafe { siginfo.si_pid() } == self.requeued_si_pid
+    }
+
+    /// Drops each record `note_requeued_report` left whose requeued instance
+    /// is no longer pending on `task`'s private queue.
+    ///
+    /// The guest can consume the instance without a delivery
+    /// (`sigtimedwait`, a `signalfd` read, or a switch to `SIG_IGN`); its
+    /// record would then claim the next, distinct instance of the signal,
+    /// which the Tool has not seen. Each of these is a syscall, so this runs
+    /// at every seccomp stop and before every injected syscall, while the
+    /// instance cannot have been dequeued since the stop. A consuming syscall
+    /// that the Tool does not intercept is retired only at the next such
+    /// point.
+    fn retire_consumed_requeues(&mut self, task: &Stopped) -> Result<(), TraceError> {
+        if self.reported_requeued_signals == 0 {
+            return Ok(());
+        }
+        let pending = task
+            .peeksiginfo_all(None)?
+            .iter()
+            .filter(|info| {
+                // SAFETY: `SI_USER` fills `si_pid`.
+                info.si_code == libc::SI_USER
+                    && unsafe { info.si_pid() } == self.requeued_si_pid
+                    && (1..=64).contains(&info.si_signo)
+            })
+            .fold(0, |pending, info| pending | 1u64 << (info.si_signo - 1));
+        self.reported_requeued_signals &= pending;
+        Ok(())
     }
 
     fn validate_nested_liteinst_activation_signal(
@@ -4777,9 +4858,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         match result {
             HandleSignalResult::SignalSuppressed(wait) => Ok(wait),
             HandleSignalResult::SignalToDeliver(task, sig) => {
-                // The requeue `note_requeued_report` records carries
-                // `SI_USER`; another code is a different instance.
-                if self.take_requeued_report(sig) && task.getsiginfo()?.si_code == libc::SI_USER {
+                if self.take_requeued_report(sig, &task.getsiginfo()?) {
                     return self.resume_stopped(task, Some(sig))?.next_state().await;
                 }
                 let verdict = self.report_signal(sig).await?;
@@ -6183,6 +6262,8 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     async fn handle_seccomp(&mut self, mut task: Stopped) -> Result<Wait, Error> {
         let tid = self.tid();
+        self.retire_consumed_requeues(&task)
+            .tracee_context(tid, "retire consumed signal requeues")?;
         // Trap-only routing (H0) runs before anything reads the syscall: a
         // patched site's stop carries an ia32 entry that must first be
         // normalized, and must never reach the mapping shortcut below.
@@ -6360,7 +6441,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.pending_signal = Some(sig);
                 }
             }
-            let sig = self.take_pending_signal_for_resume(
+            let (sig, requeued) = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeAfterSeccompStop,
             )?;
             if let Some(view) = self.trap_only_take_live_entry() {
@@ -6384,7 +6465,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.pre_syscall_for_test(&regs, PreSyscallPoint::Late)
                     .await;
             }
-            let sig = self.report_held_signal(&task, None, sig).await?;
+            let sig = self.report_held_signal(&task, None, sig, requeued).await?;
             let running = self
                 .resume_stopped(task, sig)
                 .tracee_context(tid, "resume after seccomp stop")?;
@@ -7911,6 +7992,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.next_state = tx;
                     self.next_state_rx = Some(rx);
                     self.pending_signal = None;
+                    self.pending_signal_requeued = false;
+                    self.in_signal_callback = false;
                     self.stale_private_step_trap = false;
                     self.pending_syscall = None;
                     self.pending_syscall_already_skipped = false;
@@ -8526,6 +8609,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         *regs.ip_mut() = cp::PRIVATE_PAGE_OFFSET as Reg;
 
         task.setregs(&regs)?;
+        self.retire_consumed_requeues(&task)?;
 
         // Step to run the syscall instruction.
         let (mut wait, mut seccomp_trapped) = self.step_private_syscall(task, nr).await?;
@@ -8862,6 +8946,17 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.untraced_syscall(task, nr, args).await
     }
 
+    /// Records the stop an injection ended at in `latest_injection_stop`.
+    fn note_injection_stop(&mut self, wait: &Wait) -> Result<(), TraceError> {
+        if let Wait::Stopped(stopped, event) = wait {
+            self.latest_injection_stop = Some(match event {
+                Event::Signal(sig) if !is_group_stop(stopped, *sig)? => Some(*sig),
+                _ => None,
+            });
+        }
+        Ok(())
+    }
+
     async fn status_to_result(
         &mut self,
         wait_status: Wait,
@@ -8912,12 +9007,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             let address = AddrMut::from_raw(cp::PRIVATE_PAGE_OFFSET).ok_or(Errno::EFAULT)?;
             stopped_writer.write_value(address, &mutated_stub)?;
         }
-        if let Wait::Stopped(stopped, event) = &wait_status {
-            self.latest_injection_stop = Some(match event {
-                Event::Signal(sig) if !is_group_stop(stopped, *sig)? => Some(*sig),
-                _ => None,
-            });
-        }
+        self.note_injection_stop(&wait_status)?;
         match wait_status {
             Wait::Stopped(stopped, event) => match event {
                 Event::Signal(sig) if context.is_none() => {
@@ -8971,6 +9061,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                                 held
                             );
                         }
+                        self.pending_signal_requeued =
+                            self.take_requeued_report(sig, &stopped.getsiginfo()?);
                         self.pending_signal = Some(sig);
                     }
                     let result = Errno::from_ret(regs.ret() as usize).map(|x| x as i64);
@@ -8997,12 +9089,30 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 Event::NewChild(op, child) => {
                     let ret = child.pid().as_raw() as i64;
-                    let _ = self
+                    // A signal callback's injection keeps the guest's return
+                    // register, as above. The kernel writes the child's PID
+                    // after the event stop, so it is restored at the stop the
+                    // parent's step ends at.
+                    let guest_ret = context
+                        .filter(|_| self.in_signal_callback)
+                        .map(|context| context.ret());
+                    let wait = self
                         .dispatch_new_task(op, stopped, child, context, child_context)
                         .await?;
+                    // That stop, not the event stop, is the one a resume from
+                    // a signal callback leaves (`report_held_signal`).
+                    self.note_injection_stop(&wait)?;
+                    if let (Some(ret), Wait::Stopped(parent, _)) = (guest_ret, &wait) {
+                        let mut regs = parent.getregs()?;
+                        *regs.ret_mut() = ret;
+                        parent.setregs(&regs)?;
+                    }
                     Ok(Ok(ret))
                 }
                 Event::Exec(former_tid) => {
+                    // The callback that injected the exec never resumes, so
+                    // the replacement image runs outside it.
+                    self.in_signal_callback = false;
                     // This should never return.
                     let next_state = self.handle_exec_event(stopped, former_tid).await?;
                     self.execve(next_state).await
