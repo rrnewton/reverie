@@ -2460,6 +2460,22 @@ impl Notifier {
         if event.try_begin_unstarted_completion() {
             // Publish the terminal result before completion becomes visible.
             event.mark_echild();
+            // This cfg(test) pause runs while `pids`, the process-wide
+            // NOTIFIER registry lock, is held. While an armed pause waits,
+            // every other thread in the same `cargo test` process that takes
+            // `pids` (notifier registration, lookup, ECHILD resolution,
+            // raw-cleanup claim or removal) blocks until the test releases
+            // the pause or the 2 s timeout in pause_retirement_for_test
+            // expires. The test that arms it at this site is
+            // unstarted_echild_ack_follows_registry_release.
+            // It must sit under `pids`: the ECHILD publication above, the
+            // registry removal and DONE below form one critical section,
+            // and that test must observe its interior boundary (result
+            // published, entry still registered, DONE unpublished). A pause
+            // before the lock, like the one in remove(), would run before
+            // this completion is claimed and could not catch DONE published
+            // ahead of the removal; releasing the lock around the pause
+            // would change which steps the lock covers.
             #[cfg(test)]
             pause_retirement_for_test(&event.registry_retirement_pause);
             if pids
