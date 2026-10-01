@@ -8793,8 +8793,9 @@ mod tests {
     /// resumed, so the group exit completes with the actual status and the
     /// terminal path never meets it as an unexpected non-exit stop. The
     /// exiting thread passes status 0 only if it saw the parent move from
-    /// its vfork wait into its vfork-done stop, and 3 otherwise, so the test
-    /// fails instead of passing when that stop was not reached.
+    /// its vfork wait into its vfork-done stop and still sees it there just
+    /// before exit_group, and 3 otherwise, so the test fails instead of
+    /// passing when that stop was not reached or was already consumed.
     #[tokio::test(flavor = "current_thread")]
     async fn group_exit_retires_vfork_done_queued_before_exit() {
         static RUNNING: AtomicUsize = AtomicUsize::new(0);
@@ -8874,10 +8875,12 @@ mod tests {
                     unsafe { libc::pause() };
                 }
             });
-            // The group exit, once the parent has left wait_for_vfork_done
-            // for its vfork-done stop. Bounded: if that move is not seen
-            // within 3 s, the group exits with status 3 instead of 0, so the
-            // test fails rather than passing with the prefix unexercised.
+            // The group exit, while the parent's vfork-done stop is still
+            // unconsumed. The group exits with status 3 instead of 0, so the
+            // test fails rather than passing with the prefix unexercised, if
+            // the parent is not seen moving from wait_for_vfork_done (D)
+            // into its vfork-done stop (t) within 3 s, or if it has left
+            // that stop (no longer t) when re-read just before exit_group.
             std::thread::spawn(|| {
                 after_go();
                 let tid = PARENT_TID.load(Ordering::SeqCst);
@@ -8896,7 +8899,14 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(1));
                 }
                 std::thread::sleep(Duration::from_millis(20));
-                let status: libc::c_long = if saw_vfork_done_stop { 0 } else { 3 };
+                // The tracer can consume the stop during the sleep; only the
+                // instructions between this read and exit_group stay unseen.
+                let still_in_vfork_done_stop = thread_state(tid) == Some(b't');
+                let status: libc::c_long = if saw_vfork_done_stop && still_in_vfork_done_stop {
+                    0
+                } else {
+                    3
+                };
                 unsafe { libc::syscall(libc::SYS_exit_group, status) };
             });
             while RUNNING.load(Ordering::SeqCst) < 2 {
@@ -8934,7 +8944,7 @@ mod tests {
         assert_eq!(
             status,
             ExitStatus::Exited(0),
-            "Exited(3) means the parent was not seen moving from its vfork wait (D) into its vfork-done stop (t), so no vfork-done stop was known to be queued before EXIT"
+            "Exited(3) means the parent was not seen moving from its vfork wait (D) into its vfork-done stop (t), or had left that stop just before exit_group, so no vfork-done stop was known to be queued before EXIT"
         );
     }
 
