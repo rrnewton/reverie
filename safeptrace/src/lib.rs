@@ -974,6 +974,35 @@ impl Stopped {
         ptrace::getsiginfo(self.0.into()).map_err(|err| self.map_nix_err(err))
     }
 
+    /// Returns [`Error::Died`] if this tracee has left the stop this
+    /// capability names and is now in its `PTRACE_EVENT_EXIT` stop, or if
+    /// the probe itself reports its death. Returns `None` otherwise.
+    ///
+    /// A fatal signal takes a tracee out of any ptrace stop without a tracer
+    /// request. A request made while the tracee is on its way to its exit
+    /// stop fails with `ESRCH`, because the tracee is not in a stop. Once it
+    /// is in its exit stop, requests succeed again, so an ordinary probe made
+    /// after that `ESRCH` sees a stopped, apparently live tracee.
+    /// `PTRACE_GETSIGINFO` tells the two apart: in the exit stop, `si_code`
+    /// is `SIGTRAP | (PTRACE_EVENT_EXIT << 8)`.
+    ///
+    /// Call this only on the capability for a stop other than the exit stop,
+    /// after a request on it failed with `ESRCH`. Holding such a stop, the
+    /// tracer has not resumed the tracee, so a tracee found in its exit stop
+    /// was taken there by a fatal signal and the held stop is dead.
+    pub fn died_into_exit_stop(&self) -> Option<Error> {
+        match self.getsiginfo() {
+            Ok(siginfo)
+                if siginfo.si_signo == libc::SIGTRAP
+                    && siginfo.si_code == libc::SIGTRAP | (libc::PTRACE_EVENT_EXIT << 8) =>
+            {
+                Some(self.map_err(Errno::ESRCH))
+            }
+            Err(died @ Error::Died(_)) => Some(died),
+            _ => None,
+        }
+    }
+
     /// Sets info about the singal that caused the process to be stopped.
     pub fn setsiginfo(&self, siginfo: &libc::siginfo_t) -> Result<(), Error> {
         ptrace::setsiginfo(self.0.into(), siginfo).map_err(|err| self.map_nix_err(err))
