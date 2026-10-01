@@ -3909,7 +3909,7 @@ async fn postspawn<L: Tool + 'static>(
         ordinary_session.capture_root(&child);
     }
     if !ordinary_session.is_failed() {
-        child = match tracer.tracee_preinit(child).await? {
+        child = match tracer.postspawn_preinit(child).await? {
             PreinitOutcome::Ready(child) => child,
             PreinitOutcome::Exited(pid, exit_status) => {
                 return Err(PostspawnError::Exited { pid, exit_status });
@@ -8462,6 +8462,10 @@ mod tests {
         /// fails with ESRCH, as one made between the kill and the exit stop
         /// does.
         Exited,
+        /// In its exit stop, but its next memory request in initialization
+        /// fails with ESRCH, as one made between the kill and the exit stop
+        /// does. The probe after it finds the exit stop.
+        EsrchAtExitStop,
     }
 
     /// Hits of one [`crate::task::PreinitPoint`] in a tracee's lifetime, and
@@ -8539,19 +8543,28 @@ mod tests {
             terminal
                 .request_sigkill()
                 .unwrap_or_else(|error| panic!("SIGKILL {pid} at {point:?}: {error}"));
-            if settle_killed_tracee(pid, terminal) && mode == PreinitKillMode::Exited {
-                // This hook runs on the tracer thread.
-                let resumed = unsafe { libc::ptrace(libc::PTRACE_CONT, pid.as_raw(), 0, 0) };
-                assert_eq!(
-                    resumed,
-                    0,
-                    "resume {pid} from its exit stop: {}",
-                    Errno::last()
-                );
-                assert!(
-                    !settle_killed_tracee(pid, terminal),
-                    "{pid} stopped again after its exit stop"
-                );
+            let in_exit_stop = settle_killed_tracee(pid, terminal);
+            match mode {
+                PreinitKillMode::Exited if in_exit_stop => {
+                    // This hook runs on the tracer thread.
+                    let resumed = unsafe { libc::ptrace(libc::PTRACE_CONT, pid.as_raw(), 0, 0) };
+                    assert_eq!(
+                        resumed,
+                        0,
+                        "resume {pid} from its exit stop: {}",
+                        Errno::last()
+                    );
+                    assert!(
+                        !settle_killed_tracee(pid, terminal),
+                        "{pid} stopped again after its exit stop"
+                    );
+                }
+                PreinitKillMode::EsrchAtExitStop => {
+                    assert!(in_exit_stop, "{pid} did not stop at its exit");
+                    // This hook runs on the tracer thread.
+                    crate::task::force_esrch_for_test(pid);
+                }
+                _ => {}
             }
         });
         (hook, kill)
@@ -8594,7 +8607,13 @@ mod tests {
         use crate::task::PreinitPoint::*;
         let nth = match point {
             ExecStopped | PostExecStepped => 1,
-            RegsSaved | CodeRead | MmapStepped | MmapReturned | PagePopulated | VdsoWritable => 2,
+            RegsSaved
+            | CodeRead
+            | MmapStepped
+            | MmapReturned
+            | PagePopulated
+            | VdsoWritable
+            | TrampolineUnprotected => 2,
         };
         let aborts = BareErrnoAborts::collect();
         let (hook, kill) = kill_at_preinit_point(point, nth, mode);
@@ -8611,6 +8630,11 @@ mod tests {
         if !bare.is_empty() {
             return Err(format!(
                 "{point:?}/{mode:?}: aborted with bare errnos {bare:?}"
+            ));
+        }
+        if crate::task::forced_esrch_pending_for_test() {
+            return Err(format!(
+                "{point:?}/{mode:?}: no memory request after the kill"
             ));
         }
         let hits = kill.hits.load(Ordering::SeqCst);
@@ -8652,6 +8676,11 @@ mod tests {
                 "{point:?}/{mode:?}: never reached before spawn ended"
             ));
         };
+        if crate::task::forced_esrch_pending_for_test() {
+            return Err(format!(
+                "{point:?}/{mode:?}: no memory request after the kill"
+            ));
+        }
         let error = match spawned {
             Ok(_) => {
                 return Err(format!(
@@ -8707,6 +8736,29 @@ mod tests {
         postspawn_preinit_kill_mmap_returned_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapReturned, Exited);
         postspawn_preinit_kill_page_populated_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(PagePopulated, Exited);
         postspawn_preinit_kill_vdso_writable_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(VdsoWritable, Exited);
+        postspawn_preinit_kill_mmap_stepped_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapStepped, ExitStop);
+        postspawn_preinit_kill_mmap_returned_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapReturned, ExitStop);
+        postspawn_preinit_kill_page_populated_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(PagePopulated, ExitStop);
+        postspawn_preinit_kill_vdso_writable_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(VdsoWritable, ExitStop);
+        postspawn_preinit_kill_mmap_returned_exit_stop_no_vdso: postspawn_preinit_killed_at::<InitFailureTool>(MmapReturned, ExitStop);
+        exec_preinit_kill_mmap_stepped_exit_stop_vdso: exec_preinit_killed_at::<AllSyscallsTool>(MmapStepped, ExitStop);
+        exec_preinit_kill_mmap_returned_exit_stop_vdso: exec_preinit_killed_at::<AllSyscallsTool>(MmapReturned, ExitStop);
+        exec_preinit_kill_page_populated_exit_stop_vdso: exec_preinit_killed_at::<AllSyscallsTool>(PagePopulated, ExitStop);
+        exec_preinit_kill_vdso_writable_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(VdsoWritable, ExitStop);
+        postspawn_preinit_kill_trampoline_unprotected_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(TrampolineUnprotected, ExitStop);
+        postspawn_preinit_kill_trampoline_unprotected_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(TrampolineUnprotected, Exited);
+        postspawn_preinit_kill_trampoline_unprotected_exited_no_vdso: postspawn_preinit_killed_at::<InitFailureTool>(TrampolineUnprotected, Exited);
+        exec_preinit_kill_trampoline_unprotected_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(TrampolineUnprotected, ExitStop);
+        exec_preinit_kill_trampoline_unprotected_exited: exec_preinit_killed_at::<AllSyscallsTool>(TrampolineUnprotected, Exited);
+        exec_preinit_kill_trampoline_unprotected_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(TrampolineUnprotected, Exited);
+        postspawn_preinit_kill_regs_saved_esrch_at_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(RegsSaved, EsrchAtExitStop);
+        postspawn_preinit_kill_code_read_esrch_at_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(CodeRead, EsrchAtExitStop);
+        postspawn_preinit_kill_mmap_returned_esrch_at_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapReturned, EsrchAtExitStop);
+        postspawn_preinit_kill_page_populated_esrch_at_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(PagePopulated, EsrchAtExitStop);
+        exec_preinit_kill_regs_saved_esrch_at_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(RegsSaved, EsrchAtExitStop);
+        exec_preinit_kill_code_read_esrch_at_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(CodeRead, EsrchAtExitStop);
+        exec_preinit_kill_mmap_returned_esrch_at_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(MmapReturned, EsrchAtExitStop);
+        exec_preinit_kill_page_populated_esrch_at_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(PagePopulated, EsrchAtExitStop);
     }
 
     /// An errno from a tracee that is still alive is returned unchanged.
@@ -8727,7 +8779,7 @@ mod tests {
 
     /// An ESRCH from a request made while a SIGKILL carried the tracee from
     /// the held stop to its exit stop becomes its death, although the tracee
-    /// answers PTRACE_GETREGS again in that exit stop. Other errnos are kept.
+    /// answers PTRACE_GETREGSET again in that exit stop. Other errnos are kept.
     /// See <https://github.com/rrnewton/hermit/issues/3357>.
     #[tokio::test(flavor = "current_thread")]
     async fn dead_or_reports_the_death_of_a_tracee_killed_into_its_exit_stop() {
@@ -8766,7 +8818,7 @@ mod tests {
         // The state the GETREGS probe alone cannot tell from a live tracee.
         stopped
             .getregs()
-            .expect("exit-stopped child answers PTRACE_GETREGS");
+            .expect("exit-stopped child answers PTRACE_GETREGSET");
         for errno in [Errno::EFAULT, Errno::EIO] {
             assert_eq!(
                 crate::task::dead_or(&stopped, TraceError::Errno(errno)),

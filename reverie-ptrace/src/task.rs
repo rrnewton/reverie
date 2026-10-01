@@ -259,6 +259,42 @@ pub(crate) fn dead_or(task: &Stopped, error: TraceError) -> TraceError {
     }
 }
 
+/// Returns the result of a memory request on `task`, passing an error through
+/// [`dead_or`].
+fn memory_request<T, E: Into<TraceError>>(
+    task: &Stopped,
+    result: Result<T, E>,
+) -> Result<T, TraceError> {
+    let result: Result<T, TraceError> = result.map_err(Into::into);
+    #[cfg(test)]
+    let result = match FORCED_ESRCH.with(|forced| forced.take()) {
+        Some(pid) if pid == task.pid() => Err(TraceError::Errno(Errno::ESRCH)),
+        forced => {
+            FORCED_ESRCH.with(|slot| slot.set(forced));
+            result
+        }
+    };
+    result.map_err(|error| dead_or(task, error))
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCED_ESRCH: std::cell::Cell<Option<Pid>> = const { std::cell::Cell::new(None) };
+}
+
+/// Test-only: makes the next [`memory_request`] on `pid` fail with `ESRCH`,
+/// as one made between a SIGKILL and the exit stop it leads to does.
+#[cfg(test)]
+pub(crate) fn force_esrch_for_test(pid: Pid) {
+    FORCED_ESRCH.with(|forced| forced.set(Some(pid)));
+}
+
+/// Test-only: whether an ESRCH set by [`force_esrch_for_test`] is unused.
+#[cfg(test)]
+pub(crate) fn forced_esrch_pending_for_test() -> bool {
+    FORCED_ESRCH.with(|forced| forced.get().is_some())
+}
+
 /// A same-process task rendezvous authorized only by an actual leader Exec
 /// event naming this former TID. No numeric-PID inference can request it.
 struct OrdinaryExecSlot<L: Tool> {
@@ -2353,6 +2389,9 @@ pub(crate) enum PreinitPoint {
     PagePopulated,
     /// After making the vDSO writable, before patching it.
     VdsoWritable,
+    /// After patching the vDSO, or skipping that, before the injected
+    /// `mprotect` of the trampoline page.
+    TrampolineUnprotected,
     /// At the exec stop, before the post-exec SIGTRAP step. Not on the
     /// LiteInst path.
     ExecStopped,
@@ -3443,8 +3482,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 || task.terminal_cleanup(),
                 PreinitPoint::MmapReturned,
             );
-            cp::populate_mmap_page(task.pid().into(), page_addr)
-                .map_err(|error| dead_or(&task, error.into()))?;
+            memory_request(&task, cp::populate_mmap_page(task.pid().into(), page_addr))?;
 
             // Restore our saved registers, including our instruction pointer.
             task.setregs(saved_regs)?;
@@ -3484,9 +3522,7 @@ impl<L: Tool + 'static> TracedTask<L> {
 
             // Saved instruction memory
             let ip = AddrMut::from_raw(regs.ip() as usize).ok_or(Errno::EFAULT)?;
-            let saved: SavedInstructions = task
-                .read_value(ip)
-                .map_err(|error| dead_or(&task, error.into()))?;
+            let saved: SavedInstructions = memory_request(&task, task.read_value(ip))?;
             #[cfg(test)]
             at_preinit_point(
                 preinit_point,
@@ -3501,8 +3537,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             // but `PTRACE_POKEDATA` can! Thus, we need to make sure we only
             // write one word-sized chunk at a time. Luckily, the instructions
             // we want to inject fit inside of just one 64-bit word.
-            task.write_value(ip.cast(), &SYSCALL_BP)
-                .map_err(|error| dead_or(&task, error.into()))?;
+            let patched = task.write_value(ip.cast(), &SYSCALL_BP);
+            memory_request(&task, patched)?;
 
             Ok((task, regs, saved))
         }
@@ -3518,8 +3554,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             // write-protected pages, we must write in word-sized chunks with
             // PTRACE_POKEDATA.
             let ip = AddrMut::from_raw(regs.ip() as usize).ok_or(Errno::EFAULT)?;
-            task.write_value(ip, &saved)
-                .map_err(|error| dead_or(task, error.into()))?;
+            let restored = task.write_value(ip, &saved);
+            memory_request(task, restored)?;
             task.setregs(&regs)?;
             Ok(())
         }
@@ -3599,6 +3635,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         #[cfg(test)]
         pause_preinit(&pause_preinit_step, 2, &task).await;
+        #[cfg(test)]
+        at_preinit_point(
+            &preinit_point,
+            task.pid(),
+            || task.terminal_cleanup(),
+            PreinitPoint::TrampolineUnprotected,
+        );
 
         // Protect our trampoline page from being written to. We won't need to
         // change this again for the lifetime of the guest process.
@@ -3679,6 +3722,110 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         Ok(PreinitOutcome::Ready(task))
+    }
+
+    /// Runs [`Self::tracee_preinit`] on the root tracee before its run loop
+    /// exists, and turns a death during it into its exit.
+    ///
+    /// Two things the run loop does for the exec-time initialization are
+    /// missing here, so without them a SIGKILL during this one hangs the
+    /// spawn:
+    /// - An injected syscall that sees the tracee die aborts through the
+    ///   `next_state` channel, which only the run loop reads.
+    /// - The tracee's `PTRACE_EVENT_EXIT` stop is published only to its exit
+    ///   future, which only the run loop polls. Until a resume from that stop,
+    ///   neither a wait on the tracee nor [`safeptrace::Zombie::reap`] returns.
+    ///
+    /// So this races the initialization against both. An abort carrying the
+    /// tracee's exit or death ends it; so does the exit stop, which this
+    /// claims and resumes to receive the final status. A [`TraceError::Died`]
+    /// returned by the initialization itself is finished the same way. See
+    /// <https://github.com/rrnewton/reverie/issues/760>.
+    pub(crate) async fn postspawn_preinit(
+        &mut self,
+        task: Stopped,
+    ) -> Result<PreinitOutcome, TraceError> {
+        enum Raced {
+            Done(Result<PreinitOutcome, TraceError>),
+            Aborted(Option<Result<Wait, TraceError>>),
+            ExitStop(Stopped),
+        }
+
+        let mut aborted = self
+            .next_state_rx
+            .take()
+            .expect("the root's next-state receiver is unused before its run loop");
+        // The exit stop of this tracee generation. Its claim fails only once
+        // the final status is published, which a wait reports instead.
+        let mut exit_stop = Box::pin(task.exit_event());
+        // This generation, to reap after its exit. An injection reports a
+        // death through a task it rebuilds by TID, which is unbound once the
+        // tracee has exited, so that report cannot reap it. Only `getregs` is
+        // made through this handle, and only after the exit.
+        let generation = Stopped::try_new_current_unchecked(task.pid())?;
+        let raced = {
+            let preinit = self.tracee_preinit(task).fuse();
+            let abort = aborted.recv().fuse();
+            let exit = async {
+                match (&mut exit_stop).await {
+                    Ok(stopped) => stopped,
+                    Err(_) => future::pending().await,
+                }
+            }
+            .fuse();
+            futures::pin_mut!(preinit, abort, exit);
+            futures::select_biased! {
+                outcome = preinit => Raced::Done(outcome),
+                next = abort => Raced::Aborted(next),
+                stopped = exit => Raced::ExitStop(stopped),
+            }
+        };
+        self.next_state_rx = Some(aborted);
+        match raced {
+            Raced::Done(Err(TraceError::Died(_))) => {}
+            Raced::Done(outcome) => return outcome,
+            Raced::Aborted(Some(Ok(Wait::Exited(pid, exit_status)))) => {
+                return Ok(PreinitOutcome::Exited(pid, exit_status));
+            }
+            Raced::Aborted(Some(Err(TraceError::Died(_)))) => {}
+            Raced::Aborted(Some(Err(error))) => return Err(error),
+            // Initialization makes no exec, so no abort hands over a stop.
+            Raced::Aborted(Some(Ok(Wait::Stopped(..)))) | Raced::Aborted(None) => {
+                return Err(Errno::EPROTO.into());
+            }
+            Raced::ExitStop(stopped) => return self.preinit_exit_stop(stopped).await,
+        }
+        // A death the initialization saw first: the tracee is in its exit
+        // stop or on its way there, unless it has already exited.
+        match exit_stop.await {
+            Ok(stopped) => self.preinit_exit_stop(stopped).await,
+            Err(_) => match generation.getregs() {
+                Err(TraceError::Died(zombie)) => {
+                    let pid = zombie.pid();
+                    Ok(PreinitOutcome::Exited(pid, zombie.reap().await?))
+                }
+                Err(error) => Err(error),
+                Ok(_) => Err(Errno::EPROTO.into()),
+            },
+        }
+    }
+
+    /// Resumes the root from its exit stop during initialization and returns
+    /// its final status.
+    async fn preinit_exit_stop(&self, stopped: Stopped) -> Result<PreinitOutcome, TraceError> {
+        let held_root_stop = self.liteinst_root_stop_slot(&stopped);
+        match Self::wait_after_exit_event(stopped, held_root_stop).await {
+            Ok(Wait::Exited(pid, exit_status)) => Ok(PreinitOutcome::Exited(pid, exit_status)),
+            // Only a nonleader's exec can follow an exit stop, and the root
+            // has no other thread yet.
+            Ok(Wait::Stopped(..)) => Err(Errno::EPROTO.into()),
+            // Initialization had already resumed it from the stop.
+            Err(TraceError::Died(zombie)) => {
+                let pid = zombie.pid();
+                Ok(PreinitOutcome::Exited(pid, zombie.reap().await?))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     #[cfg(target_arch = "x86_64")]
