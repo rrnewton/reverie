@@ -1,0 +1,95 @@
+{
+ "run_id": "pilot-102ffa7b-baseline-r1",
+ "mid": "102ffa7baec3aca1d13d02224ea9403c",
+ "arm": "baseline",
+ "exit_reason": "exited",
+ "wall_secs": 2526.8,
+ "tokens_total_live": 17378298,
+ "api_calls": 100,
+ "tokens_breakdown_live": {
+  "input_tokens": 200,
+  "output_tokens": 472,
+  "cache_read_input_tokens": 17038684,
+  "cache_creation_input_tokens": 338942
+ },
+ "cost_usd_list_live": 11.92,
+ "cli_result_cost_usd": 16.657737,
+ "cli_result_usage": {
+  "input_tokens": 4,
+  "cache_creation_input_tokens": 11206,
+  "cache_read_input_tokens": 578790,
+  "output_tokens": 3123,
+  "output_tokens_details": {
+   "thinking_tokens": 1037
+  },
+  "server_tool_use": {
+   "web_search_requests": 0,
+   "web_fetch_requests": 0
+  },
+  "service_tier": "standard",
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 11206,
+   "ephemeral_5m_input_tokens": 0
+  },
+  "inference_geo": "global",
+  "iterations": [],
+  "speed": "standard",
+  "fallback_credit": null
+ },
+ "cli_model_usage": {
+  "claude-opus-4-8[1m]": {
+   "inputTokens": 200,
+   "outputTokens": 189919,
+   "cacheReadInputTokens": 17038684,
+   "cacheCreationInputTokens": 338942,
+   "webSearchRequests": 0,
+   "costUSD": 16.657737,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 64000,
+   "thinkingTokens": 125266,
+   "canonicalModel": "claude-opus-4-8",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "tokens_total_cli": 17567745,
+ "cost_usd_cli": 16.66,
+ "cli_num_turns": 2,
+ "tool_calls": {
+  "Read": 23,
+  "Bash": 83,
+  "Write": 8,
+  "Edit": 15,
+  "Glob": 2,
+  "Agent": 1,
+  "Grep": 3
+ },
+ "permission_denials": 0,
+ "permission_denials_sample": [],
+ "leak_audit_hits": [],
+ "outputs": [
+  "backtrace.txt",
+  "bandicoot.json",
+  "collection.json",
+  "dmesg.txt",
+  "drgn_output.txt",
+  "host_timeline.txt",
+  "kdump_dmesg.txt",
+  "kernel_fix.patch",
+  "kreview_results.txt",
+  "report.md",
+  "reproducer",
+  "theories.md"
+ ],
+ "report_present": true,
+ "patch_present": true,
+ "hashes": {
+  "prompt": "8908ab2373b754c089406be6ae99423f589f3298a3f360d9d13c004176db1083",
+  "arm": "e985572cd09c888b110f1d7ef9d56bdf4629f05ca3d8465992524a691bfc6b8b",
+  "offline_env": "6b95fa64b71290a0fe201dda088483174f8dc12cca7386f2c9b46f49e4c47441",
+  "bundle_manifest": "b5af57ff734ec32860df287d58f0abd1ab81d273d33d1063bee6245249f95076"
+ },
+ "crash_commit": "231406f0162edfe5a07406fc9634d82f2f68bfc0",
+ "cutoff": 1784135568,
+ "finalized_by": "ccbench_finalize.py"
+}

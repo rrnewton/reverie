@@ -1,0 +1,10 @@
+{"mid": "102ffa7baec3aca1d13d02224ea9403c", "family": "F-net-tls-strp: TLS strparser operating on stale skb after TCP skb compaction",
+ "timing_dependent": true, "gt_tier": "A-",
+ "root_cause": "tls_strp_check_rcv()/tls_strp_msg_load path in net/tls/tls_strp.c keeps and dereferences a stale skb pointer (the TCP receive queue head) when checking decrypt state/geometry of queued skbs; after TCP coalesces/compacts skbs the cached skb is freed/changed, leading to a NULL/freed pointer dereference in softirq (tls_data_ready from tcp_data_queue).",
+ "fatal_mechanism": "oops (NULL pointer dereference, address 0x28) in tls_strp_check_rcv from tls_data_ready <- tcp_data_queue <- tcp_rcv_established in softirq",
+ "fix_commits": [{"sha": "4ab26bce3969", "branch": "linus-upstream (6.16-rc7)", "subject": "tls: always refresh the queue when reading sock", "author": "Jakub Kicinski", "committed": "2025-07-17"},
+                 {"sha": "bdbdd06cb731", "branch": "v6.11-fb (release-v6.11-fbk13)", "subject": "tls: always refresh the queue when reading sock", "author": "Jakub Kicinski", "committed": "2025-07-17"}],
+ "fix_available_at_cutoff": true, "crash_kernel_has_fix": false,
+ "equivalent_fix_criteria": "Patch re-reads the socket receive queue (skb_peek of sk_receive_queue) on every check instead of reusing the cached skb, i.e. the 4ab26bce3969 approach, or recommends backporting 4ab26bce3969/bdbdd06cb731.",
+ "confidence_note": "Tier A-: fix is human-authored and its changelog names tls_strp_check_rcv, but no human confirmed the mapping for this MID; the crash kernel fbk10 (2025-06-18) predates the backport in fbk13.",
+ "sources": ["WP post 4642396549312455 (CrashCortex)", "git: 4ab26bce3969 changelog (KASAN UAF in tls_strp_check_rcv)", "crash kernel 231406f0162e lacks fix (merge-base)"]}

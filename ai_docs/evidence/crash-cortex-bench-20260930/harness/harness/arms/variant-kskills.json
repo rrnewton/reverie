@@ -1,0 +1,9 @@
+{
+  "name": "variant-kskills",
+  "description": "Baseline + /kverify and /kreview installed properly (the package's prompts/skills/kverify.md and kreview.md exposed as skills with paths). Differs from baseline ONLY in this capability.",
+  "skill_dir": "/home/newton/local/ccbench/harness/plugins/ccbench-baseline/skills/kernel-investigation",
+  "add_dirs": ["/home/newton/local/ccbench/harness/plugins/ccbench-baseline/skills/kernel-investigation", "/data/users/newton/ccbench/tools", "/home/newton/local/ccbench/harness/skills-variant"],
+  "extra_bash": [],
+  "extra_tools": [],
+  "capability_section": "## Capabilities in this run\n- /kernel-investigation skill (see Offline Benchmark Environment).\n- /kverify is installed at `/home/newton/local/ccbench/harness/skills-variant/kverify/SKILL.md` and /kreview at `/home/newton/local/ccbench/harness/skills-variant/kreview/SKILL.md`. When the procedure says to run /kverify or /kreview, Read that SKILL.md and apply it.\n"
+}

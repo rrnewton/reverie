@@ -1,0 +1,63 @@
+{
+ "blind_id": "bdfbde5bf0",
+ "mid": "1e340e89494ecc519c2203b0f02d8c52",
+ "gt_fix_cited": [
+  {
+   "sha": "3a2268b381934abab7d35e1fb04f20a8f70d3d8f",
+   "subject": "btrfs: always drop root->inodes lock before cond_resched()",
+   "sha_cited": true,
+   "subject_cited": true
+  },
+  {
+   "sha": "ff616f4468b058195bdb31cc9fbd47a9a6b92af0",
+   "subject": "btrfs: always drop root->inodes lock before cond_resched()",
+   "sha_cited": true,
+   "subject_cited": true
+  }
+ ],
+ "gt_fix_files": [
+  "fs/btrfs/extent_map.c",
+  "fs/btrfs/inode.c"
+ ],
+ "gt_fix_funcs": [
+  "btrfs_find_first_inode",
+  "find_first_inode_to_shrink"
+ ],
+ "patch_present": true,
+ "patch_files": [
+  "fs/btrfs/extent_map.c",
+  "fs/btrfs/inode.c"
+ ],
+ "patch_funcs": [
+  "btrfs_find_first_inode",
+  "find_first_inode_to_shrink"
+ ],
+ "patch_file_overlap": [
+  "fs/btrfs/extent_map.c",
+  "fs/btrfs/inode.c"
+ ],
+ "patch_func_overlap": [
+  "btrfs_find_first_inode",
+  "find_first_inode_to_shrink"
+ ],
+ "repro_qemu_invocations": 2,
+ "repro_qemu_results_showing_boot": 2,
+ "repro_files": [
+  "repro.c",
+  "init",
+  "initramfs.cpio",
+  "initramfs/init"
+ ],
+ "repro_boot_logs": [],
+ "cost": {
+  "exit_reason": "exited",
+  "wall_secs": 2524.1,
+  "tokens_total_live": 13856550,
+  "cost_usd_list_live": 9.76,
+  "cli_result_cost_usd": 14.023120500000001,
+  "api_calls": 97,
+  "permission_denials": 19
+ },
+ "leak_audit_hits": 0,
+ "report_chars": 16107
+}

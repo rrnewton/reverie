@@ -1,0 +1,153 @@
+{
+ "run_id": "pilot-3c212664-baseline-r1",
+ "mid": "3c212664570a91b16403d990fa79281b",
+ "arm": "baseline",
+ "exit_reason": "exited",
+ "wall_secs": 2132.9,
+ "tokens_total_live": 17779905,
+ "api_calls": 96,
+ "tokens_breakdown_live": {
+  "input_tokens": 192,
+  "output_tokens": 620,
+  "cache_read_input_tokens": 17507704,
+  "cache_creation_input_tokens": 271389
+ },
+ "cost_usd_list_live": 11.48,
+ "cli_result_cost_usd": 15.095477000000006,
+ "cli_result_usage": {
+  "input_tokens": 192,
+  "cache_creation_input_tokens": 271389,
+  "cache_read_input_tokens": 17507704,
+  "output_tokens": 145071,
+  "output_tokens_details": {
+   "thinking_tokens": 82144
+  },
+  "server_tool_use": {
+   "web_search_requests": 0,
+   "web_fetch_requests": 0
+  },
+  "service_tier": "standard",
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 271389,
+   "ephemeral_5m_input_tokens": 0
+  },
+  "inference_geo": "global",
+  "iterations": [],
+  "speed": "standard",
+  "fallback_credit": null
+ },
+ "cli_model_usage": {
+  "claude-opus-4-8[1m]": {
+   "inputTokens": 192,
+   "outputTokens": 145071,
+   "cacheReadInputTokens": 17507704,
+   "cacheCreationInputTokens": 271389,
+   "webSearchRequests": 0,
+   "costUSD": 15.095477000000006,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 64000,
+   "thinkingTokens": 82144,
+   "canonicalModel": "claude-opus-4-8",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "tokens_total_cli": 17924356,
+ "cost_usd_cli": 15.1,
+ "cli_num_turns": 100,
+ "tool_calls": {
+  "Read": 14,
+  "Bash": 55,
+  "ToolSearch": 1,
+  "TaskCreate": 3,
+  "TaskUpdate": 6,
+  "Write": 9,
+  "Edit": 9,
+  "Glob": 1,
+  "Skill": 1
+ },
+ "permission_denials": 13,
+ "permission_denials_sample": [
+  {
+   "command": "cd /data/users/newton/ccbench/runs/pilot-3c212664-baseline-r1/linux\necho \"=== git HEAD ===\"; git log --oneline -1\necho \"\"\necho \"=== kernel/sched/fair.c around 680-760 (__sum_w_vruntime_add / avg_vruntime) ===\"\nsed -n '660,760p' kernel/sched/fair.c\n",
+   "description": "Read fair.c vruntime accounting source"
+  },
+  {
+   "command": "cd /data/users/newton/ccbench/runs/pilot-3c212664-baseline-r1/linux && git log --oneline -1 2>&1 | head -1",
+   "description": "Test git access in linux worktree",
+   "dangerouslyDisableSandbox": true
+  },
+  {
+   "command": "L=/data/users/newton/ccbench/runs/pilot-3c212664-baseline-r1/linux\necho \"=== History of sum_w_vruntime rework (fair.c avg_vruntime region) ===\"\ngit -C $L log --oneline -15 -- kernel/sched/fair.c | head -20\necho \"\"\necho \"=== Commits touching sum_w_vruntime / zero_vruntime / PARANOID_AVG ===\"\ngit -C $L log --oneline --all -S \"sum_w_vruntime\" -- kernel/sched/fair.c | head -20\necho \"\"\necho \"=== Commits mentioning PARANOID_AVG ===\"\ngit -C $L log --oneline --all -S \"PARANOID_AVG\" | head -20\necho \"\"\necho \"=== grep PARANOID_AVG in features.h ===\"\ngrep -rn \"PARANOID_AVG\" $L/kernel/sched/ 2>/dev/null",
+   "description": "Search git history for EEVDF avg_vruntime rework"
+  },
+  {
+   "command": "L=/data/users/newton/ccbench/runs/pilot-3c212664-baseline-r1/linux\nfor c in ccd3bc00e3e5 fa191eb086a7 3899f2ebc2e6 54262cda76de 22ec93f3948c 58ddd636e076 40a92886bf2f 64d8e23ce5fa e00fc73224e0; do\n  if git -C \"$L\" merge-base --is-ancestor $c HEAD 2>/dev/null; then anc=\"IN-HEAD\"; else anc=\"not-in-HEAD\"; fi\n  subj=$(git -C \"$L\" log -1 --format='%s' $c 2>/dev/null)\n  br=$(git -C \"$L\" branch -a --contains $c 2>/dev/null | tr '\\n' ',' | sed 's/  */ /g')\n  echo \"$c [$anc] $subj  {$br}\"\ndone",
+   "description": "Check ancestry of clamp variants and precursors"
+  },
+  {
+   "command": "SRC=/data/users/newton/ccbench/runs/pilot-3c212664-baseline-r1/linux\nB=/tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build/baseline\nmake -C $SRC O=$B defconfig >/dev/null 2>&1 && make -C $SRC O=$B kvm_guest.config >/dev/null 2>&1 && echo \"configured OK\"\n# ensure group sched + cgroups on (defconfig has them, but be explicit)\n$SRC/scripts/config --file $B/.config -e CGROUPS -e FAIR_GROUP_SCHED -e CFS_BANDWIDTH -e SCHED_DEBUG -e CONFIG_SCHED_AUTOGROUP 2>/dev/null\nmake -C $SRC O=$B olddefconfig >/dev/null 2>&1 && echo \"reconfigured OK\"\ngrep -E \"CONFIG_FAIR_GROUP_SCHED|CONFIG_CFS_BANDWIDTH|CONFIG_SMP|CONFIG_SCHED_DEBUG\" $B/.config",
+   "description": "Configure baseline guest kernel"
+  },
+  {
+   "command": "/data/users/newton/ccbench/runs/pilot-3c212664-baseline-r1/linux/scripts/config --file /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build/baseline/.config -e CGROUPS -e FAIR_GROUP_SCHED -e CFS_BANDWIDTH -e SCHED_DEBUG -e SCHED_AUTOGROUP -e CONFIG_CGROUP_SCHED && echo \"config edits done\"",
+   "description": "Enable group scheduling configs"
+  },
+  {
+   "command": "make -C /data/users/newton/ccbench/runs/pilot-3c212664-baseline-r1/linux O=/tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build/baseline -j160 bzImage 2>/tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build/baseline_build.err | tail -3; echo \"BASELINE_BUILD_EXIT=$?\"; ls -la /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build/baseline/arch/x86/boot/bzImage 2>&1",
+   "timeout": 1800000,
+   "description": "Build baseline bzImage in background",
+   "run_in_background": true
+  },
+  {
+   "command": "/data/users/newton/ccbench/runs/pilot-3c212664-baseline-r1/linux/scripts/config --file /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build/baseline/.config --disable WERROR",
+   "description": "Disable CONFIG_WERROR"
+  },
+  {
+   "command": "ls /usr/lib*/libc.a /usr/lib*/*/libc.a 2>/dev/null; which musl-gcc diet 2>/dev/null; ls /data/users/newton/ccbench/tools/bin 2>/dev/null | head -40; echo \"---glibc static pkg?---\"; ls /usr/lib64/libc.a 2>&1",
+   "description": "Look for static libc or musl"
+  },
+  {
+   "command": "cd /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/root && find . -print0 | cpio --null -o -H newc > /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/initramfs.cpio 2>/tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/cpio.log; echo \"cpio_exit=$?\"; ls -la /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/initramfs.cpio",
+   "description": "Create initramfs cpio archive"
+  },
+  {
+   "command": "find /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/root -mindepth 1 -printf '%P\\n' | cpio -D /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/root -o -H newc > /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/initramfs.cpio",
+   "description": "Create initramfs cpio without cd"
+  },
+  {
+   "command": "gcc -O2 -o /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/overflow_ab /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/overflow_ab.c -lm 2>&1 | tail; echo \"=== RUN ===\"; /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/overflow_ab; echo \"=== baseline console final ===\"; tail -2 /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/console_baseline.log; grep -c \"fair.c:691\" /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/console_baseline.log",
+   "description": "Run deterministic arithmetic A/B"
+  },
+  {
+   "command": "/tmp/kinv-logs/3c212664570a91b16403d990fa79281b/reproducer/overflow_ab",
+   "description": "Run arithmetic A/B demonstrator"
+  }
+ ],
+ "leak_audit_hits": [],
+ "outputs": [
+  "backtrace.txt",
+  "bandicoot.json",
+  "collection.json",
+  "dmesg.txt",
+  "drgn_output.txt",
+  "host_timeline.txt",
+  "kdump_dmesg.txt",
+  "kernel_fix.patch",
+  "kreview_results.txt",
+  "report.md",
+  "reproducer",
+  "theories.md"
+ ],
+ "report_present": true,
+ "patch_present": true,
+ "hashes": {
+  "prompt": "a90ef32fd976148a63ae653aded79b499764bf5ea847f571c85fd3b87b6abbdf",
+  "arm": "e985572cd09c888b110f1d7ef9d56bdf4629f05ca3d8465992524a691bfc6b8b",
+  "offline_env": "6b95fa64b71290a0fe201dda088483174f8dc12cca7386f2c9b46f49e4c47441",
+  "bundle_manifest": "cd754edd4e85758b2b828ac48d859af3df10f714be5d0d70ad48d2f79c70fb48"
+ },
+ "crash_commit": "242a742712f138f13593c492a3f65247e9fa06c2",
+ "cutoff": 1782239178,
+ "finalized_by": "ccbench_finalize.py"
+}

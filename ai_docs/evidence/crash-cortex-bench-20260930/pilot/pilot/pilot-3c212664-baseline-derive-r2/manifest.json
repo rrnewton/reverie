@@ -1,0 +1,133 @@
+{
+ "harness_version": "ccbench-harness/1.1",
+ "allowlist": "1.0",
+ "run_id": "pilot-3c212664-baseline-derive-r2",
+ "mid": "3c212664570a91b16403d990fa79281b",
+ "arm": "baseline",
+ "model": "claude-opus-4-8[1m]",
+ "effort": "max",
+ "session_id": "0ed6e53b-1b1e-4acc-8494-f63d25343738",
+ "exit_reason": "exited",
+ "exit_code": 0,
+ "wall_secs": 2460.2,
+ "wall_cap": 3600,
+ "token_cap": 40000000,
+ "tokens_total_live": 13716575,
+ "api_calls": 75,
+ "tokens_breakdown_live": {
+  "input_tokens": 150,
+  "output_tokens": 267,
+  "cache_read_input_tokens": 13362882,
+  "cache_creation_input_tokens": 353276
+ },
+ "cost_usd_list_live": 10.22,
+ "cli_result_cost_usd": 15.282626,
+ "cli_result_usage": {
+  "input_tokens": 134,
+  "cache_creation_input_tokens": 296597,
+  "cache_read_input_tokens": 13090151,
+  "output_tokens": 170539,
+  "output_tokens_details": {
+   "thinking_tokens": 119299
+  },
+  "server_tool_use": {
+   "web_search_requests": 0,
+   "web_fetch_requests": 0
+  },
+  "service_tier": "standard",
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 296597,
+   "ephemeral_5m_input_tokens": 0
+  },
+  "inference_geo": "global",
+  "iterations": [],
+  "speed": "standard",
+  "fallback_credit": null
+ },
+ "cli_model_usage": {
+  "claude-opus-4-8[1m]": {
+   "inputTokens": 150,
+   "outputTokens": 202707,
+   "cacheReadInputTokens": 13362882,
+   "cacheCreationInputTokens": 353276,
+   "webSearchRequests": 0,
+   "costUSD": 15.282626,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 64000,
+   "thinkingTokens": 144258,
+   "canonicalModel": "claude-opus-4-8",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "tokens_total_cli": 13919015,
+ "cost_usd_cli": 15.28,
+ "tool_calls": {
+  "Read": 30,
+  "Bash": 39,
+  "Grep": 13,
+  "Write": 6,
+  "Edit": 10,
+  "Agent": 1
+ },
+ "permission_denials": 7,
+ "permission_denials_sample": [
+  {
+   "command": "cd /tmp/kinv-logs/3c212664570a91b16403d990fa79281b\nawk '\n/^CPU: [0-9]+  PID:/ { cpu=$2; comm=$0; sub(/.*COMM: /,\"\",comm); getline f0; sub(/^ #0  /,\"\",f0);\n  # categorize\n  cat=\"other\";\n  if (f0 ~ /queued_spin_lock_slowpath/) cat=\"SPIN-rqlock\";\n  else if (f0 ~ /rep_nop|cpu_relax/) { getline f1; if (f1 ~ /queued_spin/) cat=\"SPIN-rqlock\"; else cat=\"relax:\"f1; }\n  else if (f0 ~ /csd_lock_wait_toolong/) cat=\"CSD-wait\";\n  else if (f0 ~ /rdtsc|timekeeping|ktime|tk_clock/) cat=\"timeread\";\n  else cat=\"OTHER: \"f0;\n  printf \"%-4s %-22s %s\\n\", cpu, comm, cat;\n}\n' drgn_output.txt | sort -t' ' -k1 -n | awk '{print}' | \\\nawk '{c[$3\" \"$4]++; print} END{}' > /tmp/cpu_summary.txt\necho \"=== Category counts ===\"\nawk '{cpu=$1; $1=\"\"; $2=\"\"; \n  if ($0 ~ /SPIN-rqlock/) cat=\"SPIN-rqlock\";\n  else if ($0 ~ /CSD-wait/) cat=\"CSD-wait\";\n  else if ($0 ~ /timeread/) cat=\"timeread(likely CSD/idle)\";\n  else cat=\"OTHER\";\n  n[cat]++} END{for(k in n) printf \"%5d  %s\\n\", n[k], k}' /tmp/cpu_summary.txt | sort -rn\necho\necho \"=== The OTHER (non-spin, non-csd, non-timeread) CPUs \u2014 candidate lock holders / interesting ===\"\ngrep -E \"OTHER|relax:|CSD-wait\" /tmp/cpu_summary.txt | grep -v \"timeread\" | head -80",
+   "description": "Build compact per-CPU categorized summary"
+  },
+  {
+   "command": "cd /data/users/newton/ccbench/runs/pilot-3c212664-baseline-derive-r2/linux\necho \"=== HEAD / describe ===\"; git log --oneline -1; git describe 2>/dev/null\necho; echo \"=== blame fair.c:691 (the WARN) ===\"\ngit log -1 --format=\"%h %ad %an %s\" -L 691,691:kernel/sched/fair.c 2>/dev/null | head -8\necho; echo \"=== git log touching __sum_w_vruntime_add / sum_w_vruntime / avg_vruntime_weight ===\"\ngit log --oneline -15 -S \"sum_w_vruntime\" -- kernel/sched/fair.c\necho; echo \"=== git log grep avg_vruntime / eevdf overflow (all branches) ===\"\ngit log --oneline --all -15 --grep=\"avg_vruntime\\|sum_w_vruntime\\|vruntime overflow\\|EEVDF\" -- kernel/sched/fair.c 2>/dev/null | head -25",
+   "description": "Git archaeology on the fair.c WARN"
+  },
+  {
+   "command": "R=/data/users/newton/ccbench/runs/pilot-3c212664-baseline-derive-r2/linux\necho \"HEAD:\"; git -C $R log -1 --format=\"%H %ad %s\"\necho; echo \"is c06e05dae2c6 (overflow fix) ancestor of HEAD?\"; git -C $R merge-base --is-ancestor c06e05dae2c6 HEAD && echo \"YES-in-crash-kernel\" || echo \"NO-missing-from-crash-kernel\"\necho; echo \"is 3f374515315d (weight bits, the Fixes: target) ancestor of HEAD?\"; git -C $R merge-base --is-ancestor 3f374515315d HEAD && echo \"YES-present\" || echo \"NO-absent\"\necho; echo \"branches/tags containing c06e05dae2c6:\"; git -C $R branch -a --contains c06e05dae2c6 2>/dev/null | head; git -C $R tag --contains c06e05dae2c6 2>/dev/null | head",
+   "description": "Check whether overflow fix is in crash kernel"
+  },
+  {
+   "command": "/data/users/newton/ccbench/runs/pilot-3c212664-baseline-derive-r2/linux/scripts/config --file /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build/.config --enable SOFTLOCKUP_DETECTOR --enable BOOTPARAM_SOFTLOCKUP_PANIC --enable DETECT_HUNG_TASK --set-val DEFAULT_HUNG_TASK_TIMEOUT 30 --enable SERIAL_8250 --enable SERIAL_8250_CONSOLE --enable BLK_DEV_INITRD && echo CONFIG-TWEAKED",
+   "description": "Enable lockup detectors and serial console"
+  },
+  {
+   "command": "make -C /data/users/newton/ccbench/runs/pilot-3c212664-baseline-derive-r2/linux O=/tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build -j166 bzImage 2>/tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build/build.err.log 1>/tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build/build.out.log; echo \"BUILD_EXIT=$?\"; tail -5 /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build/build.out.log; echo \"--- errors (if any) ---\"; tail -20 /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build/build.err.log",
+   "timeout": 1800000,
+   "description": "Build guest bzImage in background",
+   "run_in_background": true
+  },
+  {
+   "command": "make -C /data/users/newton/ccbench/runs/pilot-3c212664-baseline-derive-r2/linux O=/tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build -j166 bzImage > /tmp/kinv-logs/3c212664570a91b16403d990fa79281b/build/build.log 2>&1",
+   "timeout": 1800000,
+   "description": "Build guest bzImage",
+   "run_in_background": true
+  },
+  {
+   "command": "cd /data/users/newton/ccbench/runs/pilot-3c212664-baseline-derive-r2/linux && echo \"=== search for overflow commit c06e05dae2c6 ===\" && git log --oneline -1 c06e05dae2c6 2>&1 | head -5; echo \"=== is it in ancestry of HEAD? ===\" && (git merge-base --is-ancestor c06e05dae2c6 HEAD 2>&1 && echo \"YES: c06e05dae2c6 is an ancestor of HEAD\" || echo \"NO / not found\"); echo \"=== git status fair.c ===\"; git status --short kernel/sched/fair.c; echo \"=== diff stat of working tree fair.c ===\"; git diff --stat kernel/sched/fair.c",
+   "description": "Check overflow commit presence and fair.c working-tree diff"
+  }
+ ],
+ "leak_audit_hits": [],
+ "outputs": [
+  "backtrace.txt",
+  "bandicoot.json",
+  "collection.json",
+  "dmesg.txt",
+  "drgn_output.txt",
+  "host_timeline.txt",
+  "kdump_dmesg.txt",
+  "kernel_fix.patch",
+  "kreview_results.txt",
+  "report.md",
+  "reproducer",
+  "theories.md"
+ ],
+ "report_present": true,
+ "patch_present": true,
+ "hashes": {
+  "prompt": "3b75b2ac953b9785e4558f6143b7743e65a3d7ddbb99b541f78dd57b15fcab88",
+  "arm": "e985572cd09c888b110f1d7ef9d56bdf4629f05ca3d8465992524a691bfc6b8b",
+  "offline_env": "1fe9b0f49175667ba7b348f43469351e4cf149ba6a4b812fed686e8752dfeedf",
+  "bundle_manifest": "cd754edd4e85758b2b828ac48d859af3df10f714be5d0d70ad48d2f79c70fb48"
+ },
+ "crash_commit": "242a742712f138f13593c492a3f65247e9fa06c2",
+ "cutoff": 1780957968
+}

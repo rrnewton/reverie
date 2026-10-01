@@ -1,0 +1,112 @@
+Investigate this kernel crash using the /kernel-investigation skill.
+
+## Crash Context
+**MID:** 102ffa7baec3aca1d13d02224ea9403c
+**Category:** fblinux::oops::tls_strp_check_rcv:tls_data_ready:tcp_data_queue:tcp_rcv_established:tcp_v6_rcv
+**Exception Type:** oops
+**Kernel:** 6.11
+**Hardware (LSST):** T3_1P_SPR_12000GBF
+**Models:** CRATERLAKE_SPR_T3_SAMSUNG_PM9D3=35%, CRATERLAKE_SPR_T3_MICRON_7450=29%, DELTALAKE_CPL_T3_SAMSUNG_PM9A3_24C=17%
+**Hosts Affected:** 282
+**Host Sample:** twshared46327.01.lla3.facebook.com, twshared47694.01.lla3.facebook.com, twshared1815.19.odn2.facebook.com
+**Investigated Host:** twshared46327.01.lla3.facebook.com
+**Data Source:** kernel_mcp
+
+## Pre-collected Data
+All crash data has been pre-collected and saved to `/tmp/kinv-logs/102ffa7baec3aca1d13d02224ea9403c/`.
+Read the files there instead of re-collecting via kernel-mcp.
+
+Available files:
+- `backtrace.txt` (2,090 bytes) — Kernel backtrace
+- `dmesg.txt` (125,979 bytes) — Full dmesg from crash host
+- `drgn_output.txt` (34,381 bytes) — Crash analysis (stack traces, modules, meminfo)
+- `bandicoot.json` (18,926 bytes) — Additional analysis data (MCP-exclusive fields)
+- `kdump_dmesg.txt` (81,662 bytes) — Kdump kernel log at crash time
+- `host_timeline.txt` (15,962 bytes) — Netcons messages around crash
+- `collection.json` (875 bytes) — Collection metadata
+
+## Backtrace (for quick reference)
+```
+#0  tls_strp_check_queue_ok (net/tls/tls_strp.c:445:28)
+#1  tls_strp_read_sock (net/tls/tls_strp.c:529:7)
+#2  tls_strp_check_rcv (net/tls/tls_strp.c:543:6)
+#3  tls_data_ready (net/tls/tls_sw.c:2437:2)
+#4  tcp_data_ready (net/ipv4/tcp_input.c:5226:3)
+#5  tcp_data_queue (net/ipv4/tcp_input.c:5316:4)
+#6  tcp_rcv_established (net/ipv4/tcp_input.c:6263:2)
+#7  tcp_v6_do_rcv (net/ipv6/tcp_ipv6.c:1640:3)
+#8  tcp_v6_rcv (net/ipv6/tcp_ipv6.c:1912:9)
+#9  ip6_protocol_deliver_rcu (net/ipv6/ip6_input.c:438:9)
+#10 ip6_input_finish (net/ipv6/ip6_input.c:483:2)
+#11 NF_HOOK (./include/linux/netfilter.h:314:9)
+#12 ip6_input (net/ipv6/ip6_input.c:492:9)
+#13 dst_input (./include/net/dst.h:460:9)
+#14 ip6_sublist_rcv_finish (net/ipv6/ip6_input.c:88:3)
+#15 ip6_list_rcv_finish (net/ipv6/ip6_input.c:146:2)
+#16 ip6_sublist_rcv (net/ipv6/ip6_input.c:320:2)
+#17 ipv6_list_rcv (net/ipv6/ip6_input.c:355:3)
+#18 __netif_receive_skb_list_ptype (net/core/dev.c:5738:3)
+#19 __netif_receive_skb_list_core (net/core/dev.c:5786:2)
+#20 __netif_receive_skb_list (net/core/dev.c:5838:3)
+#21 netif_receive_skb_list_internal (net/core/dev.c:5930:2)
+#22 gro_normal_list (./include/net/gro.h:515:2)
+#23 napi_complete_done (net/core/dev.c:6281:2)
+#24 bnxt_poll_p5 (drivers/net/ethernet/broadcom/bnxt/bnxt.c:3222:8)
+#25 __napi_poll (net/core/dev.c:6793:10)
+#26 napi_poll (net/core/dev.c:6862:9)
+#27 net_rx_action (net/core/dev.c:6984:13)
+#28 handle_softirqs (kernel/softirq.c:554:3)
+#29 __do_softirq (kernel/softirq.c:588:2)
+#30 invoke_softirq (kernel/softirq.c:428:3)
+#31 __irq_exit_rcu (kernel/softirq.c:637:3)
+#32 irq_exit_rcu (kernel/softirq.c:649:2)
+#33 common_interrupt (arch/x86/kernel/irq.c:278:1)
+#34 asm_common_interrupt (./arch/x86/include/asm/idtentry.h:693:0)
+#35 cpuidle_enter_state (drivers/cpuidle/cpuidle.c:291:20)
+#36 cpuidle_enter (drivers/cpuidle/cpuidle.c:388:9)
+#37 call_cpuidle (kernel/sched/idle.c:155:9)
+#38 cpuidle_idle_call (kernel/sched/idle.c:230:19)
+#39 do_idle (kernel/sched/idle.c:326:4)
+#40 cpu_startup_entry (kernel/sched/idle.c:424:3)
+#41 start_secondary (arch/x86/kernel/smpboot.c:313:2)
+
+```
+
+**Panic:** BUG: kernel NULL pointer dereference, address: 0000000000000028
+
+## Instructions
+1. Read the pre-collected data files from `/tmp/kinv-logs/102ffa7baec3aca1d13d02224ea9403c/`
+2. Follow the /kernel-investigation skill procedure (all phases)
+3. If you develop a patch, save it as `/tmp/kinv-logs/102ffa7baec3aca1d13d02224ea9403c/kernel_fix.patch` (the file MUST exist separately from the report)
+4. Attempt to reproduce the crash in a mkosi-kernel QEMU VM. Use your analysis to identify the environmental conditions that triggered it (resource pressure, workload patterns, timing, hardware state) and replicate those conditions in the VM. If you have a patch, verify the fix by reproducing with and without it. Document the reproduction attempt in ### REPRODUCER and ### AB_VERIFICATION even if it fails.
+5. After completing analysis, run /kverify on your findings to verify they are not false positives. Apply the full verification checklist.
+6. Write the report to `/tmp/kinv-logs/102ffa7baec3aca1d13d02224ea9403c/report.md`
+7. Also output the report in your response text
+
+## Offline Benchmark Environment (identical for every run)
+This investigation runs OFFLINE inside the Crash Cortex benchmark harness. The facts below override any
+tool or path that the /kernel-investigation skill mentions.
+
+- **No fleet, Scuba, ODS, OOBit, serf, SSH, vmcore, Workplace, Phabricator or internet access.** kernel-mcp,
+  ssh-session and ODS MCP tools do not exist here. Everything known about the crash is in `/tmp/kinv-logs/102ffa7baec3aca1d13d02224ea9403c/`.
+  Do not try to reach the network; network commands are denied and any attempt is logged.
+- **Kernel source:** your working directory `/data/users/newton/ccbench/runs/pilot-102ffa7b-baseline-r1/linux` is a git worktree checked out at the exact crash-kernel
+  commit (crash kernel `6.11.1-0_fbk10_0_g231406f0162e-hotfix1`). Its history (branches `v*-fb`, upstream `linus-upstream`/`master`,
+  tags) is cut at the crash time: commits that landed after the crash are not available. There is no git remote.
+  Use `git log`, `git blame`, `git show`, `git log -S/-G` etc. on this tree for code archaeology and fix search.
+- **The /kernel-investigation skill** is at `/home/newton/local/ccbench/harness/plugins/ccbench-baseline/skills/kernel-investigation/SKILL.md`; its subagent files are in `/home/newton/local/ccbench/harness/plugins/ccbench-baseline/skills/kernel-investigation/subagents/`.
+  Read the SKILL.md first and follow it. Treat every kernel-mcp step (session_create, mkosi_build,
+  mkosi_start_qemu, git_fetch, b4_fetch, query_*) as unavailable and use the local equivalents below.
+- **Reproducer / A-B toolchain (replaces mkosi-kernel):** gcc, make, flex, bison, bc, pahole, cpio are installed;
+  build a guest kernel from `/data/users/newton/ccbench/runs/pilot-102ffa7b-baseline-r1/linux` with `make O=<dir> ...` (e.g. `defconfig` + `kvm_guest.config` + the options your
+  reproducer needs) and boot it with `qemu-system-x86_64` (QEMU 8.1.2, on PATH from `/data/users/newton/ccbench/tools/bin`, `-enable-kvm`
+  works) using `-kernel <bzImage> -initrd <your cpio> -nographic -append "console=ttyS0 ..."`. Guest networking is
+  disabled. Always bound runs with `timeout`. Keep build dirs and reproducer artifacts under `/tmp/kinv-logs/102ffa7baec3aca1d13d02224ea9403c/reproducer/`
+  (build trees may go under `/tmp/kinv-logs/102ffa7baec3aca1d13d02224ea9403c/build/`); both are collected after the run.
+- **Duplicate check (Phase 7):** there are no other reports in this environment; set `DUPLICATE_OF: unchecked`.
+- **Diff submission:** do not run `jf`/`arc`; just leave `kernel_fix.patch` in `/tmp/kinv-logs/102ffa7baec3aca1d13d02224ea9403c/`.
+- **Budget:** this run is capped at 60 minutes wall time and 40M tokens; the harness stops the run at either cap
+  and grades whatever is in `/tmp/kinv-logs/102ffa7baec3aca1d13d02224ea9403c/report.md` at that moment, so write report.md early and update it.
+
+## Capabilities in this run
+- /kernel-investigation skill (see Offline Benchmark Environment).

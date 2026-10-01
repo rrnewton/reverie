@@ -1,0 +1,53 @@
+{
+ "blind_id": "6d2ee86535",
+ "mid": "3c212664570a91b16403d990fa79281b",
+ "gt_fix_cited": [
+  {
+   "sha": "54262cda76de",
+   "subject": "FBONLY: sched/fair: clamp rescaled vlag in reweight_entity() to bound entity_key()",
+   "sha_cited": false,
+   "subject_cited": false
+  },
+  {
+   "sha": "ccd3bc00e3e5",
+   "subject": "sched/fair: clamp rescaled vlag in reweight_entity() to bound entity_key()",
+   "sha_cited": false,
+   "subject_cited": false
+  }
+ ],
+ "gt_fix_files": [
+  "kernel/sched/fair.c"
+ ],
+ "gt_fix_funcs": [
+  "reweight_entity"
+ ],
+ "patch_present": true,
+ "patch_files": [
+  "kernel/sched/fair.c"
+ ],
+ "patch_funcs": [
+  "__sum_w_vruntime_add"
+ ],
+ "patch_file_overlap": [
+  "kernel/sched/fair.c"
+ ],
+ "patch_func_overlap": [],
+ "repro_qemu_invocations": 3,
+ "repro_qemu_results_showing_boot": 0,
+ "repro_files": [
+  "README.md",
+  "repro_harness.diff"
+ ],
+ "repro_boot_logs": [],
+ "cost": {
+  "exit_reason": "exited",
+  "wall_secs": 2460.2,
+  "tokens_total_live": 13716575,
+  "cost_usd_list_live": 10.22,
+  "cli_result_cost_usd": 15.282626,
+  "api_calls": 75,
+  "permission_denials": 7
+ },
+ "leak_audit_hits": 0,
+ "report_chars": 19502
+}

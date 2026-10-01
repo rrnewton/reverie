@@ -1,0 +1,100 @@
+sched/fair: clamp rescaled vlag in reweight_entity() to bound entity_key()
+
+reweight_entity() preserves an entity's lag across a weight change by
+scaling vlag in rescale_entity():
+
+        se->vlag = vl' = vl * old_weight / new_weight;
+
+and then, for an on_rq entity, recomputes:
+
+        se->vruntime = avruntime - se->vlag;
+
+On a large weight decrease (w' << w) this inflates vlag without bound;
+nothing re-clamps it to the per-entity lag limit that entity_lag() and
+update_entity_lag() enforce everywhere else.  The deadline is rescaled
+and re-based separately, so only vruntime drifts.
+
+For a group entity reweighted via update_cfs_group() this lets
+se->vruntime drift arbitrarily far below cfs_rq->zero_vruntime.  A later
+__enqueue_entity() then computes
+
+        key        = entity_key(cfs_rq, se) = se->vruntime - cfs_rq->zero_vruntime
+        weight     = avg_vruntime_weight(cfs_rq, se->load.weight)
+        w_vruntime = key * weight
+
+and trips the s64 overflow guard in __sum_w_vruntime_add():
+
+        WARN_ON_ONCE((w_vruntime >> 63) != (w_vruntime >> 62));
+
+leaving the avg-vruntime accounting and the rb-tree ordering corrupt,
+which in turn wedges the load balancer (every CPU spinning in
+sched_balance_rq()) into a hard lockup.
+
+Observed on this crash (MID 3c212664..., 252-CPU AMD host, kernel
+6.13.2-0_fbk16): CPU 38 in execve()->sched_exec()->__schedule() holds
+its own rq->lock, hits the fair.c:691 WARN in __enqueue_entity() with
+weight=0x1ca3fd and w_vruntime=-6865589408623720101 (~-2^62.6); the
+WARN's printk is flushed via netconsole/netpoll whose NIC TX-completion
+path calls wake_up_process(ksoftirqd) -> try_to_wake_up() -> rq_lock()
+on the rq CPU 38 already holds, self-deadlocking the rq lock.  52 CPUs
+then spin on that rq lock and ~20 more time out delivering IPIs to them,
+producing the NMI hard lockup.
+
+Re-clamp vlag to the same bound entity_lag() uses, after the new weight
+is installed:
+
+        limit = calc_delta_fair(cfs_rq_max_slice(cfs_rq) + TICK_NSEC, se);
+        se->vlag = clamp(se->vlag, -limit, limit);
+
+Since calc_delta_fair(t, se) * se->load.weight <= t << NICE_0_LOAD_SHIFT
+(equality but for the floor in __calc_delta), this bounds key * weight by
+(max_slice + TICK_NSEC) << NICE_0_LOAD_SHIFT independent of the entity's
+weight -- ~20 bits of headroom below the 2^62 guard, so the overflow and
+the resulting lockup cannot occur.  For legitimate reweights the rescaled
+vlag is already within the bound, so the clamp is a no-op.
+
+Backport of upstream/fbk commit ccd3bc00e3e5 (cherry-picked from
+22ec93f3948c) to v6.13-fbk16.
+
+Fixes: 3f374515315d ("sched/fair: Increase weight bits for avg_vruntime")
+Signed-off-by: Rik van Riel <riel@surriel.com>
+---
+ kernel/sched/fair.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index 5dc612effbec..1cabe6a68860 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -4051,6 +4051,7 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+ 	bool curr = cfs_rq->curr == se;
+ 	bool rel_vprot = false;
+ 	u64 avruntime = 0;
++	s64 limit;
+
+ 	if (se->on_rq) {
+ 		/* commit outstanding execution time */
+@@ -4075,6 +4076,23 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+
+ 	update_load_set(&se->load, weight);
+
++	/*
++	 * rescale_entity() scaled vlag by old_weight/new_weight to preserve
++	 * lag across the reweight (vl' = vl * w/w').  On a large weight
++	 * decrease this can inflate vlag well past the legal lag bound.  Left
++	 * unclamped, the resulting se->vruntime = avruntime - vlag (computed
++	 * just below for an on_rq entity, or via place_entity() on the next
++	 * enqueue for an off_rq one) drifts far from cfs_rq->zero_vruntime, and
++	 * a subsequent __enqueue_entity() then overflows entity_key() * weight
++	 * in __sum_w_vruntime_add().  Re-clamp to the per-entity lag limit for
++	 * the new weight, exactly as entity_lag() does on every fresh lag.
++	 * Note calc_delta_fair(t, se) * se->load.weight <= t << NICE_0_LOAD_SHIFT
++	 * (equality but for the floor in __calc_delta), so this bounds
++	 * key * weight regardless of the entity's weight.
++	 */
++	limit = calc_delta_fair(cfs_rq_max_slice(cfs_rq) + TICK_NSEC, se);
++	se->vlag = clamp(se->vlag, -limit, limit);
++
+ #ifdef CONFIG_SMP
+ 	do {
+ 		u32 divider = get_pelt_divider(&se->avg);

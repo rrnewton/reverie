@@ -1,0 +1,123 @@
+From: Kernel Investigation <kinv@fb.com>
+Date: Tue, 30 Sep 2026 00:00:00 +0000
+Subject: [PATCH] btrfs: bound inode xarray lock hold time in extent map shrinker
+
+The extent map shrinker walks a root's in-memory inodes via
+find_first_inode_to_shrink(), which takes the root's inode xarray lock
+(root->inodes.xa_lock) and then loops calling xa_find(), skipping every
+inode that has no loaded extent maps (files opened only to stat(2) them,
+directories, inodes whose extent maps were already released, etc.) until
+it finds one worth scanning.
+
+The whole skip loop runs with the xarray lock held and only calls
+cond_resched_lock() between iterations. That same lock is taken by every
+inode creation (btrfs_add_inode_to_root() -> xa_store()) and by every
+inode eviction (btrfs_del_inode_from_root()) for the root, so holding it
+across a long run of skipped inodes starves those tasks.
+
+cond_resched_lock() does not bound the hold time:
+
+  - On non-preemptible kernels (PREEMPT_NONE) spin_needbreak() always
+    returns 0, so cond_resched_lock() only drops the lock when the
+    current task needs rescheduling. The shrinker runs in a cpu-bound
+    workqueue worker that can be the only runnable task on its CPU for a
+    long time, so need_resched() may not be set for many seconds.
+
+  - On virtualized guests without paravirt spinlocks the qspinlock falls
+    back to an unfair test-and-set spinlock (virt_spin_lock()); its
+    waiters are not reflected in spin_is_contended(), so even a
+    preemptible kernel would not break the lock on contention.
+
+The result observed in production (a 192-CPU KVM guest, PREEMPT_NONE) is
+the extent map shrinker holding root->inodes.xa_lock while scanning a
+root with a very large, sparse inode set, while ~25 other CPUs spin in
+queued_spin_lock_slowpath()/virt_spin_lock() trying to create or evict
+inodes on the same root, producing a soft lockup:
+
+  watchdog: BUG: soft lockup - CPU#156 stuck for 22s! [chef-client]
+   queued_spin_lock_slowpath+0x22/0x290
+   xa_store+0x17/0x40
+   btrfs_add_inode_to_root      (inlined)
+   btrfs_create_new_inode+0x5b9/0xc50
+   btrfs_create_common+0x181/0x220
+   path_openat / do_filp_open / __x64_sys_openat
+
+Bound the lock hold time: in addition to cond_resched_lock(),
+unconditionally drop and reacquire the lock every
+BTRFS_EM_SHRINK_LOCK_BATCH skipped inodes. Because 'from' is an index
+(not a dereferenced pointer) and xa_find() re-finds the next present
+entry >= from after reacquiring, correctness is preserved; only the
+lock-hold granularity changes. Dropping the (unfair) lock repeatedly
+gives the waiting create/evict tasks windows to acquire it, eliminating
+the multi-second stalls.
+
+Signed-off-by: Kernel Investigation <kinv@fb.com>
+---
+ fs/btrfs/extent_map.c | 42 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 41 insertions(+), 1 deletion(-)
+
+diff --git a/fs/btrfs/extent_map.c b/fs/btrfs/extent_map.c
+index 02bfdb976e40..d3d7ba237e70 100644
+--- a/fs/btrfs/extent_map.c
++++ b/fs/btrfs/extent_map.c
+@@ -1191,11 +1191,19 @@ static long btrfs_scan_inode(struct btrfs_inode *inode, struct btrfs_em_shrink_c
+ 	return nr_dropped;
+ }
+
++/*
++ * Number of inodes to skip while holding the root's inode xarray lock in
++ * find_first_inode_to_shrink() before unconditionally releasing it so that
++ * other tasks contending on the lock can make progress.
++ */
++#define BTRFS_EM_SHRINK_LOCK_BATCH 100
++
+ static struct btrfs_inode *find_first_inode_to_shrink(struct btrfs_root *root,
+ 						      u64 min_ino)
+ {
+ 	struct btrfs_inode *inode;
+ 	unsigned long from = min_ino;
++	unsigned int skipped = 0;
+
+ 	xa_lock(&root->inodes);
+ 	while (true) {
+@@ -1234,7 +1242,39 @@ static struct btrfs_inode *find_first_inode_to_shrink(struct btrfs_root *root,
+ 		write_unlock(&tree->lock);
+ next:
+ 		from = btrfs_ino(inode) + 1;
+-		cond_resched_lock(&root->inodes.xa_lock);
++		/*
++		 * A root can have a huge number of inodes cached in memory that
++		 * have no loaded extent maps (files opened only to stat(2) them,
++		 * directories, inodes whose extent maps were already released,
++		 * etc.), and we skip all of them here while holding the inode
++		 * xarray lock. That same lock is taken by every inode creation
++		 * (btrfs_add_inode_to_root()) and eviction
++		 * (btrfs_del_inode_from_root()) for this root, so holding it
++		 * while scanning a long run of such inodes starves those tasks.
++		 *
++		 * cond_resched_lock() is not enough to bound the hold time: on
++		 * non-preemptible kernels spin_needbreak() is always 0, so the
++		 * lock is only dropped when the current task needs rescheduling,
++		 * which may not happen for a long time for a cpu-bound worker
++		 * that is the only runnable task on its CPU. On virtualized
++		 * guests, which fall back to an unfair test-and-set spinlock,
++		 * the contention is not even detectable via spin_is_contended().
++		 * The result is that the extent map shrinker can hold this lock
++		 * for many seconds, causing soft lockups in tasks creating or
++		 * evicting inodes on the same root.
++		 *
++		 * So, in addition to cond_resched_lock(), unconditionally drop
++		 * and reacquire the lock every BTRFS_EM_SHRINK_LOCK_BATCH skipped
++		 * inodes to give waiters a chance to grab it and make progress.
++		 */
++		if (++skipped >= BTRFS_EM_SHRINK_LOCK_BATCH) {
++			skipped = 0;
++			xa_unlock(&root->inodes);
++			cond_resched();
++			xa_lock(&root->inodes);
++		} else {
++			cond_resched_lock(&root->inodes.xa_lock);
++		}
+ 	}
+ 	xa_unlock(&root->inodes);
+

@@ -1,0 +1,56 @@
+tls: always refresh the queue when reading sock
+
+[ Backport of upstream commit 4ab26bce3969f8fd925fe6f6f551e4d1a508c68b
+  ("tls: always refresh the queue when reading sock");
+  landed in fbk as c76f6f437c46. Absent from 6.11-fbk10 (crash kernel). ]
+
+TCP can compact / collapse the skbs in the receive queue (fast-path skb
+compaction, or tcp_collapse under memory pressure) between two
+->data_ready() invocations. TLS caches a snapshot of that queue in the
+strparser anchor's frag_list the first time it parses a record header.
+
+tls_strp_read_sock() only reloaded that snapshot inside the
+"if (!strp->stm.full_len)" block, i.e. only when it had *not* yet parsed
+the record length. When the record header was parsed on an earlier call
+but the full record had not arrived yet (inq < full_len -> partial read,
+early return), a later call with inq >= full_len skipped the reload and
+handed a STALE frag_list (and stale stm.offset) to
+tls_strp_check_queue_ok(). If the head skb of that stale snapshot had
+since been freed/merged, the "while (skb->len < len) { skb = skb->next; }"
+walk runs off a freed/short chain and dereferences a NULL skb->next:
+
+    BUG: kernel NULL pointer dereference, address: 0000000000000028
+    RIP: tls_strp_check_rcv+0x109/0x230 [tls]   (tls_strp_check_queue_ok)
+    tls_data_ready -> tcp_data_queue -> tcp_rcv_established -> tcp_v6_rcv
+
+(0x28 = offsetof(struct sk_buff, cb) + offsetof(struct tcp_skb_cb, seq),
+ i.e. TCP_SKB_CB(NULL)->seq.)
+
+Upstream observed the same stack as a KASAN slab-use-after-free; without
+KASAN the freed/reused skb yields a NULL ->next and an oops.
+
+Always reload the queue before checking it. The fast path is to have the
+record in the queue when we wake anyway (the path going down
+"if !strp->stm.full_len"), so this adds no meaningful cost.
+
+Fixes: 0d87bbd39d7f ("tls: strp: make sure the TCP skbs do not have overlapping data")
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ net/tls/tls_strp.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/net/tls/tls_strp.c b/net/tls/tls_strp.c
+index 000000000000..000000000000 100644
+--- a/net/tls/tls_strp.c
++++ b/net/tls/tls_strp.c
+@@ -511,9 +511,8 @@ static int tls_strp_read_sock(struct tls_strparser *strp)
+ 	if (inq < strp->stm.full_len)
+ 		return tls_strp_read_copy(strp, true);
+
++	tls_strp_load_anchor_with_queue(strp, inq);
+ 	if (!strp->stm.full_len) {
+-		tls_strp_load_anchor_with_queue(strp, inq);
+-
+ 		sz = tls_rx_msg_size(strp, strp->anchor);
+ 		if (sz < 0) {
+ 			tls_strp_abort_strp(strp, sz);

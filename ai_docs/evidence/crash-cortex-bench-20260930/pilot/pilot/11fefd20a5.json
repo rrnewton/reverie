@@ -1,0 +1,64 @@
+{
+ "blind_id": "11fefd20a5",
+ "mid": "3c212664570a91b16403d990fa79281b",
+ "gt_fix_cited": [
+  {
+   "sha": "54262cda76de",
+   "subject": "FBONLY: sched/fair: clamp rescaled vlag in reweight_entity() to bound entity_key()",
+   "sha_cited": false,
+   "subject_cited": false
+  },
+  {
+   "sha": "ccd3bc00e3e5",
+   "subject": "sched/fair: clamp rescaled vlag in reweight_entity() to bound entity_key()",
+   "sha_cited": true,
+   "subject_cited": true
+  }
+ ],
+ "gt_fix_files": [
+  "kernel/sched/fair.c"
+ ],
+ "gt_fix_funcs": [
+  "reweight_entity"
+ ],
+ "patch_present": true,
+ "patch_files": [
+  "kernel/sched/fair.c"
+ ],
+ "patch_funcs": [
+  "reweight_entity"
+ ],
+ "patch_file_overlap": [
+  "kernel/sched/fair.c"
+ ],
+ "patch_func_overlap": [
+  "reweight_entity"
+ ],
+ "repro_qemu_invocations": 3,
+ "repro_qemu_results_showing_boot": 0,
+ "repro_files": [
+  "initramfs.cpio",
+  "console_baseline.log",
+  "init.c",
+  "init",
+  "overflow_ab.c",
+  "overflow_ab",
+  "console_fixed.log",
+  "root/init"
+ ],
+ "repro_boot_logs": [
+  "console_baseline.log",
+  "console_fixed.log"
+ ],
+ "cost": {
+  "exit_reason": "exited",
+  "wall_secs": 2132.9,
+  "tokens_total_live": 17779905,
+  "cost_usd_list_live": 11.48,
+  "cli_result_cost_usd": 15.095477000000006,
+  "api_calls": 96,
+  "permission_denials": 13
+ },
+ "leak_audit_hits": 0,
+ "report_chars": 16840
+}

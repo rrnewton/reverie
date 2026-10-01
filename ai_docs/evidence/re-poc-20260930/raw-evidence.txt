@@ -1,0 +1,762 @@
+# RE-POC raw evidence bundle (2026-09-30) — companion to the report paste
+
+===== run1.log
+[2026-09-30T13:18:30.919-07:00] Buck UI: https://www.internalfb.com/buck2/de996a9a-0632-495e-b39a-e70d42662549
+[2026-09-30T13:18:31.802-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/35747322082179512
+[2026-09-30T13:18:40.444-07:00] RE Session: reSessionID-532f49b4-c433-4960-a359-36ad2a76a1d7
+[2026-09-30T13:19:53.008-07:00] ✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_default__custombin_minimal_hello - unmanaged (0.6s)
+[2026-09-30T13:19:53.008-07:00] stdout:
+[2026-09-30T13:19:53.008-07:00] Hello, World!
+[2026-09-30T13:19:53.008-07:00]
+[2026-09-30T13:19:53.008-07:00] stderr:
+[2026-09-30T13:19:54.084-07:00] Network: up 577KiB  down 32MiB  session reSessionID-532f49b4-c433-4960-a359-36ad2a76a1d7
+[2026-09-30T13:19:54.084-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/35747322082179512
+Tests finished: Pass 1. Fail 0. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+EXIT=0
+
+===== run5_control_remote_only.log
+[2026-09-30T13:26:06.562-07:00] Buck UI: https://www.internalfb.com/buck2/b82bd641-1e1f-43f5-ae44-6d643fca4676
+[2026-09-30T13:26:07.528-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/35184372128770757
+[2026-09-30T13:26:08.772-07:00] ↷ Skip: fbcode//hermetic_infra/hermit/tests:hermit_run_default__custombin_minimal_hello - unmanaged (0.0s)
+[2026-09-30T13:26:08.772-07:00] from_execution_error::transientinternalerror::Buck2TpxInternalError code: 'Unknown error', message: "Execution failed: Error constructing CommandExecutor: The desired execution strategy (`RemoteOnly`) is incompatible with the executor config that was selected: CommandExecutorConfig { executor: Local(LocalExecutorOptions { use_persistent_workers: false }), options: CommandGenerationOptions { path_separator: Unix, output_paths_behavior: Compatibility, use_bazel_protocol_remote_persistent_workers: false, network_access: None } }"
+[2026-09-30T13:26:09.378-07:00] Network: up 0B  down 0B
+[2026-09-30T13:26:09.378-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/35184372128770757
+Tests finished: Pass 0. Fail 0. Timeout 0. Fatal 0. Skip 1. Omit 0. Infra Failure 0. Build failure 0
+EXIT=64
+
+===== whatran1.jsonl (test.run line + executor counts)
+{"reason":"test.run","identity":"fbcode//hermetic_infra/hermit/tests:hermit_run_default__custombin_minimal_hello","reproducer":{"executor":"Re","details":{"digest":"fd9f3b3f6cf7cb970f19d45b0adb46ff14a3b43bb7309debb4fee4f2d2099866:150","platform_properties":{"platform":"linux-remote-execution"},"action_key":"fbcode//hermetic_infra/hermit/tests:hermit_run_default__custombin_minimal_hello (cfg:dev-linux-x86_64-fbcode-platform010-clang21-no-san#3b1f1d8d8ef14a26) test "}},"extra":{"testcases":[]}}
+Counter({'Cache': 8895, 'Re': 83})
+
+===== run6_control_local.log (tail)
+[2026-09-30T13:26:16.061-07:00] Buck UI: https://www.internalfb.com/buck2/374d8364-42a0-4e8d-b214-e2f24c0a4cef
+[2026-09-30T13:26:16.730-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/1407375417933034
+[2026-09-30T13:26:16.883-07:00] RE Session: reSessionID-5ea8d416-5a3e-42f8-a122-86e374e992aa
+[2026-09-30T13:26:17.112-07:00] ✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_default__custombin_minimal_hello - unmanaged (0.2s)
+[2026-09-30T13:26:17.112-07:00] Test returned with non-zero exit code
+[2026-09-30T13:26:17.112-07:00] stdout:
+[2026-09-30T13:26:17.112-07:00]
+[2026-09-30T13:26:17.112-07:00] stderr:
+[2026-09-30T13:26:17.112-07:00] WARNING: --preemption-timeout requires user-space perf counters, but perf_event_open is unavailable; continuing with --preemption-timeout=disabled. Check the host perf_event_paranoid value and container seccomp policy.
+[2026-09-30T13:26:17.112-07:00]
+[2026-09-30T13:26:17.112-07:00] thread 'main' (57006) panicked at fbcode/hermetic_infra/reverie/reverie-process/src/container.rs:842:26:
+[2026-09-30T13:26:17.112-07:00] called `Result::unwrap()` on an `Err` value: Error { errno: EPERM, context: Mount }
+[2026-09-30T13:26:17.112-07:00] stack backtrace:
+[2026-09-30T13:26:17.112-07:00]    0: __rustc::rust_begin_unwind
+[2026-09-30T13:26:17.112-07:00]              at ./third-party/rust-toolchain/1.98.1/rust/library/std/src/panicking.rs:679:5
+[2026-09-30T13:26:17.112-07:00]    1: core::panicking::panic_fmt
+[2026-09-30T13:26:17.112-07:00]              at ./third-party/rust-toolchain/1.98.1/rust/library/core/src/panicking.rs:80:14
+[2026-09-30T13:26:17.112-07:00]    2: core::result::unwrap_failed
+[2026-09-30T13:26:17.112-07:00]              at ./third-party/rust-toolchain/1.98.1/rust/library/core/src/result.rs:1870:5
+[2026-09-30T13:26:17.112-07:00]    3: <reverie_process::container::Container>::run::<hermit::container::with_container<<hermit::run::RunOpts>::run::{closure#1}, (reverie_process::exit_status::ExitStatus, core::option::Option<reverie_process::child::Output>)>::{closure#0}, core::result::Result<(reverie_process::exit_status::ExitStatus, core::option::Option<reverie_process::child::Output>), hermit::error::SerializableError>>
+[2026-09-30T13:26:17.112-07:00]              at ./third-party/rust-toolchain/1.98.1/rust/library/core/src/result.rs:1231:23
+[2026-09-30T13:26:17.112-07:00]    4: hermit::container::with_container::<<hermit::run::RunOpts>::run::{closure#1}, (reverie_process::exit_status::ExitStatus, core::option::Option<reverie_process::child::Output>)>
+[2026-09-30T13:26:17.112-07:00]              at ./fbcode/hermetic_infra/hermit/hermit-cli/src/bin/hermit/container.rs:45:10
+[2026-09-30T13:26:17.112-07:00]    5: <hermit::run::RunOpts>::run
+[2026-09-30T13:26:17.112-07:00]              at ./fbcode/hermetic_infra/hermit/hermit-cli/src/bin/hermit/run.rs:1208:9
+[2026-09-30T13:26:17.112-07:00]    6: <hermit::run::RunOpts>::main
+[2026-09-30T13:26:17.112-07:00]              at ./fbcode/hermetic_infra/hermit/hermit-cli/src/bin/hermit/run.rs:964:36
+[2026-09-30T13:26:17.112-07:00]    7: <hermit::Subcommand>::main
+[2026-09-30T13:26:17.112-07:00]              at ./fbcode/hermetic_infra/hermit/hermit-cli/src/bin/hermit/main.rs:155:37
+[2026-09-30T13:26:17.112-07:00]    8: hermit::main
+[2026-09-30T13:26:17.112-07:00]              at ./fbcode/hermetic_infra/hermit/hermit-cli/src/bin/hermit/main.rs:175:10
+[2026-09-30T13:26:17.112-07:00]    9: <fn() as core::ops::function::FnOnce<()>>::call_once
+[2026-09-30T13:26:17.112-07:00]              at ./third-party/rust-toolchain/1.98.1/rust/library/core/src/ops/function.rs:250:5
+[2026-09-30T13:26:17.112-07:00] note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+[2026-09-30T13:26:18.224-07:00] Network: up 0B  down 2.0KiB  session reSessionID-5ea8d416-5a3e-42f8-a122-86e374e992aa
+[2026-09-30T13:26:18.224-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/1407375417933034
+Tests finished: Pass 0. Fail 1. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+1 TESTS FAILED
+  ✗ fbcode//hermetic_infra/hermit/tests:hermit_run_default__custombin_minimal_hello - unmanaged (cfg:dev-linux-x86_64-fbcode-platform010-clang21-no-san#3b1f1d8d8ef14a26)
+EXIT=32
+
+===== run2.log
+[2026-09-30T13:20:12.373-07:00] Buck UI: https://www.internalfb.com/buck2/3b1f1228-9416-40f7-a8f5-09dce9e77007
+[2026-09-30T13:20:12.718-07:00] RE Session: reSessionID-f2c55327-ac7d-4fcc-b3bd-3bdb702ee170
+[2026-09-30T13:20:12.954-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/34621422175335989
+[2026-09-30T13:20:37.091-07:00] ✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_strict__custombin_minimal_hello - unmanaged (0.4s)
+[2026-09-30T13:20:37.091-07:00] Test returned with non-zero exit code
+[2026-09-30T13:20:37.091-07:00] stdout:
+[2026-09-30T13:20:37.091-07:00] Preparing temporary environment to run experiments
+[2026-09-30T13:20:37.091-07:00]   Root dir created: /re_tmp/.tmp0X3Ngb
+[2026-09-30T13:20:37.091-07:00] Start initializing environment for execution #1
+[2026-09-30T13:20:37.091-07:00]   Temp dir created: "/re_tmp/.tmp0X3Ngb/1"
+[2026-09-30T13:20:37.091-07:00]   Sched path: "/re_tmp/.tmp0X3Ngb/1/sched"
+[2026-09-30T13:20:37.091-07:00] Environment for execution #1 initialized
+[2026-09-30T13:20:37.091-07:00] Start initializing environment for execution #2
+[2026-09-30T13:20:37.091-07:00]   Temp dir created: "/re_tmp/.tmp0X3Ngb/2"
+[2026-09-30T13:20:37.091-07:00]   Sched path: "/re_tmp/.tmp0X3Ngb/2/sched"
+[2026-09-30T13:20:37.091-07:00] Environment for execution #2 initialized
+[2026-09-30T13:20:37.091-07:00] :: Run #1...
+[2026-09-30T13:20:37.091-07:00]    buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit --log=debug --log-file=/re_tmp/.tmp0X3Ngb/1/log run --base-env=empty --env=HERMIT_MODE=strict --preemption-timeout=80000000 --bind /re_tmp/.tmp0X3Ngb --mount=type=bind,source=/re_tmp/.tmp0X3Ngb/1/workdir,target=/tmp/out --workdir=/tmp/out -- buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/tests/__minimal_hello__/out/minimal_hello.bin
+[2026-09-30T13:20:37.091-07:00] Executed command with status: 1
+[2026-09-30T13:20:37.091-07:00]
+[2026-09-30T13:20:37.091-07:00] Failing run because of non-zero exit code.
+[2026-09-30T13:20:37.091-07:00] Try --allow-nonzero-exit if this is desired.
+[2026-09-30T13:20:37.091-07:00] :: ------------------Stdout----------------------
+[2026-09-30T13:20:37.091-07:00]
+[2026-09-30T13:20:37.091-07:00] :: ----------------End Stdout--------------------
+[2026-09-30T13:20:37.091-07:00]
+[2026-09-30T13:20:37.091-07:00] :: ------------------Stderr----------------------
+[2026-09-30T13:20:37.091-07:00] Error: Could not resolve program "buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/tests/__minimal_hello__/out/minimal_hello.bin" in the guest PATH. Check PATH or use an absolute executable path.
+[2026-09-30T13:20:37.091-07:00]      > No such file or directory (os error 2)
+[2026-09-30T13:20:37.091-07:00]
+[2026-09-30T13:20:37.091-07:00] :: ----------------End Stderr--------------------
+[2026-09-30T13:20:37.091-07:00]
+[2026-09-30T13:20:37.091-07:00]
+[2026-09-30T13:20:37.091-07:00] stderr:
+[2026-09-30T13:20:37.091-07:00] Error: Nonzero exit not allowed.
+[2026-09-30T13:20:37.813-07:00] Network: up 92KiB  down 2.0MiB  session reSessionID-f2c55327-ac7d-4fcc-b3bd-3bdb702ee170
+[2026-09-30T13:20:37.813-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/34621422175335989
+Tests finished: Pass 0. Fail 1. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+1 TESTS FAILED
+  ✗ fbcode//hermetic_infra/hermit/tests:hermit_run_strict__custombin_minimal_hello - unmanaged (cfg:dev-linux-x86_64-fbcode-platform010-clang21-no-san#3b1f1d8d8ef14a26)
+EXIT=32
+
+===== run3.log
+[2026-09-30T13:21:54.910-07:00] Buck UI: https://www.internalfb.com/buck2/07bc1126-bf84-44c6-8e1d-542ebd633680
+[2026-09-30T13:21:55.697-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/25614222933484956
+[2026-09-30T13:21:56.492-07:00] RE Session: reSessionID-1bd174d4-c714-43d8-82c3-0ce184b10c36
+[2026-09-30T13:23:53.551-07:00] ✗ Fail: fbcode//hermetic_infra/hermit/tests:test_hermit_strict__rr_hello - unmanaged (0.1s)
+[2026-09-30T13:23:53.551-07:00] Test returned with non-zero exit code
+[2026-09-30T13:23:53.551-07:00] stdout:
+[2026-09-30T13:23:53.551-07:00] Test exited with unexpected exit code: 127
+[2026-09-30T13:23:53.551-07:00]
+[2026-09-30T13:23:53.551-07:00] stderr:
+[2026-09-30T13:23:53.551-07:00] /re_cwd/buck-out/v2/art/fbcode/hermetic_infra/common/__test_runner__/1e1942d045f3bc93/../e43e99d15578807b/resources/scripts/test_runner.sh: line 43: buck-out/v2/art/fbcode/5357942eb3a073d4/hermetic_infra/hermit/hermit-cli/__hermit__/hermit: No such file or directory
+[2026-09-30T13:23:54.208-07:00] Network: up 796KiB  down 2.0MiB  session reSessionID-1bd174d4-c714-43d8-82c3-0ce184b10c36
+[2026-09-30T13:23:54.208-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/25614222933484956
+Tests finished: Pass 0. Fail 1. Timeout 0. Fatal 0. Skip 0. Omit 0. Infra Failure 0. Build failure 0
+1 TESTS FAILED
+  ✗ fbcode//hermetic_infra/hermit/tests:test_hermit_strict__rr_hello - unmanaged (cfg:dev-linux-x86_64-fbcode-platform010-clang21-no-san#3b1f1d8d8ef14a26)
+EXIT=32
+
+===== run4.log (strict + rr + probe, with throwaway path fixes)
+[2026-09-30T13:24:43.091-07:00] Buck UI: https://www.internalfb.com/buck2/00fae99a-e2c7-4350-9d90-fe827959cda5
+[2026-09-30T13:24:44.099-07:00] Test session: https://www.internalfb.com/intern/testinfra/testrun/9288674435549887
+[2026-09-30T13:24:44.290-07:00] RE Session: reSessionID-03bade70-9af3-4cb2-976e-fd2beb64718a
+[2026-09-30T13:24:46.819-07:00] ✓ Pass: fbcode//hermetic_infra/hermit/tests:test_hermit_strict__rr_hello - unmanaged (0.7s)
+[2026-09-30T13:24:46.819-07:00] stdout:
+[2026-09-30T13:24:46.819-07:00]
+[2026-09-30T13:24:46.819-07:00] stderr:
+[2026-09-30T13:24:46.819-07:00] :: Run1...
+[2026-09-30T13:24:46.819-07:00] :: Run2...
+[2026-09-30T13:24:46.819-07:00] :: Comparing logs... /re_tmp/run1_log_MFxCe and /re_tmp/run2_log_bBDe6
+[2026-09-30T13:24:46.819-07:00] Logs contain 777 | 777 messages total
+[2026-09-30T13:24:46.819-07:00] Logs contain 607 | 607 detcore-specific messages
+[2026-09-30T13:24:46.819-07:00] Logs contain 245 | 245 INFO messages
+[2026-09-30T13:24:46.819-07:00] Logs contain 517 | 517 DETLOG & scheduler COMMIT messages
+[2026-09-30T13:24:46.819-07:00] Normalizing known nondeterministic numerical data before comparison...
+[2026-09-30T13:24:46.819-07:00]   Comparing DETLOG messages...
+[2026-09-30T13:24:46.819-07:00]
+[2026-09-30T13:24:46.819-07:00] Done processing logs, no substantive differences found.
+[2026-09-30T13:24:46.819-07:00] :: Success: deterministic. Determinism verified.
+[2026-09-30T13:24:49.816-07:00] ✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_default__custombin_minimal_hello - unmanaged (1.1s)
+[2026-09-30T13:24:49.816-07:00] stdout:
+[2026-09-30T13:24:49.816-07:00] Hello, World!
+[2026-09-30T13:24:49.816-07:00]
+[2026-09-30T13:24:49.816-07:00] stderr:
+[2026-09-30T13:25:04.803-07:00] ✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_strict__custombin_minimal_hello - unmanaged (0.9s)
+[2026-09-30T13:25:04.803-07:00] stdout:
+[2026-09-30T13:25:04.803-07:00] Preparing temporary environment to run experiments
+[2026-09-30T13:25:04.803-07:00]   Root dir created: /re_tmp/.tmpAzZwdU
+[2026-09-30T13:25:04.803-07:00] Start initializing environment for execution #1
+[2026-09-30T13:25:04.803-07:00]   Temp dir created: "/re_tmp/.tmpAzZwdU/1"
+[2026-09-30T13:25:04.803-07:00]   Sched path: "/re_tmp/.tmpAzZwdU/1/sched"
+[2026-09-30T13:25:04.803-07:00] Environment for execution #1 initialized
+[2026-09-30T13:25:04.803-07:00] Start initializing environment for execution #2
+[2026-09-30T13:25:04.803-07:00]   Temp dir created: "/re_tmp/.tmpAzZwdU/2"
+[2026-09-30T13:25:04.803-07:00]   Sched path: "/re_tmp/.tmpAzZwdU/2/sched"
+[2026-09-30T13:25:04.803-07:00] Environment for execution #2 initialized
+[2026-09-30T13:25:04.803-07:00] :: Run #1...
+[2026-09-30T13:25:04.803-07:00]    buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit --log=debug --log-file=/re_tmp/.tmpAzZwdU/1/log run --base-env=empty --env=HERMIT_MODE=strict --preemption-timeout=80000000 --bind /re_tmp/.tmpAzZwdU --mount=type=bind,source=/re_tmp/.tmpAzZwdU/1/workdir,target=/tmp/out --workdir=/tmp/out -- /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/tests/__minimal_hello__/out/minimal_hello.bin
+[2026-09-30T13:25:04.803-07:00] Executed command with status: 0
+[2026-09-30T13:25:04.803-07:00]
+[2026-09-30T13:25:04.803-07:00] :: Run #2...
+[2026-09-30T13:25:04.803-07:00]    buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit --log=debug --log-file=/re_tmp/.tmpAzZwdU/2/log run --base-env=empty --env=HERMIT_MODE=strict --preemption-timeout=80000000 --bind /re_tmp/.tmpAzZwdU --mount=type=bind,source=/re_tmp/.tmpAzZwdU/2/workdir,target=/tmp/out --workdir=/tmp/out -- /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/tests/__minimal_hello__/out/minimal_hello.bin
+[2026-09-30T13:25:04.803-07:00] Executed command with status: 0
+[2026-09-30T13:25:04.803-07:00]
+[2026-09-30T13:25:04.803-07:00] ::  Comparing stdout
+[2026-09-30T13:25:04.803-07:00] ::  Comparing stderr
+[2026-09-30T13:25:04.803-07:00] ::  Comparing log files
+[2026-09-30T13:25:04.803-07:00]     buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit log-diff --include-detlogs=other --include-detlogs=syscallresult --include-detlogs=syscall --syscall-history=5 /re_tmp/.tmpAzZwdU/1/log /re_tmp/.tmpAzZwdU/2/log
+[2026-09-30T13:25:04.803-07:00] ::  Comparing exit codes
+[2026-09-30T13:25:04.803-07:00] ::  Looking for desync events:
+[2026-09-30T13:25:04.803-07:00] DESYNC events not found
+[2026-09-30T13:25:04.803-07:00] :: ------------------Stdout----------------------
+[2026-09-30T13:25:04.803-07:00] Hello, World!
+[2026-09-30T13:25:04.803-07:00]
+[2026-09-30T13:25:04.803-07:00] :: ----------------End Stdout--------------------
+[2026-09-30T13:25:04.803-07:00]
+[2026-09-30T13:25:04.803-07:00] :: ------------------Stderr----------------------
+[2026-09-30T13:25:04.803-07:00] WARNING: --bind target /re_tmp/.tmpAzZwdU is outside guest /tmp, so this option has no effect; files outside /tmp are already visible unless another mount hides them
+[2026-09-30T13:25:04.803-07:00]
+[2026-09-30T13:25:04.803-07:00] :: ----------------End Stderr--------------------
+[2026-09-30T13:25:04.803-07:00]
+[2026-09-30T13:25:04.803-07:00] :: Copy artifacts to buck-out/v2/test/execution/fbcode/dc0c674137220321/f9003207cf9e4d4c/default/artifacts_directory
+[2026-09-30T13:25:04.803-07:00] Success!
+[2026-09-30T13:25:04.803-07:00]
+[2026-09-30T13:25:04.803-07:00] stderr:
+[2026-09-30T13:25:04.803-07:00] Logs contain 80 | 80 messages total
+[2026-09-30T13:25:04.803-07:00] Logs contain 50 | 50 detcore-specific messages
+[2026-09-30T13:25:04.803-07:00] Logs contain 20 | 20 INFO messages
+[2026-09-30T13:25:04.803-07:00] Logs contain 20 | 20 DETLOG & scheduler COMMIT messages
+[2026-09-30T13:25:04.803-07:00]   Comparing DETLOG messages...
+[2026-09-30T13:25:04.803-07:00]
+[2026-09-30T13:25:04.803-07:00] Done processing logs, no substantive differences found.
+[2026-09-30T13:25:09.894-07:00] ✓ Pass: fbcode//hermetic_infra/hermit/tests:re_poc_probe - unmanaged (4.2s)
+[2026-09-30T13:25:09.894-07:00] stdout:
+[2026-09-30T13:25:09.894-07:00] == host
+[2026-09-30T13:25:09.894-07:00] twshared70618.04.vll6.facebook.com
+[2026-09-30T13:25:09.894-07:00] Linux twshared70618.04.vll6.facebook.com 6.16.1-0_fbk5_0_g0e127f210adc #1 SMP Fri Jul 17 15:49:12 PDT 2026 x86_64 x86_64 x86_64 GNU/Linux
+[2026-09-30T13:25:09.894-07:00] uid=30083(fbnobody) gid=30083(fbnobody) groups=30083(fbnobody)
+[2026-09-30T13:25:09.894-07:00] NAME="CentOS Stream"
+[2026-09-30T13:25:09.894-07:00] VERSION="9"
+[2026-09-30T13:25:09.894-07:00] == cwd: /re_cwd
+[2026-09-30T13:25:09.894-07:00] == self status
+[2026-09-30T13:25:09.894-07:00] TracerPid:0
+[2026-09-30T13:25:09.894-07:00] CapEff:0000004000000000
+[2026-09-30T13:25:09.894-07:00] CapBnd:000001c7a1ac7dff
+[2026-09-30T13:25:09.894-07:00] NoNewPrivs:0
+[2026-09-30T13:25:09.894-07:00] Seccomp:0
+[2026-09-30T13:25:09.894-07:00] Seccomp_filters:0
+[2026-09-30T13:25:09.894-07:00] == sysctls
+[2026-09-30T13:25:09.894-07:00] /proc/sys/kernel/yama/ptrace_scope: cat: /proc/sys/kernel/yama/ptrace_scope: No such file or directory
+[2026-09-30T13:25:09.894-07:00] /proc/sys/kernel/perf_event_paranoid: 1
+[2026-09-30T13:25:09.894-07:00] /proc/sys/user/max_user_namespaces: 2147483647
+[2026-09-30T13:25:09.894-07:00] /proc/sys/kernel/unprivileged_userns_clone: cat: /proc/sys/kernel/unprivileged_userns_clone: No such file or directory
+[2026-09-30T13:25:09.894-07:00] /proc/sys/kernel/apparmor_restrict_unprivileged_userns: cat: /proc/sys/kernel/apparmor_restrict_unprivileged_userns: No such file or directory
+[2026-09-30T13:25:09.894-07:00] == cpu
+[2026-09-30T13:25:09.894-07:00] model name: Intel(R) Xeon(R) Platinum 8321HC CPU @ 1.40GHz
+[2026-09-30T13:25:09.894-07:00] no hypervisor flag
+[2026-09-30T13:25:09.894-07:00] nproc=52
+[2026-09-30T13:25:09.894-07:00] == cgroup
+[2026-09-30T13:25:09.894-07:00] 0::/task/system.slice/system-re.slice/system-re-workloads.slice/system-re-workloads-2.slice/rustemd-cc6e0d9f-3c72-4cf0-947a-fff3bb092a06.service
+[2026-09-30T13:25:09.894-07:00] == pmu devices
+[2026-09-30T13:25:09.894-07:00] breakpoint cpu cstate_core cstate_pkg intel_bts intel_pt kprobe msr power software tracepoint uncore_cha_0 uncore_cha_1 uncore_cha_10 uncore_cha_11 uncore_cha_12 uncore_cha_13 uncore_cha_14 uncore_cha_15 uncore_cha_16 uncore_cha_17 uncore_cha_18 uncore_cha_19 uncore_cha_2 uncore_cha_20 uncore_cha_21 uncore_cha_22 uncore_cha_23 uncore_cha_24 uncore_cha_25 uncore_cha_3 uncore_cha_4 uncore_cha_5 uncore_cha_6 uncore_cha_7 uncore_cha_8 uncore_cha_9 uncore_iio_0 uncore_iio_1 uncore_iio_2 uncore_iio_3 uncore_iio_4 uncore_iio_5 uncore_iio_free_running_0 uncore_iio_free_running_1 uncore_iio_free_running_2 uncore_iio_free_running_3 uncore_iio_free_running_4 uncore_iio_free_running_5 uncore_imc_0 uncore_imc_1 uncore_imc_2 uncore_imc_3 uncore_imc_4 uncore_imc_5 uncore_irp_0 uncore_irp_1 uncore_irp_2 uncore_irp_3 uncore_irp_4 uncore_irp_5 uncore_m2m_0 uncore_m2m_1 uncore_m2pcie_0 uncore_m2pcie_1 uncore_m2pcie_2 uncore_m3upi_0 uncore_m3upi_1 uncore_pcu uncore_ubox uncore_upi_0 uncore_upi_1 uncore_upi_2 uprobe 
+[2026-09-30T13:25:09.894-07:00] == unshare
+[2026-09-30T13:25:09.894-07:00] userns: OK
+[2026-09-30T13:25:09.894-07:00] userns+pid+mnt: OK
+[2026-09-30T13:25:09.894-07:00] == perf/ptrace probe
+[2026-09-30T13:25:09.894-07:00] perf_event_open(HW_BRANCH_INSTRUCTIONS): OK fd=3
+[2026-09-30T13:25:09.894-07:00] perf_event_open(RAW intel rcb 0x5101c4): OK fd=3
+[2026-09-30T13:25:09.894-07:00] perf_event_open(RAW amd rcb 0x5100d1): OK fd=3
+[2026-09-30T13:25:09.894-07:00] perf_event_open(SW_TASK_CLOCK): OK fd=3
+[2026-09-30T13:25:09.894-07:00] ptrace(PTRACE_SEIZE): OK
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00] == RUN: /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit run -- /bin/true
+[2026-09-30T13:25:09.894-07:00] EXIT=0
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00] == RUN: /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit run -- /bin/grep TracerPid /proc/self/status
+[2026-09-30T13:25:09.894-07:00] TracerPid:1
+[2026-09-30T13:25:09.894-07:00] EXIT=0
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00] == RUN: /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit run -- /bin/date
+[2026-09-30T13:25:09.894-07:00] Fri Dec 31 03:59:59 PM PST 2021
+[2026-09-30T13:25:09.894-07:00] EXIT=0
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00] == RUN: /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit run --strict -- /bin/true
+[2026-09-30T13:25:09.894-07:00] EXIT=0
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00] == RUN: /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit run --strict -- /bin/date
+[2026-09-30T13:25:09.894-07:00] Fri Dec 31 03:59:59 PM PST 2021
+[2026-09-30T13:25:09.894-07:00] EXIT=0
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00] == RUN: /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit run --strict -- /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/tests/__minimal_hello__/out/minimal_hello.bin
+[2026-09-30T13:25:09.894-07:00] Hello, World!
+[2026-09-30T13:25:09.894-07:00] EXIT=0
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00] == RUN: /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit run --strict --preemption-timeout=80000000 -- /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/tests/__minimal_hello__/out/minimal_hello.bin
+[2026-09-30T13:25:09.894-07:00] Hello, World!
+[2026-09-30T13:25:09.894-07:00] EXIT=0
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00] == RUN: /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit run --strict --no-rcb-time -- /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/tests/__minimal_hello__/out/minimal_hello.bin
+[2026-09-30T13:25:09.894-07:00] Hello, World!
+[2026-09-30T13:25:09.894-07:00] EXIT=0
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00] == RUN: /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit run --verify --strict -- /bin/date
+[2026-09-30T13:25:09.894-07:00] EXIT=0
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00] == RUN: /re_cwd/buck-out/v2/art/fbcode/3b1f1d8d8ef14a26/hermetic_infra/hermit/hermit-cli/__hermit__/hermit --log=info run --strict -- /bin/true
+[2026-09-30T13:25:09.894-07:00] EXIT=0
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00] stderr:
+[2026-09-30T13:25:09.894-07:00] :: Run1...
+[2026-09-30T13:25:09.894-07:00] :: Run2...
+[2026-09-30T13:25:09.894-07:00] :: Comparing logs... /re_tmp/run1_log_v30Nf and /re_tmp/run2_log_noshN
+[2026-09-30T13:25:09.894-07:00] Logs contain 975 | 975 messages total
+[2026-09-30T13:25:09.894-07:00] Logs contain 778 | 778 detcore-specific messages
+[2026-09-30T13:25:09.894-07:00] Logs contain 322 | 322 INFO messages
+[2026-09-30T13:25:09.894-07:00] Logs contain 626 | 626 DETLOG & scheduler COMMIT messages
+[2026-09-30T13:25:09.894-07:00] Normalizing known nondeterministic numerical data before comparison...
+[2026-09-30T13:25:09.894-07:00]   Comparing DETLOG messages...
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00] Done processing logs, no substantive differences found.
+[2026-09-30T13:25:09.894-07:00] :: Success: deterministic. Determinism verified.
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.896990Z  INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: seeding scheduler runqueue with seed 0
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.901695Z  INFO detcore::scheduler: [scheduler] daemon task starting up, waiting for guest thread start..
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.902267Z  INFO detcore::tool_local: DETLOG USER RAND: seeding PRNG for root thread with seed 0
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.902349Z  INFO detcore::tool_local: DETLOG CHAOSRAND: seeding chaos scheduler with seed 0
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.929111Z  INFO detcore::scheduler: [scheduler] guest in queue, scheduler proceeding..
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.929270Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00]  COMMIT turn 0, dettid 3 using resources {ParentContinue { parent: DetPid(3), child: DetPid(3) }: W}, on previously committed 1_640_995_199.000_000_000s
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.929603Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00]  COMMIT turn 1, dettid 3 using resources {MemAddrSpace(DetPid(3)): RW}, on previously committed 1_640_995_199.000_500_000s
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.929696Z  INFO detcore::tool_global: [detcore, dtid 3] New thread given go-ahead to proceed via <ivar 0x7f84bda18fd0 Go(None)>
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.936662Z  INFO detcore: DETLOG [post_exec, dtid 3] init auxv AT_RANDOM value to [162, 205, 24, 211, 0, 83, 122, 92, 176, 131, 220, 72, 219, 250, 14, 242]
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.937161Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 1, rcbs: 367, nondet_instrs: 1, starting_micros: 1640995199000000, multiplier: 1.0 }
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.937351Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 1, rcbs: 726, nondet_instrs: 2, starting_micros: 1640995199000000, multiplier: 1.0 }
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.937550Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: brk(NULL) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.937716Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #2: brk(NULL) = Ok(93824992260096)
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.939899Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: arch_prctl(12289, 0x7fffffffe3a0) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.939972Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #3: arch_prctl(12289, 0x7fffffffe3a0) = Err(Errno(EINVAL))
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.940290Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.940494Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #4: mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = Ok(140737353850880)
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.940743Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: access(0x7ffff7ff2e50 -> "/etc/ld.so.preload", Mode(S_IROTH)) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.940945Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #5: access(0x7ffff7ff2e50 -> "/etc/ld.so.preload", Mode(S_IROTH)) = Err(Errno(ENOENT))
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.941129Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 5, rcbs: 9596, nondet_instrs: 24, starting_micros: 1640995199000000, multiplier: 1.0 }
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.941328Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: openat(-100, 0x7ffff7ff1266 -> "/etc/ld.so.cache", OFlag(O_CLOEXEC)) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.941665Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00]  COMMIT turn 2, dettid 3 using resources {Path("/etc/ld.so.cache"): R}, on previously committed 1_640_995_199.001_157_910s
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.942005Z  INFO detcore::syscalls::files: Injecting additional fstat to retrieve file metadata on fd 3.
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.942510Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #6: openat(-100, 0x7ffff7ff1266 -> "/etc/ld.so.cache", OFlag(O_CLOEXEC)) = Ok(3)
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.942712Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: fstat(3, 0x7fffffffd5d0) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.943008Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #7: fstat(3, 0x7fffffffd5d0) = Ok(0)
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.943226Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(NULL, 15003, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE), 3, 0) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.943398Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #8: mmap(NULL, 15003, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE), 3, 0) = Ok(140737353834496)
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.943556Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: close(3) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.943760Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #9: close(3) = Ok(0)
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.943973Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: openat(-100, 0x7ffff7fba750 -> "/lib64/libc.so.6", OFlag(O_CLOEXEC)) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.944223Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+[2026-09-30T13:25:09.894-07:00]
+[2026-09-30T13:25:09.894-07:00]  COMMIT turn 3, dettid 3 using resources {Path("/lib64/libc.so.6"): R}, on previously committed 1_640_995_199.001_700_750s
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.944529Z  INFO detcore::syscalls::files: Injecting additional fstat to retrieve file metadata on fd 3.
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.944893Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #10: openat(-100, 0x7ffff7fba750 -> "/lib64/libc.so.6", OFlag(O_CLOEXEC)) = Ok(3)
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.945108Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: read(3, 0x7fffffffd738, 832) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.945346Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #11: read(3, 0x7fffffffd738, 832) = Ok(832)
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.945530Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: pread64(3, 0x7fffffffd330, 784, 64) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.945731Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #12: pread64(3, 0x7fffffffd330, 784, 64) = Ok(784)
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.945903Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: pread64(3, 0x7fffffffd2f0, 48, 848) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.946094Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #13: pread64(3, 0x7fffffffd2f0, 48, 848) = Ok(48)
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.946263Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: pread64(3, 0x7fffffffd2a0, 68, 896) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.946457Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #14: pread64(3, 0x7fffffffd2a0, 68, 896) = Ok(68)
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.946624Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: fstat(3, 0x7fffffffd5d0) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.946836Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #15: fstat(3, 0x7fffffffd5d0) = Ok(0)
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.947012Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: pread64(3, 0x7fffffffd220, 784, 64) = ?
+[2026-09-30T13:25:09.894-07:00] 2026-09-30T20:25:08.947205Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #16: pread64(3, 0x7fffffffd220, 784, 64) = Ok(784)
+
+===== sweep summary
+3 BUILDS FAILED
+Tests finished: [38;5;10mPass 385[39m. [38;5;9mFail 88[39m. [38;5;11mTimeout 2[39m. Fatal 0. Skip 0. Omit 0. Infra Failure 0. [38;5;9mBuild failure 3[39m
+88 TESTS FAILED
+2 TESTS TIMED OUT
+  ✗ fbcode//hermetic_infra/hermit/tests:standalone__replay_chaos_trace - unmanaged
+  ✗ fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__sh_date - unmanaged
+  ✗ fbcode//hermetic_infra/hermit/tests:standalone__curl_client_only - unmanaged
+  ✗ fbcode//hermetic_infra/hermit/tests:standalone__validate_race_example_properties - unmanaged
+  ✗ fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__sh_par_work - unmanaged
+  ✗ fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__sh_devrand - unmanaged
+  ✗ fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__sh_race - unmanaged
+  ✗ fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__sh_date - unmanaged
+  ✗ fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__sh_race - unmanaged
+  ✗ fbcode//hermetic_infra/hermit/tests:analyze_racewrite_nostdlib - unmanaged
+  ⏱ fbcode//hermetic_infra/hermit/tests:hermit_chaos_fail_keyvalue - unmanaged
+  ⏱ fbcode//hermetic_infra/hermit/tests:test_hermit_strict__rr_multiple_pending_signals_sequential - unmanaged
+
+===== rerun summary
+✗ Fail: fbcode//hermetic_infra/hermit/tests:test_hermit_strict__rr_rlimit
+✗ Fail: fbcode//hermetic_infra/hermit/tests:test_hermit_strict__rr_sched_yield_to_lower_priority
+✗ Fail: fbcode//hermetic_infra/hermit/tests:test_hermit_strict__rr_ppoll
+✗ Fail: fbcode//hermetic_infra/hermit/tests:standalone__replay_chaos_trace
+✗ Fail: fbcode//hermetic_infra/hermit/tests:standalone__validate_race_example_properties
+✗ Fail: fbcode//hermetic_infra/hermit/tests:analyze_racewrite_nostdlib
+✗ Fail: fbcode//hermetic_infra/hermit/tests:standalone__replay_trace
+✗ Fail: fbcode//hermetic_infra/hermit/tests:standalone__curl_client_only
+✗ Fail: fbcode//hermetic_infra/hermit/tests:verify_replay__nanosleep-threads-simple
+✓ Pass: fbcode//hermetic_infra/hermit/tests:re_poc_probe2_2
+✓ Pass: fbcode//hermetic_infra/hermit/tests:raw_run__py_hello
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__custombin_minimal_hello
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__sh_par_work
+✓ Pass: fbcode//hermetic_infra/hermit/tests:raw_run__py_timed_progress_bar
+✓ Pass: fbcode//hermetic_infra/hermit/tests:re_poc_probe2_0
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__sh_devrand
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__sh_date
+✓ Pass: fbcode//hermetic_infra/hermit/tests:re_poc_probe2_1
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__custombin_minimal_hello
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__sh_date
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_strict__sh_py_hello
+✓ Pass: fbcode//hermetic_infra/hermit/tests:raw_run__py_rand
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__sh_taskset
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_default__py_hello
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__sh_par_work
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__sh_taskset
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_interrogate_tty
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_sched_yield
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_interrogate_tty
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_poll
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_bind_connect_race
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_clock_gettime
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_nanosleep
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_pipe_basics
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_heap_ptrs
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_futex_timeout
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_stack_ptr
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__custombin_minimal_hello
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__sh_devrand
+✓ Pass: fbcode//hermetic_infra/hermit/tests:re_poc_probe2_6
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_poll
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__sh_taskset
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_print_clock_nanosleep_monotonic_abs_race
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_default__py_rand
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_nanosleep
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_futex_timeout
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_socketpair
+✓ Pass: fbcode//hermetic_infra/hermit/tests:re_poc_probe2_7
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_rdtsc
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_futex_wait_child
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_futex_timeout
+✓ Pass: fbcode//hermetic_infra/hermit/tests:re_poc_probe2_5
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_heap_ptrs
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_network_hello_world
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_rdtsc
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_stack_ptr
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_sched_yield
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_stack_ptr
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_heap_ptrs
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_rdtsc
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_nanosleep
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_clock_total_order
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_sched_yield
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_futex_wait_child
+✓ Pass: fbcode//hermetic_infra/hermit/tests:re_poc_probe2_3
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_print_nanosleep_race
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_print_clock_nanosleep_monotonic_abs_race
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_network_hello_world
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_print_clock_nanosleep_monotonic_race
+✓ Pass: fbcode//hermetic_infra/hermit/tests:re_poc_probe2_4
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__sh_date
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_print_nanosleep_race
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_poll
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_print_clock_nanosleep_realtime_abs_race
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_interrogate_tty
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_clock_gettime
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_pipe_basics
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_exit_group
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_futex_wait_child
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_network_hello_world
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_print_clock_nanosleep_realtime_abs_race
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__sh_race
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_socketpair
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_clock_gettime
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_socketpair
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__sh_py_hello
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_strict__rs_mem_race
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_pipe_basics
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaos__sh_py_hello
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_print_clock_nanosleep_monotonic_race
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__sh_race
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__sh_race
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_default__py_timed_progress_bar
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_mem_race
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_futex_wake_some
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_run_strict__sh_par_work
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay_chaos__rs_mem_race
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_tracereplay__rs_mem_race
+✓ Pass: fbcode//hermetic_infra/hermit/tests:cbin_just_spin_trace_replay_split
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaosreplay__rs_futex_and_print
+✗ Fail: fbcode//hermetic_infra/hermit/tests:analyze_nanosleep-threads-nocrash
+✓ Pass: fbcode//hermetic_infra/hermit/tests:hermit_chaos_fail_keyvalue
+✗ Fail: fbcode//hermetic_infra/hermit/tests:hermit_run_chaos__sh_par_work
+
+===== SPR A/B: baseline (stock 0x5101c4)
+== probe2 idx=2 host=twshared70985.02.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=101
+Switch points: 1
+EXIT=1
+EXIT=1
+EXIT=1
+== probe2 idx=11 host=twshared70985.02.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=14 host=twshared70985.02.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=4 host=twshared70985.02.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=101
+Switch points: 1
+== probe2 idx=7 host=twshared38171.01.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=15 host=twshared38388.05.eag3.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=22 host=twshared38388.05.eag3.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=20 host=twshared38171.01.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=101
+Switch points: 1
+== probe2 idx=18 host=twshared38388.05.eag3.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=21 host=twshared38171.01.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=8 host=twshared29700.03.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=101
+Switch points: 1
+== probe2 idx=0 host=twshared83596.04.eag2.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=101
+Switch points: 1
+== probe2 idx=3 host=twshared83596.04.eag2.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=101
+Switch points: 1
+== probe2 idx=13 host=twshared29700.03.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=9 host=twshared83596.04.eag2.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=23 host=twshared83596.04.eag2.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=101
+Switch points: 1
+== probe2 idx=17 host=twshared29700.03.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=19 host=twshared38171.01.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=12 host=twshared74551.02.eag3.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=10 host=twshared74551.02.eag3.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=6 host=twshared70985.02.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=101
+Switch points: 1
+== probe2 idx=1 host=twshared70985.02.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+== probe2 idx=16 host=twshared5906.15.ftw1.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Platinum 8321HC CPU @ 1.40GHz | family= 6 model= 85 | hypervisor=0
+EXIT=0
+EXIT=0
+Switch points: 9
+== probe2 idx=5 host=twshared38171.01.eag6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=101
+Switch points: 1
+EXIT=0
+
+===== SPR A/B: with 0x5111c4
+EXIT=1
+EXIT=1
+EXIT=1
+EXIT=1
+EXIT=1
+EXIT=1
+EXIT=1
+EXIT=1
+EXIT=1
+== probe2 idx=21 host=twshared66963.03.ftw6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+== probe2 idx=12 host=twshared83567.05.ftw6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+== probe2 idx=14 host=twshared66963.03.ftw6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+== probe2 idx=15 host=twshared83567.05.ftw6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+== probe2 idx=18 host=twshared66963.03.ftw6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+== probe2 idx=10 host=twshared83567.05.ftw6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=0
+Switch points: 9
+== probe2 idx=6 host=twshared66073.09.ftw5.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=0
+Switch points: 9
+== probe2 idx=9 host=twshared66073.09.ftw5.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+== probe2 idx=19 host=twshared66073.09.ftw5.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=0
+Switch points: 9
+== probe2 idx=23 host=twshared61207.02.pnb5.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+== probe2 idx=1 host=twshared83567.05.ftw6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=0
+Switch points: 9
+== probe2 idx=5 host=twshared51166.14.ftw3.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Platinum 8321HC CPU @ 1.40GHz | family= 6 model= 85 | hypervisor=0
+EXIT=0
+EXIT=0
+Switch points: 9
+== probe2 idx=20 host=twshared66073.09.ftw5.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+== probe2 idx=17 host=twshared83567.05.ftw6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+== probe2 idx=16 host=twshared8944.15.ftw3.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=0
+Switch points: 9
+== probe2 idx=2 host=twshared66073.09.ftw5.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+== probe2 idx=3 host=twshared66073.09.ftw5.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=0
+Switch points: 9
+== probe2 idx=11 host=twshared83567.05.ftw6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+== probe2 idx=4 host=twshared29227.02.vll5.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Platinum 8321HC CPU @ 1.40GHz | family= 6 model= 85 | hypervisor=0
+EXIT=0
+EXIT=0
+Switch points: 9
+== probe2 idx=8 host=twshared54092.13.ftw3.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+== probe2 idx=13 host=twshared70469.09.ftw5.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=0
+EXIT=0
+Switch points: 9
+== probe2 idx=7 host=twshared27796.04.vll6.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Platinum 8321HC CPU @ 1.40GHz | family= 6 model= 85 | hypervisor=0
+EXIT=0
+EXIT=0
+Switch points: 9
+== probe2 idx=0 host=twshared61971.04.vll5.facebook.com
+cpu:  AuthenticAMD | AMD EPYC 9D25 126-Core Processor | family= 26 model= 17 | hypervisor=0
+EXIT=0
+EXIT=0
+Switch points: 9
+== probe2 idx=22 host=twshared13370.17.vll1.facebook.com
+cpu:  GenuineIntel | Intel(R) Xeon(R) Gold 6450C | family= 6 model= 143 | hypervisor=0
+EXIT=1
+EXIT=0
+Switch points: 9
+EXIT=0
+
+===== probe3 (ASLR test)
+== probe3 host=twshared15661.14.ftw2.facebook.com cpu= Intel(R) Xeon(R) Platinum 8321HC CPU @ 1.40GHz
+randomize_va_space=1 personality=00000000
+setarch -R personality=00040000
+== trace-replay, ASLR as-is
+EXIT=1
+Verification use case failed!
+Error: Verification check failed
+(DETLOG) Mismatch at log messages 131 (run 1) and 145 (run 2): Diff < left / right > :
+<"DEBUG syscall.intercept{tid=3 syscall=execve args=SyscallArgs { arg0: 140700618654208, arg1: 140700618422624, arg2: 140700619356384, arg3: 0, arg4: 0, arg5: 0 }}: detcore: DETLOG (pre) registers [dtid 3][rcbs 367]. rax 0x0 rbx 0x0 rcx 0x0 rdx 0x0 rsi 0x0 rdi 0x0 rbp 0x0 rsp 0x7fffffffed00 r8 0x0  r9 0x0 r10 0x0 r11 0x0 r12 0x0 r13 0x0 r14 0x0 r15 0x0 rip 0x4010f0 eflags 0x202 cs 0x33 ss 0x2b ds 0x0 es 0x0 fs 0x0 gs 0x0"
+>"DEBUG syscall.intercept{tid=3 syscall=execve args=SyscallArgs { arg0: 139909860229504, arg1: 139909859998048, arg2: 139909860931840, arg3: 0, arg4: 0, arg5: 0 }}: detcore: DETLOG (pre) registers [dtid 3][rcbs 367]. rax 0x0 rbx 0x0 rcx 0x0 rdx 0x0 rsi 0x0 rdi 0x0 rbp 0x0 rsp 0x7fffffffed00 r8 0x0  r9 0x0 r10 0x0 r11 0x0 r12 0x0 r13 0x0 r14 0x0 r15 0x0 rip 0x4010f0 eflags 0x202 cs 0x33 ss 0x2b ds 0x0 es 0x0 fs 0x0 gs 0x0"
+(DETLOG) Mismatch at log messages 137 (run 1) and 155 (run 2): Diff < left / right > :
+<"INFO syscall.intercept{tid=3 syscall=execve args=SyscallArgs { arg0: 140700618654208, arg1: 140700618422624, arg2: 140700619356384, arg3: 0, arg4: 0, arg5: 0 }}: detcore: DETLOG [post_exec, dtid 3] init auxv AT_RANDOM value to [162, 205, 24, 211, 0, 83, 122, 92, 176, 131, 220, 72, 219, 250, 14, 242]"
+>"INFO syscall.intercept{tid=3 syscall=execve args=SyscallArgs { arg0: 139909860229504, arg1: 139909859998048, arg2: 139909860931840, arg3: 0, arg4: 0, arg5: 0 }}: detcore: DETLOG [post_exec, dtid 3] init auxv AT_RANDOM value to [162, 205, 24, 211, 0, 83, 122, 92, 176, 131, 220, 72, 219, 250, 14, 242]"
+== trace-replay, setarch -R (ASLR off)
+EXIT=1
+Verification use case failed!
+Error: Verification check failed
+(DETLOG) Mismatch at log messages 131 (run 1) and 145 (run 2): Diff < left / right > :
+<"DEBUG syscall.intercept{tid=3 syscall=execve args=SyscallArgs { arg0: 140737209762304, arg1: 140737209530720, arg2: 140737210464480, arg3: 0, arg4: 0, arg5: 0 }}: detcore: DETLOG (pre) registers [dtid 3][rcbs 367]. rax 0x0 rbx 0x0 rcx 0x0 rdx 0x0 rsi 0x0 rdi 0x0 rbp 0x0 rsp 0x7fffffffed00 r8 0x0  r9 0x0 r10 0x0 r11 0x0 r12 0x0 r13 0x0 r14 0x0 r15 0x0 rip 0x4010f0 eflags 0x202 cs 0x33 ss 0x2b ds 0x0 es 0x0 fs 0x0 gs 0x0"
+>"DEBUG syscall.intercept{tid=3 syscall=execve args=SyscallArgs { arg0: 140737209762176, arg1: 140737209530720, arg2: 140737210464512, arg3: 0, arg4: 0, arg5: 0 }}: detcore: DETLOG (pre) registers [dtid 3][rcbs 367]. rax 0x0 rbx 0x0 rcx 0x0 rdx 0x0 rsi 0x0 rdi 0x0 rbp 0x0 rsp 0x7fffffffed00 r8 0x0  r9 0x0 r10 0x0 r11 0x0 r12 0x0 r13 0x0 r14 0x0 r15 0x0 rip 0x4010f0 eflags 0x202 cs 0x33 ss 0x2b ds 0x0 es 0x0 fs 0x0 gs 0x0"
+(DETLOG) Mismatch at log messages 137 (run 1) and 155 (run 2): Diff < left / right > :
+<"INFO syscall.intercept{tid=3 syscall=execve args=SyscallArgs { arg0: 140737209762304, arg1: 140737209530720, arg2: 140737210464480, arg3: 0, arg4: 0, arg5: 0 }}: detcore: DETLOG [post_exec, dtid 3] init auxv AT_RANDOM value to [162, 205, 24, 211, 0, 83, 122, 92, 176, 131, 220, 72, 219, 250, 14, 242]"
+>"INFO syscall.intercept{tid=3 syscall=execve args=SyscallArgs { arg0: 140737209762176, arg1: 140737209530720, arg2: 140737210464512, arg3: 0, arg4: 0, arg5: 0 }}: detcore: DETLOG [post_exec, dtid 3] init auxv AT_RANDOM value to [162, 205, 24, 211, 0, 83, 122, 92, 176, 131, 220, 72, 219, 250, 14, 242]"
+== trace-replay, ASLR as-is (again)
+EXIT=1
+Verification use case failed!
+Error: Verification check failed
+(DETLOG) Mismatch at log messages 131 (run 1) and 145 (run 2): Diff < left / right > :
+<"DEBUG syscall.intercept{tid=3 syscall=execve args=SyscallArgs { arg0: 140074574742016, arg1: 140074574510432, arg2: 140074575444192, arg3: 0, arg4: 0, arg5: 0 }}: detcore: DETLOG (pre) registers [dtid 3][rcbs 367]. rax 0x0 rbx 0x0 rcx 0x0 rdx 0x0 rsi 0x0 rdi 0x0 rbp 0x0 rsp 0x7fffffffed00 r8 0x0  r9 0x0 r10 0x0 r11 0x0 r12 0x0 r13 0x0 r14 0x0 r15 0x0 rip 0x4010f0 eflags 0x202 cs 0x33 ss 0x2b ds 0x0 es 0x0 fs 0x0 gs 0x0"
+>"DEBUG syscall.intercept{tid=3 syscall=execve args=SyscallArgs { arg0: 140697636503936, arg1: 140697636272480, arg2: 140697637206272, arg3: 0, arg4: 0, arg5: 0 }}: detcore: DETLOG (pre) registers [dtid 3][rcbs 367]. rax 0x0 rbx 0x0 rcx 0x0 rdx 0x0 rsi 0x0 rdi 0x0 rbp 0x0 rsp 0x7fffffffed00 r8 0x0  r9 0x0 r10 0x0 r11 0x0 r12 0x0 r13 0x0 r14 0x0 r15 0x0 rip 0x4010f0 eflags 0x202 cs 0x33 ss 0x2b ds 0x0 es 0x0 fs 0x0 gs 0x0"

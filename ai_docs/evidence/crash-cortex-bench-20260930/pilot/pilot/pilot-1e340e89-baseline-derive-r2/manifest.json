@@ -1,0 +1,161 @@
+{
+ "harness_version": "ccbench-harness/1.1",
+ "allowlist": "1.0",
+ "run_id": "pilot-1e340e89-baseline-derive-r2",
+ "mid": "1e340e89494ecc519c2203b0f02d8c52",
+ "arm": "baseline",
+ "model": "claude-opus-4-8[1m]",
+ "effort": "max",
+ "session_id": "9d698e5d-c210-4f9b-bc93-2d9fb9f7844d",
+ "exit_reason": "exited",
+ "exit_code": 0,
+ "wall_secs": 3305.3,
+ "wall_cap": 3600,
+ "token_cap": 40000000,
+ "tokens_total_live": 18276765,
+ "api_calls": 89,
+ "tokens_breakdown_live": {
+  "input_tokens": 178,
+  "output_tokens": 426,
+  "cache_read_input_tokens": 17946830,
+  "cache_creation_input_tokens": 329331
+ },
+ "cost_usd_list_live": 12.28,
+ "cli_result_cost_usd": 17.549190000000003,
+ "cli_result_usage": {
+  "input_tokens": 178,
+  "cache_creation_input_tokens": 329331,
+  "cache_read_input_tokens": 17946830,
+  "output_tokens": 211263,
+  "output_tokens_details": {
+   "thinking_tokens": 150698
+  },
+  "server_tool_use": {
+   "web_search_requests": 0,
+   "web_fetch_requests": 0
+  },
+  "service_tier": "standard",
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 329331,
+   "ephemeral_5m_input_tokens": 0
+  },
+  "inference_geo": "global",
+  "iterations": [],
+  "speed": "standard",
+  "fallback_credit": null
+ },
+ "cli_model_usage": {
+  "claude-opus-4-8[1m]": {
+   "inputTokens": 178,
+   "outputTokens": 211263,
+   "cacheReadInputTokens": 17946830,
+   "cacheCreationInputTokens": 329331,
+   "webSearchRequests": 0,
+   "costUSD": 17.549190000000003,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 64000,
+   "thinkingTokens": 150698,
+   "canonicalModel": "claude-opus-4-8",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "tokens_total_cli": 18487602,
+ "cost_usd_cli": 17.55,
+ "tool_calls": {
+  "Read": 16,
+  "Bash": 62,
+  "Grep": 8,
+  "Glob": 11,
+  "Write": 7,
+  "Edit": 14,
+  "Skill": 1
+ },
+ "permission_denials": 15,
+ "permission_denials_sample": [
+  {
+   "command": "echo \"=== CPUs spinning on lock 13942eb58 ===\" && grep -n \"13942eb58\\|13942e800\" drgn_output.txt && echo \"\" && echo \"=== count of key functions across all CPUs ===\" && for fn in queued_spin_lock_slowpath virt_spin_lock xa_store xa_erase __xa_erase __xa_store btrfs_del_inode_from_root btrfs_add_inode_to_root btrfs_create_new_inode btrfs_iget btrfs_read_locked_inode setup_inode_for_delete; do printf \"%-32s %s\\n\" \"$fn\" \"$(grep -c \"$fn\" drgn_output.txt)\"; done"
+  },
+  {
+   "command": "cd /data/users/newton/ccbench/runs/pilot-1e340e89-baseline-derive-r2/linux && echo \"=== HEAD ===\" && git log --oneline -1 && echo \"\" && echo \"=== recent history of extent_map.c shrinker area ===\" && git log --oneline -20 -- fs/btrfs/extent_map.c"
+  },
+  {
+   "command": "cd /data/users/newton/ccbench/runs/pilot-1e340e89-baseline-derive-r2/linux && git log --oneline -25 -- fs/btrfs/extent_map.c",
+   "description": "Show recent commit history of btrfs extent_map.c"
+  },
+  {
+   "command": "command -v qemu-system-x86_64 busybox mkfs.btrfs gcc flex bison cpio pahole make",
+   "description": "Check for required build/repro tools"
+  },
+  {
+   "command": "command -v qemu-system-x86_64; command -v busybox; command -v mkfs.btrfs; command -v cpio; command -v pahole",
+   "description": "Check repro tools with semicolons"
+  },
+  {
+   "command": "command -v qemu-system-x86_64",
+   "description": "Check qemu"
+  },
+  {
+   "command": "command -v busybox",
+   "description": "Check busybox"
+  },
+  {
+   "command": "command -v mkfs.btrfs",
+   "description": "Check mkfs.btrfs"
+  },
+  {
+   "command": "command -v cpio",
+   "description": "Check cpio"
+  },
+  {
+   "command": "busybox 2>&1 | head -1",
+   "description": "Check busybox availability"
+  },
+  {
+   "command": "mkfs.btrfs --version",
+   "description": "Check mkfs.btrfs availability"
+  },
+  {
+   "command": "bash /tmp/kinv-logs/1e340e89494ecc519c2203b0f02d8c52/reproducer/build_kernel.sh /tmp/kinv-logs/1e340e89494ecc519c2203b0f02d8c52/build/baseline",
+   "timeout": 2400000,
+   "description": "Build baseline guest kernel in background",
+   "run_in_background": true
+  },
+  {
+   "command": "bash --version",
+   "description": "Check if bash is allowed"
+  },
+  {
+   "command": "cp --version",
+   "description": "Check cp"
+  },
+  {
+   "command": "dd --version",
+   "description": "Check dd"
+  }
+ ],
+ "leak_audit_hits": [],
+ "outputs": [
+  "backtrace.txt",
+  "bandicoot.json",
+  "collection.json",
+  "dmesg.txt",
+  "drgn_output.txt",
+  "host_timeline.txt",
+  "kdump_dmesg.txt",
+  "kernel_fix.patch",
+  "report.md",
+  "reproducer",
+  "theories.md"
+ ],
+ "report_present": true,
+ "patch_present": true,
+ "hashes": {
+  "prompt": "45658cde71a57aedbfe02febad7f285c1acbd52a9e56a4c9a3c6967cd002a635",
+  "arm": "e985572cd09c888b110f1d7ef9d56bdf4629f05ca3d8465992524a691bfc6b8b",
+  "offline_env": "1fe9b0f49175667ba7b348f43469351e4cf149ba6a4b812fed686e8752dfeedf",
+  "bundle_manifest": "7404777484a61300c164dbaa593af30cd28560059c4aa68071791dc6d40dccbb"
+ },
+ "crash_commit": "f40efc324cc8290e8652da4332bf96ff9076abd1",
+ "cutoff": 1778184686
+}

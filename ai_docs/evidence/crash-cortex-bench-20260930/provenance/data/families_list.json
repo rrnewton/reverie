@@ -1,0 +1,359 @@
+[
+ {
+  "family_id": "F01",
+  "family_name": "btrfs qgroup: GFP_ATOMIC extent_changeset ulist_add failure under spinlock -> BUG_ON",
+  "definition": "btrfs qgroup release/free paths doing GFP_ATOMIC changeset allocations under the extent-io-tree spinlock; allocation failure under memory pressure hits BUG_ON in clear_state_bit (fix: avoid GFP_ATOMIC allocations in qgroup release/free paths).",
+  "members": [
+   "21b7096009bc4a523b477bb96f81c93b",
+   "7c1407fbc524132cd17145ad7a6e0d05",
+   "d99c270a14ddd4459315a133d278628a",
+   "803d3cc3bc17e414fb681af469a3491c",
+   "2e54912bff6bbe1102275c3bd601c278",
+   "fd5cebd5f6fd8cb24eacded20e2e03db",
+   "a866717534c8d374a2fac77ca03f3646",
+   "dedd3d273f1ae5d6fbb2e1c50526c35b",
+   "a6c344ccb539463db7d3ba9024f2fbd7",
+   "d457deb9f56b9908775f298b47fc2754",
+   "0ed71ab359ae17a4c436a86c3c1fb72f"
+  ]
+ },
+ {
+  "family_id": "F02",
+  "family_name": "sched/fair EEVDF: unclamped reweight_entity vlag -> avg_vruntime overflow -> rq-lock hard lockup",
+  "definition": "reweight_entity vlag rescale overflows entity_key/avg_vruntime, producing WARN/corruption under rq lock and load-balancer/rq-lock hard lockups (fix: clamp rescaled vlag in reweight_entity).",
+  "members": [
+   "2d10694fc81f4995ceb74fbc338a2169",
+   "3c212664570a91b16403d990fa79281b",
+   "6c505b928424b43b5da6bc0741ddb35c",
+   "3f23a2e5c24892458783465b514f509a",
+   "dba4c55d8c12873572915f62ea4d726f",
+   "0cbf67171c80417b1243c366477c811a",
+   "46468994b568cefa4a9fe4f46154949e",
+   "16d7e9e5f5b5497cc1d474022360a0be",
+   "5675cabc36146ec59ced2cb82f9140e0"
+  ]
+ },
+ {
+  "family_id": "F03",
+  "family_name": "btrfs block group: bg_list refcount race in create_pending_block_groups -> UAF",
+  "definition": "Use-after-free of btrfs block groups in unused-bg deletion, discard or allocator caused by the bg_list refcount race in btrfs_create_pending_block_groups().",
+  "members": [
+   "c565b23ae8e2b2903f058fd561bc73c0",
+   "86873f98e627d8b7311a48730f973514",
+   "f78870b05c65f43209e5364c66aaf9b9",
+   "3df7c3ffb93b8784aec3819067ab4f2c",
+   "c37daa806b0056a3b2d78e8408f86306",
+   "58d0cb07c1da6b1a5af6d0700a0b691a",
+   "bcbbb3b28ae9d60883b72059beba76b5",
+   "53cf41f8c29b018b6c420570db58f2b6"
+  ]
+ },
+ {
+  "family_id": "F04",
+  "family_name": "btrfs extent buffer: unbounded writeback-inhibit xarray walk without resched",
+  "definition": "Soft lockups/RCU stalls from btrfs_uninhibit_all_eb_writeback walking an unbounded xarray at transaction end/eviction (fix: replace writeback inhibition xarray with fixed inline buffer).",
+  "members": [
+   "d88d648980fb650a8343bed2fa435629",
+   "b406414367897185378d89dc71963bb8",
+   "3711b73238c7654165fe8cec0502015e",
+   "02b1dc330222a2bca2806867c3ab1e8b",
+   "fddf90b6d9a73b3d3f7725e08b81b04f",
+   "20cafa802554e7d548c003f9ed5542bb"
+  ]
+ },
+ {
+  "family_id": "F05",
+  "family_name": "mm list_lru / cgroup writeback: long list spinlock hold in shrinker walk or inode switch -> soft lockup",
+  "definition": "Soft lockups from long list_lru lock hold in __list_lru_walk_one inode-shrinker walks (amplified on KVM guests) or wb->list_lock contention when switching cgroup writeback inodes.",
+  "members": [
+   "cb46117362f44375fead37a7cbfb4c1a",
+   "b357dccd57bf2c9cede05324f3d7dc44",
+   "61c835f0b026b1c127f75d678ce1e7c6",
+   "7a10c34a2f43555a21f1784c0c91d0e8",
+   "f45766a3ff71fc338849f3d3f38e3901"
+  ]
+ },
+ {
+  "family_id": "F06",
+  "family_name": "mm page tables: concurrent modification race (khugepaged collapse vs PT_RECLAIM, pagewalk PUD split vs refault)",
+  "definition": "Races between concurrent page-table modifications under per-VMA lock or pagewalk split leading to stale/freed page tables and page-table UAF.",
+  "members": [
+   "c5fd1bf671131301f1503242ad38eabd",
+   "f8227af2ec8e77b28e652454c38d75dd",
+   "0e5985ec648838514cce23048eeb592b",
+   "faab3a340036ebba4bb4b412cea4edf4",
+   "c15a45d6afeb3f2bf5888f87d5714d15"
+  ]
+ },
+ {
+  "family_id": "F07",
+  "family_name": "btrfs extent_map lifecycle: map freed while still on modified_extents/tree (LOGGING flag split, debug BUG)",
+  "definition": "btrfs split extent_map inherits EXTENT_FLAG_LOGGING and is freed by the shrinker while on modified_extents, plus the Meta-only debug BUG() on freeing an extent_map still in tree.",
+  "members": [
+   "bfce71a0c1063dbf6ea55e46c57acc7f",
+   "ee89a1fdead0bb9098aa1682f0717803",
+   "3ac98aa759fa1a5e304e87ca4c451124",
+   "7423a788940ccf7dd455a37fcef4195e",
+   "f3606402c94edef2425035bd3c88222e"
+  ]
+ },
+ {
+  "family_id": "F08",
+  "family_name": "btrfs extent-map shrinker: root->inodes xa_lock held across cond_resched_lock -> lock starvation",
+  "definition": "Lockups from the btrfs extent-map shrinker holding root->inodes xa_lock across cond_resched_lock under PREEMPT_NONE, including unfair virt_spin_lock amplification in VMs.",
+  "members": [
+   "1e340e89494ecc519c2203b0f02d8c52",
+   "203998a9278612885fddf32ecd977f32",
+   "b61d279b612cf96c6b17f3185a1fd8b3",
+   "94665c7005d842ac974ea194f2267cc5"
+  ]
+ },
+ {
+  "family_id": "F09",
+  "family_name": "btrfs background workers: race/stale state -> infinite loop (kill_all_delayed_nodes xarray race, discard worker)",
+  "definition": "btrfs cleaner/discard kthreads spin forever due to a race or stale state (inodes xarray eviction race in kill_all_delayed_nodes during subvolume deletion; discard worker after discard disabled).",
+  "members": [
+   "d5a9c85ecad9bf561ebae4f31f1a4082",
+   "ea14e44267881ab777cce129acd8b37b",
+   "04f6d92a314674772d57dc2418ba9a0d",
+   "fec85be1cb9f73b2bfbca61dc3bc72eb"
+  ]
+ },
+ {
+  "family_id": "F10",
+  "family_name": "bpf arena: VMA dup/remap without vm_open refcount -> double close UAF",
+  "definition": "bpf arena vma_list entry shared across duplicated VMAs without refcount, causing double list_del/UAF in arena_vm_close (fix: bpf: Fix remap of arena).",
+  "members": [
+   "de000878f64e2a4f31d3c88eeb65b9bf",
+   "cce3695658b4759367800cdefbec18b9",
+   "724a99031d38801589a0b47b2a1037e2",
+   "2fbd1bb6eae9592ea7309edde3cd252c"
+  ]
+ },
+ {
+  "family_id": "F11",
+  "family_name": "bpf arena: GUARD_SZ/kern_vm_start misalignment on 64K pages -> infinite page-table walk",
+  "definition": "bpf arena kern_vm_start misaligned on 64K-page kernels so apply_to_pte_range never terminates in arena_map_free (softlockup).",
+  "members": [
+   "fcf03efe1b1f0480dc3a9de2c2b02860",
+   "aa7ea8f9020776a7659205423041a38b",
+   "111324bdd7404f0ed79b934d648e0f27",
+   "734da45ee4061e97c928a9c0bfe49e2f"
+  ]
+ },
+ {
+  "family_id": "F12",
+  "family_name": "mm/slub: obj_exts (memcg/alloc-tag) free-path unbounded recursion -> stack overflow",
+  "definition": "kfree -> __free_slab -> kfree recursion via slab obj_exts allocations causing stack overflow (fix: prevent unbounded recursion with new kmalloc type).",
+  "members": [
+   "08fe8d2e0ab7dea3aa9e6fa6bffc7f9a",
+   "add722542b588d68968c4fc2a91f02ab",
+   "b918adb1088523691c94285178996117",
+   "68a2c3500a3ba21743fb52a6bc10edd1"
+  ]
+ },
+ {
+  "family_id": "F13",
+  "family_name": "mm/swap: swap_reclaim_full_clusters unbounded scan without cond_resched",
+  "definition": "Full-cluster swap reclaim loop under si->lock contention with no resched point, causing softlockups/RCU stalls.",
+  "members": [
+   "9926f71e7b0600b20b016c819df3dffe",
+   "d1192b53dc3608e762543cdfda4e1ff6",
+   "ddee9ae19cc3a0d72a8e88ecaf6ad0d6",
+   "44cf65839031a802982ef68a3ddc01c0"
+  ]
+ },
+ {
+  "family_id": "F14",
+  "family_name": "net NIC drivers (bnxt, idpf): NULL deref of rings/vport on down or resetting interface",
+  "definition": "Ethernet driver callbacks (netdev-genl qstats, AER error_detected, ethtool) dereference NULL rings/bnapi/vport when the interface is closed or mid-reset.",
+  "members": [
+   "b05e1d8e1aa6c28fb31b136c9a91203a",
+   "ccbc0d0cbcd238494506de0df79c655d",
+   "c559b3b82f18952c48f388c2dbc86c83",
+   "5c62794da473b067e9170a10bde7c45d"
+  ]
+ },
+ {
+  "family_id": "F15",
+  "family_name": "sched: wrong sched_class/ownership state assumed on class or mode switch (scx migration threads, mm_cid)",
+  "definition": "Scheduler state corrupted during a sched_class or mode switch: per-CPU migration threads given wrong class on sched_ext enable, or mm_cid assumed CPU-owned on mode switch (OOB clear on exit).",
+  "members": [
+   "d959838cde9746f2be68f39af47aa805",
+   "25516480f76bb9c0c6057e346217949f",
+   "3769c3656f728ad0eac2ed7f32ae51d3",
+   "94354a4e0ad58c841b187d9d2b9458bb"
+  ]
+ },
+ {
+  "family_id": "F16",
+  "family_name": "fuse readahead: folio lifecycle bugs (splice-move refcount underflow, max_pages==0 ZERO_SIZE_PTR)",
+  "definition": "FUSE readahead path bugs: folio refcount underflow with splice move corrupting PCP/LRU lists, or ZERO_SIZE_PTR deref when max_pages==0 on 64K-page arm64.",
+  "members": [
+   "3272a8e1455e2effec7900657ea466c8",
+   "56e0d06d677d75c369f9dbcb10f79905",
+   "d8c9d82a57c249bde856d45d4d764353"
+  ]
+ },
+ {
+  "family_id": "F17",
+  "family_name": "fs clients (fuse-uring, pNFS flexfiles): wrong NULL/ERR_PTR check or request-less entry -> NULL deref",
+  "definition": "Network/userspace filesystem client paths dereferencing NULL due to wrong NULL vs ERR_PTR check (ff_layout_choose_ds_for_read) or cancelled request-less fuse-uring entries on ent_in_userspace.",
+  "members": [
+   "11c8b2be3897d9cf5846d3ea3779be52",
+   "6dbeb915e3e4d42dca07123933797999",
+   "4f1cae493037020089eb5f0476d154e0"
+  ]
+ },
+ {
+  "family_id": "F18",
+  "family_name": "core/mm/PCI: missing NULL check on absent or uninitialized state (cgroup rstat, swap_cgroup, AER info)",
+  "definition": "NULL deref because code assumes optional/initialized state exists: css_rstat_exit on uninitialized rstat_cpu in error path, swap_cgroup map on swapless host, NULL aer_info in aer_ratelimit.",
+  "members": [
+   "71e0548cdfe50bd77b068bd7d75abdeb",
+   "fd2d7ba5a9c7ea93ea9800af3a8d7b38",
+   "43ce834162a4f40962fc753feefb8c63"
+  ]
+ },
+ {
+  "family_id": "F19",
+  "family_name": "printk/IPI storm: unrate-limited WARN/AER prints or kfence static-key IPI broadcast -> soft lockup/CSD stall",
+  "definition": "Lockups caused by message floods (arm64 ioremap-on-RAM WARN, PCI AER aer_print_error) or IPI broadcast storms (kfence static-key toggles on VMs).",
+  "members": [
+   "bd2014b9572a32239435ab8a328e6ebb",
+   "f2285cf17ab3cbf147c5bdc05a921e8b",
+   "9dc3c380c7c2e9c91e16f00de4fed3ac"
+  ]
+ },
+ {
+  "family_id": "F20",
+  "family_name": "sched_ext: put_task_struct under scx_tasks_lock during class switch -> AA self-deadlock",
+  "definition": "scx_enable class-switch path dropping the last task ref (put_task_struct) while holding scx_tasks_lock, self-deadlocking (fix: use SCX_TASK_READY test instead of tryget_task_struct).",
+  "members": [
+   "25eae2b92355cc409685188260f88c58",
+   "819d8e386a91e9a1898247de79eb305e",
+   "bfb747064fdd9ee634510f46385a5146"
+  ]
+ },
+ {
+  "family_id": "F21",
+  "family_name": "sched_ext: spurious cgrp_moving_from WARN under rq lock -> netconsole printk self-deadlock",
+  "definition": "False WARN in scx_cgroup_move_task emitted under rq lock, where netconsole printk recurses into rq lock, causing csd-lock/hard lockups.",
+  "members": [
+   "2edcf353fdec8e61d10ae663110cac6c",
+   "42302b4bed3bad27fb9cc269fdaf71b1",
+   "1903abe743e1b7ab28b4ae98765bbc94"
+  ]
+ },
+ {
+  "family_id": "F22",
+  "family_name": "sched_ext: stale dsq->first_task after unlink -> UAF via scx_bpf_dsq_peek",
+  "definition": "task_unlink_from_dsq leaves a stale dsq->first_task observed by scx_bpf_dsq_peek on FIFO DSQs, causing UAF.",
+  "members": [
+   "6b737ad36f1d4486943ee63ae5d8fdf5",
+   "2cc6b22aedec0ac73af59f4ae284d193",
+   "dd16f211fca48dd88ab8edd8390a7bd4"
+  ]
+ },
+ {
+  "family_id": "F23",
+  "family_name": "sched fair/rt: starvation or IPI livelock (CFS throttle of preempted RCU reader, RT push self-IPI)",
+  "definition": "Scheduler policy logic starves a critical context or loops forever: CFS bandwidth throttling dequeues preempted in-kernel RCU readers (RCU stall), or RT push-IPI rto_next_cpu self-IPI loop.",
+  "members": [
+   "8774c5da37dba8f1e164b3bfbe1faf3c",
+   "89037ed4e48119ee4c9e6d422ec3d446",
+   "085aaffa2404f45ea5a89effd1bcc60a"
+  ]
+ },
+ {
+  "family_id": "F24",
+  "family_name": "mlx5: TX queue/channel lifecycle and FW data validation (reporter UAF, BQL reset, fw_tracer format)",
+  "definition": "mlx5 driver crashes from TX-timeout reporter UAF after channel reopen, BQL reset with in-flight WQEs on SQ re-activation, and unvalidated FW tracer format strings.",
+  "members": [
+   "46f25e117c3166c832caef1a74ab9754",
+   "e070f8f7a7d101e9b00db1b1ed0157c6",
+   "d353a52ebd7f8e57b24809b2f927eb4d"
+  ]
+ },
+ {
+  "family_id": "F25",
+  "family_name": "drivers: current-message/transfer state race between completion and error/timeout paths (ipmi, tegra QSPI)",
+  "definition": "Driver work/IRQ path uses a current message/transfer pointer that the error or timeout path has already consumed (ipmi smi_work sender-error double list_add/UAF, tegra210-quad curr_xfer NULL race).",
+  "members": [
+   "0f68a2b378c238670c04f17fa5b3e732",
+   "114ca855a7741471ffd6209b26ae0ed2",
+   "99f33f613c206ac83654135ab2cb259f"
+  ]
+ },
+ {
+  "family_id": "F26",
+  "family_name": "btrfs subpage: relocation folio private freed by reclaim race -> UAF/NULL deref",
+  "definition": "btrfs_subpage_clear_uptodate during relocation racing with page reclaim releasing folio private data.",
+  "members": [
+   "6205f377da08ab66968e5029960b7321",
+   "57f9bf89f3a7f26f8bf6901eb0e5bcb1"
+  ]
+ },
+ {
+  "family_id": "F27",
+  "family_name": "iommu/amd: completion-wait sequence allocation race -> timeouts and dom->lock convoy",
+  "definition": "AMD IOMMU cmd_sem sequence allocation race under concurrent TLB invalidation (after wait_on_sem-out-of-lock backport) causing completion-wait timeouts and lock convoys.",
+  "members": [
+   "52bc404ee8ae981d8f8cbf2a5edd2c14",
+   "bbe4a8e9fbcee2395dcd7cd5ab1d5fe2"
+  ]
+ },
+ {
+  "family_id": "F28",
+  "family_name": "perf/x86 PMU: event pointer vs active_mask state race -> NULL event deref",
+  "definition": "x86/AMD PMU enable/NMI paths dereferencing a NULL event due to event pointer setup ordering vs active_mask.",
+  "members": [
+   "90cc578a83daf9163a8151ded10cce3c",
+   "716bd44a91f2a0a0c75b73b2dfa92d91"
+  ]
+ },
+ {
+  "family_id": "F29",
+  "family_name": "tracing probes (uprobes, fprobe): register/unregister race -> NULL deref",
+  "definition": "uprobe hprobe_expire and fprobe_fgraph_entry racing with concurrent unregister/registration, dereferencing NULL.",
+  "members": [
+   "e4cb6bc6efb1dca7813220215f489c25",
+   "19d97f45294cfc6ecb039ab06ae66c2c"
+  ]
+ },
+ {
+  "family_id": "F30",
+  "family_name": "workqueue: watchdog false-positive stall from memory reordering",
+  "definition": "wq_watchdog reports false stalls due to arm64 memory reordering of pool timestamps.",
+  "members": [
+   "ac64a83dd88142a57c3764edfb9e2e8d",
+   "3df1653a4ea942b88ddbe783204e76d2"
+  ]
+ },
+ {
+  "family_id": "F31",
+  "family_name": "timers/migration: tmigr_handle_remote_up hierarchy livelock",
+  "definition": "Timer migration hierarchy livelock between jiffies advance and remote timer handling in tmigr_handle_remote_up.",
+  "members": [
+   "0f23a6dea94cc125cc0242fe7c231792",
+   "2aa7ebfdb839a8dc7b3013534a698f69"
+  ]
+ },
+ {
+  "family_id": "F32",
+  "family_name": "block/net: stale reference after async wakeup or queue change (rq_qos on-stack wait, kTLS anchor) -> UAF",
+  "definition": "UAF where a waker or reader uses stale data after the owner moved on (rq_qos waker touching waiter's on-stack data, kTLS strparser stale frag_list anchor after TCP queue collapse).",
+  "members": [
+   "1803096fce73b84f6b9995e723b3e15d",
+   "102ffa7baec3aca1d13d02224ea9403c"
+  ]
+ },
+ {
+  "family_id": "F33",
+  "family_name": "mm THP: invalid PMD migration entry dereferenced in split_huge_pmd_locked",
+  "definition": "THP split path treats a PMD migration entry as a present PMD (pmd_folio on a migration entry).",
+  "members": [
+   "a192f3342c9043278e1fdb03ed5d96be"
+  ]
+ }
+]

@@ -1,0 +1,11 @@
+{"mid": "3c212664570a91b16403d990fa79281b", "family": "F-sched-eevdf-overflow: EEVDF vruntime/lag overflow -> WARN under rq->lock -> netconsole-driven rq-lock self-deadlock",
+ "timing_dependent": true, "gt_tier": "A",
+ "root_cause": "reweight_entity() rescales a group entity's vlag on a large weight decrease without re-clamping it to the lag limit, so se->vruntime drifts far below cfs_rq->zero_vruntime; __enqueue_entity()'s entity_key()*weight overflows and trips the WARN_ON_ONCE in __sum_w_vruntime_add()/avg_vruntime accounting while rq->lock is held, corrupting avg-vruntime/rb-tree ordering and wedging the load balancer (the WARN's printk to netconsole on bnxt can additionally self-deadlock on the held rq lock).",
+ "fatal_mechanism": "hard lockup (NMI watchdog): CPUs spinning in queued_spin_lock_slowpath on rq->lock from sched_balance_rq/_nohz_idle_balance",
+ "fix_commits": [{"sha": "54262cda76de", "branch": "v6.13-fb (in v6.13-fbk17)", "subject": "FBONLY: sched/fair: clamp rescaled vlag in reweight_entity() to bound entity_key()", "author": "Rik van Riel", "committed": "2026-06-11"},
+                 {"sha": "ccd3bc00e3e5", "branch": "same patch, non-FBONLY", "subject": "sched/fair: clamp rescaled vlag in reweight_entity() to bound entity_key()", "author": "Rik van Riel", "committed": "2026-06-17"}],
+ "fix_available_at_cutoff": true, "crash_kernel_has_fix": false,
+ "human_confirmation": "Rik van Riel on WP post 4618781125007331: 'the fix for this issue was merged 2 weeks ago, in 54262cda76de FBONLY: sched/fair: clamp rescaled vlag in reweight_entity() to bound entity_key()'",
+ "known_bot_error": "Original CrashCortex report named a WARN-deferral (printk) mitigation as the fix and missed 54262cda76de.",
+ "equivalent_fix_criteria": "Patch clamps/limits the rescaled vlag (or vruntime) in reweight_entity()/rescale path so entity_key() stays bounded. Deferring the WARN printk / printk_deferred / netconsole changes = mitigation (partial credit for fatal-mechanism analysis only).",
+ "sources": ["WP post 4618781125007331 + human comment (Rik van Riel)", "git: 54262cda76de changelog", "crash kernel 242a742712f1 (v6.13-fbk16, 2026-05-29) lacks fix"]}

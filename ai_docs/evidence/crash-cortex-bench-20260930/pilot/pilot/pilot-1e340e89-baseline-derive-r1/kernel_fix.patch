@@ -1,0 +1,94 @@
+From: Kernel Investigation <kinv@fb.com>
+Date: Tue, 30 Sep 2026 00:00:00 -0700
+Subject: [PATCH] btrfs: bound root->inodes lock hold in the extent map shrinker
+
+The extent map shrinker's find_first_inode_to_shrink() takes the per-root
+root->inodes XArray lock once and then walks the inode xarray looking for an
+inode that has loaded extent maps, skipping inodes with no extent maps
+(RB_EMPTY_ROOT) or that fail write_trylock()/igrab(). The only release point
+inside the loop is cond_resched_lock(&root->inodes.xa_lock), which drops the
+lock ONLY when a reschedule is already pending.
+
+root->inodes.xa_lock is extremely hot: every inode creation
+(xa_reserve()/xa_store() from btrfs_create_new_inode()) and every inode
+eviction (btrfs_del_inode_from_root(), driven heavily by memcg direct
+reclaim via prune_icache_sb()) for the subvolume serializes on it. On a busy
+CPU where need_resched() stays clear, cond_resched_lock() never drops the
+lock, so the shrinker can hold it while scanning a very large number of
+cached inodes on an active subvolume.
+
+We observed this as a soft lockup / panic in production: a 192-vCPU KVM
+guest (which falls back to the unfair virt_spin_lock() test-and-set path
+because PV spinlocks are not active) had ~20 vCPUs spinning on one
+root->inodes.xa_lock while the extent-map shrinker kworker held it
+mid-scan. drgn showed the holding scan had advanced ~772M in ino-space
+within a single uninterrupted lock hold. A file-creating task
+(btrfs_create_new_inode -> xa_store) starved for >22s and softlockup_panic
+converted it to a panic.
+
+The sibling loop btrfs_scan_inode() already bails on contention
+(rwlock_needbreak(&tree->lock)); find_first_inode_to_shrink() has no
+equivalent bound on the far hotter xa_lock. Force a drop of the lock every
+BTRFS_EM_SHRINK_INODES scanned inodes so other users always make progress,
+independent of the preemption model or spinlock fairness. The scan resumes
+from 'from', so no inodes are skipped or revisited incorrectly.
+
+Fixes: 102044384056 ("btrfs: make the extent map shrinker run asynchronously as a work queue job")
+Signed-off-by: Kernel Investigation <kinv@fb.com>
+---
+ fs/btrfs/extent_map.c | 28 +++++++++++++++++++++++++++-
+ 1 file changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/fs/btrfs/extent_map.c b/fs/btrfs/extent_map.c
+index 02bfdb976e40..ee0fe4e1f65f 100644
+--- a/fs/btrfs/extent_map.c
++++ b/fs/btrfs/extent_map.c
+@@ -1191,11 +1191,18 @@ static long btrfs_scan_inode(struct btrfs_inode *inode, struct btrfs_em_shrink_c
+ 	return nr_dropped;
+ }
+
++/*
++ * Maximum number of inodes find_first_inode_to_shrink() scans while holding the
++ * root->inodes lock before dropping it to let other users make progress.
++ */
++#define BTRFS_EM_SHRINK_INODES 100
++
+ static struct btrfs_inode *find_first_inode_to_shrink(struct btrfs_root *root,
+ 						      u64 min_ino)
+ {
+ 	struct btrfs_inode *inode;
+ 	unsigned long from = min_ino;
++	unsigned int scanned = 0;
+
+ 	xa_lock(&root->inodes);
+ 	while (true) {
+@@ -1234,7 +1241,26 @@ static struct btrfs_inode *find_first_inode_to_shrink(struct btrfs_root *root,
+ 		write_unlock(&tree->lock);
+ next:
+ 		from = btrfs_ino(inode) + 1;
+-		cond_resched_lock(&root->inodes.xa_lock);
++		/*
++		 * The root->inodes lock is heavily contended: every inode
++		 * creation (xa_reserve()/xa_store() from btrfs_create_new_inode())
++		 * and every inode eviction (btrfs_del_inode_from_root()) for the
++		 * subvolume takes it. Holding it while scanning a large number of
++		 * inodes here can stall those tasks for a long time; on
++		 * virtualized hosts that fall back to unfair spinlocks this has
++		 * been observed to trigger multi-second soft lockups. cond_resched_lock()
++		 * only drops the lock when a reschedule is pending, which may never
++		 * happen on a busy CPU, so also force a drop every
++		 * BTRFS_EM_SHRINK_INODES inodes. The scan resumes from 'from'.
++		 */
++		if (++scanned == BTRFS_EM_SHRINK_INODES) {
++			scanned = 0;
++			xa_unlock(&root->inodes);
++			cond_resched();
++			xa_lock(&root->inodes);
++		} else {
++			cond_resched_lock(&root->inodes.xa_lock);
++		}
+ 	}
+ 	xa_unlock(&root->inodes);
+
+--
+2.43.0

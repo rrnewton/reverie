@@ -1,0 +1,9 @@
+{
+  "name": "baseline",
+  "description": "Production-faithful offline baseline: /kernel-investigation skill (agent-market copy, sha256 pinned) + production prompt; /kverify and /kreview referenced by the prompt but NOT installed (as in production today).",
+  "skill_dir": "/home/newton/local/ccbench/harness/plugins/ccbench-baseline/skills/kernel-investigation",
+  "add_dirs": ["/home/newton/local/ccbench/harness/plugins/ccbench-baseline/skills/kernel-investigation", "/data/users/newton/ccbench/tools"],
+  "extra_bash": [],
+  "extra_tools": [],
+  "capability_section": "## Capabilities in this run\n- /kernel-investigation skill (see Offline Benchmark Environment).\n"
+}

@@ -1,0 +1,79 @@
+From: Kernel Investigation <kinv@example.com>
+Date: Tue, 30 Sep 2026 00:00:00 +0000
+Subject: [PATCH] sched/fair: defer avg_vruntime overflow WARN to avoid rq->lock
+ self-deadlock via netconsole
+
+The avg_vruntime overflow check in __sum_w_vruntime_add() runs under
+rq->lock (IRQs disabled).  It is a plain WARN_ON_ONCE(), so when it
+fires it printk()s synchronously.  On a host with a polling console
+(netconsole/netpoll), vprintk_emit() -> console_unlock() flushes the
+console inline:
+
+  __enqueue_entity()                    [holds rq->lock]
+    __sum_w_vruntime_add()
+      WARN_ON_ONCE(...)
+        printk -> console_unlock -> netconsole write_ext_msg
+          -> netpoll_send_udp -> __netpoll_send_skb -> netpoll_poll_dev
+            -> bnxt_poll_p5 -> bnxt_tx_int -> dev_consume_skb_any
+              -> dev_kfree_skb_irq_reason (irqs_disabled() == true)
+                -> raise_softirq_irqoff(NET_TX_SOFTIRQ)
+                  -> wakeup_softirqd (!in_interrupt())
+                    -> wake_up_process -> try_to_wake_up -> ttwu_queue
+                      -> rq_lock(this rq)   <-- SAME rq->lock, DEADLOCK
+
+The CPU spins forever on its own rq->lock.  Because that rq is then a
+permanent "busiest" target, every idle CPU running (nohz) idle balance
+convoys onto its rq->lock with IRQs disabled; those CPUs can no longer
+answer TLB-shootdown / membarrier IPIs, so dozens more CPUs stall in
+csd_lock_wait().  The NMI watchdog eventually declares a hard LOCKUP.
+
+Observed on a 252-CPU AMD EPYC (Turin) host: WARN at fair.c:691 fired on
+CPU 38 during execve()->sched_exec()->__schedule(); ~12s later CPU 3
+panicked with "Hard LOCKUP" while spinning on CPU 38's rq->lock in
+_nohz_idle_balance() -> sched_balance_rq().  52 CPUs were queued on that
+one rq->lock and 60 more were stuck in csd_lock_wait().
+
+The scheduler already knows warnings emitted under rq->lock must not
+print inline: pick_next_entity() uses printk_deferred() for the
+"pick_eevdf would have returned NULL" message, and core.c uses
+printk_deferred() under rq->lock too.  This WARN was simply missed.
+
+Wrap the WARN in printk_deferred_enter()/exit() so its console output is
+deferred to a safe context (irq_work, after rq->lock is dropped) instead
+of re-entering the scheduler through the console.  The warning still
+fires and is logged; only the inline console flush (and thus the
+try_to_wake_up() recursion) is avoided.  IRQs are always disabled here
+(rq->lock is held), satisfying the printk_deferred requirement.
+
+Signed-off-by: Kernel Investigation <kinv@example.com>
+---
+ kernel/sched/fair.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index 5dc612effbec..e8535d6b5a47 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -688,7 +688,20 @@ __sum_w_vruntime_add(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 	s64 w_vruntime, key = entity_key(cfs_rq, se);
+
+ 	w_vruntime = key * weight;
++	/*
++	 * This runs under rq->lock (IRQs disabled).  Emitting this warning must
++	 * not synchronously flush the consoles from here: with a polling console
++	 * such as netconsole, console_unlock() -> netpoll_poll_dev() cleans the
++	 * NIC Tx ring and frees skbs via dev_kfree_skb_irq() ->
++	 * raise_softirq_irqoff() -> wakeup_softirqd() -> try_to_wake_up(), which
++	 * takes this very same rq->lock and self-deadlocks the CPU (and, via the
++	 * idle-balance convoy on the now-stuck rq, the whole machine).  Defer the
++	 * console output like the other scheduler warnings emitted under rq->lock
++	 * (see pick_next_entity()).
++	 */
++	printk_deferred_enter();
+ 	WARN_ON_ONCE((w_vruntime >> 63) != (w_vruntime >> 62));
++	printk_deferred_exit();
+
+ 	cfs_rq->sum_w_vruntime += w_vruntime;
+ 	cfs_rq->sum_weight += weight;
+--
+2.43.0

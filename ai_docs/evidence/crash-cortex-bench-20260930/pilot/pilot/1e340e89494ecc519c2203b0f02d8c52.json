@@ -1,0 +1,9 @@
+{"mid": "1e340e89494ecc519c2203b0f02d8c52", "family": "F-btrfs-lock-hold: btrfs root->inodes xa_lock held across shrinker scan (cond_resched_lock ineffective under PREEMPT_NONE)",
+ "timing_dependent": true, "gt_tier": "A",
+ "root_cause": "find_first_inode_to_shrink() (fs/btrfs/extent_map.c, extent-map shrinker) and btrfs_find_first_inode() hold root->inodes.xa_lock while scanning/skipping inodes and only release it via cond_resched_lock(), which under CONFIG_PREEMPT_NONE drops the lock only at timeslice expiry (~2.8 ms); inode create (btrfs_add_inode_to_root -> xa_store) and evict paths spin on the lock. Amplifier: KVM guest without PV qspinlocks (unfair virt_spin_lock) lets one vCPU starve >22 s -> softlockup_panic.",
+ "fatal_mechanism": "soft lockup in queued_spin_lock_slowpath (virt_spin_lock) from xa_store in btrfs_create_new_inode",
+ "fix_commits": [{"sha": "3a2268b381934abab7d35e1fb04f20a8f70d3d8f", "branch": "linus-upstream/v6.16-fb", "subject": "btrfs: always drop root->inodes lock before cond_resched()", "author": "Boris Burkov", "committed": "2026-05-19"},
+                 {"sha": "ff616f4468b058195bdb31cc9fbd47a9a6b92af0", "branch": "v6.16-fb backport", "subject": "btrfs: always drop root->inodes lock before cond_resched()", "author": "Boris Burkov", "committed": "2026-05-19"}],
+ "fix_available_at_cutoff": true, "crash_kernel_has_fix": false,
+ "equivalent_fix_criteria": "Patch makes find_first_inode_to_shrink()/btrfs_find_first_inode() unconditionally drop root->inodes lock around cond_resched() (or otherwise bounds lock hold time in the scan). Enabling PV spinlocks alone = mitigation, not the fix.",
+ "sources": ["WP post 4604106633141447 (CrashCortex, 2026-06-09)", "git: 3a2268b38193 changelog describes this exact mechanism", "crash kernel f40efc324cc8 (2026-03-05) lacks fix (merge-base)"]}

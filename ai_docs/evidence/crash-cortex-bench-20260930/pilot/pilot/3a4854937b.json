@@ -1,0 +1,61 @@
+{
+ "blind_id": "3a4854937b",
+ "mid": "102ffa7baec3aca1d13d02224ea9403c",
+ "gt_fix_cited": [
+  {
+   "sha": "4ab26bce3969",
+   "subject": "tls: always refresh the queue when reading sock",
+   "sha_cited": true,
+   "subject_cited": true
+  },
+  {
+   "sha": "bdbdd06cb731",
+   "subject": "tls: always refresh the queue when reading sock",
+   "sha_cited": false,
+   "subject_cited": true
+  }
+ ],
+ "gt_fix_files": [
+  "net/tls/tls_strp.c"
+ ],
+ "gt_fix_funcs": [
+  "tls_strp_read_sock"
+ ],
+ "patch_present": true,
+ "patch_files": [
+  "net/tls/tls_strp.c"
+ ],
+ "patch_funcs": [
+  "tls_strp_read_sock"
+ ],
+ "patch_file_overlap": [
+  "net/tls/tls_strp.c"
+ ],
+ "patch_func_overlap": [
+  "tls_strp_read_sock"
+ ],
+ "repro_qemu_invocations": 2,
+ "repro_qemu_results_showing_boot": 1,
+ "repro_files": [
+  "build_kernel.sh",
+  "repro_tls.c",
+  "repro_tls",
+  "repro_nolibc.c",
+  "init",
+  "initramfs.cpio",
+  "initramfs/init",
+  "irfs/init"
+ ],
+ "repro_boot_logs": [],
+ "cost": {
+  "exit_reason": "exited",
+  "wall_secs": 2526.8,
+  "tokens_total_live": 17378298,
+  "cost_usd_list_live": 11.92,
+  "cli_result_cost_usd": 16.657737,
+  "api_calls": 100,
+  "permission_denials": 0
+ },
+ "leak_audit_hits": 2,
+ "report_chars": 16041
+}

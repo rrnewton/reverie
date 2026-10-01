@@ -1,0 +1,75 @@
+{
+ "harness_version": "ccbench-harness/1.1",
+ "allowlist": "1.0",
+ "run_id": "pilot-102ffa7b-baseline-derive-r1",
+ "mid": "102ffa7baec3aca1d13d02224ea9403c",
+ "arm": "baseline",
+ "model": "claude-opus-4-8[1m]",
+ "effort": "max",
+ "session_id": "6d1d7e74-40ef-4ad5-a269-f07aff6778c5",
+ "exit_reason": "exited",
+ "exit_code": -9,
+ "wall_secs": 2285.2,
+ "wall_cap": 3600,
+ "token_cap": 40000000,
+ "tokens_total_live": 11319937,
+ "api_calls": 61,
+ "tokens_breakdown_live": {
+  "input_tokens": 122,
+  "output_tokens": 277,
+  "cache_read_input_tokens": 11079695,
+  "cache_creation_input_tokens": 239843
+ },
+ "cost_usd_list_live": 7.95,
+ "cli_result_cost_usd": null,
+ "cli_result_usage": null,
+ "cli_model_usage": null,
+ "tokens_total_cli": 0,
+ "cost_usd_cli": 0,
+ "tool_calls": {
+  "Read": 8,
+  "Bash": 42,
+  "Grep": 9,
+  "ToolSearch": 2,
+  "TaskCreate": 5,
+  "Edit": 8,
+  "Write": 5,
+  "TaskUpdate": 3
+ },
+ "permission_denials": 0,
+ "permission_denials_sample": [],
+ "leak_audit_hits": [
+  {
+   "pattern": "network_client",
+   "tool": "Bash",
+   "input": "{\"command\": \"cd /data/users/newton/ccbench/runs/pilot-102ffa7b-baseline-derive-r1/linux\\necho \\\"=== verify diff ===\\\"\\ngit diff -- net/tls/tls_strp.c\\necho \\\"\\\"\\necho \\\"=== build the patch file with header ===\\\"\\nMID=102ffa7baec3aca1d13d02224ea9403c\\n{\\ncat <<'EOF'\\nnet/tls: fix kernel panic when alloc_page failed\\n\\nWe cannot set frag_list to NULL pointer when alloc_page failed.\\nIt will be used "
+  },
+  {
+   "pattern": "url",
+   "tool": "Bash",
+   "input": "{\"command\": \"cd /data/users/newton/ccbench/runs/pilot-102ffa7b-baseline-derive-r1/linux\\necho \\\"=== verify diff ===\\\"\\ngit diff -- net/tls/tls_strp.c\\necho \\\"\\\"\\necho \\\"=== build the patch file with header ===\\\"\\nMID=102ffa7baec3aca1d13d02224ea9403c\\n{\\ncat <<'EOF'\\nnet/tls: fix kernel panic when alloc_page failed\\n\\nWe cannot set frag_list to NULL pointer when alloc_page failed.\\nIt will be used "
+  }
+ ],
+ "outputs": [
+  "backtrace.txt",
+  "bandicoot.json",
+  "collection.json",
+  "dmesg.txt",
+  "drgn_output.txt",
+  "host_timeline.txt",
+  "kdump_dmesg.txt",
+  "kernel_fix.patch",
+  "reproducer",
+  "theories.md"
+ ],
+ "report_present": false,
+ "patch_present": true,
+ "hashes": {
+  "prompt": "80b0e17167db45b7715c28cb7f0f0b7d90e24f0d48296768fb71acebf7c311cf",
+  "arm": "e985572cd09c888b110f1d7ef9d56bdf4629f05ca3d8465992524a691bfc6b8b",
+  "offline_env": "1fe9b0f49175667ba7b348f43469351e4cf149ba6a4b812fed686e8752dfeedf",
+  "bundle_manifest": "b5af57ff734ec32860df287d58f0abd1ab81d273d33d1063bee6245249f95076"
+ },
+ "crash_commit": "231406f0162edfe5a07406fc9634d82f2f68bfc0",
+ "cutoff": 1752590330
+}

@@ -1,0 +1,66 @@
+sched/fair: defer the avg_vruntime overflow WARN to avoid rq->lock self-deadlock
+
+A hard LOCKUP was observed on ~130 hosts (6.13 fbk16, AMD Turin, 252 CPUs).
+The NMI watchdog fired on a CPU spinning in queued_spin_lock_slowpath ->
+raw_spin_rq_lock -> sched_balance_rq -> _nohz_idle_balance, but that CPU is
+only a victim: 52 CPUs were queued on one runqueue lock (CPU 38's rq).
+
+The real holder, CPU 38, self-deadlocked. It was in __schedule() holding its
+own rq->__lock and, deep inside pick_next_task_fair() ->
+put_prev_entity() -> __enqueue_entity() -> __sum_w_vruntime_add(), the
+avg_vruntime overflow WARN_ON_ONCE() at fair.c:691 fired (key*weight had bit
+62 set: w_vruntime = -6865589408623720101, weight = 0x1ca3fd). Because this
+WARN executes with rq->__lock held, its printk was emitted *synchronously*
+through the wake-capable netconsole path:
+
+  WARN -> printk -> console_unlock -> console_emit_next_record ->
+  netpoll_send_udp -> netpoll_poll_dev -> bnxt_poll_p5 -> __bnxt_tx_int ->
+  dev_kfree_skb_irq_reason -> raise_softirq_irqoff -> wakeup_softirqd ->
+  wake_up_process(ksoftirqd/38) -> try_to_wake_up -> ttwu_queue ->
+  rq_lock(CPU38 rq) -> queued_spin_lock_slowpath (spins forever)
+
+try_to_wake_up() tried to re-acquire the very rq->__lock CPU 38 already held,
+so the lock was never released. Every other CPU that picked CPU 38's rq as the
+"busiest" in nohz idle balance then piled up behind it with IRQs disabled,
+which in turn stalled TLB-shootdown IPIs to those CPUs (csd_lock_wait_toolong
+in dmesg), until the NMI watchdog declared a hard lockup.
+
+The scheduler already knows printk under rq->__lock is unsafe and uses
+printk_deferred*() for its own messages (see kernel/sched/psi.c,
+kernel/sched/core.c, kernel/sched/fair.c:5870). This experimental
+avg_vruntime instrumentation was the one rq-lock-held diagnostic that did not.
+Wrap the WARN in printk_deferred_enter()/exit() so console output is deferred
+(defer_console_output() / irq_work) instead of emitted synchronously; IRQs are
+already disabled here, satisfying the printk_deferred requirement. The WARN is
+still logged - only the dangerous synchronous console re-entry is removed.
+
+Note: the underlying avg_vruntime key*weight overflow (the condition the WARN
+detects) is a separate, still-open issue in the experimental EEVDF avg_vruntime
+rework and is being addressed upstream (see c06e05dae2c6 "sched/fair: Avoid
+overflow in enqueue_entity()", 3f374515315d "sched/fair: Increase weight bits
+for avg_vruntime", both already present). This patch fixes the fatal mechanism
+(the fleet-wide lockup); it does not by itself stop the overflow from
+recurring.
+
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index 5dc612effbec..14a5f8196b11 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -688,7 +688,17 @@ __sum_w_vruntime_add(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 	s64 w_vruntime, key = entity_key(cfs_rq, se);
+
+ 	w_vruntime = key * weight;
++	/*
++	 * This runs under rq->__lock with IRQs disabled (pick/enqueue paths).
++	 * A plain WARN here emits printk synchronously; with a wake-capable
++	 * console (netconsole -> netpoll TX cleanup -> wake_up_process()) that
++	 * re-enters try_to_wake_up() and self-deadlocks on the rq->__lock we
++	 * already hold. Defer console output like the other scheduler
++	 * diagnostics (see printk_deferred* users in kernel/sched/).
++	 */
++	printk_deferred_enter();
+ 	WARN_ON_ONCE((w_vruntime >> 63) != (w_vruntime >> 62));
++	printk_deferred_exit();
+
+ 	cfs_rq->sum_w_vruntime += w_vruntime;
+ 	cfs_rq->sum_weight += weight;

@@ -1,0 +1,77 @@
+From 3a2268b381934abab7d35e1fb04f20a8f70d3d8f Mon Sep 17 00:00:00 2001
+From: Boris Burkov <boris@bur.io>
+Date: Fri, 8 May 2026 13:11:26 -0700
+Subject: [PATCH] btrfs: always drop root->inodes lock before cond_resched()
+
+Backport of upstream/v6.19-fb commit 3a2268b381934abab7d35e1fb04f20a8f70d3d8f
+to 6.16.1-0_fbk2_hardened (crash kernel gf40efc324cc8), which does not contain
+the fix. Resolves the soft lockup on root->inodes.xa_lock observed in MID
+1e340e89494ecc519c2203b0f02d8c52.
+
+find_first_inode() and find_first_inode_to_shrink() lock root->inodes,
+then loop over them, occasionally skipping some inodes. When they skip
+an inode, they attempt to share the cpu/lock with cond_resched_lock().
+
+However, that has a subtle problem associated with it.
+cond_resched_lock() only drops the lock if it needs to actually call
+schedule(). With CONFIG_PREEMPT_NONE, this means the full timeslice as
+detected at ticks. With 8+ cpus and default tunables, this is 2.8ms. So
+regardless of HZ, we will run for at least 2.8ms in this loop without
+dropping the lock, assuming it finds no suitable inodes. If HZ is
+small enough, it might be even worse as the tick granularity becomes
+bigger than the timeslice.
+
+The knock-on effect of this is that callers to
+btrfs_del_inode_from_root() like kswapd trying to shrink the inode slab
+or userspace threads calling evict() will spin on xa_lock(&root->inodes)
+for 2.8ms, so the extent map shrinker dominates the lock even though
+ostensibly it is intending to share it. This produces memory pressure as
+there is only one kswapd and it runs sequentially so it can get stuck in
+the inode slab shrinking.
+
+To fix it, simply replace cond_resched_lock() with an open coded variant
+which unconditionally does unlock/lock around cond_resched. Sharing the
+lock is decoupled from sharing the CPU, and all the users of the lock
+now share it fairly.
+
+Tested-by: Rik van Riel <riel@surriel.com>
+Reviewed-by: Filipe Manana <fdmanana@suse.com>
+Signed-off-by: Boris Burkov <boris@bur.io>
+Signed-off-by: David Sterba <dsterba@suse.com>
+---
+ fs/btrfs/extent_map.c | 4 +++-
+ fs/btrfs/inode.c      | 4 +++-
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/fs/btrfs/extent_map.c b/fs/btrfs/extent_map.c
+index 02bfdb976e40..4363b4c5f66b 100644
+--- a/fs/btrfs/extent_map.c
++++ b/fs/btrfs/extent_map.c
+@@ -1234,7 +1234,9 @@ static struct btrfs_inode *find_first_inode_to_shrink(struct btrfs_root *root,
+ 		write_unlock(&tree->lock);
+ next:
+ 		from = btrfs_ino(inode) + 1;
+-		cond_resched_lock(&root->inodes.xa_lock);
++		xa_unlock(&root->inodes);
++		cond_resched();
++		xa_lock(&root->inodes);
+ 	}
+ 	xa_unlock(&root->inodes);
+
+diff --git a/fs/btrfs/inode.c b/fs/btrfs/inode.c
+index cb0acbd3d96f..c8c44d28547d 100644
+--- a/fs/btrfs/inode.c
++++ b/fs/btrfs/inode.c
+@@ -10471,7 +10471,9 @@ struct btrfs_inode *btrfs_find_first_inode(struct btrfs_root *root, u64 min_ino)
+ 			break;
+
+ 		from = btrfs_ino(inode) + 1;
+-		cond_resched_lock(&root->inodes.xa_lock);
++		xa_unlock(&root->inodes);
++		cond_resched();
++		xa_lock(&root->inodes);
+ 	}
+ 	xa_unlock(&root->inodes);
+
+--
+2.47.3

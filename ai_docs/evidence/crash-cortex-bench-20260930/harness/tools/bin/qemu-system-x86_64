@@ -1,0 +1,20 @@
+#!/bin/bash
+# ccbench wrapper: user-space QEMU 8.1.2 (fbcode//antlir/vm/runtime:qemu-system-x86_64)
+# with its ROM dir, and guest networking OFF unless slirp is restrict=on (no egress).
+D=$(dirname "$(readlink -f "$0")")
+net=0
+for x in "$@"; do
+  case "$x" in
+    -netdev|-nic|-net) net=1 ;;
+  esac
+done
+if [ $net = 1 ]; then
+  for x in "$@"; do
+    case "$x" in
+      user*|*,user*) case "$x" in *restrict=on*|*restrict=yes*) ;; *) echo "ccbench: guest networking must use restrict=on (no egress in the benchmark)" >&2; exit 64 ;; esac ;;
+      tap*|bridge*|socket*|vde*|l2tpv3*|stream*|dgram*|vhost*) echo "ccbench: only -nic none or user,restrict=on networking is allowed" >&2; exit 64 ;;
+    esac
+  done
+  exec "$D/qemu-system-x86_64.real" -L "$D/../share/qemu" "$@"
+fi
+exec "$D/qemu-system-x86_64.real" -L "$D/../share/qemu" -nic none "$@"
