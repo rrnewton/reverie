@@ -656,21 +656,35 @@ tool gets `quickstart`, `userguide` and `RELATED_WORK.md`.
 4. **Tier-1 summaries**: an optional async worker using a configured command (default
    `claude -p --model haiku …`) with the fixed NOW/NEW/NEEDS contract and a cache. Measured before and
    after on real deltas.
-5. **Trial — two hours so far**, watch-only into a scratch registry on the fleet host, with no
-   delivery. It ran the build before the last two review fixes, 2026-09-29 23:45Z to 2026-09-30
-   01:45Z, with 9–11 agent panes and one sample a minute: 114 samples, no errors. Notices posted:
-   - 7 idle;
-   - 5 working (withdrawn);
-   - 1 blocked;
-   - 3 exited (short-lived panes);
-   - 3 no-op `working` (the quiet-start wart, fixed since).
-
-   That is about 16 meaningful notices in two hours for about 10 workers, compared with the
-   scrollback cron's dump of every pane every 10 minutes. An earlier trial on the first build also
-   caught still-idle reminders for workers never announced idle; the review fixed that. Next: ask
-   coord whether the coordinator's 10-minute cron should run
-   `agentctl inbox watch --to coord --once && agentctl inbox deliver --to coord --via print` beside
-   (then instead of) `coord-scrollback-delta.py`.
+5. **Trial — 24 h side by side, CLOSED 2026-10-01 02:18Z (coord's verdict).**
+   - **Setup:** coord's 10-minute cron ran `agentctl inbox watch --to coord --once` followed by
+     `inbox deliver --via print`, next to `coord-scrollback-delta.py`. The binary was agent-utils
+     134972555a21; the registry was a trial one, and nothing was posted to any pane or to Chat.
+     The log is `temp/coord-inbox-trial.log` in the parent checkout: 131 samples, 2026-09-30 02:26Z
+     to 2026-10-01 01:58Z.
+   - **Reliability:** 131 of 131 samples exited 0 for both commands. False idle notices: **0**.
+   - **Volume:** 28 notices in 27 samples; 104 samples had none. By kind (coord's recount):
+     - 12 exited;
+     - 11 idle;
+     - 5 still-idle.
+   - **Value:**
+     - Coord already knew about 19 of the 28 from scrollback or its own idle checks.
+     - 9 were the first signal. 8 of those were expected, all reviewer panes retired by kvm: the
+       pane simply vanishes from the scrollback list, with no exit line for scrollback to show.
+     - 1 was actionable. At 2026-09-30 14:06Z, gate-select had stopped about 18 min earlier on
+       "API Error: Connection lost mid-response"; scrollback showed 0 new lines and no idle flag.
+       Coord nudged it on the notice.
+   - **Weaknesses:**
+     - Exit notices arrived 6 to 26 min after the pane was gone, because `--exit-samples 3` at a
+       10-minute tick spans 20–30 min.
+     - 7 of 28 notices (all 5 still-idle and 2 idle) were for kvm wJ:p38, which coord had parked
+       on purpose with its goal paused: true but useless.
+   - **Not its job:** content. Real events such as hermit main moving and agent reports reached
+     coord by herdr prompts, and the inbox correctly stayed empty for them.
+   - **Coord's suggestions, being implemented as step 6:** suppress idle and still-idle notices for
+     a worker a coordinator marked parked; say in an exit notice when the pane was last seen.
+   - **Status:** coord has not re-armed the watcher. Replacing the scrollback script was not
+     decided.
 
 ## 7. Open questions and untested points
 
