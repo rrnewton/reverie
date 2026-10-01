@@ -387,6 +387,14 @@ fn vdso_get_symbols_info() -> BTreeMap<&'static str, (u64, usize)> {
     res
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: runs in [`vdso_patch`] once the vDSO is writable, before it
+    /// is patched.
+    pub(crate) static VDSO_WRITABLE_FOR_TEST: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// patch VDSOs when enabled
 ///
 /// `guest` must be in one of ptrace's stopped states.
@@ -419,6 +427,12 @@ where
                     ),
             )
             .await?;
+        #[cfg(test)]
+        VDSO_WRITABLE_FOR_TEST.with(|hook| {
+            if let Some(hook) = hook.borrow().as_ref() {
+                hook();
+            }
+        });
 
         for (name, (offset, size, bytes, _sysno)) in subscribed_vdso_patches(subscriptions) {
             let start = vdso.address.0 + offset;
