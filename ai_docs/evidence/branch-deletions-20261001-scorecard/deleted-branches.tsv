@@ -1,0 +1,2 @@
+repo	branch	sha	committer_date	contained_in_main	preserved_ref	action
+rrnewton/hermit	claude/scorecard-site-pin-on-5d93ff54	fb4a25410dbd52993456595ae88d4f01b74f085c	2026-09-30T09:32:14-07:00	no (its only change, pin blob 6b6bce2a, is on main as 5407956c32e78d726b0805f81c3415b115bfc5bb)	none	delete
