@@ -8665,6 +8665,73 @@ mod tests {
         resume_held_stop_child("dead_or live child", stopped).await;
     }
 
+    /// An ESRCH from a request made while a SIGKILL carried the tracee from
+    /// the held stop to its exit stop becomes its death, although the tracee
+    /// answers PTRACE_GETREGS again in that exit stop. Other errnos are kept.
+    /// See <https://github.com/rrnewton/hermit/issues/3357>.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dead_or_reports_the_death_of_a_tracee_killed_into_its_exit_stop() {
+        let (pid, stopped) = spawn_held_stop_child("dead_or exit-stop child");
+        stopped
+            .setoptions(safeptrace::Options::PTRACE_O_TRACEEXIT)
+            .expect("set PTRACE_O_TRACEEXIT on dead_or exit-stop child");
+        // A thread-directed kill wakes the tracee out of the held stop at
+        // once. (A process-directed one can stay shared-pending until the
+        // tracer resumes the tracee.)
+        assert_eq!(
+            unsafe { libc::syscall(libc::SYS_tgkill, pid.as_raw(), pid.as_raw(), libc::SIGKILL) },
+            0
+        );
+        // The SIGKILL stays pending until the tracee dequeues it after leaving
+        // the held stop. With it dequeued, a tracing stop is the exit stop.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while proc_status_has_sigkill(pid, "SigPnd:")
+            || proc_status_has_sigkill(pid, "ShdPnd:")
+            || !std::fs::read_to_string(format!("/proc/{pid}/status"))
+                .is_ok_and(|status| status.contains("\nState:\tt"))
+        {
+            if Instant::now() >= deadline {
+                let status =
+                    std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+                let signals: Vec<&str> = status
+                    .lines()
+                    .filter(|line| line.starts_with("State:") || line.contains("Pnd:"))
+                    .collect();
+                panic!(
+                    "dead_or exit-stop child {pid} did not reach its exit stop within 3 s: {signals:?}"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The state the GETREGS probe alone cannot tell from a live tracee.
+        stopped
+            .getregs()
+            .expect("exit-stopped child answers PTRACE_GETREGS");
+        for errno in [Errno::EFAULT, Errno::EIO] {
+            assert_eq!(
+                crate::task::dead_or(&stopped, TraceError::Errno(errno)),
+                TraceError::Errno(errno)
+            );
+        }
+        let TraceError::Died(_) = crate::task::dead_or(&stopped, TraceError::Errno(Errno::ESRCH))
+        else {
+            panic!("dead_or kept a bare ESRCH for child {pid} in its exit stop");
+        };
+        // Release the exit stop and reap the child.
+        assert_eq!(
+            unsafe { libc::ptrace(libc::PTRACE_CONT, pid.as_raw(), 0, 0) },
+            0,
+            "PTRACE_CONT from the exit stop"
+        );
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid.as_raw(), &mut status, libc::__WALL) },
+            pid.as_raw()
+        );
+        assert!(libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGKILL);
+        assert_eventually_reaped("dead_or exit-stop child", pid);
+    }
+
     /// An errno from a tracee that has died becomes its death.
     #[tokio::test(flavor = "current_thread")]
     async fn dead_or_reports_the_death_of_a_killed_tracee() {
