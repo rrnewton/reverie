@@ -64,6 +64,7 @@ use reverie::syscalls::Sysno;
 use safeptrace::ChildOp;
 use safeptrace::Error as TraceError;
 use safeptrace::Event;
+use safeptrace::OwnedWaitError;
 use safeptrace::Running;
 use safeptrace::Stopped;
 use safeptrace::Wait;
@@ -3760,8 +3761,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         let mut exit_stop = Box::pin(task.exit_event());
         // This generation, to reap after its exit. An injection reports a
         // death through a task it rebuilds by TID, which is unbound once the
-        // tracee has exited, so that report cannot reap it. Only `getregs` is
-        // made through this handle, and only after the exit.
+        // tracee has exited, so that report cannot reap it. This handle is
+        // only waited on, through its own notifier event, never named to
+        // ptrace: after the exit its numeric PID may name another tracee.
         let generation = Stopped::try_new_current_unchecked(task.pid())?;
         let raced = {
             let preinit = self.tracee_preinit(task).fuse();
@@ -3799,14 +3801,36 @@ impl<L: Tool + 'static> TracedTask<L> {
         // stop or on its way there, unless it has already exited.
         match exit_stop.await {
             Ok(stopped) => self.preinit_exit_stop(stopped).await,
-            Err(_) => match generation.getregs() {
-                Err(TraceError::Died(zombie)) => {
-                    let pid = zombie.pid();
-                    Ok(PreinitOutcome::Exited(pid, zombie.reap().await?))
+            // The exit stop expired, so its final status is published or
+            // about to be. This waits for it on the generation's own event,
+            // and stays pending until it is published.
+            Err(_) => {
+                let mut wait = generation.wait_owned();
+                loop {
+                    match (&mut wait).await {
+                        Ok(Wait::Exited(pid, exit_status)) => {
+                            break Ok(PreinitOutcome::Exited(pid, exit_status));
+                        }
+                        Ok(Wait::Stopped(stopped, Event::Exit)) => {
+                            break self.preinit_exit_stop(stopped).await;
+                        }
+                        // Only a nonleader's exec can follow an exit stop.
+                        Ok(Wait::Stopped(_, Event::Exec(_))) => break Err(Errno::EPROTO.into()),
+                        // A stop queued before the exit stop, which the tracee
+                        // left to reach it (as in the run loop's exit wait).
+                        Ok(Wait::Stopped(stale, _)) => wait = stale.wait_owned(),
+                        // The wait keeps the generation and settles only on
+                        // its actual next state.
+                        Err(OwnedWaitError::Died) => {}
+                        Err(OwnedWaitError::Errno(errno)) => {
+                            break Err(errno.into());
+                        }
+                        Err(OwnedWaitError::Completed) => {
+                            break Err(Errno::EPROTO.into());
+                        }
+                    }
                 }
-                Err(error) => Err(error),
-                Ok(_) => Err(Errno::EPROTO.into()),
-            },
+            }
         }
     }
 

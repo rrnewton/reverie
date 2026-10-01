@@ -8515,6 +8515,143 @@ mod test {
         assert!(unclaimed_exit_waiter_expires_before_cleanup_replacement(None).await);
     }
 
+    /// Waits on a terminal generation through a second handle whose numeric
+    /// PID names a replacement tracee of the same ptracer. With
+    /// `requested_pid`, the replacement actually reuses the old PID; without
+    /// it, the handle carries the old generation's token beside the
+    /// replacement's PID.
+    async fn terminal_generation_wait_leaves_replacement_untouched(
+        requested_pid: Option<i32>,
+    ) -> bool {
+        let Some((old_pid, old_stopped, mut old_cleanup)) = spawn_traced_process(requested_pid)
+        else {
+            return false;
+        };
+        old_stopped
+            .setoptions(Options::PTRACE_O_TRACEEXIT)
+            .expect("enable exit stop for terminal generation");
+        let mut exit_stop = Box::pin(
+            old_cleanup
+                .exit_event(&old_stopped)
+                .expect("bind terminal-generation cleanup to notifier"),
+        );
+        let terminal = old_cleanup
+            .terminal()
+            .expect("bound terminal-generation cleanup terminal");
+        let waker = futures::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+        assert_eq!(exit_stop.as_mut().poll(&mut context), Poll::Pending);
+        let token = old_stopped.1.clone();
+        drop(old_stopped);
+        pidfd_send_signal(&old_cleanup.pidfd, libc::SIGKILL).expect("SIGKILL old generation");
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !terminal.exit_stop_observed() {
+            assert!(
+                Instant::now() < deadline,
+                "killed generation did not reach exit stop"
+            );
+            thread::yield_now();
+        }
+        terminal
+            .revoke_unclaimed_exit_stop()
+            .expect("expire the unclaimed exit stop");
+        nix::sys::ptrace::cont(old_pid, None).expect("raw resume old exit stop");
+        assert!(
+            terminal.wait(Duration::from_secs(1)),
+            "notifier did not publish old final status"
+        );
+        old_cleanup.disarm();
+        assert_eq!(
+            tokio::time::timeout(TRACEE_WAIT_TIMEOUT, exit_stop)
+                .await
+                .expect("expired ExitFuture timed out"),
+            Err(Error::Errno(Errno::EALREADY))
+        );
+
+        thread::sleep(Duration::from_millis(20));
+        let Some((replacement_pid, replacement, mut replacement_cleanup)) =
+            spawn_traced_process(requested_pid)
+        else {
+            return false;
+        };
+        let generation_pid = if requested_pid.is_some() {
+            assert_eq!(
+                replacement_pid, old_pid,
+                "clone3 did not reuse terminal-generation PID"
+            );
+            old_pid
+        } else {
+            replacement_pid
+        };
+        let generation = Stopped::from_token(generation_pid.into(), token);
+        generation
+            .getregs()
+            .expect("the old generation's numeric PID names the stopped replacement");
+
+        let mut wait = generation.wait_owned();
+        let result = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, &mut wait)
+            .await
+            .expect("terminal-generation wait timed out")
+            .expect("terminal-generation wait");
+        assert_eq!(
+            result.assume_exited(),
+            (
+                generation_pid.into(),
+                crate::ExitStatus::Signaled(Signal::SIGKILL, false)
+            )
+        );
+        assert!(matches!((&mut wait).await, Err(OwnedWaitError::Completed)));
+
+        let info = replacement
+            .getsiginfo()
+            .expect("terminal-generation wait touched the stopped replacement");
+        assert_eq!(info.si_signo, libc::SIGSTOP);
+        replacement_cleanup
+            .bind_notifier(&replacement)
+            .expect("bind replacement to notifier");
+        let replacement = replacement.resume(None).expect("resume replacement");
+        let replacement = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, replacement.next_state())
+            .await
+            .expect("replacement final status timed out")
+            .expect("wait replacement");
+        replacement_cleanup.disarm();
+        assert_eq!(
+            replacement.assume_exited(),
+            (replacement_pid.into(), crate::ExitStatus::Exited(42))
+        );
+        true
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn terminal_generation_wait_never_targets_a_replacement_pid() {
+        const INNER: &str = "SAFEPTRACE_TERMINAL_GENERATION_REUSE_INNER";
+        if env::var_os(INNER).is_some() {
+            if terminal_generation_wait_leaves_replacement_untouched(Some(100)).await {
+                println!("ACTUAL_TERMINAL_GENERATION_PID_REUSE_EXERCISED");
+            } else {
+                println!("ACTUAL_TERMINAL_GENERATION_PID_REUSE_UNAVAILABLE");
+            }
+            return;
+        }
+
+        let inner = "notifier::test::terminal_generation_wait_never_targets_a_replacement_pid";
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(INNER, "1")]);
+        match classify_exact_reuse_output(
+            actual_reuse.as_ref(),
+            "ACTUAL_TERMINAL_GENERATION_PID_REUSE_EXERCISED",
+            "ACTUAL_TERMINAL_GENERATION_PID_REUSE_UNAVAILABLE",
+        )
+        .unwrap_or_else(|error| panic!("terminal-generation PID-reuse regression failed: {error}"))
+        {
+            ExactReuseOutcome::Exercised => return,
+            ExactReuseOutcome::Unavailable => {}
+        }
+
+        // Restricted runners may deny user namespaces or clone3(set_tid).
+        assert!(terminal_generation_wait_leaves_replacement_untouched(None).await);
+    }
+
     fn spawn_stopped_process(requested_pid: Option<i32>) -> Option<(Pid, TraceeCleanupGuard)> {
         let child = if let Some(requested_pid) = requested_pid {
             #[repr(C)]
