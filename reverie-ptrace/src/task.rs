@@ -235,14 +235,15 @@ pub enum PreinitOutcome {
 
 /// Returns `error` unchanged unless a probe of `task` confirms its death.
 ///
-/// `process_vm_readv`, `process_vm_writev` and `PTRACE_POKEDATA` report a
-/// tracee that a SIGKILL has just ended as a bare `ESRCH`, which carries no
-/// [`TraceError::Died`] for the caller to reap. The probe is `PTRACE_GETREGS`,
+/// `process_vm_readv`, `process_vm_writev`, `PTRACE_PEEKDATA` and
+/// `PTRACE_POKEDATA` report a tracee that a SIGKILL has just ended as a bare
+/// `ESRCH`, which carries no [`TraceError::Died`] for the caller to reap. The
+/// probe is [`Stopped::getregs`] (`PTRACE_GETREGSET` with `NT_PRSTATUS`),
 /// which safeptrace turns into `Died` exactly when it fails with `ESRCH`.
 ///
 /// A request made while the SIGKILL carries the tracee to its
 /// `PTRACE_EVENT_EXIT` stop fails with `ESRCH`, but once the tracee is in that
-/// exit stop `PTRACE_GETREGS` succeeds again. So when the original error is
+/// exit stop the probe succeeds again. So when the original error is
 /// `ESRCH` and the probe succeeds, [`Stopped::died_into_exit_stop`] checks
 /// whether the tracee is now in its exit stop, and reports that as its death.
 /// See <https://github.com/rrnewton/hermit/issues/3357>. Any other probe
@@ -2472,7 +2473,8 @@ fn at_preinit_point(
     }
 }
 
-/// Test-only: where `tracee_preinit` calls a [`PreinitPointForTest`] hook.
+/// Test-only: where `tracee_preinit`, or the post-exec step before it, calls a
+/// [`PreinitPointForTest`] hook.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PreinitPoint {
@@ -2488,6 +2490,12 @@ pub(crate) enum PreinitPoint {
     PagePopulated,
     /// After making the vDSO writable, before patching it.
     VdsoWritable,
+    /// At the exec stop, before the post-exec SIGTRAP step. Not on the
+    /// LiteInst path.
+    ExecStopped,
+    /// After the post-exec SIGTRAP step, before waiting for its stop. Not on
+    /// the LiteInst path.
+    PostExecStepped,
 }
 
 /// Test-only: where the masked hop calls a [`PreSyscallForTest`] hook.
@@ -3705,18 +3713,17 @@ impl<L: Tool + 'static> TracedTask<L> {
         if vdso::is_patch_required(&self.global_state.subscriptions) {
             let subscriptions = self.global_state.subscriptions.clone();
             #[cfg(test)]
-            if let Some(hook) = preinit_point.clone() {
+            let vdso_hook = preinit_point.clone().map(|hook| {
                 let pid = task.pid();
                 let terminal = task.terminal_cleanup();
-                vdso::VDSO_WRITABLE_FOR_TEST.with(|slot| {
-                    *slot.borrow_mut() = Some(Box::new(move || {
-                        hook(pid, &terminal, PreinitPoint::VdsoWritable)
-                    }))
-                });
-            }
+                vdso::vdso_writable_hook_for_test(
+                    pid.as_raw(),
+                    Box::new(move || hook(pid, &terminal, PreinitPoint::VdsoWritable)),
+                )
+            });
             let patched = vdso::vdso_patch(self, &subscriptions).await;
             #[cfg(test)]
-            vdso::VDSO_WRITABLE_FOR_TEST.with(|slot| slot.borrow_mut().take());
+            drop(vdso_hook);
             match patched {
                 Ok(()) => {}
                 // A tracee that died during the patch reports a bare errno.
@@ -5068,11 +5075,31 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
             }
         } else {
-            let (task, event) = self
-                .step_stopped(task, None)?
-                .wait_for_signal(Signal::SIGTRAP)
-                .await?
-                .assume_stopped();
+            #[cfg(test)]
+            let preinit_point = self.global_state.preinit_point_for_test.clone();
+            #[cfg(test)]
+            at_preinit_point(
+                &preinit_point,
+                task.pid(),
+                || task.terminal_cleanup(),
+                PreinitPoint::ExecStopped,
+            );
+            let stepped = self.step_stopped(task, None)?;
+            #[cfg(test)]
+            at_preinit_point(
+                &preinit_point,
+                stepped.pid(),
+                || stepped.terminal_cleanup(),
+                PreinitPoint::PostExecStepped,
+            );
+            // A SIGKILL at the exec stop leaves the tracee in its exit stop,
+            // which is published to the exit notifier, not to this wait. The
+            // step resumes it from there, so the wait can see it exit, as the
+            // mmap wait in `tracee_preinit` can.
+            let (task, event) = match stepped.wait_for_signal(Signal::SIGTRAP).await? {
+                Wait::Stopped(task, event) => (task, event),
+                Wait::Exited(pid, exit_status) => return Ok(Wait::Exited(pid, exit_status)),
+            };
             assert_eq!(event, Event::Signal(Signal::SIGTRAP));
             self.arm_liteinst_root_stop(&task, &event);
             task
@@ -7270,6 +7297,10 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// canceled. Thus, this function will never return so that execution of the
     /// current future doesn't proceed any further.
     async fn abort(&mut self, result: Result<Wait, TraceError>) -> ! {
+        #[cfg(test)]
+        if let Err(TraceError::Errno(errno)) = &result {
+            crate::tracer::record_bare_errno_abort_for_test(self.tid(), *errno);
+        }
         if self.next_state.send(result).await.is_err() {
             panic!(
                 "failed to abort tracee {}: run-loop next-state channel is closed",
