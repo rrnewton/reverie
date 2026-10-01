@@ -10983,7 +10983,8 @@ mod tests {
                     .retain_translated_range(WORD, 4)
                     .unwrap();
                 // Drop the ring before these retained address leases, including
-                // on failure: closing it cancels any outstanding futex request.
+                // on failure: closing initiates cancellation. A queued request's
+                // wake/cancel path uses its futex key, not the userspace word.
                 let mut ring = IoUring::new(2)
                     .unwrap_or_else(|error| panic!("{HOST_REQUIREMENTS}; io_uring_setup: {error}"));
                 let mut probe = Probe::new();
@@ -10995,6 +10996,22 @@ mod tests {
                     "{HOST_REQUIREMENTS}"
                 );
                 assert!(ring.params().is_feature_ext_arg(), "{HOST_REQUIREMENTS}");
+                // Probe the exact timed-enter form before enrolling a waiter or
+                // invoking the production helper. This empty-ring, zero-time
+                // poll submits no request and must report ETIME. In particular,
+                // a seccomp denial of GETEVENTS | EXT_ARG is a setup failure.
+                let setup_timeout = types::Timespec::new();
+                let setup_args = types::SubmitArgs::new().timespec(&setup_timeout);
+                let setup_enter = ring.submitter().submit_with_args(1, &setup_args);
+                assert_eq!(
+                    setup_enter
+                        .as_ref()
+                        .err()
+                        .and_then(|error| error.raw_os_error()),
+                    Some(libc::ETIME),
+                    "{HOST_REQUIREMENTS}; empty-ring timed io_uring_enter probe: \
+                     expected ETIME, got {setup_enter:?}"
+                );
 
                 // FUTEX2_SIZE_U32, with no FUTEX2_PRIVATE flag: the production
                 // helper uses the shared FUTEX_WAKE operation.
@@ -11010,8 +11027,8 @@ mod tests {
                 .user_data(request_id);
                 clear_tid_diagnostic::arm();
                 let wait_deadline = Instant::now() + Duration::from_secs(5);
-                // SAFETY: both address leases outlive the ring. PARK remains
-                // initialized and unchanged until the single request completes.
+                // SAFETY: both address leases outlive the ring. PARK is initialized
+                // and unchanged while submitted; wake/cancel later uses its key.
                 unsafe { ring.submission().push(&request).unwrap() };
                 assert_eq!(
                     ring.submit().unwrap_or_else(|error| panic!(
