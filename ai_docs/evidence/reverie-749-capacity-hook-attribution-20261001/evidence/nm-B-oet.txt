@@ -1,0 +1,3 @@
+t core::ptr::drop_glue::<<reverie_ptrace::tracer::tests::fatal_capacity_tests::CapacityTool as reverie::tool::Tool>::on_exit_thread<reverie_ptrace::task::WrappedFrom<reverie_ptrace::tracer::tests::fatal_capacity_tests::CapacityLog>>::{closure#0}>
+t <reverie_ptrace::tracer::tests::fatal_capacity_tests::CapacityTool as reverie::tool::Tool>::on_exit_thread::<reverie_ptrace::task::WrappedFrom<reverie_ptrace::tracer::tests::fatal_capacity_tests::CapacityLog>>
+t <reverie_ptrace::tracer::tests::fatal_capacity_tests::CapacityTool as reverie::tool::Tool>::on_exit_thread::<reverie_ptrace::task::WrappedFrom<reverie_ptrace::tracer::tests::fatal_capacity_tests::CapacityLog>>::{closure#0}

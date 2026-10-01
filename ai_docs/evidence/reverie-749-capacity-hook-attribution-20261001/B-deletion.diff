@@ -1,0 +1,49 @@
+diff --git a/reverie-ptrace/src/tracer/fatal_capacity_tests.rs b/reverie-ptrace/src/tracer/fatal_capacity_tests.rs
+index 8b51c217..eff08cec 100644
+--- a/reverie-ptrace/src/tracer/fatal_capacity_tests.rs
++++ b/reverie-ptrace/src/tracer/fatal_capacity_tests.rs
+@@ -228,44 +228,6 @@ pub(super) mod fatal_capacity_tests {
+             Ok(0)
+         }
+ 
+-        async fn on_exit_thread<G: reverie::GlobalRPC<Self::GlobalState>>(
+-            &self,
+-            tid: Pid,
+-            _: &G,
+-            _: (),
+-            _: ExitStatus,
+-        ) -> Result<(), Error> {
+-            let hold = RETIREMENT.with(|slot| {
+-                let mut slot = slot.borrow_mut();
+-                let state = slot.as_mut().unwrap();
+-                if state.fault == CapacityFault::HoldOneExitHook
+-                    && Some(tid) != state.root
+-                    && !state.held_hook
+-                {
+-                    state.held_hook = true;
+-                    true
+-                } else {
+-                    false
+-                }
+-            });
+-            if hold {
+-                futures::future::poll_fn(|cx| {
+-                    RETIREMENT.with(|slot| {
+-                        let mut slot = slot.borrow_mut();
+-                        let state = slot.as_mut().unwrap();
+-                        state.hook_waiter = Some(cx.waker().clone());
+-                        if state.release_hook {
+-                            state.hook_waiter = None;
+-                            std::task::Poll::Ready(())
+-                        } else {
+-                            std::task::Poll::Pending
+-                        }
+-                    })
+-                })
+-                .await;
+-            }
+-            Ok(())
+-        }
+     }
+ 
+     async fn isolated_capacity(threads: bool, deadline: u64) {

@@ -1,0 +1,4 @@
+tracer::tests::fatal_capacity_tests::retired_processes_release_descriptors_under_reduced_nofile: test
+tracer::tests::fatal_capacity_tests::retired_threads_release_descriptors_under_reduced_nofile: test
+
+2 tests, 0 benchmarks

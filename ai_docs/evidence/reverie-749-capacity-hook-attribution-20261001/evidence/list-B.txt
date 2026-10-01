@@ -1,0 +1,8 @@
+tracer::tests::fatal_capacity_tests::nonretiring_child_hook_falsifies_original_deadline: test
+tracer::tests::fatal_capacity_tests::retained_child_owners_falsify_capacity_bound: test
+tracer::tests::fatal_capacity_tests::retired_processes_release_descriptors_under_reduced_nofile: test
+tracer::tests::fatal_capacity_tests::retired_threads_release_descriptors_under_reduced_nofile: test
+tracer::tests::fatal_capacity_tests::stalled_hook_control_rejects_non_timeout_original_outcomes: test
+tracer::tests::fatal_capacity_tests::stalled_hook_control_requires_unique_pre_rescue_outcome: test
+
+6 tests, 0 benchmarks
