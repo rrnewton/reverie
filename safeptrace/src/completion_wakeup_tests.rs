@@ -10,13 +10,13 @@ fn completion_wait_wakes_after_publication_in_check_to_park_window() {
     let event = Arc::new(Event::new());
     assert!(event.try_begin_unstarted_completion());
     let (checked, checked_receiver) = mpsc::sync_channel(1);
-    let (attempted, attempted_receiver) = mpsc::sync_channel(1);
+    let attempted = Arc::new(AtomicI32::new(0));
     let (published, published_receiver) = mpsc::sync_channel(1);
-    // Keep the receivers alive until the publisher has joined, including when
+    // Keep the receiver alive until the publisher has joined, including when
     // the wait wakes before the publisher sends its post-return receipt.
     let probe = Arc::new(WorkerDoneWaitProbe {
         checked,
-        publisher_attempted: Mutex::new(attempted_receiver),
+        publisher_attempted: Arc::clone(&attempted),
         published: Mutex::new(published_receiver),
         observation: Mutex::new(None),
     });
@@ -26,9 +26,11 @@ fn completion_wait_wakes_after_publication_in_check_to_park_window() {
         checked_receiver
             .recv_timeout(Duration::from_secs(1))
             .map_err(|_| "waiter did not announce its predicate check")?;
-        attempted
-            .send(())
-            .map_err(|_| "publisher attempt receiver disappeared")?;
+        // SAFETY: gettid(2) has no preconditions and cannot fail.
+        let tid = unsafe { libc::gettid() };
+        // A plain store, unlike a channel send, cannot sleep, so nothing that
+        // can block lies between this announcement and the publication path.
+        attempted.store(tid, Ordering::Release);
         publisher_event.mark_worker_done();
         // Returning from the real publication path proves that its DONE store
         // and notification have both completed. There is no publication hook
@@ -54,18 +56,26 @@ fn completion_wait_wakes_after_publication_in_check_to_park_window() {
     let check_sent = observation.as_ref().is_some_and(|probe| probe.check_sent);
     let publisher_attempted = observation
         .as_ref()
-        .is_some_and(|probe| probe.publisher_attempted.is_ok());
+        .is_some_and(|probe| probe.publisher_attempted);
     let publication_before_park = observation
         .as_ref()
         .is_some_and(|probe| probe.published.is_ok());
     let publication_disconnected = observation
         .as_ref()
         .is_some_and(|probe| matches!(probe.published, Err(mpsc::RecvTimeoutError::Disconnected)));
+    let publisher_blocked_in_futex = observation
+        .as_ref()
+        .is_some_and(|probe| probe.publisher_blocked_in_futex);
+    let publisher_syscall_unreadable = observation
+        .as_ref()
+        .is_some_and(|probe| probe.publisher_syscall_unreadable);
     eprintln!(
         "WORKER_DONE_WAKEUP_RECEIPT hook_reached={hook_reached} check_sent={check_sent} \
          publisher_attempted={publisher_attempted} publication_before_park={publication_before_park} \
          publication_disconnected={publication_disconnected} publisher_completed={publisher_completed} \
-         wait_returned={acknowledged} wait_elapsed_us={} wait_timeout_us={} prompt_limit_us={}",
+         wait_returned={acknowledged} wait_elapsed_us={} wait_timeout_us={} prompt_limit_us={} \
+         publisher_blocked_in_futex={publisher_blocked_in_futex} \
+         publisher_syscall_unreadable={publisher_syscall_unreadable}",
         elapsed.as_micros(),
         timeout.as_micros(),
         prompt_limit.as_micros(),
@@ -86,6 +96,14 @@ fn completion_wait_wakes_after_publication_in_check_to_park_window() {
         !publication_disconnected,
         "publication channel disconnected before park"
     );
+    // Every passing run forced one of two orders before the waiter parked:
+    // the publication completed, or the publisher slept in futex(2). The old
+    // publisher can do the second only after its notification was lost, so it
+    // fails the prompt-wake assertion below in both orders.
+    assert!(
+        publication_before_park || publisher_blocked_in_futex,
+        "pre-park window ended with the publisher neither finished nor asleep in futex(2)"
+    );
     assert!(
         publisher_completed,
         "completion publisher did not finish: {publisher_result:?}"
@@ -97,6 +115,6 @@ fn completion_wait_wakes_after_publication_in_check_to_park_window() {
     );
     // Do not require publication_before_park == false here: a future correct
     // implementation could recheck DONE and return promptly even in that order.
-    // The baseline/fixed evidence comparison must inspect the retained receipt
-    // to require the losing order on the baseline and reject an unforced run.
+    // An unforced run, whose window saw neither publication nor a futex(2)
+    // sleep, is rejected by the forced-order assertion above.
 }
