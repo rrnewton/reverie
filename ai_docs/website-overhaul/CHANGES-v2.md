@@ -3,9 +3,9 @@
 Implemented Ryan's approved plan and follow-up notes on 2026-10-01.
 
 - **Site branch:** [writer/landing-page-v1](https://github.com/rrnewton/hermit/tree/writer/landing-page-v1)
-- **Site commit:** [`e212df558952f17818832227d1ac6b119f6576a1`](https://github.com/rrnewton/hermit/commit/e212df558952f17818832227d1ac6b119f6576a1), based on `342433e251d75624d49eaacaa111a583e07c983f`.
-- **Changed paths:** `docs/site/index.html`, `docs/site/site.css`, and the introductory blog citation in `README.md`.
-- **Handoff:** branch pushed and all three files read back byte-for-byte from GitHub. Coord2 owns PR creation, review, validation, landing, and deployment. This report does not claim the new page is live.
+- **Site commit:** [`e1fb66221338ce928c0c8d98e52b8b93db144ef1`](https://github.com/rrnewton/hermit/commit/e1fb66221338ce928c0c8d98e52b8b93db144ef1), following the first implementation `e212df558952f17818832227d1ac6b119f6576a1`; original base `342433e251d75624d49eaacaa111a583e07c983f`.
+- **Changed paths:** `docs/site/index.html`, `docs/site/site.css`, the introductory blog citation in `README.md`, and the landing-page publication contract and its regression fixtures in `scripts/docs-pages-contract.rs` and `.github/scripts/publish-compatibility-site.py`.
+- **Pull request:** https://github.com/rrnewton/hermit/pull/3479. Branch pushed; fetched the exact head and verified all five cumulative changed files byte-for-byte. Coord2 owns review, validation, landing, and deployment. This report does not claim the new page is live.
 
 ## How Ryan's notes were applied
 
@@ -19,7 +19,42 @@ Implemented Ryan's approved plan and follow-up notes on 2026-10-01.
 | Qualitative compatibility highlights | Added Python, Node.js, Rust, and SQLite workload descriptions, each linked to a published passing scorecard cell. Kept a prominent latest-scorecard link; no manually maintained counts or chart. |
 | Keep high-water examples | Added cards for Linux boot/drgn inspection, a btrfs-convert concurrency bug, and Debian/Nix build experiments. Exact evidence limits are recorded below. |
 | Keep the animation | Guest / Hermit / Linux stay stacked in the center. Six entropy labels orbit them and remain upright. A keyboard-accessible checkbox pauses motion. Reduced-motion mode is static; narrow screens use the same stack and a label grid. |
-| Public website only | Removed private dev-hermit links. New page links are limited to the public Hermit/Reverie repositories, rr, the original blog, API docs, and the public scorecard. LiteInst's link goes to its public Hermit integration documentation. Nix is described without a link. |
+| Public website only | Removed private dev-hermit links. Page links point to public repositories, rr, the original blog, API docs, papers, and the public scorecard. Restored the original LiteInst and LiteInst2 repositories and both PLDI paper links after review. Nix is described without a link. |
+
+## Review corrections
+
+Read the [full adversarial review](https://github.com/rrnewton/hermit/pull/3479#issuecomment-5939650866). The first implementation missed an existing deployment contract: the page rendered correctly but could not pass the publication checks. The original browser and link checks did not establish deployability.
+
+- **Deploy contract:** replaced the obsolete `Compatibility snapshot` / `real-ledger` wording with a stable `id="compatibility-scorecard"` on the scorecard anchor. Both checkers and their extraction fixtures change together. The visible label remains **Latest compatibility scorecard**.
+- **Nix:** changed the claim to **an example build**. The evidence is the synthetic `nondettime-hermit` derivation; the four-source `demofast-hermit` variant remained nondeterministic.
+- **btrfs:** the card now explicitly says the progress timer was replaced by a pipe. Both buggy and fixed variants used that adaptation.
+- **LiteInst:** restored https://github.com/rrnewton/liteinst2, https://github.com/iu-parfunc/liteinst, and the stable DOI links for both PLDI papers.
+- **drgn:** now described as **the drgn kernel debugger**.
+- **Follow-up only:** `docs/QEMU_BOOT.md` still links to private dev-hermit material and names a Meta kernel build. It needs a separate public-documentation cleanup; it is unchanged in this PR, as requested.
+
+### Publication requirement before and after
+
+| Check | Before | After |
+| --- | --- | --- |
+| Rust orchestration check | Exactly one `href="compatibility/latest/"` and one `Compatibility snapshot` prose marker | Same exact-once href requirement, plus exactly one `compatibility-scorecard` ID and one canonical anchor opening attaching that ID to the href |
+| Publisher `extract` | Exactly one old two-line prose/link byte string | Exactly one href, one ID, and one canonical anchor opening; also rejects a second unmarked link, which the old publisher alone did not catch |
+| Extraction fixture | Handwritten old prose | Actual `docs/site/index.html`, copied into the temporary document root |
+
+The stable alias and uniqueness requirement are preserved. Editorial prose no longer acts as the marker. Both checkers reject zero links, two marked links, a second unmarked link, a detached ID, a wrong ID, and a duplicate ID. The extraction cases use the same valid, pinned archive as the positive case and assert the specific landing-contract refusal, so an unrelated archive failure cannot satisfy the test. Workflow ordering, archive checks, release registry validation, and append-only history checks are unchanged.
+
+### Before and after results
+
+| Command / case | Before (`e212df558`) | After review fix |
+| --- | --- | --- |
+| `rust-script --test scripts/docs-pages-contract.rs` | **7 passed, 1 failed**, 2.04 s; `current_workflow_and_landing_satisfy_orchestration_contract`: `Compatibility snapshot` found 0 | **10 passed, 0 failed**, 2.46 s; includes real-page publication and all six rejection cases |
+| `python3 .github/scripts/test_publish_compatibility_site.py` | **3 passed**, 3.426 s | **3 passed**, 3.630 s; existing registry/describe tests retained |
+| Publisher `extract` with a valid fixture archive and the new page | **Refused**, exit 1: `landing page does not contain exactly one compatibility/latest link` | **Passed** through the Rust black-box fixture, including extraction, finalization, and content inventory comparison |
+
+`rust-script scripts/docs-pages-contract.rs` also passed: `docs Pages contract OK: release-pinned paths are reconstructed; verified append-only release registry against 11 historical versions`.
+
+The first broader run, `HERMIT_SCRIPT_TEST_JOBS=4 scripts/run-script-tests.sh`, finished in 293.981 s with **22 of 23 suites passing**. Its two failed tests in `scripts/validate.rs` require committed source: one said `commit the candidate before running the exact-source fixture`; the other rejected the uncommitted publisher as differing from its HEAD-based fixture. Neither reached its downstream checks. The candidate was committed before rerunning; no validation assertion was changed. **The committed rerun passed all 23 suites**, exit 0, in **312.966 s** at `e1fb66221338ce928c0c8d98e52b8b93db144ef1`; `scripts/validate.rs` passed all 148 tests, including both previously refused cases.
+
+The before-extraction probe ran the publisher fetched from local commit `e212df558` against the new real page and existing archive fixture. It failed at the intended landing check. These are script and publication checks, not a full product-validation receipt.
 
 ## Evidence behind the added claims
 
@@ -43,8 +78,8 @@ Read the [September record-mode assessment](../hermit-record-mode-current-state-
 ### Larger examples
 
 - **QEMU/Linux:** [the original strict-boot experiment](../../experiments/qemu_strict_l2_boot_20260727/README.md) reported stronger verification than the [current public QEMU guide](https://github.com/rrnewton/hermit/blob/main/docs/QEMU_BOOT.md) supports. That guide corrects the result to comparison after numeric/address/path/time normalization. The card therefore says **Boot and inspect Linux under QEMU**, with controlled scheduling and normalized repeat-boot checks, rather than claiming fully deterministic Linux execution. [drgn execution-control experiments](../../experiments/drgn-exec-control_20260818/README.md) establish repeatable task-list snapshots at chosen stops, not full-run memory identity. Also consulted the `qemu-linux` and `qemu-coherent-timebase_20260818` experiment documentation.
-- **btrfs:** [the successful experiment](../../experiments/btrfs-convert-progress-uaf-chaos_20260729/README.md) restored a historical userspace use-after-free in btrfs-convert. Buggy and fixed variants shared an adaptation that made the racing progress-thread wakeup observable, plus AddressSanitizer instrumentation. Chaos seeds triggered the buggy crash, and repeating a seed reproduced the guest report. The fixed version had no such crashes in the same sweep, although some schedules timed out in both variants. The separate [kernel subvolume-race experiment](../../experiments/btrfs_f6a6c280_subvol_race_repro_20260729/README.md) did not reproduce its target; [progress-output interleavings](../../experiments/btrfs_seeds_to_reproduce_benchmark_20260728/README.md) alone were benign. The site claims neither of those as a reproduced bug.
-- **Builds:** [Debian pilot results](../../experiments/debian_reproducible_builds_2026/PILOT_RESULTS.md) record byte-identical hello, hostname, and tree package files across independent build roots. [The Nix builder prototype](../../experiments/nix-hermit-execbuilder-prototype_20260729/README.md) made controlled clock/random-byte examples reproducible. The [later host-Nix investigation](../../experiments/nix_hermit_repro_hostnix_20260806/README.md) explicitly does not establish previously irreproducible real nixpkgs packages becoming reproducible. The card describes example builds and a prototype. Also read the container-approach and minimum-Hermit-dose experiments; their older configuration claims are not repeated.
+- **btrfs:** [the successful experiment](../../experiments/btrfs-convert-progress-uaf-chaos_20260729/README.md) restored a historical userspace use-after-free in btrfs-convert. Buggy and fixed variants shared the progress-timer-to-pipe adaptation, plus AddressSanitizer instrumentation. Chaos seeds triggered the buggy crash, and repeating a seed reproduced the guest report. The fixed version had no such crashes in the same sweep, although some schedules timed out in both variants. The separate [kernel subvolume-race experiment](../../experiments/btrfs_f6a6c280_subvol_race_repro_20260729/README.md) did not reproduce its target; [progress-output interleavings](../../experiments/btrfs_seeds_to_reproduce_benchmark_20260728/README.md) alone were benign. The site claims neither of those as a reproduced bug.
+- **Builds:** [Debian pilot results](../../experiments/debian_reproducible_builds_2026/PILOT_RESULTS.md) record byte-identical hello, hostname, and tree package files across independent build roots. [The Nix builder prototype](../../experiments/nix-hermit-execbuilder-prototype_20260729/README.md) made one synthetic clock/random-byte build, `nondettime-hermit`, reproducible; `demofast-hermit` remained nondeterministic. The [later host-Nix investigation](../../experiments/nix_hermit_repro_hostnix_20260806/README.md) explicitly does not establish previously irreproducible real nixpkgs packages becoming reproducible. The card describes one example build and a prototype. Also read the container-approach and minimum-Hermit-dose experiments; their older configuration claims are not repeated.
 
 ## Verification and remaining handoff
 
@@ -53,10 +88,11 @@ Read the [September record-mode assessment](../hermit-record-mode-current-state-
 **UX sensible? YES** — inspected full-page desktop (1440 px) and mobile (390 px) screenshots. The page explains Hermit before components or compatibility, uses readable public links, and keeps the central stack and labels legible. No unresolved rendering issue was found.
 
 - No horizontal page overflow at widths 320, 390, 600, 768, 1024, 1101, 1280, and 1440 px. On every animated layout in that set, labels stayed clear of the central stack at 24 sampled positions around a full orbit.
-- All 15 distinct linked public URL targets returned HTTP 200 using `with-proxy curl -sI -L`. Checked local document headings for the linked GitHub fragments; checked every in-page fragment against the HTML IDs. Scorecard data was fetched separately to verify that its linked cells actually contain the claimed passing results.
+- The original 15 distinct linked public URL targets returned HTTP 200. After restoring the four LiteInst links, checked all 25 href destinations (including separate fragments) using `with-proxy curl -sI -L`: 23 returned HTTP 200; both DOI links returned HTTP 302 to their ACM pages, where Cloudflare returned a 403 bot challenge. The DOI destinations are confirmed, but the ACM content was not fetched. Checked local document headings for linked GitHub fragments and every in-page fragment against the HTML IDs. Scorecard data was fetched separately in the first pass to verify the claimed passing results.
 - HTML tag nesting, unique IDs, accessibility references, the public URL allowlist, and `git diff --check` passed. No browser page errors.
-- Product tests, assertions, tolerances, comparators, classifications, and validation gates are unchanged. The removed landing-page counters were static presentation, not test gates. No Hermit program run or product validation was performed for this website change; coord2 owns the scheduled validation and review.
+- The first implementation changed no test or gate, but failed the existing deployment contract. The review revision updates that contract and adds regression coverage; it does not change execution tests, tolerances, comparators, or result classifications. No Hermit program run or full product validation was performed by the writer; coord2 owns the scheduled validation and review.
 - Shared local review artifacts are under `ignored/website-overhaul/writer-e212df558/`: `writer-site-desktop.png`, `writer-site-mobile.png`, `writer-site-browser-check.py`, `writer-site-browser-check.txt`, and `writer-site-link-check.json`. These are ignored review aids, not website assets.
+- Re-ran the browser and HTML checks after review fixes; inspected fresh desktop and mobile screenshots. All eight widths, animation controls, reduced motion, and the unique scorecard anchor passed. New evidence is under `ignored/website-overhaul/writer-review-3479/`.
 
 **Open question for Ryan:** should the Nix builder prototype and a short reproducible-builds report be published in `rrnewton/hermit`, so the landing page can link to them? The supplied prototype currently has no public home. A public btrfs experiment write-up would also let that card link directly to its evidence; its present link is explicitly labeled as the general schedule-exploration guide.
 
@@ -152,7 +188,7 @@ Patch instructions
 
 A library for patching x86-64 machine instructions while a program runs. LiteInst2 brings the original C++ project's patching core to Rust. Hermit's experimental LiteInst integration uses this technique to intercept program operations.
 
-[Hermit integration](https://github.com/rrnewton/hermit#execution-backends)
+[LiteInst2 Rust port](https://github.com/rrnewton/liteinst2) · [Original LiteInst](https://github.com/iu-parfunc/liteinst) · [PLDI '16 — Living on the edge](https://doi.org/10.1145/2908080.2908084) · [PLDI '17 — Instruction punning](https://doi.org/10.1145/3062341.3062344) · [Hermit integration](https://github.com/rrnewton/hermit#execution-backends)
 
 ### Compatibility
 
@@ -179,19 +215,19 @@ Some of the larger workloads explored with Hermit.
 
 #### Boot and inspect Linux under QEMU
 
-A minimal Linux guest boots under QEMU with Hermit's controlled thread scheduling and QEMU's instruction-based clock. Repeated boots matched after log normalization. Separate drgn experiments reproduced kernel task lists at chosen stopping points.
+A minimal Linux guest boots under QEMU with Hermit's controlled thread scheduling and QEMU's instruction-based clock. Repeated boots matched after log normalization. Separate experiments with the drgn kernel debugger reproduced kernel task lists at chosen stopping points.
 
 [QEMU boot guide](https://github.com/rrnewton/hermit/blob/main/docs/QEMU_BOOT.md)
 
 #### Reproduce a btrfs concurrency bug
 
-With a historical bug restored in an instrumented btrfs-convert, Hermit's chaos scheduler triggered a use-after-free. Repeating the seed reproduced the same failure report; the fixed version had no such crashes in the same sweep.
+With a historical bug restored in an instrumented btrfs-convert and its progress timer replaced by a pipe, Hermit's chaos scheduler triggered a use-after-free. Repeating the seed reproduced the same failure report; the fixed version had no such crashes in the same sweep.
 
 [Explore thread schedules](https://github.com/rrnewton/hermit/blob/main/docs/USER_GUIDE.md#chaos-mode)
 
 #### Reproduce build outputs
 
-Hermit has rebuilt Debian packages such as hello, hostname, and tree with byte-identical package files across independent build environments. A Nix builder prototype also made example builds that read the clock and random bytes reproducible.
+Hermit has rebuilt Debian packages such as hello, hostname, and tree with byte-identical package files across independent build environments. A Nix builder prototype also made an example build that reads the clock and random bytes reproducible.
 
 Footer brand: **Hermetic Infra**. Links: [Source](https://github.com/rrnewton/hermit) · [Documentation](https://github.com/rrnewton/hermit#more-documentation) · [Examples](https://github.com/rrnewton/hermit/tree/main/examples) · [Report an issue](https://github.com/rrnewton/hermit/issues) · [Page source](https://github.com/rrnewton/hermit/tree/main/docs/site).
 
