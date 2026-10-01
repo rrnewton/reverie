@@ -555,6 +555,10 @@ struct Event {
     worker_done_changed: Condvar,
     #[cfg(test)]
     worker_done_wait_probe: Mutex<Option<Arc<WorkerDoneWaitProbe>>>,
+    /// Test-only signal, sent once when a completion waiter is about to park
+    /// with time remaining while it holds `worker_done_lock`.
+    #[cfg(test)]
+    worker_done_park_signal: Mutex<Option<mpsc::SyncSender<()>>>,
 
     /// Serializes kernel wait-status ownership before either synchronous
     /// fallback/capture or notifier registration can inspect mutable state.
@@ -786,6 +790,8 @@ impl Event {
             worker_done_changed: Condvar::new(),
             #[cfg(test)]
             worker_done_wait_probe: Mutex::new(None),
+            #[cfg(test)]
+            worker_done_park_signal: Mutex::new(None),
             cleanup_cancel_requested: AtomicBool::new(false),
             cleanup_claim_waiters: AtomicUsize::new(0),
             wait_owner: AtomicU8::new(WAIT_OWNER_NONE),
@@ -1539,6 +1545,10 @@ impl Event {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return false;
+            }
+            #[cfg(test)]
+            if let Some(parking) = self.worker_done_park_signal.lock().take() {
+                let _ = parking.try_send(());
             }
             self.worker_done_changed.wait_for(&mut guard, remaining);
         }
@@ -3308,11 +3318,11 @@ impl TerminalCleanup {
     /// status that is not a stop is discarded and the wait continues. A
     /// consumed stop is resumed without a signal, and the method returns
     /// `Ok(())` once that resume succeeds or fails with `Error::Died` or
-    /// `ESRCH`, without waiting for retirement.
+    /// `ESRCH`, without waiting for retirement. Once the terminal status has
+    /// been published with nothing queued, it waits for retirement with the
+    /// rest of the budget.
     ///
-    /// Returns `ETIMEDOUT` when nothing is queued before the deadline, and
-    /// also when the terminal status has been published with nothing queued
-    /// but retirement is not acknowledged at that moment. Decode errors and
+    /// Returns `ETIMEDOUT` when the deadline passes first. Decode errors and
     /// other resume errors are returned unchanged. This sends no signal and
     /// does not call `waitpid`.
     pub fn wait_after_sigkill(&self) -> Result<(), Error> {
@@ -3323,7 +3333,7 @@ impl TerminalCleanup {
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             let Some(reservation) = self.reserve_pending_for_cleanup(remaining) else {
-                if self.wait(Duration::ZERO) {
+                if self.wait(deadline.saturating_duration_since(Instant::now())) {
                     return Ok(());
                 }
                 return Err(Errno::ETIMEDOUT.into());
