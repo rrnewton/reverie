@@ -4,7 +4,9 @@
  * has its own executable mapping and one raw getpid syscall site, so every
  * copy needs its own LiteInst trampoline arena (a site is hooked only through
  * the arena of the mapping that contains it).  A copy whose arena was not
- * allocated keeps trapping instead of being hooked.
+ * allocated keeps trapping instead of being hooked.  The function has an
+ * unwind-table entry because LiteInst's entry census leaves a site outside
+ * every listed function on ptrace, which would also keep it trapping.
  */
 #define HEAP_DSO_STR2(x) #x
 #define HEAP_DSO_STR(x) HEAP_DSO_STR2(x)
@@ -21,6 +23,7 @@ __asm__(".text\n"
         ".global " HEAP_DSO_NAME(heap_dso_call_) "\n"
         ".type " HEAP_DSO_NAME(heap_dso_call_) ",@function\n"
         HEAP_DSO_NAME(heap_dso_call_) ":\n"
+        ".cfi_startproc\n"
         "mov $39, %eax\n"
         ".global " HEAP_DSO_NAME(heap_dso_site_) "\n"
         HEAP_DSO_NAME(heap_dso_site_) ":\n"
@@ -29,4 +32,5 @@ __asm__(".text\n"
         "nop\n"
         "nop\n"
         "ret\n"
+        ".cfi_endproc\n"
         ".size " HEAP_DSO_NAME(heap_dso_call_) ", .-" HEAP_DSO_NAME(heap_dso_call_) "\n");
