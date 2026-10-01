@@ -1,0 +1,3 @@
+repo	branch	sha	committer_date	contained_in_main	preserved_ref	action
+rrnewton/hermit	coord/cpuid-3460	01341d66633bd2da09ce932b05f623590a1e0500	2026-10-01T05:47:36-07:00	yes (is hermit main 01341d66)	none	delete
+rrnewton/hermit	coord/hosted-release-producer-3458	0302849bf0991317d3de5eace2a7f3f73a12aa6b	2026-10-01T04:21:20-07:00	by patch-id (e310dcd1 = main 8802a55d; 0302849b = main 6cdb1a2c)	none	delete
