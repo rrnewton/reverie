@@ -3,7 +3,7 @@
 Implemented Ryan's approved plan and follow-up notes on 2026-10-01.
 
 - **Site branch:** [writer/landing-page-v1](https://github.com/rrnewton/hermit/tree/writer/landing-page-v1)
-- **Site commit:** [`e1fb66221338ce928c0c8d98e52b8b93db144ef1`](https://github.com/rrnewton/hermit/commit/e1fb66221338ce928c0c8d98e52b8b93db144ef1), following the first implementation `e212df558952f17818832227d1ac6b119f6576a1`; original base `342433e251d75624d49eaacaa111a583e07c983f`.
+- **Site commit:** [`4d63d71b1e921df6754a7205764cef845452ecd9`](https://github.com/rrnewton/hermit/commit/4d63d71b1e921df6754a7205764cef845452ecd9), including the owner's contract amendment; original base `342433e251d75624d49eaacaa111a583e07c983f`.
 - **Changed paths:** `docs/site/index.html`, `docs/site/site.css`, the introductory blog citation in `README.md`, and the landing-page publication contract and its regression fixtures in `scripts/docs-pages-contract.rs` and `.github/scripts/publish-compatibility-site.py`.
 - **Pull request:** https://github.com/rrnewton/hermit/pull/3479. Branch pushed; fetched the exact head and verified all five cumulative changed files byte-for-byte. Coord2 owns review, validation, landing, and deployment. This report does not claim the new page is live.
 
@@ -25,36 +25,39 @@ Implemented Ryan's approved plan and follow-up notes on 2026-10-01.
 
 Read the [full adversarial review](https://github.com/rrnewton/hermit/pull/3479#issuecomment-5939650866). The first implementation missed an existing deployment contract: the page rendered correctly but could not pass the publication checks. The original browser and link checks did not establish deployability.
 
-- **Deploy contract:** replaced the obsolete `Compatibility snapshot` / `real-ledger` wording with a stable `id="compatibility-scorecard"` on the scorecard anchor. Both checkers and their extraction fixtures change together. The visible label remains **Latest compatibility scorecard**.
+- **Deploy contract:** both checkers require exactly one `href="compatibility/latest/"`. Removed the old prose check and, following the owner's amendment, the later ID/opening-tag restrictions. The visible label remains **Latest compatibility scorecard**.
 - **Nix:** changed the claim to **an example build**. The evidence is the synthetic `nondettime-hermit` derivation; the four-source `demofast-hermit` variant remained nondeterministic.
 - **btrfs:** the card now explicitly says the progress timer was replaced by a pipe. Both buggy and fixed variants used that adaptation.
 - **LiteInst:** restored https://github.com/rrnewton/liteinst2, https://github.com/iu-parfunc/liteinst, and the stable DOI links for both PLDI papers.
 - **drgn:** now described as **the drgn kernel debugger**.
 - **Follow-up only:** `docs/QEMU_BOOT.md` still links to private dev-hermit material and names a Meta kernel build. It needs a separate public-documentation cleanup; it is unchanged in this PR, as requested.
 
-### Publication requirement before and after
+### Final publication contract
 
-| Check | Before | After |
-| --- | --- | --- |
-| Rust orchestration check | Exactly one `href="compatibility/latest/"` and one `Compatibility snapshot` prose marker | Same exact-once href requirement, plus exactly one `compatibility-scorecard` ID and one canonical anchor opening attaching that ID to the href |
-| Publisher `extract` | Exactly one old two-line prose/link byte string | Exactly one href, one ID, and one canonical anchor opening; also rejects a second unmarked link, which the old publisher alone did not catch |
-| Extraction fixture | Handwritten old prose | Actual `docs/site/index.html`, copied into the temporary document root |
+The owner's amendment removes presentation constraints from both checkers. The only landing-page requirement is **exactly one `href="compatibility/latest/"`**. No prose, `<strong>` label, ID, CSS class, attribute order, or surrounding whitespace is required. The page's existing ID is optional markup, not a publication condition.
 
-The stable alias and uniqueness requirement are preserved. Editorial prose no longer acts as the marker. Both checkers reject zero links, two marked links, a second unmarked link, a detached ID, a wrong ID, and a duplicate ID. The extraction cases use the same valid, pinned archive as the positive case and assert the specific landing-contract refusal, so an unrelated archive failure cannot satisfy the test. Workflow ordering, archive checks, release registry validation, and append-only history checks are unchanged.
+The exact-one-href assertion is preserved. ID and opening-tag assertions and their rejection tests are intentionally removed at the owner's request. Workflow ordering, archive checks, release registry validation, and append-only history checks are unchanged.
 
 ### Before and after results
 
-| Command / case | Before (`e212df558`) | After review fix |
+These three cases run in both the Rust orchestration checker and the actual publisher `extract` fixture:
+
+| Landing page | Before amendment (`e1fb66221`) | After amendment (`4d63d71b1`) |
 | --- | --- | --- |
-| `rust-script --test scripts/docs-pages-contract.rs` | **7 passed, 1 failed**, 2.04 s; `current_workflow_and_landing_satisfy_orchestration_contract`: `Compatibility snapshot` found 0 | **10 passed, 0 failed**, 2.46 s; includes real-page publication and all six rejection cases |
-| `python3 .github/scripts/test_publish_compatibility_site.py` | **3 passed**, 3.426 s | **3 passed**, 3.630 s; existing registry/describe tests retained |
-| Publisher `extract` with a valid fixture archive and the new page | **Refused**, exit 1: `landing page does not contain exactly one compatibility/latest link` | **Passed** through the Rust black-box fixture, including extraction, finalization, and content inventory comparison |
+| Zero matching hrefs | Both refuse | Both refuse |
+| Actual new page, one matching href | Both pass | Both pass |
+| Actual page plus a second matching href | Both refuse | Both refuse |
 
-`rust-script scripts/docs-pages-contract.rs` also passed: `docs Pages contract OK: release-pinned paths are reconstructed; verified append-only release registry against 11 historical versions`.
+The extraction cases reuse a valid pinned archive and assert the specific link-count refusal. Successful extraction is checked against the expected file inventory. An additional positive fixture uses different link text, no ID/class, and different whitespace and attribute order; both updated checkers accept it. The fixture is independent of today's site prose.
 
-The first broader run, `HERMIT_SCRIPT_TEST_JOBS=4 scripts/run-script-tests.sh`, finished in 293.981 s with **22 of 23 suites passing**. Its two failed tests in `scripts/validate.rs` require committed source: one said `commit the candidate before running the exact-source fixture`; the other rejected the uncommitted publisher as differing from its HEAD-based fixture. Neither reached its downstream checks. The candidate was committed before rerunning; no validation assertion was changed. **The committed rerun passed all 23 suites**, exit 0, in **312.966 s** at `e1fb66221338ce928c0c8d98e52b8b93db144ef1`; `scripts/validate.rs` passed all 148 tests, including both previously refused cases.
+| Command | Before amendment | After amendment |
+| --- | --- | --- |
+| `rust-script --test scripts/docs-pages-contract.rs` | **10 passed, 0 failed**, 2.25 s | **10 passed, 0 failed**, 2.16 s |
+| `python3 .github/scripts/test_publish_compatibility_site.py` | **3 passed** at `e1fb66221`, 3.630 s | **3 passed**, 3.427 s |
 
-The before-extraction probe ran the publisher fetched from local commit `e212df558` against the new real page and existing archive fixture. It failed at the intended landing check. These are script and publication checks, not a full product-validation receipt.
+For the original deploy regression, `e212df558` had **7 passed, 1 failed** in the Rust suite (`Compatibility snapshot` found 0), and the old publisher refused extraction against the new page. The preceding fix `e1fb66221` passed all 23 script suites; this amendment simplifies its over-specified presentation contract while retaining the three link-count outcomes above.
+
+`HERMIT_SCRIPT_TEST_JOBS=4 scripts/run-script-tests.sh` passed **all 23 suites**, exit 0, in **157.271 s** on committed head `4d63d71b1e921df6754a7205764cef845452ecd9`. These are script/publication checks, not a full product-validation receipt.
 
 ## Evidence behind the added claims
 
@@ -92,7 +95,7 @@ Read the [September record-mode assessment](../hermit-record-mode-current-state-
 - HTML tag nesting, unique IDs, accessibility references, the public URL allowlist, and `git diff --check` passed. No browser page errors.
 - The first implementation changed no test or gate, but failed the existing deployment contract. The review revision updates that contract and adds regression coverage; it does not change execution tests, tolerances, comparators, or result classifications. No Hermit program run or full product validation was performed by the writer; coord2 owns the scheduled validation and review.
 - Shared local review artifacts are under `ignored/website-overhaul/writer-e212df558/`: `writer-site-desktop.png`, `writer-site-mobile.png`, `writer-site-browser-check.py`, `writer-site-browser-check.txt`, and `writer-site-link-check.json`. These are ignored review aids, not website assets.
-- Re-ran the browser and HTML checks after review fixes; inspected fresh desktop and mobile screenshots. All eight widths, animation controls, reduced motion, and the unique scorecard anchor passed. New evidence is under `ignored/website-overhaul/writer-review-3479/`.
+- Re-ran the browser and HTML checks after the copy fixes; inspected fresh desktop and mobile screenshots. All eight widths, animation controls, reduced motion, and the scorecard link passed. That evidence is under `ignored/website-overhaul/writer-review-3479/`. The final contract amendment changes only the two checker files; the rendered page is identical. Amendment test logs are under `ignored/website-overhaul/writer-amend-3479/`.
 
 **Open question for Ryan:** should the Nix builder prototype and a short reproducible-builds report be published in `rrnewton/hermit`, so the landing page can link to them? The supplied prototype currently has no public home. A public btrfs experiment write-up would also let that card link directly to its evidence; its present link is explicitly labeled as the general schedule-exploration guide.
 
