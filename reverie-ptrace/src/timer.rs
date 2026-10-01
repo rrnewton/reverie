@@ -216,8 +216,8 @@ pub(crate) static KEPT_PROGRAMMINGS_CHANGED_EVENTS: std::sync::Mutex<Vec<KeptPro
 const KEPT_PROGRAMMINGS_CHANGED_KEPT: usize = 1024;
 
 /// What a check of a kept event's programming found (see
-/// [`TimerImpl::check_kept_programming`] and
-/// [`TimerImpl::recheck_kept_programming`]). The programming is unchanged
+/// `TimerImpl::check_kept_programming` and
+/// `TimerImpl::recheck_kept_programming`). The programming is unchanged
 /// only if `reprogrammed` is zero and, at the stop itself, `found` is
 /// `armed`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -473,7 +473,7 @@ impl PmuConfig {
     /// period, and no notification can be pending, taken or lost. Closer, one
     /// of those holds as host interrupt timing decides. Using the largest
     /// margin of any processor in the PMU table,
-    /// [`LARGEST_TABLE_SKID_MARGIN`], instead of this processor's own gives a
+    /// `LARGEST_TABLE_SKID_MARGIN`, instead of this processor's own gives a
     /// stop the same outcome on every supported processor, since each
     /// processor's own point lies at or after it. A skid margin override
     /// above the table's largest raises it, so that the point still comes
@@ -506,7 +506,7 @@ impl PmuConfig {
     /// then return `true`. A non-overshoot (`rcb_actual <= rcb_target`) records
     /// nothing and returns `false`.
     ///
-    /// [`Self::attempt_single_step`]'s late-delivery guard is the sole runtime
+    /// `TimerImpl::attempt_single_step`'s late-delivery guard is the sole runtime
     /// caller, so a unit test that drives real `(actual, target)` pairs through
     /// this method exercises exactly the behaviour the supervisor runs — a
     /// genuine overshoot causes exactly one witness record — without needing a
