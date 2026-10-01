@@ -1,22 +1,36 @@
 # herdr-run project configuration for dev-hermit.
 #
-# Extends the default program allowlist with `ci-hub`, the lander's named tool.
-# Without this the lander loop cannot run `ci-hub pr-status` at all while the
-# forward-proxy denies api.github.com directly: herdr-run refuses it twice over,
-# first as a path (`program must be a bare command name`) and then via a shell
-# (`program 'bash' is not allowlisted`).
+# herdr-run types one allowlisted command into a Herdr pane that runs outside
+# the calling agent's sandbox, then returns that command's output and exit code.
+# This file names the programs and subcommands it may run for this project.
 #
-# ADMITTED THE SAME WAY `cargo` IS, AND FOR THE SAME REASON. The pane runs
-# OUTSIDE the sandbox, and ci-hub is a large binary whose other subcommands do
-# far more than query GitHub -- `validate-run`, for instance, launches transient
-# systemd units. So this is fail-closed on the subcommand, not just the program
-# name: only the read-only frontier queries below are reachable through the
-# door. A bare `ci-hub`, or any subcommand not listed, is refused.
+# WHAT THE ALLOWLIST IS FOR. Owner, 2026-10-01: "This is NOT a security
+# boundary. We're all running on the same machine with the same
+# account/credentials. This is all to prevent clutter and disk leakage. It's
+# forgetfullness we are battling, not attackers." So no entry here is a
+# defence against a hostile caller, and none should be argued for or against
+# on that basis. The list keeps a forgetful agent from leaving processes,
+# build trees and files outside its sandbox where nothing cleans them up.
 #
-# Residual privilege, stated rather than implied: the admitted subcommands still
-# shell out to `gh` and read/write the local validation ledger. They do not
-# compile or execute repository-controlled code, which is the property that
-# makes them safe to run unconfined.
+# `ci-hub` is the lander's named tool. Without it the lander loop cannot run
+# `ci-hub pr-status` at all while the forward-proxy denies api.github.com
+# directly: herdr-run refuses it twice over, first as a path (`program must be
+# a bare command name`) and then via a shell (`program 'bash' is not
+# allowlisted`). ci-hub stays fail-closed on the subcommand: only the
+# subcommands listed under allow_subcommand are reachable, and a bare `ci-hub`
+# is refused. Each listed subcommand either answers a question or hands work to
+# infrastructure that owns its own bounds and cleanup.
+#
+# `validate-run` is listed so an agent can ask the shared local validation
+# infrastructure to validate a SHA it has pushed. Owner, 2026-10-01: "An agent
+# getting a SHA ready for testing and asknig the centralized (but local
+# machine) infra to run it is exactly the workflow we want." validate-run does
+# not do the work in the pane. It starts a transient systemd user unit,
+# admitted through `ci-hub validate-lock` (at most six validations at once),
+# and that unit owns the run's checkout, log, deadline and cleanup. The pane
+# only waits for the unit and reports its verdict; if herdr-run's own timeout
+# expires first, the run continues and `ci-hub-cli validate-status --sha SHA`
+# reads the result later.
 
 allow:
   - git
@@ -27,16 +41,21 @@ allow:
   # resolves to that directory and exec fails with "Is a directory" -- and in
   # one observed case produced NO OUTPUT, which reads as a clean empty result
   # rather than a broken query. A name no directory shares cannot be shadowed.
-  # Install with scripts/install-ci-hub-shim.sh.
+  # Install with scripts/install-ci-hub-shim.sh. The shim sends validate-run
+  # through the installed operational-tool, so it runs current origin/main
+  # tooling rather than the parent checkout's copy, which drifts behind.
   - ci-hub-cli
   - ci-hub
 
 allow_subcommand:
-  # cargo compiles and executes repository-controlled code -- build scripts and
-  # proc macros run arbitrary code from the tree -- which is exactly the property
-  # the note above says must NOT run unconfined. So cargo is fail-closed on the
-  # subcommand too, and only the network-fetching, non-compiling ones are
-  # reachable. `cargo build`/`check`/`test`/`run` are deliberately absent.
+  # cargo is fail-closed on the subcommand, and only the network-fetching,
+  # non-compiling ones are reachable. `cargo build`/`check`/`test`/`run` are
+  # deliberately absent.
+  #
+  # This list is unchanged by the owner's 2026-10-01 correction above, but its
+  # original stated reason was the premise that correction withdrew: that
+  # compiling repository-controlled code must not "run unconfined". Whether the
+  # list should widen is a separate decision that has not been made.
   #
   # agent-utils 089f2348 made this list MANDATORY whenever cargo is in `allow`
   # (py/herdr_run/config.py:460). The pin advanced without this entry, so config
@@ -50,14 +69,17 @@ allow_subcommand:
     - fetch
     - search
     - vendor
-  # Read-only queries against the landable frontier and the local ledger.
-  # Deliberately excludes validate-run, apply-local-label, close-task and every
-  # other mutating or process-launching subcommand.
+  # Queries against the landable frontier and the local ledger, plus
+  # validate-run (see the header). Other subcommands -- apply-local-label,
+  # close-task, validate-stop, land-lock and the rest -- are absent because no
+  # agent has needed them through this door yet; add on evidence.
   ci-hub-cli:
     - pr-status
     - newest-green
     - validate-status
+    - validate-run
   ci-hub:
     - pr-status
     - newest-green
     - validate-status
+    - validate-run
