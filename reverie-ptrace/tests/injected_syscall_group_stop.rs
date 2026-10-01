@@ -601,6 +601,13 @@ fn injected_syscall_completed_before_two_signal_deliveries_delivers_both() {
 /// the handler lacks `SA_RESTART`. SIGUSR1 queued by `tgkill` is not
 /// synchronous-class, so the unblock's own step SIGTRAP is dequeued first and
 /// the signal stops the following `getpid` before its `syscall`.
+///
+/// That stop takes the signal out of the kernel's queue into
+/// `pending_signal`; the Tool must still be told about it before the resume
+/// delivers it, or a Tool that acts on signals never sees this one
+/// (https://github.com/rrnewton/hermit/issues/3468: Hermit's
+/// `--sigint-instakill` missed a SIGINT that interrupted an injected stdin
+/// read).
 #[test]
 fn signal_pending_before_injected_syscall_interrupts_it() {
     let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
@@ -637,11 +644,12 @@ fn signal_pending_before_injected_syscall_interrupts_it() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
     eprintln!(
         "PROBE interrupted guest={} injected={:?} signals={:?}",
         stdout.trim(),
         *injected,
-        *log.signals.lock().unwrap()
+        *signals
     );
     assert_eq!(
         *injected,
@@ -652,6 +660,11 @@ fn signal_pending_before_injected_syscall_interrupts_it() {
         stdout.trim(),
         format!("-1 {} 1", libc::EINTR),
         "guest sees EINTR and one handler run"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGUSR1],
+        "the held signal is reported to the tool once before it is delivered"
     );
 }
 
@@ -705,11 +718,12 @@ fn injected_mask_swapping_syscall_keeps_the_saved_mask() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
     eprintln!(
         "PROBE ppoll guest={} injected={:?} signals={:?}",
         stdout.trim(),
         *injected,
-        *log.signals.lock().unwrap()
+        *signals
     );
     assert_eq!(
         *injected,
@@ -720,6 +734,11 @@ fn injected_mask_swapping_syscall_keeps_the_saved_mask() {
         stdout.trim(),
         format!("-1 {} 1 1", libc::EINTR),
         "guest sees EINTR, one handler run, and its saved mask restored"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS],
+        "the held SIGSYS is reported to the tool once"
     );
 }
 
@@ -885,9 +904,10 @@ fn injected_mask_swapping_syscall_requeues_a_signal_its_mask_blocks() {
         format!("-1 {} 1 0 1 1", libc::EINTR),
         "EINTR, SIGSYS run once, SIGBUS never run, saved mask restored (strace oracle)"
     );
-    assert!(
-        !signals.contains(&libc::SIGBUS),
-        "the still-blocked SIGBUS is never delivered: {signals:?}"
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS],
+        "the held SIGSYS is reported once; the still-blocked SIGBUS is never delivered"
     );
 }
 
@@ -898,15 +918,12 @@ fn injected_mask_swapping_syscall_requeues_a_signal_its_mask_blocks() {
 ///
 /// This is not native Linux, where both handlers run between the two
 /// syscalls and `getpid` succeeds; untraced the same guest body prints the
-/// pid. The tool list is pinned as it stands: the signal that stops
-/// `getpid` before its `syscall` is delivered through the single
-/// `pending_signal` slot, which bypasses `Tool::handle_signal_event`, so only
-/// SIGSEGV is observed. A fix for that bypass must update this assertion.
+/// pid. The signal that stops `getpid` before its `syscall` (SIGSYS) is
+/// held in the single `pending_signal` slot and reported to the tool before
+/// the resume delivers it; SIGSEGV is then delivered from the kernel queue.
 ///
-/// Known gaps pinned here, tracked in TaskGraph: the interrupted `getpid`
-/// and the signal parked in the single slot are `reverie_pending_signal_single_slot`;
-/// the tool never seeing SIGSYS is
-/// `reverie_held_signal_skips_tool_handle_signal_event`.
+/// Known gap pinned here, tracked in TaskGraph: the interrupted `getpid`
+/// and the signal parked in the single slot are `reverie_pending_signal_single_slot`.
 #[test]
 fn requeued_signals_interrupt_the_next_injected_syscall() {
     let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
@@ -958,8 +975,8 @@ fn requeued_signals_interrupt_the_next_injected_syscall() {
     );
     assert_eq!(
         *signals,
-        vec![libc::SIGSEGV],
-        "SIGSYS bypasses the tool through pending_signal (known gap)"
+        vec![libc::SIGSYS, libc::SIGSEGV],
+        "the held SIGSYS is reported before SIGSEGV, each once"
     );
 }
 
@@ -973,10 +990,8 @@ fn requeued_signals_interrupt_the_next_injected_syscall() {
 /// Oracle: untraced Linux and `strace -f` both print "-1 4 1 1 1 1" (EINTR,
 /// each handler once, both blocked again once the saved mask is restored).
 ///
-/// Known gap pinned here: the held SIGSYS reaches the guest through the
-/// `pending_signal` slot and so bypasses `Tool::handle_signal_event`; only
-/// SIGSEGV, delivered from the kernel queue, is reported to the tool
-/// (TaskGraph `reverie_held_signal_skips_tool_handle_signal_event`).
+/// The held SIGSYS is reported to the tool when the resume delivers it, and
+/// SIGSEGV is reported when the kernel then delivers it from its queue.
 #[test]
 fn injected_mask_swapping_syscall_holds_the_first_of_two_unblocked_signals() {
     let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
@@ -1033,8 +1048,8 @@ fn injected_mask_swapping_syscall_holds_the_first_of_two_unblocked_signals() {
     );
     assert_eq!(
         *signals,
-        vec![libc::SIGSEGV],
-        "the held SIGSYS bypasses the tool (known gap); SIGSEGV is reported"
+        vec![libc::SIGSYS, libc::SIGSEGV],
+        "the held SIGSYS and then SIGSEGV are each reported once"
     );
 }
 
@@ -1049,6 +1064,11 @@ fn injected_mask_swapping_syscall_holds_the_first_of_two_unblocked_signals() {
 /// kernel restore `ppoll`'s saved mask before the held SIGSYS is delivered,
 /// so it is requeued blocked and its handler never runs. Untraced, the same
 /// callback would return the pid after one SIGSYS handler run.
+///
+/// Because the restored mask blocks SIGSYS at the final resume, the kernel
+/// requeues it instead of delivering it, so it is not reported to the tool:
+/// a report here would claim a delivery that did not happen, and the tool
+/// would see the signal a second time once the guest unblocks it.
 #[test]
 fn injection_after_a_held_signal_discards_the_stale_step_trap() {
     let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
@@ -1105,6 +1125,11 @@ fn injection_after_a_held_signal_discards_the_stale_step_trap() {
         fields[..3],
         ["true", "0", "1"],
         "getpid ran and returned the pid; SIGSYS stays pending and blocked (known gap)"
+    );
+    assert_eq!(
+        *signals,
+        Vec::<i32>::new(),
+        "the requeued, still-blocked SIGSYS is not reported as delivered"
     );
 }
 

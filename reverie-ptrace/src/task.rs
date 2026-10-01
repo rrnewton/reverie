@@ -412,6 +412,25 @@ fn is_group_stop(task: &Stopped, sig: Signal) -> Result<bool, TraceError> {
     }
 }
 
+/// Whether `task` is in a signal-delivery stop, where a signal passed on
+/// resume is delivered without another stop. At a syscall stop Linux queues
+/// that signal instead, so the main loop meets it at a later signal-delivery
+/// stop; at a ptrace event stop or a group stop Linux drops it. The kernel
+/// gives a syscall or event stop the siginfo SIGTRAP with code
+/// `SIGTRAP | 0x80` or `SIGTRAP | (event << 8)`, and a group stop none.
+fn is_signal_delivery_stop(task: &Stopped) -> Result<bool, TraceError> {
+    let info = match task.getsiginfo() {
+        Ok(info) => info,
+        Err(safeptrace::Error::Errno(Errno::EINVAL)) => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    let code = info.si_code;
+    let trace_stop = info.si_signo == libc::SIGTRAP
+        && code > 0
+        && (code == libc::SIGTRAP | 0x80 || (code & 0xff == libc::SIGTRAP && code >> 8 != 0));
+    Ok(!trace_stop)
+}
+
 /// The bit for `sig` in a kernel signal mask as read by `PTRACE_GETSIGMASK`.
 fn signal_mask_bit(sig: Signal) -> u64 {
     1u64 << (sig as i32 - 1)
@@ -3886,6 +3905,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             let signal = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeInjectedSyscall,
             )?;
+            let signal = self.report_held_signal(&task, signal).await?;
             return self.resume_stopped(task, signal)?.next_state().await;
         }
 
@@ -3943,6 +3963,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             let signal = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeInterceptedInjectedSyscall,
             )?;
+            let signal = self.report_held_signal(&task, signal).await?;
             let wait = self.resume_stopped(task, signal)?.next_state().await?;
             tracing::trace!(
                 target: "reverie_ptrace::syscall",
@@ -4495,6 +4516,62 @@ impl<L: Tool + 'static> TracedTask<L> {
             ));
         }
         Ok(signal)
+    }
+
+    /// Reports a signal taken from `pending_signal` to `Tool::handle_signal_event`
+    /// and returns the Tool's verdict for the resume.
+    ///
+    /// A signal is held when it stopped an injected syscall's step (see
+    /// `status_to_result`), which consumed the kernel's copy. The callback's
+    /// final resume hands it back from a signal-delivery stop (the held
+    /// signal's own, or a later injection's step SIGTRAP), where the kernel
+    /// delivers whatever signal it is given without another stop. Without
+    /// this report `handle_signal` never sees the signal and the Tool cannot
+    /// act on it: Hermit's `--sigint-instakill` missed a SIGINT that
+    /// interrupted a blocking stdin read
+    /// (https://github.com/rrnewton/hermit/issues/3468).
+    ///
+    /// From any other stop the signal is passed on unreported, because the
+    /// resume does not deliver it there (`is_signal_delivery_stop`). A signal
+    /// the guest's mask blocks by now is also passed on unreported:
+    /// `ptrace_signal` requeues a resumed signal that `task->blocked` blocks,
+    /// and the main loop reports it when it is delivered after an unblock.
+    /// This happens when a later injection's step let the kernel restore a
+    /// mask-swapping syscall's saved mask. SIGSTOP and the timer signal are
+    /// also passed on unreported, as before: `handle_signal` never reports
+    /// SIGSTOP to the Tool, and a held timer signal is
+    /// https://github.com/rrnewton/reverie/issues/747.
+    async fn report_held_signal(
+        &mut self,
+        task: &Stopped,
+        signal: Option<Signal>,
+    ) -> Result<Option<Signal>, TraceError> {
+        let Some(sig) = signal else {
+            return Ok(None);
+        };
+        if sig == Signal::SIGSTOP
+            || sig == Timer::signal_type()
+            || !is_signal_delivery_stop(task)?
+            || blocked_signal_mask(task.pid())? & signal_mask_bit(sig) != 0
+        {
+            return Ok(Some(sig));
+        }
+        tracing::debug!(
+            "[{}] reporting held signal {} before resuming",
+            self.tid(),
+            sig
+        );
+        let result = self
+            .process_state
+            .clone()
+            .handle_signal_event(self, sig)
+            .await;
+        let sig = self
+            .ordinary_callback_errno("ptrace signal callback", result)
+            .await?;
+        self.ordinary_trace_continuation()?;
+        self.timer.finalize_requests();
+        Ok(sig)
     }
 
     fn validate_nested_liteinst_activation_signal(
@@ -6208,6 +6285,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.pre_syscall_for_test(&regs, PreSyscallPoint::Late)
                     .await;
             }
+            let sig = self.report_held_signal(&task, sig).await?;
             let running = self
                 .resume_stopped(task, sig)
                 .tracee_context(tid, "resume after seccomp stop")?;
