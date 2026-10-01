@@ -238,12 +238,20 @@ pub enum PreinitOutcome {
 /// `process_vm_readv`, `process_vm_writev` and `PTRACE_POKEDATA` report a
 /// tracee that a SIGKILL has just ended as a bare `ESRCH`, which carries no
 /// [`TraceError::Died`] for the caller to reap. The probe is `PTRACE_GETREGS`,
-/// which safeptrace turns into `Died` exactly when it fails with `ESRCH`. Any
-/// other probe result keeps the original error.
+/// which safeptrace turns into `Died` exactly when it fails with `ESRCH`.
+///
+/// A request made while the SIGKILL carries the tracee to its
+/// `PTRACE_EVENT_EXIT` stop fails with `ESRCH`, but once the tracee is in that
+/// exit stop `PTRACE_GETREGS` succeeds again. So when the original error is
+/// `ESRCH` and the probe succeeds, [`Stopped::died_into_exit_stop`] checks
+/// whether the tracee is now in its exit stop, and reports that as its death.
+/// See <https://github.com/rrnewton/hermit/issues/3357>. Any other probe
+/// result keeps the original error.
 pub(crate) fn dead_or(task: &Stopped, error: TraceError) -> TraceError {
     match error {
-        TraceError::Errno(_) => match task.getregs() {
+        TraceError::Errno(errno) => match task.getregs() {
             Err(died @ TraceError::Died(_)) => died,
+            Ok(_) if errno == Errno::ESRCH => task.died_into_exit_stop().unwrap_or(error),
             _ => error,
         },
         error => error,
