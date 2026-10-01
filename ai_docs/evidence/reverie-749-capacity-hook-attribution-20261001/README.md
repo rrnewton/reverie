@@ -23,7 +23,7 @@ Each variant was run 40 times on one shared host, in rotated order.
 ## Files
 - **REPORT.md:** the full report. The worker that ran the measurement wrote it, and the coordinator saved it from the worker's returned text. Its own paths name scratch locations on the measurement host, which map to this directory as follows:
   - `/tmp/claude-coord-notes/attr749/<file>` is `<file>` here.
-  - `/tmp/cml-attr749-1227/runs/` (240 files) is `raw-runs.tar.gz`.
+  - `/tmp/cml-attr749-1227/runs/` (240 files), and its archive `raw-runs.tar.gz`, are `raw-runs/` here. The repository ignores `.gz` files under `ai_docs/`, so the logs are stored uncompressed. The sha256 of all 240 files matches the originals.
   - The binaries `/tmp/cml-attr749-1227/bin/{A,B,C}` (about 394 MB each) are not kept. Their sha256 values are in `evidence/sha256-all.txt`.
 - **runs.csv:** one row per run.
 - **markers.csv:** one row per marker.
@@ -36,11 +36,10 @@ Each variant was run 40 times on one shared host, in rotated order.
 - **evidence/:** build records, test lists, symbol listings, the notifier diff (main to head), and the parser output.
 
 ## Recount
-To recount after extracting the raw logs:
+To recount from the raw logs:
 
 ```
-tar -xzf raw-runs.tar.gz
-awk -f recount.awk runs/*.err
+awk -f recount.awk raw-runs/*.err
 ```
 
 The coordinator ran this recount at 2026-10-01T13:07Z, against the original files, and got:
