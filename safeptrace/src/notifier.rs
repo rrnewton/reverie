@@ -172,7 +172,9 @@ fn pause_retirement_for_test(slot: &Mutex<Option<BoundedTestPause>>) {
 #[derive(Debug)]
 struct WorkerDoneWaitProbe {
     checked: mpsc::SyncSender<()>,
-    publisher_attempted: Mutex<mpsc::Receiver<()>>,
+    // The publisher's kernel thread ID, stored by the publisher just before
+    // it calls the real publication path; 0 until then.
+    publisher_attempted: Arc<AtomicI32>,
     published: Mutex<mpsc::Receiver<()>>,
     observation: Mutex<Option<WorkerDoneWaitObservation>>,
 }
@@ -181,8 +183,10 @@ struct WorkerDoneWaitProbe {
 #[derive(Debug)]
 struct WorkerDoneWaitObservation {
     check_sent: bool,
-    publisher_attempted: Result<(), mpsc::RecvTimeoutError>,
+    publisher_attempted: bool,
     published: Result<(), mpsc::RecvTimeoutError>,
+    publisher_blocked_in_futex: bool,
+    publisher_syscall_unreadable: bool,
 }
 
 #[cfg(test)]
@@ -190,22 +194,62 @@ fn pause_worker_done_wait_for_test(slot: &Mutex<Option<Arc<WorkerDoneWaitProbe>>
     let probe = slot.lock().take();
     if let Some(probe) = probe {
         let check_sent = probe.checked.try_send(()).is_ok();
-        let publisher_attempted = probe
-            .publisher_attempted
-            .lock()
-            .recv_timeout(Duration::from_secs(1));
-        // A timeout here does not prove that the publisher is blocked on the
-        // completion mutex: it may instead have been descheduled. The retained
-        // observation distinguishes a forced pre-park publication from a run
-        // that did not demonstrate the losing interleaving.
-        let published = probe
-            .published
-            .lock()
-            .recv_timeout(Duration::from_millis(250));
+        let attempt_deadline = Instant::now() + Duration::from_secs(1);
+        let publisher_tid = loop {
+            let tid = probe.publisher_attempted.load(Ordering::Acquire);
+            if tid != 0 || Instant::now() >= attempt_deadline {
+                break tid;
+            }
+            thread::sleep(Duration::from_millis(1));
+        };
+        // The publisher announces its attempt with a plain atomic store, which
+        // cannot sleep. The publication path before 6a8b0ed1 then stored DONE
+        // and notified with no blocking call in between, so for that publisher
+        // a futex(2) sleep can be seen below only after its notification was
+        // already lost. A publisher that serializes with this waiter's mutex
+        // sleeps in futex(2) until the waiter parks. The window ends when the
+        // publication is received, when the publisher is seen asleep in
+        // futex(2), or after 250 ms. A run that saw neither forced no order,
+        // and the test rejects it: a descheduled publisher fails the test
+        // instead of passing it.
+        let window_deadline = Instant::now() + Duration::from_millis(250);
+        let published_receiver = probe.published.lock();
+        let mut publisher_blocked_in_futex = false;
+        let mut publisher_syscall_unreadable = false;
+        let published = loop {
+            let slice = window_deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(1));
+            let received = published_receiver.recv_timeout(slice);
+            if !matches!(received, Err(mpsc::RecvTimeoutError::Timeout)) {
+                break received;
+            }
+            if publisher_tid != 0 {
+                // The kernel prints a system call number here only while the
+                // thread is asleep in that call; a running or preempted
+                // thread reads as "running".
+                match fs::read_to_string(format!("/proc/self/task/{publisher_tid}/syscall")) {
+                    Ok(syscall) => {
+                        publisher_blocked_in_futex = syscall
+                            .split_ascii_whitespace()
+                            .next()
+                            .and_then(|nr| nr.parse::<libc::c_long>().ok())
+                            == Some(libc::SYS_futex);
+                    }
+                    Err(_) => publisher_syscall_unreadable = true,
+                }
+            }
+            if publisher_blocked_in_futex || Instant::now() >= window_deadline {
+                break received;
+            }
+        };
+        drop(published_receiver);
         *probe.observation.lock() = Some(WorkerDoneWaitObservation {
             check_sent,
-            publisher_attempted,
+            publisher_attempted: publisher_tid != 0,
             published,
+            publisher_blocked_in_futex,
+            publisher_syscall_unreadable,
         });
     }
 }
