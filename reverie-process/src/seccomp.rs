@@ -93,6 +93,10 @@ pub struct FilterBuilder {
     /// The action to take for each syscall.
     syscalls: BTreeMap<Sysno, Action>,
 
+    /// Explicit rules evaluated before any IP exemption.
+    before_ip: BTreeMap<Sysno, Action>,
+    before_ip_from: Option<(u32, Action)>,
+
     /// Ranges of instruction pointer values.
     ip_ranges: Vec<(u64, u64, Action)>,
 }
@@ -211,6 +215,8 @@ impl FilterBuilder {
             target_arch: TargetArch::default(),
             default_action: Action::KillThread,
             syscalls: Default::default(),
+            before_ip: Default::default(),
+            before_ip_from: None,
             ip_ranges: Default::default(),
         }
     }
@@ -258,6 +264,24 @@ impl FilterBuilder {
         self
     }
 
+    /// Add syscall rules that must dominate instruction-pointer exemptions.
+    /// Existing syscall/IP precedence is unchanged unless this tier is used.
+    pub fn syscalls_before_ip<I>(&mut self, rules: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (Sysno, Action)>,
+    {
+        self.before_ip.extend(rules);
+        self
+    }
+
+    /// Match unsigned raw syscall numbers at or above `minimum` before IP
+    /// exemptions and exact before-IP rules. This includes x32-tagged numbers
+    /// when they meet the cutoff; the supplied `action` governs the result.
+    pub fn syscall_numbers_from_before_ip(&mut self, minimum: u32, action: Action) -> &mut Self {
+        self.before_ip_from = Some((minimum, action));
+        self
+    }
+
     /// Take an action if the instruction pointer `ip >= begin && ip < end`.
     ///
     /// This is useful in conjunction with `mmap`. For example, we can use this
@@ -287,6 +311,19 @@ impl FilterBuilder {
         // This should be the first step for every seccomp-bpf filter.
         VALIDATE_ARCH(self.target_arch as u32).into_bpf(&mut filter);
 
+        if let Some((minimum, action)) = self.before_ip_from {
+            LOAD_SYSCALL_NR.into_bpf(&mut filter);
+            BPF_JUMP(BPF_JMP + BPF_JGE + BPF_K, minimum, 0, 1).into_bpf(&mut filter);
+            sock_filter::from(action).into_bpf(&mut filter);
+        }
+
+        if !self.before_ip.is_empty() {
+            LOAD_SYSCALL_NR.into_bpf(&mut filter);
+            for (syscall, action) in &self.before_ip {
+                SYSCALL(*syscall, (*action).into()).into_bpf(&mut filter);
+            }
+        }
+
         if !self.ip_ranges.is_empty() {
             LOAD_SYSCALL_IP().into_bpf(&mut filter);
 
@@ -314,6 +351,103 @@ impl FilterBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Model only the actual emitted classic-BPF instructions, without loading
+    // a filter or asserting anything about kernel installation or ptrace.
+    fn action(filter: &Filter, nr: u32, ip: u64, arch: u32) -> u32 {
+        let mut accumulator = 0;
+        let mut memory = [0u32; 16];
+        let mut pc = 0;
+        for _ in 0..filter.len() {
+            let insn = &filter.instructions()[pc];
+            pc += 1;
+            match insn.code {
+                0x20 => {
+                    accumulator = match insn.k {
+                        0 => nr,
+                        4 => arch,
+                        8 => ip as u32,
+                        12 => (ip >> 32) as u32,
+                        offset => panic!("unexpected seccomp-data offset {offset}"),
+                    };
+                }
+                0x02 => memory[insn.k as usize] = accumulator,
+                0x60 => accumulator = memory[insn.k as usize],
+                0x15 | 0x25 | 0x35 => {
+                    let yes = match insn.code {
+                        0x15 => accumulator == insn.k,
+                        0x25 => accumulator > insn.k,
+                        _ => accumulator >= insn.k,
+                    };
+                    pc += if yes { insn.jt } else { insn.jf } as usize;
+                }
+                0x06 => return insn.k,
+                code => panic!("unexpected classic-BPF opcode {code:#x}"),
+            }
+        }
+        panic!("filter failed to return within its instruction bound");
+    }
+
+    #[test]
+    fn before_ip_rule_precedes_exemption_and_ordinary_rule() {
+        let filter = FilterBuilder::new()
+            .default_action(Action::KillThread)
+            .syscall(Sysno::write, Action::Errno(Errno::EPERM))
+            .syscall(Sysno::read, Action::Errno(Errno::EIO))
+            .ip_range(0x1000, 0x2000, Action::Allow)
+            .syscalls_before_ip([(Sysno::write, Action::Trace(7))])
+            .build();
+        for ip in [0x1800, 0x3000] {
+            assert_eq!(
+                action(&filter, Sysno::write as u32, ip, TargetArch::CURRENT as u32),
+                u32::from(Action::Trace(7)),
+                "before-IP rule lost precedence at {ip:#x}"
+            );
+            assert_eq!(
+                action(&filter, Sysno::write as u32, ip, 0),
+                libc::SECCOMP_RET_KILL_PROCESS,
+                "before-IP rule bypassed architecture validation"
+            );
+        }
+        for (ip, expected) in [(0x1800, Action::Allow), (0x3000, Action::Errno(Errno::EIO))] {
+            assert_eq!(
+                action(&filter, Sysno::read as u32, ip, TargetArch::CURRENT as u32),
+                u32::from(expected),
+                "unmatched syscall changed ordinary/IP precedence"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_cutoff_is_unsigned_inclusive_before_ip() {
+        let minimum = 0x4000_0000;
+        let filter = FilterBuilder::new()
+            .default_action(Action::KillThread)
+            .ip_range(0x1000, 0x2000, Action::Allow)
+            .syscall_numbers_from_before_ip(minimum, Action::Trace(11))
+            .build();
+        for ip in [0x1800, 0x3000] {
+            for nr in [minimum - 1, minimum, minimum + 1, u32::MAX] {
+                let expected = if nr >= minimum {
+                    Action::Trace(11)
+                } else if ip == 0x1800 {
+                    Action::Allow
+                } else {
+                    Action::KillThread
+                };
+                assert_eq!(
+                    action(&filter, nr, ip, TargetArch::CURRENT as u32),
+                    u32::from(expected),
+                    "unsigned inclusive cutoff changed at {nr:#x}, ip {ip:#x}"
+                );
+                assert_eq!(
+                    action(&filter, nr, ip, 0),
+                    libc::SECCOMP_RET_KILL_PROCESS,
+                    "raw cutoff bypassed architecture validation"
+                );
+            }
+        }
+    }
 
     #[cfg(target_arch = "x86_64")]
     #[test]

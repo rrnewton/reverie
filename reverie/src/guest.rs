@@ -221,6 +221,43 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         )))
     }
 
+    /// Read a source through backend-owned stopped-task/MM acquisition and
+    /// actual asynchronous worker retirement. The caller must independently
+    /// retain and revalidate its original scheduling/MM/FD/prefix authority.
+    /// `retention` is opaque resource custody only, kept by the backend registry
+    /// before submission through TRUE join, even when this future is dropped.
+    /// The existing outer run timeout/cancellation continues to govern the run;
+    /// this operation creates no per-Send host deadline.
+    async fn read_native_source(
+        &mut self,
+        _address: usize,
+        _length: usize,
+        _retention: Box<dyn Send + Sync>,
+    ) -> Result<Vec<u8>, crate::syscalls::NativeUserReadError> {
+        Err(crate::syscalls::NativeUserReadError::Refused(
+            crate::syscalls::NativeUserReadRefusal::UnsupportedBackend,
+        ))
+    }
+
+    /// Stage a bounded, permission-checked source under physical exclusion of
+    /// every authenticated followed task, through the original worker's join.
+    /// Busy/incomplete native histories refuse; this never interrupts tasks.
+    ///
+    /// This primitive is INACTIVE in Detcore. Bytes are not a network source
+    /// certificate: independent external-writer enforcement and the original
+    /// scheduler/MM/FD/entry consumer remain prerequisites for publication.
+    /// Opaque retention is resource custody, never caller-asserted authority.
+    async fn stage_followed_source(
+        &mut self,
+        _address: usize,
+        _length: usize,
+        _retention: Box<dyn Send + Sync>,
+    ) -> Result<Vec<u8>, crate::syscalls::NativeUserReadError> {
+        Err(crate::syscalls::NativeUserReadError::Refused(
+            crate::syscalls::NativeUserReadRefusal::UnsupportedBackend,
+        ))
+    }
+
     /// Returns a mutable reference to thread state.
     fn thread_state_mut(&mut self) -> &mut T::ThreadState;
 
@@ -786,6 +823,28 @@ where
         receive: reverie_syscalls::Recvfrom,
     ) -> Result<OriginalReadRangeVerdict, Error> {
         self.inner.inspect_original_recvfrom_range(receive)
+    }
+
+    async fn read_native_source(
+        &mut self,
+        address: usize,
+        length: usize,
+        retention: Box<dyn Send + Sync>,
+    ) -> Result<Vec<u8>, crate::syscalls::NativeUserReadError> {
+        self.inner
+            .read_native_source(address, length, retention)
+            .await
+    }
+
+    async fn stage_followed_source(
+        &mut self,
+        address: usize,
+        length: usize,
+        retention: Box<dyn Send + Sync>,
+    ) -> Result<Vec<u8>, crate::syscalls::NativeUserReadError> {
+        self.inner
+            .stage_followed_source(address, length, retention)
+            .await
     }
 
     fn thread_state_mut(&mut self) -> &mut L::ThreadState {
