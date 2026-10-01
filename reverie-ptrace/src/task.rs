@@ -568,8 +568,23 @@ struct CensusObject {
     text: (u64, u64),
     /// The address of the object's ELF header.
     header: u64,
-    /// `(start, end, executable)` for each readable mapping of the object.
-    ranges: Vec<(u64, u64, bool)>,
+    /// Each readable mapping of the object.
+    ranges: Vec<CensusRange>,
+    /// The device and inode of the object's file, as the tracee's maps name
+    /// them.
+    file: (u64, u64, u64),
+    /// The path of the object's file, as the tracee's maps name it.
+    path: Option<PathBuf>,
+}
+
+/// One readable mapping of a census object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CensusRange {
+    start: u64,
+    end: u64,
+    /// The offset in the object's file that `start` maps.
+    offset: u64,
+    executable: bool,
 }
 
 const NO_CENSUS_OBJECT: CensusError =
@@ -606,21 +621,93 @@ fn census_object(maps: &[GuestMap], site: u64) -> Result<CensusObject, CensusErr
         text: (text.start, text.end),
         header,
         ranges: object
-            .map(|map| (map.start, map.end, map.executable))
+            .map(|map| CensusRange {
+                start: map.start,
+                end: map.end,
+                offset: map.offset,
+                executable: map.executable,
+            })
             .collect(),
+        file: text.file(),
+        path: text.path.clone(),
     })
 }
 
 /// Positioned reads of a tracee's memory, as `pread` makes them on
-/// `/proc/<pid>/mem`.
+/// `/proc/<pid>/mem`, and the size of the file that a census object maps.
 trait CensusMemory {
     fn read_at(&self, address: u64, bytes: &mut [u8]) -> std::io::Result<usize>;
+
+    /// The size of `object`'s file, or an error if the tracer cannot find
+    /// that file.
+    fn file_size(&self, object: &CensusObject) -> std::io::Result<u64>;
 }
 
-impl CensusMemory for std::fs::File {
+/// A tracee's memory, read through its open `/proc/<pid>/mem`.
+struct TraceeMemory(std::fs::File);
+
+impl CensusMemory for TraceeMemory {
     fn read_at(&self, address: u64, bytes: &mut [u8]) -> std::io::Result<usize> {
-        std::os::unix::fs::FileExt::read_at(self, bytes, address)
+        std::os::unix::fs::FileExt::read_at(&self.0, bytes, address)
     }
+
+    fn file_size(&self, object: &CensusObject) -> std::io::Result<u64> {
+        mapped_file_size(object)
+    }
+}
+
+/// Returns the size of `object`'s file, which the tracer finds through the
+/// path in the tracee's maps.
+///
+/// The kernel prints that path relative to the root of the process that reads
+/// the maps, the tracer, so it can name another file than the mapped one, or
+/// none. The file at the path is the object's file only if its inode, and the
+/// device of the superblock of the mount that holds it, are the ones in the
+/// maps; anything else is an error. The maps name the superblock's device,
+/// which is not always the file's `st_dev`: btrfs reports a subvolume's own
+/// anonymous device there (on devbig014, maps `00:2f` and `st_dev` 0:48 for
+/// the same file), so the device is read from the mount's line in the tracer's
+/// mountinfo, which names the superblock's.
+fn mapped_file_size(object: &CensusObject) -> std::io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = object
+        .path
+        .as_ref()
+        .ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENOENT))?;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    let wanted = libc::STATX_INO | libc::STATX_SIZE | libc::STATX_MNT_ID;
+    let mut stat = std::mem::MaybeUninit::<libc::statx>::zeroed();
+    // SAFETY: `path` is a NUL-terminated string and `stat` is a writable
+    // `statx` buffer, both live for the call.
+    if unsafe { libc::statx(libc::AT_FDCWD, path.as_ptr(), 0, wanted, stat.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the buffer started zeroed, and statx returned 0 having filled it.
+    let stat = unsafe { stat.assume_init() };
+    if stat.stx_mask & wanted != wanted {
+        return Err(std::io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+    }
+    let mountinfo = std::fs::read_to_string("/proc/thread-self/mountinfo")?;
+    let (major, minor) = mount_device(&mountinfo, stat.stx_mnt_id)
+        .ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENOENT))?;
+    if (major, minor, stat.stx_ino) != object.file {
+        return Err(std::io::Error::from_raw_os_error(libc::ESTALE));
+    }
+    Ok(stat.stx_size)
+}
+
+/// Returns the device of the superblock of the mount numbered `mount_id`, the
+/// third field of its line in `mountinfo`.
+fn mount_device(mountinfo: &str, mount_id: u64) -> Option<(u64, u64)> {
+    mountinfo.lines().find_map(|line| {
+        let mut fields = line.split(' ');
+        if fields.next()?.parse::<u64>().ok()? != mount_id {
+            return None;
+        }
+        let (major, minor) = fields.nth(1)?.split_once(':')?;
+        Some((major.parse().ok()?, minor.parse().ok()?))
+    })
 }
 
 /// Builds the census of `object` from the tracee's current bytes, which
@@ -629,28 +716,32 @@ impl CensusMemory for std::fs::File {
 /// That file reads with the kernel's FOLL_FORCE, as a debugger does, so a
 /// range that the guest made PROT_NONE or execute-only after Ready is still
 /// read, where `process_vm_readv` fails with EFAULT. A page that faults even
-/// so, such as a file page past the end of a file that the guest truncated,
-/// makes the read fail with EIO (`mem_rw` in fs/proc/base.c), after a short
-/// count if the read had copied some bytes. The guest's own mappings caused
-/// that, so the census refuses every site of the object with
-/// [`FAULTING_CENSUS_OBJECT`], a verdict that the caller caches like any
-/// other.
+/// so makes the read fail with EIO (`mem_rw` in fs/proc/base.c), after a short
+/// count if the read had copied some bytes. One cause is the guest's own: a
+/// file page wholly past the end of a file that the guest truncated. Only when
+/// `memory` shows that the faulting page is such a page does the census refuse
+/// every site of the object with [`FAULTING_CENSUS_OBJECT`], a verdict that the
+/// caller caches like any other.
 ///
-/// The outer error is any other failed read, such as ENOMEM, or EFAULT for
-/// the tracer's own buffer. That is a host failure, not a verdict about the
-/// object, so the caller must neither cache it nor turn it into a refusal:
-/// refusing sites because of it would move the guest's schedule without any
-/// report. A read that returns no bytes means the tracee's address space is
-/// gone, because `mem_rw` returns 0 when it holds no reference to it, so it
-/// is reported as ESRCH.
+/// Every other EIO is the outer error. The host causes those too: an I/O
+/// error paging the file in, a poisoned page, an out-of-memory fault, a
+/// truncation from outside the guest, or, on a kernel that does not let this
+/// tracer read with FOLL_FORCE, a page that the guest made PROT_NONE. So is
+/// any other failed read, such as ENOMEM, or EFAULT for the tracer's own
+/// buffer. Those say nothing about the object, so the caller must neither
+/// cache them nor turn them into a refusal: refusing sites because of them
+/// would move the guest's schedule without any report. A read that returns no
+/// bytes means the tracee's address space is gone, because `mem_rw` returns 0
+/// when it holds no reference to it, so it is reported as ESRCH.
 fn read_census<M: CensusMemory>(
     memory: &M,
     object: &CensusObject,
 ) -> Result<Result<Census, CensusError>, Errno> {
     let mut contents = Vec::with_capacity(object.ranges.len());
-    for &(start, end, _) in &object.ranges {
-        let Some(len) = end
-            .checked_sub(start)
+    for range in &object.ranges {
+        let Some(len) = range
+            .end
+            .checked_sub(range.start)
             .and_then(|len| usize::try_from(len).ok())
         else {
             return Ok(Err(CensusError::TRUNCATED));
@@ -658,12 +749,19 @@ fn read_census<M: CensusMemory>(
         let mut bytes = vec![0; len];
         let mut filled = 0;
         while filled < len {
-            match memory.read_at(start + filled as u64, &mut bytes[filled..]) {
+            let address = range.start + filled as u64;
+            match memory.read_at(address, &mut bytes[filled..]) {
                 Ok(0) => return Err(Errno::ESRCH),
                 Ok(read) => filled += read,
                 Err(error) => match error.raw_os_error() {
                     Some(libc::EINTR) => {}
-                    Some(libc::EIO) => return Ok(Err(FAULTING_CENSUS_OBJECT)),
+                    Some(libc::EIO) => {
+                        return if faults_past_end_of_file(memory, object, range, address)? {
+                            Ok(Err(FAULTING_CENSUS_OBJECT))
+                        } else {
+                            Err(Errno::EIO)
+                        };
+                    }
                     errno => return Err(Errno::new(errno.unwrap_or(libc::EINVAL))),
                 },
             }
@@ -674,13 +772,91 @@ fn read_census<M: CensusMemory>(
         .ranges
         .iter()
         .zip(&contents)
-        .map(|(&(address, _, executable), bytes)| Segment {
-            address,
+        .map(|(range, bytes)| Segment {
+            address: range.start,
             bytes,
-            executable,
+            executable: range.executable,
         })
         .collect();
     Ok(Census::build(&segments, object.header, object.text))
+}
+
+/// Whether the page of `range` that holds `address`, whose read failed with
+/// EIO, lies wholly past the end of `object`'s file. A page that holds the
+/// end of the file reads as the file's tail and zeros, so it does not count.
+///
+/// Each answer is logged at warning level, so that a refusal, or a run that
+/// fails because of the read, says which page and file.
+fn faults_past_end_of_file<M: CensusMemory>(
+    memory: &M,
+    object: &CensusObject,
+    range: &CensusRange,
+    address: u64,
+) -> Result<bool, Errno> {
+    let page_size = host_page_size()?;
+    let page = address & !(page_size - 1);
+    let offset = page
+        .checked_sub(range.start)
+        .and_then(|delta| range.offset.checked_add(delta))
+        .ok_or(Errno::EIO)?;
+    let size = match memory.file_size(object) {
+        Ok(size) => size,
+        Err(error) => {
+            tracing::warn!(
+                "[liteinst] the entry census read of {:?} faulted at {address:#x}, \
+                 and the tracer cannot find the mapped file: {error}",
+                object.path
+            );
+            return Err(Errno::EIO);
+        }
+    };
+    // A mapping's file offset is a multiple of the page size, and so is
+    // `offset`: the page lies wholly past the end exactly when it starts at or
+    // after it.
+    let past = offset >= size;
+    tracing::warn!(
+        "[liteinst] the entry census read of {:?} faulted at {address:#x}, file \
+         offset {offset:#x}, which is {} the file's {size} bytes",
+        object.path,
+        if past { "past the end of" } else { "within" }
+    );
+    Ok(past)
+}
+
+/// How the tracer goes on from a site's entry census.
+#[derive(Debug, Eq, PartialEq)]
+enum CensusOutcome {
+    /// Hand the patch helper this entry limit, which is
+    /// [`REFUSED_ENTRY_LIMIT`] for a refused site.
+    Install(u64),
+    /// Fail the run closed, recording a LiteInst activation failure.
+    Fail(Errno),
+    /// The tracee is gone. The error returns along the ordinary ptrace-error
+    /// path, like a failed `getregs` or `read_value` on the same stop, and is
+    /// not a LiteInst activation failure.
+    Gone,
+}
+
+/// Decides what the tracer does with `site` from the result of its entry
+/// census, `entries`.
+///
+/// A refusal is a verdict about the site's object, so the site stays on
+/// ptrace and the run goes on. A failure to read the tracee's code says
+/// nothing about the site: refusing the site because of it would move the
+/// guest's schedule without any report, so the run fails closed instead.
+fn census_outcome(
+    site: u64,
+    entries: Result<Result<SiteEntries, Refusal>, Errno>,
+) -> CensusOutcome {
+    match entries {
+        Ok(Ok(entries)) => CensusOutcome::Install(entries.limit),
+        Ok(Err(refusal)) => {
+            tracing::debug!("[liteinst] leaving syscall site {site:#x} unpatched: {refusal}");
+            CensusOutcome::Install(REFUSED_ENTRY_LIMIT)
+        }
+        Err(Errno::ESRCH) => CensusOutcome::Gone,
+        Err(errno) => CensusOutcome::Fail(errno),
+    }
 }
 
 /// Returns the entries of `site` in `census`, or why the site is refused.
@@ -5628,31 +5804,20 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         // A refused site still goes to the helper, which records the site's
         // trap and leaves it on ptrace, as for any other failed installation.
-        let entry_limit = match self.liteinst_site_entries(&task, site) {
-            Ok(Ok(entries)) => entries.limit,
-            Ok(Err(refusal)) => {
-                tracing::debug!("[liteinst] leaving syscall site {site:#x} unpatched: {refusal}");
-                REFUSED_ENTRY_LIMIT
-            }
-            // A host failure to read the tracee's code says nothing about the
-            // site. Refusing the site would move the guest's schedule without
-            // any report, so the run fails closed instead. ESRCH, a tracee
-            // that is gone, is not recorded as a LiteInst activation failure;
-            // it returns along the ordinary ptrace-error path, like a failed
-            // `getregs` or `read_value` on this stop.
-            Err(errno) => {
-                if errno != Errno::ESRCH {
-                    self.record_liteinst_failure(
-                        LiteinstActivationFailureReason::ReadCensusObject,
-                        Error::runtime(
-                            self.tid(),
-                            "read the tracee's code for the LiteInst entry census",
-                            format!("site {site:#x}: {errno}"),
-                        ),
-                    );
-                }
+        let entry_limit = match census_outcome(site, self.liteinst_site_entries(&task, site)) {
+            CensusOutcome::Install(limit) => limit,
+            CensusOutcome::Fail(errno) => {
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::ReadCensusObject,
+                    Error::runtime(
+                        self.tid(),
+                        "read the tracee's code for the LiteInst entry census",
+                        format!("site {site:#x}: {errno}"),
+                    ),
+                );
                 return Err(errno.into());
             }
+            CensusOutcome::Gone => return Err(Errno::ESRCH.into()),
         };
 
         // Convert the active seccomp stop into an ordinary stopped state before
@@ -5687,6 +5852,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: &Stopped,
         site: u64,
     ) -> Result<Result<SiteEntries, Refusal>, Errno> {
+        // No other guest task can change the object while the census reads it
+        // only because installation stops once the guest has a second task.
+        debug_assert!(
+            !self
+                .global_state
+                .liteinst_runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.multi_task.load(Ordering::Acquire)),
+            "the LiteInst entry census ran after the guest created a second task"
+        );
         let maps = Arc::clone(&self.liteinst_runtime.lock().unwrap().census_maps);
         let object = match census_object(&maps, site) {
             Ok(object) => object,
@@ -5703,6 +5878,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             Some(census) => census,
             None => {
                 let memory = std::fs::File::open(format!("/proc/{}/mem", task.pid()))
+                    .map(TraceeMemory)
                     .map_err(|error| Errno::new(error.raw_os_error().unwrap_or(libc::EIO)))?;
                 let census = Arc::new(read_census(&memory, &object)?);
                 let mut state = self.liteinst_runtime.lock().unwrap();
@@ -9753,6 +9929,15 @@ mod tests {
             .collect()
     }
 
+    fn census_range(start: u64, end: u64, offset: u64, executable: bool) -> CensusRange {
+        CensusRange {
+            start,
+            end,
+            offset,
+            executable,
+        }
+    }
+
     /// The tracer's census reads an object through the mappings recorded at
     /// Ready (https://github.com/rrnewton/reverie/issues/812), so those must be
     /// exactly the readable mappings of the text mapping's file. The LiteInst
@@ -9770,12 +9955,14 @@ mod tests {
                 text: (0x7fff_f7c2_8000, 0x7fff_f7db_0000),
                 header: 0x7fff_f7c0_0000,
                 ranges: vec![
-                    (0x7fff_f7c0_0000, 0x7fff_f7c2_8000, false),
-                    (0x7fff_f7c2_8000, 0x7fff_f7db_0000, true),
-                    (0x7fff_f7db_0000, 0x7fff_f7df_f000, false),
-                    (0x7fff_f7e0_0000, 0x7fff_f7e0_4000, false),
-                    (0x7fff_f7e0_4000, 0x7fff_f7e0_6000, false),
+                    census_range(0x7fff_f7c0_0000, 0x7fff_f7c2_8000, 0, false),
+                    census_range(0x7fff_f7c2_8000, 0x7fff_f7db_0000, 0x28000, true),
+                    census_range(0x7fff_f7db_0000, 0x7fff_f7df_f000, 0x1b_0000, false),
+                    census_range(0x7fff_f7e0_0000, 0x7fff_f7e0_4000, 0x1f_f000, false),
+                    census_range(0x7fff_f7e0_4000, 0x7fff_f7e0_6000, 0x20_3000, false),
                 ],
+                file: (0, 0x1f, 22),
+                path: Some(PathBuf::from("/usr/lib64/libc.so.6")),
             })
         );
         assert_eq!(
@@ -9784,10 +9971,12 @@ mod tests {
                 text: (0x5555_5555_6000, 0x5555_5555_8000),
                 header: 0x5555_5555_4000,
                 ranges: vec![
-                    (0x5555_5555_4000, 0x5555_5555_6000, false),
-                    (0x5555_5555_6000, 0x5555_5555_8000, true),
-                    (0x5555_5555_8000, 0x5555_5555_a000, false),
+                    census_range(0x5555_5555_4000, 0x5555_5555_6000, 0, false),
+                    census_range(0x5555_5555_6000, 0x5555_5555_8000, 0x2000, true),
+                    census_range(0x5555_5555_8000, 0x5555_5555_a000, 0x4000, false),
                 ],
+                file: (0, 0x1f, 11),
+                path: Some(PathBuf::from("/usr/bin/guest")),
             })
         );
         // Anonymous text, a file mapped twice (two headers), a mapping that is
@@ -9852,10 +10041,13 @@ mod tests {
 
     /// Tracee memory that answers each read with the next of its replies:
     /// a count of bytes, which it fills with zeros, or an errno. It records
-    /// the address and length of each read.
+    /// the address and length of each read. Its object's file has the size
+    /// `file_size`, or is not found with that errno; with `None`, asking for
+    /// the size fails the test.
     struct ScriptedMemory {
         replies: std::cell::RefCell<std::collections::VecDeque<Result<usize, i32>>>,
         reads: std::cell::RefCell<Vec<(u64, usize)>>,
+        file_size: Option<Result<u64, i32>>,
     }
 
     impl ScriptedMemory {
@@ -9863,6 +10055,14 @@ mod tests {
             Self {
                 replies: std::cell::RefCell::new(replies.into()),
                 reads: std::cell::RefCell::new(Vec::new()),
+                file_size: None,
+            }
+        }
+
+        fn with_file_size(replies: Vec<Result<usize, i32>>, file_size: Result<u64, i32>) -> Self {
+            Self {
+                file_size: Some(file_size),
+                ..Self::new(replies)
             }
         }
 
@@ -9887,48 +10087,124 @@ mod tests {
                 ),
             }
         }
+
+        fn file_size(&self, _object: &CensusObject) -> std::io::Result<u64> {
+            match self.file_size {
+                Some(Ok(size)) => Ok(size),
+                Some(Err(errno)) => Err(std::io::Error::from_raw_os_error(errno)),
+                None => panic!("an unexpected question for the size of the object's file"),
+            }
+        }
     }
 
     const CENSUS_HEADER: u64 = 0x5555_5555_4000;
     const CENSUS_TEXT: u64 = 0x5555_5555_6000;
 
+    /// An object whose header page and text map file offsets 0 to 0x4000.
     fn two_range_census_object() -> CensusObject {
         CensusObject {
             text: (CENSUS_TEXT, CENSUS_TEXT + 0x2000),
             header: CENSUS_HEADER,
             ranges: vec![
-                (CENSUS_HEADER, CENSUS_TEXT, false),
-                (CENSUS_TEXT, CENSUS_TEXT + 0x2000, true),
+                census_range(CENSUS_HEADER, CENSUS_TEXT, 0, false),
+                census_range(CENSUS_TEXT, CENSUS_TEXT + 0x2000, 0x2000, true),
             ],
+            file: (0, 0x1f, 11),
+            path: Some(PathBuf::from("/usr/bin/guest")),
         }
     }
 
-    /// A page that faults when the census reads it, as a file page past the
-    /// end of a file that the guest truncated does, refuses every site of the
-    /// object, also after a short count (review finding F7 on
-    /// <https://github.com/rrnewton/reverie/pull/818>).
+    /// A page that faults when the census reads it refuses every site of the
+    /// object, also after a short count, when it lies wholly past the end of
+    /// the object's file, as a page of a file that the guest truncated does
+    /// (review finding F7 on <https://github.com/rrnewton/reverie/pull/818>).
     #[test]
-    fn a_faulting_census_read_refuses_the_object() {
+    fn a_census_read_faulting_past_the_end_of_the_file_refuses_the_object() {
         let object = two_range_census_object();
-        let memory = ScriptedMemory::new(vec![Err(libc::EIO)]);
+        // A file cut to nothing faults at its header.
+        let memory = ScriptedMemory::with_file_size(vec![Err(libc::EIO)], Ok(0));
         assert_eq!(
             read_census(&memory, &object).map(Result::err),
             Ok(Some(FAULTING_CENSUS_OBJECT))
         );
 
-        let memory = ScriptedMemory::new(vec![Ok(FULL), Ok(0x1000), Err(libc::EIO)]);
+        // The text's second page maps file offset 0x3000, so a file of at
+        // most 0x3000 bytes ends before it.
+        for size in [0x2001, 0x3000] {
+            let memory = ScriptedMemory::with_file_size(
+                vec![Ok(FULL), Ok(0x1000), Err(libc::EIO)],
+                Ok(size),
+            );
+            assert_eq!(
+                read_census(&memory, &object).map(Result::err),
+                Ok(Some(FAULTING_CENSUS_OBJECT)),
+                "{size:#x}"
+            );
+            assert_eq!(
+                memory.reads(),
+                [
+                    (CENSUS_HEADER, 0x2000),
+                    (CENSUS_TEXT, 0x2000),
+                    (CENSUS_TEXT + 0x1000, 0x1000),
+                ]
+            );
+        }
+    }
+
+    /// An EIO from a page that is not wholly past the end of the object's
+    /// file is the outer error of `read_census`, not a refusal: the host
+    /// causes those as well, by an I/O error paging the file in, a poisoned
+    /// page or an out-of-memory fault (review finding F9 on
+    /// <https://github.com/rrnewton/reverie/pull/818>). So is an EIO when the
+    /// tracer cannot find the mapped file to tell.
+    #[test]
+    fn a_census_read_faulting_within_the_file_is_an_error_not_a_refusal() {
+        let object = two_range_census_object();
+        // The faulting page, at file offset 0x3000, holds the end of a file
+        // of 0x3001 bytes, and lies inside one of 0x4000.
+        for size in [0x3001, 0x4000, u64::MAX] {
+            let memory = ScriptedMemory::with_file_size(
+                vec![Ok(FULL), Ok(0x1000), Err(libc::EIO)],
+                Ok(size),
+            );
+            assert_eq!(
+                read_census(&memory, &object).map(Result::err),
+                Err(Errno::EIO),
+                "{size:#x}"
+            );
+        }
+        let memory = ScriptedMemory::with_file_size(vec![Err(libc::EIO)], Ok(0x4000));
         assert_eq!(
             read_census(&memory, &object).map(Result::err),
-            Ok(Some(FAULTING_CENSUS_OBJECT))
+            Err(Errno::EIO)
+        );
+        // After a short count that ends inside a page, the faulting page is
+        // the one that holds the next byte, here the page at file offset
+        // 0x3000, which holds the end of a file of 0x3400 bytes.
+        let memory =
+            ScriptedMemory::with_file_size(vec![Ok(FULL), Ok(0x1800), Err(libc::EIO)], Ok(0x3400));
+        assert_eq!(
+            read_census(&memory, &object).map(Result::err),
+            Err(Errno::EIO)
         );
         assert_eq!(
             memory.reads(),
             [
                 (CENSUS_HEADER, 0x2000),
                 (CENSUS_TEXT, 0x2000),
-                (CENSUS_TEXT + 0x1000, 0x1000),
+                (CENSUS_TEXT + 0x1800, 0x800),
             ]
         );
+
+        // No file, or another file, at the mapping's path.
+        for errno in [libc::ENOENT, libc::ESTALE, libc::EACCES] {
+            let memory = ScriptedMemory::with_file_size(vec![Err(libc::EIO)], Err(errno));
+            assert_eq!(
+                read_census(&memory, &object).map(Result::err),
+                Err(Errno::EIO),
+                "{errno}"
+            );
+        }
     }
 
     /// Any other failed read of the tracee's code is the outer error of
@@ -9937,7 +10213,7 @@ mod tests {
     /// (<https://github.com/rrnewton/reverie/pull/818> review finding F1).
     /// A read of no bytes means the tracee's address space is gone, an
     /// interrupted read is repeated, and a range that cannot be a mapping is
-    /// refused before any read.
+    /// refused before any read. None of these asks for the file's size.
     #[test]
     fn a_host_failure_to_read_a_census_object_is_an_error_not_a_refusal() {
         let object = two_range_census_object();
@@ -9968,7 +10244,7 @@ mod tests {
         );
 
         let reversed = CensusObject {
-            ranges: vec![(CENSUS_TEXT, CENSUS_HEADER, false)],
+            ranges: vec![census_range(CENSUS_TEXT, CENSUS_HEADER, 0, false)],
             ..object
         };
         let memory = ScriptedMemory::new(Vec::new());
@@ -9977,6 +10253,114 @@ mod tests {
             Ok(Some(CensusError::TRUNCATED))
         );
         assert!(memory.reads().is_empty());
+    }
+
+    /// The tracer finds a census object's file, and its size, through the
+    /// path in the maps, here the maps of this test's own process for its
+    /// own executable, and refuses a file whose inode or mount device differs
+    /// from the maps'. On a btrfs subvolume, such as devbig014's /home, the
+    /// file's `st_dev` differs from the maps' device, so this also checks
+    /// that the device comes from the mount (review finding F9 on
+    /// <https://github.com/rrnewton/reverie/pull/818>).
+    #[test]
+    fn the_census_finds_the_size_of_the_mapped_file() {
+        let maps = read_guest_maps(Pid::this()).unwrap();
+        let site = the_census_finds_the_size_of_the_mapped_file as fn() as usize as u64;
+        let object = census_object(&maps, site).unwrap();
+        let path = object.path.clone().unwrap();
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(mapped_file_size(&object).unwrap(), size, "{path:?}");
+
+        let (major, minor, inode) = object.file;
+        for file in [(major, minor, inode + 1), (major, minor + 1, inode)] {
+            let other = CensusObject {
+                file,
+                path: Some(path.clone()),
+                ..census_object(&maps, site).unwrap()
+            };
+            assert_eq!(
+                mapped_file_size(&other).unwrap_err().raw_os_error(),
+                Some(libc::ESTALE),
+                "{file:?}"
+            );
+        }
+
+        let gone = CensusObject {
+            path: Some(PathBuf::from("/proc/self/no-such-file")),
+            ..census_object(&maps, site).unwrap()
+        };
+        assert_eq!(
+            mapped_file_size(&gone).unwrap_err().raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        let anonymous = CensusObject {
+            path: None,
+            ..object
+        };
+        assert_eq!(
+            mapped_file_size(&anonymous).unwrap_err().raw_os_error(),
+            Some(libc::ENOENT)
+        );
+    }
+
+    #[test]
+    fn mount_device_reads_the_mount_line_of_the_mount_id() {
+        let mountinfo = concat!(
+            "22 1 0:32 / / rw,relatime shared:1 - btrfs /dev/vda2 rw,subvol=/root\n",
+            "29 22 0:47 /home /home rw,relatime shared:12 - btrfs /dev/vda2 rw\n",
+            "300 29 259:1 / /mnt/data rw - ext4 /dev/nvme0n1p1 rw\n",
+        );
+        assert_eq!(mount_device(mountinfo, 22), Some((0, 32)));
+        assert_eq!(mount_device(mountinfo, 29), Some((0, 47)));
+        assert_eq!(mount_device(mountinfo, 300), Some((259, 1)));
+        assert_eq!(mount_device(mountinfo, 1), None);
+        assert_eq!(mount_device(mountinfo, 30), None);
+    }
+
+    /// A census refusal leaves the site on ptrace and the run goes on; any
+    /// failure to read the tracee's code fails the run closed, except a
+    /// tracee that is gone (review finding F8 on
+    /// <https://github.com/rrnewton/reverie/pull/818>).
+    #[test]
+    fn a_census_read_failure_fails_the_run_and_a_refusal_does_not() {
+        let site = 0x5555_5555_7000;
+        assert_eq!(
+            census_outcome(
+                site,
+                Ok(Ok(SiteEntries {
+                    len: 2,
+                    limit: 0x5555_5555_7010
+                }))
+            ),
+            CensusOutcome::Install(0x5555_5555_7010)
+        );
+        for error in [
+            FAULTING_CENSUS_OBJECT,
+            CHANGED_CENSUS_OBJECT,
+            NO_CENSUS_OBJECT,
+            CensusError::TRUNCATED,
+        ] {
+            assert_eq!(
+                census_outcome(site, Ok(Err(Refusal::NoCensus(error)))),
+                CensusOutcome::Install(REFUSED_ENTRY_LIMIT),
+                "{error:?}"
+            );
+        }
+        for errno in [
+            Errno::EIO,
+            Errno::ENOMEM,
+            Errno::EMFILE,
+            Errno::ENFILE,
+            Errno::EACCES,
+            Errno::EFAULT,
+        ] {
+            assert_eq!(
+                census_outcome(site, Err(errno)),
+                CensusOutcome::Fail(errno),
+                "{errno}"
+            );
+        }
+        assert_eq!(census_outcome(site, Err(Errno::ESRCH)), CensusOutcome::Gone);
     }
 
     /// A census that could not be built refuses every site of its object with
