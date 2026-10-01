@@ -52,6 +52,26 @@ _OWNER_PATH_NEEDLE = "/" + "home" + "/"
 # a part, following no word character, dot, tilde or slash (so not a slash
 # inside a URL or a relative path).
 _ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.~/])/[^\s/]")
+# The site writer's owner-path and credential patterns (build_data.py's
+# _OWNER_PATH_RE and _CREDENTIAL_RE), copied verbatim; a test holds them
+# equal. The site writer refuses every page when any string it publishes
+# matches either one, so a parity carriage holding a match becomes a refusal
+# in the parity panel instead.
+_SITE_OWNER_PATH_RE = re.compile(
+    r"(?:/" + "home" + r"/[^/\s]+|/Users/[^/\s]+|/root)(?:/|$)"
+    r"|[A-Z]:[\\/](?:Users|Documents and Settings)[\\/][^\\/\s]+",
+    re.IGNORECASE,
+)
+_SITE_CREDENTIAL_RE = re.compile(
+    r"\bauthorization\s*[:=]\s*(?:basic|bearer)\s+\S+"
+    r"|(?:^|[\s;&])(?:[A-Za-z0-9]+[_-])*(?:access[_-]?(?:key|token)"
+    r"|api[_-]?key|client[_-]?secret|credential|passwd|password"
+    r"|private[_-]?key|secret|token)\s*[:=]\s*\S+"
+    r"|\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]+\b"
+    r"|https?://[^/@\s:]+:[^/@\s]+@"
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    re.IGNORECASE,
+)
 _HISTORICAL_TEST_ENVIRONMENT = (
     "CI_HUB_VALIDATE_LEDGER_TEST_ROOT",
     "HERMIT_VALIDATE_STOP_TEST_MODE",
@@ -873,6 +893,16 @@ def _contains_absolute_path(value: Any) -> bool:
     return False
 
 
+def _contains_match(value: Any, pattern: re.Pattern[str]) -> bool:
+    if isinstance(value, str):
+        return pattern.search(value) is not None
+    if isinstance(value, dict):
+        return any(_contains_match(item, pattern) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_match(item, pattern) for item in value)
+    return False
+
+
 def _replace_string(value: Any, old: str, new: str) -> Any:
     """Return a copy with one exact captured-root string made portable."""
     if isinstance(value, str):
@@ -1115,6 +1145,14 @@ def _parity_without_paths(
     carriage that still holds any absolute path is replaced too. Only a
     refused one: a summary quotes the guest's own absolute paths (a
     determinism log's "/etc/...", for one), which must not refuse the panel.
+
+    The site writer refuses every page when any string it publishes holds an
+    owner path (_SITE_OWNER_PATH_RE: "/Users/<name>", "/root", a Windows
+    user directory, as well as "/home/<name>") or a credential-shaped string
+    (_SITE_CREDENTIAL_RE), and the carriage is published as it is. So a
+    carriage in any state that holds either is replaced too, the owner path
+    reported first. The ledger does not rule these out: the guest's home is
+    "/root", and the parity writer refuses only "/home/".
     """
     reader = _parity_reader()
     roles: dict[str, str] = {}
@@ -1127,10 +1165,17 @@ def _parity_without_paths(
             refusal = refusal.replace(path, roles[path])
         carriage = {**carriage, "refusal": refusal}
     holds_path = any(_contains_string(carriage, needle) for needle in (*roles, _OWNER_PATH_NEEDLE))
-    if holds_path or (carriage.get("state") == "refused" and _contains_absolute_path(carriage)):
+    holds_owner_path = _contains_match(carriage, _SITE_OWNER_PATH_RE)
+    if holds_path or holds_owner_path or (carriage.get("state") == "refused" and _contains_absolute_path(carriage)):
         return reader.refused_carriage(
             series_commit,
             f"ledger commit {series_commit} parity data is refused: it holds an absolute path",
+            append_refusals_total=None,
+        )
+    if _contains_match(carriage, _SITE_CREDENTIAL_RE):
+        return reader.refused_carriage(
+            series_commit,
+            f"ledger commit {series_commit} parity data is refused: it holds a credential-shaped string",
             append_refusals_total=None,
         )
     return carriage

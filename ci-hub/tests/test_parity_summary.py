@@ -1408,6 +1408,21 @@ def test_the_panel_withholds_the_retired_placeholder_word_in_the_scorecards_text
             "legacy verdict [retired word withheld]: 2 row(s) for 1 cell(s).</p>") in panel
 
 
+def test_the_panel_withholds_the_retired_placeholder_word_in_an_earlier_runs_line() -> None:
+    """The summary checks an earlier run's line only as a string, and the
+    panel lists each earlier run with its line."""
+    word = "Unavail" + "able"
+    document = _document([_cell("t/a", credit=0.5)])
+    document["runs"].append(dict(document["runs"][0], run_id="validate-earlier-fixture-run", headline=False,
+                                 line=f"parity: {word} in an earlier summary line"))
+    summary_module.validate_summary(document)
+    panel = _panel(_carriage(document))
+    assert word not in panel
+    assert ("validate run <code>validate-earlier-fixture-run</code> at Hermit "
+            f'<code title="{HERMIT_SHA}">{HERMIT_SHA[:12]}</code>: '
+            "<code>parity: [retired word withheld] in an earlier summary line</code></li>") in panel
+
+
 def test_a_headline_brief_agrees_with_its_run(run_1953: dict[str, Any]) -> None:
     for field, value in (("emitted_at", "2026-09-28T22:00:00Z"), ("hermit_sha", "e" * 40),
                          ("line", "parity: something else")):

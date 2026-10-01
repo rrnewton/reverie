@@ -1902,10 +1902,11 @@ def _parity_quoted(value: Any) -> str:
 
     Those texts are a cell's reason, log messages and differing field, the
     carriage's refusal, each row refusal the summary lists, an append-parity
-    error, and a retired-rerun drop reason. render_site refuses every page
-    when one page holds the retired placeholder word, so a quoted text that
-    holds it would take the determinism pages down with the panel, which is
-    what confining a parity refusal to the panel rules out. Hermit does write
+    error, an earlier run's line, and a retired-rerun drop reason.
+    render_site refuses every page when one page holds the retired
+    placeholder word, so a quoted text that holds it would take the
+    determinism pages down with the panel, which is what confining a parity
+    refusal to the panel rules out. Hermit does write
     the word: its parity record check names a verdict in Rust's Debug form
     ("<cell>: <Verdict> is unmeasured and carries no compared lengths"), and
     each expected cell of a node whose records fail that check gets a
@@ -2443,7 +2444,7 @@ def _parity_panel(model: Any) -> str:
             f"<details><summary>{_integer(len(others))} earlier parity run(s) in the store</summary><ul>"
             + "".join(
                 f'<li>{_escape(brief["producer"])} run <code>{_escape(brief["run_id"])}</code> '
-                f'{_parity_at_hermit(brief["hermit_sha"])}: <code>{_escape(brief["line"])}</code></li>'
+                f'{_parity_at_hermit(brief["hermit_sha"])}: <code>{_parity_quoted(brief["line"])}</code></li>'
                 for brief in others
             )
             + "</ul></details>"

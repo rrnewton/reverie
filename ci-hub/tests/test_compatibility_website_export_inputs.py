@@ -2505,13 +2505,15 @@ def _path_hits(tmp_path: Path, files: dict[str, bytes]) -> list[tuple[str, str]]
     return [(name, needle) for name, value in files.items() for needle in needles if needle.encode() in value]
 
 
+@pytest.mark.parametrize("state_root", ["the parent checkout", "the shared checkout"])
 def test_a_parity_refusal_names_the_ledger_git_directory_in_the_shared_checkout_by_its_role(
-    tmp_path: Path,
+    tmp_path: Path, state_root: str,
 ) -> None:
     # Built from a linked worktree, the ledger's git directory sits in the
     # shared checkout's .git/modules, and git names it when an object there is
     # corrupt. Neither the parent checkout (the linked worktree) nor the ledger
-    # checkout holds that path.
+    # checkout holds that path. The nightly gives the shared checkout as its
+    # state root too, and the shared checkout keeps its own role's name.
     primary, commit = repository(tmp_path)
     ledger = primary / "hermit_test_ledger"
     shards = _parity_run_1953_shards()
@@ -2532,7 +2534,8 @@ def test_a_parity_refusal_names_the_ledger_git_directory_in_the_shared_checkout_
     loose = gitdir / "objects" / tree[:2] / tree[2:]
     loose.chmod(0o644)
     loose.write_bytes(b"this is not a zlib stream")
-    result = export_inputs.build_export(worktree, commit, published_only=True)
+    state = {"state_root": primary} if state_root == "the shared checkout" else {}
+    result = export_inputs.build_export(worktree, commit, published_only=True, **state)
     files = {"export.json": export_inputs.render_export(result), **_published_site(result)}
     assert _path_hits(tmp_path, files) == []
     refusal = result["parity"]["refusal"]
@@ -2553,6 +2556,10 @@ def test_a_parity_carriage_naming_a_linked_state_root_is_refused_in_the_panel(tm
     state = tmp_path / "linked-worktree"
     git(primary, "worktree", "add", "-q", "--detach", str(state), commit)
     assert export_inputs.series_store.shared_parent_root(state) == primary.resolve()
+    # Under an owner path, the owner-path checks would refuse the carriage
+    # without the state root's role, and this test would not need it.
+    assert export_inputs._OWNER_PATH_NEEDLE not in str(state.resolve())
+    assert export_inputs._SITE_OWNER_PATH_RE.search(str(state.resolve())) is None
     ledger_store = export_inputs._parity_reader().parity_ledger_module()
     refusal = ledger_store.build_refusal(
         producer="validate", run_id="validate-refused", hermit_sha="d" * 40, emitted_at="2026-09-29T01:00:00Z",
@@ -2569,3 +2576,146 @@ def test_a_parity_carriage_naming_a_linked_state_root_is_refused_in_the_panel(tm
     panel = result["parity"]["refusal"]
     assert panel == f"ledger commit {series_commit} parity data is refused: it holds an absolute path"
     assert panel.encode() in files["index.html"]
+
+
+#: Each text below holds this marker, so a search for it finds the text in
+#: any spelling a published file could hold, JSON- or HTML-escaped included.
+SITE_REFUSED_MARKER = "site-refused-marker"
+#: Texts the parity ledger's writer admits (it refuses only "/home/") and the
+#: site writer refuses on every page. The guest's home is "/root".
+SITE_REFUSED_TEXTS = {
+    "current summary naming the guest's home": f"cannot open /root/.cache/{SITE_REFUSED_MARKER}",
+    "current summary naming a macOS owner path": f"cannot open /Users/someone/{SITE_REFUSED_MARKER}",
+    "stale summary naming the guest's home": f"cannot open /root/.cache/{SITE_REFUSED_MARKER}",
+    "append refusal naming a Windows owner path": f"cannot open C:\\Users\\someone\\{SITE_REFUSED_MARKER}",
+    "current summary holding a credential": f"retried with password={SITE_REFUSED_MARKER}",
+    "append refusal holding a credential URL": f"cannot fetch https://someone:{SITE_REFUSED_MARKER}@example.invalid/p",
+}
+
+
+def _site_writer() -> Any:
+    """The site writer's checks (build_data.py), loaded as the renderer loads them."""
+    return _renderer_test().render_page._writer()._build_data_module()
+
+
+def _naming(text: str) -> Any:
+    """A `sources_of` that quotes `text` in each inputs-not-equalized reason."""
+    def rewrite(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for row in sources:
+            if row["verdict"] == "inputs-not-equalized":
+                row["reason"] = row["record"]["reason"] = row["reason"] + f" ({text})"
+        return sources
+
+    return rewrite
+
+
+def _absent_carriage_listing(ledger_commit: str, *errors: str) -> dict[str, Any]:
+    """A carriage with no summary, listing one append refusal per error."""
+    listed = [{"producer": "validate", "run_id": f"validate-refused-{index}", "hermit_sha": "d" * 40,
+               "emitted_at": "2026-09-29T01:00:00Z", "error": error} for index, error in enumerate(errors)]
+    return export_inputs._parity_reader().capture_carriage(
+        ledger_commit, summary_object=None, summary_data=None, store={}, store_files=0,
+        run_marker_files=len(errors), read_store_at=lambda commit: ({}, 0), is_ancestor=lambda commit: False,
+        append_refusals=listed, append_refusals_total=len(listed),
+    )
+
+
+@pytest.mark.parametrize("case", list(SITE_REFUSED_TEXTS))
+def test_a_parity_carriage_the_site_writer_refuses_is_refused_in_the_panel(tmp_path: Path, case: str) -> None:
+    # The site writer refuses every page when any string it publishes holds an
+    # owner path or a credential-shaped string, and it publishes the parity
+    # carriage as it is. Each carriage here passes the parity ledger's writer
+    # and would refuse the whole site. The export puts a panel refusal in its
+    # place, and no published file holds the text.
+    repo, commit = repository(tmp_path)
+    ledger = repo / "hermit_test_ledger"
+    text = SITE_REFUSED_TEXTS[case]
+    kind = case.split()[0]
+    if kind == "current":
+        shards = _parity_run_1953_shards(_naming(text))
+        _commit_ledger_parity(repo, {**shards, "scorecard/parity.json": _parity_run_1953_summary_bytes(shards)})
+    elif kind == "stale":
+        shards = _parity_run_1953_shards(_naming(text))
+        summarized = _commit_ledger_parity(repo, shards)
+        _commit_ledger_parity(repo, {"scorecard/parity.json": _parity_run_1953_summary_bytes(shards, summarized)})
+        (path,) = _store(shards)
+        _commit_ledger_parity(repo, {path: shards[path] + shards[path].splitlines(keepends=True)[0]})
+    else:
+        ledger_store = export_inputs._parity_reader().parity_ledger_module()
+        refusal = ledger_store.build_refusal(
+            producer="validate", run_id="validate-refused", hermit_sha="d" * 40, emitted_at="2026-09-29T01:00:00Z",
+            source_tree_dirty=None, host="fixturehost", input_bytes=b"x", input_lines=1, error=text,
+        )
+        _commit_ledger_parity(repo, {ledger_store.event_shard(refusal): ledger_store.encode_batch([refusal]).encode()})
+    series_commit = git(ledger, "rev-parse", "HEAD")
+    captured = export_inputs._parity_capture(ledger, series_commit)
+    assert captured["state"] == {"current": "current", "stale": "stale", "append": "absent"}[kind]
+    assert export_inputs._contains_string(captured, text)
+    # Carried as captured, the carriage would refuse every page.
+    site_writer = _site_writer()
+    site_refusal = site_writer._CREDENTIAL_REFUSAL if "credential" in case else site_writer._OWNER_PATH_REFUSAL
+    with pytest.raises(site_writer.BuildRefused, match=f"^{re.escape(site_refusal)}$"):
+        site_writer._require_publishable_output({"parity": captured})
+    result = export_inputs.build_export(repo, commit, published_only=True)
+    assert result["provenance"]["series_commit"] == series_commit
+    with pytest.raises(Exception, match=f"^{re.escape(site_refusal)}$") as whole_site:
+        _published_site({**result, "parity": captured})
+    assert type(whole_site.value).__name__ == "BuildRefused"
+    held = "a credential-shaped string" if "credential" in case else "an absolute path"
+    assert result["parity"] == export_inputs._parity_reader().refused_carriage(
+        series_commit, f"ledger commit {series_commit} parity data is refused: it holds {held}",
+        append_refusals_total=None)
+    files = {"export.json": export_inputs.render_export(result), **_published_site(result)}
+    assert _path_hits(tmp_path, files) == []
+    assert [name for name, value in files.items() if SITE_REFUSED_MARKER.encode() in value] == []
+    assert json.loads(files["data/runs.json.gz"])["parity"] == result["parity"]
+    assert result["parity"]["refusal"].encode() in files["index.html"]
+
+
+def test_a_parity_carriage_holding_an_owner_path_and_a_credential_is_refused_for_the_owner_path(
+    tmp_path: Path,
+) -> None:
+    reader = export_inputs._parity_reader()
+    ledger_commit = "e" * 40
+    checkouts = {"ledger": tmp_path / "ledger"}
+    owner = SITE_REFUSED_TEXTS["current summary naming the guest's home"]
+    credential = SITE_REFUSED_TEXTS["current summary holding a credential"]
+    for errors in ((credential, owner), (owner, credential)):
+        carriage = _absent_carriage_listing(ledger_commit, *errors)
+        assert reader.validate_carriage(carriage) is None
+        held = export_inputs._parity_without_paths(carriage, ledger_commit, checkouts)
+        assert held["refusal"] == f"ledger commit {ledger_commit} parity data is refused: it holds an absolute path"
+        assert reader.validate_carriage(held) is None
+    held = export_inputs._parity_without_paths(_absent_carriage_listing(ledger_commit, credential), ledger_commit,
+                                               checkouts)
+    assert held["refusal"] == (
+        f"ledger commit {ledger_commit} parity data is refused: it holds a credential-shaped string")
+    assert reader.validate_carriage(held) is None
+    plain = _absent_carriage_listing(ledger_commit, "--source-tree-dirty is required")
+    assert export_inputs._parity_without_paths(plain, ledger_commit, checkouts) == plain
+
+
+def test_the_exports_owner_path_and_credential_patterns_are_the_site_writers() -> None:
+    site_writer = _site_writer()
+    for ours, theirs in ((export_inputs._SITE_OWNER_PATH_RE, site_writer._OWNER_PATH_RE),
+                         (export_inputs._SITE_CREDENTIAL_RE, site_writer._CREDENTIAL_RE)):
+        assert (ours.pattern, ours.flags) == (theirs.pattern, theirs.flags)
+
+
+def test_a_parity_carriages_keys_are_fixed_and_the_site_writer_refuses_none_of_them() -> None:
+    # The export checks a carriage's values and not its keys: the site writer
+    # also refuses a key that is a stored measurement field or reads as an
+    # owner path or a credential, but a carriage holds only these keys.
+    reader = export_inputs._parity_reader()
+    site_writer = _site_writer()
+    for name in (*reader.CARRIAGE_FIELDS, *reader.APPEND_REFUSAL_FIELDS):
+        assert name not in site_writer._FORBIDDEN_STORED_FIELDS
+        for pattern in (site_writer._OWNER_PATH_RE, site_writer._CREDENTIAL_KEY_RE, site_writer._CREDENTIAL_RE):
+            assert pattern.search(name) is None, (name, pattern.pattern)
+    carriage = _absent_carriage_listing("e" * 40, "--source-tree-dirty is required")
+    assert reader.validate_carriage(carriage) is None
+    with pytest.raises(reader.ParitySummaryError, match=r"^parity carriage has unknown field\(s\): token$"):
+        reader.validate_carriage({**carriage, "token": None})
+    listed = [{**carriage["append_refusals"][0], "token": None}]
+    with pytest.raises(reader.ParitySummaryError, match=r"\.append_refusals\[0\] has unknown field\(s\): token$"):
+        reader.validate_carriage({**carriage, "append_refusals": listed})
