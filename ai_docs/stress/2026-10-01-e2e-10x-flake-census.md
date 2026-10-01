@@ -6,7 +6,7 @@ Owner request: polish the stress tooling onto the shared harness, run the green 
 
 | Population | Units | Runs | CLEAN | FLAKY | FAILING | INCOMPLETE |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| E2E manifest cells (green in the last clean full validation of main) | 1,084 cells | 10,840 | 867 | **1** | 0 | 216 |
+| E2E manifest cells (green in the last clean full validation of main) | 1,084 cells | 10,840 | 863 | **1** | 0 | 220 |
 | `test.detcore_misc` (nextest) | 28 tests | 500 iterations (14,000 test runs) | 27 | **1** | 0 | 0 |
 | `test.liteinst_strict` (nextest) | 25 tests | 5 iterations (125 test runs) | 25 | 0 | 0 | 0 |
 
@@ -16,7 +16,7 @@ Owner request: polish the stress tooling onto the shared harness, run the green 
 
 ## What ran
 
-- **Hermit:** `39762829129ea8c52e65c4d6cf072b6c04574d16` for the e2e census, which is main `342433e2` plus the `--no-retry` change. The nextest stress used the same source plus the new `scripts/stress-test.sh`. None of these changes touch product code. The PR is https://github.com/rrnewton/hermit/pull/3476 (head `a1b4925e3`, rebased onto main `1139c661`).
+- **Hermit:** `39762829129ea8c52e65c4d6cf072b6c04574d16` for the e2e census, which is main `342433e2` plus the `--no-retry` change. The nextest stress used the same source plus the new `scripts/stress-test.sh`. None of these changes touch product code. The tooling landed through https://github.com/rrnewton/hermit/pull/3476 as hermit main `e58a9f086` + `b40707ad6` at 2026-10-01T20:53Z. The landed tree `7b69ccbe34c5` is byte-identical to the validated head `2a7c0584f`: full validation PASSED with 87 nodes and 3,920 of 3,920 tests, and the adversarial review approved it after one round of fixes. In that round, `flake_verdict` was tightened so that a pass whose evidence contradicts itself is not CLEAN, which is why the e2e row reads 863 CLEAN rather than the 867 the census run first printed.
 - **Population:** every cell that passed in the last clean full validation of main (`validate-liteinst-iced-fix-342433e251d7-…`: 1,089 e2e cells, all first-attempt PASS). pressure-test `--green` selects 1,084 of them. The 5 `custom`-mode cells are outside the scorecard's comparable population that pressure-test draws from, so they were **not run**: `c-programs/environment-and-workdir@ptrace`, `c-programs/io-uring-fallback@ptrace`, `c-programs/io-uring-fallback@dbt`, `system-utils/clock-determinism@liteinst`, `system-utils/clock-determinism@ptrace`.
 - **Retries:** off. Every repetition was exactly one harness attempt (`test-harness run --no-retry`), and the summary records `retried_repetitions = 0` across 10,840 runs. Nextest ran with `--retries 0`.
 - **E2E command:**
@@ -55,6 +55,12 @@ For comparison, a full validation of main takes about 22 minutes (342433e2: 17:3
 | Unit | Pass rate | Class | Signature | Issue |
 | --- | ---: | --- | --- | --- |
 | `c-programs/getitimer-determinism-probe` verify@kvm | 9/10 + 1 no-result | `no_result` (incomplete-verification-evidence) | `HERMIT_INTERNAL_FAILURE class=cli-error` / `Error: KVM producer-captured mount identities do not match the backend namespace`, after 42 ms | new: https://github.com/rrnewton/hermit/issues/3473 |
+
+### Passes whose retained evidence contradicts itself (not counted as CLEAN)
+
+| Unit | Harness result | Class | Signature |
+| --- | --- | --- | --- |
+| `c-programs/nanosleep-threads-simple`, `shared-futex-c/qemu-hello`, `system-utils/sh-exit-status`, `util-c/pmu-skid` (all verify@ptrace) | 10/10 PASS each | sample classification `incomplete` (`unknown_history_repetitions = 10`) | pressure-test's evidence reader reports `pressure_evidence matched report contradicts its inner process disposition` for all 40 runs. The census output first printed these 4 cells as CLEAN. Review of https://github.com/rrnewton/hermit/pull/3476 caught it, and the verdict now requires an intact history, which makes them INCOMPLETE. The harness itself saw no failure; the disagreement is between pressure-test's consistency check and the retained reports. |
 
 ### Infrastructure: the runner could not measure these cells
 
