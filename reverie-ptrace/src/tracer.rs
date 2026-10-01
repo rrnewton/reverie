@@ -1048,31 +1048,7 @@ impl NewbornTracee {
             Err(error) => return Err(error.into()),
         }
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if self.terminal.wait(Duration::ZERO) {
-                return Ok(());
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let Some(reservation) = self.terminal.reserve_pending_for_cleanup(remaining) else {
-                if self.terminal.wait(Duration::ZERO) {
-                    return Ok(());
-                }
-                return Err(Errno::ETIMEDOUT.into());
-            };
-            let state = reservation.decode()?;
-            let Wait::Stopped(stopped, _) = state else {
-                reservation.commit();
-                continue;
-            };
-            reservation.commit();
-            match stopped.resume(None) {
-                Ok(_) | Err(TraceError::Died(_)) | Err(TraceError::Errno(Errno::ESRCH)) => {
-                    return Ok(());
-                }
-                Err(error) => return Err(error),
-            }
-        }
+        self.terminal.wait_after_sigkill()
     }
 }
 
