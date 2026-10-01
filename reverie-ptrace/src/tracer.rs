@@ -7168,6 +7168,9 @@ mod tests {
     /// first the replaced leader's state, with that leader's own exit-stop
     /// status, then the exec thread's state, with the final status. Both
     /// come before the one on_exit_process, which gets the final status.
+    /// Those two are the only on_exit_thread calls under the leader's PID,
+    /// so a call for any other state there, such as a freshly made one,
+    /// fails too.
     ///
     /// The replaced leader was zapped by de_thread while `group_exec_task`
     /// was set, so do_group_exit gave it exit code 0 and its exit stop's
@@ -7192,7 +7195,16 @@ mod tests {
         let former_hooks = matching(&|event| event.0 == 2 && event.2 == former.as_raw() as usize);
         let leader_hooks = matching(&|event| event.0 == 2 && event.2 == root.as_raw() as usize);
         let process_exits = matching(&|event| event.0 == 3 && event.1 == root);
+        let hooks_under_leader = matching(&|event| event.0 == 2 && event.1 == root);
         let events_of = |hooks: &[(usize, _)]| hooks.iter().map(|hook| hook.1).collect::<Vec<_>>();
+        assert_eq!(
+            events_of(&hooks_under_leader),
+            vec![
+                (2, root, root.as_raw() as usize, Some(replaced_status)),
+                (2, root, former.as_raw() as usize, Some(status)),
+            ],
+            "the on_exit_thread calls under the leader's PID were not exactly the replaced leader's state, then the exec thread's: {events:?}"
+        );
         assert_eq!(
             events_of(&former_hooks),
             vec![(2, root, former.as_raw() as usize, Some(status))],
