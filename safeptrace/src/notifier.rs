@@ -3299,6 +3299,50 @@ impl TerminalCleanup {
         })
     }
 
+    /// Finishes a SIGKILL that the caller has already sent to this generation.
+    ///
+    /// Waits, for at most two seconds from the call, until [`Self::wait`]
+    /// acknowledges notifier-owned retirement, and then returns `Ok(())`.
+    /// While retirement is not acknowledged, it waits with the remaining
+    /// budget for a queued nonterminal status and consumes it. A consumed
+    /// status that is not a stop is discarded and the wait continues. A
+    /// consumed stop is resumed without a signal, and the method returns
+    /// `Ok(())` once that resume succeeds or fails with `Error::Died` or
+    /// `ESRCH`, without waiting for retirement.
+    ///
+    /// Returns `ETIMEDOUT` when nothing is queued before the deadline, and
+    /// also when the terminal status has been published with nothing queued
+    /// but retirement is not acknowledged at that moment. Decode errors and
+    /// other resume errors are returned unchanged. This sends no signal and
+    /// does not call `waitpid`.
+    pub fn wait_after_sigkill(&self) -> Result<(), Error> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if self.wait(Duration::ZERO) {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(reservation) = self.reserve_pending_for_cleanup(remaining) else {
+                if self.wait(Duration::ZERO) {
+                    return Ok(());
+                }
+                return Err(Errno::ETIMEDOUT.into());
+            };
+            let state = reservation.decode()?;
+            let Wait::Stopped(stopped, _) = state else {
+                reservation.commit();
+                continue;
+            };
+            reservation.commit();
+            match stopped.resume(None) {
+                Ok(_) | Err(Error::Died(_)) | Err(Error::Errno(Errno::ESRCH)) => {
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     /// Returns true when no nonterminal status remains queued.
     pub fn pending_is_empty(&self) -> bool {
         self.event.event().pending_is_empty()
