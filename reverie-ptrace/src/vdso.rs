@@ -387,12 +387,31 @@ fn vdso_get_symbols_info() -> BTreeMap<&'static str, (u64, usize)> {
     res
 }
 
+/// Test-only: a hook for the tracee with the given raw PID.
+#[cfg(test)]
+type VdsoHookForTest = (i32, Box<dyn Fn()>);
+
 #[cfg(test)]
 thread_local! {
-    /// Test-only: runs in [`vdso_patch`] once the vDSO is writable, before it
-    /// is patched.
-    pub(crate) static VDSO_WRITABLE_FOR_TEST: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+    /// Test-only: runs in [`vdso_patch`] of the tracee with the given raw PID,
+    /// once its vDSO is writable, before it is patched.
+    static VDSO_WRITABLE_FOR_TEST: std::cell::RefCell<Option<VdsoHookForTest>> =
         const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only: installs a [`VDSO_WRITABLE_FOR_TEST`] hook for the tracee with
+/// raw PID `pid` until the returned guard is dropped, including when the
+/// patch future is dropped part way.
+#[cfg(test)]
+pub(crate) fn vdso_writable_hook_for_test(pid: i32, hook: Box<dyn Fn()>) -> impl Drop {
+    struct Uninstall;
+    impl Drop for Uninstall {
+        fn drop(&mut self) {
+            VDSO_WRITABLE_FOR_TEST.with(|slot| slot.borrow_mut().take());
+        }
+    }
+    VDSO_WRITABLE_FOR_TEST.with(|slot| *slot.borrow_mut() = Some((pid, hook)));
+    Uninstall
 }
 
 /// patch VDSOs when enabled
@@ -429,7 +448,9 @@ where
             .await?;
         #[cfg(test)]
         VDSO_WRITABLE_FOR_TEST.with(|hook| {
-            if let Some(hook) = hook.borrow().as_ref() {
+            if let Some((pid, hook)) = hook.borrow().as_ref()
+                && *pid == guest.pid().as_raw()
+            {
                 hook();
             }
         });
