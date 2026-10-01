@@ -66,7 +66,10 @@ mod fatal_dead_exec_tests {
             .expect("claim the exit stop");
         let exited = tokio::time::timeout_at(
             deadline.into(),
-            exit_stop.resume(None).expect("resume exit stop").next_state(),
+            exit_stop
+                .resume(None)
+                .expect("resume exit stop")
+                .next_state(),
         )
         .await
         .expect("final status is bounded")
@@ -103,7 +106,10 @@ mod fatal_dead_exec_tests {
             stop.held.lock().unwrap().is_none(),
             "a dead Exec was recorded as the held stop"
         );
-        assert!(stop.terminal.pending_is_empty(), "the dead Exec stayed queued");
+        assert!(
+            stop.terminal.pending_is_empty(),
+            "the dead Exec stayed queued"
+        );
         reap_killed_exec(pid, running, deadline).await;
     }
 
@@ -137,7 +143,11 @@ mod fatal_dead_exec_tests {
         pid: Pid,
         running: Running,
         deadline: Instant,
-    ) -> (Option<ExitStatus>, FatalSession, safeptrace::TerminalCleanup) {
+    ) -> (
+        Option<ExitStatus>,
+        FatalSession,
+        safeptrace::TerminalCleanup,
+    ) {
         let session = FatalSession::for_test(pid);
         let terminal = running.terminal_cleanup();
         let held = Arc::new(StdMutex::new(None));
@@ -289,7 +299,11 @@ mod fatal_dead_exec_tests {
             ),
             "{messages:?}"
         );
-        assert_eq!(status, Some(ExitStatus::Signaled(Signal::SIGKILL, false)), "{messages:?}");
+        assert_eq!(
+            status,
+            Some(ExitStatus::Signaled(Signal::SIGKILL, false)),
+            "{messages:?}"
+        );
         assert_eq!(terminal.retired_stops_before_exit(), 0);
         assert!(child_reaped, "the fork child {child} was not reaped");
     }
