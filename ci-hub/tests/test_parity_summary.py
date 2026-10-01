@@ -166,13 +166,16 @@ def _carriage(summary: dict[str, Any], markers: int = 1) -> dict[str, Any]:
     return carriage
 
 
-def _model(carriage: dict[str, Any] | None, series_commit: str | None = LEDGER_COMMIT) -> Any:
+def _model(carriage: dict[str, Any] | None, series_commit: str | None = LEDGER_COMMIT,
+           history_rows: tuple[dict[str, Any], ...] = ()) -> Any:
     runs = {} if carriage is None else {"parity": carriage}
-    return SimpleNamespace(runs=runs, data={"provenance": {"canonical_input_provenance": {"series_commit": series_commit}}})
+    return SimpleNamespace(runs=runs, data={"provenance": {"canonical_input_provenance": {"series_commit": series_commit}}},
+                           history_rows=history_rows)
 
 
-def _panel(carriage: dict[str, Any] | None, series_commit: str | None = LEDGER_COMMIT) -> str:
-    return render_page._parity_panel(_model(carriage, series_commit))
+def _panel(carriage: dict[str, Any] | None, series_commit: str | None = LEDGER_COMMIT,
+           history_rows: tuple[dict[str, Any], ...] = ()) -> str:
+    return render_page._parity_panel(_model(carriage, series_commit, history_rows))
 
 
 def _text(markup: str) -> str:
@@ -1842,6 +1845,253 @@ def test_each_absent_state_says_what_is_missing() -> None:
             "its parity records were published and never summarized.") in unsummarized
     for text in (no_capture, empty, unsummarized):
         assert "Nothing here is zero parity." in text and "0/" not in text
+
+
+# --- the retired rerun's parity failures in the site's history ---------------------
+#
+# Hermit's retired ptrace rerun wrote a `backend_parity` witness into recorded
+# validation cells. The live site's history (release c62ff3e7, ledger 57234c77)
+# holds 692 such witnesses: four rows (Run 1,897 and runs 229, 238 and 239) of the
+# same 173 cells, kvm 75, liteinst 97 and sabre 1. Each has two attempts; in both,
+# the cross comparison diverged while each side matched its own repeat. The
+# shapes below are copied from those witnesses.
+
+NOTHING_ZERO = "Nothing here is zero parity."
+NO_CURRENT = "There is no current parity measurement on this site."
+PARITY_DESIGN = "https://github.com/rrnewton/hermit/issues/3301"
+PARITY_DESIGN_LINK = f'<a href="{PARITY_DESIGN}">{PARITY_DESIGN}</a>'
+HISTORY_NOTE = '<p class="notice parity-history">'
+NO_HISTORY = {"cells": 0, "per_backend": [], "runs": [], "excluded": 0}
+
+
+def _side(**overrides: Any) -> dict[str, Any]:
+    """One side of an attempt: a canonical verdict that matched its own repeat."""
+    side = {
+        "bitwise_parity": True,
+        "compared_log_messages": {"left": 107, "right": 107},
+        "comparison": {
+            "canonicalizations": ["host-address-to-first-appearance-ordinal/v1"], "canonicalize_addresses": True,
+            "compare_io_buffers": True, "compare_logs": True, "display_name": "BitwiseInfoV1",
+            "exact_remainder": True, "full_trace": True, "ignore_lines": False, "log_scope": "info",
+            "record_envelope": "all_records_v1", "skip_commit": False, "skip_detlog": False,
+            "strictness": "canonical", "strip_lines": False, "stripped_prefixes": ["real-wall-clock-prefix/v1"],
+            "virtualize_time": True,
+        },
+        "comparison_tier": "canonical-bitwise",
+        "state": "compared-and-matched",
+    }
+    return {**side, **overrides}
+
+
+def _attempt(number: int, cross: str = "diverged", **sides: Any) -> dict[str, Any]:
+    return {"attempt": number, "candidate": _side(), "reference": _side(), "cross": {"state": cross}, **sides}
+
+
+def _legacy_cell(test: str, backend: str = "kvm", *, authority: str = "writer_verified_raw_census_v1",
+                 attempts: Any = _IMPLIED) -> dict[str, Any]:
+    """A recorded cell whose witness is a failure unless its attempts say otherwise."""
+    verified = "artifact_verified" if authority == "selected-attempt-v1" else "derived_operand_verified"
+    return {
+        "test": test, "mode": "verify", "backend": backend, "cell_verdict": _side(),
+        "comparison_authority": authority,
+        "backend_parity": {
+            verified: True, "clean_match": False,
+            "summary": {"reference_backend": "ptrace", "record_envelope": "cross_backend_detcore_v1",
+                        "attempts": [_attempt(1), _attempt(2)] if attempts is _IMPLIED else attempts},
+        },
+    }
+
+
+def _history_row(run_number: int | None, cells: list[dict[str, Any]], run_id: str | None = None) -> dict[str, Any]:
+    """A schema-5 validation row, derived as the census writer derives one."""
+    row = {
+        "schema_version": 5, "cell_results": None,
+        "derived_cell_results": {"authority": "writer_verified_raw_census_v1", "population_scope": "recorded_only",
+                                 "recorded": {"cells": cells}},
+        "run_id": run_id or f"validate-fixture-{run_number}",
+    }
+    if run_number is not None:
+        row["run_number"] = run_number
+    return row
+
+
+def _history(*rows: dict[str, Any]) -> dict[str, Any]:
+    return render_page._parity_history_failures(SimpleNamespace(history_rows=rows))
+
+
+def _diverged_from_its_repeat() -> dict[str, Any]:
+    return _side(state="compared-and-diverged", bitwise_parity=False)
+
+
+def test_the_history_note_counts_distinct_cells_not_rows_times_cells() -> None:
+    # The live shape: rows that record the same cells. Four rows of the same four
+    # cells are four failures, not sixteen; Run 238's two rows name it once.
+    cells = [_legacy_cell("tests/a", "kvm"), _legacy_cell("tests/a", "liteinst"),
+             _legacy_cell("tests/b", "sabre"), _legacy_cell("tests/c", "dbt")]
+    rows = tuple(_history_row(number, copy.deepcopy(cells)) for number in (1897, 229, 238, 238))
+    assert _history(*rows) == {
+        "cells": 4, "per_backend": [("kvm", 1), ("liteinst", 1), ("sabre", 1), ("dbt", 1)],
+        "runs": ["Run 1,897", "Run 229", "Run 238"], "excluded": 0,
+    }
+    text = _text(_panel(None, history_rows=rows))
+    assert ("4 historical cross-backend parity failure(s) are kept in data/runs.json.gz and are not shown in this "
+            "panel. The retired ptrace rerun recorded them in these runs: Run 1,897; Run 229; Run 238. They are 4 "
+            "distinct cell(s) (kvm 1; liteinst 1; sabre 1; dbt 1) in which the candidate backend's log and the ptrace "
+            "reference's log each matched its own repeat and the two logs diverged. Each is a parity failure, not a "
+            f"cell without parity. They return to this panel with the parity legacy section; see {PARITY_DESIGN}.") in text
+
+
+def test_each_absent_state_with_failures_in_the_history_says_there_is_no_current_measurement() -> None:
+    rows = (_history_row(1897, [_legacy_cell("tests/a")]),)
+    for carriage in (None, _capture(None, store={}, store_files=0, markers=1),
+                     _capture(None, store=GROWN, store_files=3, markers=2)):
+        markup = _panel(carriage, history_rows=rows)
+        text = _text(markup)
+        assert summary_module.ABSENT_LINE in text
+        assert NOTHING_ZERO not in text and NO_CURRENT in text and "0/" not in text
+        assert ("1 historical cross-backend parity failure(s) are kept in data/runs.json.gz and are not shown in "
+                "this panel.") in text
+        assert markup.count(HISTORY_NOTE) == 1 and PARITY_DESIGN_LINK in markup
+        assert markup.index(NO_CURRENT) < markup.index(HISTORY_NOTE)
+
+
+def test_the_refused_current_and_stale_panels_carry_the_history_note(run_1953: dict[str, Any]) -> None:
+    rows = (_history_row(1897, [_legacy_cell("tests/a")]),)
+    for carriage in (_refused_carriage(), _carriage(run_1953), _stale(run_1953)):
+        assert HISTORY_NOTE not in _panel(carriage)
+        markup = _panel(carriage, history_rows=rows)
+        assert markup.count(HISTORY_NOTE) == 1 and PARITY_DESIGN_LINK in markup
+        assert NOTHING_ZERO not in markup and NO_CURRENT not in markup
+    # With a summary, the note follows the legacy section, whose line covers
+    # only the ledger's parity store.
+    markup = _panel(_carriage(run_1953), history_rows=rows)
+    assert markup.index('<details class="parity-legacy-rerun">') < markup.index(HISTORY_NOTE)
+
+
+def _drop(mapping: dict[str, Any], key: str) -> None:
+    del mapping[key]
+
+
+NOT_A_FAILURE_WITNESS = {
+    "no witness": lambda cell: _drop(cell, "backend_parity"),
+    "a null witness": lambda cell: cell.update(backend_parity=None),
+    "a witness that is a list": lambda cell: cell.update(backend_parity=[cell["backend_parity"]]),
+    "no comparison authority": lambda cell: _drop(cell, "comparison_authority"),
+    "an unknown comparison authority": lambda cell: cell.update(comparison_authority="selected-attempt-v0"),
+    "a census witness not verified": lambda cell: cell["backend_parity"].update(derived_operand_verified=False),
+    "a census witness verified as a string": lambda cell: cell["backend_parity"].update(derived_operand_verified="true"),
+    "a census witness verified only as an artifact": lambda cell: (
+        _drop(cell["backend_parity"], "derived_operand_verified"),
+        cell["backend_parity"].update(artifact_verified=True)),
+    "an artifact witness verified only as derived": lambda cell: cell.update(comparison_authority="selected-attempt-v1"),
+    "no summary": lambda cell: _drop(cell["backend_parity"], "summary"),
+    "a summary that is a list": lambda cell: cell["backend_parity"].update(summary=[]),
+    "a kvm reference": lambda cell: cell["backend_parity"]["summary"].update(reference_backend="kvm"),
+    "no reference backend": lambda cell: _drop(cell["backend_parity"]["summary"], "reference_backend"),
+    "the all-records envelope": lambda cell: cell["backend_parity"]["summary"].update(record_envelope="all_records_v1"),
+    "no record envelope": lambda cell: _drop(cell["backend_parity"]["summary"], "record_envelope"),
+    "no attempts": lambda cell: _drop(cell["backend_parity"]["summary"], "attempts"),
+    "no attempt": lambda cell: cell["backend_parity"]["summary"].update(attempts=[]),
+    "attempts that are a string": lambda cell: cell["backend_parity"]["summary"].update(attempts="diverged"),
+    "attempts that are a mapping": lambda cell: cell["backend_parity"]["summary"].update(attempts=_attempt(1)),
+    "attempts that are not mappings": lambda cell: cell["backend_parity"]["summary"].update(attempts=["diverged", None]),
+    "both cross comparisons matched": lambda cell: cell["backend_parity"]["summary"].update(
+        attempts=[_attempt(1, "matched"), _attempt(2, "matched")]),
+    "a cross comparison that is a string": lambda cell: cell["backend_parity"]["summary"].update(
+        attempts=[{**_attempt(1), "cross": "diverged"}]),
+    "no cross comparison": lambda cell: cell["backend_parity"]["summary"].update(
+        attempts=[{key: value for key, value in _attempt(1).items() if key != "cross"}]),
+}
+
+
+@pytest.mark.parametrize("name", NOT_A_FAILURE_WITNESS)
+def test_a_witness_the_retired_reader_did_not_read_or_that_never_diverged_counts_as_neither(name: str) -> None:
+    cell = _legacy_cell("tests/a")
+    NOT_A_FAILURE_WITNESS[name](cell)
+    assert render_page._legacy_parity_failure(cell) is None
+    rows = (_history_row(1897, [cell]),)
+    assert _history(*rows) == NO_HISTORY
+    markup = _panel(None, history_rows=rows)
+    assert NOTHING_ZERO in markup and NO_CURRENT not in markup and HISTORY_NOTE not in markup
+
+
+NOT_APPLICABLE = {
+    "a candidate that diverged from its repeat": [_attempt(n, candidate=_diverged_from_its_repeat()) for n in (1, 2)],
+    "a reference that diverged from its repeat": [_attempt(n, reference=_diverged_from_its_repeat()) for n in (1, 2)],
+    "a candidate compared below the canonical tier": [_attempt(1, candidate=_side(comparison_tier="normalized"))],
+    "a reference compared at relaxed strictness": [_attempt(1, reference=_side(
+        comparison={**_side()["comparison"], "strictness": "normalized"}))],
+    "a reference whose compared lengths differ": [_attempt(1, reference=_side(
+        compared_log_messages={"left": 107, "right": 106}))],
+    "a candidate matched without bitwise parity": [_attempt(1, candidate=_side(bitwise_parity=False))],
+    "a candidate that compared no log message": [_attempt(1, candidate=_side(compared_log_messages={"left": 0, "right": 0}))],
+    "no reference": [{key: value for key, value in _attempt(1).items() if key != "reference"}],
+    "a candidate that is a string": [_attempt(1, candidate="compared-and-matched")],
+    # Deterministic sides count only in the attempt that diverged.
+    "deterministic sides only in an attempt that matched": [
+        _attempt(1, candidate=_diverged_from_its_repeat()), _attempt(2, "matched")],
+}
+
+
+@pytest.mark.parametrize("name", NOT_APPLICABLE)
+def test_a_divergence_without_a_matching_deterministic_log_on_both_sides_is_not_applicable(name: str) -> None:
+    cell = _legacy_cell("tests/b", attempts=NOT_APPLICABLE[name])
+    assert render_page._legacy_parity_failure(cell) == "not-applicable"
+    # Alone, it is not a failure, so the panel keeps its sentence.
+    alone = (_history_row(1897, [cell]),)
+    assert _history(*alone) == {**NO_HISTORY, "excluded": 1}
+    markup = _panel(None, history_rows=alone)
+    assert NOTHING_ZERO in markup and HISTORY_NOTE not in markup
+    # Beside a failure, the note counts it as excluded.
+    rows = (_history_row(1897, [_legacy_cell("tests/a"), cell]),)
+    assert _history(*rows) == {"cells": 1, "per_backend": [("kvm", 1)], "runs": ["Run 1,897"], "excluded": 1}
+    assert ("Each is a parity failure, not a cell without parity. 1 other cell(s) with a diverged attempt are not "
+            "applicable and not counted: a side had no matching deterministic log. They return to this panel") in _text(
+        _panel(None, history_rows=rows))
+
+
+FAILURE = {
+    "two diverged attempts": _IMPLIED,
+    "one diverged attempt": [_attempt(1)],
+    "only the second attempt diverged": [_attempt(1, "matched"), _attempt(2)],
+    "a first diverged attempt without a deterministic candidate": [
+        _attempt(1, candidate=_diverged_from_its_repeat()), _attempt(2)],
+    "a second diverged attempt without a deterministic reference": [
+        _attempt(1), _attempt(2, reference=_diverged_from_its_repeat())],
+}
+
+
+@pytest.mark.parametrize("name", FAILURE)
+@pytest.mark.parametrize("authority", ["writer_verified_raw_census_v1", "selected-attempt-v1"])
+def test_a_divergence_between_two_deterministic_logs_is_a_failure(name: str, authority: str) -> None:
+    cell = _legacy_cell("tests/a", authority=authority, attempts=FAILURE[name])
+    assert render_page._legacy_parity_failure(cell) == "failure"
+    assert _history(_history_row(1897, [cell])) == {
+        "cells": 1, "per_backend": [("kvm", 1)], "runs": ["Run 1,897"], "excluded": 0}
+
+
+def test_a_cell_with_a_failure_in_any_row_is_counted_and_not_excluded() -> None:
+    inapplicable = [_attempt(1, candidate=_diverged_from_its_repeat())]
+    rows = (
+        _history_row(1, [_legacy_cell("tests/a", attempts=inapplicable)]),
+        _history_row(2, [_legacy_cell("tests/a")]),
+        _history_row(3, [_legacy_cell("tests/b", attempts=inapplicable)]),
+        _history_row(None, [_legacy_cell("tests/a")], run_id="validate-unnumbered"),
+    )
+    # tests/a is a failure in Run 2, so its not-applicable row in Run 1 neither
+    # excludes it nor lists Run 1; Run 3 records only the excluded tests/b.
+    assert _history(*rows) == {
+        "cells": 1, "per_backend": [("kvm", 1)], "runs": ["Run 2", "Run id validate-unnumbered"], "excluded": 1}
+    assert "recorded them in these runs: Run 2; Run id validate-unnumbered. They are 1 distinct cell(s) (kvm 1)" in _text(
+        _panel(None, history_rows=rows))
+
+
+def test_the_history_note_escapes_its_run_labels_and_backend_names() -> None:
+    # Both come from the history rows; the note escapes them as the runs pages do.
+    rows = (_history_row(None, [_legacy_cell("tests/a", "x<b>")], run_id="validate-<i>1</i>"),)
+    markup = _panel(None, history_rows=rows)
+    assert "these runs: Run id validate-&lt;i&gt;1&lt;/i&gt;. They are 1 distinct cell(s) (x&lt;b&gt; 1)" in markup
+    assert "<i>" not in markup and "<b>" not in markup
 
 
 def test_record_missing_source_survives_into_the_panel() -> None:

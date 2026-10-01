@@ -1931,13 +1931,139 @@ def _parity_backends(run: Mapping[str, Any]) -> list[str]:
     return known + sorted(set(run["per_backend"]) - set(known))
 
 
-def _parity_absent_text(carriage: Mapping[str, Any] | None) -> str:
+#: The parity design issue, which tracks the panel's legacy section.
+PARITY_DESIGN_ISSUE = "https://github.com/rrnewton/hermit/issues/3301"
+
+
+def _matched_own_repeat(side: Any) -> bool:
+    """Whether one side of a retired-rerun attempt matched its own repeat.
+
+    A side is a cell verdict, read as determinism reads one: only the typed
+    canonical comparison counts, never an aggregate GREEN.
+    """
+    return isinstance(side, Mapping) and _repeat_state({"cell_verdict": side}) == "matched"
+
+
+def _legacy_parity_failure(recorded: Any) -> str | None:
+    """How a recorded cell's retired-rerun parity witness counts, if at all.
+
+    The witness is the legacy `backend_parity` field, written only by
+    Hermit's retired ptrace rerun. It is read under the conditions the
+    deleted `_parity_state` read it under (9ebf5abc8a): its writer verified
+    it, and its summary names the ptrace reference and the cross-backend
+    record envelope. "failure" is an attempt whose cross comparison diverged
+    while its candidate log and its ptrace reference log each matched its
+    own repeat. A cell with a diverged attempt and no such attempt is
+    "not-applicable": by the owner's ruling, a side without a matching
+    deterministic log has no parity. Any other witness counts as neither,
+    including one too malformed to read.
+    """
+    if not isinstance(recorded, Mapping):
+        return None
+    parity = recorded.get("backend_parity")
+    if not isinstance(parity, Mapping) or not (
+        (recorded.get("comparison_authority") == "selected-attempt-v1"
+         and parity.get("artifact_verified") is True)
+        or (recorded.get("comparison_authority") == "writer_verified_raw_census_v1"
+            and parity.get("derived_operand_verified") is True)
+    ):
+        return None
+    summary = parity.get("summary")
+    if (
+        not isinstance(summary, Mapping)
+        or summary.get("reference_backend") != "ptrace"
+        or summary.get("record_envelope") != "cross_backend_detcore_v1"
+    ):
+        return None
+    attempts = summary.get("attempts")
+    if not isinstance(attempts, Sequence) or isinstance(attempts, (str, bytes)):
+        return None
+    diverged = [
+        attempt for attempt in attempts
+        if isinstance(attempt, Mapping)
+        and isinstance(attempt.get("cross"), Mapping)
+        and attempt["cross"].get("state") == "diverged"
+    ]
+    if not diverged:
+        return None
+    if any(
+        _matched_own_repeat(attempt.get("candidate")) and _matched_own_repeat(attempt.get("reference"))
+        for attempt in diverged
+    ):
+        return "failure"
+    return "not-applicable"
+
+
+def _parity_history_failures(model: Any) -> dict[str, Any]:
+    """The retired rerun's parity failures in the site's validation history.
+
+    A cell counts once however many rows record a failure for it; it is
+    excluded as not applicable only when no row records a failure for it.
+    The runs are those with a row that records a counted failure, in history
+    order, each named once.
+    """
+    failures: dict[str, str] = {}
+    inapplicable: set[str] = set()
+    runs: list[str] = []
+    for row in model.history_rows:
+        counted = False
+        for cell in _cell_evidence(row)["recorded"]["cells"]:
+            state = _legacy_parity_failure(cell)
+            if state == "failure":
+                failures.setdefault(_cell_identity(cell), str(cell["backend"]))
+                counted = True
+            elif state == "not-applicable":
+                inapplicable.add(_cell_identity(cell))
+        label = _run_display_label(row)
+        if counted and label not in runs:
+            runs.append(label)
+    per_backend = Counter(failures.values())
+    known = [backend for backend in PARITY_BACKEND_ORDER if backend in per_backend]
+    return {
+        "cells": len(failures),
+        "per_backend": [(backend, per_backend[backend]) for backend in known + sorted(set(per_backend) - set(known))],
+        "runs": runs,
+        "excluded": len(inapplicable - set(failures)),
+    }
+
+
+def _parity_history_note(history: Mapping[str, Any]) -> str:
+    """Say that the history holds parity failures this panel does not show.
+
+    Without it, a panel with no parity figure would read as if the site held
+    no parity failure.
+    """
+    if not history["cells"]:
+        return ""
+    excluded = (
+        f" {_integer(history['excluded'])} other cell(s) with a diverged attempt are not applicable and "
+        "not counted: a side had no matching deterministic log."
+        if history["excluded"] else ""
+    )
+    return (
+        f'<p class="notice parity-history"><strong>{_integer(history["cells"])} historical cross-backend parity '
+        "failure(s) are kept in <code>data/runs.json.gz</code> and are not shown in this panel.</strong> "
+        f'The retired ptrace rerun recorded them in these runs: {"; ".join(_escape(run) for run in history["runs"])}. '
+        f'They are {_integer(history["cells"])} distinct cell(s) ('
+        + "; ".join(f"{_escape(backend)} {_integer(count)}" for backend, count in history["per_backend"])
+        + ") in which the candidate backend's log and the ptrace reference's log each matched its own repeat "
+        "and the two logs diverged. Each is a parity failure, not a cell without parity."
+        + excluded
+        + " They return to this panel with the parity legacy section; see "
+        f'<a href="{PARITY_DESIGN_ISSUE}">{PARITY_DESIGN_ISSUE}</a>.</p>'
+    )
+
+
+def _parity_absent_text(carriage: Mapping[str, Any] | None, history: Mapping[str, Any]) -> str:
     reader = _parity_reader()
+    # With failures in the history, "nothing here" would deny them.
+    closing = "There is no current parity measurement on this site." if history["cells"] \
+        else "Nothing here is zero parity."
     if carriage is None:
         return (
             f'<p><code>{_escape(reader.ABSENT_LINE)}</code></p>'
             "<p>This build carries no parity capture: it is a historical build, or it was built "
-            "before the website captured the ledger's parity summary. Nothing here is zero parity.</p>"
+            f"before the website captured the ledger's parity summary. {closing}</p>"
         )
     commit = _escape(carriage["ledger_commit"])
     if carriage["store_files"] == 0:
@@ -1945,7 +2071,7 @@ def _parity_absent_text(carriage: Mapping[str, Any] | None) -> str:
             f'<p><code>{_escape(reader.ABSENT_LINE)}</code></p>'
             f"<p>Ledger commit <code>{commit}</code> holds no parity records "
             f"({_integer(carriage['run_marker_files'])} parity run marker file(s)). "
-            "Nothing here is zero parity.</p>"
+            f"{closing}</p>"
         )
     return (
         f'<p><code>{_escape(reader.ABSENT_LINE)}</code></p>'
@@ -1953,7 +2079,7 @@ def _parity_absent_text(carriage: Mapping[str, Any] | None) -> str:
         f"{_integer(carriage['store_files'])} parity record shard file(s) and "
         f"{_integer(carriage['run_marker_files'])} run marker file(s), but no "
         f"<code>{_escape(carriage['path'])}</code>: its parity records were published and never "
-        "summarized.</strong> Nothing here is zero parity.</p>"
+        f"summarized.</strong> {closing}</p>"
     )
 
 
@@ -2416,10 +2542,11 @@ def _parity_panel(model: Any) -> str:
         f"{_parity_unequalizable(reader)} This panel shows the ledger's committed parity summary after checking it "
         "against the parity records it summarizes; it is separate from determinism and recomputes no credit.</p>"
     )
+    history = _parity_history_failures(model)
     if summary is None:
         body = _parity_refused_text(carriage) if carriage is not None and carriage["state"] == "refused" \
-            else _parity_absent_text(carriage)
-        return intro + body + _parity_append_refusals(carriage) + "</section>"
+            else _parity_absent_text(carriage, history)
+        return intro + body + _parity_history_note(history) + _parity_append_refusals(carriage) + "</section>"
     parts = [intro]
     if carriage["state"] == "stale":
         parts.append(
@@ -2467,6 +2594,9 @@ def _parity_panel(model: Any) -> str:
             + "</ul></div>"
         )
     parts.append(_parity_legacy_section(summary))
+    # The legacy section reads the ledger's parity store, not the site's
+    # validation history, which may still hold the retired rerun's failures.
+    parts.append(_parity_history_note(history))
     parts.append("</section>")
     return "".join(parts)
 

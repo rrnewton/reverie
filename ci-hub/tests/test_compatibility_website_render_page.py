@@ -6476,6 +6476,36 @@ def test_overview_renders_the_parity_panel_from_the_carried_summary() -> None:
     assert overview.index('id="backends"') < overview.index('id="parity"') < overview.index('id="backend-history"')
 
 
+def test_the_overview_names_the_retired_reruns_parity_failures_in_the_history() -> None:
+    """A recorded cell's retired-rerun failure witness reaches the parity panel
+    through the whole build, and data/runs.json.gz, which the note names, holds it."""
+    data = representative_build_data()
+    [row] = data["runs"]["validation_history_rows"]
+    # The fixture records one cell, ptrace's. The panel reads the witness, not
+    # the cell's backend.
+    [cell] = row["cell_results"]["recorded"]["cells"]
+    side = copy.deepcopy(cell["cell_verdict"])
+    witness = {
+        "artifact_verified": True, "clean_match": False,
+        "summary": {"reference_backend": "ptrace", "record_envelope": "cross_backend_detcore_v1",
+                    "attempts": [{"attempt": 1, "candidate": side, "reference": copy.deepcopy(side),
+                                  "cross": {"state": "diverged"}}]},
+    }
+    cell.update(comparison_authority="selected-attempt-v1", backend_parity=witness)
+    _refresh_projection_digests(data)
+    runs = json.loads(gzip.decompress(_tree(data)["data/runs.json.gz"]))
+    assert runs["validation_history_rows"][0]["cell_results"]["recorded"]["cells"][0]["backend_parity"] == witness
+    files = render_page.render_site(_build(data), data)
+    overview = files["index.html"].decode()
+    panel = overview[overview.index('id="parity"'):overview.index('id="backend-history"')]
+    assert "Nothing here is zero parity." not in panel
+    assert "There is no current parity measurement on this site." in panel
+    assert ('<p class="notice parity-history"><strong>1 historical cross-backend parity failure(s) are kept in '
+            '<code>data/runs.json.gz</code> and are not shown in this panel.</strong> The retired ptrace rerun '
+            'recorded them in these runs: Run id validate-run-1.') in panel
+    assert overview.count('class="notice parity-history"') == 1
+
+
 def _refused_parity_site(data: dict[str, Any]) -> tuple[dict[str, bytes], dict[str, bytes]]:
     """The site with a refused parity carriage, and the same site without parity."""
     _validated(data)
