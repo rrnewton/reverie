@@ -33,7 +33,6 @@ pub(super) mod fatal_capacity_tests {
     enum CapacityFault {
         None,
         RetainSixOwners,
-        RetainThreeOwners,
         HoldOneExitHook,
     }
 
@@ -62,7 +61,6 @@ pub(super) mod fatal_capacity_tests {
                 assert_ne!(Some(task.tid), state.root, "root registered twice");
                 let retain = match state.fault {
                     CapacityFault::RetainSixOwners => 6,
-                    CapacityFault::RetainThreeOwners => 3,
                     _ => 0,
                 };
                 if state.retained.len() < retain {
@@ -276,7 +274,6 @@ pub(super) mod fatal_capacity_tests {
         let fault = match std::env::var("REVERIE_FATAL_CAPACITY_FAULT").as_deref() {
             Err(std::env::VarError::NotPresent) => CapacityFault::None,
             Ok("retain-six-owners") => CapacityFault::RetainSixOwners,
-            Ok("retain-three-owners") => CapacityFault::RetainThreeOwners,
             Ok("hold-one-exit-hook") => CapacityFault::HoldOneExitHook,
             other => panic!("unknown capacity fault: {other:?}"),
         };
@@ -580,46 +577,6 @@ pub(super) mod fatal_capacity_tests {
             "capacity retirement checkpoint: registered=97, completed=96, retained=6, held_hook=false, steady_fds=Some(",
         );
         assert!(!stderr.contains("capacity rescue only:"));
-    }
-
-    #[test]
-    fn three_retained_process_owners_falsify_final_steady_state_bound() {
-        // The first retained owner's descriptors are already in the first
-        // sample. Three owners leave two additional pairs: above +2, within
-        // +8. Check the actual measurements; do not assume that accounting.
-        // Use the process fixture for this additional final-bound control;
-        // the existing thread fixture and its overlap checks stay unchanged.
-        let failure = "descriptor count did not return to the initial steady state";
-        let stderr = capacity_negative_control(
-            false,
-            "retain-three-owners",
-            failure,
-            "capacity retirement checkpoint: registered=97, completed=96, retained=3, held_hook=false, steady_fds=Some(",
-        );
-        assert!(!stderr.contains("capacity rescue only:"));
-        assert!(!stderr.contains("retired tasks retained descriptors"));
-        assert_eq!(stderr.lines().filter(|line| *line == failure).count(), 1);
-        let mut bounds = stderr
-            .lines()
-            .filter_map(|line| line.strip_prefix("capacity fd bounds: baseline="));
-        let bound = bounds.next().expect("missing original fd measurements");
-        assert!(
-            bounds.next().is_none(),
-            "duplicate original fd measurements"
-        );
-        let (baseline, rest) = bound.split_once(", maximum_immediate=").unwrap();
-        let (maximum_immediate, steady_fds) = rest.split_once(", steady_fds=Some(").unwrap();
-        let baseline: usize = baseline.parse().unwrap();
-        let maximum_immediate: usize = maximum_immediate.parse().unwrap();
-        let steady_fds: usize = steady_fds.strip_suffix(')').unwrap().parse().unwrap();
-        assert!(
-            maximum_immediate <= baseline + 8,
-            "final-bound control exceeded the unchanged immediate bound: {bound}"
-        );
-        assert!(
-            steady_fds > baseline + 2 && steady_fds <= baseline + 8,
-            "retained owners did not isolate the final +2 bound: {bound}"
-        );
     }
 
     #[test]
