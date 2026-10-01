@@ -296,6 +296,20 @@ pub(crate) fn forced_esrch_pending_for_test() -> bool {
     FORCED_ESRCH.with(|forced| forced.get().is_some())
 }
 
+#[cfg(test)]
+thread_local! {
+    static PARKED_PREINIT: std::cell::Cell<Option<Pid>> = const { std::cell::Cell::new(None) };
+}
+
+/// Test-only: makes the initialization of `pid` stop making progress after
+/// it steps into the injected mmap, before it waits for the stop the step
+/// leads to, as one whose wait is pending when the notifier publishes that
+/// stop and an exit stop after it does.
+#[cfg(test)]
+pub(crate) fn park_preinit_for_test(pid: Pid) {
+    PARKED_PREINIT.with(|parked| parked.set(Some(pid)));
+}
+
 /// A same-process task rendezvous authorized only by an actual leader Exec
 /// event naming this former TID. No numeric-PID inference can request it.
 struct OrdinaryExecSlot<L: Tool> {
@@ -3388,6 +3402,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                 || running.terminal_cleanup(),
                 PreinitPoint::MmapStepped,
             );
+            #[cfg(test)]
+            if PARKED_PREINIT.with(|parked| parked.get()) == Some(running.pid()) {
+                PARKED_PREINIT.with(|parked| parked.set(None));
+                future::pending::<()>().await;
+            }
 
             // loop until second breakpoint hit after injected syscall.
             #[cfg(test)]
@@ -3838,18 +3857,50 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// its final status.
     async fn preinit_exit_stop(&self, stopped: Stopped) -> Result<PreinitOutcome, TraceError> {
         let held_root_stop = self.liteinst_root_stop_slot(&stopped);
-        match Self::wait_after_exit_event(stopped, held_root_stop).await {
-            Ok(Wait::Exited(pid, exit_status)) => Ok(PreinitOutcome::Exited(pid, exit_status)),
+        let mut wait = match Self::wait_after_exit_event(stopped, held_root_stop).await {
+            Ok(Wait::Exited(pid, exit_status)) => {
+                return Ok(PreinitOutcome::Exited(pid, exit_status));
+            }
+            // The notifier publishes the exit stop out of band, so a stop
+            // queued before it (initialization's single-step trap) can still
+            // be at the front of the queue. The tracee left that stop to reach
+            // its exit, so wait again without resuming it.
+            Ok(Wait::Stopped(stale, event)) if Self::preinit_stale_stop(&event) => {
+                stale.wait_owned()
+            }
             // Only a nonleader's exec can follow an exit stop, and the root
             // has no other thread yet.
-            Ok(Wait::Stopped(..)) => Err(Errno::EPROTO.into()),
+            Ok(Wait::Stopped(..)) => return Err(Errno::EPROTO.into()),
             // Initialization had already resumed it from the stop.
             Err(TraceError::Died(zombie)) => {
                 let pid = zombie.pid();
-                Ok(PreinitOutcome::Exited(pid, zombie.reap().await?))
+                return Ok(PreinitOutcome::Exited(pid, zombie.reap().await?));
             }
-            Err(error) => Err(error),
+            Err(error) => return Err(error),
+        };
+        loop {
+            match (&mut wait).await {
+                Ok(Wait::Exited(pid, exit_status)) => {
+                    break Ok(PreinitOutcome::Exited(pid, exit_status));
+                }
+                Ok(Wait::Stopped(stale, event)) if Self::preinit_stale_stop(&event) => {
+                    wait = stale.wait_owned();
+                }
+                // The exit stop was resumed above.
+                Ok(Wait::Stopped(..)) => break Err(Errno::EPROTO.into()),
+                // The wait keeps the generation and settles only on its
+                // actual next state.
+                Err(OwnedWaitError::Died) => {}
+                Err(OwnedWaitError::Errno(errno)) => break Err(errno.into()),
+                Err(OwnedWaitError::Completed) => break Err(Errno::EPROTO.into()),
+            }
         }
+    }
+
+    /// Whether `event` is an ordinary stop that a tracee in its exit stop has
+    /// already left, rather than the exit stop or an exec that replaced it.
+    fn preinit_stale_stop(event: &Event) -> bool {
+        *event != Event::Exit && !matches!(event, Event::Exec(_))
     }
 
     #[cfg(target_arch = "x86_64")]

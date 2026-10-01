@@ -8466,6 +8466,22 @@ mod tests {
         /// fails with ESRCH, as one made between the kill and the exit stop
         /// does. The probe after it finds the exit stop.
         EsrchAtExitStop,
+        /// In its exit stop, killed after the notifier queued the stop the
+        /// step into the injected mmap leads to, with initialization parked
+        /// before its wait for that stop. The exit stop is claimed first and
+        /// the queued stop is still ahead of the final status. Only at
+        /// `MmapStepped` of the initialization before the exec.
+        ExitStopAfterQueuedStop,
+    }
+
+    /// Waits, for at most two seconds, until `ready` holds, and panics with
+    /// `what` if it does not.
+    fn wait_for_test_condition(what: &str, ready: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !ready() {
+            assert!(Instant::now() < deadline, "{what} within 2 s");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Hits of one [`crate::task::PreinitPoint`] in a tracee's lifetime, and
@@ -8540,6 +8556,11 @@ mod tests {
                 return;
             }
             *state.killed.lock().unwrap() = Some(pid);
+            if mode == PreinitKillMode::ExitStopAfterQueuedStop {
+                wait_for_test_condition(&format!("{pid}'s step stop queued"), || {
+                    !terminal.pending_is_empty()
+                });
+            }
             terminal
                 .request_sigkill()
                 .unwrap_or_else(|error| panic!("SIGKILL {pid} at {point:?}: {error}"));
@@ -8563,6 +8584,18 @@ mod tests {
                     assert!(in_exit_stop, "{pid} did not stop at its exit");
                     // This hook runs on the tracer thread.
                     crate::task::force_esrch_for_test(pid);
+                }
+                PreinitKillMode::ExitStopAfterQueuedStop => {
+                    assert_eq!(point, crate::task::PreinitPoint::MmapStepped);
+                    assert!(in_exit_stop, "{pid} did not stop at its exit");
+                    wait_for_test_condition(&format!("{pid}'s exit stop published"), || {
+                        terminal.exit_stop_observed()
+                    });
+                    assert!(
+                        !terminal.pending_is_empty(),
+                        "{pid}'s step stop is no longer queued"
+                    );
+                    crate::task::park_preinit_for_test(pid);
                 }
                 _ => {}
             }
@@ -8737,6 +8770,7 @@ mod tests {
         postspawn_preinit_kill_page_populated_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(PagePopulated, Exited);
         postspawn_preinit_kill_vdso_writable_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(VdsoWritable, Exited);
         postspawn_preinit_kill_mmap_stepped_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapStepped, ExitStop);
+        postspawn_preinit_kill_mmap_stepped_exit_stop_after_queued_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapStepped, ExitStopAfterQueuedStop);
         postspawn_preinit_kill_mmap_returned_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapReturned, ExitStop);
         postspawn_preinit_kill_page_populated_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(PagePopulated, ExitStop);
         postspawn_preinit_kill_vdso_writable_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(VdsoWritable, ExitStop);
