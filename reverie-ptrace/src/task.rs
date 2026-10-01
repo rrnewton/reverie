@@ -97,6 +97,7 @@ use crate::gdbstub::ResumeInferior;
 use crate::gdbstub::StopEvent;
 use crate::gdbstub::StopReason;
 use crate::gdbstub::StoppedInferior;
+#[cfg(target_arch = "x86_64")]
 use crate::injected_syscall::InjectedSyscallFrame;
 use crate::liteinst_census::Census;
 use crate::liteinst_census::CensusError;
@@ -104,6 +105,31 @@ use crate::liteinst_census::REFUSED_ENTRY_LIMIT;
 use crate::liteinst_census::Refusal;
 use crate::liteinst_census::Segment;
 use crate::liteinst_census::SiteEntries;
+#[cfg(target_arch = "x86_64")]
+use crate::liteinst_restart::LANDING_LEN;
+use crate::liteinst_restart::LANDING_OFFSET;
+use crate::liteinst_restart::LandingOutcome;
+use crate::liteinst_restart::PrivateStep;
+#[cfg(target_arch = "x86_64")]
+use crate::liteinst_restart::RUNTIME_OWNED_HANDLERS;
+#[cfg(target_arch = "x86_64")]
+use crate::liteinst_restart::RestartAction;
+#[cfg(target_arch = "x86_64")]
+use crate::liteinst_restart::changed_landing_register;
+#[cfg(target_arch = "x86_64")]
+use crate::liteinst_restart::check_landing_bytes;
+#[cfg(target_arch = "x86_64")]
+use crate::liteinst_restart::check_rewind_preconditions;
+use crate::liteinst_restart::classify_landing_trap;
+use crate::liteinst_restart::classify_private_step;
+#[cfg(target_arch = "x86_64")]
+use crate::liteinst_restart::landing_regs;
+#[cfg(target_arch = "x86_64")]
+use crate::liteinst_restart::liteinst_restart_action;
+#[cfg(target_arch = "x86_64")]
+use crate::liteinst_restart::restart_depends_on_handler;
+#[cfg(target_arch = "x86_64")]
+use crate::liteinst_restart::signal_bit;
 use crate::liteinst_stats::LiteinstPatchOutcome;
 use crate::liteinst_trap_only::TrapOnlyTask;
 use crate::poll_on_wake::PollOnWake;
@@ -1525,6 +1551,125 @@ fn callback_observation_decision(
     }
 }
 
+/// A host-hybrid syscall restart in flight: the controller was rewound to the
+/// runtime `int3` and will re-trap there (see `restart_liteinst_syscall`).
+///
+/// A thread keeps these on a stack, innermost last. A signal handler delivered
+/// while one is pending can itself make host-hybrid syscalls that restart, so
+/// the stack relies on how handlers leave:
+///
+/// - A handler that returns through `rt_sigreturn` restores the registers it
+///   was delivered with. The controller then re-traps at its rewound `int3`,
+///   or reaches the landing with the stack pointer it was armed with, so
+///   `controller_rsp` names the restart it resolves even when restarts nested
+///   inside the handler were abandoned.
+/// - A handler left by `siglongjmp` abandons its restarts. They stay below
+///   the top until an enclosing restart's re-trap or landing drops everything
+///   above it, or a new restart at the same controller stack pointer
+///   replaces them, and `LITEINST_PENDING_RESTART_LIMIT` bounds them
+///   meanwhile (see `push_liteinst_pending_restart`).
+/// - A handler that edits its `ucontext` edits the runtime's trap context, not
+///   the guest's syscall registers. At an armed landing only `rax` keeps its
+///   plain-ptrace meaning (the result, or the number of the syscall to
+///   restart) and is applied; any other register edit fails closed
+///   (`changed_landing_register`). A handler that moves `rip` never reaches
+///   the landing, so its restart is abandoned as by `siglongjmp`.
+///
+/// A fork child inherits the parent's stack with the address space it
+/// resolves (`inherited_liteinst_restarts`); a thread starts with none.
+#[derive(Clone, Copy, Debug)]
+// Only the x86_64 host-hybrid path pushes an entry.
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+struct LiteinstPendingRestart {
+    /// Address of the runtime `int3` the controller was rewound to.
+    restart_rip: u64,
+    /// The trap's injected frame and controller stack pointer, which tie the
+    /// re-trap to this site.
+    frame_address: usize,
+    controller_rsp: u64,
+    /// The restart code that decides a signal delivered before the re-trap.
+    /// Once the outcome is fixed (the syscall never ran, or the kernel already
+    /// chose to restart), this is `ERESTARTNOINTR`: a signal delivered before
+    /// a syscall is entered never interrupts it.
+    errno: Errno,
+    /// The rewound controller registers while the kernel decides the restart
+    /// at the private-page landing (`landing_regs`).
+    landing: Option<libc::user_regs_struct>,
+}
+
+impl LiteinstPendingRestart {
+    /// Whether a runtime `int3` trap is this restart's re-trap.
+    ///
+    /// The runtime `int3` is shared by every site and a frame address repeats
+    /// at the same call depth, so an entry abandoned by `siglongjmp` matches a
+    /// later trap made at exactly its stack depth. Such a trap is then served
+    /// as a re-trap: the site's hook entry is not counted in the
+    /// instrumentation statistics, and the entries above it are dropped. A
+    /// dropped entry that was still armed makes its landing fail closed
+    /// (`finish_liteinst_restart_landing`); the syscall itself is dispatched
+    /// the same either way.
+    #[cfg(target_arch = "x86_64")]
+    fn is_retrap(&self, restart_rip: u64, frame_address: usize, rsp: u64) -> bool {
+        self.landing.is_none()
+            && self.restart_rip == restart_rip
+            && self.frame_address == frame_address
+            && self.controller_rsp == rsp
+    }
+}
+
+/// Deepest nesting of pending host-hybrid restarts kept per thread; see
+/// `push_liteinst_pending_restart`.
+#[cfg(target_arch = "x86_64")]
+const LITEINST_PENDING_RESTART_LIMIT: usize = 64;
+
+/// The private-page landing address (see `liteinst_restart::landing_regs`).
+const fn liteinst_landing() -> u64 {
+    (cp::PRIVATE_PAGE_OFFSET + LANDING_OFFSET) as u64
+}
+
+/// Whether a host-hybrid syscall's trap stop decided the timer event
+/// (`TracedTask::restart_liteinst_syscall`).
+#[cfg(target_arch = "x86_64")]
+enum TrapTimer {
+    /// The Tool observed the trap, which decided the event.
+    Decided,
+    /// The trap was disregarded (`Timer::disregard_stop`) and left this of
+    /// the event to finish.
+    Disregarded(Option<Unfinished>),
+}
+
+/// Why a restart landing trap could not be resolved
+/// (`TracedTask::resolve_liteinst_landing`).
+enum LandingFailure {
+    /// The trap contradicts the pending restarts; the caller fails closed
+    /// with this message.
+    Invariant(String),
+    Trace(TraceError),
+}
+
+impl From<TraceError> for LandingFailure {
+    fn from(error: TraceError) -> Self {
+        Self::Trace(error)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn read_injected_frame(task: &Stopped, address: usize) -> Result<InjectedSyscallFrame, TraceError> {
+    let address = Addr::from_raw(address).ok_or(Errno::EFAULT)?;
+    Ok(task.read_value(address)?)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn write_injected_frame(
+    task: &Stopped,
+    address: usize,
+    frame: &InjectedSyscallFrame,
+) -> Result<(), TraceError> {
+    let address = AddrMut::from_raw(address).ok_or(Errno::EFAULT)?;
+    let mut task = Stopped::new_unchecked(task.pid());
+    Ok(task.write_value(address, frame)?)
+}
+
 enum LiteinstTrap {
     HandshakeBegin,
     HandshakeReady,
@@ -2406,6 +2551,17 @@ pub struct TracedTask<L: Tool> {
     /// Address of the writable e9tool register frame for the active event.
     injected_syscall_frame: Option<usize>,
 
+    /// Result of a fast tail injection made from an injected-frame callback.
+    /// The dispatcher that owns the frame writes it, or restarts the trap when
+    /// it is a Linux restart code, after the callback is dropped.
+    injected_tail_result: Option<Result<i64, Errno>>,
+
+    /// Host-hybrid syscalls whose controller was rewound to the runtime
+    /// `int3` for a restart and has not re-trapped yet, innermost last. A
+    /// signal handler that runs while a restart is pending can itself make a
+    /// syscall that restarts, so restarts nest like the handlers do.
+    liteinst_pending_restarts: Vec<LiteinstPendingRestart>,
+
     /// Per-process dynamic LiteInst handshake and patched-site state.
     liteinst_runtime: Arc<StdMutex<LiteinstRuntimeState>>,
 
@@ -2604,6 +2760,8 @@ impl<L: Tool> TracedTask<L> {
             pending_syscall: None,
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
+            injected_tail_result: None,
+            liteinst_pending_restarts: Vec::new(),
             liteinst_runtime: Arc::new(StdMutex::new(LiteinstRuntimeState::default())),
             liteinst_entry_guard: None,
             liteinst_failure: None,
@@ -2647,6 +2805,39 @@ impl<L: Tool> TracedTask<L> {
         }
     }
 
+    /// The pending host-hybrid restarts a new child resolves.
+    ///
+    /// A child that forks inside a signal handler returns through the same
+    /// handler frames, copied into its own address space, to the same
+    /// re-traps and landings, and serves each against its own copy of the
+    /// injected frames. A child sharing the parent's address space (a thread,
+    /// or a `CLONE_VM` process) runs on its own stack and starts with none.
+    /// `PTRACE_EVENT_FORK` and `PTRACE_EVENT_CLONE` follow the exit signal,
+    /// not `CLONE_VM`, so the kernel is asked; if it cannot answer, the child
+    /// starts with none, and a landing it reaches fails closed.
+    fn inherited_liteinst_restarts(&self, child: Pid) -> Vec<LiteinstPendingRestart> {
+        if self.liteinst_pending_restarts.is_empty() {
+            return Vec::new();
+        }
+        const KCMP_VM: libc::c_long = 1;
+        // SAFETY: kcmp only compares kernel objects of the two tasks.
+        let order = unsafe {
+            libc::syscall(
+                libc::SYS_kcmp,
+                self.tid.as_raw() as libc::c_long,
+                child.as_raw() as libc::c_long,
+                KCMP_VM,
+                0 as libc::c_long,
+                0 as libc::c_long,
+            )
+        };
+        if order > 0 {
+            self.liteinst_pending_restarts.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Create a child TracedTask corresponding to a clone()
     fn cloned(&self, child: Pid) -> Self {
         let global_state = self.global_state.clone();
@@ -2674,6 +2865,8 @@ impl<L: Tool> TracedTask<L> {
             pending_syscall: None,
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
+            injected_tail_result: None,
+            liteinst_pending_restarts: self.inherited_liteinst_restarts(child),
             liteinst_runtime: self.liteinst_runtime.clone(),
             liteinst_entry_guard: None,
             liteinst_failure: None,
@@ -2738,6 +2931,8 @@ impl<L: Tool> TracedTask<L> {
             pending_syscall: None,
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
+            injected_tail_result: None,
+            liteinst_pending_restarts: self.inherited_liteinst_restarts(child),
             liteinst_runtime: Arc::new(StdMutex::new(
                 self.liteinst_runtime.lock().unwrap().clone(),
             )),
@@ -2779,26 +2974,26 @@ impl<L: Tool> TracedTask<L> {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn read_injected_syscall_frame(
         &self,
         task: &Stopped,
         address: usize,
     ) -> Result<InjectedSyscallFrame, TraceError> {
-        let address = Addr::from_raw(address).ok_or(Errno::EFAULT)?;
-        Ok(task.read_value(address)?)
+        read_injected_frame(task, address)
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn write_injected_syscall_frame(
         &self,
         task: &Stopped,
         address: usize,
         frame: &InjectedSyscallFrame,
     ) -> Result<(), TraceError> {
-        let address = AddrMut::from_raw(address).ok_or(Errno::EFAULT)?;
-        let mut task = Stopped::new_unchecked(task.pid());
-        Ok(task.write_value(address, frame)?)
+        write_injected_frame(task, address, frame)
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn write_injected_syscall_result(
         &self,
         task: &Stopped,
@@ -2897,6 +3092,15 @@ pub(crate) static LIVE_TIMER_SIGNALS_TAKEN: AtomicU64 = AtomicU64::new(0);
 /// Timer overflow signals discarded while the LiteInst patch helper ran, for
 /// tests.
 pub(crate) static LITEINST_HELPER_TIMER_SIGNALS_DISCARDED: AtomicU64 = AtomicU64::new(0);
+
+/// LiteInst restart landings that interrupted a precise timer's single steps,
+/// after which the run loop resolved the landing and the steps continued
+/// (`finish_liteinst_restart_landing`), for tests.
+pub(crate) static LITEINST_TIMER_STEP_LANDINGS_RESOLVED: AtomicU64 = AtomicU64::new(0);
+
+/// SIGTRAP stops that `handle_sigtrap` resumed without delivering the signal
+/// because nothing claimed them, for tests.
+pub(crate) static UNCLAIMED_SIGTRAPS_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
 
 /// Canonical marker emitted when a guest-thread task dies of a panic.
 ///
@@ -3669,6 +3873,26 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok((true, task))
     }
 
+    /// Finishes, before the guest resumes, what of the timer event a
+    /// disregarded stop left (`disregarded`, from `Timer::disregard_stop`), or
+    /// a notification an injection took (`Timer::take_notification`), by
+    /// driving it from this stop. A guest signal held for the resume instead
+    /// retires the event (`Timer::retire`); see `handle_injected_syscall`.
+    async fn finish_disregarded_timer(
+        &mut self,
+        task: Stopped,
+        disregarded: Option<Unfinished>,
+    ) -> Result<Stopped, TraceError> {
+        if self.pending_signal.is_some() {
+            self.timer.retire()?;
+            return Ok(task);
+        }
+        match disregarded.or_else(|| self.timer.take_notification()) {
+            Some(unfinished) => Ok(self.drive_timer(task, Some(unfinished)).await?.1),
+            None => Ok(task),
+        }
+    }
+
     /// Handle a state change in the guest, and leave it in a stopped state.
     /// Return the signal that the process would be resumed with, if any.
     ///
@@ -3797,13 +4021,20 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     // TODO-HUMAN-REVIEW(PR-102): Review rewritten-syscall dispatch and result handling.
+    //
+    // `restart_rip` is the address of the LiteInst runtime's trap `int3` for a
+    // host-hybrid trap, and `None` for an e9patch marker trap. With it, a Linux
+    // restart result rewinds the controller to that `int3` instead of writing
+    // the private code into the guest frame; see `restart_liteinst_syscall`.
     #[cfg(target_arch = "x86_64")]
     async fn handle_injected_syscall(
         &mut self,
         task: Stopped,
         frame_address: usize,
         trap_rflags: u64,
+        restart_rip: Option<u64>,
     ) -> Result<Wait, TraceError> {
+        self.injected_tail_result = None;
         let mut frame = self.read_injected_syscall_frame(&task, frame_address)?;
         let syscall = frame.syscall();
         let (nr, args) = syscall.into_parts();
@@ -3840,6 +4071,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             // arrive at the injection (`untraced_syscall`).
             let disregarded = self.timer.disregard_stop()?;
             self.injected_syscall_frame = Some(frame_address);
+            if let Some(restart_rip) = restart_rip {
+                return self
+                    .untraced_liteinst_syscall(
+                        task,
+                        frame_address,
+                        nr,
+                        args,
+                        restart_rip,
+                        disregarded,
+                    )
+                    .await;
+            }
             let result = self.untraced_syscall(task, nr, args).await?;
             let task = self.assume_stopped();
             self.write_injected_syscall_result(&task, result)?;
@@ -3874,15 +4117,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             // the event's notification would then be discarded as cancelled.
             // That stop is one that no Tool sees and that still cancels
             // (https://github.com/rrnewton/reverie/issues/746).
-            let task = if self.pending_signal.is_some() {
-                self.timer.retire()?;
-                task
-            } else {
-                match disregarded.or_else(|| self.timer.take_notification()) {
-                    Some(unfinished) => self.drive_timer(task, Some(unfinished)).await?.1,
-                    None => task,
-                }
-            };
+            let task = self.finish_disregarded_timer(task, disregarded).await?;
             let signal = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeInjectedSyscall,
             )?;
@@ -3926,8 +4161,28 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Some(Ok(value)) => Some(Ok(value)),
                 None => None,
             };
+            // A fast tail injection ended the callback early; its result is
+            // this dispatcher's to apply.
+            let retval = retval.or_else(|| self.injected_tail_result.take());
             self.ordinary_trace_continuation()?;
             self.timer.finalize_requests();
+
+            if let (Some(restart_rip), Some(result)) = (restart_rip, retval)
+                && let Some(action) = liteinst_restart_action(result)
+            {
+                let errno = result.expect_err("only an errno is a restart request");
+                return self
+                    .restart_liteinst_syscall(
+                        task,
+                        frame_address,
+                        restart_rip,
+                        errno,
+                        action,
+                        LiteinstActivationOperation::ResumeInterceptedInjectedSyscall,
+                        TrapTimer::Decided,
+                    )
+                    .await;
+            }
 
             if let Some(retval) = retval {
                 let result = match retval {
@@ -3952,6 +4207,573 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         .instrument(span)
         .await
+    }
+
+    /// Runs an unsubscribed host-hybrid syscall on the private page and
+    /// applies Linux's restart rule to it.
+    ///
+    /// The controller is stopped at the runtime `int3` with `orig_rax == -1`,
+    /// so the kernel never restarts this syscall on its own. The private step
+    /// ends in one of three ways (`classify_private_step`):
+    ///
+    /// * `NotRun`: a signal was pending before the `syscall` executed. The
+    ///   controller is rewound to the `int3` and the signal stop is handed to
+    ///   the run loop exactly as ptrace would see a signal that arrives before
+    ///   an unsubscribed syscall; the re-trap issues the syscall afterwards.
+    /// * `Ran`: a restart code is rewound (`restart_liteinst_syscall`), with
+    ///   the interrupting signal still kernel-pending; anything else is the
+    ///   syscall's result.
+    /// * `Held`: the syscall ran and `step_private_syscall` held a signal it
+    ///   could not requeue; the result is handled as for `Ran`, with the held
+    ///   signal delivered on the resume.
+    /// * `Unexpected`: fails closed.
+    ///
+    /// The step itself is `step_private_syscall`, as for every other
+    /// untraced syscall, so group stops, stale step reports, signals after
+    /// the syscall completed, guest seccomp traps and late timer
+    /// notifications are handled before the outcome is classified.
+    #[cfg(target_arch = "x86_64")]
+    async fn untraced_liteinst_syscall(
+        &mut self,
+        task: Stopped,
+        frame_address: usize,
+        nr: Sysno,
+        args: SyscallArgs,
+        restart_rip: u64,
+        disregarded: Option<Unfinished>,
+    ) -> Result<Wait, TraceError> {
+        self.validate_liteinst_mapping_execution(nr, args)?;
+        self.timer.expire_overflow_records(&task);
+        let controller = task.getregs()?;
+        let mut regs = self.read_guest_registers(&task)?;
+        *regs.syscall_mut() = nr as Reg;
+        *regs.orig_syscall_mut() = nr as Reg;
+        regs.set_args((
+            args.arg0 as Reg,
+            args.arg1 as Reg,
+            args.arg2 as Reg,
+            args.arg3 as Reg,
+            args.arg4 as Reg,
+            args.arg5 as Reg,
+        ));
+        let child_context = regs;
+        *regs.ip_mut() = cp::PRIVATE_PAGE_OFFSET as Reg;
+        task.setregs(&regs)?;
+
+        let (wait, seccomp_trapped) = self
+            .step_private_syscall_discarding_late_timer(task, nr)
+            .await?;
+
+        let (stopped, sig) = match wait {
+            Wait::Stopped(stopped, Event::Signal(sig)) => (stopped, sig),
+            other => {
+                // Fork, exec, exit and syscall stops keep their existing
+                // handling; none of them carries a restart code.
+                let result = self
+                    .status_to_result(other, Some(controller), Some(child_context))
+                    .await?;
+                self.observe_liteinst_mapping_result(nr, args, result);
+                let task = self.assume_stopped();
+                self.write_injected_syscall_result(&task, result)?;
+                self.injected_syscall_frame = None;
+                let task = self.finish_disregarded_timer(task, disregarded).await?;
+                let signal = self.take_pending_signal_for_resume(
+                    LiteinstActivationOperation::ResumeInjectedSyscall,
+                )?;
+                return self.resume_stopped(task, signal)?.next_state().await;
+            }
+        };
+
+        self.validate_nested_liteinst_activation_signal(
+            &stopped,
+            sig,
+            LiteinstActivationOperation::FinishInjectedSyscall,
+            NestedTrapExpectation::PrivateSyscall(
+                (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64,
+            ),
+            false,
+        )?;
+        let step_regs = stopped.getregs()?;
+        match classify_private_step(
+            step_regs.ip(),
+            sig,
+            cp::PRIVATE_PAGE_OFFSET as u64,
+            cp::SYSCALL_INSTR_SIZE as u64,
+        ) {
+            PrivateStep::NotRun => {
+                let byte = self.read_restart_byte(&stopped, restart_rip)?;
+                self.check_liteinst_rewind(&controller, restart_rip, byte)?;
+                let mut rewound = controller;
+                *rewound.ip_mut() = restart_rip as Reg;
+                stopped.setregs(&rewound)?;
+                self.injected_syscall_frame = None;
+                // The syscall never ran, so no handler can interrupt it: the
+                // re-executed int3 issues it after the signal is handled.
+                self.push_liteinst_pending_restart(LiteinstPendingRestart {
+                    restart_rip,
+                    frame_address,
+                    controller_rsp: controller.rsp,
+                    errno: Errno::ERESTARTNOINTR,
+                    landing: None,
+                });
+                // The run loop observes this signal stop, and it decides the
+                // timer event as plain ptrace's stop for the same signal would:
+                // the int3 stop was disregarded, so the event is as it was
+                // before the trap. A stop other than the timer's own cancels
+                // it, as `handle_injected_syscall` retires the event for a
+                // guest signal that an injection holds. The single steps the
+                // int3 stop interrupted, a lost notification, or one the step
+                // took (`disregarded`, `Timer::take_notification`) therefore
+                // end with that stop and are not driven here.
+                let _ = disregarded;
+                Ok(Wait::Stopped(stopped, Event::Signal(sig)))
+            }
+            step @ (PrivateStep::Ran | PrivateStep::Held) => {
+                if step == PrivateStep::Held {
+                    self.hold_pending_signal(&stopped, sig);
+                }
+                // A guest seccomp filter's `SECCOMP_RET_TRAP` skipped the
+                // syscall and left its number in RAX (see `untraced_syscall`).
+                let result = if seccomp_trapped {
+                    Err(Errno::ENOSYS)
+                } else {
+                    Errno::from_ret(step_regs.ret() as usize).map(|x| x as i64)
+                };
+                stopped.setregs(&controller)?;
+                if let Some(action) = liteinst_restart_action(result) {
+                    let errno = result.expect_err("only an errno is a restart request");
+                    return self
+                        .restart_liteinst_syscall(
+                            stopped,
+                            frame_address,
+                            restart_rip,
+                            errno,
+                            action,
+                            LiteinstActivationOperation::ResumeInjectedSyscall,
+                            TrapTimer::Disregarded(disregarded),
+                        )
+                        .await;
+                }
+                self.observe_liteinst_mapping_result(nr, args, result);
+                self.write_injected_syscall_result(&stopped, result)?;
+                self.injected_syscall_frame = None;
+                let stopped = self.finish_disregarded_timer(stopped, disregarded).await?;
+                let signal = self.take_pending_signal_for_resume(
+                    LiteinstActivationOperation::ResumeInjectedSyscall,
+                )?;
+                self.resume_stopped(stopped, signal)?.next_state().await
+            }
+            PrivateStep::Unexpected => {
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::SyscallRestartInvariant,
+                    Error::runtime(
+                        self.tid(),
+                        "restart LiteInst host-hybrid syscall",
+                        format!(
+                            "private-page step of {nr} stopped with {sig} at {:#x}, \
+                             outside the private syscall",
+                            step_regs.ip()
+                        ),
+                    ),
+                );
+                Err(Errno::EPROTO.into())
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn read_restart_byte(&self, task: &Stopped, restart_rip: u64) -> Result<u8, TraceError> {
+        let address = Addr::from_raw(restart_rip as usize).ok_or(Errno::EFAULT)?;
+        Ok(task.read_value(address)?)
+    }
+
+    /// Fails closed unless rewinding the controller one byte re-executes the
+    /// runtime `int3` that produced this trap.
+    #[cfg(target_arch = "x86_64")]
+    fn check_liteinst_rewind(
+        &mut self,
+        controller: &libc::user_regs_struct,
+        restart_rip: u64,
+        restart_byte: u8,
+    ) -> Result<(), TraceError> {
+        let marker = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .map(|config| config.syscall_marker)
+            .ok_or(Errno::EPROTO)?;
+        if let Err(message) = check_rewind_preconditions(
+            controller.ip(),
+            controller.rax,
+            restart_rip,
+            marker,
+            restart_byte,
+        ) {
+            self.record_liteinst_failure(
+                LiteinstActivationFailureReason::SyscallRestartInvariant,
+                Error::runtime(self.tid(), "restart LiteInst host-hybrid syscall", message),
+            );
+            return Err(Errno::EPROTO.into());
+        }
+        Ok(())
+    }
+
+    /// Restarts a host-hybrid syscall whose final result is a Linux restart
+    /// code, applying Linux's signal-delivery restart rule.
+    ///
+    /// The controller must be stopped just after the runtime `int3` (see
+    /// `check_liteinst_rewind`). Instead of writing the private code into the
+    /// guest frame, the controller is rewound to the `int3` and resumed. With
+    /// no signal delivered, or one with no guest handler, the re-executed
+    /// `int3` traps again and re-dispatches the syscall.
+    /// `ERESTART_RESTARTBLOCK` re-dispatches as `restart_syscall` with the
+    /// argument registers kept.
+    ///
+    /// A signal delivered before the re-trap is decided by the kernel itself:
+    /// a signal the tracer holds is delivered from this stop, and a
+    /// kernel-pending one reaches `handle_signal` at the rewound `int3`. Both
+    /// arm the private-page landing (`arm_liteinst_restart_landing`), where
+    /// x86 `handle_signal` restarts or returns `-EINTR` according to the code
+    /// and the delivered handler's `SA_RESTART`.
+    ///
+    /// No retry bound applies: a Tool that keeps returning a restart code with
+    /// nothing pending re-traps forever, as it would re-stop forever at the
+    /// kernel's own restart under plain ptrace.
+    ///
+    /// `timer` says whether the trap stop decided the timer event. A trap the
+    /// Tool observed did; one it did not was disregarded, and what of the
+    /// event it left is finished at the rewound `int3`, as
+    /// `handle_injected_syscall` finishes it at an unsubscribed syscall's
+    /// return. Single steps from there end at the kernel-pending signal's stop
+    /// or at the re-trap, which the run loop observes.
+    #[cfg(target_arch = "x86_64")]
+    #[allow(clippy::too_many_arguments)]
+    async fn restart_liteinst_syscall(
+        &mut self,
+        task: Stopped,
+        frame_address: usize,
+        restart_rip: u64,
+        errno: Errno,
+        action: RestartAction,
+        operation: LiteinstActivationOperation,
+        timer: TrapTimer,
+    ) -> Result<Wait, TraceError> {
+        let mut controller = task.getregs()?;
+        let byte = self.read_restart_byte(&task, restart_rip)?;
+        self.check_liteinst_rewind(&controller, restart_rip, byte)?;
+
+        if action == RestartAction::RestartSyscall {
+            // Re-read: the callback may have rewritten guest registers.
+            let mut frame = self.read_injected_syscall_frame(&task, frame_address)?;
+            frame.set_restart_syscall();
+            self.write_injected_syscall_frame(&task, frame_address, &frame)?;
+        }
+
+        *controller.ip_mut() = restart_rip as Reg;
+        task.setregs(&controller)?;
+        self.injected_syscall_frame = None;
+        self.pending_syscall = None;
+        self.pending_syscall_already_skipped = false;
+        self.push_liteinst_pending_restart(LiteinstPendingRestart {
+            restart_rip,
+            frame_address,
+            controller_rsp: controller.rsp,
+            errno,
+            landing: None,
+        });
+        let task = match timer {
+            TrapTimer::Decided => task,
+            TrapTimer::Disregarded(disregarded) => {
+                self.finish_disregarded_timer(task, disregarded).await?
+            }
+        };
+        let signal = self.take_pending_signal_for_resume(operation)?;
+        if let Some(signal) = signal {
+            // A held signal is delivered from this `int3` stop, so the kernel
+            // decides this restart as it delivers it.
+            self.arm_liteinst_restart_landing(&task, signal)?;
+        }
+        self.resume_stopped(task, signal)?.next_state().await
+    }
+
+    /// Hands a pending host-hybrid restart to the kernel's own restart rule
+    /// for the signal about to be delivered from this stop.
+    ///
+    /// Does nothing unless a restart is pending with the controller at its
+    /// rewound `int3` and the code can become `EINTR`. Otherwise the
+    /// controller is parked at the landing (`landing_regs`); the `int3` it
+    /// reaches reports the outcome to `finish_liteinst_restart_landing`. A
+    /// SIGTRAP delivery fails closed instead (`RUNTIME_OWNED_HANDLERS`).
+    #[cfg(target_arch = "x86_64")]
+    fn arm_liteinst_restart_landing(
+        &mut self,
+        task: &Stopped,
+        signal: Signal,
+    ) -> Result<(), TraceError> {
+        let Some(&pending) = self.liteinst_pending_restarts.last() else {
+            return Ok(());
+        };
+        if pending.landing.is_some() || !restart_depends_on_handler(pending.errno) {
+            return Ok(());
+        }
+        // Both a held signal (after `restart_liteinst_syscall` rewound the
+        // int3 stop) and a kernel-pending one (stopped at the rewound int3)
+        // are delivered with the controller at the int3.
+        let rewound = task.getregs()?;
+        if rewound.ip() != pending.restart_rip || rewound.rsp != pending.controller_rsp {
+            return Ok(());
+        }
+        if signal_bit(signal as i32) & RUNTIME_OWNED_HANDLERS != 0 {
+            self.record_liteinst_failure(
+                LiteinstActivationFailureReason::SyscallRestartInvariant,
+                Error::runtime(
+                    self.tid(),
+                    "restart LiteInst host-hybrid syscall",
+                    format!(
+                        "{signal} delivered while a {} restart is pending: the runtime's \
+                         {signal} router hides whether the guest's disposition would restart it",
+                        pending.errno
+                    ),
+                ),
+            );
+            return Err(Errno::EPROTO.into());
+        }
+        let syscall_number = self
+            .read_injected_syscall_frame(task, pending.frame_address)?
+            .raw_syscall_number();
+        let landing = liteinst_landing();
+        let mut bytes = [0u8; LANDING_LEN];
+        task.read_exact(landing as usize, &mut bytes)?;
+        if let Err(message) = check_landing_bytes(&bytes) {
+            self.record_liteinst_failure(
+                LiteinstActivationFailureReason::SyscallRestartInvariant,
+                Error::runtime(self.tid(), "restart LiteInst host-hybrid syscall", message),
+            );
+            return Err(Errno::EPROTO.into());
+        }
+        task.setregs(&landing_regs(
+            &rewound,
+            landing,
+            pending.errno,
+            syscall_number,
+        ))?;
+        if let Some(innermost) = self.liteinst_pending_restarts.last_mut() {
+            innermost.landing = Some(rewound);
+        }
+        Ok(())
+    }
+
+    /// Puts the syscall marker back in `rax` when the controller is stopped
+    /// at a pending restart's rewound `int3`.
+    ///
+    /// The rewind left the marker there (`check_liteinst_rewind`), and the
+    /// controller has not run since, but a syscall the Tool injects from this
+    /// stop returns its result in `rax`: `restore_context` restores the
+    /// instruction pointer, the arguments and the syscall clobbers, not the
+    /// return register. Without the marker the re-executed `int3` would not be
+    /// recognised as the syscall trap, and an armed landing would restore the
+    /// clobbered value for the re-trap.
+    #[cfg(target_arch = "x86_64")]
+    fn restore_liteinst_restart_marker(&self, task: &Stopped) -> Result<(), TraceError> {
+        let Some(config) = self.global_state.liteinst_runtime.as_ref() else {
+            return Ok(());
+        };
+        let Some(pending) = self.liteinst_pending_restarts.last() else {
+            return Ok(());
+        };
+        if pending.landing.is_some() {
+            return Ok(());
+        }
+        let mut regs = task.getregs()?;
+        if regs.ip() != pending.restart_rip
+            || regs.rsp != pending.controller_rsp
+            || regs.rax == config.syscall_marker
+        {
+            return Ok(());
+        }
+        regs.rax = config.syscall_marker;
+        task.setregs(&regs)?;
+        Ok(())
+    }
+
+    /// Records a restart the thread will re-trap for. A restart abandoned by
+    /// `siglongjmp` out of a handler is never re-trapped, so two rules keep
+    /// such entries from accumulating:
+    ///
+    /// - An entry with the new restart's controller stack pointer is dropped.
+    ///   A live restart keeps its controller frame on the stack until its
+    ///   re-trap or landing, and a handler delivered while it is pending runs
+    ///   below that frame or on another stack, so a new trap at the same
+    ///   stack pointer means the older restart was abandoned. A loop that
+    ///   abandons a restart on every iteration therefore keeps one entry.
+    /// - Past `LITEINST_PENDING_RESTART_LIMIT` entries the oldest is dropped.
+    ///   That entry is live only if a handler abandoned more than the limit
+    ///   of restarts at distinct stack depths inside it; its landing or
+    ///   re-trap then fails closed.
+    #[cfg(target_arch = "x86_64")]
+    fn push_liteinst_pending_restart(&mut self, pending: LiteinstPendingRestart) {
+        self.liteinst_pending_restarts
+            .retain(|older| older.controller_rsp != pending.controller_rsp);
+        if self.liteinst_pending_restarts.len() >= LITEINST_PENDING_RESTART_LIMIT {
+            self.liteinst_pending_restarts.remove(0);
+        }
+        self.liteinst_pending_restarts.push(pending);
+    }
+
+    /// Serves the landing `int3` that reports the kernel's restart decision.
+    ///
+    /// Returns the stop untouched unless this is the kernel-generated SIGTRAP
+    /// of one of the landing's two `int3`s. The landing is entered only from
+    /// an armed restart, so such a trap with none armed fails closed.
+    ///
+    /// The trap belongs to the armed restart whose `controller_rsp` it
+    /// carries: `rt_sigreturn` restored the stack pointer the landing was
+    /// armed with (see `LiteinstPendingRestart`). The innermost such restart
+    /// is chosen, and every restart above it was pushed inside a handler that
+    /// has now returned past it, so they are dropped. A landing trap that
+    /// matches no armed restart fails closed.
+    ///
+    /// Plain ptrace has no stop where the kernel decides a restart after a
+    /// handler: an interrupted syscall returns to the guest unseen, and a
+    /// restarted one stops next at its own re-entry, which the re-trap
+    /// reproduces. So the landing stop is disregarded
+    /// (`Timer::disregard_stop`), and what of the timer event it left is
+    /// finished once the landing is resolved, as at an unsubscribed
+    /// syscall's return: single steps toward a precise event that the
+    /// landing interrupted continue from the resolved state.
+    async fn finish_liteinst_restart_landing(
+        &mut self,
+        task: Stopped,
+        regs: &libc::user_regs_struct,
+    ) -> Result<Result<Wait, Stopped>, TraceError> {
+        if self.global_state.liteinst_runtime.is_none() {
+            return Ok(Err(task));
+        }
+        let Some(outcome) = classify_landing_trap(regs.ip(), liteinst_landing()) else {
+            return Ok(Err(task));
+        };
+        if task.getsiginfo()?.si_code != libc::SI_KERNEL {
+            return Ok(Err(task));
+        }
+        match Self::resolve_liteinst_landing(
+            &mut self.liteinst_pending_restarts,
+            &task,
+            regs,
+            outcome,
+        ) {
+            Ok(()) => {}
+            Err(LandingFailure::Trace(error)) => return Err(error),
+            Err(LandingFailure::Invariant(message)) => {
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::SyscallRestartInvariant,
+                    Error::runtime(self.tid(), "restart LiteInst host-hybrid syscall", message),
+                );
+                return Err(Errno::EPROTO.into());
+            }
+        }
+        let disregarded = self.timer.disregard_stop()?;
+        if self.pending_signal.is_none() && matches!(disregarded, Some(Unfinished::Steps(_))) {
+            LITEINST_TIMER_STEP_LANDINGS_RESOLVED.fetch_add(1, Ordering::Relaxed);
+        }
+        let task = self.finish_disregarded_timer(task, disregarded).await?;
+        let signal = self
+            .take_pending_signal_for_resume(LiteinstActivationOperation::ResumeInjectedSyscall)?;
+        Ok(Ok(self.resume_stopped(task, signal)?.next_state().await?))
+    }
+
+    /// Applies the kernel's restart decision that a landing trap reports
+    /// (`finish_liteinst_restart_landing`). The thread is left at the rewound
+    /// runtime `int3` of a restart that will re-trap, or at the instruction
+    /// after it with the frame completed. The caller resumes the thread.
+    #[cfg(target_arch = "x86_64")]
+    fn resolve_liteinst_landing(
+        pending_restarts: &mut Vec<LiteinstPendingRestart>,
+        task: &Stopped,
+        regs: &libc::user_regs_struct,
+        outcome: LandingOutcome,
+    ) -> Result<(), LandingFailure> {
+        let Some(index) = pending_restarts
+            .iter()
+            .rposition(|pending| pending.landing.is_some() && pending.controller_rsp == regs.rsp)
+        else {
+            return Err(LandingFailure::Invariant(format!(
+                "restart landing trap at {:#x} with stack pointer {:#x} matches no armed restart",
+                regs.ip(),
+                regs.rsp
+            )));
+        };
+        pending_restarts.truncate(index + 1);
+        let pending = pending_restarts[index];
+        let rewound = pending
+            .landing
+            .expect("rposition selected an armed restart");
+        if let Some(register) = changed_landing_register(&rewound, regs) {
+            return Err(LandingFailure::Invariant(format!(
+                "a signal handler changed controller register {register} across the restart \
+                 landing"
+            )));
+        }
+        let mut frame = read_injected_frame(task, pending.frame_address)?;
+        match outcome {
+            LandingOutcome::Restart => {
+                // The kernel restarted with `rax` = the frame's syscall
+                // number, which a handler may have edited as it can edit the
+                // number a plain restarted `syscall` instruction makes.
+                if regs.rax != frame.raw_syscall_number() {
+                    frame.set_raw_syscall_number(regs.rax);
+                    write_injected_frame(task, pending.frame_address, &frame)?;
+                }
+                // The next signal, if any, reaches a syscall that has not
+                // been re-entered, so it cannot interrupt it.
+                task.setregs(&rewound)?;
+                pending_restarts[index] = LiteinstPendingRestart {
+                    errno: Errno::ERESTARTNOINTR,
+                    landing: None,
+                    ..pending
+                };
+            }
+            LandingOutcome::Interrupted => {
+                // `rax` is the kernel's `-EINTR`, or what the handler left in
+                // its place, which is the syscall's result under plain ptrace.
+                frame.set_result(regs.rax as i64);
+                write_injected_frame(task, pending.frame_address, &frame)?;
+                let mut completed = rewound;
+                *completed.ip_mut() = (pending.restart_rip + 1) as Reg;
+                task.setregs(&completed)?;
+                pending_restarts.truncate(index);
+            }
+        }
+        Ok(())
+    }
+
+    // Only the x86_64 host-hybrid path pushes a pending restart, so elsewhere
+    // no landing is armed and no rewound `int3` carries the marker. These
+    // match the x86_64 functions with an empty pending stack.
+    #[cfg(not(target_arch = "x86_64"))]
+    fn arm_liteinst_restart_landing(
+        &mut self,
+        _task: &Stopped,
+        _signal: Signal,
+    ) -> Result<(), TraceError> {
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn restore_liteinst_restart_marker(&self, _task: &Stopped) -> Result<(), TraceError> {
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn resolve_liteinst_landing(
+        _pending_restarts: &mut Vec<LiteinstPendingRestart>,
+        _task: &Stopped,
+        regs: &libc::user_regs_struct,
+        _outcome: LandingOutcome,
+    ) -> Result<(), LandingFailure> {
+        Err(LandingFailure::Invariant(format!(
+            "restart landing trap at {:#x} matches no armed restart",
+            regs.ip()
+        )))
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -4165,10 +4987,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         None
     }
 
-    async fn handle_sigtrap(
-        &mut self,
-        mut task: Stopped,
-    ) -> Result<HandleSignalResult, TraceError> {
+    async fn handle_sigtrap(&mut self, task: Stopped) -> Result<HandleSignalResult, TraceError> {
         let resumed_by_gdb_step = self
             .resumed_by_gdb
             .is_some_and(|action| matches!(action, ResumeAction::Step(_)));
@@ -4212,6 +5031,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             );
             return Err(Errno::EPROTO.into());
         }
+        let mut task = match self.finish_liteinst_restart_landing(task, &regs).await? {
+            Ok(wait) => return Ok(HandleSignalResult::SignalSuppressed(wait)),
+            Err(task) => task,
+        };
         match self.classify_liteinst_trap(&task, &regs) {
             Some(LiteinstTrap::HandshakeBegin) => {
                 return Ok(HandleSignalResult::SignalSuppressed(
@@ -4262,16 +5085,43 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             #[cfg(target_arch = "x86_64")]
             Some(LiteinstTrap::Syscall(frame_address)) => {
-                if let Some(stats) = self
-                    .global_state
+                // A restart re-executes only the runtime int3 of the hook
+                // entry already counted; kernel-interrupted restarts depend on
+                // signal timing, so they must not change the hook count.
+                // `classify_liteinst_trap` matched this stop against the
+                // validated handshake's exact post-int3 RIP, so the runtime's
+                // `int3` is the byte before it (runtime.rs host trap asm).
+                let restart_rip = self
                     .liteinst_runtime
-                    .as_ref()
-                    .and_then(|config| config.instrumentation_stats.as_ref())
+                    .lock()
+                    .unwrap()
+                    .frame
+                    .and_then(|handshake| handshake.syscall_trap_rip.checked_sub(1))
+                    .ok_or(Errno::EPROTO)?;
+                // Any other trap is a hook entry nested inside a signal handler
+                // delivered while a restart is pending (a handler can call
+                // through a patched site), so the pending restarts are kept
+                // for the re-trap or the landing that follows the handler.
+                // Restarts above a re-trapped one were abandoned.
+                let restart_retrap = self
+                    .liteinst_pending_restarts
+                    .iter()
+                    .rposition(|pending| pending.is_retrap(restart_rip, frame_address, regs.rsp));
+                if let Some(index) = restart_retrap {
+                    self.liteinst_pending_restarts.truncate(index);
+                }
+                let restart_retrap = restart_retrap.is_some();
+                if !restart_retrap
+                    && let Some(stats) = self
+                        .global_state
+                        .liteinst_runtime
+                        .as_ref()
+                        .and_then(|config| config.instrumentation_stats.as_ref())
                 {
                     stats.lock().unwrap().record_direct_hook();
                 }
                 let next_state = self
-                    .handle_injected_syscall(task, frame_address, regs.eflags)
+                    .handle_injected_syscall(task, frame_address, regs.eflags, Some(restart_rip))
                     .await?;
                 return Ok(HandleSignalResult::SignalSuppressed(next_state));
             }
@@ -4302,7 +5152,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 && trap.validates_site_provenance(task.pid(), regs.ip(), &frame)
             {
                 let next_state = self
-                    .handle_injected_syscall(task, regs.rdi as usize, regs.eflags)
+                    .handle_injected_syscall(task, regs.rdi as usize, regs.eflags, None)
                     .await?;
                 return Ok(HandleSignalResult::SignalSuppressed(next_state));
             }
@@ -4328,6 +5178,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
         } else {
+            UNCLAIMED_SIGTRAPS_SUPPRESSED.fetch_add(1, Ordering::Relaxed);
             // The trap is not delivered and makes no Tool callback, so it
             // leaves the timer event as it was, and what of the event nothing
             // else will drive, the single steps toward it that it interrupted
@@ -4586,6 +5437,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             sig if sig == Timer::signal_type() => {
                 let (was_timer, task) = self.handle_timer(task).await?;
                 if was_timer {
+                    // The Tool's timer callback can inject from this stop.
+                    self.restore_liteinst_restart_marker(&task)?;
                     HandleSignalResult::SignalSuppressed(
                         self.resume_stopped(task, None)?.next_state().await?,
                     )
@@ -4609,6 +5462,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .await?;
                 self.ordinary_trace_continuation()?;
                 self.timer.finalize_requests();
+                self.restore_liteinst_restart_marker(&task)?;
+                if let Some(sig) = sig {
+                    // A signal delivered at a rewound host-hybrid int3 decides
+                    // the pending restart, as Linux decides it at delivery.
+                    self.arm_liteinst_restart_landing(&task, sig)?;
+                }
                 Ok(self.resume_stopped(task, sig)?.next_state().await?)
             }
         }
@@ -4645,6 +5504,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         self.command_bootstrap = false;
         self.trap_only_exec(initial_command);
+        // The replaced image has no rewound host-hybrid trap to re-execute.
+        self.liteinst_pending_restarts.clear();
         if self.global_state.liteinst_runtime.is_some() {
             if former_tid != self.tid() {
                 return Err(self.reject_liteinst_nonleader_exec(former_tid));
@@ -8317,6 +9178,19 @@ impl<L: Tool + 'static> TracedTask<L> {
         nr: Sysno,
         args: SyscallArgs,
     ) -> Result<Result<i64, Errno>, TraceError> {
+        self.untraced_syscall_with(task, nr, args, false).await
+    }
+
+    /// `untraced_syscall`; `original` marks a LiteInst frame-mode injection of
+    /// the event's own pending syscall, which a signal must not stop from
+    /// running (`requeue_signals_before_original_syscall`).
+    async fn untraced_syscall_with(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+        args: SyscallArgs,
+        original: bool,
+    ) -> Result<Result<i64, Errno>, TraceError> {
         self.validate_liteinst_mapping_execution(nr, args)?;
         self.timer.expire_overflow_records(&task);
         tracing::trace!(
@@ -8351,6 +9225,39 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         // Step to run the syscall instruction.
+        let (mut wait, mut seccomp_trapped) = self
+            .step_private_syscall_discarding_late_timer(task, nr)
+            .await?;
+        if original && child_context.is_some() {
+            (wait, seccomp_trapped) = self
+                .requeue_signals_before_original_syscall(wait, seccomp_trapped, nr)
+                .await?;
+        }
+
+        // Get the result of the syscall to return to the caller.
+        let result = self
+            .status_to_result(wait, Some(oldregs), child_context)
+            .await?;
+        // A guest seccomp filter's `SECCOMP_RET_TRAP` skipped the syscall and
+        // left its number in RAX. Report that it did not run; the guest's
+        // SIGSYS handler still runs, and seccomp(2) leaves the register it
+        // finds architecture-dependent.
+        let result = if seccomp_trapped {
+            Err(Errno::ENOSYS)
+        } else {
+            result
+        };
+        self.observe_liteinst_mapping_result(nr, args, result);
+        Ok(result)
+    }
+
+    /// Runs `step_private_syscall`, discarding the timer's own late overflow
+    /// notifications that stop the step before the `syscall` executes.
+    async fn step_private_syscall_discarding_late_timer(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+    ) -> Result<(Wait, bool), TraceError> {
         let (mut wait, mut seccomp_trapped) = self.step_private_syscall(task, nr).await?;
 
         // A late overflow notification of the timer can be pending when the
@@ -8443,22 +9350,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             // requeued or held in `pending_signal` here.
             (wait, seccomp_trapped) = self.step_private_syscall(stopped, nr).await?;
         }
-
-        // Get the result of the syscall to return to the caller.
-        let result = self
-            .status_to_result(wait, Some(oldregs), child_context)
-            .await?;
-        // A guest seccomp filter's `SECCOMP_RET_TRAP` skipped the syscall and
-        // left its number in RAX. Report that it did not run; the guest's
-        // SIGSYS handler still runs, and seccomp(2) leaves the register it
-        // finds architecture-dependent.
-        let result = if seccomp_trapped {
-            Err(Errno::ENOSYS)
-        } else {
-            result
-        };
-        self.observe_liteinst_mapping_result(nr, args, result);
-        Ok(result)
+        Ok((wait, seccomp_trapped))
     }
 
     /// Single-steps the private-page `syscall` and waits for the stop that
@@ -8672,6 +9564,103 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// Runs a LiteInst frame-mode injection of the event's original syscall
+    /// that a signal stopped before its private-page `syscall` instruction,
+    /// the way plain ptrace runs the original: once, with the signal pending.
+    ///
+    /// Plain ptrace resumes the original from its seccomp stop, so the kernel
+    /// enters the syscall with the signal still pending and delivers it on the
+    /// way back to the guest, as a signal stop the Tool sees. A
+    /// non-blocking syscall completes; a blocking one that the signal can
+    /// interrupt returns its `-ERESTART*` code or `-EINTR` at once. The
+    /// private-page step instead dequeued the signal before the instruction.
+    /// This puts it back, in the kernel, and reaches the syscall entry:
+    ///
+    /// 1. The signal is added to the thread's blocked mask and resumed into
+    ///    it with `PTRACE_SYSCALL`; the kernel requeues a blocked signal the
+    ///    tracer injects, with its siginfo. Any further signal stop before the
+    ///    instruction is requeued the same way; the thread's own late timer
+    ///    overflow is discarded, as `step_private_syscall_discarding_late_timer`
+    ///    discards it, and a group stop is resumed without a signal, as
+    ///    `step_private_syscall` resumes it.
+    /// 2. At the syscall-entry stop the original mask is restored, which
+    ///    leaves the signals pending and deliverable.
+    /// 3. `step_private_syscall` then runs the syscall, which sees them
+    ///    pending. It handles what can stop that step after the syscall
+    ///    returned exactly as for any injected syscall: a guest seccomp trap
+    ///    (whose flag is returned), a synchronous-class signal dequeued ahead
+    ///    of the step's report, which is requeued behind it or, after a
+    ///    mask-swapping syscall, held; and group stops.
+    ///
+    /// The signals stay queued in the kernel; nothing is held for the resume
+    /// (`pending_signal`) except by step 3, so the next resume delivers them as
+    /// a signal stop the Tool handles, and a restart code the syscall returns
+    /// is decided by the ordinary rewound-`int3` delivery.
+    ///
+    /// `SIGKILL` and `SIGSTOP` cannot be blocked, and an external `SIGTRAP`
+    /// would coalesce with the step's own report, so a stop with one of them
+    /// is returned unchanged and keeps the generic not-run handling
+    /// (`status_to_result`): the injection returns `-ERESTARTSYS` with the
+    /// signal held for the resume. Signals requeued before it stay pending.
+    async fn requeue_signals_before_original_syscall(
+        &mut self,
+        wait: Wait,
+        seccomp_trapped: bool,
+        nr: Sysno,
+    ) -> Result<(Wait, bool), TraceError> {
+        fn requeueable(sig: Signal) -> bool {
+            !matches!(sig, Signal::SIGKILL | Signal::SIGSTOP | Signal::SIGTRAP)
+        }
+        fn before_instruction(stopped: &Stopped) -> Result<bool, TraceError> {
+            Ok(stopped.getregs()?.ip() as usize == cp::PRIVATE_PAGE_OFFSET)
+        }
+        match &wait {
+            Wait::Stopped(stopped, Event::Signal(sig))
+                if requeueable(*sig)
+                    && !self.liteinst_activation_in_progress()
+                    && before_instruction(stopped)? => {}
+            _ => return Ok((wait, seccomp_trapped)),
+        }
+        let Wait::Stopped(stopped, _) = &wait else {
+            unreachable!("matched a stopped task")
+        };
+        let original_mask = stopped.getsigmask()?;
+        let mut mask = original_mask;
+        let mut wait = wait;
+        loop {
+            match wait {
+                Wait::Stopped(stopped, Event::Signal(sig))
+                    if requeueable(sig) && before_instruction(&stopped)? =>
+                {
+                    let deliver = if is_group_stop(&stopped, sig)? {
+                        None
+                    } else if sig == Timer::signal_type()
+                        && self.consume_own_timer_overflow(&stopped)?
+                    {
+                        LATE_TIMER_SIGNALS_DISCARDED.fetch_add(1, Ordering::Relaxed);
+                        None
+                    } else {
+                        mask |= signal_mask_bit(sig);
+                        stopped.setsigmask(mask)?;
+                        Some(sig)
+                    };
+                    wait = self.syscall_stopped(stopped, deliver)?.next_state().await?;
+                    self.arm_liteinst_wait(&wait);
+                }
+                Wait::Stopped(stopped, Event::Syscall) => {
+                    stopped.setsigmask(original_mask)?;
+                    return self.step_private_syscall(stopped, nr).await;
+                }
+                other => {
+                    if let Wait::Stopped(stopped, _) = &other {
+                        stopped.setsigmask(original_mask)?;
+                    }
+                    return Ok((other, false));
+                }
+            }
+        }
+    }
+
     // Replace an actual, unconverted seccomp entry. The caller must have taken
     // its pending record; this is not valid for a stopped task with no original
     // syscall left to consume (for example, a post-exec callback).
@@ -8684,6 +9673,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         let task = self.skip_seccomp_syscall(task).await?;
 
         self.untraced_syscall(task, nr, args).await
+    }
+
+    /// Holds a signal that stopped a private-page step for delivery when the
+    /// guest resumes at its syscall site.
+    fn hold_pending_signal(&mut self, stopped: &Stopped, sig: Signal) {
+        if let Some(held) = self.pending_signal {
+            // TaskGraph reverie_pending_signal_single_slot.
+            tracing::warn!(
+                "[scheduler/tool] (pid = {}) {} replaces held {} in the single pending-signal slot",
+                stopped.pid(),
+                sig,
+                held
+            );
+        }
+        self.pending_signal = Some(sig);
     }
 
     async fn status_to_result(
@@ -8767,7 +9771,47 @@ impl<L: Tool + 'static> TracedTask<L> {
                         regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE
                             || regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET
                     );
-                    if sig != Signal::SIGTRAP {
+                    if child_context.is_some() {
+                        // A LiteInst injected frame: the controller is parked
+                        // at the runtime int3, so the tracer, not the kernel,
+                        // decides restarts (see `untraced_liteinst_syscall`).
+                        match classify_private_step(
+                            regs.ip(),
+                            sig,
+                            cp::PRIVATE_PAGE_OFFSET as u64,
+                            cp::SYSCALL_INSTR_SIZE as u64,
+                        ) {
+                            PrivateStep::NotRun => {
+                                // Any signal, including an external SIGTRAP,
+                                // stopped the step before the syscall ran.
+                                *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
+                                self.hold_pending_signal(&stopped, sig);
+                            }
+                            PrivateStep::Ran => {}
+                            PrivateStep::Held => {
+                                // The syscall ran; `step_private_syscall` held
+                                // a signal it could not requeue after a
+                                // mask-swapping syscall. RAX holds the
+                                // syscall's outcome and is kept.
+                                self.hold_pending_signal(&stopped, sig);
+                            }
+                            PrivateStep::Unexpected => {
+                                self.record_liteinst_failure(
+                                    LiteinstActivationFailureReason::SyscallRestartInvariant,
+                                    Error::runtime(
+                                        self.tid(),
+                                        "restart LiteInst host-hybrid syscall",
+                                        format!(
+                                            "private-page step stopped with {sig} at {:#x}, \
+                                             outside the private syscall",
+                                            regs.ip()
+                                        ),
+                                    ),
+                                );
+                                return Err(Errno::EPROTO.into());
+                            }
+                        }
+                    } else if sig != Signal::SIGTRAP {
                         // Interrupted by a signal before the `syscall`
                         // executed: return -ERESTARTSYS so that the tracee
                         // restarts it once the signal is delivered. Past the
@@ -8780,16 +9824,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         if regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET {
                             *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
                         }
-                        if let Some(held) = self.pending_signal {
-                            // TaskGraph reverie_pending_signal_single_slot.
-                            tracing::warn!(
-                                "[scheduler/tool] (pid = {}) {} replaces held {} in the single pending-signal slot",
-                                stopped.pid(),
-                                sig,
-                                held
-                            );
-                        }
-                        self.pending_signal = Some(sig);
+                        self.hold_pending_signal(&stopped, sig);
                     }
                     let result = Errno::from_ret(regs.ret() as usize).map(|x| x as i64);
                     if let Some(context) = context {
@@ -8855,8 +9890,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         );
 
         if self.injected_syscall_frame.is_some() || self.pending_syscall_already_skipped {
+            let original = self.injected_syscall_frame.is_some()
+                && self.pending_syscall.take() == Some((nr, args));
             self.pending_syscall = None;
-            self.untraced_syscall(task, nr, args).await
+            self.untraced_syscall_with(task, nr, args, original).await
         } else {
             match self.pending_syscall.take() {
                 Some(original) if original == (nr, args) => {
@@ -8914,10 +9951,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         let task = self.assume_stopped();
 
         if self.injected_syscall_frame.is_some() {
-            self.pending_syscall = None;
-            let result = self.untraced_syscall(task, nr, args).await?;
-            let task = self.assume_stopped();
-            self.write_injected_syscall_result(&task, result)?;
+            let original = self.pending_syscall.take() == Some((nr, args));
+            let result = self.untraced_syscall_with(task, nr, args, original).await?;
+            // `handle_injected_syscall` owns the frame and applies this after
+            // the callback is dropped, restarting the trap for a Linux restart
+            // code instead of leaking it into the guest frame.
+            self.injected_tail_result = Some(result);
             return Ok(result);
         }
 

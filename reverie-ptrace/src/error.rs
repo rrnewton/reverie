@@ -73,6 +73,9 @@ pub(crate) enum LiteinstActivationFailureReason {
     ReadGuestMaps,
     /// The tracee's code could not be read to build a site's entry census.
     ReadCensusObject,
+    /// A host-hybrid syscall restart found the controller or private-page
+    /// step in a state the rewind cannot serve.
+    SyscallRestartInvariant,
 }
 
 impl LiteinstActivationFailureReason {
