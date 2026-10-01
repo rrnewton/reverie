@@ -167,7 +167,7 @@ mod fatal_dead_exec_tests {
             loop {
                 let step = tokio::time::timeout(Duration::from_millis(1), finish.as_mut()).await;
                 match step {
-                    Ok(OrdinaryTerminal::Exited(status, _)) => break Some(status),
+                    Ok(OrdinaryTerminal::Exited(status, _, _)) => break Some(status),
                     Ok(OrdinaryTerminal::Exec { .. }) => break None,
                     Err(_) if Instant::now() >= deadline => break None,
                     Err(_) => {
