@@ -358,7 +358,7 @@ impl FatalNewborn {
         let mut next = stopped;
         let status = loop {
             match finish_ordinary_terminal(next, &self.terminal, &held, session).await {
-                OrdinaryTerminal::Exited(status, _) => break status,
+                OrdinaryTerminal::Exited(status, _, _) => break status,
                 OrdinaryTerminal::Exec {
                     stopped, former, ..
                 } => {
@@ -487,9 +487,24 @@ struct ExitEventStatusUnavailable {
     former: Pid,
 }
 
+/// What an ordinary terminal path read from the exit stop it entered holding:
+/// the one its task's ExitFuture claimed, never an exit stop popped later
+/// from the FIFO. After a fresh ExitFuture (start or Exec edge) that is the
+/// first exit stop under the TID, so for a leader it is the leader thread's
+/// own even when exec's de_thread then gives the TID to another thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EntryExitStop {
+    /// GETEVENTMSG read this status before the stop was left.
+    Read(ExitStatus),
+    /// The stop was left before GETEVENTMSG could read it (ESRCH).
+    Unread,
+    /// The path did not enter holding an exit stop.
+    NotHeld,
+}
+
 /// Actual outcomes after consuming the original exit-stop capability.
 pub(crate) enum OrdinaryTerminal {
-    Exited(ExitStatus, OrdinaryReceipt),
+    Exited(ExitStatus, OrdinaryReceipt, EntryExitStop),
     Exec {
         stopped: Stopped,
         former: Pid,
@@ -608,6 +623,8 @@ async fn finish_ordinary_terminal(
     held: &Arc<StdMutex<Option<HeldRootStop>>>,
     session: &FatalSession,
 ) -> OrdinaryTerminal {
+    // Set once, when the exit stop this path entered holding is left.
+    let mut entry_exit_stop = stopped.is_err().then_some(EntryExitStop::NotHeld);
     let mut current = stopped;
     let mut exit_status = None;
     // Whether this path has already failed the session for a non-exit stop.
@@ -667,6 +684,7 @@ async fn finish_ordinary_terminal(
                                 // exit stop popped from the FIFO (below), the
                                 // wait consumed them in order before popping it.
                                 drop(stopped);
+                                entry_exit_stop.get_or_insert(EntryExitStop::Unread);
                                 break zombie.wait_owned();
                             }
                             Err(error) => {
@@ -703,6 +721,12 @@ async fn finish_ordinary_terminal(
                     #[cfg(test)]
                     let resumed_pid = stopped.pid();
                     let resumed = stopped.resume_retaining(None);
+                    // GETEVENTMSG above has read the entry stop by the time
+                    // it is resumed; a later exit stop keeps the entry value.
+                    let left = match exit_status {
+                        Some(status) => EntryExitStop::Read(status),
+                        None => EntryExitStop::Unread,
+                    };
                     #[cfg(test)]
                     EXIT_RESUME_CONTROL.with(|slot| {
                         if let Some(control) = slot.borrow().as_ref() {
@@ -716,6 +740,7 @@ async fn finish_ordinary_terminal(
                         Ok(running) => {
                             // The sole capability has made the transition.
                             held.lock().unwrap().take();
+                            entry_exit_stop.get_or_insert(left);
                             #[cfg(test)]
                             hold_until_exec_reported_for_test(&running, terminal).await;
                             break running.wait_owned();
@@ -728,6 +753,7 @@ async fn finish_ordinary_terminal(
                             // before the exit stop: a marked capability's ESRCH
                             // retired them, and for a queued exit stop popped
                             // from the FIFO they were consumed before it.
+                            entry_exit_stop.get_or_insert(left);
                             break retained.wait_owned();
                         }
                         Err((retained, error)) => {
@@ -742,7 +768,7 @@ async fn finish_ordinary_terminal(
                 if let Ok(Some(status)) = terminal.observed_exit_status() {
                     let receipt = session.ordinary_receipt();
                     retire_ordinary_terminal(terminal, held).await;
-                    return OrdinaryTerminal::Exited(status, receipt);
+                    return OrdinaryTerminal::Exited(status, receipt, EntryExitStop::NotHeld);
                 }
                 // The original ExitFuture remains with its task owner. This
                 // path cannot invent a replacement stopped capability.
@@ -764,7 +790,10 @@ async fn finish_ordinary_terminal(
                     #[cfg(not(test))]
                     let _ = pid;
                     retire_ordinary_terminal(terminal, held).await;
-                    return OrdinaryTerminal::Exited(status, receipt);
+                    // Set before the first wait: entering without an exit
+                    // stop, or on leaving the one this path entered holding.
+                    let entry = entry_exit_stop.unwrap_or(EntryExitStop::NotHeld);
+                    return OrdinaryTerminal::Exited(status, receipt, entry);
                 }
                 Wait::Stopped(stopped, event) => {
                     if let Event::Exec(former) = event {
@@ -7133,6 +7162,58 @@ mod tests {
         assert!(terminal.queued_raw_statuses().is_empty());
     }
 
+    /// The exit hooks after a nonleader exec thread took the leader's PID
+    /// through de_thread and died before its exec stop. Each Tool thread
+    /// state gets exactly one on_exit_thread, both under the leader's PID:
+    /// first the replaced leader's state, with that leader's own exit-stop
+    /// status, then the exec thread's state, with the final status. Both
+    /// come before the one on_exit_process, which gets the final status.
+    ///
+    /// The replaced leader was zapped by de_thread while `group_exec_task`
+    /// was set, so do_group_exit gave it exit code 0 and its exit stop's
+    /// GETEVENTMSG reads Exited(0).
+    fn assert_lost_former_exit_hooks(
+        events: &ExecOwnerEvents,
+        root: Pid,
+        former: Pid,
+        status: ExitStatus,
+    ) {
+        type Event = (u8, Pid, usize, Option<ExitStatus>);
+        let replaced_status = ExitStatus::Exited(0);
+        // The (index, event) pairs that `select` keeps, in log order.
+        let matching = |select: &dyn Fn(&Event) -> bool| {
+            events
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(_, event)| select(event))
+                .collect::<Vec<_>>()
+        };
+        let former_hooks = matching(&|event| event.0 == 2 && event.2 == former.as_raw() as usize);
+        let leader_hooks = matching(&|event| event.0 == 2 && event.2 == root.as_raw() as usize);
+        let process_exits = matching(&|event| event.0 == 3 && event.1 == root);
+        let events_of = |hooks: &[(usize, _)]| hooks.iter().map(|hook| hook.1).collect::<Vec<_>>();
+        assert_eq!(
+            events_of(&former_hooks),
+            vec![(2, root, former.as_raw() as usize, Some(status))],
+            "the exec thread's state did not get exactly one on_exit_thread under the leader's PID with the final status: {events:?}"
+        );
+        assert_eq!(
+            events_of(&leader_hooks),
+            vec![(2, root, root.as_raw() as usize, Some(replaced_status))],
+            "the replaced leader's state did not get exactly one on_exit_thread with its own exit-stop status: {events:?}"
+        );
+        assert_eq!(
+            events_of(&process_exits),
+            vec![(3, root, 0, Some(status))],
+            "on_exit_process did not run once with the final status: {events:?}"
+        );
+        assert!(
+            leader_hooks[0].0 < former_hooks[0].0 && former_hooks[0].0 < process_exits[0].0,
+            "exit hooks out of order: the replaced leader's, then the exec thread's, then on_exit_process: {events:?}"
+        );
+    }
+
     /// Interleaving X in a run that has not failed: a real SIGKILL from
     /// outside reaches the group after the replacement image's exec stop was
     /// reported and before the leader's terminal path decoded that Exec. The
@@ -7141,11 +7222,13 @@ mod tests {
     /// image's exit stop, so the Exec decode's GETEVENTMSG reads that exit
     /// stop's message (the exit code 9) instead of a former TID. The wait
     /// retires the dead Exec, the exit stop behind it is resumed once, the
-    /// former TID's owner is retired as lost, and the run Completes with the
-    /// real Signaled(SIGKILL). Before the fix the Exec decoded as a former
-    /// TID of 9 and the run stayed Pending; without the lost-former record
-    /// on the ordinary exit-wait path, the leader's thread join would wait
-    /// for the former thread's owner forever.
+    /// former TID's owner is retired as lost and hands its task to the
+    /// leader owner, and the run Completes with the real Signaled(SIGKILL).
+    /// The exit hooks are those `assert_lost_former_exit_hooks` requires.
+    /// Before the fix the Exec decoded as a former TID of 9 and the run
+    /// stayed Pending; without the lost-former record on the ordinary
+    /// exit-wait path, the leader's thread join would wait for the former
+    /// thread's owner forever.
     ///
     /// The exec thread calls execv only once the leader sleeps (state S):
     /// the leader has then been resumed from its post-clone step stop and is
@@ -7365,12 +7448,7 @@ mod tests {
             .collect();
         assert_eq!(started.len(), 1, "guest thread starts: {events:?}");
         let former = started[0];
-        assert!(
-            events
-                .iter()
-                .all(|event| !(event.0 == 2 && event.2 == former.as_raw() as usize)),
-            "on_exit_thread ran for the lost former: {events:?}"
-        );
+        assert_lost_former_exit_hooks(&events, root, former, status);
         let (records, omitted) = FATAL_REAP_CHRONOLOGY
             .with(|slot| slot.borrow().clone())
             .expect("chronology installed");
@@ -7678,8 +7756,10 @@ mod tests {
             events.iter().all(|event| event.0 != 1),
             "the killed exec reached post-exec: {events:?}"
         );
-        // on_exit_thread for the exec thread's own state: only when it died
-        // under its former TID. A lost former has no status and no hook.
+        // on_exit_thread for the exec thread's own state under its former
+        // TID: only when it died there. A lost former's state is reported
+        // under the leader's PID instead; see
+        // `assert_lost_former_exit_hooks`.
         let former_exit_hooks = events
             .iter()
             .filter(|event| event.0 == 2 && event.2 == former.as_raw() as usize)
@@ -7718,9 +7798,11 @@ mod tests {
                     .all(|(pid, _)| *pid != former),
                 "the lost former's TID was resumed: {records:?}"
             );
-            assert_eq!(
-                former_exit_hooks, 0,
-                "on_exit_thread ran for a lost former: {events:?}"
+            assert_lost_former_exit_hooks(
+                &events,
+                root,
+                former,
+                ExitStatus::Signaled(Signal::SIGKILL, false),
             );
         }
         assert!(leader_terminal.queued_raw_statuses().is_empty());
