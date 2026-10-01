@@ -130,10 +130,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         observation: Option<(Sysno, SyscallArgs)>,
     ) -> Result<Result<i64, Errno>, TraceError> {
         let entered = task.getregs()?;
+        let owner = task.terminal_cleanup();
         let wait = self.syscall_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait);
         match wait {
             Wait::Stopped(stopped, Event::Syscall) => {
+                if !owner.same_generation(&stopped.terminal_cleanup()) {
+                    return Err(Errno::ECHILD.into());
+                }
                 let raw = stopped.syscall_exit_result()?;
                 let regs = stopped.getregs()?;
                 if regs.orig_syscall() != nr as u64

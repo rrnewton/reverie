@@ -2185,6 +2185,8 @@ enum InjectionOrigin {
 mod original_context;
 #[cfg(target_arch = "x86_64")]
 mod original_read;
+#[cfg(target_arch = "x86_64")]
+mod original_setsockopt;
 
 // Private producer: consumers borrow this only at an actual stopped boundary.
 struct InitialCommandStop<'a> {
@@ -2271,6 +2273,11 @@ pub struct TracedTask<L: Tool> {
     /// Original native Read tuple retained before the Tool can alter registers.
     /// A capture error refuses range inspection without changing ordinary Read.
     original_read_entry: Option<Result<original_context::OriginalReadEntry, String>>,
+
+    /// One actual native entry, retained before Tool code can change registers.
+    #[cfg(target_arch = "x86_64")]
+    original_setsockopt_entry:
+        Option<Result<original_setsockopt::OriginalSetsockoptEntry, TraceError>>,
 
     /// The pending syscall was converted out of its seccomp stop before Tool dispatch.
     pending_syscall_already_skipped: bool,
@@ -2469,6 +2476,8 @@ impl<L: Tool> TracedTask<L> {
             has_cpuid_interception: false,
             pending_syscall: None,
             original_read_entry: None,
+            #[cfg(target_arch = "x86_64")]
+            original_setsockopt_entry: None,
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
             liteinst_runtime: Arc::new(StdMutex::new(LiteinstRuntimeState::default())),
@@ -2548,6 +2557,8 @@ impl<L: Tool> TracedTask<L> {
             has_cpuid_interception: self.has_cpuid_interception,
             pending_syscall: None,
             original_read_entry: None,
+            #[cfg(target_arch = "x86_64")]
+            original_setsockopt_entry: None,
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
             liteinst_runtime: self.liteinst_runtime.clone(),
@@ -2615,6 +2626,8 @@ impl<L: Tool> TracedTask<L> {
             has_cpuid_interception: self.has_cpuid_interception,
             pending_syscall: None,
             original_read_entry: None,
+            #[cfg(target_arch = "x86_64")]
+            original_setsockopt_entry: None,
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
             liteinst_runtime: Arc::new(StdMutex::new(
@@ -3014,8 +3027,16 @@ fn restore_context(
     retval: Option<Reg>,
     restore_stack: bool,
 ) -> Result<(), TraceError> {
-    let mut regs = task.getregs()?;
+    let regs = restored_context_registers(task.getregs()?, context, retval, restore_stack);
+    task.setregs(&regs)
+}
 
+fn restored_context_registers(
+    mut regs: libc::user_regs_struct,
+    context: libc::user_regs_struct,
+    retval: Option<Reg>,
+    restore_stack: bool,
+) -> libc::user_regs_struct {
     if let Some(ret) = retval {
         *regs.ret_mut() = ret;
     }
@@ -3045,8 +3066,7 @@ fn restore_context(
     // nondeterministic) pointer to the guest. Restore them from the guest's own
     // pre-syscall snapshot. (No-op on aarch64.)
     regs.restore_syscall_clobbers(&context);
-
-    task.setregs(&regs)
+    regs
 }
 
 impl<L: Tool + 'static> TracedTask<L> {
@@ -3716,6 +3736,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         async {
             self.injected_syscall_frame = Some(frame_address);
             self.pending_syscall = Some((nr, args));
+            #[cfg(target_arch = "x86_64")]
+            {
+                self.original_setsockopt_entry = None;
+            }
             self.pending_syscall_already_skipped = false;
 
             let retval = cancellable(self.cancel_handler.clone(), async {
@@ -4455,6 +4479,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         // program start as a clean slate, hence it is actually ok to do either
         // inject or tail inject after execve succeeded.
         self.pending_syscall = None;
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.original_setsockopt_entry = None;
+        }
         self.original_read_entry = None;
         self.pending_syscall_already_skipped = false;
         self.injected_syscall_frame = None;
@@ -5668,6 +5696,17 @@ impl<L: Tool + 'static> TracedTask<L> {
             );
             self.pending_syscall = Some((nr, args));
             self.pending_syscall_already_skipped = syscall_already_skipped;
+            #[cfg(target_arch = "x86_64")]
+            {
+                self.original_setsockopt_entry =
+                    if nr == Sysno::setsockopt && !syscall_already_skipped {
+                        Some(original_setsockopt::OriginalSetsockoptEntry::capture(
+                            &task, args,
+                        ))
+                    } else {
+                        None
+                    };
+            }
             self.original_read_entry = (matches!(nr, Sysno::read | Sysno::recvfrom)
                 && !syscall_already_skipped)
                 .then(|| original_context::OriginalReadEntry::capture(&task, nr, args));
@@ -5709,6 +5748,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             // injection. Keeping Some after skipping would let a later signal
             // or timer callback mistake an ordinary stop for a seccomp entry.
             let pending_syscall = self.pending_syscall.take();
+            #[cfg(target_arch = "x86_64")]
+            {
+                self.original_setsockopt_entry = None;
+            }
             self.original_read_entry = None;
             let emulate_legacy_vsyscall = is_legacy_vsyscall && pending_syscall.is_some();
             // The kernel owns the synthetic `ret` from the fixed vsyscall
@@ -9086,6 +9129,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         let task = self.assume_stopped();
         let observe_tool =
             origin == InjectionOrigin::Tool && L::observe_injected_syscalls(&self.global_state.cfg);
+        #[cfg(target_arch = "x86_64")]
+        let original_setsockopt = self.original_setsockopt_entry.take();
         // Same retained injection owner as Returned. No await/resume precedes
         // this preparation fact, and it cannot supply an execution result.
         self.observe_injected_syscall(
@@ -9100,6 +9145,30 @@ impl<L: Tool + 'static> TracedTask<L> {
             nr,
             args,
         );
+
+        #[cfg(target_arch = "x86_64")]
+        if let Some(original) = original_setsockopt::route_optval_rewrite(
+            origin,
+            self.pending_syscall,
+            nr,
+            args,
+            self.injected_syscall_frame.is_some(),
+            self.pending_syscall_already_skipped,
+            original_setsockopt,
+        )? {
+            original.validate(&task)?;
+            let (_, original_args) = self.pending_syscall.ok_or(Errno::EPROTO)?;
+            let (task, context) = self
+                .take_original_entry(nr, args, Some(original_args))?
+                .ok_or(Errno::EPROTO)?;
+            let observation = observe_tool.then_some((nr, args));
+            // Prepared was emitted above. This is the SAME original entry;
+            // do not skip it or create an administrative private attempt.
+            self.observe_injected_syscall(observation, InjectedSyscallEvent::Entered);
+            return self
+                .finish_entered_original(task, nr, args, context, observation)
+                .await;
+        }
 
         if self.injected_syscall_frame.is_some() || self.pending_syscall_already_skipped {
             self.pending_syscall = None;
