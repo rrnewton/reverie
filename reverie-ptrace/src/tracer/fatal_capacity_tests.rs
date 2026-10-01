@@ -33,6 +33,9 @@ pub(super) mod fatal_capacity_tests {
     enum CapacityFault {
         None,
         RetainSixOwners,
+        // Retains three owners, and each marker samples only after the bodies
+        // of every child created so far have dropped.
+        RetainThreeOwnersSettledSamples,
         HoldOneExitHook,
     }
 
@@ -44,7 +47,7 @@ pub(super) mod fatal_capacity_tests {
         waiter: Option<std::task::Waker>,
         steady_fds: Option<usize>,
         fault: CapacityFault,
-        // Only the explicit negative control retains real descriptor owners.
+        // Only the explicit negative controls retain real descriptor owners.
         retained: Vec<Arc<FatalTaskStop>>,
         held_hook: bool,
         release_hook: bool,
@@ -61,6 +64,7 @@ pub(super) mod fatal_capacity_tests {
                 assert_ne!(Some(task.tid), state.root, "root registered twice");
                 let retain = match state.fault {
                     CapacityFault::RetainSixOwners => 6,
+                    CapacityFault::RetainThreeOwnersSettledSamples => 3,
                     _ => 0,
                 };
                 if state.retained.len() < retain {
@@ -133,6 +137,48 @@ pub(super) mod fatal_capacity_tests {
         .await;
     }
 
+    async fn settle_before_sample(iteration: usize) {
+        // Settled-samples control only; every other mode returns here without
+        // awaiting. At marker `iteration` the guest has waited for or joined
+        // children 0..=iteration and has not created the next one, so exactly
+        // those children are registered. Each publishes one receipt after its
+        // whole body has dropped, so `completed > iteration` means none of
+        // them is in flight. There is no separate timer: if a body never
+        // drops, the original shared deadline expires before this marker
+        // prints, and the control's marker count and checkpoint fail.
+        let completed = RETIREMENT.with(|slot| {
+            let slot = slot.borrow();
+            let state = slot.as_ref().unwrap();
+            if state.fault != CapacityFault::RetainThreeOwnersSettledSamples {
+                return None;
+            }
+            assert_eq!(
+                state.registered,
+                iteration + 2,
+                "settled sample saw an unexpected child set"
+            );
+            Some(state.completed)
+        });
+        let Some(completed) = completed else { return };
+        if completed > iteration {
+            return;
+        }
+        eprintln!("capacity settle wait: iteration={iteration}, completed_at_entry={completed}");
+        futures::future::poll_fn(|cx| {
+            RETIREMENT.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let state = slot.as_mut().unwrap();
+                state.waiter = Some(cx.waker().clone());
+                if state.completed <= iteration {
+                    return std::task::Poll::Pending;
+                }
+                state.waiter = None;
+                std::task::Poll::Ready(())
+            })
+        })
+        .await;
+    }
+
     fn release_hook_for_rescue() {
         let waiter = RETIREMENT.with(|slot| {
             let mut slot = slot.borrow_mut();
@@ -184,6 +230,7 @@ pub(super) mod fatal_capacity_tests {
             // scalar observations only; no descriptor authority is retained.
             tokio::task::yield_now().await;
             let (_, args) = syscall.into_parts();
+            settle_before_sample(args.arg0).await;
             let fds = fs::read_dir("/proc/self/fd")
                 .map_err(anyhow::Error::new)?
                 .count();
@@ -274,6 +321,9 @@ pub(super) mod fatal_capacity_tests {
         let fault = match std::env::var("REVERIE_FATAL_CAPACITY_FAULT").as_deref() {
             Err(std::env::VarError::NotPresent) => CapacityFault::None,
             Ok("retain-six-owners") => CapacityFault::RetainSixOwners,
+            Ok("retain-three-owners-settled-samples") => {
+                CapacityFault::RetainThreeOwnersSettledSamples
+            }
             Ok("hold-one-exit-hook") => CapacityFault::HoldOneExitHook,
             other => panic!("unknown capacity fault: {other:?}"),
         };
@@ -577,6 +627,47 @@ pub(super) mod fatal_capacity_tests {
             "capacity retirement checkpoint: registered=97, completed=96, retained=6, held_hook=false, steady_fds=Some(",
         );
         assert!(!stderr.contains("capacity rescue only:"));
+    }
+
+    #[test]
+    fn retained_owners_with_settled_samples_falsify_steady_state_bound() {
+        // The first retained owner's two descriptors are already in the
+        // baseline. The other two owners add a pair each, so iteration 2 on
+        // and steady_fds should read baseline + 4: above +2, within +8. This
+        // fault mode samples each marker only after every child created so
+        // far has dropped its body, so no child is in flight at any sample.
+        // Check the actual measurements; do not assume that accounting.
+        let failure = "descriptor count did not return to the initial steady state";
+        let stderr = capacity_negative_control(
+            true,
+            "retain-three-owners-settled-samples",
+            failure,
+            "capacity retirement checkpoint: registered=97, completed=96, retained=3, held_hook=false, steady_fds=Some(",
+        );
+        assert!(!stderr.contains("capacity rescue only:"));
+        assert!(!stderr.contains("retired tasks retained descriptors"));
+        assert_eq!(stderr.lines().filter(|line| *line == failure).count(), 1);
+        let mut bounds = stderr
+            .lines()
+            .filter_map(|line| line.strip_prefix("capacity fd bounds: baseline="));
+        let bound = bounds.next().expect("missing original fd measurements");
+        assert!(
+            bounds.next().is_none(),
+            "duplicate original fd measurements"
+        );
+        let (baseline, rest) = bound.split_once(", maximum_immediate=").unwrap();
+        let (maximum_immediate, steady_fds) = rest.split_once(", steady_fds=Some(").unwrap();
+        let baseline: usize = baseline.parse().unwrap();
+        let maximum_immediate: usize = maximum_immediate.parse().unwrap();
+        let steady_fds: usize = steady_fds.strip_suffix(')').unwrap().parse().unwrap();
+        assert!(
+            maximum_immediate <= baseline + 8,
+            "final-bound control exceeded the unchanged immediate bound: {bound}"
+        );
+        assert!(
+            steady_fds > baseline + 2 && steady_fds <= baseline + 8,
+            "retained owners did not isolate the final +2 bound: {bound}"
+        );
     }
 
     #[test]
