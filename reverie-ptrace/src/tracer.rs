@@ -546,6 +546,22 @@ pub(crate) fn record_fatal_phase_for_test(message: impl FnOnce() -> String) {
         }
     });
 }
+// Test-only: the bare errnos tasks aborted with, while a test collects them.
+// A bare-errno abort from an injected syscall never reaches the run loop's
+// error handling once the exit future reports the tracee's death, so a test
+// that checks only the exit status cannot see it.
+#[cfg(test)]
+thread_local! {
+    static BARE_ERRNO_ABORTS: std::cell::RefCell<Option<Vec<(Pid, Errno)>>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn record_bare_errno_abort_for_test(tid: Pid, errno: Errno) {
+    BARE_ERRNO_ABORTS.with(|slot| {
+        if let Some(aborts) = slot.borrow_mut().as_mut() {
+            aborts.push((tid, errno));
+        }
+    });
+}
 #[cfg(test)]
 pub(crate) fn record_capacity_finished_for_test(stop: &FatalTaskStop) {
     tests::fatal_capacity_tests::record_finished(stop);
@@ -10036,13 +10052,47 @@ mod tests {
         (hook, kill)
     }
 
-    /// Kills `/bin/true` at `point` of its second pre-initialization, the one
-    /// after its exec, and requires the run to report the kill.
+    /// Collects, until dropped, the bare errnos that tasks on this thread
+    /// abort with. See [`super::record_bare_errno_abort_for_test`].
+    struct BareErrnoAborts;
+
+    impl BareErrnoAborts {
+        fn collect() -> Self {
+            super::BARE_ERRNO_ABORTS.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+            Self
+        }
+
+        fn take(&self) -> Vec<(Pid, Errno)> {
+            super::BARE_ERRNO_ABORTS.with(|slot| {
+                slot.borrow_mut()
+                    .as_mut()
+                    .map(std::mem::take)
+                    .unwrap_or_default()
+            })
+        }
+    }
+
+    impl Drop for BareErrnoAborts {
+        fn drop(&mut self) {
+            super::BARE_ERRNO_ABORTS.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    /// Kills `/bin/true` at `point` after its exec, and requires the run to
+    /// report the kill, with no task aborting on a bare errno. The points of
+    /// `tracee_preinit` are hit before the exec too, so the kill is at their
+    /// second hit; the post-exec step's points are hit only after it.
     async fn exec_preinit_killed_at<T: Tool<GlobalState = ()> + Default + 'static>(
         point: crate::task::PreinitPoint,
         mode: PreinitKillMode,
     ) -> Result<(), String> {
-        let (hook, kill) = kill_at_preinit_point(point, 2, mode);
+        use crate::task::PreinitPoint::*;
+        let nth = match point {
+            ExecStopped | PostExecStepped => 1,
+            RegsSaved | CodeRead | MmapStepped | MmapReturned | PagePopulated | VdsoWritable => 2,
+        };
+        let aborts = BareErrnoAborts::collect();
+        let (hook, kill) = kill_at_preinit_point(point, nth, mode);
         let tracer = TracerBuilder::<T>::new(Command::new("/bin/true"))
             .preinit_point_for_test(hook)
             .spawn()
@@ -10052,8 +10102,14 @@ mod tests {
         let result = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
             .await
             .map_err(|_| format!("{point:?}/{mode:?}: run did not end within 5 s"))?;
+        let bare = aborts.take();
+        if !bare.is_empty() {
+            return Err(format!(
+                "{point:?}/{mode:?}: aborted with bare errnos {bare:?}"
+            ));
+        }
         let hits = kill.hits.load(Ordering::SeqCst);
-        if hits < 2 {
+        if hits < nth {
             return Err(format!(
                 "{point:?}/{mode:?}: reached {hits} times, never killed"
             ));
@@ -10134,6 +10190,10 @@ mod tests {
         exec_preinit_kill_mmap_returned_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(MmapReturned, Exited);
         exec_preinit_kill_page_populated_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(PagePopulated, Exited);
         exec_preinit_kill_vdso_writable_exited: exec_preinit_killed_at::<AllSyscallsTool>(VdsoWritable, Exited);
+        exec_stopped_kill_exit_stop_vdso: exec_preinit_killed_at::<AllSyscallsTool>(ExecStopped, ExitStop);
+        exec_stopped_kill_exit_stop_no_vdso: exec_preinit_killed_at::<InitFailureTool>(ExecStopped, ExitStop);
+        post_exec_stepped_kill_exited_vdso: exec_preinit_killed_at::<AllSyscallsTool>(PostExecStepped, Exited);
+        post_exec_stepped_kill_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(PostExecStepped, Exited);
         postspawn_preinit_kill_regs_saved_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(RegsSaved, ExitStop);
         postspawn_preinit_kill_code_read_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(CodeRead, ExitStop);
         postspawn_preinit_kill_regs_saved_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(RegsSaved, Exited);
