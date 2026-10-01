@@ -681,8 +681,15 @@ tool gets `quickstart`, `userguide` and `RELATED_WORK.md`.
        on purpose with its goal paused: true but useless.
    - **Not its job:** content. Real events such as hermit main moving and agent reports reached
      coord by herdr prompts, and the inbox correctly stayed empty for them.
-   - **Coord's suggestions, being implemented as step 6:** suppress idle and still-idle notices for
-     a worker a coordinator marked parked; say in an exit notice when the pane was last seen.
+   - **Coord's suggestions — LANDED as step 6** at agent-utils main
+     812e4c39ea06488fbf5c398d99ba8b95370eaf8d (commits 6b667b2f, 812e4c39):
+     - `agentctl inbox park --to COORD --worker NAME [--off]` silences idle and still-idle notices
+       for a parked worker. Blocked, exited and working are still posted, and so is an idle that
+       replaces a standing notice.
+     - An exited notice says "last listed at <time>, <lag> before this notice".
+     - The adversarial review took two rounds and approved. Round 1 found `park` overwriting an
+       unreadable parked set, and 4 of 6 probe mutations surviving; all 11 mutations are now killed
+       except one untested rounding nit. `make validate` passed 24 of 24 on the pushed head.
    - **Status:** coord has not re-armed the watcher. Replacing the scrollback script was not
      decided.
 
