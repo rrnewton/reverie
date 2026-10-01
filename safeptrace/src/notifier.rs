@@ -552,10 +552,31 @@ struct Event {
     /// Actual exec after an exit stop invalidates old waiters before a new
     /// image can publish another exit on the same retained leader pidfd.
     exit_epoch: AtomicUsize,
-    /// Set, under `exit_publication`, when a status waiter retired an Exec
-    /// status the tracee had left before its exit stop was reported. The
-    /// next reported exit stop then joins the FIFO instead of being
-    /// published; see [`Event::forward_exit_stop_after_dead_exec`].
+    /// Set when a status waiter retired an Exec status the tracee had left
+    /// before its exit stop was reported. The next reported exit stop then
+    /// joins the FIFO instead of being published; see
+    /// [`Event::forward_exit_stop_after_dead_exec`].
+    ///
+    /// Locking. The set in `forward_exit_stop_after_dead_exec` and the clear
+    /// in `queue_exit_stop_after_exit` both hold `exit_publication`, which
+    /// orders them against the `exit_status` publication each one reads.
+    /// The clear in `update_sync_status` holds no lock, and needs none:
+    /// - The flag is set only for an Exec whose report advanced the exit
+    ///   epoch. That needs `exit_status == EXIT_STOPPED` at the report, and
+    ///   only `publish_exit_stop`, reached through `update` from the
+    ///   notifier worker, stores `EXIT_STOPPED`.
+    /// - Once a worker is started, `wait_owner` stays `WAIT_OWNER_NOTIFIER`
+    ///   or `WAIT_OWNER_NOTIFIER_RETURNING` for the life of this Event, so no
+    ///   synchronous owner can claim the wait and call `update_sync_status`.
+    /// - A synchronous owner that called it earlier released the wait under
+    ///   `wait_owner_lock`, and the notifier's claim takes that lock, so the
+    ///   clear happened before the worker started.
+    ///
+    /// So the unlocked clear never runs alongside, or after, the set, and
+    /// finds the flag already false. For the same reason, the synchronous
+    /// owner's dead-Exec arm never finds an epoch Exec in production, so it
+    /// never calls the forward. Only tests that seed an exit stop through
+    /// `update` reach that call.
     exit_stop_follows_dead_exec: AtomicBool,
 
     /// Last notifier registration error. Resource/read failures are retryable
@@ -1380,7 +1401,9 @@ impl Event {
         // status lock that queues the exit stop. No reservation can be live
         // while this lock is held.
         // This exit stop is queued in any case, so a pending forward from a
-        // retired dead Exec is spent.
+        // retired dead Exec would be spent. None can be pending on a
+        // synchronously waited Event; see `exit_stop_follows_dead_exec`
+        // for why this store needs no lock.
         self.exit_stop_follows_dead_exec
             .store(false, Ordering::Release);
         let mut state = self.status.lock();
