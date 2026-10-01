@@ -68,6 +68,9 @@ pub(crate) enum LiteinstActivationFailureReason {
     NewbornIdentity,
     VforkUnsupported,
     TerminatedBeforeHandshake,
+    /// A host-hybrid syscall restart found the controller or private-page
+    /// step in a state the rewind cannot serve.
+    SyscallRestartInvariant,
 }
 
 impl LiteinstActivationFailureReason {
