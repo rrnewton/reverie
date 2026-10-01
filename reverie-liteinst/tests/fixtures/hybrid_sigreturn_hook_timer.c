@@ -13,29 +13,36 @@ long reverie_liteinst_restorer_nr;
    whether to request a timer, and rsi, the round the request is for. The
    second makes the syscall numbered by
    `reverie_liteinst_restorer_nr`, and becomes the signal handler's
-   restorer, whose rt_sigreturn is then a LiteInst hook trap. */
+   restorer, whose rt_sigreturn is then a LiteInst hook trap. Each has an
+   unwind-table entry so that LiteInst's entry census admits its site; the
+   restorer's entry does not describe a signal frame, and nothing unwinds
+   through it. */
 __asm__(".text\n"
         ".p2align 4\n"
         ".global reverie_liteinst_getpid\n"
         ".type reverie_liteinst_getpid,@function\n"
         "reverie_liteinst_getpid:\n"
+        ".cfi_startproc\n"
         "mov $39, %eax\n"
         "syscall\n"
         "nop\n"
         "nop\n"
         "nop\n"
         "ret\n"
+        ".cfi_endproc\n"
         ".size reverie_liteinst_getpid, .-reverie_liteinst_getpid\n"
         ".p2align 4\n"
         ".global reverie_liteinst_restorer\n"
         ".type reverie_liteinst_restorer,@function\n"
         "reverie_liteinst_restorer:\n"
+        ".cfi_startproc\n"
         "mov reverie_liteinst_restorer_nr(%rip), %rax\n"
         "syscall\n"
         "nop\n"
         "nop\n"
         "nop\n"
         "ret\n"
+        ".cfi_endproc\n"
         ".size reverie_liteinst_restorer, .-reverie_liteinst_restorer\n");
 
 extern long reverie_liteinst_getpid(long request, unsigned long round);
