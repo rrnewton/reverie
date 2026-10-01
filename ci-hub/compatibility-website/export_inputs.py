@@ -1531,7 +1531,7 @@ def build_export(
         sources = _provenance_sources(snapshot_root, git_files, mutable)
         parity = _parity_without_paths(
             _parity_capture(ledger, series_commit), series_commit,
-            {"ledger": ledger, "parent": parent, "shared": data_root},
+            {"ledger": ledger, "parent": parent, "shared": data_root, "state": state},
         )
 
         result = {

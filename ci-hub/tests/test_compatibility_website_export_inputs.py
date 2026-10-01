@@ -2179,7 +2179,7 @@ def test_export_carries_the_summary_of_the_store_at_the_series_commit(tmp_path: 
 
 
 def test_a_parity_only_publication_after_the_summary_makes_it_stale(tmp_path: Path):
-    repo, _commit = repository(tmp_path)
+    repo, commit = repository(tmp_path)
     ledger = repo / "hermit_test_ledger"
     shards = _parity_run_1953_shards()
     series_commit = _commit_ledger_parity(repo, shards)
@@ -2196,6 +2196,10 @@ def test_a_parity_only_publication_after_the_summary_makes_it_stale(tmp_path: Pa
     assert (stale["state"], stale["summarized_commit"], stale["unsummarized_records"], stale["store_records"]) == (
         "stale", series_commit, 3, 195)
     assert export_inputs._parity_reader().validate_carriage(stale)["producers"][0]["line"] == RUN_1953_LINE
+    # The export carries a stale summary unchanged, the guest's own "/etc/..."
+    # paths included.
+    assert export_inputs._contains_absolute_path(stale)
+    assert export_inputs.build_export(repo, commit, published_only=True)["parity"] == stale
 
 
 def test_a_summary_that_is_not_of_its_store_is_refused_and_the_export_goes_on(tmp_path: Path):
@@ -2418,6 +2422,7 @@ def _published_site(result: dict[str, Any]) -> dict[str, bytes]:
     "git failure naming an owner path",
     "git failure cut short inside the parent checkout path",
     "current summary naming the ledger checkout",
+    "current summary naming an owner path",
 ])
 def test_a_parity_refusal_puts_no_checkout_or_owner_path_in_the_export_or_the_site(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str,
@@ -2440,6 +2445,25 @@ def test_a_parity_refusal_puts_no_checkout_or_owner_path_in_the_export_or_the_si
             repo, {**shards, "scorecard/parity.json": _parity_run_1953_summary_bytes(shards)})
         captured = export_inputs._parity_capture(ledger, series_commit)
         assert captured["state"] == "current" and export_inputs._contains_string(captured, str(ledger))
+    elif case == "current summary naming an owner path":
+        # The ledger writer refuses an owner path in a source row, so put one
+        # into the encoded rows, then summarize those rows.
+        placeholder = "owner-path-placeholder"
+
+        def naming_a_placeholder(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            for row in sources:
+                if row["verdict"] == "inputs-not-equalized":
+                    row["reason"] = row["record"]["reason"] = row["reason"] + f" (read from {placeholder}/parity)"
+            return sources
+
+        owner = (export_inputs._OWNER_PATH_NEEDLE + "someone").encode()
+        shards = {path: data.replace(placeholder.encode(), owner)
+                  for path, data in _parity_run_1953_shards(naming_a_placeholder).items()}
+        series_commit = _commit_ledger_parity(
+            repo, {**shards, "scorecard/parity.json": _parity_run_1953_summary_bytes(shards)})
+        captured = export_inputs._parity_capture(ledger, series_commit)
+        assert captured["state"] == "current"
+        assert export_inputs._contains_string(captured, export_inputs._OWNER_PATH_NEEDLE)
     else:
         detail = f"fatal: cannot read {ledger}/objects"
         if case == "git failure naming an owner path":
@@ -2516,3 +2540,32 @@ def test_a_parity_refusal_names_the_ledger_git_directory_in_the_shared_checkout_
     assert refusal.startswith(f"ledger commit {series_commit} parity paths cannot be listed: git ls-tree ")
     assert f"(stored in the shared checkout/.git/modules/hermit_test_ledger/objects/{tree[:2]}/{tree[2:]})" in refusal
     assert refusal.encode() in files["index.html"]
+
+
+def test_a_parity_carriage_naming_a_linked_state_root_is_refused_in_the_panel(tmp_path: Path) -> None:
+    # The export reads the ledger through its state root. A linked worktree
+    # given as the state root is neither the parent nor the shared checkout,
+    # and a carriage that is not refused is held to the absolute-path rule
+    # only through the checkouts' roles.
+    primary, commit = repository(tmp_path)
+    (primary / "ci-hub/series").mkdir(parents=True)
+    (primary / "ci-hub/series/series.py").write_text("# shared-parent marker\n")
+    state = tmp_path / "linked-worktree"
+    git(primary, "worktree", "add", "-q", "--detach", str(state), commit)
+    assert export_inputs.series_store.shared_parent_root(state) == primary.resolve()
+    ledger_store = export_inputs._parity_reader().parity_ledger_module()
+    refusal = ledger_store.build_refusal(
+        producer="validate", run_id="validate-refused", hermit_sha="d" * 40, emitted_at="2026-09-29T01:00:00Z",
+        source_tree_dirty=None, host="fixturehost", input_bytes=b"x", input_lines=1,
+        error=f"cannot read {state.resolve()}/ignored/parity-batch.jsonl",
+    )
+    series_commit = _commit_ledger_parity(
+        primary, {ledger_store.event_shard(refusal): ledger_store.encode_batch([refusal]).encode()})
+    captured = export_inputs._parity_capture(primary / "hermit_test_ledger", series_commit)
+    assert captured["state"] == "absent" and export_inputs._contains_string(captured, str(state.resolve()))
+    result = export_inputs.build_export(primary, commit, published_only=True, state_root=state)
+    files = {"export.json": export_inputs.render_export(result), **_published_site(result)}
+    assert _path_hits(tmp_path, files) == []
+    panel = result["parity"]["refusal"]
+    assert panel == f"ledger commit {series_commit} parity data is refused: it holds an absolute path"
+    assert panel.encode() in files["index.html"]
