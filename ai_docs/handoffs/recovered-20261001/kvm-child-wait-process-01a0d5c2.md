@@ -1,0 +1,32 @@
+RELEASED by the KVM owner for coordinator retirement after the supported release succeeds.
+
+Slot: kvm-child-wait-process-01a0d5c2
+Repository and checkout: rrnewton/reverie at /home/newton/work/dev-hermit/worktrees/slots/kvm-child-wait-process-01a0d5c2
+Generation: 1
+Agent: native-kvm-child-wait-process-01a0d5c2
+Owner: PID 1571522, start ticks 730624, boot 47cceadc-9970-4ca3-87b0-90121ca7e88f.
+Owner directive: coordinator msg192, 2026-09-30 16:21Z, release published work and park.
+
+Preservation verified at 2026-09-30T16:29:29.847860+00:00:
+Current HEAD 59f9e6e3cf06a4675cc93d3502787e406ce1adef is exactly GitHub refs/heads/codex/kvm-child-wait-process-01a0d5c2.
+Remote source: https://github.com/rrnewton/reverie/tree/59f9e6e3cf06a4675cc93d3502787e406ce1adef
+Git status --porcelain --untracked-files=all is empty. No unpushed current-head work.
+No new task or source edits are authorized. The lane stops consuming this checkout when release completes. Normal coordinator read-handoff, Git salvage, mount and process checks remain required before removal. This handoff authorizes the supported lifecycle only; no manual deletion or guard override.
+
+Product evidence:
+https://github.com/rrnewton/reverie/pull/815 is merged at 78f1d2223904d37ce9b4384d0dfd5055687c6c5b.
+Exact-head RUN274 receipt: https://github.com/rrnewton/reverie/pull/815#issuecomment-5915104116
+Complete reversible terminal evidence: https://github.com/rrnewton/reverie/pull/815#issuecomment-5915135177
+Maintained landing, byte-identity and exact cleanup refusal: https://github.com/rrnewton/reverie/pull/815#issuecomment-5915335621
+
+https://github.com/rrnewton/reverie/pull/629 remains HOLD at e88c20fd1939bcd3419706a0c387691cd2b5aa9e.
+Its retained red: https://github.com/rrnewton/reverie/pull/629#issuecomment-5911645897
+Owner decision for https://github.com/rrnewton/reverie/issues/696 remains open:
+https://github.com/rrnewton/reverie/issues/696#issuecomment-5912462711
+Releasing the checkout does not release or close the held PR, or relabel any red evidence. Resume only after the owner decides, in a new registered slot.
+
+RUN274 validate checkout is separate and MUST remain untouched after its census-time-bound refusal, per msg192. It is not covered by this slot release.
+
+This slot supported the completed approved publishing route. All required network publication and readback must finish before release. Its local publishing scripts and private authentication profile are operational support, not unpushed product work. Never copy credentials into a public artifact. No future lane invocation or heartbeat will use this route after release.
+
+The final remote preservation inventory was posted and read back exactly: https://github.com/rrnewton/reverie/pull/815#issuecomment-5915434948
