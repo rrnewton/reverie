@@ -977,6 +977,19 @@ def test_canonical_test_producer_result_manifest_controls(result_manifests, mess
         fr._canonical_full_test_producers(data)
 
 
+def test_canonical_structured_result_contract_accepts_the_diagnostic_schema():
+    # dagrun schema 4 (diagnostic rows) is what e2e.manifest_compat declares.
+    declaration = _structured_result("e2e.manifest_compat")
+    declaration["schema"] = 4
+    data = {
+        "steps": [
+            _canonical_step("test", "one"),
+            _canonical_step("e2e", "manifest_compat", result_manifests=[declaration]),
+        ]
+    }
+    assert fr._canonical_full_test_producers(data) == {"test.one"}
+
+
 def test_canonical_structured_result_contract_accepts_exact_valid_declaration():
     data = {
         "steps": [
@@ -1046,7 +1059,11 @@ def test_planned_from_real_hermit_manifest_at_head():
     assert "test.cli_on_host" not in planned
     assert "test.isolated_dbt_workdir" in planned
     assert "test.isolated_detcore_workdir" in planned
-    assert len(planned) == 22
+    # 23 at the pinned Hermit fb3c2aaa (and at 197d8e48 before it): the last
+    # change was test.dbt_parity's retirement in hermit 1ce5c498 (slice S13 of
+    # https://github.com/rrnewton/hermit/issues/3301), 24 before it; this read
+    # 22 when it was written on 2026-09-13 and was not updated since.
+    assert len(planned) == 23
     print(
         f"\n[planned-control] {len(planned)} planned test.* nodes at hermit HEAD {sha[:12]}"
     )

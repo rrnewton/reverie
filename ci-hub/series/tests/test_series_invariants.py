@@ -5353,6 +5353,14 @@ class CellResultProjection(unittest.TestCase):
                              "    modes:\n      verify:\n        expected_guest_exit:\n"
                              "          code: 9\n" + declaration)},
              "duplicate manifest key 'code'"),
+            ("a corpus section without rows",
+             {"bad-corpus.yaml": "schema: 3\nbucket: x\ncorpus: {rows: []}\n"},
+             "malformed corpus section"),
+            # A corpus row is a test whose id is <bucket>/<id or label>.
+            ("a corpus row whose id another manifest declares",
+             {"fixture-corpus.yaml": ("schema: 3\nbucket: fixture\ncorpus:\n  rows:\n"
+                                      "    - {label: exit-7, argv: [/bin/true]}\n")},
+             "declares manifest test 'fixture/exit-7' twice"),
         ):
             with self.subTest(label=label):
                 tree = self._commit_manifests(files)
@@ -5365,6 +5373,21 @@ class CellResultProjection(unittest.TestCase):
                 )
                 # Restore the readable manifests for the next case.
                 self._commit_manifests({name: None for name in files})
+
+    def test_a_corpus_manifest_reads_as_its_expanded_test_ids(self):
+        # Hermit expands a corpus section (tests/e2e/manifests/compat.yaml)
+        # into one test per row; a tree carrying one still binds a declared
+        # row of another manifest instead of refusing the whole tree.
+        tree = self._commit_manifests({
+            "compat.yaml": ("schema: 3\nbucket: compat\ncorpus:\n  rows:\n"
+                            "    - {label: echo, argv: [/bin/echo]}\n"
+                            "    - {label: g++, id: gxx, argv: [g++, --version]}\n"),
+        })
+        self.assertEqual(
+            self._project_at(self._declared_exit_7(), tree, "corpus")[0]["series"]["outcome"],
+            "passed",
+        )
+        self._commit_manifests({"compat.yaml": None})
 
     def _declared_exit_7(self):
         return self._expected_exit_cell(

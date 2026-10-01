@@ -82,8 +82,12 @@ FULL_LABEL = "full"
 STRUCTURED_TEST_RESULTS_KIND = "structured-test-results"
 STRUCTURED_TEST_RESULTS_KEYS = frozenset({"kind", "owner", "path_env", "schema"})
 # dagrun's retained and current structured-result schemas are both 2 at the
-# Hermit revision this parent pins. A future schema must update both authorities.
-STRUCTURED_TEST_RESULTS_SCHEMAS = frozenset({2})
+# Hermit revision this parent pins; dagrun 4 (agent-utils d510a548, pinned by
+# Hermit fb3c2aaa and later) adds non-blocking diagnostic rows, which a bucket
+# listed in Hermit's DIAGNOSTIC_MANIFEST_BUCKETS declares (e2e.manifest_compat).
+# This reader checks only the declaration's shape. A future schema must update
+# both authorities.
+STRUCTURED_TEST_RESULTS_SCHEMAS = frozenset({2, 4})
 TEST_COUNTS_PATH_ENV = "DAGRUN_TEST_COUNTS_PATH"
 REVERIE_SOURCE_RE = re.compile(
     r"git\+https://github\.com/(?:rrnewton|facebookexperimental)/reverie\.git"

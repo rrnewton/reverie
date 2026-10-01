@@ -3604,6 +3604,28 @@ def _is_checkout(checkout: Path) -> bool:
         return False
 
 
+def _corpus_tests(document: dict, corpus: Any, path: str, tree: str) -> list[dict]:
+    """The tests a manifest's ``corpus:`` section expands into, by id only.
+
+    Hermit's ``ci/manifest-plan/src/manifest_corpus.rs`` expands each row into
+    one test with id ``<bucket>/<row id, or its label>``, appended after any
+    hand-written ``test`` entries. A row carries only ``label``, ``id`` and
+    ``argv`` (the section denies unknown keys), so it declares no
+    ``expected_guest_exit``; only the id is needed here.
+    """
+    bucket = document.get("bucket")
+    rows = corpus.get("rows") if isinstance(corpus, dict) else None
+    if not isinstance(bucket, str) or not bucket or not isinstance(rows, list) or not rows:
+        raise SeriesError(f"{path} at Hermit {tree} has a malformed corpus section")
+    tests = []
+    for row in rows:
+        suffix = row.get("id", row.get("label")) if isinstance(row, dict) else None
+        if not isinstance(suffix, str) or not suffix:
+            raise SeriesError(f"{path} at Hermit {tree} has a corpus row without a label")
+        tests.append({"id": f"{bucket}/{suffix}"})
+    return tests
+
+
 def main_ancestry(checkout: Path, trees: Iterable[str]) -> dict[str, tuple[bool | None, dict | None]]:
     """Resolve current ``origin/main`` ancestry and depth for each requested SHA.
 
@@ -4011,6 +4033,9 @@ def manifest_guest_exit_declarations(
         except (UnicodeDecodeError, yaml.YAMLError) as error:
             raise SeriesError(f"{path} at Hermit {tree} is not UTF-8 YAML: {error}") from error
         tests = document.get("test") if isinstance(document, dict) else None
+        corpus = document.get("corpus") if isinstance(document, dict) else None
+        if corpus is not None:
+            tests = list(tests or []) + _corpus_tests(document, corpus, path, tree)
         if not isinstance(tests, list):
             raise SeriesError(f"{path} at Hermit {tree} has no test list")
         for test in tests:
