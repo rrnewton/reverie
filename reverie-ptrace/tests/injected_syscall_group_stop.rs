@@ -68,12 +68,25 @@ const PPOLL_FD: i32 = 904;
 const PPOLL_THEN_GETPID_FD: i32 = 905;
 /// A zero-length write to this descriptor is replaced with `getppid`.
 const GETPPID_FD: i32 = 906;
+/// Like `PPOLL_FD`, but the tool returns 0 to the guest instead of the
+/// `ppoll` result, so the guest's syscall is not restarted.
+const PPOLL_THEN_ZERO_FD: i32 = 907;
+/// For an `UnblockThenTrapArgs` at `buf`: `rt_sigprocmask(SIG_UNBLOCK,
+/// &buf.set, NULL)`, then `getpid`, then `rt_tgsigqueueinfo(self, self,
+/// SIGTRAP, &buf.info)`, each reported; the tool returns the last result.
+const UNBLOCK_GETPID_THEN_TRAP_FD: i32 = 908;
 
 /// Guest memory for the injected `ppoll`.
 #[repr(C)]
 struct PpollArgs {
     mask: libc::sigset_t,
     timeout: libc::timespec,
+}
+/// Guest memory for `UNBLOCK_GETPID_THEN_TRAP_FD`.
+#[repr(C)]
+struct UnblockThenTrapArgs {
+    set: libc::sigset_t,
+    info: libc::siginfo_t,
 }
 const MARKERS: usize = 1500;
 
@@ -122,96 +135,7 @@ impl Tool for ReplaceMarker {
         guest: &mut G,
         syscall: Syscall,
     ) -> Result<i64, Error> {
-        match syscall {
-            Syscall::Write(write) if write.fd() == PROBE_FD && write.len() == 0 => {
-                // A different syscall from the pending one: this takes the
-                // private_inject -> untraced_syscall path.
-                let result = guest.inject(write.with_len(1)).await;
-                guest
-                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
-                    .await;
-                Ok(result?)
-            }
-            Syscall::Write(write) if write.fd() == SIGQUEUE_FD && write.len() == 0 => {
-                let siginfo = write.buf().and_then(|buf| AddrMut::from_raw(buf.as_raw()));
-                let result = guest
-                    .inject(
-                        RtTgsigqueueinfo::new()
-                            .with_tgid(guest.pid().as_raw())
-                            .with_tid(guest.tid().as_raw())
-                            .with_sig(libc::SIGSYS)
-                            .with_siginfo(siginfo),
-                    )
-                    .await;
-                guest
-                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
-                    .await;
-                Ok(result?)
-            }
-            Syscall::Write(write)
-                if (write.fd() == UNBLOCK_FD || write.fd() == UNBLOCK_THEN_GETPID_FD)
-                    && write.len() == 0 =>
-            {
-                let set = write.buf().and_then(|buf| Addr::from_raw(buf.as_raw()));
-                let result = guest
-                    .inject(
-                        RtSigprocmask::new()
-                            .with_how(libc::SIG_UNBLOCK)
-                            .with_set(set)
-                            .with_oldset(None)
-                            .with_sigsetsize(8),
-                    )
-                    .await;
-                guest
-                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
-                    .await;
-                if write.fd() == UNBLOCK_FD {
-                    return Ok(result?);
-                }
-                let result = guest.inject(Getpid::new()).await;
-                guest
-                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
-                    .await;
-                Ok(result?)
-            }
-            Syscall::Write(write)
-                if (write.fd() == PPOLL_FD || write.fd() == PPOLL_THEN_GETPID_FD)
-                    && write.len() == 0 =>
-            {
-                let base = write.buf().map_or(0, |buf| buf.as_raw());
-                let result = guest
-                    .inject(
-                        Ppoll::new()
-                            .with_fds(None)
-                            .with_nfds(0)
-                            .with_timeout(AddrMut::from_raw(
-                                base + std::mem::offset_of!(PpollArgs, timeout),
-                            ))
-                            .with_sigmask(Addr::from_raw(base))
-                            .with_sigsetsize(8),
-                    )
-                    .await;
-                guest
-                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
-                    .await;
-                if write.fd() == PPOLL_FD {
-                    return Ok(result?);
-                }
-                let result = guest.inject(Getpid::new()).await;
-                guest
-                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
-                    .await;
-                Ok(result?)
-            }
-            Syscall::Write(write) if write.fd() == GETPPID_FD && write.len() == 0 => {
-                let result = guest.inject(Getppid::new()).await;
-                guest
-                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
-                    .await;
-                Ok(result?)
-            }
-            other => Ok(guest.inject(other).await?),
-        }
+        replace_marker(guest, syscall).await
     }
 
     async fn handle_signal_event<G: Guest<Self>>(
@@ -220,6 +144,186 @@ impl Tool for ReplaceMarker {
         signal: Signal,
     ) -> Result<Option<Signal>, Errno> {
         guest.send_rpc(Report::Signal(signal as i32)).await;
+        Ok(Some(signal))
+    }
+}
+
+/// The marker replacements shared by `ReplaceMarker` and
+/// `InjectInFirstSignalHook`.
+async fn replace_marker<T, G>(guest: &mut G, syscall: Syscall) -> Result<i64, Error>
+where
+    T: Tool<GlobalState = Log>,
+    G: Guest<T>,
+{
+    match syscall {
+        Syscall::Write(write) if write.fd() == PROBE_FD && write.len() == 0 => {
+            // A different syscall from the pending one: this takes the
+            // private_inject -> untraced_syscall path.
+            let result = guest.inject(write.with_len(1)).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            Ok(result?)
+        }
+        Syscall::Write(write) if write.fd() == SIGQUEUE_FD && write.len() == 0 => {
+            let siginfo = write.buf().and_then(|buf| AddrMut::from_raw(buf.as_raw()));
+            let result = guest
+                .inject(
+                    RtTgsigqueueinfo::new()
+                        .with_tgid(guest.pid().as_raw())
+                        .with_tid(guest.tid().as_raw())
+                        .with_sig(libc::SIGSYS)
+                        .with_siginfo(siginfo),
+                )
+                .await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            Ok(result?)
+        }
+        Syscall::Write(write)
+            if (write.fd() == UNBLOCK_FD || write.fd() == UNBLOCK_THEN_GETPID_FD)
+                && write.len() == 0 =>
+        {
+            let set = write.buf().and_then(|buf| Addr::from_raw(buf.as_raw()));
+            let result = guest
+                .inject(
+                    RtSigprocmask::new()
+                        .with_how(libc::SIG_UNBLOCK)
+                        .with_set(set)
+                        .with_oldset(None)
+                        .with_sigsetsize(8),
+                )
+                .await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            if write.fd() == UNBLOCK_FD {
+                return Ok(result?);
+            }
+            let result = guest.inject(Getpid::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            Ok(result?)
+        }
+        Syscall::Write(write)
+            if (write.fd() == PPOLL_FD
+                || write.fd() == PPOLL_THEN_GETPID_FD
+                || write.fd() == PPOLL_THEN_ZERO_FD)
+                && write.len() == 0 =>
+        {
+            let base = write.buf().map_or(0, |buf| buf.as_raw());
+            let result = guest
+                .inject(
+                    Ppoll::new()
+                        .with_fds(None)
+                        .with_nfds(0)
+                        .with_timeout(AddrMut::from_raw(
+                            base + std::mem::offset_of!(PpollArgs, timeout),
+                        ))
+                        .with_sigmask(Addr::from_raw(base))
+                        .with_sigsetsize(8),
+                )
+                .await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            if write.fd() == PPOLL_FD {
+                return Ok(result?);
+            }
+            if write.fd() == PPOLL_THEN_ZERO_FD {
+                return Ok(0);
+            }
+            let result = guest.inject(Getpid::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            Ok(result?)
+        }
+        Syscall::Write(write) if write.fd() == GETPPID_FD && write.len() == 0 => {
+            let result = guest.inject(Getppid::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            Ok(result?)
+        }
+        Syscall::Write(write) if write.fd() == UNBLOCK_GETPID_THEN_TRAP_FD && write.len() == 0 => {
+            let base = write.buf().map_or(0, |buf| buf.as_raw());
+            let result = guest
+                .inject(
+                    RtSigprocmask::new()
+                        .with_how(libc::SIG_UNBLOCK)
+                        .with_set(Addr::from_raw(base))
+                        .with_oldset(None)
+                        .with_sigsetsize(8),
+                )
+                .await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            let result = guest.inject(Getpid::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            let result = guest
+                .inject(
+                    RtTgsigqueueinfo::new()
+                        .with_tgid(guest.pid().as_raw())
+                        .with_tid(guest.tid().as_raw())
+                        .with_sig(libc::SIGTRAP)
+                        .with_siginfo(AddrMut::from_raw(
+                            base + std::mem::offset_of!(UnblockThenTrapArgs, info),
+                        )),
+                )
+                .await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            Ok(result?)
+        }
+        other => Ok(guest.inject(other).await?),
+    }
+}
+
+/// Like `ReplaceMarker`, but the first signal hook on each thread injects a
+/// `getpid`, reported, before passing the signal through.
+#[derive(Clone, Copy, Debug, Default)]
+struct InjectInFirstSignalHook;
+
+#[reverie::tool]
+impl Tool for InjectInFirstSignalHook {
+    type GlobalState = Log;
+    /// Signal hooks run on this thread so far.
+    type ThreadState = u64;
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        replace_marker(guest, syscall).await
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        *guest.thread_state_mut() += 1;
+        if *guest.thread_state_mut() == 1 {
+            let result = guest.inject(Getpid::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+        }
         Ok(Some(signal))
     }
 }
@@ -1130,6 +1234,412 @@ fn injection_after_a_held_signal_discards_the_stale_step_trap() {
         *signals,
         Vec::<i32>::new(),
         "the requeued, still-blocked SIGSYS is not reported as delivered"
+    );
+}
+
+/// Whether `signal` is pending for the calling thread.
+///
+/// # Safety
+/// Plain libc calls on a local set.
+unsafe fn is_pending(signal: libc::c_int) -> libc::c_int {
+    unsafe {
+        let mut pending: libc::sigset_t = std::mem::zeroed();
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_rt_sigpending,
+                &mut pending as *mut libc::sigset_t,
+                8usize
+            ),
+            0
+        );
+        libc::sigismember(&pending, signal)
+    }
+}
+
+/// Unblocks `signal` for the calling thread.
+///
+/// # Safety
+/// Changes the calling thread's signal mask.
+unsafe fn unblock(signal: libc::c_int) {
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, signal);
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_rt_sigprocmask,
+                libc::SIG_UNBLOCK,
+                &set as *const libc::sigset_t,
+                0usize,
+                8usize
+            ),
+            0
+        );
+    }
+}
+
+/// The held SIGSYS of `injected_mask_swapping_syscall_keeps_the_saved_mask`,
+/// reported to a signal hook that injects `getpid` before passing it
+/// through. The injection's step lets the kernel restore `ppoll`'s saved
+/// mask, so the kernel requeues the passed-through SIGSYS, blocked, instead
+/// of delivering it. The guest's syscall still holds `-ERESTARTNOHAND` and
+/// is restarted; the tool injects `ppoll` again, whose temporary mask lets
+/// the requeued SIGSYS through, and that delivery is the one the hook
+/// already decided, so it is not reported again. Untraced Linux prints
+/// "-1 4 1 1 0 1": EINTR, one handler run, SIGSYS blocked again and no
+/// longer pending, and no second handler run once it is unblocked.
+#[test]
+fn signal_hook_injecting_after_a_held_signal_reports_it_once() {
+    let (output, log) = test_fn::<InjectInFirstSignalHook, _>(|| unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        block(&[libc::SIGSYS]);
+        queue_to_self(libc::SIGSYS, 1);
+        let mut args: PpollArgs = std::mem::zeroed();
+        libc::sigemptyset(&mut args.mask);
+        args.timeout.tv_sec = 5;
+        let ret = libc::syscall(
+            libc::SYS_write,
+            PPOLL_FD,
+            &mut args as *mut PpollArgs,
+            0usize,
+        );
+        let errno = *libc::__errno_location();
+        let calls = SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed);
+        let blocked = is_blocked(libc::SIGSYS);
+        let pending = is_pending(libc::SIGSYS);
+        unblock(libc::SIGSYS);
+        println!(
+            "{ret} {errno} {calls} {blocked} {pending} {} {}",
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+            libc::getpid()
+        );
+    })
+    .expect("run signal-hook injection guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE hook-inject-held guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
+    let pid: i64 = pid.parse().expect("guest pid");
+    assert_eq!(
+        fields,
+        format!("-1 {} 1 1 0 1", libc::EINTR),
+        "guest sees EINTR, one handler run, and SIGSYS blocked and not pending"
+    );
+    let restart = Err(Errno::ERESTARTNOHAND.into_raw());
+    assert_eq!(
+        *injected,
+        vec![restart, Ok(pid), restart],
+        "ppoll is interrupted, the hook's getpid runs, and the restarted ppoll is interrupted"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS],
+        "the hook runs once for the one SIGSYS"
+    );
+}
+
+/// As `signal_hook_injecting_after_a_held_signal_reports_it_once`, but the
+/// tool returns 0 for the guest's syscall, so nothing restarts it and the
+/// requeued SIGSYS stays pending, blocked by the restored mask. When the
+/// guest unblocks it, it is delivered once, and the hook, which already
+/// passed it through, is not run for it again.
+#[test]
+fn signal_hook_injecting_after_a_held_signal_reports_it_once_after_unblock() {
+    let (output, log) = test_fn::<InjectInFirstSignalHook, _>(|| unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        block(&[libc::SIGSYS]);
+        queue_to_self(libc::SIGSYS, 1);
+        let mut args: PpollArgs = std::mem::zeroed();
+        libc::sigemptyset(&mut args.mask);
+        args.timeout.tv_sec = 5;
+        let ret = libc::syscall(
+            libc::SYS_write,
+            PPOLL_THEN_ZERO_FD,
+            &mut args as *mut PpollArgs,
+            0usize,
+        );
+        let calls = SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed);
+        let blocked = is_blocked(libc::SIGSYS);
+        let pending = is_pending(libc::SIGSYS);
+        unblock(libc::SIGSYS);
+        println!(
+            "{ret} {calls} {blocked} {pending} {} {}",
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+            libc::getpid()
+        );
+    })
+    .expect("run signal-hook injection guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE hook-inject-held-unblock guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
+    let pid: i64 = pid.parse().expect("guest pid");
+    assert_eq!(
+        fields, "0 0 1 1 1",
+        "SIGSYS stays blocked and pending until the guest unblocks it, then runs its handler once"
+    );
+    assert_eq!(
+        *injected,
+        vec![Err(Errno::ERESTARTNOHAND.into_raw()), Ok(pid)],
+        "ppoll is interrupted and the hook's getpid runs"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS],
+        "the hook runs once for the one SIGSYS"
+    );
+}
+
+/// The ordinary signal route with the same hook: the guest's own `ppoll`,
+/// whose temporary mask lets a pending SIGSYS through, is not intercepted.
+/// The hook's `getpid` lets the kernel restore the saved mask, so its
+/// pass-through verdict is requeued, the kernel restarts `ppoll`, and the
+/// restarted call takes SIGSYS under its temporary mask again. That delivery
+/// is not reported a second time. Untraced Linux prints "-1 4 1 1 0 1".
+#[test]
+fn signal_hook_injecting_at_a_delivery_stop_reports_it_once() {
+    let (output, log) = test_fn::<InjectInFirstSignalHook, _>(|| unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        block(&[libc::SIGSYS]);
+        queue_to_self(libc::SIGSYS, 1);
+        let mut mask: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut mask);
+        let timeout = libc::timespec {
+            tv_sec: 5,
+            tv_nsec: 0,
+        };
+        let ret = libc::syscall(
+            libc::SYS_ppoll,
+            0usize,
+            0usize,
+            &timeout as *const libc::timespec,
+            &mask as *const libc::sigset_t,
+            8usize,
+        );
+        let errno = *libc::__errno_location();
+        let calls = SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed);
+        let blocked = is_blocked(libc::SIGSYS);
+        let pending = is_pending(libc::SIGSYS);
+        unblock(libc::SIGSYS);
+        println!(
+            "{ret} {errno} {calls} {blocked} {pending} {} {}",
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+            libc::getpid()
+        );
+    })
+    .expect("run signal-hook injection guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE hook-inject-ordinary guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
+    let pid: i64 = pid.parse().expect("guest pid");
+    assert_eq!(
+        fields,
+        format!("-1 {} 1 1 0 1", libc::EINTR),
+        "guest sees EINTR, one handler run, and SIGSYS blocked and not pending"
+    );
+    assert_eq!(*injected, vec![Ok(pid)], "the hook's getpid runs once");
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS],
+        "the hook runs once for the one SIGSYS"
+    );
+}
+
+/// A held SIGTSTP with its default (stop) disposition, as in
+/// `signal_pending_before_injected_syscall_interrupts_it`. Resuming with it
+/// starts a group stop, which the tracer sees as a second SIGTSTP stop
+/// without siginfo. That stop is a consequence of the one delivery the tool
+/// was told about, so the tool is not told again. A restarted ptraced tracee
+/// does not honor the stop; the interrupted marker restarts and its
+/// injections run again, the `getpid` now returning the pid.
+#[test]
+fn held_default_action_stop_signal_is_reported_once() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        // As in `guest`: a stop signal is discarded in an orphaned group.
+        assert_eq!(libc::setpgid(0, 0), 0);
+        let set = block(&[libc::SIGTSTP]);
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_tgkill,
+                libc::getpid(),
+                libc::syscall(libc::SYS_gettid),
+                libc::SIGTSTP
+            ),
+            0
+        );
+        let ret = libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_THEN_GETPID_FD,
+            &set as *const libc::sigset_t,
+            0usize,
+        );
+        println!("{ret} {}", libc::getpid());
+    })
+    .expect("run held stop-signal guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE held-sigtstp guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    let (ret, pid) = stdout.trim().split_once(' ').expect("guest output");
+    let pid: i64 = pid.parse().expect("guest pid");
+    assert_eq!(ret, pid.to_string(), "the restarted marker returns the pid");
+    assert_eq!(
+        *injected,
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw()), Ok(0), Ok(pid)],
+        "SIGTSTP interrupts getpid; the restarted marker runs both injections"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGTSTP],
+        "one SIGTSTP is reported once, not again at its group stop"
+    );
+}
+
+/// The ordinary route of a default-action SIGTSTP: its delivery stop is
+/// reported, and the group stop that follows the delivery is not.
+#[test]
+fn default_action_stop_signal_is_reported_once() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        assert_eq!(libc::setpgid(0, 0), 0);
+        assert_eq!(libc::raise(libc::SIGTSTP), 0);
+        println!("resumed");
+    })
+    .expect("run stop-signal guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE sigtstp guest={} signals={:?}",
+        stdout.trim(),
+        *signals
+    );
+    assert_eq!(stdout.trim(), "resumed");
+    assert_eq!(
+        *signals,
+        vec![libc::SIGTSTP],
+        "one SIGTSTP is reported once, not again at its group stop"
+    );
+}
+
+/// A guest may queue itself a SIGTRAP whose `si_code` is that of a syscall
+/// stop (`SIGTRAP | 0x80`). Here SIGUSR1 is held as in
+/// `signal_pending_before_injected_syscall_interrupts_it`, and the callback's
+/// third injection queues such a SIGTRAP, which Linux dequeues ahead of the
+/// step SIGTRAP: the injection ends at a genuine signal-delivery stop whose
+/// siginfo reads like a syscall stop. Resuming from it delivers the held
+/// SIGUSR1, so the tool must be told about SIGUSR1 first.
+#[test]
+fn held_signal_is_reported_at_a_delivery_stop_with_syscall_stop_siginfo() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        SIGUSR1_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGUSR1, count_sigusr1);
+        let mut args: UnblockThenTrapArgs = std::mem::zeroed();
+        args.set = block(&[libc::SIGUSR1]);
+        args.info.si_signo = libc::SIGTRAP;
+        args.info.si_code = libc::SIGTRAP | 0x80;
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_tgkill,
+                libc::getpid(),
+                libc::syscall(libc::SYS_gettid),
+                libc::SIGUSR1
+            ),
+            0
+        );
+        let ret = libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_GETPID_THEN_TRAP_FD,
+            &mut args as *mut UnblockThenTrapArgs,
+            0usize,
+        );
+        println!("{ret} {}", SIGUSR1_HANDLER_CALLS.load(Ordering::Relaxed));
+    })
+    .expect("run syscall-stop siginfo guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE trap-siginfo guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    assert_eq!(
+        *injected,
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw()), Ok(0)],
+        "SIGUSR1 interrupts getpid; the SIGTRAP is queued"
+    );
+    assert_eq!(
+        stdout.trim(),
+        "0 1",
+        "the guest sees the last result and SIGUSR1's handler runs once"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGUSR1],
+        "the held SIGUSR1 is reported once before it is delivered"
     );
 }
 
