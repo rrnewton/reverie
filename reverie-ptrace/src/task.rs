@@ -221,6 +221,35 @@ enum OrdinaryStart {
     Newborn(Running, Option<Box<libc::user_regs_struct>>),
 }
 
+/// How [`TracedTask::tracee_preinit`] ended.
+pub enum PreinitOutcome {
+    /// The tracee is initialized and still stopped.
+    Ready(Stopped),
+    /// A wait during initialization returned the tracee's final status. A
+    /// SIGKILLed tracee first stops at `PTRACE_EVENT_EXIT`, but that stop is
+    /// published to the exit notifier, not to the waits initialization makes,
+    /// so initialization can resume the tracee from it and then see it exit.
+    /// See <https://github.com/rrnewton/reverie/issues/760>.
+    Exited(Pid, ExitStatus),
+}
+
+/// Returns `error` unchanged unless a probe of `task` confirms its death.
+///
+/// `process_vm_readv`, `process_vm_writev` and `PTRACE_POKEDATA` report a
+/// tracee that a SIGKILL has just ended as a bare `ESRCH`, which carries no
+/// [`TraceError::Died`] for the caller to reap. The probe is `PTRACE_GETREGS`,
+/// which safeptrace turns into `Died` exactly when it fails with `ESRCH`. Any
+/// other probe result keeps the original error.
+pub(crate) fn dead_or(task: &Stopped, error: TraceError) -> TraceError {
+    match error {
+        TraceError::Errno(_) => match task.getregs() {
+            Err(died @ TraceError::Died(_)) => died,
+            _ => error,
+        },
+        error => error,
+    }
+}
+
 /// A same-process task rendezvous authorized only by an actual leader Exec
 /// event naming this former TID. No numeric-PID inference can request it.
 struct OrdinaryExecSlot<L: Tool> {
@@ -2385,6 +2414,9 @@ struct GlobalState<G: GlobalTool> {
 
     #[cfg(test)]
     pre_syscall_for_test: Option<PreSyscallForTest>,
+
+    #[cfg(test)]
+    preinit_point_for_test: Option<PreinitPointForTest>,
 }
 
 /// Test-only: picks a signal to leave pending for the final resume of a
@@ -2409,6 +2441,46 @@ pub(crate) type PreSyscallForTest = Arc<
         + Send
         + Sync,
 >;
+
+/// Test-only: runs synchronously at a [`PreinitPoint`] of every
+/// `tracee_preinit`, with the tracee's PID and terminal-status observer.
+/// Being synchronous, it can end the tracee and let the next ptrace operation
+/// or wait of the same poll observe that, as a SIGKILL racing initialization
+/// does.
+#[cfg(test)]
+pub(crate) type PreinitPointForTest =
+    Arc<dyn Fn(Pid, &safeptrace::TerminalCleanup, PreinitPoint) + Send + Sync>;
+
+/// Calls the [`PreinitPointForTest`] hook, if any. `cleanup` runs only then.
+#[cfg(test)]
+fn at_preinit_point(
+    hook: &Option<PreinitPointForTest>,
+    pid: Pid,
+    cleanup: impl FnOnce() -> safeptrace::TerminalCleanup,
+    point: PreinitPoint,
+) {
+    if let Some(hook) = hook {
+        hook(pid, &cleanup(), point);
+    }
+}
+
+/// Test-only: where `tracee_preinit` calls a [`PreinitPointForTest`] hook.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreinitPoint {
+    /// After saving the registers, before reading the code at RIP.
+    RegsSaved,
+    /// After reading the code at RIP, before patching it.
+    CodeRead,
+    /// After stepping into the injected mmap, before waiting for its stop.
+    MmapStepped,
+    /// After checking the mmap's result, before populating the page.
+    MmapReturned,
+    /// After populating the page, before restoring the code at RIP.
+    PagePopulated,
+    /// After making the vDSO writable, before patching it.
+    VdsoWritable,
+}
 
 /// Test-only: where the masked hop calls a [`PreSyscallForTest`] hook.
 #[cfg(test)]
@@ -2440,6 +2512,8 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             final_resume_signal_for_test: self.final_resume_signal_for_test.clone(),
             #[cfg(test)]
             pre_syscall_for_test: self.pre_syscall_for_test.clone(),
+            #[cfg(test)]
+            preinit_point_for_test: self.preinit_point_for_test.clone(),
         }
     }
 }
@@ -2494,6 +2568,8 @@ pub(crate) struct TracedTaskOptions<'a> {
     pub(crate) final_resume_signal_for_test: Option<FinalResumeSignalForTest>,
     #[cfg(test)]
     pub(crate) pre_syscall_for_test: Option<PreSyscallForTest>,
+    #[cfg(test)]
+    pub(crate) preinit_point_for_test: Option<PreinitPointForTest>,
 }
 
 /// Our runtime representation of what Reverie knows about a guest thread. Its
@@ -2719,6 +2795,8 @@ impl<L: Tool> TracedTask<L> {
             final_resume_signal_for_test: options.final_resume_signal_for_test,
             #[cfg(test)]
             pre_syscall_for_test: options.pre_syscall_for_test,
+            #[cfg(test)]
+            preinit_point_for_test: options.preinit_point_for_test,
         };
         let thread_state = process_state.init_thread_state(tid, None);
         let (next_state, next_state_rx) = mpsc::channel(1);
@@ -3282,10 +3360,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         skip_all,
         fields(pid = %task.pid())
     )]
-    pub async fn tracee_preinit(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+    pub async fn tracee_preinit(&mut self, task: Stopped) -> Result<PreinitOutcome, TraceError> {
         // A forked child can initialize a replacement image too. It must not
         // consume or overwrite the session root's held-stop cleanup lease.
         let held_root_stop = self.liteinst_root_stop_slot(&task);
+        #[cfg(test)]
+        let preinit_point = self.global_state.preinit_point_for_test.clone();
         let reject_activation_signals = self.global_state.liteinst_runtime.is_some();
         let unexpected_preinit_signal = Arc::new(StdMutex::new(None));
         #[cfg(test)]
@@ -3349,6 +3429,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         type SavedInstructions = [u8; 8];
 
         /// Helper function for tracee_preinit that does the core work.
+        // The three test-only hooks push the count past clippy's limit.
+        #[cfg_attr(test, allow(clippy::too_many_arguments))]
         async fn setup_special_mmap_page(
             task: Stopped,
             saved_regs: &libc::user_regs_struct,
@@ -3357,7 +3439,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             unexpected_signal: &Arc<StdMutex<Option<Signal>>>,
             #[cfg(test)] pause_preinit_step: &Option<(usize, mpsc::UnboundedSender<Pid>)>,
             #[cfg(test)] force_preinit_signal_once: &Option<Arc<AtomicBool>>,
-        ) -> Result<Stopped, TraceError> {
+            #[cfg(test)] preinit_point: &Option<PreinitPointForTest>,
+        ) -> Result<PreinitOutcome, TraceError> {
             // NOTE: This point in the code assumes that a specific instruction
             // sequence "SYSCALL; INT3", has been patched into the guest, and
             // that RIP points to the syscall.
@@ -3379,12 +3462,24 @@ impl<L: Tool + 'static> TracedTask<L> {
             task.setregs(&regs)?;
             // Execute the injected mmap call.
             let mut running = RootStopLease::new(task, held_root_stop.clone()).step(None)?;
+            #[cfg(test)]
+            at_preinit_point(
+                preinit_point,
+                running.pid(),
+                || running.terminal_cleanup(),
+                PreinitPoint::MmapStepped,
+            );
 
             // loop until second breakpoint hit after injected syscall.
             #[cfg(test)]
             let mut step = 0;
             let task = loop {
-                let (task, event) = running.next_state().await?.assume_stopped();
+                let (task, event) = match running.next_state().await? {
+                    Wait::Stopped(task, event) => (task, event),
+                    Wait::Exited(pid, exit_status) => {
+                        return Ok(PreinitOutcome::Exited(pid, exit_status));
+                    }
+                };
                 arm_preinit_stop(held_root_stop, &task, &event);
                 #[cfg(test)]
                 let forced_external_sigtrap = event == Event::Signal(Signal::SIGTRAP)
@@ -3462,11 +3557,19 @@ impl<L: Tool + 'static> TracedTask<L> {
                 page_addr
             );
 
-            cp::populate_mmap_page(task.pid().into(), page_addr)?;
+            #[cfg(test)]
+            at_preinit_point(
+                preinit_point,
+                task.pid(),
+                || task.terminal_cleanup(),
+                PreinitPoint::MmapReturned,
+            );
+            cp::populate_mmap_page(task.pid().into(), page_addr)
+                .map_err(|error| dead_or(&task, error.into()))?;
 
             // Restore our saved registers, including our instruction pointer.
             task.setregs(saved_regs)?;
-            Ok(task)
+            Ok(PreinitOutcome::Ready(task))
         }
 
         /// Put the guest into the weird state where it has an
@@ -3475,6 +3578,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         /// allows forcible injection of syscalls into the guest.
         async fn establish_injection_state(
             mut task: Stopped,
+            #[cfg(test)] preinit_point: &Option<PreinitPointForTest>,
         ) -> Result<(Stopped, libc::user_regs_struct, SavedInstructions), TraceError> {
             #[cfg(target_arch = "x86_64")]
             const SYSCALL_BP: SavedInstructions = [
@@ -3491,10 +3595,26 @@ impl<L: Tool + 'static> TracedTask<L> {
 
             // Save the original registers so we can restore them later.
             let regs = task.getregs()?;
+            #[cfg(test)]
+            at_preinit_point(
+                preinit_point,
+                task.pid(),
+                || task.terminal_cleanup(),
+                PreinitPoint::RegsSaved,
+            );
 
             // Saved instruction memory
             let ip = AddrMut::from_raw(regs.ip() as usize).ok_or(Errno::EFAULT)?;
-            let saved: SavedInstructions = task.read_value(ip)?;
+            let saved: SavedInstructions = task
+                .read_value(ip)
+                .map_err(|error| dead_or(&task, error.into()))?;
+            #[cfg(test)]
+            at_preinit_point(
+                preinit_point,
+                task.pid(),
+                || task.terminal_cleanup(),
+                PreinitPoint::CodeRead,
+            );
 
             // Patch the tracee at the current instruction pointer.
             //
@@ -3502,7 +3622,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             // but `PTRACE_POKEDATA` can! Thus, we need to make sure we only
             // write one word-sized chunk at a time. Luckily, the instructions
             // we want to inject fit inside of just one 64-bit word.
-            task.write_value(ip.cast(), &SYSCALL_BP)?;
+            task.write_value(ip.cast(), &SYSCALL_BP)
+                .map_err(|error| dead_or(&task, error.into()))?;
 
             Ok((task, regs, saved))
         }
@@ -3518,13 +3639,19 @@ impl<L: Tool + 'static> TracedTask<L> {
             // write-protected pages, we must write in word-sized chunks with
             // PTRACE_POKEDATA.
             let ip = AddrMut::from_raw(regs.ip() as usize).ok_or(Errno::EFAULT)?;
-            task.write_value(ip, &saved)?;
+            task.write_value(ip, &saved)
+                .map_err(|error| dead_or(task, error.into()))?;
             task.setregs(&regs)?;
             Ok(())
         }
 
-        let (task, regs, prev_state) = establish_injection_state(task).await?;
-        let task = setup_special_mmap_page(
+        let (task, regs, prev_state) = establish_injection_state(
+            task,
+            #[cfg(test)]
+            &preinit_point,
+        )
+        .await?;
+        let outcome = setup_special_mmap_page(
             task,
             &regs,
             &held_root_stop,
@@ -3534,6 +3661,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             &pause_preinit_step,
             #[cfg(test)]
             &force_preinit_signal_once,
+            #[cfg(test)]
+            &preinit_point,
         )
         .await;
         if let Some(sig) = unexpected_preinit_signal.lock().unwrap().take() {
@@ -3548,18 +3677,47 @@ impl<L: Tool + 'static> TracedTask<L> {
                 ),
             );
         }
-        let mut task = task?;
+        let mut task = match outcome? {
+            PreinitOutcome::Ready(task) => task,
+            exited @ PreinitOutcome::Exited(..) => return Ok(exited),
+        };
         #[cfg(test)]
         pause_preinit(&pause_preinit_step, 1, &task).await;
+        #[cfg(test)]
+        at_preinit_point(
+            &preinit_point,
+            task.pid(),
+            || task.terminal_cleanup(),
+            PreinitPoint::PagePopulated,
+        );
 
         // Restore registers after adding our temporary injection state.
         remove_injection_state(&mut task, regs, prev_state)?;
 
         if vdso::is_patch_required(&self.global_state.subscriptions) {
             let subscriptions = self.global_state.subscriptions.clone();
-            vdso::vdso_patch(self, &subscriptions)
-                .await
-                .expect("unable to patch vdso");
+            #[cfg(test)]
+            if let Some(hook) = preinit_point.clone() {
+                let pid = task.pid();
+                let terminal = task.terminal_cleanup();
+                vdso::VDSO_WRITABLE_FOR_TEST.with(|slot| {
+                    *slot.borrow_mut() = Some(Box::new(move || {
+                        hook(pid, &terminal, PreinitPoint::VdsoWritable)
+                    }))
+                });
+            }
+            let patched = vdso::vdso_patch(self, &subscriptions).await;
+            #[cfg(test)]
+            vdso::VDSO_WRITABLE_FOR_TEST.with(|slot| slot.borrow_mut().take());
+            match patched {
+                Ok(()) => {}
+                // A tracee that died during the patch reports a bare errno.
+                Err(reverie::Error::Errno(errno)) => match dead_or(&task, errno.into()) {
+                    died @ TraceError::Died(_) => return Err(died),
+                    error => panic!("unable to patch vdso: {error:?}"),
+                },
+                Err(error) => panic!("unable to patch vdso: {error:?}"),
+            }
         }
         #[cfg(test)]
         pause_preinit(&pause_preinit_step, 2, &task).await;
@@ -3642,7 +3800,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // don't leave the return value register (%rax) in a dirty state.
         task.setregs(&regs)?;
 
-        Ok(task)
+        Ok(PreinitOutcome::Ready(task))
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -4911,7 +5069,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.arm_liteinst_root_stop(&task, &event);
             task
         };
-        let mut task = self.tracee_preinit(task).await?;
+        let mut task = match self.tracee_preinit(task).await? {
+            PreinitOutcome::Ready(task) => task,
+            PreinitOutcome::Exited(pid, exit_status) => {
+                return Ok(Wait::Exited(pid, exit_status));
+            }
+        };
         if let Err(error) = self.install_liteinst_entry_guard(&mut task) {
             self.record_liteinst_failure(
                 LiteinstActivationFailureReason::InstallExecutableEntryGuard,

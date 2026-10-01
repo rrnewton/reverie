@@ -85,6 +85,7 @@ use crate::task::FatalSession;
 use crate::task::InjectedSyscallProvenance;
 use crate::task::InjectedSyscallTrap;
 use crate::task::LiteinstRuntimeConfig;
+use crate::task::PreinitOutcome;
 #[cfg(test)]
 use crate::task::RootStopPause;
 use crate::task::TracedTask;
@@ -4135,7 +4136,12 @@ async fn postspawn<L: Tool + 'static>(
         ordinary_session.capture_root(&child);
     }
     if !ordinary_session.is_failed() {
-        child = tracer.tracee_preinit(child).await?;
+        child = match tracer.tracee_preinit(child).await? {
+            PreinitOutcome::Ready(child) => child,
+            PreinitOutcome::Exited(pid, exit_status) => {
+                return Err(PostspawnError::Exited { pid, exit_status });
+            }
+        };
     }
 
     let tracer = Box::pin(run_task_tree(
@@ -4278,6 +4284,9 @@ pub struct TracerBuilder<T: Tool + 'static> {
 
     #[cfg(test)]
     pre_syscall_for_test: Option<crate::task::PreSyscallForTest>,
+
+    #[cfg(test)]
+    preinit_point_for_test: Option<crate::task::PreinitPointForTest>,
 }
 
 impl<T: Tool + 'static> TracerBuilder<T> {
@@ -4298,6 +4307,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             final_resume_signal_for_test: None,
             #[cfg(test)]
             pre_syscall_for_test: None,
+            #[cfg(test)]
+            preinit_point_for_test: None,
         }
     }
 
@@ -4521,6 +4532,14 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     #[cfg(test)]
     fn pre_syscall_for_test(mut self, hook: crate::task::PreSyscallForTest) -> Self {
         self.pre_syscall_for_test = Some(hook);
+        self
+    }
+
+    /// Calls `hook` at each point of every tracee pre-initialization (see
+    /// [`crate::task::PreinitPointForTest`]).
+    #[cfg(test)]
+    fn preinit_point_for_test(mut self, hook: crate::task::PreinitPointForTest) -> Self {
+        self.preinit_point_for_test = Some(hook);
         self
     }
 
@@ -5055,6 +5074,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                 final_resume_signal_for_test: self.final_resume_signal_for_test,
                 #[cfg(test)]
                 pre_syscall_for_test: self.pre_syscall_for_test,
+                #[cfg(test)]
+                preinit_point_for_test: self.preinit_point_for_test,
             },
             gdbserver,
         )
@@ -5253,6 +5274,8 @@ where
                     final_resume_signal_for_test: None,
                     #[cfg(test)]
                     pre_syscall_for_test: None,
+                    #[cfg(test)]
+                    preinit_point_for_test: None,
                 },
                 None,
             )
@@ -9906,6 +9929,257 @@ mod tests {
         fn subscriptions(_config: &()) -> Subscription {
             Subscription::none()
         }
+    }
+
+    /// How [`kill_at_preinit_point`] leaves the tracee it kills.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum PreinitKillMode {
+        /// In its `PTRACE_EVENT_EXIT` stop. Its ptrace requests still succeed,
+        /// and the next resume lets it exit.
+        ExitStop,
+        /// Exited, with its final status published. Every later request
+        /// fails with ESRCH, as one made between the kill and the exit stop
+        /// does.
+        Exited,
+    }
+
+    /// Hits of one [`crate::task::PreinitPoint`] in a tracee's lifetime, and
+    /// the tracee that was killed at the chosen hit.
+    #[derive(Default)]
+    struct PreinitKill {
+        hits: AtomicUsize,
+        killed: StdMutex<Option<Pid>>,
+    }
+
+    fn proc_status_has_sigkill(tid: Pid, field: &str) -> bool {
+        std::fs::read_to_string(format!("/proc/{tid}/status"))
+            .ok()
+            .and_then(|status| {
+                let mask = status.lines().find_map(|line| line.strip_prefix(field))?;
+                u64::from_str_radix(mask.trim(), 16).ok()
+            })
+            .is_some_and(|mask| mask & (1 << (libc::SIGKILL - 1)) != 0)
+    }
+
+    /// Waits, for at most two seconds, until killed tracee `pid` is in its exit
+    /// stop or its final status is published, so that no state change is in
+    /// flight when the tracer resumes. Returns whether it is in its exit stop.
+    ///
+    /// The kill is pending until the tracee dequeues it, which it does only
+    /// after leaving the stop it was in, so the SIGKILL bits are read before
+    /// the state: with both clear, a tracing stop is the exit stop. The bits
+    /// are read thread-wide and process-wide because a thread pidfd sends the
+    /// kill to the thread's own pending set.
+    fn settle_killed_tracee(pid: Pid, terminal: &safeptrace::TerminalCleanup) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if terminal.observed_exit_status() != Ok(None) {
+                return false;
+            }
+            if !proc_status_has_sigkill(pid, "SigPnd:")
+                && !proc_status_has_sigkill(pid, "ShdPnd:")
+                && std::fs::read_to_string(format!("/proc/{pid}/status"))
+                    .is_ok_and(|status| status.contains("\nState:\tt"))
+            {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+        let signals: Vec<&str> = status
+            .lines()
+            .filter(|line| line.starts_with("State:") || line.contains("Pnd:"))
+            .collect();
+        panic!("killed tracee {pid} did not settle within 2 s: {signals:?}");
+    }
+
+    /// Returns a hook that SIGKILLs the tracee at the `nth` hit of `target`
+    /// and leaves it as `mode` says.
+    ///
+    /// After the kill, every later hook point first waits for the tracee to
+    /// settle, so the order in which the tracer observes the death does not
+    /// depend on timing. See <https://github.com/rrnewton/reverie/issues/760>.
+    fn kill_at_preinit_point(
+        target: crate::task::PreinitPoint,
+        nth: usize,
+        mode: PreinitKillMode,
+    ) -> (crate::task::PreinitPointForTest, Arc<PreinitKill>) {
+        let kill = Arc::new(PreinitKill::default());
+        let state = Arc::clone(&kill);
+        let hook: crate::task::PreinitPointForTest = Arc::new(move |pid, terminal, point| {
+            if *state.killed.lock().unwrap() == Some(pid) {
+                settle_killed_tracee(pid, terminal);
+                return;
+            }
+            if point != target || state.hits.fetch_add(1, Ordering::SeqCst) + 1 != nth {
+                return;
+            }
+            *state.killed.lock().unwrap() = Some(pid);
+            terminal
+                .request_sigkill()
+                .unwrap_or_else(|error| panic!("SIGKILL {pid} at {point:?}: {error}"));
+            if settle_killed_tracee(pid, terminal) && mode == PreinitKillMode::Exited {
+                // This hook runs on the tracer thread.
+                let resumed = unsafe { libc::ptrace(libc::PTRACE_CONT, pid.as_raw(), 0, 0) };
+                assert_eq!(
+                    resumed,
+                    0,
+                    "resume {pid} from its exit stop: {}",
+                    Errno::last()
+                );
+                assert!(
+                    !settle_killed_tracee(pid, terminal),
+                    "{pid} stopped again after its exit stop"
+                );
+            }
+        });
+        (hook, kill)
+    }
+
+    /// Kills `/bin/true` at `point` of its second pre-initialization, the one
+    /// after its exec, and requires the run to report the kill.
+    async fn exec_preinit_killed_at<T: Tool<GlobalState = ()> + Default + 'static>(
+        point: crate::task::PreinitPoint,
+        mode: PreinitKillMode,
+    ) -> Result<(), String> {
+        let (hook, kill) = kill_at_preinit_point(point, 2, mode);
+        let tracer = TracerBuilder::<T>::new(Command::new("/bin/true"))
+            .preinit_point_for_test(hook)
+            .spawn()
+            .await
+            .map_err(|error| format!("{point:?}/{mode:?}: spawn failed: {error}"))?;
+        let root_pid = tracer.guest_pid();
+        let result = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+            .await
+            .map_err(|_| format!("{point:?}/{mode:?}: run did not end within 5 s"))?;
+        let hits = kill.hits.load(Ordering::SeqCst);
+        if hits < 2 {
+            return Err(format!(
+                "{point:?}/{mode:?}: reached {hits} times, never killed"
+            ));
+        }
+        if *kill.killed.lock().unwrap() != Some(root_pid) {
+            return Err(format!(
+                "{point:?}/{mode:?}: killed a tracee other than {root_pid}"
+            ));
+        }
+        match result.map(|(status, _)| status) {
+            Ok(ExitStatus::Signaled(Signal::SIGKILL, false)) => {}
+            other => return Err(format!("{point:?}/{mode:?}: run ended with {other:?}")),
+        }
+        assert_eventually_reaped("exec preinit kill", root_pid);
+        Ok(())
+    }
+
+    /// Kills the tracee at `point` of its first pre-initialization, before
+    /// its exec, and requires spawning to fail with the kill as the reason.
+    async fn postspawn_preinit_killed_at<T: Tool + Default + 'static>(
+        point: crate::task::PreinitPoint,
+        mode: PreinitKillMode,
+    ) -> Result<(), String> {
+        let (hook, kill) = kill_at_preinit_point(point, 1, mode);
+        let spawned = tokio::time::timeout(
+            Duration::from_secs(5),
+            TracerBuilder::<T>::new(Command::new("/bin/true"))
+                .preinit_point_for_test(hook)
+                .spawn(),
+        )
+        .await
+        .map_err(|_| format!("{point:?}/{mode:?}: spawn did not end within 5 s"))?;
+        let Some(pid) = *kill.killed.lock().unwrap() else {
+            return Err(format!(
+                "{point:?}/{mode:?}: never reached before spawn ended"
+            ));
+        };
+        let error = match spawned {
+            Ok(_) => {
+                return Err(format!(
+                    "{point:?}/{mode:?}: spawn of a killed tracee succeeded"
+                ));
+            }
+            Err(error) => error.to_string(),
+        };
+        let expected = format!(
+            "tracee {pid} exited during ptrace initialization with Signaled(SIGKILL, false)"
+        );
+        if error != expected {
+            return Err(format!("{point:?}/{mode:?}: spawn failed with {error:?}"));
+        }
+        assert_eventually_reaped("postspawn preinit kill", pid);
+        Ok(())
+    }
+
+    /// Defines one test per tracee pre-initialization kill: `$run` must end
+    /// the way it requires for the kill at `$point`, in `$mode`.
+    macro_rules! preinit_kill_tests {
+        ($($name:ident: $run:ident::<$tool:ty>($point:ident, $mode:ident);)*) => {$(
+            #[tokio::test(flavor = "current_thread")]
+            async fn $name() {
+                $run::<$tool>(crate::task::PreinitPoint::$point, PreinitKillMode::$mode)
+                    .await
+                    .unwrap_or_else(|failure| panic!("{failure}"));
+            }
+        )*};
+    }
+
+    preinit_kill_tests! {
+        exec_preinit_kill_regs_saved_exit_stop_vdso: exec_preinit_killed_at::<AllSyscallsTool>(RegsSaved, ExitStop);
+        exec_preinit_kill_regs_saved_exit_stop_no_vdso: exec_preinit_killed_at::<InitFailureTool>(RegsSaved, ExitStop);
+        exec_preinit_kill_code_read_exit_stop_vdso: exec_preinit_killed_at::<AllSyscallsTool>(CodeRead, ExitStop);
+        exec_preinit_kill_code_read_exit_stop_no_vdso: exec_preinit_killed_at::<InitFailureTool>(CodeRead, ExitStop);
+        exec_preinit_kill_regs_saved_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(RegsSaved, Exited);
+        exec_preinit_kill_code_read_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(CodeRead, Exited);
+        exec_preinit_kill_mmap_stepped_exited_vdso: exec_preinit_killed_at::<AllSyscallsTool>(MmapStepped, Exited);
+        exec_preinit_kill_mmap_stepped_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(MmapStepped, Exited);
+        exec_preinit_kill_mmap_returned_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(MmapReturned, Exited);
+        exec_preinit_kill_page_populated_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(PagePopulated, Exited);
+        exec_preinit_kill_vdso_writable_exited: exec_preinit_killed_at::<AllSyscallsTool>(VdsoWritable, Exited);
+        postspawn_preinit_kill_regs_saved_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(RegsSaved, ExitStop);
+        postspawn_preinit_kill_code_read_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(CodeRead, ExitStop);
+        postspawn_preinit_kill_regs_saved_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(RegsSaved, Exited);
+        postspawn_preinit_kill_code_read_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(CodeRead, Exited);
+        postspawn_preinit_kill_mmap_stepped_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapStepped, Exited);
+        postspawn_preinit_kill_mmap_returned_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapReturned, Exited);
+        postspawn_preinit_kill_page_populated_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(PagePopulated, Exited);
+        postspawn_preinit_kill_vdso_writable_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(VdsoWritable, Exited);
+    }
+
+    /// An errno from a tracee that is still alive is returned unchanged.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dead_or_keeps_the_error_of_a_live_tracee() {
+        let (_pid, stopped) = spawn_held_stop_child("dead_or live child");
+        for errno in [Errno::ESRCH, Errno::EFAULT, Errno::EIO] {
+            assert_eq!(
+                crate::task::dead_or(&stopped, TraceError::Errno(errno)),
+                TraceError::Errno(errno)
+            );
+        }
+        stopped
+            .getregs()
+            .expect("live child stops answering after dead_or");
+        resume_held_stop_child("dead_or live child", stopped).await;
+    }
+
+    /// An errno from a tracee that has died becomes its death.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dead_or_reports_the_death_of_a_killed_tracee() {
+        let (pid, stopped) = spawn_held_stop_child("dead_or killed child");
+        let terminal = stopped.terminal_cleanup();
+        terminal.request_sigkill().expect("SIGKILL dead_or child");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while terminal.observed_exit_status() == Ok(None) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let TraceError::Died(zombie) =
+            crate::task::dead_or(&stopped, TraceError::Errno(Errno::ESRCH))
+        else {
+            panic!("dead_or kept a bare errno for killed child {pid}");
+        };
+        assert_eq!(
+            zombie.reap().await.expect("reap dead_or child"),
+            ExitStatus::Signaled(Signal::SIGKILL, false)
+        );
+        assert_eventually_reaped("dead_or killed child", pid);
     }
 
     #[test]
