@@ -576,6 +576,8 @@ const NO_CENSUS_OBJECT: CensusError =
     CensusError("the executable mapping belongs to no identifiable object");
 const CHANGED_CENSUS_OBJECT: CensusError =
     CensusError("the object's mappings changed while its census was built");
+const FAULTING_CENSUS_OBJECT: CensusError =
+    CensusError("a page of the object faults when read, such as a page past the end of its file");
 
 /// Returns the readable mappings of the file that `maps` maps executable over
 /// `site`, with the address of its ELF header. This is the tracer's copy of the
@@ -609,13 +611,39 @@ fn census_object(maps: &[GuestMap], site: u64) -> Result<CensusObject, CensusErr
     })
 }
 
-/// Builds the census of `object` from the tracee's current bytes.
+/// Positioned reads of a tracee's memory, as `pread` makes them on
+/// `/proc/<pid>/mem`.
+trait CensusMemory {
+    fn read_at(&self, address: u64, bytes: &mut [u8]) -> std::io::Result<usize>;
+}
+
+impl CensusMemory for std::fs::File {
+    fn read_at(&self, address: u64, bytes: &mut [u8]) -> std::io::Result<usize> {
+        std::os::unix::fs::FileExt::read_at(self, bytes, address)
+    }
+}
+
+/// Builds the census of `object` from the tracee's current bytes, which
+/// `memory` reads as `/proc/<pid>/mem` does.
 ///
-/// The outer error is a failed read of the tracee's memory. That is a host
-/// failure, not a verdict about the object, so the caller must neither cache
-/// it nor turn it into a refusal: refusing sites because of it would move the
-/// guest's schedule without any report.
-fn read_census<M: MemoryAccess>(
+/// That file reads with the kernel's FOLL_FORCE, as a debugger does, so a
+/// range that the guest made PROT_NONE or execute-only after Ready is still
+/// read, where `process_vm_readv` fails with EFAULT. A page that faults even
+/// so, such as a file page past the end of a file that the guest truncated,
+/// makes the read fail with EIO (`mem_rw` in fs/proc/base.c), after a short
+/// count if the read had copied some bytes. The guest's own mappings caused
+/// that, so the census refuses every site of the object with
+/// [`FAULTING_CENSUS_OBJECT`], a verdict that the caller caches like any
+/// other.
+///
+/// The outer error is any other failed read, such as ENOMEM, or EFAULT for
+/// the tracer's own buffer. That is a host failure, not a verdict about the
+/// object, so the caller must neither cache it nor turn it into a refusal:
+/// refusing sites because of it would move the guest's schedule without any
+/// report. A read that returns no bytes means the tracee's address space is
+/// gone, because `mem_rw` returns 0 when it holds no reference to it, so it
+/// is reported as ESRCH.
+fn read_census<M: CensusMemory>(
     memory: &M,
     object: &CensusObject,
 ) -> Result<Result<Census, CensusError>, Errno> {
@@ -628,7 +656,18 @@ fn read_census<M: MemoryAccess>(
             return Ok(Err(CensusError::TRUNCATED));
         };
         let mut bytes = vec![0; len];
-        memory.read_exact(start as usize, &mut bytes)?;
+        let mut filled = 0;
+        while filled < len {
+            match memory.read_at(start + filled as u64, &mut bytes[filled..]) {
+                Ok(0) => return Err(Errno::ESRCH),
+                Ok(read) => filled += read,
+                Err(error) => match error.raw_os_error() {
+                    Some(libc::EINTR) => {}
+                    Some(libc::EIO) => return Ok(Err(FAULTING_CENSUS_OBJECT)),
+                    errno => return Err(Errno::new(errno.unwrap_or(libc::EINVAL))),
+                },
+            }
+        }
         contents.push(bytes);
     }
     let segments: Vec<Segment<'_>> = object
@@ -5595,10 +5634,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                 tracing::debug!("[liteinst] leaving syscall site {site:#x} unpatched: {refusal}");
                 REFUSED_ENTRY_LIMIT
             }
-            // A failed read of the tracee's code says nothing about the site.
-            // Refusing the site would move the guest's schedule without any
-            // report, so the run fails closed instead. A tracee that is gone
-            // is not a LiteInst failure: its exit is reported as usual.
+            // A host failure to read the tracee's code says nothing about the
+            // site. Refusing the site would move the guest's schedule without
+            // any report, so the run fails closed instead. ESRCH, a tracee
+            // that is gone, is not recorded as a LiteInst activation failure;
+            // it returns along the ordinary ptrace-error path, like a failed
+            // `getregs` or `read_value` on this stop.
             Err(errno) => {
                 if errno != Errno::ESRCH {
                     self.record_liteinst_failure(
@@ -5635,7 +5676,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Returns the census entries of `site`, building its object's census from
     /// the tracee's memory at the first site attempt in that object
     /// (<https://github.com/rrnewton/reverie/issues/812>). The outer error is
-    /// a failed read of the tracee; see [`read_census`].
+    /// a failure to open or read the tracee's memory; see [`read_census`].
     ///
     /// The census runs here rather than in the guest because it decodes every
     /// function of the object: about 12.9 million conditional branches for
@@ -5661,7 +5702,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         let census = match cached {
             Some(census) => census,
             None => {
-                let census = Arc::new(read_census(task, &object)?);
+                let memory = std::fs::File::open(format!("/proc/{}/mem", task.pid()))
+                    .map_err(|error| Errno::new(error.raw_os_error().unwrap_or(libc::EIO)))?;
+                let census = Arc::new(read_census(&memory, &object)?);
                 let mut state = self.liteinst_runtime.lock().unwrap();
                 if !Arc::ptr_eq(&state.census_maps, &maps) {
                     return Ok(Err(Refusal::NoCensus(CHANGED_CENSUS_OBJECT)));
@@ -5709,9 +5752,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             state.forget_all_census_objects();
             return;
         };
-        // A protection change leaves an object's bytes where they are, and the
-        // installation helper makes one for every patch, so only the calls
-        // that map, unmap or move pages remove census objects.
+        // A protection change leaves an object's bytes where they are, the
+        // census reads them whatever their protection (`read_census`), and
+        // the installation helper makes one for every patch, so only the
+        // calls that map, unmap or move pages remove census objects.
         match nr {
             // AUTONOMOUS-BOT-IMPLEMENTED
             Sysno::mmap => {
@@ -9803,58 +9847,136 @@ mod tests {
         assert!(state.census_maps.is_empty() && state.censuses.is_empty());
     }
 
-    /// Memory whose every access fails with `EIO`, standing in for a tracee
-    /// whose code cannot be read.
-    struct UnreadableMemory;
+    /// A reply of `ScriptedMemory` that copies every byte asked for.
+    const FULL: usize = usize::MAX;
 
-    impl MemoryAccess for UnreadableMemory {
-        fn read_vectored(
-            &self,
-            _read_from: &[std::io::IoSlice],
-            _write_to: &mut [std::io::IoSliceMut],
-        ) -> Result<usize, Errno> {
-            Err(Errno::EIO)
+    /// Tracee memory that answers each read with the next of its replies:
+    /// a count of bytes, which it fills with zeros, or an errno. It records
+    /// the address and length of each read.
+    struct ScriptedMemory {
+        replies: std::cell::RefCell<std::collections::VecDeque<Result<usize, i32>>>,
+        reads: std::cell::RefCell<Vec<(u64, usize)>>,
+    }
+
+    impl ScriptedMemory {
+        fn new(replies: Vec<Result<usize, i32>>) -> Self {
+            Self {
+                replies: std::cell::RefCell::new(replies.into()),
+                reads: std::cell::RefCell::new(Vec::new()),
+            }
         }
 
-        fn write_vectored(
-            &mut self,
-            _read_from: &[std::io::IoSlice],
-            _write_to: &mut [std::io::IoSliceMut],
-        ) -> Result<usize, Errno> {
-            Err(Errno::EIO)
+        fn reads(&self) -> Vec<(u64, usize)> {
+            self.reads.borrow().clone()
         }
     }
 
-    /// A failed read of the tracee's code is the outer error of
+    impl CensusMemory for ScriptedMemory {
+        fn read_at(&self, address: u64, bytes: &mut [u8]) -> std::io::Result<usize> {
+            self.reads.borrow_mut().push((address, bytes.len()));
+            match self.replies.borrow_mut().pop_front() {
+                Some(Ok(count)) => {
+                    let count = count.min(bytes.len());
+                    bytes[..count].fill(0);
+                    Ok(count)
+                }
+                Some(Err(errno)) => Err(std::io::Error::from_raw_os_error(errno)),
+                None => panic!(
+                    "an unexpected read of {} bytes at {address:#x}",
+                    bytes.len()
+                ),
+            }
+        }
+    }
+
+    const CENSUS_HEADER: u64 = 0x5555_5555_4000;
+    const CENSUS_TEXT: u64 = 0x5555_5555_6000;
+
+    fn two_range_census_object() -> CensusObject {
+        CensusObject {
+            text: (CENSUS_TEXT, CENSUS_TEXT + 0x2000),
+            header: CENSUS_HEADER,
+            ranges: vec![
+                (CENSUS_HEADER, CENSUS_TEXT, false),
+                (CENSUS_TEXT, CENSUS_TEXT + 0x2000, true),
+            ],
+        }
+    }
+
+    /// A page that faults when the census reads it, as a file page past the
+    /// end of a file that the guest truncated does, refuses every site of the
+    /// object, also after a short count (review finding F7 on
+    /// <https://github.com/rrnewton/reverie/pull/818>).
+    #[test]
+    fn a_faulting_census_read_refuses_the_object() {
+        let object = two_range_census_object();
+        let memory = ScriptedMemory::new(vec![Err(libc::EIO)]);
+        assert_eq!(
+            read_census(&memory, &object).map(Result::err),
+            Ok(Some(FAULTING_CENSUS_OBJECT))
+        );
+
+        let memory = ScriptedMemory::new(vec![Ok(FULL), Ok(0x1000), Err(libc::EIO)]);
+        assert_eq!(
+            read_census(&memory, &object).map(Result::err),
+            Ok(Some(FAULTING_CENSUS_OBJECT))
+        );
+        assert_eq!(
+            memory.reads(),
+            [
+                (CENSUS_HEADER, 0x2000),
+                (CENSUS_TEXT, 0x2000),
+                (CENSUS_TEXT + 0x1000, 0x1000),
+            ]
+        );
+    }
+
+    /// Any other failed read of the tracee's code is the outer error of
     /// `read_census`, never a census refusal, so the caller fails the run
     /// closed instead of refusing the site
     /// (<https://github.com/rrnewton/reverie/pull/818> review finding F1).
-    /// A range that cannot be a mapping is still a refusal, decided before any
-    /// read.
+    /// A read of no bytes means the tracee's address space is gone, an
+    /// interrupted read is repeated, and a range that cannot be a mapping is
+    /// refused before any read.
     #[test]
-    fn an_unreadable_census_object_is_a_host_error_not_a_refusal() {
-        let object = CensusObject {
-            text: (0x5555_5555_6000, 0x5555_5555_8000),
-            header: 0x5555_5555_4000,
-            ranges: vec![
-                (0x5555_5555_4000, 0x5555_5555_6000, false),
-                (0x5555_5555_6000, 0x5555_5555_8000, true),
-            ],
-        };
-        match read_census(&UnreadableMemory, &object) {
-            Err(errno) => assert_eq!(errno, Errno::EIO),
-            Ok(census) => panic!("an unreadable object gave a census: {:?}", census.err()),
+    fn a_host_failure_to_read_a_census_object_is_an_error_not_a_refusal() {
+        let object = two_range_census_object();
+        for errno in [libc::ENOMEM, libc::EFAULT] {
+            let memory = ScriptedMemory::new(vec![Ok(FULL), Err(errno)]);
+            assert_eq!(
+                read_census(&memory, &object).map(Result::err),
+                Err(Errno::new(errno))
+            );
         }
 
+        let memory = ScriptedMemory::new(vec![Ok(0)]);
+        assert_eq!(
+            read_census(&memory, &object).map(Result::err),
+            Err(Errno::ESRCH)
+        );
+
+        let memory = ScriptedMemory::new(vec![Err(libc::EINTR), Ok(FULL), Ok(FULL)]);
+        let census = read_census(&memory, &object).expect("an interrupted read was not repeated");
+        assert_ne!(census.err(), Some(FAULTING_CENSUS_OBJECT));
+        assert_eq!(
+            memory.reads(),
+            [
+                (CENSUS_HEADER, 0x2000),
+                (CENSUS_HEADER, 0x2000),
+                (CENSUS_TEXT, 0x2000),
+            ]
+        );
+
         let reversed = CensusObject {
-            ranges: vec![(0x5555_5555_6000, 0x5555_5555_4000, false)],
+            ranges: vec![(CENSUS_TEXT, CENSUS_HEADER, false)],
             ..object
         };
-        match read_census(&UnreadableMemory, &reversed) {
-            Ok(Err(error)) => assert_eq!(error, CensusError::TRUNCATED),
-            Ok(Ok(_)) => panic!("a reversed range gave a census"),
-            Err(errno) => panic!("a reversed range was read: {errno}"),
-        }
+        let memory = ScriptedMemory::new(Vec::new());
+        assert_eq!(
+            read_census(&memory, &reversed).map(Result::err),
+            Ok(Some(CensusError::TRUNCATED))
+        );
+        assert!(memory.reads().is_empty());
     }
 
     /// A census that could not be built refuses every site of its object with
