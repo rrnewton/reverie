@@ -874,7 +874,7 @@ class PublishedResidueTests(ParentMainWriteTests):
             "unread nested handoff\n", (self.repo / "hermit" / "HANDOFF.md").read_text()
         )
 
-    def test_preserve_dirty_sync_refuses_an_incoming_gitlink_at_a_different_checkout(self) -> None:
+    def test_preserve_dirty_sync_refuses_a_staged_third_gitlink_at_the_target_checkout(self) -> None:
         submodule = Path(self.temp.name) / "hermit-origin-mismatch"
         git(Path(self.temp.name), "init", "--initial-branch=main", str(submodule))
         git(submodule, "config", "user.name", "Nested")
@@ -916,20 +916,12 @@ class PublishedResidueTests(ParentMainWriteTests):
 
         git(self.repo / "hermit", "checkout", "-q", different_gitlink)
         (self.repo / "hermit" / "HANDOFF.md").write_text("unread nested handoff\n")
-
-        result = self.writer("sync", "--preserve-dirty")
-
-        self.assertNotEqual(0, result.returncode)
-        combined = result.stdout + result.stderr
-        self.assertIn("state=skipped reason=path-overlap", combined)
-        self.assertIn("incoming=hermit dirty=hermit", combined)
-        self.assertEqual(before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
-        self.assertEqual(different_gitlink, git(self.repo / "hermit", "rev-parse", "HEAD").stdout.strip())
-        self.assertEqual(
-            "unread nested handoff\n", (self.repo / "hermit" / "HANDOFF.md").read_text()
-        )
         self.assertNotEqual(target_gitlink, different_gitlink)
         self.assertNotEqual(target, before)
+        # A checkout at a different commit with nothing staged in the
+        # superproject now advances; see
+        # test_preserve_dirty_sync_advances_past_an_unstaged_gitlink_at_another_commit
+        # and https://github.com/rrnewton/dev-hermit/issues/468.
 
         # Matching the target checkout is insufficient when the index carries
         # a third, explicitly staged gitlink value. Preserve and report it.
@@ -947,6 +939,514 @@ class PublishedResidueTests(ParentMainWriteTests):
         self.assertEqual(
             "unread nested handoff\n", (self.repo / "hermit" / "HANDOFF.md").read_text()
         )
+
+    def unstaged_gitlink_bump(
+        self,
+        name: str,
+        *,
+        active: bool = True,
+        also: tuple[str, str] | None = None,
+        extra_path: str | None = None,
+    ) -> dict[str, str]:
+        """Record a nested `hermit` checkout and publish a bump of its gitlink.
+
+        The nested origin has three commits, `old`, `target` and `other`. The
+        local parent records `old` with a .gitmodules entry and is left one
+        commit behind origin/main, which records `target`. By default the
+        submodule is configured as the shared parent's `hermit` was on
+        2026-10-01: `update = checkout`, a url, and `active = true` in
+        .git/config. `active=False` keeps only `update = checkout`, the shape of
+        a submodule that was never initialized. `also` adds an ordinary file
+        change to the same published commit. `extra_path` records a second
+        nested checkout of the same origin at that path, with no .gitmodules
+        entry, and the published commit bumps it to `target` too. The writer runs
+        with global and system Git configuration disabled, so submodule.recurse
+        is unset, as in the shared parent
+        (https://github.com/rrnewton/dev-hermit/issues/468).
+        """
+        temp = Path(self.temp.name)
+        nested_origin = temp / f"{name}-origin"
+        git(temp, "init", "--initial-branch=main", str(nested_origin))
+        git(nested_origin, "config", "user.name", "Nested")
+        git(nested_origin, "config", "user.email", "nested@example.invalid")
+        ids: dict[str, str] = {}
+        for label in ("old", "target", "other"):
+            (nested_origin / "version.txt").write_text(f"{label}\n")
+            git(nested_origin, "add", "version.txt")
+            git(nested_origin, "commit", "-m", f"{label} nested head")
+            ids[label] = git(nested_origin, "rev-parse", "HEAD").stdout.strip()
+
+        git(self.repo, "clone", "-q", str(nested_origin), "hermit")
+        git(self.repo / "hermit", "checkout", "-q", ids["old"])
+        (self.repo / ".gitmodules").write_text(
+            f'[submodule "hermit"]\n\tpath = hermit\n\turl = {nested_origin}\n'
+        )
+        git(self.repo, "config", "submodule.hermit.update", "checkout")
+        if active:
+            git(self.repo, "config", "submodule.hermit.url", str(nested_origin))
+            git(self.repo, "config", "submodule.hermit.active", "true")
+        git(self.repo, "add", ".gitmodules")
+        git(self.repo, "update-index", "--add", "--cacheinfo", f"160000,{ids['old']},hermit")
+        if extra_path is not None:
+            git(self.repo, "clone", "-q", str(nested_origin), extra_path)
+            git(self.repo / extra_path, "checkout", "-q", ids["old"])
+            git(self.repo, "update-index", "--add", "--cacheinfo", f"160000,{ids['old']},{extra_path}")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", tagged("record nested checkout"))
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "push", "-q", "origin", "HEAD:main")
+        ids["before"] = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+        publisher = temp / f"{name}-publisher"
+        git(temp, "clone", "-q", str(self.remote), str(publisher))
+        git(publisher, "config", "user.name", "Other")
+        git(publisher, "config", "user.email", "other@example.invalid")
+        git(publisher, "update-index", "--cacheinfo", f"160000,{ids['target']},hermit")
+        if extra_path is not None:
+            git(publisher, "update-index", "--cacheinfo", f"160000,{ids['target']},{extra_path}")
+        if also is not None:
+            (publisher / also[0]).write_text(also[1])
+            git(publisher, "add", also[0])
+        git(publisher, "commit", "-m", tagged("advance nested checkout"))
+        git(publisher, "push", "-q", "origin", "HEAD:main")
+        ids["target_commit"] = git(publisher, "rev-parse", "HEAD").stdout.strip()
+
+        self.env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+        recurse = run("git", "config", "--get", "submodule.recurse", cwd=self.repo, env=self.env)
+        self.assertEqual(1, recurse.returncode, recurse.stdout + recurse.stderr)
+        return ids
+
+    def nested_snapshot(self, path: str = "hermit") -> dict[str, object]:
+        """Everything about the nested checkout that a sync must not change."""
+        nested = self.repo / path
+        return {
+            "head": git(nested, "rev-parse", "HEAD").stdout.strip(),
+            "status": git(nested, "status", "--porcelain=v1", "--untracked-files=all").stdout,
+            "worktree-diff": git(nested, "diff", "--binary").stdout,
+            "index-diff": git(nested, "diff", "--cached", "--binary").stdout,
+            "bytes": {
+                str(path.relative_to(nested)): path.read_bytes()
+                for path in sorted(nested.rglob("*"))
+                if path.is_file() and ".git" not in path.relative_to(nested).parts
+            },
+        }
+
+    def test_preserve_dirty_sync_advances_past_an_unstaged_gitlink_at_another_commit(self) -> None:
+        ids = self.unstaged_gitlink_bump("unstaged-other")
+        nested = self.repo / "hermit"
+        # The 2026-09-30 shape of the shared parent: the nested checkout is at a
+        # third commit, has uncommitted and nested-staged edits and an unread
+        # handoff, and the superproject stages nothing.
+        git(nested, "checkout", "-q", ids["other"])
+        (nested / "version.txt").write_text("uncommitted nested work\n")
+        (nested / "staged.txt").write_text("nested staged work\n")
+        git(nested, "add", "staged.txt")
+        (nested / "HANDOFF.md").write_text("unread nested handoff\n")
+        self.assertEqual("", git(self.repo, "diff", "--cached", "--name-only").stdout)
+        self.assertIn("hermit", git(self.repo, "diff", "--name-only").stdout.split())
+        snapshot = self.nested_snapshot()
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        combined = result.stdout + result.stderr
+        self.assertEqual(0, result.returncode, combined)
+        self.assertEqual(ids["target_commit"], git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(
+            f"160000 {ids['target']} 0\thermit\n",
+            git(self.repo, "ls-files", "--stage", "--", "hermit").stdout,
+        )
+        self.assertEqual("", git(self.repo, "diff", "--cached", "--name-only").stdout)
+        self.assertEqual(snapshot, self.nested_snapshot())
+        self.assertEqual(ids["other"], git(nested, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual("uncommitted nested work\n", (nested / "version.txt").read_text())
+        self.assertEqual("unread nested handoff\n", (nested / "HANDOFF.md").read_text())
+        self.assertIn(
+            f"gitlink-drift path=hermit checkout={ids['other']} target={ids['target']} "
+            "state=unstaged-checkout-preserved",
+            combined,
+        )
+        self.assertIn("state=fast-forwarded", result.stdout)
+        self.assertIn("gitlink-drift=1", result.stdout)
+
+    def test_preserve_dirty_sync_advances_past_nested_edits_at_the_recorded_gitlink(self) -> None:
+        # An uninitialized submodule (no url or active in .git/config) qualifies
+        # the same way as the active one above.
+        ids = self.unstaged_gitlink_bump("unstaged-edits", active=False)
+        nested = self.repo / "hermit"
+        (nested / "version.txt").write_text("uncommitted nested work\n")
+        self.assertEqual(ids["old"], git(nested, "rev-parse", "HEAD").stdout.strip())
+        self.assertIn("hermit", git(self.repo, "diff", "--name-only").stdout.split())
+        snapshot = self.nested_snapshot()
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        combined = result.stdout + result.stderr
+        self.assertEqual(0, result.returncode, combined)
+        self.assertEqual(ids["target_commit"], git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(snapshot, self.nested_snapshot())
+        self.assertEqual("uncommitted nested work\n", (nested / "version.txt").read_text())
+        self.assertIn(
+            f"gitlink-drift path=hermit checkout={ids['old']} target={ids['target']} "
+            "state=unstaged-checkout-preserved",
+            combined,
+        )
+
+    def test_preserve_dirty_sync_still_refuses_a_staged_gitlink(self) -> None:
+        ids = self.unstaged_gitlink_bump("staged")
+        nested = self.repo / "hermit"
+        git(nested, "checkout", "-q", ids["other"])
+        (nested / "version.txt").write_text("uncommitted nested work\n")
+        snapshot = self.nested_snapshot()
+
+        for staged in ("other", "target"):
+            with self.subTest(staged=staged):
+                git(self.repo, "update-index", "--cacheinfo", f"160000,{ids[staged]},hermit")
+                index_before = git(self.repo, "ls-files", "--stage", "-z").stdout
+
+                result = self.writer("sync", "--preserve-dirty")
+
+                combined = result.stdout + result.stderr
+                self.assertNotEqual(0, result.returncode, combined)
+                self.assertIn("state=skipped reason=path-overlap", combined)
+                self.assertIn("incoming=hermit dirty=hermit", combined)
+                self.assertIn("found 1 incoming/dirty path overlap(s)", combined)
+                self.assertNotIn("gitlink-drift path=hermit", combined)
+                self.assertEqual(ids["before"], git(self.repo, "rev-parse", "HEAD").stdout.strip())
+                self.assertEqual(index_before, git(self.repo, "ls-files", "--stage", "-z").stdout)
+                self.assertEqual(snapshot, self.nested_snapshot())
+
+    def test_preserve_dirty_sync_refuses_an_ordinary_overlap_beside_an_unstaged_gitlink(self) -> None:
+        ids = self.unstaged_gitlink_bump("ordinary", also=("notes.md", "published notes\n"))
+        nested = self.repo / "hermit"
+        git(nested, "checkout", "-q", ids["other"])
+        (nested / "version.txt").write_text("uncommitted nested work\n")
+        (self.repo / "notes.md").write_text("unstaged local notes\n")
+        snapshot = self.nested_snapshot()
+        index_before = git(self.repo, "ls-files", "--stage", "-z").stdout
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        combined = result.stdout + result.stderr
+        self.assertNotEqual(0, result.returncode, combined)
+        self.assertIn("state=skipped reason=path-overlap", combined)
+        self.assertIn("incoming=notes.md dirty=notes.md", combined)
+        # Exactly the ordinary file blocks; the unstaged gitlink does not.
+        self.assertIn("found 1 incoming/dirty path overlap(s)", combined)
+        self.assertNotIn("incoming=hermit dirty=hermit", combined)
+        self.assertEqual(ids["before"], git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(index_before, git(self.repo, "ls-files", "--stage", "-z").stdout)
+        self.assertEqual("unstaged local notes\n", (self.repo / "notes.md").read_text())
+        self.assertEqual(snapshot, self.nested_snapshot())
+
+    def refuse_a_non_directory_at_an_unstaged_gitlink_path(self, kind: str) -> None:
+        ids = self.unstaged_gitlink_bump(f"typechange-{kind}")
+        gitlink_path = self.repo / "hermit"
+        aside = Path(self.temp.name) / f"typechange-{kind}-checkout-aside"
+        gitlink_path.rename(aside)
+        if kind == "file":
+            gitlink_path.write_text("local bytes at the gitlink path\n")
+        else:
+            gitlink_path.symlink_to(aside)
+        self.assertEqual("", git(self.repo, "diff", "--cached", "--name-only").stdout)
+        self.assertIn("hermit", git(self.repo, "diff", "--name-only").stdout.split())
+        # With a .gitmodules entry, the writer's `git fetch` recurses into a
+        # changed submodule on demand and already fails on a non-directory at
+        # its path ("Could not access submodule", "expected submodule path ...
+        # not to be a symbolic link"). Turn that off so the overlap check is
+        # the only guard, as it is for a gitlink without a .gitmodules entry or
+        # a checkout that sets fetch.recurseSubmodules=false. Without the check,
+        # the fast-forward replaces the path with an empty directory, which
+        # deletes a regular file's bytes.
+        git(self.repo, "config", "fetch.recurseSubmodules", "false")
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        combined = result.stdout + result.stderr
+        self.assertNotEqual(0, result.returncode, combined)
+        self.assertIn("state=skipped reason=path-overlap", combined)
+        self.assertIn("incoming=hermit dirty=hermit", combined)
+        self.assertIn("found 1 incoming/dirty path overlap(s)", combined)
+        self.assertNotIn("gitlink-drift path=hermit", combined)
+        self.assertEqual(ids["before"], git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        if kind == "file":
+            self.assertFalse(gitlink_path.is_symlink())
+            self.assertEqual("local bytes at the gitlink path\n", gitlink_path.read_text())
+        else:
+            self.assertTrue(gitlink_path.is_symlink())
+            self.assertEqual(aside, Path(os.readlink(gitlink_path)))
+        self.assertEqual(ids["old"], git(aside, "rev-parse", "HEAD").stdout.strip())
+
+    def test_preserve_dirty_sync_refuses_a_regular_file_at_an_unstaged_gitlink_path(self) -> None:
+        self.refuse_a_non_directory_at_an_unstaged_gitlink_path("file")
+
+    def test_preserve_dirty_sync_refuses_a_symlink_at_an_unstaged_gitlink_path(self) -> None:
+        self.refuse_a_non_directory_at_an_unstaged_gitlink_path("symlink")
+
+    def install_git_shim(self, *hooks: tuple[str, str]) -> list[Path]:
+        """Run Python statements just before chosen Git commands of the writer.
+
+        Each hook is (CONDITION, STATEMENTS). On every Git invocation, a `git`
+        shim first on the writer's PATH finds the first hook that has not fired
+        yet and whose CONDITION, a Python expression over `args` (the arguments
+        after `git`) and `MARKERS`, is true. It runs that hook's STATEMENTS (one
+        per line, with `Path`, `subprocess` and `REAL_GIT` in scope), touches
+        its marker `MARKERS[i]`, and then executes the real Git. A hook fires at
+        most once, and at most one hook fires per invocation. Returns the
+        markers in hook order.
+        """
+        shim_dir = Path(self.temp.name) / "git-shim"
+        shim_dir.mkdir()
+        markers = [Path(self.temp.name) / f"git-shim-fired-{index}" for index in range(len(hooks))]
+        lines = [
+            f"#!{REAL_PYTHON}",
+            "import os",
+            "import subprocess",
+            "import sys",
+            "from pathlib import Path",
+            f"REAL_GIT = {REAL_GIT!r}",
+            f"MARKERS = [Path(name) for name in {[str(marker) for marker in markers]!r}]",
+            "args = sys.argv[1:]",
+        ]
+        for index, (condition, statements) in enumerate(hooks):
+            keyword = "if" if index == 0 else "elif"
+            lines.append(f"{keyword} not MARKERS[{index}].exists() and ({condition}):")
+            lines.extend(f"    {line}" for line in statements.splitlines())
+            lines.append(f"    MARKERS[{index}].touch()")
+        lines.append("os.execv(REAL_GIT, [REAL_GIT, *args])")
+        shim = shim_dir / "git"
+        shim.write_text("\n".join(lines) + "\n")
+        shim.chmod(0o755)
+        self.env["PATH"] = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+        return markers
+
+    # The writer's own `git -C ROOT <subcommand>` invocations, as shim conditions.
+    WRITER_MERGE = "len(args) > 2 and args[0] == '-C' and args[2] == 'merge'"
+    WRITER_INDEX_UPDATE = "len(args) > 2 and args[0] == '-C' and args[2] in ('apply', 'update-index')"
+    WRITER_INDEX_WRITE = f"({WRITER_INDEX_UPDATE}) or ({WRITER_MERGE})"
+
+    def run_before_merge(self, statements: str) -> Path:
+        """Run STATEMENTS just before the writer's `git -C ROOT merge`.
+
+        This is the window between the writer's overlap check and the
+        fast-forward, where another process can still change the checkout.
+        Returns the marker the shim touches when it runs them.
+        """
+        return self.install_git_shim((self.WRITER_MERGE, statements))[0]
+
+    def test_preserve_dirty_sync_leaves_a_gitlink_path_replaced_before_the_merge_alone(self) -> None:
+        ids = self.unstaged_gitlink_bump("late-replacement")
+        nested = self.repo / "hermit"
+        aside = Path(self.temp.name) / "late-replacement-checkout-aside"
+        git(nested, "checkout", "-q", ids["other"])
+        (nested / "version.txt").write_text("uncommitted nested work\n")
+        late = "local bytes created after the overlap check\n"
+        # After the overlap check accepts the gitlink, another process replaces
+        # the nested checkout with a regular file. The writer cannot see this.
+        # Only the index entry it staged at the target keeps the merge from
+        # checking out the path, which would replace the file with an empty
+        # directory and delete its bytes.
+        marker = self.run_before_merge(
+            f"Path({str(nested)!r}).rename({str(aside)!r})\n"
+            f"Path({str(nested)!r}).write_text({late!r})\n"
+        )
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        combined = result.stdout + result.stderr
+        self.assertTrue(marker.exists(), combined)
+        self.assertIn(
+            f"gitlink-drift path=hermit checkout={ids['other']} target={ids['target']} "
+            "state=unstaged-checkout-preserved",
+            combined,
+        )
+        self.assertEqual(0, result.returncode, combined)
+        self.assertEqual(ids["target_commit"], git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(
+            f"160000 {ids['target']} 0\thermit\n",
+            git(self.repo, "ls-files", "--stage", "--", "hermit").stdout,
+        )
+        self.assertEqual("", git(self.repo, "diff", "--cached", "--name-only").stdout)
+        self.assertFalse(nested.is_symlink())
+        self.assertTrue(nested.is_file(), combined)
+        self.assertEqual(late, nested.read_text())
+        self.assertEqual(ids["other"], git(aside, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual("uncommitted nested work\n", (aside / "version.txt").read_text())
+
+    def test_preserve_dirty_sync_restores_the_staged_gitlink_when_the_fast_forward_fails(self) -> None:
+        ids = self.unstaged_gitlink_bump("failed-merge", also=("notes.md", "published notes\n"))
+        nested = self.repo / "hermit"
+        git(nested, "checkout", "-q", ids["other"])
+        (nested / "version.txt").write_text("uncommitted nested work\n")
+        snapshot = self.nested_snapshot()
+        late = "local notes written after the overlap check\n"
+        # An incoming ordinary file becomes dirty after the overlap check, so
+        # Git's own overwrite check refuses the fast-forward after the writer
+        # has staged the gitlink at its target. The writer must put the entry
+        # back, or the next run would refuse a gitlink it staged itself.
+        marker = self.run_before_merge(
+            f"Path({str(self.repo / 'notes.md')!r}).write_text({late!r})\n"
+        )
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        combined = result.stdout + result.stderr
+        self.assertTrue(marker.exists(), combined)
+        self.assertNotEqual(0, result.returncode, combined)
+        self.assertIn("sync --preserve-dirty fast-forward failed", combined)
+        self.assertEqual(ids["before"], git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(
+            f"160000 {ids['old']} 0\thermit\n",
+            git(self.repo, "ls-files", "--stage", "--", "hermit").stdout,
+            combined,
+        )
+        self.assertEqual("", git(self.repo, "diff", "--cached", "--name-only").stdout)
+        self.assertIn(f"gitlink-unstaged path=hermit index={ids['old']}", combined)
+        self.assertNotIn("gitlink-left-staged", combined)
+        self.assertNotIn("ABORTED", combined)
+        self.assertEqual(late, (self.repo / "notes.md").read_text())
+        self.assertEqual(snapshot, self.nested_snapshot())
+
+    def test_preserve_dirty_sync_keeps_a_gitlink_staged_after_the_overlap_check(self) -> None:
+        ids = self.unstaged_gitlink_bump("stage-before-prestage")
+        nested = self.repo / "hermit"
+        git(nested, "checkout", "-q", ids["other"])
+        (nested / "version.txt").write_text("uncommitted nested work\n")
+        snapshot = self.nested_snapshot()
+        # After the overlap check accepts the unstaged gitlink, another process
+        # stages it at a third commit, just before the writer's first command
+        # that writes the index. The writer must not overwrite that staging: it
+        # refuses, as it would have if the staging had come first.
+        stage_other = (
+            f"subprocess.run([REAL_GIT, '-C', {str(self.repo)!r}, 'update-index', "
+            f"'--cacheinfo', '160000,{ids['other']},hermit'], check=True)"
+        )
+        (marker,) = self.install_git_shim((self.WRITER_INDEX_WRITE, stage_other))
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        combined = result.stdout + result.stderr
+        self.assertTrue(marker.exists(), combined)
+        self.assertNotEqual(0, result.returncode, combined)
+        self.assertEqual(
+            f"160000 {ids['other']} 0\thermit\n",
+            git(self.repo, "ls-files", "--stage", "--", "hermit").stdout,
+            combined,
+        )
+        self.assertEqual(ids["before"], git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertIn("could not stage 1 gitlink(s) at their fetched targets", combined)
+        self.assertIn("an index entry changed after the overlap check", combined)
+        self.assertNotIn("ABORTED", combined)
+        self.assertEqual(snapshot, self.nested_snapshot())
+
+    def test_preserve_dirty_sync_keeps_a_gitlink_staged_during_the_restore(self) -> None:
+        ids = self.unstaged_gitlink_bump("stage-during-restore", also=("notes.md", "published notes\n"))
+        nested = self.repo / "hermit"
+        git(nested, "checkout", "-q", ids["other"])
+        (nested / "version.txt").write_text("uncommitted nested work\n")
+        snapshot = self.nested_snapshot()
+        late = "local notes written after the overlap check\n"
+        # Dirty an incoming file before the merge so the fast-forward fails and
+        # the writer restores the entry it staged. After the merge, just before
+        # the writer's next command that updates the index, another process
+        # stages the gitlink at a third commit. The restore must leave that
+        # staging alone and say so.
+        stage_other = (
+            f"subprocess.run([REAL_GIT, '-C', {str(self.repo)!r}, 'update-index', "
+            f"'--cacheinfo', '160000,{ids['other']},hermit'], check=True)"
+        )
+        merge_marker, restore_marker = self.install_git_shim(
+            (self.WRITER_MERGE, f"Path({str(self.repo / 'notes.md')!r}).write_text({late!r})"),
+            (f"MARKERS[0].exists() and ({self.WRITER_INDEX_UPDATE})", stage_other),
+        )
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        combined = result.stdout + result.stderr
+        self.assertTrue(merge_marker.exists(), combined)
+        self.assertTrue(restore_marker.exists(), combined)
+        self.assertNotEqual(0, result.returncode, combined)
+        self.assertIn("sync --preserve-dirty fast-forward failed", combined)
+        self.assertEqual(
+            f"160000 {ids['other']} 0\thermit\n",
+            git(self.repo, "ls-files", "--stage", "--", "hermit").stdout,
+            combined,
+        )
+        self.assertEqual(ids["before"], git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertIn(
+            f"gitlink-left-staged path=hermit index=160000\\ {ids['other']}\\ 0 head={ids['before']};",
+            combined,
+        )
+        self.assertNotIn("gitlink-unstaged", combined)
+        self.assertNotIn("ABORTED", combined)
+        self.assertEqual(late, (self.repo / "notes.md").read_text())
+        self.assertEqual(snapshot, self.nested_snapshot())
+
+    def test_preserve_dirty_sync_does_not_autostash_around_a_replaced_gitlink_path(self) -> None:
+        ids = self.unstaged_gitlink_bump("autostash")
+        git(self.repo, "config", "merge.autostash", "true")
+        nested = self.repo / "hermit"
+        aside = Path(self.temp.name) / "autostash-checkout-aside"
+        git(nested, "checkout", "-q", ids["other"])
+        (nested / "version.txt").write_text("uncommitted nested work\n")
+        (self.repo / "notes.md").write_text("unrelated unstaged ordinary work\n")
+        late = "local bytes created after the overlap check\n"
+        # With merge.autostash=true and any unrelated dirty file, `git merge`
+        # stashes and resets to HEAD first. That reset checks out the gitlink
+        # path even though the writer staged it at the target, so the late
+        # regular file is replaced by an empty directory.
+        marker = self.run_before_merge(
+            f"Path({str(nested)!r}).rename({str(aside)!r})\n"
+            f"Path({str(nested)!r}).write_text({late!r})\n"
+        )
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        combined = result.stdout + result.stderr
+        self.assertTrue(marker.exists(), combined)
+        self.assertEqual(0, result.returncode, combined)
+        self.assertEqual(ids["target_commit"], git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(
+            f"160000 {ids['target']} 0\thermit\n",
+            git(self.repo, "ls-files", "--stage", "--", "hermit").stdout,
+            combined,
+        )
+        self.assertEqual("", git(self.repo, "diff", "--cached", "--name-only").stdout)
+        self.assertEqual("", git(self.repo, "stash", "list").stdout)
+        self.assertTrue(nested.is_file(), combined)
+        self.assertEqual(late, nested.read_text())
+        self.assertEqual("unrelated unstaged ordinary work\n", (self.repo / "notes.md").read_text())
+        self.assertEqual(ids["other"], git(aside, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual("uncommitted nested work\n", (aside / "version.txt").read_text())
+
+    def test_preserve_dirty_sync_reads_a_pathspec_magic_gitlink_path_literally(self) -> None:
+        magic = ":(literal)hermit"
+        ids = self.unstaged_gitlink_bump("pathspec-magic", extra_path=magic)
+        nested = self.repo / magic
+        git(nested, "checkout", "-q", ids["other"])
+        (nested / "version.txt").write_text("uncommitted nested work\n")
+        git(self.repo, "update-index", "--cacheinfo", f"160000,{ids['target']},{magic}")
+        # Read as a pathspec, the staged gitlink's name selects `hermit`, whose
+        # entry still equals HEAD at a real directory: a state that qualifies.
+        self.assertEqual(
+            f"160000 {ids['old']} 0\thermit\n",
+            git(self.repo, "ls-files", "--stage", "--", magic).stdout,
+        )
+        self.assertEqual(
+            f"160000 {ids['target']} 0\t{magic}\n",
+            git(self.repo, "--literal-pathspecs", "ls-files", "--stage", "--", magic).stdout,
+        )
+        index_before = git(self.repo, "ls-files", "--stage", "-z").stdout
+        snapshot = self.nested_snapshot(magic)
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        combined = result.stdout + result.stderr
+        self.assertNotEqual(0, result.returncode, combined)
+        self.assertIn("state=skipped reason=path-overlap", combined)
+        self.assertIn("incoming=:\\(literal\\)hermit dirty=:\\(literal\\)hermit", combined)
+        self.assertIn("found 1 incoming/dirty path overlap(s)", combined)
+        self.assertNotIn("gitlink-drift", combined)
+        self.assertEqual(ids["before"], git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(index_before, git(self.repo, "ls-files", "--stage", "-z").stdout)
+        self.assertEqual(snapshot, self.nested_snapshot(magic))
 
     def test_preserve_dirty_sync_refuses_divergence_without_reconciling(self) -> None:
         (self.repo / "local.md").write_text("local\n")

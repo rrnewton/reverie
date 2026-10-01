@@ -127,39 +127,149 @@ fetch_expected() {
   export HERMIT_PARENT_MAIN_EXPECT
 }
 
-# A dirty gitlink whose checkout already names the fetched target is not an
-# overwrite. The fast-forward changes only the superproject's index entry; it
-# does not update, clean, or otherwise touch the nested checkout. Require all
-# three superproject entries to remain gitlinks and require the current index to
-# equal either endpoint. Any staged third value, missing checkout, or different
-# checkout remains an ordinary overlap and refuses.
-gitlink_overlap_matches_target() {
+# A dirty gitlink is not an overwrite when the fast-forward changes only the
+# superproject's index entry. The writer stages each qualifying gitlink at its
+# fetched target itself, immediately before `git merge --ff-only` (see
+# sync_preserve_dirty), so the merge keeps that index entry and never checks out
+# the path: it does not update, clean, or otherwise touch the nested checkout's
+# HEAD, edits, or untracked files. `git merge` has no --recurse-submodules
+# option; on git 2.53 it left the nested checkout alone even with
+# submodule.recurse=true, for both an embedded .git directory and an absorbed
+# gitfile (measured 2026-10-01).
+#
+# Two states qualify. The function records which one in gitlink_overlap_state,
+# and records gitlink_overlap_checkout, gitlink_overlap_target,
+# gitlink_overlap_before and gitlink_overlap_index, all of which the caller
+# declares local:
+#
+#   already-at-target: the nested checkout already names the fetched target,
+#     and the index equals either endpoint.
+#   unstaged-checkout-preserved: the superproject's index entry still equals
+#     the gitlink recorded in HEAD, so nothing about the gitlink is staged, and
+#     the path is a real directory. The nested checkout may be at any commit and
+#     carry any edits. The shared parent's ./hermit is a primary working
+#     checkout whose HEAD rarely equals the recorded gitlink, so refusing this
+#     state blocked every gitlink bump:
+#     https://github.com/rrnewton/dev-hermit/issues/468
+#
+# Everything else remains an ordinary overlap and refuses:
+#   - either endpoint or the stage-0 index entry is not a mode-160000 gitlink;
+#   - the gitlink is staged (index differs from HEAD), unless the checkout and
+#     the index both already name the target;
+#   - a regular file, a symlink, or nothing at the gitlink path when the
+#     checkout is not already at the target. A plain fast-forward replaces a
+#     non-directory there with an empty directory, which deletes a regular
+#     file's bytes (measured with git merge --ff-only on 2026-10-01). The
+#     writer's pre-staging would leave such a path alone too, but a
+#     non-directory at a gitlink path is not a nested checkout in any state;
+#     it is local work of another kind, and this tool does not classify it.
+#
+# Every metadata query uses --literal-pathspecs. Without it, a path such as
+# `:(literal)hermit` is pathspec magic and the query inspects `hermit` instead.
+gitlink_overlap_preservable() {
   local root=$1 before=$2 target=$3 path=$4
   local before_mode before_oid target_mode target_oid index_mode index_oid checkout_oid
-  before_mode=$(git -C "$root" ls-tree "$before" -- "$path" | awk 'NR == 1 { print $1 }')
-  before_oid=$(git -C "$root" ls-tree "$before" -- "$path" | awk 'NR == 1 { print $3 }')
-  target_mode=$(git -C "$root" ls-tree "$target" -- "$path" | awk 'NR == 1 { print $1 }')
-  target_oid=$(git -C "$root" ls-tree "$target" -- "$path" | awk 'NR == 1 { print $3 }')
-  index_mode=$(git -C "$root" ls-files --stage -- "$path" | awk '$3 == 0 { print $1 }')
-  index_oid=$(git -C "$root" ls-files --stage -- "$path" | awk '$3 == 0 { print $2 }')
+  before_mode=$(git --literal-pathspecs -C "$root" ls-tree "$before" -- "$path" | awk 'NR == 1 { print $1 }')
+  before_oid=$(git --literal-pathspecs -C "$root" ls-tree "$before" -- "$path" | awk 'NR == 1 { print $3 }')
+  target_mode=$(git --literal-pathspecs -C "$root" ls-tree "$target" -- "$path" | awk 'NR == 1 { print $1 }')
+  target_oid=$(git --literal-pathspecs -C "$root" ls-tree "$target" -- "$path" | awk 'NR == 1 { print $3 }')
+  index_mode=$(git --literal-pathspecs -C "$root" ls-files --stage -- "$path" | awk '$3 == 0 { print $1 }')
+  index_oid=$(git --literal-pathspecs -C "$root" ls-files --stage -- "$path" | awk '$3 == 0 { print $2 }')
   [ "$before_mode" = 160000 ] && [ "$target_mode" = 160000 ] &&
     [ "$index_mode" = 160000 ] || return 1
-  checkout_oid=$(git -C "$root/$path" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
-  [ "$checkout_oid" = "$target_oid" ] || return 1
-  [ "$index_oid" = "$before_oid" ] || [ "$index_oid" = "$target_oid" ]
+  checkout_oid=$(git -C "$root/$path" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) ||
+    checkout_oid=
+  if [ -n "$checkout_oid" ] && [ "$checkout_oid" = "$target_oid" ] &&
+     { [ "$index_oid" = "$before_oid" ] || [ "$index_oid" = "$target_oid" ]; }; then
+    gitlink_overlap_state=already-at-target
+    gitlink_overlap_checkout=$checkout_oid
+    gitlink_overlap_target=$target_oid
+    gitlink_overlap_before=$before_oid
+    gitlink_overlap_index=$index_oid
+    return 0
+  fi
+  if [ "$index_oid" = "$before_oid" ] && [ ! -L "$root/$path" ] && [ -d "$root/$path" ]; then
+    gitlink_overlap_state=unstaged-checkout-preserved
+    # In a directory without its own .git, rev-parse reports the superproject's
+    # HEAD. Name the checkout only when it is a repository of its own.
+    if [ -n "$checkout_oid" ] && [ -e "$root/$path/.git" ]; then
+      gitlink_overlap_checkout=$checkout_oid
+    else
+      gitlink_overlap_checkout=unreadable
+    fi
+    gitlink_overlap_target=$target_oid
+    gitlink_overlap_before=$before_oid
+    gitlink_overlap_index=$index_oid
+    return 0
+  fi
+  return 1
+}
+
+# Write to FILE a patch that changes each named gitlink from its entry in
+# commit FROM to its entry in commit TO. Plumbing with every format option
+# explicit, so local diff.* configuration (submodule=log, noprefix,
+# mnemonicPrefix, external drivers) cannot change what `git apply` reads.
+write_gitlink_patch() {
+  local root=$1 from=$2 to=$3 file=$4
+  shift 4
+  git --literal-pathspecs -C "$root" diff-tree -r -p --full-index --no-renames \
+    --no-ext-diff --no-textconv --no-color --submodule=short \
+    --ignore-submodules=none --src-prefix=a/ --dst-prefix=b/ \
+    "$from" "$to" -- "$@" >"$file"
+}
+
+# Undo sync_preserve_dirty's gitlink staging after a fast-forward that did not
+# happen. It reads the caller's prestaged_paths and prestaged_befores arrays.
+# Each entry is put back with `git apply --cached -R` of that path's
+# BEFORE..TARGET patch: Git takes the index lock, then checks that the entry
+# still names TARGET, then writes, so an entry that anything else changed
+# meanwhile is left alone rather than overwritten. It is attempted only while
+# HEAD is still BEFORE; HEAD is read once, before the first attempt, and a HEAD
+# move after that read is not detected. An entry left alone is named on
+# stderr. Every command is guarded so that this cleanup cannot itself abort
+# before the caller's explanation.
+restore_prestaged_gitlinks() {
+  local root=$1 before=$2 target=$3 head entry i path patch restored
+  head=$(git -C "$root" rev-parse HEAD 2>/dev/null) || head=unreadable
+  patch=$(mktemp "${TMPDIR:-/tmp}/parent-main-sync-gitlink.XXXXXX" 2>/dev/null) || patch=
+  for ((i = 0; i < ${#prestaged_paths[@]}; i++)); do
+    path=${prestaged_paths[$i]}
+    restored=0
+    if [ "$head" = "$before" ] && [ -n "$patch" ] &&
+       write_gitlink_patch "$root" "$before" "$target" "$patch" "$path" 2>/dev/null &&
+       git -C "$root" apply --cached -R --whitespace=nowarn "$patch"; then
+      restored=1
+    fi
+    entry=$(git --literal-pathspecs -C "$root" ls-files --stage -- "$path" 2>/dev/null |
+      awk '{ print $1, $2, $3 }') || entry=unreadable
+    if [ "$restored" = 1 ]; then
+      printf 'PARENT_MAIN_WRITE sync gitlink-unstaged path=%q index=%s\n' \
+        "$path" "${prestaged_befores[$i]}" >&2
+    elif [ "$head" = "$before" ]; then
+      printf 'PARENT_MAIN_WRITE sync gitlink-left-staged path=%q index=%q head=%s; the entry no longer named the target this run staged, or the index could not be locked; if this run staged it, restore with: git -C %q update-index --cacheinfo %q\n' \
+        "$path" "$entry" "$head" "$root" "160000,${prestaged_befores[$i]},$path" >&2
+    else
+      printf 'PARENT_MAIN_WRITE sync gitlink-left-staged path=%q index=%q head=%s before=%s; HEAD moved, so the entry was not restored\n' \
+        "$path" "$entry" "$head" "$before" >&2
+    fi
+  done
+  if [ -n "$patch" ]; then rm -f "$patch" 2>/dev/null || true; fi
 }
 
 # The operational tick may advance the shared parent around dirty paths only
 # when the exact fetched change is disjoint from them, or when an overlapping
-# gitlink is already checked out at the fetched target. It has no authority to
+# gitlink is one that the fast-forward cannot overwrite: nothing about it is
+# staged and its path is a real directory, or its checkout is already at the
+# fetched target (see gitlink_overlap_preservable). It has no authority to
 # decide that local bytes are expendable. This is deliberately narrower than
 # ordinary `sync` and `sync --automatic`: it never calls the published-residue
 # classifier and therefore cannot adopt, stage, stash, discard, reset, or
 # reconcile work.
 sync_preserve_dirty() {
   local root=$1 before target after path_dir incoming dirty incoming_cmp dirty_cmp overlap
-  local matching_gitlinks=0 target_gitlink
-  local -a incoming_paths=() dirty_paths=()
+  local preserved_gitlinks=0 gitlink_overlap_state gitlink_overlap_checkout gitlink_overlap_target
+  local gitlink_overlap_before gitlink_overlap_index prestage_patch
+  local -a incoming_paths=() dirty_paths=() prestaged_paths=() prestaged_befores=()
   before=$(git -C "$root" rev-parse HEAD) ||
     die "sync --preserve-dirty could not read HEAD; nothing was modified"
   target=$HERMIT_PARENT_MAIN_EXPECT
@@ -209,11 +319,14 @@ sync_preserve_dirty() {
          [[ "$incoming_cmp" == "$dirty_cmp/"* ]] ||
          [[ "$dirty_cmp" == "$incoming_cmp/"* ]]; then
         if [ "$incoming_cmp" = "$dirty_cmp" ] &&
-           gitlink_overlap_matches_target "$root" "$before" "$target" "$incoming_cmp"; then
-          target_gitlink=$(git -C "$root" ls-tree "$target" -- "$incoming_cmp" | awk 'NR == 1 { print $3 }')
-          printf 'PARENT_MAIN_WRITE sync gitlink-drift path=%q checkout=%s target=%s state=already-at-target\n' \
-            "$incoming" "$target_gitlink" "$target_gitlink" >&2
-          matching_gitlinks=$((matching_gitlinks + 1))
+           gitlink_overlap_preservable "$root" "$before" "$target" "$incoming_cmp"; then
+          printf 'PARENT_MAIN_WRITE sync gitlink-drift path=%q checkout=%s target=%s state=%s\n' \
+            "$incoming" "$gitlink_overlap_checkout" "$gitlink_overlap_target" "$gitlink_overlap_state" >&2
+          preserved_gitlinks=$((preserved_gitlinks + 1))
+          if [ "$gitlink_overlap_index" = "$gitlink_overlap_before" ]; then
+            prestaged_paths+=("$incoming_cmp")
+            prestaged_befores+=("$gitlink_overlap_before")
+          fi
           continue
         fi
         if [ "$overlap" = 0 ]; then
@@ -234,8 +347,55 @@ sync_preserve_dirty() {
   # between the ancestry proof and the ref update. Git performs its own final
   # overwrite check, including ignored paths that become dirty after our
   # comparison (plain `git merge` overwrites ignored files by default).
-  if ! git -C "$root" merge --ff-only --no-overwrite-ignore "$target"; then
+  #
+  # First stage every accepted gitlink whose index entry still equals HEAD at
+  # its fetched target. With the index entry already equal to the new tree,
+  # unpack-trees keeps the entry and never checks out the path, so whatever is
+  # at the path when the merge runs is left alone, including anything that
+  # replaced the nested checkout after the classification above. Without this,
+  # the merge checks out such a gitlink and, for a non-directory at its path,
+  # unlinks a regular file or replaces a symlink with an empty directory
+  # (measured with git 2.53 on 2026-10-01). After a successful fast-forward the
+  # staged entry equals the new HEAD, so nothing is left staged.
+  #
+  # The staging is one `git apply --cached` of the BEFORE..TARGET patch for
+  # exactly those paths. Git takes the index lock before it reads the index,
+  # checks every entry against the patch's preimage, and writes all of them or
+  # none (measured with strace and a concurrently staged entry on git 2.53,
+  # 2026-10-01). So a gitlink that anything else staged after the overlap check
+  # makes the whole sync refuse with the index untouched, instead of being
+  # overwritten. An unconditional `update-index --cacheinfo` here erased such
+  # staging and then reported success.
+  #
+  # From a successful apply until the merge returns, every command is guarded:
+  # the index has been changed, so the generic abort banner ("nothing was
+  # modified") would be false. A failed merge restores the entries. A kill
+  # inside this window leaves a gitlink staged at its target; the next run then
+  # refuses it as a staged gitlink (unless its checkout is already at the
+  # target), and the nested checkout is never touched.
+  #
+  # --no-autostash: with merge.autostash=true, Git stashes the dirty tree,
+  # including the staged entry, and resets to HEAD before merging. That reset
+  # checks out the gitlink path, which replaced a regular file there with an
+  # empty directory and left an unmerged gitlink while the merge still exited
+  # 0 (reproduced by adversarial review on 2026-10-01). This mode may not stash
+  # local work in any case.
+  if [ "${#prestaged_paths[@]}" -ne 0 ]; then
+    prestage_patch=$(mktemp "${TMPDIR:-/tmp}/parent-main-sync-gitlinks.XXXXXX") ||
+      die "sync --preserve-dirty could not allocate gitlink patch storage (before=$before after=$before target=$target); nothing was modified"
+    if ! write_gitlink_patch "$root" "$before" "$target" "$prestage_patch" "${prestaged_paths[@]}"; then
+      rm -f "$prestage_patch" 2>/dev/null || true
+      die "sync --preserve-dirty could not write the gitlink patch to stage (before=$before after=$before target=$target); nothing was modified"
+    fi
+    if ! git -C "$root" apply --cached --whitespace=nowarn "$prestage_patch"; then
+      rm -f "$prestage_patch" 2>/dev/null || true
+      die "sync --preserve-dirty could not stage ${#prestaged_paths[@]} gitlink(s) at their fetched targets (before=$before after=$before target=$target): an index entry changed after the overlap check, or the index could not be locked; git apply --cached writes all entries or none, so HEAD was not moved and nothing was modified"
+    fi
+    rm -f "$prestage_patch" 2>/dev/null || true
+  fi
+  if ! git -C "$root" merge --ff-only --no-autostash --no-overwrite-ignore "$target"; then
     after=$(git -C "$root" rev-parse HEAD 2>/dev/null || printf unreadable)
+    restore_prestaged_gitlinks "$root" "$before" "$target"
     die "sync --preserve-dirty fast-forward failed (before=$before after=$after target=$target); no adoption, reset, or reconcile was attempted"
   fi
   after=$(git -C "$root" rev-parse HEAD) ||
@@ -243,7 +403,7 @@ sync_preserve_dirty() {
   [ "$after" = "$target" ] ||
     die "sync --preserve-dirty ended at $after instead of fetched origin/main $target (before=$before)"
   printf 'PARENT_MAIN_WRITE sync state=fast-forwarded before=%s after=%s target=%s preserve-dirty=1 incoming=%s dirty=%s overlap=0 gitlink-drift=%s\n' \
-    "$before" "$after" "$target" "${#incoming_paths[@]}" "${#dirty_paths[@]}" "$matching_gitlinks"
+    "$before" "$after" "$target" "${#incoming_paths[@]}" "${#dirty_paths[@]}" "$preserved_gitlinks"
 }
 
 attribution_checker() {
