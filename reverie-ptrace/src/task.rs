@@ -344,7 +344,7 @@ enum ChildTaskKind {
 
 // One ownership slot, from native event custody through the ordinary list.
 enum PendingChild {
-    Native(NativeChild),
+    Native(Box<NativeChild>),
     Spawned(ChildTaskKind, Child),
 }
 
@@ -1639,7 +1639,7 @@ impl FatalSession {
         self.backend_signalling.store(true, Ordering::Release);
         // A vfork parent can be kernel-blocked behind a captured child. Signal
         // these exact child generations before waiting for the parent stop.
-        loop {
+        {
             let error = {
                 let tree = self.tree.lock().unwrap();
                 tree.vfork_children
@@ -1661,8 +1661,6 @@ impl FatalSession {
                     self.root.expect("fatal session has a root owner"),
                     error,
                 );
-            } else {
-                break;
             }
         }
         loop {
@@ -1734,30 +1732,25 @@ impl FatalSession {
                 // This future, retained by the run driver on refusal, is the
                 // sole owner of these unhanded child receivers until reaping.
                 for newborn in &mut newborns {
-                    loop {
-                        let signal = newborn.signal();
-                        match signal {
-                            Ok(()) | Err(Errno::ESRCH) => break,
-                            Err(error) => failed_task_termination_is_fatal(newborn.tid, error),
-                        }
+                    let signal = newborn.signal();
+                    match signal {
+                        Ok(()) | Err(Errno::ESRCH) => {}
+                        Err(error) => failed_task_termination_is_fatal(newborn.tid, error),
                     }
                 }
-                loop {
+                {
                     let errors = self.signal_groups();
-                    if errors.is_empty() {
-                        break;
+                    if !errors.is_empty() {
+                        failed_task_termination_is_fatal(
+                            self.root.expect("fatal session has a root owner"),
+                            errors[0],
+                        );
                     }
-                    failed_task_termination_is_fatal(
-                        self.root.expect("fatal session has a root owner"),
-                        errors[0],
-                    );
                 }
                 for task in &tasks {
-                    loop {
-                        match task.terminal.request_sigkill() {
-                            Ok(()) | Err(Errno::ESRCH) => break,
-                            Err(error) => failed_task_termination_is_fatal(task.tid, error),
-                        }
+                    match task.terminal.request_sigkill() {
+                        Ok(()) | Err(Errno::ESRCH) => {}
+                        Err(error) => failed_task_termination_is_fatal(task.tid, error),
                     }
                 }
                 self.changed.notify_waiters();
@@ -6205,7 +6198,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // admitted boundary, no await may take the native child out of this slot.
         let id = child.pid();
         assert!(self.pending_child.is_none(), "overlapping child dispatch");
-        self.pending_child = Some(PendingChild::Native(NativeChild {
+        self.pending_child = Some(PendingChild::Native(Box::new(NativeChild {
             id,
             creator,
             creator_cleanup: parent_cleanup,
@@ -6225,7 +6218,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .requires_native_child_admission(&self.thread_state),
             admission_done: false,
             child_restore_context: child_context.or(context),
-        }));
+        })));
         #[cfg(test)]
         if let Some(PendingChild::Native(native)) = &self.pending_child {
             newborn_startup_tests::retained(
@@ -6505,7 +6498,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     #[cfg(test)]
                     let child = match newborn_startup_tests::startup_error_case(child).await {
                         Ok(child) => child,
-                        Err(prepared) => return Ok(prepared),
+                        Err(prepared) => return Ok(*prepared),
                     };
                     #[cfg(test)]
                     newborn_startup_tests::before_timer(&child).await;
@@ -6804,7 +6797,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             admission_required: _,
             admission_done: _,
             child_restore_context,
-        } = native;
+        } = *native;
         let (initial, timer) = match initial.into_observed() {
             Ok(prepared) => prepared.into_parts(),
             Err(error) => self.fail_newborn_custody_detail(
@@ -7823,7 +7816,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         mut start: OrdinaryStart,
     ) -> Result<Option<ExitStatus>, reverie::Error> {
         #[cfg(test)]
-        if let OrdinaryStart::Stopped(child) | OrdinaryStart::Exec(child, _) = &start {
+        {
+            let (OrdinaryStart::Stopped(child) | OrdinaryStart::Exec(child, _)) = &start;
             run_error_tests::retained(child, &self.ntasks, &self.ndaemons);
             run_error_tests::additional::retained(child, &self.ntasks, &self.ndaemons);
         }
@@ -8184,10 +8178,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> crate::tracer::OrdinaryTerminal {
         let pending_thread = matches!(
             &self.pending_child,
-            Some(PendingChild::Native(NativeChild {
-                kind: ChildTaskKind::Thread,
-                ..
-            }))
+            Some(PendingChild::Native(native)) if native.kind == ChildTaskKind::Thread
         );
         #[cfg(test)]
         if pending_thread && let Ok(stopped) = &stopped {
@@ -8342,10 +8333,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let final_wait = Self::wait_after_exit_event(task, held_root_stop).fuse();
         if !matches!(
             &self.pending_child,
-            Some(PendingChild::Native(NativeChild {
-                kind: ChildTaskKind::Thread,
-                ..
-            }))
+            Some(PendingChild::Native(native)) if native.kind == ChildTaskKind::Thread
         ) {
             return final_wait.await;
         }

@@ -426,7 +426,9 @@ fn require_results(evidence: &Evidence, results: &[i64]) {
         .collect();
     assert_eq!(rows.len(), results.len() * 3);
     assert_eq!(evidence.continued, results.len());
-    for (index, (&raw, rows)) in results.iter().zip(rows.chunks_exact(3)).enumerate() {
+    let (groups, remainder) = rows.as_chunks::<3>();
+    assert!(remainder.is_empty());
+    for (index, (&raw, rows)) in results.iter().zip(groups).enumerate() {
         assert_eq!(
             rows.iter().map(|row| row.event).collect::<Vec<_>>(),
             vec![
@@ -590,7 +592,7 @@ fn original_epoll_copy_restores_logical_signal_context_and_siginfo() {
             SIGNAL_SENDER.store(tracer_pid, Ordering::SeqCst);
             SIGNAL_COUNT.store(0, Ordering::SeqCst);
             let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-            action.sa_sigaction = signal_handler as libc::sighandler_t;
+            action.sa_sigaction = signal_handler as *const () as libc::sighandler_t;
             action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
             assert_eq!(unsafe { libc::sigemptyset(&mut action.sa_mask) }, 0);
             assert_eq!(

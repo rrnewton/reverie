@@ -185,24 +185,22 @@ impl Tool for BridgeTool {
         guest: &mut G,
         call: Syscall,
     ) -> Result<i64, reverie::Error> {
-        if let Syscall::Read(read) = call {
-            if [-900, -901, -902].contains(&read.fd()) {
-                if read.fd() == -901 {
-                    let expected_global =
-                        guest.local_global_state().unwrap() as *const Log as usize;
-                    let expected_state = Arc::as_ptr(&guest.thread_state().phase) as usize;
-                    let wrapped = guest.into_guest();
-                    let forwarded: &Log =
-                        Guest::<BridgeTool>::local_global_state(&wrapped).unwrap();
-                    assert_eq!(forwarded as *const Log as usize, expected_global);
-                    assert_eq!(
-                        Arc::as_ptr(&Guest::<BridgeTool>::thread_state(&wrapped).phase) as usize,
-                        expected_state
-                    );
-                    return observe_and_write(&wrapped, Some(read)).await;
-                }
-                return observe_and_write(guest, Some(read)).await;
+        if let Syscall::Read(read) = call
+            && [-900, -901, -902].contains(&read.fd())
+        {
+            if read.fd() == -901 {
+                let expected_global = guest.local_global_state().unwrap() as *const Log as usize;
+                let expected_state = Arc::as_ptr(&guest.thread_state().phase) as usize;
+                let wrapped = guest.into_guest();
+                let forwarded: &Log = Guest::<BridgeTool>::local_global_state(&wrapped).unwrap();
+                assert_eq!(forwarded as *const Log as usize, expected_global);
+                assert_eq!(
+                    Arc::as_ptr(&Guest::<BridgeTool>::thread_state(&wrapped).phase) as usize,
+                    expected_state
+                );
+                return observe_and_write(&wrapped, Some(read)).await;
             }
+            return observe_and_write(guest, Some(read)).await;
         }
         if matches!(call, Syscall::Getpgid(_)) {
             observe_and_write(guest, None).await?;
