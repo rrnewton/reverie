@@ -102,8 +102,9 @@ const MARKER_SIGNAL: Signal = reverie::PERF_EVENT_SIGNAL;
 const SINGLESTEP_TIMEOUT_RCBS: u64 = 5;
 
 /// The largest default skid margin of any processor in the PMU table
-/// (`reverie::pmu::PmuProfile`, and 1000 on aarch64): that of AMD Zen other
-/// than the EPYC 9D85. A unit test checks it against the whole table.
+/// (`reverie::pmu::PmuProfile`, and 1000 on aarch64): that of the AMD Zen
+/// processors without a measured 1K entry. A unit test checks it against the
+/// whole table.
 pub const LARGEST_TABLE_SKID_MARGIN: u64 = 10_000;
 
 /// The single, greppable marker emitted to stderr whenever this backend detects
@@ -4606,7 +4607,13 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn other_amd_cpus_keep_default_skid_margin() {
-        for (family, model) in [(0x17, 0x71), (0x19, 0x61), (0x1A, 0x20)] {
+        for (family, model) in [
+            (0x17, 0x71),
+            (0x19, 0x61),
+            (0x19, 0x9F),
+            (0x19, 0xA1),
+            (0x1A, 0x20),
+        ] {
             let config = PmuConfig::from_family_model(family, model);
             assert_eq!(config.raw_rcb_event(), 0x5100d1);
             assert_eq!(config.skid_margin(), 10_000);
