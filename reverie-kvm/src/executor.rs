@@ -6954,6 +6954,86 @@ fn zero_read_host_address(address: u64) -> usize {
     }
 }
 
+/// Refuse unsupported external waits before creating a reader or injecting a
+/// host read. Detcore currently retains its runnable turn around zero-count
+/// injection, so a guest peer cannot supply data or commit group exit:
+/// https://github.com/rrnewton/hermit/issues/3498.
+///
+/// This checks the owned endpoint selected by the shared-table snapshot, not
+/// its guest fd number or modeled stdin type. O_NONBLOCK is deliberately not an
+/// admission proof: another alias of the same open-file description can change
+/// it after F_GETFL. Even a currently nonblocking socket/inotify is therefore
+/// outside this supported surface. Known local regular files retain the
+/// backend's existing filesystem-I/O contract; arbitrary pseudo/FUSE files and
+/// unknown drivers are not assumed to have regular-file zero-read semantics.
+fn admit_host_read_zero(file: &std::fs::File, guest_fd: i32, address: u64) -> crate::Result<()> {
+    let host_fd = file.as_raw_fd();
+    // O_PATH cannot change through F_SETFL and fdget rejects it before taking
+    // a file-position lock. Other native errors are not a universal admission
+    // proof: fdget_pos can wait on a shared regular-file position before
+    // vfs_read checks access mode and access_ok.
+    let flags = unsafe { libc::fcntl(host_fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if flags & libc::O_PATH != 0 {
+        return Ok(());
+    }
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: the snapshot owns host_fd; stat is writable for fstat.
+    if unsafe { libc::fstat(host_fd, stat.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let stat = unsafe { stat.assume_init() };
+    match stat.st_mode & libc::S_IFMT {
+        // pipe_read returns before taking its mutex for a zero-sized iterator.
+        libc::S_IFIFO => return Ok(()),
+        // Socket descriptors have no atomic file position. An invalid numeric
+        // operand fails in vfs_read before invoking the socket operation.
+        libc::S_IFSOCK if address > X86_64_GUEST_USER_LIMIT => return Ok(()),
+        libc::S_IFCHR
+            if libc::major(stat.st_rdev) == 1 && matches!(libc::minor(stat.st_rdev), 3 | 5) =>
+        {
+            // Linux's /dev/null and /dev/zero implementations need no data.
+            return Ok(());
+        }
+        _ => {}
+    }
+    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+    // SAFETY: query the same live owned endpoint, never a guest pathname.
+    if unsafe { libc::fstatfs(host_fd, filesystem.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let filesystem = unsafe { filesystem.assume_init() };
+    if matches!(stat.st_mode & libc::S_IFMT, libc::S_IFREG | libc::S_IFDIR)
+        && matches!(
+            filesystem.f_type,
+            libc::TMPFS_MAGIC | libc::EXT4_SUPER_MAGIC | libc::BTRFS_SUPER_MAGIC
+        )
+    {
+        return Ok(());
+    }
+    if filesystem.f_type == libc::ANON_INODE_FS_MAGIC {
+        let target = std::fs::read_link(format!("/proc/self/fd/{host_fd}"))?;
+        if matches!(
+            target.as_os_str().as_bytes(),
+            b"anon_inode:[eventfd]" | b"anon_inode:[timerfd]" | b"anon_inode:[signalfd]"
+        ) {
+            // These built-in fixed-record readers reject a zero byte count
+            // before waiting, independently of their mutable nonblocking flag.
+            return Ok(());
+        }
+        if target.as_os_str().as_bytes() == b"anon_inode:inotify"
+            && address > X86_64_GUEST_USER_LIMIT
+        {
+            // Inotify has no atomic file position; invalid numeric operands
+            // fail before its data-dependent wait. Valid operands still refuse.
+            return Ok(());
+        }
+    }
+    Err(crate::Error::PotentiallyBlockingZeroRead { fd: guest_fd })
+}
+
 // A zero-length scalar read still invokes the endpoint and validates the
 // numeric user address. Only actual host endpoints may use this helper.
 fn host_read_zero(fd: RawFd, address: u64) -> i64 {
@@ -7193,6 +7273,7 @@ fn read(
             return Ok(negative_errno(libc::EBADF));
         };
         if requested_length == 0 {
+            admit_host_read_zero(stdin, fd, args[1])?;
             if let Some((context, identity)) = terminal_read {
                 // Preserve the owned C reader's cancellation and join protocol.
                 // Adapt only its host operand; retain the original request and
@@ -7230,6 +7311,7 @@ fn read(
     {
         // Only actual host endpoints decide zero-count error ordering here.
         // Synthetic descriptions retain their existing dispatch and ownership.
+        admit_host_read_zero(file, fd, args[1])?;
         if let Some((context, identity)) = terminal_read {
             let mut endpoint = ReadEndpoint::take(&mut state.files, fd);
             let returned = context.read(
@@ -38177,6 +38259,8 @@ mod tests {
         0x8000_0000_0000_0000,
         u64::MAX,
     ];
+
+    include!("executor/read_zero_refusal_tests.rs");
 
     fn read_zero_memory() -> GuestMemory {
         let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();

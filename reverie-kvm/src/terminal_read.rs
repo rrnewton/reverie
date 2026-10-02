@@ -830,6 +830,16 @@ pub(crate) mod test_support {
     }
 
     impl ReadRegistry {
+        /// A dispatcher refusal must happen before a reader is registered or
+        /// launched. An empty live map alone could hide a completed operation;
+        /// the monotonic generation must also still be zero.
+        pub(crate) fn assert_no_test_read_started(&self) {
+            let state = lock(&self.state);
+            assert_eq!(state.next, 0, "refused read created a reader operation");
+            assert!(state.operations.is_empty());
+            assert!(state.errors.is_empty());
+        }
+
         pub(crate) fn exhaust_test_generations(&self) {
             lock(&self.state).next = u64::MAX;
         }
