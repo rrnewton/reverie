@@ -5783,6 +5783,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.liteinst_pending_restarts.truncate(index);
                 }
                 let restart_retrap = restart_retrap.is_some();
+                // The hook count is logical, one per hook entry; the stop
+                // count is physical, so a restart's re-trap is a stop too.
+                if let Some(stats) = &self.global_state.backend_stats {
+                    stats.record_injected_trap();
+                }
                 if !restart_retrap
                     && let Some(stats) = self
                         .global_state

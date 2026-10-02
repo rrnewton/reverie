@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! One backend-neutral record of how intercepted guest events reached the tool.
+//! One backend-neutral record of how intercepted guest events were delivered.
 //!
 //! Every backend keeps its own detailed statistics snapshot. This record is the
 //! common projection of those snapshots, so runs on different backends (or with
@@ -31,10 +31,20 @@ pub const DISPATCH_STATS_SCHEMA_VERSION: u32 = 1;
 
 /// Counts of intercepted guest events by the route that delivered them.
 ///
-/// The first five fields are dispatch routes: each intercepted event that
-/// reached the tool is counted by exactly one of them. The ptrace
-/// syscall-entry and syscall-exit stops are tracer overhead, not routes, and
-/// refusals are attempts that never reached ordinary tool dispatch.
+/// The first five fields are dispatch routes, and they count physical
+/// deliveries (a signal, a patched-call entry, a ptrace stop), which is what a
+/// patching strategy pays for. They are not a count of syscalls or of tool
+/// callbacks:
+///
+/// - one syscall can be delivered more than once: a lazily patched site's
+///   first call takes a signal that installs the patch and then enters through
+///   it, and a restarted syscall traps again;
+/// - a delivery the backend completes without a tool callback still counts,
+///   such as an unsubscribed syscall that the filter traps or a syscall the
+///   tool itself makes.
+///
+/// The ptrace syscall-entry and syscall-exit stops are tracer overhead, not
+/// routes, and refusals are attempts that never reached ordinary tool dispatch.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DispatchCounters {
     /// Events delivered to an in-guest handler by a seccomp `SIGSYS` signal.
@@ -70,7 +80,8 @@ impl DispatchCounters {
         refusals: Some(0),
     };
 
-    /// Total events that reached the tool by any route.
+    /// Total deliveries by any route (see [`DispatchCounters`] for why this is
+    /// not the number of syscalls).
     ///
     /// `None` when any route is unmeasured: a partial sum would read as a
     /// total.
@@ -78,9 +89,8 @@ impl DispatchCounters {
         sum_all([self.patched_direct_calls, self.trapped_dispatches()])
     }
 
-    /// Events that reached the tool through a signal or a ptrace stop rather
-    /// than a patched direct call; `None` when any of those routes is
-    /// unmeasured.
+    /// Deliveries through a signal or a ptrace stop rather than a patched
+    /// direct call; `None` when any of those routes is unmeasured.
     pub fn trapped_dispatches(&self) -> Option<u64> {
         sum_all([
             self.signal_traps,
@@ -114,6 +124,12 @@ fn sum_all<const N: usize>(values: [Option<u64>; N]) -> Option<u64> {
 }
 
 /// Counts of distinct instrumentation sites.
+///
+/// What a candidate is depends on the backend's strategy, so compare site
+/// counts across backends with care: e9patch counts the sites it found in the
+/// root executable before the run, SaBRe the sites it decoded in each image
+/// as it was loaded, and LiteInst only the sites the guest actually executed,
+/// because it patches lazily on a site's first trap.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SiteCounters {
     /// Distinct sites the backend considered for patching.

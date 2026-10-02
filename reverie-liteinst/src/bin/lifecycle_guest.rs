@@ -22,6 +22,9 @@ const RPC_GETPID: u64 = 1;
 const RPC_CLOCK_GETTIME: u64 = 2;
 const RPC_GETTIMEOFDAY: u64 = 3;
 const RPC_FORK: u64 = 4;
+/// Sent once per `handle_syscall_event` call, so the host can compare the
+/// backend's dispatch counts with the Tool callbacks it actually made.
+const RPC_CALLBACK: u64 = 5;
 static FORCE_WAIT_RESTART: AtomicBool = AtomicBool::new(true);
 static READ_CALLS: AtomicUsize = AtomicUsize::new(0);
 
@@ -117,6 +120,7 @@ impl Tool for LifecycleTool {
         guest: &mut G,
         syscall: Syscall,
     ) -> Result<i64, Error> {
+        guest.send_rpc(RPC_CALLBACK).await;
         if syscall.number() == Sysno::wait4 {
             if FORCE_WAIT_RESTART.swap(false, Ordering::Relaxed) {
                 return Err(Errno::ERESTARTSYS.into());

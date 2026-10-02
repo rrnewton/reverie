@@ -737,7 +737,8 @@ impl E9patchBackend {
         // ptrace-only path is unchanged. The shared runtime covers residual
         // un-rewritten sites; ptrace remains the lifecycle owner and Guest.
         // AUTONOMOUS-BOT-IMPLEMENTED
-        let ldpreload = match ldpreload_fallback_mode() {
+        let fallback_mode = ldpreload_fallback_mode();
+        let ldpreload = match fallback_mode {
             Some(mode) => {
                 crate::configure_guest_command(&mut command, mode)?;
                 mode.controller_name()
@@ -748,6 +749,9 @@ impl E9patchBackend {
         // TODO-HUMAN-REVIEW(PR-103): Review non-ELF ptrace fallback behavior.
         if !is_elf_file(&source)? {
             let mut stats = E9patchBackendStatsSource::unsupported_non_elf();
+            if fallback_mode.is_some() {
+                stats.arm_in_guest_runtime();
+            }
             eprintln!(
                 ":: Backend: e9patch hybrid; {}; controller=ptrace; ldpreload={ldpreload}",
                 stats.snapshot(),
@@ -763,6 +767,9 @@ impl E9patchBackend {
         let image_entry_address = report.image_entry_address();
         let patched_site_addresses = report.patched_site_addresses().to_vec();
         let mut stats = E9patchBackendStatsSource::from_report(report);
+        if fallback_mode.is_some() {
+            stats.arm_in_guest_runtime();
+        }
         // TODO-HUMAN-REVIEW(PR-103): Review the stable backend coverage diagnostic.
         eprintln!(
             ":: Backend: e9patch hybrid; {}; controller=ptrace; ldpreload={ldpreload}",

@@ -1597,7 +1597,8 @@ async fn first_site_is_installed_once_and_hot_calls_use_liteinst() {
     assert_eq!(record.inconsistencies(), Vec::<String>::new(), "{record}");
     // The hybrid takes no in-guest route: every subscribed syscall is a seccomp
     // stop, except the hot site's 31 patched calls, which return to the tracer
-    // through SIGTRAP.
+    // through SIGTRAP. Nothing here restarts, so the tracer's SIGTRAP stops
+    // equal the runtime's hook entries, which are counted separately.
     assert_eq!(record.counters.signal_traps, Some(0), "{record}");
     assert_eq!(record.counters.patched_direct_calls, Some(0), "{record}");
     assert_eq!(
@@ -5419,6 +5420,57 @@ async fn host_hybrid_tool_restart_codes_re_invoke_the_syscall() {
             );
         }
     }
+}
+
+/// The shared record counts the tracer's SIGTRAP stops, not hook entries: each
+/// Tool-returned restart of a hooked syscall re-traps through the runtime int3
+/// without a second hook entry, so it adds one stop and no hook.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_restart_re_traps_count_as_sigtrap_stops() {
+    const RESTARTS: u8 = 2;
+    let plan = RestartPlan {
+        errno: reverie::Errno::ERESTARTSYS.into_raw(),
+        restarts: RESTARTS,
+        ..Default::default()
+    };
+    let (_directory, guest) = compile_fixture("hybrid_restart.c");
+    let mut command = Command::new(guest);
+    command.arg("read");
+    let (output, log, stats) = LiteinstBackend::run_host_with_output_and_preload_and_stats::<
+        RestartTool,
+    >(command, plan.encode(), preload_path())
+    .await
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!(
+            "read-result={RESTART_RESULT} {}\n",
+            restart_counts(RestartBackend::HostHybrid, 1)
+        )
+    );
+    assert_eq!(
+        log.events(),
+        [
+            "read(warm)",
+            "magic read(0x7e57,1)",
+            "magic read(0x7e57,1)",
+            "magic read(0x7e57,1)"
+        ]
+    );
+    let snapshot = stats.snapshot();
+    let record = snapshot
+        .dispatch_stats()
+        .expect("hybrid LiteInst reports a dispatch record");
+    let hooks = snapshot
+        .dispatch_paths()
+        .count(&reverie::LiteinstDispatchPath::DirectHook);
+    assert!(hooks >= 1, "the magic read must be a hook entry: {stats}");
+    assert_eq!(
+        record.counters.ptrace_sigtrap_stops,
+        Some(hooks + u64::from(RESTARTS)),
+        "{record}\n{stats}"
+    );
 }
 
 /// `-ERESTART_RESTARTBLOCK` re-dispatches as `restart_syscall` with the

@@ -60,6 +60,7 @@ pub struct E9patchBackendStatsSnapshot {
     b0_sites: Option<usize>,
     event_source: E9patchEventSource,
     tracer: Option<PtraceBackendStatsSnapshot>,
+    in_guest_runtime: bool,
 }
 
 impl E9patchBackendStatsSnapshot {
@@ -92,6 +93,12 @@ impl E9patchBackendStatsSnapshot {
     /// run collected it.
     pub const fn tracer(&self) -> Option<&PtraceBackendStatsSnapshot> {
         self.tracer.as_ref()
+    }
+
+    /// Whether the guest also ran the shared in-guest `SIGSYS` runtime, whose
+    /// deliveries the tracer does not see.
+    pub const fn in_guest_runtime(&self) -> bool {
+        self.in_guest_runtime
     }
 }
 
@@ -138,6 +145,10 @@ impl BackendStatsSnapshot for E9patchBackendStatsSnapshot {
     /// tracer that ran the image: a patched site reaches it through the
     /// injected-trap `SIGTRAP`, and every other syscall through a seccomp
     /// stop. Without tracer stats the counters are unmeasured.
+    ///
+    /// When the shared in-guest runtime is armed, it handles syscalls through
+    /// `SIGSYS` without a tracer stop and reports nothing back, so the signal
+    /// and direct-call routes are unmeasured rather than zero.
     fn dispatch_stats(&self) -> Option<DispatchStats> {
         let mut record = match &self.tracer {
             Some(tracer) => tracer.dispatch_stats_as(Self::BACKEND_NAME),
@@ -147,6 +158,10 @@ impl BackendStatsSnapshot for E9patchBackendStatsSnapshot {
                 SiteCounters::default(),
             ),
         };
+        if self.in_guest_runtime {
+            record.counters.signal_traps = None;
+            record.counters.patched_direct_calls = None;
+        }
         record.sites = self.site_counters();
         Some(record)
     }
@@ -169,6 +184,7 @@ impl E9patchBackendStatsSource {
                 b0_sites: None,
                 event_source: E9patchEventSource::Ptrace,
                 tracer: None,
+                in_guest_runtime: false,
             },
             tracer: None,
         }
@@ -195,9 +211,16 @@ impl E9patchBackendStatsSource {
                     E9patchEventSource::InjectedTrap
                 },
                 tracer: None,
+                in_guest_runtime: false,
             },
             tracer: None,
         }
+    }
+
+    /// Records that the guest command was armed with the shared in-guest
+    /// runtime.
+    pub(crate) fn arm_in_guest_runtime(&mut self) {
+        self.snapshot.in_guest_runtime = true;
     }
 
     /// Adds the live activity of the tracer that runs the prepared image.
@@ -267,5 +290,37 @@ mod tests {
             .site_counters();
         assert_eq!(unsupported.candidates, None);
         assert_eq!(unsupported.fell_back, None);
+    }
+
+    #[test]
+    fn armed_in_guest_runtime_leaves_its_routes_unmeasured() {
+        let with_tracer = |source: &E9patchBackendStatsSource| E9patchBackendStatsSnapshot {
+            tracer: Some(PtraceBackendStatsSnapshot::default()),
+            ..source.backend_stats()
+        };
+        let mut source = E9patchBackendStatsSource::measured(5, 3, 1);
+        let plain = with_tracer(&source);
+        assert!(!plain.in_guest_runtime());
+        let plain = plain.dispatch_stats().expect("e9patch reports a record");
+        assert_eq!(plain.counters.signal_traps, Some(0));
+        assert_eq!(plain.counters.patched_direct_calls, Some(0));
+
+        source.arm_in_guest_runtime();
+        let armed = with_tracer(&source);
+        let rendered = armed.to_string();
+        assert!(armed.in_guest_runtime());
+        let armed = armed.dispatch_stats().expect("e9patch reports a record");
+        assert_eq!(armed.counters.signal_traps, None);
+        assert_eq!(armed.counters.patched_direct_calls, None);
+        assert_eq!(armed.counters.dispatches(), None);
+        // The tracer's own routes stay measured.
+        assert_eq!(armed.counters.ptrace_seccomp_stops, Some(0));
+        // The stderr diagnostic line does not change.
+        assert_eq!(
+            rendered,
+            E9patchBackendStatsSource::measured(5, 3, 1)
+                .backend_stats()
+                .to_string()
+        );
     }
 }

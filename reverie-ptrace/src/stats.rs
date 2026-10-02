@@ -36,8 +36,8 @@ pub(crate) const INTERNAL_STOP_PREFIX: &str = "internal ";
 ///
 /// Every field is supported by ptrace. A zero therefore means the named
 /// transition was measured and did not occur; it never means collection was
-/// unavailable.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// unavailable. The default is a tracer that observed nothing.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PtraceBackendStatsSnapshot {
     tracees_started: u64,
     stop_events: u64,
@@ -105,8 +105,13 @@ impl PtraceBackendStatsSnapshot {
         self.vfork_done_stops
     }
 
-    /// Number of `SIGTRAP` stops raised by a rewritten site's injected syscall
-    /// trap whose provenance validated and which were dispatched as syscalls.
+    /// Number of validated `SIGTRAP` stops raised by a rewritten site's
+    /// syscall trap: an e9patch injected-trap marker, or the LiteInst
+    /// runtime's trap `int3`.
+    ///
+    /// This counts stops, not Tool callbacks. A LiteInst restart's re-trap is
+    /// a second stop for one hook entry, and a trapped `rt_sigreturn` or
+    /// unsubscribed syscall is a stop that makes no Tool callback.
     pub const fn injected_trap_stops(&self) -> u64 {
         self.injected_trap_stops
     }
@@ -298,8 +303,8 @@ impl PtraceBackendStatsSource {
         }
     }
 
-    /// Counts one validated injected-syscall-trap `SIGTRAP` dispatched as a
-    /// syscall.
+    /// Counts one validated rewritten-site syscall-trap `SIGTRAP` stop; see
+    /// [`PtraceBackendStatsSnapshot::injected_trap_stops`].
     pub(crate) fn record_injected_trap(&self) {
         self.collector
             .injected_trap_stops

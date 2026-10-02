@@ -1788,6 +1788,7 @@ pub(crate) fn record_fork_child_dispatch(
             if let Some(site) = find_site(event.instruction_pointer) {
                 site.hook_count.fetch_add(1, Ordering::Relaxed);
             }
+            stats.record_inherited_entry(crate::stats::InheritedEntry::Hook);
         }
         SyscallDispatch::Fallback => {
             if let Some(site) = find_site(event.instruction_pointer) {
@@ -1795,6 +1796,7 @@ pub(crate) fn record_fork_child_dispatch(
             }
             record_fallback_dispatch(event.number);
             stats.record_path(crate::LiteinstDispatchPath::InGuestSigsys);
+            stats.record_inherited_entry(crate::stats::InheritedEntry::Sigsys);
             if stats.is_enabled() {
                 record_enabled_fallback_stats(stats, event.instruction_pointer);
             }

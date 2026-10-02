@@ -22,12 +22,16 @@ use reverie_liteinst::TOOL_PRELOAD_ENV;
 
 const RPC_GETPID: u64 = 1;
 const RPC_FORK: u64 = 4;
+const RPC_CALLBACK: u64 = 5;
 const BACKEND_OUTPUT_CHILD_ENV: &str = "REVERIE_LITEINST_BACKEND_OUTPUT_TEST_CHILD";
 
 #[derive(Debug, Default)]
 struct LifecycleGlobal {
     getpid: AtomicU64,
     fork: AtomicU64,
+    /// Every in-guest Tool syscall callback, counted independently of the
+    /// backend's statistics.
+    callbacks: AtomicU64,
 }
 
 #[reverie::global_tool]
@@ -40,6 +44,7 @@ impl GlobalTool for LifecycleGlobal {
         let counter = match event {
             RPC_GETPID => &self.getpid,
             RPC_FORK => &self.fork,
+            RPC_CALLBACK => &self.callbacks,
             _ => panic!("unknown lifecycle fixture RPC {event}"),
         };
         counter.fetch_add(1, Ordering::Relaxed);
@@ -242,9 +247,48 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
         record.counters.signal_traps >= record.sites.patched,
         "{record}"
     );
+    assert_physical_signals_agree(&stats, &record);
+    // The getpid site's first call trapped once and then entered through the
+    // hook it installed; every call after that was a hook entry.
     assert!(
-        record.counters.dispatches() >= Some(global.getpid.load(Ordering::Relaxed)),
-        "every getpid the Tool's coordinator saw was dispatched: {record}"
+        record.counters.patched_direct_calls >= Some(8),
+        "{record}\n{stats}"
+    );
+    assert_tool_callbacks_were_delivered(&global, &record, &stats);
+}
+
+/// The handler's count of every `SIGSYS` it received equals the dispatcher's
+/// classified signals, counted at a different point, plus each fallback's
+/// completion signal, less the entries a fork child re-attributed to itself.
+fn assert_physical_signals_agree(
+    stats: &reverie_liteinst::LiteinstBackendStatsSource,
+    record: &reverie::DispatchStats,
+) {
+    let paths = stats.dispatch_path_counts();
+    let classified = paths.count(&LiteinstDispatchPath::InGuestSigsys)
+        + paths.count(&LiteinstDispatchPath::InGuestNestedSigsys)
+        + paths.count(&LiteinstDispatchPath::FallbackCompletionSigsys)
+        - stats.snapshot().fork_child_entries().sigsys;
+    assert_eq!(
+        record.counters.signal_traps,
+        Some(classified),
+        "{record}\n{stats}"
+    );
+}
+
+/// Every Tool callback was delivered by some route. The in-guest filter also
+/// traps syscalls that make no callback (the Tool's own RPC traffic and
+/// unsubscribed guest syscalls), so this is a lower bound, not an equality.
+fn assert_tool_callbacks_were_delivered(
+    global: &LifecycleGlobal,
+    record: &reverie::DispatchStats,
+    stats: &reverie_liteinst::LiteinstBackendStatsSource,
+) {
+    let callbacks = global.callbacks.load(Ordering::Relaxed);
+    assert!(callbacks > 0, "the guest Tool reported no callbacks");
+    assert!(
+        record.counters.dispatches() >= Some(callbacks),
+        "{callbacks} callbacks\n{record}\n{stats}"
     );
 }
 
@@ -295,6 +339,23 @@ async fn fallback_fork_reports_both_process_dispatch_paths() {
             >= 2,
         "{stats}"
     );
+    // The child reports the parent's fork entry as its own first event; the
+    // shared record still counts that physical signal once.
+    assert_eq!(
+        stats.snapshot().fork_child_entries(),
+        reverie_liteinst::InheritedEntries {
+            sigsys: 1,
+            hooks: 0
+        },
+        "{stats}"
+    );
+    let record = stats
+        .snapshot()
+        .dispatch_stats()
+        .expect("in-guest LiteInst reports a dispatch record");
+    assert_eq!(record.inconsistencies(), Vec::<String>::new(), "{record}");
+    assert_physical_signals_agree(&stats, &record);
+    assert_tool_callbacks_were_delivered(&global, &record, &stats);
     println!("{stats}");
 }
 
