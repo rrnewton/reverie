@@ -6299,7 +6299,13 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// (<https://github.com/rrnewton/reverie/issues/845>): a SIGSTOP that
     /// arrives while the callback runs, or a signal a mask-swapping
     /// injection of the callback holds (`step_private_syscall`), can still be
-    /// taken into `pending_signal` and stay there.
+    /// taken into `pending_signal` and stay there. In plain words: if the
+    /// callback queues a signal to its thread and then injects a
+    /// mask-swapping syscall such as `ppoll` that the signal interrupts, the
+    /// signal is held, and if the guest exits before another stop empties
+    /// `pending_signal`, its handler never runs. Main's ordinary signal hooks
+    /// lose a signal the same way
+    /// (`signal_held_by_a_signal_hook_injection_is_not_delivered`).
     ///
     /// A signal is also passed on unreported, as every held signal was
     /// before this report, while the main loop may do more with a SIGTRAP
