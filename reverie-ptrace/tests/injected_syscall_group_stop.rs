@@ -113,6 +113,7 @@ enum Report {
     Injected(Result<i64, i32>),
     Signal(i32),
     Timer,
+    Rdtsc,
 }
 
 #[derive(Default)]
@@ -120,6 +121,7 @@ struct Log {
     injected: Mutex<Vec<Result<i64, i32>>>,
     signals: Mutex<Vec<i32>>,
     timers: AtomicUsize,
+    rdtscs: AtomicUsize,
 }
 
 #[reverie::global_tool]
@@ -134,6 +136,9 @@ impl GlobalTool for Log {
             Report::Signal(signal) => self.signals.lock().unwrap().push(signal),
             Report::Timer => {
                 self.timers.fetch_add(1, Ordering::Relaxed);
+            }
+            Report::Rdtsc => {
+                self.rdtscs.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -4154,4 +4159,732 @@ fn signal_keeps_its_siginfo_after_a_signal_hook_injection() {
         "the hook's getpid runs"
     );
     assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR1]);
+}
+
+/// What `ScriptedSignalHook`'s callbacks on a thread do, one entry per
+/// callback, as `action` encodes it. The guest writes it before its first
+/// signal, and the tool reads the guest's copy. Callbacks past the last
+/// entry repeat it, up to `HOOK_INJECTIONS` callbacks, and later ones pass
+/// their signal through.
+static SCRIPT: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+/// The mask `INJECT_SET_MASK` installs.
+static SCRIPT_MASK: AtomicU64 = AtomicU64::new(0);
+/// The siginfo `INJECT_QUEUE` queues, which the guest fills in.
+static mut SCRIPT_INFO: libc::siginfo_t = unsafe { std::mem::zeroed() };
+/// The program `INJECT_EXEC` executes, which the guest fills in.
+static mut SCRIPT_EXEC: ExecArgs = ExecArgs {
+    path: std::ptr::null(),
+    argv: std::ptr::null(),
+    envp: std::ptr::null(),
+};
+
+/// Injects nothing.
+const INJECT_NONE: u64 = 0;
+/// Injects `getpid`.
+const INJECT_GETPID: u64 = 1;
+/// Injects `rt_sigprocmask(SIG_BLOCK, NULL, NULL, 8)`, which reads the mask
+/// and writes nothing.
+const INJECT_QUERY: u64 = 2;
+/// Injects `rt_sigprocmask(SIG_BLOCK, {SIGUSR1}, NULL, 4)`, which fails
+/// with EINVAL before it writes the mask.
+const INJECT_BAD_SIZE: u64 = 3;
+/// Injects `rt_sigprocmask(SIG_BLOCK, {SIGUSR1}, 8, 8)`, which blocks
+/// SIGUSR1 and then fails with EFAULT writing the old set.
+const INJECT_BLOCK_BAD_OLDSET: u64 = 4;
+/// Injects `rt_sigprocmask(SIG_SETMASK, &SCRIPT_MASK, NULL, 8)`.
+const INJECT_SET_MASK: u64 = 5;
+/// Injects an `execve` of `SCRIPT_EXEC`.
+const INJECT_EXEC: u64 = 6;
+/// Injects `getpid`, then an `rt_tgsigqueueinfo` to the thread with
+/// `SCRIPT_INFO` for each signal in the action's argument, a mask.
+const INJECT_QUEUE: u64 = 7;
+/// Passes the signal through.
+const VERDICT_PASS: u64 = 0;
+/// Suppresses the signal.
+const VERDICT_SUPPRESS: u64 = 1;
+/// Delivers the signal in the action's argument instead.
+const VERDICT_REPLACE: u64 = 2;
+
+/// A `SCRIPT` entry: `inject` (`INJECT_*`), then `verdict` (`VERDICT_*`),
+/// with `arg` for either.
+const fn action(inject: u64, verdict: u64, arg: u64) -> u64 {
+    inject | verdict << 8 | arg << 32
+}
+
+/// Writes `actions` to `SCRIPT`, and empty actions after them.
+fn set_script(actions: &[u64]) {
+    for (i, entry) in SCRIPT.iter().enumerate() {
+        entry.store(actions.get(i).copied().unwrap_or(0), Ordering::Relaxed);
+    }
+}
+
+/// Fills in `SCRIPT_INFO` as `queue_value_to_self` fills in its siginfo,
+/// with `SI_QUEUE`.
+///
+/// # Safety
+/// Writes `SCRIPT_INFO`.
+unsafe fn fill_script_info() {
+    unsafe {
+        let info = &raw mut SCRIPT_INFO;
+        (*info).si_code = libc::SI_QUEUE;
+        let fields = info.cast::<u8>().add(16);
+        fields.cast::<libc::pid_t>().write(libc::getpid());
+        fields.add(4).cast::<libc::uid_t>().write(libc::getuid());
+        fields.add(8).cast::<usize>().write(QUEUED_VALUE);
+    }
+}
+
+/// The calling thread's signal mask.
+fn current_mask() -> u64 {
+    let mut mask = 0u64;
+    // SAFETY: rt_sigprocmask with no new set only writes the 8-byte old set.
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigprocmask,
+            libc::SIG_BLOCK,
+            0usize,
+            &mut mask as *mut u64,
+            8usize,
+        )
+    };
+    assert_eq!(ret, 0);
+    mask
+}
+
+/// Makes the alternate signal stack one the guest cannot write, so Linux
+/// cannot build the frame of an `SA_ONSTACK` handler and forces a SIGSEGV.
+///
+/// # Safety
+/// Replaces the calling thread's alternate signal stack.
+unsafe fn install_unwritable_altstack() {
+    unsafe {
+        let size = 1 << 16;
+        let stack = libc::mmap(
+            std::ptr::null_mut(),
+            size,
+            libc::PROT_NONE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        );
+        assert_ne!(stack, libc::MAP_FAILED);
+        let alternate = libc::stack_t {
+            ss_sp: stack,
+            ss_flags: 0,
+            ss_size: size,
+        };
+        assert_eq!(libc::sigaltstack(&alternate, std::ptr::null_mut()), 0);
+    }
+}
+
+/// Like `ReplaceMarker`, but each signal hook does what its `SCRIPT` entry
+/// says, reporting each injection, and RDTSC is intercepted and reported.
+#[derive(Clone, Copy, Debug, Default)]
+struct ScriptedSignalHook;
+
+#[reverie::tool]
+impl Tool for ScriptedSignalHook {
+    type GlobalState = Log;
+    /// Signal hooks run on this thread so far.
+    type ThreadState = u64;
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        #[cfg(target_arch = "x86_64")]
+        subscription.rdtsc();
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        replace_marker(guest, syscall).await
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn handle_rdtsc_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        request: reverie::Rdtsc,
+    ) -> Result<reverie::RdtscResult, Errno> {
+        guest.send_rpc(Report::Rdtsc).await;
+        Ok(reverie::RdtscResult::new(request))
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        let index = *guest.thread_state();
+        *guest.thread_state_mut() += 1;
+        if index >= HOOK_INJECTIONS {
+            return Ok(Some(signal));
+        }
+        let entry = (index as usize).min(SCRIPT.len() - 1);
+        let address =
+            Addr::<u64>::from_raw(SCRIPT.as_ptr() as usize + entry * 8).ok_or(Errno::EFAULT)?;
+        let action: u64 = guest.memory().read_value(address)?;
+        let arg = action >> 32;
+        let usr1_set = Addr::from_raw(&SIGUSR1_SET as *const u64 as usize);
+        let mut results = Vec::new();
+        match action & 0xff {
+            INJECT_NONE => {}
+            INJECT_GETPID => results.push(guest.inject(Getpid::new()).await),
+            INJECT_QUERY => results.push(
+                guest
+                    .inject(
+                        RtSigprocmask::new()
+                            .with_how(libc::SIG_BLOCK)
+                            .with_set(None)
+                            .with_oldset(None)
+                            .with_sigsetsize(8),
+                    )
+                    .await,
+            ),
+            INJECT_BAD_SIZE => results.push(
+                guest
+                    .inject(
+                        RtSigprocmask::new()
+                            .with_how(libc::SIG_BLOCK)
+                            .with_set(usr1_set)
+                            .with_oldset(None)
+                            .with_sigsetsize(4),
+                    )
+                    .await,
+            ),
+            INJECT_BLOCK_BAD_OLDSET => results.push(
+                guest
+                    .inject(
+                        RtSigprocmask::new()
+                            .with_how(libc::SIG_BLOCK)
+                            .with_set(usr1_set)
+                            .with_oldset(AddrMut::from_raw(8))
+                            .with_sigsetsize(8),
+                    )
+                    .await,
+            ),
+            INJECT_SET_MASK => results.push(
+                guest
+                    .inject(
+                        RtSigprocmask::new()
+                            .with_how(libc::SIG_SETMASK)
+                            .with_set(Addr::from_raw(SCRIPT_MASK.as_ptr() as usize))
+                            .with_oldset(None)
+                            .with_sigsetsize(8),
+                    )
+                    .await,
+            ),
+            INJECT_EXEC => {
+                let base = &raw const SCRIPT_EXEC as usize;
+                let mut args = [0usize; 3];
+                for (i, offset) in [
+                    std::mem::offset_of!(ExecArgs, path),
+                    std::mem::offset_of!(ExecArgs, argv),
+                    std::mem::offset_of!(ExecArgs, envp),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let address = Addr::<usize>::from_raw(base + offset).ok_or(Errno::EFAULT)?;
+                    args[i] = guest.memory().read_value(address)?;
+                }
+                let execve = Syscall::from_raw(
+                    Sysno::execve,
+                    SyscallArgs::new(args[0], args[1], args[2], 0, 0, 0),
+                );
+                // Returns only if the exec fails.
+                results.push(guest.inject(execve).await);
+            }
+            INJECT_QUEUE => {
+                results.push(guest.inject(Getpid::new()).await);
+                for queued in 1..32 {
+                    if arg & bit(queued) != 0 {
+                        results.push(
+                            guest
+                                .inject(
+                                    RtTgsigqueueinfo::new()
+                                        .with_tgid(guest.pid().as_raw())
+                                        .with_tid(guest.tid().as_raw())
+                                        .with_sig(queued)
+                                        .with_siginfo(AddrMut::from_raw(
+                                            &raw mut SCRIPT_INFO as usize,
+                                        )),
+                                )
+                                .await,
+                        );
+                    }
+                }
+            }
+            other => panic!("unknown script injection {other}"),
+        }
+        for result in results {
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+        }
+        Ok(match (action >> 8) & 0xff {
+            VERDICT_PASS => Some(signal),
+            VERDICT_SUPPRESS => None,
+            VERDICT_REPLACE => Some(Signal::try_from(arg as i32).map_err(|_| Errno::EINVAL)?),
+            other => panic!("unknown script verdict {other}"),
+        })
+    }
+}
+
+/// Prints the guest's status, stdout, injections and signals, and checks
+/// that it exited with 0.
+fn check_exited(output: &reverie::process::Output, probe: &str, log: &Log) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    eprintln!(
+        "PROBE {probe} status={:?} guest={:?} injected={:?} signals={:?} rdtscs={}",
+        output.status,
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap(),
+        log.rdtscs.load(Ordering::Relaxed)
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    stdout
+}
+
+/// The guest ignores SIGUSR1, queues it blocked, and calls `epoll_pwait`
+/// with an empty temporary mask, its `syscall` instruction followed at once
+/// by RDTSC, which the Tool intercepts. `epoll_pwait` takes SIGUSR1 and
+/// returns EINTR, which no restart replaces. The hook's `getpid` leaves the
+/// saved mask restored, so Reverie delivers SIGUSR1 under the temporary
+/// mask (`deliver_under_taken_mask`). Linux discards it and returns to the
+/// guest, whose RDTSC faults: a SIGSEGV with no frame failure behind it,
+/// which the Tool's RDTSC hook emulates. The guest goes on with the saved
+/// mask restored and SIGUSR1 neither pending nor reported again. Taking
+/// that SIGSEGV for one Linux forced when a frame could not be built
+/// instead reports it and ends the guest.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn rdtsc_after_a_discarded_signal_is_emulated() {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
+        set_script(&[action(INJECT_GETPID, VERDICT_PASS, 0)]);
+        libc::signal(libc::SIGUSR1, libc::SIG_IGN);
+        block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let epfd = libc::epoll_create1(0);
+        assert!(epfd >= 0);
+        let mut events: [libc::epoll_event; 1] = std::mem::zeroed();
+        let mask = 0u64;
+        let low: u64;
+        let high: u64;
+        // RDTSC overwrites the syscall's result in rax.
+        std::arch::asm!(
+            "syscall",
+            "rdtsc",
+            inout("rax") libc::SYS_epoll_pwait as u64 => low,
+            in("rdi") epfd as u64,
+            in("rsi") events.as_mut_ptr(),
+            inout("rdx") 1u64 => high,
+            in("r10") 5000u64,
+            in("r8") &mask as *const u64,
+            in("r9") 8u64,
+            out("rcx") _,
+            out("r11") _,
+        );
+        println!(
+            "{} {} {}",
+            is_blocked(libc::SIGUSR1),
+            is_pending(libc::SIGUSR1),
+            (high << 32 | low) != 0
+        );
+        println!("{}", libc::getpid());
+    })
+    .expect("run discarded-signal RDTSC guest");
+    let stdout = check_exited(&output, "rdtsc-after-discard", &log);
+    let (fields, pid) = stdout.trim().rsplit_once('\n').expect("guest pid");
+    let pid: i64 = pid.parse().expect("guest pid");
+    assert_eq!(
+        fields, "1 0 true",
+        "the saved mask is restored, SIGUSR1 is not pending, and RDTSC returns a counter"
+    );
+    assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR1]);
+    assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid)]);
+    assert_eq!(
+        log.rdtscs.load(Ordering::Relaxed),
+        1,
+        "the Tool emulates the RDTSC"
+    );
+}
+
+/// As `always_injecting_hook_lets_a_forced_sigsegv_end_the_guest`, with
+/// SIGSEGV's default action and only SIGUSR1 blocked outside `ppoll`. The
+/// first hook injects `getpid`, so Reverie delivers SIGUSR1 under `ppoll`'s
+/// temporary mask, and the hook of the SIGSEGV Linux forces injects
+/// `rt_sigprocmask(SIG_SETMASK, {SIGUSR2})` and suppresses it. Under
+/// untraced Linux's equivalent, a tracer resuming the forced SIGSEGV's stop
+/// to run that syscall, Linux first restores `ppoll`'s saved mask, and the
+/// syscall then replaces it: `ppoll` returns EINTR with the Tool's mask, and
+/// no handler runs.
+#[test]
+fn signal_hook_mask_at_a_forced_sigsegv_outlives_the_restore() {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
+        set_script(&[
+            action(INJECT_GETPID, VERDICT_PASS, 0),
+            action(INJECT_SET_MASK, VERDICT_SUPPRESS, 0),
+        ]);
+        SCRIPT_MASK.store(bit(libc::SIGUSR2), Ordering::Relaxed);
+        install_unwritable_altstack();
+        install_recorder_with(
+            libc::SIGUSR1,
+            record_siginfo as *const () as usize,
+            libc::SA_ONSTACK,
+        );
+        block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let ret = ppoll_with_empty_mask();
+        let errno = *libc::__errno_location();
+        println!("{:#x}", current_mask());
+        print_recorded(ret, errno, libc::SIGUSR1);
+    })
+    .expect("run forced-SIGSEGV mask-setting hook guest");
+    let stdout = check_exited(&output, "forced-sigsegv-set-mask", &log);
+    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
+    let pid: i64 = pid.parse().expect("guest pid");
+    assert_eq!(
+        fields,
+        format!(
+            "{:#x}\n-1 {} 0 0 0 0 0 0 0",
+            bit(libc::SIGUSR2),
+            libc::EINTR
+        ),
+        "EINTR with the Tool's mask, and no handler run"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1, libc::SIGSEGV]
+    );
+    assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid), Ok(0)]);
+}
+
+/// As `signal_hook_mask_at_a_forced_sigsegv_outlives_the_restore`, with
+/// SIGUSR2 blocked outside `ppoll` too and caught by `record_frame_masks`,
+/// and the hook of the forced SIGSEGV replaces it with SIGUSR2, injecting
+/// nothing. Linux delivers a replacement under the mask the forced SIGSEGV
+/// was taken under, `ppoll`'s temporary one, which does not block SIGUSR2,
+/// with the siginfo it makes up for a tracer's replacement (`SI_USER`, the
+/// tracer's PID, no value). The handler runs once, under that mask plus SIGUSR2, and its
+/// frame saves `ppoll`'s saved mask; `ppoll` returns EINTR.
+#[test]
+fn replacement_for_a_forced_sigsegv_runs_under_the_dequeue_mask() {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
+        set_script(&[
+            action(INJECT_GETPID, VERDICT_PASS, 0),
+            action(INJECT_NONE, VERDICT_REPLACE, libc::SIGUSR2 as u64),
+        ]);
+        install_unwritable_altstack();
+        install_recorder_with(
+            libc::SIGUSR1,
+            record_siginfo as *const () as usize,
+            libc::SA_ONSTACK,
+        );
+        install_recorder_with(libc::SIGUSR2, record_frame_masks as *const () as usize, 0);
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let tracer = status
+            .lines()
+            .find_map(|line| line.strip_prefix("TracerPid:"))
+            .unwrap()
+            .trim()
+            .to_owned();
+        block(&[libc::SIGUSR1, libc::SIGUSR2]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let ret = ppoll_with_empty_mask();
+        let errno = *libc::__errno_location();
+        println!("{tracer}");
+        print_frame_masks();
+        print_recorded(ret, errno, libc::SIGUSR2);
+    })
+    .expect("run forced-SIGSEGV replacing hook guest");
+    let stdout = check_exited(&output, "forced-sigsegv-replace", &log);
+    let mut lines = stdout.trim().lines();
+    let (tracer, masks, recorded) = (
+        lines.next().expect("tracer line"),
+        lines.next().expect("frame masks line"),
+        lines.next().expect("recorded line"),
+    );
+    let saved = bit(libc::SIGUSR1) | bit(libc::SIGUSR2);
+    assert_eq!(
+        masks,
+        format!("{:#x} {saved:#x} {saved:#x}", bit(libc::SIGUSR2)),
+        "the handler runs under ppoll's mask, and the frame saves the saved mask twice"
+    );
+    let fields: Vec<&str> = recorded.split(' ').collect();
+    let pid: i64 = fields[9].parse().expect("guest pid");
+    assert_eq!(
+        &fields[..9],
+        &[
+            "-1",
+            &libc::EINTR.to_string(),
+            "1",
+            &libc::SI_USER.to_string(),
+            tracer,
+            "0",
+            "1",
+            "0",
+            "1"
+        ][..],
+        "EINTR; one handler run with the tracer's siginfo; blocked again and not pending"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1, libc::SIGSEGV]
+    );
+    assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid)]);
+}
+
+/// As `signal_hook_mask_at_a_forced_sigsegv_outlives_the_restore`, but the
+/// hook of the forced SIGSEGV executes `cat /proc/self/status`. Linux
+/// restores `ppoll`'s saved mask when the stop resumes to run the `execve`,
+/// so the new image starts with SIGUSR1 blocked.
+#[test]
+fn exec_from_a_forced_sigsegv_hook_keeps_the_saved_mask() {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
+        set_script(&[
+            action(INJECT_GETPID, VERDICT_PASS, 0),
+            action(INJECT_EXEC, VERDICT_PASS, 0),
+        ]);
+        let path = c"/bin/cat";
+        let argv = [
+            c"cat".as_ptr(),
+            c"/proc/self/status".as_ptr(),
+            std::ptr::null(),
+        ];
+        let envp = [std::ptr::null()];
+        let exec = &raw mut SCRIPT_EXEC;
+        (*exec).path = path.as_ptr();
+        (*exec).argv = argv.as_ptr();
+        (*exec).envp = envp.as_ptr();
+        install_unwritable_altstack();
+        install_recorder_with(
+            libc::SIGUSR1,
+            record_siginfo as *const () as usize,
+            libc::SA_ONSTACK,
+        );
+        block(&[libc::SIGUSR1]);
+        use std::io::Write;
+        println!("{}", libc::getpid());
+        std::io::stdout().flush().unwrap();
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        ppoll_with_empty_mask();
+        // Reached only if the hook did not execute the program.
+        libc::_exit(3);
+    })
+    .expect("run forced-SIGSEGV exec hook guest");
+    let stdout = check_exited(&output, "forced-sigsegv-exec", &log);
+    let pid: i64 = stdout.lines().next().unwrap().parse().expect("guest pid");
+    let blocked = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("SigBlk:"))
+        .expect("cat's SigBlk line")
+        .trim();
+    assert_eq!(
+        u64::from_str_radix(blocked, 16).expect("SigBlk mask"),
+        bit(libc::SIGUSR1),
+        "the new image starts with ppoll's saved mask"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1, libc::SIGSEGV]
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(pid)],
+        "the exec succeeds"
+    );
+}
+
+/// As `always_injecting_hook_delivers_at_a_delivery_stop`, but every hook
+/// injects `inject`, an `rt_sigprocmask` that leaves the mask as it was.
+/// The mask is the one the injection's step restored, not one the Tool set,
+/// so Reverie still delivers SIGUSR1 under `ppoll`'s temporary mask: the
+/// handler runs once and `ppoll` returns EINTR.
+fn signal_hook_mask_call_that_sets_nothing_delivers(inject: u64, result: Result<i64, i32>) {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(move || unsafe {
+        set_script(&[action(inject, VERDICT_PASS, 0)]);
+        install_recorder(libc::SIGUSR1);
+        block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let ret = ppoll_with_empty_mask();
+        let errno = *libc::__errno_location();
+        print_recorded(ret, errno, libc::SIGUSR1);
+    })
+    .expect("run mask-call hook guest");
+    check_recorded(
+        &output,
+        &format!("mask-call-{inject}"),
+        &log,
+        &format!("-1 {}", libc::EINTR),
+        libc::SI_QUEUE,
+    );
+    assert_eq!(*log.injected.lock().unwrap(), vec![result]);
+    assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR1]);
+}
+
+#[test]
+fn signal_hook_querying_the_mask_delivers() {
+    signal_hook_mask_call_that_sets_nothing_delivers(INJECT_QUERY, Ok(0));
+}
+
+#[test]
+fn signal_hook_failing_to_set_the_mask_delivers() {
+    signal_hook_mask_call_that_sets_nothing_delivers(
+        INJECT_BAD_SIZE,
+        Err(Errno::EINVAL.into_raw()),
+    );
+}
+
+/// As `signal_hook_blocking_its_signal_at_a_delivery_stop_requeues_it`, but
+/// the hook's `rt_sigprocmask` fails with EFAULT writing the old set, after
+/// it blocked SIGUSR1. The mask is still the Tool's, so Linux requeues the
+/// signal, and the restarted `ppoll` takes it again.
+#[test]
+fn signal_hook_block_that_faults_after_writing_requeues() {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
+        set_script(&[action(INJECT_BLOCK_BAD_OLDSET, VERDICT_PASS, 0)]);
+        install_recorder(libc::SIGUSR1);
+        block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let ret = ppoll_with_empty_mask();
+        let errno = *libc::__errno_location();
+        print_recorded(ret, errno, libc::SIGUSR1);
+    })
+    .expect("run faulting-block hook guest");
+    check_recorded(
+        &output,
+        "block-bad-oldset",
+        &log,
+        &format!("-1 {}", libc::EINTR),
+        libc::SI_QUEUE,
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Err(Errno::EFAULT.into_raw())]
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1, libc::SIGUSR1],
+        "the signal is reported when taken, and again when the restarted ppoll takes it"
+    );
+}
+
+/// The guest ignores SIGUSR1, catches `signal` with `record_frame_masks`,
+/// blocks both, queues SIGUSR1, and calls `ppoll` with an empty temporary
+/// mask. The hook of SIGUSR1 injects `getpid` and queues `signal` with
+/// `QUEUED_VALUE`, which the restored saved mask blocks. Linux discards
+/// SIGUSR1 under `ppoll`'s temporary mask and takes `signal` under it too:
+/// the handler runs once with the queued siginfo, under the temporary mask
+/// plus `signal`, its frame saves `ppoll`'s saved mask, and `ppoll`
+/// returns EINTR. `signal` is reported once. SIGSTKFLT is the number of
+/// Reverie's timer signal; this one is the guest's.
+fn check_signal_queued_by_a_hook_after_a_discard(signal: libc::c_int) {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(move || unsafe {
+        set_script(&[action(INJECT_QUEUE, VERDICT_PASS, bit(signal))]);
+        fill_script_info();
+        libc::signal(libc::SIGUSR1, libc::SIG_IGN);
+        install_recorder_with(signal, record_frame_masks as *const () as usize, 0);
+        block(&[libc::SIGUSR1, signal]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let ret = ppoll_with_empty_mask();
+        let errno = *libc::__errno_location();
+        print_frame_masks();
+        print_recorded(ret, errno, signal);
+    })
+    .expect("run discard-then-queued hook guest");
+    let (masks, output) = split_frame_masks(output);
+    let pid = check_recorded(
+        &output,
+        &format!("discard-then-queued-{signal}"),
+        &log,
+        &format!("-1 {}", libc::EINTR),
+        libc::SI_QUEUE,
+    );
+    let saved = bit(libc::SIGUSR1) | bit(signal);
+    assert_eq!(
+        masks,
+        format!("{:#x} {saved:#x} {saved:#x}", bit(signal)),
+        "the handler runs under ppoll's mask, and the frame saves the saved mask twice"
+    );
+    assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid), Ok(0)]);
+    assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR1, signal]);
+}
+
+#[test]
+fn signal_queued_by_a_hook_after_a_discard_runs_under_the_dequeue_mask() {
+    check_signal_queued_by_a_hook_after_a_discard(libc::SIGUSR2);
+}
+
+#[test]
+fn timer_numbered_signal_queued_by_a_hook_after_a_discard_runs_under_the_dequeue_mask() {
+    check_signal_queued_by_a_hook_after_a_discard(libc::SIGSTKFLT);
+}
+
+/// As `check_signal_queued_by_a_hook_after_a_discard` with SIGSTKFLT, but the hook also queues SIGWINCH, caught by
+/// `record_siginfo`, the guest waits in `epoll_pwait`, which returns EINTR
+/// without a restart, and the hook of SIGSTKFLT suppresses it. On untraced
+/// Linux's equivalent, Linux goes on under `epoll_pwait`'s temporary mask
+/// and takes SIGWINCH: its handler runs once before `epoll_pwait` returns.
+///
+/// Known gap pinned here (https://github.com/rrnewton/reverie/issues/845):
+/// Linux no longer holds the saved mask's restore when it takes SIGSTKFLT
+/// (`deliver_under_taken_mask`), so Reverie installs the saved mask before
+/// it resumes the suppressed stop. That mask blocks SIGWINCH, so
+/// `epoll_pwait` returns EINTR with SIGWINCH pending, and its handler runs,
+/// and the hook reports it, only when the guest unblocks it.
+#[test]
+fn signal_pending_behind_a_suppressed_lost_restore_signal_waits_for_the_saved_mask() {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
+        set_script(&[
+            action(
+                INJECT_QUEUE,
+                VERDICT_PASS,
+                bit(libc::SIGSTKFLT) | bit(libc::SIGWINCH),
+            ),
+            action(INJECT_NONE, VERDICT_SUPPRESS, 0),
+        ]);
+        fill_script_info();
+        libc::signal(libc::SIGUSR1, libc::SIG_IGN);
+        install_recorder(libc::SIGWINCH);
+        block(&[libc::SIGUSR1, libc::SIGSTKFLT, libc::SIGWINCH]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let epfd = libc::epoll_create1(0);
+        assert!(epfd >= 0);
+        let mut events: [libc::epoll_event; 1] = std::mem::zeroed();
+        let mut mask: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut mask);
+        let ret = libc::epoll_pwait(epfd, events.as_mut_ptr(), 1, 5000, &mask);
+        let errno = *libc::__errno_location();
+        print_recorded(ret as libc::c_long, errno, libc::SIGWINCH);
+    })
+    .expect("run suppressed lost-restore guest");
+    let stdout = check_exited(&output, "suppressed-lost-restore", &log);
+    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
+    let pid: i64 = pid.parse().expect("guest pid");
+    assert_eq!(
+        fields,
+        format!(
+            "-1 {} 0 {} {pid} {QUEUED_VALUE} 1 1 1",
+            libc::EINTR,
+            libc::SI_QUEUE
+        ),
+        "EINTR with SIGWINCH blocked and pending; its handler runs once unblocked"
+    );
+    assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid), Ok(0), Ok(0)]);
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1, libc::SIGSTKFLT, libc::SIGWINCH]
+    );
 }
