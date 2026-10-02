@@ -8691,7 +8691,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         // Step to run the syscall instruction.
-        let (mut wait, mut seccomp_trapped) = self.step_private_syscall(task, nr, None).await?;
+        let (mut wait, mut seccomp_trapped) = self.step_private_syscall(task, nr).await?;
 
         // A late overflow notification of the timer can be pending when the
         // step starts. Its delivery stop precedes the syscall instruction. No
@@ -8781,7 +8781,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             // stays queued past this step and reaches the timer's own
             // handling at the next run-loop stop. It is therefore never
             // requeued or held in `pending_signal` here.
-            (wait, seccomp_trapped) = self.step_private_syscall(stopped, nr, None).await?;
+            (wait, seccomp_trapped) = self.step_private_syscall(stopped, nr).await?;
         }
 
         // Get the result of the syscall to return to the caller.
@@ -8889,7 +8889,6 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         nr: Sysno,
-        signal: Option<Signal>,
     ) -> Result<(Wait, bool), TraceError> {
         let after_syscall = (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64;
         // Signals returned to the kernel queue during this step, still blocked
@@ -8906,7 +8905,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             Ok(())
         };
-        let mut running = self.step_stopped(task, signal)?;
+        let mut running = self.step_stopped(task, None)?;
         loop {
             let wait = running.next_state().await?;
             self.arm_liteinst_wait(&wait);
