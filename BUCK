@@ -224,6 +224,17 @@ rust_library(
     ],
 )
 
+# Hermit's SaBRe supervisor reads the statistics page through this crate.
+rust_library(
+    name = "reverie-sabre-stats",
+    srcs = glob(["experimental/reverie-sabre-stats/src/**/*.rs"]),
+    autocargo = {"cargo_toml_dir": "experimental/reverie-sabre-stats"},
+    deps = [
+        "fbsource//third-party/rust:libc",
+        ":reverie",
+    ],
+)
+
 rust_library(
     name = "reverie-preload",
     srcs = glob(["reverie-preload/src/**/*.rs"]),
