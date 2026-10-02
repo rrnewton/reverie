@@ -6476,6 +6476,10 @@ enum RestartBlockEnd {
     /// As `SuppressAfterSleep`, but the hook resumes with SIGUSR2, which the
     /// guest catches and blocks, in place of suppressing SIGALRM.
     BlockedAfterSleep,
+    /// As `Deliver`, while a process the guest created with `CLONE_VM`,
+    /// `CLONE_SIGHAND` and `CLONE_UNTRACED`, which Reverie does not trace,
+    /// shares the guest's signal dispositions.
+    DeliverBesideAnUntracedSharer,
 }
 
 /// SIGALRM interrupts the guest's `nanosleep` (3 seconds, or 300 ms for
@@ -6488,7 +6492,12 @@ enum RestartBlockEnd {
 /// place of the guest's.
 ///
 /// When the hook passes SIGALRM through, the guest sees EINTR, well before
-/// either deadline, and the handler runs: what untraced Linux returns.
+/// either deadline, and the handler runs: what untraced Linux returns. When
+/// an untraced process shares the guest's dispositions
+/// (`DeliverBesideAnUntracedSharer`), it could make SIGALRM ignored before
+/// the kernel delivers it, so the guest sees the `getpid`'s PID, as on main,
+/// with the handler run, a known gap
+/// (https://github.com/rrnewton/reverie/issues/845).
 ///
 /// When it suppresses SIGALRM, untraced Linux would restart the guest's
 /// sleep, which the replaced restart block rules out. The guest sees the
@@ -6512,7 +6521,11 @@ enum RestartBlockEnd {
 /// In every case the second SIGALRM, held by the hook's `getpid`, is
 /// delivered at the guest's next subscribed syscall, its `println`.
 fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
-    let suppress = end != RestartBlockEnd::Deliver;
+    let suppress = !matches!(
+        end,
+        RestartBlockEnd::Deliver | RestartBlockEnd::DeliverBesideAnUntracedSharer
+    );
+    let sharer = end == RestartBlockEnd::DeliverBesideAnUntracedSharer;
     let final_sleep = matches!(
         end,
         RestartBlockEnd::SuppressAfterSleep
@@ -6540,6 +6553,21 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
                 install_counter(libc::SIGUSR2, count_second);
                 block(&[libc::SIGUSR2]);
             }
+            let mut sharer_stack = vec![0u8; 1 << 16];
+            let sharer_pid = if sharer {
+                SHARER_STOP.store(false, Ordering::Relaxed);
+                let top = sharer_stack.as_mut_ptr().add(sharer_stack.len()) as usize & !15;
+                let pid = libc::clone(
+                    share_dispositions_until_stopped,
+                    top as *mut libc::c_void,
+                    libc::CLONE_VM | libc::CLONE_SIGHAND | libc::CLONE_UNTRACED,
+                    std::ptr::null_mut(),
+                );
+                assert!(pid > 0, "clone: {}", std::io::Error::last_os_error());
+                pid
+            } else {
+                0
+            };
             let timer = libc::itimerval {
                 it_interval: libc::timeval {
                     tv_sec: 0,
@@ -6570,6 +6598,15 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
             let errno = *libc::__errno_location();
             let elapsed = start.elapsed().as_millis();
             let calls = SIGALRM_HANDLER_CALLS.load(Ordering::Relaxed);
+            if sharer_pid > 0 {
+                SHARER_STOP.store(true, Ordering::Relaxed);
+                let mut status = 0;
+                assert_eq!(
+                    libc::waitpid(sharer_pid, &mut status, libc::__WALL),
+                    sharer_pid
+                );
+            }
+            drop(sharer_stack);
             println!("{ret} {errno} {calls} {elapsed}");
             println!("{}", SIGALRM_HANDLER_CALLS.load(Ordering::Relaxed));
         },
@@ -6608,6 +6645,11 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
             fields[..3].join(" "),
             format!("-1 {} 1", libc::EINTR),
             "EINTR, with a handler run"
+        ),
+        RestartBlockEnd::DeliverBesideAnUntracedSharer => assert_eq!(
+            [fields[0], fields[2]],
+            [pid.to_string().as_str(), "1"],
+            "the injected getpid's PID, as on main, with a handler run"
         ),
         RestartBlockEnd::Suppress => assert_eq!(
             [fields[0], fields[2]],
@@ -6665,6 +6707,24 @@ extern "C" fn count_sigalrm(_signal: libc::c_int) {
     SIGALRM_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
 }
 
+static SHARER_STOP: AtomicBool = AtomicBool::new(false);
+
+/// The untraced process of `DeliverBesideAnUntracedSharer`: it shares the
+/// guest's memory, its thread pointer included, so it makes only raw
+/// syscalls until the guest stops it.
+extern "C" fn share_dispositions_until_stopped(_arg: *mut libc::c_void) -> libc::c_int {
+    let pause = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 1_000_000,
+    };
+    while !SHARER_STOP.load(Ordering::Relaxed) {
+        unsafe {
+            libc::syscall(libc::SYS_nanosleep, &pause as *const libc::timespec, 0usize);
+        }
+    }
+    0
+}
+
 #[test]
 fn suppressed_signal_after_a_restart_block_replacing_injection_returns_the_injection_result() {
     check_restart_block_replaced_by_a_hook_injection(RestartBlockEnd::Suppress);
@@ -6698,6 +6758,13 @@ fn blocked_signal_after_a_restart_block_replacing_injection_keeps_a_final_zero()
 #[test]
 fn delivered_signal_after_a_restart_block_replacing_injection_returns_eintr() {
     check_restart_block_replaced_by_a_hook_injection(RestartBlockEnd::Deliver);
+}
+
+#[test]
+fn delivered_signal_beside_an_untraced_disposition_sharer_returns_the_injection_result() {
+    check_restart_block_replaced_by_a_hook_injection(
+        RestartBlockEnd::DeliverBesideAnUntracedSharer,
+    );
 }
 
 /// A Tool whose signal hook of SIGUSR1 saves the guest's registers, reports
