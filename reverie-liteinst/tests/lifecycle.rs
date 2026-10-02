@@ -17,6 +17,7 @@ use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_liteinst::LiteinstBackend;
 use reverie_liteinst::LiteinstDispatchPath;
+use reverie_liteinst::SITE_PATCHING_ENV;
 use reverie_liteinst::TOOL_PRELOAD_ENV;
 
 const RPC_GETPID: u64 = 1;
@@ -222,6 +223,58 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
         paths.count(&LiteinstDispatchPath::DirectHook) >= 8,
         "expected installed-hook dispatches: {stats}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn site_patching_off_runs_every_call_through_the_in_guest_fallback() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let mut command = guest_command("patching-off");
+    command.env(SITE_PATCHING_ENV, "0");
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload_and_stats::<CoordinatorOnlyTool>(
+            command,
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("patching-off in-guest run hung")
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    // No site is claimed, so the site keeps no trap or hook count; every
+    // getpid reached the fallback, and no tracer is attached to the guest.
+    assert_eq!(
+        output.stdout, b"calls=8 traps=0 hooks=0 fallback_getpid=8 tracer_pid=0\n",
+        "{output:?}"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
+    assert_eq!(stats.snapshot().process_reports(), 1, "{stats}");
+    assert_eq!(stats.snapshot().patch_shapes().patched_rips(), 0, "{stats}");
+    let paths = stats.dispatch_path_counts();
+    for (path, expected) in [
+        (LiteinstDispatchPath::DirectHook, 0),
+        (LiteinstDispatchPath::FirstSiteSeccomp, 0),
+        (LiteinstDispatchPath::PtraceInstallation, 0),
+        (LiteinstDispatchPath::CachelineStraddlerFallback, 0),
+        (LiteinstDispatchPath::UnpatchableOrOtherFallback, 0),
+        (LiteinstDispatchPath::FallbackRefusal, 0),
+    ] {
+        assert_eq!(paths.count(&path), expected, "{path}: {stats}");
+    }
+    let disabled = paths.count(&LiteinstDispatchPath::PatchingDisabledFallback);
+    assert!(
+        disabled >= 8,
+        "expected every getpid on the fallback: {stats}"
+    );
+    assert_eq!(
+        paths.count(&LiteinstDispatchPath::FallbackCompletionSigsys),
+        disabled,
+        "every fallback must complete: {stats}"
+    );
+    println!("{stats}");
 }
 
 #[tokio::test(flavor = "current_thread")]
