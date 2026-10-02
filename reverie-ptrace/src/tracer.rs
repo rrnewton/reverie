@@ -8799,10 +8799,10 @@ mod tests {
     const POPULATE_REUSE_INNER: &str = "REVERIE_PREINIT_POPULATE_REUSE_INNER";
     const POPULATE_REUSE_CHECKED: &str = "@@preinit-populate-replacement-checked@@";
 
-    /// Starts an untraced process that reuses the reaped `pid` and maps a
-    /// zero-filled page where initialization populates its private page.
-    /// Needs CAP_SYS_ADMIN over the PID namespace, for `clone3`'s `set_tid`.
-    fn spawn_private_page_replacement(pid: Pid) -> Pid {
+    /// Forks a child onto `pid`, which must be free, and returns as `fork`
+    /// does. Needs CAP_SYS_ADMIN over the PID namespace, for `clone3`'s
+    /// `set_tid`.
+    fn clone_reusing(pid: Pid) -> libc::c_long {
         #[repr(C)]
         #[derive(Default)]
         struct CloneArgs {
@@ -8819,12 +8819,6 @@ mod tests {
             cgroup: u64,
         }
 
-        assert_eventually_reaped("killed tracee before its PID is reused", pid);
-        let mut ready = [0; 2];
-        assert_eq!(
-            unsafe { libc::pipe2(ready.as_mut_ptr(), libc::O_CLOEXEC) },
-            0
-        );
         let mut set_tid = pid.as_raw() as u64;
         let args = CloneArgs {
             exit_signal: libc::SIGCHLD as u64,
@@ -8840,6 +8834,19 @@ mod tests {
             )
         };
         assert!(child >= 0, "clone3 reusing {pid}: {}", Errno::last());
+        child
+    }
+
+    /// Starts an untraced process that reuses the reaped `pid` and maps a
+    /// zero-filled page where initialization populates its private page.
+    fn spawn_private_page_replacement(pid: Pid) -> Pid {
+        assert_eventually_reaped("killed tracee before its PID is reused", pid);
+        let mut ready = [0; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(ready.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        let child = clone_reusing(pid);
         if child == 0 {
             // Only async-signal-safe calls: the test process has other threads.
             let page = unsafe {
@@ -8975,6 +8982,141 @@ mod tests {
         );
         // libtest has already printed "test <name> ... " without a newline.
         println!("\n{POPULATE_REUSE_CHECKED}");
+    }
+
+    /// Selects the inner run of [`preinit_injection_never_reaches_a_replacement`].
+    const INJECTION_REUSE_INNER: &str = "REVERIE_PREINIT_INJECTION_REUSE_INNER";
+    const INJECTION_REUSE_CHECKED: &str = "@@preinit-injection-replacement-checked@@";
+
+    /// Starts a process that reuses the reaped `pid`, is traced by this
+    /// thread, and stays in its SIGSTOP signal-delivery stop, so that a
+    /// ptrace request naming `pid` from this thread reaches it.
+    fn spawn_stopped_traced_replacement(pid: Pid) -> Pid {
+        assert_eventually_reaped("killed tracee before its PID is reused", pid);
+        let child = clone_reusing(pid);
+        if child == 0 {
+            // Only async-signal-safe calls: the test process has other threads.
+            unsafe {
+                if libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) != 0 {
+                    libc::_exit(1);
+                }
+                libc::kill(libc::getpid(), libc::SIGSTOP);
+                libc::_exit(2);
+            }
+        }
+        assert_eq!(child as i32, pid.as_raw(), "clone3 did not reuse {pid}");
+        let status = nix::sys::wait::waitpid(unistd::Pid::from_raw(pid.as_raw()), None);
+        assert!(
+            matches!(
+                status,
+                Ok(nix::sys::wait::WaitStatus::Stopped(_, Signal::SIGSTOP))
+            ),
+            "replacement {pid} did not stop traced: {status:?}"
+        );
+        pid
+    }
+
+    /// Kills the tracee before initialization's last injections, lets the
+    /// notifier reap it, and starts a replacement on the same PID that the
+    /// same thread traces and holds stopped, so a request naming the PID
+    /// would succeed on it. Initialization must still fail with the kill, and
+    /// its injection must not reach the replacement: its registers must be
+    /// unchanged. Runs in a fresh user and PID namespace, where the PID can be
+    /// reused exactly.
+    #[tokio::test(flavor = "current_thread")]
+    async fn preinit_injection_never_reaches_a_replacement() {
+        if std::env::var_os(INJECTION_REUSE_INNER).is_none() {
+            let module = module_path!()
+                .split_once("::")
+                .map(|(_, rest)| rest)
+                .unwrap();
+            let test_name = format!("{module}::preinit_injection_never_reaches_a_replacement");
+            let output = std::process::Command::new("/usr/bin/timeout")
+                .args([
+                    "60",
+                    "/usr/bin/unshare",
+                    "--user",
+                    "--map-root-user",
+                    "--pid",
+                    "--fork",
+                    "--mount-proc",
+                    "--",
+                ])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
+                .env(INJECTION_REUSE_INNER, "1")
+                .output()
+                .expect("spawn /usr/bin/unshare");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains(INJECTION_REUSE_CHECKED),
+                "inner run in a fresh PID namespace failed ({}):\nstdout:\n{stdout}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let point = crate::task::PreinitPoint::TrampolineUnprotected;
+        let (kill_hook, kill) = kill_at_preinit_point(point, 1, PreinitKillMode::Exited);
+        let replacement = Arc::new(StdMutex::new(None));
+        let made = Arc::clone(&replacement);
+        let hook: crate::task::PreinitPointForTest = Arc::new(move |pid, terminal, at| {
+            kill_hook(pid, terminal, at);
+            let mut made = made.lock().unwrap();
+            if at == point && made.is_none() && *kill.killed.lock().unwrap() == Some(pid) {
+                let pid = spawn_stopped_traced_replacement(pid);
+                let regs = nix::sys::ptrace::getregs(unistd::Pid::from_raw(pid.as_raw()))
+                    .unwrap_or_else(|error| panic!("read replacement {pid}'s registers: {error}"));
+                *made = Some((pid, std::thread::current().id(), format!("{regs:?}")));
+            }
+        });
+        let spawned = tokio::time::timeout(
+            Duration::from_secs(5),
+            TracerBuilder::<AllSyscallsTool>::new(Command::new("/bin/true"))
+                .preinit_point_for_test(hook)
+                .spawn(),
+        )
+        .await
+        .expect("spawn did not end within 5 s");
+        let (pid, tracer, before) = replacement
+            .lock()
+            .unwrap()
+            .take()
+            .expect("never killed at TrampolineUnprotected");
+        // Only the thread that traces the replacement can read its registers.
+        assert_eq!(std::thread::current().id(), tracer);
+
+        let reaped = unistd::Pid::from_raw(pid.as_raw());
+        let after = nix::sys::ptrace::getregs(reaped).map(|regs| format!("{regs:?}"));
+        let killed = unsafe { libc::kill(pid.as_raw(), libc::SIGKILL) };
+        let status = nix::sys::wait::waitpid(reaped, None);
+        assert_eq!(
+            after,
+            Ok(before),
+            "initialization changed replacement {pid}'s registers"
+        );
+        assert_eq!(killed, 0);
+        assert!(
+            matches!(
+                status,
+                Ok(nix::sys::wait::WaitStatus::Signaled(_, Signal::SIGKILL, _))
+            ),
+            "replacement {pid} ended with {status:?}"
+        );
+
+        let error = match spawned {
+            Ok(_) => panic!("spawn of a killed tracee succeeded"),
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(
+            error,
+            format!(
+                "tracee {pid} exited during ptrace initialization with Signaled(SIGKILL, false)"
+            )
+        );
+        // libtest has already printed "test <name> ... " without a newline.
+        println!("\n{INJECTION_REUSE_CHECKED}");
     }
 
     /// An errno from a tracee that is still alive is returned unchanged.

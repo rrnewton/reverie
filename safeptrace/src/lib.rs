@@ -553,6 +553,26 @@ bitflags::bitflags! {
     }
 }
 
+/// The tracee generation a [`Stopped`] capability is bound to. It grants no
+/// ptrace operation by itself.
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+pub struct TraceeGeneration(Pid, TraceeToken);
+
+impl TraceeGeneration {
+    /// Returns the process ID of the tracee.
+    pub fn pid(&self) -> Pid {
+        self.0
+    }
+
+    /// Creates a stopped state for this generation. Like
+    /// [`Stopped::new_unchecked`], the caller must independently know that the
+    /// tracee is stopped. Unlike it, requests through the result are refused
+    /// once this generation is reaped, even if another task has reused the TID.
+    pub fn assume_stopped(&self) -> Stopped {
+        Stopped::from_token(self.0, self.1.clone())
+    }
+}
+
 /// A process that is in a stopped state and allows ptrace operations to be
 /// performed.
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -644,6 +664,14 @@ impl Stopped {
 
     fn from_token(pid: Pid, token: TraceeToken) -> Self {
         Self(pid, token)
+    }
+
+    /// Returns the generation this capability is bound to, so a caller that
+    /// later rebuilds an unchecked capability for this tracee keeps the
+    /// generation's TID gate instead of joining whatever task holds the TID
+    /// by then.
+    pub fn generation(&self) -> TraceeGeneration {
+        TraceeGeneration(self.0, self.1.clone())
     }
 
     /// Returns the process ID of the tracee.

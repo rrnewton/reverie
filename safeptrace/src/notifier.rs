@@ -1586,7 +1586,16 @@ impl EventHandle {
     /// reaping, after which the kernel may reuse the TID. While the returned
     /// hold lives, the reaper cannot release the TID.
     pub(super) fn hold_tid(&self) -> Option<TidHold<'_>> {
-        self.event().hold_tid()
+        loop {
+            let event = self.event();
+            let hold = event.hold_tid()?;
+            // Adoption redirects this handle while holding the old Event's
+            // gate exclusively, so a hold taken before the redirect delays it,
+            // and one taken after it must be on the generation it now names.
+            if Arc::ptr_eq(self.event(), event) {
+                return Some(hold);
+            }
+        }
     }
 
     fn identity(&self) -> Option<&Arc<WorkerIdentity>> {
@@ -1637,7 +1646,13 @@ impl EventHandle {
             }
             return Err(Errno::ELOOP);
         }
-        match self.0.authoritative.set(authoritative.clone()) {
+        // Wait for numeric requests already holding this generation's TID
+        // gate: once redirected, the authoritative generation's reaper no
+        // longer sees them.
+        let gate = self.0.event.terminal_reaping.write();
+        let adopted = self.0.authoritative.set(authoritative.clone());
+        drop(gate);
+        match adopted {
             Ok(()) => Ok(authoritative),
             Err(_) => {
                 let selected = self.resolved_handle();
@@ -2243,13 +2258,19 @@ enum CancellableEventRegistration {
 struct Notifier {
     /// Mapping of numeric PIDs to their validated current proc generation.
     pids: Mutex<HashMap<Pid, NotifierEntry>>,
+
+    /// Generations handed out before registration, so every capability for
+    /// one live task shares one Event, and thus one TID gate, before any of
+    /// them registers. Locked only while `pids` is held.
+    unregistered: Mutex<HashMap<Pid, Weak<EventGeneration>>>,
 }
 
 impl Notifier {
     /// Creates the notifier.
     pub fn new() -> Self {
         let pids = Mutex::new(HashMap::new());
-        Notifier { pids }
+        let unregistered = Mutex::new(HashMap::new());
+        Notifier { pids, unregistered }
     }
 
     fn capture_identity(&self, pid: Pid) -> Result<Arc<WorkerIdentity>, Errno> {
@@ -2317,10 +2338,24 @@ impl Notifier {
                     return Ok(handle);
                 }
                 Entry::Vacant(_) => {
-                    let handle = EventHandle::with_identity(Arc::clone(&current));
                     // A typed state may still use synchronous wait. Defer registry
                     // insertion until async notification or terminal cleanup is
-                    // actually requested.
+                    // actually requested. Until then, hand every capability for
+                    // this live generation the same Event, so the reap that
+                    // registering any one of them leads to closes the TID gate
+                    // for all of them.
+                    let mut unregistered = self.unregistered.lock();
+                    if let Some(generation) = unregistered.get(&pid).and_then(Weak::upgrade) {
+                        let handle = EventHandle(generation);
+                        if let Some(bound) = handle.identity()
+                            && bound.same_live_generation(&current)?
+                        {
+                            return Ok(handle.resolved_handle());
+                        }
+                    }
+                    unregistered.retain(|_, generation| generation.strong_count() > 0);
+                    let handle = EventHandle::with_identity(Arc::clone(&current));
+                    unregistered.insert(pid, Arc::downgrade(&handle.0));
                     return Ok(handle);
                 }
             }
@@ -5361,6 +5396,61 @@ mod test {
             "an adopted handle cannot be redirected to a second authority"
         );
         assert!(Arc::ptr_eq(first.event(), second.event()));
+    }
+
+    #[test]
+    fn adoption_waits_for_a_request_holding_the_old_gate() {
+        let requested = EventHandle::new();
+        let authoritative = EventHandle::new();
+        let hold = requested.hold_tid().expect("hold the unmarked gate");
+        let (adopted_tx, adopted_rx) = mpsc::channel();
+        let adopter = {
+            let requested = requested.clone();
+            let authoritative = authoritative.clone();
+            thread::spawn(move || {
+                let result = requested.adopt_authoritative(&authoritative);
+                adopted_tx.send(()).expect("report adoption");
+                result
+            })
+        };
+        assert!(
+            adopted_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "adoption redirected a handle while a request held its old gate"
+        );
+        drop(hold);
+        adopter
+            .join()
+            .expect("join adopter")
+            .expect("adopt the authoritative generation");
+
+        authoritative.event().mark_terminal_reaping();
+        assert!(
+            requested.hold_tid().is_none(),
+            "a request through the adopted handle escaped the authoritative reap"
+        );
+    }
+
+    #[test]
+    fn capabilities_created_before_registration_share_one_tid_gate() {
+        let (pid, cleanup) = spawn_stopped_process(None).expect("spawn unregistered child");
+        let first = EventHandle::current_or_new(pid.into()).expect("first capability");
+        let second = EventHandle::current_or_new(pid.into()).expect("second capability");
+        assert!(
+            !NOTIFIER.pids.lock().contains_key(&pid.into()),
+            "a lookup registered the generation"
+        );
+        assert!(
+            Arc::ptr_eq(first.event(), second.event()),
+            "two capabilities for one live generation carry different TID gates"
+        );
+
+        first.event().mark_terminal_reaping();
+        assert!(
+            second.hold_tid().is_none(),
+            "a reap marked through one capability left the other's TID gate open"
+        );
+        drop((first, second));
+        reap_stopped_process(cleanup);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -8727,14 +8817,17 @@ mod test {
     /// claimed capability, as a stale stop's injected single-step can, so the
     /// notifier reaps the generation while the claimed capability is still
     /// held. The capability's requests must then fail with ESRCH instead of
-    /// reaching a replacement tracee. With `requested_pid`, the replacement
-    /// actually reuses the old PID; without it, the capability is rebuilt
-    /// beside the replacement's PID with the old generation's token.
+    /// reaching a replacement tracee, and so must those of a second
+    /// capability created before the generation registered with the
+    /// notifier. With `requested_pid`, the replacement actually reuses the
+    /// old PID; without it, each capability is rebuilt beside the
+    /// replacement's PID with the old generation's token.
     async fn claimed_exit_stop_refuses_after_reap(requested_pid: Option<i32>) -> bool {
         let Some((old_pid, old_stopped, mut old_cleanup)) = spawn_traced_process(requested_pid)
         else {
             return false;
         };
+        let early = Stopped::new_unchecked(old_pid.into());
         old_stopped
             .setoptions(Options::PTRACE_O_TRACEEXIT)
             .expect("enable exit stop for claimed generation");
@@ -8766,14 +8859,17 @@ mod test {
         else {
             return false;
         };
-        let claimed = if requested_pid.is_some() {
+        let (claimed, early) = if requested_pid.is_some() {
             assert_eq!(
                 replacement_pid, old_pid,
                 "clone3 did not reuse claimed-generation PID"
             );
-            claimed
+            (claimed, early)
         } else {
-            Stopped::from_token(replacement_pid.into(), claimed.1)
+            (
+                Stopped::from_token(replacement_pid.into(), claimed.1),
+                Stopped::from_token(replacement_pid.into(), early.1),
+            )
         };
         replacement
             .getregs()
@@ -8782,14 +8878,19 @@ mod test {
             matches!(claimed.getregs(), Err(Error::Died(_))),
             "a request through the claimed capability reached the replacement"
         );
+        assert!(
+            matches!(early.getregs(), Err(Error::Died(_))),
+            "a request through the capability created before registration reached the replacement"
+        );
         let (claimed, errno) = claimed
             .resume_retaining(None)
             .expect_err("the claimed capability resumed the replacement");
         assert_eq!(errno, Errno::ESRCH);
         #[cfg(feature = "memory")]
-        let replacement = assert_user_access_write_refused_after_reap(claimed, replacement);
+        let replacement =
+            assert_user_access_write_refused_after_reap([claimed, early], replacement);
         #[cfg(not(feature = "memory"))]
-        drop(claimed);
+        drop((claimed, early));
 
         let info = replacement
             .getsiginfo()
@@ -8816,12 +8917,12 @@ mod test {
     #[cfg(feature = "memory")]
     static mut REUSE_PROBE: [u8; 16] = *b"replacement-data";
 
-    /// A user-access write through a reaped generation's capability must fail
-    /// without changing the replacement's memory, while the replacement's own
-    /// capability can still write it.
+    /// A user-access write through any of a reaped generation's capabilities
+    /// must fail without changing the replacement's memory, while the
+    /// replacement's own capability can still write it.
     #[cfg(feature = "memory")]
     fn assert_user_access_write_refused_after_reap(
-        mut claimed: Stopped,
+        stale: [Stopped; 2],
         mut replacement: Stopped,
     ) -> Stopped {
         use reverie_memory::Addr;
@@ -8842,13 +8943,15 @@ mod test {
             observed
         };
 
-        assert_eq!(
-            claimed.write_with_user_access(probe, b"stale-generation"),
-            Err(Errno::ESRCH),
-            "a user-access write through the claimed capability reached the replacement"
-        );
-        drop(claimed);
-        assert_eq!(read_probe(&replacement), original);
+        for mut stale in stale {
+            assert_eq!(
+                stale.write_with_user_access(probe, b"stale-generation"),
+                Err(Errno::ESRCH),
+                "a user-access write through a reaped generation's capability reached the replacement"
+            );
+            drop(stale);
+            assert_eq!(read_probe(&replacement), original);
+        }
 
         assert_eq!(
             replacement.write_with_user_access(probe, b"own-capability!!"),

@@ -67,6 +67,7 @@ use safeptrace::Event;
 use safeptrace::OwnedWaitError;
 use safeptrace::Running;
 use safeptrace::Stopped;
+use safeptrace::TraceeGeneration;
 use safeptrace::Wait;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
@@ -2576,6 +2577,9 @@ pub struct TracedTask<L: Tool> {
     /// completion or reported as an unexpected trap.
     stale_private_step_trap: bool,
 
+    /// The generation [`Self::tracee_preinit`] is initializing, while it runs.
+    preinit_generation: Option<TraceeGeneration>,
+
     /// A channel to allow short-circuiting the next state to main run loop. This
     /// is useful inside of `inject` or `tail_inject` where we might need to
     /// cancel a future early.
@@ -2766,6 +2770,7 @@ impl<L: Tool> TracedTask<L> {
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
             stale_private_step_trap: false,
+            preinit_generation: None,
             child_procs: Arc::new(Mutex::new(Children::new())),
             child_threads: Arc::new(Mutex::new(Children::new())),
             orphanage,
@@ -2833,6 +2838,7 @@ impl<L: Tool> TracedTask<L> {
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
             stale_private_step_trap: false,
+            preinit_generation: None,
             child_procs: self.child_procs.clone(),
             child_threads: self.child_threads.clone(),
             orphanage: self.orphanage.clone(),
@@ -2899,6 +2905,7 @@ impl<L: Tool> TracedTask<L> {
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
             stale_private_step_trap: false,
+            preinit_generation: None,
             child_procs: Arc::new(Mutex::new(Children::new())),
             child_threads: Arc::new(Mutex::new(Children::new())),
             orphanage: self.orphanage.clone(),
@@ -3294,6 +3301,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         fields(pid = %task.pid())
     )]
     pub async fn tracee_preinit(&mut self, task: Stopped) -> Result<PreinitOutcome, TraceError> {
+        // Injections rebuild their capability through `assume_stopped`. Bind
+        // it to this generation, so that once the tracee dies and is reaped,
+        // a request refuses instead of reaching a task that reused the TID.
+        self.preinit_generation = Some(task.generation());
+        let outcome = self.tracee_preinit_bound(task).await;
+        self.preinit_generation = None;
+        outcome
+    }
+
+    async fn tracee_preinit_bound(&mut self, task: Stopped) -> Result<PreinitOutcome, TraceError> {
         // A forked child can initialize a replacement image too. It must not
         // consume or overwrite the session root's held-stop cleanup lease.
         let held_root_stop = self.liteinst_root_stop_slot(&task);
@@ -3807,6 +3824,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         };
         self.next_state_rx = Some(aborted);
+        // A lost race drops the initialization before it unbinds.
+        self.preinit_generation = None;
         match raced {
             Raced::Done(Err(TraceError::Died(_))) => {}
             Raced::Done(outcome) => return outcome,
@@ -9399,7 +9418,10 @@ impl<L: Tool + 'static> TracedTask<L> {
     // Assumption: Task is in stopped state as long as we have a valid
     // reference to `TracedTask`.
     fn assume_stopped(&self) -> Stopped {
-        Stopped::new_unchecked(self.tid())
+        match &self.preinit_generation {
+            Some(generation) if generation.pid() == self.tid() => generation.assume_stopped(),
+            _ => Stopped::new_unchecked(self.tid()),
+        }
     }
 
     async fn notify_gdb_stop(&self, reason: StopReason) -> Result<(), TraceError> {
