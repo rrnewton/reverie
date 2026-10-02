@@ -19,6 +19,7 @@ use std::process::Command as ProcessCommand;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use reverie::BackendStatsSnapshot;
 use reverie::BackendStatsSource;
 use reverie::Error;
 use reverie::ExitStatus;
@@ -290,7 +291,7 @@ async fn trap_only_stats_report_no_patched_sites() {
     let scratch = tempfile::tempdir().unwrap();
     let mut command = Command::new(&binary);
     command.arg(scratch.path().join("stats.pid"));
-    let (status, _log, stats) = tokio::time::timeout(
+    let (status, log, stats) = tokio::time::timeout(
         Duration::from_secs(20),
         LiteinstBackend::run_host_trap_only_and_stats::<RecordTool>(command, false),
     )
@@ -311,6 +312,34 @@ async fn trap_only_stats_report_no_patched_sites() {
         0,
         "a patch decision was counted with patching off: {:?}",
         snapshot.patch_decisions().counts()
+    );
+    // With patching off every syscall is a seccomp stop, and the Tool,
+    // subscribed to all of them, sees each one exactly once.
+    let record = snapshot
+        .dispatch_stats()
+        .expect("trap-only LiteInst reports a dispatch record");
+    assert_eq!(record.inconsistencies(), Vec::<String>::new(), "{record}");
+    assert_eq!(record.counters.patched_direct_calls, Some(0), "{record}");
+    assert_eq!(record.counters.signal_traps, Some(0), "{record}");
+    assert_eq!(record.counters.ptrace_sigtrap_stops, Some(0), "{record}");
+    assert_eq!(record.sites.patched, Some(0), "{record}");
+    let tool_syscalls = log
+        .0
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .filter(|(_, event)| event.starts_with("syscall "))
+        .count() as u64;
+    assert!(tool_syscalls >= 5, "the fixture makes five syscalls");
+    assert_eq!(
+        record.counters.ptrace_seccomp_stops,
+        Some(tool_syscalls),
+        "{record}"
+    );
+    assert_eq!(
+        record.counters.dispatches(),
+        Some(tool_syscalls),
+        "{record}"
     );
 }
 

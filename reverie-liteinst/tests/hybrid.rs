@@ -10,6 +10,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 #[cfg(target_arch = "x86_64")]
+use reverie::BackendStatsSnapshot;
 use reverie::CpuIdResult;
 use reverie::Error;
 use reverie::ExitStatus;
@@ -1588,6 +1589,53 @@ async fn first_site_is_installed_once_and_hot_calls_use_liteinst() {
     assert_eq!(
         stats.straddle_prefix_counts().into_iter().sum::<usize>(),
         stats.cacheline_straddlers()
+    );
+    let snapshot = stats.snapshot();
+    let record = snapshot
+        .dispatch_stats()
+        .expect("hybrid LiteInst reports a dispatch record");
+    assert_eq!(record.inconsistencies(), Vec::<String>::new(), "{record}");
+    // The hybrid takes no in-guest route: every subscribed syscall is a seccomp
+    // stop, except the hot site's 31 patched calls, which return to the tracer
+    // through SIGTRAP.
+    assert_eq!(record.counters.signal_traps, Some(0), "{record}");
+    assert_eq!(record.counters.patched_direct_calls, Some(0), "{record}");
+    assert_eq!(
+        record.counters.ptrace_sigtrap_stops,
+        Some(
+            snapshot
+                .dispatch_paths()
+                .count(&reverie::LiteinstDispatchPath::DirectHook)
+        ),
+        "{record}"
+    );
+    assert!(
+        record.counters.ptrace_sigtrap_stops >= Some(31),
+        "the hot site's 31 hooks must be SIGTRAP dispatches: {record}"
+    );
+    assert!(
+        record.counters.ptrace_seccomp_stops >= Some(1),
+        "the hot site's first call is a seccomp stop: {record}"
+    );
+    // Every stop is a dispatch, but LiteInst completes its own mapping
+    // tracking without a Tool callback. The rest reached the Tool exactly once.
+    let internal = snapshot
+        .ptrace()
+        .expect("the hybrid reports its tracer's stats")
+        .internal_seccomp_stops();
+    assert!(internal >= 1, "the loader's mappings are tracked: {record}");
+    assert_eq!(
+        record.counters.dispatches().map(|total| total - internal),
+        Some(
+            global.delivered.load(Ordering::SeqCst)
+                + global.helper_mprotect_callbacks.load(Ordering::SeqCst)
+        ),
+        "every non-internal dispatch reached the Tool exactly once: {record}"
+    );
+    assert_eq!(
+        record.per_process.as_ref().map(Vec::len),
+        Some(1),
+        "{record}"
     );
     assert!(output.status.success(), "{output:?}");
 }

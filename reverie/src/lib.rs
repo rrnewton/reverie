@@ -53,6 +53,7 @@ mod auxv;
 mod backend;
 pub mod backend_stats;
 mod backtrace;
+mod dispatch_stats;
 mod error;
 mod guest;
 #[cfg(target_arch = "x86_64")]
@@ -73,6 +74,7 @@ pub use auxv::*;
 pub use backend::*;
 pub use backend_stats::*;
 pub use backtrace::*;
+pub use dispatch_stats::*;
 pub use error::*;
 pub use guest::*;
 pub use process::ExitStatus;

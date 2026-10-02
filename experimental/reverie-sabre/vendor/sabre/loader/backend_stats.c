@@ -104,6 +104,14 @@ void sbr_backend_stats_record_slow_path(enum sbr_slow_path path) {
   increment(&stats->slow_paths[path]);
 }
 
+void sbr_backend_stats_record_dispatch(enum sbr_dispatch_route route) {
+  if (stats == NULL)
+    return;
+  if (route >= SBR_DISPATCH_ROUTE_COUNT)
+    _nx_fatal_printf("invalid SaBRe dispatch statistics record\n");
+  increment(&stats->dispatch_routes[route]);
+}
+
 bool sbr_backend_stats_is_rewrite_sigill_site(const void *rip) {
   struct rewrite_sigill_site *site =
       __atomic_load_n(&rewrite_sigill_sites, __ATOMIC_ACQUIRE);

@@ -21,12 +21,16 @@ use std::sync::atomic::Ordering;
 use reverie::BackendStatsSnapshot;
 use reverie::BackendStatsSource;
 use reverie::CounterSnapshot;
+use reverie::DispatchCounters;
+use reverie::DispatchStats;
 use reverie::GlobalTool;
 use reverie::InstructionPatchShape;
 pub use reverie::LiteinstDispatchPath;
 use reverie::PatchShapeCollector;
 use reverie::PatchShapeStats;
+use reverie::SiteCounters;
 use reverie::Tid;
+use reverie_ptrace::PtraceBackendStatsSnapshot;
 use reverie_rpc_transport::BlockingRpcClient;
 use serde::Deserialize;
 use serde::Serialize;
@@ -44,9 +48,22 @@ pub enum LiteinstPatchDecision {
     OtherFallback,
 }
 
+/// Which LiteInst runtime produced a statistics snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LiteinstStatsMode {
+    /// The ptrace-host hybrid: patched sites return to the tracer via SIGTRAP.
+    HostHybrid,
+    /// Runtime-free trap-only LiteInst: every syscall is a ptrace seccomp stop.
+    TrapOnly,
+    /// The in-guest runtime: no tracer; SIGSYS and patched hooks run in the guest.
+    InGuest,
+}
+
 /// Stable LiteInst statistics captured after one backend run.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LiteinstBackendStatsSnapshot {
+    mode: LiteinstStatsMode,
+    ptrace: Option<PtraceBackendStatsSnapshot>,
     process_reports: u64,
     patch_shapes: PatchShapeStats,
     patch_decisions: CounterSnapshot<LiteinstPatchDecision>,
@@ -54,6 +71,16 @@ pub struct LiteinstBackendStatsSnapshot {
 }
 
 impl LiteinstBackendStatsSnapshot {
+    /// The runtime that produced this snapshot.
+    pub const fn mode(&self) -> LiteinstStatsMode {
+        self.mode
+    }
+
+    /// The tracer's own stop counts, for the tracer-owned modes.
+    pub const fn ptrace(&self) -> Option<&PtraceBackendStatsSnapshot> {
+        self.ptrace.as_ref()
+    }
+
     /// Number of process-local reports aggregated by the in-guest runtime.
     pub const fn process_reports(&self) -> u64 {
         self.process_reports
@@ -121,6 +148,63 @@ impl fmt::Display for LiteinstBackendStatsSnapshot {
 
 impl BackendStatsSnapshot for LiteinstBackendStatsSnapshot {
     const BACKEND_NAME: &'static str = "liteinst";
+
+    /// Projects the existing LiteInst counters onto the shared record.
+    ///
+    /// Tracer-owned modes take seccomp stops (and the per-process attribution)
+    /// from the tracer's stop counts, which are unmeasured when the run did not
+    /// collect them; a direct hook is a ptrace `SIGTRAP` dispatch. The in-guest
+    /// runtime has no tracer: its `SIGSYS` paths are signal traps and its
+    /// patched-site hook entries are direct calls. A patched site's hook count
+    /// includes patched `rdtsc`/`cpuid` instruction sites, which are
+    /// intercepted events but not syscalls.
+    fn dispatch_stats(&self) -> Option<DispatchStats> {
+        let sites = SiteCounters {
+            candidates: Some(self.patch_shapes.candidate_rips()),
+            patched: Some(self.patch_shapes.patched_rips()),
+            fell_back: Some(
+                self.decision_count(LiteinstPatchDecision::StraddlerFallback)
+                    + self.decision_count(LiteinstPatchDecision::OtherFallback),
+            ),
+        };
+        let refusals = Some(self.path_count(LiteinstDispatchPath::FallbackRefusal));
+        let record = match self.mode {
+            LiteinstStatsMode::HostHybrid | LiteinstStatsMode::TrapOnly => {
+                let mut record = match &self.ptrace {
+                    Some(ptrace) => ptrace.dispatch_stats_as(Self::BACKEND_NAME),
+                    None => DispatchStats::new(
+                        Self::BACKEND_NAME,
+                        DispatchCounters {
+                            ptrace_seccomp_stops: None,
+                            ptrace_syscall_entry_stops: None,
+                            ptrace_syscall_exit_stops: None,
+                            ..DispatchCounters::ZERO
+                        },
+                        sites,
+                    ),
+                };
+                record.counters.ptrace_sigtrap_stops =
+                    Some(self.path_count(LiteinstDispatchPath::DirectHook));
+                record.counters.refusals = refusals;
+                record.sites = sites;
+                record
+            }
+            LiteinstStatsMode::InGuest => DispatchStats::new(
+                Self::BACKEND_NAME,
+                DispatchCounters {
+                    signal_traps: Some(
+                        self.path_count(LiteinstDispatchPath::InGuestSigsys)
+                            + self.path_count(LiteinstDispatchPath::InGuestNestedSigsys),
+                    ),
+                    patched_direct_calls: Some(self.path_count(LiteinstDispatchPath::DirectHook)),
+                    refusals,
+                    ..DispatchCounters::ZERO
+                },
+                sites,
+            ),
+        };
+        Some(record)
+    }
 }
 
 /// Backend-owned source for a typed LiteInst end-of-run snapshot.
@@ -132,11 +216,22 @@ pub struct LiteinstBackendStatsSource {
 impl LiteinstBackendStatsSource {
     pub(crate) fn from_ptrace_host_hybrid(
         stats: reverie_ptrace::LiteinstInstrumentationStats,
+        ptrace: Option<PtraceBackendStatsSnapshot>,
+    ) -> Self {
+        Self::from_tracer(LiteinstStatsMode::HostHybrid, stats, ptrace)
+    }
+
+    fn from_tracer(
+        mode: LiteinstStatsMode,
+        stats: reverie_ptrace::LiteinstInstrumentationStats,
+        ptrace: Option<PtraceBackendStatsSnapshot>,
     ) -> Self {
         let decisions = stats.decision_counts();
         let dispatch_paths = stats.ptrace_host_dispatch_paths();
         Self {
             snapshot: LiteinstBackendStatsSnapshot {
+                mode,
+                ptrace,
                 process_reports: 0,
                 patch_shapes: stats.patch_shape_stats(),
                 patch_decisions: CounterSnapshot::new([
@@ -154,8 +249,11 @@ impl LiteinstBackendStatsSource {
     ///
     /// Trap-only sites are recorded through the same tracer-owned collector as
     /// the host hybrid; with patching off it stays empty.
-    pub(crate) fn from_trap_only(stats: reverie_ptrace::LiteinstInstrumentationStats) -> Self {
-        Self::from_ptrace_host_hybrid(stats)
+    pub(crate) fn from_trap_only(
+        stats: reverie_ptrace::LiteinstInstrumentationStats,
+        ptrace: Option<PtraceBackendStatsSnapshot>,
+    ) -> Self {
+        Self::from_tracer(LiteinstStatsMode::TrapOnly, stats, ptrace)
     }
 
     /// Returns the captured snapshot without performing another collection pass.
@@ -497,6 +595,8 @@ impl LiteinstStatsGlobal {
 
         LiteinstBackendStatsSource {
             snapshot: LiteinstBackendStatsSnapshot {
+                mode: LiteinstStatsMode::InGuest,
+                ptrace: None,
                 process_reports: reported_processes.len() as u64,
                 patch_shapes: shapes.snapshot(),
                 patch_decisions: CounterSnapshot::new([
@@ -552,6 +652,8 @@ mod tests {
         );
         let source = LiteinstBackendStatsSource {
             snapshot: LiteinstBackendStatsSnapshot {
+                mode: LiteinstStatsMode::HostHybrid,
+                ptrace: None,
                 process_reports: 0,
                 patch_shapes: shapes.snapshot(),
                 patch_decisions: CounterSnapshot::new([(LiteinstPatchDecision::Relocated, 1)]),
@@ -627,6 +729,79 @@ mod tests {
         assert!(rendered.contains("in_guest_nested_sigsys=4"), "{rendered}");
         assert!(!rendered.contains("pid="), "{rendered}");
         assert!(!rendered.contains("0x4000"), "{rendered}");
+    }
+
+    fn snapshot_with(
+        mode: LiteinstStatsMode,
+        paths: impl IntoIterator<Item = (LiteinstDispatchPath, u64)>,
+    ) -> LiteinstBackendStatsSnapshot {
+        let mut shapes = PatchShapeCollector::default();
+        shapes.record_site(0x1000, true, Some(InstructionPatchShape::new(2, None)));
+        shapes.record_site(0x103f, false, Some(InstructionPatchShape::new(2, Some(1))));
+        shapes.record_site(0x2000, false, None);
+        LiteinstBackendStatsSnapshot {
+            mode,
+            ptrace: None,
+            process_reports: 1,
+            patch_shapes: shapes.snapshot(),
+            patch_decisions: CounterSnapshot::new([
+                (LiteinstPatchDecision::DirectPun, 1),
+                (LiteinstPatchDecision::StraddlerFallback, 1),
+                (LiteinstPatchDecision::OtherFallback, 1),
+            ]),
+            dispatch_paths: CounterSnapshot::new(paths),
+        }
+    }
+
+    #[test]
+    fn in_guest_dispatch_record_counts_sigsys_and_hooks_once() {
+        let snapshot = snapshot_with(
+            LiteinstStatsMode::InGuest,
+            [
+                (LiteinstDispatchPath::InGuestSigsys, 4),
+                (LiteinstDispatchPath::InGuestNestedSigsys, 2),
+                (LiteinstDispatchPath::InGuestPhysicalSigsys, 1),
+                (LiteinstDispatchPath::FallbackCompletionSigsys, 1),
+                (LiteinstDispatchPath::CachelineStraddlerFallback, 3),
+                (LiteinstDispatchPath::DirectHook, 9),
+                (LiteinstDispatchPath::FallbackRefusal, 1),
+            ],
+        );
+        let record = snapshot
+            .dispatch_stats()
+            .expect("LiteInst measures dispatch");
+        assert_eq!(record.backend, "liteinst");
+        assert_eq!(record.counters.signal_traps, Some(6));
+        assert_eq!(record.counters.patched_direct_calls, Some(9));
+        assert_eq!(record.counters.ptrace_seccomp_stops, Some(0));
+        assert_eq!(record.counters.dispatches(), Some(15));
+        assert_eq!(record.counters.refusals, Some(1));
+        assert_eq!(record.sites.candidates, Some(3));
+        assert_eq!(record.sites.patched, Some(1));
+        assert_eq!(record.sites.fell_back, Some(2));
+        assert_eq!(record.per_process, None);
+        assert_eq!(record.inconsistencies(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn tracer_owned_dispatch_record_leaves_seccomp_unmeasured_without_tracer_stats() {
+        let snapshot = snapshot_with(
+            LiteinstStatsMode::HostHybrid,
+            [
+                (LiteinstDispatchPath::FirstSiteSeccomp, 3),
+                (LiteinstDispatchPath::PtraceInstallation, 1),
+                (LiteinstDispatchPath::DirectHook, 7),
+            ],
+        );
+        let record = snapshot
+            .dispatch_stats()
+            .expect("LiteInst measures dispatch");
+        assert_eq!(record.counters.ptrace_sigtrap_stops, Some(7));
+        assert_eq!(record.counters.signal_traps, Some(0));
+        assert_eq!(record.counters.patched_direct_calls, Some(0));
+        assert_eq!(record.counters.ptrace_seccomp_stops, None);
+        assert_eq!(record.counters.trapped_dispatches(), None);
+        assert_eq!(record.inconsistencies(), Vec::<String>::new());
     }
 
     #[test]

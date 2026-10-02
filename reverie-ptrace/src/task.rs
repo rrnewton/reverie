@@ -5823,6 +5823,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             if let Ok(frame) = self.read_injected_syscall_frame(&task, regs.rdi as usize)
                 && trap.validates_site_provenance(task.pid(), regs.ip(), &frame)
             {
+                if let Some(stats) = &self.global_state.backend_stats {
+                    stats.record_injected_trap();
+                }
                 let next_state = self
                     .handle_injected_syscall(task, regs.rdi as usize, regs.eflags, None)
                     .await?;
@@ -7604,6 +7607,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             .iter_syscalls()
             .any(|subscribed| subscribed == nr);
         if !trap_only_patched && is_liteinst_mapping_syscall(nr) && !tool_subscribed {
+            if let Some(stats) = &self.global_state.backend_stats {
+                stats.record_internal_seccomp_stop();
+            }
             return self.handle_liteinst_mapping_syscall(task, nr, args).await;
         }
         let (syscall_already_skipped, liteinst_resume_rip) = if self.trap_only.is_some() {
@@ -8778,7 +8784,7 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         loop {
             if let Some(stats) = &self.global_state.backend_stats {
-                stats.record_wait(&task_state);
+                stats.record_wait(self.pid(), &task_state);
             }
             // A nested handler may forward a stop it already armed before
             // inspecting the status. Accept only that exact generation/status;

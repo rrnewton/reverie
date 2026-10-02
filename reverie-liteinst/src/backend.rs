@@ -272,16 +272,21 @@ impl LiteinstBackend {
                 crate::runtime::HOST_FAILED_MARKER,
                 BackendStatsRequest::ENABLED,
             )
+            .backend_stats(BackendStatsRequest::ENABLED)
             .spawn()
             .await?;
         let stats = tracer
             .liteinst_instrumentation_stats()
             .expect("LiteInst runtime tracer must expose instrumentation statistics");
+        let ptrace = tracer.backend_stats();
         let (status, global) = tracer.wait().await?;
         Ok((
             status,
             global,
-            crate::LiteinstBackendStatsSource::from_ptrace_host_hybrid(stats.snapshot()),
+            crate::LiteinstBackendStatsSource::from_ptrace_host_hybrid(
+                stats.snapshot(),
+                ptrace.map(|ptrace| ptrace.backend_stats()),
+            ),
         ))
     }
 
@@ -339,16 +344,21 @@ impl LiteinstBackend {
                 reverie_ptrace::SitePatching::Off,
                 BackendStatsRequest::ENABLED,
             )
+            .backend_stats(BackendStatsRequest::ENABLED)
             .spawn()
             .await?;
         let stats = tracer
             .liteinst_instrumentation_stats()
             .expect("trap-only LiteInst tracer must expose instrumentation statistics");
+        let ptrace = tracer.backend_stats();
         let (status, global) = tracer.wait().await?;
         Ok((
             status,
             global,
-            crate::LiteinstBackendStatsSource::from_trap_only(stats.snapshot()),
+            crate::LiteinstBackendStatsSource::from_trap_only(
+                stats.snapshot(),
+                ptrace.map(|ptrace| ptrace.backend_stats()),
+            ),
         ))
     }
 
@@ -416,16 +426,21 @@ impl LiteinstBackend {
                 crate::runtime::HOST_FAILED_MARKER,
                 BackendStatsRequest::ENABLED,
             )
+            .backend_stats(BackendStatsRequest::ENABLED)
             .spawn()
             .await?;
         let stats = tracer
             .liteinst_instrumentation_stats()
             .expect("LiteInst runtime tracer must expose instrumentation statistics");
+        let ptrace = tracer.backend_stats();
         let (output, global) = tracer.wait_with_output().await?;
         Ok((
             output,
             global,
-            crate::LiteinstBackendStatsSource::from_ptrace_host_hybrid(stats.snapshot()),
+            crate::LiteinstBackendStatsSource::from_ptrace_host_hybrid(
+                stats.snapshot(),
+                ptrace.map(|ptrace| ptrace.backend_stats()),
+            ),
         ))
     }
 

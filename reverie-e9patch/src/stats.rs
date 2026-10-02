@@ -12,6 +12,11 @@ use std::fmt;
 
 use reverie::BackendStatsSnapshot;
 use reverie::BackendStatsSource;
+use reverie::DispatchCounters;
+use reverie::DispatchStats;
+use reverie::SiteCounters;
+use reverie_ptrace::PtraceBackendStatsSnapshot;
+use reverie_ptrace::PtraceBackendStatsSource;
 
 use crate::rewrite::RewriteReport;
 
@@ -54,6 +59,7 @@ pub struct E9patchBackendStatsSnapshot {
     patched_sites: Option<usize>,
     b0_sites: Option<usize>,
     event_source: E9patchEventSource,
+    tracer: Option<PtraceBackendStatsSnapshot>,
 }
 
 impl E9patchBackendStatsSnapshot {
@@ -81,6 +87,12 @@ impl E9patchBackendStatsSnapshot {
     pub const fn event_source(&self) -> E9patchEventSource {
         self.event_source
     }
+
+    /// Activity of the ptrace tracer that ran the prepared image, when the
+    /// run collected it.
+    pub const fn tracer(&self) -> Option<&PtraceBackendStatsSnapshot> {
+        self.tracer.as_ref()
+    }
 }
 
 impl fmt::Display for E9patchBackendStatsSnapshot {
@@ -105,14 +117,50 @@ impl fmt::Display for E9patchBackendStatsSnapshot {
     }
 }
 
+impl E9patchBackendStatsSnapshot {
+    /// The rewrite's site counts in the shared record's terms.
+    ///
+    /// A recovered site that e9patch did not patch fell back to ptrace's
+    /// seccomp stop. A non-ELF root was never analyzed, so nothing is measured.
+    pub fn site_counters(&self) -> SiteCounters {
+        let as_u64 = |sites: Option<usize>| sites.map(|sites| sites as u64);
+        SiteCounters {
+            candidates: as_u64(self.recovered_sites),
+            patched: as_u64(self.patched_sites),
+            fell_back: self
+                .recovered_sites
+                .zip(self.patched_sites)
+                .map(|(recovered, patched)| recovered.saturating_sub(patched) as u64),
+        }
+    }
+}
+
 impl BackendStatsSnapshot for E9patchBackendStatsSnapshot {
     const BACKEND_NAME: &'static str = "e9patch";
+
+    /// The rewrite's site counts, with the dispatch counts of the ptrace
+    /// tracer that ran the image: a patched site reaches it through the
+    /// injected-trap `SIGTRAP`, and every other syscall through a seccomp
+    /// stop. Without tracer stats the counters are unmeasured.
+    fn dispatch_stats(&self) -> Option<DispatchStats> {
+        let mut record = match &self.tracer {
+            Some(tracer) => tracer.dispatch_stats_as(Self::BACKEND_NAME),
+            None => DispatchStats::new(
+                Self::BACKEND_NAME,
+                DispatchCounters::default(),
+                SiteCounters::default(),
+            ),
+        };
+        record.sites = self.site_counters();
+        Some(record)
+    }
 }
 
 /// Backend-owned source for one e9patch preparation snapshot.
 #[derive(Clone, Debug)]
 pub struct E9patchBackendStatsSource {
     snapshot: E9patchBackendStatsSnapshot,
+    tracer: Option<PtraceBackendStatsSource>,
 }
 
 impl E9patchBackendStatsSource {
@@ -124,7 +172,9 @@ impl E9patchBackendStatsSource {
                 patched_sites: None,
                 b0_sites: None,
                 event_source: E9patchEventSource::Ptrace,
+                tracer: None,
             },
+            tracer: None,
         }
     }
 
@@ -148,11 +198,18 @@ impl E9patchBackendStatsSource {
                 } else {
                     E9patchEventSource::InjectedTrap
                 },
+                tracer: None,
             },
+            tracer: None,
         }
     }
 
-    /// Returns the captured snapshot.
+    /// Adds the live activity of the tracer that runs the prepared image.
+    pub(crate) fn attach_tracer(&mut self, tracer: Option<PtraceBackendStatsSource>) {
+        self.tracer = tracer;
+    }
+
+    /// Returns the preparation snapshot, without tracer activity.
     pub const fn snapshot(&self) -> &E9patchBackendStatsSnapshot {
         &self.snapshot
     }
@@ -162,7 +219,10 @@ impl BackendStatsSource for E9patchBackendStatsSource {
     type Snapshot = E9patchBackendStatsSnapshot;
 
     fn backend_stats(&self) -> Self::Snapshot {
-        self.snapshot.clone()
+        E9patchBackendStatsSnapshot {
+            tracer: self.tracer.as_ref().map(BackendStatsSource::backend_stats),
+            ..self.snapshot.clone()
+        }
     }
 }
 
@@ -192,5 +252,24 @@ mod tests {
         assert_eq!(snapshot.recovered_sites(), Some(0));
         assert_eq!(snapshot.patched_sites(), Some(0));
         assert!(snapshot.to_string().contains("recovered_sites=0"));
+    }
+
+    #[test]
+    fn dispatch_record_carries_sites_and_leaves_dispatch_to_the_tracer() {
+        let record = E9patchBackendStatsSource::measured(5, 3, 1)
+            .backend_stats()
+            .dispatch_stats()
+            .expect("e9patch reports its sites");
+        assert_eq!(record.sites.candidates, Some(5));
+        assert_eq!(record.sites.patched, Some(3));
+        assert_eq!(record.sites.fell_back, Some(2));
+        assert_eq!(record.counters.dispatches(), None);
+        assert_eq!(record.inconsistencies(), Vec::<String>::new());
+
+        let unsupported = E9patchBackendStatsSource::unsupported_non_elf()
+            .backend_stats()
+            .site_counters();
+        assert_eq!(unsupported.candidates, None);
+        assert_eq!(unsupported.fell_back, None);
     }
 }

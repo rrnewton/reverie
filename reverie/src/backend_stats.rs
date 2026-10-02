@@ -58,6 +58,12 @@ impl BackendStatsRequest {
 pub trait BackendStatsSnapshot: fmt::Display {
     /// Canonical backend name used by command-line selection and log output.
     const BACKEND_NAME: &'static str;
+
+    /// Projects this snapshot onto the shared, backend-neutral dispatch record.
+    ///
+    /// Every backend implements this explicitly. `None` means the backend has
+    /// no dispatch counters to project; it is never a silent default.
+    fn dispatch_stats(&self) -> Option<crate::DispatchStats>;
 }
 
 /// A backend-owned source of a typed end-of-run statistics snapshot.
@@ -369,6 +375,10 @@ mod tests {
 
     impl BackendStatsSnapshot for FakeSnapshot {
         const BACKEND_NAME: &'static str = "fake";
+
+        fn dispatch_stats(&self) -> Option<crate::DispatchStats> {
+            None
+        }
     }
 
     impl BackendStatsSource for FakeSource {

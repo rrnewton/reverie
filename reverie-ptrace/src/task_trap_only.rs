@@ -700,8 +700,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> Result<Wait, TraceError> {
         // The run loop already counted this I386 stop, which plain ptrace
         // never produces; the P2 comparator accounts for it explicitly.
-        #[cfg(test)]
         if let Some(stats) = &self.global_state.backend_stats {
+            stats.record_internal_seccomp_stop();
+            #[cfg(test)]
             stats.mark_last_stop_internal(self.tid);
         }
         match self.trap_only_hop(task, view).await? {

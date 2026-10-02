@@ -16,6 +16,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use reverie::Backend;
+use reverie::BackendStatsSnapshot;
 use reverie::Error;
 use reverie::ExitStatus;
 use reverie::GlobalTool;
@@ -267,6 +268,31 @@ async fn elf_stats_report_measured_coverage_even_when_counts_are_zero() {
     assert!(stats.recovered_sites().is_some());
     assert!(stats.patched_sites().is_some());
     assert!(stats.b0_sites().is_some());
+}
+
+/// The rewritten getpid site reaches the Tool through the injected-trap
+/// `SIGTRAP`, never a seccomp stop, and the record counts that trap once.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a built e9tool/e9patch pair and a C compiler"]
+async fn dispatch_record_counts_the_rewritten_site_as_a_sigtrap_dispatch() {
+    let (_directory, guest) = compile_fixture("direct_spoof_getpid.c");
+    let (status, global, stats) =
+        E9patchBackend::run_with_stats::<CountGetpid>(Command::new(guest), ())
+            .await
+            .unwrap();
+    assert_eq!(status, ExitStatus::Exited(0));
+    let record = stats
+        .dispatch_stats()
+        .expect("e9patch reports a dispatch record");
+    assert_eq!(record.inconsistencies(), Vec::<String>::new(), "{record}");
+    assert_eq!(record.backend, "e9patch");
+    assert!(record.sites.patched >= Some(1), "{record}");
+    assert_eq!(record.counters.patched_direct_calls, Some(0), "{record}");
+    assert_eq!(record.counters.signal_traps, Some(0), "{record}");
+    assert_eq!(global.delivered.load(Ordering::SeqCst), 1);
+    assert_eq!(record.counters.ptrace_sigtrap_stops, Some(1), "{record}");
+    assert_eq!(record.counters.ptrace_seccomp_stops, Some(0), "{record}");
+    assert_eq!(record.counters.dispatches(), Some(1), "{record}");
 }
 
 #[tokio::test(flavor = "current_thread")]

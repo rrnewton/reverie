@@ -117,7 +117,94 @@ impl Backend for PtraceBackend {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
+
+    use reverie::BackendStatsSnapshot;
+    use reverie::Guest;
+    use reverie::Pid;
+    use reverie::Subscription;
+    use reverie::syscalls::Syscall;
+
     use super::*;
+
+    #[derive(Debug, Default)]
+    struct SyscallCount(AtomicU64);
+
+    #[reverie::global_tool]
+    impl GlobalTool for SyscallCount {
+        type Config = ();
+        type Request = ();
+        type Response = ();
+
+        async fn receive_rpc(&self, _from: Pid, _request: ()) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct CountEverySyscall;
+
+    #[reverie::tool]
+    impl Tool for CountEverySyscall {
+        type GlobalState = SyscallCount;
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::all_syscalls()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            guest.send_rpc(()).await;
+            guest.tail_inject(syscall).await
+        }
+    }
+
+    /// Plain ptrace dispatches every syscall through a seccomp stop: none is
+    /// patched, and each stop reaches a Tool subscribed to all of them exactly
+    /// once, in whichever process made it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_record_counts_each_tool_syscall_once_per_process() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "/bin/true; :"]);
+        let (status, global, stats) =
+            PtraceBackend::run_with_stats::<CountEverySyscall>(command, ())
+                .await
+                .unwrap();
+        assert_eq!(status, ExitStatus::Exited(0));
+        let record = stats.dispatch_stats().expect("ptrace measures dispatch");
+        assert_eq!(record.inconsistencies(), Vec::<String>::new(), "{record}");
+        assert_eq!(record.backend, "ptrace");
+        assert_eq!(record.counters.patched_direct_calls, Some(0), "{record}");
+        assert_eq!(record.counters.signal_traps, Some(0), "{record}");
+        assert_eq!(record.counters.ptrace_sigtrap_stops, Some(0), "{record}");
+        assert_eq!(record.sites.patched, Some(0), "{record}");
+        assert_eq!(stats.internal_seccomp_stops(), 0, "{record}");
+        let tool_syscalls = global.0.load(Ordering::SeqCst);
+        assert!(tool_syscalls > 0);
+        assert_eq!(
+            record.counters.dispatches(),
+            Some(tool_syscalls),
+            "{record}"
+        );
+        let processes = record
+            .per_process
+            .as_ref()
+            .expect("ptrace attributes stops");
+        assert_eq!(processes.len(), 2, "the shell forked /bin/true: {record}");
+        assert_eq!(
+            processes
+                .iter()
+                .map(|process| process.counters.ptrace_seccomp_stops)
+                .sum::<Option<u64>>(),
+            record.counters.ptrace_seccomp_stops,
+            "{record}"
+        );
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn stats_run_observes_real_tracee_activity() {

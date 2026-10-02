@@ -180,7 +180,7 @@ static void sigill_handler(int sig __unused, siginfo_t *info, void *ucontext) {
     // The ptrace fallback can install this marker in a shared libc site. Route
     // through the normal recursion boundary so guest calls reach the plugin,
     // while syscalls made by the plugin itself execute natively.
-    regs[REG_RAX] = runtime_syscall_router(
+    regs[REG_RAX] = runtime_sigill_syscall_router(
         regs[REG_RAX], regs[REG_RDI], regs[REG_RSI], regs[REG_RDX],
         regs[REG_R10], regs[REG_R8], regs[REG_R9], wrapper_sp);
     regs[REG_RCX] = ret_addr;
@@ -232,7 +232,7 @@ static void sigill_handler(int sig __unused, siginfo_t *info, void *ucontext) {
         (void *)((intptr_t)&ret_addr - get_offsetof_syscall_return_address());
     // Keep marker traps consistent with rewritten syscall sites: the runtime
     // router bypasses the plugin when this syscall originated in its handler.
-    regs[REG_A0] = runtime_syscall_router(
+    regs[REG_A0] = runtime_sigill_syscall_router(
         regs[REG_A0 + 7], regs[REG_A0], regs[REG_A0 + 1], regs[REG_A0 + 2],
         regs[REG_A0 + 3], regs[REG_A0 + 4], regs[REG_A0 + 5], wrapper_sp);
   } else {

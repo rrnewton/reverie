@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use reverie::Backend;
+use reverie::BackendStatsSnapshot;
 use reverie::Error;
 use reverie::ExitStatus;
 use reverie::GlobalTool;
@@ -221,6 +222,29 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
     assert!(
         paths.count(&LiteinstDispatchPath::DirectHook) >= 8,
         "expected installed-hook dispatches: {stats}"
+    );
+    let record = stats
+        .snapshot()
+        .dispatch_stats()
+        .expect("in-guest LiteInst reports a dispatch record");
+    assert_eq!(record.inconsistencies(), Vec::<String>::new(), "{record}");
+    assert_eq!(record.counters.ptrace_seccomp_stops, Some(0), "{record}");
+    assert_eq!(record.counters.ptrace_sigtrap_stops, Some(0), "{record}");
+    assert_eq!(
+        record.counters.patched_direct_calls,
+        Some(paths.count(&LiteinstDispatchPath::DirectHook)),
+        "{record}"
+    );
+    // A site is patched only after its first call trapped, so there is at
+    // least one SIGSYS per patched site.
+    assert!(record.sites.patched >= Some(1), "{record}");
+    assert!(
+        record.counters.signal_traps >= record.sites.patched,
+        "{record}"
+    );
+    assert!(
+        record.counters.dispatches() >= Some(global.getpid.load(Ordering::Relaxed)),
+        "every getpid the Tool's coordinator saw was dispatched: {record}"
     );
 }
 

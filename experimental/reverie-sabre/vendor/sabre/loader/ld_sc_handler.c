@@ -25,6 +25,7 @@
 #include "compiler.h"
 #include "global_vars.h"
 #include "ld_sc_handler.h"
+#include "loader/backend_stats.h"
 #include "macros.h"
 #include "plugins/real_syscall.h"
 
@@ -562,8 +563,9 @@ void setup_plugin_vdso(sbr_icept_vdso_callback_fn plugin_vdso_callback) {
 #endif // __x86_64__
 }
 
-long runtime_syscall_router(long sc_no, long arg1, long arg2, long arg3,
-                            long arg4, long arg5, long arg6, void *wrapper_sp) {
+static long route_syscall(enum sbr_dispatch_route route, long sc_no, long arg1,
+                          long arg2, long arg3, long arg4, long arg5, long arg6,
+                          void *wrapper_sp) {
   // TODO(andronat): the following if code can be optimized by completely avoid
   // calling real_syscall if we carefully refactor handle_syscall.S
   // TODO(andronat): calling_from_plugin can be optimized if we somehow copy the
@@ -596,6 +598,7 @@ long runtime_syscall_router(long sc_no, long arg1, long arg2, long arg3,
   }
 
   long rc = 0;
+  sbr_backend_stats_record_dispatch(route);
   enter_plugin();
   // ARCH_SET_FS needs special handling because it switches TLS.
   // TODO(andronat): I think we don't need this in runtime as the plugin runs
@@ -608,6 +611,21 @@ long runtime_syscall_router(long sc_no, long arg1, long arg2, long arg3,
   }
   exit_plugin();
   return rc;
+}
+
+// Entered from a rewritten site's jump trampoline (and the loader's handler).
+long runtime_syscall_router(long sc_no, long arg1, long arg2, long arg3,
+                            long arg4, long arg5, long arg6, void *wrapper_sp) {
+  return route_syscall(SBR_DISPATCH_TRAMPOLINE, sc_no, arg1, arg2, arg3, arg4,
+                       arg5, arg6, wrapper_sp);
+}
+
+// Entered from the SIGILL handler for a syscall marker.
+long runtime_sigill_syscall_router(long sc_no, long arg1, long arg2, long arg3,
+                                   long arg4, long arg5, long arg6,
+                                   void *wrapper_sp) {
+  return route_syscall(SBR_DISPATCH_SIGILL_MARKER, sc_no, arg1, arg2, arg3,
+                       arg4, arg5, arg6, wrapper_sp);
 }
 
 void post_clone_hook(void *ctx) {

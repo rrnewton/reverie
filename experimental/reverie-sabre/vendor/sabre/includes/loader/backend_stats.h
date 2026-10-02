@@ -12,7 +12,7 @@
 
 #define SBR_BACKEND_STATS_ENV "REVERIE_SABRE_BACKEND_STATS_FD"
 #define SBR_BACKEND_STATS_MAGIC UINT64_C(0x3154415453524253)
-#define SBR_BACKEND_STATS_VERSION UINT32_C(1)
+#define SBR_BACKEND_STATS_VERSION UINT32_C(2)
 #define SBR_BACKEND_STATS_BUCKETS 15
 
 enum sbr_patch_route {
@@ -20,6 +20,14 @@ enum sbr_patch_route {
   SBR_PATCH_REWRITE_SIGILL_MARKER = 1,
   SBR_PATCH_PTRACE_INSTALLED_MARKER = 2,
   SBR_PATCH_ROUTE_COUNT = 3,
+};
+
+/* How a guest syscall reached the plugin. Syscalls the plugin itself issues
+ * run natively and are not dispatches. */
+enum sbr_dispatch_route {
+  SBR_DISPATCH_TRAMPOLINE = 0,
+  SBR_DISPATCH_SIGILL_MARKER = 1,
+  SBR_DISPATCH_ROUTE_COUNT = 2,
 };
 
 enum sbr_slow_path {
@@ -49,10 +57,12 @@ struct sbr_backend_stats {
   uint64_t straddle_after[SBR_BACKEND_STATS_BUCKETS];
   uint64_t patch_routes[SBR_PATCH_ROUTE_COUNT];
   uint64_t slow_paths[SBR_SLOW_PATH_COUNT];
+  uint64_t dispatch_routes[SBR_DISPATCH_ROUTE_COUNT];
 };
 
 void sbr_backend_stats_init(void);
 void sbr_backend_stats_record_patch(void *rip, unsigned instruction_length,
                                     enum sbr_patch_route route);
 void sbr_backend_stats_record_slow_path(enum sbr_slow_path path);
+void sbr_backend_stats_record_dispatch(enum sbr_dispatch_route route);
 bool sbr_backend_stats_is_rewrite_sigill_site(const void *rip);
