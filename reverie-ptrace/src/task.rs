@@ -3018,6 +3018,7 @@ pub struct TracedTask<L: Tool> {
 
     /// The generation [`Self::tracee_preinit`] is initializing, while it runs.
     preinit_generation: Option<TraceeGeneration>,
+
     /// The stop an injection last ended at since the current stop was
     /// dispatched (`handle_stop_event`), as its wait status classifies it:
     /// `Some(Some(sig))` for a signal-delivery stop of `sig`, `Some(None)`
