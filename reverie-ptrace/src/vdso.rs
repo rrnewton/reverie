@@ -8,7 +8,9 @@
 
 //! Provides APIs to disable VDSOs at runtime.
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::LazyLock;
+use std::sync::Mutex;
 
 use goblin::elf::Elf;
 use nix::sys::mman::ProtFlags;
@@ -364,8 +366,8 @@ struct VdsoEntry {
     names: Vec<String>,
     offset: u64,
     /// The bytes a stub must fit in: `st_size` rounded up to 16, the function
-    /// alignment of the x86_64 and aarch64 vDSOs, cut short at the next entry
-    /// point and at the end of the containing section. The rounding is an
+    /// alignment of the x86_64 vDSO (not verified for aarch64), cut short at
+    /// the next entry point and at the end of the containing section. The rounding is an
     /// assumption about the image, so only a stub longer than `st_size` relies
     /// on it; see [`VdsoEntry::patch_len`].
     size: usize,
@@ -628,48 +630,64 @@ fn vdso_table() -> Result<Option<&'static VdsoTable>, Error> {
 fn vdso_replacements(
     subscriptions: &Subscription,
 ) -> Result<Vec<(&'static VdsoEntry, &'static [u8])>, Error> {
-    if subscriptions.iter_syscalls().next().is_none() {
-        return Ok(Vec::new());
-    }
+    static REPORTED: LazyLock<Mutex<BTreeSet<String>>> = LazyLock::new(Default::default);
     let Some(table) = vdso_table()? else {
         return Ok(Vec::new());
     };
-    Ok(table
-        .entries
-        .iter()
-        .filter_map(|entry| Some((entry, entry.replacement(subscriptions)?)))
-        .collect())
-}
-
-/// Reports every entry point of `table` that `replacements` leaves native: a
-/// warning the first time in this process, then at debug level.
-fn log_native_entries(table: &VdsoTable, replacements: &[(&VdsoEntry, &[u8])]) {
-    static WARNED: std::sync::Once = std::sync::Once::new();
-    let native: Vec<String> = table
-        .entries
-        .iter()
-        .filter(|entry| {
-            !replacements
-                .iter()
-                .any(|(replaced, _)| std::ptr::eq(*replaced, *entry))
-        })
-        .map(VdsoEntry::describe)
-        .collect();
-    if native.is_empty() {
-        return;
-    }
-    let native = native.join(", ");
-    let mut warned = false;
-    WARNED.call_once(|| {
-        warned = true;
-        warn!(
+    let (replacements, report) = select_replacements(table, subscriptions, &REPORTED);
+    match report {
+        Some(NativeReport::First(native)) => warn!(
             "vDSO entry points left native because the tool does not subscribe to their \
              syscalls, so it does not observe these calls: {native}"
-        );
-    });
-    if !warned {
-        debug!("vDSO entry points left native: {native}");
+        ),
+        Some(NativeReport::Repeat(native)) => debug!("vDSO entry points left native: {native}"),
+        None => {}
     }
+    Ok(replacements)
+}
+
+/// How [`select_replacements`] reports the entry points it leaves native.
+#[derive(Debug, PartialEq, Eq)]
+enum NativeReport {
+    /// This set of native entry points, described, is new to this process.
+    First(String),
+    /// The same set was already reported.
+    Repeat(String),
+}
+
+/// The entry points of `table` that `subscriptions` selects for replacement,
+/// with their stubs, and the report of those it leaves native.
+///
+/// A tool that subscribes to no syscall leaves the whole vDSO alone, and
+/// nothing a vDSO function does can bypass it, so that is not reported. Any
+/// other tool gets a report whenever an entry point stays native, including
+/// when nothing at all is replaced. `reported` holds the sets already reported,
+/// so each distinct set is [`NativeReport::First`] once.
+fn select_replacements<'a>(
+    table: &'a VdsoTable,
+    subscriptions: &Subscription,
+    reported: &Mutex<BTreeSet<String>>,
+) -> (Vec<(&'a VdsoEntry, &'static [u8])>, Option<NativeReport>) {
+    if subscriptions.iter_syscalls().next().is_none() {
+        return (Vec::new(), None);
+    }
+    let mut replacements = Vec::new();
+    let mut native = Vec::new();
+    for entry in &table.entries {
+        match entry.replacement(subscriptions) {
+            Some(stub) => replacements.push((entry, stub)),
+            None => native.push(entry.describe()),
+        }
+    }
+    let report = (!native.is_empty()).then(|| {
+        let native = native.join(", ");
+        if reported.lock().unwrap().insert(native.clone()) {
+            NativeReport::First(native)
+        } else {
+            NativeReport::Repeat(native)
+        }
+    });
+    (replacements, report)
 }
 
 /// Does `subscriptions` require patching the vDSO? A vDSO that could not be
@@ -710,9 +728,6 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
     let replacements = vdso_replacements(subscriptions)?;
     if replacements.is_empty() {
         return Ok(Vec::new());
-    }
-    if let Some(table) = vdso_table()? {
-        log_native_entries(table, &replacements);
     }
     let process =
         procfs::process::Process::new(unistd::getpid().as_raw()).map_err(|_| Errno::ENOENT)?;
@@ -845,7 +860,6 @@ where
     if replacements.is_empty() {
         return Ok(());
     }
-    log_native_entries(table, &replacements);
     if let Some(vdso) = procfs::process::Process::new(guest.pid().as_raw())
         .map_or_else(
             |_| Vec::new(),
@@ -978,6 +992,74 @@ mod tests {
             size,
             section_end: None,
         }
+    }
+
+    /// A vDSO of syscall fast paths only, as on aarch64 or an x86_64 kernel
+    /// without SGX: one known fast path, and a subscription without its syscall.
+    fn syscall_only_table() -> (VdsoTable, Sysno, Subscription) {
+        let (known, _, sysno) = a_known_syscall();
+        let table = VdsoTable {
+            mapping_len: 0x2000,
+            entries: classify_vdso_exports(&[export(known, 0x800, 100)]).unwrap(),
+        };
+        let unrelated = [if sysno == Sysno::read {
+            Sysno::write
+        } else {
+            Sysno::read
+        }]
+        .into_iter()
+        .collect();
+        (table, sysno, unrelated)
+    }
+
+    #[test]
+    fn native_entry_points_are_reported_when_nothing_is_replaced() {
+        let (table, _, unrelated) = syscall_only_table();
+        let native = table.entries[0].describe();
+        let reported = Mutex::default();
+
+        let (replacements, report) = select_replacements(&table, &unrelated, &reported);
+        assert!(replacements.is_empty());
+        assert_eq!(report, Some(NativeReport::First(native.clone())));
+
+        let (_, report) = select_replacements(&table, &unrelated, &reported);
+        assert_eq!(report, Some(NativeReport::Repeat(native)));
+    }
+
+    #[test]
+    fn each_distinct_set_of_native_entry_points_is_reported_first() {
+        let (known, _, sysno) = a_known_syscall();
+        let table = VdsoTable {
+            mapping_len: 0x2000,
+            entries: classify_vdso_exports(&[
+                export(known, 0x800, 100),
+                export("__vdso_future_call", 0x900, 40),
+            ])
+            .unwrap(),
+        };
+        let reported = Mutex::default();
+        let (_, report) = select_replacements(&table, &Subscription::all(), &reported);
+        assert_eq!(report, None, "every entry point is replaced");
+        let unrelated = syscall_only_table().2;
+        let (replacements, report) = select_replacements(&table, &unrelated, &reported);
+        assert_eq!(replacements.len(), 1, "only the unknown entry point");
+        assert_eq!(
+            report,
+            Some(NativeReport::First(table.entries[0].describe()))
+        );
+        let only_known: Subscription = [sysno].into_iter().collect();
+        let (replacements, report) = select_replacements(&table, &only_known, &reported);
+        assert_eq!(replacements.len(), 2);
+        assert_eq!(report, None);
+    }
+
+    #[test]
+    fn a_tool_without_subscriptions_leaves_the_vdso_unreported() {
+        let (table, _, _) = syscall_only_table();
+        let (replacements, report) =
+            select_replacements(&table, &Subscription::none(), &Mutex::default());
+        assert!(replacements.is_empty());
+        assert_eq!(report, None);
     }
 
     #[test]
