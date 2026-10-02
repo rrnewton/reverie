@@ -2590,9 +2590,13 @@ impl Notifier {
     /// The failed registration released `pids` before this runs, so the
     /// generation registered for the task meanwhile may already have reaped
     /// it and left the registry. Then nothing will redirect this one, so its
-    /// gate is closed here, as that reap closed the registered one's. With
-    /// `pids` held, a task that is not reaped yet can only be reaped through
-    /// a registration that comes after this one and redirects it.
+    /// gate is closed here when the pidfd or procfs confirms the reap, as
+    /// that reap closed the registered one's; when neither can tell, it
+    /// stays open. With `pids` held, a task that is not reaped yet can be
+    /// reaped by the notifier only through a registration that comes after
+    /// this one and redirects it. The bulk waits and the orders in
+    /// <https://github.com/rrnewton/reverie/issues/860> can still reap it
+    /// without closing this gate.
     /// Called with `pids` held.
     fn retain_failed_registrant(
         &self,
