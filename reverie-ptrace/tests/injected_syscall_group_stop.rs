@@ -114,12 +114,15 @@ enum Report {
     Signal(i32),
     Timer,
     Rdtsc,
+    /// The guest's original syscall number and return register at a stop.
+    Regs(i64, i64),
 }
 
 #[derive(Default)]
 struct Log {
     injected: Mutex<Vec<Result<i64, i32>>>,
     signals: Mutex<Vec<i32>>,
+    regs: Mutex<Vec<(i64, i64)>>,
     timers: AtomicUsize,
     rdtscs: AtomicUsize,
 }
@@ -140,6 +143,7 @@ impl GlobalTool for Log {
             Report::Rdtsc => {
                 self.rdtscs.fetch_add(1, Ordering::Relaxed);
             }
+            Report::Regs(orig_syscall, ret) => self.regs.lock().unwrap().push((orig_syscall, ret)),
         }
     }
 }
@@ -6203,7 +6207,11 @@ impl Tool for TrapAfterUnblockThenGetpid {
 /// the step's own, consuming the guest's trap. So the held signal is passed
 /// on unreported, as while any other signal is pending
 /// (`check_held_signal_with_another_pending`), and as on main: the hook's
-/// `getpid` never runs, and the SIGUSR1 handler runs once.
+/// `getpid` never runs, and the SIGUSR1 handler runs once. Without the trap
+/// configuration nothing claims the SIGTRAP, so the main loop suppresses it
+/// (`handle_sigtrap`), as on main, and the Tool sees no signal. Known gap:
+/// the held SIGUSR1 is not reported
+/// (https://github.com/rrnewton/reverie/issues/845).
 #[test]
 fn held_signal_is_not_reported_while_a_guest_sigtrap_is_pending() {
     let (output, log) = test_fn_bounded::<TrapAfterUnblockThenGetpid, _>(
@@ -6247,9 +6255,10 @@ fn held_signal_is_not_reported_while_a_guest_sigtrap_is_pending() {
         vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
         "the unblock completes, SIGUSR1 interrupts getpid, and no hook injection runs"
     );
-    assert!(
-        !log.signals.lock().unwrap().contains(&libc::SIGUSR1),
-        "the held SIGUSR1 passes unreported"
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        Vec::<i32>::new(),
+        "the held SIGUSR1 passes unreported, and the unclaimed SIGTRAP is suppressed"
     );
 }
 
@@ -6667,4 +6676,565 @@ fn blocked_signal_after_a_restart_block_replacing_injection_keeps_a_final_zero()
 #[test]
 fn delivered_signal_after_a_restart_block_replacing_injection_returns_eintr() {
     check_restart_block_replaced_by_a_hook_injection(RestartBlockEnd::Deliver);
+}
+
+/// A Tool whose signal hook of SIGUSR1 saves the guest's registers, reports
+/// its original syscall number and return register, injects `getpid`,
+/// reported, writes the saved registers back with `Guest::set_regs`, and
+/// resumes with SIGUSR2 in place of SIGUSR1. Other signals pass through.
+#[derive(Clone, Copy, Debug, Default)]
+struct RestoreRegsAfterGetpidHook;
+
+#[reverie::tool]
+impl Tool for RestoreRegsAfterGetpidHook {
+    type GlobalState = Log;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        Subscription::none()
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        if signal != Signal::SIGUSR1 {
+            return Ok(Some(signal));
+        }
+        let regs = guest.regs().await;
+        guest
+            .send_rpc(Report::Regs(regs.orig_rax as i64, regs.rax as i64))
+            .await;
+        let result = guest.inject(Getpid::new()).await;
+        guest
+            .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+            .await;
+        guest
+            .set_regs(regs)
+            .await
+            .expect("write the guest's registers");
+        Ok(Some(Signal::SIGUSR2))
+    }
+}
+
+/// A helper thread interrupts the guest's `read` of an empty pipe with
+/// SIGUSR1 after 100 ms, and writes one byte to the pipe 200 ms later. The
+/// hook of SIGUSR1 injects `getpid`, writes back the registers it saved
+/// before the injection, so the return register holds the `read`'s
+/// `-ERESTARTSYS` again, and resumes with SIGUSR2, which the guest blocks.
+/// Linux requeues SIGUSR2, enters no handler, and restarts the `read`, which
+/// returns the byte: 1, as on main. The Tool's own write decides the return
+/// register; Reverie does not put the injection's PID back over it
+/// (`keep_injection_ret_for_requeue`,
+/// <https://github.com/rrnewton/reverie/issues/845>).
+#[test]
+fn blocked_verdict_after_the_tool_restores_its_registers_restarts_the_read() {
+    let (output, log) = test_fn_bounded::<RestoreRegsAfterGetpidHook, _>(
+        || unsafe {
+            SIGUSR1_HANDLER_CALLS.store(0, Ordering::Relaxed);
+            SECOND_HANDLER_CALLS.store(0, Ordering::Relaxed);
+            install_counter(libc::SIGUSR1, count_sigusr1);
+            install_counter(libc::SIGUSR2, count_second);
+            // The helper thread inherits the mask, so SIGUSR2 can reach
+            // neither thread's handler.
+            block(&[libc::SIGUSR2]);
+            let mut fds = [0; 2];
+            assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
+            let (pid, tid) = (libc::getpid(), libc::gettid());
+            let writer = fds[1];
+            let helper = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                assert_eq!(libc::syscall(libc::SYS_tgkill, pid, tid, libc::SIGUSR1), 0);
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                assert_eq!(libc::write(writer, b"Z".as_ptr().cast(), 1), 1);
+            });
+            let mut byte = b'?';
+            let ret = libc::read(fds[0], (&mut byte as *mut u8).cast(), 1);
+            let errno = if ret < 0 {
+                *libc::__errno_location()
+            } else {
+                0
+            };
+            helper.join().expect("join the helper thread");
+            let mut unread: libc::c_int = 0;
+            assert_eq!(libc::ioctl(fds[0], libc::FIONREAD, &mut unread), 0);
+            println!(
+                "{ret} {errno} {} {unread} {} {} {}",
+                byte as char,
+                SIGUSR1_HANDLER_CALLS.load(Ordering::Relaxed),
+                SECOND_HANDLER_CALLS.load(Ordering::Relaxed),
+                is_pending(libc::SIGUSR2)
+            );
+        },
+        "blocked verdict after the Tool restores its registers",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE tool-restores-regs guest={:?} regs={:?} injected={:?} signals={:?}",
+        stdout.trim(),
+        *log.regs.lock().unwrap(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        *log.regs.lock().unwrap(),
+        vec![(libc::SYS_read, -(Errno::ERESTARTSYS.into_raw() as i64))],
+        "SIGUSR1 stops the guest in its read, which leaves -ERESTARTSYS"
+    );
+    let injected = log.injected.lock().unwrap();
+    assert!(
+        matches!(injected[..], [Ok(pid)] if pid > 0),
+        "the hook's getpid succeeds: {injected:?}"
+    );
+    assert_eq!(
+        stdout.trim(),
+        "1 0 Z 0 0 0 1",
+        "the restarted read returns the byte, as on main; no handler runs, and SIGUSR2 stays pending"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1],
+        "SIGUSR1 is reported once; the blocked SIGUSR2 is never delivered"
+    );
+}
+
+/// Like `InjectInSigusr1Hook`, but the signal hook of SIGUSR1 injects
+/// `getpid`, then sends SIGTRAP to the guest's thread from the tracer, so the
+/// trap is pending when the hook's second `getpid` is stepped.
+#[derive(Clone, Copy, Debug, Default)]
+struct TrapThenGetpidInSigusr1Hook;
+
+#[reverie::tool]
+impl Tool for TrapThenGetpidInSigusr1Hook {
+    type GlobalState = Log;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        replace_marker(guest, syscall).await
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        if signal == Signal::SIGUSR1 {
+            // The interrupted injection left its step SIGTRAP queued. A
+            // SIGTRAP sent now would coalesce with it, and the first step
+            // discards that stale trap. Inject once to consume it, so the
+            // SIGTRAP sent next is the only one pending.
+            let result = guest.inject(Getpid::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            // SAFETY: tgkill has no memory-safety preconditions.
+            let sent = unsafe {
+                libc::syscall(
+                    libc::SYS_tgkill,
+                    guest.pid().as_raw(),
+                    guest.tid().as_raw(),
+                    libc::SIGTRAP,
+                )
+            };
+            assert_eq!(sent, 0, "send SIGTRAP to the guest");
+            let result = guest.inject(Getpid::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+        }
+        Ok(Some(signal))
+    }
+}
+
+/// The hook of a held SIGUSR1 injects `getpid`, which consumes the step
+/// SIGTRAP the interrupted injection left queued, sends the guest's thread
+/// a SIGTRAP, and injects `getpid` again. Linux dequeues that SIGTRAP when
+/// the second injection is stepped, before its `syscall` runs, and stops
+/// there. That is not the
+/// step's own trap: taken for it, the injection would return the syscall
+/// number left in RAX (39) in place of the PID. The trap is discarded, as
+/// the main loop discards a SIGTRAP no gdb, breakpoint or trap
+/// configuration claims (`handle_sigtrap`), and the step runs the `getpid`,
+/// which returns the guest's PID. The held SIGUSR1 is then delivered, so
+/// the guest sees EINTR and one handler run, and SIGTRAP kills nothing
+/// (https://github.com/rrnewton/reverie/issues/845).
+#[test]
+fn sigtrap_sent_before_a_held_signal_hook_injection_is_discarded_and_the_injection_runs() {
+    let (output, log) = test_fn_bounded::<TrapThenGetpidInSigusr1Hook, _>(
+        || unsafe {
+            SIGUSR1_HANDLER_CALLS.store(0, Ordering::Relaxed);
+            install_counter(libc::SIGUSR1, count_sigusr1);
+            let set = block(&[libc::SIGUSR1]);
+            assert_eq!(
+                libc::syscall(
+                    libc::SYS_tgkill,
+                    libc::getpid(),
+                    libc::syscall(libc::SYS_gettid),
+                    libc::SIGUSR1
+                ),
+                0
+            );
+            let ret = libc::syscall(
+                libc::SYS_write,
+                UNBLOCK_THEN_GETPID_FD,
+                &set as *const libc::sigset_t,
+                0usize,
+            );
+            let errno = *libc::__errno_location();
+            println!(
+                "{ret} {errno} {} {}",
+                SIGUSR1_HANDLER_CALLS.load(Ordering::Relaxed),
+                libc::getpid()
+            );
+        },
+        "SIGTRAP sent by a held signal hook",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE held-hook-trap guest={:?} injected={:?} signals={:?}",
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fields: Vec<&str> = stdout.split_whitespace().collect();
+    assert_eq!(fields.len(), 4, "guest output: {stdout:?}");
+    let pid: i64 = fields[3].parse().expect("the guest's PID");
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw()), Ok(pid), Ok(pid)],
+        "the unblock completes, SIGUSR1 interrupts getpid before it runs, and both of the hook's getpid calls return the PID"
+    );
+    assert_eq!(
+        fields[..3].join(" "),
+        format!("-1 {} 1", libc::EINTR),
+        "the guest sees EINTR and one SIGUSR1 handler run"
+    );
+    assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR1]);
+}
+
+/// Like `ReplaceMarker`, but the signal hook of SIGUSR1 injects a 20-second
+/// `poll` of no descriptors, reported, before passing it through. It reads
+/// no guest memory: the guest is re-executed, so a pointer into this test
+/// process's statics need not be mapped in it.
+#[derive(Clone, Copy, Debug, Default)]
+struct SleepInSigusr1Hook;
+
+#[reverie::tool]
+impl Tool for SleepInSigusr1Hook {
+    type GlobalState = Log;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        replace_marker(guest, syscall).await
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        if signal == Signal::SIGUSR1 {
+            let sleep = Syscall::from_raw(Sysno::poll, SyscallArgs::new(0, 0, 20000, 0, 0, 0));
+            let result = guest.inject(sleep).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+        }
+        Ok(Some(signal))
+    }
+}
+
+/// Set by the guest's SIGTRAP handler (1) or by its helper thread when no
+/// SIGTRAP reached the handler in time (2).
+static HELD_TRAP_FLAG: AtomicU64 = AtomicU64::new(0);
+/// Set by the guest once it waits for `HELD_TRAP_FLAG` with RAX and RDI zero.
+static HELD_TRAP_READY: AtomicU64 = AtomicU64::new(0);
+static HELD_TRAP_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn count_held_trap(_signal: libc::c_int) {
+    HELD_TRAP_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+    let _ = HELD_TRAP_FLAG.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst);
+}
+
+/// The guest of `held_signal_is_not_reported_under_the_injected_syscall_trap`:
+/// its held SIGUSR1 is followed by a SIGTRAP its helper thread sends while it
+/// waits with RAX holding the trap configuration's marker, zero, and RDI a
+/// frame address Reverie cannot read. Exits with ten times the SIGUSR1
+/// handler's runs plus the SIGTRAP handler's.
+fn held_trap_guest() -> ! {
+    unsafe {
+        SIGUSR1_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        let (pid, tid) = (libc::getpid(), libc::gettid());
+        let helper = std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            while HELD_TRAP_READY.load(Ordering::SeqCst) == 0
+                && start.elapsed() < std::time::Duration::from_secs(1)
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert_eq!(libc::syscall(libc::SYS_tgkill, pid, tid, libc::SIGTRAP), 0);
+            let start = std::time::Instant::now();
+            while HELD_TRAP_FLAG.load(Ordering::SeqCst) == 0
+                && start.elapsed() < std::time::Duration::from_secs(3)
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let _ = HELD_TRAP_FLAG.compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst);
+        });
+        // Only now: creating the helper thread under Reverie resets a
+        // SIGTRAP handler installed before it to SIG_DFL
+        // (https://github.com/rrnewton/reverie/issues/879).
+        install_counter(libc::SIGTRAP, count_held_trap);
+        install_counter(libc::SIGUSR1, count_sigusr1);
+        let set = block(&[libc::SIGUSR1]);
+        assert_eq!(libc::syscall(libc::SYS_tgkill, pid, tid, libc::SIGUSR1), 0);
+        libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_THEN_GETPID_FD,
+            &set as *const libc::sigset_t,
+            0usize,
+        );
+        std::arch::asm!(
+            "mov qword ptr [{ready}], 1",
+            "2:",
+            "cmp qword ptr [{flag}], 0",
+            "je 2b",
+            ready = in(reg) HELD_TRAP_READY.as_ptr(),
+            flag = in(reg) HELD_TRAP_FLAG.as_ptr(),
+            in("rax") 0u64,
+            in("rdi") 0u64,
+            options(nostack),
+        );
+        helper.join().expect("join the helper thread");
+        libc::_exit(
+            (SIGUSR1_HANDLER_CALLS.load(Ordering::Relaxed) * 10
+                + HELD_TRAP_HANDLER_CALLS.load(Ordering::Relaxed)) as libc::c_int,
+        );
+    }
+}
+
+/// Under the trap configuration (`TracerBuilder::injected_syscall_trap`) the
+/// main loop delivers a SIGTRAP that stops the guest with the marker in RAX
+/// and no readable frame at RDI to the guest (`handle_sigtrap`). A Tool hook
+/// of a held signal can see none of that: a SIGTRAP that arrives while its
+/// injection is stepped is taken for the step's own and consumed. So under
+/// this configuration a held signal is passed on unreported, as on main
+/// (`sigtrap_may_be_claimed`). Here the held SIGUSR1 would be reported to a
+/// hook that injects a 20-second `poll`, which the helper's SIGTRAP would
+/// interrupt and consume (exit 10). Instead the SIGUSR1 handler runs, the guest waits
+/// with the marker in RAX, and the helper's SIGTRAP reaches the guest's
+/// handler: exit 11. The Tool sees only the delivered SIGTRAP. Known gap:
+/// the held SIGUSR1 is not reported under this configuration, nor under
+/// gdb, a breakpoint, or a LiteInst runtime that is not Ready
+/// (https://github.com/rrnewton/reverie/issues/845).
+#[test]
+fn held_signal_is_not_reported_under_the_injected_syscall_trap() {
+    const NAME: &str = "held_signal_is_not_reported_under_the_injected_syscall_trap";
+    const ROLE: &str = "REVERIE_HELD_TRAP_GUEST";
+    if std::env::var(ROLE).as_deref() == Ok(NAME) {
+        held_trap_guest();
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut command =
+            reverie::process::Command::new(std::env::current_exe().expect("test binary"));
+        command
+            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env(ROLE, NAME)
+            .stdout(reverie::process::Stdio::piped())
+            .stderr(reverie::process::Stdio::piped());
+        let result = reverie_ptrace::testing::run_tokio_test(async move {
+            let tracer = reverie_ptrace::TracerBuilder::<SleepInSigusr1Hook>::new(command)
+                .injected_syscall_trap(0, 0)
+                .spawn()
+                .await?;
+            tracer.wait_with_output().await
+        });
+        // A closed receiver means the test already timed out and failed.
+        let _ = tx.send(result.map_err(|error| error.to_string()));
+    });
+    let (output, log) = match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => panic!("held signal under the trap configuration: {error}"),
+        Err(error) => panic!("held signal under the trap configuration: {error}"),
+    };
+    eprintln!(
+        "PROBE held-trap-config status={:?} injected={:?} signals={:?}",
+        output.status,
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(11),
+        "each handler runs once; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
+        "the unblock completes, SIGUSR1 interrupts getpid, and no hook injection runs"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGTRAP],
+        "the held SIGUSR1 passes unreported; the SIGTRAP is reported as it is delivered"
+    );
+}
+
+/// Set to stop the disposition flipper of
+/// `restart_block_verdict_raced_by_a_disposition_change_never_leaves_a_bare_eintr`.
+static DISPOSITION_FLIPPER_STOP: AtomicBool = AtomicBool::new(false);
+
+/// How many workers that test runs. Each ends its sleep about 1 second in.
+const DISPOSITION_RACE_WORKERS: usize = 16;
+
+/// As `BlockedAfterSleep` in `check_restart_block_replaced_by_a_hook_injection`,
+/// but the guest does not block SIGUSR2, and a sibling thread keeps switching
+/// its process-wide disposition between a handler and `SIG_IGN`. The hook
+/// resumes the guest's interrupted `nanosleep` with SIGUSR2 after its final
+/// injected sleep, and the disposition Reverie reads can differ from the one
+/// in force when the kernel delivers the signal. Untraced Linux, for a
+/// signal arriving while the sleep is interrupted, either runs the handler
+/// and returns EINTR, or ignores the signal and restarts the sleep. Reverie
+/// leaves `-ERESTARTNOHAND` for the kernel to decide at delivery when it
+/// sees a handler, so each worker sees EINTR with a handler run, or zero,
+/// with or without one (a handler installed after the read runs, and the
+/// final sleep has already outlasted the guest's deadline). EINTR with no
+/// handler run, which no untraced run returns, is never seen
+/// (https://github.com/rrnewton/reverie/issues/845).
+#[test]
+fn restart_block_verdict_raced_by_a_disposition_change_never_leaves_a_bare_eintr() {
+    let (output, log) = test_fn_bounded::<RestartBlockInFirstSignalHook, _>(
+        || unsafe {
+            RESTART_BLOCK_SUPPRESS.store(0, Ordering::Relaxed);
+            RESTART_BLOCK_FINAL.store(1, Ordering::Relaxed);
+            RESTART_BLOCK_RESUME.store(0, Ordering::Relaxed);
+            RESTART_BLOCK_ZERO_RAX.store(0, Ordering::Relaxed);
+            RESTART_BLOCK_VERDICT.store(libc::SIGUSR2 as u64, Ordering::Relaxed);
+            install_counter(libc::SIGALRM, count_sigalrm);
+            install_counter(libc::SIGUSR2, count_second);
+            // Only the workers take the process-wide SIGALRM of ITIMER_REAL.
+            block(&[libc::SIGALRM]);
+            let flipper = std::thread::spawn(|| {
+                let mut ignore: libc::sigaction = std::mem::zeroed();
+                ignore.sa_sigaction = libc::SIG_IGN;
+                libc::sigemptyset(&mut ignore.sa_mask);
+                while !DISPOSITION_FLIPPER_STOP.load(Ordering::Relaxed) {
+                    install_counter(libc::SIGUSR2, count_second);
+                    assert_eq!(
+                        libc::sigaction(libc::SIGUSR2, &ignore, std::ptr::null_mut()),
+                        0
+                    );
+                }
+            });
+            for _ in 0..DISPOSITION_RACE_WORKERS {
+                std::thread::spawn(|| {
+                    let mut set: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut set);
+                    libc::sigaddset(&mut set, libc::SIGALRM);
+                    assert_eq!(
+                        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut()),
+                        0
+                    );
+                    let timer = libc::itimerval {
+                        it_interval: libc::timeval {
+                            tv_sec: 0,
+                            tv_usec: 0,
+                        },
+                        it_value: libc::timeval {
+                            tv_sec: 0,
+                            tv_usec: 100_000,
+                        },
+                    };
+                    assert_eq!(
+                        libc::setitimer(libc::ITIMER_REAL, &timer, std::ptr::null_mut()),
+                        0
+                    );
+                    let sleep = libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: 300_000_000,
+                    };
+                    let before = SECOND_HANDLER_CALLS.load(Ordering::SeqCst);
+                    let ret =
+                        libc::syscall(libc::SYS_nanosleep, &sleep as *const libc::timespec, 0usize);
+                    let errno = if ret == -1 {
+                        *libc::__errno_location()
+                    } else {
+                        0
+                    };
+                    let usr2 = SECOND_HANDLER_CALLS.load(Ordering::SeqCst) - before;
+                    println!("{ret} {errno} {usr2}");
+                })
+                .join()
+                .expect("join a worker");
+            }
+            DISPOSITION_FLIPPER_STOP.store(true, Ordering::Relaxed);
+            flipper.join().expect("join the flipper");
+        },
+        "restart block verdict raced by a disposition change",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE disposition-race guest={:?} injected={} signals={}",
+        stdout.lines().collect::<Vec<_>>(),
+        log.injected.lock().unwrap().len(),
+        log.signals.lock().unwrap().len()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        DISPOSITION_RACE_WORKERS,
+        "one line per worker: {stdout:?}"
+    );
+    let eintr_with_handler = format!("-1 {} 1", libc::EINTR);
+    for line in &lines {
+        assert!(
+            [eintr_with_handler.as_str(), "0 0 0", "0 0 1"].contains(line),
+            "EINTR with a handler run, or zero; never EINTR alone: {line:?} in {stdout:?}"
+        );
+    }
 }
