@@ -586,9 +586,12 @@ impl TraceeGeneration {
 
     /// Creates a stopped state for this generation. Like
     /// [`Stopped::new_unchecked`], the caller must independently know that the
-    /// tracee is stopped. Unlike it, requests through the result are refused
-    /// once the notifier or [`Running::wait`] reaps this generation, even if
-    /// another task has reused the TID. A reap through [`wait_all`],
+    /// tracee is stopped. Unlike it, with the `notifier` feature and once this
+    /// generation's identity has been captured, requests through the result
+    /// are refused once the notifier or [`Running::wait`] reaps this
+    /// generation, even if another task has reused the TID. Without that
+    /// feature, or for a generation whose identity could not be captured,
+    /// requests go to the numeric TID unchecked. A reap through [`wait_all`],
     /// [`try_wait_all`] or [`wait_group`], and the registration orders in
     /// <https://github.com/rrnewton/reverie/issues/860>, do not refuse them yet.
     pub fn assume_stopped(&self) -> Stopped {
@@ -1106,8 +1109,8 @@ impl Stopped {
 /// Waits for any child processes to change state, blocking until the next event.
 /// This is equivalent to `waitpid(-1)`.
 ///
-/// A child this reaps keeps its capabilities' TID gates open, so they can
-/// reach a task that reuses its TID
+/// Reaping a child here does not close its capabilities' TID gates, so a
+/// gate that nothing else closed lets them reach a task that reuses its TID
 /// (<https://github.com/rrnewton/reverie/issues/860>).
 pub fn wait_all() -> Result<Option<Wait>, Error> {
     let result = wait(IdType::All, WaitPidFlag::WEXITED | WaitPidFlag::WSTOPPED)
@@ -1146,8 +1149,8 @@ pub fn try_wait_all() -> Result<Option<Wait>, Error> {
 /// Waits for any child in a process group to change state, blocking until the
 /// next event.
 ///
-/// A child this reaps keeps its capabilities' TID gates open, so they can
-/// reach a task that reuses its TID
+/// Reaping a child here does not close its capabilities' TID gates, so a
+/// gate that nothing else closed lets them reach a task that reuses its TID
 /// (<https://github.com/rrnewton/reverie/issues/860>).
 pub fn wait_group(pid: Pid) -> Result<Option<Wait>, Error> {
     let result = wait(
@@ -1238,10 +1241,13 @@ impl Running {
     /// new process as soon as it is created.
     ///
     /// The state shares the generation that other states for the same live
-    /// task already carry, so a numeric request through any of them stops
-    /// reaching the TID once the notifier or [`Running::wait`] reaps that
-    /// task, except in the orders listed in
-    /// <https://github.com/rrnewton/reverie/issues/860>.
+    /// task already carry. With the `notifier` feature, once that
+    /// generation's identity has been captured, a numeric request through any
+    /// of them stops reaching the TID once the notifier or [`Running::wait`]
+    /// reaps that task, except in the orders listed in
+    /// <https://github.com/rrnewton/reverie/issues/860>. If the identity
+    /// cannot be captured, the state gets a fresh generation that no reap
+    /// gates.
     pub fn new(pid: Pid) -> Self {
         Self::from_token(pid, TraceeToken::current_or_fresh(pid))
     }
