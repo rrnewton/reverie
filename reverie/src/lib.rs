@@ -67,6 +67,7 @@ mod stack;
 mod subscription;
 mod timer;
 mod tool;
+pub mod vdso;
 
 pub use auxv::*;
 pub use backend::*;

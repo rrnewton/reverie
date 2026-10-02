@@ -24,6 +24,8 @@ use reverie::syscalls::AddrMut;
 use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Mprotect;
 use reverie::syscalls::Sysno;
+use reverie::vdso::VdsoHandling;
+use reverie::vdso::VdsoSymbol;
 use tracing::debug;
 use tracing::warn;
 
@@ -235,7 +237,8 @@ mod vdso_syms {
     pub const enosys: &[u8; 16] = &enosys_code.0;
 }
 
-/// What reverie does with a vDSO entry point it knows.
+/// What reverie does with a vDSO entry point it knows: its
+/// [`VdsoSymbol::class`], with the stub for this architecture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KnownEntry {
     /// A userspace fast path for the syscall, replaced by a stub that issues it.
@@ -243,95 +246,54 @@ enum KnownEntry {
     /// An entry point with no syscall equivalent, replaced by
     /// [`vdso_syms::enosys`].
     Enosys,
+    /// An entry point that keeps the kernel's code.
+    Native,
 }
 
-/// Every vDSO entry point reverie knows, by its kernel name.
-///
-/// This is not the list of entry points that get handled. The patch plan covers
-/// every function the vDSO's dynamic symbol table exports; one missing here is
-/// replaced by [`vdso_syms::enosys`] and logged. The x86_64 vDSO also exports
-/// `clock_gettime`, `time` and so on at the same addresses as the `__vdso_`
-/// names; such aliases share the entry point, and its replacement.
-///
-/// Which replacement is safe depends on how libc calls the entry point. From
-/// glibc 2.42 source:
-/// - `clock_gettime`: `__clock_gettime64` returns any nonzero vDSO result as an
-///   error, without trying the syscall (`sysdeps/unix/sysv/linux/clock_gettime.c`
-///   lines 41-46).
-/// - `gettimeofday`, and x86_64 `time`: IFUNCs that resolve to the vDSO function
-///   itself, so its return value goes straight to the caller (`gettimeofday.c`
-///   lines 42-45, `time.c` lines 38-40; `x86/gettimeofday.c`, `x86/time.c` and
-///   `aarch64/gettimeofday.c` select them with `USE_IFUNC_*`).
-/// - `clock_getres` and `getcpu`: `INLINE_VSYSCALL`, which retries with the
-///   syscall when the vDSO returns -ENOSYS (`sysdep-vdso.h` lines 42 and 46).
-/// - `getrandom`: see its stub.
-/// - aarch64 `__kernel_rt_sigreturn`: glibc never calls it, but glibc does not
-///   set `SA_RESTORER` (`aarch64/libc_sigaction.c`), so the kernel returns from
-///   every signal handler through it.
-///
-/// An -ENOSYS stub would turn the first two into visible failures and the last
-/// into a crash on every signal return, so every syscall fast path keeps a stub
-/// that issues its syscall. -ENOSYS is for entry points glibc does not call.
-/// glibc only calls vDSO functions it names (`HAVE_*_VSYSCALL` in each
-/// architecture's `sysdep.h`), so a future glibc calling an entry point added
-/// after this table either retries with the syscall (`INLINE_VSYSCALL`) or
-/// fails visibly; it never runs the kernel's code unobserved.
-#[cfg(target_arch = "x86_64")]
-const VDSO_SYMBOLS: &[(&str, KnownEntry)] = &[
-    (
-        "__vdso_time",
-        KnownEntry::Syscall(vdso_syms::time, Sysno::time),
-    ),
-    (
-        "__vdso_clock_gettime",
-        KnownEntry::Syscall(vdso_syms::clock_gettime, Sysno::clock_gettime),
-    ),
-    (
-        "__vdso_getcpu",
-        KnownEntry::Syscall(vdso_syms::getcpu, Sysno::getcpu),
-    ),
-    (
-        "__vdso_gettimeofday",
-        KnownEntry::Syscall(vdso_syms::gettimeofday, Sysno::gettimeofday),
-    ),
-    (
-        "__vdso_clock_getres",
-        KnownEntry::Syscall(vdso_syms::clock_getres, Sysno::clock_getres),
-    ),
-    (
-        "__vdso_getrandom",
-        KnownEntry::Syscall(vdso_syms::getrandom, Sysno::getrandom),
-    ),
-    // SGX enclave entry (`arch/x86/entry/vdso/vsgx.S`). glibc does not call it,
-    // and a tool cannot observe what an enclave does. The kernel's version
-    // already returns negative errnos (-EINVAL for an invalid leaf), so SGX
-    // runtimes handle a negative result.
-    ("__vdso_sgx_enter_enclave", KnownEntry::Enosys),
-];
+impl KnownEntry {
+    /// The entry for `symbol`, or why it cannot be patched here.
+    fn of(symbol: VdsoSymbol) -> Result<Self, String> {
+        Ok(match symbol.class().handling {
+            VdsoHandling::Syscall(sysno) => Self::Syscall(
+                syscall_stub(sysno).ok_or_else(|| {
+                    format!(
+                        "vDSO entry point {symbol} is a fast path of {sysno}, which has no stub"
+                    )
+                })?,
+                sysno,
+            ),
+            VdsoHandling::Enosys => Self::Enosys,
+            VdsoHandling::Native => Self::Native,
+        })
+    }
+}
 
+/// The stub that replaces a vDSO fast path of `sysno`.
+#[cfg(target_arch = "x86_64")]
+fn syscall_stub(sysno: Sysno) -> Option<&'static [u8]> {
+    Some(match sysno {
+        Sysno::time => vdso_syms::time,
+        Sysno::clock_gettime => vdso_syms::clock_gettime,
+        Sysno::getcpu => vdso_syms::getcpu,
+        Sysno::gettimeofday => vdso_syms::gettimeofday,
+        Sysno::clock_getres => vdso_syms::clock_getres,
+        Sysno::getrandom => vdso_syms::getrandom,
+        _ => return None,
+    })
+}
+
+/// The stub that replaces a vDSO fast path of `sysno`.
 #[cfg(target_arch = "aarch64")]
-const VDSO_SYMBOLS: &[(&str, KnownEntry)] = &[
-    (
-        "__kernel_clock_getres",
-        KnownEntry::Syscall(vdso_syms::clock_getres, Sysno::clock_getres),
-    ),
-    (
-        "__kernel_clock_gettime",
-        KnownEntry::Syscall(vdso_syms::clock_gettime, Sysno::clock_gettime),
-    ),
-    (
-        "__kernel_gettimeofday",
-        KnownEntry::Syscall(vdso_syms::gettimeofday, Sysno::gettimeofday),
-    ),
-    (
-        "__kernel_rt_sigreturn",
-        KnownEntry::Syscall(vdso_syms::rt_sigreturn, Sysno::rt_sigreturn),
-    ),
-    (
-        "__kernel_getrandom",
-        KnownEntry::Syscall(vdso_syms::getrandom, Sysno::getrandom),
-    ),
-];
+fn syscall_stub(sysno: Sysno) -> Option<&'static [u8]> {
+    Some(match sysno {
+        Sysno::clock_getres => vdso_syms::clock_getres,
+        Sysno::clock_gettime => vdso_syms::clock_gettime,
+        Sysno::gettimeofday => vdso_syms::gettimeofday,
+        Sysno::rt_sigreturn => vdso_syms::rt_sigreturn,
+        Sysno::getrandom => vdso_syms::getrandom,
+        _ => return None,
+    })
+}
 
 /// Rounds up `value` so that it is a multiple of `alignment`.
 fn align_up(value: usize, alignment: usize) -> usize {
@@ -355,7 +317,7 @@ struct VdsoExport {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VdsoEntryKind {
     Known(KnownEntry),
-    /// Not in [`VDSO_SYMBOLS`].
+    /// No name exported at its address is a [`VdsoSymbol`].
     Unknown,
 }
 
@@ -388,10 +350,11 @@ impl VdsoEntry {
     /// Big QEMU Lock*, so every needless crossing is taken with a lock held that
     /// vCPU threads are waiting on.
     ///
-    /// Every other entry point is replaced by [`vdso_syms::enosys`] whenever the
-    /// tool subscribes to any syscall, because an unknown entry point could be
-    /// the fast path of any of them. A tool that subscribes to no syscall
-    /// observes nothing a vDSO function could bypass.
+    /// Every other entry point, except those [`VdsoHandling::Native`] keeps, is
+    /// replaced by [`vdso_syms::enosys`] whenever the tool subscribes to any
+    /// syscall, because an unknown entry point could be the fast path of any of
+    /// them. A tool that subscribes to no syscall observes nothing a vDSO
+    /// function could bypass.
     fn replacement(&self, subscriptions: &Subscription) -> Option<&'static [u8]> {
         match self.kind {
             VdsoEntryKind::Known(KnownEntry::Syscall(stub, sysno)) => subscriptions
@@ -403,6 +366,7 @@ impl VdsoEntry {
                 .next()
                 .is_some()
                 .then_some(vdso_syms::enosys),
+            VdsoEntryKind::Known(KnownEntry::Native) => None,
         }
     }
 
@@ -471,13 +435,13 @@ fn vdso_exports(image: &[u8]) -> Result<Vec<VdsoExport>, String> {
     Ok(exports)
 }
 
-/// Groups `exports` by address into entry points and classifies each against
-/// [`VDSO_SYMBOLS`].
+/// Groups `exports` by address into entry points and classifies each by
+/// [`VdsoSymbol::class`].
 ///
 /// Refuses, rather than guess, whenever a stub cannot be placed safely: two
 /// known names that need different stubs at one address, names at one address
-/// that disagree on the size, entry points that overlap, or a stub larger than
-/// its entry point.
+/// that disagree on the size, entry points that overlap, a stub larger than
+/// its entry point, or a syscall fast path this architecture has no stub for.
 fn classify_vdso_exports(exports: &[VdsoExport]) -> Result<Vec<VdsoEntry>, String> {
     let mut by_offset: BTreeMap<u64, Vec<&VdsoExport>> = BTreeMap::new();
     for export in exports {
@@ -498,13 +462,14 @@ fn classify_vdso_exports(exports: &[VdsoExport]) -> Result<Vec<VdsoEntry>, Strin
         let mut names: Vec<String> = Vec::new();
         let mut known: Option<KnownEntry> = None;
         for export in &group {
-            match VDSO_SYMBOLS.iter().find(|(name, _)| *name == export.name) {
-                Some((name, entry)) => {
+            match VdsoSymbol::from_name(&export.name) {
+                Some(symbol) => {
+                    let entry = KnownEntry::of(symbol)?;
                     if let Some(previous) = known
-                        && previous != *entry
+                        && previous != entry
                     {
                         return Err(format!(
-                            "vDSO exports {} and {name} at one address {offset:#x}, \
+                            "vDSO exports {} and {symbol} at one address {offset:#x}, \
                              but they need different stubs",
                             names[0]
                         ));
@@ -514,7 +479,7 @@ fn classify_vdso_exports(exports: &[VdsoExport]) -> Result<Vec<VdsoEntry>, Strin
                     } else {
                         names.push(export.name.clone());
                     }
-                    known = Some(*entry);
+                    known = Some(entry);
                 }
                 None => names.push(export.name.clone()),
             }
@@ -549,7 +514,10 @@ fn classify_vdso_exports(exports: &[VdsoExport]) -> Result<Vec<VdsoEntry>, Strin
         let kind = known.map_or(VdsoEntryKind::Unknown, VdsoEntryKind::Known);
         let stub_len = match kind {
             VdsoEntryKind::Known(KnownEntry::Syscall(stub, _)) => stub.len(),
-            _ => vdso_syms::enosys.len(),
+            VdsoEntryKind::Known(KnownEntry::Enosys) | VdsoEntryKind::Unknown => {
+                vdso_syms::enosys.len()
+            }
+            VdsoEntryKind::Known(KnownEntry::Native) => 0,
         };
         if stub_len > size {
             return Err(format!(
@@ -679,8 +647,9 @@ enum NativeReport {
 /// A tool that subscribes to no syscall leaves the whole vDSO alone, and
 /// nothing a vDSO function does can bypass it, so that is not reported. Any
 /// other tool gets a report whenever an entry point stays native, including
-/// when nothing at all is replaced. `reported` holds the sets already reported,
-/// so each distinct set is [`NativeReport::First`] once.
+/// when nothing at all is replaced, unless [`VdsoHandling::Native`] keeps it.
+/// `reported` holds the sets already reported, so each distinct set is
+/// [`NativeReport::First`] once.
 fn select_replacements<'a>(
     table: &'a VdsoTable,
     subscriptions: &Subscription,
@@ -694,6 +663,9 @@ fn select_replacements<'a>(
     for entry in &table.entries {
         match entry.replacement(subscriptions) {
             Some(stub) => replacements.push((entry, stub)),
+            // Kept by its classification: it reads nothing the tool could
+            // observe.
+            None if entry.kind == VdsoEntryKind::Known(KnownEntry::Native) => {}
             None => native.push(entry.describe()),
         }
     }
@@ -738,7 +710,8 @@ pub struct VdsoSyscallSite {
 /// keeps the table's whole stub, which answers the parameter query without a
 /// syscall, and its site is the stub's `syscall`, followed only by `ret` and
 /// padding. Entry points with no syscall equivalent, known or not, get the
-/// -ENOSYS stub, which needs no hook. This shares the authoritative vDSO table
+/// -ENOSYS stub, which needs no hook, except those [`VdsoHandling::Native`]
+/// keeps. This shares the authoritative vDSO table
 /// with ptrace's stopped-guest path instead of maintaining a backend-specific
 /// list.
 #[cfg(target_arch = "x86_64")]
@@ -821,6 +794,9 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
                         patch_len - bytes.len(),
                     );
                 }
+            }
+            VdsoEntryKind::Known(KnownEntry::Native) => {
+                unreachable!("{} is kept native, never replaced", entry.describe())
             }
         }
         debug!("patched vDSO entry point {}", entry.describe());
@@ -991,16 +967,20 @@ mod tests {
             .expect("this host must map a vDSO")
     }
 
-    /// The first syscall fast path in [`VDSO_SYMBOLS`], so the synthetic tests
-    /// run unchanged on every architecture.
-    fn a_known_syscall() -> (&'static str, &'static [u8], Sysno) {
-        VDSO_SYMBOLS
+    /// Every [`VdsoSymbol`] that is a syscall fast path, with its stub.
+    fn known_syscalls() -> impl Iterator<Item = (&'static str, &'static [u8], Sysno)> {
+        VdsoSymbol::ALL
             .iter()
-            .find_map(|(name, entry)| match entry {
-                KnownEntry::Syscall(stub, sysno) => Some((*name, *stub, *sysno)),
-                KnownEntry::Enosys => None,
+            .filter_map(|symbol| match KnownEntry::of(*symbol).unwrap() {
+                KnownEntry::Syscall(stub, sysno) => Some((symbol.name(), stub, sysno)),
+                KnownEntry::Enosys | KnownEntry::Native => None,
             })
-            .unwrap()
+    }
+
+    /// The first syscall fast path in [`VdsoSymbol::ALL`], so the synthetic
+    /// tests run unchanged on every architecture.
+    fn a_known_syscall() -> (&'static str, &'static [u8], Sysno) {
+        known_syscalls().next().unwrap()
     }
 
     fn export(name: &str, offset: u64, size: usize) -> VdsoExport {
@@ -1138,6 +1118,82 @@ mod tests {
                 entry.size
             );
         }
+        // At run time an unknown entry point is stubbed, which keeps it from
+        // running unobserved; here it fails, so that it gets classified.
+        let unknown: Vec<String> = table
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == VdsoEntryKind::Unknown)
+            .map(VdsoEntry::describe)
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "the host vDSO exports entry points with no VdsoSymbol variant: {unknown:?}"
+        );
+    }
+
+    /// Every [`VdsoSymbol`] has a plan on this architecture: a syscall fast
+    /// path has a stub, and aliases agree on it.
+    #[test]
+    fn every_classified_symbol_has_a_plan() {
+        let mut by_function: BTreeMap<&str, Vec<VdsoExport>> = BTreeMap::new();
+        for symbol in VdsoSymbol::ALL {
+            let function = symbol.name().trim_start_matches("__vdso_");
+            by_function
+                .entry(function)
+                .or_default()
+                .push(export(symbol.name(), 0, 64));
+        }
+        let mut exports = Vec::new();
+        for (index, group) in by_function.into_values().enumerate() {
+            for mut alias in group {
+                alias.offset = 0x800 + 0x100 * index as u64;
+                exports.push(alias);
+            }
+        }
+        let entries = classify_vdso_exports(&exports).unwrap();
+        for entry in &entries {
+            assert_ne!(entry.kind, VdsoEntryKind::Unknown, "{}", entry.describe());
+        }
+        assert_eq!(
+            entries.iter().map(|entry| entry.names.len()).sum::<usize>(),
+            VdsoSymbol::ALL.len()
+        );
+    }
+
+    /// The robust-futex unlock functions of Linux v7.2 keep the kernel's code,
+    /// whatever the tool subscribes to, and are not reported as unobserved.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn futex_robust_unlock_entry_points_stay_native() {
+        let (known, _, sysno) = a_known_syscall();
+        let table = VdsoTable {
+            mapping_len: 0x2000,
+            entries: classify_vdso_exports(&[
+                export(known, 0x800, 100),
+                export("__vdso_futex_robust_list64_try_unlock", 0x880, 20),
+                export("__vdso_futex_robust_list32_try_unlock", 0x8a0, 20),
+            ])
+            .unwrap(),
+        };
+        for entry in &table.entries[1..] {
+            assert_eq!(entry.kind, VdsoEntryKind::Known(KnownEntry::Native));
+            for subscriptions in [
+                Subscription::all(),
+                [Sysno::futex].into_iter().collect(),
+                Subscription::none(),
+            ] {
+                assert_eq!(entry.replacement(&subscriptions), None);
+            }
+        }
+        let (replacements, report) =
+            select_replacements(&table, &Subscription::all(), &Mutex::default());
+        assert_eq!(replacements.len(), 1, "only the syscall fast path");
+        assert_eq!(report, None);
+        let only_known: Subscription = [sysno].into_iter().collect();
+        let (replacements, report) = select_replacements(&table, &only_known, &Mutex::default());
+        assert_eq!(replacements.len(), 1);
+        assert_eq!(report, None);
     }
 
     /// The fail-closed property itself: an entry point this module has never
@@ -1320,16 +1376,13 @@ mod tests {
 
     #[test]
     fn known_names_needing_different_stubs_at_one_address_are_refused() {
-        let syscalls: Vec<&str> = VDSO_SYMBOLS
-            .iter()
-            .filter(|(_, entry)| matches!(entry, KnownEntry::Syscall(..)))
-            .map(|(name, _)| *name)
-            .collect();
-        let error = classify_vdso_exports(&[
-            export(syscalls[0], 0x800, 0x40),
-            export(syscalls[1], 0x800, 0x40),
-        ])
-        .unwrap_err();
+        let (first, _, first_sysno) = a_known_syscall();
+        let (other, _, _) = known_syscalls()
+            .find(|(_, _, sysno)| *sysno != first_sysno)
+            .unwrap();
+        let error =
+            classify_vdso_exports(&[export(first, 0x800, 0x40), export(other, 0x800, 0x40)])
+                .unwrap_err();
         assert!(error.contains("different stubs"), "{error}");
     }
 
@@ -1342,10 +1395,12 @@ mod tests {
         assert!(!is_patch_required(&Subscription::none()));
 
         let table = host_table();
-        let has_non_syscall_entry = table
-            .entries
-            .iter()
-            .any(|entry| !matches!(entry.kind, VdsoEntryKind::Known(KnownEntry::Syscall(..))));
+        let has_non_syscall_entry = table.entries.iter().any(|entry| {
+            matches!(
+                entry.kind,
+                VdsoEntryKind::Known(KnownEntry::Enosys) | VdsoEntryKind::Unknown
+            )
+        });
         assert_eq!(
             is_patch_required(&[Sysno::read].into_iter().collect()),
             has_non_syscall_entry,
@@ -1386,6 +1441,9 @@ mod tests {
                         selected.describe()
                     ),
                     VdsoEntryKind::Known(KnownEntry::Enosys) | VdsoEntryKind::Unknown => {}
+                    VdsoEntryKind::Known(KnownEntry::Native) => {
+                        panic!("{} is kept native but was selected", selected.describe())
+                    }
                 }
             }
         }

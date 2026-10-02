@@ -20,6 +20,10 @@
 #include "maps.h"
 #include "stringutil.h"
 
+#ifdef __x86_64__
+#include "reverie_vdso_symbols.h"
+#endif
+
 #include "arch/rewriter_api.h"
 
 #include <asm/unistd.h>
@@ -435,11 +439,26 @@ static void library_make_writable(struct library *l, bool state) {
 }
 
 #ifdef __x86_64__
-/* The vDSO entry points patch_vdso routes to a syscall, by detour or stub. */
-static const char *const vdso_syscall_entries[] = {
-    "__vdso_getcpu",       "__vdso_time",         "__vdso_gettimeofday",
-    "__vdso_clock_gettime", "__vdso_clock_getres", "__vdso_getrandom",
-};
+/* The entry point patch_vdso routes syscall `sysno` through, by detour or
+ * stub, or NULL if it routes none. */
+static const char *vdso_routed_entry(long sysno) {
+  switch (sysno) {
+  case SYS_getcpu:
+    return "__vdso_getcpu";
+  case SYS_time:
+    return "__vdso_time";
+  case SYS_gettimeofday:
+    return "__vdso_gettimeofday";
+  case SYS_clock_gettime:
+    return "__vdso_clock_gettime";
+  case SYS_clock_getres:
+    return "__vdso_clock_getres";
+  case SYS_getrandom:
+    return "__vdso_getrandom";
+  default:
+    return NULL;
+  }
+}
 
 /* Is `sym` an exported entry point? Mirrors `vdso_exports` in
  * reverie-ptrace/src/vdso.rs, failing closed on the type: only data and
@@ -456,6 +475,36 @@ static bool vdso_is_entry_point(const ElfW(Sym) * sym) {
     return ELF64_ST_BIND(sym->st_info) != STB_LOCAL &&
            sym->st_shndx != SHN_UNDEF && sym->st_shndx != SHN_ABS;
   }
+}
+
+/* The classification of the entry point `sym`: the reverie_vdso_symbols entry
+ * of a name exported at its address, or NULL if none is listed. The x86_64
+ * vDSO exports most functions twice (`clock_gettime` beside
+ * `__vdso_clock_gettime`); listed names at one address that disagree are
+ * fatal, as reverie-ptrace refuses such a vDSO. */
+static const struct reverie_vdso_symbol *
+vdso_classify(struct library *lib, const struct symbol *sym) {
+  const struct reverie_vdso_symbol *known = NULL;
+  for (int bucket = 0; bucket < symbolhash_size; bucket++) {
+    struct hlist_node *node;
+    struct symbol *other;
+    hlist_for_each_entry(other, node, &lib->symbol_hash[bucket], symbol_hash) {
+      if (!vdso_is_entry_point(&other->sym) ||
+          other->sym.st_value != sym->sym.st_value)
+        continue;
+      const struct reverie_vdso_symbol *entry =
+          reverie_vdso_symbol_lookup(other->name);
+      if (entry == NULL)
+        continue;
+      if (known != NULL && (known->handling != entry->handling ||
+                            known->syscall != entry->syscall))
+        _nx_fatal_printf("vdso exports %s and %s at one address, but they "
+                         "need different stubs\n",
+                         known->name, entry->name);
+      known = entry;
+    }
+  }
+  return known;
 }
 
 /* Overwrite the vDSO entry point `sym` with `stub`, padded with NOPs. */
@@ -577,11 +626,13 @@ static void patch_vdso(struct library *lib) {
                             &extra_len, false);
   }
 
-  /* Every other entry point returns -ENOSYS, so none keeps running the
-   * kernel's code outside the router; reverie-ptrace/src/vdso.rs documents
-   * which glibc callers tolerate -ENOSYS. A name exported at the same address
-   * as a routed entry (the vDSO exports `clock_gettime` beside
-   * `__vdso_clock_gettime`) is an alias and already covered. */
+  /* Every other entry point is handled as reverie-core classifies it
+   * (reverie_vdso_symbols.h, generated from `VdsoSymbol::class`): a syscall
+   * fast path must be one routed above, a function the classification leaves
+   * native keeps the kernel's code, and any other function, or a name the
+   * table does not list, returns -ENOSYS, so none keeps running the kernel's
+   * code outside the router; reverie/src/vdso.rs documents which glibc
+   * callers tolerate -ENOSYS. */
   static const char enosys_stub[] =
       "\x48\xc7\xc0\xda\xff\xff\xff" // mov $-ENOSYS, %rax
       "\xc3";                         // ret
@@ -591,21 +642,33 @@ static void patch_vdso(struct library *lib) {
     hlist_for_each_entry(other, node, &lib->symbol_hash[bucket], symbol_hash) {
       if (!vdso_is_entry_point(&other->sym))
         continue;
-      bool covered = false;
-      for (size_t i = 0;
-           i < sizeof(vdso_syscall_entries) / sizeof(vdso_syscall_entries[0]);
-           i++) {
-        struct symbol *known =
-            symbol_find(lib->symbol_hash, vdso_syscall_entries[i]);
-        if (known != NULL && known->sym.st_value == other->sym.st_value) {
-          covered = true;
-          break;
-        }
-      }
-      if (covered)
+      const struct reverie_vdso_symbol *known = vdso_classify(lib, other);
+      if (known == NULL) {
+        _nx_debug_printf("replacing unknown vdso %s with -ENOSYS\n",
+                         other->name);
+        replace_vdso_entry(lib, other, enosys_stub, sizeof(enosys_stub) - 1);
         continue;
-      _nx_debug_printf("replacing vdso %s with -ENOSYS\n", other->name);
-      replace_vdso_entry(lib, other, enosys_stub, sizeof(enosys_stub) - 1);
+      }
+      switch (known->handling) {
+      case REVERIE_VDSO_SYSCALL: {
+        /* Routed above under its `__vdso_` name, which this one aliases. */
+        const char *routed_name = vdso_routed_entry(known->syscall);
+        struct symbol *routed =
+            routed_name == NULL ? NULL
+                                : symbol_find(lib->symbol_hash, routed_name);
+        if (routed == NULL || routed->sym.st_value != other->sym.st_value)
+          _nx_fatal_printf("vdso %s needs syscall %ld, which patch_vdso does "
+                           "not route\n",
+                           other->name, known->syscall);
+        break;
+      }
+      case REVERIE_VDSO_ENOSYS:
+        _nx_debug_printf("replacing vdso %s with -ENOSYS\n", other->name);
+        replace_vdso_entry(lib, other, enosys_stub, sizeof(enosys_stub) - 1);
+        break;
+      case REVERIE_VDSO_NATIVE:
+        break;
+      }
     }
   }
 #endif // __x86_64__

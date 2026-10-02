@@ -35,6 +35,7 @@
 #include "drreg.h"
 #include "drwrap.h"
 #include "drx.h"
+#include "reverie_vdso_symbols.h"
 #include "virtual_identity.h"
 
 #ifndef X86_64
@@ -3361,18 +3362,6 @@ static bool vdso_is_entry_point(const Elf64_Sym* symbol) {
   }
 }
 
-static const Elf64_Sym* vdso_lookup(
-    const vdso_symtab_t* table,
-    const char* name) {
-  for (Elf64_Word index = 0; index < table->count; index++) {
-    const Elf64_Sym* symbol = &table->symbols[index];
-    if (vdso_is_entry_point(symbol) &&
-        strcmp(table->strings + symbol->st_name, name) == 0)
-      return symbol;
-  }
-  return NULL;
-}
-
 /*
  * The bytes a stub may overwrite at `symbol`: its st_size rounded up to the
  * vDSO's 16-byte function alignment, cut short at the next entry point.
@@ -3423,24 +3412,22 @@ static void replace_vdso_entry(
 // clock reads through the shared Detcore tool (2021 epoch) rather than the raw
 // host TSC, matching the ptrace backend.
 //
-// Neutralize one guest vDSO time symbol by overwriting its entry point with a
-// tiny `mov $sysnum, %eax; syscall; ret` thunk. glibc's vDSO fast path then
-// issues a real, trapped syscall instead of reading the raw host TSC, so the
-// call flows through pre_syscall() where the external Detcore tool virtualizes
-// it (and the prototype runtime still services it via handle_virtual_clock()).
-// This mirrors reverie-ptrace/src/vdso.rs, whose vDSO neutralization is why the
-// ptrace backend already reports the deterministic epoch; the previous
-// drwrap_skip_call() path answered from the base-zero prototype clock and never
-// reached the real tool, so `date` printed 1970 under Detcore (hermit#705).
-static void neutralize_vdso_symbol(
+// Neutralize one guest vDSO syscall fast path by overwriting its entry point
+// with a tiny `mov $sysnum, %eax; syscall; ret` thunk. glibc's vDSO fast path
+// then issues a real, trapped syscall instead of reading the raw host TSC, so
+// the call flows through pre_syscall() where the external Detcore tool
+// virtualizes it (and the prototype runtime still services it via
+// handle_virtual_clock()). This mirrors reverie-ptrace/src/vdso.rs, whose vDSO
+// neutralization is why the ptrace backend already reports the deterministic
+// epoch; the previous drwrap_skip_call() path answered from the base-zero
+// prototype clock and never reached the real tool, so `date` printed 1970
+// under Detcore (hermit#705).
+static void neutralize_vdso_syscall(
     const module_data_t* module,
     const vdso_symtab_t* table,
     const char* name,
+    const Elf64_Sym* symbol,
     long sysnum) {
-  const Elf64_Sym* symbol = vdso_lookup(table, name);
-  if (symbol == NULL)
-    return;
-
   /*
    * mov $sysnum, %eax; syscall; ret  (8 bytes). The trailing `ret` prevents
    * fall-through into the original body.
@@ -3470,12 +3457,9 @@ static void neutralize_vdso_symbol(
  */
 static void neutralize_vdso_getrandom(
     const module_data_t* module,
-    const vdso_symtab_t* table) {
-  static const char name[] = "__vdso_getrandom";
-  const Elf64_Sym* symbol = vdso_lookup(table, name);
-  if (symbol == NULL)
-    return;
-
+    const vdso_symtab_t* table,
+    const char* name,
+    const Elf64_Sym* symbol) {
   static const uint8_t stub[36] = {
       0x49, 0x83, 0xf8, 0xff, /* cmp $-1, %r8 */
       0x75, 0x16, /* jne syscall_path */
@@ -3496,28 +3480,59 @@ static void neutralize_vdso_getrandom(
 }
 
 /*
- * The vDSO entry points with a syscall equivalent, which module_load replaces
- * with stubs that issue it. Keep in step with the neutralize calls there.
+ * The classification of the entry point at `symbol`: the reverie_vdso_symbols
+ * entry of a name exported at its address, or NULL if none is listed. The
+ * x86_64 vDSO exports most functions twice (`clock_gettime` beside
+ * `__vdso_clock_gettime`); listed names at one address that disagree exit the
+ * runtime tree, as reverie-ptrace refuses such a vDSO.
  */
-static const char* const vdso_syscall_entries[] = {
-    "__vdso_clock_gettime",
-    "__vdso_clock_getres",
-    "__vdso_gettimeofday",
-    "__vdso_getcpu",
-    "__vdso_time",
-    "__vdso_getrandom",
-};
+static const struct reverie_vdso_symbol* vdso_classify(
+    const vdso_symtab_t* table,
+    const Elf64_Sym* symbol) {
+  const struct reverie_vdso_symbol* known = NULL;
+  for (Elf64_Word index = 0; index < table->count; index++) {
+    const Elf64_Sym* other = &table->symbols[index];
+    if (!vdso_is_entry_point(other) || other->st_value != symbol->st_value)
+      continue;
+    const struct reverie_vdso_symbol* entry =
+        reverie_vdso_symbol_lookup(table->strings + other->st_name);
+    if (entry == NULL)
+      continue;
+    if (known != NULL &&
+        (known->handling != entry->handling ||
+         known->syscall != entry->syscall)) {
+      dr_fprintf(
+          diagnostic_file,
+          "reverie-dbt: vdso exports %s and %s at one address, but they need "
+          "different stubs\n",
+          known->name,
+          entry->name);
+      exit_runtime_tree(101);
+    }
+    known = entry;
+  }
+  return known;
+}
+
+/* Is no earlier entry point in `table` at the address of symbol `index`? */
+static bool vdso_first_at_address(const vdso_symtab_t* table, Elf64_Word index) {
+  for (Elf64_Word other = 0; other < index; other++) {
+    if (vdso_is_entry_point(&table->symbols[other]) &&
+        table->symbols[other].st_value == table->symbols[index].st_value)
+      return false;
+  }
+  return true;
+}
 
 /*
- * Replace every other vDSO entry point with `mov $-ENOSYS, %rax; ret`, so no
- * entry point keeps running the kernel's code unobserved; this is the same
- * policy as reverie-ptrace/src/vdso.rs, which documents which glibc callers
- * tolerate -ENOSYS. A name exported at the same address as a syscall entry is
- * an alias (the x86_64 vDSO exports `clock_gettime` beside
- * `__vdso_clock_gettime`) and is already covered. `__vdso_sgx_enter_enclave`
- * has no syscall equivalent and is expected; any other name is reported.
+ * Replace every vDSO entry point as reverie-core classifies it
+ * (reverie_vdso_symbols.h, generated from `VdsoSymbol::class`): a syscall fast
+ * path with a stub that issues the syscall, any other function with
+ * `mov $-ENOSYS, %rax; ret`, except those the classification leaves native.
+ * A name the table does not list is reported and replaced with -ENOSYS, so no
+ * entry point keeps running the kernel's code unobserved.
  */
-static void neutralize_other_vdso_entries(
+static void neutralize_vdso(
     const module_data_t* module,
     const vdso_symtab_t* table) {
   static const uint8_t enosys[VDSO_THUNK_SIZE] = {
@@ -3526,27 +3541,31 @@ static void neutralize_other_vdso_entries(
   };
   for (Elf64_Word index = 0; index < table->count; index++) {
     const Elf64_Sym* symbol = &table->symbols[index];
-    if (!vdso_is_entry_point(symbol))
+    if (!vdso_is_entry_point(symbol) || !vdso_first_at_address(table, index))
       continue;
     const char* name = table->strings + symbol->st_name;
-    bool covered = false;
-    for (size_t known = 0; known < sizeof(vdso_syscall_entries) /
-             sizeof(vdso_syscall_entries[0]);
-         known++) {
-      const Elf64_Sym* entry = vdso_lookup(table, vdso_syscall_entries[known]);
-      if (entry != NULL && entry->st_value == symbol->st_value) {
-        covered = true;
-        break;
-      }
-    }
-    if (covered)
-      continue;
-    if (strcmp(name, "__vdso_sgx_enter_enclave") != 0)
+    const struct reverie_vdso_symbol* known = vdso_classify(table, symbol);
+    if (known == NULL) {
       dr_fprintf(
           diagnostic_file,
           "reverie-dbt: replacing unknown vdso entry point %s with -ENOSYS\n",
           name);
-    replace_vdso_entry(module, table, name, symbol, enosys, sizeof(enosys));
+      replace_vdso_entry(module, table, name, symbol, enosys, sizeof(enosys));
+      continue;
+    }
+    switch (known->handling) {
+      case REVERIE_VDSO_SYSCALL:
+        if (known->syscall == SYS_getrandom)
+          neutralize_vdso_getrandom(module, table, name, symbol);
+        else
+          neutralize_vdso_syscall(module, table, name, symbol, known->syscall);
+        break;
+      case REVERIE_VDSO_ENOSYS:
+        replace_vdso_entry(module, table, name, symbol, enosys, sizeof(enosys));
+        break;
+      case REVERIE_VDSO_NATIVE:
+        break;
+    }
   }
 }
 
@@ -3573,16 +3592,7 @@ module_load(void* drcontext, const module_data_t* module, bool loaded) {
     exit_runtime_tree(101);
     return;
   }
-  neutralize_other_vdso_entries(module, &table);
-  neutralize_vdso_symbol(
-      module, &table, "__vdso_clock_gettime", SYS_clock_gettime);
-  neutralize_vdso_symbol(
-      module, &table, "__vdso_clock_getres", SYS_clock_getres);
-  neutralize_vdso_symbol(
-      module, &table, "__vdso_gettimeofday", SYS_gettimeofday);
-  neutralize_vdso_symbol(module, &table, "__vdso_getcpu", SYS_getcpu);
-  neutralize_vdso_symbol(module, &table, "__vdso_time", SYS_time);
-  neutralize_vdso_getrandom(module, &table);
+  neutralize_vdso(module, &table);
 }
 
 static bool fd_matches_stdin(void* drcontext, int fd) {
