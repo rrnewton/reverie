@@ -92,6 +92,25 @@ impl TraceeToken {
     fn event(&self) -> &notifier::EventHandle {
         &self.event
     }
+
+    /// Runs one numeric request on this generation's TID.
+    ///
+    /// Under the notifier, a fatal signal can end the stop that a capability
+    /// names, and the generation's reaper can then release the TID for reuse
+    /// while the capability is still held. The request runs only while this
+    /// generation still holds the TID, and otherwise fails with `ESRCH`
+    /// without reaching the kernel, so it never names a replacement task.
+    fn on_held_tid<T>(&self, request: impl FnOnce() -> Result<T, Errno>) -> Result<T, Errno> {
+        #[cfg(feature = "notifier")]
+        let Some(_held) = self.event.hold_tid() else {
+            return Err(Errno::ESRCH);
+        };
+        request()
+    }
+}
+
+fn nix_errno(err: nix::Error) -> Errno {
+    Errno::new(err as i32)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -566,11 +585,6 @@ impl Stopped {
         }
     }
 
-    // Helper for converting from the nix::Error type.
-    fn map_nix_err(&self, err: nix::Error) -> Error {
-        self.map_err(Errno::new(err as i32))
-    }
-
     /// Returns a future that is notified when the next exit stop occurs. This
     /// is received asynchronously regardless of what the process was doing at
     /// the time. This is useful for canceling futures when a process enters a
@@ -639,7 +653,9 @@ impl Stopped {
 
     /// Sets the ptracer options.
     pub fn setoptions(&self, options: ptrace::Options) -> Result<(), Error> {
-        ptrace::setoptions(self.0.into(), options).map_err(|err| self.map_nix_err(err))
+        self.1
+            .on_held_tid(|| ptrace::setoptions(self.0.into(), options).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))
     }
 
     /// Gets a set of registers.
@@ -657,18 +673,19 @@ impl Stopped {
             iov_len: core::mem::size_of_val(&regs),
         };
 
-        unsafe {
-            syscalls::syscall!(
-                Sysno::ptrace,
-                // PTRACE_GETREGS isn't available on aarch64, so we must use
-                // PTRACE_GETREGSET instead.
-                libc::PTRACE_GETREGSET,
-                self.0.as_raw(),
-                which,
-                &mut iov as *mut _
-            )
-        }
-        .map_err(|err| self.map_err(err))?;
+        self.1
+            .on_held_tid(|| unsafe {
+                syscalls::syscall!(
+                    Sysno::ptrace,
+                    // PTRACE_GETREGS isn't available on aarch64, so we must use
+                    // PTRACE_GETREGSET instead.
+                    libc::PTRACE_GETREGSET,
+                    self.0.as_raw(),
+                    which,
+                    &mut iov as *mut _
+                )
+            })
+            .map_err(|err| self.map_err(err))?;
 
         // PTRACE_GETREGSET modifies the length to the real length of the
         // registers, but we should already know the exact number of registers
@@ -684,18 +701,19 @@ impl Stopped {
             iov_len: core::mem::size_of::<T>(),
         };
 
-        unsafe {
-            syscalls::syscall!(
-                Sysno::ptrace,
-                // PTRACE_SETREGS isn't available on aarch64, so we must use
-                // PTRACE_SETREGSET instead.
-                libc::PTRACE_SETREGSET,
-                self.0.as_raw(),
-                which,
-                &iov as *const _
-            )
-        }
-        .map_err(|err| self.map_err(err))?;
+        self.1
+            .on_held_tid(|| unsafe {
+                syscalls::syscall!(
+                    Sysno::ptrace,
+                    // PTRACE_SETREGS isn't available on aarch64, so we must use
+                    // PTRACE_SETREGSET instead.
+                    libc::PTRACE_SETREGSET,
+                    self.0.as_raw(),
+                    which,
+                    &iov as *const _
+                )
+            })
+            .map_err(|err| self.map_err(err))?;
 
         Ok(())
     }
@@ -733,16 +751,17 @@ impl Stopped {
             iov_base: bytes.as_mut_ptr().cast(),
             iov_len: bytes.len(),
         };
-        unsafe {
-            syscalls::syscall!(
-                Sysno::ptrace,
-                libc::PTRACE_GETREGSET,
-                self.0.as_raw(),
-                NT_X86_XSTATE,
-                &mut iov as *mut _
-            )
-        }
-        .map_err(|err| self.map_err(err))?;
+        self.1
+            .on_held_tid(|| unsafe {
+                syscalls::syscall!(
+                    Sysno::ptrace,
+                    libc::PTRACE_GETREGSET,
+                    self.0.as_raw(),
+                    NT_X86_XSTATE,
+                    &mut iov as *mut _
+                )
+            })
+            .map_err(|err| self.map_err(err))?;
         if iov.iov_len > bytes.len() {
             return Err(Error::Errno(Errno::EOVERFLOW));
         }
@@ -759,22 +778,25 @@ impl Stopped {
             iov_base: state.0.as_ptr() as *mut libc::c_void,
             iov_len: state.0.len(),
         };
-        unsafe {
-            syscalls::syscall!(
-                Sysno::ptrace,
-                libc::PTRACE_SETREGSET,
-                self.0.as_raw(),
-                NT_X86_XSTATE,
-                &iov as *const _
-            )
-        }
-        .map_err(|err| self.map_err(err))?;
+        self.1
+            .on_held_tid(|| unsafe {
+                syscalls::syscall!(
+                    Sysno::ptrace,
+                    libc::PTRACE_SETREGSET,
+                    self.0.as_raw(),
+                    NT_X86_XSTATE,
+                    &iov as *const _
+                )
+            })
+            .map_err(|err| self.map_err(err))?;
         Ok(())
     }
 
     /// Resumes the process and transitions it back to a running state.
     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::cont(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        self.1
+            .on_held_tid(|| ptrace::cont(self.0.into(), sig).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))?;
         Ok(Running::from_token(self.0, self.1))
     }
 
@@ -791,7 +813,9 @@ impl Stopped {
         self,
         sig: T,
     ) -> Result<Running, (Self, Errno)> {
-        let result = ptrace::cont(self.0.into(), sig);
+        let result = self
+            .1
+            .on_held_tid(|| ptrace::cont(self.0.into(), sig).map_err(nix_errno));
         self.finish_retained_resume(result)
     }
 
@@ -813,25 +837,29 @@ impl Stopped {
 
     pub(crate) fn finish_retained_resume(
         self,
-        result: Result<(), nix::Error>,
+        result: Result<(), Errno>,
     ) -> Result<Running, (Self, Errno)> {
         match result {
             Ok(()) => Ok(Running::from_token(self.0, self.1)),
-            Err(error) => Err((self, Errno::new(error as i32))),
+            Err(error) => Err((self, error)),
         }
     }
 
     /// Advances the execution of the process by a single step optionally
     /// delivering a signal specified by `sig`.
     pub fn step<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::step(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        self.1
+            .on_held_tid(|| ptrace::step(self.0.into(), sig).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))?;
         Ok(Running::from_token(self.0, self.1))
     }
 
     /// Like `step`, but arranges for the tracee to be stopped at the next
     /// entry to or exit from a system call.
     pub fn syscall<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::syscall(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        self.1
+            .on_held_tid(|| ptrace::syscall(self.0.into(), sig).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))?;
         Ok(Running::from_token(self.0, self.1))
     }
 
@@ -854,7 +882,9 @@ impl Stopped {
 
     /// Gets info about the signal that caused the process to be stopped.
     pub fn getsiginfo(&self) -> Result<libc::siginfo_t, Error> {
-        ptrace::getsiginfo(self.0.into()).map_err(|err| self.map_nix_err(err))
+        self.1
+            .on_held_tid(|| ptrace::getsiginfo(self.0.into()).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))
     }
 
     /// Returns [`Error::Died`] if this tracee has left the stop this
@@ -888,22 +918,27 @@ impl Stopped {
 
     /// Sets info about the singal that caused the process to be stopped.
     pub fn setsiginfo(&self, siginfo: &libc::siginfo_t) -> Result<(), Error> {
-        ptrace::setsiginfo(self.0.into(), siginfo).map_err(|err| self.map_nix_err(err))
+        self.1
+            .on_held_tid(|| ptrace::setsiginfo(self.0.into(), siginfo).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))
     }
 
     /// Gets the tracee's blocked signal mask (`PTRACE_GETSIGMASK`). Bit `n - 1`
     /// is set when signal `n` is blocked.
     pub fn getsigmask(&self) -> Result<u64, Error> {
         let mut mask: u64 = 0;
-        Errno::result(unsafe {
-            libc::ptrace(
-                libc::PTRACE_GETSIGMASK,
-                self.0.as_raw(),
-                core::mem::size_of::<u64>(),
-                &mut mask as *mut u64,
-            )
-        })
-        .map_err(|err| self.map_err(err))?;
+        self.1
+            .on_held_tid(|| {
+                Errno::result(unsafe {
+                    libc::ptrace(
+                        libc::PTRACE_GETSIGMASK,
+                        self.0.as_raw(),
+                        core::mem::size_of::<u64>(),
+                        &mut mask as *mut u64,
+                    )
+                })
+            })
+            .map_err(|err| self.map_err(err))?;
         Ok(mask)
     }
 
@@ -912,15 +947,18 @@ impl Stopped {
     /// also clears the tracee's pending restore of a mask saved by a
     /// mask-swapping syscall such as `ppoll` or `rt_sigsuspend`.
     pub fn setsigmask(&self, mask: u64) -> Result<(), Error> {
-        Errno::result(unsafe {
-            libc::ptrace(
-                libc::PTRACE_SETSIGMASK,
-                self.0.as_raw(),
-                core::mem::size_of::<u64>(),
-                &mask as *const u64,
-            )
-        })
-        .map_err(|err| self.map_err(err))?;
+        self.1
+            .on_held_tid(|| {
+                Errno::result(unsafe {
+                    libc::ptrace(
+                        libc::PTRACE_SETSIGMASK,
+                        self.0.as_raw(),
+                        core::mem::size_of::<u64>(),
+                        &mask as *const u64,
+                    )
+                })
+            })
+            .map_err(|err| self.map_err(err))?;
         Ok(())
     }
 
@@ -937,15 +975,19 @@ impl Stopped {
             flags: flags.into().map_or(0, |x| x.bits()),
             nr: SIGNAL_MAX as u32,
         };
-        let count = Errno::result(unsafe {
-            libc::ptrace(
-                libc::PTRACE_PEEKSIGINFO,
-                self.0.as_raw(),
-                &mut siginfo_args as *mut _,
-                data.as_mut_ptr() as *const _ as *const libc::c_void,
-            )
-        })
-        .map_err(|err| self.map_err(err))?;
+        let count = self
+            .1
+            .on_held_tid(|| {
+                Errno::result(unsafe {
+                    libc::ptrace(
+                        libc::PTRACE_PEEKSIGINFO,
+                        self.0.as_raw(),
+                        &mut siginfo_args as *mut _,
+                        data.as_mut_ptr() as *const _ as *const libc::c_void,
+                    )
+                })
+            })
+            .map_err(|err| self.map_err(err))?;
         Ok(unsafe { data.assume_init() }[0..count as usize].to_vec())
     }
 
@@ -970,15 +1012,19 @@ impl Stopped {
                 flags,
                 nr: CHUNK as u32,
             };
-            let count = Errno::result(unsafe {
-                libc::ptrace(
-                    libc::PTRACE_PEEKSIGINFO,
-                    self.0.as_raw(),
-                    &mut siginfo_args as *mut _,
-                    data.as_mut_ptr() as *const _ as *const libc::c_void,
-                )
-            })
-            .map_err(|err| self.map_err(err))? as usize;
+            let count = self
+                .1
+                .on_held_tid(|| {
+                    Errno::result(unsafe {
+                        libc::ptrace(
+                            libc::PTRACE_PEEKSIGINFO,
+                            self.0.as_raw(),
+                            &mut siginfo_args as *mut _,
+                            data.as_mut_ptr() as *const _ as *const libc::c_void,
+                        )
+                    })
+                })
+                .map_err(|err| self.map_err(err))? as usize;
             if count == 0 {
                 return Ok(all);
             }
@@ -992,12 +1038,16 @@ impl Stopped {
     /// It shouldn't be necessary to call this in most cases because `Event`
     /// provides the necessary context for certain ptrace events.
     pub fn getevent(&self) -> Result<i64, Error> {
-        ptrace::getevent(self.0.into()).map_err(|err| self.map_nix_err(err))
+        self.1
+            .on_held_tid(|| ptrace::getevent(self.0.into()).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))
     }
 
     /// Detaches from and then resumes the stopped tracee.
     pub fn detach<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::detach(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        self.1
+            .on_held_tid(|| ptrace::detach(self.0.into(), sig).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))?;
         Ok(Running::from_token(self.0, self.1))
     }
 }
@@ -1168,15 +1218,17 @@ impl Running {
     pub fn interrupt(&self) -> Result<(), Errno> {
         // nix doesn't provide `ptrace::interrupt` yet, so we need to roll our
         // own.
-        Errno::result(unsafe {
-            libc::ptrace(
-                libc::PTRACE_INTERRUPT,
-                self.0.as_raw(),
-                std::ptr::null_mut::<libc::c_void>(),
-                std::ptr::null_mut::<libc::c_void>(),
-            )
+        self.1.on_held_tid(|| {
+            Errno::result(unsafe {
+                libc::ptrace(
+                    libc::PTRACE_INTERRUPT,
+                    self.0.as_raw(),
+                    std::ptr::null_mut::<libc::c_void>(),
+                    std::ptr::null_mut::<libc::c_void>(),
+                )
+            })
+            .map(drop)
         })
-        .map(drop)
     }
 
     /// Returns the pid of the running process.

@@ -74,6 +74,7 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
+use std::os::fd::RawFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::pin::Pin;
@@ -106,6 +107,8 @@ use nix::sys::wait::WaitPidFlag;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
+use parking_lot::RwLock;
+use parking_lot::RwLockReadGuard;
 
 use super::Errno;
 use super::Error;
@@ -428,6 +431,13 @@ struct Event {
     /// but unstarted-completion paths may publish ECHILD independently.
     exit_publication: Mutex<()>,
 
+    /// Set by this generation's sole reaper after it observes the terminal
+    /// status with `WNOWAIT` and before it reaps, so the TID stays held by
+    /// this generation until the flag is set. A numeric ptrace request holds
+    /// the read side for its duration and is refused once the flag is set,
+    /// so it can never reach a replacement task that reused the TID.
+    terminal_reaping: RwLock<bool>,
+
     /// Waker for regular status events.
     status_waker: WakerSlot,
 
@@ -472,6 +482,11 @@ struct Event {
     cleanup_return_pause: Mutex<Option<BoundedTestPause>>,
     #[cfg(test)]
     terminal_publish_pause: Mutex<Option<BoundedTestPause>>,
+}
+
+/// Keeps a generation's TID from being reaped. See [`EventHandle::hold_tid`].
+pub(super) struct TidHold<'a> {
+    _guard: RwLockReadGuard<'a, bool>,
 }
 
 #[derive(Debug)]
@@ -669,6 +684,7 @@ impl Event {
         Self {
             exit_waiters: ExitWaiters::default(),
             exit_publication: Mutex::new(()),
+            terminal_reaping: RwLock::new(false),
             status_waker: WakerSlot::default(),
             status: Mutex::new(StatusState {
                 pending: VecDeque::new(),
@@ -694,6 +710,18 @@ impl Event {
             #[cfg(test)]
             terminal_publish_pause: Mutex::new(None),
         }
+    }
+
+    /// Marks the terminal status, already observed with `WNOWAIT`, as about
+    /// to be reaped. This waits for numeric requests already holding the TID
+    /// and refuses every later one.
+    fn mark_terminal_reaping(&self) {
+        *self.terminal_reaping.write() = true;
+    }
+
+    fn hold_tid(&self) -> Option<TidHold<'_>> {
+        let guard = self.terminal_reaping.read();
+        (!*guard).then_some(TidHold { _guard: guard })
     }
 
     fn expire_unclaimed_exit_capability(&self) -> bool {
@@ -1553,6 +1581,14 @@ impl EventHandle {
         &self.resolved().0.event
     }
 
+    /// Holds this generation's TID for one numeric ptrace request. Returns
+    /// `None` once the generation's reaper has marked its terminal status for
+    /// reaping, after which the kernel may reuse the TID. While the returned
+    /// hold lives, the reaper cannot release the TID.
+    pub(super) fn hold_tid(&self) -> Option<TidHold<'_>> {
+        self.event().hold_tid()
+    }
+
     fn identity(&self) -> Option<&Arc<WorkerIdentity>> {
         self.resolved().0.identity.get()
     }
@@ -1846,28 +1882,68 @@ fn spawn_worker(
     })
 }
 
+/// Waits for the next status of this exact pidfd and consumes it.
+///
+/// A terminal status is first observed with `WNOWAIT` and marked on `event`
+/// before the wait that reaps it, so a numeric ptrace request holding
+/// [`EventHandle::hold_tid`] can never reach a task that reused the TID. A stop
+/// is consumed by a wait that cannot reap: if a fatal signal ends the stop
+/// first, the next observation sees the terminal status instead.
+fn wait_pidfd_consuming(raw_fd: RawFd, event: &Event) -> Result<i32, Errno> {
+    let observe = WaitPidFlag::from_bits_retain(
+        WaitPidFlag::WEXITED.bits()
+            | WaitPidFlag::WSTOPPED.bits()
+            | WaitPidFlag::WNOWAIT.bits()
+            | libc::__WALL,
+    );
+    let consume_stop = WaitPidFlag::from_bits_retain(
+        WaitPidFlag::WSTOPPED.bits() | WaitPidFlag::WNOHANG.bits() | libc::__WALL,
+    );
+    let reap = WaitPidFlag::from_bits_retain(
+        WaitPidFlag::WEXITED.bits() | WaitPidFlag::WNOHANG.bits() | libc::__WALL,
+    );
+    loop {
+        let status = match waitid::waitpidfd(raw_fd, observe) {
+            Ok(status) => status.expect("blocking waitid returned no status"),
+            Err(Errno::EINTR) => continue,
+            Err(error) => return Err(error),
+        };
+        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+            event.mark_terminal_reaping();
+            loop {
+                return match waitid::waitpidfd(raw_fd, reap) {
+                    Ok(Some(reaped)) => {
+                        debug_assert_eq!(reaped, status, "reaped a different terminal status");
+                        Ok(reaped)
+                    }
+                    Ok(None) => unreachable!("observed terminal status is not reapable"),
+                    Err(Errno::EINTR) => continue,
+                    Err(error) => Err(error),
+                };
+            }
+        }
+        match waitid::waitpidfd(raw_fd, consume_stop) {
+            Ok(Some(stop)) => return Ok(stop),
+            Ok(None) | Err(Errno::EINTR) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Waits on the retained PID object and returns its lossless raw status.
 /// Exec can change the task attached to a PID object; callers must use the
 /// actual Exec edge for state handoffs, not infer them from a numeric PID.
 /// Returns `None` once the pidfd is no longer waitable, without PID fallback.
-fn wait_pidfd_status(identity: &WorkerIdentity) -> Option<i32> {
-    let flags = WaitPidFlag::from_bits_retain(
-        WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
-    );
-    loop {
-        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags);
-
-        return match result {
-            Ok(status) => Some(status.unwrap()),
-            Err(Errno::EINTR) => continue,
-            Err(Errno::ECHILD) => None,
-            Err(err) => {
-                panic!(
-                    "waitid(P_PIDFD, {}) failed unexpectedly: {}",
-                    identity.pid, err
-                )
-            }
-        };
+fn wait_pidfd_status(identity: &WorkerIdentity, event: &Event) -> Option<i32> {
+    match wait_pidfd_consuming(identity.pidfd.as_raw_fd(), event) {
+        Ok(status) => Some(status),
+        Err(Errno::ECHILD) => None,
+        Err(err) => {
+            panic!(
+                "waitid(P_PIDFD, {}) failed unexpectedly: {}",
+                identity.pid, err
+            )
+        }
     }
 }
 
@@ -1881,7 +1957,7 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
             event.mark_echild();
             break;
         }
-        let Some(status) = wait_pidfd_status(&identity) else {
+        let Some(status) = wait_pidfd_status(&identity, &event) else {
             if identity.is_active_tracee() {
                 // A newborn auto-attached ptrace child can briefly exist with
                 // this exact procfs generation before its first wait status
@@ -1954,9 +2030,6 @@ fn resume_cancelled_sync_status(pid: Pid, status: i32) -> Result<(), Error> {
 /// authority and atomic Event wait-owner claim. A losing synchronous caller
 /// consumes the notifier FIFO instead of issuing a second kernel wait.
 pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
-    let flags = WaitPidFlag::from_bits_retain(
-        WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
-    );
     let requested = token.event().resolved_handle();
     // A retained same-generation result remains authoritative even after the
     // procfs task and registry entry have disappeared.
@@ -2020,30 +2093,23 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                     }
                 }
                 loop {
-                    let status = loop {
-                        let Some(identity) = handle.identity() else {
-                            NOTIFIER.remove(pid, &event);
-                            return Err(Errno::EIO.into());
-                        };
-                        if identity.pid != pid {
-                            NOTIFIER.remove(pid, &event);
-                            return Err(Errno::ESRCH.into());
-                        }
-                        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags);
-                        match result {
-                            Ok(Some(status)) => break status,
-                            Ok(None) => {
-                                unreachable!("blocking synchronous wait returned no status")
+                    let Some(identity) = handle.identity() else {
+                        NOTIFIER.remove(pid, &event);
+                        return Err(Errno::EIO.into());
+                    };
+                    if identity.pid != pid {
+                        NOTIFIER.remove(pid, &event);
+                        return Err(Errno::ESRCH.into());
+                    }
+                    let status = match wait_pidfd_consuming(identity.pidfd.as_raw_fd(), &event) {
+                        Ok(status) => status,
+                        Err(error) => {
+                            if error == Errno::ECHILD {
+                                event.mark_echild();
+                                event.finish_sync_terminal();
                             }
-                            Err(Errno::EINTR) => {}
-                            Err(error) => {
-                                if error == Errno::ECHILD {
-                                    event.mark_echild();
-                                    event.finish_sync_terminal();
-                                }
-                                NOTIFIER.remove(pid, &event);
-                                return Err(error.into());
-                            }
+                            NOTIFIER.remove(pid, &event);
+                            return Err(error.into());
                         }
                     };
                     event.update_sync_status(status);
@@ -2904,8 +2970,8 @@ impl StoppedObservation {
             result.refusal = Some(StopObservationError::PidMismatch);
             return result;
         }
-        result.siginfo = Some(
-            nix::sys::ptrace::getsiginfo(self.pid.into())
+        result.siginfo = Some(match self.generation.hold_tid() {
+            Some(_held) => nix::sys::ptrace::getsiginfo(self.pid.into())
                 .map(|info| StopSiginfo {
                     signo: info.si_signo,
                     code: info.si_code,
@@ -2913,7 +2979,8 @@ impl StoppedObservation {
                     sender_uid: unsafe { info.si_uid() },
                 })
                 .map_err(|error| Errno::new(error as i32)),
-        );
+            None => Err(Errno::ESRCH),
+        });
         if flags_for_exit_siginfo
             && result
                 .siginfo
@@ -8585,9 +8652,13 @@ mod test {
             replacement_pid
         };
         let generation = Stopped::from_token(generation_pid.into(), token);
-        generation
+        replacement
             .getregs()
             .expect("the old generation's numeric PID names the stopped replacement");
+        assert!(
+            matches!(generation.getregs(), Err(Error::Died(_))),
+            "a request through the reaped generation reached the replacement"
+        );
 
         let mut wait = generation.wait_owned();
         let result = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, &mut wait)
@@ -8650,6 +8721,120 @@ mod test {
 
         // Restricted runners may deny user namespaces or clone3(set_tid).
         assert!(terminal_generation_wait_leaves_replacement_untouched(None).await);
+    }
+
+    /// Releases a claimed exit stop with a numeric request made outside the
+    /// claimed capability, as a stale stop's injected single-step can, so the
+    /// notifier reaps the generation while the claimed capability is still
+    /// held. The capability's requests must then fail with ESRCH instead of
+    /// reaching a replacement tracee. With `requested_pid`, the replacement
+    /// actually reuses the old PID; without it, the capability is rebuilt
+    /// beside the replacement's PID with the old generation's token.
+    async fn claimed_exit_stop_refuses_after_reap(requested_pid: Option<i32>) -> bool {
+        let Some((old_pid, old_stopped, mut old_cleanup)) = spawn_traced_process(requested_pid)
+        else {
+            return false;
+        };
+        old_stopped
+            .setoptions(Options::PTRACE_O_TRACEEXIT)
+            .expect("enable exit stop for claimed generation");
+        let exit_stop = old_cleanup
+            .exit_event(&old_stopped)
+            .expect("bind claimed-generation cleanup to notifier");
+        old_stopped
+            .resume(None)
+            .expect("resume claimed-generation tracee");
+        let claimed = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, exit_stop)
+            .await
+            .expect("claimed-generation ExitFuture timed out")
+            .expect("claim the exit-stop capability");
+        old_cleanup.mark_claimed_exit();
+        let terminal = old_cleanup
+            .terminal()
+            .expect("bound claimed-generation cleanup terminal");
+
+        nix::sys::ptrace::cont(old_pid, None).expect("raw resume of the claimed exit stop");
+        assert!(
+            terminal.wait(Duration::from_secs(1)),
+            "notifier did not publish old final status"
+        );
+        old_cleanup.disarm();
+
+        thread::sleep(Duration::from_millis(20));
+        let Some((replacement_pid, replacement, mut replacement_cleanup)) =
+            spawn_traced_process(requested_pid)
+        else {
+            return false;
+        };
+        let claimed = if requested_pid.is_some() {
+            assert_eq!(
+                replacement_pid, old_pid,
+                "clone3 did not reuse claimed-generation PID"
+            );
+            claimed
+        } else {
+            Stopped::from_token(replacement_pid.into(), claimed.1)
+        };
+        replacement
+            .getregs()
+            .expect("the claimed capability's numeric PID names the stopped replacement");
+        assert!(
+            matches!(claimed.getregs(), Err(Error::Died(_))),
+            "a request through the claimed capability reached the replacement"
+        );
+        let (claimed, errno) = claimed
+            .resume_retaining(None)
+            .expect_err("the claimed capability resumed the replacement");
+        assert_eq!(errno, Errno::ESRCH);
+        drop(claimed);
+
+        let info = replacement
+            .getsiginfo()
+            .expect("the claimed capability touched the stopped replacement");
+        assert_eq!(info.si_signo, libc::SIGSTOP);
+        replacement_cleanup
+            .bind_notifier(&replacement)
+            .expect("bind replacement to notifier");
+        let replacement = replacement.resume(None).expect("resume replacement");
+        let replacement = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, replacement.next_state())
+            .await
+            .expect("replacement final status timed out")
+            .expect("wait replacement");
+        replacement_cleanup.disarm();
+        assert_eq!(
+            replacement.assume_exited(),
+            (replacement_pid.into(), crate::ExitStatus::Exited(42))
+        );
+        true
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claimed_exit_stop_never_resumes_a_replacement_pid() {
+        const INNER: &str = "SAFEPTRACE_CLAIMED_EXIT_REUSE_INNER";
+        if env::var_os(INNER).is_some() {
+            if claimed_exit_stop_refuses_after_reap(Some(100)).await {
+                println!("ACTUAL_CLAIMED_EXIT_PID_REUSE_EXERCISED");
+            } else {
+                println!("ACTUAL_CLAIMED_EXIT_PID_REUSE_UNAVAILABLE");
+            }
+            return;
+        }
+
+        let inner = "notifier::test::claimed_exit_stop_never_resumes_a_replacement_pid";
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(INNER, "1")]);
+        match classify_exact_reuse_output(
+            actual_reuse.as_ref(),
+            "ACTUAL_CLAIMED_EXIT_PID_REUSE_EXERCISED",
+            "ACTUAL_CLAIMED_EXIT_PID_REUSE_UNAVAILABLE",
+        )
+        .unwrap_or_else(|error| panic!("claimed exit PID-reuse regression failed: {error}"))
+        {
+            ExactReuseOutcome::Exercised => return,
+            ExactReuseOutcome::Unavailable => {}
+        }
+
+        // Restricted runners may deny user namespaces or clone3(set_tid).
+        assert!(claimed_exit_stop_refuses_after_reap(None).await);
     }
 
     fn spawn_stopped_process(requested_pid: Option<i32>) -> Option<(Pid, TraceeCleanupGuard)> {

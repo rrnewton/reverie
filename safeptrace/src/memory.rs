@@ -39,23 +39,27 @@ impl Stopped {
 
     /// Reads a single u64.
     fn read_u64(&self, addr: Addr<u64>) -> Result<u64, Errno> {
-        ptrace::read(self.0.into(), unsafe {
-            addr.as_ptr() as *mut ::core::ffi::c_void
+        self.1.on_held_tid(|| {
+            ptrace::read(self.0.into(), unsafe {
+                addr.as_ptr() as *mut ::core::ffi::c_void
+            })
+            .map_err(|err| Errno::new(err as i32))
+            .map(|x| x as u64)
         })
-        .map_err(|err| Errno::new(err as i32))
-        .map(|x| x as u64)
     }
 
     /// Writes a single u64.
     fn write_u64(&mut self, addr: AddrMut<u64>, value: u64) -> Result<(), Errno> {
-        unsafe {
-            ptrace::write(
-                self.0.into(),
-                addr.as_mut_ptr() as *mut ::core::ffi::c_void,
-                value as c_long,
-            )
-        }
-        .map_err(|err| Errno::new(err as i32))
+        self.1.on_held_tid(|| {
+            unsafe {
+                ptrace::write(
+                    self.0.into(),
+                    addr.as_mut_ptr() as *mut ::core::ffi::c_void,
+                    value as c_long,
+                )
+            }
+            .map_err(|err| Errno::new(err as i32))
+        })
     }
 }
 
@@ -71,25 +75,28 @@ impl MemoryAccess for Stopped {
         remote: &[io::IoSlice],
         local: &mut [io::IoSliceMut],
     ) -> Result<usize, Errno> {
-        Errno::result(unsafe {
-            libc::process_vm_readv(
-                self.0.as_raw(),
-                local.as_ptr() as *const libc::iovec,
-                local.len() as libc::c_ulong,
-                remote.as_ptr() as *const libc::iovec,
-                remote.len() as libc::c_ulong,
-                0,
-            )
-        })
-        .map(|x| x as usize)
-        .or_else(|err| {
-            if err == Errno::EFAULT {
-                // Treat page faults as an EOF.
-                Ok(0)
-            } else {
-                Err(err)
-            }
-        })
+        self.1
+            .on_held_tid(|| {
+                Errno::result(unsafe {
+                    libc::process_vm_readv(
+                        self.0.as_raw(),
+                        local.as_ptr() as *const libc::iovec,
+                        local.len() as libc::c_ulong,
+                        remote.as_ptr() as *const libc::iovec,
+                        remote.len() as libc::c_ulong,
+                        0,
+                    )
+                })
+                .map(|x| x as usize)
+            })
+            .or_else(|err| {
+                if err == Errno::EFAULT {
+                    // Treat page faults as an EOF.
+                    Ok(0)
+                } else {
+                    Err(err)
+                }
+            })
     }
 
     /// Does a vectored writes to the address space. Returns the number of bytes
@@ -103,25 +110,28 @@ impl MemoryAccess for Stopped {
         local: &[io::IoSlice],
         remote: &mut [io::IoSliceMut],
     ) -> Result<usize, Errno> {
-        Errno::result(unsafe {
-            libc::process_vm_writev(
-                self.0.as_raw(),
-                local.as_ptr() as *const libc::iovec,
-                local.len() as libc::c_ulong,
-                remote.as_ptr() as *const libc::iovec,
-                remote.len() as libc::c_ulong,
-                0,
-            )
-        })
-        .map(|x| x as usize)
-        .or_else(|err| {
-            if err == Errno::EFAULT {
-                // Treat page faults as an EOF.
-                Ok(0)
-            } else {
-                Err(err)
-            }
-        })
+        self.1
+            .on_held_tid(|| {
+                Errno::result(unsafe {
+                    libc::process_vm_writev(
+                        self.0.as_raw(),
+                        local.as_ptr() as *const libc::iovec,
+                        local.len() as libc::c_ulong,
+                        remote.as_ptr() as *const libc::iovec,
+                        remote.len() as libc::c_ulong,
+                        0,
+                    )
+                })
+                .map(|x| x as usize)
+            })
+            .or_else(|err| {
+                if err == Errno::EFAULT {
+                    // Treat page faults as an EOF.
+                    Ok(0)
+                } else {
+                    Err(err)
+                }
+            })
     }
 
     /// Performs a read starting at the given address. The number of bytes read
