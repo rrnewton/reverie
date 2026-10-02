@@ -330,7 +330,7 @@ rust_library(
             "lints": {
                 "rust": {
                     "unexpected_cfgs": {
-                        "check-cfg": ["cfg(sanitized)"],
+                        "check-cfg": ["cfg(sanitized)", "cfg(cohort_final_test)"],
                         "level": "warn",
                     },
                 },
