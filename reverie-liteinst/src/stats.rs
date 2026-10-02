@@ -240,6 +240,7 @@ struct GuestStatsCollector {
     cacheline_straddler_fallback: AtomicU64,
     unpatchable_or_other_fallback: AtomicU64,
     fallback_refusal: AtomicU64,
+    patching_disabled_fallback: AtomicU64,
 }
 
 impl GuestStatsCollector {
@@ -252,6 +253,7 @@ impl GuestStatsCollector {
             LiteinstDispatchPath::CachelineStraddlerFallback => &self.cacheline_straddler_fallback,
             LiteinstDispatchPath::UnpatchableOrOtherFallback => &self.unpatchable_or_other_fallback,
             LiteinstDispatchPath::FallbackRefusal => &self.fallback_refusal,
+            LiteinstDispatchPath::PatchingDisabledFallback => &self.patching_disabled_fallback,
             LiteinstDispatchPath::FirstSiteSeccomp
             | LiteinstDispatchPath::PtraceInstallation
             | LiteinstDispatchPath::DirectHook => {
@@ -291,6 +293,10 @@ impl GuestStatsCollector {
                 LiteinstDispatchPath::FallbackRefusal,
                 self.fallback_refusal.load(Ordering::Relaxed),
             ),
+            (
+                LiteinstDispatchPath::PatchingDisabledFallback,
+                self.patching_disabled_fallback.load(Ordering::Relaxed),
+            ),
         ])
     }
 
@@ -304,6 +310,7 @@ impl GuestStatsCollector {
         self.unpatchable_or_other_fallback
             .store(0, Ordering::Relaxed);
         self.fallback_refusal.store(0, Ordering::Relaxed);
+        self.patching_disabled_fallback.store(0, Ordering::Relaxed);
     }
 }
 
@@ -403,6 +410,7 @@ pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<GuestStat
             cacheline_straddler_fallback: AtomicU64::new(0),
             unpatchable_or_other_fallback: AtomicU64::new(0),
             fallback_refusal: AtomicU64::new(0),
+            patching_disabled_fallback: AtomicU64::new(0),
         })
         .map_err(|_| {
             io::Error::new(

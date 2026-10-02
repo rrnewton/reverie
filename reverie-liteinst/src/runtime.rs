@@ -360,6 +360,7 @@ static INSTALL_HELD: AtomicBool = AtomicBool::new(false);
 static INSTRUCTION_SUBSCRIPTIONS: AtomicU8 = AtomicU8::new(0);
 static PATCH_PUBLICATION: AtomicU8 = AtomicU8::new(PatchPublication::Concurrent as u8);
 static PROCESS_FORKS_ALLOWED: AtomicBool = AtomicBool::new(true);
+static SITE_PATCHING_ENABLED: AtomicBool = AtomicBool::new(true);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InstructionEventKind {
@@ -742,6 +743,61 @@ pub const ALT_STACK_ENV: &str = "REVERIE_LITEINST_ALT_STACK";
 /// Allows a caller to keep fork-family syscalls fail-closed while integrating
 /// a Tool whose process lifecycle is not ready for the direct backend.
 pub const PROCESS_FORK_ENV: &str = "REVERIE_LITEINST_PROCESS_FORK";
+/// Selects whether an in-guest Reverie Tool patches trapping syscall sites.
+///
+/// Unset or `1` keeps site patching on. `0` turns it off: no site is claimed or
+/// patched, and every trapping syscall runs the Tool through the in-guest
+/// `SIGSYS` fallback ([`crate::syscall_fallback`]). That includes subscribed
+/// vDSO fast paths: they get ptrace's whole `mov $nr, %eax; syscall; ret`
+/// stubs with no hook ([`reverie_ptrace::patch_current_vdso_trapping`]) instead
+/// of hooked bare `syscall`s. Any other value is
+/// rejected. Only an in-guest Reverie Tool (the `install_tool` family) honors
+/// `0`; the ptrace-hosted, built-in, `strace`, and `compat` runtimes always
+/// patch, so they refuse to start when this variable holds anything but `1`.
+pub const SITE_PATCHING_ENV: &str = "REVERIE_LITEINST_SITE_PATCHING";
+/// [`SITE_PATCHING_ENV`] for the non-allocating constructor check.
+const SITE_PATCHING_ENV_C: &CStr = c"REVERIE_LITEINST_SITE_PATCHING";
+const _: () = assert!(const_bytes_eq(
+    SITE_PATCHING_ENV_C.to_bytes(),
+    SITE_PATCHING_ENV.as_bytes()
+));
+
+/// Parses a [`SITE_PATCHING_ENV`] value into the site-patching boolean.
+///
+/// `None` (unset) and `1` select patching; `0` disables it. Any other value,
+/// including surrounding whitespace, is rejected, matching the strict
+/// [`PROCESS_FORK_ENV`] parse.
+pub fn site_patching_from_env_value(value: Option<&OsStr>) -> io::Result<bool> {
+    match value {
+        None => Ok(true),
+        Some(value) if value == OsStr::new("1") => Ok(true),
+        Some(value) if value == OsStr::new("0") => Ok(false),
+        Some(value) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unsupported {SITE_PATCHING_ENV} value {value:?}"),
+        )),
+    }
+}
+
+/// Refuses to start a runtime that always patches when the launcher asked for
+/// site patching to be off. Reads with `getenv` so the accepted case does not
+/// allocate before the constructor window.
+fn require_site_patching(runtime: &str) -> io::Result<()> {
+    // SAFETY: the loader runs constructors before application threads start,
+    // so nothing mutates the environment concurrently; the name is NUL-terminated.
+    let value = unsafe { libc::getenv(SITE_PATCHING_ENV_C.as_ptr()) };
+    // SAFETY: a non-null getenv result is a NUL-terminated environment value.
+    if value.is_null() || unsafe { CStr::from_ptr(value) }.to_bytes() == b"1" {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "{SITE_PATCHING_ENV} can only disable site patching for an in-guest Reverie Tool; \
+             the {runtime} runtime always patches"
+        ),
+    ))
+}
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-254): Review alt-stack env parse/reject contract.
@@ -967,6 +1023,7 @@ pub(crate) fn initialize_from_environment() -> io::Result<()> {
     let host_selector = unsafe { libc::getenv(HOST_RUNTIME_ENV_C.as_ptr()) };
     // SAFETY: a non-null getenv result is a NUL-terminated environment value.
     if !host_selector.is_null() && unsafe { CStr::from_ptr(host_selector) }.to_bytes() == b"1" {
+        require_site_patching("ptrace-hosted")?;
         return initialize_host_runtime();
     }
     let tool_value = std::env::var_os("REVERIE_LITEINST_TOOL");
@@ -976,6 +1033,7 @@ pub(crate) fn initialize_from_environment() -> io::Result<()> {
     if let Some(value) = tool_value.as_deref()
         && let Some(tool) = builtin_tool_from_env_value(value)
     {
+        require_site_patching("built-in Tool")?;
         // SAFETY: the loader calls this once before application threads start.
         return unsafe { install_builtin_runtime(tool) };
     }
@@ -990,6 +1048,11 @@ pub(crate) fn initialize_from_environment() -> io::Result<()> {
             ));
         }
     };
+    require_site_patching(if mode == TOOL_COMPAT {
+        "compat"
+    } else {
+        "strace"
+    })?;
     TOOL_MODE.store(mode, Ordering::Release);
     let event_channel = if mode == TOOL_COMPAT {
         compatibility_event_channel()?
@@ -1141,6 +1204,7 @@ pub(crate) fn initialize_reverie_tool(
     stats: crate::stats::GuestStatsHooks,
     publication: PatchPublication,
     instructions: InstructionSubscriptions,
+    site_patching: bool,
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
 ) -> io::Result<()> {
     let stage_stream = match std::env::var_os(IN_GUEST_STAGE_STREAM_ENV).as_deref() {
@@ -1167,6 +1231,8 @@ pub(crate) fn initialize_reverie_tool(
         }
     };
     PROCESS_FORKS_ALLOWED.store(process_forks_allowed, Ordering::Release);
+    debug_assert!(site_patching || vdso_sites.is_empty());
+    SITE_PATCHING_ENABLED.store(site_patching, Ordering::Release);
     TOOL_MODE.store(TOOL_REVERIE, Ordering::Release);
     install_runtime(stats, publication, instructions, vdso_sites)
 }
@@ -3069,6 +3135,10 @@ static ENABLED_FALLBACK_CLASSIFICATIONS: AtomicU64 = AtomicU64::new(0);
 fn record_enabled_fallback_stats(stats: crate::stats::GuestStatsHooks, address: u64) {
     #[cfg(test)]
     ENABLED_FALLBACK_CLASSIFICATIONS.fetch_add(1, Ordering::Relaxed);
+    if !SITE_PATCHING_ENABLED.load(Ordering::Relaxed) {
+        stats.record_path(crate::LiteinstDispatchPath::PatchingDisabledFallback);
+        return;
+    }
     let straddler =
         find_site(address).is_some_and(|site| site.straddle_prefix.load(Ordering::Relaxed) != 0);
     stats.record_path(if straddler {
@@ -3169,7 +3239,9 @@ impl LiteinstDispatcher {
         let instruction_pointer = unsafe { locate_syscall_site(resume_address) }
             .unwrap_or(resume_address.saturating_sub(2));
 
-        if let Some((site, claimed)) = claim_site(instruction_pointer) {
+        if SITE_PATCHING_ENABLED.load(Ordering::Relaxed)
+            && let Some((site, claimed)) = claim_site(instruction_pointer)
+        {
             site.trap_count.fetch_add(1, Ordering::Relaxed);
             if claimed {
                 let native = unsafe { set_all_instruction_native(true) };
