@@ -344,6 +344,9 @@ struct VdsoExport {
     offset: u64,
     /// The symbol's `st_size`.
     size: usize,
+    /// The end of the section that contains the symbol, if the image has
+    /// section headers.
+    section_end: Option<u64>,
 }
 
 /// What a vDSO entry point is.
@@ -360,10 +363,14 @@ struct VdsoEntry {
     /// The exported names, the known one (if any) first.
     names: Vec<String>,
     offset: u64,
-    /// Bytes a replacement may overwrite. The vDSO pads every entry to a
-    /// 16-byte alignment, which `st_size` does not include, so this is
-    /// `st_size` rounded up to 16, cut short at the next entry point.
+    /// The bytes a stub must fit in: `st_size` rounded up to 16, the function
+    /// alignment of the x86_64 and aarch64 vDSOs, cut short at the next entry
+    /// point and at the end of the containing section. The rounding is an
+    /// assumption about the image, so only a stub longer than `st_size` relies
+    /// on it; see [`VdsoEntry::patch_len`].
     size: usize,
+    /// The symbol's `st_size`.
+    symbol_size: usize,
     kind: VdsoEntryKind,
 }
 
@@ -395,6 +402,16 @@ impl VdsoEntry {
                 .is_some()
                 .then_some(vdso_syms::enosys),
         }
+    }
+
+    /// The bytes a `stub_len`-byte stub and its NOP fill overwrite: the whole
+    /// function, and padding only where the stub itself is longer. Filling to
+    /// `size` would write over whatever follows the function when the image is
+    /// not padded as assumed; on this x86_64 host the last entry point ends 4
+    /// bytes before `.altinstructions`, which `size` rounded into.
+    fn patch_len(&self, stub_len: usize) -> usize {
+        debug_assert!(stub_len <= self.size);
+        self.symbol_size.max(stub_len)
     }
 
     fn describe(&self) -> String {
@@ -443,6 +460,10 @@ fn vdso_exports(image: &[u8]) -> Result<Vec<VdsoExport>, String> {
             name: name.to_owned(),
             offset: sym.st_value,
             size: sym.st_size as usize,
+            section_end: elf
+                .section_headers
+                .get(sym.st_shndx)
+                .map(|section| section.sh_addr + section.sh_size),
         });
     }
     Ok(exports)
@@ -506,10 +527,22 @@ fn classify_vdso_exports(exports: &[VdsoExport]) -> Result<Vec<VdsoEntry>, Strin
                 names[0], first.size
             ));
         }
-        let size = match next {
-            Some(next) => align_up(first.size, 16).min((next - offset) as usize),
-            None => align_up(first.size, 16),
-        };
+        if let Some(section_end) = first.section_end
+            && offset + first.size as u64 > section_end
+        {
+            return Err(format!(
+                "vDSO entry point {}@{offset:#x} ({} bytes) runs past the end of \
+                 its section at {section_end:#x}",
+                names[0], first.size
+            ));
+        }
+        let mut size = align_up(first.size, 16);
+        if let Some(next) = next {
+            size = size.min((next - offset) as usize);
+        }
+        if let Some(section_end) = first.section_end {
+            size = size.min((section_end - offset) as usize);
+        }
 
         let kind = known.map_or(VdsoEntryKind::Unknown, VdsoEntryKind::Known);
         let stub_len = match kind {
@@ -527,6 +560,7 @@ fn classify_vdso_exports(exports: &[VdsoExport]) -> Result<Vec<VdsoEntry>, Strin
             names,
             offset,
             size,
+            symbol_size: first.size,
             kind,
         });
     }
@@ -607,18 +641,34 @@ fn vdso_replacements(
         .collect())
 }
 
-/// Logs every entry point of `table` that `replacements` leaves native.
+/// Reports every entry point of `table` that `replacements` leaves native: a
+/// warning the first time in this process, then at debug level.
 fn log_native_entries(table: &VdsoTable, replacements: &[(&VdsoEntry, &[u8])]) {
-    for entry in &table.entries {
-        if !replacements
-            .iter()
-            .any(|(replaced, _)| std::ptr::eq(*replaced, entry))
-        {
-            debug!(
-                "vDSO entry point {} left native: its syscall is not subscribed",
-                entry.describe()
-            );
-        }
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    let native: Vec<String> = table
+        .entries
+        .iter()
+        .filter(|entry| {
+            !replacements
+                .iter()
+                .any(|(replaced, _)| std::ptr::eq(*replaced, *entry))
+        })
+        .map(VdsoEntry::describe)
+        .collect();
+    if native.is_empty() {
+        return;
+    }
+    let native = native.join(", ");
+    let mut warned = false;
+    WARNED.call_once(|| {
+        warned = true;
+        warn!(
+            "vDSO entry points left native because the tool does not subscribe to their \
+             syscalls, so it does not observe these calls: {native}"
+        );
+    });
+    if !warned {
+        debug!("vDSO entry points left native: {native}");
     }
 }
 
@@ -694,12 +744,13 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
                 // `syscall`. Every byte after that `syscall` is a `ret` or
                 // padding, which leaves the hook its full patch word.
                 assert!(size >= bytes.len() + 8);
+                let patch_len = entry.patch_len(bytes.len() + 8);
                 unsafe {
                     core::ptr::copy_nonoverlapping(bytes.as_ptr(), symbol as *mut u8, bytes.len());
                     core::ptr::write_bytes(
                         (symbol + bytes.len()) as *mut u8,
                         0x90,
-                        size - bytes.len(),
+                        patch_len - bytes.len(),
                     );
                 }
                 syscall_sites.push(VdsoSyscallSite {
@@ -710,12 +761,14 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
                 });
             }
             VdsoEntryKind::Known(KnownEntry::Syscall(_, sysno)) => {
-                assert!(size >= 3);
+                // The hook replaces a whole patch word at the `syscall`.
+                assert!(size >= 8);
+                let patch_len = entry.patch_len(8);
                 unsafe {
                     core::ptr::write(symbol as *mut u8, 0x0f);
                     core::ptr::write((symbol + 1) as *mut u8, 0x05);
                     core::ptr::write((symbol + 2) as *mut u8, 0xc3);
-                    core::ptr::write_bytes((symbol + 3) as *mut u8, 0x90, size - 3);
+                    core::ptr::write_bytes((symbol + 3) as *mut u8, 0x90, patch_len - 3);
                 }
                 syscall_sites.push(VdsoSyscallSite {
                     address: symbol as u64,
@@ -726,12 +779,13 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
             }
             VdsoEntryKind::Known(KnownEntry::Enosys) | VdsoEntryKind::Unknown => {
                 assert!(size >= bytes.len());
+                let patch_len = entry.patch_len(bytes.len());
                 unsafe {
                     core::ptr::copy_nonoverlapping(bytes.as_ptr(), symbol as *mut u8, bytes.len());
                     core::ptr::write_bytes(
                         (symbol + bytes.len()) as *mut u8,
                         0x90,
-                        size - bytes.len(),
+                        patch_len - bytes.len(),
                     );
                 }
             }
@@ -841,10 +895,11 @@ where
         for (entry, bytes) in replacements {
             let start = vdso.address.0 + entry.offset;
             assert!(bytes.len() <= entry.size);
+            let patch_len = entry.patch_len(bytes.len());
             let rptr = AddrMut::from_raw(start as usize).ok_or(Errno::EFAULT)?;
             memory.write_exact(rptr, bytes)?;
-            if entry.size > bytes.len() {
-                let fill: Vec<u8> = std::iter::repeat_n(0x90u8, entry.size - bytes.len()).collect();
+            if patch_len > bytes.len() {
+                let fill: Vec<u8> = std::iter::repeat_n(0x90u8, patch_len - bytes.len()).collect();
                 memory.write_exact(unsafe { rptr.add(bytes.len()) }, &fill)?;
             }
             debug!(
@@ -921,6 +976,7 @@ mod tests {
             name: name.to_owned(),
             offset,
             size,
+            section_end: None,
         }
     }
 
@@ -1040,6 +1096,72 @@ mod tests {
     fn last_entry_point_gets_its_aligned_size() {
         let entries = classify_vdso_exports(&[export("__vdso_future_call", 0x900, 9)]).unwrap();
         assert_eq!(entries[0].size, 16);
+    }
+
+    #[test]
+    fn last_entry_point_stops_at_the_end_of_its_section() {
+        let mut last = export("__vdso_future_call", 0x900, 9);
+        last.section_end = Some(0x90c);
+        let entries = classify_vdso_exports(&[last]).unwrap();
+        assert_eq!(entries[0].size, 12);
+    }
+
+    #[test]
+    fn entry_point_past_the_end_of_its_section_is_refused() {
+        let mut last = export("__vdso_future_call", 0x900, 16);
+        last.section_end = Some(0x90c);
+        let error = classify_vdso_exports(&[last]).unwrap_err();
+        assert!(error.contains("past the end of its section"), "{error}");
+    }
+
+    /// A stub overwrites the function, and alignment padding only where the
+    /// stub is longer than the function.
+    #[test]
+    fn patch_covers_the_function_and_no_more_of_its_padding_than_the_stub() {
+        let entries = classify_vdso_exports(&[
+            export("__vdso_future_call", 0x900, 20),
+            export("__vdso_other_call", 0x980, 4),
+        ])
+        .unwrap();
+        assert_eq!((entries[0].size, entries[0].patch_len(8)), (32, 20));
+        assert_eq!((entries[1].size, entries[1].patch_len(8)), (16, 8));
+    }
+
+    /// No host entry point's patch reaches past the end of its section; the
+    /// host's last export, rounded up to 16, would.
+    #[test]
+    fn host_vdso_patches_stay_inside_their_sections() {
+        let maps = procfs::process::Process::myself().unwrap().maps().unwrap();
+        let vdso = maps
+            .iter()
+            .find(|map| map.pathname == procfs::process::MMapPath::Vdso)
+            .unwrap();
+        // SAFETY: as in VDSO_TABLE; nothing in this test binary patches its
+        // own vDSO.
+        let image = unsafe {
+            std::slice::from_raw_parts(
+                vdso.address.0 as *const u8,
+                (vdso.address.1 - vdso.address.0) as usize,
+            )
+        };
+        let elf = Elf::parse(image).unwrap();
+        for entry in &host_table().entries {
+            let section = elf
+                .section_headers
+                .iter()
+                .find(|section| {
+                    section.sh_addr <= entry.offset
+                        && entry.offset < section.sh_addr + section.sh_size
+                })
+                .unwrap_or_else(|| panic!("no section contains {}", entry.describe()));
+            assert!(
+                entry.offset + entry.size as u64 <= section.sh_addr + section.sh_size,
+                "{} may overwrite {} bytes, past the end of its section at {:#x}",
+                entry.describe(),
+                entry.size,
+                section.sh_addr + section.sh_size
+            );
+        }
     }
 
     #[test]
