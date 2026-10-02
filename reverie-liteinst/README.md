@@ -237,7 +237,9 @@ trap path. Quiescent publication is never selected from this route.
   unregisters its own rseq area for both native and Tool controls; the runtime
   does not unregister production guests. Direct installed-hook behavior for
   this registered-rseq case remains unmeasured.
-- Timer arming currently returns success without delivery. Clock reads use a
+- Timer arming (`set_timer` and `set_timer_precise`) is refused with `ENOSYS`,
+  because nothing in the guest delivers a timer event; a Tool that needs
+  preemption fails closed instead of running unpreempted. Clock reads use a
   calling-thread RDPMC RCB counter and deduct branches retired inside active
   LiteInst handlers. Hosts that deny perf-event access report the clock as
   unsupported. This is not PMU preemption or complete scheduling support.
