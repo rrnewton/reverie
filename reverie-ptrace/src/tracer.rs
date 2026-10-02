@@ -525,6 +525,9 @@ async fn finish_ordinary_terminal(
     held: &Arc<StdMutex<Option<HeldRootStop>>>,
     session: &FatalSession,
 ) -> OrdinaryTerminal {
+    #[cfg(test)]
+    crate::task::source_cohort::tests::original_terminal_pending(terminal);
+    let cohort_operation = session.cohort_terminal(terminal);
     let mut current = stopped;
     let mut exit_status = None;
     #[cfg(test)]
@@ -583,7 +586,27 @@ async fn finish_ordinary_terminal(
                     }
                     #[cfg(test)]
                     let resumed_pid = stopped.pid();
+                    #[cfg(all(test, cohort_final_test))]
+                    crate::task::source_cohort::final_tests::exit_attempt(terminal);
                     let resumed = stopped.resume_retaining(None);
+                    #[cfg(test)]
+                    crate::task::source_cohort::startup_tests::exit_resumed(
+                        terminal,
+                        crate::task::source_cohort::startup_tests::OwnerPath::Ordinary,
+                        &resumed
+                            .as_ref()
+                            .map(|_| ())
+                            .map_err(|(_, error)| format!("{error:?}")),
+                    );
+                    #[cfg(all(test, cohort_final_test))]
+                    crate::task::source_cohort::final_tests::exit_resumed(
+                        terminal,
+                        crate::task::source_cohort::final_tests::OwnerPath::Ordinary,
+                        &resumed
+                            .as_ref()
+                            .map(|_| ())
+                            .map_err(|(_, error)| format!("{error:?}")),
+                    );
                     #[cfg(test)]
                     EXIT_RESUME_CONTROL.with(|slot| {
                         if let Some(control) = slot.borrow().as_ref() {
@@ -617,6 +640,11 @@ async fn finish_ordinary_terminal(
                 if let Ok(Some(status)) = terminal.observed_exit_status() {
                     let receipt = session.ordinary_receipt();
                     retire_ordinary_terminal(terminal, held).await;
+                    #[cfg(test)]
+                    crate::task::source_cohort::tests::original_terminal_completed(terminal);
+                    if let Some(operation) = cohort_operation {
+                        operation.completed();
+                    }
                     return OrdinaryTerminal::Exited(status, receipt);
                 }
                 // The original ExitFuture remains with its task owner. This
@@ -638,6 +666,11 @@ async fn finish_ordinary_terminal(
                 #[cfg(not(test))]
                 let _ = pid;
                 retire_ordinary_terminal(terminal, held).await;
+                #[cfg(test)]
+                crate::task::source_cohort::tests::original_terminal_completed(terminal);
+                if let Some(operation) = cohort_operation {
+                    operation.completed();
+                }
                 return OrdinaryTerminal::Exited(status, receipt);
             }
             Wait::Stopped(stopped, event) => {
@@ -980,6 +1013,18 @@ impl RootStopLease {
         signal: T,
     ) -> Result<Running, TraceError> {
         self.take_for_transition()?.syscall(signal)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn sysemu_from_exit(mut self) -> Result<Running, TraceError> {
+        // Refuse before disarming the original cleanup lease.
+        if !matches!(
+            self.syscall_stop_info()?,
+            safeptrace::SyscallStopInfo::Exit { .. }
+        ) {
+            return Err(Errno::EPROTO.into());
+        }
+        self.take_for_transition()?.sysemu_from_exit()
     }
 
     pub(crate) fn detach<T: Into<Option<Signal>>>(
@@ -1894,7 +1939,7 @@ impl LiteinstTraceeCleanup {
                         "root-cleanup-cont",
                         self.pid(),
                         Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
-                        ptrace::cont(self.pid().into(), None)
+                        root_terminal.continue_for_cleanup()
                     );
                 }
                 for tracee in descendants.values() {
@@ -1914,7 +1959,7 @@ impl LiteinstTraceeCleanup {
                             Some(injected_error_tests::RefusalGeneration::of(
                                 &tracee.identity
                             )),
-                            ptrace::cont(tracee.identity.tid.into(), None)
+                            tracee.terminal.continue_for_cleanup()
                         );
                     }
                 }
@@ -2854,6 +2899,14 @@ impl CleanupUnconfirmed {
 }
 
 impl<G: 'static, R: 'static> PendingPtraceCleanup<G, R> {
+    // The source-cohort tests live outside this module. Preserve the exact
+    // original quarantine owner on their failed cleanup path without exposing
+    // a new production API or dropping an unconfirmed owner.
+    #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+    pub(crate) fn quarantine_source_test(self) -> Error {
+        self.quarantine()
+    }
+
     fn quarantine(mut self) -> Error {
         let id = self
             .driver
@@ -3035,7 +3088,22 @@ impl<G, R> CompletionWork<G, R> {
                     _ => {}
                 }
             }
-            if self.tree_done && self.stdout.is_finished() && self.stderr.is_finished() {
+            let source = session.source_jobs.poll(cx, session.is_failed());
+            if let Some(error) = source.failure {
+                session.fail_at(
+                    reverie::BackendFailure {
+                        pid: self.tracer.guest_pid,
+                        tid: self.tracer.guest_pid,
+                        phase: "ptrace source worker join",
+                    },
+                    anyhow::anyhow!(error).into(),
+                );
+            }
+            if self.tree_done
+                && self.stdout.is_finished()
+                && self.stderr.is_finished()
+                && source.complete
+            {
                 std::task::Poll::Ready(())
             } else {
                 std::task::Poll::Pending
@@ -3149,6 +3217,11 @@ impl<G, R> CompletionDriver<G, R> {
 }
 
 impl<G: Default + 'static> Tracer<G> {
+    #[cfg(all(test, cohort_final_test))]
+    pub(crate) fn followed_source_test_context(&self) -> (Arc<FatalSession>, Arc<G>) {
+        (self.ordinary_session.clone(), self.gref.clone())
+    }
+
     fn completion<R>(
         mut self,
         mode: u8,
@@ -3156,6 +3229,9 @@ impl<G: Default + 'static> Tracer<G> {
     ) -> CompletionDriver<G, R> {
         use crate::capture::BoxedRead;
         use crate::capture::CaptureDrain;
+        if self.ordinary_completion_supported {
+            self.ordinary_session.source_jobs.enable();
+        }
         if mode != 0 {
             drop(self.stdin.take());
         }
@@ -4019,6 +4095,31 @@ fn seccomp_filter(events: &Subscription) -> seccomp::Filter {
         .build()
 }
 
+// A function guest inherits the tracer's address space and never establishes
+// the initial-Command source epoch. Installing source-only observations here
+// therefore grants no source capability, but can stall an otherwise untraced
+// sibling exec while a Tool callback is running. Preserve its Tool-only filter.
+// Command source observation now belongs to each traced task's actual ptrace
+// ENTRY/EXIT owner. Both inherited filters must contain only original Tool rules.
+fn fork_function_seccomp_filter(events: &Subscription) -> seccomp::Filter {
+    use reverie::process::seccomp::Action;
+
+    seccomp::FilterBuilder::new()
+        .default_action(Action::Allow)
+        .syscalls(
+            events
+                .iter_syscalls()
+                .map(|syscall| (syscall, Action::Trace(0))),
+        )
+        .syscall(Sysno::rt_sigreturn, Action::Allow)
+        .ip_range(
+            (cp::TRAMPOLINE_BASE + cp::SYSCALL_INSTR_SIZE) as u64,
+            (cp::TRAMPOLINE_BASE + cp::SYSCALL_INSTR_SIZE + cp::UD_INSTR_SIZE) as u64,
+            Action::Allow,
+        )
+        .build()
+}
+
 /// Specifies *how* the GDB server should listen for incoming connections.
 pub enum GdbConnection {
     /// An already-bound controller listener. The caller must retire its parent
@@ -4771,7 +4872,7 @@ where
     let events = L::subscriptions(&config);
     let gref = Arc::new(global_state);
 
-    let seccomp_filter = seccomp_filter(&events);
+    let seccomp_filter = fork_function_seccomp_filter(&events);
 
     let (read1, write1) = unistd::pipe().map_err(from_nix_error)?;
     let (read2, write2) = unistd::pipe().map_err(from_nix_error)?;
@@ -4867,6 +4968,10 @@ where
 mod initial_command_tests;
 
 #[cfg(all(test, target_arch = "x86_64"))]
+#[path = "tracer/fork_filter_tests.rs"]
+mod fork_filter_tests;
+
+#[cfg(all(test, target_arch = "x86_64"))]
 #[path = "clock_origin_tests.rs"]
 mod clock_origin_tests;
 
@@ -4880,6 +4985,7 @@ mod injected_error_tests;
 
 #[cfg(test)]
 mod tests {
+    include!("tracer/parent_step_native_tests.rs");
     include!("tracer/fatal_callback_tests.rs");
     include!("tracer/fatal_vfork_tests.rs");
     include!("tracer/fatal_parent_kill_tests.rs");
@@ -10075,3 +10181,47 @@ mod parent_join_retention_tests {
         }
     }
 }
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "source_backend_tests.rs"]
+mod source_backend_tests;
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "source_step_native_tests.rs"]
+mod source_step_native_tests;
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "source_private_signal_tests.rs"]
+mod source_private_signal_tests;
+
+#[cfg(test)]
+mod source_observation_tests {
+    use super::*;
+    #[test]
+    fn inherited_command_filter_is_exactly_the_original_tool_policy() {
+        for subscriptions in [
+            Subscription::default(),
+            [Sysno::write].into_iter().collect(),
+            Subscription::all(),
+        ] {
+            let command = seccomp_filter(&subscriptions);
+            let original = fork_function_seccomp_filter(&subscriptions);
+            let encoded = |filter: &seccomp::Filter| {
+                filter
+                    .instructions()
+                    .iter()
+                    .map(|i| (i.code, i.jt, i.jf, i.k))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                encoded(&command),
+                encoded(&original),
+                "source observation must not add inherited TRACE rules, including before the private-IP exception"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tracer/source_completion_component_tests.rs"]
+mod source_completion_component_tests;

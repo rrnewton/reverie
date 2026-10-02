@@ -1149,6 +1149,34 @@ impl Stopped {
         Ok(Running::from_token(self.0, self.1))
     }
 
+    /// Resume from an actual syscall EXIT with x86 syscall emulation selected
+    /// before the next userspace instruction.
+    ///
+    /// ENTRY, SECCOMP and signal stops are refused. Selecting SYSEMU at an
+    /// already-entered syscall does not retroactively bypass its seccomp work.
+    /// The caller owns any register installation and must ensure the next
+    /// instruction is its intended non-executing transport. This transition
+    /// does not authorize emulating arbitrary guest or Tool operations.
+    #[cfg(target_arch = "x86_64")]
+    pub fn sysemu_from_exit(self) -> Result<Running, Error> {
+        {
+            #[cfg(feature = "notifier")]
+            let _source_control = self
+                .1
+                .event()
+                .source_control(self.0)
+                .map_err(|error| self.map_err(error))?;
+            if !matches!(self.syscall_stop_info()?, SyscallStopInfo::Exit { .. }) {
+                return Err(Errno::EPROTO.into());
+            }
+            unsafe {
+                syscalls::syscall!(Sysno::ptrace, libc::PTRACE_SYSEMU, self.0.as_raw(), 0, 0)
+            }
+            .map_err(|error| self.map_err(error))?;
+        }
+        Ok(Running::from_token(self.0, self.1))
+    }
+
     /// Sets the syscall to be executed. Only available on `aarch64`.
     ///
     /// Normally, on x86_64, the register `orig_rax` should be set instead to
@@ -1225,6 +1253,22 @@ impl Stopped {
         decode_native_syscall_stop(&info, size).map_err(Error::Errno)
     }
 
+    /// Inspect current kernel syscall operands immediately before a control
+    /// transition. NONE/EXIT have no pending entry; unknown/truncated operations
+    /// refuse. This is observation only, never a consumed-stop source issuer.
+    pub fn pending_syscall_entry(&self) -> Result<Option<SyscallEntry>, Error> {
+        let (info, size) = self.read_syscall_entry_info()?;
+        if size < 24 {
+            return Err(Errno::EPROTO.into());
+        }
+        if matches!(info.op, 0 | 2) {
+            return Ok(None);
+        }
+        decode_native_syscall_entry(&info, size)
+            .map(Some)
+            .map_err(Error::Errno)
+    }
+
     /// Checks that this actual held stop has no ENTRY/EXIT/SECCOMP receipt.
     /// This does not by itself prove that no syscall ran: the caller must also
     /// retain its first-resume phase and exact task/frame through every wait.
@@ -1239,6 +1283,23 @@ impl Stopped {
     /// Gets info about the signal that caused the process to be stopped.
     pub fn getsiginfo(&self) -> Result<libc::siginfo_t, Error> {
         ptrace::getsiginfo(self.0.into()).map_err(|err| self.map_nix_err(err))
+    }
+
+    /// Reads Linux's native 64-bit signal mask from this stopped task. This is
+    /// read-only metadata, not a stop/source authority or a mask mutation.
+    #[cfg(target_arch = "x86_64")]
+    pub fn getsigmask_native(&self) -> Result<u64, Error> {
+        let mut mask = 0u64;
+        Errno::result(unsafe {
+            libc::ptrace(
+                libc::PTRACE_GETSIGMASK,
+                self.0.as_raw(),
+                std::mem::size_of::<u64>(),
+                &mut mask as *mut u64,
+            )
+        })
+        .map_err(|err| self.map_err(err))?;
+        Ok(mask)
     }
 
     /// Sets info about the singal that caused the process to be stopped.

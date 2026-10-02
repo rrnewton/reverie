@@ -114,6 +114,32 @@ use crate::tracer::RootStopLease;
 use crate::tracer::TraceeIdentity;
 use crate::vdso;
 
+// One-use observation of the actual injected Seccomp stop. The failure-only
+// backup comes from this same Stopped, never a raw decoder or new PID capture.
+// It cannot repair the test's sealed pre-rescue lease observation.
+#[cfg(all(test, target_arch = "x86_64"))]
+pub(crate) struct SourceInjectedStopReceipt {
+    pub(crate) tid: Pid,
+    pub(crate) seccomp: bool,
+    pub(crate) number: u64,
+    pub(crate) arguments: [u64; 6],
+    pub(crate) ip: usize,
+    pub(crate) terminal: TerminalCleanup,
+    pub(crate) held: Arc<StdMutex<Option<HeldRootStop>>>,
+    pub(crate) failure_cleanup: Option<HeldRootStop>,
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+pub(crate) struct SourceInjectedStopGate {
+    pub(crate) tid: Pid,
+    pub(crate) entered: oneshot::Sender<SourceInjectedStopReceipt>,
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+thread_local! {
+    pub(crate) static SOURCE_INJECTED_STOP_GATE: std::cell::RefCell<Option<SourceInjectedStopGate>> = const { std::cell::RefCell::new(None) };
+}
+
 // A lifecycle association failure must prevent the following resume, not just
 // report a flag whose waiter may be polled after this future resumes the guest.
 fn observe_ready_thread_state<T: Tool>(
@@ -358,6 +384,7 @@ struct NativeChild {
     admission_required: bool,
     admission_done: bool,
     child_restore_context: Option<libc::user_regs_struct>,
+    cohort: Option<source_cohort::ChildMembership>,
 }
 
 /// Only a real final wait admits the terminal variant. It owns no perf
@@ -395,7 +422,7 @@ enum PreparedNewborn {
     Live {
         child: Stopped,
         event: Event,
-        timer: Timer,
+        timer: Box<Timer>,
     },
     Terminal {
         id: Pid,
@@ -410,7 +437,7 @@ impl PreparedNewborn {
                 child,
                 event,
                 timer,
-            } => (Ok(Wait::Stopped(child, event)), TaskTimer::Live(timer)),
+            } => (Ok(Wait::Stopped(child, event)), TaskTimer::Live(*timer)),
             Self::Terminal { id, status } => {
                 (Ok(Wait::Exited(id, status)), TaskTimer::Terminal(status))
             }
@@ -523,6 +550,317 @@ async fn publish_child_to_existing_list(
         }
     }
     children.push(child);
+}
+
+// This is local to one ordinary NewChild continuation, not a reusable signal
+// filter. The injected caller retains its original stopped Tool continuation.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+struct ParentSyscallStepState {
+    words: [u64; 27],
+    siginfo: (i32, i32, i32),
+    fault_address: Option<u64>,
+    dr6: u64,
+    syscall_opcode: [u8; cp::SYSCALL_INSTR_SIZE],
+}
+
+#[cfg(target_arch = "x86_64")]
+fn parent_syscall_opcode(
+    ip: u64,
+    mut read_word: impl FnMut(usize) -> Result<u64, Errno>,
+) -> Result<[u8; cp::SYSCALL_INSTR_SIZE], Errno> {
+    let site = ip
+        .checked_sub(cp::SYSCALL_INSTR_SIZE as u64)
+        .ok_or(Errno::EFAULT)?;
+    let mut bytes = [0; cp::SYSCALL_INSTR_SIZE];
+    for (offset, byte) in bytes.iter_mut().enumerate() {
+        let address = site.checked_add(offset as u64).ok_or(Errno::EFAULT)?;
+        // Like source_observation::code_byte: PEEKDATA reads a full word.
+        // The executed syscall may end at the final byte of a mapped page.
+        let word = read_word((address & !7) as usize)?;
+        *byte = (word >> ((address & 7) * 8)) as u8;
+    }
+    Ok(bytes)
+}
+
+#[cfg(target_arch = "x86_64")]
+impl ParentSyscallStepState {
+    fn read(task: &Stopped) -> Result<Self, TraceError> {
+        let r = task.getregs()?;
+        let info = task.getsiginfo()?;
+        let offset = std::mem::offset_of!(libc::user, u_debugreg) + 6 * 8;
+        let dr6 = nix::sys::ptrace::read_user(task.pid().into(), offset as *mut libc::c_void)
+            .map_err(|error| Errno::new(error as i32))? as u64;
+        let syscall_opcode = parent_syscall_opcode(r.rip, |address| {
+            let address = Addr::from_raw(address).ok_or(Errno::EFAULT)?;
+            task.read_value::<_, u64>(address)
+        })?;
+        Ok(Self {
+            words: [
+                r.r15, r.r14, r.r13, r.r12, r.rbp, r.rbx, r.r11, r.r10, r.r9, r.r8, r.rax, r.rcx,
+                r.rdx, r.rsi, r.rdi, r.orig_rax, r.rip, r.cs, r.eflags, r.rsp, r.ss, r.fs_base,
+                r.gs_base, r.ds, r.es, r.fs, r.gs,
+            ],
+            siginfo: (info.si_signo, info.si_code, info.si_errno),
+            fault_address: (info.si_signo == libc::SIGTRAP && info.si_code == libc::TRAP_BRKPT)
+                .then(|| unsafe { info.si_addr() as u64 }),
+            dr6,
+            syscall_opcode,
+        })
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn is_parent_syscall_step_completion(
+    op: ChildOp,
+    child: Pid,
+    before: &ParentSyscallStepState,
+    after: &ParentSyscallStepState,
+) -> bool {
+    let event = match op {
+        ChildOp::Fork => libc::PTRACE_EVENT_FORK,
+        ChildOp::Vfork => libc::PTRACE_EVENT_VFORK,
+        ChildOp::Clone => libc::PTRACE_EVENT_CLONE,
+    };
+    let syscall = before.words[15];
+    let creating_call = syscall == libc::SYS_clone as u64
+        || syscall == libc::SYS_clone3 as u64
+        || (op == ChildOp::Fork && syscall == libc::SYS_fork as u64)
+        || (op == ChildOp::Vfork && syscall == libc::SYS_vfork as u64);
+    // Linux's syscall-exit SINGLESTEP report is TRAP_BRKPT before any user
+    // instruction or pending-signal delivery. It does not update virtual DR6;
+    // unchanged stale debug bits are not evidence of a new debug exception.
+    child.as_raw() > 0
+        && creating_call
+        && before.siginfo == (libc::SIGTRAP, (event << 8) | libc::SIGTRAP, 0)
+        && after.siginfo == (libc::SIGTRAP, libc::TRAP_BRKPT, 0)
+        && after.fault_address == Some(after.words[16])
+        && before.words[17] == 0x33 // native x86-64 ABI only
+        && before.words[18] & 0x100 == 0
+        && after.dr6 == before.dr6
+        && before.syscall_opcode == [0x0f, 0x05]
+        && after.syscall_opcode == before.syscall_opcode
+        && before.words[10] == (-(libc::ENOSYS as i64)) as u64
+        // The result is in the parent's PID namespace, unlike the event's
+        // tracer-namespace child ID. Do not compare those integer domains.
+        && after.words[10] > 0
+        && after.words[10] <= i32::MAX as u64
+        && before.words.iter().zip(&after.words).enumerate()
+            .all(|(index, (before, after))| index == 10 || before == after)
+}
+
+#[cfg(target_arch = "x86_64")]
+struct ParentSyscallStep {
+    task: safeptrace::TaskIdentity,
+    op: ChildOp,
+    child: Pid,
+    before: ParentSyscallStepState,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl ParentSyscallStep {
+    fn capture(task: &Stopped, op: ChildOp, child: Pid) -> Result<Self, TraceError> {
+        Ok(Self {
+            task: task.terminal_cleanup().task_identity()?,
+            op,
+            child,
+            before: ParentSyscallStepState::read(task)?,
+        })
+    }
+
+    // Consuming self permits exactly one decision on the wait returned by the
+    // existing dispatch. No wait owner, event or native return is manufactured.
+    fn completed(self, wait: &Wait) -> Result<bool, TraceError> {
+        let Wait::Stopped(task, Event::Signal(Signal::SIGTRAP)) = wait else {
+            return Ok(false);
+        };
+        let current = task.terminal_cleanup().task_identity()?;
+        if !self.task.same_generation(&current) {
+            return Ok(false);
+        }
+        Ok(is_parent_syscall_step_completion(
+            self.op,
+            self.child,
+            &self.before,
+            &ParentSyscallStepState::read(task)?,
+        ))
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod parent_syscall_step_tests {
+    use super::*;
+
+    fn pair(op: ChildOp, syscall: i64) -> (ParentSyscallStepState, ParentSyscallStepState) {
+        let event = match op {
+            ChildOp::Fork => libc::PTRACE_EVENT_FORK,
+            ChildOp::Vfork => libc::PTRACE_EVENT_VFORK,
+            ChildOp::Clone => libc::PTRACE_EVENT_CLONE,
+        };
+        let mut before = ParentSyscallStepState {
+            words: std::array::from_fn(|i| i as u64 + 0x200),
+            siginfo: (libc::SIGTRAP, (event << 8) | libc::SIGTRAP, 0),
+            fault_address: None,
+            dr6: 0xffff0ff0,
+            syscall_opcode: [0x0f, 0x05],
+        };
+        before.words[10] = (-(libc::ENOSYS as i64)) as u64;
+        before.words[15] = syscall as u64;
+        before.words[16] = 0x10002;
+        before.words[17] = 0x33;
+        before.words[18] = 0x206;
+        let mut after = before;
+        after.words[10] = 42;
+        after.siginfo = (libc::SIGTRAP, libc::TRAP_BRKPT, 0);
+        after.fault_address = Some(before.words[16]);
+        (before, after)
+    }
+
+    #[test]
+    fn syscall_opcode_at_last_mapped_bytes_needs_no_following_mapping() {
+        let mut reads = Vec::new();
+        let opcode = parent_syscall_opcode(4096, |address| {
+            reads.push(address);
+            if address == 4088 {
+                Ok(0x050f_0000_0000_0000)
+            } else {
+                Err(Errno::EFAULT)
+            }
+        });
+        assert_eq!(opcode, Ok([0x0f, 0x05]));
+        assert_eq!(reads, [4088, 4088]);
+        assert_eq!(
+            parent_syscall_opcode(1, |_| panic!("invalid address read")),
+            Err(Errno::EFAULT)
+        );
+        assert_eq!(
+            parent_syscall_opcode(4097, |address| if address == 4088 {
+                Ok(0x0f00_0000_0000_0000)
+            } else {
+                Err(Errno::EFAULT)
+            }),
+            Err(Errno::EFAULT),
+        );
+        assert_eq!(
+            parent_syscall_opcode(4097, |address| match address {
+                4088 => Ok(0x0f00_0000_0000_0000),
+                4096 => Ok(5),
+                _ => Err(Errno::EFAULT),
+            }),
+            Ok([0x0f, 0x05]),
+        );
+    }
+
+    #[test]
+    fn exact_parent_syscall_exit_and_namespace_relative_result() {
+        for (op, syscall) in [
+            (ChildOp::Fork, libc::SYS_fork),
+            (ChildOp::Vfork, libc::SYS_vfork),
+            (ChildOp::Fork, libc::SYS_clone),
+            (ChildOp::Clone, libc::SYS_clone),
+            (ChildOp::Clone, libc::SYS_clone3),
+            (ChildOp::Vfork, libc::SYS_clone3),
+        ] {
+            let (before, after) = pair(op, syscall);
+            assert!(is_parent_syscall_step_completion(
+                op,
+                Pid::from_raw(104074),
+                &before,
+                &after
+            ));
+        }
+    }
+
+    #[test]
+    fn preserves_every_non_return_word_and_actual_syscall_bytes() {
+        let (before, after) = pair(ChildOp::Clone, libc::SYS_clone3);
+        let accepts = |a: &ParentSyscallStepState, b: &ParentSyscallStepState| {
+            is_parent_syscall_step_completion(ChildOp::Clone, Pid::from_raw(104074), a, b)
+        };
+        for index in 0..27 {
+            if index != 10 {
+                let mut changed = after;
+                changed.words[index] ^= 1;
+                assert!(!accepts(&before, &changed), "word {index}");
+            }
+        }
+        for result in [0, u64::MAX, i32::MAX as u64 + 1] {
+            let mut changed = after;
+            changed.words[10] = result;
+            assert!(!accepts(&before, &changed));
+        }
+        let mut changed = before;
+        changed.words[10] = 0;
+        assert!(!accepts(&changed, &after));
+        for opcode in [[0xcc, 0x05], [0xcd, 0x80], [0x0f, 0x34]] {
+            let mut a = before;
+            let mut b = after;
+            a.syscall_opcode = opcode;
+            b.syscall_opcode = opcode;
+            assert!(!accepts(&a, &b));
+            assert!(!accepts(&before, &b));
+        }
+    }
+
+    #[test]
+    fn preserves_guest_tf_debug_and_nonowned_traps() {
+        let (before, after) = pair(ChildOp::Clone, libc::SYS_clone3);
+        let accepts = |a: &ParentSyscallStepState, b: &ParentSyscallStepState| {
+            is_parent_syscall_step_completion(ChildOp::Clone, Pid::from_raw(104074), a, b)
+        };
+        let mut a = before;
+        let mut b = after;
+        a.words[18] |= 0x100;
+        b.words[18] |= 0x100;
+        assert!(!accepts(&a, &b));
+        for cause in [1, 2, 4, 8, 1 << 13, 1 << 14, 1 << 15] {
+            a = before;
+            b = after;
+            a.dr6 |= cause;
+            b.dr6 |= cause;
+            assert!(
+                accepts(&a, &b),
+                "unchanged stale DR6 is not a new debug cause"
+            );
+            assert!(!accepts(&before, &b));
+        }
+        for code in [
+            libc::TRAP_TRACE,
+            libc::SI_KERNEL,
+            libc::SI_USER,
+            libc::SI_TKILL,
+        ] {
+            b = after;
+            b.siginfo.1 = code;
+            assert!(!accepts(&before, &b));
+        }
+        for address in [None, Some(after.words[16] + 1)] {
+            b = after;
+            b.fault_address = address;
+            assert!(!accepts(&before, &b));
+        }
+        a = before;
+        b = after;
+        a.words[17] = 0x23;
+        b.words[17] = 0x23;
+        assert!(!accepts(&a, &b));
+        b = after;
+        b.siginfo.0 = libc::SIGUSR1;
+        assert!(!accepts(&before, &b));
+        a = before;
+        a.siginfo.1 = (libc::PTRACE_EVENT_FORK << 8) | libc::SIGTRAP;
+        assert!(!accepts(&a, &after));
+        assert!(!is_parent_syscall_step_completion(
+            ChildOp::Clone,
+            Pid::from_raw(0),
+            &before,
+            &after,
+        ));
+        let (a, b) = pair(ChildOp::Clone, libc::SYS_getpid);
+        assert!(!accepts(&a, &b));
+        let (a, b) = pair(ChildOp::Clone, libc::SYS_fork);
+        assert!(!accepts(&a, &b));
+    }
 }
 
 enum HandleSignalResult {
@@ -1252,10 +1590,23 @@ enum LiteinstTrap {
     Invalid,
 }
 
+#[path = "source_cohort.rs"]
+pub(crate) mod source_cohort;
+#[path = "source_epoch.rs"]
+pub(crate) mod source_epoch;
+#[path = "source_jobs.rs"]
+pub(crate) mod source_jobs;
+#[cfg(target_arch = "x86_64")]
+#[path = "source_observation.rs"]
+pub(crate) mod source_observation;
+
 /// The first ordinary-ptrace fatal error cancels every followed task. Keep the
 /// actual error until the entire tree has completed its real terminal waits.
 #[derive(Default)]
 pub(crate) struct FatalSession {
+    pub(crate) source_jobs: source_jobs::SourceJobs,
+    source_epoch: Arc<source_epoch::SourceEpoch>,
+    source_cohort: Arc<source_cohort::CohortHistory>,
     ptracer_thread: Option<std::thread::ThreadId>,
     callback_diagnostics: StdMutex<Vec<crate::PtraceCallbackDiagnostic>>,
     backend_signalling: AtomicBool,
@@ -1426,11 +1777,18 @@ impl FatalSession {
     }
 
     pub(crate) fn signal_groups(&self) -> Vec<Errno> {
+        if let Err(error) = self.source_cohort.before_group_signal() {
+            return vec![error];
+        }
         self.groups
             .lock()
             .unwrap()
             .iter()
             .filter_map(|group| {
+                let _signal = match group.terminal.source_signal_guard() {
+                    Ok(guard) => guard,
+                    Err(error) => return Some(error),
+                };
                 group
                     .identity
                     .signal_owned_group()
@@ -1599,6 +1957,7 @@ impl FatalSession {
             return Err(Errno::ESTALE);
         }
         self.backend_signalling.store(true, Ordering::Release);
+        self.source_cohort.before_group_signal()?;
         group.identity.signal_owned_process_group()
     }
 
@@ -1615,6 +1974,7 @@ impl FatalSession {
         terminal: &safeptrace::TerminalCleanup,
     ) -> Result<(), Errno> {
         self.backend_signalling.store(true, Ordering::Release);
+        self.source_cohort.before_group_signal()?;
         // The orphan carries its original generation across late exit hooks.
         // A numeric PID match could select a later captured process. A thread
         // pidfd can also accept SIGKILL without reaching an exited leader's
@@ -1636,6 +1996,9 @@ impl FatalSession {
     }
 
     async fn freeze_and_kill(&self, task: &FatalTaskStop) {
+        // Physical source custody survives callback cancellation. The original
+        // CompletionWork keeps polling the actual OS join while this waits.
+        self.source_jobs.wait_followed_retirement().await;
         self.backend_signalling.store(true, Ordering::Release);
         // A vfork parent can be kernel-blocked behind a captured child. Signal
         // these exact child generations before waiting for the parent stop.
@@ -1734,7 +2097,7 @@ impl FatalSession {
                 for newborn in &mut newborns {
                     let signal = newborn.signal();
                     match signal {
-                        Ok(()) | Err(Errno::ESRCH) => {}
+                        Ok(()) | Err(Errno::ESRCH) => (),
                         Err(error) => failed_task_termination_is_fatal(newborn.tid, error),
                     }
                 }
@@ -1749,7 +2112,7 @@ impl FatalSession {
                 }
                 for task in &tasks {
                     match task.terminal.request_sigkill() {
-                        Ok(()) | Err(Errno::ESRCH) => {}
+                        Ok(()) | Err(Errno::ESRCH) => (),
                         Err(error) => failed_task_termination_is_fatal(task.tid, error),
                     }
                 }
@@ -1780,11 +2143,29 @@ impl FatalSession {
         }
     }
 
+    // Host component admission only: use the existing constructor/reporter,
+    // not fabricated task, source-cohort or terminal authority.
+    #[cfg(test)]
+    pub(crate) fn source_completion_component<G: GlobalTool + 'static>(
+        global: &Arc<G>,
+        original_child: Pid,
+    ) -> Self {
+        Self::new(global, original_child)
+    }
+
     pub(crate) fn fail_at(&self, origin: BackendFailure, error: reverie::Error) {
         self.try_fail_at(origin, error);
     }
 
+    pub(crate) fn cohort_terminal(
+        &self,
+        terminal: &TerminalCleanup,
+    ) -> Option<source_cohort::TerminalOperation> {
+        self.source_cohort.terminal_owner(terminal)
+    }
+
     fn try_fail_at(&self, origin: BackendFailure, error: reverie::Error) -> bool {
+        self.source_cohort.fail();
         let first = {
             let mut failure = self.failure.lock().unwrap();
             if self.closed.load(Ordering::Acquire) {
@@ -2112,6 +2493,7 @@ struct GlobalState<G: GlobalTool> {
     liteinst_runtime: Option<LiteinstRuntimeConfig>,
 
     fatal_session: Arc<FatalSession>,
+    source_supported: bool,
 
     /// Optional collector for general ptrace lifecycle activity.
     backend_stats: Option<PtraceBackendStatsSource>,
@@ -2130,6 +2512,7 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             injected_syscall_trap: self.injected_syscall_trap.clone(),
             liteinst_runtime: self.liteinst_runtime.clone(),
             fatal_session: self.fatal_session.clone(),
+            source_supported: self.source_supported,
             backend_stats: self.backend_stats.clone(),
             parent_completion_failure: Arc::clone(&self.parent_completion_failure),
         }
@@ -2187,6 +2570,8 @@ mod original_context;
 mod original_read;
 #[cfg(target_arch = "x86_64")]
 mod original_setsockopt;
+#[cfg(target_arch = "x86_64")]
+mod private_signal;
 
 // Private producer: consumers borrow this only at an actual stopped boundary.
 struct InitialCommandStop<'a> {
@@ -2279,6 +2664,12 @@ pub struct TracedTask<L: Tool> {
     original_setsockopt_entry:
         Option<Result<original_setsockopt::OriginalSetsockoptEntry, TraceError>>,
 
+    /// Original consumed callback stop; never reconstructed by assume_stopped.
+    source_stop: Option<Arc<safeptrace::SourceStop>>,
+    cohort: Option<source_cohort::Member>,
+    #[cfg(target_arch = "x86_64")]
+    source_observer: Arc<StdMutex<source_observation::State>>,
+
     /// The pending syscall was converted out of its seccomp stop before Tool dispatch.
     pending_syscall_already_skipped: bool,
 
@@ -2302,6 +2693,11 @@ pub struct TracedTask<L: Tool> {
     // This is not an errno, an independent operation registry, or a result.
     #[cfg(target_arch = "x86_64")]
     interrupted_read: Option<original_read::InterruptedRead>,
+
+    /// Original logical frame and explicit finite continuation, never a saved
+    /// future across guest handler execution.
+    #[cfg(target_arch = "x86_64")]
+    private_signal: private_signal::State,
 
     /// A channel to allow short-circuiting the next state to main run loop. This
     /// is useful inside of `inject` or `tail_inject` where we might need to
@@ -2447,6 +2843,11 @@ impl<L: Tool> TracedTask<L> {
                     .map(|s| s.sequentialized_guest)
                     .unwrap_or(false),
             ),
+            source_supported: cfg!(target_arch = "x86_64")
+                && options.command_bootstrap
+                && gdbserver.is_none()
+                && options.liteinst_runtime.is_none()
+                && options.injected_syscall_trap.is_none(),
             injected_syscall_trap: options.injected_syscall_trap.clone(),
             liteinst_runtime: options.liteinst_runtime,
             fatal_session,
@@ -2478,6 +2879,10 @@ impl<L: Tool> TracedTask<L> {
             original_read_entry: None,
             #[cfg(target_arch = "x86_64")]
             original_setsockopt_entry: None,
+            source_stop: None,
+            cohort: None,
+            #[cfg(target_arch = "x86_64")]
+            source_observer: Arc::new(StdMutex::new(source_observation::State::startup())),
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
             liteinst_runtime: Arc::new(StdMutex::new(LiteinstRuntimeState::default())),
@@ -2494,6 +2899,8 @@ impl<L: Tool> TracedTask<L> {
             pending_signal: None,
             #[cfg(target_arch = "x86_64")]
             interrupted_read: None,
+            #[cfg(target_arch = "x86_64")]
+            private_signal: private_signal::State::default(),
             child_procs: Arc::new(Mutex::new(Children::new())),
             child_threads: Arc::new(Mutex::new(Children::new())),
             orphanage,
@@ -2524,7 +2931,7 @@ impl<L: Tool> TracedTask<L> {
     }
 
     /// Create a child TracedTask corresponding to a clone()
-    fn cloned(&self, child: Pid, timer: TaskTimer) -> Self {
+    fn cloned(&self, child: Pid, timer: TaskTimer, cohort: Option<source_cohort::Member>) -> Self {
         let global_state = self.global_state.clone();
         let process_state = self.process_state.clone();
         let thread_state =
@@ -2559,6 +2966,10 @@ impl<L: Tool> TracedTask<L> {
             original_read_entry: None,
             #[cfg(target_arch = "x86_64")]
             original_setsockopt_entry: None,
+            source_stop: None,
+            cohort,
+            #[cfg(target_arch = "x86_64")]
+            source_observer: Arc::new(StdMutex::new(source_observation::State::startup())),
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
             liteinst_runtime: self.liteinst_runtime.clone(),
@@ -2571,6 +2982,8 @@ impl<L: Tool> TracedTask<L> {
             pending_signal: None,
             #[cfg(target_arch = "x86_64")]
             interrupted_read: None,
+            #[cfg(target_arch = "x86_64")]
+            private_signal: private_signal::State::default(),
             child_procs: self.child_procs.clone(),
             child_threads: self.child_threads.clone(),
             orphanage: self.orphanage.clone(),
@@ -2599,7 +3012,7 @@ impl<L: Tool> TracedTask<L> {
     }
 
     /// Create a child TracedTask corresponding to a fork()
-    fn forked(&self, child: Pid, timer: TaskTimer) -> Self {
+    fn forked(&self, child: Pid, timer: TaskTimer, cohort: Option<source_cohort::Member>) -> Self {
         let process_state = Arc::new(L::new(child, &self.global_state.cfg));
         let thread_state =
             process_state.init_thread_state(child, Some((self.tid, &self.thread_state)));
@@ -2628,6 +3041,10 @@ impl<L: Tool> TracedTask<L> {
             original_read_entry: None,
             #[cfg(target_arch = "x86_64")]
             original_setsockopt_entry: None,
+            source_stop: None,
+            cohort,
+            #[cfg(target_arch = "x86_64")]
+            source_observer: Arc::new(StdMutex::new(source_observation::State::startup())),
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
             liteinst_runtime: Arc::new(StdMutex::new(
@@ -2642,6 +3059,8 @@ impl<L: Tool> TracedTask<L> {
             pending_signal: None,
             #[cfg(target_arch = "x86_64")]
             interrupted_read: None,
+            #[cfg(target_arch = "x86_64")]
+            private_signal: private_signal::State::default(),
             child_procs: Arc::new(Mutex::new(Children::new())),
             child_threads: Arc::new(Mutex::new(Children::new())),
             orphanage: self.orphanage.clone(),
@@ -2883,6 +3302,340 @@ fn exit_failed_tracer_process(status: i32) -> ! {
     let _ = std::io::stderr().flush();
     let _ = std::io::stdout().flush();
     std::process::exit(status)
+}
+
+/// A regular wait issued by this actor, with its original ordinary nonleader
+/// owner when applicable. Newborn admission and terminal cleanup keep their
+/// separate raw Running owners.
+pub(crate) struct TaskRunning {
+    running: Running,
+    original_nonleader: Option<Arc<TerminalCleanup>>,
+    cohort_operation: Option<source_cohort::ResumeOperation>,
+    #[cfg(target_arch = "x86_64")]
+    observation: Option<source_observation::Context>,
+    #[cfg(target_arch = "x86_64")]
+    administrative: bool,
+    #[cfg(target_arch = "x86_64")]
+    precise: Option<source_observation::Step>,
+}
+
+fn vanished_without_status(terminal: &TerminalCleanup) -> bool {
+    terminal.registration_error().is_none()
+        && terminal.observed_exit_status() == Err(Errno::ECHILD)
+        && terminal.is_reaped() == Ok(true)
+}
+
+/// Both wait classes must make this decision after their own result arrives:
+/// select_biased's earlier exit poll is not atomic with notifier publication.
+/// Only an original wait may call this; Tool errors never pass through it.
+async fn arbitrate_original_wait<T>(
+    result: Result<T, TraceError>,
+    vanished_nonleader: impl FnOnce() -> bool,
+) -> Result<T, TraceError> {
+    if matches!(&result, Err(TraceError::Errno(Errno::ECHILD))) && vanished_nonleader() {
+        // No status, resume, or state transfer is invented. The existing outer
+        // owner can still select cancellation or an authenticated leader Exec.
+        return future::pending().await;
+    }
+    result
+}
+
+/// A refused exit wait publishes failure before waiting for a cleanup retry.
+/// Once resumed, rejoin the failed-cleanup arm without another ordinary wait
+/// or an exec-only park outside the cancellation select. None retains the
+/// existing failure; it is not a terminal status or a transfer authorization.
+async fn ordinary_exit_or_failure<T>(
+    result: Result<T, TraceError>,
+    has_terminal_status: bool,
+    session: &FatalSession,
+) -> Option<Result<T, TraceError>> {
+    match result {
+        Err(TraceError::Errno(error)) if !has_terminal_status => {
+            session.retry_after(error.into()).await;
+            None
+        }
+        result => Some(result),
+    }
+}
+
+impl TaskRunning {
+    #[cfg(target_arch = "x86_64")]
+    async fn drive(
+        mut self,
+        stepping: bool,
+    ) -> Result<source_observation::StepOutcome, TraceError> {
+        loop {
+            let result = self.running.next_state().await;
+            if let Some(operation) = self.cohort_operation.take() {
+                operation.observe(&result);
+            }
+            let wait = arbitrate_original_wait(result, || {
+                self.original_nonleader
+                    .as_ref()
+                    .is_some_and(|terminal| vanished_without_status(terminal))
+            })
+            .await?;
+            let owned_exit = match &self.observation {
+                Some(context) => context.observe(&wait, self.administrative)?,
+                None => None,
+            };
+            if self.administrative
+                && let Wait::Stopped(task, Event::Syscall) = &wait
+            {
+                let info = task.syscall_stop_info()?;
+                if let Some(step) = &mut self.precise
+                    && let safeptrace::SyscallStopInfo::Entry(entry) = info
+                {
+                    step.entry(task, entry)?;
+                }
+                if !stepping || !matches!(info, safeptrace::SyscallStopInfo::Exit { .. }) {
+                    let Wait::Stopped(task, _) = wait else {
+                        unreachable!()
+                    };
+                    let context = self.observation.as_ref().ok_or(Errno::EPROTO)?;
+                    let (running, operation) = context.resume(task, None)?;
+                    self.running = running;
+                    self.cohort_operation = operation;
+                    continue;
+                }
+            }
+            let transfer = if let Wait::Stopped(task, Event::Seccomp) = &wait
+                && let (Some(context), Some(step)) = (&self.observation, self.precise.take())
+            {
+                Some(context.transfer_tool(step, task)?)
+            } else {
+                None
+            };
+            let (completion, guest_event) = if transfer.is_some() {
+                (None, true)
+            } else if let Some(step) = &mut self.precise {
+                step.finish(&wait, owned_exit)?
+            } else if stepping {
+                // Legacy non-source stepping still requires a real debug cause;
+                // a user-generated SIGTRAP is not a completion receipt.
+                let receipt = if let Wait::Stopped(task, Event::Signal(Signal::SIGTRAP)) = &wait {
+                    source_observation::Completion::legacy(task)?
+                } else {
+                    None
+                };
+                let guest_event = receipt.is_none();
+                (receipt, guest_event)
+            } else {
+                (None, true)
+            };
+            if completion.is_none()
+                && matches!(&wait, Wait::Stopped(..))
+                && let (Some(context), Some(step)) = (&self.observation, self.precise.take())
+            {
+                context.retain_interrupted_step(step)?;
+            }
+            return Ok(source_observation::StepOutcome {
+                wait,
+                completion,
+                guest_event,
+                transfer,
+            });
+        }
+    }
+    pub(crate) async fn next_state(self) -> Result<Wait, TraceError> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            Ok(self.drive(false).await?.wait)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let result = self.running.next_state().await;
+            if let Some(operation) = self.cohort_operation {
+                operation.observe(&result);
+            }
+            arbitrate_original_wait(result, || {
+                self.original_nonleader
+                    .as_ref()
+                    .is_some_and(|terminal| vanished_without_status(terminal))
+            })
+            .await
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) async fn next_step(self) -> Result<source_observation::StepOutcome, TraceError> {
+        self.drive(true).await
+    }
+    async fn wait_for_signal(mut self, signal: Signal) -> Result<Wait, TraceError> {
+        loop {
+            let original_nonleader = self.original_nonleader.clone();
+            #[cfg(target_arch = "x86_64")]
+            let observation = self.observation.clone();
+            let wait = self.next_state().await?;
+            match wait {
+                Wait::Stopped(task, event) if event != Event::Signal(signal) => {
+                    let deliver = if let Event::Signal(signal) = event {
+                        Some(signal)
+                    } else {
+                        None
+                    };
+                    #[cfg(target_arch = "x86_64")]
+                    if let Some(context) = observation {
+                        let (running, cohort_operation) = context.resume(task, deliver)?;
+                        self = Self {
+                            running,
+                            original_nonleader,
+                            cohort_operation,
+                            observation: Some(context),
+                            administrative: true,
+                            precise: None,
+                        };
+                        continue;
+                    }
+                    self = Self {
+                        running: task.resume(deliver)?,
+                        original_nonleader,
+                        cohort_operation: None,
+                        #[cfg(target_arch = "x86_64")]
+                        observation: None,
+                        #[cfg(target_arch = "x86_64")]
+                        administrative: false,
+                        #[cfg(target_arch = "x86_64")]
+                        precise: None,
+                    };
+                }
+                wait => return Ok(wait),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod original_wait_arbitration_tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn publication_between_exit_and_regular_polls_remains_pending() {
+        // Model only publication timing; native 572 remains the kernel oracle.
+        for publish_before_exit in [false, true] {
+            let published = Cell::new(publish_before_exit);
+            let exit = async {
+                futures::future::poll_fn(|cx| {
+                    if published.get() {
+                        std::task::Poll::Ready(Err::<(), _>(TraceError::Errno(Errno::ECHILD)))
+                    } else {
+                        published.set(true);
+                        cx.waker().wake_by_ref();
+                        std::task::Poll::Pending
+                    }
+                })
+                .await
+            };
+            let exit = async { arbitrate_original_wait(exit.await, || true).await }.fuse();
+            let regular = async {
+                assert!(published.get());
+                arbitrate_original_wait(Err::<(), _>(TraceError::Errno(Errno::ECHILD)), || true)
+                    .await
+            }
+            .fuse();
+            let drive = async {
+                futures::pin_mut!(exit, regular);
+                futures::select_biased! {
+                    result = exit => result,
+                    result = regular => result,
+                }
+            };
+            assert!(drive.now_or_never().is_none());
+        }
+    }
+
+    #[test]
+    fn unrelated_wait_errors_and_unproven_echild_are_preserved() {
+        for errno in [
+            Errno::ECHILD,
+            Errno::EIO,
+            Errno::EPERM,
+            Errno::ESRCH,
+            Errno::EALREADY,
+        ] {
+            for vanished in [false, true] {
+                if errno == Errno::ECHILD && vanished {
+                    continue;
+                }
+                let result =
+                    arbitrate_original_wait(Err::<(), _>(TraceError::Errno(errno)), || vanished)
+                        .now_or_never()
+                        .expect("unrelated failure was swallowed");
+                assert!(matches!(result, Err(TraceError::Errno(actual)) if actual == errno));
+            }
+        }
+        assert_eq!(
+            arbitrate_original_wait(Ok(73), || panic!("success queried disappearance"))
+                .now_or_never()
+                .unwrap()
+                .unwrap(),
+            73
+        );
+    }
+
+    #[test]
+    fn arbitrary_callback_failure_keeps_its_typed_cause() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("callback sentinel, not a native wait")]
+        struct CallbackFailure;
+
+        let parked =
+            arbitrate_original_wait(Err::<(), _>(TraceError::Errno(Errno::ECHILD)), || true);
+        let callback =
+            handle_internal_error(Error::External(anyhow::Error::new(CallbackFailure).into()));
+        let result = future::select(Box::pin(parked), Box::pin(callback))
+            .now_or_never()
+            .expect("callback failure must remain ready");
+        let Either::Right((Err(reverie::Error::Tool(error)), _)) = result else {
+            panic!("callback failure lost its error route");
+        };
+        assert!(error.downcast_ref::<CallbackFailure>().is_some());
+    }
+
+    #[test]
+    fn refused_exit_wait_resumes_into_failed_cleanup() {
+        use std::future::Future;
+        use std::task::Context;
+        use std::task::Poll;
+
+        // Exercise the actual failure/retry handshake without any native task.
+        // In particular, no second ordinary ECHILD wait may be polled after
+        // the retry: None must select the existing failed-cleanup arm instead.
+        for error in [Errno::EIO, Errno::EALREADY] {
+            let session = FatalSession {
+                root: Some(Pid::from_raw(42)),
+                reporter: Some(Box::new(|_| true)),
+                ..FatalSession::default()
+            };
+            let mut retry = Box::pin(ordinary_exit_or_failure(
+                Err::<(), _>(TraceError::Errno(error)),
+                false,
+                &session,
+            ));
+            let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+            assert!(retry.as_mut().poll(&mut cx).is_pending());
+            assert!(session.is_failed());
+            assert!(session.cleanup_was_refused());
+            session.resume_cleanup();
+            assert!(matches!(retry.as_mut().poll(&mut cx), Poll::Ready(None)));
+            assert!(session.is_failed());
+            let failure = session.failure_snapshot().expect("original cause retained");
+            assert!(matches!(failure.primary(), reverie::Error::Errno(actual) if *actual == error));
+
+            let actual_terminal = ordinary_exit_or_failure(
+                Err::<(), _>(TraceError::Errno(Errno::ECHILD)),
+                true,
+                &session,
+            )
+            .now_or_never()
+            .expect("retained terminal status still reaches the terminal owner");
+            assert!(matches!(
+                actual_terminal,
+                Some(Err(TraceError::Errno(Errno::ECHILD)))
+            ));
+        }
+    }
 }
 
 fn log_guest_exit(tid: Pid, pid: Pid, exit_status: ExitStatus) {
@@ -3539,14 +4292,52 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Returns `true` if the signal was actually meant for the timer, and
     /// therefore should not be forwarded to the tool / guest.
     async fn handle_timer(&mut self, task: Stopped) -> Result<(bool, Stopped), TraceError> {
+        // Capture the original stopped actor before borrowing the timer. Each
+        // successful step keeps this generation; a non-step event leaves the
+        // timer loop. Only its native wait may defer vanished-nonleader ECHILD.
+        let original_nonleader = self.original_nonleader(task.pid(), || task.terminal_cleanup());
         let armer = self.liteinst_root_stop_armer(&task);
         let held_root_stop = armer
             .as_ref()
             .map(|armer| Arc::clone(&armer.held_root_stop));
-        let mut step = move |task| RootStopLease::new(task, held_root_stop.clone()).step(None);
+        let cohort = self.cohort.clone();
+        #[cfg(target_arch = "x86_64")]
+        let observation = self.source_context(Some(&task));
+        let mut step = move |task: Stopped| {
+            #[cfg(target_arch = "x86_64")]
+            if let Some(context) = observation.clone()
+                && let Some(precise) = context.begin_step(&task)?
+            {
+                let (running, cohort_operation) = context.resume(task, None)?;
+                return Ok(TaskRunning {
+                    running,
+                    original_nonleader: original_nonleader.clone(),
+                    cohort_operation,
+                    observation: Some(context),
+                    administrative: true,
+                    precise: Some(precise),
+                });
+            }
+            let cohort_operation = cohort
+                .as_ref()
+                .and_then(|member| member.before_resume(&task));
+            RootStopLease::new(task, held_root_stop.clone())
+                .step(None)
+                .map(|running| TaskRunning {
+                    running,
+                    original_nonleader: original_nonleader.clone(),
+                    cohort_operation,
+                    #[cfg(target_arch = "x86_64")]
+                    observation: None,
+                    #[cfg(target_arch = "x86_64")]
+                    administrative: false,
+                    #[cfg(target_arch = "x86_64")]
+                    precise: None,
+                })
+        };
         let mut observe = |wait: &Wait| {
             if let (Some(armer), Wait::Stopped(task, event)) = (armer.as_ref(), wait) {
-                armer.arm(task, event)?;
+                armer.ensure(task, event)?;
             }
             Ok(())
         };
@@ -3600,7 +4391,32 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Postconditions:
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
+        #[cfg(target_arch = "x86_64")]
+        if self.cohort.is_some() && matches!(&event, Event::Syscall) {
+            if !matches!(
+                stopped.syscall_stop_info()?,
+                safeptrace::SyscallStopInfo::Exit { .. }
+            ) {
+                return Err(Errno::EPROTO.into());
+            }
+            return Ok(self.resume_stopped(stopped, None)?.next_state().await?);
+        }
         self.timer.observe_event();
+        #[cfg(target_arch = "x86_64")]
+        self.source_observer
+            .lock()
+            .unwrap()
+            .retire_interrupted_step(&stopped)?;
+        #[cfg(target_arch = "x86_64")]
+        if !matches!(&event, Event::Seccomp) {
+            self.source_observer
+                .lock()
+                .unwrap()
+                .cancel_tool_for_guest_event(&stopped)?;
+        }
+        if matches!(&event, Event::NewChild(..)) {
+            self.global_state.fatal_session.source_epoch.revoke();
+        }
         let tid = self.tid();
 
         #[cfg(test)]
@@ -3648,11 +4464,56 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             Event::Exec(former_tid) => self.handle_exec_event(stopped, former_tid).await,
             Event::Seccomp => self.handle_seccomp(stopped).await,
-            Event::NewChild(op, child) => self
-                .dispatch_new_task(op, stopped, child, None, None, None)
-                .await
-                .map(|(wait, _)| wait)
-                .tracee_context(tid, "handle new tracee stop"),
+            Event::NewChild(op, child) => {
+                // Capture the original native frame before child callbacks or
+                // any context restoration. A failed optional observation must
+                // not bypass dispatch's real newborn custody and cleanup.
+                #[cfg(target_arch = "x86_64")]
+                let parent_step = if !self.attached_by_gdb {
+                    match ParentSyscallStep::capture(&stopped, op, child.pid()) {
+                        Ok(step) => Some(step),
+                        Err(error) => {
+                            tracing::debug!(?error, "parent-step provenance unavailable");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                let result = async {
+                    let (wait, _) = self
+                        .dispatch_new_task(op, stopped, child, None, None, None)
+                        .await?;
+                    #[cfg(target_arch = "x86_64")]
+                    let wait = {
+                        let complete = match parent_step {
+                            Some(step) => match step.completed(&wait) {
+                                Ok(complete) => complete,
+                                Err(error) => {
+                                    tracing::debug!(?error, "parent-step completion unavailable");
+                                    false
+                                }
+                            },
+                            None => false,
+                        };
+                        if complete {
+                            match wait {
+                                Wait::Stopped(parent, Event::Signal(Signal::SIGTRAP)) => {
+                                    // Only this ordinary caller resumes user execution.
+                                    // status_to_result's injected continuation is unchanged.
+                                    return self.resume_stopped(parent, None)?.next_state().await;
+                                }
+                                wait => wait,
+                            }
+                        } else {
+                            wait
+                        }
+                    };
+                    Ok::<_, TraceError>(wait)
+                }
+                .await;
+                result.tracee_context(tid, "handle new tracee stop")
+            }
             Event::VforkDone => self
                 .handle_vfork_done_event(stopped)
                 .await
@@ -4112,8 +4973,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
         } else {
-            let running = self.resume_stopped(task, None)?;
-            HandleSignalResult::SignalSuppressed(running.next_state().await?)
+            HandleSignalResult::SignalToDeliver(task, Signal::SIGTRAP)
         })
     }
 
@@ -4394,6 +5254,26 @@ impl<L: Tool + 'static> TracedTask<L> {
                 "stopped task differs from retained root",
             ));
         }
+        if self.command_bootstrap {
+            if self.is_root_thread() && self.global_state.source_supported {
+                self.cohort = self
+                    .global_state
+                    .fatal_session
+                    .source_cohort
+                    .initial_command(&task);
+            }
+            self.global_state.fatal_session.source_epoch.initial_exec(
+                &task,
+                self.is_root_thread()
+                    && self.global_state.source_supported
+                    && self.cohort.is_some(),
+            );
+        } else {
+            if let Some(member) = &self.cohort {
+                member.exec_observed();
+            }
+            self.global_state.fatal_session.source_epoch.revoke();
+        }
         let initial_command = self
             .prepare_exec_event(former_tid)
             .tracee_context(self.tid(), "handle exec stop")?;
@@ -4501,7 +5381,20 @@ impl<L: Tool + 'static> TracedTask<L> {
         // PTRACE_EVENT_EXEC. We can't call `tracee_preinit` until after this
         // because when it tries to step the tracee, it'll get this SIGTRAP
         // signal instead.
-        let task = if self.global_state.liteinst_runtime.is_some() {
+        let task = if self.cohort.is_some() {
+            // The exec effect has happened, but the first image instruction
+            // has not. Consume this same syscall's real EXIT without setting
+            // TF or allowing an unobserved first instruction to execute.
+            let wait = self.syscall_stopped(task, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            match wait {
+                Wait::Stopped(task, Event::Syscall) => {
+                    task.syscall_exit_result()?;
+                    task
+                }
+                other => return Ok(other),
+            }
+        } else if self.global_state.liteinst_runtime.is_some() {
             let expected_post_exec_rip = task.getregs()?.ip();
             let wait = self.step_stopped(task, None)?.next_state().await?;
             self.arm_liteinst_wait(&wait);
@@ -4620,6 +5513,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.ordinary_trace_continuation()?;
         self.observe_ready_thread_state()?;
         self.timer.finalize_requests();
+        if initial_command && let Some(member) = &self.cohort {
+            member.initial_ready();
+        }
 
         if self.attached_by_gdb {
             let request_tx = self.gdb_request_tx.clone();
@@ -4668,6 +5564,34 @@ impl<L: Tool + 'static> TracedTask<L> {
         } else {
             if self.global_state.liteinst_runtime.is_some() {
                 return self.resume_stopped(task, None)?.next_state().await;
+            }
+            #[cfg(target_arch = "x86_64")]
+            if let Some(context) = self.source_context(Some(&task))
+                && let Some(precise) = context.begin_step(&task)?
+            {
+                // The first instruction of the image is guest code too. Keep
+                // its native ENTRY visible before effect; do not use an
+                // unobserved bootstrap SINGLESTEP after initial_ready().
+                let (running, operation) = context.resume(task, None)?;
+                let mut running = self.task_running(running, operation);
+                running.observation = Some(context);
+                running.administrative = true;
+                running.precise = Some(precise);
+                let outcome = running.next_step().await?;
+                // Context::observe already retained this exact startup wait.
+                // Check the same generation/event; do not re-arm a consumed wait.
+                self.ensure_liteinst_wait(&outcome.wait);
+                if outcome.completion.is_some() && !outcome.guest_event {
+                    let Wait::Stopped(task, _) = outcome.wait else {
+                        return Err(Errno::EPROTO.into());
+                    };
+                    // This bootstrap step was already present before this
+                    // change. It is not a timer-request completion.
+                    self.ordinary_trace_continuation()?;
+                    self.timer.finalize_requests();
+                    return self.resume_stopped(task, None)?.next_state().await;
+                }
+                return Ok(outcome.wait);
             }
             let wait = self.step_stopped(task, None)?.next_state().await?;
             self.arm_liteinst_wait(&wait);
@@ -5652,15 +6576,48 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     async fn handle_seccomp(&mut self, mut task: Stopped) -> Result<Wait, Error> {
         let tid = self.tid();
+        // The source tier observes x32/high raw numbers without pretending they
+        // are native Sysno values. Preserve their actual kernel execution/result.
+        let raw_number = task.getregs()?.orig_syscall() as u32;
+        if raw_number >= 0x4000_0000 {
+            if (raw_number as i32) >= 0 {
+                self.global_state.fatal_session.source_epoch.revoke();
+            }
+            return self
+                .resume_stopped(task, None)?
+                .next_state()
+                .await
+                .map_err(Into::into);
+        }
         let syscall = self
             .get_syscall(&task)
             .tracee_context(tid, "read registers at seccomp stop")?;
         let (nr, args) = syscall.into_parts();
+        self.global_state
+            .fatal_session
+            .source_epoch
+            .observe(nr, args);
         let tool_subscribed = self
             .global_state
             .subscriptions
             .iter_syscalls()
             .any(|subscribed| subscribed == nr);
+        // Source-only observation neither redispatches the Tool nor changes
+        // syscall flags/results. The existing private-IP exemption still means
+        // no Tool callback, even when the source tier observed the syscall.
+        let private_ip = {
+            let ip = task.getregs()?.ip() as usize;
+            (cp::TRAMPOLINE_BASE + cp::SYSCALL_INSTR_SIZE
+                ..cp::TRAMPOLINE_BASE + cp::SYSCALL_INSTR_SIZE + cp::UD_INSTR_SIZE)
+                .contains(&ip)
+        };
+        if source_epoch::observes(nr) && (!tool_subscribed || private_ip) {
+            return self
+                .resume_stopped(task, None)?
+                .next_state()
+                .await
+                .map_err(Into::into);
+        }
         if is_liteinst_mapping_syscall(nr) && !tool_subscribed {
             return self.handle_liteinst_mapping_syscall(task, nr, args).await;
         }
@@ -5711,6 +6668,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                 && !syscall_already_skipped)
                 .then(|| original_context::OriginalReadEntry::capture(&task, nr, args));
 
+            self.source_stop = task.source_stop().ok().map(Arc::new);
+            #[cfg(target_arch = "x86_64")]
+            self.begin_private_logical_call(&task, (nr, args))?;
             let retval = cancellable(self.cancel_handler.clone(), async {
                 self.process_state
                     .clone()
@@ -5718,6 +6678,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .await
             })
             .await;
+            self.source_stop = None;
+
+            #[cfg(target_arch = "x86_64")]
+            if let Some(wait) = self.finish_private_signal_callback(&retval).await? {
+                return Ok(wait);
+            }
 
             #[cfg(target_arch = "x86_64")]
             if self.interrupted_read.is_some() {
@@ -5792,6 +6758,37 @@ impl<L: Tool + 'static> TracedTask<L> {
 
             self.pending_syscall_already_skipped = false;
 
+            #[cfg(target_arch = "x86_64")]
+            {
+                let needs_original = self
+                    .source_observer
+                    .lock()
+                    .unwrap()
+                    .tool_needs_original_resume();
+                if needs_original {
+                    // Matching tail injection leaves the original SECCOMP
+                    // attempt uneffected. Finish that very attempt, including
+                    // native parent restoration, before completing the logical
+                    // instruction transferred from the precise timer.
+                    let native = self
+                        .cohort
+                        .as_ref()
+                        .and_then(|member| member.native(nr, args));
+                    let wait = self.syscall_stopped(task, None)?.next_state().await?;
+                    self.arm_liteinst_wait(&wait);
+                    // The native raw result remains in the actual registers;
+                    // errno is a guest result, not a backend failure.
+                    let _native_result = self
+                        .status_to_result(wait, None, None, None, native)
+                        .await?;
+                    task = self.assume_stopped();
+                }
+                let completion = self.source_observer.lock().unwrap().finish_tool(&task)?;
+                if let Some(completion) = completion {
+                    self.timer.complete_tool_step(completion);
+                }
+            }
+
             if let Some(resume_rip) = liteinst_resume_rip {
                 let mut regs = task
                     .getregs()
@@ -5818,10 +6815,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             let running = self
                 .resume_stopped(task, sig)
                 .tracee_context(tid, "resume after seccomp stop")?;
-            let wait = running
-                .next_state()
-                .await
-                .tracee_context(tid, "wait after seccomp resume")?;
+            let wait_result = running.next_state().await;
+            let wait = wait_result.tracee_context(tid, "wait after seccomp resume")?;
             tracing::trace!(
                 target: "reverie_ptrace::syscall",
                 "completed guest syscall interception"
@@ -5932,37 +6927,167 @@ impl<L: Tool + 'static> TracedTask<L> {
         RootStopLease::new(task, slot)
     }
 
+    fn original_nonleader(
+        &self,
+        tid: Pid,
+        terminal: impl FnOnce() -> TerminalCleanup,
+    ) -> Option<Arc<TerminalCleanup>> {
+        if self.ordinary_failure_enabled() && !self.is_main_thread() {
+            let terminal = terminal();
+            self.ordinary_exec
+                .lock()
+                .unwrap()
+                .get(&self.tid())
+                .and_then(|slot| {
+                    (tid == self.tid()
+                        && slot.stop.terminal.same_generation(&terminal)
+                        && terminal.thread_group_id() == Ok(self.pid()))
+                    .then_some(Arc::new(terminal))
+                })
+        } else {
+            None
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn source_context(&self, task: Option<&Stopped>) -> Option<source_observation::Context> {
+        Some(source_observation::Context {
+            state: Arc::clone(&self.source_observer),
+            member: self.cohort.clone()?,
+            epoch: Arc::clone(&self.global_state.fatal_session.source_epoch),
+            subscriptions: Arc::clone(&self.global_state.subscriptions),
+            armer: task.and_then(|task| self.liteinst_root_stop_armer(task)),
+        })
+    }
+
+    fn task_running(
+        &self,
+        running: Running,
+        cohort_operation: Option<source_cohort::ResumeOperation>,
+    ) -> TaskRunning {
+        let original_nonleader =
+            self.original_nonleader(running.pid(), || running.terminal_cleanup());
+        TaskRunning {
+            running,
+            original_nonleader,
+            cohort_operation,
+            #[cfg(target_arch = "x86_64")]
+            observation: self.source_context(None),
+            #[cfg(target_arch = "x86_64")]
+            administrative: false,
+            #[cfg(target_arch = "x86_64")]
+            precise: None,
+        }
+    }
+
     fn resume_stopped<T: Into<Option<Signal>>>(
         &self,
         task: Stopped,
         signal: T,
-    ) -> Result<Running, TraceError> {
+    ) -> Result<TaskRunning, TraceError> {
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
-        self.lease_liteinst_root_stop(task).resume(signal)
+        #[cfg(target_arch = "x86_64")]
+        if let Some(context) = self.source_context(Some(&task)) {
+            let (running, operation) = context.resume(task, signal.into())?;
+            let mut running = self.task_running(running, operation);
+            running.observation = Some(context);
+            running.administrative = true;
+            return Ok(running);
+        }
+        self.global_state
+            .fatal_session
+            .source_epoch
+            .observe_resume(&task);
+        let operation = self
+            .cohort
+            .as_ref()
+            .and_then(|member| member.before_resume(&task));
+        self.lease_liteinst_root_stop(task)
+            .resume(signal)
+            .map(|running| self.task_running(running, operation))
     }
 
     fn step_stopped<T: Into<Option<Signal>>>(
         &self,
         task: Stopped,
         signal: T,
-    ) -> Result<Running, TraceError> {
+    ) -> Result<TaskRunning, TraceError> {
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
-        self.lease_liteinst_root_stop(task).step(signal)
+        #[cfg(target_arch = "x86_64")]
+        if let Some(context) = self.source_context(Some(&task)) {
+            // Remaining callers require the real kernel SINGLESTEP stop
+            // protocol (debugger/legacy parent). Do not claim source coverage
+            // across that execution. Ordinary root startup and timer stepping
+            // have explicit SYSCALL paths and never reach this fallback.
+            context.close();
+        }
+        self.global_state
+            .fatal_session
+            .source_epoch
+            .observe_resume(&task);
+        let operation = self
+            .cohort
+            .as_ref()
+            .and_then(|member| member.before_resume(&task));
+        self.lease_liteinst_root_stop(task)
+            .step(signal)
+            .map(|running| self.task_running(running, operation))
     }
 
     fn syscall_stopped<T: Into<Option<Signal>>>(
         &self,
         task: Stopped,
         signal: T,
-    ) -> Result<Running, TraceError> {
+    ) -> Result<TaskRunning, TraceError> {
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
-        self.lease_liteinst_root_stop(task).syscall(signal)
+        #[cfg(target_arch = "x86_64")]
+        if let Some(context) = self.source_context(Some(&task)) {
+            context.raw_resume(&task)?;
+        }
+        self.global_state
+            .fatal_session
+            .source_epoch
+            .observe_resume(&task);
+        let operation = self
+            .cohort
+            .as_ref()
+            .and_then(|member| member.before_resume(&task));
+        self.lease_liteinst_root_stop(task)
+            .syscall(signal)
+            .map(|running| self.task_running(running, operation))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn sysemu_from_exit_stopped(&self, task: Stopped) -> Result<TaskRunning, TraceError> {
+        if self.global_state.fatal_session.is_failed() {
+            return Err(Errno::ECANCELED.into());
+        }
+        if !matches!(
+            task.syscall_stop_info()?,
+            safeptrace::SyscallStopInfo::Exit { .. }
+        ) {
+            return Err(Errno::EPROTO.into());
+        }
+        if let Some(context) = self.source_context(Some(&task)) {
+            context.raw_resume(&task)?;
+        }
+        self.global_state
+            .fatal_session
+            .source_epoch
+            .observe_resume(&task);
+        let operation = self
+            .cohort
+            .as_ref()
+            .and_then(|member| member.before_resume(&task));
+        self.lease_liteinst_root_stop(task)
+            .sysemu_from_exit()
+            .map(|running| self.task_running(running, operation))
     }
 
     async fn dispatch_new_task(
@@ -6024,6 +7149,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         if let TaskTimer::Terminal(previous) = &self.timer {
             assert_eq!(*previous, status, "newborn terminal status changed");
         }
+        // Startup retirement is unsupported by this inactive history. Refuse
+        // it permanently; original owners still perform every physical cleanup.
+        self.global_state.fatal_session.source_cohort.fail();
+        #[cfg(test)]
+        source_cohort::startup_tests::terminal_branch(&self, status);
+        #[cfg(all(test, cohort_final_test))]
+        source_cohort::final_tests::terminal_branch(&self, status);
         // A later startup death can leave an opened timer. Retire it before
         // terminal callbacks; those callbacks have no Guest/timer interface.
         self.timer = TaskTimer::Terminal(status);
@@ -6241,6 +7373,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         // admitted boundary, no await may take the native child out of this slot.
         let id = child.pid();
         assert!(self.pending_child.is_none(), "overlapping child dispatch");
+        let (cohort, parent_completion) = match self
+            .cohort
+            .as_ref()
+            .and_then(|member| member.retain_child(&child_cleanup))
+        {
+            Some((child, parent)) => (Some(child), Some(parent)),
+            None => (None, None),
+        };
         self.pending_child = Some(PendingChild::Native(Box::new(NativeChild {
             id,
             creator,
@@ -6261,6 +7401,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .requires_native_child_admission(&self.thread_state),
             admission_done: false,
             child_restore_context: child_context.or(context),
+            cohort,
         })));
         #[cfg(test)]
         if let Some(PendingChild::Native(native)) = &self.pending_child {
@@ -6300,15 +7441,26 @@ impl<L: Tool + 'static> TracedTask<L> {
         // step boundary does not supply the optional authenticated syscall-exit
         // receipt; no consumer may infer this knowledge or require it for that
         // preexisting path. Non-observing Tools also keep the original path.
-        let completion_owner =
-            (observation.is_some() && !self.attached_by_gdb).then(|| parent.terminal_cleanup());
-        let (parent, native_return) = if let Some(observation) = observation
+        #[cfg(target_arch = "x86_64")]
+        let source_birth = self.source_observer.lock().unwrap().birth();
+        #[cfg(not(target_arch = "x86_64"))]
+        let source_birth = None;
+        let completion_observation = observation.or(source_birth);
+        let completion_owner = (completion_observation.is_some() && !self.attached_by_gdb)
+            .then(|| parent.terminal_cleanup());
+        let (parent, native_return) = if let Some(completion_observation) = completion_observation
             && !self.attached_by_gdb
         {
             #[cfg(test)]
             parent_completion_tests::before_observation(&parent, context.is_some());
             match self
-                .observe_child_syscall_return(parent, op, id, observation)
+                .observe_child_syscall_return(
+                    parent,
+                    op,
+                    id,
+                    completion_observation,
+                    observation.is_some(),
+                )
                 .await
             {
                 Ok((parent, raw)) => (parent, Some(raw)),
@@ -6354,7 +7506,16 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Err(error);
             }
         }
-        if native_return.is_some() {
+        if let Some(raw) = native_return {
+            if let Some(completion) = parent_completion {
+                completion.returned_and_restored(raw);
+            }
+            #[cfg(target_arch = "x86_64")]
+            self.source_observer.lock().unwrap().birth_restored();
+            #[cfg(test)]
+            source_cohort::startup_tests::parent_restored(&parent, id, native_return);
+            #[cfg(all(test, cohort_final_test))]
+            source_cohort::final_tests::parent_restored(&parent, id, native_return);
             // PTRACE_SYSCALL already completed the native operation and stopped
             // before another guest instruction. Do not append the old internal
             // single-step, which would now execute a guest instruction.
@@ -6455,6 +7616,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         op: ChildOp,
         child: Pid,
         observation: (Sysno, SyscallArgs),
+        observe_tool: bool,
     ) -> Result<(Stopped, i64), TraceError> {
         let creator = parent.pid();
         let generation = parent.terminal_cleanup();
@@ -6482,7 +7644,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                                 return Err(Errno::EPROTO.into());
                             }
                             self.observe_injected_syscall(
-                                Some(observation),
+                                observe_tool.then_some(observation),
                                 InjectedSyscallEvent::ChildSyscallReturned { child, raw },
                             );
                             return Ok((parent, raw));
@@ -6552,7 +7714,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         Ok(timer) => Ok(PreparedNewborn::Live {
                             child,
                             event,
-                            timer,
+                            timer: Box::new(timer),
                         }),
                         Err(Errno::ESRCH) => {
                             let status =
@@ -6581,6 +7743,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         let id = child.pid();
         let cleanup = child.terminal_cleanup();
         if let Some(Ok(status)) = cleanup.observed_terminal() {
+            #[cfg(all(test, cohort_final_test))]
+            source_cohort::final_tests::already_final(&cleanup, status);
             return Ok(status);
         }
         let stopped = match child.exit_event().await {
@@ -6840,9 +8004,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             admission_required: _,
             admission_done: _,
             child_restore_context,
+            cohort,
         } = *native;
-        let (initial, timer) = match initial.into_observed() {
-            Ok(prepared) => prepared.into_parts(),
+        let (initial, timer, cohort) = match initial.into_observed() {
+            Ok(prepared) => {
+                let cohort = cohort.map(|membership| membership.prepared(&prepared));
+                let (initial, timer) = prepared.into_parts();
+                (initial, timer, cohort)
+            }
             Err(error) => self.fail_newborn_custody_detail(
                 creator,
                 id,
@@ -6853,8 +8022,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         let child_cleanup = Arc::new(child_cleanup);
         let terminal = (child_kind == ChildTaskKind::Process).then(|| Arc::clone(&child_cleanup));
         let mut child_task = match child_kind {
-            ChildTaskKind::Thread => self.cloned(id, timer),
-            ChildTaskKind::Process => self.forked(id, timer),
+            ChildTaskKind::Thread => self.cloned(id, timer, cohort),
+            ChildTaskKind::Process => self.forked(id, timer, cohort),
         };
 
         #[cfg(test)]
@@ -6877,6 +8046,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             .ordinary_failure_enabled()
             .then(|| self.fatal_session());
         let report_failure = ordinary_failure.clone();
+        // Process children can retain real-parent adoption/reap work in the
+        // final tree drain after this body returns. Only ordinary threads have
+        // the complete continuation boundary certified by this private guard.
+        let retirement = ordinary_failure
+            .as_ref()
+            .filter(|_| child_kind == ChildTaskKind::Thread)
+            .and_then(|_| {
+                child_task
+                    .cohort
+                    .as_ref()
+                    .and_then(|member| member.ordinary_child(Arc::clone(&child_cleanup)))
+            });
         let ordinary_group = ordinary_failure.as_ref().and_then(|session| {
             match session.subscribe_group(child_cleanup.as_ref()) {
                 Ok(subscription) => Some(subscription),
@@ -6896,6 +8077,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         // Heap-place the child operation before the catch/completion wrappers
         // capture it. Tokio's automatic boxing occurs after its by-value spawn
         // entry, which can already exhaust the container's small host stack.
+        #[cfg(test)]
+        let startup_counts = (
+            Arc::clone(&child_task.ntasks),
+            Arc::clone(&child_task.ndaemons),
+        );
+        #[cfg(test)]
+        let completion_readback = Arc::clone(&child_cleanup);
         let body = Box::pin(async move {
             // waitid retries EINTR and notifier registration already owns this
             // exact generation. A genuine final wait can precede SIGSTOP; an
@@ -6923,9 +8111,20 @@ impl<L: Tool + 'static> TracedTask<L> {
                             Errno::ECHILD,
                         );
                     }
-                    return Ok(Some(
-                        child_task.finish_newborn_terminal(creator, status).await,
-                    ));
+                    let status = child_task.finish_newborn_terminal(creator, status).await;
+                    #[cfg(test)]
+                    source_cohort::startup_tests::callbacks_done(
+                        &child_cleanup,
+                        source_cohort::startup_tests::OwnerPath::Startup,
+                        &startup_counts,
+                    );
+                    #[cfg(all(test, cohort_final_test))]
+                    source_cohort::final_tests::callbacks_done(
+                        &child_cleanup,
+                        source_cohort::final_tests::OwnerPath::Startup,
+                        &startup_counts,
+                    );
+                    return Ok(Some(status));
                 }
                 Err(TraceError::Died(zombie)) => {
                     if zombie.pid() != id {
@@ -6944,9 +8143,20 @@ impl<L: Tool + 'static> TracedTask<L> {
                             &error.to_string(),
                         )
                     });
-                    return Ok(Some(
-                        child_task.finish_newborn_terminal(creator, status).await,
-                    ));
+                    let status = child_task.finish_newborn_terminal(creator, status).await;
+                    #[cfg(test)]
+                    source_cohort::startup_tests::callbacks_done(
+                        &child_cleanup,
+                        source_cohort::startup_tests::OwnerPath::Startup,
+                        &startup_counts,
+                    );
+                    #[cfg(all(test, cohort_final_test))]
+                    source_cohort::final_tests::callbacks_done(
+                        &child_cleanup,
+                        source_cohort::final_tests::OwnerPath::Startup,
+                        &startup_counts,
+                    );
+                    return Ok(Some(status));
                 }
                 Err(TraceError::Errno(error)) => {
                     child_task.fail_newborn_custody(
@@ -6971,11 +8181,27 @@ impl<L: Tool + 'static> TracedTask<L> {
                 if event == Event::Signal(Signal::SIGSTOP) {
                     #[cfg(test)]
                     newborn_startup_tests::before_restore(&child, &child_task.timer).await;
+                    #[cfg(test)]
+                    source_cohort::startup_tests::before_restore(&child_task, &child).await;
+                    #[cfg(all(test, cohort_final_test))]
+                    source_cohort::final_tests::before_restore(&child_task, &child).await;
+                    #[cfg(test)]
+                    source_cohort::startup_tests::capture_before_restore(&child, &context);
                     let restored = restore_context(&child, context, None, false);
+                    #[cfg(test)]
+                    source_cohort::startup_tests::restore_result(&child, &restored);
+                    #[cfg(all(test, cohort_final_test))]
+                    source_cohort::final_tests::restore_result(&child, &restored);
                     #[cfg(test)]
                     let restored = newborn_startup_tests::restore_result(child.pid(), restored);
                     match restored {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            if let Some(member) = &child_task.cohort {
+                                member.child_restored();
+                            }
+                            #[cfg(test)]
+                            source_cohort::startup_tests::capture_adoption(&child_task, &child);
+                        }
                         Err(error @ (TraceError::Died(_) | TraceError::Errno(Errno::ESRCH))) => {
                             // Keep construction and the original context order.
                             // A real death here still precedes thread-start; the
@@ -6990,9 +8216,20 @@ impl<L: Tool + 'static> TracedTask<L> {
                                         &error.to_string(),
                                     )
                                 });
-                            return Ok(Some(
-                                child_task.finish_newborn_terminal(creator, status).await,
-                            ));
+                            let status = child_task.finish_newborn_terminal(creator, status).await;
+                            #[cfg(test)]
+                            source_cohort::startup_tests::callbacks_done(
+                                &child_cleanup,
+                                source_cohort::startup_tests::OwnerPath::Startup,
+                                &startup_counts,
+                            );
+                            #[cfg(all(test, cohort_final_test))]
+                            source_cohort::final_tests::callbacks_done(
+                                &child_cleanup,
+                                source_cohort::final_tests::OwnerPath::Startup,
+                                &startup_counts,
+                            );
+                            return Ok(Some(status));
                         }
                         Err(err) => {
                             tracing::error!(
@@ -7021,8 +8258,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                         }
                     }
                 }
+            } else if event == Event::Signal(Signal::SIGSTOP)
+                && let Some(member) = &child_task.cohort
+            {
+                member.child_restored();
             }
-
             let tid = child.pid();
             let detach_held_root_stop = child_task
                 .liteinst_root_config()
@@ -7177,8 +8417,28 @@ impl<L: Tool + 'static> TracedTask<L> {
             let task_finished = Arc::clone(&finished);
             let handle = tokio::task::spawn_local(async move {
                 let result = task_body.await;
+                #[cfg(test)]
+                let body_status = result;
                 task_finished.store(true, Ordering::Release);
-                let _ = sender.send(result);
+                let _sent = sender.send(result);
+                #[cfg(test)]
+                source_cohort::startup_tests::body_completed(
+                    &completion_readback,
+                    body_status,
+                    _sent.is_ok(),
+                );
+                #[cfg(all(test, cohort_final_test))]
+                source_cohort::final_tests::body_completed(
+                    &completion_readback,
+                    body_status,
+                    _sent.is_ok(),
+                );
+                // The consuming task, final-status validation, newborn
+                // bookkeeping and result publication have all finished.
+                // The original session still owns and joins this same handle.
+                if let Some(retirement) = retirement {
+                    retirement.completed(result);
+                }
             });
             self.global_state
                 .fatal_session
@@ -7244,15 +8504,35 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> Result<Wait, TraceError> {
         #[cfg(test)]
         newborn_startup_tests::exit_resuming(&task);
+        #[cfg(test)]
+        let resume_readback = task.terminal_cleanup();
         // de_thread can replace the leader after its PTRACE_EVENT_EXIT, so
         // this wait may report Exec with the caller's former TID, not death.
         if let Some(slot) = held_root_stop.as_ref() {
             HeldRootStop::supersede_with_exit(slot, &task)?;
         }
-        RootStopLease::new(task, held_root_stop)
-            .resume(None)?
-            .next_state()
-            .await
+        #[cfg(all(test, cohort_final_test))]
+        source_cohort::final_tests::exit_attempt(&resume_readback);
+        let resumed = RootStopLease::new(task, held_root_stop).resume(None);
+        #[cfg(test)]
+        source_cohort::startup_tests::exit_resumed(
+            &resume_readback,
+            source_cohort::startup_tests::OwnerPath::Startup,
+            &resumed
+                .as_ref()
+                .map(|_| ())
+                .map_err(|error| format!("{error:?}")),
+        );
+        #[cfg(all(test, cohort_final_test))]
+        source_cohort::final_tests::exit_resumed(
+            &resume_readback,
+            source_cohort::final_tests::OwnerPath::Startup,
+            &resumed
+                .as_ref()
+                .map(|_| ())
+                .map_err(|error| format!("{error:?}")),
+        );
+        resumed?.next_state().await
     }
 
     #[cfg(test)]
@@ -7309,6 +8589,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             return;
         }
         self.observed_terminal = Some(status);
+        if let Some(member) = &self.cohort {
+            member.terminal_observed();
+        }
         self.process_state.on_backend_thread_terminal(
             self.tid,
             self.global_state.gs_ref.as_ref(),
@@ -7948,8 +9231,26 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // then finish child admission/construction before the
                     // creator's consuming Tool callbacks run.
                     self.publish_pending_child().await;
+                    #[cfg(test)]
+                    let callback_counts = (Arc::clone(&self.ntasks), Arc::clone(&self.ndaemons));
+                    let cohort = self.cohort.clone();
                     self.tool_exit_ordinary(status).await;
+                    #[cfg(test)]
+                    source_cohort::startup_tests::callbacks_done(
+                        &stop.terminal,
+                        source_cohort::startup_tests::OwnerPath::Ordinary,
+                        &callback_counts,
+                    );
+                    #[cfg(all(test, cohort_final_test))]
+                    source_cohort::final_tests::callbacks_done(
+                        &stop.terminal,
+                        source_cohort::final_tests::OwnerPath::Ordinary,
+                        &callback_counts,
+                    );
                     session.finished(&stop);
+                    if let Some(member) = cohort {
+                        member.ordinary_callbacks_completed(&stop.terminal);
+                    }
                     return Ok(Some(status));
                 }
                 Some(crate::tracer::OrdinaryTerminal::Exec {
@@ -8125,12 +9426,20 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> crate::tracer::OrdinaryTerminal {
         let global = self.global_state.gs_ref.clone();
         let parent_failure = Arc::clone(&self.global_state.parent_completion_failure);
+        let main_thread = self.is_main_thread();
         let outcome = {
             let run_loop = self.ordinary_start(start).fuse();
             let cancelled = session.cancelled().fuse();
             let task_failure = wait_for_task_failure(global.as_ref(), &parent_failure).fuse();
             futures::pin_mut!(run_loop, cancelled, task_failure);
-            let exit = (&mut *exit_event).fuse();
+            let exit = async {
+                let result = (&mut *exit_event).await;
+                arbitrate_original_wait(result, || {
+                    !main_thread && vanished_without_status(&stop.terminal)
+                })
+                .await
+            }
+            .fuse();
             futures::pin_mut!(exit);
             futures::select_biased! {
                 () = cancelled => None,
@@ -8147,36 +9456,33 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }
                     None
                 },
-                task = exit => Some(Either::Left(task)),
+                task = exit => {
+                    session.source_cohort.terminal_selected(&task);
+                    Some(Either::Left(task))
+                },
                 result = run_loop => Some(Either::Right(result)),
             }
         };
         drop(global);
+        let outcome = match outcome {
+            Some(Either::Left(stopped)) => ordinary_exit_or_failure(
+                stopped,
+                stop.terminal
+                    .observed_exit_status()
+                    .ok()
+                    .flatten()
+                    .is_some(),
+                session,
+            )
+            .await
+            .map(Either::Left),
+            outcome => outcome,
+        };
         match outcome {
             Some(Either::Right(Ok(status))) => {
                 crate::tracer::OrdinaryTerminal::Exited(status, session.ordinary_receipt())
             }
-            Some(Either::Left(mut stopped)) => {
-                while let Err(TraceError::Errno(error)) = stopped {
-                    if stop
-                        .terminal
-                        .observed_exit_status()
-                        .ok()
-                        .flatten()
-                        .is_some()
-                    {
-                        break;
-                    }
-                    if error == Errno::ECHILD && !self.is_main_thread() {
-                        // A former TID can lose its pidfd wait during exec. It
-                        // has no terminal status to consume. The outer owner
-                        // remains available for the leader's actual Exec edge;
-                        // ECHILD itself authorizes neither transfer nor exit.
-                        return future::pending().await;
-                    }
-                    session.retry_after(error.into()).await;
-                    stopped = (&mut *exit_event).await;
-                }
+            Some(Either::Left(stopped)) => {
                 stop.frozen.store(true, Ordering::Release);
                 session.changed.notify_waiters();
                 self.finish_ordinary_exit_with_pending_thread(stopped, stop, session)
@@ -8752,7 +10058,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     /// Skip the syscall which is about to happen in the tracee, switching the tracee
-    /// from Seccomp() state to Stopped(SIGTRAP) state.
+    /// from Seccomp() to the same skipped attempt's actual syscall EXIT.
     ///
     /// This uses the convention that setting the syscall number to -1 causes the
     /// kernel to skip it. This function takes as argument the current register state
@@ -8763,9 +10069,12 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///  The tracee was stopped with the RIP pointing just after a syscall instruction (+2).
     ///
     /// Postconditions:
-    ///  Set tracee state to Stopped/SIGTRP.
+    ///  Retain the actual syscall EXIT stop (no synthetic signal).
     ///  Restore the registers to the state specified by the regs arg.
     async fn skip_seccomp_syscall(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        if self.cohort.is_some() {
+            return self.skip_source_seccomp_syscall(task).await;
+        }
         // So here we are, at ptrace seccomp stop, if we simply resume, the kernel
         // would do the syscall, without our patch. we change to syscall number to
         // -1, so that kernel would simply skip the syscall, so that we can jump to
@@ -8843,6 +10152,80 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    async fn skip_source_seccomp_syscall(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        // So here we are, at ptrace seccomp stop, if we simply resume, the kernel
+        // would do the syscall, without our patch. we change to syscall number to
+        // -1, so that kernel would simply skip the syscall, so that we can jump to
+        // our patched syscall on the first run. Please note after calling this
+        // function, the task state will no longer be in ptrace event seccomp.
+        let regs = task.getregs()?;
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut new_regs = regs;
+            *new_regs.orig_syscall_mut() = -1i64 as u64;
+            task.setregs(&new_regs)?;
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        task.set_syscall(-1)?;
+
+        let running = self.syscall_stopped(task, None)?;
+
+        // After the step, wait for the next transition. Note that this can return
+        // an exited state if there is a group exit while some thread is blocked on
+        // a syscall.
+        {
+            let wait = running.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            match wait {
+                Wait::Stopped(task, Event::Syscall) => {
+                    let _raw = task.syscall_exit_result()?;
+                    // Preserve the original negative control. A forced external
+                    // event must still fail activation; EXIT is not SIGTRAP.
+                    #[cfg(test)]
+                    if self.liteinst_runtime.lock().unwrap().phase == LiteinstRuntimePhase::Waiting
+                        && self
+                            .global_state
+                            .liteinst_runtime
+                            .as_ref()
+                            .and_then(|r| r.force_skip_signal_once.as_ref())
+                            .is_some_and(|once| once.swap(false, Ordering::SeqCst))
+                    {
+                        self.validate_nested_liteinst_activation_signal(
+                            &task,
+                            Signal::SIGTRAP,
+                            LiteinstActivationOperation::SkipInterceptedSyscall,
+                            NestedTrapExpectation::SyscallSkip { pre_rip: regs.ip() },
+                            true,
+                        )?;
+                    }
+                    #[cfg(target_arch = "x86_64")]
+                    task.setregs(&regs)?;
+                    Ok(task)
+                }
+                Wait::Stopped(task, Event::Signal(sig)) => {
+                    // Keep the actual signal stop; the original run owner handles
+                    // delivery/cancellation. Do not fabricate a skip completion.
+                    self.abort(Ok(Wait::Stopped(task, Event::Signal(sig))))
+                        .await;
+                }
+                Wait::Stopped(task, event) => {
+                    panic!(
+                        "skip_seccomp_syscall: PID {} got unexpected event: {:?}",
+                        task.pid(),
+                        event
+                    );
+                }
+                Wait::Exited(_pid, exit_status) =>
+                {
+                    #[allow(unreachable_code)]
+                    self.exit(exit_status).await
+                }
+            }
+        }
+    }
+
     /// inject syscall for given tracee
     ///
     /// NB: limitations:
@@ -8859,6 +10242,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         args: SyscallArgs,
         observe_tool: bool,
     ) -> Result<Result<i64, Errno>, TraceError> {
+        self.global_state
+            .fatal_session
+            .source_epoch
+            .observe(nr, args);
         self.validate_liteinst_mapping_execution(nr, args)?;
         tracing::trace!(
             "[scheduler/tool] (pid = {}) untraced syscall: {:?}",
@@ -8884,6 +10271,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             args.arg5 as Reg,
         ));
         let child_context = self.injected_syscall_frame.is_some().then_some(regs);
+        let mut cohort_native = None;
 
         // Jump to our private page to run the syscall instruction there. See
         // `populate_mmap_page` for details.
@@ -8891,9 +10279,160 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         task.setregs(&regs)?;
 
-        // Step to run the syscall instruction.
-        let wait = self.step_stopped(task, None)?.next_state().await?;
+        // Reach this private instruction's actual ENTRY before its effect.
+        // No SINGLESTEP completion signal can alter guest signal dispositions.
+        let wait = if self.cohort.is_some() {
+            self.syscall_stopped(task, None)?.next_state().await?
+        } else {
+            self.step_stopped(task, None)?.next_state().await?
+        };
+        let wait = match wait {
+            Wait::Stopped(stopped, Event::Syscall) if self.cohort.is_some() => {
+                // The previous transition consumed its lease. Retain this
+                // actual new stop for validation failure/cancellation as well
+                // as for the single effect transition below.
+                self.arm_liteinst_root_stop(&stopped, &Event::Syscall);
+                #[cfg(all(test, target_arch = "x86_64"))]
+                if let Some(gate) = SOURCE_INJECTED_STOP_GATE.with(|slot| {
+                    let mut gate = slot.borrow_mut();
+                    if nr == Sysno::clone
+                        && gate.as_ref().is_some_and(|gate| gate.tid == stopped.pid())
+                    {
+                        gate.take()
+                    } else {
+                        None
+                    }
+                }) {
+                    let entry = stopped.syscall_entry()?;
+                    let receipt = SourceInjectedStopReceipt {
+                        tid: stopped.pid(),
+                        seccomp: entry.seccomp,
+                        number: entry.number,
+                        arguments: entry.arguments,
+                        ip: stopped.getregs()?.ip() as usize,
+                        terminal: stopped.terminal_cleanup(),
+                        held: self
+                            .liteinst_root_stop_slot(&stopped)
+                            .expect("actual injected stop must have its cleanup slot"),
+                        failure_cleanup: Some(HeldRootStop::from_event(&stopped, &Event::Syscall)),
+                    };
+                    assert!(
+                        gate.entered.send(receipt).is_ok(),
+                        "actual stop receiver lost"
+                    );
+                    // Only the original session cancellation may release this
+                    // callback. No second step or synthetic result is issued.
+                    future::pending::<()>().await;
+                }
+                let entry = stopped.syscall_entry()?;
+                let expected = [
+                    args.arg0 as u64,
+                    args.arg1 as u64,
+                    args.arg2 as u64,
+                    args.arg3 as u64,
+                    args.arg4 as u64,
+                    args.arg5 as u64,
+                ];
+                if entry.seccomp
+                    || entry.number != nr as u64
+                    || entry.arguments != expected
+                    || stopped.getregs()?.ip() as usize
+                        != cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE
+                {
+                    return Err(Errno::EPROTO.into());
+                }
+                self.global_state
+                    .fatal_session
+                    .source_epoch
+                    .observe(nr, args);
+                #[cfg(target_arch = "x86_64")]
+                if self.private_signal.frame.is_some() {
+                    original_context::check_entry(
+                        &stopped,
+                        nr,
+                        args,
+                        (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64,
+                        regs.stack_ptr(),
+                        false,
+                    )?;
+                }
+                // Every opted-in injection has reached the authenticated ENTRY
+                // above, including calls without a private signal frame.
+                self.observe_injected_syscall(
+                    observe_tool.then_some((nr, args)),
+                    InjectedSyscallEvent::Entered,
+                );
+                // Only this validated ENTRY establishes a native invocation.
+                // Preparation or an earlier signal stop establishes no effect.
+                cohort_native = self
+                    .cohort
+                    .as_ref()
+                    .and_then(|member| member.native(nr, args));
+                // Continue this SAME original private attempt from ENTRY.
+                self.syscall_stopped(stopped, None)?.next_state().await?
+            }
+            Wait::Stopped(stopped, Event::Signal(sig)) if self.cohort.is_some() => {
+                self.arm_liteinst_root_stop(&stopped, &Event::Signal(sig));
+                // No private ENTRY or return exists. The explicit Tool contract
+                // either drains this same continuation or settles its exact Read;
+                // unsupported/opaque paths still fail under original custody.
+                #[cfg(target_arch = "x86_64")]
+                return match self
+                    .continue_private_signal(
+                        stopped,
+                        sig,
+                        nr,
+                        args,
+                        oldregs,
+                        private_signal::ContinuationOptions {
+                            observe_tool,
+                            recorded: false,
+                        },
+                    )
+                    .await
+                {
+                    Ok(result) => Ok(result),
+                    Err(error) => {
+                        self.publish_ordinary_failure(
+                            "ptrace private syscall before ENTRY",
+                            anyhow::anyhow!("logical signal continuation is unsupported: {error}")
+                                .into(),
+                        );
+                        future::pending().await
+                    }
+                };
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    self.publish_ordinary_failure("ptrace private syscall before ENTRY",
+                        anyhow::anyhow!(
+                            "private syscall {nr:?} interrupted by {sig:?} before validated ENTRY; logical signal continuation is unsupported"
+                        ).into());
+                    return future::pending().await;
+                }
+            }
+            other => other,
+        };
         self.arm_liteinst_wait(&wait);
+
+        #[cfg(target_arch = "x86_64")]
+        if self.private_signal.frame.is_some() {
+            // A finite drain accepts only this helper's real same-frame EXIT;
+            // a second signal/child/exec cannot fall through the legacy helper
+            // branch which models a restart errno.
+            let Wait::Stopped(stopped, Event::Syscall) = &wait else {
+                return Err(Errno::ENOTSUPP.into());
+            };
+            let actual = stopped.getregs()?;
+            let raw = stopped.syscall_exit_result()?;
+            if actual.orig_rax != nr as u64
+                || actual.args() != regs.args()
+                || actual.rsp != regs.rsp
+                || actual.rip != (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64
+                || actual.rax as i64 != raw
+            {
+                return Err(Errno::EPROTO.into());
+            }
+        }
 
         // Get the result of the syscall to return to the caller.
         let result = self
@@ -8902,6 +10441,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Some(oldregs),
                 child_context,
                 observe_tool.then_some((nr, args)),
+                cohort_native,
             )
             .await?;
         self.observe_liteinst_mapping_result(nr, args, result);
@@ -8929,6 +10469,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         context: Option<libc::user_regs_struct>,
         child_context: Option<libc::user_regs_struct>,
         observation: Option<(Sysno, SyscallArgs)>,
+        cohort_native: Option<source_cohort::NativeOperation>,
     ) -> Result<Result<i64, Errno>, TraceError> {
         #[cfg(test)]
         let forced_external_sigtrap = matches!(&wait_status, Wait::Stopped(_, _))
@@ -8998,6 +10539,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                         forced_external_sigtrap,
                     )?;
                     let mut regs = stopped.getregs()?;
+                    let cohort_return = cohort_native.and_then(|owner| {
+                        (sig == Signal::SIGTRAP && !forced_external_sigtrap)
+                            .then(|| owner.private_return(&stopped, regs.ret() as i64))
+                            .flatten()
+                    });
                     // NB: it is possible to get interrupted by signal (such as
                     // SIGCHLD) before single step finishes, while RIP still
                     // points at the private page.
@@ -9043,6 +10589,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                             restore_context(&stopped, context, None, false)?;
                         }
                     }
+                    if let Some(receipt) = cohort_return {
+                        receipt.restored();
+                    }
                     Ok(result)
                 }
                 Event::NewChild(op, child) => {
@@ -9054,6 +10603,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                     let (_, native_return) = self
                         .dispatch_new_task(op, stopped, child, context, child_context, observation)
                         .await?;
+                    if native_return.is_some()
+                        && let Some(owner) = cohort_native
+                    {
+                        owner.child_returned();
+                    }
                     Ok(Errno::from_ret(native_return.unwrap_or(ret) as usize)
                         .map(|value| value as i64))
                 }
@@ -9067,13 +10621,27 @@ impl<L: Tool + 'static> TracedTask<L> {
                         .await
                 }
                 Event::Syscall => {
+                    let raw = stopped.syscall_exit_result()?;
                     let regs = stopped.getregs()?;
-                    self.observe_injected_syscall(
-                        observation,
-                        InjectedSyscallEvent::Returned(regs.ret() as i64),
-                    );
-                    Ok(Errno::from_ret(regs.ret() as usize).map(|x| x as i64))
+                    if regs.ret() as i64 != raw {
+                        return Err(Errno::EPROTO.into());
+                    }
+                    let cohort_return =
+                        cohort_native.and_then(|owner| owner.syscall_return(&stopped, raw));
+                    self.observe_injected_syscall(observation, InjectedSyscallEvent::Returned(raw));
+                    if let Some(context) = context {
+                        if child_context.is_some() {
+                            stopped.setregs(&context)?;
+                        } else {
+                            restore_context(&stopped, context, None, false)?;
+                        }
+                    }
+                    if let Some(receipt) = cohort_return {
+                        receipt.restored();
+                    }
+                    Ok(Errno::from_ret(raw as usize).map(|x| x as i64))
                 }
+                Event::Seccomp => Err(Errno::EPROTO.into()),
                 st => panic!("untraced_syscall returned unknown state: {:?}", st),
             },
             Wait::Exited(_pid, exit_status) => self.exit(exit_status).await,
@@ -9106,6 +10674,20 @@ impl<L: Tool + 'static> TracedTask<L> {
         args: SyscallArgs,
         origin: InjectionOrigin,
     ) -> Result<i64, Errno> {
+        #[cfg(target_arch = "x86_64")]
+        if self.private_signal.consulting
+            || self.private_signal.frame.is_some()
+            || self.private_signal.read.is_some()
+            || self.private_signal.completing.is_some()
+        {
+            // A hook cannot recursively inject to find its own checkpoint, and
+            // the finite-drain promise permits no second helper after this one.
+            self.publish_ordinary_failure(
+                "private continuation injection",
+                anyhow::anyhow!("unapproved nested injection during private handback").into(),
+            );
+            return future::pending().await;
+        }
         // Interrupted Read custody owns the exact kernel stop until the Tool
         // hands its ticket back and the callback consumes it.  Any injection
         // would resume or replace that stop before the handback contract can
@@ -9180,10 +10762,20 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Some(original) if original == (nr, args) => {
                     // Run the exact pending syscall and stop at its exit.
                     self.validate_liteinst_mapping_execution(nr, args)?;
+                    let cohort_native = self
+                        .cohort
+                        .as_ref()
+                        .and_then(|member| member.native(nr, args));
                     let wait = self.syscall_stopped(task, None)?.next_state().await?;
                     self.arm_liteinst_wait(&wait);
                     let result = self
-                        .status_to_result(wait, None, None, observe_tool.then_some((nr, args)))
+                        .status_to_result(
+                            wait,
+                            None,
+                            None,
+                            observe_tool.then_some((nr, args)),
+                            cohort_native,
+                        )
                         .await?;
                     self.observe_liteinst_mapping_result(nr, args, result);
                     Ok(result)
@@ -9336,7 +10928,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         resume: Option<ResumeInferior>,
         task: Stopped,
         resume_action: ExpectedGdbResume,
-    ) -> Result<(Running, Option<ResumeInferior>), TraceError> {
+    ) -> Result<(TaskRunning, Option<ResumeInferior>), TraceError> {
         match resume {
             None => Ok((self.resume_stopped(task, None)?, None)),
             Some(resume) => {
@@ -9376,7 +10968,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         resume_action: ExpectedGdbResume,
-    ) -> Result<Running, TraceError> {
+    ) -> Result<TaskRunning, TraceError> {
         if !self.attached_by_gdb {
             return self.resume_stopped(task, None);
         }
@@ -9736,7 +11328,108 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         self.inspect_native_recvfrom_range(receive)
     }
 
+    async fn stage_followed_source(
+        &mut self,
+        address: usize,
+        length: usize,
+        retention: Box<dyn Send + Sync>,
+    ) -> Result<Vec<u8>, reverie::syscalls::NativeUserReadError> {
+        use reverie::syscalls::NativeUserReadError as E;
+        use reverie::syscalls::NativeUserReadRefusal as R;
+        let refused = |error| E::Refused(R::TargetState(error));
+        let session = Arc::clone(&self.global_state.fatal_session);
+        if !session.source_jobs.enabled()
+            || session.is_failed()
+            || self.cancel_handler.load(Ordering::Acquire)
+        {
+            return Err(refused(Errno::ECANCELED));
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let member = self
+                .cohort
+                .as_ref()
+                .ok_or_else(|| E::Refused(R::UnsupportedBackend))?;
+            if !session.source_jobs.idle() {
+                return Err(refused(Errno::EBUSY));
+            }
+            let hold = Arc::new(member.acquire().map_err(refused)?);
+            let plan = safeptrace::FollowedSourceReadPlan::prepare(hold.sender(), address, length)?;
+            #[cfg(all(test, cohort_final_test))]
+            let plan = source_cohort::hold_tests::prepare(plan, member);
+            let observer = session
+                .source_jobs
+                .submit_followed(retention, hold, move || plan.run())?;
+            let result = observer.await;
+            if session.is_failed() || self.cancel_handler.load(Ordering::Acquire) {
+                return Err(refused(Errno::ECANCELED));
+            }
+            result
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (address, length, retention);
+            Err(E::Refused(R::UnsupportedPlatform))
+        }
+    }
+
+    async fn read_native_source(
+        &mut self,
+        address: usize,
+        length: usize,
+        retention: Box<dyn Send + Sync>,
+    ) -> Result<Vec<u8>, reverie::syscalls::NativeUserReadError> {
+        use reverie::syscalls::NativeUserReadError as E;
+        use reverie::syscalls::NativeUserReadRefusal as R;
+        let refused = |error| E::Refused(R::TargetState(error));
+        let session = Arc::clone(&self.global_state.fatal_session);
+        if !session.source_jobs.enabled()
+            || session.is_failed()
+            || self.cancel_handler.load(Ordering::Acquire)
+        {
+            return Err(refused(Errno::ECANCELED));
+        }
+        let stop = self
+            .source_stop
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| E::Refused(R::UnsupportedBackend))?;
+        session.source_epoch.validate(&stop).map_err(refused)?;
+        #[cfg(target_arch = "x86_64")]
+        {
+            let acquisition = stop.begin_acquisition().map_err(refused)?;
+            let plan = safeptrace::NativeSourceReadPlan::prepare(acquisition, address, length)?;
+            let source = stop.clone();
+            let observer = session.source_jobs.submit(
+                retention,
+                stop.clone(),
+                session.source_epoch.clone(),
+                move || {
+                    source.validate_single_source_filter().map_err(refused)?;
+                    plan.run()
+                },
+            )?;
+            let result = observer.await;
+            // Recheck after observer wake too: cancellation may have arrived
+            // between registry retirement and this callback continuation.
+            if session.is_failed() || self.cancel_handler.load(Ordering::Acquire) {
+                return Err(refused(Errno::ECANCELED));
+            }
+            session.source_epoch.validate(&stop).map_err(refused)?;
+            result
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (address, length, retention);
+            Err(E::Refused(R::UnsupportedPlatform))
+        }
+    }
+
     async fn regs(&mut self) -> libc::user_regs_struct {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(regs) = self.private_logical_registers() {
+            return regs;
+        }
         let task = self.assume_stopped();
 
         match self.read_guest_registers(&task) {
@@ -9746,6 +11439,10 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     }
 
     async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), reverie::Error> {
+        #[cfg(target_arch = "x86_64")]
+        if self.set_private_logical_registers(regs)? {
+            return Ok(());
+        }
         let task = self.assume_stopped();
 
         if let Err(err) = self.write_guest_registers(&task, &regs) {
@@ -9768,6 +11465,62 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
 
     fn thread_state(&self) -> &L::ThreadState {
         &self.thread_state
+    }
+
+    fn claim_private_interruption(
+        &mut self,
+        ticket: &reverie::PrivateInterruption,
+    ) -> Result<(), reverie::Error> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.claim_held_private_interruption(ticket)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = ticket;
+            Err(reverie::Error::Tool(anyhow::anyhow!(
+                "backend has no matching private interruption"
+            )))
+        }
+    }
+
+    fn claim_private_read_completion(
+        &mut self,
+        ticket: &reverie::PrivateReadCompletion,
+    ) -> Result<(), reverie::Error> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.claim_held_private_read_completion(ticket)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = ticket;
+            Err(reverie::Error::Tool(anyhow::anyhow!(
+                "backend has no matching private Read completion"
+            )))
+        }
+    }
+
+    async fn await_recorded_private_interruption(
+        &mut self,
+        helper: reverie::syscalls::Syscall,
+        signal: Signal,
+    ) -> Result<reverie::Never, reverie::Error> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.wait_recorded_private_signal(helper, signal)
+                .await
+                .map_err(|error| {
+                    reverie::Error::Tool(anyhow::anyhow!("recorded private interruption: {error}"))
+                })
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (helper, signal);
+            Err(reverie::Error::Tool(anyhow::anyhow!(
+                "backend has no recorded private interruption wait"
+            )))
+        }
     }
 
     async fn daemonize(&mut self) {
@@ -9805,6 +11558,13 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     ) -> reverie::InjectedReadResult {
         #[cfg(target_arch = "x86_64")]
         {
+            if self.private_signal.consulting
+                || self.private_signal.completing.is_some()
+                || self.private_signal.frame.is_some()
+                || self.private_signal.read.is_some()
+            {
+                self.abort(Err(TraceError::Errno(Errno::EPROTO))).await;
+            }
             let (nr, args) = syscall.into_parts();
             let outcome = self.inject_read_boundaries(nr, args).await;
             if self.pending_syscall.is_none() {
@@ -9827,6 +11587,13 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     ) -> Result<i64, reverie::Error> {
         #[cfg(target_arch = "x86_64")]
         {
+            if self.private_signal.consulting
+                || self.private_signal.completing.is_some()
+                || self.private_signal.frame.is_some()
+                || self.private_signal.read.is_some()
+            {
+                self.abort(Err(TraceError::Errno(Errno::EPROTO))).await;
+            }
             match self.inject_epoll_ctl_copy_entry(syscall).await {
                 Ok(result) => result.map_err(Into::into),
                 Err(error) => self.abort(Err(error)).await,
@@ -9848,6 +11615,13 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     ) -> Result<reverie::InterruptedSyscall, reverie::Error> {
         #[cfg(target_arch = "x86_64")]
         {
+            if self.private_signal.consulting
+                || self.private_signal.completing.is_some()
+                || self.private_signal.frame.is_some()
+                || self.private_signal.read.is_some()
+            {
+                self.abort(Err(TraceError::Errno(Errno::EPROTO))).await;
+            }
             let outcome = self.observe_recorded_read_signal(call, signal).await;
             if self.pending_syscall.is_none() {
                 self.original_read_entry = None;
@@ -9871,6 +11645,13 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     ) -> Result<(), reverie::Error> {
         #[cfg(target_arch = "x86_64")]
         {
+            if self.private_signal.consulting
+                || self.private_signal.completing.is_some()
+                || self.private_signal.frame.is_some()
+                || self.private_signal.read.is_some()
+            {
+                self.abort(Err(TraceError::Errno(Errno::EPROTO))).await;
+            }
             self.prepare_interrupted_read_handback(&ticket, completed)
                 .map_err(|error| {
                     reverie::Error::Tool(anyhow::anyhow!("interrupted Read handback: {error}"))
@@ -9885,6 +11666,14 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
 
     #[allow(unreachable_code)]
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
+        #[cfg(target_arch = "x86_64")]
+        if self.private_signal.consulting
+            || self.private_signal.completing.is_some()
+            || self.private_signal.frame.is_some()
+            || self.private_signal.read.is_some()
+        {
+            self.abort(Err(TraceError::Errno(Errno::EPROTO))).await;
+        }
         if self.interrupted_read.is_some() {
             return self.abort(Err(TraceError::Errno(Errno::EPROTO))).await;
         }

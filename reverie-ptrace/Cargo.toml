@@ -9,6 +9,9 @@ edition = "2024"
 repository = "https://github.com/facebookexperimental/reverie"
 license = "BSD-2-Clause"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(cohort_final_test)'] }
+
 [dependencies]
 anyhow = "1.0.103"
 async-trait = "0.1.86"
@@ -37,3 +40,8 @@ unwind = { version = "0.4.2", features = ["ptrace"] }
 
 [dev-dependencies]
 test-case = "3.3.1"
+
+[[test]]
+name = "cohort_bridge_fixture"
+path = "tests/fixtures/cohort_bridge_fixture.rs"
+harness = false

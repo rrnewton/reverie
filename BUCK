@@ -123,6 +123,14 @@ rust_library(
                     },
                 },
             },
+            "lints": {
+                "rust": {
+                    "unexpected_cfgs": {
+                        "check-cfg": ["cfg(cohort_final_test)"],
+                        "level": "warn",
+                    },
+                },
+            },
         },
         "cargo_toml_dir": "reverie-ptrace",
     },

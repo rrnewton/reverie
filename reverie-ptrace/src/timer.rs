@@ -43,8 +43,8 @@ use reverie::RegDisplayOptions;
 use reverie::Signal;
 use reverie::Tid;
 use safeptrace::Error as TraceError;
+#[cfg(not(target_arch = "x86_64"))]
 use safeptrace::Event as TraceEvent;
-use safeptrace::Running;
 use safeptrace::Stopped;
 use safeptrace::Wait;
 use thiserror::Error;
@@ -53,6 +53,7 @@ use tracing::trace;
 use tracing::warn;
 
 use crate::perf::*;
+use crate::task::TaskRunning;
 
 // This signal is unused, in that the kernel will never send it to a process.
 const MARKER_SIGNAL: Signal = reverie::PERF_EVENT_SIGNAL;
@@ -523,6 +524,18 @@ impl Timer {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn complete_tool_step(
+        &self,
+        completion: crate::task::source_observation::Completion,
+    ) {
+        // The real Tool event cancelled notification of the old timer request.
+        // Its in-flight instruction nevertheless retains its own counter and
+        // must complete once. This never re-arms the cancelled request, resets
+        // the continuous perf clock, or consumes the Tool's new timer request.
+        completion.consume_deferred(|| self.read_clock());
+    }
+
     /// Cancel pending timer notifications. This is idempotent.
     ///
     /// If there was a previous call to [`Timer::enable_interval'], this
@@ -656,11 +669,11 @@ impl Timer {
     ///
     /// LiteInst uses this hook to keep its exact-generation root-stop lease
     /// synchronized across the precise timer's internal single steps. The
-    /// non-LiteInst caller supplies the historical raw transition.
+    /// ordinary caller also retains its original-generation wait arbitration.
     pub(crate) async fn handle_signal(
         &mut self,
         task: Stopped,
-        step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
+        step: &mut (dyn FnMut(Stopped) -> Result<TaskRunning, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
         match self.inner_mut_noinit() {
@@ -816,6 +829,34 @@ struct ClockCounter {
     rcbs: u64,
     instr: u64,
     target_rcb: u64,
+}
+
+/// Counter ownership transferred with an actual SECCOMP-interrupted precise
+/// instruction. Its notification may be cancelled while its instruction is
+/// still pending in the Tool. No private EXIT owns this counter.
+pub(crate) struct DeferredStepCounter(ClockCounter);
+#[cfg(test)]
+type StepCounterWitness = ((u64, u64), (u64, u64));
+#[cfg(test)]
+thread_local! {
+    // Measurement only: written by the actual linear completion consumer.
+    // It cannot manufacture a stop, owner, counter completion or source permit.
+    pub(crate) static TOOL_STEP_WITNESS: std::cell::RefCell<Vec<StepCounterWitness>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+impl DeferredStepCounter {
+    pub(crate) fn complete(mut self, clock: u64) -> (u64, u64) {
+        #[cfg(test)]
+        let before = (self.0.rcbs, self.0.instr);
+        self.0.single_step_with_clock(clock);
+        #[cfg(test)]
+        TOOL_STEP_WITNESS.with(|witness| {
+            witness
+                .borrow_mut()
+                .push((before, (self.0.rcbs, self.0.instr)))
+        });
+        trace!("completed transferred precise instruction at {}", self.0);
+        (self.0.rcbs, self.0.instr)
+    }
 }
 
 impl std::fmt::Display for ClockCounter {
@@ -1134,7 +1175,7 @@ impl TimerImpl {
     async fn handle_signal(
         &mut self,
         task: Stopped,
-        step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
+        step: &mut (dyn FnMut(Stopped) -> Result<TaskRunning, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
         let signal = task.getsiginfo()?;
@@ -1232,7 +1273,7 @@ impl TimerImpl {
         ctr_initial: u64,
         target_rcb: u64,
         target_instr: u64,
-        step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
+        step: &mut (dyn FnMut(Stopped) -> Result<TaskRunning, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
         // The perf interrupt can arrive *past* the target when descheduling or
@@ -1279,14 +1320,35 @@ impl TimerImpl {
                 task.getregs()?
                     .display_with_options(RegDisplayOptions { multiline: true })
             );
-            let wait = step(task)?.next_state().await?;
-            observe(&wait)?;
-            task = match wait {
-                // a successful single step results in SIGTRAP stop
-                Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => new_task,
-                wait => return Err(HandleFailure::Event(wait)),
-            };
-            current.single_step_with_clock(self.read_clock());
+            #[cfg(target_arch = "x86_64")]
+            {
+                let outcome = step(task)?.next_step().await?;
+                observe(&outcome.wait)?;
+                let completed = outcome.completion.is_some();
+                if let Some(receipt) = outcome.completion {
+                    receipt.consume(|| current.single_step_with_clock(self.read_clock()));
+                }
+                if !completed || outcome.guest_event {
+                    if let Some(transfer) = outcome.transfer {
+                        transfer.bind_counter(DeferredStepCounter(current))?;
+                    }
+                    return Err(HandleFailure::Event(outcome.wait));
+                }
+                task = match outcome.wait {
+                    Wait::Stopped(task, _) => task,
+                    wait => return Err(HandleFailure::Event(wait)),
+                };
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                let wait = step(task)?.next_state().await?;
+                observe(&wait)?;
+                task = match wait {
+                    Wait::Stopped(task, TraceEvent::Signal(Signal::SIGTRAP)) => task,
+                    wait => return Err(HandleFailure::Event(wait)),
+                };
+                current.single_step_with_clock(self.read_clock());
+            }
         }
         Ok(task)
     }
@@ -1679,5 +1741,48 @@ mod tests {
     ) {
         counter.single_step_with_clock(new_clock);
         assert_eq!((counter.rcbs, counter.instr), expected);
+    }
+}
+
+#[cfg(test)]
+mod source_observation_tests {
+    use super::*;
+    #[test]
+    fn transferred_instruction_keeps_its_counter_after_notification_cancellation() {
+        let counter = DeferredStepCounter(ClockCounter::new(12, 7, 12));
+        let mut old_notification = EventStatus::Armed;
+        old_notification.tick();
+        assert_eq!(old_notification, EventStatus::Cancelled);
+        // A new Tool request has its own progress and is never overwritten by
+        // the old instruction's late, linear completion.
+        let new_counter = ClockCounter::new(12, 0, 20);
+        assert_eq!(counter.complete(12), (12, 8));
+        assert_eq!(old_notification, EventStatus::Cancelled);
+        assert_eq!(new_counter, ClockCounter::new(12, 0, 20));
+        assert_eq!(
+            DeferredStepCounter(ClockCounter::new(11, 5, 12)).complete(12),
+            (12, 0)
+        );
+        assert_eq!(
+            DeferredStepCounter(ClockCounter::new(12, 7, 12)).complete(13),
+            (12, 8)
+        );
+    }
+    #[test]
+    fn completion_accounting_preserves_the_full_counter_trajectory() {
+        let mut counter = ClockCounter::new(10, 0, 12);
+        // Two administrative stops at the same clock issue no receipt.
+        assert_eq!(counter, ClockCounter::new(10, 0, 12));
+        counter.single_step_with_clock(10);
+        assert_eq!(counter, ClockCounter::new(10, 1, 12));
+        counter.single_step_with_clock(11);
+        assert_eq!(counter, ClockCounter::new(11, 0, 12));
+        counter.single_step_with_clock(12);
+        assert_eq!(counter, ClockCounter::new(12, 0, 12));
+        counter.single_step_with_clock(12);
+        assert_eq!(counter, ClockCounter::new(12, 1, 12));
+        counter.single_step_with_clock(13);
+        assert_eq!(counter, ClockCounter::new(12, 2, 12));
+        assert_eq!(counter.is_behind(12, 2), Some(false));
     }
 }

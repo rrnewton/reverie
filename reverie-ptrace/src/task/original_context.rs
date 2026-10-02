@@ -130,6 +130,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         observation: Option<(Sysno, SyscallArgs)>,
     ) -> Result<Result<i64, Errno>, TraceError> {
         let entered = task.getregs()?;
+        // This SAME original entry/effect future owns the cohort debt too.
+        // Direction/Tool-step observation in syscall_stopped is not a native
+        // invocation or a substitute for its authenticated return/restoration.
+        let cohort_native = self
+            .cohort
+            .as_ref()
+            .and_then(|member| member.native(nr, args));
         let owner = task.terminal_cleanup();
         let wait = self.syscall_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait);
@@ -148,6 +155,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 {
                     return Err(Errno::EPROTO.into());
                 }
+                let cohort_return =
+                    cohort_native.and_then(|owner| owner.syscall_return(&stopped, raw));
                 self.observe_injected_syscall(observation, InjectedSyscallEvent::Returned(raw));
                 if let Some(context) = context {
                     if self.injected_syscall_frame.is_some() {
@@ -155,6 +164,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                     } else {
                         restore_context(&stopped, context, None, false)?;
                     }
+                }
+                if let Some(receipt) = cohort_return {
+                    receipt.restored();
                 }
                 let result = Errno::from_ret(raw as usize).map(|value| value as i64);
                 self.observe_liteinst_mapping_result(nr, args, result);

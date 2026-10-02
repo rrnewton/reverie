@@ -248,7 +248,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
-    async fn skip_recorded_read_entry(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+    pub(super) async fn skip_recorded_read_entry(
+        &mut self,
+        task: Stopped,
+    ) -> Result<Stopped, TraceError> {
         let mut skipped = task.getregs()?;
         *skipped.orig_syscall_mut() = -1i64 as u64;
         task.setregs(&skipped)?;
@@ -341,6 +344,20 @@ impl<L: Tool + 'static> TracedTask<L> {
         state.stop.setregs(&regs)?;
         self.pending_syscall = None;
         self.pending_syscall_already_skipped = false;
+        if state.completed.is_some() {
+            // The original InterruptedSyscall ticket and callback result were
+            // matched above. Complete that logical Read before forwarding its
+            // real signal, using the separately authenticated original skip's
+            // EXIT; an unentered private attempt supplies no such completion.
+            let completion = self
+                .source_observer
+                .lock()
+                .unwrap()
+                .finish_tool(&state.stop)?;
+            if let Some(completion) = completion {
+                self.timer.complete_tool_step(completion);
+            }
+        }
         self.timer.finalize_requests();
         Ok(Wait::Stopped(state.stop, Event::Signal(state.signal)))
     }
