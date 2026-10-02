@@ -5573,8 +5573,8 @@ mod tests {
         retained: Option<&RetainedWriteAliasSnapshot>,
     ) -> &'a Error {
         let cause = match retained {
-            Some(record) => fault.cause_with_retention(error, record.retention_id),
-            None => fault.cause(error),
+            Some(record) => fault.cause(error, Some(record.retention_id)),
+            None => fault.cause(error, None),
         };
         cause.unwrap_or_else(|| panic!("wrong alias cause for {:?}: {error:?}", fault.case()))
     }
@@ -5644,7 +5644,7 @@ mod tests {
     }
 
     fn writable_alias_construction_failure_case(fault: crate::alias_failure::Fault) {
-        assert!(!fault.setup_succeeds());
+        assert!(!fault.case().setup_succeeds());
         let before = retained_write_aliases_for_test();
         assert!(before.is_empty(), "fault child was not isolated");
         let (memory, observer) = alias_failure_memory(&fault);
@@ -5908,7 +5908,7 @@ mod tests {
         use std::os::unix::fs::FileExt;
         use std::task::Context;
         use std::task::Waker;
-        assert!(fault.setup_succeeds() && !fault.succeeds());
+        assert!(fault.case().setup_succeeds() && !fault.succeeds());
         assert_eq!(retained_write_aliases_for_test(), before);
         let (memory, observer) = alias_failure_memory(fault);
         let backing_file =
