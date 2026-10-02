@@ -111,8 +111,8 @@ impl TraceeToken {
     /// while the capability is still held. Once that reap has marked this
     /// generation's gate, the request fails with `ESRCH` without reaching the
     /// kernel, so it does not name a replacement task. A reap that marks no
-    /// gate lets the request through: a generation whose identity was never
-    /// captured, a bulk wait, or an order in
+    /// gate lets the request through while nothing else has marked it: a
+    /// reap while the generation is unbound, a bulk wait, or an order in
     /// <https://github.com/rrnewton/reverie/issues/860>. Without the notifier
     /// the request always runs.
     fn on_held_tid<T>(&self, request: impl FnOnce() -> Result<T, Errno>) -> Result<T, Errno> {
@@ -609,10 +609,11 @@ impl TraceeGeneration {
     /// generation's identity has been captured, requests through the result
     /// are refused once the notifier or [`Running::wait`] reaps this
     /// generation, even if another task has reused the TID. Without that
-    /// feature, or for a generation whose identity could not be captured,
-    /// requests go to the numeric TID unchecked. A reap through [`wait_all`],
-    /// [`try_wait_all`] or [`wait_group`], and the registration orders in
-    /// <https://github.com/rrnewton/reverie/issues/860>, do not refuse them yet.
+    /// feature, or while the generation is unbound because its identity could
+    /// not be captured, requests go to the numeric TID unchecked. A reap
+    /// through [`wait_all`], [`try_wait_all`] or [`wait_group`], and the
+    /// registration orders in <https://github.com/rrnewton/reverie/issues/860>,
+    /// do not refuse them yet.
     pub fn assume_stopped(&self) -> Stopped {
         Stopped::from_token(self.0, self.1.clone())
     }
@@ -1366,8 +1367,8 @@ impl Running {
     /// of them stops reaching the TID once the notifier or [`Running::wait`]
     /// reaps that task, except in the orders listed in
     /// <https://github.com/rrnewton/reverie/issues/860>. If the identity
-    /// cannot be captured, the state gets a fresh generation that no reap
-    /// gates.
+    /// cannot be captured, the state gets a fresh, unbound generation, which
+    /// no reap gates until a later registration binds it.
     pub fn new(pid: Pid) -> Self {
         Self::from_token(pid, TraceeToken::current_or_fresh(pid))
     }
