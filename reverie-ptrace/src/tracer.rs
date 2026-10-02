@@ -85,6 +85,12 @@ use crate::task::FatalSession;
 use crate::task::InjectedSyscallProvenance;
 use crate::task::InjectedSyscallTrap;
 use crate::task::LiteinstRuntimeConfig;
+#[cfg(test)]
+use crate::task::NewbornDisplacement;
+#[cfg(test)]
+use crate::task::NewbornDisplacementOutcome;
+#[cfg(test)]
+use crate::task::NewbornDisplacementStage;
 use crate::task::PreinitOutcome;
 #[cfg(test)]
 use crate::task::RootStopPause;
@@ -1286,6 +1292,40 @@ impl NewbornTracee {
         child: &Running,
     ) {
         Self::from_event(parent_tid, op, child).retain(&mut newborns.lock().unwrap());
+    }
+
+    /// Registers `terminal` under `tid` through the same ownership rule as
+    /// `register`, for a generation that is not the decoded child's.
+    #[cfg(test)]
+    pub(crate) fn register_generation_for_test(
+        newborns: &StdMutex<HashMap<Pid, NewbornTracee>>,
+        tid: Pid,
+        parent_tid: Pid,
+        op: ChildOp,
+        terminal: TerminalCleanup,
+    ) {
+        Self {
+            link: EventChildLink {
+                tid,
+                parent_tid,
+                op,
+            },
+            identity: None,
+            terminal,
+            history: Vec::new(),
+        }
+        .retain(&mut newborns.lock().unwrap());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_identity_for_test(&self) -> bool {
+        self.identity.is_some()
+    }
+
+    /// Whether the entry records `terminal` without it owning the TID.
+    #[cfg(test)]
+    pub(crate) fn records_in_history_for_test(&self, terminal: &TerminalCleanup) -> bool {
+        !self.same_generation(terminal) && self.records_generation(terminal)
     }
 
     /// The table is keyed by TID alone, and the kernel reuses a TID once the
@@ -4543,6 +4583,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             force_post_exec_signal_once: None,
             #[cfg(test)]
             force_private_stub_mutation_once: None,
+            #[cfg(test)]
+            displace_newborn: None,
         });
         self
     }
@@ -4722,6 +4764,25 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             .as_mut()
             .expect("LiteInst runtime must be configured before child-event observation")
             .pause_new_task = Some(sender);
+        self
+    }
+
+    #[cfg(test)]
+    fn displace_liteinst_newborn_for_test(
+        mut self,
+        stage: NewbornDisplacementStage,
+        foreign: Running,
+        outcome: mpsc::UnboundedSender<NewbornDisplacementOutcome>,
+    ) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before newborn displacement")
+            .displace_newborn = Some(Arc::new(NewbornDisplacement {
+            stage,
+            foreign,
+            displaced_child: StdOnceLock::new(),
+            outcome,
+        }));
         self
     }
 
@@ -12514,6 +12575,185 @@ mod tests {
                 Err(TraceError::Errno(Errno::ECHILD))
             );
         }
+    }
+
+    fn newborn_vfork_guest_command() -> Command {
+        static GUEST: LazyLock<PathBuf> = LazyLock::new(|| {
+            let source = fixture("newborn_vfork.c");
+            let output =
+                std::env::temp_dir().join(format!("reverie-newborn-vfork-{}", std::process::id()));
+            let status = std::process::Command::new("cc")
+                .args(["-O0", "-g"])
+                .arg(&source)
+                .arg("-o")
+                .arg(&output)
+                .status()
+                .expect("invoke cc for the newborn vfork fixture");
+            assert!(status.success(), "compile {}", source.display());
+            output
+        });
+        Command::new(GUEST.as_path())
+    }
+
+    /// The processes whose `on_exit_process` ran under [`ExitWitnessTool`].
+    /// Only the displaced-newborn tests use that tool.
+    static EXIT_WITNESS_PROCESSES: StdMutex<Vec<Pid>> = StdMutex::new(Vec::new());
+
+    #[derive(Default)]
+    struct ExitWitnessTool;
+
+    #[reverie::tool]
+    impl Tool for ExitWitnessTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::none()
+        }
+
+        async fn on_exit_process<G: reverie::GlobalRPC<Self::GlobalState>>(
+            self,
+            pid: Pid,
+            _global: &G,
+            _status: ExitStatus,
+        ) -> Result<(), Error> {
+            EXIT_WITNESS_PROCESSES.lock().unwrap().push(pid);
+            Ok(())
+        }
+    }
+
+    /// Runs `command` while `handle_new_task` holds a generation that its
+    /// child's entry records only in its history, from `stage` on. Returns
+    /// what the handler did, the session error, and the root TID.
+    async fn run_with_displaced_newborn(
+        command: Command,
+        stage: NewbornDisplacementStage,
+        fail_new_task: bool,
+    ) -> (NewbornDisplacementOutcome, Error, Pid) {
+        let (outcome_tx, mut outcome_rx) = mpsc::unbounded_channel();
+        let mut builder = TracerBuilder::<ExitWitnessTool>::new(command)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4, 5)
+            .activate_liteinst_without_handshake_for_test()
+            .displace_liteinst_newborn_for_test(
+                stage,
+                gone_at_registration_generation(),
+                outcome_tx,
+            );
+        if fail_new_task {
+            builder = builder.fail_liteinst_new_task_for_test();
+        }
+        let tracer = builder
+            .spawn()
+            .await
+            .expect("spawn displaced-newborn tracee");
+        let root_pid = tracer.guest_pid();
+        let result = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("displaced-newborn session hung");
+        let error = result.expect_err("displaced-newborn session unexpectedly succeeded");
+        let outcome = outcome_rx
+            .try_recv()
+            .expect("no child reached the displacement stage");
+        (outcome, error, root_pid)
+    }
+
+    // The new-task failure injection follows the identity store and precedes
+    // the vfork block. It does not fire in either test below unless its guard
+    // is missing, and then it ends the run with ENOTSUPP instead of ESRCH,
+    // rather than leaving the guest to wait for `sleep 60`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_task_refuses_a_generation_that_does_not_own_the_registration() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 60 & wait"]);
+        let (outcome, error, root_pid) = run_with_displaced_newborn(
+            command,
+            NewbornDisplacementStage::RegistrationLookup,
+            true,
+        )
+        .await;
+        assert_eq!(outcome.errno, Some(Errno::ESRCH), "{error}");
+        assert!(outcome.child_owns_entry, "{outcome:?}");
+        assert!(!outcome.child_identity_stored, "{outcome:?}");
+        assert!(outcome.foreign_in_history, "{outcome:?}");
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::NewbornRegistration,
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("event ownership names another generation"),
+            "{error}"
+        );
+        assert_reaped("root", root_pid);
+        assert_eventually_reaped("child", outcome.child);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_task_refuses_to_store_identity_for_a_generation_that_does_not_own_the_entry() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 60 & wait"]);
+        let (outcome, error, root_pid) =
+            run_with_displaced_newborn(command, NewbornDisplacementStage::IdentityStore, true)
+                .await;
+        assert_eq!(outcome.errno, Some(Errno::ESRCH), "{error}");
+        assert!(outcome.child_owns_entry, "{outcome:?}");
+        assert!(!outcome.child_identity_stored, "{outcome:?}");
+        assert!(outcome.foreign_in_history, "{outcome:?}");
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::NewbornRegistration,
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("event ownership disappeared before identity storage"),
+            "{error}"
+        );
+        assert_reaped("root", root_pid);
+        assert_eventually_reaped("child", outcome.child);
+    }
+
+    // The refusal runs in the forked child's task, so the root reports it as
+    // a non-root failure: the message survives but the typed reason does not.
+    // Without the guard the vfork child is terminated and the handler returns
+    // ENOTSUPP with the same recorded failure, so only the handler's own
+    // ESRCH tells the two apart.
+    //
+    // The refusal records no reason of its own, so VforkUnsupported is still
+    // the forked child's latest one at task exit. That task therefore leaves
+    // through the session cleanup, as the ordinary vfork refusal does, and the
+    // Tool gets no exit hook with a made-up status for a process that is still
+    // held behind its vfork child.
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_task_refuses_to_terminate_a_vfork_generation_that_does_not_own_the_entry() {
+        let (outcome, error, root_pid) = run_with_displaced_newborn(
+            newborn_vfork_guest_command(),
+            NewbornDisplacementStage::VforkTermination,
+            false,
+        )
+        .await;
+        assert_eq!(outcome.errno, Some(Errno::ESRCH), "{error}");
+        assert!(outcome.child_owns_entry, "{outcome:?}");
+        assert!(outcome.child_identity_stored, "{outcome:?}");
+        assert!(outcome.foreign_in_history, "{outcome:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains("LiteInst session failed closed in a non-root task")
+                && message.contains("refused: exec cannot preserve the preload runtime"),
+            "{error}"
+        );
+        assert_ne!(outcome.parent, root_pid, "{outcome:?}");
+        assert!(
+            !EXIT_WITNESS_PROCESSES
+                .lock()
+                .unwrap()
+                .contains(&outcome.parent),
+            "the vfork parent {} ran the Tool's exit hooks",
+            outcome.parent
+        );
+        assert_reaped("root", root_pid);
+        assert_eventually_reaped("vfork child", outcome.child);
     }
 
     fn clone_thread_guest_command() -> Command {
