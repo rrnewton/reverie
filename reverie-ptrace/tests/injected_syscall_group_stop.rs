@@ -2385,7 +2385,7 @@ fn consumed_requeue_does_not_hide_a_later_held_signal() {
 }
 
 #[test]
-fn consumed_requeue_does_not_hide_a_lookalike_held_signal() {
+fn consumed_requeue_then_held_lookalike_is_delivered_unreported() {
     consumed_requeue_then_held(Resend::LookalikeAfterSyscall);
 }
 
@@ -6487,8 +6487,13 @@ enum RestartBlockEnd {
 /// `-ERESTART_RESTARTBLOCK` would make Linux restart the injected sleep in
 /// place of the guest's.
 ///
-/// When the hook passes SIGALRM through, the guest sees EINTR, well before
-/// either deadline, and the handler runs: what untraced Linux returns.
+/// When the hook passes SIGALRM through, the handler runs, well before
+/// either deadline, and the guest sees the `getpid`'s PID, as on main.
+/// Untraced Linux returns EINTR there, a known gap
+/// (https://github.com/rrnewton/reverie/issues/845): whether the kernel
+/// delivers a handler is decided at the resume, from dispositions that
+/// another thread, or a process sharing them that Reverie does not trace,
+/// can change after Reverie reads them.
 ///
 /// When it suppresses SIGALRM, untraced Linux would restart the guest's
 /// sleep, which the replaced restart block rules out. The guest sees the
@@ -6605,9 +6610,9 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
     let fields: Vec<&str> = lines[0].split(' ').collect();
     match end {
         RestartBlockEnd::Deliver => assert_eq!(
-            fields[..3].join(" "),
-            format!("-1 {} 1", libc::EINTR),
-            "EINTR, with a handler run"
+            [fields[0], fields[2]],
+            [pid.to_string().as_str(), "1"],
+            "the injected getpid's PID, as on main, with a handler run"
         ),
         RestartBlockEnd::Suppress => assert_eq!(
             [fields[0], fields[2]],
@@ -6696,7 +6701,7 @@ fn blocked_signal_after_a_restart_block_replacing_injection_keeps_a_final_zero()
 }
 
 #[test]
-fn delivered_signal_after_a_restart_block_replacing_injection_returns_eintr() {
+fn delivered_signal_after_a_restart_block_replacing_injection_returns_the_injection_result() {
     check_restart_block_replaced_by_a_hook_injection(RestartBlockEnd::Deliver);
 }
 
@@ -7157,10 +7162,10 @@ const DISPOSITION_RACE_WORKERS: usize = 16;
 /// in force when the kernel delivers the signal. Untraced Linux, for a
 /// signal arriving while the sleep is interrupted, either runs the handler
 /// and returns EINTR, or ignores the signal and restarts the sleep to its
-/// own deadline. With a sibling that can change the disposition, Reverie
-/// does not rely on what it read: the guest resumes with the final injected
-/// sleep's zero, as on main, and the handler runs or not as the kernel finds
-/// it at delivery. So each worker sees zero, with or without a handler run;
+/// own deadline. Reverie does not rely on what it read: the guest resumes
+/// with the final injected sleep's zero, as on main, and the handler runs
+/// or not as the kernel finds it at delivery. So each worker sees zero,
+/// with or without a handler run;
 /// EINTR with a handler run is a known gap here
 /// (https://github.com/rrnewton/reverie/issues/845). EINTR with no handler
 /// run, which no untraced run returns, is never seen, nor a restart of the
