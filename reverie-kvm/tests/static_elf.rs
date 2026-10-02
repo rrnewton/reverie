@@ -12508,7 +12508,7 @@ static int run_case(int argc, char **argv) {
     if (argc != 4) return 86;
     fault_kind = !strcmp(argv[1], "read") ? 0 : !strcmp(argv[1], "write") ? 1 : 2;
     expected_cs = !strcmp(argv[3], "native") ? 0x33 : 0x23;
-    expected_ss = !strcmp(argv[3], "native") ? 0x2b : 0x18;
+    expected_ss = !strcmp(argv[3], "native") ? 0x2b : 0x1b;
     struct sigaction action = {0};
     if (!strcmp(argv[2], "caught")) {
         action.sa_sigaction = handler;
@@ -12667,7 +12667,7 @@ impl Tool for PageFaultInjectionTool {
         );
         let registers = guest.regs().await;
         assert_eq!(registers.orig_rax, u64::MAX);
-        assert_eq!((registers.cs, registers.ss), (0x23, 0x18));
+        assert_eq!((registers.cs, registers.ss), (0x23, 0x1b));
         assert_eq!(registers.eflags & (1 << 16), 1 << 16);
         guest.send_rpc((1, 0, 0)).await;
         let request = if self.thread {

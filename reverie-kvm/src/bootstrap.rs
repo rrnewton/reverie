@@ -124,6 +124,11 @@ const MSR_LSTAR: u32 = 0xc000_0082;
 const MSR_CSTAR: u32 = 0xc000_0083;
 const MSR_SYSCALL_MASK: u32 = 0xc000_0084;
 const SYSCALL_MASK: u64 = (1 << 8) | (1 << 9) | (1 << 10);
+// SYSRET loads SS with STAR[63:48] + 8 and forces RPL 3 on Intel but not on
+// AMD, so the SYSRET base carries RPL 3 (as Linux's __USER32_CS does) to give
+// the guest the same SS on both vendors.
+const STAR: u64 =
+    (((KERNEL_DATA_SELECTOR | 3) as u64) << 48) | ((KERNEL_CODE_SELECTOR as u64) << 32);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum SegmentBase {
@@ -228,11 +233,10 @@ pub(crate) fn configure_long_mode_with_syscall_area(
     };
     vcpu.set_fpu(&fpu)?;
 
-    let star = (u64::from(KERNEL_DATA_SELECTOR) << 48) | (u64::from(KERNEL_CODE_SELECTOR) << 32);
     let entries = [
         kvm_msr_entry {
             index: MSR_STAR,
-            data: star,
+            data: STAR,
             ..Default::default()
         },
         kvm_msr_entry {
@@ -936,6 +940,17 @@ mod tests {
             (context.rbx, context.rip, context.rflags),
             (0x7777, 0x1234_5678, 0x202)
         );
+    }
+
+    #[test]
+    fn sysret_selectors_do_not_depend_on_cpu_vendor() {
+        let base = (STAR >> 48) as u16;
+        // 64-bit SYSRET sets CS to (base + 16) | 3. SS is (base + 8) | 3 on
+        // Intel and base + 8 on AMD.
+        assert_eq!((base + 16) | 3, USER_CODE_SELECTOR);
+        assert_eq!((base + 8) | 3, USER_DATA_SELECTOR);
+        assert_eq!(base + 8, USER_DATA_SELECTOR);
+        assert_eq!((STAR >> 32) as u16, KERNEL_CODE_SELECTOR);
     }
 
     #[test]
