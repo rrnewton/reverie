@@ -282,10 +282,12 @@ fn assert_physical_signals_agree(
     );
 }
 
-/// Every Tool callback was entered by a guest event: a top-level `SIGSYS` or
-/// a patched-site hook entry the Tool's own syscalls did not make. The Tool's
-/// own syscalls are excluded, so its RPC traffic cannot pad the count. It is
-/// still a bound, not an equality: a lazily patched site's first call counts
+/// Every Tool callback the guest counted was entered by a guest event: a
+/// top-level `SIGSYS` or a patched-site hook entry the Tool's own syscalls did
+/// not make. The guest counts one callback per entry, so a callback re-run for
+/// an `ERESTARTSYS` restart is not counted twice. The Tool's own syscalls are
+/// excluded, so its RPC traffic cannot pad the count. It is still a bound, not
+/// an equality: a lazily patched site's first call counts
 /// a signal and then a hook entry for one callback, and a signal for an
 /// unsubscribed syscall makes no callback.
 ///

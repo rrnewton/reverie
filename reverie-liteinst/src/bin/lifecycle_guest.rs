@@ -22,14 +22,16 @@ const RPC_GETPID: u64 = 1;
 const RPC_CLOCK_GETTIME: u64 = 2;
 const RPC_GETTIMEOFDAY: u64 = 3;
 const RPC_FORK: u64 = 4;
-/// Tags the one RPC a process sends at exit with its count of Tool
+/// Tags the one RPC a process sends at `exit_group` with its count of Tool
 /// callbacks, so the host can compare the backend's dispatch counts with the
 /// callbacks the Tool actually made.
 const RPC_CALLBACK_COUNT: u64 = 1 << 32;
 static FORCE_WAIT_RESTART: AtomicBool = AtomicBool::new(true);
 static READ_CALLS: AtomicUsize = AtomicUsize::new(0);
-/// This process's Tool callbacks. Counted in memory, because a counting
-/// syscall would itself be trapped and change what is being measured.
+/// This process's Tool callbacks, one per guest entry: a callback that asks
+/// for a restart is re-run for the same entry and is not counted again.
+/// Counted in memory, because a counting syscall would itself be trapped and
+/// change what is being measured. The fixture's processes are single-threaded.
 static CALLBACKS: AtomicU64 = AtomicU64::new(0);
 /// Makes the next `getpid` callback call the `getppid` stub, a Tool syscall
 /// that reaches a site an earlier guest call patched.
@@ -171,13 +173,13 @@ impl Tool for LifecycleTool {
         CALLBACKS.fetch_add(1, Ordering::Relaxed);
         if syscall.number() == Sysno::wait4 {
             if FORCE_WAIT_RESTART.swap(false, Ordering::Relaxed) {
-                return Err(Errno::ERESTARTSYS.into());
+                return Err(restart_same_entry());
             }
             return Ok(4242);
         }
         if syscall.number() == Sysno::read {
             if READ_CALLS.fetch_add(1, Ordering::Relaxed) < 2 {
-                return Err(Errno::ERESTARTSYS.into());
+                return Err(restart_same_entry());
             }
             return Ok(4243);
         }
@@ -196,7 +198,7 @@ impl Tool for LifecycleTool {
         if event == RPC_GETPID && NESTED_GETPPID.swap(false, Ordering::Relaxed) {
             unsafe { reverie_liteinst_lifecycle_getppid() };
         }
-        if matches!(syscall.number(), Sysno::exit | Sysno::exit_group) {
+        if syscall.number() == Sysno::exit_group {
             guest
                 .send_rpc(RPC_CALLBACK_COUNT | CALLBACKS.load(Ordering::Relaxed))
                 .await;
@@ -212,6 +214,13 @@ impl Tool for LifecycleTool {
             _ => Ok(guest.inject(syscall).await?),
         }
     }
+}
+
+/// Asks the driver to re-run this callback for the same guest entry, which the
+/// re-run counts again.
+fn restart_same_entry() -> Error {
+    CALLBACKS.fetch_sub(1, Ordering::Relaxed);
+    Errno::ERESTARTSYS.into()
 }
 
 /// A new process's callback count starts with the one callback it returns
