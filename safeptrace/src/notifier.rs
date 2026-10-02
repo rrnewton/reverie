@@ -2515,8 +2515,10 @@ impl Notifier {
 
     /// Keeps `handle`'s generation discoverable for `pid` after its first
     /// registration failed, so constructors and the next registration of the
-    /// same live task still reach it, unless a cached generation already
-    /// resolves to it. Called with `pids` held.
+    /// same live task still reach it, unless it is cached already. A cached
+    /// generation that only redirects to it does not count: dropping that
+    /// one's last capability would drop the only entry that reaches it.
+    /// Called with `pids` held.
     fn keep_unregistered(&self, pid: Pid, handle: &EventHandle) {
         let resolved = handle.resolved_handle();
         let mut unregistered = self.unregistered.lock();
@@ -2524,11 +2526,45 @@ impl Notifier {
         generations.retain(|generation| generation.strong_count() > 0);
         let cached = generations
             .iter()
-            .filter_map(Weak::upgrade)
-            .any(|generation| EventHandle(generation).resolved() == &resolved);
+            .any(|generation| std::ptr::eq(generation.as_ptr(), Arc::as_ptr(&resolved.0)));
         if !cached {
             generations.push(Arc::downgrade(&resolved.0));
         }
+    }
+
+    /// Keeps a generation whose registration for `pid` failed reachable from
+    /// every later capability for its task, once it has captured or bound
+    /// that task's identity: it follows the generation registered for the
+    /// same task meanwhile, or else stays cached (`keep_unregistered`), where
+    /// constructors find it and the next registration redirects it
+    /// (`absorb_unregistered`). Otherwise a later capability could register
+    /// another generation for the same task, whose reap never closes this
+    /// one's TID gate. A generation without an identity names no task yet.
+    /// Called with `pids` held.
+    fn retain_failed_registrant(
+        &self,
+        pids: &HashMap<Pid, NotifierEntry>,
+        pid: Pid,
+        handle: &EventHandle,
+    ) {
+        let resolved = handle.resolved_handle();
+        let Some(identity) = resolved.identity() else {
+            return;
+        };
+        if let Some(occupied) = pids.get(&pid) {
+            if occupied.handle == resolved {
+                return;
+            }
+            // The same generation, alive or not: following a dead one's
+            // registrant is harmless, and comparing needs no syscall that
+            // could fail again.
+            if occupied.identity.same_generation(identity)
+                && handle.adopt_authoritative(&occupied.handle).is_ok()
+            {
+                return;
+            }
+        }
+        self.keep_unregistered(pid, handle);
     }
 
     fn current_or_new(&self, pid: Pid) -> Result<EventHandle, Errno> {
@@ -2624,8 +2660,17 @@ impl Notifier {
     }
 
     /// Resolves one PID generation to its process-global wait authority before
-    /// a synchronous caller can claim or enter the kernel wait.
+    /// a synchronous caller can claim or enter the kernel wait. A failure
+    /// leaves `requested` reachable for its task (`retain_failed_registrant`).
     fn sync_handle(&self, pid: Pid, requested: &EventHandle) -> Result<EventHandle, Errno> {
+        let result = self.resolve_sync_handle(pid, requested);
+        if result.is_err() {
+            self.retain_failed_registrant(&self.pids.lock(), pid, requested);
+        }
+        result
+    }
+
+    fn resolve_sync_handle(&self, pid: Pid, requested: &EventHandle) -> Result<EventHandle, Errno> {
         let mut capture_retries = 0;
         loop {
             let current = match self.capture_identity(pid) {
@@ -2857,7 +2902,23 @@ impl Notifier {
         }
     }
 
+    /// Registers `handle` for `pid`. A failure leaves it reachable for its
+    /// task (`retain_failed_registrant`).
     fn event_with_owner(
+        &self,
+        pid: Pid,
+        handle: &EventHandle,
+        requested: &Arc<Event>,
+        owner: NotifierWaitOwner<'_>,
+    ) -> Result<EventRegistration, Errno> {
+        let result = self.register_with_owner(pid, handle, requested, owner);
+        if result.is_err() {
+            self.retain_failed_registrant(&self.pids.lock(), pid, handle);
+        }
+        result
+    }
+
+    fn register_with_owner(
         &self,
         pid: Pid,
         handle: &EventHandle,
@@ -9585,12 +9646,22 @@ mod test {
         /// A capability on an unbound token redirects the earlier unchecked
         /// one to itself, then fails to start its notifier worker.
         AbsorbedWorkerStart,
+        /// As `AbsorbedWorkerStart`, then the earlier capability is dropped,
+        /// so the generation that redirected to the failed one is gone.
+        AbsorbedWorkerStartEarlierDropped,
         /// A capability on an unbound token fails while checking whether the
         /// earlier unchecked one is still live.
         Absorption,
         /// A capability on an unbound token fails to start its notifier
         /// worker while no other capability for the task exists.
         UncachedWorkerStart,
+        /// A capability on an unbound token binds the task's identity, then
+        /// fails to check that the task is still alive (`pidfd_is_live`),
+        /// as a refused `pidfd_send_signal` would.
+        BoundLiveness,
+        /// As `BoundLiveness`, through the synchronous wait's registration
+        /// (`sync_handle`).
+        SyncBoundLiveness,
     }
 
     /// How `failed_registration_refuses_after_reap` registers again after
@@ -9633,7 +9704,7 @@ mod test {
                 .unwrap_or(0)
         };
         let absorbed_before = absorbed();
-        let early = if failure == FailedRegistration::UncachedWorkerStart {
+        let mut early = if failure == FailedRegistration::UncachedWorkerStart {
             drop(early);
             None
         } else {
@@ -9644,37 +9715,96 @@ mod test {
         } else {
             Stopped::from_token(old_pid.into(), crate::TraceeToken::new())
         };
-        let expected = if failure == FailedRegistration::Absorption {
-            ABSORB_LIVENESS_ERRORS
-                .lock()
-                .insert(old_pid.into(), Errno::EIO);
-            Errno::EIO
+        let expected = match failure {
+            FailedRegistration::Absorption => {
+                ABSORB_LIVENESS_ERRORS
+                    .lock()
+                    .insert(old_pid.into(), Errno::EIO);
+                Errno::EIO
+            }
+            FailedRegistration::BoundLiveness | FailedRegistration::SyncBoundLiveness => {
+                // The unbound token's registration makes no liveness check
+                // before it binds the identity and takes the registry lock.
+                PIDFD_LIVENESS_ERRORS
+                    .lock()
+                    .entry(old_pid.into())
+                    .or_default()
+                    .push_back(Errno::EINVAL);
+                Errno::EINVAL
+            }
+            _ => {
+                SPAWN_WORKER_ERRORS
+                    .lock()
+                    .insert(old_pid.into(), libc::EAGAIN);
+                Errno::EAGAIN
+            }
+        };
+        if failure != FailedRegistration::OwnWorkerStart {
+            assert!(
+                failed.1.event().identity().is_none(),
+                "{failure:?}: the failing capability's identity was bound before its registration"
+            );
+        }
+        let registration = if failure == FailedRegistration::SyncBoundLiveness {
+            NOTIFIER
+                .sync_handle(old_pid.into(), failed.1.event())
+                .map(drop)
         } else {
-            SPAWN_WORKER_ERRORS
-                .lock()
-                .insert(old_pid.into(), libc::EAGAIN);
-            Errno::EAGAIN
+            TerminalCleanup::new_unregistered(old_pid.into(), &failed.1).ensure_registered()
         };
         assert_eq!(
-            TerminalCleanup::new_unregistered(old_pid.into(), &failed.1).ensure_registered(),
+            registration,
             Err(expected),
             "{failure:?}: the first registration did not fail as injected"
+        );
+        assert!(
+            PIDFD_LIVENESS_ERRORS
+                .lock()
+                .get(&old_pid.into())
+                .is_none_or(VecDeque::is_empty),
+            "{failure:?}: the injected liveness error was not consumed"
+        );
+        assert!(
+            failed.1.event().identity().is_some(),
+            "{failure:?}: the failed registration did not bind the task's identity"
         );
         assert!(
             !NOTIFIER.pids.lock().contains_key(&old_pid.into()),
             "{failure:?}: the failed registration stayed in the registry"
         );
         let absorbed_after_failure = absorbed();
+        let redirected_before_failure = matches!(
+            failure,
+            FailedRegistration::AbsorbedWorkerStart
+                | FailedRegistration::AbsorbedWorkerStartEarlierDropped
+        );
         assert_eq!(
             absorbed_after_failure,
-            absorbed_before + usize::from(failure == FailedRegistration::AbsorbedWorkerStart),
+            absorbed_before + usize::from(redirected_before_failure),
             "{failure:?}: unexpected redirects before the failure"
         );
+        if failure == FailedRegistration::AbsorbedWorkerStartEarlierDropped {
+            let earlier = early.take().expect("the earlier capability");
+            let generation = Arc::downgrade(&earlier.1.event().0);
+            drop(earlier);
+            assert_eq!(
+                generation.strong_count(),
+                0,
+                "the dropped earlier capability's generation is still alive"
+            );
+        }
 
-        // Distinct generations the retry's registration must redirect.
-        let redirects = match (failure, retry) {
-            (FailedRegistration::Absorption, RegistrationRetry::Unbound) => 2,
-            (_, RegistrationRetry::Unbound) | (FailedRegistration::Absorption, _) => 1,
+        // Earlier generations the failure left unjoined: the retry's
+        // registration must redirect each of them.
+        let unjoined = matches!(
+            failure,
+            FailedRegistration::Absorption
+                | FailedRegistration::BoundLiveness
+                | FailedRegistration::SyncBoundLiveness
+        );
+        let redirects = match (unjoined, retry) {
+            (true, RegistrationRetry::Unbound) => 2,
+            (_, RegistrationRetry::Unbound) | (true, _) => 1,
             _ => 0,
         };
         let constructed = Stopped::new_unchecked(old_pid.into());
@@ -9713,11 +9843,6 @@ mod test {
             );
         }
         old_cleanup.disarm();
-        assert_eq!(
-            absorbed(),
-            absorbed_after_failure + redirects,
-            "{failure:?}, {retry:?}: the retry did not redirect every earlier generation"
-        );
 
         let mut stale = vec![("failed", failed), ("constructed", constructed)];
         if let Some(early) = early {
@@ -9729,6 +9854,11 @@ mod test {
                 "{failure:?}, {retry:?}: the {name} capability's TID gate stayed open after the reap"
             );
         }
+        assert_eq!(
+            absorbed(),
+            absorbed_after_failure + redirects,
+            "{failure:?}, {retry:?}: the retry did not redirect every earlier generation"
+        );
 
         thread::sleep(Duration::from_millis(20));
         let Some((replacement_pid, replacement, mut replacement_cleanup)) =
@@ -9854,6 +9984,85 @@ mod test {
             "notifier::test::failed_redirect_keeps_both_generations_for_the_next_registration",
         )
         .await;
+    }
+
+    /// The generation that redirected to the failed one is dropped before
+    /// any later capability is made: the failed generation must stay cached
+    /// on its own.
+    #[tokio::test(flavor = "current_thread")]
+    async fn worker_start_failure_keeps_the_generation_after_its_predecessor_is_dropped() {
+        failed_registration_reuse_through(
+            FailedRegistration::AbsorbedWorkerStartEarlierDropped,
+            "SAFEPTRACE_DROPPED_PREDECESSOR_REUSE_INNER",
+            "notifier::test::worker_start_failure_keeps_the_generation_after_its_predecessor_is_dropped",
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn liveness_failure_after_binding_keeps_the_generation_for_later_capabilities() {
+        failed_registration_reuse_through(
+            FailedRegistration::BoundLiveness,
+            "SAFEPTRACE_BOUND_LIVENESS_REUSE_INNER",
+            "notifier::test::liveness_failure_after_binding_keeps_the_generation_for_later_capabilities",
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn synchronous_liveness_failure_after_binding_keeps_the_generation_for_later_capabilities()
+     {
+        failed_registration_reuse_through(
+            FailedRegistration::SyncBoundLiveness,
+            "SAFEPTRACE_SYNC_BOUND_LIVENESS_REUSE_INNER",
+            "notifier::test::synchronous_liveness_failure_after_binding_keeps_the_generation_for_later_capabilities",
+        )
+        .await;
+    }
+
+    /// A registration that fails after binding its task's identity while
+    /// another generation of the same task is registered must follow that
+    /// generation, whose reap then closes its TID gate too.
+    #[tokio::test(flavor = "current_thread")]
+    async fn liveness_failure_beside_a_registered_generation_follows_it() {
+        let (pid, registered, mut cleanup) =
+            spawn_traced_process(None).expect("spawn registered-generation tracee");
+        cleanup
+            .bind_notifier(&registered)
+            .expect("register the first capability");
+        let failed = Stopped::from_token(pid.into(), crate::TraceeToken::new());
+        PIDFD_LIVENESS_ERRORS
+            .lock()
+            .entry(pid.into())
+            .or_default()
+            .push_back(Errno::EINVAL);
+        assert_eq!(
+            TerminalCleanup::new_unregistered(pid.into(), &failed.1).ensure_registered(),
+            Err(Errno::EINVAL),
+            "the registration did not fail as injected"
+        );
+        assert!(
+            failed.1.event().identity().is_some(),
+            "the failed registration did not bind the task's identity"
+        );
+        assert!(
+            Arc::ptr_eq(failed.1.event().event(), registered.1.event().event()),
+            "the failed generation does not follow the registered one"
+        );
+        let running = registered.resume(None).expect("resume to exit");
+        let exited = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, running.next_state())
+            .await
+            .expect("final status timed out")
+            .expect("wait the registered capability");
+        cleanup.disarm();
+        assert_eq!(
+            exited.assume_exited(),
+            (pid.into(), crate::ExitStatus::Exited(42))
+        );
+        assert!(
+            failed.1.event().hold_tid().is_none(),
+            "the failed capability's TID gate stayed open after the reap"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
