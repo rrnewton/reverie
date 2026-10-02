@@ -1339,6 +1339,8 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) force_post_exec_signal_once: Option<Arc<AtomicBool>>,
     #[cfg(test)]
     pub(crate) force_private_stub_mutation_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) displace_newborn: Option<Arc<NewbornDisplacement>>,
 }
 
 #[cfg(test)]
@@ -1346,6 +1348,109 @@ pub(crate) struct LiteinstRuntimeConfig {
 pub(crate) enum RootStopPause {
     Seccomp,
     Signal(Signal),
+}
+
+/// The ownership check in `handle_new_task` at which a test makes the handler
+/// hold another generation.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NewbornDisplacementStage {
+    RegistrationLookup,
+    IdentityStore,
+    VforkTermination,
+}
+
+/// Makes `handle_new_task` hold `foreign` instead of the decoded child's
+/// generation from `stage` on, for the first child that reaches `stage`.
+///
+/// A test cannot make the kernel reuse a TID. When it does, the entry under
+/// the TID is owned by an earlier generation and the reusing child is in the
+/// entry's history. This hook builds the same relation the other way round:
+/// it records `foreign` in the child's entry history, where the child stays
+/// the owner, and hands the handler `foreign`. The handler then holds a
+/// generation the entry records but that does not own it, while the child
+/// itself stays live and owned, so the session's ordinary cleanup reaps it.
+#[cfg(test)]
+pub(crate) struct NewbornDisplacement {
+    pub(crate) stage: NewbornDisplacementStage,
+    pub(crate) foreign: Running,
+    pub(crate) displaced_child: StdOnceLock<Pid>,
+    pub(crate) outcome: mpsc::UnboundedSender<NewbornDisplacementOutcome>,
+}
+
+/// What `handle_new_task` did for the displaced child, reported as it returns.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct NewbornDisplacementOutcome {
+    /// The process whose task handled the new child.
+    pub(crate) parent: Pid,
+    pub(crate) child: Pid,
+    /// The handler's own error, before task exit reports the recorded failure
+    /// in its place. `None` if it did not fail with an errno.
+    pub(crate) errno: Option<Errno>,
+    pub(crate) child_owns_entry: bool,
+    pub(crate) child_identity_stored: bool,
+    pub(crate) foreign_in_history: bool,
+}
+
+#[cfg(test)]
+impl LiteinstRuntimeConfig {
+    /// Returns the generation `handle_new_task` checks ownership with at
+    /// `stage`: `generation`, or the displacement's foreign generation once
+    /// recorded in the child's entry history.
+    fn displace_newborn_generation_for_test(
+        &self,
+        stage: NewbornDisplacementStage,
+        child_pid: Pid,
+        parent_tid: Pid,
+        op: ChildOp,
+        generation: safeptrace::TerminalCleanup,
+    ) -> safeptrace::TerminalCleanup {
+        let Some(displacement) = self.displace_newborn.as_ref() else {
+            return generation;
+        };
+        if displacement.stage != stage || displacement.displaced_child.set(child_pid).is_err() {
+            return generation;
+        }
+        NewbornTracee::register_generation_for_test(
+            &self.newborn_tracees,
+            child_pid,
+            parent_tid,
+            op,
+            displacement.foreign.terminal_cleanup(),
+        );
+        displacement.foreign.terminal_cleanup()
+    }
+
+    fn report_newborn_displacement_for_test(
+        &self,
+        parent_pid: Pid,
+        child_pid: Pid,
+        child: &safeptrace::TerminalCleanup,
+        result: &Result<Wait, TraceError>,
+    ) {
+        let Some(displacement) = self.displace_newborn.as_ref() else {
+            return;
+        };
+        if displacement.displaced_child.get() != Some(&child_pid) {
+            return;
+        }
+        let foreign = displacement.foreign.terminal_cleanup();
+        let newborns = self.newborn_tracees.lock().unwrap();
+        let entry = newborns.get(&child_pid);
+        let _ = displacement.outcome.send(NewbornDisplacementOutcome {
+            parent: parent_pid,
+            child: child_pid,
+            errno: match result {
+                Err(TraceError::Errno(errno)) => Some(*errno),
+                _ => None,
+            },
+            child_owns_entry: entry.is_some_and(|entry| entry.same_generation(child)),
+            child_identity_stored: entry.is_some_and(NewbornTracee::has_identity_for_test),
+            foreign_in_history: entry
+                .is_some_and(|entry| entry.records_in_history_for_test(&foreign)),
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -8604,8 +8709,22 @@ impl<L: Tool + 'static> TracedTask<L> {
             let _ = sender.send(child.pid());
             future::pending::<()>().await;
         }
-        self.handle_new_task(op, parent, child, context, child_context)
-            .await
+        #[cfg(test)]
+        let (parent_pid, child_pid, child_generation) =
+            (self.pid(), child.pid(), child.terminal_cleanup());
+        let result = self
+            .handle_new_task(op, parent, child, context, child_context)
+            .await;
+        #[cfg(test)]
+        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
+            runtime.report_newborn_displacement_for_test(
+                parent_pid,
+                child_pid,
+                &child_generation,
+                &result,
+            );
+        }
+        result
     }
 
     async fn handle_new_task(
@@ -8621,6 +8740,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             let newborn_tracees = Arc::clone(&runtime.newborn_tracees);
             let child_pid = child.pid();
             let generation = child.terminal_cleanup();
+            #[cfg(test)]
+            let generation = runtime.displace_newborn_generation_for_test(
+                NewbornDisplacementStage::RegistrationLookup,
+                child_pid,
+                parent.pid(),
+                op,
+                generation,
+            );
             let registration_error = {
                 let newborns = newborn_tracees.lock().unwrap();
                 let Some(newborn) = newborns.get(&child_pid) else {
@@ -8693,6 +8820,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                     ),
                 );
             }
+            #[cfg(test)]
+            let generation = runtime.displace_newborn_generation_for_test(
+                NewbornDisplacementStage::IdentityStore,
+                child_pid,
+                parent.pid(),
+                op,
+                generation,
+            );
             {
                 let mut newborns = newborn_tracees.lock().unwrap();
                 let Some(newborn) = newborns
@@ -8736,6 +8871,21 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Err(Errno::ENOTSUPP.into());
             }
             if op == ChildOp::Vfork {
+                #[cfg(test)]
+                let generation = runtime.displace_newborn_generation_for_test(
+                    NewbornDisplacementStage::VforkTermination,
+                    child_pid,
+                    parent.pid(),
+                    op,
+                    generation,
+                );
+                // This refusal records no NewbornRegistration on top of the
+                // VforkUnsupported recorded above. The task's latest recorded
+                // reason decides at task exit whether a non-root vfork parent
+                // skips the tool's exit bookkeeping, and this child was not
+                // terminated, so its parent is still held behind it. The
+                // refusals before this block do not keep VforkUnsupported
+                // last: https://github.com/rrnewton/reverie/issues/878.
                 let termination = newborn_tracees
                     .lock()
                     .unwrap()
