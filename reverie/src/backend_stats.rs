@@ -161,10 +161,16 @@ liteinst_dispatch_paths! {
     or successful in-guest Tool dispatch. Refused in-guest attempts are counted
     by `FallbackRefusal` instead. */
     UnpatchableOrOtherFallback => "unpatchable_or_other",
-    /// A patched-site callback that returned to the ptrace-host Tool through SIGTRAP.
+    /** A patched-site hook entry. Under the ptrace-hosted runtime the hook
+    returns to the host Tool through SIGTRAP; under an in-guest Tool it calls
+    the Tool directly in the guest, with no trap. */
     DirectHook => "direct_hook",
     /// An in-guest fallback attempt refused before ordinary Tool dispatch.
     FallbackRefusal => "fallback_refusal",
+    /** A syscall serviced by in-guest Tool fallback because the run disabled
+    site patching, so the site was never claimed or patched. Such calls are not
+    counted as `CachelineStraddlerFallback` or `UnpatchableOrOtherFallback`. */
+    PatchingDisabledFallback => "patching_disabled",
 }
 
 /// Decoded shape of one candidate patch site.

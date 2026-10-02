@@ -368,6 +368,7 @@ struct GuestStatsCollector {
     fallback_refusal: AtomicU64,
     inherited_sigsys: AtomicU64,
     inherited_hooks: AtomicU64,
+    patching_disabled_fallback: AtomicU64,
 }
 
 impl GuestStatsCollector {
@@ -381,6 +382,7 @@ impl GuestStatsCollector {
             LiteinstDispatchPath::CachelineStraddlerFallback => &self.cacheline_straddler_fallback,
             LiteinstDispatchPath::UnpatchableOrOtherFallback => &self.unpatchable_or_other_fallback,
             LiteinstDispatchPath::FallbackRefusal => &self.fallback_refusal,
+            LiteinstDispatchPath::PatchingDisabledFallback => &self.patching_disabled_fallback,
             LiteinstDispatchPath::FirstSiteSeccomp
             | LiteinstDispatchPath::PtraceInstallation
             | LiteinstDispatchPath::DirectHook => {
@@ -424,6 +426,10 @@ impl GuestStatsCollector {
                 LiteinstDispatchPath::FallbackRefusal,
                 self.fallback_refusal.load(Ordering::Relaxed),
             ),
+            (
+                LiteinstDispatchPath::PatchingDisabledFallback,
+                self.patching_disabled_fallback.load(Ordering::Relaxed),
+            ),
         ])
     }
 
@@ -440,6 +446,7 @@ impl GuestStatsCollector {
         self.fallback_refusal.store(0, Ordering::Relaxed);
         self.inherited_sigsys.store(0, Ordering::Relaxed);
         self.inherited_hooks.store(0, Ordering::Relaxed);
+        self.patching_disabled_fallback.store(0, Ordering::Relaxed);
     }
 
     fn inherited_entries(&self) -> InheritedEntries {
@@ -588,6 +595,7 @@ pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<GuestStat
             fallback_refusal: AtomicU64::new(0),
             inherited_sigsys: AtomicU64::new(0),
             inherited_hooks: AtomicU64::new(0),
+            patching_disabled_fallback: AtomicU64::new(0),
         })
         .map_err(|_| {
             io::Error::new(

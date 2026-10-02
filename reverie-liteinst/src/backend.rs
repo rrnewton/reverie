@@ -450,8 +450,12 @@ impl LiteinstBackend {
     /// `GlobalTool` in this coordinator. The coordinator drains inherited RPC
     /// connections to follow process-like fork/clone3 descendants without
     /// attaching ptrace. Vfork is translated to a COW child and supports the
-    /// child-exit completion boundary. Thread clone, exec rebootstrap, and
-    /// unpatchable-site fallback remain unsupported.
+    /// child-exit completion boundary. A trapping site that cannot be patched,
+    /// or every site when [`crate::SITE_PATCHING_ENV`] is `0`, runs the Tool
+    /// through the in-guest `SIGSYS` fallback; that fallback refuses with
+    /// `EOPNOTSUPP` on a thread whose fallback state is not ready, or while
+    /// another fallback is pending on that thread. Thread clone and exec
+    /// rebootstrap remain unsupported and are refused.
     pub async fn run_with_preload<T>(
         command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
