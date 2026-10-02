@@ -425,10 +425,19 @@ impl ExitWaiters {
     }
 }
 
+#[cfg(all(test, feature = "memory", target_arch = "x86_64"))]
+#[derive(Clone, Copy, Debug)]
+enum CaptureConsumeObservation {
+    Waiting { mutation: bool },
+    Consumed(i32),
+}
+
 #[derive(Debug)]
 struct Event {
     source: Mutex<source::SourceState>,
     source_idle: Condvar,
+    #[cfg(all(test, feature = "memory", target_arch = "x86_64"))]
+    capture_consume_observer: Mutex<Option<mpsc::Sender<CaptureConsumeObservation>>>,
     /// Cancellation-safe weak registrations for every pending exit waiter.
     exit_waiters: ExitWaiters,
 
@@ -835,6 +844,8 @@ impl Event {
         Self {
             source: Mutex::new(source::SourceState::default()),
             source_idle: Condvar::new(),
+            #[cfg(all(test, feature = "memory", target_arch = "x86_64"))]
+            capture_consume_observer: Mutex::new(None),
             exit_waiters: ExitWaiters::default(),
             exit_publication: Mutex::new(()),
             status_waker: WakerSlot::default(),
@@ -2234,7 +2245,13 @@ fn consume_pidfd_status(
             Err(error) => return Err(error),
         }
         let mut source = event.source.lock();
-        while source.mutation.is_some() {
+        while source.mutation.is_some() || source.register_capture.is_some() {
+            #[cfg(all(test, feature = "memory", target_arch = "x86_64"))]
+            if let Some(observer) = event.capture_consume_observer.lock().as_ref() {
+                let _ = observer.send(CaptureConsumeObservation::Waiting {
+                    mutation: source.mutation.is_some(),
+                });
+            }
             event.source_idle.wait(&mut source);
         }
         // Readiness can become stale while a same-owner control runs. Only a
@@ -2243,6 +2260,10 @@ fn consume_pidfd_status(
             Ok(Some(observed)) => {
                 let raw = observed.raw;
                 let receipt = source.record_consumed(event, raw, observed.si_code);
+                #[cfg(all(test, feature = "memory", target_arch = "x86_64"))]
+                if let Some(observer) = event.capture_consume_observer.lock().as_ref() {
+                    let _ = observer.send(CaptureConsumeObservation::Consumed(raw));
+                }
                 return Ok(StatusEntry { raw, receipt });
             }
             Ok(None) | Err(Errno::EINTR) => {}

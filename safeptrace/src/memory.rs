@@ -26,6 +26,11 @@ mod source_mutation_tests;
 #[cfg(target_arch = "x86_64")]
 mod native_read;
 
+#[cfg(all(target_arch = "x86_64", feature = "notifier"))]
+pub use native_read::FollowedSourceReadPlan;
+#[cfg(all(target_arch = "x86_64", feature = "notifier"))]
+pub use native_read::NativeSourceReadPlan;
+
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
 struct NativePkruLayout {

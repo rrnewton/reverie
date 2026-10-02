@@ -11,8 +11,11 @@ use std::ffi::CString;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Read;
+use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
+use std::os::fd::BorrowedFd;
 use std::os::fd::FromRawFd;
+#[cfg(test)]
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 
@@ -24,6 +27,18 @@ use syscalls::Errno;
 use super::Stopped;
 use super::decode_native_pkru_xstate;
 use super::native_pkru_layout;
+
+// Separate proc-mem transport. This never replaces the synchronous ordinary
+// process_vm reader below. Its only production constructor consumes the actual
+// notifier SourceAcquisition; the mechanical helpers grant no task authority.
+#[cfg(any(test, feature = "notifier"))]
+#[path = "native_mm_read.rs"]
+mod mm_bound;
+
+#[cfg(feature = "notifier")]
+pub use mm_bound::FollowedSourceReadPlan;
+#[cfg(feature = "notifier")]
+pub use mm_bound::NativeSourceReadPlan;
 
 const PAGE: usize = 4096;
 const MAX_READ: usize = 512;
@@ -398,11 +413,20 @@ struct ProcMount {
 }
 
 fn verify_proc(file: &File, expected: Option<ProcMount>) -> Result<ProcMount, Error> {
+    verify_proc_fd(file.as_fd(), expected)
+}
+
+// Share the same procfs/mount checks with the MM transport without duplicating
+// or reopening the backend's borrowed original task-directory descriptor.
+fn verify_proc_fd(file: BorrowedFd<'_>, expected: Option<ProcMount>) -> Result<ProcMount, Error> {
     let mut fs = std::mem::MaybeUninit::<libc::statfs>::uninit();
     Errno::result(unsafe { libc::fstatfs(file.as_raw_fd(), fs.as_mut_ptr()) })
         .map_err(|e| refused(Refusal::Procfs(e)))?;
     let fs = unsafe { fs.assume_init() };
-    let device = file.metadata().map_err(proc_error)?.dev();
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    Errno::result(unsafe { libc::fstat(file.as_raw_fd(), metadata.as_mut_ptr()) })
+        .map_err(|e| refused(Refusal::Procfs(e)))?;
+    let device = unsafe { metadata.assume_init() }.st_dev;
     // A same-procfs bind mount of another task's smaps has the same st_dev.
     // Require the held proc root's mount as well, so path components cannot
     // substitute a foreign proc file while still passing the filesystem test.
@@ -550,5 +574,11 @@ fn publish(
 }
 
 #[cfg(test)]
-#[path = "native_read_tests.rs"]
-mod tests;
+mod tests {
+    // Keep the qualified tests/helpers byte-identical and preserve their names.
+    include!("native_read_tests.rs");
+
+    mod mm_bound {
+        include!("native_mm_read_tests.rs");
+    }
+}

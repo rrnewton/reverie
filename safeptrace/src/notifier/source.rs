@@ -77,9 +77,22 @@ pub(crate) struct SourceState {
     // Never cleared by invalidation/cancellation. Only this ticket's guard
     // may release the in-flight physical effect.
     pub(super) mutation: Option<Arc<()>>,
+    // Only the synchronous native register pair owns this ticket. It never
+    // spans proc IO, worker execution, or the rest of an acquisition/hold.
+    pub(super) register_capture: Option<Arc<()>>,
 }
 
 impl SourceState {
+    #[cfg(all(feature = "memory", target_arch = "x86_64"))]
+    fn reserve_register_capture(&mut self) -> Result<Arc<()>, Errno> {
+        if self.register_capture.is_some() || self.mutation.is_some() || self.signals != 0 {
+            return Err(Errno::EBUSY);
+        }
+        let ticket = Arc::new(());
+        self.register_capture = Some(Arc::clone(&ticket));
+        Ok(ticket)
+    }
+
     fn reserve_hold(&mut self, revision: u64) -> Result<Arc<()>, Errno> {
         if self.revision != revision
             || self.control_stop != Some(revision)
@@ -468,7 +481,68 @@ pub struct SourceAcquisition {
     stamp: SourceStamp,
 }
 
+// Crate-private, borrowed and !Send/!Sync: no public callback or async caller
+// can retain the notifier consumption exclusion. The closed native reader
+// keeps it only across PRSTATUS and XSTATE, on the committed-return thread.
+#[cfg(all(feature = "memory", target_arch = "x86_64"))]
+pub(crate) struct SourceRegisterCapture<'a> {
+    generation: Arc<Event>,
+    ticket: Arc<()>,
+    stopped: Stopped,
+    _borrow: std::marker::PhantomData<&'a ()>,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(all(feature = "memory", target_arch = "x86_64"))]
+impl SourceRegisterCapture<'_> {
+    pub(crate) fn stopped(&self) -> &Stopped {
+        &self.stopped
+    }
+}
+
+#[cfg(all(feature = "memory", target_arch = "x86_64"))]
+impl Drop for SourceRegisterCapture<'_> {
+    fn drop(&mut self) {
+        let mut state = self.generation.source.lock();
+        assert!(
+            state
+                .register_capture
+                .as_ref()
+                .is_some_and(|ticket| Arc::ptr_eq(ticket, &self.ticket)),
+            "register capture cannot release another owner's ticket"
+        );
+        state.register_capture = None;
+        drop(state);
+        self.generation.source_idle.notify_all();
+    }
+}
+
 impl SourceAcquisition {
+    #[cfg(all(feature = "memory", target_arch = "x86_64"))]
+    pub(crate) fn begin_register_capture(&self) -> Result<SourceRegisterCapture<'_>, Errno> {
+        if self.stamp.thread != thread::current().id() {
+            return Err(Errno::EPERM);
+        }
+        let mut state = self.generation.source.lock();
+        if !state.acquiring
+            || !state.consumed
+            || !self.stamp.receipt.matches(&state, &self.generation)
+            || !Arc::ptr_eq(&self.generation, self.token.event().event())
+            || self.generation.cleanup_cancel_requested.load(Ordering::Acquire)
+            || self.generation.exit_status.load(Ordering::Acquire) != EXIT_PENDING
+        {
+            return Err(Errno::ESTALE);
+        }
+        let ticket = state.reserve_register_capture()?;
+        Ok(SourceRegisterCapture {
+            generation: Arc::clone(&self.generation),
+            ticket,
+            stopped: Stopped::from_token(self.pid, self.token.clone()),
+            _borrow: std::marker::PhantomData,
+            _thread: std::marker::PhantomData,
+        })
+    }
+
     /// Borrow the consumed-stop view on its committed-wait return thread.
     /// A numeric ptrace operation still requires kernel ptracer ownership;
     /// this view does not bind that operation's numeric target to a generation.
@@ -593,6 +667,9 @@ mod hold_state_tests {
 mod tests {
     use super::*;
     use crate::Signal;
+
+    #[cfg(all(feature = "memory", target_arch = "x86_64"))]
+    include!("register_capture_tests.rs");
 
     include!("control_stop_native_tests.rs");
 

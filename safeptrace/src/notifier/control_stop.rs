@@ -201,6 +201,32 @@ pub struct ControlHold {
 }
 
 impl ControlHold {
+    #[cfg(all(feature = "memory", target_arch = "x86_64"))]
+    pub(crate) fn begin_register_capture(&self) -> Result<SourceRegisterCapture<'_>, Errno> {
+        if self.thread != thread::current().id() {
+            return Err(Errno::EPERM);
+        }
+        let mut state = self.generation.source.lock();
+        if state.revision != self.revision
+            || state.control_stop != Some(self.revision)
+            || state.mutation.is_some()
+            || state.signals != 0
+            || !state.hold.as_ref().is_some_and(|ticket| Arc::ptr_eq(ticket, &self.ticket))
+            || self.generation.cleanup_cancel_requested.load(Ordering::Acquire)
+            || self.generation.exit_status.load(Ordering::Acquire) != EXIT_PENDING
+        {
+            return Err(Errno::ESTALE);
+        }
+        let ticket = state.reserve_register_capture()?;
+        Ok(SourceRegisterCapture {
+            generation: Arc::clone(&self.generation),
+            ticket,
+            stopped: Stopped::from_token(self.pid, TraceeToken::from_event(self.handle.clone())),
+            _borrow: std::marker::PhantomData,
+            _thread: std::marker::PhantomData,
+        })
+    }
+
     /// Check the inherited single Command filter on the acquisition worker.
     pub fn validate_single_source_filter(&self) -> Result<(), Errno> {
         if self.thread == thread::current().id() {

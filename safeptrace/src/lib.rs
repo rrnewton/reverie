@@ -14,6 +14,10 @@
 //! not possible to call ptrace on a process not in a stopped state.
 #[cfg(feature = "memory")]
 mod memory;
+#[cfg(all(target_arch = "x86_64", feature = "memory", feature = "notifier"))]
+pub use memory::FollowedSourceReadPlan;
+#[cfg(all(feature = "memory", feature = "notifier", target_arch = "x86_64"))]
+pub use memory::NativeSourceReadPlan;
 #[cfg(feature = "notifier")]
 mod notifier;
 mod regs;
