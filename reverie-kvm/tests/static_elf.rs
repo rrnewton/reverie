@@ -14669,6 +14669,30 @@ int main(int argc, char **argv) {
     assert!(stderr.is_empty());
 }
 
+fn host_accepts_rwf_nosignal() -> bool {
+    let mut pipe = [-1; 2];
+    assert_eq!(
+        unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) },
+        0
+    );
+    let mut byte = 0_u8;
+    let vector = libc::iovec {
+        iov_base: (&raw mut byte).cast(),
+        iov_len: 1,
+    };
+    let result = unsafe { libc::preadv2(pipe[0], &vector, 1, -1, 0x100) };
+    let error = std::io::Error::last_os_error();
+    for fd in pipe {
+        assert_eq!(unsafe { libc::close(fd) }, 0);
+    }
+    assert_eq!(result, -1);
+    match error.raw_os_error() {
+        Some(libc::EAGAIN) => true,
+        Some(libc::EOPNOTSUPP) => false,
+        _ => panic!("unexpected RWF_NOSIGNAL probe result: {error}"),
+    }
+}
+
 #[test]
 fn signalfd_positioned_vector_flags_match_native_linux() {
     if !kvm_available("KVM signalfd positioned-vector flags") {
@@ -14768,15 +14792,18 @@ int main(void) {
 }
 "#,
     );
-    let native = std::process::Command::new("timeout")
-        .args(["--signal=TERM", "--kill-after=2s", "15s"])
-        .arg(&executable)
-        .output()
-        .unwrap();
-    assert!(native.status.success(), "native fixture failed: {native:?}");
-    assert_eq!(native.stdout.split(|byte| *byte == b'\n').count(), 67);
-    assert!(native.stdout.ends_with(b"signalfd-vector-flags=ok\n"));
-    assert!(native.stderr.is_empty());
+    // The KVM backend models Linux 7.1, which accepts RWF_NOSIGNAL (0x100).
+    // Older hosts reject it, so they cannot provide the native baseline; the
+    // fixture still checks every KVM result against the 7.1 behavior.
+    let native = host_accepts_rwf_nosignal().then(|| {
+        let native = std::process::Command::new("timeout")
+            .args(["--signal=TERM", "--kill-after=2s", "15s"])
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(native.status.success(), "native fixture failed: {native:?}");
+        native
+    });
     let executable = executable.to_str().unwrap();
     let image = std::fs::read(executable).unwrap();
     let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
@@ -14796,8 +14823,13 @@ int main(void) {
         String::from_utf8_lossy(&stdout),
         String::from_utf8_lossy(&stderr)
     );
-    assert_eq!(stdout, native.stdout);
-    assert_eq!(stderr, native.stderr);
+    assert_eq!(stdout.split(|byte| *byte == b'\n').count(), 67);
+    assert!(stdout.ends_with(b"signalfd-vector-flags=ok\n"));
+    assert!(stderr.is_empty());
+    if let Some(native) = native {
+        assert_eq!(stdout, native.stdout);
+        assert_eq!(stderr, native.stderr);
+    }
 }
 
 #[test]
