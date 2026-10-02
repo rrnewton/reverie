@@ -3582,19 +3582,29 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         type SavedInstructions = [u8; 8];
 
+        /// The test-only hooks `setup_special_mmap_page` consults.
+        #[cfg(test)]
+        struct PreinitTestHooks<'a> {
+            pause_preinit_step: &'a Option<(usize, mpsc::UnboundedSender<Pid>)>,
+            force_preinit_signal_once: &'a Option<Arc<AtomicBool>>,
+            preinit_point: &'a Option<PreinitPointForTest>,
+        }
+
         /// Helper function for tracee_preinit that does the core work.
-        // The three test-only hooks push the count past clippy's limit.
-        #[cfg_attr(test, allow(clippy::too_many_arguments))]
         async fn setup_special_mmap_page(
             task: Stopped,
             saved_regs: &libc::user_regs_struct,
             held_root_stop: &Option<Arc<StdMutex<Option<HeldRootStop>>>>,
             reject_activation_signals: bool,
             unexpected_signal: &Arc<StdMutex<Option<Signal>>>,
-            #[cfg(test)] pause_preinit_step: &Option<(usize, mpsc::UnboundedSender<Pid>)>,
-            #[cfg(test)] force_preinit_signal_once: &Option<Arc<AtomicBool>>,
-            #[cfg(test)] preinit_point: &Option<PreinitPointForTest>,
+            #[cfg(test)] hooks: PreinitTestHooks<'_>,
         ) -> Result<PreinitOutcome, TraceError> {
+            #[cfg(test)]
+            let PreinitTestHooks {
+                pause_preinit_step,
+                force_preinit_signal_once,
+                preinit_point,
+            } = hooks;
             // NOTE: This point in the code assumes that a specific instruction
             // sequence "SYSCALL; INT3", has been patched into the guest, and
             // that RIP points to the syscall.
@@ -3819,11 +3829,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             reject_activation_signals,
             &unexpected_preinit_signal,
             #[cfg(test)]
-            &pause_preinit_step,
-            #[cfg(test)]
-            &force_preinit_signal_once,
-            #[cfg(test)]
-            &preinit_point,
+            PreinitTestHooks {
+                pause_preinit_step: &pause_preinit_step,
+                force_preinit_signal_once: &force_preinit_signal_once,
+                preinit_point: &preinit_point,
+            },
         )
         .await;
         if let Some(sig) = unexpected_preinit_signal.lock().unwrap().take() {

@@ -325,6 +325,11 @@ static CLEANUP_CANCEL_SIGNAL_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePau
 #[cfg(test)]
 static ABSORBED_UNREGISTERED: LazyLock<Mutex<HashMap<Pid, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+/// One liveness error for the next earlier generation that registration
+/// would redirect, as a failed pidfd poll would return.
+#[cfg(test)]
+static ABSORB_LIVENESS_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 #[cfg(test)]
 static STOP_CONSUMPTION_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -346,6 +351,12 @@ static SYNC_DECODE_CAPTURE_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
 
 #[cfg(test)]
 static CAPTURE_THREAD_ERRORS: LazyLock<Mutex<HashMap<ThreadId, VecDeque<Errno>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Pauses one thread's `EventHandle::hold_tid` after it reads the Event its
+/// handle names and before it takes that Event's TID gate.
+#[cfg(test)]
+static HOLD_TID_PAUSES: LazyLock<Mutex<HashMap<ThreadId, EventCapturePause>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
@@ -1724,6 +1735,11 @@ impl EventHandle {
     pub(super) fn hold_tid(&self) -> Option<TidHold<'_>> {
         loop {
             let event = self.event();
+            #[cfg(test)]
+            if let Some(pause) = HOLD_TID_PAUSES.lock().remove(&thread::current().id()) {
+                pause.captured.wait();
+                pause.resume.wait();
+            }
             let hold = event.hold_tid()?;
             // Adoption redirects this handle while holding the old Event's
             // gate exclusively, so a hold taken before the redirect delays it,
@@ -2417,8 +2433,11 @@ struct Notifier {
 
     /// Generations handed out before registration, so every capability for
     /// one live task shares one Event, and thus one TID gate, before any of
-    /// them registers. Locked only while `pids` is held.
-    unregistered: Mutex<HashMap<Pid, Weak<EventGeneration>>>,
+    /// them registers. A generation whose first registration failed is kept
+    /// here too, beside the one constructors already share, so the next
+    /// registration of the same live task redirects both. Locked only while
+    /// `pids` is held.
+    unregistered: Mutex<HashMap<Pid, Vec<Weak<EventGeneration>>>>,
 }
 
 impl Notifier {
@@ -2433,37 +2452,82 @@ impl Notifier {
         WorkerIdentity::capture(pid).map(Arc::new)
     }
 
-    /// Redirects the generation handed out for `pid` before any registration
+    /// Redirects the generations handed out for `pid` before any registration
     /// (`unregistered`) to `handle`, which is about to become the first
     /// registered generation of the same live task `current`. Capabilities
-    /// that carry the earlier generation then reach the TID gate that
+    /// that carry an earlier generation then reach the TID gate that
     /// `handle`'s reaper marks; `adopt_authoritative` first waits for their
-    /// requests already holding the earlier gate. Called with `pids` held.
+    /// requests already holding the earlier gate. The cached generations stay
+    /// cached: if this registration fails, the next one must find them again.
+    /// Called with `pids` held.
     fn absorb_unregistered(
         &self,
         pid: Pid,
         current: &WorkerIdentity,
         handle: &EventHandle,
     ) -> Result<(), Errno> {
-        let earlier = self.unregistered.lock().remove(&pid);
-        let Some(earlier) = earlier.as_ref().and_then(Weak::upgrade).map(EventHandle) else {
-            return Ok(());
-        };
-        // An earlier generation that already follows another one, or that
-        // `handle` already follows, needs no redirect.
-        if earlier.0.authoritative.get().is_some() || handle.chain_contains(&earlier.0) {
-            return Ok(());
-        }
-        match earlier.identity() {
-            Some(bound) if bound.same_live_generation(current)? => {
-                #[cfg(test)]
-                {
-                    *ABSORBED_UNREGISTERED.lock().entry(pid).or_default() += 1;
+        let earlier: Vec<EventHandle> = self
+            .unregistered
+            .lock()
+            .get(&pid)
+            .map(|generations| {
+                generations
+                    .iter()
+                    .filter_map(Weak::upgrade)
+                    .map(EventHandle)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for earlier in earlier {
+            loop {
+                // Redirect the generation the earlier one names now, which
+                // may itself follow a generation whose registration failed.
+                let resolved = earlier.resolved_handle();
+                // `handle` already follows it: nothing to redirect.
+                if handle.chain_contains(&resolved.0) {
+                    break;
                 }
-                earlier.adopt_authoritative(handle).map(drop)
+                #[cfg(test)]
+                if let Some(error) = ABSORB_LIVENESS_ERRORS.lock().remove(&pid) {
+                    return Err(error);
+                }
+                match resolved.identity() {
+                    Some(bound) if bound.same_live_generation(current)? => {}
+                    // A dead task's generation: nothing live can reach it.
+                    _ => break,
+                }
+                match resolved.adopt_authoritative(handle) {
+                    Ok(_) => {
+                        #[cfg(test)]
+                        {
+                            *ABSORBED_UNREGISTERED.lock().entry(pid).or_default() += 1;
+                        }
+                        break;
+                    }
+                    // Another adoption redirected it first; follow it again.
+                    Err(Errno::EALREADY) => continue,
+                    Err(error) => return Err(error),
+                }
             }
-            // A dead task's generation: nothing live can reach it.
-            _ => Ok(()),
+        }
+        Ok(())
+    }
+
+    /// Keeps `handle`'s generation discoverable for `pid` after its first
+    /// registration failed, so constructors and the next registration of the
+    /// same live task still reach it, unless a cached generation already
+    /// resolves to it. Called with `pids` held.
+    fn keep_unregistered(&self, pid: Pid, handle: &EventHandle) {
+        let resolved = handle.resolved_handle();
+        let mut unregistered = self.unregistered.lock();
+        let generations = unregistered.entry(pid).or_default();
+        generations.retain(|generation| generation.strong_count() > 0);
+        let cached = generations
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|generation| EventHandle(generation).resolved() == &resolved);
+        if !cached {
+            generations.push(Arc::downgrade(&resolved.0));
         }
     }
 
@@ -2535,7 +2599,8 @@ impl Notifier {
                     // registering any one of them leads to closes the TID gate
                     // for all of them.
                     let mut unregistered = self.unregistered.lock();
-                    if let Some(generation) = unregistered.get(&pid).and_then(Weak::upgrade) {
+                    let cached = unregistered.get(&pid).into_iter().flatten();
+                    for generation in cached.filter_map(Weak::upgrade) {
                         let handle = EventHandle(generation);
                         if let Some(bound) = handle.identity()
                             && bound.same_live_generation(&current)?
@@ -2543,9 +2608,15 @@ impl Notifier {
                             return Ok(handle.resolved_handle());
                         }
                     }
-                    unregistered.retain(|_, generation| generation.strong_count() > 0);
+                    unregistered.retain(|_, generations| {
+                        generations.retain(|generation| generation.strong_count() > 0);
+                        !generations.is_empty()
+                    });
                     let handle = EventHandle::with_identity(Arc::clone(&current));
-                    unregistered.insert(pid, Arc::downgrade(&handle.0));
+                    unregistered
+                        .entry(pid)
+                        .or_default()
+                        .push(Arc::downgrade(&handle.0));
                     return Ok(handle);
                 }
             }
@@ -2594,7 +2665,10 @@ impl Notifier {
             {
                 return requested.adopt_authoritative(&occupied.handle);
             }
-            self.absorb_unregistered(pid, &current, requested)?;
+            if let Err(error) = self.absorb_unregistered(pid, &current, requested) {
+                self.keep_unregistered(pid, requested);
+                return Err(error);
+            }
             pids.insert(
                 pid,
                 NotifierEntry {
@@ -2933,6 +3007,7 @@ impl Notifier {
                 }
                 Entry::Vacant(vacant) => {
                     if let Err(error) = self.absorb_unregistered(pid, &current, handle) {
+                        self.keep_unregistered(pid, handle);
                         Self::record_registration_error(handle, error);
                         return Err(error);
                     }
@@ -2958,6 +3033,7 @@ impl Notifier {
                             entry.handle == *handle && entry.identity.same_generation(&identity)
                         }) {
                             pids.remove(&pid);
+                            self.keep_unregistered(pid, handle);
                         }
                         let error = io_errno(error);
                         Self::record_registration_error(handle, error);
@@ -5679,8 +5755,19 @@ mod test {
                 result
             })
         };
+        // The gate is task-fair: once the adopter is waiting for the write
+        // lock, a new read attempt fails, so this proves the adopter reached
+        // the gate before it is checked.
+        let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
+        while requested.0.event.terminal_reaping.try_read().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "adoption never waited for the request holding the old gate"
+            );
+            thread::yield_now();
+        }
         assert!(
-            adopted_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            adopted_rx.try_recv().is_err() && requested.0.authoritative.get().is_none(),
             "adoption redirected a handle while a request held its old gate"
         );
         drop(hold);
@@ -5693,6 +5780,42 @@ mod test {
         assert!(
             requested.hold_tid().is_none(),
             "a request through the adopted handle escaped the authoritative reap"
+        );
+    }
+
+    /// A request that read its handle's Event just before an adoption
+    /// redirected the handle, and takes the old gate only after the adoption
+    /// released it, must follow the redirect to the authoritative gate.
+    #[test]
+    fn request_racing_adoption_takes_the_authoritative_gate() {
+        let requested = EventHandle::new();
+        let authoritative = EventHandle::new();
+        let read_event = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let request = {
+            let requested = requested.clone();
+            let read_event = Arc::clone(&read_event);
+            let resume = Arc::clone(&resume);
+            thread::spawn(move || {
+                HOLD_TID_PAUSES.lock().insert(
+                    thread::current().id(),
+                    EventCapturePause {
+                        captured: read_event,
+                        resume,
+                    },
+                );
+                requested.hold_tid().is_some()
+            })
+        };
+        read_event.wait();
+        requested
+            .adopt_authoritative(&authoritative)
+            .expect("adopt while the request is paused");
+        authoritative.event().mark_terminal_reaping();
+        resume.wait();
+        assert!(
+            !request.join().expect("join the paused request"),
+            "a request that read the old Event before the adoption held the old gate after the authoritative reap"
         );
     }
 
@@ -9297,7 +9420,7 @@ mod test {
     /// replacement's own capability can still write it.
     #[cfg(feature = "memory")]
     fn assert_user_access_write_refused_after_reap(
-        stale: [Stopped; 2],
+        stale: impl IntoIterator<Item = Stopped>,
         mut replacement: Stopped,
     ) -> Stopped {
         use reverie_memory::Addr;
@@ -9450,6 +9573,297 @@ mod test {
             early.1.event().hold_tid().is_none(),
             "the earlier capability's TID gate stayed open after the reap"
         );
+    }
+
+    /// How `failed_registration_refuses_after_reap` makes the first
+    /// registration of a live generation fail.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum FailedRegistration {
+        /// A second unchecked capability, on the earlier one's Event, fails
+        /// to start its notifier worker, as EAGAIN from thread creation does.
+        OwnWorkerStart,
+        /// A capability on an unbound token redirects the earlier unchecked
+        /// one to itself, then fails to start its notifier worker.
+        AbsorbedWorkerStart,
+        /// A capability on an unbound token fails while checking whether the
+        /// earlier unchecked one is still live.
+        Absorption,
+        /// A capability on an unbound token fails to start its notifier
+        /// worker while no other capability for the task exists.
+        UncachedWorkerStart,
+    }
+
+    /// How `failed_registration_refuses_after_reap` registers again after
+    /// the failure.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum RegistrationRetry {
+        /// A later `Stopped::new_unchecked` capability registers for
+        /// asynchronous notification.
+        Unchecked,
+        /// A later `Stopped::new_unchecked` capability reaps the task through
+        /// synchronous `Running::wait`.
+        UncheckedSync,
+        /// A later capability on an unbound token registers for asynchronous
+        /// notification, so it must redirect every earlier generation.
+        Unbound,
+    }
+
+    /// Fails the first registration of a live generation, then makes a later
+    /// capability with `Stopped::new_unchecked`, which must share the Event
+    /// of every capability made before it, and registers again as `retry`
+    /// says until the task is reaped. Every capability made before the retry,
+    /// including the one whose registration failed, must then refuse its
+    /// requests instead of reaching a replacement tracee, and the
+    /// replacement's own requests must still work. With `requested_pid`, the
+    /// replacement actually reuses the old PID; without it, each old
+    /// capability is rebuilt beside the replacement's PID with its old token.
+    async fn failed_registration_refuses_after_reap(
+        requested_pid: Option<i32>,
+        failure: FailedRegistration,
+        retry: RegistrationRetry,
+    ) -> bool {
+        let Some((old_pid, early, mut old_cleanup)) = spawn_traced_process(requested_pid) else {
+            return false;
+        };
+        let absorbed = || {
+            ABSORBED_UNREGISTERED
+                .lock()
+                .get(&old_pid.into())
+                .copied()
+                .unwrap_or(0)
+        };
+        let absorbed_before = absorbed();
+        let early = if failure == FailedRegistration::UncachedWorkerStart {
+            drop(early);
+            None
+        } else {
+            Some(early)
+        };
+        let failed = if failure == FailedRegistration::OwnWorkerStart {
+            Stopped::new_unchecked(old_pid.into())
+        } else {
+            Stopped::from_token(old_pid.into(), crate::TraceeToken::new())
+        };
+        let expected = if failure == FailedRegistration::Absorption {
+            ABSORB_LIVENESS_ERRORS
+                .lock()
+                .insert(old_pid.into(), Errno::EIO);
+            Errno::EIO
+        } else {
+            SPAWN_WORKER_ERRORS
+                .lock()
+                .insert(old_pid.into(), libc::EAGAIN);
+            Errno::EAGAIN
+        };
+        assert_eq!(
+            TerminalCleanup::new_unregistered(old_pid.into(), &failed.1).ensure_registered(),
+            Err(expected),
+            "{failure:?}: the first registration did not fail as injected"
+        );
+        assert!(
+            !NOTIFIER.pids.lock().contains_key(&old_pid.into()),
+            "{failure:?}: the failed registration stayed in the registry"
+        );
+        let absorbed_after_failure = absorbed();
+        assert_eq!(
+            absorbed_after_failure,
+            absorbed_before + usize::from(failure == FailedRegistration::AbsorbedWorkerStart),
+            "{failure:?}: unexpected redirects before the failure"
+        );
+
+        // Distinct generations the retry's registration must redirect.
+        let redirects = match (failure, retry) {
+            (FailedRegistration::Absorption, RegistrationRetry::Unbound) => 2,
+            (_, RegistrationRetry::Unbound) | (FailedRegistration::Absorption, _) => 1,
+            _ => 0,
+        };
+        let constructed = Stopped::new_unchecked(old_pid.into());
+        let shared = early.as_ref().unwrap_or(&failed);
+        assert!(
+            Arc::ptr_eq(constructed.1.event().event(), shared.1.event().event()),
+            "{failure:?}: a capability made after the failed registration left the earlier generation's Event"
+        );
+        let later = if retry == RegistrationRetry::Unbound {
+            Stopped::from_token(old_pid.into(), crate::TraceeToken::new())
+        } else {
+            Stopped::new_unchecked(old_pid.into())
+        };
+        if retry == RegistrationRetry::UncheckedSync {
+            let running = later
+                .resume(None)
+                .expect("resume the later capability to exit");
+            assert_eq!(
+                running.wait().expect("synchronous wait").assume_exited(),
+                (old_pid.into(), crate::ExitStatus::Exited(42))
+            );
+        } else {
+            old_cleanup
+                .bind_notifier(&later)
+                .expect("register the later capability");
+            let running = later
+                .resume(None)
+                .expect("resume the later capability to exit");
+            let exited = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, running.next_state())
+                .await
+                .expect("later capability's final status timed out")
+                .expect("wait the later capability");
+            assert_eq!(
+                exited.assume_exited(),
+                (old_pid.into(), crate::ExitStatus::Exited(42))
+            );
+        }
+        old_cleanup.disarm();
+        assert_eq!(
+            absorbed(),
+            absorbed_after_failure + redirects,
+            "{failure:?}, {retry:?}: the retry did not redirect every earlier generation"
+        );
+
+        let mut stale = vec![("failed", failed), ("constructed", constructed)];
+        if let Some(early) = early {
+            stale.push(("earlier", early));
+        }
+        for (name, capability) in &stale {
+            assert!(
+                capability.1.event().hold_tid().is_none(),
+                "{failure:?}, {retry:?}: the {name} capability's TID gate stayed open after the reap"
+            );
+        }
+
+        thread::sleep(Duration::from_millis(20));
+        let Some((replacement_pid, replacement, mut replacement_cleanup)) =
+            spawn_traced_process(requested_pid)
+        else {
+            return false;
+        };
+        if requested_pid.is_some() {
+            assert_eq!(
+                replacement_pid, old_pid,
+                "clone3 did not reuse the failed-registration PID"
+            );
+        } else {
+            for (_, capability) in &mut stale {
+                let token = capability.1.clone();
+                *capability = Stopped::from_token(replacement_pid.into(), token);
+            }
+        }
+        replacement
+            .getregs()
+            .expect("the old capabilities' numeric PID names the stopped replacement");
+        for (name, capability) in &stale {
+            assert!(
+                matches!(capability.getregs(), Err(Error::Died(_))),
+                "{failure:?}, {retry:?}: a request through the {name} capability reached the replacement"
+            );
+        }
+        #[cfg(feature = "memory")]
+        let replacement = assert_user_access_write_refused_after_reap(
+            stale.into_iter().map(|(_, capability)| capability),
+            replacement,
+        );
+        #[cfg(not(feature = "memory"))]
+        drop(stale);
+
+        let info = replacement
+            .getsiginfo()
+            .expect("an old capability touched the stopped replacement");
+        assert_eq!(info.si_signo, libc::SIGSTOP);
+        replacement_cleanup
+            .bind_notifier(&replacement)
+            .expect("bind replacement to notifier");
+        let replacement = replacement.resume(None).expect("resume replacement");
+        let replacement = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, replacement.next_state())
+            .await
+            .expect("replacement final status timed out")
+            .expect("wait replacement");
+        replacement_cleanup.disarm();
+        assert_eq!(
+            replacement.assume_exited(),
+            (replacement_pid.into(), crate::ExitStatus::Exited(42))
+        );
+        true
+    }
+
+    /// Runs `failed_registration_refuses_after_reap` with each retry, in a
+    /// PID namespace where the replacement actually reuses the old PID when
+    /// the runner allows it.
+    async fn failed_registration_reuse_through(
+        failure: FailedRegistration,
+        inner_env: &str,
+        inner: &str,
+    ) {
+        const RETRIES: [RegistrationRetry; 3] = [
+            RegistrationRetry::Unchecked,
+            RegistrationRetry::UncheckedSync,
+            RegistrationRetry::Unbound,
+        ];
+        if env::var_os(inner_env).is_some() {
+            for retry in RETRIES {
+                if !failed_registration_refuses_after_reap(Some(100), failure, retry).await {
+                    println!("ACTUAL_FAILED_REGISTRATION_PID_REUSE_UNAVAILABLE");
+                    return;
+                }
+            }
+            println!("ACTUAL_FAILED_REGISTRATION_PID_REUSE_EXERCISED");
+            return;
+        }
+
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(inner_env, "1")]);
+        match classify_exact_reuse_output(
+            actual_reuse.as_ref(),
+            "ACTUAL_FAILED_REGISTRATION_PID_REUSE_EXERCISED",
+            "ACTUAL_FAILED_REGISTRATION_PID_REUSE_UNAVAILABLE",
+        )
+        .unwrap_or_else(|error| panic!("{failure:?} PID-reuse regression failed: {error}"))
+        {
+            ExactReuseOutcome::Exercised => return,
+            ExactReuseOutcome::Unavailable => {}
+        }
+
+        // Restricted runners may deny user namespaces or clone3(set_tid).
+        for retry in RETRIES {
+            assert!(failed_registration_refuses_after_reap(None, failure, retry).await);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn worker_start_failure_keeps_the_generation_for_later_capabilities() {
+        failed_registration_reuse_through(
+            FailedRegistration::OwnWorkerStart,
+            "SAFEPTRACE_OWN_WORKER_START_REUSE_INNER",
+            "notifier::test::worker_start_failure_keeps_the_generation_for_later_capabilities",
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn worker_start_failure_after_redirect_keeps_the_generation_for_later_capabilities() {
+        failed_registration_reuse_through(
+            FailedRegistration::AbsorbedWorkerStart,
+            "SAFEPTRACE_ABSORBED_WORKER_START_REUSE_INNER",
+            "notifier::test::worker_start_failure_after_redirect_keeps_the_generation_for_later_capabilities",
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_redirect_keeps_both_generations_for_the_next_registration() {
+        failed_registration_reuse_through(
+            FailedRegistration::Absorption,
+            "SAFEPTRACE_FAILED_ABSORPTION_REUSE_INNER",
+            "notifier::test::failed_redirect_keeps_both_generations_for_the_next_registration",
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn worker_start_failure_keeps_an_uncached_generation_for_later_capabilities() {
+        failed_registration_reuse_through(
+            FailedRegistration::UncachedWorkerStart,
+            "SAFEPTRACE_UNCACHED_WORKER_START_REUSE_INNER",
+            "notifier::test::worker_start_failure_keeps_an_uncached_generation_for_later_capabilities",
+        )
+        .await;
     }
 
     /// Builds a handle on a fresh Event that no other constructor shares.
