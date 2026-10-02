@@ -76,6 +76,15 @@ impl TraceeToken {
         })
     }
 
+    /// The generation that `pid` names now, shared with every other
+    /// capability for it as `current_or_new` shares it, or a fresh token if
+    /// the task's identity cannot be captured. A fresh token is bound to no
+    /// generation, so its requests are not held off by the TID gate that the
+    /// task's reaper marks.
+    fn current_or_fresh(pid: Pid) -> Self {
+        Self::current_or_new(pid).unwrap_or_else(|_| Self::new())
+    }
+
     fn current_or_error(pid: Pid) -> Self {
         #[cfg(not(feature = "notifier"))]
         let _ = pid;
@@ -94,6 +103,29 @@ impl TraceeToken {
     fn event(&self) -> &notifier::EventHandle {
         &self.event
     }
+
+    /// Runs one numeric request on this generation's TID.
+    ///
+    /// Under the notifier, a fatal signal can end the stop that a capability
+    /// names, and the generation's reaper can then release the TID for reuse
+    /// while the capability is still held. Once that reap has marked this
+    /// generation's gate, the request fails with `ESRCH` without reaching the
+    /// kernel, so it does not name a replacement task. A reap that marks no
+    /// gate lets the request through: a generation whose identity was never
+    /// captured, a bulk wait, or an order in
+    /// <https://github.com/rrnewton/reverie/issues/860>. Without the notifier
+    /// the request always runs.
+    fn on_held_tid<T>(&self, request: impl FnOnce() -> Result<T, Errno>) -> Result<T, Errno> {
+        #[cfg(feature = "notifier")]
+        let Some(_held) = self.event.hold_tid() else {
+            return Err(Errno::ESRCH);
+        };
+        request()
+    }
+}
+
+fn nix_errno(err: nix::Error) -> Errno {
+    Errno::new(err as i32)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -424,7 +456,12 @@ impl Wait {
     /// Preconditions:
     /// The process must not be in a running state.
     pub fn from_raw(pid: Pid, status: i32) -> Result<Self, Error> {
-        Self::from_raw_with_token(pid, status, TraceeToken::new())
+        let token = if libc::WIFSTOPPED(status) {
+            TraceeToken::current_or_fresh(pid)
+        } else {
+            TraceeToken::new()
+        };
+        Self::from_raw_with_token(pid, status, token)
     }
 
     fn from_raw_with_token(pid: Pid, status: i32, token: TraceeToken) -> Result<Self, Error> {
@@ -476,7 +513,13 @@ impl TryFrom<WaitStatus> for Wait {
     /// Preconditions:
     /// The process must not be in a `StillAlive` state.
     fn try_from(wait_status: WaitStatus) -> Result<Self, Error> {
-        Self::from_wait_status_with_token(wait_status, TraceeToken::new())
+        let token = match wait_status {
+            WaitStatus::Stopped(pid, _)
+            | WaitStatus::PtraceEvent(pid, ..)
+            | WaitStatus::PtraceSyscall(pid) => TraceeToken::current_or_fresh(pid.into()),
+            _ => TraceeToken::new(),
+        };
+        Self::from_wait_status_with_token(wait_status, token)
     }
 }
 
@@ -549,6 +592,32 @@ bitflags::bitflags! {
     }
 }
 
+/// The tracee generation a [`Stopped`] capability is bound to. It grants no
+/// ptrace operation by itself.
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+pub struct TraceeGeneration(Pid, TraceeToken);
+
+impl TraceeGeneration {
+    /// Returns the process ID of the tracee.
+    pub fn pid(&self) -> Pid {
+        self.0
+    }
+
+    /// Creates a stopped state for this generation. Like
+    /// [`Stopped::new_unchecked`], the caller must independently know that the
+    /// tracee is stopped. Unlike it, with the `notifier` feature and once this
+    /// generation's identity has been captured, requests through the result
+    /// are refused once the notifier or [`Running::wait`] reaps this
+    /// generation, even if another task has reused the TID. Without that
+    /// feature, or for a generation whose identity could not be captured,
+    /// requests go to the numeric TID unchecked. A reap through [`wait_all`],
+    /// [`try_wait_all`] or [`wait_group`], and the registration orders in
+    /// <https://github.com/rrnewton/reverie/issues/860>, do not refuse them yet.
+    pub fn assume_stopped(&self) -> Stopped {
+        Stopped::from_token(self.0, self.1.clone())
+    }
+}
+
 /// A process that is in a stopped state and allows ptrace operations to be
 /// performed.
 #[derive(Hash, Eq, PartialEq)]
@@ -618,11 +687,6 @@ impl Stopped {
         } else {
             Error::Errno(err)
         }
-    }
-
-    // Helper for converting from the nix::Error type.
-    fn map_nix_err(&self, err: nix::Error) -> Error {
-        self.map_err(Errno::new(err as i32))
     }
 
     /// Returns a future that is notified when the next exit stop occurs. This
@@ -741,6 +805,14 @@ impl Stopped {
         Running::from_token(self.0, self.1)
     }
 
+    /// Returns the generation this capability is bound to, so a caller that
+    /// later rebuilds an unchecked capability for this tracee keeps the
+    /// generation's TID gate instead of joining whatever task holds the TID
+    /// by then.
+    pub fn generation(&self) -> TraceeGeneration {
+        TraceeGeneration(self.0, self.1.clone())
+    }
+
     /// Returns the process ID of the tracee.
     pub fn pid(&self) -> Pid {
         self.0
@@ -748,7 +820,9 @@ impl Stopped {
 
     /// Sets the ptracer options.
     pub fn setoptions(&self, options: ptrace::Options) -> Result<(), Error> {
-        ptrace::setoptions(self.0.into(), options).map_err(|err| self.map_nix_err(err))
+        self.1
+            .on_held_tid(|| ptrace::setoptions(self.0.into(), options).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))
     }
 
     /// Gets a set of registers.
@@ -766,18 +840,19 @@ impl Stopped {
             iov_len: core::mem::size_of_val(&regs),
         };
 
-        unsafe {
-            syscalls::syscall!(
-                Sysno::ptrace,
-                // PTRACE_GETREGS isn't available on aarch64, so we must use
-                // PTRACE_GETREGSET instead.
-                libc::PTRACE_GETREGSET,
-                self.0.as_raw(),
-                which,
-                &mut iov as *mut _
-            )
-        }
-        .map_err(|err| self.map_err(err))?;
+        self.1
+            .on_held_tid(|| unsafe {
+                syscalls::syscall!(
+                    Sysno::ptrace,
+                    // PTRACE_GETREGS isn't available on aarch64, so we must use
+                    // PTRACE_GETREGSET instead.
+                    libc::PTRACE_GETREGSET,
+                    self.0.as_raw(),
+                    which,
+                    &mut iov as *mut _
+                )
+            })
+            .map_err(|err| self.map_err(err))?;
 
         // PTRACE_GETREGSET modifies the length to the real length of the
         // registers, but we should already know the exact number of registers
@@ -793,18 +868,19 @@ impl Stopped {
             iov_len: core::mem::size_of::<T>(),
         };
 
-        unsafe {
-            syscalls::syscall!(
-                Sysno::ptrace,
-                // PTRACE_SETREGS isn't available on aarch64, so we must use
-                // PTRACE_SETREGSET instead.
-                libc::PTRACE_SETREGSET,
-                self.0.as_raw(),
-                which,
-                &iov as *const _
-            )
-        }
-        .map_err(|err| self.map_err(err))?;
+        self.1
+            .on_held_tid(|| unsafe {
+                syscalls::syscall!(
+                    Sysno::ptrace,
+                    // PTRACE_SETREGS isn't available on aarch64, so we must use
+                    // PTRACE_SETREGSET instead.
+                    libc::PTRACE_SETREGSET,
+                    self.0.as_raw(),
+                    which,
+                    &iov as *const _
+                )
+            })
+            .map_err(|err| self.map_err(err))?;
 
         Ok(())
     }
@@ -842,16 +918,17 @@ impl Stopped {
             iov_base: bytes.as_mut_ptr().cast(),
             iov_len: bytes.len(),
         };
-        unsafe {
-            syscalls::syscall!(
-                Sysno::ptrace,
-                libc::PTRACE_GETREGSET,
-                self.0.as_raw(),
-                NT_X86_XSTATE,
-                &mut iov as *mut _
-            )
-        }
-        .map_err(|err| self.map_err(err))?;
+        self.1
+            .on_held_tid(|| unsafe {
+                syscalls::syscall!(
+                    Sysno::ptrace,
+                    libc::PTRACE_GETREGSET,
+                    self.0.as_raw(),
+                    NT_X86_XSTATE,
+                    &mut iov as *mut _
+                )
+            })
+            .map_err(|err| self.map_err(err))?;
         if iov.iov_len > bytes.len() {
             return Err(Error::Errno(Errno::EOVERFLOW));
         }
@@ -868,22 +945,25 @@ impl Stopped {
             iov_base: state.0.as_ptr() as *mut libc::c_void,
             iov_len: state.0.len(),
         };
-        unsafe {
-            syscalls::syscall!(
-                Sysno::ptrace,
-                libc::PTRACE_SETREGSET,
-                self.0.as_raw(),
-                NT_X86_XSTATE,
-                &iov as *const _
-            )
-        }
-        .map_err(|err| self.map_err(err))?;
+        self.1
+            .on_held_tid(|| unsafe {
+                syscalls::syscall!(
+                    Sysno::ptrace,
+                    libc::PTRACE_SETREGSET,
+                    self.0.as_raw(),
+                    NT_X86_XSTATE,
+                    &iov as *const _
+                )
+            })
+            .map_err(|err| self.map_err(err))?;
         Ok(())
     }
 
     /// Resumes the process and transitions it back to a running state.
     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::cont(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        self.1
+            .on_held_tid(|| ptrace::cont(self.0.into(), sig).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))?;
         Ok(self.into_running())
     }
 
@@ -900,7 +980,9 @@ impl Stopped {
         self,
         sig: T,
     ) -> Result<Running, (Self, Errno)> {
-        let result = ptrace::cont(self.0.into(), sig);
+        let result = self
+            .1
+            .on_held_tid(|| ptrace::cont(self.0.into(), sig).map_err(nix_errno));
         self.finish_retained_resume(result)
     }
 
@@ -922,18 +1004,17 @@ impl Stopped {
 
     pub(crate) fn finish_retained_resume(
         self,
-        result: Result<(), nix::Error>,
+        result: Result<(), Errno>,
     ) -> Result<Running, (Self, Errno)> {
         match result {
             Ok(()) => Ok(self.into_running()),
             Err(error) => {
-                let errno = Errno::new(error as i32);
-                if errno == Errno::ESRCH {
+                if error == Errno::ESRCH {
                     // The retained value keeps its ownership role, but the
                     // tracee has left the exit stop this capability names.
                     self.retire_statuses_before_exit_stop();
                 }
-                Err((self, errno))
+                Err((self, error))
             }
         }
     }
@@ -941,14 +1022,18 @@ impl Stopped {
     /// Advances the execution of the process by a single step optionally
     /// delivering a signal specified by `sig`.
     pub fn step<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::step(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        self.1
+            .on_held_tid(|| ptrace::step(self.0.into(), sig).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))?;
         Ok(self.into_running())
     }
 
     /// Like `step`, but arranges for the tracee to be stopped at the next
     /// entry to or exit from a system call.
     pub fn syscall<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::syscall(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        self.1
+            .on_held_tid(|| ptrace::syscall(self.0.into(), sig).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))?;
         Ok(self.into_running())
     }
 
@@ -971,27 +1056,63 @@ impl Stopped {
 
     /// Gets info about the signal that caused the process to be stopped.
     pub fn getsiginfo(&self) -> Result<libc::siginfo_t, Error> {
-        ptrace::getsiginfo(self.0.into()).map_err(|err| self.map_nix_err(err))
+        self.1
+            .on_held_tid(|| ptrace::getsiginfo(self.0.into()).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))
+    }
+
+    /// Returns [`Error::Died`] if this tracee has left the stop this
+    /// capability names and is now in its `PTRACE_EVENT_EXIT` stop, or if
+    /// the probe itself reports its death. Returns `None` otherwise.
+    ///
+    /// A fatal signal takes a tracee out of any ptrace stop without a tracer
+    /// request. A request made while the tracee is on its way to its exit
+    /// stop fails with `ESRCH`, because the tracee is not in a stop. Once it
+    /// is in its exit stop, requests succeed again, so an ordinary probe made
+    /// after that `ESRCH` sees a stopped, apparently live tracee.
+    /// `PTRACE_GETSIGINFO` tells the two apart: in the exit stop, `si_code`
+    /// is `SIGTRAP | (PTRACE_EVENT_EXIT << 8)`.
+    ///
+    /// Call this only on the capability for a stop other than the exit stop,
+    /// after a request on it failed with `ESRCH`. Holding such a stop, the
+    /// tracer has not resumed the tracee, so a tracee found in its exit stop
+    /// was taken there by a fatal signal and the held stop is dead.
+    pub fn died_into_exit_stop(&self) -> Option<Error> {
+        match self.getsiginfo() {
+            Ok(siginfo)
+                if siginfo.si_signo == libc::SIGTRAP
+                    && siginfo.si_code == libc::SIGTRAP | (libc::PTRACE_EVENT_EXIT << 8) =>
+            {
+                Some(self.map_err(Errno::ESRCH))
+            }
+            Err(died @ Error::Died(_)) => Some(died),
+            _ => None,
+        }
     }
 
     /// Sets info about the singal that caused the process to be stopped.
     pub fn setsiginfo(&self, siginfo: &libc::siginfo_t) -> Result<(), Error> {
-        ptrace::setsiginfo(self.0.into(), siginfo).map_err(|err| self.map_nix_err(err))
+        self.1
+            .on_held_tid(|| ptrace::setsiginfo(self.0.into(), siginfo).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))
     }
 
     /// Gets the tracee's blocked signal mask (`PTRACE_GETSIGMASK`). Bit `n - 1`
     /// is set when signal `n` is blocked.
     pub fn getsigmask(&self) -> Result<u64, Error> {
         let mut mask: u64 = 0;
-        Errno::result(unsafe {
-            libc::ptrace(
-                libc::PTRACE_GETSIGMASK,
-                self.0.as_raw(),
-                core::mem::size_of::<u64>(),
-                &mut mask as *mut u64,
-            )
-        })
-        .map_err(|err| self.map_err(err))?;
+        self.1
+            .on_held_tid(|| {
+                Errno::result(unsafe {
+                    libc::ptrace(
+                        libc::PTRACE_GETSIGMASK,
+                        self.0.as_raw(),
+                        core::mem::size_of::<u64>(),
+                        &mut mask as *mut u64,
+                    )
+                })
+            })
+            .map_err(|err| self.map_err(err))?;
         Ok(mask)
     }
 
@@ -1000,15 +1121,18 @@ impl Stopped {
     /// also clears the tracee's pending restore of a mask saved by a
     /// mask-swapping syscall such as `ppoll` or `rt_sigsuspend`.
     pub fn setsigmask(&self, mask: u64) -> Result<(), Error> {
-        Errno::result(unsafe {
-            libc::ptrace(
-                libc::PTRACE_SETSIGMASK,
-                self.0.as_raw(),
-                core::mem::size_of::<u64>(),
-                &mask as *const u64,
-            )
-        })
-        .map_err(|err| self.map_err(err))?;
+        self.1
+            .on_held_tid(|| {
+                Errno::result(unsafe {
+                    libc::ptrace(
+                        libc::PTRACE_SETSIGMASK,
+                        self.0.as_raw(),
+                        core::mem::size_of::<u64>(),
+                        &mask as *const u64,
+                    )
+                })
+            })
+            .map_err(|err| self.map_err(err))?;
         Ok(())
     }
 
@@ -1025,15 +1149,19 @@ impl Stopped {
             flags: flags.into().map_or(0, |x| x.bits()),
             nr: SIGNAL_MAX as u32,
         };
-        let count = Errno::result(unsafe {
-            libc::ptrace(
-                libc::PTRACE_PEEKSIGINFO,
-                self.0.as_raw(),
-                &mut siginfo_args as *mut _,
-                data.as_mut_ptr() as *const _ as *const libc::c_void,
-            )
-        })
-        .map_err(|err| self.map_err(err))?;
+        let count = self
+            .1
+            .on_held_tid(|| {
+                Errno::result(unsafe {
+                    libc::ptrace(
+                        libc::PTRACE_PEEKSIGINFO,
+                        self.0.as_raw(),
+                        &mut siginfo_args as *mut _,
+                        data.as_mut_ptr() as *const _ as *const libc::c_void,
+                    )
+                })
+            })
+            .map_err(|err| self.map_err(err))?;
         Ok(unsafe { data.assume_init() }[0..count as usize].to_vec())
     }
 
@@ -1058,15 +1186,19 @@ impl Stopped {
                 flags,
                 nr: CHUNK as u32,
             };
-            let count = Errno::result(unsafe {
-                libc::ptrace(
-                    libc::PTRACE_PEEKSIGINFO,
-                    self.0.as_raw(),
-                    &mut siginfo_args as *mut _,
-                    data.as_mut_ptr() as *const _ as *const libc::c_void,
-                )
-            })
-            .map_err(|err| self.map_err(err))? as usize;
+            let count = self
+                .1
+                .on_held_tid(|| {
+                    Errno::result(unsafe {
+                        libc::ptrace(
+                            libc::PTRACE_PEEKSIGINFO,
+                            self.0.as_raw(),
+                            &mut siginfo_args as *mut _,
+                            data.as_mut_ptr() as *const _ as *const libc::c_void,
+                        )
+                    })
+                })
+                .map_err(|err| self.map_err(err))? as usize;
             if count == 0 {
                 return Ok(all);
             }
@@ -1080,18 +1212,26 @@ impl Stopped {
     /// It shouldn't be necessary to call this in most cases because `Event`
     /// provides the necessary context for certain ptrace events.
     pub fn getevent(&self) -> Result<i64, Error> {
-        ptrace::getevent(self.0.into()).map_err(|err| self.map_nix_err(err))
+        self.1
+            .on_held_tid(|| ptrace::getevent(self.0.into()).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))
     }
 
     /// Detaches from and then resumes the stopped tracee.
     pub fn detach<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::detach(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        self.1
+            .on_held_tid(|| ptrace::detach(self.0.into(), sig).map_err(nix_errno))
+            .map_err(|err| self.map_err(err))?;
         Ok(self.into_running())
     }
 }
 
 /// Waits for any child processes to change state, blocking until the next event.
 /// This is equivalent to `waitpid(-1)`.
+///
+/// Reaping a child here does not close its capabilities' TID gates, so a
+/// gate that nothing else closed lets them reach a task that reuses its TID
+/// (<https://github.com/rrnewton/reverie/issues/860>).
 pub fn wait_all() -> Result<Option<Wait>, Error> {
     let result = wait(IdType::All, WaitPidFlag::WEXITED | WaitPidFlag::WSTOPPED)
         .map_err(Error::from)
@@ -1128,6 +1268,10 @@ pub fn try_wait_all() -> Result<Option<Wait>, Error> {
 
 /// Waits for any child in a process group to change state, blocking until the
 /// next event.
+///
+/// Reaping a child here does not close its capabilities' TID gates, so a
+/// gate that nothing else closed lets them reach a task that reuses its TID
+/// (<https://github.com/rrnewton/reverie/issues/860>).
 pub fn wait_group(pid: Pid) -> Result<Option<Wait>, Error> {
     let result = wait(
         IdType::Pgid(pid.into()),
@@ -1215,8 +1359,17 @@ pub struct Running(Pid, TraceeToken);
 impl Running {
     /// Creates a new running process. This is generally the entry point for a
     /// new process as soon as it is created.
+    ///
+    /// The state shares the generation that other states for the same live
+    /// task already carry. With the `notifier` feature, once that
+    /// generation's identity has been captured, a numeric request through any
+    /// of them stops reaching the TID once the notifier or [`Running::wait`]
+    /// reaps that task, except in the orders listed in
+    /// <https://github.com/rrnewton/reverie/issues/860>. If the identity
+    /// cannot be captured, the state gets a fresh generation that no reap
+    /// gates.
     pub fn new(pid: Pid) -> Self {
-        Self::from_token(pid, TraceeToken::new())
+        Self::from_token(pid, TraceeToken::current_or_fresh(pid))
     }
 
     fn from_token(pid: Pid, token: TraceeToken) -> Self {
@@ -1256,15 +1409,17 @@ impl Running {
     pub fn interrupt(&self) -> Result<(), Errno> {
         // nix doesn't provide `ptrace::interrupt` yet, so we need to roll our
         // own.
-        Errno::result(unsafe {
-            libc::ptrace(
-                libc::PTRACE_INTERRUPT,
-                self.0.as_raw(),
-                std::ptr::null_mut::<libc::c_void>(),
-                std::ptr::null_mut::<libc::c_void>(),
-            )
+        self.1.on_held_tid(|| {
+            Errno::result(unsafe {
+                libc::ptrace(
+                    libc::PTRACE_INTERRUPT,
+                    self.0.as_raw(),
+                    std::ptr::null_mut::<libc::c_void>(),
+                    std::ptr::null_mut::<libc::c_void>(),
+                )
+            })
+            .map(drop)
         })
-        .map(drop)
     }
 
     /// Returns the pid of the running process.
