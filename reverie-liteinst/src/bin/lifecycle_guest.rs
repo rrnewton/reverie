@@ -1,6 +1,7 @@
 use core::arch::global_asm;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicI64;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -12,6 +13,7 @@ use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Subscription;
 use reverie::Tid;
+use reverie::TimerSchedule;
 use reverie::Tool;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
@@ -24,6 +26,12 @@ const RPC_GETTIMEOFDAY: u64 = 3;
 const RPC_FORK: u64 = 4;
 static FORCE_WAIT_RESTART: AtomicBool = AtomicBool::new(true);
 static READ_CALLS: AtomicUsize = AtomicUsize::new(0);
+const TIMER_ACCEPTED: i64 = 0;
+const TIMER_NOT_ERRNO: i64 = -1;
+const TIMER_NOT_PROBED: i64 = -2;
+static PROBE_TIMERS: AtomicBool = AtomicBool::new(false);
+static SET_TIMER_OUTCOME: AtomicI64 = AtomicI64::new(TIMER_NOT_PROBED);
+static SET_TIMER_PRECISE_OUTCOME: AtomicI64 = AtomicI64::new(TIMER_NOT_PROBED);
 
 global_asm!(
     r#"
@@ -123,6 +131,12 @@ impl Tool for LifecycleTool {
             }
             return Ok(4242);
         }
+        if syscall.number() == Sysno::getpid && PROBE_TIMERS.swap(false, Ordering::Relaxed) {
+            let outcome = timer_outcome(guest.set_timer(TimerSchedule::Rcbs(1)));
+            SET_TIMER_OUTCOME.store(outcome, Ordering::Relaxed);
+            let outcome = timer_outcome(guest.set_timer_precise(TimerSchedule::Rcbs(1)));
+            SET_TIMER_PRECISE_OUTCOME.store(outcome, Ordering::Relaxed);
+        }
         if syscall.number() == Sysno::read {
             if READ_CALLS.fetch_add(1, Ordering::Relaxed) < 2 {
                 return Err(Errno::ERESTARTSYS.into());
@@ -147,6 +161,26 @@ impl Tool for LifecycleTool {
             Sysno::clock_gettime | Sysno::gettimeofday => Ok(0),
             _ => Ok(guest.inject(syscall).await?),
         }
+    }
+}
+
+/// Encodes a timer request's result so the guest can report it after the hook.
+fn timer_outcome(result: Result<(), Error>) -> i64 {
+    match result {
+        Ok(()) => TIMER_ACCEPTED,
+        Err(error) => error
+            .into_errno()
+            .map_or(TIMER_NOT_ERRNO, |errno| i64::from(errno.into_raw())),
+    }
+}
+
+fn timer_label(outcome: i64) -> String {
+    match outcome {
+        TIMER_ACCEPTED => "accepted".to_owned(),
+        TIMER_NOT_ERRNO => "non-errno-error".to_owned(),
+        TIMER_NOT_PROBED => "not-probed".to_owned(),
+        errno if errno == i64::from(libc::ENOSYS) => "ENOSYS".to_owned(),
+        errno => format!("errno-{errno}"),
     }
 }
 
@@ -290,6 +324,16 @@ fn patching_off() {
     );
 }
 
+fn timer_refused() {
+    PROBE_TIMERS.store(true, Ordering::Relaxed);
+    unsafe { reverie_liteinst_lifecycle_getpid() };
+    println!(
+        "set_timer={} set_timer_precise={}",
+        timer_label(SET_TIMER_OUTCOME.load(Ordering::Relaxed)),
+        timer_label(SET_TIMER_PRECISE_OUTCOME.load(Ordering::Relaxed)),
+    );
+}
+
 fn restart_wait4() {
     let waited = unsafe { libc::waitpid(-1, core::ptr::null_mut(), libc::WNOHANG) };
     assert_eq!(waited, 4242, "wait4 callback was not restarted");
@@ -379,6 +423,7 @@ fn main() {
         )),
         Some("fast-path") => fast_path(),
         Some("patching-off") => patching_off(),
+        Some("timer-refused") => timer_refused(),
         Some("restart-wait4") => restart_wait4(),
         Some("restart-read") => restart_read(),
         _ => panic!("unknown lifecycle fixture mode {mode:?}"),
