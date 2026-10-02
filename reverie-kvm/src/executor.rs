@@ -6954,6 +6954,16 @@ fn zero_read_host_address(address: u64) -> usize {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    // Lifecycle controls deliberately exercise a blocked read through the real
+    // dispatcher. Only their exact owned host fd is admitted, on their test
+    // thread, for the lifetime of a panic-safe guard. No production bypass.
+    static TEST_ZERO_READ_ADMISSION: std::cell::Cell<Option<RawFd>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
 /// Refuse unsupported external waits before creating a reader or injecting a
 /// host read. Detcore currently retains its runnable turn around zero-count
 /// injection, so a guest peer cannot supply data or commit group exit:
@@ -6962,12 +6972,16 @@ fn zero_read_host_address(address: u64) -> usize {
 /// This checks the owned endpoint selected by the shared-table snapshot, not
 /// its guest fd number or modeled stdin type. O_NONBLOCK is deliberately not an
 /// admission proof: another alias of the same open-file description can change
-/// it after F_GETFL. Even a currently nonblocking socket/inotify is therefore
+/// it after F_GETFL. Even a currently nonblocking inotify is therefore
 /// outside this supported surface. Known local regular files retain the
 /// backend's existing filesystem-I/O contract; arbitrary pseudo/FUSE files and
 /// unknown drivers are not assumed to have regular-file zero-read semantics.
 fn admit_host_read_zero(file: &std::fs::File, guest_fd: i32, address: u64) -> crate::Result<()> {
     let host_fd = file.as_raw_fd();
+    #[cfg(test)]
+    if TEST_ZERO_READ_ADMISSION.with(|admitted| admitted.get() == Some(host_fd)) {
+        return Ok(());
+    }
     // O_PATH cannot change through F_SETFL and fdget rejects it before taking
     // a file-position lock. Other native errors are not a universal admission
     // proof: fdget_pos can wait on a shared regular-file position before
@@ -6988,9 +7002,12 @@ fn admit_host_read_zero(file: &std::fs::File, guest_fd: i32, address: u64) -> cr
     match stat.st_mode & libc::S_IFMT {
         // pipe_read returns before taking its mutex for a zero-sized iterator.
         libc::S_IFIFO => return Ok(()),
-        // Socket descriptors have no atomic file position. An invalid numeric
-        // operand fails in vfs_read before invoking the socket operation.
-        libc::S_IFSOCK if address > X86_64_GUEST_USER_LIMIT => return Ok(()),
+        // sock_read_iter returns zero for an empty iterator before sock_recvmsg,
+        // independently of O_NONBLOCK. The host still checks numeric-address
+        // errors first; there is no protocol receive or payload consumption.
+        // Linux v6.12 net/socket.c, sock_read_iter:
+        // https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/net/socket.c#L1126
+        libc::S_IFSOCK => return Ok(()),
         libc::S_IFCHR
             if libc::major(stat.st_rdev) == 1 && matches!(libc::minor(stat.st_rdev), 3 | 5) =>
         {
@@ -7021,6 +7038,13 @@ fn admit_host_read_zero(file: &std::fs::File, guest_fd: i32, address: u64) -> cr
         ) {
             // These built-in fixed-record readers reject a zero byte count
             // before waiting, independently of their mutable nonblocking flag.
+            return Ok(());
+        }
+        if target.as_os_str().as_bytes() == b"anon_inode:[eventpoll]" {
+            // eventpoll_fops has no read/read_iter, so alloc_file leaves
+            // FMODE_CAN_READ unset and vfs_read rejects with EINVAL before
+            // checking the address or invoking an endpoint operation.
+            // https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/fs/eventpoll.c#L1067
             return Ok(());
         }
         if target.as_os_str().as_bytes() == b"anon_inode:inotify"
@@ -38277,6 +38301,24 @@ mod tests {
         memory
     }
 
+    fn assert_read_zero_fixture_filesystem(file: &std::fs::File) {
+        let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+        // SAFETY: this fixture owns the descriptor and writable statfs storage.
+        assert_eq!(
+            unsafe { libc::fstatfs(file.as_raw_fd(), filesystem.as_mut_ptr()) },
+            0
+        );
+        let filesystem = unsafe { filesystem.assume_init() };
+        assert!(
+            matches!(
+                filesystem.f_type,
+                libc::TMPFS_MAGIC | libc::EXT4_SUPER_MAGIC | libc::BTRFS_SUPER_MAGIC
+            ),
+            "zero-read native-result fixture requires a directory on tmpfs, ext4, or btrfs; filesystem type={:#x}",
+            filesystem.f_type,
+        );
+    }
+
     fn assert_read_zero_canaries(memory: &GuestMemory) {
         for address in [READ_ZERO_BUFFER, READ_ZERO_PROTECTED] {
             let mut canary = [0; 16];
@@ -38514,6 +38556,9 @@ mod tests {
                 let host = unsafe { libc::open(path.as_ptr(), flags | libc::O_CLOEXEC) };
                 assert!(host >= 0);
                 let file = unsafe { std::fs::File::from_raw_fd(host) };
+                if flags & libc::O_DIRECTORY != 0 {
+                    assert_read_zero_fixture_filesystem(&file);
+                }
                 let mut state = test_state(&std::env::current_dir().unwrap());
                 let fd = if inherited {
                     state.stdin = Some(file);
@@ -38962,7 +39007,11 @@ mod tests {
                             assert!(raw >= 0);
                             Some(unsafe { std::fs::File::from_raw_fd(raw) })
                         }
-                        "directory" => Some(std::fs::File::open(".").unwrap()),
+                        "directory" => {
+                            let file = std::fs::File::open(".").unwrap();
+                            assert_read_zero_fixture_filesystem(&file);
+                            Some(file)
+                        }
                         "missing" => None,
                         _ => unreachable!(),
                     };
@@ -39395,7 +39444,9 @@ mod tests {
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
 
-        state.stdin = Some(std::fs::File::open(&root.0).unwrap());
+        let directory = std::fs::File::open(&root.0).unwrap();
+        assert_read_zero_fixture_filesystem(&directory);
+        state.stdin = Some(directory);
         for (address, length, expected) in [
             (u64::MAX, 1, negative_errno(libc::EFAULT)),
             (0x100, 1, negative_errno(libc::EISDIR)),
