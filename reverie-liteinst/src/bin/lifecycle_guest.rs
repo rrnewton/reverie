@@ -22,11 +22,18 @@ const RPC_GETPID: u64 = 1;
 const RPC_CLOCK_GETTIME: u64 = 2;
 const RPC_GETTIMEOFDAY: u64 = 3;
 const RPC_FORK: u64 = 4;
-/// Sent once per `handle_syscall_event` call, so the host can compare the
-/// backend's dispatch counts with the Tool callbacks it actually made.
-const RPC_CALLBACK: u64 = 5;
+/// Tags the one RPC a process sends at exit with its count of Tool
+/// callbacks, so the host can compare the backend's dispatch counts with the
+/// callbacks the Tool actually made.
+const RPC_CALLBACK_COUNT: u64 = 1 << 32;
 static FORCE_WAIT_RESTART: AtomicBool = AtomicBool::new(true);
 static READ_CALLS: AtomicUsize = AtomicUsize::new(0);
+/// This process's Tool callbacks. Counted in memory, because a counting
+/// syscall would itself be trapped and change what is being measured.
+static CALLBACKS: AtomicU64 = AtomicU64::new(0);
+/// Makes the next `getpid` callback call the `getppid` stub, a Tool syscall
+/// that reaches a site an earlier guest call patched.
+static NESTED_GETPPID: AtomicBool = AtomicBool::new(false);
 
 global_asm!(
     r#"
@@ -66,13 +73,53 @@ reverie_liteinst_lifecycle_read:
     ret
     .cfi_endproc
     .size reverie_liteinst_lifecycle_read, .-reverie_liteinst_lifecycle_read
+
+    .p2align 4
+    .global reverie_liteinst_lifecycle_getppid
+    .hidden reverie_liteinst_lifecycle_getppid
+    .type reverie_liteinst_lifecycle_getppid,@function
+reverie_liteinst_lifecycle_getppid:
+    .cfi_startproc
+    mov eax, 110
+    .global reverie_liteinst_lifecycle_getppid_site
+    .hidden reverie_liteinst_lifecycle_getppid_site
+reverie_liteinst_lifecycle_getppid_site:
+    syscall
+    nop
+    nop
+    nop
+    ret
+    .cfi_endproc
+    .size reverie_liteinst_lifecycle_getppid, .-reverie_liteinst_lifecycle_getppid
+
+    .p2align 4
+    .global reverie_liteinst_lifecycle_fork
+    .hidden reverie_liteinst_lifecycle_fork
+    .type reverie_liteinst_lifecycle_fork,@function
+reverie_liteinst_lifecycle_fork:
+    .cfi_startproc
+    mov eax, 57
+    .global reverie_liteinst_lifecycle_fork_site
+    .hidden reverie_liteinst_lifecycle_fork_site
+reverie_liteinst_lifecycle_fork_site:
+    syscall
+    nop
+    nop
+    nop
+    ret
+    .cfi_endproc
+    .size reverie_liteinst_lifecycle_fork, .-reverie_liteinst_lifecycle_fork
 "#
 );
 
 unsafe extern "C" {
     fn reverie_liteinst_lifecycle_getpid() -> i64;
     fn reverie_liteinst_lifecycle_read() -> i64;
+    fn reverie_liteinst_lifecycle_getppid() -> i64;
+    fn reverie_liteinst_lifecycle_fork() -> i64;
     static reverie_liteinst_lifecycle_getpid_site: u8;
+    static reverie_liteinst_lifecycle_getppid_site: u8;
+    static reverie_liteinst_lifecycle_fork_site: u8;
 }
 
 #[derive(Default)]
@@ -102,6 +149,7 @@ impl Tool for LifecycleTool {
     fn subscriptions(_config: &()) -> Subscription {
         [
             Sysno::getpid,
+            Sysno::getppid,
             Sysno::clock_gettime,
             Sysno::gettimeofday,
             Sysno::fork,
@@ -120,7 +168,7 @@ impl Tool for LifecycleTool {
         guest: &mut G,
         syscall: Syscall,
     ) -> Result<i64, Error> {
-        guest.send_rpc(RPC_CALLBACK).await;
+        CALLBACKS.fetch_add(1, Ordering::Relaxed);
         if syscall.number() == Sysno::wait4 {
             if FORCE_WAIT_RESTART.swap(false, Ordering::Relaxed) {
                 return Err(Errno::ERESTARTSYS.into());
@@ -139,19 +187,44 @@ impl Tool for LifecycleTool {
             Sysno::gettimeofday => RPC_GETTIMEOFDAY,
             Sysno::fork | Sysno::clone => RPC_FORK,
             Sysno::wait4 => unreachable!("wait4 is handled before event classification"),
-            Sysno::exit | Sysno::exit_group => 0,
+            Sysno::getppid | Sysno::exit | Sysno::exit_group => 0,
             number => panic!("unexpected lifecycle fixture syscall {number}"),
         };
         if event != 0 {
             guest.send_rpc(event).await;
         }
-        match syscall.number() {
+        if event == RPC_GETPID && NESTED_GETPPID.swap(false, Ordering::Relaxed) {
+            unsafe { reverie_liteinst_lifecycle_getppid() };
+        }
+        if matches!(syscall.number(), Sysno::exit | Sysno::exit_group) {
+            guest
+                .send_rpc(RPC_CALLBACK_COUNT | CALLBACKS.load(Ordering::Relaxed))
+                .await;
+        }
+        match syscall {
             // The fixture only proves that ptrace syscallized the vDSO call
             // and the in-guest Tool received it. Zeroed outputs are sufficient.
-            Sysno::clock_gettime | Sysno::gettimeofday => Ok(0),
+            Syscall::ClockGettime(_) | Syscall::Gettimeofday(_) => Ok(0),
+            Syscall::Fork(_) => Ok(inject_fork(guest, syscall).await?),
+            Syscall::Clone(clone) if clone.flags().bits() & libc::CLONE_VM == 0 => {
+                Ok(inject_fork(guest, syscall).await?)
+            }
             _ => Ok(guest.inject(syscall).await?),
         }
     }
+}
+
+/// A new process's callback count starts with the one callback it returns
+/// from, which the backend also counts as the child's own first event.
+async fn inject_fork<G: Guest<LifecycleTool>>(
+    guest: &mut G,
+    syscall: Syscall,
+) -> Result<i64, Error> {
+    let result = guest.inject(syscall).await?;
+    if result == 0 {
+        CALLBACKS.store(1, Ordering::Relaxed);
+    }
+    Ok(result)
 }
 
 fn install_tool() {
@@ -277,6 +350,57 @@ fn fallback_fork_stats() {
     println!("fallback fork stats: child=finished");
 }
 
+fn site_counts(site: *const u8) -> (u64, u64) {
+    let address = site as usize as u64;
+    (
+        reverie_liteinst::reverie_liteinst_site_trap_count(address),
+        reverie_liteinst::reverie_liteinst_site_hook_count(address),
+    )
+}
+
+fn nested_hook() {
+    let site = core::ptr::addr_of!(reverie_liteinst_lifecycle_getppid_site);
+    // The guest's own call traps once and patches the site.
+    unsafe { reverie_liteinst_lifecycle_getppid() };
+    NESTED_GETPPID.store(true, Ordering::Relaxed);
+    unsafe { reverie_liteinst_lifecycle_getpid() };
+    assert!(!NESTED_GETPPID.load(Ordering::Relaxed));
+    let (traps, hooks) = site_counts(site);
+    println!("nested getppid traps={traps} hooks={hooks}");
+    assert_eq!((traps, hooks), (1, 2));
+}
+
+fn hooked_fork_stats() {
+    let site = core::ptr::addr_of!(reverie_liteinst_lifecycle_fork_site);
+    // The first call traps, installs the hook and forks inside it.
+    let child = unsafe { reverie_liteinst_lifecycle_fork() };
+    assert!(child >= 0, "fork failed: {child}");
+    let (traps, hooks) = site_counts(site);
+    if child == 0 {
+        // The child's counts were reset, then given back the one hook entry
+        // it returns from.
+        assert_eq!((traps, hooks), (0, 1));
+        unsafe { libc::_exit(0) };
+    }
+    assert_eq!((traps, hooks), (1, 1));
+    let mut status = -1i32;
+    loop {
+        let waited = unsafe {
+            reverie_preload::trap::raw_syscall6(
+                libc::SYS_wait4,
+                [child as u64, (&mut status as *mut i32) as u64, 0, 0, 0, 0],
+            )
+        };
+        if waited == -i64::from(libc::EINTR) {
+            continue;
+        }
+        assert_eq!(waited, child);
+        break;
+    }
+    assert_eq!(status, 0);
+    println!("hooked fork stats: child=finished");
+}
+
 fn main() {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
@@ -297,6 +421,8 @@ fn main() {
         Some("fast-path") => fast_path(),
         Some("restart-wait4") => restart_wait4(),
         Some("restart-read") => restart_read(),
+        Some("nested-hook") => nested_hook(),
+        Some("hooked-fork-stats") => hooked_fork_stats(),
         _ => panic!("unknown lifecycle fixture mode {mode:?}"),
     }
 }

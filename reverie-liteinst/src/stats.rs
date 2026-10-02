@@ -173,8 +173,10 @@ impl BackendStatsSnapshot for LiteinstBackendStatsSnapshot {
     /// so they include the signal that installs a site's hook and then
     /// re-enters through it, a fallback's completion signal, and the Tool's
     /// own syscalls trapped during a callback. Its direct calls are
-    /// patched-site hook entries. A fork-like syscall's child reports the
-    /// parent's hook entry again as its own first event, so the aggregate
+    /// patched-site hook entries, including those the Tool's own syscalls make
+    /// during a callback (also counted, alone, as
+    /// [`LiteinstDispatchPath::InGuestNestedHook`]). A fork-like syscall's
+    /// child reports the parent's hook entry again as its own first event, so the aggregate
     /// subtracts those inherited entries to count each physical entry once. A
     /// patched site's hook count includes patched `rdtsc`/`cpuid` instruction
     /// sites, which are intercepted events but not syscalls. In-guest totals
@@ -358,6 +360,7 @@ struct GuestStatsCollector {
     coordinator: PathBuf,
     in_guest_sigsys: AtomicU64,
     in_guest_nested_sigsys: AtomicU64,
+    in_guest_nested_hook: AtomicU64,
     in_guest_physical_sigsys: AtomicU64,
     fallback_completion_sigsys: AtomicU64,
     cacheline_straddler_fallback: AtomicU64,
@@ -372,6 +375,7 @@ impl GuestStatsCollector {
         match path {
             LiteinstDispatchPath::InGuestSigsys => &self.in_guest_sigsys,
             LiteinstDispatchPath::InGuestNestedSigsys => &self.in_guest_nested_sigsys,
+            LiteinstDispatchPath::InGuestNestedHook => &self.in_guest_nested_hook,
             LiteinstDispatchPath::InGuestPhysicalSigsys => &self.in_guest_physical_sigsys,
             LiteinstDispatchPath::FallbackCompletionSigsys => &self.fallback_completion_sigsys,
             LiteinstDispatchPath::CachelineStraddlerFallback => &self.cacheline_straddler_fallback,
@@ -404,6 +408,10 @@ impl GuestStatsCollector {
                 self.in_guest_nested_sigsys.load(Ordering::Relaxed),
             ),
             (
+                LiteinstDispatchPath::InGuestNestedHook,
+                self.in_guest_nested_hook.load(Ordering::Relaxed),
+            ),
+            (
                 LiteinstDispatchPath::CachelineStraddlerFallback,
                 self.cacheline_straddler_fallback.load(Ordering::Relaxed),
             ),
@@ -422,6 +430,7 @@ impl GuestStatsCollector {
     fn reset(&self) {
         self.in_guest_sigsys.store(0, Ordering::Relaxed);
         self.in_guest_nested_sigsys.store(0, Ordering::Relaxed);
+        self.in_guest_nested_hook.store(0, Ordering::Relaxed);
         self.in_guest_physical_sigsys.store(0, Ordering::Relaxed);
         self.fallback_completion_sigsys.store(0, Ordering::Relaxed);
         self.cacheline_straddler_fallback
@@ -466,6 +475,13 @@ impl GuestStatsHooks {
             reset_after_fork: enabled_reset_after_fork,
             record_inherited_entry: enabled_record_inherited_entry,
         }
+    }
+
+    /// This process's hooks, for code that is not handed the dispatcher's
+    /// copy, such as a patched site's hook. Disabled when the run collects no
+    /// statistics.
+    pub(crate) fn current() -> Self {
+        GUEST_STATS.get().map_or(Self::DISABLED, Self::enabled)
     }
 
     pub(crate) fn is_enabled(self) -> bool {
@@ -564,6 +580,7 @@ pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<GuestStat
             coordinator: coordinator.to_path_buf(),
             in_guest_sigsys: AtomicU64::new(0),
             in_guest_nested_sigsys: AtomicU64::new(0),
+            in_guest_nested_hook: AtomicU64::new(0),
             in_guest_physical_sigsys: AtomicU64::new(0),
             fallback_completion_sigsys: AtomicU64::new(0),
             cacheline_straddler_fallback: AtomicU64::new(0),
@@ -780,6 +797,8 @@ mod tests {
                         paths: CounterSnapshot::new([
                             (LiteinstDispatchPath::InGuestSigsys, 1),
                             (LiteinstDispatchPath::InGuestNestedSigsys, 2),
+                            // The inherited signal was the parent's.
+                            (LiteinstDispatchPath::InGuestPhysicalSigsys, 2),
                             (LiteinstDispatchPath::CachelineStraddlerFallback, 3),
                             (LiteinstDispatchPath::UnpatchableOrOtherFallback, 4),
                             (LiteinstDispatchPath::DirectHook, direct_hooks),
@@ -820,7 +839,8 @@ mod tests {
         );
         assert_eq!(paths.count(&LiteinstDispatchPath::DirectHook), 18);
         assert_eq!(paths.count(&LiteinstDispatchPath::FallbackRefusal), 10);
-        assert_eq!(paths.total(), 48);
+        assert_eq!(paths.count(&LiteinstDispatchPath::InGuestPhysicalSigsys), 4);
+        assert_eq!(paths.total(), 52);
         assert_eq!(
             source.snapshot().fork_child_entries(),
             InheritedEntries {
@@ -832,7 +852,7 @@ mod tests {
             .snapshot()
             .dispatch_stats()
             .expect("LiteInst measures dispatch");
-        assert_eq!(record.counters.signal_traps, Some(0));
+        assert_eq!(record.counters.signal_traps, Some(4));
         assert_eq!(record.counters.patched_direct_calls, Some(16));
         let rendered = source.to_string();
         assert!(rendered.contains("first_site_seccomp=0"), "{rendered}");
@@ -872,7 +892,7 @@ mod tests {
             [
                 (LiteinstDispatchPath::InGuestSigsys, 4),
                 (LiteinstDispatchPath::InGuestNestedSigsys, 2),
-                (LiteinstDispatchPath::InGuestPhysicalSigsys, 1),
+                (LiteinstDispatchPath::InGuestPhysicalSigsys, 7),
                 (LiteinstDispatchPath::FallbackCompletionSigsys, 1),
                 (LiteinstDispatchPath::CachelineStraddlerFallback, 3),
                 (LiteinstDispatchPath::DirectHook, 9),
@@ -884,10 +904,10 @@ mod tests {
             .expect("LiteInst measures dispatch");
         assert_eq!(record.backend, "liteinst");
         // Every SIGSYS the handler received, whatever it was then classified as.
-        assert_eq!(record.counters.signal_traps, Some(1));
+        assert_eq!(record.counters.signal_traps, Some(7));
         assert_eq!(record.counters.patched_direct_calls, Some(9));
         assert_eq!(record.counters.ptrace_seccomp_stops, Some(0));
-        assert_eq!(record.counters.dispatches(), Some(10));
+        assert_eq!(record.counters.dispatches(), Some(16));
         assert_eq!(record.counters.refusals, Some(1));
         assert_eq!(record.sites.candidates, Some(3));
         assert_eq!(record.sites.patched, Some(1));
@@ -902,7 +922,7 @@ mod tests {
             LiteinstStatsMode::InGuest,
             [
                 (LiteinstDispatchPath::InGuestSigsys, 4),
-                (LiteinstDispatchPath::InGuestPhysicalSigsys, 4),
+                (LiteinstDispatchPath::InGuestPhysicalSigsys, 2),
                 (LiteinstDispatchPath::DirectHook, 9),
             ],
         );
@@ -914,9 +934,9 @@ mod tests {
             .dispatch_stats()
             .expect("LiteInst measures dispatch");
         // A child's reset physical count never held the parent's signal.
-        assert_eq!(record.counters.signal_traps, Some(4));
+        assert_eq!(record.counters.signal_traps, Some(2));
         assert_eq!(record.counters.patched_direct_calls, Some(6));
-        assert_eq!(record.counters.dispatches(), Some(10));
+        assert_eq!(record.counters.dispatches(), Some(8));
         // The per-process paths still describe each process's own events.
         assert_eq!(
             snapshot

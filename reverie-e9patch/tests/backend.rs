@@ -393,6 +393,56 @@ async fn non_elf_script_uses_ptrace_fallback() {
     assert_eq!(stats.patched_sites(), None);
 }
 
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a ptrace-capable host"]
+async fn caller_armed_in_guest_runtime_leaves_its_routes_unmeasured() {
+    let directory = tempfile::tempdir().unwrap();
+    let guest = directory.path().join("guest.sh");
+    fs::write(&guest, "#!/bin/sh\nexit 0\n").unwrap();
+    let mut permissions = fs::metadata(&guest).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&guest, permissions).unwrap();
+
+    for (variable, value) in [
+        (reverie_e9patch::RUNTIME_ENV, "fallback"),
+        (reverie_e9patch::TOOL_ENV, "passthrough"),
+    ] {
+        // The caller, not REVERIE_E9PATCH_LDPRELOAD_FALLBACK, selects the
+        // in-guest runtime. Without its preload the script never loads it, but
+        // the backend cannot know that, so it must not claim zero signals.
+        let mut command = Command::new(&guest);
+        command.env(variable, value);
+        let (status, (), stats) = E9patchBackend::run_with_stats::<()>(command, ())
+            .await
+            .unwrap();
+        assert_eq!(status, ExitStatus::Exited(0));
+        let record = stats
+            .dispatch_stats()
+            .expect("e9patch reports a dispatch record");
+        assert_eq!(record.counters.signal_traps, None, "{variable}: {record}");
+        assert_eq!(
+            record.counters.patched_direct_calls, None,
+            "{variable}: {record}"
+        );
+        assert_eq!(record.counters.dispatches(), None, "{variable}: {record}");
+        assert!(
+            record.counters.ptrace_seccomp_stops.is_some(),
+            "{variable}: {record}"
+        );
+    }
+
+    // Unarmed, the tracer sees every route.
+    let (status, (), stats) = E9patchBackend::run_with_stats::<()>(Command::new(&guest), ())
+        .await
+        .unwrap();
+    assert_eq!(status, ExitStatus::Exited(0));
+    let record = stats
+        .dispatch_stats()
+        .expect("e9patch reports a dispatch record");
+    assert_eq!(record.counters.signal_traps, Some(0), "{record}");
+    assert!(record.counters.dispatches().is_some(), "{record}");
+}
+
 #[path = "fixtures/pkey_nested_support.rs"]
 mod pkey_nested_support;
 

@@ -521,6 +521,14 @@ fn is_elf_file(path: &Path) -> io::Result<bool> {
 // TODO-HUMAN-REVIEW(PR-104): Review activating in-guest seccomp under ptrace.
 const LDPRELOAD_FALLBACK_ENV: &str = "REVERIE_E9PATCH_LDPRELOAD_FALLBACK";
 
+/// Whether the guest's final environment selects an in-guest e9patch runtime,
+/// whether this backend armed it, the caller configured the command, or the
+/// launcher's own environment passes the selection through. Its signals and
+/// patched calls are invisible to the tracer.
+fn in_guest_runtime_armed(command: &Command) -> bool {
+    command.get_env(crate::RUNTIME_ENV).is_some() || command.get_env(crate::TOOL_ENV).is_some()
+}
+
 /// Parse [`LDPRELOAD_FALLBACK_ENV`] into a [`crate::RuntimeMode`], or `None`
 /// (leave the guest command untouched) when unset or unrecognized.
 fn ldpreload_fallback_mode() -> Option<crate::RuntimeMode> {
@@ -745,11 +753,12 @@ impl E9patchBackend {
             }
             None => "off",
         };
+        let in_guest_runtime = in_guest_runtime_armed(&command);
 
         // TODO-HUMAN-REVIEW(PR-103): Review non-ELF ptrace fallback behavior.
         if !is_elf_file(&source)? {
             let mut stats = E9patchBackendStatsSource::unsupported_non_elf();
-            if fallback_mode.is_some() {
+            if in_guest_runtime {
                 stats.arm_in_guest_runtime();
             }
             eprintln!(
@@ -767,7 +776,7 @@ impl E9patchBackend {
         let image_entry_address = report.image_entry_address();
         let patched_site_addresses = report.patched_site_addresses().to_vec();
         let mut stats = E9patchBackendStatsSource::from_report(report);
-        if fallback_mode.is_some() {
+        if in_guest_runtime {
             stats.arm_in_guest_runtime();
         }
         // TODO-HUMAN-REVIEW(PR-103): Review the stable backend coverage diagnostic.

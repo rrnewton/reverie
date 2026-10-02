@@ -143,6 +143,10 @@ liteinst_dispatch_paths! {
     InGuestSigsys => "in_guest_sigsys",
     /// An actual in-guest `SIGSYS` was forwarded while a Tool callback was active.
     InGuestNestedSigsys => "in_guest_nested_sigsys",
+    /** A patched site's in-guest hook was entered while a Tool callback was
+    active: the Tool's own syscall or instruction reached a site that an earlier
+    guest event patched. These entries are also counted in `DirectHook`. */
+    InGuestNestedHook => "in_guest_nested_hook",
     /** A genuine kernel SIGSYS entered shared frame dispatch in this process.
     Unlike guest-path attribution, this is not inherited/recreated at fork. */
     InGuestPhysicalSigsys => "in_guest_physical_sigsys",

@@ -1785,10 +1785,11 @@ pub(crate) fn record_fork_child_dispatch(
 ) {
     match event.dispatch {
         SyscallDispatch::InstalledHook => {
+            // Only offset an entry the site's hook count actually re-counted.
             if let Some(site) = find_site(event.instruction_pointer) {
                 site.hook_count.fetch_add(1, Ordering::Relaxed);
+                stats.record_inherited_entry(crate::stats::InheritedEntry::Hook);
             }
-            stats.record_inherited_entry(crate::stats::InheritedEntry::Hook);
         }
         SyscallDispatch::Fallback => {
             if let Some(site) = find_site(event.instruction_pointer) {
@@ -2838,7 +2839,7 @@ unsafe fn installed_instruction_hook(context: *mut HookContext, kind: Instructio
     }
     let context = unsafe { &mut *context };
     if let Some(site) = find_site(context.instruction_pointer) {
-        site.hook_count.fetch_add(1, Ordering::Relaxed);
+        record_hook_entry(site);
     }
     if unsafe { set_instruction_native(kind, true) }.is_err() {
         unsafe { exit_now(122) };
@@ -2910,9 +2911,20 @@ unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i
     if let Some(context) = unsafe { context.as_ref() }
         && let Some(site) = find_site(context.instruction_pointer)
     {
-        site.hook_count.fetch_add(1, Ordering::Relaxed);
+        record_hook_entry(site);
     }
     unsafe { dispatch_syscall_context(context, number, SyscallDispatch::InstalledHook, None) };
+}
+
+/// Counts one entry through a patched site's hook. An entry the Tool's own
+/// syscall or instruction made during a callback is also counted alone, so
+/// the guest's own entries can be told apart from the Tool's.
+fn record_hook_entry(site: &SiteSlot) {
+    site.hook_count.fetch_add(1, Ordering::Relaxed);
+    if tool_callback_active() {
+        crate::stats::GuestStatsHooks::current()
+            .record_path(crate::LiteinstDispatchPath::InGuestNestedHook);
+    }
 }
 
 pub(crate) unsafe fn dispatch_fallback_context(context: *mut HookContext, pkru: &mut Option<u32>) {
