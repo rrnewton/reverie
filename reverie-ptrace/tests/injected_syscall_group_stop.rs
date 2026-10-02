@@ -3554,6 +3554,150 @@ fn signal_hook_requesting_a_near_timer_delivers_its_signal_and_fires_once() {
     );
 }
 
+/// The value of the sibling that `QueueSiblingInFirstSignalHook` queues.
+const SIBLING_VALUE: usize = 88;
+
+/// The siginfo of that sibling, which the guest fills in.
+static mut SIBLING_INFO: libc::siginfo_t = unsafe { std::mem::zeroed() };
+
+/// Like `ReplaceMarker`, but the first signal hook on each thread injects a
+/// `getpid` and then an `rt_tgsigqueueinfo` that queues the same signal to the
+/// thread again with `SIBLING_INFO`, both reported, before passing the signal
+/// through. Every later signal hook suppresses its signal.
+#[derive(Clone, Copy, Debug, Default)]
+struct QueueSiblingInFirstSignalHook;
+
+#[reverie::tool]
+impl Tool for QueueSiblingInFirstSignalHook {
+    type GlobalState = Log;
+    /// Signal hooks run on this thread so far.
+    type ThreadState = u64;
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        replace_marker(guest, syscall).await
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        *guest.thread_state_mut() += 1;
+        if *guest.thread_state() > 1 {
+            return Ok(None);
+        }
+        let result = guest.inject(Getpid::new()).await;
+        guest
+            .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+            .await;
+        let result = guest
+            .inject(
+                RtTgsigqueueinfo::new()
+                    .with_tgid(guest.pid().as_raw())
+                    .with_tid(guest.tid().as_raw())
+                    .with_sig(signal as i32)
+                    .with_siginfo(AddrMut::from_raw(&raw mut SIBLING_INFO as usize)),
+            )
+            .await;
+        guest
+            .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+            .await;
+        Ok(Some(signal))
+    }
+}
+
+/// As `always_injecting_hook_delivers_at_a_delivery_stop`, with `signal`
+/// queued with `QUEUED_VALUE`, but the hook's injections leave a sibling of
+/// the same number, with `SIBLING_VALUE`, queued while `ppoll`'s saved mask
+/// blocks it. The instance the hook was told about is delivered, with its
+/// own siginfo, as the hook decided. The sibling stays pending until the
+/// guest unblocks it, and its own delivery reaches the Tool, which
+/// suppresses it, so the handler never sees `SIBLING_VALUE`. The sibling
+/// does not merge with the delivered instance, which left the queue at its
+/// delivery stop. (Real-time signals are not covered: a real-time signal
+/// stop already fails `WaitStatus::from_raw` in safeptrace's waitid.)
+fn sibling_queued_by_a_signal_hook_reaches_the_tool(signal: libc::c_int) {
+    let (output, log) = test_fn::<QueueSiblingInFirstSignalHook, _>(move || unsafe {
+        install_recorder(signal);
+        block(&[signal]);
+        queue_value_to_self(signal, libc::SI_QUEUE);
+        let sibling = &raw mut SIBLING_INFO;
+        (*sibling).si_signo = signal;
+        (*sibling).si_code = libc::SI_QUEUE;
+        let fields = sibling.cast::<u8>().add(16);
+        fields.cast::<libc::pid_t>().write(libc::getpid());
+        fields.add(4).cast::<libc::uid_t>().write(libc::getuid());
+        fields.add(8).cast::<usize>().write(SIBLING_VALUE);
+        let mut mask: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut mask);
+        let timeout = libc::timespec {
+            tv_sec: 5,
+            tv_nsec: 0,
+        };
+        let ret = libc::syscall(
+            libc::SYS_ppoll,
+            0usize,
+            0usize,
+            &timeout as *const libc::timespec,
+            &mask as *const libc::sigset_t,
+            8usize,
+        );
+        let errno = *libc::__errno_location();
+        print_recorded(ret, errno, signal);
+    })
+    .expect("run sibling-queueing hook guest");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE sibling-{signal} guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
+    let pid: i64 = pid.parse().expect("guest pid");
+    assert_eq!(
+        fields,
+        format!(
+            "-1 {} 1 {} {pid} {QUEUED_VALUE} 1 1 1",
+            libc::EINTR,
+            libc::SI_QUEUE
+        ),
+        "EINTR and one handler run with the first instance's siginfo; the sibling pending, then suppressed"
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(pid), Ok(0)],
+        "the hook's getpid and rt_tgsigqueueinfo run once"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![signal, signal],
+        "the first instance and the sibling are each reported once"
+    );
+}
+
+#[test]
+fn standard_sibling_queued_by_a_signal_hook_reaches_the_tool() {
+    sibling_queued_by_a_signal_hook_reaches_the_tool(libc::SIGUSR1);
+}
+
 /// As `always_injecting_hook_delivers_at_a_delivery_stop`, but `signal` is
 /// held by the `PPOLL_FD` marker's injected `ppoll`, and the guest's result
 /// is that `ppoll`'s. Untraced Linux prints EINTR, one handler run with the
