@@ -5449,6 +5449,24 @@ async fn restart_parity(
     hooks: u64,
     label: &str,
 ) -> (String, Vec<String>) {
+    let (ptrace_stdout, ptrace_events, hybrid_events) =
+        restart_output_parity(mode, plan, hooks, label).await;
+    assert_eq!(
+        hybrid_events, ptrace_events,
+        "{label}: host-hybrid Tool events differ from plain ptrace"
+    );
+    (ptrace_stdout, ptrace_events)
+}
+
+/// Runs `mode` under both backends and requires the same guest output (up to
+/// the site counters, with `hooks` host-hybrid hook entries), returning plain
+/// ptrace's output and both backends' Tool-visible events.
+async fn restart_output_parity(
+    mode: &str,
+    plan: RestartPlan,
+    hooks: u64,
+    label: &str,
+) -> (String, Vec<String>, Vec<String>) {
     let (ptrace_stdout, ptrace_events) = run_restart_fixture(RestartBackend::Ptrace, mode, plan)
         .await
         .unwrap();
@@ -5464,11 +5482,7 @@ async fn restart_parity(
         ),
         "{label}: host-hybrid output differs from plain ptrace"
     );
-    assert_eq!(
-        hybrid_events, ptrace_events,
-        "{label}: host-hybrid Tool events differ from plain ptrace"
-    );
-    (ptrace_stdout, ptrace_events)
+    (ptrace_stdout, ptrace_events, hybrid_events)
 }
 
 /// Attempts `timer_restart_parity` may make when an attempt diverges.
@@ -5894,9 +5908,14 @@ async fn host_hybrid_restart_with_an_sa_restart_sigchld_handler_restarts() {
 /// it and delivers it on the restart's resume instead of at a fresh signal
 /// stop. The Linux rule must apply to that delivery too: a handler without
 /// `SA_RESTART` interrupts, an `SA_RESTART` one restarts, and no handler
-/// restarts. As under plain ptrace, a signal that interrupts a Tool
-/// injection reaches the guest without a Tool signal event, so the handler
-/// count is the evidence of delivery.
+/// restarts. The handler count is the evidence of delivery.
+///
+/// Plain ptrace reports the held signal to the Tool before the resume that
+/// delivers it (https://github.com/rrnewton/hermit/issues/3468).
+///
+/// Known gap: host-hybrid passes the held signal on without a Tool signal
+/// event (https://github.com/rrnewton/reverie/issues/853), so its events are
+/// plain ptrace's without that report.
 #[tokio::test(flavor = "current_thread")]
 async fn host_hybrid_restart_with_a_signal_held_across_an_injection_follows_linux() {
     for (mode, signal, result) in [
@@ -5912,7 +5931,7 @@ async fn host_hybrid_restart_with_a_signal_held_across_an_injection_follows_linu
             ..Default::default()
         };
         let hooks = if mode == "read" { 1 } else { 2 };
-        let (stdout, events) = restart_parity(mode, plan, hooks, mode).await;
+        let (stdout, events, hybrid_events) = restart_output_parity(mode, plan, hooks, mode).await;
         let handled = if mode == "read" {
             ""
         } else {
@@ -5923,11 +5942,17 @@ async fn host_hybrid_restart_with_a_signal_held_across_an_injection_follows_linu
             format!("read-result={result}{handled} traps=- hooks=-\n"),
             "{mode}"
         );
+        let signal_event = format!(
+            "signal {}",
+            reverie::Signal::try_from(signal).unwrap().as_str()
+        );
         let mut expected = vec!["read(warm)", "magic read(0x7e57,1)"];
         if result == RESTART_RESULT {
             expected.push("magic read(0x7e57,1)");
         }
-        assert_eq!(events, expected, "{mode}");
+        assert_eq!(hybrid_events, expected, "{mode}: host-hybrid (known gap)");
+        expected.insert(2, signal_event.as_str());
+        assert_eq!(events, expected, "{mode}: plain ptrace");
     }
 }
 
@@ -6434,9 +6459,10 @@ async fn host_hybrid_original_injection_with_a_pending_signal_follows_ptrace() {
 ///
 /// An injection the guest cannot observe must leave the outcome of the run
 /// without it, so the reference is plain ptrace with no injection. Plain
-/// ptrace with the injection is not a reference: its signal-stop injection
-/// does not restore `rax`, which holds the pending `-ERESTARTSYS`, so the
-/// kernel returns the injected `getpid` result from the read instead of
+/// ptrace with the injection was not a reference before
+/// https://github.com/rrnewton/reverie/pull/831: its signal-stop injection
+/// did not restore `rax`, which holds the pending `-ERESTARTSYS`, so the
+/// kernel returned the injected `getpid` result from the read instead of
 /// deciding the restart.
 #[tokio::test(flavor = "current_thread")]
 async fn host_hybrid_tool_injection_at_the_deciding_signal_keeps_the_restart() {
