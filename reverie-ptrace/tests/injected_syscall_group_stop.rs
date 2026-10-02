@@ -3098,13 +3098,15 @@ fn check_recorded(
     pid
 }
 
-/// The guest's own `ppoll`, with no timeout, whose temporary mask lets a
-/// pending `signal` through, and a hook that injects at every callback. Each
-/// injection's step lets the kernel restore `ppoll`'s saved mask, which
-/// blocks `signal`. Passing it through from there would requeue it, and the
-/// restarted `ppoll` would take it again, at every callback. Reverie instead
-/// delivers it under the temporary mask. Untraced Linux prints EINTR, one
-/// handler run with the queued siginfo, and the signal blocked again.
+/// The guest's own `ppoll`, with a 5-second timeout, whose temporary mask
+/// lets a pending `signal` through, and a hook that injects at every
+/// callback. Each injection's step lets the kernel restore `ppoll`'s saved
+/// mask, which blocks `signal`. Passing it through from there would requeue
+/// it, and the restarted `ppoll` would take it again, at every callback.
+/// Reverie instead delivers it under the temporary mask. Untraced Linux
+/// prints EINTR at once, one handler run with the queued siginfo, and the
+/// signal blocked again. A signal that is lost instead ends `ppoll` with 0
+/// after its timeout.
 ///
 /// `code` is the queued `si_code`: a positive one is synchronous-class, which
 /// the kernel dequeues ahead of a step's SIGTRAP.
@@ -3115,11 +3117,15 @@ fn always_injecting_hook_delivers_at_a_delivery_stop(signal: libc::c_int, code: 
         queue_value_to_self(signal, code);
         let mut mask: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut mask);
+        let timeout = libc::timespec {
+            tv_sec: 5,
+            tv_nsec: 0,
+        };
         let ret = libc::syscall(
             libc::SYS_ppoll,
             0usize,
             0usize,
-            0usize,
+            &timeout as *const libc::timespec,
             &mask as *const libc::sigset_t,
             8usize,
         );
@@ -3154,6 +3160,281 @@ fn always_injecting_hook_delivers_a_signal_at_its_delivery_stop() {
 #[test]
 fn always_injecting_hook_delivers_a_synchronous_signal_at_its_delivery_stop() {
     always_injecting_hook_delivers_at_a_delivery_stop(libc::SIGSYS, 1);
+}
+
+/// Loads a seccomp filter that answers `ppoll` with `action` and allows
+/// everything else.
+///
+/// # Safety
+/// Restricts the calling thread's syscalls for the rest of its life.
+unsafe fn filter_ppoll(action: u32) {
+    unsafe {
+        let statement = |code: u32, k: u32, jt: u8, jf: u8| libc::sock_filter {
+            code: code as u16,
+            jt,
+            jf,
+            k,
+        };
+        let filter = [
+            // seccomp_data.nr is at offset 0.
+            statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0, 0, 0),
+            statement(
+                libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+                libc::SYS_ppoll as u32,
+                0,
+                1,
+            ),
+            statement(libc::BPF_RET | libc::BPF_K, action, 0, 0),
+            statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW, 0, 0),
+        ];
+        let program = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_ptr() as *mut libc::sock_filter,
+        };
+        assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+        assert_eq!(
+            libc::prctl(
+                libc::PR_SET_SECCOMP,
+                libc::SECCOMP_MODE_FILTER,
+                &program as *const libc::sock_fprog
+            ),
+            0
+        );
+    }
+}
+
+/// As `always_injecting_hook_delivers_at_a_delivery_stop`, but the guest's
+/// mask-swapping syscall is `pselect6`, and a seccomp filter the guest
+/// installed answers `ppoll`, which neither the guest nor the hook makes,
+/// with `action`. Delivering the signal must not make a syscall the guest
+/// did not: untraced Linux prints EINTR, one handler run with the queued
+/// siginfo, and the signal blocked again.
+fn always_injecting_hook_delivers_under_a_guest_seccomp_filter(action: u32) {
+    let (output, log) = test_fn::<InjectInEverySignalHook, _>(move || unsafe {
+        install_recorder(libc::SIGUSR1);
+        block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        filter_ppoll(action);
+        let mut mask: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut mask);
+        let sigmask: [usize; 2] = [&mask as *const libc::sigset_t as usize, 8];
+        let timeout = libc::timespec {
+            tv_sec: 5,
+            tv_nsec: 0,
+        };
+        let ret = libc::syscall(
+            libc::SYS_pselect6,
+            0usize,
+            0usize,
+            0usize,
+            0usize,
+            &timeout as *const libc::timespec,
+            sigmask.as_ptr(),
+        );
+        let errno = *libc::__errno_location();
+        print_recorded(ret, errno, libc::SIGUSR1);
+    })
+    .expect("run seccomp-filtered always-injecting hook guest");
+    let pid = check_recorded(
+        &output,
+        "always-inject-seccomp",
+        &log,
+        &format!("-1 {}", libc::EINTR),
+        libc::SI_QUEUE,
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(pid)],
+        "the hook's getpid runs once"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1],
+        "the signal is reported once"
+    );
+}
+
+#[test]
+fn always_injecting_hook_delivers_when_the_guest_kills_on_ppoll() {
+    always_injecting_hook_delivers_under_a_guest_seccomp_filter(libc::SECCOMP_RET_KILL_PROCESS);
+}
+
+#[test]
+fn always_injecting_hook_delivers_when_the_guest_fails_ppoll() {
+    always_injecting_hook_delivers_under_a_guest_seccomp_filter(
+        libc::SECCOMP_RET_ERRNO | libc::EPERM as u32,
+    );
+}
+
+#[test]
+fn always_injecting_hook_delivers_when_the_guest_traps_ppoll() {
+    always_injecting_hook_delivers_under_a_guest_seccomp_filter(libc::SECCOMP_RET_TRAP);
+}
+
+/// As `always_injecting_hook_delivers_at_a_delivery_stop`, but the guest
+/// ignores SIGUSR1 (`SIG_IGN`) and `ppoll` times out after 100 ms. Linux
+/// discards the signal when `ppoll` takes it, restarts `ppoll`, and it
+/// returns 0 with the signal blocked again and not pending, and no handler.
+#[test]
+fn always_injecting_hook_discards_an_ignored_signal() {
+    let (output, log) = test_fn::<InjectInEverySignalHook, _>(|| unsafe {
+        libc::signal(libc::SIGUSR1, libc::SIG_IGN);
+        block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let mut mask: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut mask);
+        let timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 100_000_000,
+        };
+        *libc::__errno_location() = 0;
+        let ret = libc::syscall(
+            libc::SYS_ppoll,
+            0usize,
+            0usize,
+            &timeout as *const libc::timespec,
+            &mask as *const libc::sigset_t,
+            8usize,
+        );
+        let errno = *libc::__errno_location();
+        println!(
+            "{ret} {errno} {} {} {}",
+            is_blocked(libc::SIGUSR1),
+            is_pending(libc::SIGUSR1),
+            libc::getpid()
+        );
+    })
+    .expect("run ignored-signal always-injecting hook guest");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE always-inject-ignored guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
+    let pid: i64 = pid.parse().expect("guest pid");
+    assert_eq!(
+        fields, "0 0 1 0",
+        "ppoll times out; the signal is blocked again and not pending"
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(pid)],
+        "the hook's getpid runs once"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1],
+        "the signal is reported once"
+    );
+}
+
+/// The set `BlockInFirstSignalHook` blocks. A static, so the forked guest has
+/// it at the same address.
+static SIGUSR1_SET: u64 = 1 << (libc::SIGUSR1 - 1);
+
+/// Like `ReplaceMarker`, but the first signal hook on each thread injects
+/// `rt_sigprocmask(SIG_BLOCK, {SIGUSR1})`, reported, before passing the
+/// signal through.
+#[derive(Clone, Copy, Debug, Default)]
+struct BlockInFirstSignalHook;
+
+#[reverie::tool]
+impl Tool for BlockInFirstSignalHook {
+    type GlobalState = Log;
+    /// Whether a signal hook has run on this thread.
+    type ThreadState = bool;
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        replace_marker(guest, syscall).await
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        if !std::mem::replace(guest.thread_state_mut(), true) {
+            let set = Addr::from_raw(&SIGUSR1_SET as *const u64 as usize);
+            let result = guest
+                .inject(
+                    RtSigprocmask::new()
+                        .with_how(libc::SIG_BLOCK)
+                        .with_set(set)
+                        .with_oldset(None)
+                        .with_sigsetsize(8),
+                )
+                .await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+        }
+        Ok(Some(signal))
+    }
+}
+
+/// A SIGUSR1 queued unblocked is delivered as `rt_tgsigqueueinfo` returns,
+/// outside any mask-swapping syscall. The hook blocks it with an injected
+/// `rt_sigprocmask` before passing it through, so Linux requeues it: the
+/// handler does not run until the guest unblocks it, and then runs with the
+/// queued siginfo. Only a mask-swapping syscall's restore makes Reverie
+/// deliver a signal its injections left blocked.
+#[test]
+fn signal_hook_blocking_its_signal_keeps_it_pending() {
+    let (output, log) = test_fn::<BlockInFirstSignalHook, _>(|| unsafe {
+        install_recorder(libc::SIGUSR1);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        print_recorded(0, 0, libc::SIGUSR1);
+    })
+    .expect("run hook-blocking guest");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE hook-blocks guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
+    let pid: i64 = pid.parse().expect("guest pid");
+    assert_eq!(
+        fields,
+        format!("0 0 0 {} {pid} {QUEUED_VALUE} 1 1 1", libc::SI_QUEUE),
+        "no handler run while blocked and pending; one run with the queued siginfo once unblocked"
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(0)],
+        "the hook's rt_sigprocmask runs once"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1, libc::SIGUSR1],
+        "the signal is reported when delivered, and again once unblocked"
+    );
 }
 
 /// As `always_injecting_hook_delivers_at_a_delivery_stop`, but `signal` is

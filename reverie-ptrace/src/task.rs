@@ -418,22 +418,26 @@ fn signal_mask_bit(sig: Signal) -> u64 {
 }
 
 /// A signal as its signal-delivery stop took it from the kernel: its siginfo,
-/// and the mask it was dequeued under (`blocked_signal_mask`).
+/// the mask it was dequeued under (`blocked_signal_mask`), and the mask the
+/// thread returns to after it (`PTRACE_GETSIGMASK`): a mask-swapping syscall's
+/// saved mask while that syscall's restore is pending, else the same mask.
 #[derive(Clone, Copy)]
 struct TakenSignal {
     signal: Signal,
     siginfo: libc::siginfo_t,
     blocked: u64,
+    restores: u64,
 }
 
 impl TakenSignal {
     /// Reads the record of `signal` at its signal-delivery stop, `None` if
-    /// the stop's siginfo or mask cannot be read.
+    /// the stop's siginfo or masks cannot be read.
     fn at_stop(task: &Stopped, signal: Signal) -> Option<Self> {
         Some(Self {
             signal,
             siginfo: task.getsiginfo().ok()?,
             blocked: blocked_signal_mask(task.pid()).ok()?,
+            restores: task.getsigmask().ok()?,
         })
     }
 }
@@ -452,13 +456,65 @@ struct SignalResume {
 /// syscall's restore is pending (`TIF_RESTORE_SIGMASK`), so it cannot tell
 /// whether that syscall's temporary mask blocks a signal.
 fn blocked_signal_mask(tid: Pid) -> Result<u64, TraceError> {
-    let status = std::fs::read_to_string(format!("/proc/{tid}/status"))
-        .map_err(|err| Errno::new(err.raw_os_error().unwrap_or(libc::EIO)))?;
+    let status = proc_status(tid)?;
+    status_signal_mask(&status, "SigBlk:")
+}
+
+fn proc_status(tid: Pid) -> Result<String, TraceError> {
+    std::fs::read_to_string(format!("/proc/{tid}/status"))
+        .map_err(|err| Errno::new(err.raw_os_error().unwrap_or(libc::EIO)).into())
+}
+
+/// The signal mask in the procfs status line `field`.
+fn status_signal_mask(status: &str, field: &str) -> Result<u64, TraceError> {
     status
         .lines()
-        .find_map(|line| line.strip_prefix("SigBlk:"))
+        .find_map(|line| line.strip_prefix(field))
         .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
         .ok_or_else(|| Errno::EPROTO.into())
+}
+
+/// Whether Linux discards `sig` when it is delivered to the stopped thread
+/// `tid`, as `get_signal` does: its disposition is `SIG_IGN`, or `SIG_DFL`
+/// with ignore as the default action, or `SIG_DFL` in a PID namespace's init
+/// (`SIGNAL_UNKILLABLE`, procfs `NStgid` ending in 1).
+fn discards_signal(tid: Pid, sig: Signal) -> Result<bool, TraceError> {
+    let status = proc_status(tid)?;
+    let bit = signal_mask_bit(sig);
+    if status_signal_mask(&status, "SigIgn:")? & bit != 0 {
+        return Ok(true);
+    }
+    if status_signal_mask(&status, "SigCgt:")? & bit != 0 {
+        return Ok(false);
+    }
+    let namespace_init = status
+        .lines()
+        .find_map(|line| line.strip_prefix("NStgid:"))
+        .and_then(|ids| ids.split_whitespace().last())
+        .ok_or(Errno::EPROTO)?
+        == "1";
+    Ok(namespace_init
+        || matches!(
+            sig,
+            Signal::SIGCHLD | Signal::SIGCONT | Signal::SIGURG | Signal::SIGWINCH
+        ))
+}
+
+/// Whether the SIGTRAP `task` stopped with is the report of a step resumed
+/// with `sig` entering `sig`'s handler (`signal_delivered`): `ptrace_notify`
+/// gives it `si_code` SIGTRAP, and the handler's first argument is `sig`.
+fn is_handler_entry_trap(task: &Stopped, sig: Signal) -> Result<bool, TraceError> {
+    let siginfo = task.getsiginfo()?;
+    Ok(siginfo.si_signo == libc::SIGTRAP
+        && siginfo.si_code == libc::SIGTRAP
+        && task.getregs()?.args().0 == sig as i32 as Reg)
+}
+
+/// Whether the SIGTRAP `task` stopped with is a single step's report.
+fn is_step_trap(task: &Stopped) -> Result<bool, TraceError> {
+    let siginfo = task.getsiginfo()?;
+    Ok(siginfo.si_signo == libc::SIGTRAP
+        && matches!(siginfo.si_code, libc::TRAP_TRACE | libc::TRAP_BRKPT))
 }
 
 /// `si_code` of a SIGSYS raised by a seccomp filter's `SECCOMP_RET_TRAP`.
@@ -4643,8 +4699,10 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///   mask blocks. The guest's registers still restart that syscall, which
     ///   installs its temporary mask again and takes the signal again: a
     ///   callback that always injects would never let it be delivered. Such
-    ///   a signal is delivered under its delivery stop's mask instead
-    ///   (`deliver_under_taken_mask`).
+    ///   a signal is delivered under the mask it was dequeued under instead
+    ///   (`deliver_under_taken_mask`). The mask must still be the restored
+    ///   one (`TakenSignal::restores`): a mask the callback's own injection
+    ///   set blocks the signal as the Tool asked.
     async fn resume_with_signal(
         &mut self,
         task: Stopped,
@@ -4656,7 +4714,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             && sig == taken.signal
         {
             let bit = signal_mask_bit(sig);
-            if blocked_signal_mask(task.pid())? & bit != 0 && taken.blocked & bit == 0 {
+            let blocked = blocked_signal_mask(task.pid())?;
+            if blocked & bit != 0 && taken.blocked & bit == 0 && blocked == taken.restores {
                 return self.deliver_under_taken_mask(task, taken).await;
             }
             task.setsiginfo(&taken.siginfo)?;
@@ -4664,119 +4723,74 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.resume_stopped(task, signal)?.next_state().await
     }
 
-    /// Delivers `taken.signal`, which the guest's mask (`B`) has blocked
-    /// since its delivery stop, under the mask it was dequeued under (`T`),
-    /// with `B` restored when its handler returns: as Linux delivers a signal
-    /// that interrupts a mask-swapping syscall.
+    /// Delivers `taken.signal`, which the guest's mask has blocked since a
+    /// mask-swapping syscall's saved mask (`taken.restores`) was restored,
+    /// under the syscall's temporary mask it was dequeued under
+    /// (`taken.blocked`), and with the saved mask restored when its handler
+    /// returns: as Linux delivers a signal that interrupts such a syscall.
     ///
-    /// Only that syscall's restore (`TIF_RESTORE_SIGMASK`) puts `B` in the
-    /// signal frame, and nothing but such a syscall sets it. So the private
-    /// page runs `ppoll(NULL, 0, &{0, 0}, &T, 8)`, and its step is resumed
-    /// with the signal, carrying its own siginfo. `B` blocks it, so Linux
-    /// requeues it with that siginfo. The `ppoll` saves `B`, installs `T`,
-    /// finds the signal pending and returns `-ERESTARTNOHAND`, which keeps
-    /// the restore. The step's SIGTRAP and then the signal's delivery stop
-    /// follow, with no guest instruction between them. The guest's registers
-    /// are put back and the signal is resumed at its stop: its handler runs,
-    /// the guest's interrupted syscall returns `-EINTR`, and `B` is restored
-    /// when the handler returns. `ppoll`'s two arguments go in the guest's
-    /// stack below its red zone, which is restored before the delivery; a
-    /// signal frame on that stack is written there anyway.
+    /// The thread's mask is set to the temporary one and `task` is stepped
+    /// with the signal, carrying its own siginfo. Linux delivers it at once,
+    /// before any guest instruction, and the step reports the handler's
+    /// entry (`is_handler_entry_trap`). The handler's signal frame saved the
+    /// mask in effect, the temporary one; it is replaced with the saved mask,
+    /// which the handler's `rt_sigreturn` installs. No syscall is injected.
     ///
-    /// Another signal that stops the guest meanwhile is held
-    /// (`pending_signal`), as an injection's step holds it. If the `ppoll`
-    /// does not run (a guest seccomp filter traps it, or a signal stops the
-    /// step first), the guest resumes from that stop without the signal,
-    /// which stays requeued under `B`, as before this delivery was added.
+    /// A signal Linux discards (`discards_signal`) is dropped, as Linux
+    /// drops it. Without a handler there is no frame: the signal stops or
+    /// ends the guest, or Linux discards it after all (an orphaned process
+    /// group's SIGTSTP, SIGTTIN or SIGTTOU), and the saved mask is restored
+    /// at the next stop. In the last case the guest's restarted syscall runs
+    /// under the temporary mask until it returns or stops.
     async fn deliver_under_taken_mask(
         &mut self,
         task: Stopped,
         taken: TakenSignal,
     ) -> Result<Wait, TraceError> {
-        const RED_ZONE: usize = 128;
         let sig = taken.signal;
-        let mut task = task;
-        let guest = task.getregs()?;
-        let scratch = (guest.stack_ptr() as usize).saturating_sub(RED_ZONE + 32) & !15;
-        let mut saved = [0u8; 32];
-        let mut args = [0u8; 32];
-        args[..8].copy_from_slice(&taken.blocked.to_ne_bytes());
-        let address = || AddrMut::<u8>::from_raw(scratch).ok_or(Errno::EFAULT);
-        if AddrMut::<u8>::from_raw(scratch).is_none()
-            || task.read_exact(address()?, &mut saved).is_err()
-            || task.write_exact(address()?, &args).is_err()
-        {
-            task.setsiginfo(&taken.siginfo)?;
-            return self.resume_stopped(task, sig)?.next_state().await;
+        if discards_signal(task.pid(), sig)? {
+            return self.resume_stopped(task, None)?.next_state().await;
         }
-        let restore = |task: &mut Stopped| -> Result<(), TraceError> {
-            task.setregs(&guest)?;
-            task.write_exact(address()?, &saved)?;
-            Ok(())
-        };
-        let mut regs = guest;
-        *regs.syscall_mut() = Sysno::ppoll as Reg;
-        *regs.orig_syscall_mut() = Sysno::ppoll as Reg;
-        regs.set_args((
-            0,
-            0,
-            (scratch + 16) as Reg,
-            scratch as Reg,
-            std::mem::size_of::<u64>() as Reg,
-            0,
-        ));
-        *regs.ip_mut() = cp::PRIVATE_PAGE_OFFSET as Reg;
-        task.setregs(&regs)?;
+        task.setsigmask(taken.blocked)?;
         task.setsiginfo(&taken.siginfo)?;
         tracing::debug!(
             "[{}] delivering {} under the mask it was dequeued under",
             task.pid(),
             sig
         );
-        let after_syscall = (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64;
-        let (wait, seccomp_trapped) = self
-            .step_private_syscall(task, Sysno::ppoll, Some(sig))
-            .await?;
-        let mut wait = match wait {
-            // A synchronous signal is requeued ahead of the step's SIGTRAP.
-            Wait::Stopped(mut stopped, Event::Signal(stop)) if stop == sig && !seccomp_trapped => {
-                restore(&mut stopped)?;
-                return self.resume_stopped(stopped, sig)?.next_state().await;
-            }
+        let wait = self.step_stopped(task, sig)?.next_state().await?;
+        self.arm_liteinst_wait(&wait);
+        match wait {
             Wait::Stopped(mut stopped, Event::Signal(Signal::SIGTRAP))
-                if !seccomp_trapped && stopped.getregs()?.ip() == after_syscall =>
+                if is_handler_entry_trap(&stopped, sig)? =>
             {
-                restore(&mut stopped)?;
+                let context = stopped.getregs()?.args().2 as usize;
+                let address = AddrMut::<u8>::from_raw(
+                    context + std::mem::offset_of!(libc::ucontext_t, uc_sigmask),
+                )
+                .ok_or(Errno::EFAULT)?;
+                let mut saved = [0u8; 8];
+                stopped.read_exact(address, &mut saved)?;
+                if u64::from_ne_bytes(saved) != taken.blocked {
+                    return Err(Errno::EPROTO.into());
+                }
+                stopped.write_exact(address, &taken.restores.to_ne_bytes())?;
                 let wait = self.resume_stopped(stopped, None)?.next_state().await?;
                 self.arm_liteinst_wait(&wait);
-                wait
+                Ok(wait)
             }
-            Wait::Stopped(mut stopped, event) => {
-                restore(&mut stopped)?;
-                if let Event::Signal(other) = event
-                    && !(seccomp_trapped && other == Signal::SIGSYS)
+            Wait::Stopped(stopped, event) => {
+                stopped.setsigmask(taken.restores)?;
+                if let Event::Signal(Signal::SIGTRAP) = event
+                    && is_step_trap(&stopped)?
                 {
-                    self.hold_signal(&stopped, other);
-                }
-                return self.resume_stopped(stopped, None)?.next_state().await;
-            }
-            wait => return Ok(wait),
-        };
-        loop {
-            wait = match wait {
-                Wait::Stopped(stopped, Event::Signal(stop)) if stop == sig => {
-                    return self.resume_stopped(stopped, sig)?.next_state().await;
-                }
-                Wait::Stopped(stopped, Event::Signal(other)) => {
-                    if !is_group_stop(&stopped, other)? {
-                        self.hold_signal(&stopped, other);
-                    }
                     let wait = self.resume_stopped(stopped, None)?.next_state().await?;
                     self.arm_liteinst_wait(&wait);
-                    wait
+                    return Ok(wait);
                 }
-                wait => return Ok(wait),
-            };
+                Ok(Wait::Stopped(stopped, event))
+            }
+            wait => Ok(wait),
         }
     }
 
