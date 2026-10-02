@@ -381,7 +381,9 @@ fn getdents64_alias_failure_case_selected(
         marker.exists(),
     );
     let error = result.unwrap_err();
-    let cause = fault.cause(&error).unwrap_or_else(|| panic!("{error:?}"));
+    let cause = fault
+        .cause(&error, None)
+        .unwrap_or_else(|| panic!("{error:?}"));
     assert!(!marker.exists(), "guest resumed after supervisor failure");
     // The EOF setup has two successful small reads before the targeted alias.
     // Neither the failed syscall nor its Tool injection may resume afterwards.
@@ -401,7 +403,7 @@ fn getdents64_alias_failure_case_selected(
     assert!(std::ptr::eq(
         cause,
         fault
-            .cause(&refused)
+            .cause(&refused, None)
             .unwrap_or_else(|| panic!("{refused:?}"))
     ));
     // Retain the original invalid-address control as well: terminal poison
@@ -410,7 +412,7 @@ fn getdents64_alias_failure_case_selected(
     assert!(std::ptr::eq(
         cause,
         fault
-            .cause(&invalid_refused)
+            .cause(&invalid_refused, None)
             .unwrap_or_else(|| panic!("{invalid_refused:?}"))
     ));
     eprintln!(

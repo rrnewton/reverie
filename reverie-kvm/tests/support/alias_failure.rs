@@ -17,6 +17,15 @@ pub(crate) enum Case {
 }
 
 impl Case {
+    pub(crate) fn setup_succeeds(self) -> bool {
+        matches!(
+            self,
+            Case::AtomicCollision
+                | Case::CleanupAfterSuccess
+                | Case::PersistentCleanup
+                | Case::CleanupAtEof
+        )
+    }
     fn from_stage(stage: i32) -> Self {
         match stage {
             1 => Self::Reservation,
@@ -226,15 +235,6 @@ impl Fault {
     pub(crate) fn succeeds(&self) -> bool {
         self.case == Case::AtomicCollision
     }
-    pub(crate) fn setup_succeeds(&self) -> bool {
-        matches!(
-            self.case,
-            Case::AtomicCollision
-                | Case::CleanupAfterSuccess
-                | Case::PersistentCleanup
-                | Case::CleanupAtEof
-        )
-    }
     pub(crate) fn arm(&self) {
         let operation = self.operation.get() + 1;
         assert!(operation == 1 || (self.case == Case::PersistentCleanup && operation <= 3));
@@ -261,25 +261,16 @@ impl Fault {
             operation: values[4],
         }
     }
-    pub(crate) fn cause<'a>(&self, error: &'a crate::Error) -> Option<&'a crate::Error> {
-        self.cause_expected(error, None)
-    }
-    /// Native unit tests bind this ID to an independently queried ledger record.
-    pub(crate) fn cause_with_retention<'a>(
-        &self,
-        error: &'a crate::Error,
-        id: usize,
-    ) -> Option<&'a crate::Error> {
-        if id == 0 {
-            return None;
-        }
-        self.cause_expected(error, Some(id))
-    }
-    fn cause_expected<'a>(
+    /// Native unit tests bind an ID from an independently queried ledger record.
+    /// Integration tests cannot inspect that private ledger and pass no ID.
+    pub(crate) fn cause<'a>(
         &self,
         error: &'a crate::Error,
         retention_id: Option<usize>,
     ) -> Option<&'a crate::Error> {
+        if retention_id == Some(0) {
+            return None;
+        }
         let addresses = self.addresses();
         let expected = CaseCause::for_case(self.case, addresses, retention_id)?;
         alias_case_cause(error, expected)
@@ -338,17 +329,23 @@ impl Fault {
             expected[29] = (self.operation.get() - 1) as u64;
         }
         assert_eq!(counts, expected, "atomic alias case {:?}", self.case);
-        let addresses = self.addresses();
-        eprintln!(
-            "\natomic alias case={:?} operation={} counters={counts:?} addresses={addresses:?}",
-            self.case,
-            self.operation.get()
-        );
-        AliasObservation {
+        let observation = AliasObservation {
             case: self.case,
-            addresses,
+            addresses: self.addresses(),
             counters: counts,
-        }
+        };
+        eprintln!(
+            "\natomic alias case={:?} operation={} counters={:?} addresses=AliasAddresses {{ base: {}, length: {}, wrong: {}, ambiguous: {}, operation: {} }}",
+            observation.case,
+            observation.addresses.operation,
+            observation.counters,
+            observation.addresses.base,
+            observation.addresses.length,
+            observation.addresses.wrong,
+            observation.addresses.ambiguous,
+            observation.addresses.operation,
+        );
+        observation
     }
 }
 
@@ -370,7 +367,7 @@ impl CaseCause {
     ) -> Option<Self> {
         let mapping = match case {
             Case::AtomicCollision => return None,
-            Case::CleanupAfterSuccess | Case::PersistentCleanup | Case::CleanupAtEof => None,
+            _ if case.setup_succeeds() => None,
             Case::WrongAddress => Some(ExpectedCause::UnexpectedAddress),
             _ => Some(ExpectedCause::Errno(libc::ENOMEM)),
         };
