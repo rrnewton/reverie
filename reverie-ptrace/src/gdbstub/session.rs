@@ -382,6 +382,19 @@ impl Session {
                     writer.put_str(",");
                 }
             }
+            Base::T(t) => {
+                // Thread-alive query. GDB treats every reply other than `OK`
+                // as "thread is dead", including the empty "unsupported" reply.
+                let alive = self.inferiors.lock().await.values().any(|task| {
+                    let threadid: ThreadId = task.id.into();
+                    t.thread.matches(&threadid)
+                });
+                if alive {
+                    ResponseOk.write_response(writer);
+                } else {
+                    writer.put_str("E01");
+                }
+            }
             Base::qsThreadInfo(_) => {
                 writer.put_str("l");
             }
