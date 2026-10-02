@@ -150,6 +150,10 @@ static PIDFD_LIVENESS_ERRORS: LazyLock<Mutex<HashMap<Pid, VecDeque<Errno>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+static PROCFS_OBSERVATION_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
 struct EventCapturePause {
     captured: Arc<Barrier>,
     resume: Arc<Barrier>,
@@ -1938,15 +1942,35 @@ impl WorkerIdentity {
     }
 
     fn is_same_process_generation(&self) -> bool {
-        let Ok(current) = worker_proc_snapshot(self.pid) else {
-            return false;
+        self.procfs_generation() == Some(true)
+    }
+
+    /// Whether procfs still shows this exact generation: `Some(false)` once
+    /// `/proc/<pid>` is gone or names another generation, and `None` when
+    /// procfs could not be read, which shows neither.
+    fn observed_process_generation(&self) -> Option<bool> {
+        #[cfg(test)]
+        if let Some(error) = PROCFS_OBSERVATION_ERRORS.lock().remove(&self.pid) {
+            let error = io::Error::from_raw_os_error(error.into_raw());
+            return procfs_error_shows_exit(&error).then_some(false);
+        }
+        self.procfs_generation()
+    }
+
+    fn procfs_generation(&self) -> Option<bool> {
+        let current = match worker_proc_snapshot(self.pid) {
+            Ok(current) => current,
+            Err(error) => return procfs_error_shows_exit(&error).then_some(false),
         };
-        current.same_process_generation(&self.snapshot)
-            && fd_inode(&self.proc_dir).ok() == Some(self.proc_inode)
-            && fs::metadata(format!("/proc/{}", self.pid))
-                .ok()
-                .map(|metadata| metadata.ino())
-                == Some(self.proc_inode)
+        if !current.same_process_generation(&self.snapshot)
+            || fd_inode(&self.proc_dir).ok()? != self.proc_inode
+        {
+            return Some(false);
+        }
+        match fs::metadata(format!("/proc/{}", self.pid)) {
+            Ok(metadata) => Some(metadata.ino() == self.proc_inode),
+            Err(error) => procfs_error_shows_exit(&error).then_some(false),
+        }
     }
 
     fn same_generation(&self, other: &Self) -> bool {
@@ -2406,6 +2430,15 @@ fn tracer_is_current(tracer_pid: Pid) -> bool {
         && std::path::Path::new(&format!("/proc/self/task/{tracer_pid}")).exists()
 }
 
+/// Whether a procfs read failed because the thread it names is gone: its
+/// directory no longer exists, or its identity changed while it was read.
+fn procfs_error_shows_exit(error: &std::io::Error) -> bool {
+    match error.raw_os_error() {
+        Some(errno) => errno == libc::ENOENT || errno == libc::ESRCH,
+        None => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
 fn fd_inode(fd: &OwnedFd) -> std::io::Result<u64> {
     fs::metadata(format!("/proc/self/fd/{}", fd.as_raw_fd())).map(|metadata| metadata.ino())
 }
@@ -2593,8 +2626,10 @@ impl Notifier {
         let reaped = match identity.pidfd_is_live() {
             Ok(live) => !live,
             // Without the pidfd's answer, procfs's: a reaped task's
-            // /proc/<pid> is gone or names another generation.
-            Err(_) => !identity.is_same_process_generation(),
+            // /proc/<pid> is gone or names another generation. A procfs read
+            // that fails otherwise, as EMFILE, shows neither, so the gate
+            // stays open as it would without this check.
+            Err(_) => identity.observed_process_generation() == Some(false),
         };
         if reaped {
             handle.event().mark_terminal_reaping();
@@ -9725,6 +9760,11 @@ mod test {
         BoundLivenessTwice,
         /// As `BoundLivenessTwice`, through `sync_handle`.
         SyncBoundLivenessTwice,
+        /// As `BoundLivenessTwice`, and procfs cannot be read either, as
+        /// EMFILE: neither answer shows a reap, so the gate must stay open.
+        BoundLivenessProcfsError,
+        /// As `BoundLivenessProcfsError`, through `sync_handle`.
+        SyncBoundLivenessProcfsError,
     }
 
     /// How `failed_registration_refuses_after_reap` registers again after
@@ -9788,21 +9828,35 @@ mod test {
             FailedRegistration::BoundLiveness
             | FailedRegistration::SyncBoundLiveness
             | FailedRegistration::BoundLivenessTwice
-            | FailedRegistration::SyncBoundLivenessTwice => {
+            | FailedRegistration::SyncBoundLivenessTwice
+            | FailedRegistration::BoundLivenessProcfsError
+            | FailedRegistration::SyncBoundLivenessProcfsError => {
                 // The unbound token's registration makes no liveness check
                 // before it binds the identity and takes the registry lock.
                 // The second error, if any, fails the check that the failed
-                // registration makes as it keeps its generation.
-                let twice = matches!(
+                // registration makes as it keeps its generation; the procfs
+                // error fails that check's fallback.
+                let procfs_error = matches!(
                     failure,
-                    FailedRegistration::BoundLivenessTwice
-                        | FailedRegistration::SyncBoundLivenessTwice
+                    FailedRegistration::BoundLivenessProcfsError
+                        | FailedRegistration::SyncBoundLivenessProcfsError
                 );
+                let twice = procfs_error
+                    || matches!(
+                        failure,
+                        FailedRegistration::BoundLivenessTwice
+                            | FailedRegistration::SyncBoundLivenessTwice
+                    );
                 PIDFD_LIVENESS_ERRORS
                     .lock()
                     .entry(old_pid.into())
                     .or_default()
                     .extend(std::iter::repeat_n(Errno::EINVAL, 1 + usize::from(twice)));
+                if procfs_error {
+                    PROCFS_OBSERVATION_ERRORS
+                        .lock()
+                        .insert(old_pid.into(), Errno::EMFILE);
+                }
                 Errno::EINVAL
             }
             _ => {
@@ -9820,7 +9874,9 @@ mod test {
         }
         let registration = if matches!(
             failure,
-            FailedRegistration::SyncBoundLiveness | FailedRegistration::SyncBoundLivenessTwice
+            FailedRegistration::SyncBoundLiveness
+                | FailedRegistration::SyncBoundLivenessTwice
+                | FailedRegistration::SyncBoundLivenessProcfsError
         ) {
             NOTIFIER
                 .sync_handle(old_pid.into(), failed.1.event())
@@ -9841,6 +9897,12 @@ mod test {
             "{failure:?}: the injected liveness error was not consumed"
         );
         assert!(
+            !PROCFS_OBSERVATION_ERRORS
+                .lock()
+                .contains_key(&old_pid.into()),
+            "{failure:?}: the injected procfs error was not consumed"
+        );
+        assert!(
             failed.1.event().identity().is_some(),
             "{failure:?}: the failed registration did not bind the task's identity"
         );
@@ -9852,6 +9914,9 @@ mod test {
             failed.1.event().hold_tid().is_some(),
             "{failure:?}: the failed registration closed a live task's TID gate"
         );
+        failed.getregs().unwrap_or_else(|error| {
+            panic!("{failure:?}: the failed capability refused a live task's request: {error:?}")
+        });
         let absorbed_after_failure = absorbed();
         let redirected_before_failure = matches!(
             failure,
@@ -9883,6 +9948,8 @@ mod test {
                 | FailedRegistration::SyncBoundLiveness
                 | FailedRegistration::BoundLivenessTwice
                 | FailedRegistration::SyncBoundLivenessTwice
+                | FailedRegistration::BoundLivenessProcfsError
+                | FailedRegistration::SyncBoundLivenessProcfsError
         );
         let redirects = match (unjoined, retry) {
             (true, RegistrationRetry::Unbound) => 2,
@@ -10142,6 +10209,53 @@ mod test {
             FailedRegistration::SyncBoundLivenessTwice,
             "SAFEPTRACE_SYNC_REPEATED_LIVENESS_REUSE_INNER",
             "notifier::test::synchronous_repeated_liveness_failure_keeps_a_live_generation_open",
+        )
+        .await;
+    }
+
+    /// Neither the pidfd nor procfs can say whether the failed
+    /// registration's task was reaped: an unreadable procfs is no proof of a
+    /// reap, so the live task's gate must stay open.
+    #[tokio::test(flavor = "current_thread")]
+    async fn procfs_error_after_liveness_failure_keeps_a_live_generation_open() {
+        failed_registration_reuse_through(
+            FailedRegistration::BoundLivenessProcfsError,
+            "SAFEPTRACE_PROCFS_ERROR_LIVENESS_REUSE_INNER",
+            "notifier::test::procfs_error_after_liveness_failure_keeps_a_live_generation_open",
+        )
+        .await;
+    }
+
+    /// Only a missing thread or a changed identity shows a reap; any other
+    /// procfs read error shows nothing about the thread.
+    #[test]
+    fn only_a_missing_or_changed_thread_shows_exit_in_procfs() {
+        for errno in [libc::ENOENT, libc::ESRCH] {
+            assert!(procfs_error_shows_exit(&io::Error::from_raw_os_error(
+                errno
+            )));
+        }
+        assert!(procfs_error_shows_exit(&io::Error::new(
+            io::ErrorKind::NotFound,
+            "tracee identity changed while reading procfs",
+        )));
+        for errno in [libc::EMFILE, libc::ENFILE, libc::EACCES, libc::EIO] {
+            assert!(!procfs_error_shows_exit(&io::Error::from_raw_os_error(
+                errno
+            )));
+        }
+        assert!(!procfs_error_shows_exit(&io::Error::new(
+            io::ErrorKind::InvalidData,
+            "malformed stat",
+        )));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn synchronous_procfs_error_after_liveness_failure_keeps_a_live_generation_open() {
+        failed_registration_reuse_through(
+            FailedRegistration::SyncBoundLivenessProcfsError,
+            "SAFEPTRACE_SYNC_PROCFS_ERROR_LIVENESS_REUSE_INNER",
+            "notifier::test::synchronous_procfs_error_after_liveness_failure_keeps_a_live_generation_open",
         )
         .await;
     }

@@ -587,7 +587,10 @@ impl TraceeGeneration {
     /// Creates a stopped state for this generation. Like
     /// [`Stopped::new_unchecked`], the caller must independently know that the
     /// tracee is stopped. Unlike it, requests through the result are refused
-    /// once this generation is reaped, even if another task has reused the TID.
+    /// once the notifier or [`Running::wait`] reaps this generation, even if
+    /// another task has reused the TID. A reap through [`wait_all`],
+    /// [`try_wait_all`] or [`wait_group`], and the registration orders in
+    /// <https://github.com/rrnewton/reverie/issues/860>, do not refuse them yet.
     pub fn assume_stopped(&self) -> Stopped {
         Stopped::from_token(self.0, self.1.clone())
     }
@@ -1102,6 +1105,10 @@ impl Stopped {
 
 /// Waits for any child processes to change state, blocking until the next event.
 /// This is equivalent to `waitpid(-1)`.
+///
+/// A child this reaps keeps its capabilities' TID gates open, so they can
+/// reach a task that reuses its TID
+/// (<https://github.com/rrnewton/reverie/issues/860>).
 pub fn wait_all() -> Result<Option<Wait>, Error> {
     let result = wait(IdType::All, WaitPidFlag::WEXITED | WaitPidFlag::WSTOPPED)
         .map_err(Error::from)
@@ -1138,6 +1145,10 @@ pub fn try_wait_all() -> Result<Option<Wait>, Error> {
 
 /// Waits for any child in a process group to change state, blocking until the
 /// next event.
+///
+/// A child this reaps keeps its capabilities' TID gates open, so they can
+/// reach a task that reuses its TID
+/// (<https://github.com/rrnewton/reverie/issues/860>).
 pub fn wait_group(pid: Pid) -> Result<Option<Wait>, Error> {
     let result = wait(
         IdType::Pgid(pid.into()),
@@ -1228,7 +1239,9 @@ impl Running {
     ///
     /// The state shares the generation that other states for the same live
     /// task already carry, so a numeric request through any of them stops
-    /// reaching the TID once that task is reaped.
+    /// reaching the TID once the notifier or [`Running::wait`] reaps that
+    /// task, except in the orders listed in
+    /// <https://github.com/rrnewton/reverie/issues/860>.
     pub fn new(pid: Pid) -> Self {
         Self::from_token(pid, TraceeToken::current_or_fresh(pid))
     }
