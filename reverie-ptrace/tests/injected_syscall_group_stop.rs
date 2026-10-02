@@ -5809,6 +5809,10 @@ impl Tool for InjectInSigusr1Hook {
 /// unreported while another is pending, as on main: both handlers run
 /// before the marker returns, and the Tool sees only SIGUSR2, at its own
 /// delivery stop.
+///
+/// Known gap: the Tool never sees the held SIGUSR1, the
+/// https://github.com/rrnewton/hermit/issues/3468 defect on this input
+/// (https://github.com/rrnewton/reverie/issues/845).
 #[test]
 fn held_signal_is_not_reported_while_another_signal_is_pending() {
     let (output, log) = test_fn_bounded::<InjectInSigusr1Hook, _>(
