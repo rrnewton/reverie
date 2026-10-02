@@ -1250,6 +1250,49 @@ impl NewbornTracee {
         }
     }
 
+    /// Retains the decoded child's current generation as the cleanup owner of
+    /// its TID. Every LiteInst `Event::NewChild` registration goes through here.
+    pub(crate) fn register(
+        newborns: &StdMutex<HashMap<Pid, NewbornTracee>>,
+        parent_tid: Pid,
+        op: ChildOp,
+        child: &Running,
+    ) {
+        Self::from_event(parent_tid, op, child).retain(&mut newborns.lock().unwrap());
+    }
+
+    /// The table is keyed by TID alone, and the kernel reuses a TID once the
+    /// child that held it is reaped
+    /// (https://github.com/rrnewton/reverie/issues/852). A repeated
+    /// registration of the stored generation is a no-op, so a nested handler
+    /// and the run loop can both register one stop and the stored identity
+    /// survives. Another generation replaces the stored entry: two generations
+    /// never hold one TID at once, so the stored one names a reaped child, and
+    /// keeping it would hand the new child that child's event link and retired
+    /// notifier generation. The exception is a late registration of a
+    /// generation whose retirement is already acknowledged: a reaped child's
+    /// queued `NewChild` must not displace a live child that reused its TID.
+    fn retain(self, newborns: &mut HashMap<Pid, NewbornTracee>) {
+        match newborns.entry(self.link.tid) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(self);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let stored = &entry.get().terminal;
+                if stored.same_generation(&self.terminal)
+                    || (self.terminal.wait(Duration::ZERO) && !stored.wait(Duration::ZERO))
+                {
+                    return;
+                }
+                entry.insert(self);
+            }
+        }
+    }
+
+    pub(crate) fn same_generation(&self, terminal: &TerminalCleanup) -> bool {
+        self.terminal.same_generation(terminal)
+    }
+
     pub(crate) fn set_identity(&mut self, identity: TraceeIdentity) {
         self.identity = Some(identity);
     }
@@ -1609,11 +1652,7 @@ impl LiteinstTraceeCleanup {
                 },
             };
             if let Wait::Stopped(stopped, Event::NewChild(op, child)) = state {
-                let child_pid = child.pid();
-                let mut newborns = self.newborn_tracees.lock().unwrap();
-                newborns
-                    .entry(child_pid)
-                    .or_insert_with(|| NewbornTracee::from_event(stopped.pid(), op, &child));
+                NewbornTracee::register(&self.newborn_tracees, stopped.pid(), op, &child);
             }
             // The raw FIFO front remains present until any child cleanup
             // ownership above is durably stored.
@@ -1744,14 +1783,7 @@ impl LiteinstTraceeCleanup {
                 })?;
                 if let Some((reservation, state)) = decoded {
                     if let Wait::Stopped(stopped, Event::NewChild(op, child)) = state {
-                        let child_pid = child.pid();
-                        self.newborn_tracees
-                            .lock()
-                            .unwrap()
-                            .entry(child_pid)
-                            .or_insert_with(|| {
-                                NewbornTracee::from_event(stopped.pid(), op, &child)
-                            });
+                        NewbornTracee::register(&self.newborn_tracees, stopped.pid(), op, &child);
                     }
                     legacy_cleanup_observe!(
                         "root-freeze-revocation-site1",
@@ -10041,6 +10073,76 @@ mod tests {
             resume_held_stop_child("first generation child", first).await;
             resume_held_stop_child("second generation child", second).await;
         }
+    }
+
+    /// https://github.com/rrnewton/reverie/issues/852: the kernel reuses a TID
+    /// only after reaping its holder, which a test cannot force, so the reaped
+    /// generation is stored under the live child's TID instead.
+    #[tokio::test(flavor = "current_thread")]
+    async fn newborn_registration_replaces_a_reaped_generation_of_its_tid() {
+        let (_reaped_pid, reaped) = spawn_held_stop_child("reaped newborn generation");
+        let reaped_terminal = reaped.terminal_cleanup();
+        let late_terminal = reaped.terminal_cleanup();
+        resume_held_stop_child("reaped newborn generation", reaped).await;
+        assert!(
+            reaped_terminal.wait(Duration::from_secs(2)),
+            "the notifier did not retire the reaped generation"
+        );
+
+        let (tid, live) = spawn_held_stop_child("live newborn generation");
+        let live_generation = live.terminal_cleanup();
+        let link = |parent: i32, op| EventChildLink {
+            tid,
+            parent_tid: Pid::from_raw(parent),
+            op,
+        };
+        let newborns = StdMutex::new(HashMap::from([(
+            tid,
+            NewbornTracee {
+                link: link(11, ChildOp::Fork),
+                identity: None,
+                terminal: reaped_terminal,
+            },
+        )]));
+        let assert_live_owner = |newborns: &StdMutex<HashMap<Pid, NewbornTracee>>| {
+            let newborns = newborns.lock().unwrap();
+            assert_eq!(newborns.len(), 1);
+            let stored = &newborns[&tid];
+            assert!(
+                stored.terminal.same_generation(&live_generation),
+                "the TID's owner is not the live generation"
+            );
+            assert_eq!(stored.link, link(22, ChildOp::Clone));
+        };
+
+        NewbornTracee::register(
+            &newborns,
+            Pid::from_raw(22),
+            ChildOp::Clone,
+            &Running::new(tid),
+        );
+        assert_live_owner(&newborns);
+
+        // A repeated registration of the live generation keeps its first link.
+        NewbornTracee::register(
+            &newborns,
+            Pid::from_raw(33),
+            ChildOp::Vfork,
+            &Running::new(tid),
+        );
+        assert_live_owner(&newborns);
+
+        // A late registration of the reaped generation does not displace it.
+        NewbornTracee {
+            link: link(44, ChildOp::Fork),
+            identity: None,
+            terminal: late_terminal,
+        }
+        .retain(&mut newborns.lock().unwrap());
+        assert_live_owner(&newborns);
+
+        drop(newborns);
+        resume_held_stop_child("live newborn generation", live).await;
     }
 
     #[derive(Default)]
