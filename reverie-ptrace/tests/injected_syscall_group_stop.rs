@@ -4177,6 +4177,29 @@ static mut SCRIPT_EXEC: ExecArgs = ExecArgs {
     argv: std::ptr::null(),
     envp: std::ptr::null(),
 };
+/// Set to 1 by the tool when `INJECT_PARK` parks a callback.
+static SCRIPT_PARKED: AtomicU64 = AtomicU64::new(0);
+/// The old set `INJECT_BAD_SET` asks for.
+static SCRIPT_OLDSET: AtomicU64 = AtomicU64::new(0);
+/// The arguments `INJECT_PGETEVENTS` passes, which the guest fills in
+/// (`fill_script_pgetevents`).
+static mut SCRIPT_PGETEVENTS: PgeteventsArgs = unsafe { std::mem::zeroed() };
+
+/// An AIO context and the buffers an `io_pgetevents` with a temporary
+/// signal mask reads and writes.
+#[repr(C)]
+struct PgeteventsArgs {
+    /// The context `io_setup` made.
+    context: u64,
+    /// The temporary mask.
+    mask: u64,
+    /// The `struct __aio_sigset`: the mask's address and size.
+    sigset: [usize; 2],
+    /// A zero timeout, so the call returns at once.
+    timeout: libc::timespec,
+    /// Room for one `struct io_event`.
+    events: [u64; 4],
+}
 
 /// Injects nothing.
 const INJECT_NONE: u64 = 0;
@@ -4198,6 +4221,16 @@ const INJECT_EXEC: u64 = 6;
 /// Injects `getpid`, then an `rt_tgsigqueueinfo` to the thread with
 /// `SCRIPT_INFO` for each signal in the action's argument, a mask.
 const INJECT_QUEUE: u64 = 7;
+/// Injects nothing, sets `SCRIPT_PARKED` in the guest, and never returns.
+const INJECT_PARK: u64 = 8;
+/// Injects `rt_sigprocmask(SIG_BLOCK, 8, &SCRIPT_OLDSET, 8)`, which fails
+/// with EFAULT reading the new set, before it writes the mask or the old
+/// set.
+const INJECT_BAD_SET: u64 = 9;
+/// Injects `io_pgetevents` with `SCRIPT_PGETEVENTS`'s context, no minimum,
+/// its zero timeout and its temporary mask. It returns 0 at once, and
+/// Linux restores the mask it replaced before it returns.
+const INJECT_PGETEVENTS: u64 = 10;
 /// Passes the signal through.
 const VERDICT_PASS: u64 = 0;
 /// Suppresses the signal.
@@ -4231,6 +4264,27 @@ unsafe fn fill_script_info() {
         fields.cast::<libc::pid_t>().write(libc::getpid());
         fields.add(4).cast::<libc::uid_t>().write(libc::getuid());
         fields.add(8).cast::<usize>().write(QUEUED_VALUE);
+    }
+}
+
+/// Makes `SCRIPT_PGETEVENTS` a new AIO context with an empty temporary mask
+/// and a zero timeout.
+///
+/// # Safety
+/// Writes `SCRIPT_PGETEVENTS`.
+unsafe fn fill_script_pgetevents() {
+    unsafe {
+        let args = &raw mut SCRIPT_PGETEVENTS;
+        assert_eq!(
+            libc::syscall(libc::SYS_io_setup, 1, &raw mut (*args).context),
+            0
+        );
+        (*args).mask = 0;
+        (*args).sigset = [&raw const (*args).mask as usize, 8];
+        (*args).timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
     }
 }
 
@@ -4419,6 +4473,42 @@ impl Tool for ScriptedSignalHook {
                         );
                     }
                 }
+            }
+            INJECT_BAD_SET => results.push(
+                guest
+                    .inject(
+                        RtSigprocmask::new()
+                            .with_how(libc::SIG_BLOCK)
+                            .with_set(Addr::from_raw(8))
+                            .with_oldset(AddrMut::from_raw(SCRIPT_OLDSET.as_ptr() as usize))
+                            .with_sigsetsize(8),
+                    )
+                    .await,
+            ),
+            INJECT_PGETEVENTS => {
+                let base = &raw const SCRIPT_PGETEVENTS as usize;
+                let context =
+                    Addr::<u64>::from_raw(base + std::mem::offset_of!(PgeteventsArgs, context))
+                        .ok_or(Errno::EFAULT)?;
+                let context: u64 = guest.memory().read_value(context)?;
+                let pgetevents = Syscall::from_raw(
+                    Sysno::io_pgetevents,
+                    SyscallArgs::new(
+                        context as usize,
+                        0,
+                        1,
+                        base + std::mem::offset_of!(PgeteventsArgs, events),
+                        base + std::mem::offset_of!(PgeteventsArgs, timeout),
+                        base + std::mem::offset_of!(PgeteventsArgs, sigset),
+                    ),
+                );
+                results.push(guest.inject(pgetevents).await);
+            }
+            INJECT_PARK => {
+                let parked = AddrMut::<u64>::from_raw(SCRIPT_PARKED.as_ptr() as usize)
+                    .ok_or(Errno::EFAULT)?;
+                guest.memory().write_value(parked, &1)?;
+                std::future::pending::<()>().await;
             }
             other => panic!("unknown script injection {other}"),
         }
@@ -4646,6 +4736,61 @@ fn replacement_for_a_forced_sigsegv_runs_under_the_dequeue_mask() {
     assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid)]);
 }
 
+/// As `replacement_for_a_forced_sigsegv_runs_under_the_dequeue_mask`, but
+/// the hook of the forced SIGSEGV injects `getpid` before it replaces it
+/// with SIGUSR2. On untraced Linux with the equivalent tracer, as with no
+/// injection, SIGUSR2's handler runs once before `ppoll` returns EINTR.
+///
+/// Known gap pinned here (https://github.com/rrnewton/reverie/issues/845):
+/// the injection installs `ppoll`'s saved mask, which blocks SIGUSR2, and
+/// Reverie delivers a replacement under the dequeue mask only when the
+/// callback injected nothing. Linux requeues the blocked replacement, so
+/// `ppoll` returns EINTR with SIGUSR2 pending, its handler runs only when
+/// the guest unblocks it, and the hook is told about it again then. This
+/// predates the held-signal change.
+#[test]
+fn replacement_after_an_injection_for_a_forced_sigsegv_waits_for_the_saved_mask() {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
+        set_script(&[
+            action(INJECT_GETPID, VERDICT_PASS, 0),
+            action(INJECT_GETPID, VERDICT_REPLACE, libc::SIGUSR2 as u64),
+        ]);
+        install_unwritable_altstack();
+        install_recorder_with(
+            libc::SIGUSR1,
+            record_siginfo as *const () as usize,
+            libc::SA_ONSTACK,
+        );
+        install_recorder_with(libc::SIGUSR2, record_siginfo as *const () as usize, 0);
+        block(&[libc::SIGUSR1, libc::SIGUSR2]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let ret = ppoll_with_empty_mask();
+        let errno = *libc::__errno_location();
+        let runs = RECORDED_CALLS.load(Ordering::Relaxed);
+        println!("{runs}");
+        print_recorded(ret, errno, libc::SIGUSR2);
+    })
+    .expect("run forced-SIGSEGV inject-then-replace hook guest");
+    let stdout = check_exited(&output, "forced-sigsegv-inject-replace", &log);
+    let (runs, recorded) = stdout.trim().split_once('\n').expect("two lines");
+    assert_eq!(runs, "0", "no handler runs before ppoll returns");
+    let fields: Vec<&str> = recorded.split(' ').collect();
+    let pid: i64 = fields[9].parse().expect("guest pid");
+    assert_eq!(
+        (
+            fields[0], fields[1], fields[2], fields[6], fields[7], fields[8]
+        ),
+        ("-1", libc::EINTR.to_string().as_str(), "0", "1", "1", "1"),
+        "EINTR with SIGUSR2 blocked and pending; its handler runs once unblocked"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1, libc::SIGSEGV, libc::SIGUSR2],
+        "the requeued SIGUSR2 is reported again when it is taken"
+    );
+    assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid), Ok(pid)]);
+}
+
 /// As `signal_hook_mask_at_a_forced_sigsegv_outlives_the_restore`, but the
 /// hook of the forced SIGSEGV executes `cat /proc/self/status`. Linux
 /// restores `ppoll`'s saved mask when the stop resumes to run the `execve`,
@@ -4714,7 +4859,7 @@ fn exec_from_a_forced_sigsegv_hook_keeps_the_saved_mask() {
 /// handler runs once and `ppoll` returns EINTR.
 fn signal_hook_mask_call_that_sets_nothing_delivers(inject: u64, result: Result<i64, i32>) {
     let (output, log) = test_fn::<ScriptedSignalHook, _>(move || unsafe {
-        set_script(&[action(inject, VERDICT_PASS, 0)]);
+        set_script(&[action(inject, VERDICT_PASS, 0); 4]);
         install_recorder(libc::SIGUSR1);
         block(&[libc::SIGUSR1]);
         queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
@@ -4781,6 +4926,297 @@ fn signal_hook_block_that_faults_after_writing_requeues() {
     );
 }
 
+/// As `signal_hook_block_that_faults_after_writing_requeues`, but every
+/// hook injects an `rt_sigprocmask` that fails with EFAULT reading its new
+/// set, before it writes anything (`INJECT_BAD_SET`). The injection leaves
+/// the mask as it was, so SIGUSR1 is delivered under `ppoll`'s temporary
+/// mask as for any other injection: reported once, its handler runs once,
+/// and `ppoll` returns EINTR, as on untraced Linux.
+#[test]
+fn signal_hook_block_that_faults_before_writing_delivers_once() {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
+        set_script(&[action(INJECT_BAD_SET, VERDICT_PASS, 0); 4]);
+        install_recorder(libc::SIGUSR1);
+        block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let ret = ppoll_with_empty_mask();
+        let errno = *libc::__errno_location();
+        print_recorded(ret, errno, libc::SIGUSR1);
+    })
+    .expect("run bad-set hook guest");
+    check_recorded(
+        &output,
+        "block-bad-set",
+        &log,
+        &format!("-1 {}", libc::EINTR),
+        libc::SI_QUEUE,
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Err(Errno::EFAULT.into_raw())]
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1],
+        "the signal is reported once"
+    );
+}
+
+/// As `signal_hook_block_that_faults_before_writing_delivers_once`, but
+/// every hook injects an `io_pgetevents` with a temporary mask that
+/// returns 0 at once (`INJECT_PGETEVENTS`): Linux restores the mask it
+/// replaced before the call returns, so the injection leaves the mask as
+/// it was, and SIGUSR1 is delivered once.
+#[test]
+fn signal_hook_pgetevents_that_restores_its_mask_delivers_once() {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
+        set_script(&[action(INJECT_PGETEVENTS, VERDICT_PASS, 0); 4]);
+        fill_script_pgetevents();
+        install_recorder(libc::SIGUSR1);
+        block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let ret = ppoll_with_empty_mask();
+        let errno = *libc::__errno_location();
+        print_recorded(ret, errno, libc::SIGUSR1);
+    })
+    .expect("run io_pgetevents hook guest");
+    check_recorded(
+        &output,
+        "pgetevents",
+        &log,
+        &format!("-1 {}", libc::EINTR),
+        libc::SI_QUEUE,
+    );
+    assert_eq!(*log.injected.lock().unwrap(), vec![Ok(0)]);
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1],
+        "the signal is reported once"
+    );
+}
+
+/// The guest ignores SIGUSR1, catches SIGSEGV with a counter, blocks both,
+/// queues SIGUSR1, and calls `epoll_pwait` with an empty temporary mask,
+/// which returns EINTR without a restart. The instruction after its
+/// `syscall` faults. The hook of SIGUSR1 injects `getpid`, so Reverie
+/// delivers SIGUSR1 under the temporary mask itself, and the hook of
+/// SIGSEGV passes it through. On untraced Linux the fault comes after
+/// `epoll_pwait`'s saved mask is restored, so SIGSEGV is blocked: Linux
+/// resets it to its default action and unblocks it, and it ends the guest
+/// after one report. Run under the temporary mask instead, the fault would
+/// run the counter, return to the faulting instruction, and fault again.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn fault_after_a_discarded_signal_runs_under_the_saved_mask() {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
+        set_script(&[
+            action(INJECT_GETPID, VERDICT_PASS, 0),
+            action(INJECT_NONE, VERDICT_PASS, 0),
+        ]);
+        let no_core = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(libc::setrlimit(libc::RLIMIT_CORE, &no_core), 0);
+        libc::signal(libc::SIGUSR1, libc::SIG_IGN);
+        SIGSEGV_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSEGV, count_sigsegv);
+        block(&[libc::SIGUSR1, libc::SIGSEGV]);
+        use std::io::Write;
+        println!("{}", libc::getpid());
+        std::io::stdout().flush().unwrap();
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let epfd = libc::epoll_create1(0);
+        assert!(epfd >= 0);
+        let mut events: [libc::epoll_event; 1] = std::mem::zeroed();
+        let mask = 0u64;
+        // The load from address 8 is the first instruction after the
+        // `syscall`.
+        std::arch::asm!(
+            "syscall",
+            "mov {scratch}, qword ptr [{address}]",
+            address = in(reg) 8usize,
+            scratch = out(reg) _,
+            inlateout("rax") libc::SYS_epoll_pwait => _,
+            in("rdi") epfd,
+            in("rsi") events.as_mut_ptr(),
+            in("rdx") 1,
+            in("r10") 5000,
+            in("r8") &mask as *const u64,
+            in("r9") 8,
+            out("rcx") _,
+            out("r11") _,
+        );
+        // Reached only if the fault did not end the guest.
+        libc::_exit(3);
+    })
+    .expect("run fault-after-discard guest");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE fault-after-discard status={:?} guest={} injected={:?} signals={:?}",
+        output.status,
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    assert!(
+        matches!(output.status, ExitStatus::Signaled(Signal::SIGSEGV, _)),
+        "the blocked SIGSEGV ends the guest: {:?}",
+        output.status
+    );
+    let pid: i64 = stdout.trim().parse().expect("guest pid");
+    assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid)]);
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1, libc::SIGSEGV],
+        "SIGSEGV is reported once"
+    );
+}
+
+/// Loads a seccomp filter that traps `write` to `fd` (`SECCOMP_RET_TRAP`)
+/// and allows everything else.
+///
+/// # Safety
+/// Restricts the calling thread's syscalls for the rest of its life.
+#[cfg(target_arch = "x86_64")]
+unsafe fn trap_write_to(fd: u32) {
+    unsafe {
+        let statement = |code: u32, k: u32, jt: u8, jf: u8| libc::sock_filter {
+            code: code as u16,
+            jt,
+            jf,
+            k,
+        };
+        let filter = [
+            // seccomp_data.nr is at offset 0, and the low half of args[0]
+            // at offset 16.
+            statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0, 0, 0),
+            statement(
+                libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+                libc::SYS_write as u32,
+                0,
+                3,
+            ),
+            statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 16, 0, 0),
+            statement(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K, fd, 0, 1),
+            statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_TRAP, 0, 0),
+            statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW, 0, 0),
+        ];
+        let program = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_ptr() as *mut libc::sock_filter,
+        };
+        assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+        assert_eq!(
+            libc::prctl(
+                libc::PR_SET_SECCOMP,
+                libc::SECCOMP_MODE_FILTER,
+                &program as *const libc::sock_fprog
+            ),
+            0
+        );
+    }
+}
+
+/// `struct iocb` for an `IOCB_CMD_PREAD`.
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+struct Iocb {
+    data: u64,
+    key: u32,
+    rw_flags: i32,
+    opcode: u16,
+    reqprio: i16,
+    fd: u32,
+    buf: u64,
+    nbytes: u64,
+    offset: i64,
+    reserved: u64,
+    flags: u32,
+    resfd: u32,
+}
+
+/// The guest ignores SIGUSR1, catches seccomp's SIGSYS with
+/// `record_frame_masks`, blocks SIGUSR1, and queues it. It completes a read
+/// of `/dev/zero` on an AIO context and calls `io_pgetevents` with an
+/// empty temporary mask: the call returns the completion, 1, and with
+/// SIGUSR1 pending Linux still owes the restore of the saved mask. The
+/// next instruction is a `syscall`, whose number is that 1, `write`, to a
+/// descriptor a seccomp filter traps. The hook of SIGUSR1 injects `getpid`,
+/// so Reverie delivers SIGUSR1 under the temporary mask itself. On untraced
+/// Linux the saved mask is restored before the `write`, and the SIGSYS
+/// handler runs under it plus SIGSYS, with the saved mask in its frame.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn trapped_syscall_after_a_discarded_signal_runs_under_the_saved_mask() {
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
+        set_script(&[
+            action(INJECT_GETPID, VERDICT_PASS, 0),
+            action(INJECT_NONE, VERDICT_PASS, 0),
+        ]);
+        let mut context = 0u64;
+        assert_eq!(libc::syscall(libc::SYS_io_setup, 1, &mut context), 0);
+        let zero = libc::open(c"/dev/zero".as_ptr(), libc::O_RDONLY);
+        assert!(zero >= 0);
+        let mut buffer = [1u8; 8];
+        let mut iocb: Iocb = std::mem::zeroed();
+        iocb.fd = zero as u32;
+        iocb.buf = buffer.as_mut_ptr() as u64;
+        iocb.nbytes = buffer.len() as u64;
+        let mut iocbs = [&mut iocb as *mut Iocb];
+        assert_eq!(
+            libc::syscall(libc::SYS_io_submit, context, 1, iocbs.as_mut_ptr()),
+            1
+        );
+        libc::signal(libc::SIGUSR1, libc::SIG_IGN);
+        install_recorder_with(libc::SIGSYS, record_frame_masks as *const () as usize, 0);
+        trap_write_to(context as u32);
+        block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let mut events = [0u64; 4];
+        let mask = 0u64;
+        let sigset = [&mask as *const u64 as usize, 8];
+        // The `write` is the first instruction after `io_pgetevents`'s
+        // `syscall`, and its number is `io_pgetevents`'s result.
+        std::arch::asm!(
+            "syscall",
+            "syscall",
+            inlateout("rax") Sysno::io_pgetevents.id() as i64 => _,
+            in("rdi") context,
+            in("rsi") 1,
+            in("rdx") 1,
+            in("r10") events.as_mut_ptr(),
+            in("r8") 0,
+            in("r9") sigset.as_ptr(),
+            out("rcx") _,
+            out("r11") _,
+        );
+        print_frame_masks();
+        println!(
+            "{} {}",
+            RECORDED_CALLS.load(Ordering::Relaxed),
+            libc::getpid()
+        );
+    })
+    .expect("run trapped-syscall-after-discard guest");
+    let (masks, output) = split_frame_masks(output);
+    let stdout = check_exited(&output, "trapped-syscall-after-discard", &log);
+    let (calls, pid) = stdout.trim().split_once(' ').expect("calls and pid");
+    let pid: i64 = pid.parse().expect("guest pid");
+    let saved = bit(libc::SIGUSR1);
+    assert_eq!(
+        masks,
+        format!("{:#x} {saved:#x} {saved:#x}", saved | bit(libc::SIGSYS)),
+        "the SIGSYS handler runs under the saved mask, which its frame saves"
+    );
+    assert_eq!(calls, "1", "the SIGSYS handler runs once");
+    assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid)]);
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1, libc::SIGSYS]
+    );
+}
+
 /// The guest ignores SIGUSR1, catches `signal` with `record_frame_masks`,
 /// blocks both, queues SIGUSR1, and calls `ppoll` with an empty temporary
 /// mask. The hook of SIGUSR1 injects `getpid` and queues `signal` with
@@ -4832,20 +5268,105 @@ fn timer_numbered_signal_queued_by_a_hook_after_a_discard_runs_under_the_dequeue
     check_signal_queued_by_a_hook_after_a_discard(libc::SIGSTKFLT);
 }
 
+/// The program `parked_lost_restore_callback_leaves_a_sibling_exec_its_mask`
+/// executes. Its first write is a Tool injection; it then prints whether
+/// SIGUSR1 and SIGUSR2 are blocked, and the PID.
+const PRINT_USR_MASK_PY: &std::ffi::CStr = c"import os, signal
+os.write(2, b'')
+mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+print(int(signal.SIGUSR1 in mask), int(signal.SIGUSR2 in mask), os.getpid())
+";
+
+/// As in `exec_from_a_forced_sigsegv_hook_keeps_the_saved_mask`, the leader
+/// takes SIGUSR1 in `ppoll`, its callback injects `getpid`, and Linux
+/// forces a SIGSEGV, whose callback is owed `ppoll`'s saved mask {SIGUSR1}
+/// (`Task::pending_restore`). That callback parks without
+/// injecting, and a worker that blocks only SIGUSR2 executes another
+/// program, which ends the leader and its callback. As on untraced Linux,
+/// the new program starts with the worker's mask: the saved mask was the
+/// leader's, and the new program's first Tool injection does not install
+/// it.
+#[test]
+fn parked_lost_restore_callback_leaves_a_sibling_exec_its_mask() {
+    extern "C" fn worker(_: *mut libc::c_void) -> *mut libc::c_void {
+        // SAFETY: plain libc calls on this thread's signal state and on
+        // buffers that outlive each call.
+        unsafe {
+            let mut usr2: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut usr2);
+            libc::sigaddset(&mut usr2, libc::SIGUSR2);
+            libc::pthread_sigmask(libc::SIG_SETMASK, &usr2, std::ptr::null_mut());
+            let start = std::time::Instant::now();
+            while SCRIPT_PARKED.load(Ordering::Acquire) == 0 {
+                if start.elapsed() > std::time::Duration::from_secs(30) {
+                    libc::_exit(5);
+                }
+                libc::sched_yield();
+            }
+            let path = c"/usr/bin/python3";
+            let argv = [
+                c"python3".as_ptr(),
+                c"-c".as_ptr(),
+                PRINT_USR_MASK_PY.as_ptr(),
+                std::ptr::null(),
+            ];
+            let envp = [std::ptr::null()];
+            libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr());
+            libc::_exit(3);
+        }
+    }
+    let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
+        set_script(&[
+            action(INJECT_GETPID, VERDICT_PASS, 0),
+            action(INJECT_PARK, VERDICT_PASS, 0),
+        ]);
+        SCRIPT_PARKED.store(0, Ordering::Relaxed);
+        install_unwritable_altstack();
+        install_recorder_with(
+            libc::SIGUSR1,
+            record_siginfo as *const () as usize,
+            libc::SA_ONSTACK,
+        );
+        let mut thread: libc::pthread_t = 0;
+        assert_eq!(
+            libc::pthread_create(&mut thread, std::ptr::null(), worker, std::ptr::null_mut()),
+            0
+        );
+        block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        ppoll_with_empty_mask();
+        // Reached only if the worker did not execute the program.
+        libc::_exit(4);
+    })
+    .expect("run parked-callback sibling-exec guest");
+    let stdout = check_exited(&output, "parked-sibling-exec", &log);
+    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("program pid");
+    let pid: i64 = pid.parse().expect("program pid");
+    assert_eq!(
+        fields, "0 1",
+        "the new program keeps the worker's mask, not the leader's saved mask"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1, libc::SIGSEGV]
+    );
+    assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid)]);
+}
+
 /// As `check_signal_queued_by_a_hook_after_a_discard` with SIGSTKFLT, but the hook also queues SIGWINCH, caught by
 /// `record_siginfo`, the guest waits in `epoll_pwait`, which returns EINTR
 /// without a restart, and the hook of SIGSTKFLT suppresses it. On untraced
 /// Linux's equivalent, Linux goes on under `epoll_pwait`'s temporary mask
 /// and takes SIGWINCH: its handler runs once before `epoll_pwait` returns.
-///
-/// Known gap pinned here (https://github.com/rrnewton/reverie/issues/845):
-/// Linux no longer holds the saved mask's restore when it takes SIGSTKFLT
-/// (`deliver_under_taken_mask`), so Reverie installs the saved mask before
-/// it resumes the suppressed stop. That mask blocks SIGWINCH, so
-/// `epoll_pwait` returns EINTR with SIGWINCH pending, and its handler runs,
-/// and the hook reports it, only when the guest unblocks it.
+/// Reverie matches it: the suppressed stop goes on from the nop landing
+/// under the dequeue mask, so Linux takes SIGWINCH in the same
+/// `get_signal`, and the saved mask is installed only after it. Other
+/// architectures have no landing: they install the saved mask before they
+/// go on, so SIGWINCH waits for it
+/// (https://github.com/rrnewton/reverie/issues/845).
+#[cfg(target_arch = "x86_64")]
 #[test]
-fn signal_pending_behind_a_suppressed_lost_restore_signal_waits_for_the_saved_mask() {
+fn signal_pending_behind_a_suppressed_signal_runs_under_the_dequeue_mask() {
     let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
         set_script(&[
             action(
@@ -4869,18 +5390,18 @@ fn signal_pending_behind_a_suppressed_lost_restore_signal_waits_for_the_saved_ma
         let errno = *libc::__errno_location();
         print_recorded(ret as libc::c_long, errno, libc::SIGWINCH);
     })
-    .expect("run suppressed lost-restore guest");
-    let stdout = check_exited(&output, "suppressed-lost-restore", &log);
+    .expect("run suppressed-signal guest");
+    let stdout = check_exited(&output, "suppressed-signal", &log);
     let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
     let pid: i64 = pid.parse().expect("guest pid");
     assert_eq!(
         fields,
         format!(
-            "-1 {} 0 {} {pid} {QUEUED_VALUE} 1 1 1",
+            "-1 {} 1 {} {pid} {QUEUED_VALUE} 1 0 1",
             libc::EINTR,
             libc::SI_QUEUE
         ),
-        "EINTR with SIGWINCH blocked and pending; its handler runs once unblocked"
+        "SIGWINCH's handler runs once before EINTR, and the saved mask blocks it after"
     );
     assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid), Ok(0), Ok(0)]);
     assert_eq!(

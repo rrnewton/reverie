@@ -16,6 +16,17 @@ pub const TRAMPOLINE_SIZE: usize = 0x1000;
 /// total private page size
 pub const PRIVATE_PAGE_SIZE: usize = TRAMPOLINE_SIZE;
 
+/// Offset, within the private page, of the landing a signal is delivered
+/// from under a mask it was dequeued under (`deliver_under_taken_mask`):
+/// `NOP_LANDING_LEN` `nop` bytes in the page's `int3` padding, clear of the
+/// LiteInst restart landing at 0x100.
+#[cfg(target_arch = "x86_64")]
+pub const NOP_LANDING_OFFSET: usize = 0x110;
+
+/// The number of `nop` bytes at `NOP_LANDING_OFFSET`.
+#[cfg(target_arch = "x86_64")]
+pub const NOP_LANDING_LEN: usize = 4;
+
 /// The size of the `ud2` instruction on x86_64.
 #[cfg(target_arch = "x86_64")]
 pub const UD_INSTR_SIZE: usize = 1;

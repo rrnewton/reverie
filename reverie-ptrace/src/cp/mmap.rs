@@ -52,6 +52,11 @@ pub fn populate_mmap_page(pid: Pid, page_address: usize) -> nix::Result<()> {
     const SOFTWARE_INTERUPT: u8 = 0x00;
 
     syscall_stubs.resize_with(TRAMPOLINE_SIZE, || SOFTWARE_INTERUPT);
+
+    // The landing a signal is delivered from without running a guest
+    // instruction (`NOP_LANDING_OFFSET`): `nop`s.
+    #[cfg(target_arch = "x86_64")]
+    syscall_stubs[NOP_LANDING_OFFSET..NOP_LANDING_OFFSET + NOP_LANDING_LEN].fill(0x90);
     let local_iov = &[IoSlice::new(syscall_stubs.as_slice())];
     let remote_iov = &[RemoteIoVec {
         base: page_address,
