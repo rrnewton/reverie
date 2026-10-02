@@ -6130,6 +6130,137 @@ async fn host_hybrid_interrupted_sleep_continues_through_restart_syscall() {
     }
 }
 
+/// Holds a SIGURG across a nanosleep hook that returns the original
+/// `-ERESTART_RESTARTBLOCK`, and replaces the restart block from SIGURG's
+/// signal event if that event runs: it arms a 200 ms alarm, injects a 20 s
+/// sleep the alarm interrupts and holds the alarm with a getpid.
+#[derive(Default)]
+struct ReplacingSleepTool;
+
+#[reverie::tool]
+impl Tool for ReplacingSleepTool {
+    type GlobalState = RestartLog;
+    /// The guest's 20 s timespec and 200 ms `itimerval`, from the
+    /// nanosleep's ignored third and fourth arguments.
+    type ThreadState = Option<(u64, u64)>;
+
+    fn subscriptions(_config: &u64) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::read);
+        subscription.syscall(Sysno::nanosleep);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let (nr, args) = syscall.into_parts();
+        if nr == Sysno::read && args.arg0 as u64 == RESTART_WARM_FD {
+            guest.send_rpc("read(warm)".to_owned()).await;
+            return Ok(0);
+        }
+        if nr == Sysno::nanosleep && guest.thread_state().is_none() {
+            *guest.thread_state_mut() = Some((args.arg2 as u64, args.arg3 as u64));
+            // SAFETY: tgkill has no memory effects.
+            let sent = unsafe {
+                libc::syscall(
+                    libc::SYS_tgkill,
+                    guest.pid().as_raw(),
+                    guest.tid().as_raw(),
+                    libc::SIGURG,
+                )
+            };
+            assert_eq!(sent, 0, "tgkill failed");
+            // The pending SIGURG interrupts the original sleep, which
+            // establishes the guest's restart block; the getpid then holds it.
+            let original = guest.inject(syscall).await;
+            guest
+                .send_rpc(format!(
+                    "nanosleep original={:?}",
+                    original.map_err(|errno| errno.into_raw())
+                ))
+                .await;
+            let getpid = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+            let _ = guest.inject(getpid).await;
+            return Ok(original?);
+        }
+        Ok(guest.inject(syscall).await?)
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: reverie::Signal,
+    ) -> Result<Option<reverie::Signal>, reverie::Errno> {
+        guest.send_rpc(format!("signal {}", signal.as_str())).await;
+        if signal != reverie::Signal::SIGURG {
+            return Ok(Some(signal));
+        }
+        let (replacement, alarm) = guest.thread_state().expect("the nanosleep ran first");
+        let arm = Syscall::from_raw(
+            Sysno::setitimer,
+            SyscallArgs::new(libc::ITIMER_REAL as usize, alarm as usize, 0, 0, 0, 0),
+        );
+        assert_eq!(guest.inject(arm).await, Ok(0), "setitimer failed");
+        // Interrupted by the alarm, the 20 s sleep leaves its own restart
+        // block in place of the guest's.
+        let sleep = Syscall::from_raw(
+            Sysno::nanosleep,
+            SyscallArgs::new(replacement as usize, 0, 0, 0, 0, 0),
+        );
+        let _ = guest.inject(sleep).await;
+        let getpid = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+        let _ = guest.inject(getpid).await;
+        Ok(None)
+    }
+}
+
+/// A held signal on a host-hybrid restart through `restart_syscall` is
+/// passed on unreported: the controller's `orig_rax` is -1, so a signal
+/// event injecting a sleep there would replace the guest's restart block
+/// unseen and `restart_syscall` would continue the injected 20 s sleep
+/// instead of the guest's 400 ms one.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_restart_syscall_with_a_held_signal_keeps_the_guest_restart_block() {
+    let (_directory, guest) = compile_fixture("hybrid_restart.c");
+    let mut command = Command::new(guest);
+    command.arg("sleep-replaced");
+    let started = std::time::Instant::now();
+    let (output, log) = LiteinstBackend::run_host_with_output_and_preload::<ReplacingSleepTool>(
+        command,
+        0,
+        preload_path(),
+    )
+    .await
+    .unwrap();
+    let elapsed = started.elapsed();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!(
+            "sleep-result=0 slept-enough=1 {}\n",
+            restart_counts(RestartBackend::HostHybrid, 1)
+        )
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "the guest's restart continued the injected 20 s sleep: {elapsed:?}"
+    );
+    assert_eq!(
+        log.events(),
+        [
+            "read(warm)",
+            format!(
+                "nanosleep original=Err({})",
+                reverie::Errno::ERESTART_RESTARTBLOCK.into_raw()
+            )
+            .as_str()
+        ]
+    );
+}
+
 /// A syscall that completes with a signal pending is not re-executed: the
 /// thread's self-sent SIGURG reaches the Tool exactly once.
 #[tokio::test(flavor = "current_thread")]
