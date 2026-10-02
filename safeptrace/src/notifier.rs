@@ -4094,6 +4094,19 @@ impl TerminalCleanup {
         Arc::ptr_eq(self.event.event(), other.event.event())
     }
 
+    /// Returns true once this generation's reaper has marked its terminal
+    /// status for reaping, after which the kernel may give its TID to another
+    /// task. The mark is set before the reaping wait, so until it is set no
+    /// reap through this generation's notifier wait has released the TID.
+    /// False is not proof of life: a reap that marks no gate leaves it unset
+    /// (see `retain_failed_registrant` and
+    /// <https://github.com/rrnewton/reverie/issues/860>), and so does a
+    /// registration that finds its task already gone or replaced and retires
+    /// the generation with ECHILD.
+    pub fn reaping_started(&self) -> bool {
+        self.event.hold_tid().is_none()
+    }
+
     /// Waits up to `timeout` for notifier-owned retirement of this generation.
     ///
     /// Acknowledgment follows removal of this generation's registry entry and
