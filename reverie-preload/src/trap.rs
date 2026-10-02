@@ -30,6 +30,7 @@ use crate::dispatch::SyscallEvent;
 use crate::seccomp::TrustedGate;
 use crate::signal;
 pub mod frame;
+mod panic_report;
 mod pkru;
 const SYS_SECCOMP_CODE: libc::c_int = 1;
 
@@ -160,6 +161,8 @@ static DISPATCHER: AtomicPtr<Box<dyn SyscallDispatcher>> = AtomicPtr::new(ptr::n
 thread_local! {
     /// Per-thread reentrancy guard. The const initializer and no-drop `Cell`
     /// select native TLS without Rust's lazy-initialization state machine.
+    /// The panic hook in [`panic_report`] also reads it, to recognize a panic
+    /// raised inside the handler.
     static IN_HANDLER: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -460,11 +463,16 @@ unsafe extern "C" {
 /// Handler permissions stay open through return so a nondefault-key signal
 /// stack remains accessible. This does not change guest signal policy.
 ///
+/// It first installs a panic hook so that a panic inside the handler prints
+/// its message and ends the process with SIGABRT instead of a bare SIGSYS
+/// kill; see `trap/panic_report.rs`.
+///
 /// # Safety
 ///
 /// Installs process-global signal disposition; call once during init while
 /// CPUID is available, before enabling instruction faulting.
 pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
+    panic_report::install();
     frame::initialize()?;
     let ospke = pkru::initialize()?;
     let handler = if ospke {
@@ -519,5 +527,166 @@ mod tests {
             assert_eq!(output.status.code(), Some(126), "{output:?}");
             assert!(output.stderr.is_empty(), "{output:?}");
         }
+    }
+
+    /// The line of the `panic!` in [`deliberate_panic`].
+    const DELIBERATE_PANIC_LINE: u32 = line!() + 2;
+    fn deliberate_panic() -> ! {
+        panic!("deliberate panic inside the SIGSYS handler")
+    }
+
+    /// Forwards every syscall except `getppid`, which panics.
+    struct PanicOnGetppid;
+
+    impl SyscallDispatcher for PanicOnGetppid {
+        fn dispatch(&self, event: &mut SyscallEvent) {
+            if event.number() == libc::SYS_getppid {
+                deliberate_panic();
+            }
+            crate::dispatch::PassthroughDispatcher::new().dispatch(event);
+        }
+    }
+
+    #[test]
+    fn a_panic_inside_the_handler_is_reported_and_aborts() {
+        use std::os::unix::process::ExitStatusExt;
+
+        const CHILD: &str = "REVERIE_TEST_SIGSYS_PANIC";
+        if let Some(value) = std::env::var_os(CHILD) {
+            // The child aborts on purpose. A non-dumpable process writes no
+            // core and does not start the host's core-dump helper.
+            assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) }, 0);
+            let config = crate::lifecycle::RuntimeConfig {
+                use_alt_stack: value == "1",
+            };
+            unsafe {
+                crate::install(
+                    Box::new(PanicOnGetppid),
+                    &crate::lifecycle::InProcessSeccomp,
+                    &config,
+                )
+                .unwrap();
+                libc::syscall(libc::SYS_getppid);
+            }
+            panic!("the trapped getppid returned from the handler");
+        }
+        let expected = format!(
+            "reverie-preload: panic in the SIGSYS handler at {}:{DELIBERATE_PANIC_LINE}:9: \
+             deliberate panic inside the SIGSYS handler\n",
+            file!()
+        );
+        for on_alt_stack in ["0", "1"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "trap::tests::a_panic_inside_the_handler_is_reported_and_aborts",
+                    "--nocapture",
+                ])
+                .env(CHILD, on_alt_stack)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.signal(), Some(libc::SIGABRT), "{output:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                expected,
+                "{output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_panic_inside_the_handler_with_a_closed_stderr_pipe_still_aborts() {
+        use std::os::fd::FromRawFd;
+        use std::os::fd::OwnedFd;
+        use std::os::unix::process::ExitStatusExt;
+
+        const CHILD: &str = "REVERIE_TEST_SIGSYS_PANIC_EPIPE";
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) }, 0);
+            // Rust programs ignore SIGPIPE; a C program takes the default
+            // action, which kills the process.
+            assert_ne!(
+                unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) },
+                libc::SIG_ERR
+            );
+            let config = crate::lifecycle::RuntimeConfig {
+                use_alt_stack: false,
+            };
+            unsafe {
+                crate::install(
+                    Box::new(PanicOnGetppid),
+                    &crate::lifecycle::InProcessSeccomp,
+                    &config,
+                )
+                .unwrap();
+                libc::syscall(libc::SYS_getppid);
+            }
+            panic!("the trapped getppid returned from the handler");
+        }
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: pipe2 returned two new descriptors that nothing else owns.
+        let (reader, writer) =
+            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        // With no reader left, every write to the child's stderr fails.
+        drop(reader);
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "trap::tests::a_panic_inside_the_handler_with_a_closed_stderr_pipe_still_aborts",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stderr(writer)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.signal(), Some(libc::SIGABRT), "{output:?}");
+    }
+
+    /// The line of the `panic!` in [`deliberate_panic_outside_the_handler`].
+    const OUTSIDE_PANIC_LINE: u32 = line!() + 2;
+    fn deliberate_panic_outside_the_handler() -> ! {
+        panic!("deliberate panic outside the SIGSYS handler")
+    }
+
+    #[test]
+    fn a_panic_outside_the_handler_reaches_the_previous_hook() {
+        const CHILD: &str = "REVERIE_TEST_SIGSYS_PANIC_OUTSIDE";
+        if std::env::var_os(CHILD).is_some() {
+            let config = crate::lifecycle::RuntimeConfig {
+                use_alt_stack: false,
+            };
+            unsafe {
+                crate::install(
+                    Box::new(PanicOnGetppid),
+                    &crate::lifecycle::InProcessSeccomp,
+                    &config,
+                )
+                .unwrap();
+            }
+            deliberate_panic_outside_the_handler();
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "trap::tests::a_panic_outside_the_handler_reaches_the_previous_hook",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        // The test harness reports the child's test as failed and exits 101.
+        assert_eq!(output.status.code(), Some(101), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let report = format!(
+            "panicked at {}:{OUTSIDE_PANIC_LINE}:9:\n\
+             deliberate panic outside the SIGSYS handler\n",
+            file!()
+        );
+        assert!(stderr.contains(&report), "{output:?}");
+        assert!(
+            !stderr.contains("panic in the SIGSYS handler"),
+            "{output:?}"
+        );
     }
 }
