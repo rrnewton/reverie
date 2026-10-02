@@ -8786,6 +8786,9 @@ mod test {
             .resume_retaining(None)
             .expect_err("the claimed capability resumed the replacement");
         assert_eq!(errno, Errno::ESRCH);
+        #[cfg(feature = "memory")]
+        let replacement = assert_user_access_write_refused_after_reap(claimed, replacement);
+        #[cfg(not(feature = "memory"))]
         drop(claimed);
 
         let info = replacement
@@ -8806,6 +8809,53 @@ mod test {
             (replacement_pid.into(), crate::ExitStatus::Exited(42))
         );
         true
+    }
+
+    /// Bytes in the test binary's writable data, at the same address in
+    /// every forked tracee.
+    #[cfg(feature = "memory")]
+    static mut REUSE_PROBE: [u8; 16] = *b"replacement-data";
+
+    /// A user-access write through a reaped generation's capability must fail
+    /// without changing the replacement's memory, while the replacement's own
+    /// capability can still write it.
+    #[cfg(feature = "memory")]
+    fn assert_user_access_write_refused_after_reap(
+        mut claimed: Stopped,
+        mut replacement: Stopped,
+    ) -> Stopped {
+        use reverie_memory::Addr;
+        use reverie_memory::AddrMut;
+        use reverie_memory::MemoryAccess;
+
+        let raw = std::ptr::addr_of!(REUSE_PROBE) as usize;
+        let probe = AddrMut::from_raw(raw).expect("probe address");
+        let original = *b"replacement-data";
+        let read_probe = |replacement: &Stopped| {
+            let mut observed = [0u8; 16];
+            replacement
+                .read_exact(
+                    Addr::<u8>::from_raw(raw).expect("probe address"),
+                    &mut observed,
+                )
+                .expect("read the replacement's probe");
+            observed
+        };
+
+        assert_eq!(
+            claimed.write_with_user_access(probe, b"stale-generation"),
+            Err(Errno::ESRCH),
+            "a user-access write through the claimed capability reached the replacement"
+        );
+        drop(claimed);
+        assert_eq!(read_probe(&replacement), original);
+
+        assert_eq!(
+            replacement.write_with_user_access(probe, b"own-capability!!"),
+            Ok(16)
+        );
+        assert_eq!(&read_probe(&replacement), b"own-capability!!");
+        replacement
     }
 
     #[tokio::test(flavor = "current_thread")]

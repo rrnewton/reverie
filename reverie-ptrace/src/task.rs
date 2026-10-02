@@ -3411,7 +3411,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             // loop until second breakpoint hit after injected syscall.
             #[cfg(test)]
             let mut step = 0;
-            let task = loop {
+            let mut task = loop {
                 let (task, event) = match running.next_state().await? {
                     Wait::Stopped(task, event) => (task, event),
                     Wait::Exited(pid, exit_status) => {
@@ -3502,7 +3502,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                 || task.terminal_cleanup(),
                 PreinitPoint::MmapReturned,
             );
-            memory_request(&task, cp::populate_mmap_page(task.pid().into(), page_addr))?;
+            // Write through the task's own capability, which refuses once
+            // its TID is being reaped, so the page contents can never land
+            // in a task that reused the TID.
+            let page = AddrMut::from_raw(page_addr).ok_or(Errno::EFAULT)?;
+            let populated = task.write_exact(page, &cp::mmap_page_contents());
+            memory_request(&task, populated)?;
 
             // Restore our saved registers, including our instruction pointer.
             task.setregs(saved_regs)?;
@@ -8769,7 +8774,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let child_context = self.injected_syscall_frame.is_some().then_some(regs);
 
         // Jump to our private page to run the syscall instruction there. See
-        // `populate_mmap_page` for details.
+        // `mmap_page_contents` for details.
         *regs.ip_mut() = cp::PRIVATE_PAGE_OFFSET as Reg;
 
         task.setregs(&regs)?;

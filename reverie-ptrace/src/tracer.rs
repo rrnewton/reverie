@@ -8795,6 +8795,188 @@ mod tests {
         exec_preinit_kill_page_populated_esrch_at_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(PagePopulated, EsrchAtExitStop);
     }
 
+    /// Selects the inner run of [`preinit_page_population_never_writes_a_replacement`].
+    const POPULATE_REUSE_INNER: &str = "REVERIE_PREINIT_POPULATE_REUSE_INNER";
+    const POPULATE_REUSE_CHECKED: &str = "@@preinit-populate-replacement-checked@@";
+
+    /// Starts an untraced process that reuses the reaped `pid` and maps a
+    /// zero-filled page where initialization populates its private page.
+    /// Needs CAP_SYS_ADMIN over the PID namespace, for `clone3`'s `set_tid`.
+    fn spawn_private_page_replacement(pid: Pid) -> Pid {
+        #[repr(C)]
+        #[derive(Default)]
+        struct CloneArgs {
+            flags: u64,
+            pidfd: u64,
+            child_tid: u64,
+            parent_tid: u64,
+            exit_signal: u64,
+            stack: u64,
+            stack_size: u64,
+            tls: u64,
+            set_tid: u64,
+            set_tid_size: u64,
+            cgroup: u64,
+        }
+
+        assert_eventually_reaped("killed tracee before its PID is reused", pid);
+        let mut ready = [0; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(ready.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        let mut set_tid = pid.as_raw() as u64;
+        let args = CloneArgs {
+            exit_signal: libc::SIGCHLD as u64,
+            set_tid: std::ptr::from_mut(&mut set_tid) as u64,
+            set_tid_size: 1,
+            ..CloneArgs::default()
+        };
+        let child = unsafe {
+            libc::syscall(
+                libc::SYS_clone3,
+                std::ptr::from_ref(&args),
+                std::mem::size_of::<CloneArgs>(),
+            )
+        };
+        assert!(child >= 0, "clone3 reusing {pid}: {}", Errno::last());
+        if child == 0 {
+            // Only async-signal-safe calls: the test process has other threads.
+            let page = unsafe {
+                libc::mmap(
+                    crate::cp::PRIVATE_PAGE_OFFSET as *mut libc::c_void,
+                    crate::cp::PRIVATE_PAGE_SIZE,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_FIXED | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            if page as usize != crate::cp::PRIVATE_PAGE_OFFSET {
+                unsafe { libc::_exit(1) };
+            }
+            unsafe {
+                libc::write(ready[1], [1u8].as_ptr().cast(), 1);
+                loop {
+                    libc::pause();
+                }
+            }
+        }
+        assert_eq!(child as i32, pid.as_raw(), "clone3 did not reuse {pid}");
+        unsafe { libc::close(ready[1]) };
+        let mut byte = [0u8; 1];
+        let read = unsafe { libc::read(ready[0], byte.as_mut_ptr().cast(), 1) };
+        unsafe { libc::close(ready[0]) };
+        assert_eq!(read, 1, "replacement {pid} did not map its page");
+        pid
+    }
+
+    /// Kills the tracee after its injected mmap returns and before
+    /// initialization populates the page, lets the notifier reap it, and
+    /// starts a replacement on the same PID with a zero-filled page at the
+    /// same address. Initialization must still fail with the kill, and its
+    /// page population must not reach the replacement. Runs in a fresh user
+    /// and PID namespace, where the PID can be reused exactly.
+    #[tokio::test(flavor = "current_thread")]
+    async fn preinit_page_population_never_writes_a_replacement() {
+        if std::env::var_os(POPULATE_REUSE_INNER).is_none() {
+            let module = module_path!()
+                .split_once("::")
+                .map(|(_, rest)| rest)
+                .unwrap();
+            let test_name = format!("{module}::preinit_page_population_never_writes_a_replacement");
+            let output = std::process::Command::new("/usr/bin/timeout")
+                .args([
+                    "60",
+                    "/usr/bin/unshare",
+                    "--user",
+                    "--map-root-user",
+                    "--pid",
+                    "--fork",
+                    "--mount-proc",
+                    "--",
+                ])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
+                .env(POPULATE_REUSE_INNER, "1")
+                .output()
+                .expect("spawn /usr/bin/unshare");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains(POPULATE_REUSE_CHECKED),
+                "inner run in a fresh PID namespace failed ({}):\nstdout:\n{stdout}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let point = crate::task::PreinitPoint::MmapReturned;
+        let (kill_hook, kill) = kill_at_preinit_point(point, 1, PreinitKillMode::Exited);
+        let replacement = Arc::new(StdMutex::new(None));
+        let made = Arc::clone(&replacement);
+        let hook: crate::task::PreinitPointForTest = Arc::new(move |pid, terminal, at| {
+            kill_hook(pid, terminal, at);
+            let mut made = made.lock().unwrap();
+            if at == point && made.is_none() && *kill.killed.lock().unwrap() == Some(pid) {
+                *made = Some(spawn_private_page_replacement(pid));
+            }
+        });
+        let spawned = tokio::time::timeout(
+            Duration::from_secs(5),
+            TracerBuilder::<AllSyscallsTool>::new(Command::new("/bin/true"))
+                .preinit_point_for_test(hook)
+                .spawn(),
+        )
+        .await
+        .expect("spawn did not end within 5 s");
+        let pid = replacement
+            .lock()
+            .unwrap()
+            .expect("never killed at MmapReturned");
+
+        let mut page = vec![0xa5u8; crate::cp::PRIVATE_PAGE_SIZE];
+        let local = libc::iovec {
+            iov_base: page.as_mut_ptr().cast(),
+            iov_len: page.len(),
+        };
+        let remote = libc::iovec {
+            iov_base: crate::cp::PRIVATE_PAGE_OFFSET as *mut libc::c_void,
+            iov_len: page.len(),
+        };
+        let read = unsafe { libc::process_vm_readv(pid.as_raw(), &local, 1, &remote, 1, 0) };
+        let killed = unsafe { libc::kill(pid.as_raw(), libc::SIGKILL) };
+        let reaped = unistd::Pid::from_raw(pid.as_raw());
+        let status = nix::sys::wait::waitpid(reaped, None);
+        assert_eq!(read, page.len() as isize, "read the replacement's page");
+        assert!(
+            page.iter().all(|byte| *byte == 0),
+            "initialization populated the replacement's page: {:02x?}",
+            &page[..16]
+        );
+        assert_eq!(killed, 0);
+        assert!(
+            matches!(
+                status,
+                Ok(nix::sys::wait::WaitStatus::Signaled(_, Signal::SIGKILL, _))
+            ),
+            "replacement {pid} ended with {status:?}"
+        );
+
+        let error = match spawned {
+            Ok(_) => panic!("spawn of a killed tracee succeeded"),
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(
+            error,
+            format!(
+                "tracee {pid} exited during ptrace initialization with Signaled(SIGKILL, false)"
+            )
+        );
+        // libtest has already printed "test <name> ... " without a newline.
+        println!("\n{POPULATE_REUSE_CHECKED}");
+    }
+
     /// An errno from a tracee that is still alive is returned unchanged.
     #[tokio::test(flavor = "current_thread")]
     async fn dead_or_keeps_the_error_of_a_live_tracee() {

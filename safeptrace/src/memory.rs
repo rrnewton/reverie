@@ -236,8 +236,10 @@ impl MemoryAccess for Stopped {
         // SAFETY: local describes the live source slice. The remote address is
         // only a numeric kernel operand; no Rust reference is formed from it.
         // Unlike POKEDATA, process_vm_writev checks writable VMA permissions.
-        let written = Errno::result(unsafe {
-            libc::process_vm_writev(self.0.as_raw(), &local, 1, &remote, 1, 0)
+        let written = self.1.on_held_tid(|| {
+            Errno::result(unsafe {
+                libc::process_vm_writev(self.0.as_raw(), &local, 1, &remote, 1, 0)
+            })
         })? as usize;
         if written == 0 {
             Err(Errno::EFAULT)
