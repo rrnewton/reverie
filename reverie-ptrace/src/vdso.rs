@@ -631,10 +631,7 @@ fn vdso_replacements(
     subscriptions: &Subscription,
 ) -> Result<Vec<(&'static VdsoEntry, &'static [u8])>, Error> {
     static REPORTED: LazyLock<Mutex<BTreeSet<String>>> = LazyLock::new(Default::default);
-    let Some(table) = vdso_table()? else {
-        return Ok(Vec::new());
-    };
-    let (replacements, report) = select_replacements(table, subscriptions, &REPORTED);
+    let (replacements, report) = replacements_from(vdso_table, subscriptions, &REPORTED)?;
     match report {
         Some(NativeReport::First(native)) => warn!(
             "vDSO entry points left native because the tool does not subscribe to their \
@@ -644,6 +641,27 @@ fn vdso_replacements(
         None => {}
     }
     Ok(replacements)
+}
+
+/// The entry points to replace, each with its stub, and the report of those
+/// left native.
+type Selection<'a> = (Vec<(&'a VdsoEntry, &'static [u8])>, Option<NativeReport>);
+
+/// Runs [`select_replacements`] on the vDSO table, which `table` reads only if
+/// the tool subscribes to some syscall: a tool that subscribes to none leaves
+/// the vDSO alone, even one that could not be read or classified.
+fn replacements_from<'a>(
+    table: impl FnOnce() -> Result<Option<&'a VdsoTable>, Error>,
+    subscriptions: &Subscription,
+    reported: &Mutex<BTreeSet<String>>,
+) -> Result<Selection<'a>, Error> {
+    if subscriptions.iter_syscalls().next().is_none() {
+        return Ok((Vec::new(), None));
+    }
+    Ok(match table()? {
+        Some(table) => select_replacements(table, subscriptions, reported),
+        None => (Vec::new(), None),
+    })
 }
 
 /// How [`select_replacements`] reports the entry points it leaves native.
@@ -667,7 +685,7 @@ fn select_replacements<'a>(
     table: &'a VdsoTable,
     subscriptions: &Subscription,
     reported: &Mutex<BTreeSet<String>>,
-) -> (Vec<(&'a VdsoEntry, &'static [u8])>, Option<NativeReport>) {
+) -> Selection<'a> {
     if subscriptions.iter_syscalls().next().is_none() {
         return (Vec::new(), None);
     }
@@ -1051,6 +1069,22 @@ mod tests {
         let (replacements, report) = select_replacements(&table, &only_known, &reported);
         assert_eq!(replacements.len(), 2);
         assert_eq!(report, None);
+    }
+
+    #[test]
+    fn a_tool_without_subscriptions_never_reads_the_vdso() {
+        let unreadable = || -> Result<Option<&VdsoTable>, Error> {
+            Err(std::io::Error::other("vDSO entry points overlap").into())
+        };
+        let (replacements, report) =
+            replacements_from(unreadable, &Subscription::none(), &Mutex::default()).unwrap();
+        assert!(replacements.is_empty());
+        assert_eq!(report, None);
+        let read: Subscription = [Sysno::read].into_iter().collect();
+        assert!(
+            replacements_from(unreadable, &read, &Mutex::default()).is_err(),
+            "a subscribing tool must see why the vDSO could not be classified"
+        );
     }
 
     #[test]
