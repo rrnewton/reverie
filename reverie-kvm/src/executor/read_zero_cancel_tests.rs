@@ -98,29 +98,36 @@ fn read_zero_blocking_inotify() -> std::fs::File {
     unsafe { std::fs::File::from_raw_fd(raw) }
 }
 
-// Primitive ownership coverage only. Public scalar dispatch now refuses these
-// potentially blocking endpoints before injection; its refusal is tested in
-// read_zero_refusal_tests and by the real Direct/Tool guests. Exercise the
-// still-existing endpoint lender/reader directly here to retain the kernel
-// blocked-read witness, cancellation, unwind, and replacement assertions. This
-// test-only helper is not a production admission bypass or supported execution.
-fn read_zero_alias_primitive(
+// Public scalar dispatch refuses these potentially blocking endpoints before
+// injection; the real Direct/Tool guests independently require that refusal.
+// These lifecycle controls explicitly admit one exact owned fd under cfg(test)
+// so the real dispatcher still exercises table install, lock release, file
+// retirement, and reader ownership. This is not supported guest execution.
+fn read_zero_alias_with_test_admission(
     executor: &mut ElfExecutor,
     request: &SyscallRequest,
+    memory: &GuestMemory,
     context: &mut crate::terminal_read::ReadContext,
-) -> crate::Result<crate::terminal_read::NativeReturn> {
+) -> crate::Result<i64> {
     assert_eq!(request.number(), libc::SYS_read as u64);
     assert_eq!(request.args()[2], 0);
-    let identity = executor.admitted_signal_identity();
     let fd = request.args()[0] as libc::c_int;
-    let mut endpoint = ReadEndpoint::take(&mut executor.state.files, fd);
-    context.read(
-        &mut endpoint.endpoint,
-        identity,
-        *request,
-        zero_read_host_address(request.args()[1]),
-        0,
-    )
+    let host_fd = executor.state.files[&fd].as_raw_fd();
+    struct Admission;
+    impl Drop for Admission {
+        fn drop(&mut self) {
+            TEST_ZERO_READ_ADMISSION.with(|admitted| admitted.set(None));
+        }
+    }
+    TEST_ZERO_READ_ADMISSION.with(|admitted| {
+        assert_eq!(admitted.get(), None, "nested test admission");
+        admitted.set(Some(host_fd));
+    });
+    let admission = Admission;
+    let result = executor.execute_checked_with_read_context(request, memory, context);
+    drop(admission);
+    TEST_ZERO_READ_ADMISSION.with(|admitted| assert_eq!(admitted.get(), None));
+    result
 }
 
 fn read_zero_alias_blocked_disposal(observer_panic: bool) {
@@ -172,7 +179,8 @@ fn read_zero_alias_blocked_disposal(observer_panic: bool) {
             panics.clone(),
             false,
         );
-        let result = read_zero_alias_primitive(&mut executor, &request, &mut context);
+        let result =
+            read_zero_alias_with_test_admission(&mut executor, &request, &memory, &mut context);
         if observer_panic {
             assert!(matches!(
                 result.unwrap_err().primary(),
@@ -212,12 +220,12 @@ fn read_zero_alias_blocked_disposal(observer_panic: bool) {
 }
 
 #[test]
-fn read_zero_count_alias_primitive_blocks_then_cancels_and_restores_endpoint() {
+fn read_zero_count_alias_test_admission_blocks_then_cancels_and_restores_endpoint() {
     read_zero_alias_blocked_disposal(false);
 }
 
 #[test]
-fn read_zero_count_alias_primitive_observer_panic_restores_endpoint() {
+fn read_zero_count_alias_test_admission_observer_panic_restores_endpoint() {
     read_zero_alias_blocked_disposal(true);
 }
 
@@ -300,7 +308,7 @@ fn read_zero_count_alias_native_errors_and_control_refusal_restore_entry() {
 }
 
 #[test]
-fn read_zero_count_alias_primitive_restore_does_not_resurrect_sibling_replacement() {
+fn read_zero_count_alias_test_admission_restore_does_not_resurrect_sibling_replacement() {
     let (mut executor, memory, fd) = read_zero_alias_fixture(read_zero_blocking_inotify(), false);
     let before = ReadZeroEntry::capture(&executor.state, fd);
     let sibling = Arc::new(Mutex::new(executor.thread_child(2).unwrap()));
@@ -365,7 +373,7 @@ fn read_zero_count_alias_primitive_restore_does_not_resurrect_sibling_replacemen
         false,
     );
     assert!(matches!(
-        read_zero_alias_primitive(&mut executor, &request, &mut context),
+        read_zero_alias_with_test_admission(&mut executor, &request, &memory, &mut context),
         Err(crate::Error::TerminalReadCancelled)
     ));
     observed

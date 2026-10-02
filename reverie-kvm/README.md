@@ -280,10 +280,10 @@ This ends the run with a named unsupported-operation error; it does not return
 a successful zero or a made-up syscall errno. The consumer repair remains
 tracked at https://github.com/rrnewton/hermit/issues/3498.
 
-The admitted real endpoints are pipes, `/dev/null`, `/dev/zero`, positively
-identified eventfd/timerfd/signalfd objects, and regular files/directories on
+The admitted real endpoints are pipes, sockets, `/dev/null`, `/dev/zero`, positively
+identified eventfd/timerfd/signalfd/epoll objects, and regular files/directories on
 tmpfs, ext4, or btrfs. Synthetic proc/random/signalfd descriptions keep their
-existing routing. Sockets, inotify, and unknown endpoint/filesystem kinds are
+existing routing. Inotify and unknown endpoint/filesystem kinds are
 refused even when `O_NONBLOCK` is currently set: another alias can change that
 shared flag before injection. Native descriptor/address errors are preserved
 within the admitted surface, including invalid-address reads on sockets and
@@ -291,11 +291,14 @@ inotify; an invalid address alone does not admit an unknown filesystem.
 
 This is a deliberately reduced support boundary. It relies on the backend's
 existing trusted host, procfs, metadata, and ordinary local-filesystem I/O
-contract. It is not a guarantee that every host metadata query or local-file
-read is wait-free: tmpfs may fault or swap a folio, and btrfs direct I/O may
-take an inode lock even for zero bytes. Primitive reader-retirement tests do
-not establish support for a refused guest operation. The real guest tests
-instead require the named failure, no reader ever started, no fabricated
+contract. In particular, zero-count reads on XFS or overlayfs files and terminal
+stdin now end the run explicitly, where the previous paths attempted the host
+read or answered zero. It is not a guarantee that every host metadata query or
+local-file read is wait-free: tmpfs may fault or swap a folio, and btrfs direct I/O may
+take an inode lock even for zero bytes. Lifecycle tests use an explicit
+`cfg(test)` admission for one owned descriptor to exercise the real dispatcher's
+lock release and reader retirement; they do not establish support for a refused
+guest operation. The real guest tests instead require the named failure, no reader ever started, no fabricated
 result, and completed teardown.
 
 Non-leader `execve` and supported-form `execveat` (`AT_FDCWD`, flags `0`)
