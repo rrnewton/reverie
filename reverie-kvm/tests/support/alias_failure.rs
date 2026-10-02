@@ -278,7 +278,7 @@ impl Fault {
     pub(crate) fn assert_fired(&self) -> AliasObservation {
         // Finish observes before the fixture's own allocator releases its marker.
         unsafe { (self.finish)() };
-        let counts = std::array::from_fn::<_, 32, _>(|i| unsafe { (self.count)(i as i32) as u64 });
+        let counts = std::array::from_fn::<_, 32, _>(|i| unsafe { (self.count)(i as i32) });
         let mut expected = match self.case {
             Case::Reservation => [
                 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
