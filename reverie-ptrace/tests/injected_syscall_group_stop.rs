@@ -6203,8 +6203,9 @@ impl Tool for TrapAfterUnblockThenGetpid {
 
 /// A held SIGUSR1 with a guest SIGTRAP pending, not the step SIGTRAP of the
 /// injection that held it (`stale_private_step_trap`). Reported, its hook's
-/// `getpid` would stop at that SIGTRAP before the `syscall` and take it for
-/// the step's own, consuming the guest's trap. So the held signal is passed
+/// `getpid` would stop at that SIGTRAP before the `syscall`, which the
+/// injection discards before it steps the `syscall` again
+/// (`untraced_syscall_with`), consuming the guest's trap. So the held signal is passed
 /// on unreported, as while any other signal is pending
 /// (`check_held_signal_with_another_pending`), and as on main: the hook's
 /// `getpid` never runs, and the SIGUSR1 handler runs once. Without the trap
@@ -6279,6 +6280,18 @@ static RESTART_BLOCK_ZERO_RAX: AtomicU64 = AtomicU64::new(0);
 /// of SIGALRM, when nonzero; it then neither suppresses nor passes SIGALRM.
 /// Read like `RESTART_BLOCK_SUPPRESS`.
 static RESTART_BLOCK_VERDICT: AtomicU64 = AtomicU64::new(0);
+/// Nonzero when `RestartBlockInFirstSignalHook` overwrites the guest's
+/// `nanosleep` request, at the address in its first argument register, with
+/// `RESTART_BLOCK_INVALID_SLEEP` after its last injection: a restart of the
+/// guest's sleep with its original arguments then fails with EINVAL. Read
+/// like `RESTART_BLOCK_SUPPRESS`.
+static RESTART_BLOCK_POISON: AtomicU64 = AtomicU64::new(0);
+/// What `RESTART_BLOCK_POISON` writes: a nanosecond count `nanosleep`
+/// rejects.
+const RESTART_BLOCK_INVALID_SLEEP: libc::timespec = libc::timespec {
+    tv_sec: 0,
+    tv_nsec: 1_000_000_000,
+};
 /// The sleep `RestartBlockInFirstSignalHook` injects last when
 /// `RESTART_BLOCK_FINAL` is set: 350 ms, which no signal interrupts.
 static RESTART_BLOCK_FINAL_SLEEP: libc::timespec = libc::timespec {
@@ -6312,7 +6325,8 @@ const RESTART_BLOCK_GETPID_TRIES: usize = 3;
 /// SIGALRM interrupts it, then injects `getpid` until it succeeds, and then
 /// `RESTART_BLOCK_FINAL_SLEEP` when `RESTART_BLOCK_FINAL` is set in the
 /// guest; each injection is reported. It then writes zero to the guest's
-/// return register when `RESTART_BLOCK_ZERO_RAX` is set. It resumes with
+/// return register when `RESTART_BLOCK_ZERO_RAX` is set, and overwrites the
+/// guest's sleep request when `RESTART_BLOCK_POISON` is set. It resumes with
 /// the signal `RESTART_BLOCK_VERDICT` names when that is set, else
 /// suppresses the signal when `RESTART_BLOCK_SUPPRESS` is set in the guest
 /// and passes it through otherwise.
@@ -6419,6 +6433,13 @@ impl Tool for RestartBlockInFirstSignalHook {
                 .await
                 .expect("write the guest's registers");
         }
+        if guest.memory().read_value(flag(&RESTART_BLOCK_POISON)?)? != 0 {
+            let request = AddrMut::<libc::timespec>::from_raw(guest.regs().await.rdi as usize)
+                .ok_or(Errno::EFAULT)?;
+            guest
+                .memory()
+                .write_value(request, &RESTART_BLOCK_INVALID_SLEEP)?;
+        }
         let verdict = guest.memory().read_value(flag(&RESTART_BLOCK_VERDICT)?)?;
         if verdict != 0 {
             Ok(Some(
@@ -6512,6 +6533,7 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
             RESTART_BLOCK_RESUME.store(resume as u64, Ordering::Relaxed);
             RESTART_BLOCK_ZERO_RAX.store(zero_rax as u64, Ordering::Relaxed);
             RESTART_BLOCK_VERDICT.store(verdict as u64, Ordering::Relaxed);
+            RESTART_BLOCK_POISON.store(0, Ordering::Relaxed);
             SIGALRM_HANDLER_CALLS.store(0, Ordering::Relaxed);
             install_counter(libc::SIGALRM, count_sigalrm);
             if verdict == libc::SIGUSR2 {
@@ -6838,10 +6860,11 @@ impl Tool for TrapThenGetpidInSigusr1Hook {
     ) -> Result<Option<Signal>, Errno> {
         guest.send_rpc(Report::Signal(signal as i32)).await;
         if signal == Signal::SIGUSR1 {
-            // The interrupted injection left its step SIGTRAP queued. A
-            // SIGTRAP sent now would coalesce with it, and the first step
-            // discards that stale trap. Inject once to consume it, so the
-            // SIGTRAP sent next is the only one pending.
+            // A precaution: if an earlier injection had left its step
+            // SIGTRAP queued, a SIGTRAP sent now would coalesce with it and
+            // be discarded as that stale trap. One complete injection first
+            // leaves no step SIGTRAP behind, so the SIGTRAP sent next is
+            // the only one pending.
             let result = guest.inject(Getpid::new()).await;
             guest
                 .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
@@ -6865,8 +6888,8 @@ impl Tool for TrapThenGetpidInSigusr1Hook {
     }
 }
 
-/// The hook of a held SIGUSR1 injects `getpid`, which consumes the step
-/// SIGTRAP the interrupted injection left queued, sends the guest's thread
+/// The hook of a held SIGUSR1 injects `getpid`, a complete injection that
+/// leaves no step SIGTRAP queued for the next to coalesce with, sends the guest's thread
 /// a SIGTRAP, and injects `getpid` again. Linux dequeues that SIGTRAP when
 /// the second injection is stepped, before its `syscall` runs, and stops
 /// there. That is not the
@@ -7133,13 +7156,18 @@ const DISPOSITION_RACE_WORKERS: usize = 16;
 /// injected sleep, and the disposition Reverie reads can differ from the one
 /// in force when the kernel delivers the signal. Untraced Linux, for a
 /// signal arriving while the sleep is interrupted, either runs the handler
-/// and returns EINTR, or ignores the signal and restarts the sleep. Reverie
-/// leaves `-ERESTARTNOHAND` for the kernel to decide at delivery when it
-/// sees a handler, so each worker sees EINTR with a handler run, or zero,
-/// with or without one (a handler installed after the read runs, and the
-/// final sleep has already outlasted the guest's deadline). EINTR with no
-/// handler run, which no untraced run returns, is never seen
-/// (https://github.com/rrnewton/reverie/issues/845).
+/// and returns EINTR, or ignores the signal and restarts the sleep to its
+/// own deadline. With a sibling that can change the disposition, Reverie
+/// does not rely on what it read: the guest resumes with the final injected
+/// sleep's zero, as on main, and the handler runs or not as the kernel finds
+/// it at delivery. So each worker sees zero, with or without a handler run;
+/// EINTR with a handler run is a known gap here
+/// (https://github.com/rrnewton/reverie/issues/845). EINTR with no handler
+/// run, which no untraced run returns, is never seen, nor a restart of the
+/// guest's sleep with its original arguments, which would sleep 300 ms
+/// past the deadline: the hook overwrites the guest's request with one
+/// `nanosleep` rejects (`RESTART_BLOCK_POISON`), so a restart returns
+/// EINVAL.
 #[test]
 fn restart_block_verdict_raced_by_a_disposition_change_never_leaves_a_bare_eintr() {
     let (output, log) = test_fn_bounded::<RestartBlockInFirstSignalHook, _>(
@@ -7149,6 +7177,7 @@ fn restart_block_verdict_raced_by_a_disposition_change_never_leaves_a_bare_eintr
             RESTART_BLOCK_RESUME.store(0, Ordering::Relaxed);
             RESTART_BLOCK_ZERO_RAX.store(0, Ordering::Relaxed);
             RESTART_BLOCK_VERDICT.store(libc::SIGUSR2 as u64, Ordering::Relaxed);
+            RESTART_BLOCK_POISON.store(1, Ordering::Relaxed);
             install_counter(libc::SIGALRM, count_sigalrm);
             install_counter(libc::SIGUSR2, count_second);
             // Only the workers take the process-wide SIGALRM of ITIMER_REAL.
@@ -7230,11 +7259,11 @@ fn restart_block_verdict_raced_by_a_disposition_change_never_leaves_a_bare_eintr
         DISPOSITION_RACE_WORKERS,
         "one line per worker: {stdout:?}"
     );
-    let eintr_with_handler = format!("-1 {} 1", libc::EINTR);
     for line in &lines {
         assert!(
-            [eintr_with_handler.as_str(), "0 0 0", "0 0 1"].contains(line),
-            "EINTR with a handler run, or zero; never EINTR alone: {line:?} in {stdout:?}"
+            ["0 0 0", "0 0 1"].contains(line),
+            "zero, with or without a handler run; never EINTR alone or a restart's EINVAL: \
+             {line:?} in {stdout:?}"
         );
     }
 }
