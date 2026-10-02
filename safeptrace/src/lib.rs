@@ -74,6 +74,15 @@ impl TraceeToken {
         })
     }
 
+    /// The generation that `pid` names now, shared with every other
+    /// capability for it as `current_or_new` shares it, or a fresh token if
+    /// the task's identity cannot be captured. A fresh token is bound to no
+    /// generation, so its requests are not held off by the TID gate that the
+    /// task's reaper marks.
+    fn current_or_fresh(pid: Pid) -> Self {
+        Self::current_or_new(pid).unwrap_or_else(|_| Self::new())
+    }
+
     fn current_or_error(pid: Pid) -> Self {
         #[cfg(not(feature = "notifier"))]
         let _ = pid;
@@ -428,7 +437,12 @@ impl Wait {
     /// Preconditions:
     /// The process must not be in a running state.
     pub fn from_raw(pid: Pid, status: i32) -> Result<Self, Error> {
-        Self::from_raw_with_token(pid, status, TraceeToken::new())
+        let token = if libc::WIFSTOPPED(status) {
+            TraceeToken::current_or_fresh(pid)
+        } else {
+            TraceeToken::new()
+        };
+        Self::from_raw_with_token(pid, status, token)
     }
 
     fn from_raw_with_token(pid: Pid, status: i32, token: TraceeToken) -> Result<Self, Error> {
@@ -480,7 +494,13 @@ impl TryFrom<WaitStatus> for Wait {
     /// Preconditions:
     /// The process must not be in a `StillAlive` state.
     fn try_from(wait_status: WaitStatus) -> Result<Self, Error> {
-        Self::from_wait_status_with_token(wait_status, TraceeToken::new())
+        let token = match wait_status {
+            WaitStatus::Stopped(pid, _)
+            | WaitStatus::PtraceEvent(pid, ..)
+            | WaitStatus::PtraceSyscall(pid) => TraceeToken::current_or_fresh(pid.into()),
+            _ => TraceeToken::new(),
+        };
+        Self::from_wait_status_with_token(wait_status, token)
     }
 }
 
@@ -1205,8 +1225,12 @@ pub struct Running(Pid, TraceeToken);
 impl Running {
     /// Creates a new running process. This is generally the entry point for a
     /// new process as soon as it is created.
+    ///
+    /// The state shares the generation that other states for the same live
+    /// task already carry, so a numeric request through any of them stops
+    /// reaching the TID once that task is reaped.
     pub fn new(pid: Pid) -> Self {
-        Self::from_token(pid, TraceeToken::new())
+        Self::from_token(pid, TraceeToken::current_or_fresh(pid))
     }
 
     fn from_token(pid: Pid, token: TraceeToken) -> Self {

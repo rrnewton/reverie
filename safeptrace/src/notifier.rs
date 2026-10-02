@@ -323,6 +323,9 @@ static CLEANUP_CANCEL_SIGNAL_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePau
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+static ABSORBED_UNREGISTERED: LazyLock<Mutex<HashMap<Pid, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[cfg(test)]
 static STOP_CONSUMPTION_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 #[cfg(test)]
@@ -2430,6 +2433,40 @@ impl Notifier {
         WorkerIdentity::capture(pid).map(Arc::new)
     }
 
+    /// Redirects the generation handed out for `pid` before any registration
+    /// (`unregistered`) to `handle`, which is about to become the first
+    /// registered generation of the same live task `current`. Capabilities
+    /// that carry the earlier generation then reach the TID gate that
+    /// `handle`'s reaper marks; `adopt_authoritative` first waits for their
+    /// requests already holding the earlier gate. Called with `pids` held.
+    fn absorb_unregistered(
+        &self,
+        pid: Pid,
+        current: &WorkerIdentity,
+        handle: &EventHandle,
+    ) -> Result<(), Errno> {
+        let earlier = self.unregistered.lock().remove(&pid);
+        let Some(earlier) = earlier.as_ref().and_then(Weak::upgrade).map(EventHandle) else {
+            return Ok(());
+        };
+        // An earlier generation that already follows another one, or that
+        // `handle` already follows, needs no redirect.
+        if earlier.0.authoritative.get().is_some() || handle.chain_contains(&earlier.0) {
+            return Ok(());
+        }
+        match earlier.identity() {
+            Some(bound) if bound.same_live_generation(current)? => {
+                #[cfg(test)]
+                {
+                    *ABSORBED_UNREGISTERED.lock().entry(pid).or_default() += 1;
+                }
+                earlier.adopt_authoritative(handle).map(drop)
+            }
+            // A dead task's generation: nothing live can reach it.
+            _ => Ok(()),
+        }
+    }
+
     fn current_or_new(&self, pid: Pid) -> Result<EventHandle, Errno> {
         // Steady-state fast path: adopt a still-live registered generation
         // without a full procfs identity re-capture. This path is reached once
@@ -2557,6 +2594,7 @@ impl Notifier {
             {
                 return requested.adopt_authoritative(&occupied.handle);
             }
+            self.absorb_unregistered(pid, &current, requested)?;
             pids.insert(
                 pid,
                 NotifierEntry {
@@ -2894,6 +2932,10 @@ impl Notifier {
                     handle.clone()
                 }
                 Entry::Vacant(vacant) => {
+                    if let Err(error) = self.absorb_unregistered(pid, &current, handle) {
+                        Self::record_registration_error(handle, error);
+                        return Err(error);
+                    }
                     vacant.insert(NotifierEntry {
                         handle: handle.clone(),
                         identity: Arc::clone(&current),
@@ -5794,7 +5836,7 @@ mod test {
             spawn_stopped_process(None).expect("spawn capture-error child");
         CAPTURE_ERRORS.lock().insert(pid.into(), Errno::EMFILE);
 
-        let running = Running::new(pid.into());
+        let running = distinct_running(pid.into());
         let error = child_cleanup
             .bind_running_notifier(&running)
             .expect_err("first notifier registration must surface EMFILE");
@@ -5849,7 +5891,7 @@ mod test {
     #[test]
     fn fatal_signal_preserves_registration_refusal() {
         let (pid, mut cleanup) = spawn_stopped_process(None).expect("spawn registration control");
-        let running = Running::new(pid.into());
+        let running = distinct_running(pid.into());
         let terminal = TerminalCleanup::new_unregistered(pid.into(), &running.1);
         CAPTURE_ERRORS.lock().insert(pid.into(), Errno::EMFILE);
         assert_eq!(terminal.ensure_registered(), Err(Errno::EMFILE));
@@ -5977,7 +6019,7 @@ mod test {
             spawn_stopped_process(None).expect("spawn liveness raw-claim child");
         let authoritative_running = Running::new(raw_pid.into());
         let authoritative = authoritative_running.terminal_cleanup();
-        let competing_running = Running::new(raw_pid.into());
+        let competing_running = distinct_running(raw_pid.into());
         let competing = TerminalCleanup::new_unregistered(raw_pid.into(), &competing_running.1);
         PIDFD_LIVENESS_ERRORS
             .lock()
@@ -6001,7 +6043,7 @@ mod test {
         let (pid, mut cleanup) =
             spawn_stopped_process(None).expect("spawn sync-first wait-owner child");
         let synchronous_running = Running::new(pid.into());
-        let notifier_running = Running::new(pid.into());
+        let notifier_running = distinct_running(pid.into());
         let terminal = TerminalCleanup::new_unregistered(pid.into(), &notifier_running.1);
         let claimed = Arc::new(Barrier::new(2));
         let resume_wait = Arc::new(Barrier::new(2));
@@ -6054,7 +6096,7 @@ mod test {
             .ensure_registered()
             .expect("register notifier-first worker");
 
-        let synchronous_running = Running::new(pid.into());
+        let synchronous_running = distinct_running(pid.into());
         let canonicalized = Arc::new(Barrier::new(2));
         let resume_wait = Arc::new(Barrier::new(2));
         SYNC_HANDLE_PAUSES.lock().insert(
@@ -6099,7 +6141,7 @@ mod test {
         let synchronous = thread::spawn(move || synchronous_running.wait());
         claimed.wait();
 
-        let raw_running = Running::new(pid.into());
+        let raw_running = distinct_running(pid.into());
         let raw = TerminalCleanup::new_unregistered(pid.into(), &raw_running.1);
         let authoritative = match raw
             .try_claim_unstarted_raw_cleanup()
@@ -6147,7 +6189,7 @@ mod test {
         let synchronous = thread::spawn(move || synchronous_running.wait());
         claimed.wait();
 
-        let cleanup_running = Running::new(pid.into());
+        let cleanup_running = distinct_running(pid.into());
         cleanup
             .store_terminal(TerminalCleanup::new_unregistered(
                 pid.into(),
@@ -7477,7 +7519,7 @@ mod test {
             .expect("capture distinct-Event cleanup generation");
         let authoritative_running = Running::new(pid.into());
         let authoritative = authoritative_running.terminal_cleanup();
-        let competing_running = Running::new(pid.into());
+        let competing_running = distinct_running(pid.into());
         cleanup
             .store_terminal(TerminalCleanup::new_unregistered(
                 pid.into(),
@@ -7697,7 +7739,7 @@ mod test {
         let Some((old_pid, mut old_cleanup)) = spawn_stopped_process(requested_pid) else {
             return false;
         };
-        let old_running = Running::new(old_pid.into());
+        let old_running = distinct_running(old_pid.into());
         let old_handle = old_running.1.event().clone();
         old_handle
             .bind_identity(Arc::new(
@@ -9115,13 +9157,41 @@ mod test {
     /// capability created before the generation registered with the
     /// notifier. With `requested_pid`, the replacement actually reuses the
     /// old PID; without it, each capability is rebuilt beside the
-    /// replacement's PID with the old generation's token.
-    async fn claimed_exit_stop_refuses_after_reap(requested_pid: Option<i32>) -> bool {
-        let Some((old_pid, old_stopped, mut old_cleanup)) = spawn_traced_process(requested_pid)
+    /// replacement's PID with the old generation's token. `primary` is how
+    /// the capability that registers and claims the exit stop is made.
+    async fn claimed_exit_stop_refuses_after_reap(
+        requested_pid: Option<i32>,
+        primary: PrimaryRoute,
+    ) -> bool {
+        let Some((old_pid, unchecked, mut old_cleanup)) = spawn_traced_process(requested_pid)
         else {
             return false;
         };
         let early = Stopped::new_unchecked(old_pid.into());
+        let old_stopped = match primary {
+            PrimaryRoute::Unchecked => unchecked,
+            PrimaryRoute::RawWait => {
+                drop(unchecked);
+                let stop = (libc::SIGSTOP << 8) | 0x7f;
+                let (raw, _) = Wait::from_raw(old_pid.into(), stop)
+                    .expect("convert the actual stop's raw status")
+                    .assume_stopped();
+                assert!(
+                    Arc::ptr_eq(raw.1.event().event(), early.1.event().event()),
+                    "Wait::from_raw made a capability outside the live generation's Event"
+                );
+                raw
+            }
+            PrimaryRoute::Unbound => {
+                drop(unchecked);
+                Stopped::from_token(old_pid.into(), crate::TraceeToken::new())
+            }
+        };
+        let absorbed_before = ABSORBED_UNREGISTERED
+            .lock()
+            .get(&old_pid.into())
+            .copied()
+            .unwrap_or(0);
         old_stopped
             .setoptions(Options::PTRACE_O_TRACEEXIT)
             .expect("enable exit stop for claimed generation");
@@ -9135,6 +9205,17 @@ mod test {
             .await
             .expect("claimed-generation ExitFuture timed out")
             .expect("claim the exit-stop capability");
+        assert!(
+            Arc::ptr_eq(claimed.1.event().event(), early.1.event().event()),
+            "the first registration left the earlier capability on another Event"
+        );
+        if matches!(primary, PrimaryRoute::Unbound) {
+            assert_eq!(
+                ABSORBED_UNREGISTERED.lock().get(&old_pid.into()).copied(),
+                Some(absorbed_before + 1),
+                "the earlier generation was not redirected at first registration"
+            );
+        }
         old_cleanup.mark_claimed_exit();
         let terminal = old_cleanup
             .terminal()
@@ -9259,7 +9340,7 @@ mod test {
     async fn claimed_exit_stop_never_resumes_a_replacement_pid() {
         const INNER: &str = "SAFEPTRACE_CLAIMED_EXIT_REUSE_INNER";
         if env::var_os(INNER).is_some() {
-            if claimed_exit_stop_refuses_after_reap(Some(100)).await {
+            if claimed_exit_stop_refuses_after_reap(Some(100), PrimaryRoute::Unchecked).await {
                 println!("ACTUAL_CLAIMED_EXIT_PID_REUSE_EXERCISED");
             } else {
                 println!("ACTUAL_CLAIMED_EXIT_PID_REUSE_UNAVAILABLE");
@@ -9281,7 +9362,103 @@ mod test {
         }
 
         // Restricted runners may deny user namespaces or clone3(set_tid).
-        assert!(claimed_exit_stop_refuses_after_reap(None).await);
+        assert!(claimed_exit_stop_refuses_after_reap(None, PrimaryRoute::Unchecked).await);
+    }
+
+    /// How `claimed_exit_stop_refuses_after_reap` makes the capability that
+    /// registers first, after an unchecked one already exists.
+    #[derive(Clone, Copy, Debug)]
+    enum PrimaryRoute {
+        /// `Stopped::new_unchecked`, as the earlier capability.
+        Unchecked,
+        /// The actual stop's raw status through public `Wait::from_raw`.
+        RawWait,
+        /// A token bound to no generation, as when identity capture fails,
+        /// so first registration must redirect the earlier generation.
+        Unbound,
+    }
+
+    async fn claimed_exit_reuse_through(primary: PrimaryRoute, inner_env: &str, inner: &str) {
+        if env::var_os(inner_env).is_some() {
+            if claimed_exit_stop_refuses_after_reap(Some(100), primary).await {
+                println!("ACTUAL_CLAIMED_EXIT_PID_REUSE_EXERCISED");
+            } else {
+                println!("ACTUAL_CLAIMED_EXIT_PID_REUSE_UNAVAILABLE");
+            }
+            return;
+        }
+
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(inner_env, "1")]);
+        match classify_exact_reuse_output(
+            actual_reuse.as_ref(),
+            "ACTUAL_CLAIMED_EXIT_PID_REUSE_EXERCISED",
+            "ACTUAL_CLAIMED_EXIT_PID_REUSE_UNAVAILABLE",
+        )
+        .unwrap_or_else(|error| panic!("{primary:?} PID-reuse regression failed: {error}"))
+        {
+            ExactReuseOutcome::Exercised => return,
+            ExactReuseOutcome::Unavailable => {}
+        }
+
+        // Restricted runners may deny user namespaces or clone3(set_tid).
+        assert!(claimed_exit_stop_refuses_after_reap(None, primary).await);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn raw_wait_capability_shares_the_unchecked_generation_gate() {
+        claimed_exit_reuse_through(
+            PrimaryRoute::RawWait,
+            "SAFEPTRACE_RAW_WAIT_REUSE_INNER",
+            "notifier::test::raw_wait_capability_shares_the_unchecked_generation_gate",
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn first_registration_redirects_an_earlier_unregistered_generation() {
+        claimed_exit_reuse_through(
+            PrimaryRoute::Unbound,
+            "SAFEPTRACE_UNBOUND_REUSE_INNER",
+            "notifier::test::first_registration_redirects_an_earlier_unregistered_generation",
+        )
+        .await;
+    }
+
+    /// The synchronous registration route: an unbound capability's
+    /// `Running::wait` registers first and reaps the task, which must close
+    /// the TID gate of an unchecked capability made earlier.
+    #[test]
+    fn synchronous_first_registration_redirects_an_earlier_unregistered_generation() {
+        let (pid, _, mut cleanup) =
+            spawn_traced_process(None).expect("spawn synchronous registration tracee");
+        let early = Stopped::new_unchecked(pid.into());
+        let unbound = Stopped::from_token(pid.into(), crate::TraceeToken::new());
+        let token = unbound.1.clone();
+        let running = unbound.resume(None).expect("resume to exit");
+        assert_eq!(
+            running.wait().expect("synchronous wait").assume_exited(),
+            (pid.into(), crate::ExitStatus::Exited(42))
+        );
+        cleanup.disarm();
+        assert_eq!(
+            ABSORBED_UNREGISTERED.lock().get(&pid.into()).copied(),
+            Some(1),
+            "sync_handle did not redirect the earlier generation"
+        );
+        assert!(Arc::ptr_eq(early.1.event().event(), token.event().event()));
+        assert!(
+            early.1.event().hold_tid().is_none(),
+            "the earlier capability's TID gate stayed open after the reap"
+        );
+    }
+
+    /// Builds a handle on a fresh Event that no other constructor shares.
+    ///
+    /// `Running::new` joins the generation already cached for the PID, so
+    /// tests that need two independent Events for one tracee (the route a
+    /// failed generation capture still takes) build the second one here.
+    fn distinct_running(pid: crate::Pid) -> Running {
+        Running::from_token(pid, crate::TraceeToken::new())
     }
 
     fn spawn_stopped_process(requested_pid: Option<i32>) -> Option<(Pid, TraceeCleanupGuard)> {
