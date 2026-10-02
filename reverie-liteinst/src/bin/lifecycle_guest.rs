@@ -203,6 +203,36 @@ fn fast_path() {
     assert_eq!(hooks, FAST_CALLS);
 }
 
+/// Returns this process's `TracerPid` from procfs; zero means no ptrace attach.
+fn tracer_pid() -> u64 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("TracerPid:"))
+        .expect("procfs status has a TracerPid line")
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+fn patching_off() {
+    let mut expected = None;
+    for _ in 0..FAST_CALLS {
+        let observed = unsafe { reverie_liteinst_lifecycle_getpid() };
+        assert_eq!(*expected.get_or_insert(observed), observed);
+    }
+    let address = core::ptr::addr_of!(reverie_liteinst_lifecycle_getpid_site) as usize as u64;
+    // Read every counter before procfs and stdout add their own syscalls.
+    let traps = reverie_liteinst::reverie_liteinst_site_trap_count(address);
+    let hooks = reverie_liteinst::reverie_liteinst_site_hook_count(address);
+    let fallback_getpid =
+        reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_getpid);
+    let tracer = tracer_pid();
+    println!(
+        "calls={FAST_CALLS} traps={traps} hooks={hooks} fallback_getpid={fallback_getpid} tracer_pid={tracer}"
+    );
+}
+
 fn restart_wait4() {
     let waited = unsafe { libc::waitpid(-1, core::ptr::null_mut(), libc::WNOHANG) };
     assert_eq!(waited, 4242, "wait4 callback was not restarted");
@@ -291,6 +321,7 @@ fn main() {
             &arguments.next().expect("missing child pid path"),
         )),
         Some("fast-path") => fast_path(),
+        Some("patching-off") => patching_off(),
         Some("restart-wait4") => restart_wait4(),
         Some("restart-read") => restart_read(),
         _ => panic!("unknown lifecycle fixture mode {mode:?}"),
