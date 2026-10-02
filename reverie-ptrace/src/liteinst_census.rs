@@ -52,6 +52,7 @@
 //! are patched. Anonymous and JIT mappings have no image and get no census.
 
 use std::fmt;
+use std::ops::ControlFlow;
 
 use iced_x86::Decoder;
 use iced_x86::DecoderOptions;
@@ -575,51 +576,151 @@ fn instruction_entries(instruction: &Instruction, record: &mut impl FnMut(u64)) 
     }
 }
 
+/// The length of the longest x86-64 instruction.
+const MAX_INSTRUCTION_BYTES: usize = 15;
+
+/// The size of the buffer that holds a copy of one instruction's bytes.
+const COPY_BYTES: usize = 2 * MAX_INSTRUCTION_BYTES;
+
+/// Returns the offset from `address` of the byte just below a multiple of
+/// 4 GiB, if it is among the `len` bytes there.
+fn byte_before_4_gib(address: usize, len: usize) -> Option<usize> {
+    let offset = (address | u32::MAX as usize) - address;
+    (offset < len).then_some(offset)
+}
+
+/// Returns the offset in `bytes` of the byte just below a multiple of 4 GiB,
+/// if `bytes` holds one.
+fn last_byte_before_4_gib(bytes: &[u8]) -> Option<usize> {
+    byte_before_4_gib(bytes.as_ptr() as usize, bytes.len())
+}
+
+/// Returns where to put at most [`MAX_INSTRUCTION_BYTES`] bytes in a buffer of
+/// [`COPY_BYTES`] at `address` so that none of them is just below a multiple of
+/// 4 GiB. At most one byte of the buffer is, so the bytes go after it if it is
+/// among the first [`MAX_INSTRUCTION_BYTES`], and first otherwise.
+fn copy_start(address: usize) -> usize {
+    match byte_before_4_gib(address, COPY_BYTES) {
+        Some(hazard) if hazard < MAX_INSTRUCTION_BYTES => MAX_INSTRUCTION_BYTES,
+        _ => 0,
+    }
+}
+
+/// Decodes the instruction at the start of `bytes`, at most
+/// [`MAX_INSTRUCTION_BYTES`] of them, whose first byte is at `ip`, from a copy in
+/// `buffer`, and returns how many bytes the decoder took. The copy goes where
+/// [`copy_start`] puts it, so iced-x86 never decodes the byte just below a
+/// multiple of 4 GiB, wherever `buffer` is.
+fn decode_copy(
+    bytes: &[u8],
+    ip: u64,
+    buffer: &mut [u8; COPY_BYTES],
+    instruction: &mut Instruction,
+) -> usize {
+    let at = copy_start(buffer.as_ptr() as usize);
+    let copy = &mut buffer[at..at + bytes.len()];
+    copy.copy_from_slice(bytes);
+    let mut decoder = Decoder::with_ip(64, copy, ip, DecoderOptions::NONE);
+    decoder.decode_out(instruction);
+    decoder.position()
+}
+
+/// Decodes the 64-bit code in `code`, whose first byte is at `ip`, and passes
+/// each instruction to `visit` until it returns [`ControlFlow::Break`]. The
+/// instructions are exactly those that one [`Decoder`] over `code` returns.
+///
+/// That one decoder panics in a build with overflow checks, such as the debug
+/// build that the tests run, when an instruction includes the byte just below a
+/// multiple of 4 GiB. iced-x86 1.21.0 takes an instruction's length as the low
+/// 32 bits of the address after it minus those of its first byte, which
+/// underflows there. Upstream fixed the subtraction in
+/// <https://github.com/icedland/iced/commit/1e37b3d66904b68b4faee8c8cc7ea0a7f0d74a46>,
+/// which no release contains yet. The in-guest census decodes the text where it
+/// is mapped, so a guest whose text crossed a multiple of 4 GiB panicked inside
+/// its SIGSYS handler and was killed by SIGSYS
+/// (<https://github.com/rrnewton/reverie/issues/855>).
+///
+/// So a decoder here stops before that byte, and each instruction that starts
+/// within [`MAX_INSTRUCTION_BYTES`] of it is decoded from a copy of the bytes it
+/// may read, placed where no byte is just below a multiple of 4 GiB. A decoder
+/// reads at most that many bytes of an instruction, so the copy holds every
+/// byte that one decoder over `code` would read for it.
+fn decode_each(code: &[u8], ip: u64, mut visit: impl FnMut(&Instruction) -> ControlFlow<()>) {
+    let mut instruction = Instruction::default();
+    let mut start = 0;
+    while start < code.len() {
+        let rest = &code[start..];
+        let rest_ip = ip.wrapping_add(start as u64);
+        let Some(last) = last_byte_before_4_gib(rest) else {
+            let mut decoder = Decoder::with_ip(64, rest, rest_ip, DecoderOptions::NONE);
+            while decoder.can_decode() {
+                decoder.decode_out(&mut instruction);
+                if visit(&instruction).is_break() {
+                    return;
+                }
+            }
+            return;
+        };
+        // These instructions read only bytes before `last`.
+        let mut decoder = Decoder::with_ip(64, &rest[..last], rest_ip, DecoderOptions::NONE);
+        while decoder.position() + MAX_INSTRUCTION_BYTES <= last {
+            decoder.decode_out(&mut instruction);
+            if visit(&instruction).is_break() {
+                return;
+            }
+        }
+        let mut offset = decoder.position();
+        while offset <= last {
+            let bytes = &rest[offset..rest.len().min(offset + MAX_INSTRUCTION_BYTES)];
+            let ip = rest_ip.wrapping_add(offset as u64);
+            offset += decode_copy(bytes, ip, &mut [0; COPY_BYTES], &mut instruction);
+            if visit(&instruction).is_break() {
+                return;
+            }
+        }
+        start += offset;
+    }
+}
+
 /// Decodes one function and reports whether it is transparent.
 fn decode_function(code: &[u8], start: u64, visit: &mut impl FnMut(&Instruction)) -> bool {
-    let mut decoder = Decoder::with_ip(64, code, start, DecoderOptions::NONE);
-    let mut instruction = Instruction::default();
     let mut transparent = true;
-    while decoder.can_decode() {
+    decode_each(code, start, |instruction| {
         // An instruction that crosses the function end cannot decode from
         // the truncated slice, so it also makes the function opaque.
-        decoder.decode_out(&mut instruction);
         if instruction.is_invalid() {
             transparent = false;
-            continue;
+            return ControlFlow::Continue(());
         }
-        if is_indirect_jump(&instruction) {
+        if is_indirect_jump(instruction) {
             transparent = false;
         }
-        visit(&instruction);
-    }
+        visit(instruction);
+        ControlFlow::Continue(())
+    });
     transparent
 }
 
 /// Decodes bytes outside every function, only to collect more entries.
 fn decode_gap(code: &[u8], start: u64, record: &mut impl FnMut(u64)) {
-    let mut decoder = Decoder::with_ip(64, code, start, DecoderOptions::NONE);
-    let mut instruction = Instruction::default();
-    while decoder.can_decode() {
-        decoder.decode_out(&mut instruction);
+    decode_each(code, start, |instruction| {
         if !instruction.is_invalid() {
-            instruction_entries(&instruction, record);
+            instruction_entries(instruction, record);
         }
-    }
+        ControlFlow::Continue(())
+    });
 }
 
 /// Records the first instruction after `end` that is not padding.
 fn record_code_after(code: &[u8], end: u64, record: &mut impl FnMut(u64)) {
     let lookahead = code.len().min(WINDOW_LOOKAHEAD as usize);
-    let mut decoder = Decoder::with_ip(64, &code[..lookahead], end, DecoderOptions::NONE);
-    let mut instruction = Instruction::default();
-    while decoder.can_decode() {
-        decoder.decode_out(&mut instruction);
-        if instruction.is_invalid() || !is_padding(&instruction) {
+    decode_each(&code[..lookahead], end, |instruction| {
+        if instruction.is_invalid() || !is_padding(instruction) {
             record(instruction.ip());
-            return;
+            return ControlFlow::Break(());
         }
-    }
+        ControlFlow::Continue(())
+    });
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -816,5 +917,296 @@ impl Census {
     /// in ascending order.
     pub fn site_addresses(&self) -> impl Iterator<Item = u64> + '_ {
         self.sites.iter().map(|site| site.address)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAGE: usize = 4096;
+    const IP: u64 = 0x40_1000;
+
+    /// Instructions of many lengths up to 15 bytes, one of them invalid.
+    const CODE: &[&[u8]] = &[
+        &[0x90],                                              // nop
+        &[0x0f, 0x05],                                        // syscall
+        &[0xb8, 1, 2, 3, 4],                                  // mov eax, imm32
+        &[0x48, 0xb8, 1, 2, 3, 4, 5, 6, 7, 8],                // mov rax, imm64
+        &[0x48, 0x8d, 0x05, 0x10, 0, 0, 0],                   // lea rax, [rip + 0x10]
+        &[0xe8, 0x20, 0, 0, 0],                               // call rel32
+        &[0x06],                                              // invalid in 64-bit mode
+        &[0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0, 0, 0, 0, 0], // nopw
+        // lock add qword fs:[eax + ebx * 8 + 0x12345678], 0x12345678
+        &[
+            0x67, 0x64, 0xf0, 0x48, 0x81, 0x84, 0xd8, 0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34,
+            0x12,
+        ],
+        &[0xff, 0xe0], // jmp rax
+        &[0xc3],       // ret
+    ];
+
+    /// `mov rax, imm64` cut short, which ends the code in an invalid instruction.
+    const CUT_SHORT: &[u8] = &[0x48, 0xb8, 1, 2, 3];
+
+    /// Two writable pages, the second of which starts at a multiple of 4 GiB.
+    struct PagesAround4Gib {
+        boundary: usize,
+    }
+
+    impl PagesAround4Gib {
+        fn map() -> Self {
+            // Multiples of 4 GiB from 64 GiB up, far below the program and
+            // its libraries.
+            for boundary in (16..256).map(|n: usize| n << 32) {
+                let want = (boundary - PAGE) as *mut libc::c_void;
+                // SAFETY: MAP_FIXED_NOREPLACE never replaces a mapping.
+                let got = unsafe {
+                    libc::mmap(
+                        want,
+                        2 * PAGE,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED_NOREPLACE,
+                        -1,
+                        0,
+                    )
+                };
+                if got == want {
+                    return Self { boundary };
+                }
+                if got != libc::MAP_FAILED {
+                    // A kernel before 4.17 takes the address only as a hint.
+                    // SAFETY: the mapping was just made and nothing uses it.
+                    unsafe { libc::munmap(got, 2 * PAGE) };
+                }
+            }
+            panic!("no free pages around a multiple of 4 GiB");
+        }
+
+        /// Copies `code` so that `code[last]` is the byte just below the
+        /// multiple of 4 GiB.
+        fn straddling(&mut self, code: &[u8], last: usize) -> &[u8] {
+            assert!(last < PAGE && code.len() - last <= PAGE);
+            self.copy_to(self.boundary - 1 - last, code)
+        }
+
+        /// Copies `code` to the start of the first page, where none of its
+        /// bytes is just below a multiple of 4 GiB.
+        fn clear(&mut self, code: &[u8]) -> &[u8] {
+            assert!(code.len() < PAGE);
+            self.copy_to(self.boundary - PAGE, code)
+        }
+
+        /// A buffer of [`COPY_BYTES`] whose byte `index` is just below the
+        /// multiple of 4 GiB.
+        fn buffer(&mut self, index: usize) -> &mut [u8; COPY_BYTES] {
+            assert!(index < COPY_BYTES);
+            // SAFETY: the buffer is inside the two pages, which only this value
+            // uses.
+            unsafe { &mut *((self.boundary - 1 - index) as *mut [u8; COPY_BYTES]) }
+        }
+
+        fn copy_to(&mut self, address: usize, code: &[u8]) -> &[u8] {
+            // SAFETY: the callers keep the copy inside the two pages, which
+            // only this value uses.
+            let copy = unsafe { std::slice::from_raw_parts_mut(address as *mut u8, code.len()) };
+            copy.copy_from_slice(code);
+            copy
+        }
+    }
+
+    impl Drop for PagesAround4Gib {
+        fn drop(&mut self) {
+            // SAFETY: the two pages were mapped by `map` for this value.
+            unsafe { libc::munmap((self.boundary - PAGE) as *mut libc::c_void, 2 * PAGE) };
+        }
+    }
+
+    fn decode_with_one_decoder(code: &[u8]) -> Vec<Instruction> {
+        let mut decoder = Decoder::with_ip(64, code, IP, DecoderOptions::NONE);
+        let mut instructions = Vec::new();
+        while decoder.can_decode() {
+            instructions.push(decoder.decode());
+        }
+        instructions
+    }
+
+    fn decode_with_decode_each(code: &[u8]) -> Vec<Instruction> {
+        let mut instructions = Vec::new();
+        decode_each(code, IP, |instruction| {
+            instructions.push(*instruction);
+            ControlFlow::Continue(())
+        });
+        instructions
+    }
+
+    /// [`CODE`] twice and then [`CUT_SHORT`], so that the byte below 4 GiB
+    /// falls in each instruction, with whole instructions on both sides.
+    fn code() -> Vec<u8> {
+        let code = CODE.concat();
+        [code.as_slice(), code.as_slice(), CUT_SHORT].concat()
+    }
+
+    /// [`CODE`] twice without its invalid byte and its indirect jump, so that a
+    /// function made of it is transparent.
+    fn transparent_code() -> Vec<u8> {
+        let code = CODE
+            .iter()
+            .filter(|instruction| !matches!(instruction, [0x06] | [0xff, 0xe0]))
+            .copied()
+            .collect::<Vec<_>>()
+            .concat();
+        [code.as_slice(), code.as_slice()].concat()
+    }
+
+    #[test]
+    fn decode_each_decodes_what_one_decoder_does_across_4_gib() {
+        let code = code();
+        let mut pages = PagesAround4Gib::map();
+        let expected = decode_with_one_decoder(pages.clear(&code));
+        assert_eq!(expected.len(), 2 * CODE.len() + 1);
+        assert_eq!(
+            expected.iter().filter(|i| i.is_invalid()).count(),
+            3,
+            "two invalid bytes and the cut-short tail"
+        );
+        assert!(
+            expected
+                .iter()
+                .any(|i| i.len() == MAX_INSTRUCTION_BYTES && !i.is_invalid())
+        );
+        for last in 0..code.len() {
+            let actual = decode_with_decode_each(pages.straddling(&code, last));
+            let summary = |instructions: &[Instruction]| {
+                instructions
+                    .iter()
+                    .map(|i| (i.ip(), i.len(), i.code()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                summary(&actual),
+                summary(&expected),
+                "byte {last} below 4 GiB"
+            );
+            for (actual, expected) in actual.iter().zip(&expected) {
+                assert!(actual.eq_all_bits(expected), "byte {last} below 4 GiB");
+            }
+        }
+    }
+
+    #[test]
+    fn decode_each_stops_at_break() {
+        let code = code();
+        let mut pages = PagesAround4Gib::map();
+        for last in 0..code.len() {
+            let mut visited = 0;
+            decode_each(pages.straddling(&code, last), IP, |_| {
+                visited += 1;
+                if visited == 3 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            });
+            assert_eq!(visited, 3, "byte {last} below 4 GiB");
+        }
+    }
+
+    #[test]
+    fn census_decoders_agree_across_4_gib() {
+        let mut pages = PagesAround4Gib::map();
+        let decode = |code: &[u8]| {
+            let mut visited = Vec::new();
+            let transparent =
+                decode_function(code, IP, &mut |i: &Instruction| visited.push(i.ip()));
+            let mut gap = Vec::new();
+            decode_gap(code, IP, &mut |entry| gap.push(entry));
+            let mut after = Vec::new();
+            record_code_after(code, IP, &mut |entry| after.push(entry));
+            (transparent, visited, gap, after)
+        };
+        let code = code();
+        let expected = decode(pages.clear(&code));
+        assert!(!expected.0, "the invalid bytes make the code opaque");
+        assert_eq!(expected.3, [IP + 1], "the syscall after the nop");
+        for last in 0..code.len() {
+            assert_eq!(
+                decode(pages.straddling(&code, last)),
+                expected,
+                "byte {last} below 4 GiB"
+            );
+        }
+        let code = transparent_code();
+        let expected = decode(pages.clear(&code));
+        assert!(
+            expected.0,
+            "valid code without an indirect jump is transparent"
+        );
+        assert_eq!(expected.3, [IP + 1], "the syscall after the nop");
+        for last in 0..code.len() {
+            assert_eq!(
+                decode(pages.straddling(&code, last)),
+                expected,
+                "byte {last} of the transparent code below 4 GiB"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_copy_decodes_from_a_buffer_across_4_gib() {
+        let code = code();
+        let mut pages = PagesAround4Gib::map();
+        let expected = decode_with_one_decoder(pages.clear(&code));
+        for index in 0..COPY_BYTES {
+            let mut offset = 0;
+            for (n, expected) in expected.iter().enumerate() {
+                let bytes = &code[offset..code.len().min(offset + MAX_INSTRUCTION_BYTES)];
+                let mut instruction = Instruction::default();
+                let ip = IP + offset as u64;
+                offset += decode_copy(bytes, ip, pages.buffer(index), &mut instruction);
+                assert!(
+                    instruction.eq_all_bits(expected),
+                    "instruction {n}, buffer byte {index} below 4 GiB"
+                );
+            }
+            assert_eq!(offset, code.len(), "buffer byte {index} below 4 GiB");
+        }
+    }
+
+    #[test]
+    fn copy_start_keeps_the_copy_off_the_byte_before_4_gib() {
+        for boundary in [1usize << 32, 7 << 32] {
+            let mut starts = std::collections::BTreeSet::new();
+            for address in boundary - 2 * COPY_BYTES..boundary + COPY_BYTES {
+                let start = copy_start(address);
+                starts.insert(start);
+                for len in 1..=MAX_INSTRUCTION_BYTES {
+                    assert!(start + len <= COPY_BYTES, "address {address:#x}");
+                    assert_eq!(
+                        byte_before_4_gib(address + start, len),
+                        None,
+                        "address {address:#x}, {len} bytes"
+                    );
+                }
+            }
+            assert_eq!(
+                starts.into_iter().collect::<Vec<_>>(),
+                [0, MAX_INSTRUCTION_BYTES]
+            );
+        }
+    }
+
+    /// Shows that the tests above place an instruction where one decoder fails.
+    /// Once an iced-x86 release contains
+    /// <https://github.com/icedland/iced/commit/1e37b3d66904b68b4faee8c8cc7ea0a7f0d74a46>,
+    /// this fails, and `decode_each` can go back to one decoder.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn one_decoder_panics_on_an_instruction_ending_at_4_gib() {
+        let mut pages = PagesAround4Gib::map();
+        // mov rax, imm64, whose last byte is just below the multiple of 4 GiB.
+        let code = pages.straddling(&[0x48, 0xb8, 1, 2, 3, 4, 5, 6, 7, 8], 9);
+        let outcome = std::panic::catch_unwind(|| decode_with_one_decoder(code));
+        assert!(outcome.is_err());
     }
 }
