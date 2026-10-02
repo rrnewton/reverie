@@ -615,6 +615,18 @@ fn caught_signal_mask(tid: Pid) -> Result<u64, TraceError> {
         .ok_or_else(|| Errno::EPROTO.into())
 }
 
+/// The number of threads in the thread group of the stopped thread `tid`
+/// (procfs `Threads`).
+fn thread_count(tid: Pid) -> Result<u64, TraceError> {
+    let status = std::fs::read_to_string(format!("/proc/{tid}/status"))
+        .map_err(|err| Errno::new(err.raw_os_error().unwrap_or(libc::EIO)))?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Threads:"))
+        .and_then(|value| value.trim().parse().ok())
+        .ok_or_else(|| Errno::EPROTO.into())
+}
+
 /// The signals pending in the kernel for the stopped thread `tid`: its own
 /// and its thread group's (procfs `SigPnd` and `ShdPnd`).
 fn pending_signal_mask(tid: Pid) -> Result<u64, TraceError> {
@@ -6352,13 +6364,17 @@ impl<L: Tool + 'static> TracedTask<L> {
         })
     }
 
-    /// Whether `handle_sigtrap` may do more with a SIGTRAP from the guest or
-    /// another process than discard it as unclaimed
-    /// (`UNCLAIMED_SIGTRAPS_SUPPRESSED`): a binary rewriter's trap is
-    /// configured (`injected_syscall_trap`), which delivers a trap with its
-    /// marker in RAX; gdb has resumed this thread or set a breakpoint in it,
-    /// so a trap can be reported to gdb; or a LiteInst runtime has not
-    /// reached Ready, so the trap fails the run.
+    /// A conservative guard used while a private injection runs: whether an
+    /// asynchronous SIGTRAP from the guest or another process could be
+    /// claimed by a consumer other than the injection, so the injection must
+    /// not discard it. True when a binary rewriter's trap is configured
+    /// (`injected_syscall_trap`), which delivers a trap with its marker in
+    /// RAX; when gdb has resumed this thread or set a breakpoint in it, so a
+    /// trap can be reported to gdb; or when a LiteInst runtime has not
+    /// reached Ready, so the trap fails the run. This is not an exhaustive
+    /// classifier of `handle_sigtrap`, which also claims a Ready LiteInst
+    /// controller's traps and `SI_KERNEL` restart landings; those are not
+    /// asynchronous traps that can interrupt a private injection.
     fn sigtrap_may_be_claimed(&self) -> bool {
         self.global_state.injected_syscall_trap.is_some()
             || self.resumed_by_gdb.is_some()
@@ -6484,11 +6500,10 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// which runs the injection's restart block instead: an interrupted
     /// injected `nanosleep` would sleep out its own deadline in place of the
     /// guest's. `-EINTR` is what the guest's syscall returns when a handler
-    /// is delivered. When no handler runs instead,
+    /// is delivered. When no handler runs instead, or another task could
+    /// still change whether one runs,
     /// `keep_injection_ret_for_suppressed_restart_block` puts back the
-    /// injection's return register, as before this restore existed, and when
-    /// a sibling can still change whether one runs, it leaves the kernel to
-    /// decide with `-ERESTARTNOHAND`.
+    /// injection's return register, as before this restore existed.
     fn signal_callback_guest_ret(&mut self, context: &libc::user_regs_struct, ret: Reg) -> Reg {
         if self.signal_callback_replaced_restart_block
             && (context.orig_syscall() as i64) >= 0
@@ -6507,8 +6522,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// into no handler: the callback suppressed the signal (`verdict.signal`
     /// is `None`), or resumes with one the guest does not catch (procfs
     /// `SigCgt`) or blocks by now (`SigBlk`), which `ptrace_signal` then
-    /// requeues. A Tool's own register write after the injection clears
-    /// `restart_block_eintr` (`Guest::set_regs`) and is kept.
+    /// requeues, and also when another task could still change whether a
+    /// handler runs (below). A Tool's own register write after the injection
+    /// clears `restart_block_eintr` (`Guest::set_regs`) and is kept.
     ///
     /// No handler is delivered then, so `-EINTR` is not what the guest's
     /// syscall would return: untraced Linux would restart it through the
@@ -6521,16 +6537,17 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///
     /// The blocked mask is the stopped thread's own, but the dispositions
     /// are shared: a sibling thread can make a caught signal ignored after
-    /// `SigCgt` is read and before the kernel delivers it. So when the
-    /// signal is caught and the resume is from a signal-delivery stop, the
-    /// kernel decides instead, as it delivers the signal: the return
-    /// register is `-ERESTARTNOHAND`, which becomes `-EINTR` when a handler
-    /// is entered, and otherwise restarts the guest's syscall with its own
-    /// arguments, the nearest Linux has to its replaced restart block; a
-    /// relative sleep then starts over. Linux applies that rule on the way
-    /// out of `get_signal`, where a signal-delivery stop is resumed, but not
-    /// from a ptrace event stop, where `-ERESTARTNOHAND` could reach the
-    /// guest, so the `-EINTR` stays there.
+    /// `SigCgt` is read and before the kernel delivers it, and the guest
+    /// would then see `-EINTR` with no handler, which neither untraced Linux
+    /// nor Reverie without this restore returns. Handing the decision to the
+    /// kernel with `-ERESTARTNOHAND` does not help: with no handler, Linux
+    /// restarts the guest's syscall with its original arguments, so a
+    /// relative sleep starts over and the request is read again. So the
+    /// `-EINTR` stays only while no other task can change the dispositions:
+    /// the stopped thread is the only thread of its group (procfs `Threads`)
+    /// and the only task Reverie traces (`ntasks`). Otherwise the guest
+    /// resumes with the injection's return register, as without this
+    /// restore (<https://github.com/rrnewton/reverie/issues/845>).
     fn keep_injection_ret_for_suppressed_restart_block(
         &self,
         task: &Stopped,
@@ -6543,17 +6560,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             None => false,
             Some(sig) => {
                 let bit = signal_mask_bit(sig);
-                caught_signal_mask(task.pid())? & bit != 0
+                self.ntasks.load(Ordering::SeqCst) == 1
+                    && thread_count(task.pid())? == 1
+                    && caught_signal_mask(task.pid())? & bit != 0
                     && blocked_signal_mask(task.pid())? & bit == 0
             }
         };
-        let ret = if !enters_handler {
-            ret
-        } else if matches!(self.latest_injection_stop, Some(Some(_))) {
-            -(Errno::ERESTARTNOHAND.into_raw() as i64) as Reg
-        } else {
+        if enters_handler {
             return Ok(());
-        };
+        }
         let mut regs = task.getregs()?;
         *regs.ret_mut() = ret;
         task.setregs(&regs)?;
@@ -11251,11 +11266,16 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// a signal stop the Tool handles, and a restart code the syscall returns
     /// is decided by the ordinary rewound-`int3` delivery.
     ///
-    /// `SIGKILL` and `SIGSTOP` cannot be blocked, and an external `SIGTRAP`
-    /// would coalesce with the step's own report, so a stop with one of them
-    /// is returned unchanged and keeps the generic not-run handling
+    /// `SIGSTOP` cannot be blocked, and an external `SIGTRAP` would coalesce
+    /// with the step's own report, so a stop with one of them is returned
+    /// unchanged. A `SIGSTOP` keeps the generic not-run handling
     /// (`status_to_result`): the injection returns `-ERESTARTSYS` with the
-    /// signal held for the resume. Signals requeued before it stay pending.
+    /// signal held for the resume. A plain injection discards a `SIGTRAP`
+    /// stop before its instruction and steps the syscall again
+    /// (`untraced_syscall_with`); a LiteInst frame injection, or one during
+    /// LiteInst activation, keeps the not-run handling for it. `SIGKILL` has
+    /// no signal stop to return; `requeueable` names it only for
+    /// completeness. Signals requeued before it stay pending.
     async fn requeue_signals_before_original_syscall(
         &mut self,
         wait: Wait,
