@@ -121,10 +121,9 @@ impl Tool for ObservationTool {
 }
 
 fn observation_fixture() -> PathBuf {
-    let path = PathBuf::from(
-        std::env::var_os("REVERIE_SOURCE_OBSERVATION_FIXTURE")
-            .expect("caller must bind the actual compiled observation fixture"),
-    );
+    let path = PathBuf::from(crate::testing::fixture_path(
+        "REVERIE_SOURCE_OBSERVATION_FIXTURE",
+    ));
     assert!(path.is_absolute(), "no PATH fixture or compiler lookup");
     path
 }

@@ -41,7 +41,10 @@ unwind = { version = "0.4.2", features = ["ptrace"] }
 [dev-dependencies]
 test-case = "3.3.1"
 
-[[test]]
+[build-dependencies]
+cc = "1.5.1"
+
+[[example]]
 name = "cohort_bridge_fixture"
 path = "tests/fixtures/cohort_bridge_fixture.rs"
-harness = false
+test = false

@@ -25,7 +25,7 @@ fn ordinary_ownership_matches(proof: &OrdinaryOwnership<'_>) -> bool {
 
 #[tokio::test(flavor = "current_thread")]
 async fn command_traceexit_before_restore_uses_ordinary_terminal_owner() {
-    let fixture = std::path::PathBuf::from(std::env::var_os("COHORT_BRIDGE_FIXTURE").unwrap());
+    let fixture = std::path::PathBuf::from(crate::testing::fixture_path("COHORT_BRIDGE_FIXTURE"));
     assert!(fixture.is_absolute());
     let log = Arc::new(Mutex::new(Log::default()));
     ACTIVE.with(|slot| assert!(slot.replace(Some(Arc::clone(&log))).is_none()));

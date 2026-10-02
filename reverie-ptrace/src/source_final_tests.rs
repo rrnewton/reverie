@@ -852,7 +852,7 @@ async fn join_original_worker(cleanup: &TerminalCleanup) -> bool {
 
 #[tokio::test(flavor = "current_thread")]
 async fn command_startup_final_without_traceexit_permanently_refuses_after_cleanup() {
-    let fixture = std::path::PathBuf::from(std::env::var_os("COHORT_BRIDGE_FIXTURE").unwrap());
+    let fixture = std::path::PathBuf::from(crate::testing::fixture_path("COHORT_BRIDGE_FIXTURE"));
     assert!(fixture.is_absolute());
     let log = Arc::new(Mutex::new(Log::default()));
     ACTIVE.with(|slot| assert!(slot.replace(Some(Arc::clone(&log))).is_none()));

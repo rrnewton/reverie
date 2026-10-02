@@ -208,10 +208,8 @@ mod native {
     }
 
     async fn case(child_sender: bool, cancel: bool) {
-        let fixture = std::path::PathBuf::from(
-            std::env::var_os("COHORT_BRIDGE_FIXTURE")
-                .expect("requires separate Main native admission and hash binding"),
-        );
+        let fixture =
+            std::path::PathBuf::from(crate::testing::fixture_path("COHORT_BRIDGE_FIXTURE"));
         assert!(fixture.is_absolute());
         let entered = Arc::new(AtomicBool::new(false));
         let (release, gate) = std::sync::mpsc::channel();

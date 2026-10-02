@@ -159,8 +159,7 @@ impl Tool for SignalTool {
 }
 
 async fn run(queue_signal: bool) {
-    let fixture = std::env::var_os("REVERIE_PRIVATE_SIGNAL_FIXTURE")
-        .expect("bounded caller must supply its source-bound fixture ELF");
+    let fixture = crate::testing::fixture_path("REVERIE_PRIVATE_SIGNAL_FIXTURE");
     let fixture = PathBuf::from(fixture);
     assert!(
         fixture.is_absolute(),

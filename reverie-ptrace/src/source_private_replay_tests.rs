@@ -410,10 +410,9 @@ impl Tool for ReplayTool {
 }
 
 fn fixture() -> PathBuf {
-    let path = PathBuf::from(
-        std::env::var_os("REVERIE_PRIVATE_REPLAY_FIXTURE")
-            .expect("caller supplies exact source-bound native fixture"),
-    );
+    let path = PathBuf::from(crate::testing::fixture_path(
+        "REVERIE_PRIVATE_REPLAY_FIXTURE",
+    ));
     assert!(path.is_absolute(), "no PATH compiler or fixture lookup");
     path
 }

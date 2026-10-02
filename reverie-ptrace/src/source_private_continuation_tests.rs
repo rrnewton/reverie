@@ -486,10 +486,7 @@ async fn continuation_case_with_timer(mode: u8, request_timer: bool) {
     } else {
         "REVERIE_PRIVATE_CONTINUATION_FIXTURE"
     };
-    let fixture = PathBuf::from(
-        std::env::var_os(fixture_variable)
-            .expect("bounded caller supplies its source-bound native fixture"),
-    );
+    let fixture = PathBuf::from(crate::testing::fixture_path(fixture_variable));
     assert!(fixture.is_absolute(), "fixture must not use PATH lookup");
     let mut command = Command::new(fixture);
     command.arg(mode.to_string());

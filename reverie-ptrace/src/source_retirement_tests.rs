@@ -254,10 +254,7 @@ impl Tool for Reader {
 }
 
 async fn case(mode: u8) {
-    let fixture = std::path::PathBuf::from(
-        std::env::var_os("COHORT_BRIDGE_FIXTURE")
-            .expect("Main must bind and admit the compile-only703 fixture"),
-    );
+    let fixture = std::path::PathBuf::from(crate::testing::fixture_path("COHORT_BRIDGE_FIXTURE"));
     assert!(fixture.is_absolute());
     let p = Arc::new(Probe {
         mode,

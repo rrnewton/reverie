@@ -8,6 +8,10 @@
 
 //! Utilities that support constructing tests for Reverie Tools.
 
+#[cfg(test)]
+mod fixtures;
+#[cfg(test)]
+pub(crate) use fixtures::fixture_path;
 use futures::Future;
 use reverie::Error;
 use reverie::ExitStatus;

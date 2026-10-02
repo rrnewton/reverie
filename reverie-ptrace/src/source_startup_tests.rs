@@ -786,7 +786,7 @@ impl Tool for Observer {
 
 #[tokio::test(flavor = "current_thread")]
 async fn command_startup_traceexit_restores_before_ordinary_cleanup() {
-    let fixture = std::path::PathBuf::from(std::env::var_os("COHORT_BRIDGE_FIXTURE").unwrap());
+    let fixture = std::path::PathBuf::from(crate::testing::fixture_path("COHORT_BRIDGE_FIXTURE"));
     assert!(fixture.is_absolute());
     let log = Arc::new(Mutex::new(Log::default()));
     ACTIVE.with(|slot| assert!(slot.replace(Some(Arc::clone(&log))).is_none()));

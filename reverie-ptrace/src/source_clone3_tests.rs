@@ -186,10 +186,7 @@ impl Tool for Probe {
 }
 
 async fn case(mode: u8) {
-    let fixture = PathBuf::from(
-        std::env::var_os("REVERIE_CLONE3_JOIN_FIXTURE")
-            .expect("Main must bind the freshly compiled clone3 fixture"),
-    );
+    let fixture = PathBuf::from(crate::testing::fixture_path("REVERIE_CLONE3_JOIN_FIXTURE"));
     assert!(fixture.is_absolute());
     let native = Arc::new(Mutex::new(NativeLog::default()));
     ACTIVE.with(|s| assert!(s.replace(Some(native.clone())).is_none()));

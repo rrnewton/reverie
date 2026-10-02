@@ -471,10 +471,7 @@ impl Tool for Observer {
 }
 
 async fn run(mode: &str) {
-    let fixture = PathBuf::from(
-        std::env::var_os("COHORT_BRIDGE_FIXTURE")
-            .expect("requires separately admitted, hash-bound fixture binary"),
-    );
+    let fixture = PathBuf::from(crate::testing::fixture_path("COHORT_BRIDGE_FIXTURE"));
     assert!(fixture.is_absolute());
     let observations = Arc::new(Mutex::new(Observations::default()));
     observations.lock().unwrap().mode = mode.to_owned();
