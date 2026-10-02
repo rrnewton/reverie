@@ -342,14 +342,31 @@ pub(crate) fn park_preinit_for_test(pid: Pid) {
 struct OrdinaryExecSlot<L: Tool> {
     stop: Arc<FatalTaskStop>,
     requested: AtomicBool,
+    /// Set by a nonleader owner, in a failed run or not, once its former
+    /// TID's exit wait met ECHILD with no final status: exec's de_thread
+    /// released the TID.
+    lost_former: AtomicBool,
     changed: Notify,
     transferred: StdMutex<Option<Box<TracedTask<L>>>>,
+    /// On a leader owner's slot only: the task a same-process nonleader
+    /// owner handed over from its lost-former arm. The leader owner takes it
+    /// after its child-thread joins, in `tool_exit_ordinary`.
+    lost_former_task: StdMutex<Option<Box<TracedTask<L>>>>,
 }
 impl<L: Tool> OrdinaryExecSlot<L> {
     async fn requested(&self) {
         loop {
             let changed = self.changed.notified();
             if self.requested.load(Ordering::Acquire) {
+                return;
+            }
+            changed.await;
+        }
+    }
+    async fn lost_former(&self) {
+        loop {
+            let changed = self.changed.notified();
+            if self.lost_former.load(Ordering::Acquire) {
                 return;
             }
             changed.await;
@@ -1796,6 +1813,19 @@ pub(crate) struct FatalSession {
 #[error("original global Tool owner was unavailable for synchronous failure publication")]
 struct GlobalFailurePublicationLost;
 
+/// The replaced leader of a lost former has no exit-stop status to report:
+/// its leader owner's terminal path left that exit stop before GETEVENTMSG
+/// read it, or did not enter holding it. No status is fabricated.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "replaced leader {leader} of lost former {former} has no read exit-stop status ({entry:?}); its Tool thread state gets no on_exit_thread"
+)]
+struct ReplacedLeaderStatusUnavailable {
+    leader: Pid,
+    former: Pid,
+    entry: crate::tracer::EntryExitStop,
+}
+
 struct FatalGroup {
     terminal: safeptrace::TerminalCleanup,
     identity: crate::tracer::TraceeIdentity,
@@ -1829,6 +1859,65 @@ pub(crate) struct FatalForkPause {
     pub(crate) generation: StdMutex<Option<(u64, u64)>>,
     pub(crate) terminal_status: StdMutex<Option<(Pid, ExitStatus)>>,
     pub(crate) live_stop_opponent: AtomicBool,
+    /// Selects the timer-decoded fork control: the fork is decoded by a
+    /// precise-timer single step, and the run loop's receive of the aborted
+    /// stop is held so a sibling failure cancels the loop first.
+    pub(crate) timer: bool,
+    pub(crate) timer_parent: std::sync::atomic::AtomicI32,
+    pub(crate) timer_child: StdMutex<Option<FatalTimerChild>>,
+    pub(crate) timer_published: AtomicBool,
+    pub(crate) timer_receive_blocked: AtomicBool,
+}
+
+/// The actual child a timer step decoded, retained only for test assertions.
+/// It carries no cleanup ownership of its own.
+#[cfg(test)]
+pub(crate) struct FatalTimerChild {
+    pub(crate) pid: Pid,
+    pub(crate) start_time: u64,
+    pub(crate) proc_inode: u64,
+    pub(crate) terminal: Arc<safeptrace::TerminalCleanup>,
+}
+
+#[cfg(test)]
+fn record_timer_decoded_fork_for_test(task: &Stopped, event: &Event) {
+    let Event::NewChild(ChildOp::Fork, child) = event else {
+        return;
+    };
+    let Some(pause) = FATAL_FORK_PAUSE
+        .with(|slot| slot.borrow().clone())
+        .filter(|pause| pause.timer)
+    else {
+        return;
+    };
+    use std::os::unix::fs::MetadataExt;
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", child.pid())).unwrap();
+    let start = stat
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let inode = std::fs::metadata(format!("/proc/{}", child.pid()))
+        .unwrap()
+        .ino();
+    pause
+        .timer_parent
+        .store(task.pid().as_raw(), Ordering::SeqCst);
+    *pause.timer_child.lock().unwrap() = Some(FatalTimerChild {
+        pid: child.pid(),
+        start_time: start,
+        proc_inode: inode,
+        terminal: Arc::new(child.terminal_cleanup()),
+    });
+    eprintln!(
+        "timer decoded actual fork: parent={}, child={}, start={start}, inode={inode}",
+        task.pid(),
+        child.pid()
+    );
 }
 
 #[cfg(test)]
@@ -1871,6 +1960,102 @@ thread_local! {
     /// through that branch rather than through the exit future or an earlier
     /// Exec transfer.
     pub(crate) static NONLEADER_RUN_LOOP_ECHILD_PENDED: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Holds the leader's run loop between its post-clone single step and the
+/// wait for that step, so the step stop stays queued while a nonleader exec's
+/// zap moves the leader into its exit stop. This is the ordering behind
+/// https://github.com/rrnewton/reverie/issues/686, which a loaded tracer
+/// thread produces by chance. The hold fabricates no status: it only observes
+/// the notifier FIFO and the exit publication, then leaves the run loop
+/// pending so the exit future wins in `drive_ordinary`.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct LeaderStepExitHold {
+    /// Armed by the test; the first leader post-clone step disarms it.
+    pub(crate) armed: AtomicBool,
+    /// The decoded FIFO front after the step, before any consumer.
+    pub(crate) queued_step: StdMutex<Option<String>>,
+    /// Whether that front decoded as a SIGTRAP signal stop.
+    pub(crate) queued_step_is_trap: AtomicBool,
+    /// Whether the leader's exit stop had been published when the held run
+    /// loop was dropped.
+    pub(crate) exit_published: AtomicBool,
+    /// The held leader's notifier generation, for diagnostics readback.
+    pub(crate) terminal: StdMutex<Option<safeptrace::TerminalCleanup>>,
+    /// When nonzero, the address of a word shared with the forked guest. The
+    /// hold then single-steps the leader once more, so a second real step
+    /// stop is queued behind the first, and stores 1 into that word once the
+    /// notifier holds both. The guest's exec'ing thread waits for the word.
+    pub(crate) second_step_release: AtomicUsize,
+    /// The result of that second real single step.
+    pub(crate) second_step: StdMutex<Option<String>>,
+    /// The raw statuses queued for the leader when the word was released.
+    pub(crate) queued_statuses: StdMutex<Vec<i32>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static LEADER_STEP_EXIT_HOLD: std::cell::RefCell<Option<Arc<LeaderStepExitHold>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+async fn hold_leader_step_until_exit(hold: Arc<LeaderStepExitHold>, running: &Running) {
+    let terminal = running.terminal_cleanup();
+    // The step stop is a real kernel report that the notifier queues. Observe
+    // it without consuming it: dropping the reservation rolls it back in
+    // place. It must be dropped before waiting, because publishing the exit
+    // stop takes the same status lock.
+    if let Some(pending) = terminal.reserve_pending_for_cleanup(std::time::Duration::from_secs(2)) {
+        let decoded = match pending.decode() {
+            Ok(Wait::Stopped(_, event)) => format!("Stopped({event:?})"),
+            Ok(Wait::Exited(_, status)) => format!("Exited({status:?})"),
+            Err(error) => format!("Err({error:?})"),
+        };
+        let is_trap = decoded == format!("Stopped({:?})", Event::Signal(Signal::SIGTRAP));
+        drop(pending);
+        hold.queued_step_is_trap.store(is_trap, Ordering::SeqCst);
+        *hold.queued_step.lock().unwrap() = Some(decoded);
+    }
+    let release = hold.second_step_release.load(Ordering::SeqCst);
+    if release != 0 {
+        // The leader is still in the real stop whose report is queued above.
+        // One more real single step leaves a second stale report behind it.
+        // The capability is unmarked: it names no exit stop and retires
+        // nothing.
+        let step = match Stopped::try_new_current_unchecked(running.pid()) {
+            Ok(stopped) => stopped
+                .step(None)
+                .map(drop)
+                .map_err(|error| format!("{error:?}")),
+            Err(error) => Err(format!("{error:?}")),
+        };
+        *hold.second_step.lock().unwrap() = Some(format!("{step:?}"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut queued = terminal.queued_raw_statuses();
+        while step.is_ok() && queued.len() < 2 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            queued = terminal.queued_raw_statuses();
+        }
+        *hold.queued_statuses.lock().unwrap() = queued;
+        // Release the guest's exec whatever was observed; the test asserts
+        // the readback.
+        unsafe { &*(release as *const AtomicUsize) }.store(1, Ordering::SeqCst);
+    }
+    // The hold ends only when `drive_ordinary` drops the run loop, normally
+    // because the exit future won. Record what was true at that moment.
+    struct Release(Arc<LeaderStepExitHold>, Option<safeptrace::TerminalCleanup>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let terminal = self.1.take().expect("held generation");
+            self.0
+                .exit_published
+                .store(terminal.exit_stop_observed(), Ordering::SeqCst);
+            *self.0.terminal.lock().unwrap() = Some(terminal);
+        }
+    }
+    let _release = Release(hold, Some(terminal));
+    future::pending::<()>().await;
 }
 
 #[cfg(test)]
@@ -2006,6 +2191,17 @@ impl FatalSession {
     #[cfg(test)]
     pub(crate) fn cleanup_was_refused(&self) -> bool {
         self.tree.lock().unwrap().cleanup_refusal.is_some()
+    }
+
+    /// A session with a root owner on this ptracer thread and no Tool to
+    /// report a failure to, for tests that drive one cleanup owner directly.
+    #[cfg(test)]
+    pub(crate) fn for_test(root: Pid) -> Self {
+        Self {
+            root: Some(root),
+            ptracer_thread: Some(std::thread::current().id()),
+            ..Self::default()
+        }
     }
 
     fn register(&self, task: Arc<FatalTaskStop>) -> Option<FatalNewborn> {
@@ -2574,6 +2770,49 @@ pub(crate) enum PreSyscallPoint {
     /// before the hop restores the signal mask, raises the deferred SIGSTOPs
     /// again and runs the syscall.
     Late,
+}
+
+/// The owner that must retain a decoded `Event::NewChild` before any
+/// cancellation point can drop the stop that carries it.
+#[derive(Clone, Copy)]
+enum NewbornOwner<'a> {
+    /// Ordinary ptrace: the fatal session's retained kernel edge.
+    Ordinary(&'a FatalSession),
+    /// Dynamic LiteInst: the session cleanup guard's newborn table.
+    Liteinst(&'a StdMutex<HashMap<Pid, NewbornTracee>>),
+}
+
+impl NewbornOwner<'_> {
+    /// Synchronous and idempotent for the same child generation: a repeated
+    /// registration of an already retained child is a no-op, so a nested
+    /// handler and the run loop can both register the same stop.
+    fn register(self, parent: Pid, event: &Event) {
+        let Event::NewChild(op, child) = event else {
+            return;
+        };
+        match self {
+            Self::Ordinary(session) => session.capture(parent, *op, child),
+            Self::Liteinst(newborns) => {
+                newborns
+                    .lock()
+                    .unwrap()
+                    .entry(child.pid())
+                    .or_insert_with(|| NewbornTracee::from_event(parent, *op, child));
+            }
+        }
+    }
+}
+
+impl<G: GlobalTool> GlobalState<G> {
+    /// Borrows only the global state, so a closure passed to a nested stepper
+    /// that also borrows the task's timer can still register a newborn.
+    fn newborn_owner(&self) -> NewbornOwner<'_> {
+        // `liteinst_runtime.is_none()` is `TracedTask::ordinary_failure_enabled`.
+        match self.liteinst_runtime.as_ref() {
+            None => NewbornOwner::Ordinary(&self.fatal_session),
+            Some(runtime) => NewbornOwner::Liteinst(&runtime.newborn_tracees),
+        }
+    }
 }
 
 impl<G: GlobalTool> Clone for GlobalState<G> {
@@ -4238,9 +4477,19 @@ impl<L: Tool + 'static> TracedTask<L> {
             .as_ref()
             .map(|armer| Arc::clone(&armer.held_root_stop));
         let mut step = move |task| RootStopLease::new(task, held_root_stop.clone()).step(None);
+        let newborn_owner = self.global_state.newborn_owner();
         let mut observe = |wait: &Wait| {
-            if let (Some(armer), Wait::Stopped(task, event)) = (armer.as_ref(), wait) {
-                armer.arm(task, event)?;
+            if let Wait::Stopped(task, event) = wait {
+                // A step can decode a new child. `HandleFailure::Event` then
+                // hands it to `abort`, and a cancellation can drop the run
+                // loop before the loop-top registration. Retain it here,
+                // before arming, in the order `arm_liteinst_wait` uses.
+                newborn_owner.register(task.pid(), event);
+                #[cfg(test)]
+                record_timer_decoded_fork_for_test(task, event);
+                if let Some(armer) = armer.as_ref() {
+                    armer.arm(task, event)?;
+                }
             }
             Ok(())
         };
@@ -7595,25 +7844,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// A grandchild is reported to its own non-root parent, so scoping this to
     /// the root leaves it unregistered.
     fn register_liteinst_newborn(&self, task: &Stopped, event: &Event) {
-        if self.ordinary_failure_enabled() {
-            if let Event::NewChild(op, child) = event {
-                self.global_state
-                    .fatal_session
-                    .capture(task.pid(), *op, child);
-            }
-            return;
-        }
-        let Some(runtime) = self.global_state.liteinst_runtime.as_ref() else {
-            return;
-        };
-        if let Event::NewChild(op, child) = event {
-            runtime
-                .newborn_tracees
-                .lock()
-                .unwrap()
-                .entry(child.pid())
-                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
-        }
+        self.global_state
+            .newborn_owner()
+            .register(task.pid(), event);
     }
 
     fn arm_liteinst_wait(&self, wait: &Wait) {
@@ -8226,7 +8459,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             // that will transition the root again. Every other nested handler
             // does the same; this one only looks new because the whole
             // new-task path used to be unreachable under LiteInst.
-            let wait = self.step_stopped(parent, None)?.next_state().await?;
+            #[cfg(test)]
+            let hold = LEADER_STEP_EXIT_HOLD
+                .with(|slot| slot.borrow().clone())
+                .filter(|hold| {
+                    self.tid() == self.pid() && hold.armed.swap(false, Ordering::SeqCst)
+                });
+            let running = self.step_stopped(parent, None)?;
+            #[cfg(test)]
+            if let Some(hold) = hold {
+                hold_leader_step_until_exit(hold, &running).await;
+            }
+            let wait = running.next_state().await?;
             self.arm_liteinst_wait(&wait);
             Ok(wait)
         }
@@ -8267,12 +8511,29 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// current future doesn't proceed any further.
     async fn abort(&mut self, result: Result<Wait, TraceError>) -> ! {
         #[cfg(test)]
+        let timer_pause = FATAL_FORK_PAUSE.with(|slot| {
+            slot.borrow().clone().filter(|pause| {
+                pause.timer
+                    && pause.timer_parent.load(Ordering::SeqCst) == self.tid().as_raw()
+                    && matches!(&result, Ok(Wait::Stopped(_, Event::NewChild(ChildOp::Fork, child)))
+                        if pause.timer_child.lock().unwrap().as_ref().is_some_and(|observed| observed.pid == child.pid()))
+            })
+        });
+        #[cfg(test)]
         if let Err(TraceError::Errno(errno)) = &result {
             crate::tracer::record_bare_errno_abort_for_test(self.tid(), *errno);
         }
         if self.next_state.send(result).await.is_err() {
             panic!(
                 "failed to abort tracee {}: run-loop next-state channel is closed",
+                self.tid()
+            );
+        }
+        #[cfg(test)]
+        if let Some(pause) = timer_pause {
+            pause.timer_published.store(true, Ordering::SeqCst);
+            eprintln!(
+                "timer fork published to next-state channel: parent={}",
                 self.tid()
             );
         }
@@ -8519,6 +8780,30 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // loop from within `inject` or `tail_inject`.
                     let tid = self.tid();
                     let fut1 = next_state_rx.recv().fuse();
+                    // Holds the queued timer-decoded fork unconsumed, so the
+                    // control's sibling failure cancels this loop first.
+                    #[cfg(test)]
+                    let fut1 = {
+                        let mut receive = Box::pin(fut1);
+                        let pause = FATAL_FORK_PAUSE.with(|slot| slot.borrow().clone());
+                        future::poll_fn(move |cx| {
+                            if let Some(pause) = pause.as_ref().filter(|pause| {
+                                pause.timer
+                                    && pause.timer_parent.load(Ordering::SeqCst) == tid.as_raw()
+                                    && pause.timer_published.load(Ordering::SeqCst)
+                            }) {
+                                if !pause.timer_receive_blocked.swap(true, Ordering::SeqCst) {
+                                    eprintln!(
+                                        "timer fork receiver held before consuming queued child: parent={tid}"
+                                    );
+                                    pause.ready.notify_waiters();
+                                }
+                                return Poll::Pending;
+                            }
+                            receive.as_mut().poll(cx)
+                        })
+                        .fuse()
+                    };
                     let fut2 = self.handle_stop_event(stopped, event).fuse();
 
                     futures::pin_mut!(fut1, fut2);
@@ -8872,13 +9157,25 @@ impl<L: Tool + 'static> TracedTask<L> {
         let slot = Arc::new(OrdinaryExecSlot {
             stop: stop.clone(),
             requested: AtomicBool::new(false),
+            lost_former: AtomicBool::new(false),
             changed: Notify::new(),
             transferred: StdMutex::new(None),
+            lost_former_task: StdMutex::new(None),
         });
-        self.ordinary_exec
-            .lock()
-            .unwrap()
-            .insert(self.tid(), slot.clone());
+        // A nonleader's owner retains its own process's leader owner slot. The
+        // leader removes that slot only after consuming its actual final wait
+        // status, and never after an Exec edge; see `run_ordinary_owned`'s
+        // lost-former arm, which hands its task over through that slot.
+        let leader = {
+            let mut exec = self.ordinary_exec.lock().unwrap();
+            exec.insert(self.tid(), slot.clone());
+            if self.is_main_thread() {
+                None
+            } else {
+                exec.get(&self.pid()).cloned()
+            }
+        };
+        let exec_owners = self.ordinary_exec.clone();
         let newborn = session.register(stop.clone());
         let mut exit_event = match newborn {
             Some(newborn) => newborn.into_exit(),
@@ -8903,8 +9200,40 @@ impl<L: Tool + 'static> TracedTask<L> {
             // stop before this original task can transfer its state.
             let outcome = {
                 let drive = self
-                    .drive_ordinary(start, &mut exit_event, &stop, &session)
+                    .drive_ordinary(
+                        start,
+                        &mut exit_event,
+                        &stop,
+                        &session,
+                        leader.is_some().then_some(&*slot),
+                    )
                     .fuse();
+                // Only after drive_ordinary has recorded its former TID's
+                // ECHILD, and only once the same process's leader owner has
+                // consumed its actual final wait status and left the registry.
+                // After that no Exec edge can request this slot: the leader
+                // requests before it resumes an Exec stop, and it removes its
+                // own slot only on its Exited route.
+                // Polled only after a waker fired, like `transfer` below.
+                let lost = PollOnWake::new(Box::pin(async {
+                    slot.lost_former().await;
+                    let Some(leader) = leader.as_ref() else {
+                        return future::pending().await;
+                    };
+                    loop {
+                        let changed = leader.changed.notified();
+                        let present = exec_owners
+                            .lock()
+                            .unwrap()
+                            .get(&leader.stop.tid)
+                            .is_some_and(|entry| Arc::ptr_eq(entry, leader));
+                        if !present {
+                            break;
+                        }
+                        changed.await;
+                    }
+                }))
+                .fuse();
                 // Polled only after `slot.changed` woke it, not on every
                 // resume of this task: it completes at most once per exec.
                 let transfer = PollOnWake::new(Box::pin(async {
@@ -8926,13 +9255,48 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }
                 }))
                 .fuse();
-                futures::pin_mut!(drive, transfer);
+                futures::pin_mut!(drive, transfer, lost);
                 futures::select_biased! {
                     () = transfer => None,
-                    result = drive => Some(result),
+                    () = lost => Some(None),
+                    result = drive => Some(Some(result)),
                 }
             };
             match outcome {
+                Some(None) => {
+                    // This former thread became the leader through de_thread
+                    // and died before its exec stop, so no Exec edge requested
+                    // this task. Its final status is the one the leader owner
+                    // consumed under the leader TID, and this TID has none.
+                    // Hand the task, Tool thread state included, to the leader
+                    // owner: its child-thread join in `tool_exit_ordinary`
+                    // waits for this owner, then reports this state under the
+                    // leader TID with that final status, and the replaced
+                    // leader's state with that leader's own exit-stop status.
+                    // This owner runs no on_exit hook and returns no
+                    // ExitStatus.
+                    self.ordinary_exec.lock().unwrap().remove(&self.tid());
+                    crate::tracer::retire_ordinary_terminal(&stop.terminal, &stop.held).await;
+                    session.finished(&stop);
+                    let leader = leader
+                        .as_ref()
+                        .expect("`lost` completes only with a leader owner slot");
+                    let previous = leader
+                        .lost_former_task
+                        .lock()
+                        .unwrap()
+                        .replace(Box::new(self));
+                    // One de_thread per process can release a former TID
+                    // without an Exec edge following: its thread is the last
+                    // one, and the process ends with it. Any earlier exec
+                    // reached its Exec edge, which transfers its former task
+                    // instead, since this arm requires the leader slot gone.
+                    assert!(
+                        previous.is_none(),
+                        "a second lost former handed over to one leader owner"
+                    );
+                    return Ok(None);
+                }
                 None => {
                     *slot.transferred.lock().unwrap() = Some(Box::new(self));
                     slot.changed.notify_waiters();
@@ -8940,7 +9304,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // surviving former thread. Its state now has one owner.
                     return Ok(None);
                 }
-                Some(crate::tracer::OrdinaryTerminal::Exited(status, receipt)) => {
+                Some(Some(crate::tracer::OrdinaryTerminal::Exited(
+                    status,
+                    receipt,
+                    entry_exit_stop,
+                ))) => {
                     // Every actual terminal route, including direct run-loop
                     // return, keeps its original owner registered until the
                     // notifier retires. Announce physical quiescence first so a
@@ -8953,6 +9321,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                         receipt,
                     );
                     self.ordinary_exec.lock().unwrap().remove(&self.tid());
+                    // Wakes a nonleader owner whose former TID was lost to
+                    // exec (the lost-former arm above). It hands its task to
+                    // this slot before it completes, and the child-thread
+                    // join in `tool_exit_ordinary` waits for it.
+                    slot.changed.notify_waiters();
                     if let Some(stats) = &self.global_state.backend_stats {
                         stats.record_tracee_exit();
                     }
@@ -8960,16 +9333,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // short, the thread has ended its timer event.
                     self.timer.settle_at_exit();
                     log_guest_exit(self.tid(), self.pid(), status);
-                    self.tool_exit_ordinary(status).await;
+                    self.tool_exit_ordinary(status, &slot, entry_exit_stop)
+                        .await;
                     session.finished(&stop);
                     return Ok(Some(status));
                 }
-                Some(crate::tracer::OrdinaryTerminal::Exec {
+                Some(Some(crate::tracer::OrdinaryTerminal::Exec {
                     stopped,
                     former,
                     replaced_status,
                     receipt,
-                }) => {
+                })) => {
                     self.resolve_callback_diagnostic(
                         crate::PtraceCallbackOutcome::Exec {
                             former,
@@ -9076,6 +9450,88 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// Retires the task a nonleader owner handed to the leader owner after
+    /// exec's de_thread released its former TID: its thread became the
+    /// leader and died before its exec stop, so no Exec edge transferred it.
+    /// The leader owner calls this after its child-thread joins and after
+    /// swapping Tool thread states with this task, so this task carries the
+    /// replaced leader's state. That state gets its one on_exit_thread here,
+    /// under the leader TID, with `replaced`: the replaced leader's own
+    /// exit-stop status, the stop the leader owner's ExitFuture claimed.
+    /// This is the swap `retire_replaced_leader` makes for an Exec edge. The
+    /// exec thread's state gets its hook from the leader owner, under the
+    /// leader TID with the final status, before `on_exit_process`. If that
+    /// exit stop's status was never read, there is no status to report: the
+    /// session fails and the replaced leader's state gets no hook. This task
+    /// otherwise releases only its own timer and thread accounting.
+    async fn retire_lost_former(mut self, leader: Pid, replaced: crate::tracer::EntryExitStop) {
+        let session = self.fatal_session();
+        let former = self.tid();
+        let pid = self.pid();
+        #[cfg(test)]
+        crate::tracer::record_fatal_phase_for_test(|| format!("lost former retired: tid={former}"));
+        if let Err(error) = self.timer.cancel() {
+            session.fail_at(
+                BackendFailure {
+                    pid,
+                    tid: former,
+                    phase: "ptrace lost former timer cancellation",
+                },
+                error.into(),
+            );
+        }
+        for (phase, error) in self.timer.close_after_failure() {
+            session.fail_at(
+                BackendFailure {
+                    pid,
+                    tid: former,
+                    phase,
+                },
+                error.into(),
+            );
+        }
+        match replaced {
+            crate::tracer::EntryExitStop::Read(status) => {
+                let wrapped = WrappedFrom(leader, &self.global_state);
+                if let Err(error) = self
+                    .process_state
+                    .on_exit_thread(leader, &wrapped, self.thread_state, status)
+                    .await
+                {
+                    session.fail_at(
+                        BackendFailure {
+                            pid,
+                            tid: leader,
+                            phase: "ptrace lost former replaced leader on_exit_thread",
+                        },
+                        error,
+                    );
+                }
+            }
+            entry => session.fail_at(
+                BackendFailure {
+                    pid,
+                    tid: leader,
+                    phase: "ptrace lost former replaced leader exit status",
+                },
+                anyhow::Error::new(ReplacedLeaderStatusUnavailable {
+                    leader,
+                    former,
+                    entry,
+                })
+                .into(),
+            ),
+        }
+        self.child_threads
+            .lock()
+            .await
+            .retain(|child| child.id() != former);
+        self.ntasks.fetch_sub(1, Ordering::SeqCst);
+        if self.is_a_daemon {
+            self.ndaemons.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
     async fn retire_replaced_leader(mut self, leader: Pid, status: ExitStatus) {
         let session = self.fatal_session();
         let former = self.tid();
@@ -9136,6 +9592,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         exit_event: &mut futures::future::BoxFuture<'static, Result<Stopped, TraceError>>,
         stop: &Arc<FatalTaskStop>,
         session: &Arc<FatalSession>,
+        lost_former: Option<&OrdinaryExecSlot<L>>,
     ) -> crate::tracer::OrdinaryTerminal {
         let global = self.global_state.gs_ref.clone();
         #[cfg(test)]
@@ -9172,7 +9629,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         drop(global);
         match outcome {
             Some(Either::Right(Ok(status))) => {
-                crate::tracer::OrdinaryTerminal::Exited(status, session.ordinary_receipt())
+                // The run loop consumed the final status itself; this path
+                // claimed no exit stop.
+                crate::tracer::OrdinaryTerminal::Exited(
+                    status,
+                    session.ordinary_receipt(),
+                    crate::tracer::EntryExitStop::NotHeld,
+                )
             }
             Some(Either::Left(mut stopped)) => {
                 while let Err(TraceError::Errno(error)) = stopped {
@@ -9190,6 +9653,21 @@ impl<L: Tool + 'static> TracedTask<L> {
                         // has no terminal status to consume. The outer owner
                         // remains available for the leader's actual Exec edge;
                         // ECHILD itself authorizes neither transfer nor exit.
+                        //
+                        // If the notifier recorded that ECHILD for this exact
+                        // generation, de_thread released the TID, and a fatal
+                        // signal can land before that thread's exec stop, so no
+                        // Exec edge need follow, in a run that has not failed
+                        // too. Record it as on the failure path below; the
+                        // owner's lost-former arm then hands this task to the
+                        // leader owner only once that owner has consumed its
+                        // actual final status and left the registry.
+                        if let Some(slot) = lost_former
+                            && stop.terminal.observed_exit_status() == Err(Errno::ECHILD)
+                        {
+                            slot.lost_former.store(true, Ordering::Release);
+                            slot.changed.notify_waiters();
+                        }
                         return future::pending().await;
                     }
                     session.retry_after(error.into()).await;
@@ -9217,6 +9695,43 @@ impl<L: Tool + 'static> TracedTask<L> {
                     match (&mut *exit_event).await {
                         Ok(stopped) => break Ok(stopped),
                         Err(TraceError::Died(zombie)) => break Err(TraceError::Died(zombie)),
+                        // As on the exit-future path above: once the notifier
+                        // has published this generation's actual final wait
+                        // status (for example a SIGKILLed tracee that exited
+                        // without an exit stop, so the exit wait meets ECHILD),
+                        // finish_ordinary_exit reports exactly that status.
+                        // An error without a published final status still
+                        // refuses cleanup.
+                        Err(error)
+                            if stop
+                                .terminal
+                                .observed_exit_status()
+                                .ok()
+                                .flatten()
+                                .is_some() =>
+                        {
+                            break Err(error);
+                        }
+                        // The notifier recorded ECHILD for this nonleader's
+                        // exact generation with no final status: exec's
+                        // de_thread released the former TID, and the thread
+                        // now runs as the leader. This failed run's group
+                        // SIGKILL can land before that thread's exec stop, so
+                        // no Exec edge need follow. Record it and stay
+                        // pending: an Exec request still transfers this task
+                        // first, and otherwise the owner's lost-former arm
+                        // hands it to the leader owner once that owner has
+                        // consumed its actual final status. ECHILD itself
+                        // authorizes neither.
+                        Err(TraceError::Errno(Errno::ECHILD))
+                            if lost_former.is_some()
+                                && stop.terminal.observed_exit_status() == Err(Errno::ECHILD) =>
+                        {
+                            let slot = lost_former.unwrap();
+                            slot.lost_former.store(true, Ordering::Release);
+                            slot.changed.notify_waiters();
+                            return future::pending().await;
+                        }
                         Err(error) => session.retry_after(anyhow::Error::new(error).into()).await,
                     }
                 };
@@ -9225,7 +9740,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
-    async fn tool_exit_ordinary(mut self, status: ExitStatus) {
+    async fn tool_exit_ordinary(
+        mut self,
+        status: ExitStatus,
+        slot: &OrdinaryExecSlot<L>,
+        entry_exit_stop: crate::tracer::EntryExitStop,
+    ) {
         let session = self.fatal_session();
         let pid = self.pid();
         let tid = self.tid();
@@ -9254,6 +9774,22 @@ impl<L: Tool + 'static> TracedTask<L> {
                 {
                     session.fail(error);
                 }
+            }
+            // The join above waited for every child-thread owner, including
+            // a nonleader owner whose former TID exec's de_thread released:
+            // that owner handed its task to this slot before completing. Its
+            // thread took this TID and died before its exec stop, so `status`
+            // is that thread's, while the exit stop this owner's ExitFuture
+            // claimed was the replaced leader's own. Swap only the Tool
+            // thread states, as the Exec arm does: the replaced leader's state
+            // is reported first, with that exit stop's status, and the exec
+            // thread's state below, with `status`, before on_exit_process.
+            // Timers and daemon accounting stay with their own owners, since
+            // no thread survives to carry either.
+            let lost_former = slot.lost_former_task.lock().unwrap().take();
+            if let Some(mut former) = lost_former {
+                std::mem::swap(&mut self.thread_state, &mut former.thread_state);
+                former.retire_lost_former(tid, entry_exit_stop).await;
             }
         }
         let reason = if main {

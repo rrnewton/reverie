@@ -1720,6 +1720,10 @@ impl UserMemory {
         self.write_user(guest_address, source, true)
     }
 
+    pub(crate) fn put_user_i16(&self, guest_address: u64, value: i16) -> Result<()> {
+        self.write_user(guest_address, &value.to_ne_bytes(), false)
+    }
+
     pub(crate) fn put_user_i32(&self, guest_address: u64, value: i32) -> Result<()> {
         self.write_user(guest_address, &value.to_ne_bytes(), false)
     }

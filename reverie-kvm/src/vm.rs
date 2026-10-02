@@ -10909,9 +10909,18 @@ mod tests {
     fn both_clear_tid_paths_keep_distinct_store_and_queued_wake_contracts() {
         use std::time::Duration;
         use std::time::Instant;
+
+        use io_uring::IoUring;
+        use io_uring::Probe;
+        use io_uring::opcode;
+        use io_uring::types;
         const PARK: u64 = 0x1000;
         const WORD: u64 = 0x2000;
         const PAGE: u64 = 0x1000;
+        const HOST_REQUIREMENTS: &str = "clear-TID test setup requires Linux 6.7+, \
+            CONFIG_IO_URING and CONFIG_FUTEX, IORING_OP_FUTEX_WAIT, and permitted \
+            io_uring_setup/register/enter (including extended-argument timeouts); \
+            io_uring must be enabled for this user and allowed by seccomp";
         fn host_futex(
             address: usize,
             operation: i32,
@@ -10973,35 +10982,68 @@ mod tests {
                     .user()
                     .retain_translated_range(WORD, 4)
                     .unwrap();
-                let waiting = backend
-                    .memory
-                    .user()
-                    .retain_translated_range(PARK, 4)
-                    .unwrap();
+                // Drop the ring before these retained address leases, including
+                // on failure: closing initiates cancellation. A queued request's
+                // wake/cancel path uses its futex key, not the userspace word.
+                let mut ring = IoUring::new(2)
+                    .unwrap_or_else(|error| panic!("{HOST_REQUIREMENTS}; io_uring_setup: {error}"));
+                let mut probe = Probe::new();
+                ring.submitter()
+                    .register_probe(&mut probe)
+                    .unwrap_or_else(|error| panic!("{HOST_REQUIREMENTS}; opcode probe: {error}"));
+                assert!(
+                    probe.is_supported(opcode::FutexWait::CODE),
+                    "{HOST_REQUIREMENTS}"
+                );
+                assert!(ring.params().is_feature_ext_arg(), "{HOST_REQUIREMENTS}");
+                // Probe the exact timed-enter form before enrolling a waiter or
+                // invoking the production helper. This empty-ring, zero-time
+                // poll submits no request and must report ETIME. In particular,
+                // a seccomp denial of GETEVENTS | EXT_ARG is a setup failure.
+                let setup_timeout = types::Timespec::new();
+                let setup_args = types::SubmitArgs::new().timespec(&setup_timeout);
+                let setup_enter = ring.submitter().submit_with_args(1, &setup_args);
+                assert_eq!(
+                    setup_enter
+                        .as_ref()
+                        .err()
+                        .and_then(|error| error.raw_os_error()),
+                    Some(libc::ETIME),
+                    "{HOST_REQUIREMENTS}; empty-ring timed io_uring_enter probe: \
+                     expected ETIME, got {setup_enter:?}"
+                );
+
+                // FUTEX2_SIZE_U32, with no FUTEX2_PRIVATE flag: the production
+                // helper uses the shared FUTEX_WAKE operation.
+                const FUTEX2_SIZE_U32: u32 = 2;
+                let request_id = 0x6960 + u64::from(registered_worker) * 3 + policy;
+                let request = opcode::FutexWait::new(
+                    parking.address() as *const u32,
+                    0,
+                    u64::from(u32::MAX),
+                    FUTEX2_SIZE_U32,
+                )
+                .build()
+                .user_data(request_id);
                 clear_tid_diagnostic::arm();
-                let waiter = std::thread::spawn(move || {
-                    let timeout = libc::timespec {
-                        tv_sec: 5,
-                        tv_nsec: 0,
-                    };
-                    let result = host_futex(
-                        waiting.address(),
-                        libc::FUTEX_WAIT,
-                        0,
-                        std::ptr::from_ref(&timeout) as usize,
-                        0,
-                        0,
-                    );
-                    let errno = if result == -1 {
-                        // errno belongs to this waiter, not the joining thread.
-                        Some(unsafe { *libc::__errno_location() })
-                    } else {
-                        None
-                    };
-                    (result, errno)
-                });
-                let deadline = Instant::now() + Duration::from_secs(2);
+                let wait_deadline = Instant::now() + Duration::from_secs(5);
+                // SAFETY: both address leases outlive the ring. PARK is initialized
+                // and unchanged while submitted; wake/cancel later uses its key.
+                unsafe { ring.submission().push(&request).unwrap() };
+                assert_eq!(
+                    ring.submit().unwrap_or_else(|error| panic!(
+                        "{HOST_REQUIREMENTS}; io_uring_enter submission: {error}"
+                    )),
+                    1
+                );
+                let enrollment_deadline = Instant::now() + Duration::from_secs(2);
                 loop {
+                    let early_completion = ring.completion().next();
+                    assert!(
+                        early_completion.is_none(),
+                        "{HOST_REQUIREMENTS}; futex wait completed before enrollment: \
+                         {early_completion:?}"
+                    );
                     let moved = host_futex(
                         parking.address(),
                         libc::FUTEX_CMP_REQUEUE,
@@ -11014,13 +11056,18 @@ mod tests {
                     if moved == 1 {
                         break;
                     }
-                    assert!(Instant::now() < deadline, "clear-TID waiter was not queued");
+                    assert!(
+                        Instant::now() < enrollment_deadline,
+                        "clear-TID waiter was not queued"
+                    );
                     std::thread::yield_now();
                 }
-                // Requeue establishes enrollment only at that instant. An
-                // internal FUTEX_WAIT restart can later return to PARK; see
-                // https://github.com/rrnewton/reverie/issues/696. Keep requiring
-                // an actual wake and record what the production helper did.
+                // Linux io_uring/futex.c keeps this request's futex_q enrolled
+                // until wake or cancellation; it has no sleeping FUTEX_WAIT
+                // syscall that can restart at PARK after requeue. Require the
+                // same request to complete with an actual wake, not a timeout.
+                // https://github.com/rrnewton/reverie/issues/696
+                // https://github.com/torvalds/linux/blob/v7.1/io_uring/futex.c
                 if registered_worker {
                     executor.set_clear_child_tid(Some(WORD));
                     backend.clear_registered_worker_tid_before_exit(&mut executor);
@@ -11035,7 +11082,7 @@ mod tests {
                 assert_eq!(i32::from_ne_bytes(bytes), if stored { 0 } else { 7 });
                 if policy == 2 {
                     // No wake: prove the same waiter is still queued, then
-                    // drain it explicitly so no host worker survives the test.
+                    // drain it explicitly so no request survives the test.
                     assert_eq!(
                         host_futex(
                             word.address(),
@@ -11052,12 +11099,35 @@ mod tests {
                         1
                     );
                 }
-                let (wait_result, wait_errno) = waiter.join().unwrap();
+                let remaining = wait_deadline
+                    .checked_duration_since(Instant::now())
+                    .expect("clear-TID wake exceeded the unchanged five-second deadline");
+                let timeout = types::Timespec::from(remaining);
+                let args = types::SubmitArgs::new().timespec(&timeout);
+                let completion_wait = ring.submitter().submit_with_args(1, &args);
                 assert_eq!(
-                    wait_result, 0,
+                    completion_wait.as_ref().ok(),
+                    Some(&0),
+                    "expected completion within the single five-second deadline; \
+                     registered_worker={registered_worker} policy={policy} \
+                     completion_wait={completion_wait:?} wake={wake:?}"
+                );
+                let completion = ring.completion().next().expect("missing futex completion");
+                assert_eq!(
+                    completion.user_data(),
+                    request_id,
+                    "wrong futex request completed"
+                );
+                assert_eq!(
+                    completion.result(),
+                    0,
                     "expected an actual wake, never a timeout; \
                      registered_worker={registered_worker} policy={policy} \
-                     wait_errno={wait_errno:?} wake={wake:?}"
+                     completion={completion:?} wake={wake:?}"
+                );
+                assert!(
+                    ring.completion().next().is_none(),
+                    "unexpected extra completion"
                 );
             }
             // An unaligned word crosses writable and readonly pages. Futex

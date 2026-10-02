@@ -10262,9 +10262,9 @@ fn poll_with_timeout(
     args: &[u64; 6],
     timeout: libc::c_int,
 ) -> i64 {
-    let Ok(count) = usize::try_from(args[1]) else {
-        return negative_errno(libc::EINVAL);
-    };
+    // Both Linux syscall entrypoints declare nfds as unsigned int, even on
+    // x86-64 where the raw syscall register and host nfds_t are wider.
+    let count = args[1] as u32 as usize;
     if count > GUEST_NOFILE_LIMIT as usize {
         return negative_errno(libc::EINVAL);
     }
@@ -10331,7 +10331,13 @@ fn poll_with_timeout(
     // can wait for worker eventfds without spinning on virtual clock reads.
     // A virtual signalfd is different: readiness is guest state, so probe it
     // without blocking and fail closed below only when no event is ready.
-    let host_timeout = if virtual_signalfd_wait { 0 } else { timeout };
+    // A missing guest descriptor is already ready with POLLNVAL. Still probe
+    // the other descriptors, but never wait for them before reporting it.
+    let host_timeout = if virtual_signalfd_wait || invalid.iter().any(|invalid| *invalid) {
+        0
+    } else {
+        timeout
+    };
     let ready = unsafe { libc::poll(poll_fds.as_mut_ptr(), count as libc::nfds_t, host_timeout) };
     if ready < 0 {
         return io_error(std::io::Error::last_os_error());
@@ -10355,12 +10361,20 @@ fn poll_with_timeout(
         // Refuse before changing the guest pollfd array.
         return negative_errno(libc::ENOSYS);
     }
-    {
-        // SAFETY: poll_fds remains initialized ABI data and the byte view is
-        // exactly bounded to the vector allocation.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(poll_fds.as_ptr().cast::<u8>(), byte_length) };
-        if memory.user().write(args[0], bytes).is_err() {
+    // Linux writes only revents, one field at a time in array order. The
+    // caller may change fd/events while a host-owned wait is blocked, and a
+    // later output fault must retain earlier successful field stores.
+    for (index, poll_fd) in poll_fds.iter().enumerate() {
+        let offset = index * std::mem::size_of::<libc::pollfd>()
+            + std::mem::offset_of!(libc::pollfd, revents);
+        let Some(address) = args[0].checked_add(offset as u64) else {
+            return negative_errno(libc::EFAULT);
+        };
+        if memory
+            .user()
+            .put_user_i16(address, poll_fd.revents)
+            .is_err()
+        {
             return negative_errno(libc::EFAULT);
         }
     }
@@ -12722,6 +12736,9 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
     message.msg_namelen = host_header.msg_namelen;
     message.msg_controllen = control_bytes.len();
     message.msg_flags = host_header.msg_flags;
+    if flags & libc::MSG_CMSG_CLOEXEC == 0 {
+        message.msg_flags &= !libc::MSG_CMSG_CLOEXEC;
+    }
     if stripped_unsupported {
         message.msg_flags |= libc::MSG_CTRUNC;
     }
@@ -13004,6 +13021,9 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
         message.msg_hdr.msg_namelen = host_header.msg_namelen;
         message.msg_hdr.msg_controllen = control_bytes.len();
         message.msg_hdr.msg_flags = host_header.msg_flags;
+        if flags & libc::MSG_CMSG_CLOEXEC == 0 {
+            message.msg_hdr.msg_flags &= !libc::MSG_CMSG_CLOEXEC;
+        }
         if stripped_unsupported {
             message.msg_hdr.msg_flags |= libc::MSG_CTRUNC;
         }
@@ -29212,6 +29232,291 @@ mod tests {
         );
     }
 
+    #[test]
+    fn poll_and_ppoll_consume_unsigned_low_word_nfds() {
+        const POLL_FDS: u64 = 0x300;
+        const TIMEOUT: u64 = 0x100;
+        const READY_FD: libc::c_int = 17;
+
+        let root = TestDir::new();
+        let ready_path = root.0.join("poll-ready");
+        std::fs::write(&ready_path, b"readable").unwrap();
+        for checked in [false, true] {
+            for number in [libc::SYS_poll, libc::SYS_ppoll] {
+                let mut state = test_state(&root.0);
+                state
+                    .files
+                    .insert(READY_FD, std::fs::File::open(&ready_path).unwrap());
+                let mut executor = ElfExecutor::new(state, false);
+                let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+                memory
+                    .write_raw(0, &vec![0xa5; PAGE_SIZE as usize])
+                    .unwrap();
+                assert_eq!(write_struct(&mut memory, TIMEOUT, &[0_i64; 2]), 0);
+                let descriptors = [
+                    libc::pollfd {
+                        fd: -7,
+                        events: libc::POLLIN | libc::POLLOUT,
+                        revents: 0x1234,
+                    },
+                    libc::pollfd {
+                        fd: libc::c_int::MAX,
+                        // POLLNVAL is reported even without requested events.
+                        events: 0,
+                        revents: 0x2345,
+                    },
+                    libc::pollfd {
+                        fd: READY_FD,
+                        events: libc::POLLIN,
+                        revents: 0x3456,
+                    },
+                ];
+                assert_eq!(write_struct(&mut memory, POLL_FDS, &descriptors), 0);
+                let mut original = vec![0; PAGE_SIZE as usize];
+                memory.read_raw(0, &mut original).unwrap();
+                memory
+                    .map_user_permissions(0, PAGE_SIZE, true, true)
+                    .unwrap();
+                memory.enable_user_access();
+
+                let cases: &[(u64, i64, &[i16])] = &[
+                    (0, 0, &[]),
+                    (1, 0, &[0]),
+                    (3, 2, &[0, libc::POLLNVAL, libc::POLLIN]),
+                    (
+                        GUEST_NOFILE_LIMIT as u64 + 1,
+                        negative_errno(libc::EINVAL),
+                        &[],
+                    ),
+                    (u32::MAX as u64, negative_errno(libc::EINVAL), &[]),
+                ];
+                for high in [0, 0x5a5a_5a5a_0000_0000, 0xffff_ffff_0000_0000] {
+                    for &(count, expected_result, revents) in cases {
+                        memory.write_raw(0, &original).unwrap();
+                        let args = [
+                            POLL_FDS,
+                            high | count,
+                            if number == libc::SYS_ppoll {
+                                TIMEOUT
+                            } else {
+                                0
+                            },
+                            0,
+                            0,
+                            0,
+                        ];
+                        let result = if checked {
+                            executor
+                                .execute_checked(&SyscallRequest::new(number as u64, args), &memory)
+                                .unwrap()
+                        } else {
+                            syscall_result(&mut memory, &mut executor.state, number, args)
+                        };
+                        assert_eq!(
+                            result,
+                            expected_result,
+                            "checked={checked} syscall={number} nfds={:#x}",
+                            high | count
+                        );
+                        let mut expected = original.clone();
+                        for (index, value) in revents.iter().enumerate() {
+                            let offset = POLL_FDS as usize + 8 * index + 6;
+                            expected[offset..offset + 2].copy_from_slice(&value.to_ne_bytes());
+                        }
+                        let mut actual = vec![0; original.len()];
+                        memory.read_raw(0, &mut actual).unwrap();
+                        assert_eq!(
+                            actual,
+                            expected,
+                            "complete arena: checked={checked} syscall={number} nfds={:#x}",
+                            high | count
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn poll_and_ppoll_write_revents_after_readonly_fd_and_events() {
+        const POLL_FD: u64 = PAGE_SIZE - 6;
+        const TIMEOUT: u64 = 0x100;
+        const READY_FD: libc::c_int = 17;
+
+        let root = TestDir::new();
+        let ready_path = root.0.join("poll-ready");
+        std::fs::write(&ready_path, b"readable").unwrap();
+        for checked in [false, true] {
+            for number in [libc::SYS_poll, libc::SYS_ppoll] {
+                let mut state = test_state(&root.0);
+                state
+                    .files
+                    .insert(READY_FD, std::fs::File::open(&ready_path).unwrap());
+                let mut executor = ElfExecutor::new(state, false);
+                let mut memory = GuestMemory::new(0, (2 * PAGE_SIZE) as usize).unwrap();
+                memory
+                    .write_raw(0, &vec![0xa5; (2 * PAGE_SIZE) as usize])
+                    .unwrap();
+                assert_eq!(write_struct(&mut memory, TIMEOUT, &[0_i64; 2]), 0);
+                assert_eq!(
+                    write_struct(
+                        &mut memory,
+                        POLL_FD,
+                        &libc::pollfd {
+                            fd: READY_FD,
+                            events: libc::POLLIN,
+                            revents: 0x1234,
+                        }
+                    ),
+                    0
+                );
+                let mut expected = vec![0; (2 * PAGE_SIZE) as usize];
+                memory.read_raw(0, &mut expected).unwrap();
+                memory
+                    .map_user_permissions(0, PAGE_SIZE, true, false)
+                    .unwrap();
+                memory
+                    .map_user_permissions(PAGE_SIZE, PAGE_SIZE, true, true)
+                    .unwrap();
+                memory.enable_user_access();
+                assert_eq!(memory.user().user_writable_prefix(POLL_FD, 6).unwrap(), 0);
+                assert_eq!(
+                    memory.user().user_writable_prefix(POLL_FD + 6, 2).unwrap(),
+                    2
+                );
+
+                let args = [
+                    POLL_FD,
+                    1,
+                    if number == libc::SYS_ppoll {
+                        TIMEOUT
+                    } else {
+                        0
+                    },
+                    0,
+                    0,
+                    0,
+                ];
+                let result = if checked {
+                    executor
+                        .execute_checked(&SyscallRequest::new(number as u64, args), &memory)
+                        .unwrap()
+                } else {
+                    syscall_result(&mut memory, &mut executor.state, number, args)
+                };
+                assert_eq!(result, 1, "checked={checked} syscall={number}");
+                expected[PAGE_SIZE as usize..PAGE_SIZE as usize + 2]
+                    .copy_from_slice(&libc::POLLIN.to_ne_bytes());
+                let mut actual = vec![0; expected.len()];
+                memory.read_raw(0, &mut actual).unwrap();
+                assert_eq!(
+                    actual, expected,
+                    "only the writable revents field may change: checked={checked} syscall={number}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn poll_and_ppoll_revents_faults_retain_only_prior_complete_stores() {
+        const TIMEOUT: u64 = 0x100;
+        const READY_FD: libc::c_int = 17;
+
+        let root = TestDir::new();
+        let ready_path = root.0.join("poll-ready");
+        std::fs::write(&ready_path, b"readable").unwrap();
+        for checked in [false, true] {
+            for number in [libc::SYS_poll, libc::SYS_ppoll] {
+                let mut state = test_state(&root.0);
+                state
+                    .files
+                    .insert(READY_FD, std::fs::File::open(&ready_path).unwrap());
+                let mut executor = ElfExecutor::new(state, false);
+                let mut memory = GuestMemory::new(0, (2 * PAGE_SIZE) as usize).unwrap();
+                for (case, address, prior_store, readonly_page) in [
+                    ("first field readonly", PAGE_SIZE - 8, false, 0),
+                    ("later field readonly", PAGE_SIZE - 8, true, PAGE_SIZE),
+                    (
+                        "first field crosses readonly boundary",
+                        PAGE_SIZE - 7,
+                        false,
+                        PAGE_SIZE,
+                    ),
+                    (
+                        "later field crosses readonly boundary",
+                        PAGE_SIZE - 15,
+                        true,
+                        PAGE_SIZE,
+                    ),
+                ] {
+                    memory
+                        .map_user_permissions(0, 2 * PAGE_SIZE, true, true)
+                        .unwrap();
+                    memory
+                        .map_user_permissions(readonly_page, PAGE_SIZE, true, false)
+                        .unwrap();
+                    memory.enable_user_access();
+                    // Initialize through the raw fixture surface; the actual
+                    // syscall below must enforce the guest's RW/RO mappings.
+                    let mut original = vec![0xa5; (2 * PAGE_SIZE) as usize];
+                    original[TIMEOUT as usize..TIMEOUT as usize + 16].fill(0);
+                    for (index, (fd, events, revents)) in [
+                        (libc::c_int::MAX, 0_i16, 0x1234_i16),
+                        (-7, libc::POLLIN | libc::POLLOUT, 0x2345),
+                        (READY_FD, libc::POLLIN, 0x3456),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let offset = address as usize + 8 * index;
+                        original[offset..offset + 4].copy_from_slice(&fd.to_ne_bytes());
+                        original[offset + 4..offset + 6].copy_from_slice(&events.to_ne_bytes());
+                        original[offset + 6..offset + 8].copy_from_slice(&revents.to_ne_bytes());
+                    }
+                    memory.write_raw(0, &original).unwrap();
+                    let mut input = [0; 24];
+                    memory.user().read(address, &mut input).unwrap();
+                    assert_eq!(input, original[address as usize..address as usize + 24]);
+                    let args = [
+                        address,
+                        3,
+                        if number == libc::SYS_ppoll {
+                            TIMEOUT
+                        } else {
+                            0
+                        },
+                        0,
+                        0,
+                        0,
+                    ];
+                    let result = if checked {
+                        executor
+                            .execute_checked(&SyscallRequest::new(number as u64, args), &memory)
+                            .unwrap()
+                    } else {
+                        syscall_result(&mut memory, &mut executor.state, number, args)
+                    };
+                    assert_eq!(
+                        result,
+                        negative_errno(libc::EFAULT),
+                        "case={case} checked={checked} syscall={number}"
+                    );
+                    let mut expected = original;
+                    if prior_store {
+                        let offset = address as usize + 6;
+                        expected[offset..offset + 2].copy_from_slice(&libc::POLLNVAL.to_ne_bytes());
+                    }
+                    let mut actual = vec![0; expected.len()];
+                    memory.read_raw(0, &mut actual).unwrap();
+                    assert_eq!(
+                        actual, expected,
+                        "no torn or later stores: case={case} checked={checked} syscall={number}"
+                    );
+                }
+            }
+        }
+    }
+
     /// A masked `ppoll` must return the ready count when a descriptor is already
     /// readable (the `ppoll_readv` corpus cell), yet fail closed with `ENOSYS`
     /// when it would have to block with the mask applied (the `ppoll_simulation`
@@ -31094,6 +31399,273 @@ mod tests {
         assert!(state.files.is_empty());
     }
 
+    fn check_receive_output_flags(batch: bool) {
+        const PAIR: u64 = 0x80;
+        const PIPE: u64 = 0x90;
+        const SEND: u64 = 0x100;
+        const SEND_IOV: u64 = 0x180;
+        const SEND_CONTROL: u64 = 0x200;
+        const IOVS: u64 = 0x300;
+        const MESSAGES: u64 = 0x400;
+        const PAYLOAD: u64 = 0x600;
+        const OUTPUT: u64 = 0x700;
+        const CONTROL: u64 = 0xa00;
+        let root = TestDir::new();
+        // Exercise the production executor with real datagrams, including both
+        // independent kinds of truncation and their combination.
+        for cloexec in [0, libc::MSG_CMSG_CLOEXEC] {
+            for input_trunc in [0, libc::MSG_TRUNC] {
+                for (donate, short_payload, short_control) in [
+                    (false, false, false),
+                    (true, false, false),
+                    (false, true, false),
+                    (true, false, true),
+                    (true, true, true),
+                ] {
+                    let case = (
+                        batch,
+                        cloexec,
+                        input_trunc,
+                        donate,
+                        short_payload,
+                        short_control,
+                    );
+                    let mut state = test_state(&root.0);
+                    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_socketpair,
+                            [libc::AF_UNIX as u64, libc::SOCK_DGRAM as u64, 0, PAIR, 0, 0]
+                        ),
+                        0
+                    );
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_pipe2,
+                            [PIPE, 0, 0, 0, 0, 0]
+                        ),
+                        0
+                    );
+                    let sockets: [i32; 2] = read_struct(&memory, PAIR);
+                    let pipes: [i32; 2] = read_struct(&memory, PIPE);
+                    memory.write(PAYLOAD, b"abcdef").unwrap();
+                    let send_iov = libc::iovec {
+                        iov_base: PAYLOAD as usize as *mut _,
+                        iov_len: 6,
+                    };
+                    assert_eq!(write_struct(&mut memory, SEND_IOV, &send_iov), 0);
+                    let control = rights_control(&pipes);
+                    memory.write(SEND_CONTROL, &control).unwrap();
+                    let mut send: libc::msghdr = unsafe { std::mem::zeroed() };
+                    send.msg_iov = SEND_IOV as usize as *mut _;
+                    send.msg_iovlen = 1;
+                    if donate {
+                        send.msg_control = SEND_CONTROL as usize as *mut _;
+                        send.msg_controllen = control.len();
+                    }
+                    assert_eq!(write_struct(&mut memory, SEND, &send), 0);
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_sendmsg,
+                            [sockets[0] as u64, SEND, 0, 0, 0, 0]
+                        ),
+                        6
+                    );
+                    if batch {
+                        assert_eq!(
+                            syscall_result(
+                                &mut memory,
+                                &mut state,
+                                libc::SYS_write,
+                                [sockets[0] as u64, PAYLOAD, 6, 0, 0, 0]
+                            ),
+                            6
+                        );
+                    }
+                    let mut third_before = Vec::new();
+                    for index in 0..3 {
+                        let iov_address = IOVS + index * std::mem::size_of::<libc::iovec>() as u64;
+                        let iov = libc::iovec {
+                            iov_base: (OUTPUT + index * 0x80) as usize as *mut _,
+                            iov_len: if index == 0 && short_payload { 3 } else { 8 },
+                        };
+                        assert_eq!(write_struct(&mut memory, iov_address, &iov), 0);
+                        let mut message: libc::mmsghdr = unsafe { std::mem::zeroed() };
+                        message.msg_hdr.msg_iov = iov_address as usize as *mut _;
+                        message.msg_hdr.msg_iovlen = 1;
+                        message.msg_hdr.msg_flags = -1;
+                        message.msg_len = 0xdeadbeef;
+                        if index == 0 && donate {
+                            message.msg_hdr.msg_control = CONTROL as usize as *mut _;
+                            message.msg_hdr.msg_controllen = if short_control {
+                                cmsg_align(std::mem::size_of::<libc::cmsghdr>()).unwrap()
+                                    + std::mem::size_of::<libc::c_int>()
+                            } else {
+                                control.len()
+                            };
+                        }
+                        let address =
+                            MESSAGES + index * std::mem::size_of::<libc::mmsghdr>() as u64;
+                        assert_eq!(write_struct(&mut memory, address, &message), 0);
+                        if index == 2 {
+                            third_before = vec![0; std::mem::size_of::<libc::mmsghdr>()];
+                            memory.read(address, &mut third_before).unwrap();
+                        }
+                    }
+                    let flags = cloexec | input_trunc | libc::MSG_DONTWAIT;
+                    let args = if batch {
+                        [sockets[1] as u64, MESSAGES, 3, flags as u64, 0, 0]
+                    } else {
+                        [sockets[1] as u64, MESSAGES, flags as u64, 0, 0, 0]
+                    };
+                    let number = if batch {
+                        libc::SYS_recvmmsg
+                    } else {
+                        libc::SYS_recvmsg
+                    };
+                    let files_before = state.files.len();
+                    let expected_len = if short_payload && input_trunc == 0 {
+                        3
+                    } else {
+                        6
+                    };
+                    assert_eq!(
+                        syscall_result(&mut memory, &mut state, number, args),
+                        if batch { 2 } else { expected_len },
+                        "{case:?}"
+                    );
+                    let first: libc::mmsghdr = read_struct(&memory, MESSAGES);
+                    let expected_flags = cloexec
+                        | if short_payload { libc::MSG_TRUNC } else { 0 }
+                        | if short_control { libc::MSG_CTRUNC } else { 0 };
+                    assert_eq!(first.msg_hdr.msg_flags, expected_flags, "{case:?}");
+                    let mut payload = vec![0; if short_payload { 3 } else { 6 }];
+                    memory.read(OUTPUT, &mut payload).unwrap();
+                    assert_eq!(payload, b"abcdef"[..payload.len()], "{case:?}");
+                    if batch {
+                        assert_eq!(first.msg_len, expected_len as u32, "{case:?}");
+                        let second: libc::mmsghdr = read_struct(
+                            &memory,
+                            MESSAGES + std::mem::size_of::<libc::mmsghdr>() as u64,
+                        );
+                        assert_eq!(second.msg_len, 6);
+                        assert_eq!(second.msg_hdr.msg_flags, cloexec, "{case:?}");
+                        assert_eq!(second.msg_hdr.msg_controllen, 0);
+                        assert_eq!(
+                            read_guest_bytes::<6>(&memory, OUTPUT + 0x80).unwrap(),
+                            *b"abcdef"
+                        );
+                        let mut third_after = vec![0; third_before.len()];
+                        memory
+                            .read(
+                                MESSAGES + 2 * std::mem::size_of::<libc::mmsghdr>() as u64,
+                                &mut third_after,
+                            )
+                            .unwrap();
+                        assert_eq!(
+                            third_after, third_before,
+                            "undelivered header changed: {case:?}"
+                        );
+                    }
+                    let mut received_control = vec![0; first.msg_hdr.msg_controllen];
+                    memory.read(CONTROL, &mut received_control).unwrap();
+                    let received = control_rights(&received_control);
+                    assert_eq!(
+                        received.len(),
+                        if donate {
+                            if short_control { 1 } else { 2 }
+                        } else {
+                            0
+                        }
+                    );
+                    assert_eq!(state.files.len(), files_before + received.len());
+                    for &fd in &received {
+                        assert_eq!(
+                            syscall_result(
+                                &mut memory,
+                                &mut state,
+                                libc::SYS_fcntl,
+                                [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+                            ),
+                            if cloexec == 0 {
+                                0
+                            } else {
+                                libc::FD_CLOEXEC as i64
+                            },
+                            "{case:?}"
+                        );
+                        let backing = host_fd(&state, fd).unwrap();
+                        // SAFETY: backing is an owned, live descriptor; F_GETFD
+                        // takes no pointer and must remain CLOEXEC for host safety.
+                        let host_flags = unsafe { libc::fcntl(backing, libc::F_GETFD) };
+                        assert!(host_flags >= 0, "{case:?}");
+                        assert_eq!(host_flags & libc::FD_CLOEXEC, libc::FD_CLOEXEC, "{case:?}");
+                    }
+                    if let Some(&read_fd) = received.first() {
+                        assert_eq!(
+                            syscall_result(
+                                &mut memory,
+                                &mut state,
+                                libc::SYS_write,
+                                [pipes[1] as u64, PAYLOAD, 1, 0, 0, 0]
+                            ),
+                            1
+                        );
+                        assert_eq!(
+                            syscall_result(
+                                &mut memory,
+                                &mut state,
+                                libc::SYS_read,
+                                [read_fd as u64, OUTPUT, 1, 0, 0, 0]
+                            ),
+                            1
+                        );
+                        assert_eq!(read_guest_bytes::<1>(&memory, OUTPUT).unwrap(), *b"a");
+                    }
+                    for fd in received {
+                        assert_eq!(
+                            syscall_result(
+                                &mut memory,
+                                &mut state,
+                                libc::SYS_close,
+                                [fd as u64, 0, 0, 0, 0, 0]
+                            ),
+                            0
+                        );
+                    }
+                    assert_eq!(state.files.len(), files_before);
+                    // Empty-queue failure must not publish a replacement header.
+                    let mut before = vec![0; std::mem::size_of::<libc::mmsghdr>()];
+                    memory.read(MESSAGES, &mut before).unwrap();
+                    assert_eq!(
+                        syscall_result(&mut memory, &mut state, number, args),
+                        negative_errno(libc::EAGAIN),
+                        "{case:?}"
+                    );
+                    let mut after = vec![0; before.len()];
+                    memory.read(MESSAGES, &mut after).unwrap();
+                    assert_eq!(after, before, "failed receive changed header: {case:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn recvmsg_output_flags_and_received_descriptor_safety() {
+        check_receive_output_flags(false);
+    }
+
+    #[test]
+    fn recvmmsg_output_flags_and_received_descriptor_safety() {
+        check_receive_output_flags(true);
+    }
+
     #[test]
     fn recvmmsg_translates_guest_headers_and_receives_multiple_datagrams() {
         const PAIR_FDS: u64 = 0x100;
@@ -31228,6 +31800,8 @@ mod tests {
         );
         assert_eq!(first.msg_len, 5);
         assert_eq!(second.msg_len, 6);
+        assert_eq!(first.msg_hdr.msg_flags, 0);
+        assert_eq!(second.msg_hdr.msg_flags, 0);
         assert_eq!(
             read_guest_bytes::<5>(&memory, FIRST_BUFFER).unwrap(),
             *b"hello"
@@ -31408,6 +31982,7 @@ mod tests {
 
         let received: libc::msghdr = read_struct(&memory, RECV_MSG);
         assert_eq!(received.msg_flags & libc::MSG_CTRUNC, 0);
+        assert_eq!(received.msg_flags, libc::MSG_CMSG_CLOEXEC);
         let mut received_control = vec![0; received.msg_controllen];
         memory.read(RECV_CONTROL, &mut received_control).unwrap();
         let received_fds = control_rights(&received_control);
@@ -31810,6 +32385,7 @@ mod tests {
 
         let received: libc::msghdr = read_struct(&memory, RECV_MSG);
         assert_ne!(received.msg_flags & libc::MSG_CTRUNC, 0);
+        assert_eq!(received.msg_flags & libc::MSG_CMSG_CLOEXEC, 0);
         let mut control = vec![0; received.msg_controllen];
         memory.read(RECV_CONTROL, &mut control).unwrap();
         let messages = control_messages(&control).unwrap();
@@ -31924,6 +32500,7 @@ mod tests {
         );
         let received: libc::msghdr = read_struct(&memory, RECV_MSG);
         assert_ne!(received.msg_flags & libc::MSG_CTRUNC, 0);
+        assert_eq!(received.msg_flags & libc::MSG_CMSG_CLOEXEC, 0);
         let mut control = vec![0; received.msg_controllen];
         memory.read(RECV_CONTROL, &mut control).unwrap();
         assert_eq!(control_rights(&control).len(), 1);
