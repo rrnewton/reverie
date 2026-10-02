@@ -4124,7 +4124,7 @@ impl TerminalCleanup {
     ///
     /// This is a cancellation-only escape hatch for the ptracer thread that
     /// owns this exact event generation. The FIFO front remains present and
-    /// unavailable to other consumers until [`PendingStatusReservation::commit`].
+    /// unavailable to other consumers until `PendingStatusReservation::commit`.
     /// Dropping the reservation performs an allocation-free rollback without
     /// changing FIFO order.
     pub fn reserve_pending_for_cleanup(
@@ -4158,7 +4158,7 @@ impl TerminalCleanup {
     /// rest of the budget.
     ///
     /// A queued Exec status whose decode observes death is consumed by
-    /// [`PendingStatusReservation::consume_dead_exec`] and the method returns
+    /// `PendingStatusReservation::consume_dead_exec` and the method returns
     /// `Ok(())`, as for a resume that meets death: the SIGKILL has taken the
     /// child out of that exec stop.
     ///
@@ -4258,7 +4258,7 @@ impl TerminalCleanup {
     /// (`Stopped::retire_statuses_before_exit_stop`): the tracee had
     /// left each of those stops when it entered the exit stop. Statuses
     /// queued after the exit stop are kept for cleanup. The caller must not
-    /// hold a [`PendingStatusReservation`] for this generation.
+    /// hold a `PendingStatusReservation` for this generation.
     ///
     /// # Safety
     ///
