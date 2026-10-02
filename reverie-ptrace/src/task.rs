@@ -627,6 +627,87 @@ fn thread_count(tid: Pid) -> Result<u64, TraceError> {
         .ok_or_else(|| Errno::EPROTO.into())
 }
 
+/// Whether a process outside the thread group of the stopped thread `tid`
+/// may share its signal dispositions (`CLONE_SIGHAND` without
+/// `CLONE_THREAD`). Reverie need not trace such a process (`CLONE_UNTRACED`),
+/// so `ntasks` does not count it. Every process in procfs is compared with
+/// `tid` by `kcmp(KCMP_SIGHAND)`.
+///
+/// True when that cannot be established: procfs cannot be read or belongs
+/// to another PID namespace than Reverie's, or `kcmp` cannot inspect `tid`
+/// itself or fails otherwise. A process that `kcmp` may
+/// not inspect (`EPERM`) is not counted. Sharing the dispositions means
+/// sharing the address space (`CLONE_SIGHAND` requires `CLONE_VM`, and an
+/// exec unshares both), so such a process is dumpable exactly when `tid`
+/// is; it could refuse inspection only after changing its credentials,
+/// which takes privilege. One that exits during the scan (`ESRCH`) cannot
+/// change a disposition. A new sharer can only be created by a holder of
+/// the dispositions, and the thread group of `tid` is stopped, so the scan
+/// misses one only if a sharer it has not reached yet creates it below the
+/// scan's position and exits, which takes the process IDs to wrap around
+/// during the scan.
+fn may_share_signal_handlers_with_another_process(tid: Pid) -> bool {
+    const KCMP_SIGHAND: libc::c_long = 4;
+    let kcmp = |other: libc::pid_t| {
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_kcmp,
+                tid.as_raw() as libc::c_long,
+                other as libc::c_long,
+                KCMP_SIGHAND,
+                0 as libc::c_long,
+                0 as libc::c_long,
+            )
+        };
+        if result < 0 {
+            Err(Errno::last())
+        } else {
+            Ok(result)
+        }
+    };
+    let tgid = std::fs::read_to_string(format!("/proc/{tid}/status"))
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("Tgid:"))
+                .and_then(|value| value.trim().parse::<libc::pid_t>().ok())
+        });
+    let Some(tgid) = tgid else {
+        return true;
+    };
+    let own_proc = std::fs::read_link("/proc/self")
+        .ok()
+        .and_then(|link| link.to_str().and_then(|pid| pid.parse::<u32>().ok()));
+    if own_proc != Some(std::process::id()) || kcmp(tid.as_raw()) != Ok(0) {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return true;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return true;
+        };
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        if pid == tgid {
+            continue;
+        }
+        match kcmp(pid) {
+            Ok(0) => return true,
+            Ok(_) | Err(Errno::ESRCH) | Err(Errno::EPERM) => {}
+            Err(_) => return true,
+        }
+    }
+    false
+}
+
 /// The signals pending in the kernel for the stopped thread `tid`: its own
 /// and its thread group's (procfs `SigPnd` and `ShdPnd`).
 fn pending_signal_mask(tid: Pid) -> Result<u64, TraceError> {
@@ -6524,7 +6605,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// handler runs (below). A Tool's own register write after the injection
     /// clears `restart_block_eintr` (`Guest::set_regs`) and is kept.
     ///
-    /// No handler is delivered then, so `-EINTR` is not what the guest's
+    /// When no handler is delivered, `-EINTR` is not what the guest's
     /// syscall would return: untraced Linux would restart it through the
     /// guest's own restart block, which the injection replaced, so Reverie
     /// cannot restart it. The injection's return register is what the guest
@@ -6542,10 +6623,14 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// restarts the guest's syscall with its original arguments, so a
     /// relative sleep starts over and the request is read again. So the
     /// `-EINTR` stays only while no other task can change the dispositions:
-    /// the stopped thread is the only thread of its group (procfs `Threads`)
-    /// and the only task Reverie traces (`ntasks`). Otherwise the guest
-    /// resumes with the injection's return register, as without this
-    /// restore (<https://github.com/rrnewton/reverie/issues/845>).
+    /// the stopped thread is the only thread of its group (procfs `Threads`),
+    /// the only task Reverie traces (`ntasks`), and no other process shares
+    /// the dispositions, which a process created with `CLONE_SIGHAND` and
+    /// `CLONE_UNTRACED` does without Reverie tracing it
+    /// (`may_share_signal_handlers_with_another_process`). Otherwise, or when
+    /// procfs cannot tell, the guest resumes with the injection's return
+    /// register, as without this restore, even if the kernel then delivers
+    /// a handler (<https://github.com/rrnewton/reverie/issues/845>).
     fn keep_injection_ret_for_suppressed_restart_block(
         &self,
         task: &Stopped,
@@ -6559,9 +6644,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             Some(sig) => {
                 let bit = signal_mask_bit(sig);
                 self.ntasks.load(Ordering::SeqCst) == 1
-                    && thread_count(task.pid())? == 1
-                    && caught_signal_mask(task.pid())? & bit != 0
-                    && blocked_signal_mask(task.pid())? & bit == 0
+                    && thread_count(task.pid()).is_ok_and(|count| count == 1)
+                    && caught_signal_mask(task.pid()).is_ok_and(|caught| caught & bit != 0)
+                    && blocked_signal_mask(task.pid()).is_ok_and(|blocked| blocked & bit == 0)
+                    && !may_share_signal_handlers_with_another_process(task.pid())
             }
         };
         if enters_handler {
@@ -11267,8 +11353,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// (`status_to_result`): the injection returns `-ERESTARTSYS` with the
     /// signal held for the resume. A plain injection discards a `SIGTRAP`
     /// stop before its instruction and steps the syscall again
-    /// (`untraced_syscall_with`); a LiteInst frame injection, or one during
-    /// LiteInst activation, keeps the not-run handling for it. `SIGKILL` has
+    /// (`untraced_syscall_with`); a LiteInst frame injection keeps the
+    /// not-run handling for it, and an injection during LiteInst activation
+    /// rejects it with `EPROTO` (`status_to_result`). `SIGKILL` has
     /// no signal stop to return; `requeueable` names it only for
     /// completeness. Signals requeued before it stay pending.
     async fn requeue_signals_before_original_syscall(
