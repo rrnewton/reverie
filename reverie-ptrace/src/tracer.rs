@@ -85,6 +85,7 @@ use crate::task::FatalSession;
 use crate::task::InjectedSyscallProvenance;
 use crate::task::InjectedSyscallTrap;
 use crate::task::LiteinstRuntimeConfig;
+use crate::task::PreinitOutcome;
 #[cfg(test)]
 use crate::task::RootStopPause;
 use crate::task::TracedTask;
@@ -542,6 +543,22 @@ pub(crate) fn record_fatal_phase_for_test(message: impl FnOnce() -> String) {
             } else {
                 *omitted += 1;
             }
+        }
+    });
+}
+// Test-only: the bare errnos tasks aborted with, while a test collects them.
+// A bare-errno abort from an injected syscall never reaches the run loop's
+// error handling once the exit future reports the tracee's death, so a test
+// that checks only the exit status cannot see it.
+#[cfg(test)]
+thread_local! {
+    static BARE_ERRNO_ABORTS: std::cell::RefCell<Option<Vec<(Pid, Errno)>>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn record_bare_errno_abort_for_test(tid: Pid, errno: Errno) {
+    BARE_ERRNO_ABORTS.with(|slot| {
+        if let Some(aborts) = slot.borrow_mut().as_mut() {
+            aborts.push((tid, errno));
         }
     });
 }
@@ -4103,7 +4120,12 @@ async fn postspawn<L: Tool + 'static>(
         ordinary_session.capture_root(&child);
     }
     if !ordinary_session.is_failed() {
-        child = tracer.tracee_preinit(child).await?;
+        child = match tracer.postspawn_preinit(child).await? {
+            PreinitOutcome::Ready(child) => child,
+            PreinitOutcome::Exited(pid, exit_status) => {
+                return Err(PostspawnError::Exited { pid, exit_status });
+            }
+        };
     }
 
     let tracer = Box::pin(run_task_tree(
@@ -4246,6 +4268,9 @@ pub struct TracerBuilder<T: Tool + 'static> {
 
     #[cfg(test)]
     pre_syscall_for_test: Option<crate::task::PreSyscallForTest>,
+
+    #[cfg(test)]
+    preinit_point_for_test: Option<crate::task::PreinitPointForTest>,
 }
 
 impl<T: Tool + 'static> TracerBuilder<T> {
@@ -4266,6 +4291,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             final_resume_signal_for_test: None,
             #[cfg(test)]
             pre_syscall_for_test: None,
+            #[cfg(test)]
+            preinit_point_for_test: None,
         }
     }
 
@@ -4489,6 +4516,14 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     #[cfg(test)]
     fn pre_syscall_for_test(mut self, hook: crate::task::PreSyscallForTest) -> Self {
         self.pre_syscall_for_test = Some(hook);
+        self
+    }
+
+    /// Calls `hook` at each point of every tracee pre-initialization (see
+    /// [`crate::task::PreinitPointForTest`]).
+    #[cfg(test)]
+    fn preinit_point_for_test(mut self, hook: crate::task::PreinitPointForTest) -> Self {
+        self.preinit_point_for_test = Some(hook);
         self
     }
 
@@ -5023,6 +5058,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                 final_resume_signal_for_test: self.final_resume_signal_for_test,
                 #[cfg(test)]
                 pre_syscall_for_test: self.pre_syscall_for_test,
+                #[cfg(test)]
+                preinit_point_for_test: self.preinit_point_for_test,
             },
             gdbserver,
         )
@@ -5221,6 +5258,8 @@ where
                     final_resume_signal_for_test: None,
                     #[cfg(test)]
                     pre_syscall_for_test: None,
+                    #[cfg(test)]
+                    preinit_point_for_test: None,
                 },
                 None,
             )
@@ -10015,6 +10054,778 @@ mod tests {
         fn subscriptions(_config: &()) -> Subscription {
             Subscription::none()
         }
+    }
+
+    /// How [`kill_at_preinit_point`] leaves the tracee it kills.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum PreinitKillMode {
+        /// In its `PTRACE_EVENT_EXIT` stop. Its ptrace requests still succeed,
+        /// and the next resume lets it exit.
+        ExitStop,
+        /// Exited, with its final status published. Every later request
+        /// fails with ESRCH, as one made between the kill and the exit stop
+        /// does.
+        Exited,
+        /// In its exit stop, but its next memory request in initialization
+        /// fails with ESRCH, as one made between the kill and the exit stop
+        /// does. The probe after it finds the exit stop.
+        EsrchAtExitStop,
+        /// In its exit stop, killed after the notifier queued the stop the
+        /// step into the injected mmap leads to, with initialization parked
+        /// before its wait for that stop. The exit stop is claimed first and
+        /// the queued stop is still ahead of the final status. Only at
+        /// `MmapStepped` of the initialization before the exec.
+        ExitStopAfterQueuedStop,
+    }
+
+    /// Waits, for at most two seconds, until `ready` holds, and panics with
+    /// `what` if it does not.
+    fn wait_for_test_condition(what: &str, ready: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !ready() {
+            assert!(Instant::now() < deadline, "{what} within 2 s");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Hits of one [`crate::task::PreinitPoint`] in a tracee's lifetime, and
+    /// the tracee that was killed at the chosen hit.
+    #[derive(Default)]
+    struct PreinitKill {
+        hits: AtomicUsize,
+        killed: StdMutex<Option<Pid>>,
+    }
+
+    fn proc_status_has_sigkill(tid: Pid, field: &str) -> bool {
+        std::fs::read_to_string(format!("/proc/{tid}/status"))
+            .ok()
+            .and_then(|status| {
+                let mask = status.lines().find_map(|line| line.strip_prefix(field))?;
+                u64::from_str_radix(mask.trim(), 16).ok()
+            })
+            .is_some_and(|mask| mask & (1 << (libc::SIGKILL - 1)) != 0)
+    }
+
+    /// Waits, for at most two seconds, until killed tracee `pid` is in its exit
+    /// stop or its final status is published, so that no state change is in
+    /// flight when the tracer resumes. Returns whether it is in its exit stop.
+    ///
+    /// The kill is pending until the tracee dequeues it, which it does only
+    /// after leaving the stop it was in, so the SIGKILL bits are read before
+    /// the state: with both clear, a tracing stop is the exit stop. The bits
+    /// are read thread-wide and process-wide because a thread pidfd sends the
+    /// kill to the thread's own pending set.
+    fn settle_killed_tracee(pid: Pid, terminal: &safeptrace::TerminalCleanup) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if terminal.observed_exit_status() != Ok(None) {
+                return false;
+            }
+            if !proc_status_has_sigkill(pid, "SigPnd:")
+                && !proc_status_has_sigkill(pid, "ShdPnd:")
+                && std::fs::read_to_string(format!("/proc/{pid}/status"))
+                    .is_ok_and(|status| status.contains("\nState:\tt"))
+            {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+        let signals: Vec<&str> = status
+            .lines()
+            .filter(|line| line.starts_with("State:") || line.contains("Pnd:"))
+            .collect();
+        panic!("killed tracee {pid} did not settle within 2 s: {signals:?}");
+    }
+
+    /// Returns a hook that SIGKILLs the tracee at the `nth` hit of `target`
+    /// and leaves it as `mode` says.
+    ///
+    /// After the kill, every later hook point first waits for the tracee to
+    /// settle, so the order in which the tracer observes the death does not
+    /// depend on timing. See <https://github.com/rrnewton/reverie/issues/760>.
+    fn kill_at_preinit_point(
+        target: crate::task::PreinitPoint,
+        nth: usize,
+        mode: PreinitKillMode,
+    ) -> (crate::task::PreinitPointForTest, Arc<PreinitKill>) {
+        let kill = Arc::new(PreinitKill::default());
+        let state = Arc::clone(&kill);
+        let hook: crate::task::PreinitPointForTest = Arc::new(move |pid, terminal, point| {
+            if *state.killed.lock().unwrap() == Some(pid) {
+                settle_killed_tracee(pid, terminal);
+                return;
+            }
+            if point != target || state.hits.fetch_add(1, Ordering::SeqCst) + 1 != nth {
+                return;
+            }
+            *state.killed.lock().unwrap() = Some(pid);
+            if mode == PreinitKillMode::ExitStopAfterQueuedStop {
+                wait_for_test_condition(&format!("{pid}'s step stop queued"), || {
+                    !terminal.pending_is_empty()
+                });
+            }
+            terminal
+                .request_sigkill()
+                .unwrap_or_else(|error| panic!("SIGKILL {pid} at {point:?}: {error}"));
+            let in_exit_stop = settle_killed_tracee(pid, terminal);
+            match mode {
+                PreinitKillMode::Exited if in_exit_stop => {
+                    // This hook runs on the tracer thread.
+                    let resumed = unsafe { libc::ptrace(libc::PTRACE_CONT, pid.as_raw(), 0, 0) };
+                    assert_eq!(
+                        resumed,
+                        0,
+                        "resume {pid} from its exit stop: {}",
+                        Errno::last()
+                    );
+                    assert!(
+                        !settle_killed_tracee(pid, terminal),
+                        "{pid} stopped again after its exit stop"
+                    );
+                }
+                PreinitKillMode::EsrchAtExitStop => {
+                    assert!(in_exit_stop, "{pid} did not stop at its exit");
+                    // This hook runs on the tracer thread.
+                    crate::task::force_esrch_for_test(pid);
+                }
+                PreinitKillMode::ExitStopAfterQueuedStop => {
+                    assert_eq!(point, crate::task::PreinitPoint::MmapStepped);
+                    assert!(in_exit_stop, "{pid} did not stop at its exit");
+                    wait_for_test_condition(&format!("{pid}'s exit stop published"), || {
+                        terminal.exit_stop_observed()
+                    });
+                    assert!(
+                        !terminal.pending_is_empty(),
+                        "{pid}'s step stop is no longer queued"
+                    );
+                    crate::task::park_preinit_for_test(pid);
+                }
+                _ => {}
+            }
+        });
+        (hook, kill)
+    }
+
+    /// Collects, until dropped, the bare errnos that tasks on this thread
+    /// abort with. See [`super::record_bare_errno_abort_for_test`].
+    struct BareErrnoAborts;
+
+    impl BareErrnoAborts {
+        fn collect() -> Self {
+            super::BARE_ERRNO_ABORTS.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+            Self
+        }
+
+        fn take(&self) -> Vec<(Pid, Errno)> {
+            super::BARE_ERRNO_ABORTS.with(|slot| {
+                slot.borrow_mut()
+                    .as_mut()
+                    .map(std::mem::take)
+                    .unwrap_or_default()
+            })
+        }
+    }
+
+    impl Drop for BareErrnoAborts {
+        fn drop(&mut self) {
+            super::BARE_ERRNO_ABORTS.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    /// Kills `/bin/true` at `point` after its exec, and requires the run to
+    /// report the kill, with no task aborting on a bare errno. The points of
+    /// `tracee_preinit` are hit before the exec too, so the kill is at their
+    /// second hit; the post-exec step's points are hit only after it.
+    async fn exec_preinit_killed_at<T: Tool<GlobalState = ()> + Default + 'static>(
+        point: crate::task::PreinitPoint,
+        mode: PreinitKillMode,
+    ) -> Result<(), String> {
+        use crate::task::PreinitPoint::*;
+        let nth = match point {
+            ExecStopped | PostExecStepped => 1,
+            RegsSaved
+            | CodeRead
+            | MmapStepped
+            | MmapReturned
+            | PagePopulated
+            | VdsoWritable
+            | TrampolineUnprotected => 2,
+        };
+        let aborts = BareErrnoAborts::collect();
+        let (hook, kill) = kill_at_preinit_point(point, nth, mode);
+        let tracer = TracerBuilder::<T>::new(Command::new("/bin/true"))
+            .preinit_point_for_test(hook)
+            .spawn()
+            .await
+            .map_err(|error| format!("{point:?}/{mode:?}: spawn failed: {error}"))?;
+        let root_pid = tracer.guest_pid();
+        let result = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+            .await
+            .map_err(|_| format!("{point:?}/{mode:?}: run did not end within 5 s"))?;
+        let bare = aborts.take();
+        if !bare.is_empty() {
+            return Err(format!(
+                "{point:?}/{mode:?}: aborted with bare errnos {bare:?}"
+            ));
+        }
+        if crate::task::forced_esrch_pending_for_test() {
+            return Err(format!(
+                "{point:?}/{mode:?}: no memory request after the kill"
+            ));
+        }
+        let hits = kill.hits.load(Ordering::SeqCst);
+        if hits < nth {
+            return Err(format!(
+                "{point:?}/{mode:?}: reached {hits} times, never killed"
+            ));
+        }
+        if *kill.killed.lock().unwrap() != Some(root_pid) {
+            return Err(format!(
+                "{point:?}/{mode:?}: killed a tracee other than {root_pid}"
+            ));
+        }
+        match result.map(|(status, _)| status) {
+            Ok(ExitStatus::Signaled(Signal::SIGKILL, false)) => {}
+            other => return Err(format!("{point:?}/{mode:?}: run ended with {other:?}")),
+        }
+        assert_eventually_reaped("exec preinit kill", root_pid);
+        Ok(())
+    }
+
+    /// Kills the tracee at `point` of its first pre-initialization, before
+    /// its exec, and requires spawning to fail with the kill as the reason.
+    async fn postspawn_preinit_killed_at<T: Tool + Default + 'static>(
+        point: crate::task::PreinitPoint,
+        mode: PreinitKillMode,
+    ) -> Result<(), String> {
+        let (hook, kill) = kill_at_preinit_point(point, 1, mode);
+        let spawned = tokio::time::timeout(
+            Duration::from_secs(5),
+            TracerBuilder::<T>::new(Command::new("/bin/true"))
+                .preinit_point_for_test(hook)
+                .spawn(),
+        )
+        .await
+        .map_err(|_| format!("{point:?}/{mode:?}: spawn did not end within 5 s"))?;
+        let Some(pid) = *kill.killed.lock().unwrap() else {
+            return Err(format!(
+                "{point:?}/{mode:?}: never reached before spawn ended"
+            ));
+        };
+        if crate::task::forced_esrch_pending_for_test() {
+            return Err(format!(
+                "{point:?}/{mode:?}: no memory request after the kill"
+            ));
+        }
+        let error = match spawned {
+            Ok(_) => {
+                return Err(format!(
+                    "{point:?}/{mode:?}: spawn of a killed tracee succeeded"
+                ));
+            }
+            Err(error) => error.to_string(),
+        };
+        let expected = format!(
+            "tracee {pid} exited during ptrace initialization with Signaled(SIGKILL, false)"
+        );
+        if error != expected {
+            return Err(format!("{point:?}/{mode:?}: spawn failed with {error:?}"));
+        }
+        assert_eventually_reaped("postspawn preinit kill", pid);
+        Ok(())
+    }
+
+    /// Defines one test per tracee pre-initialization kill: `$run` must end
+    /// the way it requires for the kill at `$point`, in `$mode`.
+    macro_rules! preinit_kill_tests {
+        ($($name:ident: $run:ident::<$tool:ty>($point:ident, $mode:ident);)*) => {$(
+            #[tokio::test(flavor = "current_thread")]
+            async fn $name() {
+                $run::<$tool>(crate::task::PreinitPoint::$point, PreinitKillMode::$mode)
+                    .await
+                    .unwrap_or_else(|failure| panic!("{failure}"));
+            }
+        )*};
+    }
+
+    preinit_kill_tests! {
+        exec_preinit_kill_regs_saved_exit_stop_vdso: exec_preinit_killed_at::<AllSyscallsTool>(RegsSaved, ExitStop);
+        exec_preinit_kill_regs_saved_exit_stop_no_vdso: exec_preinit_killed_at::<InitFailureTool>(RegsSaved, ExitStop);
+        exec_preinit_kill_code_read_exit_stop_vdso: exec_preinit_killed_at::<AllSyscallsTool>(CodeRead, ExitStop);
+        exec_preinit_kill_code_read_exit_stop_no_vdso: exec_preinit_killed_at::<InitFailureTool>(CodeRead, ExitStop);
+        exec_preinit_kill_regs_saved_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(RegsSaved, Exited);
+        exec_preinit_kill_code_read_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(CodeRead, Exited);
+        exec_preinit_kill_mmap_stepped_exited_vdso: exec_preinit_killed_at::<AllSyscallsTool>(MmapStepped, Exited);
+        exec_preinit_kill_mmap_stepped_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(MmapStepped, Exited);
+        exec_preinit_kill_mmap_returned_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(MmapReturned, Exited);
+        exec_preinit_kill_page_populated_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(PagePopulated, Exited);
+        exec_preinit_kill_vdso_writable_exited: exec_preinit_killed_at::<AllSyscallsTool>(VdsoWritable, Exited);
+        exec_stopped_kill_exit_stop_vdso: exec_preinit_killed_at::<AllSyscallsTool>(ExecStopped, ExitStop);
+        exec_stopped_kill_exit_stop_no_vdso: exec_preinit_killed_at::<InitFailureTool>(ExecStopped, ExitStop);
+        post_exec_stepped_kill_exited_vdso: exec_preinit_killed_at::<AllSyscallsTool>(PostExecStepped, Exited);
+        post_exec_stepped_kill_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(PostExecStepped, Exited);
+        postspawn_preinit_kill_regs_saved_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(RegsSaved, ExitStop);
+        postspawn_preinit_kill_code_read_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(CodeRead, ExitStop);
+        postspawn_preinit_kill_regs_saved_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(RegsSaved, Exited);
+        postspawn_preinit_kill_code_read_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(CodeRead, Exited);
+        postspawn_preinit_kill_mmap_stepped_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapStepped, Exited);
+        postspawn_preinit_kill_mmap_returned_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapReturned, Exited);
+        postspawn_preinit_kill_page_populated_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(PagePopulated, Exited);
+        postspawn_preinit_kill_vdso_writable_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(VdsoWritable, Exited);
+        postspawn_preinit_kill_mmap_stepped_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapStepped, ExitStop);
+        postspawn_preinit_kill_mmap_stepped_exit_stop_after_queued_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapStepped, ExitStopAfterQueuedStop);
+        postspawn_preinit_kill_mmap_returned_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapReturned, ExitStop);
+        postspawn_preinit_kill_page_populated_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(PagePopulated, ExitStop);
+        postspawn_preinit_kill_vdso_writable_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(VdsoWritable, ExitStop);
+        postspawn_preinit_kill_mmap_returned_exit_stop_no_vdso: postspawn_preinit_killed_at::<InitFailureTool>(MmapReturned, ExitStop);
+        exec_preinit_kill_mmap_stepped_exit_stop_vdso: exec_preinit_killed_at::<AllSyscallsTool>(MmapStepped, ExitStop);
+        exec_preinit_kill_mmap_returned_exit_stop_vdso: exec_preinit_killed_at::<AllSyscallsTool>(MmapReturned, ExitStop);
+        exec_preinit_kill_page_populated_exit_stop_vdso: exec_preinit_killed_at::<AllSyscallsTool>(PagePopulated, ExitStop);
+        exec_preinit_kill_vdso_writable_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(VdsoWritable, ExitStop);
+        postspawn_preinit_kill_trampoline_unprotected_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(TrampolineUnprotected, ExitStop);
+        postspawn_preinit_kill_trampoline_unprotected_exited: postspawn_preinit_killed_at::<AllSyscallsTool>(TrampolineUnprotected, Exited);
+        postspawn_preinit_kill_trampoline_unprotected_exited_no_vdso: postspawn_preinit_killed_at::<InitFailureTool>(TrampolineUnprotected, Exited);
+        exec_preinit_kill_trampoline_unprotected_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(TrampolineUnprotected, ExitStop);
+        exec_preinit_kill_trampoline_unprotected_exited: exec_preinit_killed_at::<AllSyscallsTool>(TrampolineUnprotected, Exited);
+        exec_preinit_kill_trampoline_unprotected_exited_no_vdso: exec_preinit_killed_at::<InitFailureTool>(TrampolineUnprotected, Exited);
+        postspawn_preinit_kill_regs_saved_esrch_at_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(RegsSaved, EsrchAtExitStop);
+        postspawn_preinit_kill_code_read_esrch_at_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(CodeRead, EsrchAtExitStop);
+        postspawn_preinit_kill_mmap_returned_esrch_at_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(MmapReturned, EsrchAtExitStop);
+        postspawn_preinit_kill_page_populated_esrch_at_exit_stop: postspawn_preinit_killed_at::<AllSyscallsTool>(PagePopulated, EsrchAtExitStop);
+        exec_preinit_kill_regs_saved_esrch_at_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(RegsSaved, EsrchAtExitStop);
+        exec_preinit_kill_code_read_esrch_at_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(CodeRead, EsrchAtExitStop);
+        exec_preinit_kill_mmap_returned_esrch_at_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(MmapReturned, EsrchAtExitStop);
+        exec_preinit_kill_page_populated_esrch_at_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(PagePopulated, EsrchAtExitStop);
+    }
+
+    /// Selects the inner run of [`preinit_page_population_never_writes_a_replacement`].
+    const POPULATE_REUSE_INNER: &str = "REVERIE_PREINIT_POPULATE_REUSE_INNER";
+    const POPULATE_REUSE_CHECKED: &str = "@@preinit-populate-replacement-checked@@";
+
+    /// Forks a child onto `pid`, which must be free, and returns as `fork`
+    /// does. Needs CAP_SYS_ADMIN over the PID namespace, for `clone3`'s
+    /// `set_tid`.
+    fn clone_reusing(pid: Pid) -> libc::c_long {
+        #[repr(C)]
+        #[derive(Default)]
+        struct CloneArgs {
+            flags: u64,
+            pidfd: u64,
+            child_tid: u64,
+            parent_tid: u64,
+            exit_signal: u64,
+            stack: u64,
+            stack_size: u64,
+            tls: u64,
+            set_tid: u64,
+            set_tid_size: u64,
+            cgroup: u64,
+        }
+
+        let mut set_tid = pid.as_raw() as u64;
+        let args = CloneArgs {
+            exit_signal: libc::SIGCHLD as u64,
+            set_tid: std::ptr::from_mut(&mut set_tid) as u64,
+            set_tid_size: 1,
+            ..CloneArgs::default()
+        };
+        let child = unsafe {
+            libc::syscall(
+                libc::SYS_clone3,
+                std::ptr::from_ref(&args),
+                std::mem::size_of::<CloneArgs>(),
+            )
+        };
+        assert!(child >= 0, "clone3 reusing {pid}: {}", Errno::last());
+        child
+    }
+
+    /// Starts an untraced process that reuses the reaped `pid` and maps a
+    /// zero-filled page where initialization populates its private page.
+    fn spawn_private_page_replacement(pid: Pid) -> Pid {
+        assert_eventually_reaped("killed tracee before its PID is reused", pid);
+        let mut ready = [0; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(ready.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        let child = clone_reusing(pid);
+        if child == 0 {
+            // Only async-signal-safe calls: the test process has other threads.
+            let page = unsafe {
+                libc::mmap(
+                    crate::cp::PRIVATE_PAGE_OFFSET as *mut libc::c_void,
+                    crate::cp::PRIVATE_PAGE_SIZE,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_FIXED | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            if page as usize != crate::cp::PRIVATE_PAGE_OFFSET {
+                unsafe { libc::_exit(1) };
+            }
+            unsafe {
+                libc::write(ready[1], [1u8].as_ptr().cast(), 1);
+                loop {
+                    libc::pause();
+                }
+            }
+        }
+        assert_eq!(child as i32, pid.as_raw(), "clone3 did not reuse {pid}");
+        unsafe { libc::close(ready[1]) };
+        let mut byte = [0u8; 1];
+        let read = unsafe { libc::read(ready[0], byte.as_mut_ptr().cast(), 1) };
+        unsafe { libc::close(ready[0]) };
+        assert_eq!(read, 1, "replacement {pid} did not map its page");
+        pid
+    }
+
+    /// Kills the tracee after its injected mmap returns and before
+    /// initialization populates the page, lets the notifier reap it, and
+    /// starts a replacement on the same PID with a zero-filled page at the
+    /// same address. Initialization must still fail with the kill, and its
+    /// page population must not reach the replacement. Runs in a fresh user
+    /// and PID namespace, where the PID can be reused exactly.
+    #[tokio::test(flavor = "current_thread")]
+    async fn preinit_page_population_never_writes_a_replacement() {
+        if std::env::var_os(POPULATE_REUSE_INNER).is_none() {
+            let module = module_path!()
+                .split_once("::")
+                .map(|(_, rest)| rest)
+                .unwrap();
+            let test_name = format!("{module}::preinit_page_population_never_writes_a_replacement");
+            let output = std::process::Command::new("/usr/bin/timeout")
+                .args([
+                    "60",
+                    "/usr/bin/unshare",
+                    "--user",
+                    "--map-root-user",
+                    "--pid",
+                    "--fork",
+                    "--mount-proc",
+                    "--",
+                ])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
+                .env(POPULATE_REUSE_INNER, "1")
+                .output()
+                .expect("spawn /usr/bin/unshare");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains(POPULATE_REUSE_CHECKED),
+                "inner run in a fresh PID namespace failed ({}):\nstdout:\n{stdout}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let point = crate::task::PreinitPoint::MmapReturned;
+        let (kill_hook, kill) = kill_at_preinit_point(point, 1, PreinitKillMode::Exited);
+        let replacement = Arc::new(StdMutex::new(None));
+        let made = Arc::clone(&replacement);
+        let hook: crate::task::PreinitPointForTest = Arc::new(move |pid, terminal, at| {
+            kill_hook(pid, terminal, at);
+            let mut made = made.lock().unwrap();
+            if at == point && made.is_none() && *kill.killed.lock().unwrap() == Some(pid) {
+                *made = Some(spawn_private_page_replacement(pid));
+            }
+        });
+        let spawned = tokio::time::timeout(
+            Duration::from_secs(5),
+            TracerBuilder::<AllSyscallsTool>::new(Command::new("/bin/true"))
+                .preinit_point_for_test(hook)
+                .spawn(),
+        )
+        .await
+        .expect("spawn did not end within 5 s");
+        let pid = replacement
+            .lock()
+            .unwrap()
+            .expect("never killed at MmapReturned");
+
+        let mut page = vec![0xa5u8; crate::cp::PRIVATE_PAGE_SIZE];
+        let local = libc::iovec {
+            iov_base: page.as_mut_ptr().cast(),
+            iov_len: page.len(),
+        };
+        let remote = libc::iovec {
+            iov_base: crate::cp::PRIVATE_PAGE_OFFSET as *mut libc::c_void,
+            iov_len: page.len(),
+        };
+        let read = unsafe { libc::process_vm_readv(pid.as_raw(), &local, 1, &remote, 1, 0) };
+        let killed = unsafe { libc::kill(pid.as_raw(), libc::SIGKILL) };
+        let reaped = unistd::Pid::from_raw(pid.as_raw());
+        let status = nix::sys::wait::waitpid(reaped, None);
+        assert_eq!(read, page.len() as isize, "read the replacement's page");
+        assert!(
+            page.iter().all(|byte| *byte == 0),
+            "initialization populated the replacement's page: {:02x?}",
+            &page[..16]
+        );
+        assert_eq!(killed, 0);
+        assert!(
+            matches!(
+                status,
+                Ok(nix::sys::wait::WaitStatus::Signaled(_, Signal::SIGKILL, _))
+            ),
+            "replacement {pid} ended with {status:?}"
+        );
+
+        let error = match spawned {
+            Ok(_) => panic!("spawn of a killed tracee succeeded"),
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(
+            error,
+            format!(
+                "tracee {pid} exited during ptrace initialization with Signaled(SIGKILL, false)"
+            )
+        );
+        // libtest has already printed "test <name> ... " without a newline.
+        println!("\n{POPULATE_REUSE_CHECKED}");
+    }
+
+    /// Selects the inner run of [`preinit_injection_never_reaches_a_replacement`].
+    const INJECTION_REUSE_INNER: &str = "REVERIE_PREINIT_INJECTION_REUSE_INNER";
+    const INJECTION_REUSE_CHECKED: &str = "@@preinit-injection-replacement-checked@@";
+
+    /// Starts a process that reuses the reaped `pid`, is traced by this
+    /// thread, and stays in its SIGSTOP signal-delivery stop, so that a
+    /// ptrace request naming `pid` from this thread reaches it.
+    fn spawn_stopped_traced_replacement(pid: Pid) -> Pid {
+        assert_eventually_reaped("killed tracee before its PID is reused", pid);
+        let child = clone_reusing(pid);
+        if child == 0 {
+            // Only async-signal-safe calls: the test process has other threads.
+            unsafe {
+                if libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) != 0 {
+                    libc::_exit(1);
+                }
+                libc::kill(libc::getpid(), libc::SIGSTOP);
+                libc::_exit(2);
+            }
+        }
+        assert_eq!(child as i32, pid.as_raw(), "clone3 did not reuse {pid}");
+        let status = nix::sys::wait::waitpid(unistd::Pid::from_raw(pid.as_raw()), None);
+        assert!(
+            matches!(
+                status,
+                Ok(nix::sys::wait::WaitStatus::Stopped(_, Signal::SIGSTOP))
+            ),
+            "replacement {pid} did not stop traced: {status:?}"
+        );
+        pid
+    }
+
+    /// Kills the tracee before initialization's last injections, lets the
+    /// notifier reap it, and starts a replacement on the same PID that the
+    /// same thread traces and holds stopped, so a request naming the PID
+    /// would succeed on it. Initialization must still fail with the kill, and
+    /// its injection must not reach the replacement: its registers must be
+    /// unchanged. Runs in a fresh user and PID namespace, where the PID can be
+    /// reused exactly.
+    #[tokio::test(flavor = "current_thread")]
+    async fn preinit_injection_never_reaches_a_replacement() {
+        if std::env::var_os(INJECTION_REUSE_INNER).is_none() {
+            let module = module_path!()
+                .split_once("::")
+                .map(|(_, rest)| rest)
+                .unwrap();
+            let test_name = format!("{module}::preinit_injection_never_reaches_a_replacement");
+            let output = std::process::Command::new("/usr/bin/timeout")
+                .args([
+                    "60",
+                    "/usr/bin/unshare",
+                    "--user",
+                    "--map-root-user",
+                    "--pid",
+                    "--fork",
+                    "--mount-proc",
+                    "--",
+                ])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
+                .env(INJECTION_REUSE_INNER, "1")
+                .output()
+                .expect("spawn /usr/bin/unshare");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains(INJECTION_REUSE_CHECKED),
+                "inner run in a fresh PID namespace failed ({}):\nstdout:\n{stdout}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let point = crate::task::PreinitPoint::TrampolineUnprotected;
+        let (kill_hook, kill) = kill_at_preinit_point(point, 1, PreinitKillMode::Exited);
+        let replacement = Arc::new(StdMutex::new(None));
+        let made = Arc::clone(&replacement);
+        let hook: crate::task::PreinitPointForTest = Arc::new(move |pid, terminal, at| {
+            kill_hook(pid, terminal, at);
+            let mut made = made.lock().unwrap();
+            if at == point && made.is_none() && *kill.killed.lock().unwrap() == Some(pid) {
+                let pid = spawn_stopped_traced_replacement(pid);
+                let regs = nix::sys::ptrace::getregs(unistd::Pid::from_raw(pid.as_raw()))
+                    .unwrap_or_else(|error| panic!("read replacement {pid}'s registers: {error}"));
+                *made = Some((pid, std::thread::current().id(), format!("{regs:?}")));
+            }
+        });
+        let spawned = tokio::time::timeout(
+            Duration::from_secs(5),
+            TracerBuilder::<AllSyscallsTool>::new(Command::new("/bin/true"))
+                .preinit_point_for_test(hook)
+                .spawn(),
+        )
+        .await
+        .expect("spawn did not end within 5 s");
+        let (pid, tracer, before) = replacement
+            .lock()
+            .unwrap()
+            .take()
+            .expect("never killed at TrampolineUnprotected");
+        // Only the thread that traces the replacement can read its registers.
+        assert_eq!(std::thread::current().id(), tracer);
+
+        let reaped = unistd::Pid::from_raw(pid.as_raw());
+        let after = nix::sys::ptrace::getregs(reaped).map(|regs| format!("{regs:?}"));
+        let killed = unsafe { libc::kill(pid.as_raw(), libc::SIGKILL) };
+        let status = nix::sys::wait::waitpid(reaped, None);
+        assert_eq!(
+            after,
+            Ok(before),
+            "initialization changed replacement {pid}'s registers"
+        );
+        assert_eq!(killed, 0);
+        assert!(
+            matches!(
+                status,
+                Ok(nix::sys::wait::WaitStatus::Signaled(_, Signal::SIGKILL, _))
+            ),
+            "replacement {pid} ended with {status:?}"
+        );
+
+        let error = match spawned {
+            Ok(_) => panic!("spawn of a killed tracee succeeded"),
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(
+            error,
+            format!(
+                "tracee {pid} exited during ptrace initialization with Signaled(SIGKILL, false)"
+            )
+        );
+        // libtest has already printed "test <name> ... " without a newline.
+        println!("\n{INJECTION_REUSE_CHECKED}");
+    }
+
+    /// An errno from a tracee that is still alive is returned unchanged.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dead_or_keeps_the_error_of_a_live_tracee() {
+        let (_pid, stopped) = spawn_held_stop_child("dead_or live child");
+        for errno in [Errno::ESRCH, Errno::EFAULT, Errno::EIO] {
+            assert_eq!(
+                crate::task::dead_or(&stopped, TraceError::Errno(errno)),
+                TraceError::Errno(errno)
+            );
+        }
+        stopped
+            .getregs()
+            .expect("live child stops answering after dead_or");
+        resume_held_stop_child("dead_or live child", stopped).await;
+    }
+
+    /// An ESRCH from a request made while a SIGKILL carried the tracee from
+    /// the held stop to its exit stop becomes its death, although the tracee
+    /// answers PTRACE_GETREGSET again in that exit stop. Other errnos are kept.
+    /// See <https://github.com/rrnewton/hermit/issues/3357>.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dead_or_reports_the_death_of_a_tracee_killed_into_its_exit_stop() {
+        let (pid, stopped) = spawn_held_stop_child("dead_or exit-stop child");
+        stopped
+            .setoptions(safeptrace::Options::PTRACE_O_TRACEEXIT)
+            .expect("set PTRACE_O_TRACEEXIT on dead_or exit-stop child");
+        // A thread-directed kill wakes the tracee out of the held stop at
+        // once. (A process-directed one can stay shared-pending until the
+        // tracer resumes the tracee.)
+        assert_eq!(
+            unsafe { libc::syscall(libc::SYS_tgkill, pid.as_raw(), pid.as_raw(), libc::SIGKILL) },
+            0
+        );
+        // The SIGKILL stays pending until the tracee dequeues it after leaving
+        // the held stop. With it dequeued, a tracing stop is the exit stop.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while proc_status_has_sigkill(pid, "SigPnd:")
+            || proc_status_has_sigkill(pid, "ShdPnd:")
+            || !std::fs::read_to_string(format!("/proc/{pid}/status"))
+                .is_ok_and(|status| status.contains("\nState:\tt"))
+        {
+            if Instant::now() >= deadline {
+                let status =
+                    std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+                let signals: Vec<&str> = status
+                    .lines()
+                    .filter(|line| line.starts_with("State:") || line.contains("Pnd:"))
+                    .collect();
+                panic!(
+                    "dead_or exit-stop child {pid} did not reach its exit stop within 3 s: {signals:?}"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The state the GETREGS probe alone cannot tell from a live tracee.
+        stopped
+            .getregs()
+            .expect("exit-stopped child answers PTRACE_GETREGSET");
+        for errno in [Errno::EFAULT, Errno::EIO] {
+            assert_eq!(
+                crate::task::dead_or(&stopped, TraceError::Errno(errno)),
+                TraceError::Errno(errno)
+            );
+        }
+        let TraceError::Died(_) = crate::task::dead_or(&stopped, TraceError::Errno(Errno::ESRCH))
+        else {
+            panic!("dead_or kept a bare ESRCH for child {pid} in its exit stop");
+        };
+        // Release the exit stop and reap the child.
+        assert_eq!(
+            unsafe { libc::ptrace(libc::PTRACE_CONT, pid.as_raw(), 0, 0) },
+            0,
+            "PTRACE_CONT from the exit stop"
+        );
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid.as_raw(), &mut status, libc::__WALL) },
+            pid.as_raw()
+        );
+        assert!(libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGKILL);
+        assert_eventually_reaped("dead_or exit-stop child", pid);
+    }
+
+    /// An errno from a tracee that has died becomes its death.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dead_or_reports_the_death_of_a_killed_tracee() {
+        let (pid, stopped) = spawn_held_stop_child("dead_or killed child");
+        let terminal = stopped.terminal_cleanup();
+        terminal.request_sigkill().expect("SIGKILL dead_or child");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while terminal.observed_exit_status() == Ok(None) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let TraceError::Died(zombie) =
+            crate::task::dead_or(&stopped, TraceError::Errno(Errno::ESRCH))
+        else {
+            panic!("dead_or kept a bare errno for killed child {pid}");
+        };
+        assert_eq!(
+            zombie.reap().await.expect("reap dead_or child"),
+            ExitStatus::Signaled(Signal::SIGKILL, false)
+        );
+        assert_eventually_reaped("dead_or killed child", pid);
     }
 
     #[test]

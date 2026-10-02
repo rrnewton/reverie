@@ -184,7 +184,7 @@ mod stop_observation_tests {
         let (pid, stopped, cleanup) = spawn_observed_child(deadline);
         let original = stopped.observation();
         let terminal = stopped.terminal_cleanup();
-        let competitor = Running::new(pid.into());
+        let competitor = distinct_running(pid.into());
         let competing_terminal = TerminalCleanup::new_unregistered(pid.into(), &competitor.1);
         // This is deliberately an unregistered observer refusal control, not
         // a fabricated successful stopped capability or another raw wait owner.
