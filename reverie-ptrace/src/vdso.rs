@@ -23,6 +23,7 @@ use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Mprotect;
 use reverie::syscalls::Sysno;
 use tracing::debug;
+use tracing::warn;
 
 #[repr(align(64))]
 struct BufferAligned<const N: usize>([u8; N]);
@@ -117,6 +118,15 @@ mod vdso_syms {
     /// in the stub targets an address before it, so an in-guest hook may
     /// overwrite the bytes from here on.
     pub const GETRANDOM_SYSCALL_OFFSET: usize = 33;
+
+    // The replacement for an entry point with no syscall equivalent, or one
+    // this module does not know: it returns -ENOSYS without touching memory.
+    const enosys_code: BufferAligned<8> = BufferAligned::<8>([
+        0x48, 0xc7, 0xc0, 0xda, 0xff, 0xff, 0xff, // mov $-ENOSYS, %rax
+        0xc3, // retq
+    ]);
+
+    pub const enosys: &[u8; 8] = &enosys_code.0;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -211,53 +221,114 @@ mod vdso_syms {
     ]);
 
     pub const getrandom: &[u8; 48] = &getrandom_code.0;
+
+    // See the x86_64 `enosys` stub.
+    const enosys_code: BufferAligned<16> = BufferAligned::<16>([
+        0x5f, 0x24, 0x03, 0xd5, // bti c
+        0xa0, 0x04, 0x80, 0x92, // mov x0, #-38 (-ENOSYS)
+        0xc0, 0x03, 0x5f, 0xd6, // ret
+        0x1f, 0x20, 0x03, 0xd5, // nop
+    ]);
+
+    pub const enosys: &[u8; 16] = &enosys_code.0;
 }
 
+/// What reverie does with a vDSO entry point it knows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KnownEntry {
+    /// A userspace fast path for the syscall, replaced by a stub that issues it.
+    Syscall(&'static [u8], Sysno),
+    /// An entry point with no syscall equivalent, replaced by
+    /// [`vdso_syms::enosys`].
+    Enosys,
+}
+
+/// Every vDSO entry point reverie knows, by its kernel name.
+///
+/// This is not the list of entry points that get handled. The patch plan covers
+/// every function the vDSO's dynamic symbol table exports; one missing here is
+/// replaced by [`vdso_syms::enosys`] and logged. The x86_64 vDSO also exports
+/// `clock_gettime`, `time` and so on at the same addresses as the `__vdso_`
+/// names; such aliases share the entry point, and its replacement.
+///
+/// Which replacement is safe depends on how libc calls the entry point. From
+/// glibc 2.42 source:
+/// - `clock_gettime`: `__clock_gettime64` returns any nonzero vDSO result as an
+///   error, without trying the syscall (`sysdeps/unix/sysv/linux/clock_gettime.c`
+///   lines 41-46).
+/// - `gettimeofday`, and x86_64 `time`: IFUNCs that resolve to the vDSO function
+///   itself, so its return value goes straight to the caller (`gettimeofday.c`
+///   lines 42-45, `time.c` lines 38-40; `x86/gettimeofday.c`, `x86/time.c` and
+///   `aarch64/gettimeofday.c` select them with `USE_IFUNC_*`).
+/// - `clock_getres` and `getcpu`: `INLINE_VSYSCALL`, which retries with the
+///   syscall when the vDSO returns -ENOSYS (`sysdep-vdso.h` lines 42 and 46).
+/// - `getrandom`: see its stub.
+/// - aarch64 `__kernel_rt_sigreturn`: glibc never calls it, but glibc does not
+///   set `SA_RESTORER` (`aarch64/libc_sigaction.c`), so the kernel returns from
+///   every signal handler through it.
+///
+/// An -ENOSYS stub would turn the first two into visible failures and the last
+/// into a crash on every signal return, so every syscall fast path keeps a stub
+/// that issues its syscall. -ENOSYS is for entry points glibc does not call.
+/// glibc only calls vDSO functions it names (`HAVE_*_VSYSCALL` in each
+/// architecture's `sysdep.h`), so a future glibc calling an entry point added
+/// after this table either retries with the syscall (`INLINE_VSYSCALL`) or
+/// fails visibly; it never runs the kernel's code unobserved.
 #[cfg(target_arch = "x86_64")]
-const VDSO_SYMBOLS: &[(&str, &[u8], Sysno)] = &[
-    ("__vdso_time", vdso_syms::time, Sysno::time),
+const VDSO_SYMBOLS: &[(&str, KnownEntry)] = &[
+    (
+        "__vdso_time",
+        KnownEntry::Syscall(vdso_syms::time, Sysno::time),
+    ),
     (
         "__vdso_clock_gettime",
-        vdso_syms::clock_gettime,
-        Sysno::clock_gettime,
+        KnownEntry::Syscall(vdso_syms::clock_gettime, Sysno::clock_gettime),
     ),
-    ("__vdso_getcpu", vdso_syms::getcpu, Sysno::getcpu),
+    (
+        "__vdso_getcpu",
+        KnownEntry::Syscall(vdso_syms::getcpu, Sysno::getcpu),
+    ),
     (
         "__vdso_gettimeofday",
-        vdso_syms::gettimeofday,
-        Sysno::gettimeofday,
+        KnownEntry::Syscall(vdso_syms::gettimeofday, Sysno::gettimeofday),
     ),
     (
         "__vdso_clock_getres",
-        vdso_syms::clock_getres,
-        Sysno::clock_getres,
+        KnownEntry::Syscall(vdso_syms::clock_getres, Sysno::clock_getres),
     ),
-    ("__vdso_getrandom", vdso_syms::getrandom, Sysno::getrandom),
+    (
+        "__vdso_getrandom",
+        KnownEntry::Syscall(vdso_syms::getrandom, Sysno::getrandom),
+    ),
+    // SGX enclave entry (`arch/x86/entry/vdso/vsgx.S`). glibc does not call it,
+    // and a tool cannot observe what an enclave does. The kernel's version
+    // already returns negative errnos (-EINVAL for an invalid leaf), so SGX
+    // runtimes handle a negative result.
+    ("__vdso_sgx_enter_enclave", KnownEntry::Enosys),
 ];
 
 #[cfg(target_arch = "aarch64")]
-const VDSO_SYMBOLS: &[(&str, &[u8], Sysno)] = &[
+const VDSO_SYMBOLS: &[(&str, KnownEntry)] = &[
     (
         "__kernel_clock_getres",
-        vdso_syms::clock_getres,
-        Sysno::clock_getres,
+        KnownEntry::Syscall(vdso_syms::clock_getres, Sysno::clock_getres),
     ),
     (
         "__kernel_clock_gettime",
-        vdso_syms::clock_gettime,
-        Sysno::clock_gettime,
+        KnownEntry::Syscall(vdso_syms::clock_gettime, Sysno::clock_gettime),
     ),
     (
         "__kernel_gettimeofday",
-        vdso_syms::gettimeofday,
-        Sysno::gettimeofday,
+        KnownEntry::Syscall(vdso_syms::gettimeofday, Sysno::gettimeofday),
     ),
     (
         "__kernel_rt_sigreturn",
-        vdso_syms::rt_sigreturn,
-        Sysno::rt_sigreturn,
+        KnownEntry::Syscall(vdso_syms::rt_sigreturn, Sysno::rt_sigreturn),
     ),
-    ("__kernel_getrandom", vdso_syms::getrandom, Sysno::getrandom),
+    (
+        "__kernel_getrandom",
+        KnownEntry::Syscall(vdso_syms::getrandom, Sysno::getrandom),
+    ),
 ];
 
 /// Rounds up `value` so that it is a multiple of `alignment`.
@@ -265,67 +336,296 @@ fn align_up(value: usize, alignment: usize) -> usize {
     (value + alignment - 1) & alignment.wrapping_neg()
 }
 
-/// One vDSO symbol's patch coordinates and corresponding syscall.
-type VdsoPatch = (u64, usize, &'static [u8], Sysno);
+/// One entry point exported by a vDSO's dynamic symbol table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VdsoExport {
+    name: String,
+    /// The symbol's value: its offset into the vDSO, which is linked at 0.
+    offset: u64,
+    /// The symbol's `st_size`.
+    size: usize,
+}
 
-/// Per-symbol VDSO patch info: `symbol name -> patch`.
-type VdsoPatchInfo = BTreeMap<&'static str, VdsoPatch>;
+/// What a vDSO entry point is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VdsoEntryKind {
+    Known(KnownEntry),
+    /// Not in [`VDSO_SYMBOLS`].
+    Unknown,
+}
 
-static VDSO_PATCH_INFO: LazyLock<VdsoPatchInfo> = LazyLock::new(|| {
-    let info = vdso_get_symbols_info();
-    let mut res = BTreeMap::new();
+/// One vDSO entry point, with every name exported at its address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VdsoEntry {
+    /// The exported names, the known one (if any) first.
+    names: Vec<String>,
+    offset: u64,
+    /// Bytes a replacement may overwrite. The vDSO pads every entry to a
+    /// 16-byte alignment, which `st_size` does not include, so this is
+    /// `st_size` rounded up to 16, cut short at the next entry point.
+    size: usize,
+    kind: VdsoEntryKind,
+}
 
-    for (k, v, sysno) in VDSO_SYMBOLS {
-        if let Some(&(base, size)) = info.get(*k) {
-            // NOTE: There is padding at the end of every VDSO entry to
-            // bring it up to a 16-byte size alignment. The dynamic symbol
-            // table doesn't report the aligned size, so we must do the same
-            // alignment here. For example, some VDSO entries might only be
-            // 5 bytes, but they have padding to align them up to 16 bytes.
-            let aligned_size = align_up(size, 16);
-            assert!(
-                v.len() <= aligned_size,
-                "vdso symbol {}'s real size is {} bytes, but trying to replace it with {} bytes",
-                k,
-                size,
-                v.len()
-            );
-            res.insert(*k, (base, aligned_size, *v, *sysno));
+impl VdsoEntry {
+    /// The stub that replaces this entry point under `subscriptions`, or `None`
+    /// to leave it native.
+    ///
+    /// A syscall fast path is replaced only when its own syscall is subscribed.
+    /// Rewriting an entry point nobody subscribed to converts a pure userspace
+    /// vDSO call into a real syscall for no gain: the tool never sees it, and
+    /// the guest pays the kernel crossing anyway. That cost is not hypothetical
+    /// -- QEMU's main loop calls `clock_gettime` continuously *while holding the
+    /// Big QEMU Lock*, so every needless crossing is taken with a lock held that
+    /// vCPU threads are waiting on.
+    ///
+    /// Every other entry point is replaced by [`vdso_syms::enosys`] whenever the
+    /// tool subscribes to any syscall, because an unknown entry point could be
+    /// the fast path of any of them. A tool that subscribes to no syscall
+    /// observes nothing a vDSO function could bypass.
+    fn replacement(&self, subscriptions: &Subscription) -> Option<&'static [u8]> {
+        match self.kind {
+            VdsoEntryKind::Known(KnownEntry::Syscall(stub, sysno)) => subscriptions
+                .iter_syscalls()
+                .any(|syscall| syscall == sysno)
+                .then_some(stub),
+            VdsoEntryKind::Known(KnownEntry::Enosys) | VdsoEntryKind::Unknown => subscriptions
+                .iter_syscalls()
+                .next()
+                .is_some()
+                .then_some(vdso_syms::enosys),
         }
     }
 
-    res
+    fn describe(&self) -> String {
+        format!("{}@{:#x}", self.names.join("/"), self.offset)
+    }
+}
+
+/// Every entry point exported by the vDSO image `image`.
+///
+/// This fails closed on the symbol type: only data (`STT_OBJECT`, `STT_TLS`,
+/// `STT_COMMON`) and bookkeeping (`STT_SECTION`, `STT_FILE`) symbols are
+/// skipped, so an export of any other type is an entry point. That includes
+/// aarch64's `__kernel_rt_sigreturn`, which is `STT_NOTYPE`. Local, undefined
+/// and absolute symbols are not exported functions; older vDSOs export their
+/// version names, such as `LINUX_2.6`, as absolute symbols.
+fn vdso_exports(image: &[u8]) -> Result<Vec<VdsoExport>, String> {
+    use goblin::elf::section_header::SHN_ABS;
+    use goblin::elf::section_header::SHN_UNDEF;
+    use goblin::elf::sym::STB_LOCAL;
+    use goblin::elf::sym::STT_COMMON;
+    use goblin::elf::sym::STT_FILE;
+    use goblin::elf::sym::STT_OBJECT;
+    use goblin::elf::sym::STT_SECTION;
+    use goblin::elf::sym::STT_TLS;
+
+    let elf = Elf::parse(image).map_err(|error| format!("cannot parse the vDSO: {error}"))?;
+    let mut exports = Vec::new();
+    for sym in elf.dynsyms.iter() {
+        if sym.st_bind() == STB_LOCAL
+            || sym.st_shndx == SHN_UNDEF as usize
+            || sym.st_shndx == SHN_ABS as usize
+            || matches!(
+                sym.st_type(),
+                STT_OBJECT | STT_TLS | STT_COMMON | STT_SECTION | STT_FILE
+            )
+        {
+            continue;
+        }
+        let name = elf.dynstrtab.get_at(sym.st_name).ok_or_else(|| {
+            format!(
+                "vDSO symbol name offset {} is outside its string table",
+                sym.st_name
+            )
+        })?;
+        exports.push(VdsoExport {
+            name: name.to_owned(),
+            offset: sym.st_value,
+            size: sym.st_size as usize,
+        });
+    }
+    Ok(exports)
+}
+
+/// Groups `exports` by address into entry points and classifies each against
+/// [`VDSO_SYMBOLS`].
+///
+/// Refuses, rather than guess, whenever a stub cannot be placed safely: two
+/// known names that need different stubs at one address, names at one address
+/// that disagree on the size, entry points that overlap, or a stub larger than
+/// its entry point.
+fn classify_vdso_exports(exports: &[VdsoExport]) -> Result<Vec<VdsoEntry>, String> {
+    let mut by_offset: BTreeMap<u64, Vec<&VdsoExport>> = BTreeMap::new();
+    for export in exports {
+        by_offset.entry(export.offset).or_default().push(export);
+    }
+
+    let offsets: Vec<u64> = by_offset.keys().copied().collect();
+    let mut entries = Vec::new();
+    for (index, (offset, group)) in by_offset.into_iter().enumerate() {
+        let first = group[0];
+        if let Some(other) = group.iter().find(|export| export.size != first.size) {
+            return Err(format!(
+                "vDSO exports {} ({} bytes) and {} ({} bytes) at one address {offset:#x}",
+                first.name, first.size, other.name, other.size
+            ));
+        }
+
+        let mut names: Vec<String> = Vec::new();
+        let mut known: Option<KnownEntry> = None;
+        for export in &group {
+            match VDSO_SYMBOLS.iter().find(|(name, _)| *name == export.name) {
+                Some((name, entry)) => {
+                    if let Some(previous) = known
+                        && previous != *entry
+                    {
+                        return Err(format!(
+                            "vDSO exports {} and {name} at one address {offset:#x}, \
+                             but they need different stubs",
+                            names[0]
+                        ));
+                    }
+                    if known.is_none() {
+                        names.insert(0, export.name.clone());
+                    } else {
+                        names.push(export.name.clone());
+                    }
+                    known = Some(*entry);
+                }
+                None => names.push(export.name.clone()),
+            }
+        }
+
+        let next = offsets.get(index + 1).copied();
+        if let Some(next) = next
+            && offset + first.size as u64 > next
+        {
+            return Err(format!(
+                "vDSO entry point {}@{offset:#x} ({} bytes) overlaps the one at {next:#x}",
+                names[0], first.size
+            ));
+        }
+        let size = match next {
+            Some(next) => align_up(first.size, 16).min((next - offset) as usize),
+            None => align_up(first.size, 16),
+        };
+
+        let kind = known.map_or(VdsoEntryKind::Unknown, VdsoEntryKind::Known);
+        let stub_len = match kind {
+            VdsoEntryKind::Known(KnownEntry::Syscall(stub, _)) => stub.len(),
+            _ => vdso_syms::enosys.len(),
+        };
+        if stub_len > size {
+            return Err(format!(
+                "vDSO entry point {}@{offset:#x} has {size} bytes, \
+                 too few for its {stub_len}-byte stub",
+                names[0]
+            ));
+        }
+        entries.push(VdsoEntry {
+            names,
+            offset,
+            size,
+            kind,
+        });
+    }
+    Ok(entries)
+}
+
+/// The classified entry points of a vDSO image.
+#[derive(Debug)]
+struct VdsoTable {
+    /// The length of the `[vdso]` mapping the image was read from.
+    mapping_len: u64,
+    entries: Vec<VdsoEntry>,
+}
+
+/// This process's own vDSO, classified, or `None` if it has no vDSO.
+///
+/// The ptrace backend assumes every guest maps the same image, which the kernel
+/// shares between all 64-bit processes; [`vdso_patch`] refuses a guest whose
+/// mapping has a different length. In-guest backends read their own vDSO.
+static VDSO_TABLE: LazyLock<Result<Option<VdsoTable>, String>> = LazyLock::new(|| {
+    let maps = procfs::process::Process::myself()
+        .and_then(|process| process.maps())
+        .map_err(|error| format!("cannot read this process's mappings: {error}"))?;
+    let Some(vdso) = maps
+        .iter()
+        .find(|map| map.pathname == procfs::process::MMapPath::Vdso)
+    else {
+        return Ok(None);
+    };
+    let mapping_len = vdso.address.1 - vdso.address.0;
+    // SAFETY: the kernel keeps the vDSO mapped, readable and unmodified for the
+    // life of the process; this runs before any patch of this process's vDSO.
+    let image =
+        unsafe { std::slice::from_raw_parts(vdso.address.0 as *const u8, mapping_len as usize) };
+    let entries = classify_vdso_exports(&vdso_exports(image)?)?;
+    for entry in &entries {
+        match entry.kind {
+            VdsoEntryKind::Unknown => warn!(
+                "vDSO exports unknown entry point {}; it is replaced by an -ENOSYS stub \
+                 whenever the tool subscribes to any syscall",
+                entry.describe()
+            ),
+            VdsoEntryKind::Known(kind) => debug!("vDSO entry point {}: {kind:?}", entry.describe()),
+        }
+    }
+    Ok(Some(VdsoTable {
+        mapping_len,
+        entries,
+    }))
 });
 
-/// Is this individual vDSO entry point's syscall subscribed?
-///
-/// Patching is per-symbol because subscription is per-syscall. Rewriting an entry
-/// point nobody subscribed to converts a pure userspace vDSO call into a real
-/// syscall for no gain: the tool never sees it, and the guest pays the kernel
-/// crossing anyway. That cost is not hypothetical -- QEMU's main loop calls
-/// `clock_gettime` continuously *while holding the Big QEMU Lock*, so every
-/// needless crossing is taken with a lock held that vCPU threads are waiting on.
-fn is_symbol_patch_required(subscriptions: &Subscription, sysno: Sysno) -> bool {
-    subscriptions
-        .iter_syscalls()
-        .any(|syscall| syscall == sysno)
+/// The vDSO table, or the reason it could not be built.
+fn vdso_table() -> Result<Option<&'static VdsoTable>, Error> {
+    VDSO_TABLE
+        .as_ref()
+        .map(Option::as_ref)
+        .map_err(|error| Error::from(std::io::Error::other(error.clone())))
 }
 
-/// The exact symbol patches selected by a syscall subscription.
+/// The entry points `subscriptions` selects for replacement, with their stubs,
+/// in address order.
 ///
-/// Both the in-process and stopped-guest patch paths consume this iterator, so
-/// their subscription selection is implemented in one place.
-fn subscribed_vdso_patches(
+/// Both the in-process and stopped-guest patch paths consume this, so their
+/// selection is implemented in one place.
+fn vdso_replacements(
     subscriptions: &Subscription,
-) -> impl Iterator<Item = (&'static str, &'static VdsoPatch)> + '_ {
-    VDSO_PATCH_INFO
+) -> Result<Vec<(&'static VdsoEntry, &'static [u8])>, Error> {
+    if subscriptions.iter_syscalls().next().is_none() {
+        return Ok(Vec::new());
+    }
+    let Some(table) = vdso_table()? else {
+        return Ok(Vec::new());
+    };
+    Ok(table
+        .entries
         .iter()
-        .filter(|(_, (_, _, _, sysno))| is_symbol_patch_required(subscriptions, *sysno))
-        .map(|(name, patch)| (*name, patch))
+        .filter_map(|entry| Some((entry, entry.replacement(subscriptions)?)))
+        .collect())
 }
 
+/// Logs every entry point of `table` that `replacements` leaves native.
+fn log_native_entries(table: &VdsoTable, replacements: &[(&VdsoEntry, &[u8])]) {
+    for entry in &table.entries {
+        if !replacements
+            .iter()
+            .any(|(replaced, _)| std::ptr::eq(*replaced, entry))
+        {
+            debug!(
+                "vDSO entry point {} left native: its syscall is not subscribed",
+                entry.describe()
+            );
+        }
+    }
+}
+
+/// Does `subscriptions` require patching the vDSO? A vDSO that could not be
+/// read or classified does, so that [`vdso_patch`] reports why.
 pub fn is_patch_required(subscriptions: &Subscription) -> bool {
-    subscribed_vdso_patches(subscriptions).next().is_some()
+    !matches!(vdso_replacements(subscriptions), Ok(replacements) if replacements.is_empty())
 }
 
 /// One vDSO entry point rewritten for an in-guest syscall hook.
@@ -343,20 +643,26 @@ pub struct VdsoSyscallSite {
 
 /// Rewrite the calling process's vDSO entry points into hookable syscalls.
 ///
-/// Returns each rewritten symbol's entry address and syscall number so an
-/// in-guest patching backend can install its ordinary syscall trampoline while
-/// the process is still single-threaded. The two-byte syscall is deliberately
-/// placed at the aligned symbol entry: LiteInst needs a full patch word after
-/// the hook address, which is not guaranteed at the tail of an eight-byte
-/// pseudo-vDSO function. `__vdso_getrandom` is the exception: it keeps the
-/// table's whole stub, which answers the parameter query without a syscall,
-/// and its site is the stub's `syscall`, followed only by `ret` and padding.
-/// This shares the authoritative symbol table with ptrace's stopped-guest path
-/// instead of maintaining a backend-specific list.
+/// Returns each rewritten syscall fast path's entry address and syscall number
+/// so an in-guest patching backend can install its ordinary syscall trampoline
+/// while the process is still single-threaded. The two-byte syscall is
+/// deliberately placed at the aligned symbol entry: LiteInst needs a full patch
+/// word after the hook address, which is not guaranteed at the tail of an
+/// eight-byte pseudo-vDSO function. `__vdso_getrandom` is the exception: it
+/// keeps the table's whole stub, which answers the parameter query without a
+/// syscall, and its site is the stub's `syscall`, followed only by `ret` and
+/// padding. Entry points with no syscall equivalent, known or not, get the
+/// -ENOSYS stub, which needs no hook. This shares the authoritative vDSO table
+/// with ptrace's stopped-guest path instead of maintaining a backend-specific
+/// list.
 #[cfg(target_arch = "x86_64")]
 pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscallSite>, Error> {
-    if !is_patch_required(subscriptions) {
+    let replacements = vdso_replacements(subscriptions)?;
+    if replacements.is_empty() {
         return Ok(Vec::new());
+    }
+    if let Some(table) = vdso_table()? {
+        log_native_entries(table, &replacements);
     }
     let process =
         procfs::process::Process::new(unistd::getpid().as_raw()).map_err(|_| Errno::ENOENT)?;
@@ -378,47 +684,59 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
     })?;
 
     let mut syscall_sites = Vec::new();
-    for (name, (offset, size, bytes, _sysno)) in subscribed_vdso_patches(subscriptions) {
-        let symbol = start + *offset as usize;
-        if name == "__vdso_getrandom" {
-            // The parameter query must be answered before any syscall, so this
-            // entry keeps its whole stub and is hooked at the stub's `syscall`.
-            // Every byte after that `syscall` is a `ret` or padding, which
-            // leaves the hook its full patch word.
-            assert!(*size >= bytes.len() + 8);
-            unsafe {
-                core::ptr::copy_nonoverlapping(bytes.as_ptr(), symbol as *mut u8, bytes.len());
-                core::ptr::write_bytes((symbol + bytes.len()) as *mut u8, 0x90, size - bytes.len());
+    for (entry, bytes) in replacements {
+        let symbol = start + entry.offset as usize;
+        let size = entry.size;
+        match entry.kind {
+            VdsoEntryKind::Known(KnownEntry::Syscall(_, Sysno::getrandom)) => {
+                // The parameter query must be answered before any syscall, so
+                // this entry keeps its whole stub and is hooked at the stub's
+                // `syscall`. Every byte after that `syscall` is a `ret` or
+                // padding, which leaves the hook its full patch word.
+                assert!(size >= bytes.len() + 8);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(bytes.as_ptr(), symbol as *mut u8, bytes.len());
+                    core::ptr::write_bytes(
+                        (symbol + bytes.len()) as *mut u8,
+                        0x90,
+                        size - bytes.len(),
+                    );
+                }
+                syscall_sites.push(VdsoSyscallSite {
+                    address: (symbol + vdso_syms::GETRANDOM_SYSCALL_OFFSET) as u64,
+                    number: libc::SYS_getrandom,
+                    mapping_start: start as u64,
+                    mapping_len: len as u64,
+                });
             }
-            syscall_sites.push(VdsoSyscallSite {
-                address: (symbol + vdso_syms::GETRANDOM_SYSCALL_OFFSET) as u64,
-                number: libc::SYS_getrandom,
-                mapping_start: start as u64,
-                mapping_len: len as u64,
-            });
-            continue;
+            VdsoEntryKind::Known(KnownEntry::Syscall(_, sysno)) => {
+                assert!(size >= 3);
+                unsafe {
+                    core::ptr::write(symbol as *mut u8, 0x0f);
+                    core::ptr::write((symbol + 1) as *mut u8, 0x05);
+                    core::ptr::write((symbol + 2) as *mut u8, 0xc3);
+                    core::ptr::write_bytes((symbol + 3) as *mut u8, 0x90, size - 3);
+                }
+                syscall_sites.push(VdsoSyscallSite {
+                    address: symbol as u64,
+                    number: i64::from(sysno.id()),
+                    mapping_start: start as u64,
+                    mapping_len: len as u64,
+                });
+            }
+            VdsoEntryKind::Known(KnownEntry::Enosys) | VdsoEntryKind::Unknown => {
+                assert!(size >= bytes.len());
+                unsafe {
+                    core::ptr::copy_nonoverlapping(bytes.as_ptr(), symbol as *mut u8, bytes.len());
+                    core::ptr::write_bytes(
+                        (symbol + bytes.len()) as *mut u8,
+                        0x90,
+                        size - bytes.len(),
+                    );
+                }
+            }
         }
-        let number = match name {
-            "__vdso_time" => libc::SYS_time,
-            "__vdso_clock_gettime" => libc::SYS_clock_gettime,
-            "__vdso_getcpu" => libc::SYS_getcpu,
-            "__vdso_gettimeofday" => libc::SYS_gettimeofday,
-            "__vdso_clock_getres" => libc::SYS_clock_getres,
-            _ => continue,
-        };
-        assert!(*size >= 3);
-        unsafe {
-            core::ptr::write(symbol as *mut u8, 0x0f);
-            core::ptr::write((symbol + 1) as *mut u8, 0x05);
-            core::ptr::write((symbol + 2) as *mut u8, 0xc3);
-            core::ptr::write_bytes((symbol + 3) as *mut u8, 0x90, size - 3);
-        }
-        syscall_sites.push(VdsoSyscallSite {
-            address: symbol as u64,
-            number,
-            mapping_start: start as u64,
-            mapping_len: len as u64,
-        });
+        debug!("patched vDSO entry point {}", entry.describe());
     }
 
     Errno::result(unsafe {
@@ -429,49 +747,6 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
         )
     })?;
     Ok(syscall_sites)
-}
-
-// get vdso symbols offset/size from current process
-// assuming vdso binary is the same for all processes
-// so that we don't have to decode vdso for each process
-fn vdso_get_symbols_info() -> BTreeMap<&'static str, (u64, usize)> {
-    let mut res = BTreeMap::new();
-    procfs::process::Process::new(unistd::getpid().as_raw())
-        .map_or_else(
-            |_| Vec::new(),
-            |p| match p.maps() {
-                Ok(maps) => maps.0,
-                Err(_) => Vec::new(),
-            },
-        )
-        .iter()
-        .find(|e| e.pathname == procfs::process::MMapPath::Vdso)
-        .and_then(|vdso| {
-            let slice = unsafe {
-                std::slice::from_raw_parts(
-                    vdso.address.0 as *mut u8,
-                    (vdso.address.1 - vdso.address.0) as usize,
-                )
-            };
-            Elf::parse(slice)
-                .map(|elf| {
-                    let strtab = elf.dynstrtab;
-                    elf.dynsyms.iter().for_each(|sym| {
-                        let sym_name = &strtab[sym.st_name];
-                        if let Some((name, _, _)) =
-                            VDSO_SYMBOLS.iter().find(|&(name, _, _)| name == &sym_name)
-                        {
-                            // __kernel_rt_sigreturn on ARM64 unfortunately is
-                            // not marked as a function in VDSO, but as
-                            // STT_NONE.
-                            debug_assert!(sym.is_function() || name == &"__kernel_rt_sigreturn");
-                            res.insert(*name, (sym.st_value, sym.st_size as usize));
-                        }
-                    });
-                })
-                .ok()
-        });
-    res
 }
 
 /// Test-only: a hook for the tracee with the given raw PID.
@@ -509,6 +784,14 @@ where
     G: Guest<T>,
     T: Tool,
 {
+    let replacements = vdso_replacements(subscriptions)?;
+    let Some(table) = vdso_table()? else {
+        return Ok(());
+    };
+    if replacements.is_empty() {
+        return Ok(());
+    }
+    log_native_entries(table, &replacements);
     if let Some(vdso) = procfs::process::Process::new(guest.pid().as_raw())
         .map_or_else(
             |_| Vec::new(),
@@ -520,6 +803,19 @@ where
         .iter()
         .find(|e| e.pathname == procfs::process::MMapPath::Vdso)
     {
+        // The plan was made from the tracer's own vDSO. A guest whose vDSO
+        // differs (a 32-bit or foreign-ABI guest, say) would have its code
+        // overwritten at the wrong offsets, so refuse it.
+        let guest_len = vdso.address.1 - vdso.address.0;
+        if guest_len != table.mapping_len {
+            return Err(Error::from(std::io::Error::other(format!(
+                "guest {} maps a {guest_len}-byte vDSO, but the patch plan is for the \
+                 tracer's {}-byte vDSO",
+                guest.pid(),
+                table.mapping_len
+            ))));
+        }
+
         let mut memory = guest.memory();
 
         // Allow write access to the vdso memory page.
@@ -527,7 +823,7 @@ where
             .inject_with_retry(
                 Mprotect::new()
                     .with_addr(AddrMut::from_raw(vdso.address.0 as usize))
-                    .with_len((vdso.address.1 - vdso.address.0) as usize)
+                    .with_len(guest_len as usize)
                     .with_protection(
                         ProtFlags::PROT_READ | ProtFlags::PROT_WRITE | ProtFlags::PROT_EXEC,
                     ),
@@ -542,24 +838,28 @@ where
             }
         });
 
-        for (name, (offset, size, bytes, _sysno)) in subscribed_vdso_patches(subscriptions) {
-            let start = vdso.address.0 + offset;
-            assert!(bytes.len() <= *size);
+        for (entry, bytes) in replacements {
+            let start = vdso.address.0 + entry.offset;
+            assert!(bytes.len() <= entry.size);
             let rptr = AddrMut::from_raw(start as usize).ok_or(Errno::EFAULT)?;
             memory.write_exact(rptr, bytes)?;
-            assert!(*size >= bytes.len());
-            if *size > bytes.len() {
-                let fill: Vec<u8> = std::iter::repeat_n(0x90u8, size - bytes.len()).collect();
+            if entry.size > bytes.len() {
+                let fill: Vec<u8> = std::iter::repeat_n(0x90u8, entry.size - bytes.len()).collect();
                 memory.write_exact(unsafe { rptr.add(bytes.len()) }, &fill)?;
             }
-            debug!("{} patched {}@{:x}", guest.pid(), name, start);
+            debug!(
+                "{} patched {}@{:x}",
+                guest.pid(),
+                entry.names.join("/"),
+                start
+            );
         }
 
         guest
             .inject_with_retry(
                 Mprotect::new()
                     .with_addr(AddrMut::from_raw(vdso.address.0 as usize))
-                    .with_len((vdso.address.1 - vdso.address.0) as usize)
+                    .with_len(guest_len as usize)
                     .with_protection(ProtFlags::PROT_READ | ProtFlags::PROT_EXEC),
             )
             .await?;
@@ -596,67 +896,274 @@ mod tests {
         );
     }
 
-    #[test]
-    fn vdso_can_find_symbols_info() {
-        assert!(!vdso_get_symbols_info().is_empty());
+    fn host_table() -> &'static VdsoTable {
+        VDSO_TABLE
+            .as_ref()
+            .expect("the host vDSO must classify cleanly")
+            .as_ref()
+            .expect("this host must map a vDSO")
+    }
+
+    /// The first syscall fast path in [`VDSO_SYMBOLS`], so the synthetic tests
+    /// run unchanged on every architecture.
+    fn a_known_syscall() -> (&'static str, &'static [u8], Sysno) {
+        VDSO_SYMBOLS
+            .iter()
+            .find_map(|(name, entry)| match entry {
+                KnownEntry::Syscall(stub, sysno) => Some((*name, *stub, *sysno)),
+                KnownEntry::Enosys => None,
+            })
+            .unwrap()
+    }
+
+    fn export(name: &str, offset: u64, size: usize) -> VdsoExport {
+        VdsoExport {
+            name: name.to_owned(),
+            offset,
+            size,
+        }
     }
 
     #[test]
-    fn vdso_patch_info_is_valid() {
-        let info = &VDSO_PATCH_INFO;
-        info.iter().for_each(|i| println!("info: {:x?}", i));
-        assert!(!info.is_empty());
-    }
-
-    #[test]
-    fn patch_requirement_tracks_vdso_syscall_subscriptions() {
-        assert!(!is_patch_required(&Subscription::none()));
-        assert!(!is_patch_required(&[Sysno::read].into_iter().collect()));
-
-        for (_, _, _, sysno) in VDSO_PATCH_INFO.values() {
-            assert!(
-                is_patch_required(&[*sysno].into_iter().collect()),
-                "a subscription for vDSO syscall {sysno:?} must require patching",
+    fn host_vdso_entry_points_are_all_classified() {
+        let table = host_table();
+        assert!(!table.entries.is_empty());
+        // SAFETY: as in VDSO_TABLE; nothing in this test binary patches its
+        // own vDSO.
+        let exports = vdso_exports(
+            procfs::process::Process::myself()
+                .unwrap()
+                .maps()
+                .unwrap()
+                .iter()
+                .find(|map| map.pathname == procfs::process::MMapPath::Vdso)
+                .map(|map| unsafe {
+                    std::slice::from_raw_parts(
+                        map.address.0 as *const u8,
+                        (map.address.1 - map.address.0) as usize,
+                    )
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        for export in &exports {
+            assert_eq!(
+                table
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.names.contains(&export.name))
+                    .count(),
+                1,
+                "{} must be in exactly one entry point",
+                export.name
             );
         }
+        for entry in &table.entries {
+            println!(
+                "{}: {:?} ({} bytes)",
+                entry.describe(),
+                entry.kind,
+                entry.size
+            );
+        }
+    }
 
-        #[cfg(target_arch = "x86_64")]
-        let time_is_present = VDSO_PATCH_INFO
-            .values()
-            .any(|(_, _, _, sysno)| *sysno == Sysno::time);
-        #[cfg(target_arch = "x86_64")]
+    /// The fail-closed property itself: an entry point this module has never
+    /// heard of is replaced whenever the tool observes any syscall, and never
+    /// silently left running the kernel's code.
+    #[test]
+    fn unknown_vdso_entry_point_is_stubbed() {
+        let (known, stub, sysno) = a_known_syscall();
+        let entries = classify_vdso_exports(&[
+            export(known, 0x800, 100),
+            export("future_alias", 0x800, 100),
+            export("__vdso_future_call", 0x900, 40),
+        ])
+        .unwrap();
+
+        assert_eq!(entries.len(), 2);
+        let known_entry = &entries[0];
+        assert_eq!(known_entry.names, vec![known, "future_alias"]);
+        assert_eq!(known_entry.offset, 0x800);
+        assert_eq!(known_entry.size, 112);
         assert_eq!(
-            is_patch_required(&[Sysno::time].into_iter().collect()),
-            time_is_present,
-            "time is patchable only on architectures whose vDSO table contains it",
+            known_entry.kind,
+            VdsoEntryKind::Known(KnownEntry::Syscall(stub, sysno))
+        );
+
+        let unknown = &entries[1];
+        assert_eq!(unknown.names, vec!["__vdso_future_call"]);
+        assert_eq!(unknown.offset, 0x900);
+        assert_eq!(unknown.size, 48);
+        assert_eq!(unknown.kind, VdsoEntryKind::Unknown);
+
+        let unrelated: Subscription = [if sysno == Sysno::read {
+            Sysno::write
+        } else {
+            Sysno::read
+        }]
+        .into_iter()
+        .collect();
+        for subscriptions in [Subscription::all(), unrelated.clone()] {
+            assert_eq!(
+                unknown.replacement(&subscriptions),
+                Some(&vdso_syms::enosys[..]),
+                "an unknown vDSO entry point must be replaced by the -ENOSYS stub",
+            );
+        }
+        assert_eq!(unknown.replacement(&Subscription::none()), None);
+
+        assert_eq!(
+            known_entry.replacement(&[sysno].into_iter().collect()),
+            Some(stub)
+        );
+        assert_eq!(known_entry.replacement(&Subscription::all()), Some(stub));
+        assert_eq!(known_entry.replacement(&unrelated), None);
+        assert_eq!(known_entry.replacement(&Subscription::none()), None);
+    }
+
+    #[test]
+    fn unknown_name_listed_first_at_a_known_address_is_still_known() {
+        let (known, stub, sysno) = a_known_syscall();
+        let entries =
+            classify_vdso_exports(&[export("alias_first", 0x800, 64), export(known, 0x800, 64)])
+                .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].names, vec![known, "alias_first"]);
+        assert_eq!(
+            entries[0].kind,
+            VdsoEntryKind::Known(KnownEntry::Syscall(stub, sysno))
         );
     }
 
     #[test]
-    fn each_subscription_selects_only_its_own_vdso_symbols() {
-        for (_, _, _, subscribed_sysno) in VDSO_PATCH_INFO.values() {
-            let subscriptions = [*subscribed_sysno].into_iter().collect();
-            let selected = subscribed_vdso_patches(&subscriptions).collect::<Vec<_>>();
+    fn last_entry_point_gets_its_aligned_size() {
+        let entries = classify_vdso_exports(&[export("__vdso_future_call", 0x900, 9)]).unwrap();
+        assert_eq!(entries[0].size, 16);
+    }
+
+    #[test]
+    fn entry_point_too_small_for_its_stub_is_refused() {
+        let (known, stub, _) = a_known_syscall();
+        let error = classify_vdso_exports(&[
+            export(known, 0x800, 1),
+            export("next", 0x800 + stub.len() as u64 - 1, 16),
+        ])
+        .unwrap_err();
+        assert!(error.contains("too few"), "{error}");
+
+        let error = classify_vdso_exports(&[
+            export("__vdso_future_call", 0x800, 1),
+            export("next", 0x800 + vdso_syms::enosys.len() as u64 - 1, 16),
+        ])
+        .unwrap_err();
+        assert!(error.contains("too few"), "{error}");
+    }
+
+    #[test]
+    fn overlapping_entry_points_are_refused() {
+        let error = classify_vdso_exports(&[
+            export("__vdso_future_call", 0x800, 0x40),
+            export("__vdso_other_call", 0x820, 0x40),
+        ])
+        .unwrap_err();
+        assert!(error.contains("overlaps"), "{error}");
+    }
+
+    #[test]
+    fn names_disagreeing_on_size_are_refused() {
+        let error = classify_vdso_exports(&[
+            export("__vdso_future_call", 0x800, 0x40),
+            export("future_alias", 0x800, 0x20),
+        ])
+        .unwrap_err();
+        assert!(error.contains("one address"), "{error}");
+    }
+
+    #[test]
+    fn known_names_needing_different_stubs_at_one_address_are_refused() {
+        let syscalls: Vec<&str> = VDSO_SYMBOLS
+            .iter()
+            .filter(|(_, entry)| matches!(entry, KnownEntry::Syscall(..)))
+            .map(|(name, _)| *name)
+            .collect();
+        let error = classify_vdso_exports(&[
+            export(syscalls[0], 0x800, 0x40),
+            export(syscalls[1], 0x800, 0x40),
+        ])
+        .unwrap_err();
+        assert!(error.contains("different stubs"), "{error}");
+    }
+
+    /// A subscription to no vDSO syscall requires patching exactly when the
+    /// host vDSO exports an entry point with no syscall equivalent (on x86_64,
+    /// `__vdso_sgx_enter_enclave`), because that entry point is stubbed for
+    /// any tool that observes syscalls.
+    #[test]
+    fn patch_requirement_tracks_vdso_syscall_subscriptions() {
+        assert!(!is_patch_required(&Subscription::none()));
+
+        let table = host_table();
+        let has_non_syscall_entry = table
+            .entries
+            .iter()
+            .any(|entry| !matches!(entry.kind, VdsoEntryKind::Known(KnownEntry::Syscall(..))));
+        assert_eq!(
+            is_patch_required(&[Sysno::read].into_iter().collect()),
+            has_non_syscall_entry,
+        );
+
+        for entry in &table.entries {
+            if let VdsoEntryKind::Known(KnownEntry::Syscall(_, sysno)) = entry.kind {
+                assert!(
+                    is_patch_required(&[sysno].into_iter().collect()),
+                    "a subscription for vDSO syscall {sysno:?} must require patching",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn each_subscription_selects_only_its_own_vdso_syscall_entries() {
+        let table = host_table();
+        for entry in &table.entries {
+            let VdsoEntryKind::Known(KnownEntry::Syscall(_, subscribed_sysno)) = entry.kind else {
+                continue;
+            };
+            let subscriptions = [subscribed_sysno].into_iter().collect();
+            let selected = vdso_replacements(&subscriptions).unwrap();
 
             assert!(
-                !selected.is_empty(),
-                "{subscribed_sysno:?} selected nothing"
+                selected
+                    .iter()
+                    .any(|(selected, _)| selected.offset == entry.offset),
+                "{subscribed_sysno:?} did not select its own entry point"
             );
-            for (name, (_, _, _, selected_sysno)) in selected {
-                assert_eq!(
-                    *selected_sysno, *subscribed_sysno,
-                    "subscription for {subscribed_sysno:?} also selected {name} ({selected_sysno:?})",
-                );
+            for (selected, _) in selected {
+                match selected.kind {
+                    VdsoEntryKind::Known(KnownEntry::Syscall(_, selected_sysno)) => assert_eq!(
+                        selected_sysno,
+                        subscribed_sysno,
+                        "subscription for {subscribed_sysno:?} also selected {}",
+                        selected.describe()
+                    ),
+                    VdsoEntryKind::Known(KnownEntry::Enosys) | VdsoEntryKind::Unknown => {}
+                }
             }
         }
     }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn getcpu_only_leaves_other_vdso_symbols_unselected() {
+    fn getcpu_only_leaves_other_vdso_syscall_entries_unselected() {
         let subscriptions = [Sysno::getcpu].into_iter().collect();
-        let selected = subscribed_vdso_patches(&subscriptions)
-            .map(|(name, _)| name)
+        let selected = vdso_replacements(&subscriptions)
+            .unwrap()
+            .into_iter()
+            .filter(|(entry, _)| {
+                matches!(entry.kind, VdsoEntryKind::Known(KnownEntry::Syscall(..)))
+            })
+            .map(|(entry, _)| entry.names[0].as_str())
             .collect::<Vec<_>>();
 
         assert_eq!(selected, vec!["__vdso_getcpu"]);

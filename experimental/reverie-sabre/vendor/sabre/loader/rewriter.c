@@ -434,6 +434,42 @@ static void library_make_writable(struct library *l, bool state) {
   }
 }
 
+#ifdef __x86_64__
+/* The vDSO entry points patch_vdso routes to a syscall, by detour or stub. */
+static const char *const vdso_syscall_entries[] = {
+    "__vdso_getcpu",       "__vdso_time",         "__vdso_gettimeofday",
+    "__vdso_clock_gettime", "__vdso_clock_getres", "__vdso_getrandom",
+};
+
+/* Is `sym` an exported entry point? Mirrors `vdso_exports` in
+ * reverie-ptrace/src/vdso.rs, failing closed on the type: only data and
+ * bookkeeping symbols are skipped, so a symbol of any other type is code. */
+static bool vdso_is_entry_point(const ElfW(Sym) * sym) {
+  switch (ELF64_ST_TYPE(sym->st_info)) {
+  case STT_OBJECT:
+  case STT_TLS:
+  case STT_COMMON:
+  case STT_SECTION:
+  case STT_FILE:
+    return false;
+  default:
+    return ELF64_ST_BIND(sym->st_info) != STB_LOCAL &&
+           sym->st_shndx != SHN_UNDEF && sym->st_shndx != SHN_ABS;
+  }
+}
+
+/* Overwrite the vDSO entry point `sym` with `stub`, padded with NOPs. */
+static char *replace_vdso_entry(struct library *lib, const struct symbol *sym,
+                                const char *stub, size_t stub_len) {
+  if (sym->sym.st_size < stub_len)
+    _nx_fatal_printf("vdso %s is too small for its stub\n", sym->name);
+  char *start = lib->asr_offset + sym->sym.st_value;
+  memcpy(start, stub, stub_len);
+  memset(start + stub_len, 0x90 /* NOP */, sym->sym.st_size - stub_len);
+  return start;
+}
+#endif // __x86_64__
+
 static void patch_vdso(struct library *lib) {
   _nx_debug_printf("patch_vdso: %s\n", lib->pathname);
 
@@ -520,14 +556,57 @@ static void patch_vdso(struct library *lib) {
         "\xb8\x3e\x01\x00\x00"         // syscall: mov $SYS_getrandom, %eax
         "\x0f\x05"                     // syscall
         "\xc3";                        // ret
-    size_t stub_len = sizeof(getrandom_stub) - 1;
-    if (sym->sym.st_size < stub_len)
-      _nx_fatal_printf("__vdso_getrandom is too small for its stub\n");
-    char *start = lib->asr_offset + sym->sym.st_value;
-    memcpy(start, getrandom_stub, stub_len);
-    memset(start + stub_len, 0x90 /* NOP */, sym->sym.st_size - stub_len);
+    char *start =
+        replace_vdso_entry(lib, sym, getrandom_stub, sizeof(getrandom_stub) - 1);
     patch_syscalls_in_range(lib, start, start + sym->sym.st_size, &extra_space,
                             &extra_len, false);
+  }
+
+  /* clock_getres has no detour; issue its syscall, which then enters the
+   * router like the getrandom stub's. */
+  _nx_debug_printf("replacing __vdso_clock_getres\n");
+  sym = symbol_find(lib->symbol_hash, "__vdso_clock_getres");
+  if (sym != NULL && sym->sym.st_value != 0) {
+    static const char clock_getres_stub[] =
+        "\xb8\xe5\x00\x00\x00" // mov $SYS_clock_getres, %eax
+        "\x0f\x05"             // syscall
+        "\xc3";                // ret
+    char *start = replace_vdso_entry(lib, sym, clock_getres_stub,
+                                     sizeof(clock_getres_stub) - 1);
+    patch_syscalls_in_range(lib, start, start + sym->sym.st_size, &extra_space,
+                            &extra_len, false);
+  }
+
+  /* Every other entry point returns -ENOSYS, so none keeps running the
+   * kernel's code outside the router; reverie-ptrace/src/vdso.rs documents
+   * which glibc callers tolerate -ENOSYS. A name exported at the same address
+   * as a routed entry (the vDSO exports `clock_gettime` beside
+   * `__vdso_clock_gettime`) is an alias and already covered. */
+  static const char enosys_stub[] =
+      "\x48\xc7\xc0\xda\xff\xff\xff" // mov $-ENOSYS, %rax
+      "\xc3";                         // ret
+  for (int bucket = 0; bucket < symbolhash_size; bucket++) {
+    struct hlist_node *node;
+    struct symbol *other;
+    hlist_for_each_entry(other, node, &lib->symbol_hash[bucket], symbol_hash) {
+      if (!vdso_is_entry_point(&other->sym))
+        continue;
+      bool covered = false;
+      for (size_t i = 0;
+           i < sizeof(vdso_syscall_entries) / sizeof(vdso_syscall_entries[0]);
+           i++) {
+        struct symbol *known =
+            symbol_find(lib->symbol_hash, vdso_syscall_entries[i]);
+        if (known != NULL && known->sym.st_value == other->sym.st_value) {
+          covered = true;
+          break;
+        }
+      }
+      if (covered)
+        continue;
+      _nx_debug_printf("replacing vdso %s with -ENOSYS\n", other->name);
+      replace_vdso_entry(lib, other, enosys_stub, sizeof(enosys_stub) - 1);
+    }
   }
 #endif // __x86_64__
 

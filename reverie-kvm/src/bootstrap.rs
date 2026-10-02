@@ -1108,6 +1108,30 @@ mod tests {
         );
     }
 
+    /// The other backends replace every entry point the host vDSO exports. The
+    /// synthetic vDSO must export none, so there is nothing for glibc to call
+    /// outside the executor.
+    #[test]
+    fn synthetic_vdso_exports_no_entry_point() {
+        let mut memory = GuestMemory::new(0, (VDSO_ADDRESS + PAGE_SIZE) as usize).unwrap();
+        write_vdso(&mut memory).unwrap();
+        let mut image = vec![0; PAGE_SIZE as usize];
+        memory.read_raw(VDSO_ADDRESS, &mut image).unwrap();
+
+        let elf = goblin::elf::Elf::parse(&image).unwrap();
+        assert!(
+            elf.dynamic.is_none(),
+            "the synthetic vDSO has a dynamic section"
+        );
+        assert!(
+            !elf.program_headers
+                .iter()
+                .any(|ph| ph.p_type == goblin::elf::program_header::PT_DYNAMIC),
+            "the synthetic vDSO has a PT_DYNAMIC segment"
+        );
+        assert!(elf.dynsyms.is_empty(), "the synthetic vDSO exports symbols");
+    }
+
     #[test]
     fn exception_halt_identifies_fault_vector_without_clobbering_registers() {
         let invalid_opcode_rip = EXCEPTION_STUB_ADDRESS + 6 * EXCEPTION_STUB_STRIDE + 1;

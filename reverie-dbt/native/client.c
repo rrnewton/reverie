@@ -3292,6 +3292,132 @@ static bool patch_vdso_symbol(
   return true;
 }
 
+/* The vDSO's SONAME, which DynamoRIO reports as the module's preferred name. */
+#define VDSO_SONAME "linux-vdso.so.1"
+
+/* Bytes in the `mov $sysnum, %eax; syscall; ret` and -ENOSYS stubs. */
+#define VDSO_THUNK_SIZE 8
+
+/* The dynamic symbol table of the vDSO image mapped at `base`. */
+typedef struct {
+  const char* strings;
+  const Elf64_Sym* symbols;
+  Elf64_Word count;
+} vdso_symtab_t;
+
+/*
+ * Locate the dynamic symbol table of the ELF image mapped at `base` (the vDSO).
+ * Returns false if the image has no DT_HASH, whose second word is the only
+ * symbol count the dynamic section records.
+ */
+static bool vdso_find_symtab(app_pc base, vdso_symtab_t* table) {
+  const Elf64_Ehdr* header = (const Elf64_Ehdr*)base;
+  const Elf64_Phdr* program =
+      (const Elf64_Phdr*)((const char*)header + header->e_phoff);
+  uintptr_t load_offset = 0;
+  const Elf64_Dyn* dynamic = NULL;
+  for (int index = 0; index < header->e_phnum; index++) {
+    if (program[index].p_type == PT_LOAD)
+      load_offset =
+          (uintptr_t)base + program[index].p_offset - program[index].p_vaddr;
+    if (program[index].p_type == PT_DYNAMIC)
+      dynamic = (const Elf64_Dyn*)(base + program[index].p_offset);
+  }
+  if (dynamic == NULL)
+    return false;
+  const Elf64_Word* hash = NULL;
+  table->strings = NULL;
+  table->symbols = NULL;
+  for (const Elf64_Dyn* entry = dynamic; entry->d_tag != DT_NULL; entry++) {
+    if (entry->d_tag == DT_STRTAB)
+      table->strings = (const char*)(load_offset + entry->d_un.d_ptr);
+    else if (entry->d_tag == DT_SYMTAB)
+      table->symbols = (const Elf64_Sym*)(load_offset + entry->d_un.d_ptr);
+    else if (entry->d_tag == DT_HASH)
+      hash = (const Elf64_Word*)(load_offset + entry->d_un.d_ptr);
+  }
+  if (table->strings == NULL || table->symbols == NULL || hash == NULL)
+    return false;
+  table->count = hash[1];
+  return true;
+}
+
+/*
+ * Is `symbol` an exported entry point? This mirrors `vdso_exports` in
+ * reverie-ptrace/src/vdso.rs and fails closed on the type: only data and
+ * bookkeeping symbols are skipped, so a symbol of any other type is code.
+ */
+static bool vdso_is_entry_point(const Elf64_Sym* symbol) {
+  switch (ELF64_ST_TYPE(symbol->st_info)) {
+    case STT_OBJECT:
+    case STT_TLS:
+    case STT_COMMON:
+    case STT_SECTION:
+    case STT_FILE:
+      return false;
+    default:
+      return ELF64_ST_BIND(symbol->st_info) != STB_LOCAL &&
+          symbol->st_shndx != SHN_UNDEF && symbol->st_shndx != SHN_ABS;
+  }
+}
+
+static const Elf64_Sym* vdso_lookup(
+    const vdso_symtab_t* table,
+    const char* name) {
+  for (Elf64_Word index = 0; index < table->count; index++) {
+    const Elf64_Sym* symbol = &table->symbols[index];
+    if (vdso_is_entry_point(symbol) &&
+        strcmp(table->strings + symbol->st_name, name) == 0)
+      return symbol;
+  }
+  return NULL;
+}
+
+/*
+ * The bytes a stub may overwrite at `symbol`: its st_size rounded up to the
+ * vDSO's 16-byte function alignment, cut short at the next entry point.
+ */
+static size_t vdso_entry_space(
+    const vdso_symtab_t* table,
+    const Elf64_Sym* symbol) {
+  size_t space = ((size_t)symbol->st_size + 15) & ~(size_t)15;
+  for (Elf64_Word index = 0; index < table->count; index++) {
+    const Elf64_Sym* other = &table->symbols[index];
+    if (vdso_is_entry_point(other) && other->st_value > symbol->st_value &&
+        other->st_value - symbol->st_value < space)
+      space = (size_t)(other->st_value - symbol->st_value);
+  }
+  return space;
+}
+
+/*
+ * Overwrite vDSO entry point `name` at `symbol` with `code`, or exit the
+ * runtime tree: an entry point left running the kernel's code would be read
+ * outside the tool's view.
+ */
+static void replace_vdso_entry(
+    const module_data_t* module,
+    const vdso_symtab_t* table,
+    const char* name,
+    const Elf64_Sym* symbol,
+    const uint8_t* code,
+    size_t code_size) {
+  size_t space = vdso_entry_space(table, symbol);
+  if (space < code_size) {
+    dr_fprintf(
+        diagnostic_file,
+        "reverie-dbt: vdso %s has %zu bytes, too few for its %zu-byte stub\n",
+        name,
+        space,
+        code_size);
+    exit_runtime_tree(101);
+    return;
+  }
+  if (!patch_vdso_symbol(
+          module, name, module->start + symbol->st_value, code, code_size))
+    exit_runtime_tree(101);
+}
+
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(hermit#705): Confirm vDSO time neutralization routes guest
 // clock reads through the shared Detcore tool (2021 epoch) rather than the raw
@@ -3308,18 +3434,18 @@ static bool patch_vdso_symbol(
 // reached the real tool, so `date` printed 1970 under Detcore (hermit#705).
 static void neutralize_vdso_symbol(
     const module_data_t* module,
+    const vdso_symtab_t* table,
     const char* name,
     long sysnum) {
-  app_pc address = (app_pc)dr_get_proc_address(module->handle, name);
-  if (address == NULL)
+  const Elf64_Sym* symbol = vdso_lookup(table, name);
+  if (symbol == NULL)
     return;
 
   /*
-   * mov $sysnum, %eax; syscall; ret  (8 bytes). vDSO entries are padded to a
-   * 16-byte alignment, so overwriting the first 8 bytes stays within the symbol
-   * and the trailing `ret` prevents fall-through into the original body.
+   * mov $sysnum, %eax; syscall; ret  (8 bytes). The trailing `ret` prevents
+   * fall-through into the original body.
    */
-  const uint8_t thunk[8] = {
+  const uint8_t thunk[VDSO_THUNK_SIZE] = {
       0xb8,
       (uint8_t)(sysnum),
       (uint8_t)(sysnum >> 8),
@@ -3329,47 +3455,7 @@ static void neutralize_vdso_symbol(
       0x05,
       0xc3,
   };
-  (void)patch_vdso_symbol(module, name, address, thunk, sizeof(thunk));
-}
-
-/*
- * The st_size of dynamic symbol `name` in the ELF image mapped at `base` (the
- * vDSO), or 0 if the image has no such symbol.
- */
-static size_t vdso_symbol_size(app_pc base, const char* name) {
-  const Elf64_Ehdr* header = (const Elf64_Ehdr*)base;
-  const Elf64_Phdr* program =
-      (const Elf64_Phdr*)((const char*)header + header->e_phoff);
-  uintptr_t load_offset = 0;
-  const Elf64_Dyn* dynamic = NULL;
-  for (int index = 0; index < header->e_phnum; index++) {
-    if (program[index].p_type == PT_LOAD)
-      load_offset =
-          (uintptr_t)base + program[index].p_offset - program[index].p_vaddr;
-    if (program[index].p_type == PT_DYNAMIC)
-      dynamic = (const Elf64_Dyn*)(base + program[index].p_offset);
-  }
-  if (dynamic == NULL)
-    return 0;
-  const char* strings = NULL;
-  const Elf64_Sym* symbols = NULL;
-  const Elf64_Word* hash = NULL;
-  for (const Elf64_Dyn* entry = dynamic; entry->d_tag != DT_NULL; entry++) {
-    if (entry->d_tag == DT_STRTAB)
-      strings = (const char*)(load_offset + entry->d_un.d_ptr);
-    else if (entry->d_tag == DT_SYMTAB)
-      symbols = (const Elf64_Sym*)(load_offset + entry->d_un.d_ptr);
-    else if (entry->d_tag == DT_HASH)
-      hash = (const Elf64_Word*)(load_offset + entry->d_un.d_ptr);
-  }
-  if (strings == NULL || symbols == NULL || hash == NULL)
-    return 0;
-  /* DT_HASH's second word is the symbol count. */
-  for (Elf64_Word index = 0; index < hash[1]; index++) {
-    if (strcmp(strings + symbols[index].st_name, name) == 0)
-      return (size_t)symbols[index].st_size;
-  }
-  return 0;
+  replace_vdso_entry(module, table, name, symbol, thunk, sizeof(thunk));
 }
 
 /*
@@ -3382,10 +3468,12 @@ static size_t vdso_symbol_size(app_pc base, const char* name) {
  * glibc 2.41+ never sizes a state and calls the getrandom syscall directly;
  * any other call is the getrandom syscall on the first three arguments.
  */
-static void neutralize_vdso_getrandom(const module_data_t* module) {
+static void neutralize_vdso_getrandom(
+    const module_data_t* module,
+    const vdso_symtab_t* table) {
   static const char name[] = "__vdso_getrandom";
-  app_pc address = (app_pc)dr_get_proc_address(module->handle, name);
-  if (address == NULL)
+  const Elf64_Sym* symbol = vdso_lookup(table, name);
+  if (symbol == NULL)
     return;
 
   static const uint8_t stub[36] = {
@@ -3404,34 +3492,97 @@ static void neutralize_vdso_getrandom(const module_data_t* module) {
       0x0f, 0x05, /* syscall */
       0xc3, /* ret */
   };
-  size_t size = vdso_symbol_size(module->start, name);
-  if (size < sizeof(stub)) {
-    dr_fprintf(
-        diagnostic_file,
-        "reverie-dbt: %s is %zu bytes, too small for its %zu-byte stub\n",
-        name,
-        size,
-        sizeof(stub));
-    /* Leaving the kernel's ChaCha code in place would be nondeterministic. */
-    exit_runtime_tree(101);
-    return;
+  replace_vdso_entry(module, table, name, symbol, stub, sizeof(stub));
+}
+
+/*
+ * The vDSO entry points with a syscall equivalent, which module_load replaces
+ * with stubs that issue it. Keep in step with the neutralize calls there.
+ */
+static const char* const vdso_syscall_entries[] = {
+    "__vdso_clock_gettime",
+    "__vdso_clock_getres",
+    "__vdso_gettimeofday",
+    "__vdso_getcpu",
+    "__vdso_time",
+    "__vdso_getrandom",
+};
+
+/*
+ * Replace every other vDSO entry point with `mov $-ENOSYS, %rax; ret`, so no
+ * entry point keeps running the kernel's code unobserved; this is the same
+ * policy as reverie-ptrace/src/vdso.rs, which documents which glibc callers
+ * tolerate -ENOSYS. A name exported at the same address as a syscall entry is
+ * an alias (the x86_64 vDSO exports `clock_gettime` beside
+ * `__vdso_clock_gettime`) and is already covered. `__vdso_sgx_enter_enclave`
+ * has no syscall equivalent and is expected; any other name is reported.
+ */
+static void neutralize_other_vdso_entries(
+    const module_data_t* module,
+    const vdso_symtab_t* table) {
+  static const uint8_t enosys[VDSO_THUNK_SIZE] = {
+      0x48, 0xc7, 0xc0, 0xda, 0xff, 0xff, 0xff, /* mov $-ENOSYS, %rax */
+      0xc3, /* ret */
+  };
+  for (Elf64_Word index = 0; index < table->count; index++) {
+    const Elf64_Sym* symbol = &table->symbols[index];
+    if (!vdso_is_entry_point(symbol))
+      continue;
+    const char* name = table->strings + symbol->st_name;
+    bool covered = false;
+    for (size_t known = 0; known < sizeof(vdso_syscall_entries) /
+             sizeof(vdso_syscall_entries[0]);
+         known++) {
+      const Elf64_Sym* entry = vdso_lookup(table, vdso_syscall_entries[known]);
+      if (entry != NULL && entry->st_value == symbol->st_value) {
+        covered = true;
+        break;
+      }
+    }
+    if (covered)
+      continue;
+    if (strcmp(name, "__vdso_sgx_enter_enclave") != 0)
+      dr_fprintf(
+          diagnostic_file,
+          "reverie-dbt: replacing unknown vdso entry point %s with -ENOSYS\n",
+          name);
+    replace_vdso_entry(module, table, name, symbol, enosys, sizeof(enosys));
   }
-  if (!patch_vdso_symbol(module, name, address, stub, sizeof(stub)))
-    exit_runtime_tree(101);
 }
 
 static void
 module_load(void* drcontext, const module_data_t* module, bool loaded) {
-  neutralize_vdso_symbol(module, "__vdso_clock_gettime", SYS_clock_gettime);
-  neutralize_vdso_symbol(module, "__vdso_clock_getres", SYS_clock_getres);
-  neutralize_vdso_symbol(module, "__vdso_gettimeofday", SYS_gettimeofday);
-#ifdef SYS_getcpu
-  neutralize_vdso_symbol(module, "__vdso_getcpu", SYS_getcpu);
-#endif
-#ifdef SYS_time
-  neutralize_vdso_symbol(module, "__vdso_time", SYS_time);
-#endif
-  neutralize_vdso_getrandom(module);
+  const char* module_name = dr_module_preferred_name(module);
+  if (module_name == NULL || strcmp(module_name, VDSO_SONAME) != 0) {
+    if (dr_get_proc_address(module->handle, "__vdso_clock_gettime") != NULL) {
+      /* Not recognized as the vDSO, so it would be left unpatched. */
+      dr_fprintf(
+          diagnostic_file,
+          "reverie-dbt: module %s exports __vdso_clock_gettime but is not %s\n",
+          module_name == NULL ? "(unnamed)" : module_name,
+          VDSO_SONAME);
+      exit_runtime_tree(101);
+    }
+    return;
+  }
+  vdso_symtab_t table;
+  if (!vdso_find_symtab(module->start, &table)) {
+    dr_fprintf(
+        diagnostic_file,
+        "reverie-dbt: the vdso has no DT_HASH symbol table to enumerate\n");
+    exit_runtime_tree(101);
+    return;
+  }
+  neutralize_other_vdso_entries(module, &table);
+  neutralize_vdso_symbol(
+      module, &table, "__vdso_clock_gettime", SYS_clock_gettime);
+  neutralize_vdso_symbol(
+      module, &table, "__vdso_clock_getres", SYS_clock_getres);
+  neutralize_vdso_symbol(
+      module, &table, "__vdso_gettimeofday", SYS_gettimeofday);
+  neutralize_vdso_symbol(module, &table, "__vdso_getcpu", SYS_getcpu);
+  neutralize_vdso_symbol(module, &table, "__vdso_time", SYS_time);
+  neutralize_vdso_getrandom(module, &table);
 }
 
 static bool fd_matches_stdin(void* drcontext, int fd) {

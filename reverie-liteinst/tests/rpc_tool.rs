@@ -600,6 +600,27 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         "{vdso_getrandom_stdout}"
     );
 
+    // An entry point with no syscall equivalent must not stay native once a
+    // Tool observing any syscall is installed: the guest calls the SGX enclave
+    // entry natively, installs a Tool observing only openat, and requires the
+    // -ENOSYS stub.
+    let vdso_fail_closed = Command::new(binary)
+        .arg("vdso-fail-closed-guest")
+        .arg(&socket)
+        .output()
+        .unwrap();
+    assert!(vdso_fail_closed.status.success(), "{vdso_fail_closed:?}");
+    let vdso_fail_closed_stdout = String::from_utf8(vdso_fail_closed.stdout).unwrap();
+    eprintln!(
+        "vDSO fail-closed evidence: {}",
+        vdso_fail_closed_stdout.trim_end()
+    );
+    assert!(
+        vdso_fail_closed_stdout == "vdso-sgx=stubbed\n"
+            || vdso_fail_closed_stdout == "vdso-sgx=absent\n",
+        "{vdso_fail_closed_stdout}"
+    );
+
     let unsubscribed_lifecycle = Command::new(binary)
         .arg("unsubscribed-lifecycle")
         .arg(&socket)
