@@ -323,6 +323,9 @@ static CLEANUP_CANCEL_SIGNAL_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePau
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+static STOP_CONSUMPTION_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[cfg(test)]
 static SYNC_STATUS_PUBLICATION_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -2034,7 +2037,7 @@ fn spawn_worker(
 /// [`EventHandle::hold_tid`] can never reach a task that reused the TID. A stop
 /// is consumed by a wait that cannot reap: if a fatal signal ends the stop
 /// first, the next observation sees the terminal status instead.
-fn wait_pidfd_consuming(raw_fd: RawFd, event: &Event) -> Result<i32, Errno> {
+fn wait_pidfd_consuming(pid: Pid, raw_fd: RawFd, event: &Event) -> Result<i32, Errno> {
     let observe = WaitPidFlag::from_bits_retain(
         WaitPidFlag::WEXITED.bits()
             | WaitPidFlag::WSTOPPED.bits()
@@ -2067,9 +2070,20 @@ fn wait_pidfd_consuming(raw_fd: RawFd, event: &Event) -> Result<i32, Errno> {
                 };
             }
         }
+        #[cfg(test)]
+        if let Some(pause) = STOP_CONSUMPTION_PAUSES.lock().remove(&pid) {
+            pause.captured.wait();
+            pause.resume.wait();
+        }
+        #[cfg(not(test))]
+        let _ = pid;
         match waitid::waitpidfd(raw_fd, consume_stop) {
             Ok(Some(stop)) => return Ok(stop),
-            Ok(None) | Err(Errno::EINTR) => continue,
+            // A stop-only wait reports ECHILD for a zombie, so a fatal signal
+            // that ended the observed stop reaches here as ECHILD while its
+            // terminal status is still waitable. Only the full observation
+            // can establish that nothing is left to wait for.
+            Ok(None) | Err(Errno::EINTR | Errno::ECHILD) => continue,
             Err(error) => return Err(error),
         }
     }
@@ -2080,7 +2094,7 @@ fn wait_pidfd_consuming(raw_fd: RawFd, event: &Event) -> Result<i32, Errno> {
 /// actual Exec edge for state handoffs, not infer them from a numeric PID.
 /// Returns `None` once the pidfd is no longer waitable, without PID fallback.
 fn wait_pidfd_status(identity: &WorkerIdentity, event: &Event) -> Option<i32> {
-    match wait_pidfd_consuming(identity.pidfd.as_raw_fd(), event) {
+    match wait_pidfd_consuming(identity.pid, identity.pidfd.as_raw_fd(), event) {
         Ok(status) => Some(status),
         Err(Errno::ECHILD) => None,
         Err(err) => {
@@ -2251,7 +2265,11 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                         NOTIFIER.remove(pid, &event);
                         return Err(Errno::ESRCH.into());
                     }
-                    let status = match wait_pidfd_consuming(identity.pidfd.as_raw_fd(), &event) {
+                    let status = match wait_pidfd_consuming(
+                        identity.pid,
+                        identity.pidfd.as_raw_fd(),
+                        &event,
+                    ) {
                         Ok(status) => status,
                         Err(error) => {
                             if error == Errno::ECHILD {
@@ -6761,6 +6779,76 @@ mod test {
                 Wait::Exited(late_pid, crate::ExitStatus::Signaled(Signal::SIGKILL, _))
             ) if *first_pid == pid.into() && *late_pid == pid.into()
         ));
+        cleanup.disarm();
+    }
+
+    #[test]
+    fn synchronous_wait_reaps_a_kill_that_ends_the_observed_stop() {
+        let (pid, stopped, mut cleanup) =
+            spawn_traced_process(None).expect("spawn stop-consumption race tracee");
+        // Delivering SIGSTOP enters a group stop, which the next wait observes.
+        let running = stopped
+            .resume(Some(Signal::SIGSTOP))
+            .expect("resume stop-consumption race tracee into a group stop");
+
+        let observed = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        STOP_CONSUMPTION_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&observed),
+                resume: Arc::clone(&resume),
+            },
+        );
+        let pidfd = cleanup.pidfd.try_clone().expect("clone race tracee pidfd");
+        let killer = thread::spawn(move || {
+            observed.wait();
+            pidfd_send_signal(&pidfd, libc::SIGKILL).expect("kill the observed stop");
+            // Resume only once SIGKILL has replaced the observed stop, so the
+            // stop-only consuming wait meets the zombie.
+            let terminal = WaitPidFlag::from_bits_retain(
+                WaitPidFlag::WEXITED.bits()
+                    | WaitPidFlag::WNOWAIT.bits()
+                    | WaitPidFlag::WNOHANG.bits()
+                    | libc::__WALL,
+            );
+            let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
+            let status = loop {
+                match waitid::waitpidfd(pidfd.as_raw_fd(), terminal) {
+                    Ok(Some(status)) => break status,
+                    Ok(None) | Err(Errno::EINTR) => {}
+                    Err(error) => panic!("observe the killed tracee: {error}"),
+                }
+                assert!(Instant::now() < deadline, "SIGKILL never ended the stop");
+                thread::sleep(Duration::from_millis(1));
+            };
+            resume.wait();
+            (status, pidfd)
+        });
+
+        let result = running.wait();
+        let (status, pidfd) = killer.join().expect("join stop-consumption killer");
+        assert!(libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGKILL);
+        assert!(
+            matches!(
+                result,
+                Ok(Wait::Exited(waited, crate::ExitStatus::Signaled(Signal::SIGKILL, _)))
+                    if waited == pid.into()
+            ),
+            "a kill that ended the observed stop returned {result:?}"
+        );
+        let all = WaitPidFlag::from_bits_retain(
+            WaitPidFlag::WEXITED.bits()
+                | WaitPidFlag::WSTOPPED.bits()
+                | WaitPidFlag::WNOWAIT.bits()
+                | WaitPidFlag::WNOHANG.bits()
+                | libc::__WALL,
+        );
+        assert_eq!(
+            waitid::waitpidfd(pidfd.as_raw_fd(), all),
+            Err(Errno::ECHILD),
+            "the synchronous wait left the killed tracee unreaped"
+        );
         cleanup.disarm();
     }
 
