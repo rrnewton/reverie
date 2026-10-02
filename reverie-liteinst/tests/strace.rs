@@ -18,6 +18,7 @@ use reverie_liteinst::BuiltinTool;
 use reverie_liteinst::COMPAT_EVENT_COOKIE_ENV;
 use reverie_liteinst::COMPAT_EVENT_FD_ENV;
 use reverie_liteinst::PreloadTool;
+use reverie_liteinst::SITE_PATCHING_ENV;
 use reverie_liteinst::SPOOF_PID;
 use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
 use reverie_liteinst::configure_command;
@@ -582,6 +583,45 @@ fn compatibility_event_fd_rejects_read_only_descriptor() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// Every runtime selected from the environment, other than an in-guest Tool,
+/// always patches, so it must refuse to start rather than ignore a request to
+/// turn site patching off, or a value it does not accept.
+#[test]
+fn always_patching_runtimes_refuse_site_patching_selector() {
+    fn assert_refused(mut command: Command, runtime: &str, value: &str) {
+        command.env(SITE_PATCHING_ENV, value);
+        let output = command.output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(127),
+            "{runtime} {value}: {output:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("the {runtime} runtime always patches")),
+            "{runtime} {value}: {stderr}"
+        );
+    }
+    for value in ["0", "2"] {
+        for (tool, runtime) in [
+            (PreloadTool::Strace, "strace"),
+            (PreloadTool::Compatibility, "compat"),
+        ] {
+            let mut command = Command::new("/bin/true");
+            configure_command(&mut command, tool).unwrap();
+            assert_refused(command, runtime, value);
+        }
+        let mut command = Command::new("/bin/true");
+        configure_command_builtin(&mut command, BuiltinTool::Passthrough).unwrap();
+        assert_refused(command, "built-in Tool", value);
+        let mut command = Command::new("/bin/true");
+        command
+            .env("LD_PRELOAD", preload_path())
+            .env("REVERIE_LITEINST_HOST_RUNTIME", "1");
+        assert_refused(command, "ptrace-hosted", value);
+    }
 }
 
 #[test]

@@ -716,6 +716,29 @@ pub struct VdsoSyscallSite {
 /// list.
 #[cfg(target_arch = "x86_64")]
 pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscallSite>, Error> {
+    rewrite_current_vdso(subscriptions, true)
+}
+
+/// Rewrite the calling process's vDSO entry points into trapping syscalls.
+///
+/// Writes the same stubs as ptrace's stopped-guest path (`vdso_patch`): each
+/// syscall fast path becomes the table's whole `mov $nr, %eax; syscall; ret`
+/// stub, so a process that installs no hooks takes every subscribed vDSO call
+/// through its ordinary syscall trap. An in-guest backend with site patching
+/// off uses this instead of [`patch_current_vdso`], whose bare `syscall`
+/// relies on the installed hook to supply the syscall number.
+#[cfg(target_arch = "x86_64")]
+pub fn patch_current_vdso_trapping(subscriptions: &Subscription) -> Result<(), Error> {
+    rewrite_current_vdso(subscriptions, false).map(drop)
+}
+
+/// Shared body of [`patch_current_vdso`] (`hooked`) and
+/// [`patch_current_vdso_trapping`] (not `hooked`). Only `hooked` reports sites.
+#[cfg(target_arch = "x86_64")]
+fn rewrite_current_vdso(
+    subscriptions: &Subscription,
+    hooked: bool,
+) -> Result<Vec<VdsoSyscallSite>, Error> {
     let replacements = vdso_replacements(subscriptions)?;
     if replacements.is_empty() {
         return Ok(Vec::new());
@@ -744,7 +767,7 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
         let symbol = start + entry.offset as usize;
         let size = entry.size;
         match entry.kind {
-            VdsoEntryKind::Known(KnownEntry::Syscall(_, Sysno::getrandom)) => {
+            VdsoEntryKind::Known(KnownEntry::Syscall(_, Sysno::getrandom)) if hooked => {
                 // The parameter query must be answered before any syscall, so
                 // this entry keeps its whole stub and is hooked at the stub's
                 // `syscall`. Every byte after that `syscall` is a `ret` or
@@ -766,7 +789,7 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
                     mapping_len: len as u64,
                 });
             }
-            VdsoEntryKind::Known(KnownEntry::Syscall(_, sysno)) => {
+            VdsoEntryKind::Known(KnownEntry::Syscall(_, sysno)) if hooked => {
                 // The hook replaces a whole patch word at the `syscall`.
                 assert!(size >= 8);
                 let patch_len = entry.patch_len(8);
@@ -783,7 +806,10 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
                     mapping_len: len as u64,
                 });
             }
-            VdsoEntryKind::Known(KnownEntry::Enosys) | VdsoEntryKind::Unknown => {
+            // Without a hook, a syscall entry keeps the table's whole stub,
+            // exactly as `vdso_patch` writes it into a stopped guest.
+            VdsoEntryKind::Known(KnownEntry::Syscall(..) | KnownEntry::Enosys)
+            | VdsoEntryKind::Unknown => {
                 assert!(size >= bytes.len());
                 let patch_len = entry.patch_len(bytes.len());
                 unsafe {

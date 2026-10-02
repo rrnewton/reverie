@@ -163,8 +163,17 @@ where
         rdtsc: subscriptions.has_rdtsc(),
     };
     runtime::preflight_instruction_faulting(instruction_subscriptions)?;
-    let vdso_sites = reverie_ptrace::patch_current_vdso(&subscriptions)
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    let site_patching = runtime::site_patching_from_env_value(
+        std::env::var_os(runtime::SITE_PATCHING_ENV).as_deref(),
+    )?;
+    // With site patching off, the vDSO gets ptrace's full trapping stubs and no
+    // hooks, so its fast paths reach the Tool through the SIGSYS fallback too.
+    let vdso_sites = if site_patching {
+        reverie_ptrace::patch_current_vdso(&subscriptions)
+    } else {
+        reverie_ptrace::patch_current_vdso_trapping(&subscriptions).map(|()| Vec::new())
+    }
+    .map_err(|error| io::Error::other(error.to_string()))?;
     let _signal_state = runtime::prepare_guest_signal_state(instruction_subscriptions)?;
     let syscall_subscriptions = subscriptions.iter_syscalls().collect();
     if remove_legacy_environment {
@@ -185,7 +194,13 @@ where
         .map_err(|_| {
             io::Error::new(io::ErrorKind::AlreadyExists, "Reverie tool installed twice")
         })?;
-    runtime::initialize_reverie_tool(stats, publication, instruction_subscriptions, &vdso_sites)
+    runtime::initialize_reverie_tool(
+        stats,
+        publication,
+        instruction_subscriptions,
+        site_patching,
+        &vdso_sites,
+    )
 }
 
 pub(crate) fn dispatch(event: &mut SyscallEvent) {
