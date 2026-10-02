@@ -5784,8 +5784,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             .handle_signal_event(self, sig)
             .await;
         self.in_signal_callback = outer;
-        let injection_ret =
-            std::mem::replace(&mut self.signal_callback_injection_ret, outer_ret);
+        let injection_ret = std::mem::replace(&mut self.signal_callback_injection_ret, outer_ret);
         let verdict = self
             .ordinary_callback_errno("ptrace signal callback", result)
             .await?;
@@ -10655,8 +10654,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             // (`signal_callback_injection_ret`).
                             let retval = self.in_signal_callback.then(|| context.ret());
                             if retval.is_some() {
-                                self.signal_callback_injection_ret =
-                                    Some(stopped.getregs()?.ret());
+                                self.signal_callback_injection_ret = Some(stopped.getregs()?.ret());
                             }
                             restore_context(&stopped, context, retval, false)?;
                         }
@@ -10731,9 +10729,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         nr: Sysno,
         args: SyscallArgs,
-
     ) -> Result<Result<i64, Errno>, TraceError> {
         let task = self.assume_stopped();
+
         tracing::debug!(
             "[tool] (tid {}) beginning inject of syscall: {}, args {:?}",
             self.tid(),
