@@ -217,6 +217,11 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
     assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
+    assert_fast_path_stats(&stats);
+}
+
+/// Asserts the statistics of one `fast-path` guest run.
+fn assert_fast_path_stats(stats: &reverie_liteinst::LiteinstBackendStatsSource) {
     assert_eq!(stats.snapshot().process_reports(), 1, "{stats}");
     assert!(stats.distinct_rips() >= 1, "{stats}");
     assert!(stats.patch_candidates() >= 1, "{stats}");
@@ -229,6 +234,51 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
         paths.count(&LiteinstDispatchPath::DirectHook) >= 8,
         "expected installed-hook dispatches: {stats}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bootstrap_run_with_output_reports_typed_instrumentation_stats() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload_data_and_stats::<CoordinatorOnlyTool>(
+            guest_command("fast-path"),
+            (),
+            preload,
+            b"lifecycle".to_vec(),
+        ),
+    )
+    .await
+    .expect("stats-enabled bootstrap run hung")
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
+    assert_fast_path_stats(&stats);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bootstrap_run_with_inherited_stdio_reports_typed_instrumentation_stats() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_inherited_stdio_and_preload_data_and_stats::<CoordinatorOnlyTool>(
+            guest_command("fast-path"),
+            (),
+            preload,
+            b"lifecycle".to_vec(),
+        ),
+    )
+    .await
+    .expect("stats-enabled inherited-stdio bootstrap run hung")
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    // The guest wrote to the inherited stdout, not to a captured buffer.
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
+    assert_fast_path_stats(&stats);
 }
 
 #[tokio::test(flavor = "current_thread")]
