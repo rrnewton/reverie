@@ -2792,13 +2792,7 @@ impl NewbornOwner<'_> {
         };
         match self {
             Self::Ordinary(session) => session.capture(parent, *op, child),
-            Self::Liteinst(newborns) => {
-                newborns
-                    .lock()
-                    .unwrap()
-                    .entry(child.pid())
-                    .or_insert_with(|| NewbornTracee::from_event(parent, *op, child));
-            }
+            Self::Liteinst(newborns) => NewbornTracee::register(newborns, parent, *op, child),
         }
     }
 }
@@ -7943,6 +7937,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             runtime.multi_task.store(true, Ordering::Release);
             let newborn_tracees = Arc::clone(&runtime.newborn_tracees);
             let child_pid = child.pid();
+            let generation = child.terminal_cleanup();
             let registration_error = {
                 let newborns = newborn_tracees.lock().unwrap();
                 let Some(newborn) = newborns.get(&child_pid) else {
@@ -7957,6 +7952,18 @@ impl<L: Tool + 'static> TracedTask<L> {
                     );
                     return Err(Errno::ESRCH.into());
                 };
+                if !newborn.same_generation(&generation) {
+                    drop(newborns);
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::NewbornRegistration,
+                        Error::runtime(
+                            self.tid(),
+                            "register LiteInst newborn tracee",
+                            format!("newborn {child_pid} event ownership names another generation"),
+                        ),
+                    );
+                    return Err(Errno::ESRCH.into());
+                }
                 newborn.registration_error()
             };
             if let Some(error) = registration_error {
@@ -8005,7 +8012,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             {
                 let mut newborns = newborn_tracees.lock().unwrap();
-                let Some(newborn) = newborns.get_mut(&child_pid) else {
+                let Some(newborn) = newborns
+                    .get_mut(&child_pid)
+                    .filter(|newborn| newborn.same_generation(&generation))
+                else {
                     drop(newborns);
                     self.record_liteinst_failure(
                         LiteinstActivationFailureReason::NewbornRegistration,
@@ -8047,6 +8057,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .lock()
                     .unwrap()
                     .get(&child_pid)
+                    .filter(|newborn| newborn.same_generation(&generation))
                     .ok_or(Errno::ESRCH)?
                     .terminate_vfork_child();
                 termination?;
