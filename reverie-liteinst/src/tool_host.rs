@@ -1008,14 +1008,17 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
     // TODO-HUMAN-REVIEW(PR-326): Review the coarse
     // syscall-boundary clock until the minimal ptrace supervisor wires PMU delivery.
     fn set_timer(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        // Every intercepted syscall remains a deterministic scheduling boundary,
-        // but a CPU-bound thread cannot yet be preempted between syscalls.
-        Ok(())
+        // Nothing in the guest arms an RCB threshold or dispatches
+        // `Tool::handle_timer_event`. Accepting the request would let a Tool
+        // believe a CPU-bound thread is bounded while it runs unpreempted to
+        // its next syscall, so refuse, as reverie-dbt does, and let a Tool
+        // that needs preemption fail closed. Clock reads still work.
+        Err(Errno::ENOSYS.into())
     }
 
     fn set_timer_precise(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        // Same coarse boundary as set_timer; never synthesize host time.
-        Ok(())
+        // Same refusal as set_timer; never synthesize host time.
+        Err(Errno::ENOSYS.into())
     }
 
     fn read_clock(&mut self) -> Result<u64, Error> {
