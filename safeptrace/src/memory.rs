@@ -20,6 +20,9 @@ use syscalls::Errno;
 
 use super::Stopped;
 
+#[cfg(all(test, feature = "notifier"))]
+mod source_mutation_tests;
+
 #[cfg(target_arch = "x86_64")]
 mod native_read;
 
@@ -145,6 +148,8 @@ impl Stopped {
 
     /// Writes a single u64.
     fn write_u64(&mut self, addr: AddrMut<u64>, value: u64) -> Result<(), Errno> {
+        #[cfg(feature = "notifier")]
+        let _source_control = self.1.event().source_control(self.0)?;
         unsafe {
             ptrace::write(
                 self.0.into(),
@@ -228,6 +233,8 @@ impl MemoryAccess for Stopped {
         // distinct from a native successful zero-byte result. Remote addresses
         // remain numeric kernel operands; no Rust reference into this process
         // is formed for another process's mapping.
+        #[cfg(feature = "notifier")]
+        let _source_control = self.1.event().source_control(self.0)?;
         Errno::result(unsafe {
             libc::process_vm_writev(
                 self.0.as_raw(),
@@ -284,6 +291,8 @@ impl MemoryAccess for Stopped {
         local: &[io::IoSlice],
         remote: &mut [io::IoSliceMut],
     ) -> Result<usize, Errno> {
+        #[cfg(feature = "notifier")]
+        let _source_control = self.1.event().source_control(self.0)?;
         Errno::result(unsafe {
             libc::process_vm_writev(
                 self.0.as_raw(),
@@ -407,6 +416,8 @@ impl MemoryAccess for Stopped {
         // SAFETY: local describes the live source slice. The remote address is
         // only a numeric kernel operand; no Rust reference is formed from it.
         // Unlike POKEDATA, process_vm_writev checks writable VMA permissions.
+        #[cfg(feature = "notifier")]
+        let _source_control = self.1.event().source_control(self.0)?;
         let written = Errno::result(unsafe {
             libc::process_vm_writev(self.0.as_raw(), &local, 1, &remote, 1, 0)
         })? as usize;

@@ -76,13 +76,33 @@ fn waitid_si(waitid_type: IdType, flags: WaitPidFlag) -> Result<libc::siginfo_t,
 /// must survive so the notifier can decode `PTRACE_EVENT_*` losslessly.
 #[cfg(feature = "notifier")]
 pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
+    Ok(waitpidfd_status(raw_fd, flags)?.map(|status| status.raw))
+}
+
+/// Private notifier evidence from one actual waitid. The raw compatibility
+/// encoding alone cannot distinguish a ptrace stop from an ordinary job stop.
+#[cfg(feature = "notifier")]
+pub(crate) struct PidfdStatus {
+    pub(crate) raw: i32,
+    pub(crate) si_code: i32,
+}
+
+#[cfg(feature = "notifier")]
+pub(crate) fn waitpidfd_status(
+    raw_fd: RawFd,
+    flags: WaitPidFlag,
+) -> Result<Option<PidfdStatus>, Errno> {
     let si = waitid_si(IdType::Pidfd(raw_fd), flags)?;
 
     if unsafe { si.si_pid() } == 0 {
         return Ok(None);
     }
 
-    Ok(Some(siginfo_to_status(si)))
+    let si_code = si.si_code;
+    Ok(Some(PidfdStatus {
+        raw: siginfo_to_status(si),
+        si_code,
+    }))
 }
 
 // Converts a siginfo to a more compact status code.

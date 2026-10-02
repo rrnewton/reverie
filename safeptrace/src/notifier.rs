@@ -427,6 +427,8 @@ impl ExitWaiters {
 
 #[derive(Debug)]
 struct Event {
+    source: Mutex<source::SourceState>,
+    source_idle: Condvar,
     /// Cancellation-safe weak registrations for every pending exit waiter.
     exit_waiters: ExitWaiters,
 
@@ -450,6 +452,8 @@ struct Event {
     #[cfg(test)]
     sync_wait_owner_entered: Mutex<Option<mpsc::SyncSender<()>>>,
     #[cfg(test)]
+    notifier_wait_owner_entered: Mutex<Option<mpsc::SyncSender<u8>>>,
+    #[cfg(test)]
     notifier_registration_pause: Mutex<Option<(i32, BoundedTestPause)>>,
 
     /// Independently retained `PTRACE_EVENT_EXIT` publication. Keeping this
@@ -471,12 +475,12 @@ struct Event {
     /// Monotonic activity state owned by this exact Event generation.
     worker_state: AtomicI32,
     worker_done_lock: Mutex<()>,
+    worker_done_changed: Condvar,
+    worker_done_waiters: ExitWaiters,
     #[cfg(test)]
     worker_done_wait_pause: Mutex<Option<BoundedTestPause>>,
     #[cfg(test)]
     worker_done_lock_contended: Mutex<Option<mpsc::Sender<()>>>,
-    worker_done_changed: Condvar,
-    worker_done_waiters: ExitWaiters,
 
     /// Serializes kernel wait-status ownership before either synchronous
     /// fallback/capture or notifier registration can inspect mutable state.
@@ -484,6 +488,9 @@ struct Event {
     cleanup_claim_waiters: AtomicUsize,
     wait_owner: AtomicU8,
     wait_owner_lock: Mutex<()>,
+    // Protected by wait_owner_lock: reservation-release callbacks must wait
+    // for the outer synchronous owner, including rollback/cancel/unwind.
+    deferred_sync_status_wake: AtomicBool,
     wait_owner_changed: Condvar,
 
     #[cfg(test)]
@@ -494,17 +501,84 @@ struct Event {
     terminal_publish_pause: Mutex<Option<BoundedTestPause>>,
     #[cfg(test)]
     terminal_publication_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    consumed_publication_pause: Mutex<Option<consumed_publication_tests::ConsumptionPause>>,
+    #[cfg(test)]
+    sync_consumed_hook: Mutex<Option<consumed_receipt_native_tests::SyncConsumedHook>>,
+    #[cfg(test)]
+    sync_return_hook: Mutex<Option<consumed_receipt_native_tests::SyncConsumedHook>>,
+    // Cross-crate libtest instrumentation only; no additional worker or waiter.
+    #[cfg(cohort_final_test)]
+    final_test: FinalTestState,
+}
+
+#[cfg(cohort_final_test)]
+type FinalRegisterReturns = Vec<(i32, Result<usize, Errno>)>;
+
+#[cfg(cohort_final_test)]
+#[derive(Default, Debug)]
+struct FinalTestState {
+    worker: Mutex<Option<JoinHandle<()>>>,
+    publications: AtomicUsize,
+    claims: AtomicUsize,
+    registry_retired: AtomicBool,
+    registers: Mutex<Option<FinalRegisterReturns>>,
 }
 
 #[derive(Debug)]
 struct StatusState {
-    pending: VecDeque<i32>,
+    pending: StatusQueue,
     terminal: i32,
+    reserved: bool,
+    reservation_waiter: bool,
+}
+
+#[derive(Debug)]
+struct StatusEntry {
+    raw: i32,
+    receipt: Option<source::ConsumedReceipt>,
+}
+
+#[derive(Debug, Default)]
+struct StatusQueue {
+    entries: VecDeque<Arc<StatusEntry>>,
+}
+
+impl StatusQueue {
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    // Preserve raw-only observations in the existing state-machine tests.
+    #[cfg(test)]
+    fn front(&self) -> Option<&i32> {
+        self.entries.front().map(|entry| &entry.raw)
+    }
 }
 
 struct StatusReservation<'a> {
     status: i32,
-    state: Option<MutexGuard<'a, StatusState>>,
+    entry: Option<Arc<StatusEntry>>,
+    event: &'a Event,
+}
+
+/// Notify only after the return-owner transaction has committed/rolled back.
+/// Neither the FIFO mutex nor the source gate spans arbitrary waker code.
+struct ReservationWake<'a> {
+    event: &'a Event,
+    changed: bool,
+    wake_status: bool,
+}
+
+impl Drop for ReservationWake<'_> {
+    fn drop(&mut self) {
+        if self.changed {
+            self.event.status_changed.notify_all();
+            if self.wake_status {
+                self.event.wake_reservation_status();
+            }
+        }
+    }
 }
 
 enum StatusReturn<T> {
@@ -583,13 +657,19 @@ impl SyncWaitOwner<'_> {
             }
         };
         #[cfg(test)]
+        consumed_receipt_native_tests::after_sync_return_begin(
+            self.event,
+            _pid,
+            reservation.status,
+        );
+        #[cfg(test)]
         if let Some(pause) = SYNC_RETURN_COMMIT_PAUSES.lock().remove(&_pid) {
             pause.captured.wait();
             pause.resume.wait();
         }
-        // On decode error the synchronous path must ROLL BACK, not consume: the
-        // `?` drops `reservation` uncommitted (the latched status stays at the
-        // front of `pending`) and drops `transaction` uncommitted (its Drop
+        // On decode error the synchronous path must ROLL BACK, not consume:
+        // `reservation` drops uncommitted (the latched entry stays at the
+        // front of `pending`) after `transaction` drops uncommitted (its Drop
         // rolls `wait_owner` SYNC_RETURNING -> SYNC and notifies), and because
         // `self.released` stays false the `SyncWaitOwner` Drop then transitions
         // SYNC -> NONE and notifies again. That wake hands the tracee off to a
@@ -601,30 +681,46 @@ impl SyncWaitOwner<'_> {
         // do not replace it with a blanket commit. (The ESRCH-spin liveness fix
         // lives on the async `Event`/notifier path below, which has no cleanup
         // claimant to hand off to and so must consume-on-error.)
-        let decoded = decode(reservation.status)?;
-        reservation.commit();
+        let decoded = match decode(reservation.status) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                drop(transaction);
+                return Err(error);
+            }
+        };
+        let wake = reservation.commit();
         transaction.commit(WAIT_OWNER_NONE);
         self.released = true;
+        drop(wake);
         Ok(StatusReturn::Returned(decoded))
     }
 }
 
 impl Drop for SyncWaitOwner<'_> {
     fn drop(&mut self) {
-        if self.released {
-            return;
+        let wake = {
+            let _guard = self.event.wait_owner_lock.lock();
+            if !self.released {
+                self.event
+                    .wait_owner
+                    .compare_exchange(
+                        WAIT_OWNER_SYNC,
+                        WAIT_OWNER_NONE,
+                        Ordering::Release,
+                        Ordering::Acquire,
+                    )
+                    .expect("synchronous wait ownership changed before release");
+                self.event.wait_owner_changed.notify_all();
+            }
+            self.event
+                .deferred_sync_status_wake
+                .swap(false, Ordering::Relaxed)
+        };
+        if wake {
+            // Ownership and its mutex are released before arbitrary callbacks.
+            // If another SYNC owner won meanwhile, relatch for its release.
+            self.event.wake_reservation_status();
         }
-        let _guard = self.event.wait_owner_lock.lock();
-        self.event
-            .wait_owner
-            .compare_exchange(
-                WAIT_OWNER_SYNC,
-                WAIT_OWNER_NONE,
-                Ordering::Release,
-                Ordering::Acquire,
-            )
-            .expect("synchronous wait ownership changed before release");
-        self.event.wait_owner_changed.notify_all();
     }
 }
 
@@ -677,24 +773,76 @@ enum CancellableNotifierWaitOwnership<'a> {
     Returning,
 }
 
-impl StatusReservation<'_> {
-    fn commit(mut self) {
-        if let Some(state) = self.state.as_mut() {
-            let committed = state.pending.pop_front();
-            debug_assert_eq!(committed, Some(self.status));
+impl<'a> StatusReservation<'a> {
+    fn token(&self, handle: EventHandle) -> TraceeToken {
+        source::candidate(
+            TraceeToken::from_event(handle),
+            self.entry.as_ref().and_then(|entry| entry.receipt.clone()),
+        )
+    }
+
+    fn release(&mut self, consume: bool) -> ReservationWake<'a> {
+        let mut wake = ReservationWake {
+            event: self.event,
+            changed: false,
+            wake_status: false,
+        };
+        if let Some(entry) = self.entry.take() {
+            let mut state = self.event.status.lock();
+            assert!(state.reserved);
+            assert!(
+                state
+                    .pending
+                    .entries
+                    .front()
+                    .is_some_and(|front| Arc::ptr_eq(front, &entry))
+            );
+            if consume {
+                state.pending.entries.pop_front();
+            }
+            state.reserved = false;
+            wake.changed = true;
+            wake.wake_status = std::mem::take(&mut state.reservation_waiter);
         }
+        wake
+    }
+
+    fn commit(mut self) -> ReservationWake<'a> {
+        self.release(true)
     }
 }
+
+impl Drop for StatusReservation<'_> {
+    fn drop(&mut self) {
+        drop(self.release(false));
+    }
+}
+
+mod mutation;
+pub(crate) mod source;
+
+#[cfg(test)]
+mod consumed_publication_tests;
+
+#[cfg(test)]
+mod consumed_receipt_native_tests;
+
+#[cfg(test)]
+mod reservation_wake_tests;
 
 impl Event {
     pub fn new() -> Self {
         Self {
+            source: Mutex::new(source::SourceState::default()),
+            source_idle: Condvar::new(),
             exit_waiters: ExitWaiters::default(),
             exit_publication: Mutex::new(()),
             status_waker: WakerSlot::default(),
             status: Mutex::new(StatusState {
-                pending: VecDeque::new(),
+                pending: StatusQueue::default(),
                 terminal: INVALID_STATUS,
+                reserved: false,
+                reservation_waiter: false,
             }),
             status_changed: Condvar::new(),
             #[cfg(test)]
@@ -704,6 +852,8 @@ impl Event {
             #[cfg(test)]
             sync_wait_owner_entered: Mutex::new(None),
             #[cfg(test)]
+            notifier_wait_owner_entered: Mutex::new(None),
+            #[cfg(test)]
             notifier_registration_pause: Mutex::new(None),
             exit_status: AtomicI32::new(EXIT_PENDING),
             exit_capability: AtomicU8::new(EXIT_CAP_PENDING),
@@ -711,16 +861,17 @@ impl Event {
             registration_error: Mutex::new(None),
             worker_state: AtomicI32::new(WORKER_NOT_STARTED),
             worker_done_lock: Mutex::new(()),
+            worker_done_changed: Condvar::new(),
+            worker_done_waiters: ExitWaiters::default(),
             #[cfg(test)]
             worker_done_wait_pause: Mutex::new(None),
             #[cfg(test)]
             worker_done_lock_contended: Mutex::new(None),
-            worker_done_changed: Condvar::new(),
-            worker_done_waiters: ExitWaiters::default(),
             cleanup_cancel_requested: AtomicBool::new(false),
             cleanup_claim_waiters: AtomicUsize::new(0),
             wait_owner: AtomicU8::new(WAIT_OWNER_NONE),
             wait_owner_lock: Mutex::new(()),
+            deferred_sync_status_wake: AtomicBool::new(false),
             wait_owner_changed: Condvar::new(),
             #[cfg(test)]
             new_child_decode_pause: Mutex::new(None),
@@ -730,6 +881,14 @@ impl Event {
             terminal_publish_pause: Mutex::new(None),
             #[cfg(test)]
             terminal_publication_pause: Mutex::new(None),
+            #[cfg(test)]
+            consumed_publication_pause: Mutex::new(None),
+            #[cfg(test)]
+            sync_consumed_hook: Mutex::new(None),
+            #[cfg(test)]
+            sync_return_hook: Mutex::new(None),
+            #[cfg(cohort_final_test)]
+            final_test: FinalTestState::default(),
         }
     }
 
@@ -805,6 +964,8 @@ impl Event {
         // state is already registered and returns Pending until AVAILABLE is
         // released and wake_all runs below.
         let publication = self.exit_publication.lock();
+        let mut source = self.source.lock();
+        source.invalidate();
         let previous = self.exit_status.compare_exchange(
             EXIT_PENDING,
             EXIT_STOPPED,
@@ -815,7 +976,10 @@ impl Event {
             previous,
             Ok(EXIT_PENDING) | Err(EXIT_STOPPED | EXIT_ECHILD)
         ));
+        drop(source);
         if previous.is_ok() {
+            #[cfg(cohort_final_test)]
+            self.final_test.publications.fetch_add(1, Ordering::SeqCst);
             between_status_and_capability();
             let capability = self.exit_capability.compare_exchange(
                 EXIT_CAP_PENDING,
@@ -876,9 +1040,18 @@ impl Event {
         self.exit_waiters.wake_all();
     }
 
-    /// Replaces the status and notifies the notifier of the change. Returns the
-    /// old status if there was one.
+    /// Synthetic status helper: deliberately carries no consuming receipt.
+    #[cfg(test)]
     pub fn update(&self, status: i32) -> Option<i32> {
+        self.publish_status(StatusEntry {
+            raw: status,
+            receipt: None,
+        })
+    }
+
+    /// Publish the exact consumed entry without refreshing its source revision.
+    fn publish_status(&self, entry: StatusEntry) -> Option<i32> {
+        let status = entry.raw;
         if status == PTRACE_EVENT_EXIT_STOP {
             self.publish_exit_stop(|| {});
             return None;
@@ -894,6 +1067,7 @@ impl Event {
         // must not mistake this publication gap for a competing exit claimant.
         // Exit-stop publication never takes status while holding exit_publication.
         let mut state = self.status.lock();
+        self.source.lock().publish(self, entry.receipt.as_ref());
         if terminal {
             self.publish_terminal_exit_state();
             #[cfg(test)]
@@ -908,8 +1082,12 @@ impl Event {
             }
             previous
         } else {
-            let previous = state.pending.back().copied().unwrap_or(INVALID_STATUS);
-            state.pending.push_back(status);
+            let previous = state
+                .pending
+                .entries
+                .back()
+                .map_or(INVALID_STATUS, |entry| entry.raw);
+            state.pending.entries.push_back(Arc::new(entry));
             previous
         };
         drop(state);
@@ -927,9 +1105,10 @@ impl Event {
         (previous != INVALID_STATUS).then_some(previous)
     }
 
-    fn update_sync_status(&self, status: i32) {
+    fn update_sync_status(&self, entry: StatusEntry) {
+        let status = entry.raw;
         if status != PTRACE_EVENT_EXIT_STOP {
-            self.update(status);
+            self.publish_status(entry);
             return;
         }
 
@@ -937,7 +1116,8 @@ impl Event {
         // the raw stop rollback-safe in the regular FIFO without separately
         // minting an ExitFuture capability for the same consumed status.
         let mut state = self.status.lock();
-        state.pending.push_back(status);
+        self.source.lock().invalidate();
+        state.pending.entries.push_back(Arc::new(entry));
         drop(state);
         self.status_changed.notify_all();
         self.status_waker.wake();
@@ -946,6 +1126,7 @@ impl Event {
     /// Publishes a terminal `ECHILD` observation to every kind of waiter.
     fn mark_echild(&self) {
         let mut state = self.status.lock();
+        self.source.lock().invalidate();
         self.publish_terminal_exit_state();
         #[cfg(test)]
         self.pause_terminal_publication_for_test();
@@ -976,17 +1157,39 @@ impl Event {
         self.status.lock().terminal != INVALID_STATUS
     }
 
-    /// Reserves the next status without removing a fallibly decoded FIFO front.
+    fn reserve_front<'a>(&'a self, state: &mut StatusState) -> Option<StatusReservation<'a>> {
+        if state.reserved {
+            return None;
+        }
+        let entry = Arc::clone(state.pending.entries.front()?);
+        state.reserved = true;
+        Some(StatusReservation {
+            status: entry.raw,
+            entry: Some(entry),
+            event: self,
+        })
+    }
+
+    fn terminal_reservation(&self, status: i32) -> StatusReservation<'_> {
+        StatusReservation {
+            status,
+            entry: None,
+            event: self,
+        }
+    }
+
+    /// Reserve the exact front without holding a mutex over fallible decode.
     fn poll_status_reservation(&self, waker: &Waker) -> Poll<Result<StatusReservation<'_>, Errno>> {
         // Register the waker *before* checking the status to avoid a race condition.
         self.status_waker.register(waker);
 
-        let state = self.status.lock();
-        if let Some(status) = state.pending.front().copied() {
-            return Poll::Ready(Ok(StatusReservation {
-                status,
-                state: Some(state),
-            }));
+        let mut state = self.status.lock();
+        if let Some(reservation) = self.reserve_front(&mut state) {
+            return Poll::Ready(Ok(reservation));
+        }
+        if state.reserved {
+            state.reservation_waiter = true;
+            return Poll::Pending;
         }
         match state.terminal {
             INVALID_STATUS => Poll::Pending,
@@ -994,10 +1197,7 @@ impl Event {
             status => {
                 // Final status is immutable so old state generations retain
                 // the actual exit code or terminating signal after removal.
-                Poll::Ready(Ok(StatusReservation {
-                    status,
-                    state: None,
-                }))
+                Poll::Ready(Ok(self.terminal_reservation(status)))
             }
         }
     }
@@ -1021,10 +1221,10 @@ impl Event {
             .unwrap_or_else(Instant::now);
         let mut state = self.status.lock();
         loop {
-            if !state.pending.is_empty() {
+            if !state.pending.is_empty() && !state.reserved {
                 return Some(state);
             }
-            if state.terminal != INVALID_STATUS {
+            if state.pending.is_empty() && state.terminal != INVALID_STATUS {
                 return None;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1037,6 +1237,27 @@ impl Event {
 
     fn pending_is_empty(&self) -> bool {
         self.status.lock().pending.is_empty()
+    }
+
+    fn wake_reservation_status(&self) {
+        let guard = self.wait_owner_lock.lock();
+        if matches!(
+            self.wait_owner.load(Ordering::Acquire),
+            WAIT_OWNER_SYNC | WAIT_OWNER_SYNC_RETURNING
+        ) {
+            // Restoring SYNC after a failed/cancelled decode is not a handoff:
+            // its caller may still own physical cleanup. Calling a reentrant
+            // notifier claimant here would wait on this same call stack.
+            self.deferred_sync_status_wake
+                .store(true, Ordering::Relaxed);
+            return;
+        }
+        // This wake also covers an earlier deferred reservation wake. Serialize
+        // the latch with SYNC release so neither side can lose the notification.
+        self.deferred_sync_status_wake
+            .store(false, Ordering::Relaxed);
+        drop(guard);
+        self.status_waker.wake();
     }
 
     fn notify_wait_owner_change(&self) {
@@ -1174,6 +1395,12 @@ impl Event {
                     });
                 }
                 WAIT_OWNER_SYNC | WAIT_OWNER_SYNC_RETURNING | WAIT_OWNER_NOTIFIER_RETURNING => {
+                    #[cfg(test)]
+                    if let Some(entered) = self.notifier_wait_owner_entered.lock().take() {
+                        // Observe the real blocking arbitration decision. Do
+                        // not poll a FIFO, install a waker or change ownership.
+                        let _ = entered.try_send(self.wait_owner.load(Ordering::Acquire));
+                    }
                     self.wait_owner_changed.wait(&mut guard)
                 }
                 WAIT_OWNER_NOTIFIER => match self.worker_state.load(Ordering::Acquire) {
@@ -1258,8 +1485,9 @@ impl Event {
             // is the async-only liveness fix: unlike the synchronous path there
             // is no cleanup claimant to hand the tracee off to.
             Err(error @ Error::Died(_)) => {
-                reservation.commit();
+                let wake = reservation.commit();
                 transaction.commit(WAIT_OWNER_NOTIFIER);
+                drop(wake);
                 return Err(error);
             }
             // Any OTHER decode error is RETRYABLE — the tracee is still alive and
@@ -1275,21 +1503,26 @@ impl Event {
             // mirrors the synchronous path's rollback-and-wake-cleanup contract;
             // consuming ANY error was over-broad, symmetric to the original
             // blanket-commit bug on the sync path.
-            Err(error) => return Err(error),
+            Err(error) => {
+                drop(transaction);
+                return Err(error);
+            }
         };
-        reservation.commit();
+        let wake = reservation.commit();
         transaction.commit(WAIT_OWNER_NOTIFIER);
+        drop(wake);
         Ok(StatusReturn::Returned(decoded))
     }
 
     fn wait_status_reservation_sync(&self) -> Result<StatusReservation<'_>, Errno> {
         let mut state = self.status.lock();
         loop {
-            if let Some(status) = state.pending.front().copied() {
-                return Ok(StatusReservation {
-                    status,
-                    state: Some(state),
-                });
+            if let Some(reservation) = self.reserve_front(&mut state) {
+                return Ok(reservation);
+            }
+            if state.reserved {
+                self.status_changed.wait(&mut state);
+                continue;
             }
             match state.terminal {
                 INVALID_STATUS => {
@@ -1304,30 +1537,24 @@ impl Event {
                 }
                 ECHILD_STATUS => return Err(Errno::ECHILD),
                 status => {
-                    return Ok(StatusReservation {
-                        status,
-                        state: None,
-                    });
+                    return Ok(self.terminal_reservation(status));
                 }
             }
         }
     }
 
     fn try_status_reservation_sync(&self) -> Option<Result<StatusReservation<'_>, Errno>> {
-        let state = self.status.lock();
-        if let Some(status) = state.pending.front().copied() {
-            return Some(Ok(StatusReservation {
-                status,
-                state: Some(state),
-            }));
+        let mut state = self.status.lock();
+        if let Some(reservation) = self.reserve_front(&mut state) {
+            return Some(Ok(reservation));
+        }
+        if state.reserved {
+            return None;
         }
         match state.terminal {
             INVALID_STATUS => None,
             ECHILD_STATUS => Some(Err(Errno::ECHILD)),
-            status => Some(Ok(StatusReservation {
-                status,
-                state: None,
-            })),
+            status => Some(Ok(self.terminal_reservation(status))),
         }
     }
 
@@ -1336,10 +1563,7 @@ impl Event {
         match state.terminal {
             INVALID_STATUS => None,
             ECHILD_STATUS => Some(Err(Errno::ECHILD)),
-            status => Some(Ok(StatusReservation {
-                status,
-                state: None,
-            })),
+            status => Some(Ok(self.terminal_reservation(status))),
         }
     }
 
@@ -1528,8 +1752,8 @@ impl Event {
             #[cfg(test)]
             if let Some(pause) = self.worker_done_wait_pause.lock().take() {
                 let _ = pause.captured.send(());
-                // Same causal pause as the integration control: after the
-                // predicate check with the actual wait mutex still held.
+                // Disconnection releases the fixture on failure. This seam is
+                // after the actual predicate check, with the actual mutex held.
                 let _ = pause
                     .resume
                     .recv_timeout(deadline.saturating_duration_since(Instant::now()));
@@ -1579,6 +1803,8 @@ impl Event {
                             )
                             .is_ok()
                         {
+                            #[cfg(cohort_final_test)]
+                            self.final_test.claims.fetch_add(1, Ordering::SeqCst);
                             return Poll::Ready(Ok(()));
                         }
                     }
@@ -1634,6 +1860,13 @@ struct EventGeneration {
 pub(super) struct EventHandle(Arc<EventGeneration>);
 
 impl EventHandle {
+    #[cfg(cohort_final_test)]
+    pub(super) fn record_getregset_for_test(&self, which: i32, result: Result<usize, Errno>) {
+        if let Some(records) = self.event().final_test.registers.lock().as_mut() {
+            records.push((which, result));
+        }
+    }
+
     pub(super) fn new() -> Self {
         Self(Arc::new(EventGeneration {
             event: Arc::new(Event::new()),
@@ -1705,9 +1938,9 @@ impl EventHandle {
     }
 
     /// Redirects this requested generation to the registry's authoritative
-    /// generation. The registry mutex serializes production adoption; this
-    /// additional lock makes the primitive independently cycle-free under
-    /// racing test or future call sites.
+    /// generation. Registry locking serializes production adoption; same-PID
+    /// admission excludes physical mutations. This additional lock keeps the
+    /// primitive cycle-free under racing test or future call sites.
     fn adopt_authoritative(&self, authoritative: &Self) -> Result<Self, Errno> {
         static ADOPTION_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -1768,6 +2001,7 @@ struct WorkerIdentity {
     pidfd: OwnedFd,
     proc_dir: OwnedFd,
     proc_inode: u64,
+    proc_device: u64,
 }
 
 impl WorkerIdentity {
@@ -1813,7 +2047,9 @@ impl WorkerIdentity {
             .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
             .open(format!("/proc/{pid}"))
             .map_err(io_errno)?;
-        let proc_inode = proc_dir.metadata().map_err(io_errno)?.ino();
+        let proc_metadata = proc_dir.metadata().map_err(io_errno)?;
+        let proc_inode = proc_metadata.ino();
+        let proc_device = proc_metadata.dev();
         let after = worker_proc_snapshot(pid).map_err(io_errno)?;
         let current_inode = fs::metadata(format!("/proc/{pid}"))
             .map_err(io_errno)?
@@ -1828,6 +2064,7 @@ impl WorkerIdentity {
             pidfd,
             proc_dir: proc_dir.into(),
             proc_inode,
+            proc_device,
         })
     }
 
@@ -1925,10 +2162,16 @@ fn pidfd_is_live(pidfd: &OwnedFd) -> Result<bool, Errno> {
 struct PendingWorker {
     start: std::sync::mpsc::SyncSender<()>,
     _handle: JoinHandle<()>,
+    #[cfg(cohort_final_test)]
+    event: Arc<Event>,
 }
 
 impl PendingWorker {
     fn start(self) {
+        #[cfg(cohort_final_test)]
+        {
+            *self.event.final_test.worker.lock() = Some(self._handle);
+        }
         self.start
             .send(())
             .expect("new notifier worker dropped its start gate");
@@ -1951,6 +2194,8 @@ fn spawn_worker(
         return Err(io::Error::from_raw_os_error(error));
     }
     let (start, wait_for_start) = std::sync::mpsc::sync_channel(1);
+    #[cfg(cohort_final_test)]
+    let retained_event = Arc::clone(&event);
     let handle = thread::Builder::new()
         .name(format!("guest-{}", pid))
         .spawn(move || {
@@ -1965,6 +2210,8 @@ fn spawn_worker(
     Ok(PendingWorker {
         start,
         _handle: handle,
+        #[cfg(cohort_final_test)]
+        event: retained_event,
     })
 }
 
@@ -1972,15 +2219,43 @@ fn spawn_worker(
 /// Exec can change the task attached to a PID object; callers must use the
 /// actual Exec edge for state handoffs, not infer them from a numeric PID.
 /// Returns `None` once the pidfd is no longer waitable, without PID fallback.
-fn wait_pidfd_status(identity: &WorkerIdentity) -> Option<i32> {
+fn consume_pidfd_status(
+    identity: &WorkerIdentity,
+    event: &Arc<Event>,
+) -> Result<StatusEntry, Errno> {
     let flags = WaitPidFlag::from_bits_retain(
         WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
     );
     loop {
-        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags);
+        // Blocking readiness never holds source, status or registry locks.
+        match waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags | WaitPidFlag::WNOWAIT) {
+            Ok(Some(_)) => {}
+            Ok(None) | Err(Errno::EINTR) => continue,
+            Err(error) => return Err(error),
+        }
+        let mut source = event.source.lock();
+        while source.mutation.is_some() {
+            event.source_idle.wait(&mut source);
+        }
+        // Readiness can become stale while a same-owner control runs. Only a
+        // successful nonblocking consumption creates this exact entry's receipt.
+        match waitid::waitpidfd_status(identity.pidfd.as_raw_fd(), flags | WaitPidFlag::WNOHANG) {
+            Ok(Some(observed)) => {
+                let raw = observed.raw;
+                let receipt = source.record_consumed(event, raw, observed.si_code);
+                return Ok(StatusEntry { raw, receipt });
+            }
+            Ok(None) | Err(Errno::EINTR) => {}
+            Err(error) => return Err(error),
+        }
+        // Drop the gate before retrying blocking readiness, including EINTR.
+    }
+}
 
-        return match result {
-            Ok(status) => Some(status.unwrap()),
+fn wait_pidfd_status(identity: &WorkerIdentity, event: &Arc<Event>) -> Option<StatusEntry> {
+    loop {
+        return match consume_pidfd_status(identity, event) {
+            Ok(entry) => Some(entry),
             Err(Errno::EINTR) => continue,
             Err(Errno::ECHILD) => None,
             Err(err) => {
@@ -2003,7 +2278,7 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
             event.mark_echild();
             break;
         }
-        let Some(status) = wait_pidfd_status(&identity) else {
+        let Some(entry) = wait_pidfd_status(&identity, &event) else {
             if identity.is_active_tracee() {
                 // A newborn auto-attached ptrace child can briefly exist with
                 // this exact procfs generation before its first wait status
@@ -2017,7 +2292,12 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
             event.mark_echild();
             break;
         };
+        let status = entry.raw;
         retrying_echild = false;
+        #[cfg(test)]
+        if libc::WIFSTOPPED(status) {
+            consumed_publication_tests::after_consumption(&event, status);
+        }
         #[cfg(test)]
         if (libc::WIFEXITED(status) || libc::WIFSIGNALED(status))
             && let Some(pause) = event.terminal_publish_pause.lock().take()
@@ -2027,7 +2307,7 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
             let _ = pause.captured.send(());
             let _ = pause.resume.recv_timeout(Duration::from_secs(2));
         }
-        event.update(status);
+        event.publish_status(entry);
 
         // Try to avoid reaching an ECHILD error by terminating the loop on the
         // last event.
@@ -2040,6 +2320,18 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
     // before the final status is polled, and leaving cleanup to that future
     // would retain a stale event if the kernel later reuses this PID.
     NOTIFIER.remove(pid, &event);
+    #[cfg(cohort_final_test)]
+    {
+        let absent = !NOTIFIER
+            .pids
+            .lock()
+            .get(&pid)
+            .is_some_and(|current| Arc::ptr_eq(current.handle.event(), &event));
+        event
+            .final_test
+            .registry_retired
+            .store(absent, Ordering::Release);
+    }
 }
 
 fn try_replay_sync_terminal(pid: Pid, handle: &EventHandle) -> Option<Result<Wait, Error>> {
@@ -2156,10 +2448,17 @@ fn reconcile_failed_sync_capture(
     }
 }
 
-fn resume_cancelled_sync_status(pid: Pid, status: i32) -> Result<(), Error> {
+fn resume_cancelled_sync_status(pid: Pid, handle: &EventHandle, status: i32) -> Result<(), Error> {
     if !libc::WIFSTOPPED(status) {
         return Ok(());
     }
+    let _source_control = match handle.source_control(pid) {
+        Ok(control) => control,
+        // As with the kernel ESRCH below, this still requires the original
+        // owner's real final wait. It does not acknowledge terminal cleanup.
+        Err(Errno::ESRCH) => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
     match nix::sys::ptrace::cont(pid.into(), None) {
         Ok(()) => Ok(()),
         // An untraced job-control stop needs no resume for the already-pending
@@ -2176,9 +2475,6 @@ fn resume_cancelled_sync_status(pid: Pid, status: i32) -> Result<(), Error> {
 /// authority and atomic Event wait-owner claim. A losing synchronous caller
 /// consumes the notifier FIFO instead of issuing a second kernel wait.
 pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
-    let flags = WaitPidFlag::from_bits_retain(
-        WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
-    );
     let requested = token.event().resolved_handle();
     // A retained same-generation result remains authoritative even after the
     // procfs task and registry entry have disappeared.
@@ -2210,10 +2506,11 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
         match event.claim_sync_wait()? {
             SyncWaitOwnership::Notifier => {
                 let reservation = event.wait_status_reservation_sync()?;
+                let token = reservation.token(handle);
                 match event.decode_status_return(reservation, |status| {
-                    Wait::from_raw_with_token(pid, status, TraceeToken::from_event(handle))
+                    Wait::from_raw_with_token(pid, status, token)
                 })? {
-                    StatusReturn::Returned(decoded) => return Ok(decoded),
+                    StatusReturn::Returned(decoded) => return Ok(source::consumed(decoded)),
                     StatusReturn::Cancelled(_) => return Err(Errno::ECANCELED.into()),
                 }
             }
@@ -2230,22 +2527,19 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                 let mut cancelling = false;
                 if let Some(reservation) = event.try_status_reservation_sync() {
                     let reservation = reservation?;
+                    let token = reservation.token(handle.clone());
                     match owner.decode_status_return(pid, reservation, |status| {
-                        Wait::from_raw_with_token(
-                            pid,
-                            status,
-                            TraceeToken::from_event(handle.clone()),
-                        )
+                        Wait::from_raw_with_token(pid, status, token)
                     })? {
-                        StatusReturn::Returned(decoded) => return Ok(decoded),
+                        StatusReturn::Returned(decoded) => return Ok(source::consumed(decoded)),
                         StatusReturn::Cancelled(status) => {
-                            resume_cancelled_sync_status(pid, status)?;
+                            resume_cancelled_sync_status(pid, &handle, status)?;
                             cancelling = true;
                         }
                     }
                 }
                 loop {
-                    let status = loop {
+                    let entry = loop {
                         let Some(identity) = handle.identity() else {
                             NOTIFIER.remove(pid, &event);
                             return Err(Errno::EIO.into());
@@ -2254,12 +2548,9 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                             NOTIFIER.remove(pid, &event);
                             return Err(Errno::ESRCH.into());
                         }
-                        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags);
+                        let result = consume_pidfd_status(identity, &event);
                         match result {
-                            Ok(Some(status)) => break status,
-                            Ok(None) => {
-                                unreachable!("blocking synchronous wait returned no status")
-                            }
+                            Ok(entry) => break entry,
                             Err(Errno::EINTR) => {}
                             Err(error) => {
                                 if error == Errno::ECHILD {
@@ -2271,7 +2562,10 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                             }
                         }
                     };
-                    event.update_sync_status(status);
+                    let status = entry.raw;
+                    #[cfg(test)]
+                    consumed_receipt_native_tests::after_sync_consumption(&event, pid, status);
+                    event.update_sync_status(entry);
                     #[cfg(test)]
                     if let Some(pause) = SYNC_STATUS_PUBLICATION_PAUSES.lock().remove(&pid) {
                         pause.captured.wait();
@@ -2296,16 +2590,13 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                     let reservation = event
                         .try_status_reservation_sync()
                         .expect("published synchronous status is immediately reservable")?;
+                    let token = reservation.token(handle.clone());
                     match owner.decode_status_return(pid, reservation, |reserved_status| {
-                        Wait::from_raw_with_token(
-                            pid,
-                            reserved_status,
-                            TraceeToken::from_event(handle.clone()),
-                        )
+                        Wait::from_raw_with_token(pid, reserved_status, token)
                     })? {
-                        StatusReturn::Returned(decoded) => return Ok(decoded),
+                        StatusReturn::Returned(decoded) => return Ok(source::consumed(decoded)),
                         StatusReturn::Cancelled(reserved_status) => {
-                            resume_cancelled_sync_status(pid, reserved_status)?;
+                            resume_cancelled_sync_status(pid, &handle, reserved_status)?;
                             cancelling = true;
                         }
                     }
@@ -2389,6 +2680,7 @@ enum RawCleanupClaim {
 enum EventRegistration {
     Registered(EventHandle),
     Adopted,
+    MutationBusy(Arc<mutation::AdmissionCell>),
 }
 
 #[cfg(test)]
@@ -2402,13 +2694,17 @@ enum CancellableEventRegistration {
 struct Notifier {
     /// Mapping of numeric PIDs to their validated current proc generation.
     pids: Mutex<HashMap<Pid, NotifierEntry>>,
+    admissions: mutation::AdmissionIndex,
 }
 
 impl Notifier {
     /// Creates the notifier.
     pub fn new() -> Self {
         let pids = Mutex::new(HashMap::new());
-        Notifier { pids }
+        Notifier {
+            pids,
+            admissions: mutation::AdmissionIndex::default(),
+        }
     }
 
     fn capture_identity(&self, pid: Pid) -> Result<Arc<WorkerIdentity>, Errno> {
@@ -2452,6 +2748,7 @@ impl Notifier {
                 pause.resume.wait();
             }
 
+            let _admission = self.admissions.enter(pid);
             let mut pids = self.pids.lock();
             // This exact kernel-lifetime check is the commit linearization
             // point. It is a pidfd syscall, not a long procfs read under the
@@ -2504,6 +2801,8 @@ impl Notifier {
             if !current.is_same_process_generation() {
                 continue;
             }
+            // No synchronous wait ownership has been claimed yet.
+            let _admission = self.admissions.enter(pid);
             match requested.identity() {
                 Some(bound) if !bound.same_live_generation(&current)? => {
                     return Err(Errno::ECHILD);
@@ -2640,6 +2939,7 @@ impl Notifier {
             match self.event_with_owner(pid, handle, &requested, owner)? {
                 EventRegistration::Registered(handle) => return Ok(handle),
                 EventRegistration::Adopted => {}
+                EventRegistration::MutationBusy(cell) => cell.wait_idle(),
             }
         }
     }
@@ -2699,6 +2999,9 @@ impl Notifier {
                     return Ok(CancellableEventRegistration::Registered);
                 }
                 EventRegistration::Adopted => {}
+                EventRegistration::MutationBusy(_) => {
+                    return Ok(CancellableEventRegistration::Busy);
+                }
             }
         }
     }
@@ -2750,10 +3053,25 @@ impl Notifier {
             if !current.is_same_process_generation() {
                 continue;
             }
+            #[cfg(test)]
+            if let Some(pause) = EVENT_CAPTURE_PAUSES.lock().remove(&pid) {
+                pause.captured.wait();
+                pause.resume.wait();
+            }
+            // Capture is unlocked and may precede identity binding. Admission
+            // prevents registration from crossing an unresolved raw effect.
+            let admission = match self.admissions.try_enter(pid) {
+                Ok(admission) => admission,
+                Err(cell) => {
+                    drop(owner);
+                    return Ok(EventRegistration::MutationBusy(cell));
+                }
+            };
             match handle.identity() {
                 Some(bound) => match bound.same_live_generation(&current) {
                     Ok(true) => {}
                     Ok(false) => {
+                        drop(admission);
                         let resolved = self.resolve_echild(pid, handle);
                         owner.commit();
                         return Ok(EventRegistration::Registered(resolved));
@@ -2768,6 +3086,7 @@ impl Notifier {
                         match bound.same_live_generation(&current) {
                             Ok(true) => {}
                             Ok(false) => {
+                                drop(admission);
                                 let resolved = self.resolve_echild(pid, handle);
                                 owner.commit();
                                 return Ok(EventRegistration::Registered(resolved));
@@ -2780,16 +3099,13 @@ impl Notifier {
                     }
                 }
             }
-            #[cfg(test)]
-            if let Some(pause) = EVENT_CAPTURE_PAUSES.lock().remove(&pid) {
-                pause.captured.wait();
-                pause.resume.wait();
-            }
-
             let mut pids = self.pids.lock();
-            // All production adoption holds pids. Recheck after capture,
-            // before publishing STARTING or committing this exact claim.
+            // All production adoption holds pids and same-PID admission.
+            // Capture preceded admission: recheck the exact claimed Event
+            // before publishing STARTING or committing this claim.
             if !Arc::ptr_eq(handle.event(), requested) {
+                drop(pids);
+                drop(admission);
                 drop(owner);
                 return Ok(EventRegistration::Adopted);
             }
@@ -2797,6 +3113,7 @@ impl Notifier {
                 Ok(true) => {}
                 Ok(false) => {
                     drop(pids);
+                    drop(admission);
                     let resolved = self.resolve_echild(pid, handle);
                     owner.commit();
                     return Ok(EventRegistration::Registered(resolved));
@@ -2828,6 +3145,7 @@ impl Notifier {
                         Ok(true) => {}
                         Ok(false) => {
                             drop(pids);
+                            drop(admission);
                             let resolved = self.resolve_echild(pid, handle);
                             owner.commit();
                             return Ok(EventRegistration::Registered(resolved));
@@ -2848,6 +3166,7 @@ impl Notifier {
                             let authoritative = occupied.get().handle.clone();
                             handle.adopt_authoritative(&authoritative)?;
                             drop(pids);
+                            drop(admission);
                             drop(owner);
                             return Ok(EventRegistration::Adopted);
                         }
@@ -2901,6 +3220,7 @@ impl Notifier {
             };
             *requested.registration_error.lock() = None;
             drop(pids);
+            drop(admission);
             if let Some(worker) = pending_worker {
                 worker.start();
             }
@@ -2959,6 +3279,10 @@ impl Notifier {
                 drop(owner);
                 continue;
             }
+            let Ok(_admission) = self.admissions.try_enter(pid) else {
+                drop(owner);
+                return Ok(RawCleanupClaim::Lost);
+            };
             pids = self.pids.lock();
             if pids
                 .get(&pid)
@@ -3272,7 +3596,67 @@ pub struct TerminalCleanup {
     event: EventHandle,
 }
 
+/// Original notifier generation identity. This carries no wait, cleanup,
+/// control, stopped-state, or source-read authority. It is not Clone and cannot
+/// be constructed from a numeric PID. Command lineage is established separately
+/// by the backend that owns the original Command and child-creation events.
+pub struct TaskIdentity {
+    generation: Arc<Event>,
+    identity: Arc<WorkerIdentity>,
+}
+
+impl TaskIdentity {
+    /// Compare retained generations, including after terminal observation.
+    /// This does not assert liveness, stopped state, or shared memory.
+    pub fn same_generation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.generation, &other.generation)
+            && Arc::ptr_eq(&self.identity, &other.identity)
+    }
+}
+
 impl TerminalCleanup {
+    /// Libtest-only readbacks of this original Event; never waits or reaps.
+    #[cfg(cohort_final_test)]
+    pub fn final_test_activity(&self) -> (usize, usize, bool) {
+        let state = &self.event.event().final_test;
+        (
+            state.publications.load(Ordering::SeqCst),
+            state.claims.load(Ordering::SeqCst),
+            state.registry_retired.load(Ordering::Acquire),
+        )
+    }
+
+    /// Arm observation of the unchanged register syscall's actual return.
+    #[cfg(cohort_final_test)]
+    pub fn arm_final_test_registers(&self) {
+        *self.event.event().final_test.registers.lock() = Some(Vec::new());
+    }
+
+    #[cfg(cohort_final_test)]
+    /// Read actual register returns recorded after this generation was armed.
+    pub fn final_test_registers(&self) -> Option<Vec<(i32, Result<usize, Errno>)>> {
+        self.event.event().final_test.registers.lock().clone()
+    }
+
+    /// Transfer the already-created worker handle, after original completion.
+    /// Caller must join outside all locks; WORKER_DONE itself is not a join.
+    #[cfg(cohort_final_test)]
+    pub fn take_final_test_worker(&self) -> Option<JoinHandle<()>> {
+        self.event.event().final_test.worker.lock().take()
+    }
+
+    /// Retain only the identity already bound by this original notifier owner.
+    /// No registration, procfs lookup, pidfd open, or wait is performed here.
+    pub fn task_identity(&self) -> Result<TaskIdentity, Errno> {
+        let identity = self.event.identity().ok_or(Errno::ENXIO)?;
+        if identity.pid != self.pid {
+            return Err(Errno::ECHILD);
+        }
+        Ok(TaskIdentity {
+            generation: Arc::clone(self.event.event()),
+            identity: Arc::clone(identity),
+        })
+    }
     pub(super) fn new(pid: Pid, token: &TraceeToken) -> Self {
         let cleanup = Self::new_unregistered(pid, token);
         let _ = cleanup.ensure_registered();
@@ -3337,6 +3721,12 @@ impl TerminalCleanup {
         self.request_cancellation_signal(libc::SIGKILL)
     }
 
+    /// Gate a separately authenticated process-group signal against this
+    /// original member's control hold. This supplies no group identity.
+    pub fn source_signal_guard(&self) -> Result<source::SourceSignal, Errno> {
+        self.event.source_signal()
+    }
+
     /// Stops this already-bound generation for fatal tree cancellation.
     /// Like `request_sigkill`, delivery is not a stopped-state acknowledgment.
     /// The caller must consume an actual owned ptrace stop before discovery.
@@ -3345,6 +3735,8 @@ impl TerminalCleanup {
     }
 
     fn request_cancellation_signal(&self, signal: i32) -> Result<(), Errno> {
+        // Cancellation invalidates publication without releasing acquisition.
+        let _signal = self.event.source_signal()?;
         if let Some(error) = self.registration_error() {
             return Err(error);
         }
@@ -3386,6 +3778,7 @@ impl TerminalCleanup {
     /// nor signals a numeric group. ESRCH means that exact task is already dead,
     /// not that its terminal wait or descendant cleanup has been consumed.
     pub fn terminate_bound_task(&self) -> Result<(), Errno> {
+        let _signal = self.event.source_signal()?;
         let identity = self.event.identity().ok_or(Errno::ENXIO)?;
         let result = unsafe {
             libc::syscall(
@@ -3532,16 +3925,19 @@ impl TerminalCleanup {
         &self,
         timeout: Duration,
     ) -> Option<PendingStatusReservation<'_>> {
-        let state = self.event.event().wait_pending_status(timeout)?;
-        let status = *state
-            .pending
-            .front()
-            .expect("pending cleanup reservation requires a FIFO front");
+        let event = self.event.resolved();
+        let mut state = event.event().wait_pending_status(timeout)?;
+        let reservation = event
+            .event()
+            .reserve_front(&mut state)
+            .expect("pending cleanup reservation requires an unreserved FIFO front");
+        drop(state);
         Some(PendingStatusReservation {
             pid: self.pid,
-            status,
-            event: self.event.resolved(),
-            state,
+            #[cfg(test)]
+            status: reservation.status,
+            event,
+            reservation,
         })
     }
 
@@ -3584,9 +3980,11 @@ impl TerminalCleanup {
 #[must_use = "drop rolls the reservation back; call commit after ownership is stored"]
 pub struct PendingStatusReservation<'a> {
     pid: Pid,
+    // Preserve the existing raw-status assertion without exposing authority.
+    #[cfg(test)]
     status: i32,
     event: &'a EventHandle,
-    state: MutexGuard<'a, StatusState>,
+    reservation: StatusReservation<'a>,
 }
 
 impl PendingStatusReservation<'_> {
@@ -3594,15 +3992,14 @@ impl PendingStatusReservation<'_> {
     pub fn decode(&self) -> Result<Wait, Error> {
         Wait::from_raw_with_token(
             self.pid,
-            self.status,
-            TraceeToken::from_event(self.event.clone()),
+            self.reservation.status,
+            self.reservation.token(self.event.clone()),
         )
     }
 
     /// Removes the reserved front after all associated ownership is durable.
-    pub fn commit(mut self) {
-        let committed = self.state.pending.pop_front();
-        debug_assert_eq!(committed, Some(self.status));
+    pub fn commit(self) {
+        self.reservation.commit();
     }
 }
 
@@ -3637,10 +4034,11 @@ impl Future for WaitFuture {
             Ok(reservation) => reservation,
             Err(errno) => return Poll::Ready(Err(errno.into())),
         };
+        let token = reservation.token(event_handle.clone());
         match event.decode_status_return(reservation, |status| {
-            Wait::from_raw_with_token(pid, status, TraceeToken::from_event(event_handle.clone()))
+            Wait::from_raw_with_token(pid, status, token)
         }) {
-            Ok(StatusReturn::Returned(decoded)) => Poll::Ready(Ok(decoded)),
+            Ok(StatusReturn::Returned(decoded)) => Poll::Ready(Ok(source::consumed(decoded))),
             Ok(StatusReturn::Cancelled(_)) => Poll::Ready(Err(Errno::ECANCELED.into())),
             Err(error) => Poll::Ready(Err(error)),
         }
@@ -4444,6 +4842,7 @@ mod test {
             terminal: &TerminalCleanup,
             signal_sent: &mut bool,
         ) -> io::Result<CleanupWaitOwner> {
+            let deadline = Instant::now() + REGISTRATION_RETRY_TIMEOUT;
             let authoritative =
                 match NOTIFIER.current_registered(pid.into()) {
                     Ok(Some(authoritative)) => Some(authoritative),
@@ -4456,6 +4855,17 @@ mod test {
                         })?,
                 };
             if let Some(authoritative) = authoritative {
+                // This cleanup probe is bounded: a live mutation must be
+                // settled by its custodian before forwarding this owner.
+                let _admission = loop {
+                    if let Ok(admission) = NOTIFIER.admissions.try_enter(pid.into()) {
+                        break admission;
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(io::Error::from_raw_os_error(libc::EBUSY));
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                };
                 terminal
                     .event
                     .adopt_authoritative(&authoritative)
@@ -4468,7 +4878,6 @@ mod test {
                 pause.resume.wait();
             }
 
-            let deadline = Instant::now() + REGISTRATION_RETRY_TIMEOUT;
             let return_deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
             let last_error = loop {
                 match terminal.try_ensure_registered_for_cleanup(return_deadline) {

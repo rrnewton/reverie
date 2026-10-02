@@ -1,0 +1,139 @@
+/* Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+ * Licensed under the BSD-style license in the root LICENSE file. */
+
+// Native prerequisites only, using the existing actual TRACEME child, original
+// consuming wait, and ExactChildGuard. No fabricated Event or receipt. These
+// tests must not run until Main separately admits this exact fixture/custody.
+mod control_stop_native_tests {
+    use super::*;
+
+    #[cfg(target_arch = "x86_64")]
+    fn registers(regs: &crate::Regs) -> [u64; 27] {
+        [
+            regs.r15, regs.r14, regs.r13, regs.r12, regs.rbp, regs.rbx, regs.r11, regs.r10,
+            regs.r9, regs.r8, regs.rax, regs.rcx, regs.rdx, regs.rsi, regs.rdi, regs.orig_rax,
+            regs.rip, regs.cs, regs.eflags, regs.rsp, regs.ss, regs.fs_base, regs.gs_base,
+            regs.ds, regs.es, regs.fs, regs.gs,
+        ]
+    }
+
+    #[test]
+    fn genuine_wait_only_and_no_duplicate_issuance() {
+        let (_cleanup, stopped) = child_stop();
+        assert!(matches!(
+            Stopped::new_unchecked(stopped.pid()).control_stop(),
+            Err(Errno::ENODATA)
+        ));
+        let raw = Wait::from_raw(stopped.pid(), (libc::SIGSTOP << 8) | 0x7f)
+            .unwrap()
+            .assume_stopped()
+            .0;
+        assert!(raw.control_stop().is_err());
+        let stop = stopped.control_stop().unwrap();
+        stop.validate_current().unwrap();
+        assert!(matches!(stopped.control_stop(), Err(Errno::EALREADY)));
+        drop(stop);
+        assert!(matches!(stopped.control_stop(), Err(Errno::EALREADY)));
+        finish(stopped);
+    }
+
+    #[test]
+    fn successful_register_write_advances_only_distinct_authority() {
+        let (_cleanup, stopped) = child_stop();
+        let legacy = stopped.source_stop().unwrap();
+        let stop = stopped.control_stop().unwrap();
+        let regs = stopped.getregs().unwrap();
+        let changed = {
+            let mut changed = regs;
+            // The compiled target is x86_64: demonstrate a real
+            // register mutation and restore it before any guest instruction.
+            #[cfg(target_arch = "x86_64")]
+            {
+                changed.r15 ^= 1;
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                changed.regs[15] ^= 1;
+            }
+            changed
+        };
+        let stop = stop.setregs(&changed).unwrap();
+        stop.validate_current().unwrap();
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(registers(&stopped.getregs().unwrap()), registers(&changed));
+        assert_eq!(legacy.validate_current(), Err(Errno::ESTALE));
+        assert!(legacy.begin_acquisition().is_err());
+        assert!(stopped.source_stop().is_err());
+        assert!(stopped.control_stop().is_err());
+        // A second *actual completed operation* advances the new authority;
+        // merely asking the old Stopped for another witness never does.
+        let stop = stop.setregs(&regs).unwrap();
+        stop.validate_current().unwrap();
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(registers(&stopped.getregs().unwrap()), registers(&regs));
+        assert_eq!(legacy.validate_current(), Err(Errno::ESTALE));
+        finish(stopped);
+        assert_eq!(stop.validate_current(), Err(Errno::ESTALE));
+    }
+
+    #[test]
+    fn ordinary_alias_mutation_cannot_be_renewed() {
+        let (_cleanup, stopped) = child_stop();
+        let stop = stopped.control_stop().unwrap();
+        let regs = stopped.getregs().unwrap();
+        Stopped::new_unchecked(stopped.pid())
+            .setregs(&regs)
+            .unwrap();
+        assert_eq!(stop.validate_current(), Err(Errno::ESTALE));
+        assert!(matches!(
+            stop.setregs(&regs),
+            Err(crate::Error::Errno(Errno::ESTALE))
+        ));
+        assert!(stopped.control_stop().is_err());
+        finish(stopped);
+    }
+
+    #[test]
+    fn abandoned_operation_cannot_manufacture_completion() {
+        let (_cleanup, stopped) = child_stop();
+        let legacy = stopped.source_stop().unwrap();
+        let stop = stopped.control_stop().unwrap();
+        control_stop::abandon_register_write(stop).unwrap();
+        assert_eq!(legacy.validate_current(), Err(Errno::ESTALE));
+        assert!(stopped.control_stop().is_err());
+        assert!(stopped.source_stop().is_err());
+        // Admission was released, but no new stopped witness was published.
+        finish(stopped);
+    }
+
+    #[test]
+    fn acquisition_exclusion_applies_to_new_control_operation() {
+        let (_cleanup, stopped) = child_stop();
+        let legacy = stopped.source_stop().unwrap();
+        let stop = stopped.control_stop().unwrap();
+        let acquisition = legacy.begin_acquisition().unwrap();
+        let regs = stopped.getregs().unwrap();
+        assert!(matches!(
+            stop.setregs(&regs),
+            Err(crate::Error::Errno(Errno::EBUSY))
+        ));
+        legacy.validate_current().unwrap();
+        acquisition.finish_binding();
+        finish(stopped);
+    }
+
+    #[test]
+    fn original_ptracer_thread_is_required() {
+        let (_cleanup, stopped) = child_stop();
+        let stop = stopped.control_stop().unwrap();
+        let stop = std::thread::spawn(move || {
+            assert_eq!(stop.validate_current(), Err(Errno::EPERM));
+            stop
+        })
+        .join()
+        .unwrap();
+        stop.validate_current().unwrap();
+        finish(stopped);
+        assert_eq!(stop.validate_current(), Err(Errno::ESTALE));
+    }
+}

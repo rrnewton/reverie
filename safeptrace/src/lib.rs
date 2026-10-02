@@ -47,7 +47,19 @@ pub use crate::notifier::StopSiginfo;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::StoppedObservation;
 #[cfg(feature = "notifier")]
+pub use crate::notifier::TaskIdentity;
+#[cfg(feature = "notifier")]
 pub use crate::notifier::TerminalCleanup;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::source::ControlHold;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::source::ControlStop;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::source::SourceAcquisition;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::source::SourceSignal;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::source::SourceStop;
 pub use crate::regs::*;
 use crate::waitid::IdType;
 use crate::waitid::waitid;
@@ -227,17 +239,57 @@ fn decode_native_syscall_stop(
 }
 
 /// Immutable generation token carried through every typed tracee state.
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 struct TraceeToken {
     #[cfg(feature = "notifier")]
     event: notifier::EventHandle,
+    #[cfg(feature = "notifier")]
+    source: Option<notifier::source::SourceStamp>,
+}
+
+// Preserve generic generation equality/hash. The private source receipt is
+// checked explicitly by source custody and does not change public state identity.
+impl PartialEq for TraceeToken {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(feature = "notifier")]
+        {
+            self.event == other.event
+        }
+        #[cfg(not(feature = "notifier"))]
+        {
+            let _ = other;
+            true
+        }
+    }
+}
+impl Eq for TraceeToken {}
+impl std::hash::Hash for TraceeToken {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        #[cfg(feature = "notifier")]
+        std::hash::Hash::hash(&self.event, state);
+        #[cfg(not(feature = "notifier"))]
+        let _ = state;
+    }
 }
 
 impl TraceeToken {
+    fn raw_control(pid: Pid) -> Self {
+        #[cfg(not(feature = "notifier"))]
+        let _ = pid;
+        Self {
+            #[cfg(feature = "notifier")]
+            event: notifier::EventHandle::for_raw_control(pid),
+            #[cfg(feature = "notifier")]
+            source: None,
+        }
+    }
+
     fn new() -> Self {
         Self {
             #[cfg(feature = "notifier")]
             event: notifier::EventHandle::new(),
+            #[cfg(feature = "notifier")]
+            source: None,
         }
     }
 
@@ -247,6 +299,8 @@ impl TraceeToken {
         Ok(Self {
             #[cfg(feature = "notifier")]
             event: notifier::EventHandle::current_or_new(pid)?,
+            #[cfg(feature = "notifier")]
+            source: None,
         })
     }
 
@@ -256,12 +310,17 @@ impl TraceeToken {
         Self {
             #[cfg(feature = "notifier")]
             event: notifier::EventHandle::current_or_error(pid),
+            #[cfg(feature = "notifier")]
+            source: None,
         }
     }
 
     #[cfg(feature = "notifier")]
     fn from_event(event: notifier::EventHandle) -> Self {
-        Self { event }
+        Self {
+            event,
+            source: None,
+        }
     }
 
     #[cfg(feature = "notifier")]
@@ -581,11 +640,13 @@ impl Wait {
     }
 
     /// Converts a raw `i32` status to this type.
+    /// This does not authenticate consumption for source acquisition. Controls
+    /// still participate in any retained notifier generation's exclusion.
     ///
     /// Preconditions:
     /// The process must not be in a running state.
     pub fn from_raw(pid: Pid, status: i32) -> Result<Self, Error> {
-        Self::from_raw_with_token(pid, status, TraceeToken::new())
+        Self::from_raw_with_token(pid, status, TraceeToken::raw_control(pid))
     }
 
     fn from_raw_with_token(pid: Pid, status: i32, token: TraceeToken) -> Result<Self, Error> {
@@ -633,11 +694,16 @@ impl TryFrom<WaitStatus> for Wait {
     type Error = Error;
 
     /// Converts a `WaitStatus` to this type.
+    /// This decodes status without issuing a consumed source receipt.
     ///
     /// Preconditions:
     /// The process must not be in a `StillAlive` state.
     fn try_from(wait_status: WaitStatus) -> Result<Self, Error> {
-        Self::from_wait_status_with_token(wait_status, TraceeToken::new())
+        let token = wait_status
+            .pid()
+            .map(|pid| TraceeToken::raw_control(pid.into()))
+            .unwrap_or_else(TraceeToken::new);
+        Self::from_wait_status_with_token(wait_status, token)
     }
 }
 
@@ -782,6 +848,21 @@ impl Stopped {
         StoppedObservation::new(self.0, &self.1)
     }
 
+    /// Issue source custody from this exact consumed notifier stop. Unchecked
+    /// states and raw status decoders cannot issue it; no PID lookup occurs.
+    #[cfg(feature = "notifier")]
+    pub fn source_stop(&self) -> Result<SourceStop, Errno> {
+        SourceStop::from_stopped(self)
+    }
+
+    /// Issue a distinct, single-task control witness from this consumed wait.
+    /// This inactive cohort prerequisite grants no source-read or cohort authority.
+    /// It cannot renew a legacy [`SourceStop`] after a control mutation.
+    #[cfg(feature = "notifier")]
+    pub fn control_stop(&self) -> Result<ControlStop, Errno> {
+        ControlStop::from_stopped(self)
+    }
+
     /// Creates a new stopped state. This is useful when we know the process is
     /// in a stopped state already.
     ///
@@ -815,6 +896,12 @@ impl Stopped {
 
     /// Sets the ptracer options.
     pub fn setoptions(&self, options: ptrace::Options) -> Result<(), Error> {
+        #[cfg(feature = "notifier")]
+        let _source_control = self
+            .1
+            .event()
+            .source_control(self.0)
+            .map_err(|error| self.map_err(error))?;
         ptrace::setoptions(self.0.into(), options).map_err(|err| self.map_nix_err(err))
     }
 
@@ -833,7 +920,7 @@ impl Stopped {
             iov_len: core::mem::size_of_val(&regs),
         };
 
-        unsafe {
+        let result = unsafe {
             syscalls::syscall!(
                 Sysno::ptrace,
                 // PTRACE_GETREGS isn't available on aarch64, so we must use
@@ -843,8 +930,10 @@ impl Stopped {
                 which,
                 &mut iov as *mut _
             )
-        }
-        .map_err(|err| self.map_err(err))?;
+        };
+        #[cfg(all(feature = "notifier", cohort_final_test))]
+        self.1.event().record_getregset_for_test(which, result);
+        result.map_err(|err| self.map_err(err))?;
 
         // GETREGSET selects the target's ABI, which may differ from the
         // tracer's (for example, a compat PRSTATUS reply is shorter). Require
@@ -858,6 +947,12 @@ impl Stopped {
     }
 
     fn setregset<T>(&self, which: i32, regs: &T) -> Result<(), Error> {
+        #[cfg(feature = "notifier")]
+        let _source_control = self
+            .1
+            .event()
+            .source_control(self.0)
+            .map_err(|error| self.map_err(error))?;
         let iov = libc::iovec {
             iov_base: regs as *const _ as *mut _,
             iov_len: core::mem::size_of::<T>(),
@@ -934,6 +1029,12 @@ impl Stopped {
     // TODO-HUMAN-REVIEW(PR-270): Review complete ptrace XSTATE preservation API.
     #[cfg(target_arch = "x86_64")]
     pub fn setxstate(&self, state: &XState) -> Result<(), Error> {
+        #[cfg(feature = "notifier")]
+        let _source_control = self
+            .1
+            .event()
+            .source_control(self.0)
+            .map_err(|error| self.map_err(error))?;
         let iov = libc::iovec {
             iov_base: state.0.as_ptr() as *mut libc::c_void,
             iov_len: state.0.len(),
@@ -953,7 +1054,15 @@ impl Stopped {
 
     /// Resumes the process and transitions it back to a running state.
     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::cont(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        {
+            #[cfg(feature = "notifier")]
+            let _source_control = self
+                .1
+                .event()
+                .source_control(self.0)
+                .map_err(|error| self.map_err(error))?;
+            ptrace::cont(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        }
         Ok(Running::from_token(self.0, self.1))
     }
 
@@ -970,6 +1079,12 @@ impl Stopped {
         self,
         sig: T,
     ) -> Result<Running, (Self, Errno)> {
+        #[cfg(feature = "notifier")]
+        let result = match self.1.event().source_control(self.0) {
+            Ok(_control) => ptrace::cont(self.0.into(), sig),
+            Err(error) => Err(nix::errno::Errno::from_raw(error.into_raw())),
+        };
+        #[cfg(not(feature = "notifier"))]
         let result = ptrace::cont(self.0.into(), sig);
         self.finish_retained_resume(result)
     }
@@ -1003,14 +1118,30 @@ impl Stopped {
     /// Advances the execution of the process by a single step optionally
     /// delivering a signal specified by `sig`.
     pub fn step<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::step(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        {
+            #[cfg(feature = "notifier")]
+            let _source_control = self
+                .1
+                .event()
+                .source_control(self.0)
+                .map_err(|error| self.map_err(error))?;
+            ptrace::step(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        }
         Ok(Running::from_token(self.0, self.1))
     }
 
     /// Like `step`, but arranges for the tracee to be stopped at the next
     /// entry to or exit from a system call.
     pub fn syscall<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::syscall(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        {
+            #[cfg(feature = "notifier")]
+            let _source_control = self
+                .1
+                .event()
+                .source_control(self.0)
+                .map_err(|error| self.map_err(error))?;
+            ptrace::syscall(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        }
         Ok(Running::from_token(self.0, self.1))
     }
 
@@ -1108,6 +1239,12 @@ impl Stopped {
 
     /// Sets info about the singal that caused the process to be stopped.
     pub fn setsiginfo(&self, siginfo: &libc::siginfo_t) -> Result<(), Error> {
+        #[cfg(feature = "notifier")]
+        let _source_control = self
+            .1
+            .event()
+            .source_control(self.0)
+            .map_err(|error| self.map_err(error))?;
         ptrace::setsiginfo(self.0.into(), siginfo).map_err(|err| self.map_nix_err(err))
     }
 
@@ -1146,7 +1283,15 @@ impl Stopped {
 
     /// Detaches from and then resumes the stopped tracee.
     pub fn detach<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::detach(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        {
+            #[cfg(feature = "notifier")]
+            let _source_control = self
+                .1
+                .event()
+                .source_control(self.0)
+                .map_err(|error| self.map_err(error))?;
+            ptrace::detach(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+        }
         Ok(Running::from_token(self.0, self.1))
     }
 }
@@ -1293,8 +1438,13 @@ impl Running {
     /// have actually stopped. Thus, the tracee is still considered to be in a
     /// running state and needs to be waited upon to observe the SIGSTOP.
     pub fn attach(pid: Pid) -> Result<Self, Errno> {
+        let token = TraceeToken::raw_control(pid);
+        #[cfg(feature = "notifier")]
+        let control = token.event().source_control(pid)?;
         ptrace::attach(pid.into()).map_err(|err| Errno::new(err as i32))?;
-        Ok(Self::new(pid))
+        #[cfg(feature = "notifier")]
+        drop(control);
+        Ok(Self::from_token(pid, token))
     }
 
     /// Similar to attach, but does not stop the process. This also affects the
@@ -1303,8 +1453,13 @@ impl Running {
     ///
     /// Unlike other modes, a seized process can also accept interrupts.
     pub fn seize(pid: Pid, options: Options) -> Result<Self, Errno> {
+        let token = TraceeToken::raw_control(pid);
+        #[cfg(feature = "notifier")]
+        let control = token.event().source_control(pid)?;
         ptrace::seize(pid.into(), options).map_err(|err| Errno::new(err as i32))?;
-        Ok(Self::new(pid))
+        #[cfg(feature = "notifier")]
+        drop(control);
+        Ok(Self::from_token(pid, token))
     }
 
     /// Interrupts the running process, even if it is in the middle of a syscall.
@@ -1315,6 +1470,8 @@ impl Running {
     ///
     /// This only works for processes being traced via `Running::seize`.
     pub fn interrupt(&self) -> Result<(), Errno> {
+        #[cfg(feature = "notifier")]
+        let _source_control = self.1.event().source_control(self.0)?;
         // nix doesn't provide `ptrace::interrupt` yet, so we need to roll our
         // own.
         Errno::result(unsafe {
