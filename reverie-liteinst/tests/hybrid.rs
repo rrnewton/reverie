@@ -5549,24 +5549,6 @@ async fn restart_parity(
     hooks: u64,
     label: &str,
 ) -> (String, Vec<String>) {
-    let (ptrace_stdout, ptrace_events, hybrid_events) =
-        restart_output_parity(mode, plan, hooks, label).await;
-    assert_eq!(
-        hybrid_events, ptrace_events,
-        "{label}: host-hybrid Tool events differ from plain ptrace"
-    );
-    (ptrace_stdout, ptrace_events)
-}
-
-/// Runs `mode` under both backends and requires the same guest output (up to
-/// the site counters, with `hooks` host-hybrid hook entries), returning plain
-/// ptrace's output and both backends' Tool-visible events.
-async fn restart_output_parity(
-    mode: &str,
-    plan: RestartPlan,
-    hooks: u64,
-    label: &str,
-) -> (String, Vec<String>, Vec<String>) {
     let (ptrace_stdout, ptrace_events) = run_restart_fixture(RestartBackend::Ptrace, mode, plan)
         .await
         .unwrap();
@@ -5582,7 +5564,11 @@ async fn restart_output_parity(
         ),
         "{label}: host-hybrid output differs from plain ptrace"
     );
-    (ptrace_stdout, ptrace_events, hybrid_events)
+    assert_eq!(
+        hybrid_events, ptrace_events,
+        "{label}: host-hybrid Tool events differ from plain ptrace"
+    );
+    (ptrace_stdout, ptrace_events)
 }
 
 /// Attempts `timer_restart_parity` may make when an attempt diverges.
@@ -6010,12 +5996,10 @@ async fn host_hybrid_restart_with_an_sa_restart_sigchld_handler_restarts() {
 /// `SA_RESTART` interrupts, an `SA_RESTART` one restarts, and no handler
 /// restarts. The handler count is the evidence of delivery.
 ///
-/// Plain ptrace reports the held signal to the Tool before the resume that
-/// delivers it (https://github.com/rrnewton/hermit/issues/3468).
-///
-/// Known gap: host-hybrid passes the held signal on without a Tool signal
-/// event (https://github.com/rrnewton/reverie/issues/853), so its events are
-/// plain ptrace's without that report.
+/// Both backends report the held signal to the Tool before the resume that
+/// delivers it (https://github.com/rrnewton/hermit/issues/3468,
+/// https://github.com/rrnewton/reverie/issues/853), so the Tool events
+/// include that signal event.
 #[tokio::test(flavor = "current_thread")]
 async fn host_hybrid_restart_with_a_signal_held_across_an_injection_follows_linux() {
     for (mode, signal, result) in [
@@ -6031,7 +6015,7 @@ async fn host_hybrid_restart_with_a_signal_held_across_an_injection_follows_linu
             ..Default::default()
         };
         let hooks = if mode == "read" { 1 } else { 2 };
-        let (stdout, events, hybrid_events) = restart_output_parity(mode, plan, hooks, mode).await;
+        let (stdout, events) = restart_parity(mode, plan, hooks, mode).await;
         let handled = if mode == "read" {
             ""
         } else {
@@ -6050,9 +6034,8 @@ async fn host_hybrid_restart_with_a_signal_held_across_an_injection_follows_linu
         if result == RESTART_RESULT {
             expected.push("magic read(0x7e57,1)");
         }
-        assert_eq!(hybrid_events, expected, "{mode}: host-hybrid (known gap)");
         expected.insert(2, signal_event.as_str());
-        assert_eq!(events, expected, "{mode}: plain ptrace");
+        assert_eq!(events, expected, "{mode}");
     }
 }
 
