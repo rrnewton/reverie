@@ -74,6 +74,49 @@ mod vdso_syms {
     ]);
 
     pub const clock_getres: &[u8; 8] = &clock_getres_code.0;
+
+    // `__vdso_getrandom(buffer, len, flags, opaque_state, opaque_len)`.
+    //
+    // The kernel's implementation keys a per-thread ChaCha20 state with one
+    // `getrandom(key, 32, 0)` syscall and re-keys whenever the kernel's crng
+    // generation changes, i.e. at host-time-dependent points
+    // (https://github.com/rrnewton/reverie/issues/841). This replacement never
+    // touches the opaque state:
+    //
+    // * The parameter query `(NULL, 0, 0, params, ~0UL)` returns -ENOSYS
+    //   without writing `params`. glibc 2.41+ (`__getrandom_early_init`) then
+    //   leaves its state size at zero and serves every getrandom() with the
+    //   getrandom syscall.
+    // * Any other call is the getrandom syscall on the caller's first three
+    //   arguments, which the function ABI already passes in rdi/rsi/rdx. This
+    //   is the kernel vDSO's own fallback, and it keeps a libc that queried
+    //   the unpatched vDSO before the patch (LiteInst patches from a
+    //   constructor, after glibc's early init) working: its draws become
+    //   syscalls instead of failing with -ENOSYS.
+    const getrandom_code: BufferAligned<40> = BufferAligned::<40>([
+        0x49, 0x83, 0xf8, 0xff, // cmp $-1, %r8
+        0x75, 0x16, // jne syscall_path
+        0x48, 0x85, 0xff, // test %rdi, %rdi
+        0x75, 0x11, // jne syscall_path
+        0x48, 0x85, 0xf6, // test %rsi, %rsi
+        0x75, 0x0c, // jne syscall_path
+        0x85, 0xd2, // test %edx, %edx
+        0x75, 0x08, // jne syscall_path
+        0x48, 0xc7, 0xc0, 0xda, 0xff, 0xff, 0xff, // mov $-ENOSYS, %rax
+        0xc3, // retq
+        // syscall_path:
+        0xb8, 0x3e, 0x01, 0x00, 0x00, // mov SYS_getrandom, %eax
+        0x0f, 0x05, // syscall
+        0xc3, // retq
+        0x90, 0x90, 0x90, 0x90, // padding
+    ]);
+
+    pub const getrandom: &[u8; 40] = &getrandom_code.0;
+
+    /// Offset of the `syscall` instruction within [`getrandom`]. Every branch
+    /// in the stub targets an address before it, so an in-guest hook may
+    /// overwrite the bytes from here on.
+    pub const GETRANDOM_SYSCALL_OFFSET: usize = 33;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -147,6 +190,27 @@ mod vdso_syms {
     ]);
 
     pub const rt_sigreturn: &[u8; 8] = &rt_sigreturn_code.0;
+
+    // `__kernel_getrandom`: the same contract as the x86_64 stub (see the
+    // comment there). The parameter query `(NULL, 0, 0, params, ~0UL)`
+    // returns -ENOSYS; every other call is the getrandom syscall on x0-x2.
+    const getrandom_code: BufferAligned<48> = BufferAligned::<48>([
+        0x5f, 0x24, 0x03, 0xd5, // bti c
+        0x9f, 0x04, 0x00, 0xb1, // cmn x4, #1
+        0xc1, 0x00, 0x00, 0x54, // b.ne syscall_path
+        0xa0, 0x00, 0x00, 0xb5, // cbnz x0, syscall_path
+        0x81, 0x00, 0x00, 0xb5, // cbnz x1, syscall_path
+        0x62, 0x00, 0x00, 0x35, // cbnz w2, syscall_path
+        0xa0, 0x04, 0x80, 0x92, // mov x0, #-38 (-ENOSYS)
+        0xc0, 0x03, 0x5f, 0xd6, // ret
+        // syscall_path:
+        0xc8, 0x22, 0x80, 0xd2, // mov x8, 278 (#__NR_getrandom)
+        0x01, 0x00, 0x00, 0xd4, // svc 0
+        0xc0, 0x03, 0x5f, 0xd6, // ret
+        0x1f, 0x20, 0x03, 0xd5, // nop
+    ]);
+
+    pub const getrandom: &[u8; 48] = &getrandom_code.0;
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -168,6 +232,7 @@ const VDSO_SYMBOLS: &[(&str, &[u8], Sysno)] = &[
         vdso_syms::clock_getres,
         Sysno::clock_getres,
     ),
+    ("__vdso_getrandom", vdso_syms::getrandom, Sysno::getrandom),
 ];
 
 #[cfg(target_arch = "aarch64")]
@@ -192,6 +257,7 @@ const VDSO_SYMBOLS: &[(&str, &[u8], Sysno)] = &[
         vdso_syms::rt_sigreturn,
         Sysno::rt_sigreturn,
     ),
+    ("__kernel_getrandom", vdso_syms::getrandom, Sysno::getrandom),
 ];
 
 /// Rounds up `value` so that it is a multiple of `alignment`.
@@ -282,8 +348,11 @@ pub struct VdsoSyscallSite {
 /// the process is still single-threaded. The two-byte syscall is deliberately
 /// placed at the aligned symbol entry: LiteInst needs a full patch word after
 /// the hook address, which is not guaranteed at the tail of an eight-byte
-/// pseudo-vDSO function. This shares the authoritative symbol table with
-/// ptrace's stopped-guest path instead of maintaining a backend-specific list.
+/// pseudo-vDSO function. `__vdso_getrandom` is the exception: it keeps the
+/// table's whole stub, which answers the parameter query without a syscall,
+/// and its site is the stub's `syscall`, followed only by `ret` and padding.
+/// This shares the authoritative symbol table with ptrace's stopped-guest path
+/// instead of maintaining a backend-specific list.
 #[cfg(target_arch = "x86_64")]
 pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscallSite>, Error> {
     if !is_patch_required(subscriptions) {
@@ -309,8 +378,26 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
     })?;
 
     let mut syscall_sites = Vec::new();
-    for (name, (offset, size, _bytes, _sysno)) in subscribed_vdso_patches(subscriptions) {
+    for (name, (offset, size, bytes, _sysno)) in subscribed_vdso_patches(subscriptions) {
         let symbol = start + *offset as usize;
+        if name == "__vdso_getrandom" {
+            // The parameter query must be answered before any syscall, so this
+            // entry keeps its whole stub and is hooked at the stub's `syscall`.
+            // Every byte after that `syscall` is a `ret` or padding, which
+            // leaves the hook its full patch word.
+            assert!(*size >= bytes.len() + 8);
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), symbol as *mut u8, bytes.len());
+                core::ptr::write_bytes((symbol + bytes.len()) as *mut u8, 0x90, size - bytes.len());
+            }
+            syscall_sites.push(VdsoSyscallSite {
+                address: (symbol + vdso_syms::GETRANDOM_SYSCALL_OFFSET) as u64,
+                number: libc::SYS_getrandom,
+                mapping_start: start as u64,
+                mapping_len: len as u64,
+            });
+            continue;
+        }
         let number = match name {
             "__vdso_time" => libc::SYS_time,
             "__vdso_clock_gettime" => libc::SYS_clock_gettime,

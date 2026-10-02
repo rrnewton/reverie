@@ -12,7 +12,6 @@
 
 #include "rewriter.h"
 
-#include "bootstrap.h"
 #include "debuginfo.h"
 #include "elf_loading.h"
 #include "global_vars.h"
@@ -487,19 +486,50 @@ static void patch_vdso(struct library *lib) {
                 SYS_clock_gettime, &extra_space, &extra_len);
   }
 
-  if (sbr_bootstrap_enabled()) {
-    /* Keep the vDSO's five-argument getrandom ABI and ChaCha/state algorithm.
-     * Only its actual kernel syscall instructions enter the ordinary router.
-     * Do this once in the initial rewrite, never by rewriting an already
-     * detoured library again after plugin registration.
-     */
-    sym = symbol_find(lib->symbol_hash, "__vdso_getrandom");
-    if (sym != NULL && sym->sym.st_value != 0 && sym->sym.st_size != 0) {
-      char *start = lib->asr_offset + sym->sym.st_value;
-      patch_syscalls_in_range(lib, start, start + sym->sym.st_size,
-                              &extra_space, &extra_len, false);
-    }
+#ifdef __x86_64__
+  /* The vDSO's own getrandom generates bytes from in-process ChaCha state and
+   * enters the kernel only to re-key when the host crng generation changes,
+   * so its syscalls depend on host time and most draws never reach the
+   * router. Replace it with a stub that keeps its five-argument ABI:
+   *
+   * - glibc's parameter query (NULL, 0, 0, params, ~0UL) returns -ENOSYS
+   *   without writing params, so glibc never sizes vDSO state and uses its
+   *   own (rewritten) getrandom syscall instead;
+   * - every other call forwards (buffer, len, flags) to the getrandom
+   *   syscall, as the kernel's fallback does, so a caller that already holds
+   *   state still reaches the router.
+   *
+   * The stub's syscall then enters the ordinary router. Do this once in the
+   * initial rewrite, never by rewriting an already detoured library again
+   * after plugin registration.
+   */
+  _nx_debug_printf("replacing __vdso_getrandom\n");
+  sym = symbol_find(lib->symbol_hash, "__vdso_getrandom");
+  if (sym != NULL && sym->sym.st_value != 0) {
+    static const char getrandom_stub[] =
+        "\x49\x83\xf8\xff"             // cmp $-1, %r8
+        "\x75\x16"                     // jne syscall
+        "\x48\x85\xff"                 // test %rdi, %rdi
+        "\x75\x11"                     // jne syscall
+        "\x48\x85\xf6"                 // test %rsi, %rsi
+        "\x75\x0c"                     // jne syscall
+        "\x85\xd2"                     // test %edx, %edx
+        "\x75\x08"                     // jne syscall
+        "\x48\xc7\xc0\xda\xff\xff\xff" // mov $-ENOSYS, %rax
+        "\xc3"                         // ret
+        "\xb8\x3e\x01\x00\x00"         // syscall: mov $SYS_getrandom, %eax
+        "\x0f\x05"                     // syscall
+        "\xc3";                        // ret
+    size_t stub_len = sizeof(getrandom_stub) - 1;
+    if (sym->sym.st_size < stub_len)
+      _nx_fatal_printf("__vdso_getrandom is too small for its stub\n");
+    char *start = lib->asr_offset + sym->sym.st_value;
+    memcpy(start, getrandom_stub, stub_len);
+    memset(start + stub_len, 0x90 /* NOP */, sym->sym.st_size - stub_len);
+    patch_syscalls_in_range(lib, start, start + sym->sym.st_size, &extra_space,
+                            &extra_len, false);
   }
+#endif // __x86_64__
 
   if (extra_space != NULL) {
     // Mark our scratch space as write-protected and executable.

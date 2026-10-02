@@ -41,6 +41,7 @@ blocked_exit_guest="$tmpdir/blocked-exit-group"
 simultaneous_exit_guest="$tmpdir/simultaneous-exit-group"
 chaos_read_guest="$tmpdir/chaos-read-file"
 chaos_data="$tmpdir/chaos-data.txt"
+vdso_getrandom_guest="$tmpdir/vdso-getrandom"
 "${CC:-cc}" -O2 -g -std=c11 -Wall -Wextra -Werror -pthread \
   "$crate_dir/tests/fixtures/pthread_lifecycle.c" -o "$pthread_guest"
 "${CC:-cc}" -O2 -g -std=c11 -Wall -Wextra -Werror \
@@ -70,6 +71,8 @@ chaos_data="$tmpdir/chaos-data.txt"
 # are then the fixture's own post-startup file reads.
 "${CC:-cc}" -O2 -g -std=c11 -Wall -Wextra -Werror -static \
   "$crate_dir/tests/fixtures/chaos_read_file.c" -o "$chaos_read_guest"
+"${CC:-cc}" -O2 -g -std=c11 -Wall -Wextra -Werror \
+  "$crate_dir/tests/fixtures/vdso_getrandom.c" -ldl -o "$vdso_getrandom_guest"
 printf 'CHAOS-ONE-BYTE-AT-A-TIME\n' >"$chaos_data"
 
 # Run the guest under one tool (selected by $1=ENV) and capture stdout/stderr.
@@ -220,6 +223,21 @@ run_tool HERMIT_DBT_STRACE
 grep -q 'dbt strace' "$tmpdir/err" || fail "strace: no trace lines"
 grep -Eq 'exit_group\([0-9]+\) = \?' "$tmpdir/err" || fail "strace: missing exit_group"
 echo "PASS: strace (decoded trace incl. exit_group)"
+
+# vDSO getrandom: glibc 2.41+ must see its parameter query refused, and a
+# caller that already holds vDSO state must have every draw reach the tool as a
+# getrandom syscall instead of being served from in-process ChaCha state.
+run_tool HERMIT_DBT_STRACE "$vdso_getrandom_guest" \
+  || fail "vDSO getrandom: guest failed (exit 2 means the parameter query was not refused)"
+if grep -qx 'vdso-getrandom=absent' "$tmpdir/out"; then
+  echo "SKIP: vDSO getrandom (this kernel's vDSO exports no __vdso_getrandom)"
+else
+  grep -qx 'vdso-getrandom=patched draws=5' "$tmpdir/out" \
+    || fail "vDSO getrandom: guest did not complete its draws"
+  [[ $(grep -Ec 'getrandom\(0x[0-9a-f]+, 37, 0\) = ' "$tmpdir/err") -eq 5 ]] \
+    || fail "vDSO getrandom: draws did not reach the tool as five getrandom syscalls"
+  echo "PASS: vDSO getrandom (query refused; five draws reached the tool as syscalls)"
+fi
 
 # counter (histogram): must print a per-number histogram at exit.
 run_tool HERMIT_DBT_SYSCALL_HISTOGRAM

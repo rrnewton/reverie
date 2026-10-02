@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/sched.h>
@@ -3257,6 +3258,40 @@ static bool handle_virtual_clock(
   }
 }
 
+// Overwrite `address` inside the vDSO `module` with `code` and flush any cached
+// translation of the vDSO. Returns false, leaving the vDSO unchanged, if it
+// cannot be made writable.
+static bool patch_vdso_symbol(
+    const module_data_t* module,
+    const char* name,
+    app_pc address,
+    const uint8_t* code,
+    size_t code_size) {
+  size_t region_size = (size_t)(module->end - module->start);
+  if (!dr_memory_protect(
+          (void*)module->start,
+          region_size,
+          DR_MEMPROT_READ | DR_MEMPROT_WRITE | DR_MEMPROT_EXEC)) {
+    dr_fprintf(
+        diagnostic_file,
+        "reverie-dbt: failed to unprotect vdso to neutralize %s\n",
+        name);
+    return false;
+  }
+  memcpy(address, code, code_size);
+  DR_ASSERT(dr_memory_protect(
+      (void*)module->start, region_size, DR_MEMPROT_READ | DR_MEMPROT_EXEC));
+
+  /*
+   * Discard any cached translation of the vDSO so the patched bytes take
+   * effect. The delayed form is the flush variant permitted from a module-load
+   * callback; it completes before any new code enters the cache, i.e. before
+   * the guest first calls the patched entry.
+   */
+  dr_delay_flush_region(module->start, region_size, 0, NULL);
+  return true;
+}
+
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(hermit#705): Confirm vDSO time neutralization routes guest
 // clock reads through the shared Detcore tool (2021 epoch) rather than the raw
@@ -3294,29 +3329,95 @@ static void neutralize_vdso_symbol(
       0x05,
       0xc3,
   };
+  (void)patch_vdso_symbol(module, name, address, thunk, sizeof(thunk));
+}
 
-  size_t region_size = (size_t)(module->end - module->start);
-  if (!dr_memory_protect(
-          (void*)module->start,
-          region_size,
-          DR_MEMPROT_READ | DR_MEMPROT_WRITE | DR_MEMPROT_EXEC)) {
+/*
+ * The st_size of dynamic symbol `name` in the ELF image mapped at `base` (the
+ * vDSO), or 0 if the image has no such symbol.
+ */
+static size_t vdso_symbol_size(app_pc base, const char* name) {
+  const Elf64_Ehdr* header = (const Elf64_Ehdr*)base;
+  const Elf64_Phdr* program =
+      (const Elf64_Phdr*)((const char*)header + header->e_phoff);
+  uintptr_t load_offset = 0;
+  const Elf64_Dyn* dynamic = NULL;
+  for (int index = 0; index < header->e_phnum; index++) {
+    if (program[index].p_type == PT_LOAD)
+      load_offset =
+          (uintptr_t)base + program[index].p_offset - program[index].p_vaddr;
+    if (program[index].p_type == PT_DYNAMIC)
+      dynamic = (const Elf64_Dyn*)(base + program[index].p_offset);
+  }
+  if (dynamic == NULL)
+    return 0;
+  const char* strings = NULL;
+  const Elf64_Sym* symbols = NULL;
+  const Elf64_Word* hash = NULL;
+  for (const Elf64_Dyn* entry = dynamic; entry->d_tag != DT_NULL; entry++) {
+    if (entry->d_tag == DT_STRTAB)
+      strings = (const char*)(load_offset + entry->d_un.d_ptr);
+    else if (entry->d_tag == DT_SYMTAB)
+      symbols = (const Elf64_Sym*)(load_offset + entry->d_un.d_ptr);
+    else if (entry->d_tag == DT_HASH)
+      hash = (const Elf64_Word*)(load_offset + entry->d_un.d_ptr);
+  }
+  if (strings == NULL || symbols == NULL || hash == NULL)
+    return 0;
+  /* DT_HASH's second word is the symbol count. */
+  for (Elf64_Word index = 0; index < hash[1]; index++) {
+    if (strcmp(strings + symbols[index].st_name, name) == 0)
+      return (size_t)symbols[index].st_size;
+  }
+  return 0;
+}
+
+/*
+ * Replace `__vdso_getrandom(buffer, len, flags, opaque_state, opaque_len)`.
+ * The kernel's version keys a userspace ChaCha20 state with one getrandom
+ * syscall and re-keys it whenever the host kernel reseeds its crng, at
+ * host-time-dependent points (https://github.com/rrnewton/reverie/issues/841).
+ * This is the same stub as reverie-ptrace/src/vdso.rs: the parameter query
+ * (NULL, 0, 0, params, ~0UL) returns -ENOSYS without writing `params`, so
+ * glibc 2.41+ never sizes a state and calls the getrandom syscall directly;
+ * any other call is the getrandom syscall on the first three arguments.
+ */
+static void neutralize_vdso_getrandom(const module_data_t* module) {
+  static const char name[] = "__vdso_getrandom";
+  app_pc address = (app_pc)dr_get_proc_address(module->handle, name);
+  if (address == NULL)
+    return;
+
+  static const uint8_t stub[36] = {
+      0x49, 0x83, 0xf8, 0xff, /* cmp $-1, %r8 */
+      0x75, 0x16, /* jne syscall_path */
+      0x48, 0x85, 0xff, /* test %rdi, %rdi */
+      0x75, 0x11, /* jne syscall_path */
+      0x48, 0x85, 0xf6, /* test %rsi, %rsi */
+      0x75, 0x0c, /* jne syscall_path */
+      0x85, 0xd2, /* test %edx, %edx */
+      0x75, 0x08, /* jne syscall_path */
+      0x48, 0xc7, 0xc0, 0xda, 0xff, 0xff, 0xff, /* mov $-ENOSYS, %rax */
+      0xc3, /* ret */
+      /* syscall_path: */
+      0xb8, 0x3e, 0x01, 0x00, 0x00, /* mov $SYS_getrandom, %eax */
+      0x0f, 0x05, /* syscall */
+      0xc3, /* ret */
+  };
+  size_t size = vdso_symbol_size(module->start, name);
+  if (size < sizeof(stub)) {
     dr_fprintf(
         diagnostic_file,
-        "reverie-dbt: failed to unprotect vdso to neutralize %s\n",
-        name);
+        "reverie-dbt: %s is %zu bytes, too small for its %zu-byte stub\n",
+        name,
+        size,
+        sizeof(stub));
+    /* Leaving the kernel's ChaCha code in place would be nondeterministic. */
+    exit_runtime_tree(101);
     return;
   }
-  memcpy(address, thunk, sizeof(thunk));
-  DR_ASSERT(dr_memory_protect(
-      (void*)module->start, region_size, DR_MEMPROT_READ | DR_MEMPROT_EXEC));
-
-  /*
-   * Discard any cached translation of the vDSO so the patched bytes take
-   * effect. The delayed form is the flush variant permitted from a module-load
-   * callback; it completes before any new code enters the cache, i.e. before
-   * the guest first calls the patched entry.
-   */
-  dr_delay_flush_region(module->start, region_size, 0, NULL);
+  if (!patch_vdso_symbol(module, name, address, stub, sizeof(stub)))
+    exit_runtime_tree(101);
 }
 
 static void
@@ -3330,6 +3431,7 @@ module_load(void* drcontext, const module_data_t* module, bool loaded) {
 #ifdef SYS_time
   neutralize_vdso_symbol(module, "__vdso_time", SYS_time);
 #endif
+  neutralize_vdso_getrandom(module);
 }
 
 static bool fd_matches_stdin(void* drcontext, int fd) {

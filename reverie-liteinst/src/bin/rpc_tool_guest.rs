@@ -36,6 +36,9 @@ mod memory_access_guest;
 #[path = "rpc_tool_guest/owned_frame.rs"]
 mod owned_frame_guest;
 
+#[path = "rpc_tool_guest/vdso_getrandom.rs"]
+mod vdso_getrandom_guest;
+
 const CALLS: u64 = 32;
 const TOOL_CPUID_EAX: u32 = 0x1111_1111;
 const TOOL_CPUID_EBX: u32 = 0x2222_2222;
@@ -1353,6 +1356,7 @@ fn main() {
             instruction_guest(Path::new(&path), InstructionPublication::Quiescent)
         }
         Some("clock-and-vdso-guest") => clock_and_vdso_guest(Path::new(&path)),
+        Some("vdso-getrandom-guest") => vdso_getrandom_guest::run(Path::new(&path)),
         Some("unsubscribed-lifecycle") => unsubscribed_lifecycle_guest(Path::new(&path)),
         Some("injected-exit") => injected_exit_guest(Path::new(&path)),
         Some("fork-guest") => fork_guest(Path::new(&path)),

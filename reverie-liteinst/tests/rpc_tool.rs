@@ -579,6 +579,27 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         "{clock_and_vdso_stdout}"
     );
 
+    // The guest queries and allocates vDSO getrandom state before installing
+    // the Tool, as glibc's early startup does, then requires the patched entry
+    // point to refuse new queries and forward every draw to the Tool.
+    let vdso_getrandom = Command::new(binary)
+        .arg("vdso-getrandom-guest")
+        .arg(&socket)
+        .output()
+        .unwrap();
+    assert!(vdso_getrandom.status.success(), "{vdso_getrandom:?}");
+    let vdso_getrandom_stdout = String::from_utf8(vdso_getrandom.stdout).unwrap();
+    eprintln!(
+        "vDSO getrandom evidence: {}",
+        vdso_getrandom_stdout.trim_end()
+    );
+    assert!(
+        vdso_getrandom_stdout == "vdso-getrandom=patched draws=5\n"
+            || vdso_getrandom_stdout == "vdso-getrandom=absent\n"
+            || vdso_getrandom_stdout.starts_with("vdso-getrandom=unqueryable "),
+        "{vdso_getrandom_stdout}"
+    );
+
     let unsubscribed_lifecycle = Command::new(binary)
         .arg("unsubscribed-lifecycle")
         .arg(&socket)
