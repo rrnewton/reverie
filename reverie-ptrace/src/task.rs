@@ -603,30 +603,6 @@ fn blocked_signal_mask(tid: Pid) -> Result<u64, TraceError> {
         .ok_or_else(|| Errno::EPROTO.into())
 }
 
-/// The signals the thread group of the stopped thread `tid` catches with a
-/// handler (procfs `SigCgt`).
-fn caught_signal_mask(tid: Pid) -> Result<u64, TraceError> {
-    let status = std::fs::read_to_string(format!("/proc/{tid}/status"))
-        .map_err(|err| Errno::new(err.raw_os_error().unwrap_or(libc::EIO)))?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("SigCgt:"))
-        .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
-        .ok_or_else(|| Errno::EPROTO.into())
-}
-
-/// The number of threads in the thread group of the stopped thread `tid`
-/// (procfs `Threads`).
-fn thread_count(tid: Pid) -> Result<u64, TraceError> {
-    let status = std::fs::read_to_string(format!("/proc/{tid}/status"))
-        .map_err(|err| Errno::new(err.raw_os_error().unwrap_or(libc::EIO)))?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("Threads:"))
-        .and_then(|value| value.trim().parse().ok())
-        .ok_or_else(|| Errno::EPROTO.into())
-}
-
 /// The signals pending in the kernel for the stopped thread `tid`: its own
 /// and its thread group's (procfs `SigPnd` and `ShdPnd`).
 fn pending_signal_mask(tid: Pid) -> Result<u64, TraceError> {
@@ -5447,8 +5423,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// The rewind left the marker there (`check_liteinst_rewind`), and the
     /// controller has not run since, but a syscall the Tool injects from this
     /// stop returns its result in `rax`: `restore_context` restores the
-    /// instruction pointer, the arguments and the syscall clobbers, not the
-    /// return register. Without the marker the re-executed `int3` would not be
+    /// instruction pointer, the arguments and the syscall clobbers, and the
+    /// return register only inside a signal callback (`in_signal_callback`).
+    /// Without the marker the re-executed `int3` would not be
     /// recognised as the syscall trap, and an armed landing would restore the
     /// clobbered value for the re-trap.
     #[cfg(target_arch = "x86_64")]
@@ -6363,7 +6340,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             sig
         );
         let verdict = self.report_signal(sig, true).await?;
-        self.keep_injection_ret_for_suppressed_restart_block(task, &verdict)?;
+        self.keep_injection_ret_for_replaced_restart_block(task, &verdict)?;
         Ok(SignalResume {
             signal: verdict.signal,
             reported: taken.filter(|taken| taken.signal == sig),
@@ -6506,10 +6483,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// which runs the injection's restart block instead: an interrupted
     /// injected `nanosleep` would sleep out its own deadline in place of the
     /// guest's. `-EINTR` is what the guest's syscall returns when a handler
-    /// is delivered. When no handler runs instead, or another task could
-    /// still change whether one runs,
-    /// `keep_injection_ret_for_suppressed_restart_block` puts back the
-    /// injection's return register, as before this restore existed.
+    /// is delivered. Reverie cannot tell whether one will be, so the guest
+    /// resumes with the injection's return register, as before this restore
+    /// existed (`keep_injection_ret_for_replaced_restart_block`).
     fn signal_callback_guest_ret(&mut self, context: &libc::user_regs_struct, ret: Reg) -> Reg {
         if self.signal_callback_replaced_restart_block
             && (context.orig_syscall() as i64) >= 0
@@ -6524,37 +6500,26 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     /// Puts back the return register a signal callback's latest injection
     /// left in place of the `-EINTR` that `signal_callback_guest_ret` gave
-    /// the guest for its `-ERESTART_RESTARTBLOCK`, when the guest resumes
-    /// into no handler: the callback suppressed the signal (`verdict.signal`
-    /// is `None`), or resumes with one the guest does not catch (procfs
-    /// `SigCgt`) or blocks by now (`SigBlk`), which `ptrace_signal` then
-    /// requeues, and also when another task could still change whether a
-    /// handler runs (below). A Tool's own register write after the injection
-    /// clears `restart_block_eintr` (`Guest::set_regs`) and is kept.
+    /// the guest for its `-ERESTART_RESTARTBLOCK`, whatever signal the
+    /// callback resumes with. A Tool's own register write after the
+    /// injection clears `restart_block_eintr` (`Guest::set_regs`) and is
+    /// kept.
     ///
-    /// No handler is delivered then, so `-EINTR` is not what the guest's
-    /// syscall would return: untraced Linux would restart it through the
-    /// guest's own restart block, which the injection replaced, so Reverie
-    /// cannot restart it. The injection's return register is what the guest
-    /// has always resumed with here. It is right only when it happens to be
-    /// what the guest's syscall would have returned, as the zero of an
-    /// injected sleep that outlasts the guest's deadline
-    /// (<https://github.com/rrnewton/reverie/issues/845>).
-    ///
-    /// The blocked mask is the stopped thread's own, but the dispositions
-    /// are shared: a sibling thread can make a caught signal ignored after
-    /// `SigCgt` is read and before the kernel delivers it, and the guest
-    /// would then see `-EINTR` with no handler, which neither untraced Linux
-    /// nor Reverie without this restore returns. Handing the decision to the
-    /// kernel with `-ERESTARTNOHAND` does not help: with no handler, Linux
-    /// restarts the guest's syscall with its original arguments, so a
-    /// relative sleep starts over and the request is read again. So the
-    /// `-EINTR` stays only while no other task can change the dispositions:
-    /// the stopped thread is the only thread of its group (procfs `Threads`)
-    /// and the only task Reverie traces (`ntasks`). Otherwise the guest
-    /// resumes with the injection's return register, as without this
-    /// restore (<https://github.com/rrnewton/reverie/issues/845>).
-    fn keep_injection_ret_for_suppressed_restart_block(
+    /// When no handler is delivered at the resume, `-EINTR` is not what the
+    /// guest's syscall would return: untraced Linux would restart it through
+    /// the guest's own restart block, which the injection replaced, so
+    /// Reverie cannot restart it. The kernel decides whether a handler is
+    /// delivered at the resume, from dispositions that another thread can
+    /// change after Reverie reads them, and so can a process that shares them
+    /// without being traced (`CLONE_SIGHAND` with `CLONE_UNTRACED`), which
+    /// procfs and `kcmp` cannot rule out: such a process can make itself
+    /// uninspectable, or create another and exit while procfs is read. So
+    /// the guest resumes with the injection's return register, as before
+    /// this restore existed. It is right only when it happens to be what the
+    /// guest's syscall would have returned, as the zero of an injected sleep
+    /// that outlasts the guest's deadline; when a handler runs, Linux returns
+    /// `-EINTR` instead (<https://github.com/rrnewton/reverie/issues/845>).
+    fn keep_injection_ret_for_replaced_restart_block(
         &self,
         task: &Stopped,
         verdict: &SignalVerdict,
@@ -6562,19 +6527,6 @@ impl<L: Tool + 'static> TracedTask<L> {
         let (Some(ret), true) = (verdict.injection_ret, verdict.restart_block_eintr) else {
             return Ok(());
         };
-        let enters_handler = match verdict.signal {
-            None => false,
-            Some(sig) => {
-                let bit = signal_mask_bit(sig);
-                self.ntasks.load(Ordering::SeqCst) == 1
-                    && thread_count(task.pid())? == 1
-                    && caught_signal_mask(task.pid())? & bit != 0
-                    && blocked_signal_mask(task.pid())? & bit == 0
-            }
-        };
-        if enters_handler {
-            return Ok(());
-        }
         let mut regs = task.getregs()?;
         *regs.ret_mut() = ret;
         task.setregs(&regs)?;
@@ -6748,7 +6700,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             HandleSignalResult::SignalToDeliver(task, sig) => {
                 let taken = TakenSignal::at_stop(&task, sig);
                 let verdict = self.report_signal(sig, false).await?;
-                self.keep_injection_ret_for_suppressed_restart_block(&task, &verdict)?;
+                self.keep_injection_ret_for_replaced_restart_block(&task, &verdict)?;
                 let signal = verdict.signal;
                 self.keep_injection_ret_for_requeue(&task, signal, verdict.injection_ret)?;
                 self.restore_liteinst_restart_marker(&task)?;
@@ -11278,8 +11230,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// (`status_to_result`): the injection returns `-ERESTARTSYS` with the
     /// signal held for the resume. A plain injection discards a `SIGTRAP`
     /// stop before its instruction and steps the syscall again
-    /// (`untraced_syscall_with`); a LiteInst frame injection, or one during
-    /// LiteInst activation, keeps the not-run handling for it. `SIGKILL` has
+    /// (`untraced_syscall_with`); a LiteInst frame injection keeps the
+    /// not-run handling for it, and an injection during LiteInst activation
+    /// rejects it with `EPROTO` (`status_to_result`). `SIGKILL` has
     /// no signal stop to return; `requeueable` names it only for
     /// completeness. Signals requeued before it stay pending.
     async fn requeue_signals_before_original_syscall(
@@ -12262,8 +12215,8 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         }
         // The Tool's own write decides the guest's return register: a
         // signal callback no longer puts back its latest injection's, neither
-        // when it suppresses the signal
-        // (`keep_injection_ret_for_suppressed_restart_block`) nor when the
+        // after it replaced the guest's restart block
+        // (`keep_injection_ret_for_replaced_restart_block`) nor when the
         // guest's mask blocks the resumed signal
         // (`keep_injection_ret_for_requeue`).
         self.signal_callback_restart_block_eintr = false;
