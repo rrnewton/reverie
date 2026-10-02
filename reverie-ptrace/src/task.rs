@@ -443,48 +443,83 @@ fn signal_mask_bit(sig: Signal) -> u64 {
     1u64 << (sig as i32 - 1)
 }
 
+/// `io_uring_enter`'s flag to wait for completions (linux/io_uring.h).
+const IORING_ENTER_GETEVENTS: usize = 1;
+
 /// Whether the syscall `nr`, run with `args` to `result`, left the thread's
 /// signal mask set by it, as Linux orders each syscall's checks and effects.
-/// `Err(ERESTARTSYS)` is also the result of an injection a signal
-/// interrupted before its `syscall` ran, which none of these return once
-/// run.
+/// `memory` reads the thread's memory through its own page protections, as
+/// the syscall's user copies did, and `restore_pending` tells whether a
+/// mask-swapping syscall's restore of its saved mask is pending
+/// (`PTRACE_GETSIGMASK` differs from the mask in effect). Both are read
+/// after the syscall ran: a thread that maps or unmaps the memory in between
+/// can change the answer. `Err(ERESTARTSYS)` is also the result of an
+/// injection a signal interrupted before its `syscall` ran, which none of
+/// these return once run.
 ///
 /// - `rt_sigprocmask` with a new set writes the mask once the set is read
 ///   and `how` is valid. `EINVAL` (size, then `how`) comes before the write.
-///   `EFAULT` comes from reading the set, before it, or from writing the old
-///   set, after it; it counts as a write unless there is no old set.
+///   `EFAULT` comes from reading the set, before the write, or from writing
+///   the old set, after it: it counts as a write only if there is an old
+///   set and the new set is readable.
 /// - `rt_sigreturn` installs the mask its frame saved.
 /// - `rt_sigsuspend` and the mask-swapping syscalls given a mask install it
 ///   and save the mask in effect. They restore that mask before returning,
 ///   except when a signal interrupted them (`EINTR`, or `ERESTARTNOHAND`,
 ///   which the guest sees as `EINTR`): the restore is then pending, and the
-///   mask in effect is theirs. `io_pgetevents` leaves it pending whenever a
-///   signal is pending as it returns, whatever its result, so any result
-///   counts. `pselect6` and `io_pgetevents` take a structure that holds the
-///   mask pointer, which counts as a mask whether or not that pointer is
-///   null.
-fn writes_signal_mask(nr: Sysno, args: &SyscallArgs, result: Result<i64, Errno>) -> bool {
+///   mask in effect is theirs. `pselect6` and `io_pgetevents` take a
+///   structure that holds the mask pointer, which must not be null.
+///   `io_pgetevents` leaves the restore pending whenever a signal is pending
+///   as it returns, whatever its result, and `io_uring_enter` waiting for
+///   completions (`IORING_ENTER_GETEVENTS`) whenever a signal interrupted
+///   its wait, with a mask that may be registered with the ring: either
+///   counts if the restore is pending. A pending restore of a mask equal to
+///   the one it replaced cannot be seen, and does not count.
+fn writes_signal_mask<M: MemoryAccess>(
+    nr: Sysno,
+    args: &SyscallArgs,
+    result: Result<i64, Errno>,
+    memory: &M,
+    restore_pending: impl FnOnce() -> Result<bool, TraceError>,
+) -> Result<bool, TraceError> {
     if result == Err(Errno::ERESTARTSYS) {
-        return false;
+        return Ok(false);
     }
     let interrupted = matches!(result, Err(Errno::EINTR) | Err(Errno::ERESTARTNOHAND));
-    match nr {
+    // The first word of the 8 bytes at `address`, `None` if they cannot be
+    // read.
+    let word = |address: usize| -> Result<Option<u64>, TraceError> {
+        let Some(address) = Addr::<u8>::from_raw(address) else {
+            return Ok(None);
+        };
+        let mut bytes = [0u8; 8];
+        match memory.read_exact_with_user_access(address, &mut bytes) {
+            Ok(()) => Ok(Some(u64::from_ne_bytes(bytes))),
+            Err(Errno::EFAULT) => Ok(None),
+            Err(errno) => Err(errno.into()),
+        }
+    };
+    let nonnull_mask = |structure: usize| -> Result<bool, TraceError> {
+        Ok(word(structure)?.is_some_and(|mask| mask != 0))
+    };
+    Ok(match nr {
         Sysno::rt_sigprocmask => {
             args.arg1 != 0
                 && match result {
                     Ok(_) => true,
-                    Err(Errno::EFAULT) => args.arg2 != 0,
+                    Err(Errno::EFAULT) => args.arg2 != 0 && word(args.arg1)?.is_some(),
                     Err(_) => false,
                 }
         }
         Sysno::rt_sigreturn => true,
         Sysno::rt_sigsuspend => interrupted,
         Sysno::ppoll => args.arg3 != 0 && interrupted,
-        Sysno::pselect6 => args.arg5 != 0 && interrupted,
+        Sysno::pselect6 => interrupted && nonnull_mask(args.arg5)?,
         Sysno::epoll_pwait | Sysno::epoll_pwait2 => args.arg4 != 0 && interrupted,
-        Sysno::io_pgetevents => args.arg5 != 0,
+        Sysno::io_pgetevents => nonnull_mask(args.arg5)? && (interrupted || restore_pending()?),
+        Sysno::io_uring_enter => args.arg3 & IORING_ENTER_GETEVENTS != 0 && restore_pending()?,
         _ => false,
-    }
+    })
 }
 
 /// A signal as its signal-delivery stop took it from the kernel: its siginfo,
@@ -580,19 +615,103 @@ fn is_step_trap(task: &Stopped) -> Result<bool, TraceError> {
         && matches!(siginfo.si_code, libc::TRAP_TRACE | libc::TRAP_BRKPT))
 }
 
-/// Whether `task`'s registers at a stop still name a syscall it entered
-/// (`orig_rax` at least 0). x86_64 sets `orig_rax` to -1 on every entry from
-/// an exception or interrupt, so a stop that reports -1 after one that
-/// named a syscall follows a guest instruction. Other architectures keep no
-/// such record, and report false.
-fn names_syscall(task: &Stopped) -> Result<bool, TraceError> {
+/// The address of the private page's nop landing (`cp::NOP_LANDING_OFFSET`).
+#[cfg(target_arch = "x86_64")]
+const fn nop_landing() -> u64 {
+    (cp::PRIVATE_PAGE_OFFSET + cp::NOP_LANDING_OFFSET) as u64
+}
+
+/// Moves the stopped `task` to the nop landing, `landing + 2`, and returns
+/// the instruction pointer it had, which `leave_nop_landing` maps it back
+/// to. The syscall registers are kept, so the kernel's restart rule applies
+/// as it would have at the guest's own address: a restart moves the
+/// instruction pointer back two bytes, to `landing`, where the guest's
+/// `syscall` instruction would be. The landing must still hold its `nop`s:
+/// the private page is writable by the guest. `None` on architectures
+/// without a landing, which deliver from the guest's own address.
+fn enter_nop_landing(task: &Stopped) -> Result<Option<u64>, TraceError> {
     #[cfg(target_arch = "x86_64")]
-    return Ok(task.getregs()?.orig_syscall() as i64 >= 0);
+    {
+        let mut bytes = [0u8; cp::NOP_LANDING_LEN];
+        task.read_exact(nop_landing() as usize, &mut bytes)?;
+        if bytes != [0x90; cp::NOP_LANDING_LEN] {
+            tracing::error!(
+                "[{}] private-page nop landing holds {bytes:02x?}, not {} nop bytes",
+                task.pid(),
+                cp::NOP_LANDING_LEN
+            );
+            return Err(Errno::EPROTO.into());
+        }
+        let mut regs = task.getregs()?;
+        let guest_rip = regs.ip();
+        *regs.ip_mut() = (nop_landing() + 2) as Reg;
+        task.setregs(&regs)?;
+        Ok(Some(guest_rip))
+    }
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = task;
-        Ok(false)
+        Ok(None)
     }
+}
+
+/// The guest address an instruction pointer `rip` at the nop landing stands
+/// for, given the guest's own instruction pointer `guest_rip`
+/// (`enter_nop_landing`): `landing` (a restart) and `landing + 1` (its `nop`
+/// run) stand for the guest's `syscall` instruction, two bytes back, and
+/// `landing + 2` and `landing + 3` for `guest_rip`. `None` outside the
+/// landing.
+fn from_nop_landing(rip: u64, guest_rip: u64) -> Option<u64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let offset = rip.checked_sub(nop_landing())?;
+        (offset < cp::NOP_LANDING_LEN as u64)
+            .then(|| guest_rip.wrapping_add(offset & !1).wrapping_sub(2))
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (rip, guest_rip);
+        None
+    }
+}
+
+/// Whether the stopped `task`, moved to the nop landing from `guest_rip`
+/// (`enter_nop_landing`), is still in the kernel's signal delivery, before
+/// any instruction ran there: at `landing + 2`, or at `landing` after a
+/// restart. Without a landing nothing tells, and it is taken to be.
+fn in_signal_delivery(task: &Stopped, guest_rip: Option<u64>) -> Result<bool, TraceError> {
+    Ok(match guest_rip {
+        #[cfg(target_arch = "x86_64")]
+        Some(_) => {
+            let rip = task.getregs()?.ip();
+            rip == nop_landing() || rip == nop_landing() + 2
+        }
+        _ => true,
+    })
+}
+
+/// Moves the stopped `task` back from the nop landing to the guest address
+/// its instruction pointer there stands for (`from_nop_landing`), if it was
+/// moved there from `guest_rip` and is still there.
+fn leave_nop_landing(task: &Stopped, guest_rip: Option<u64>) -> Result<(), TraceError> {
+    let Some(guest_rip) = guest_rip else {
+        return Ok(());
+    };
+    let mut regs = task.getregs()?;
+    if let Some(rip) = from_nop_landing(regs.ip(), guest_rip) {
+        *regs.ip_mut() = rip as Reg;
+        task.setregs(&regs)?;
+    }
+    Ok(())
+}
+
+/// The offset in a handler's `ucontext_t` of the instruction pointer its
+/// signal frame saved, which `rt_sigreturn` returns to.
+#[cfg(target_arch = "x86_64")]
+fn saved_rip_offset() -> usize {
+    std::mem::offset_of!(libc::ucontext_t, uc_mcontext)
+        + std::mem::offset_of!(libc::mcontext_t, gregs)
+        + libc::REG_RIP as usize * std::mem::size_of::<libc::greg_t>()
 }
 
 /// `si_code` of a SIGSYS raised by a seccomp filter's `SECCOMP_RET_TRAP`.
@@ -2751,7 +2870,8 @@ pub struct TracedTask<L: Tool> {
     /// guest leaves the stop: the callback's first injection installs it
     /// before its syscall runs, as Linux restores it when the injection's
     /// step returns to the guest without a signal, and otherwise
-    /// `resume_with_signal` does.
+    /// `resume_with_signal` does. Another thread's exec, which ends the
+    /// callback, drops it.
     pending_restore: Option<u64>,
 
     /// Whether `Tool::handle_signal_event` is running (`report_signal`). A
@@ -5604,7 +5724,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// this report `handle_signal` never sees the signal and the Tool cannot
     /// act on it: Hermit's `--sigint-instakill` missed a SIGINT that
     /// interrupted a blocking stdin read
-    /// (https://github.com/rrnewton/hermit/issues/3468).
+    /// (<https://github.com/rrnewton/hermit/issues/3468>).
     ///
     /// From any other stop the signal is passed on unreported, because the
     /// resume does not deliver it there: at a syscall stop Linux queues it,
@@ -5618,11 +5738,11 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// let the kernel restore a mask-swapping syscall's saved mask. SIGSTOP
     /// and the timer signal are also passed on unreported, as before:
     /// `handle_signal` never reports SIGSTOP to the Tool, and a held timer
-    /// signal is https://github.com/rrnewton/reverie/issues/747.
+    /// signal is <https://github.com/rrnewton/reverie/issues/747>.
     ///
     /// A signal the callback's own injection let the kernel block again is
     /// delivered by `resume_with_signal`. Not handled here
-    /// (https://github.com/rrnewton/reverie/issues/845): a signal the
+    /// (<https://github.com/rrnewton/reverie/issues/845>): a signal the
     /// callback's own injections hold stays in `pending_signal`.
     async fn report_held_signal(
         &mut self,
@@ -5686,11 +5806,15 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// installs it, so the signal then takes the route above. Without an
     /// injection, the signal the Tool delivers, its own or a replacement,
     /// is delivered under the mask the signal was dequeued under with the
-    /// saved mask restored after it, as Linux delivers it; a suppressed
-    /// signal resumes the guest with the saved mask installed. Linux scans
-    /// for pending signals under the dequeue mask before it restores the
-    /// saved one: Reverie scans under the saved mask whenever it resumes
-    /// such a stop without a signal (https://github.com/rrnewton/reverie/issues/845).
+    /// saved mask restored after it, as Linux delivers it. On x86_64 a
+    /// suppressed signal goes on the same way with no signal
+    /// (`deliver_under_taken_mask`): Linux scans for pending signals under
+    /// the dequeue mask and restores the saved one after them, as it does
+    /// untraced. Elsewhere a suppressed signal resumes the guest with the
+    /// saved mask installed. Reverie scans under the saved mask whenever it
+    /// resumes without a signal a stop whose restore an injection installed,
+    /// or, outside x86_64, a lost one
+    /// (<https://github.com/rrnewton/reverie/issues/845>).
     async fn resume_with_signal(
         &mut self,
         task: Stopped,
@@ -5698,13 +5822,15 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> Result<Wait, TraceError> {
         let SignalResume { signal, reported } = resume;
         if let Some(restores) = self.pending_restore.take() {
-            return match (signal, reported) {
-                (Some(sig), Some(taken)) => {
-                    let siginfo = (sig == taken.signal).then_some(taken.siginfo);
-                    self.deliver_under_taken_mask(task, sig, siginfo, taken.blocked, restores)
+            return match reported {
+                Some(taken) if signal.is_some() || cfg!(target_arch = "x86_64") => {
+                    let siginfo = signal
+                        .filter(|sig| *sig == taken.signal)
+                        .map(|_| taken.siginfo);
+                    self.deliver_under_taken_mask(task, signal, siginfo, taken.blocked, restores)
                         .await
                 }
-                (signal, _) => {
+                _ => {
                     task.setsigmask(restores)?;
                     self.resume_stopped(task, signal)?.next_state().await
                 }
@@ -5724,7 +5850,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return self
                     .deliver_under_taken_mask(
                         task,
-                        sig,
+                        Some(sig),
                         Some(taken.siginfo),
                         taken.blocked,
                         taken.restores,
@@ -5739,10 +5865,11 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Delivers `sig` under `blocked`, the mask a mask-swapping syscall's
     /// signal was dequeued under (its temporary mask), with the syscall's
     /// saved mask (`restores`) restored when its handler returns: as Linux
-    /// delivers a signal that interrupts such a syscall. The thread's mask
-    /// is either the saved one by now, restored by an injection's step, or
-    /// still the temporary one, with the restore cleared by an earlier call
-    /// (`Task::pending_restore`).
+    /// delivers a signal that interrupts such a syscall. With no `sig`,
+    /// Linux goes on under `blocked` as after a signal it discards. The
+    /// thread's mask is either the saved one by now, restored by an
+    /// injection's step, or still the temporary one, with the restore
+    /// cleared by an earlier call (`Task::pending_restore`).
     ///
     /// The thread's mask is set to the temporary one and `task` is stepped
     /// with the signal, carrying `siginfo`, or for a signal that replaces
@@ -5758,44 +5885,55 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// the temporary mask when the signal has no frame: it discards the
     /// signal (`SIG_IGN`, a default ignore, an orphaned process group's
     /// SIGTSTP, SIGTTIN or SIGTTOU), stops on it, ends the guest, or forces
-    /// a SIGSEGV because the frame cannot be built. The saved mask is then
-    /// restored at the step's next stop, except a signal-delivery stop that
-    /// no guest instruction preceded: Linux took that stop's signal (the
-    /// forced SIGSEGV, or another pending one) under the temporary mask
-    /// too, and would restore the saved mask after it. That stop is returned
-    /// with the saved mask recorded in `Task::lost_restore`, so that its
-    /// signal is delivered the same way (`handle_signal`). On x86_64 a stop
-    /// whose registers no longer name the interrupted syscall
-    /// (`names_syscall`) follows a guest instruction, such as a faulting
-    /// RDTSC after the discarded signal returned the guest to user mode, and
-    /// gets the saved mask restored like every other stop. A discarded
-    /// signal returns the guest to its restarted syscall under the temporary
-    /// mask; the syscall's first stop restores the saved mask, or, run
-    /// without a stop, the syscall saves the temporary mask as its own and
-    /// installs it again.
+    /// a SIGSEGV because the frame cannot be built. On x86_64 the step
+    /// starts at the private page's nop landing (`enter_nop_landing`), not
+    /// at the guest's own address, so what Linux returns to then is a `nop`,
+    /// not a guest instruction. The step's trap after it restores the saved
+    /// mask and moves the guest back to its own address
+    /// (`leave_nop_landing`): no guest instruction runs under the temporary
+    /// mask, and a syscall Linux restarts runs under the saved one, as it
+    /// does untraced. A signal-delivery stop still at the landing
+    /// (`in_signal_delivery`) is one Linux took under the temporary mask
+    /// too, as it takes the forced SIGSEGV or another pending signal, and
+    /// would restore the saved mask after it. That stop is returned with the
+    /// saved mask recorded in `Task::lost_restore`, so that its signal is
+    /// delivered the same way (`handle_signal`). Every other stop gets the
+    /// saved mask restored. A handler entered from the landing has the
+    /// instruction pointer its frame saved moved back to the guest's
+    /// address, and a core dump of a guest ended there shows the landing.
+    ///
+    /// Without a landing, on other architectures, the step starts at the
+    /// guest's own address, and nothing tells a stop that follows a guest
+    /// instruction from one that does not: every signal-delivery stop is
+    /// taken to be in delivery, and after a discarded signal the guest runs
+    /// its own code under the temporary mask until its next stop.
     async fn deliver_under_taken_mask(
         &mut self,
         task: Stopped,
-        sig: Signal,
+        sig: Option<Signal>,
         siginfo: Option<libc::siginfo_t>,
         blocked: u64,
         restores: u64,
     ) -> Result<Wait, TraceError> {
-        let in_syscall = names_syscall(&task)?;
+        let guest_rip = enter_nop_landing(&task)?;
         task.setsigmask(blocked)?;
         if let Some(siginfo) = siginfo {
             task.setsiginfo(&siginfo)?;
         }
         tracing::debug!(
-            "[{}] delivering {} under the mask it was dequeued under",
+            "[{}] resuming with {:?} under the mask it was dequeued under",
             task.pid(),
             sig
         );
         let wait = self.step_stopped(task, sig)?.next_state().await?;
         self.arm_liteinst_wait(&wait);
+        let entered_handler = |stopped: &Stopped| match sig {
+            Some(sig) => is_handler_entry_trap(stopped, sig),
+            None => Ok(false),
+        };
         match wait {
             Wait::Stopped(mut stopped, Event::Signal(Signal::SIGTRAP))
-                if is_handler_entry_trap(&stopped, sig)? =>
+                if entered_handler(&stopped)? =>
             {
                 let context = stopped.getregs()?.args().2 as usize;
                 for offset in saved_mask_offsets() {
@@ -5807,24 +5945,36 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }
                     stopped.write_exact(address, &restores.to_ne_bytes())?;
                 }
+                #[cfg(target_arch = "x86_64")]
+                if let Some(guest_rip) = guest_rip {
+                    let address = AddrMut::<u8>::from_raw(context + saved_rip_offset())
+                        .ok_or(Errno::EFAULT)?;
+                    let mut saved = [0u8; 8];
+                    stopped.read_exact(address, &mut saved)?;
+                    let rip = from_nop_landing(u64::from_ne_bytes(saved), guest_rip)
+                        .ok_or(Errno::EPROTO)?;
+                    stopped.write_exact(address, &rip.to_ne_bytes())?;
+                }
                 let wait = self.resume_stopped(stopped, None)?.next_state().await?;
                 self.arm_liteinst_wait(&wait);
                 Ok(wait)
             }
             Wait::Stopped(stopped, Event::Signal(Signal::SIGTRAP)) if is_step_trap(&stopped)? => {
+                leave_nop_landing(&stopped, guest_rip)?;
                 stopped.setsigmask(restores)?;
                 let wait = self.resume_stopped(stopped, None)?.next_state().await?;
                 self.arm_liteinst_wait(&wait);
                 Ok(wait)
             }
             Wait::Stopped(stopped, Event::Signal(next))
-                if !is_group_stop(&stopped, next)?
-                    && !(in_syscall && !names_syscall(&stopped)?) =>
+                if !is_group_stop(&stopped, next)? && in_signal_delivery(&stopped, guest_rip)? =>
             {
+                leave_nop_landing(&stopped, guest_rip)?;
                 self.lost_restore = Some((next, restores));
                 Ok(Wait::Stopped(stopped, Event::Signal(next)))
             }
             Wait::Stopped(stopped, event) => {
+                leave_nop_landing(&stopped, guest_rip)?;
                 stopped.setsigmask(restores)?;
                 Ok(Wait::Stopped(stopped, event))
             }
@@ -5900,9 +6050,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Linux restores it when it returns to the guest without a handler. The
     /// SIGSEGV of such a stop is Linux's own, forced when the step before it
     /// could not build a handler's frame: no guest instruction ran since
-    /// (`deliver_under_taken_mask` does not keep a restore past a stop that
-    /// no longer names the interrupted syscall), so it is not a fault
-    /// `handle_sigsegv` emulates.
+    /// (on x86_64, where `handle_sigsegv` emulates faults,
+    /// `deliver_under_taken_mask` keeps a restore only for a stop at its nop
+    /// landing), so it is not a fault `handle_sigsegv` emulates.
     async fn handle_signal(
         &mut self,
         task: Stopped,
@@ -9167,6 +9317,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.pending_signal = None;
                     self.pending_signal_taken = None;
                     self.in_signal_callback = false;
+                    // A restore the cancelled callback's stop owed belongs to
+                    // the thread that stopped, which the exec ended: the new
+                    // image keeps the mask of the thread that executed it.
+                    self.pending_restore = None;
+                    self.lost_restore = None;
                     self.stale_private_step_trap = false;
                     self.pending_syscall = None;
                     self.pending_syscall_already_skipped = false;
@@ -10504,7 +10659,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> Result<Result<i64, Errno>, TraceError> {
         self.install_pending_restore()?;
         let result = self.inject_at_stop(nr, args).await?;
-        self.note_mask_write(nr, &args, result);
+        self.note_mask_write(nr, &args, result)?;
         Ok(result)
     }
 
@@ -10520,10 +10675,19 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Records that a signal callback's injection of `nr` with `args`, which
     /// ran to `result`, left the signal mask set by it
     /// (`Task::injection_wrote_mask`).
-    fn note_mask_write(&mut self, nr: Sysno, args: &SyscallArgs, result: Result<i64, Errno>) {
-        if self.in_signal_callback && writes_signal_mask(nr, args, result) {
-            self.injection_wrote_mask = true;
+    fn note_mask_write(
+        &mut self,
+        nr: Sysno,
+        args: &SyscallArgs,
+        result: Result<i64, Errno>,
+    ) -> Result<(), TraceError> {
+        if self.in_signal_callback && !self.injection_wrote_mask {
+            let task = self.assume_stopped();
+            let restore_pending = || Ok(task.getsigmask()? != blocked_signal_mask(task.pid())?);
+            self.injection_wrote_mask =
+                writes_signal_mask(nr, args, result, &task, restore_pending)?;
         }
+        Ok(())
     }
 
     async fn inject_at_stop(
@@ -10592,7 +10756,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> Result<Result<i64, Errno>, TraceError> {
         self.install_pending_restore()?;
         let result = self.tail_inject_at_stop(nr, args).await?;
-        self.note_mask_write(nr, &args, result);
+        self.note_mask_write(nr, &args, result)?;
         Ok(result)
     }
 
