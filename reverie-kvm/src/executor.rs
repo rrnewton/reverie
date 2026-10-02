@@ -7030,7 +7030,7 @@ fn admit_host_read_zero(file: &std::fs::File, guest_fd: i32, address: u64) -> cr
     {
         return Ok(());
     }
-    if filesystem.f_type == libc::ANON_INODE_FS_MAGIC {
+    if filesystem.f_type == ANON_INODE_FS_MAGIC {
         let target = std::fs::read_link(format!("/proc/self/fd/{host_fd}"))?;
         if matches!(
             target.as_os_str().as_bytes(),
