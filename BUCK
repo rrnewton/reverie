@@ -267,6 +267,7 @@ rust_library(
     ],
     deps = [
         "fbsource//third-party/rust:bincode",
+        "fbsource//third-party/rust:iced-x86",
         "fbsource//third-party/rust:libc",
         "fbsource//third-party/rust:liteinst2",
         "fbsource//third-party/rust:serde",
