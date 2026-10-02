@@ -789,7 +789,7 @@ impl Stopped {
     /// ESRCH and the child is never captured. The refusal names the queued
     /// status instead. This makes no ptrace request and changes no queue; a
     /// prefix holding such a stop is also never retired (see
-    /// [`Stopped::retire_statuses_before_exit_stop`]). Always succeeds on any
+    /// `Stopped::retire_statuses_before_exit_stop`). Always succeeds on any
     /// other capability.
     #[cfg(feature = "notifier")]
     pub fn superseded_new_child(&self) -> Result<(), SupersededStopRefusal> {
