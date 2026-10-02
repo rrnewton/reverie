@@ -2570,6 +2570,49 @@ pub(crate) enum PreSyscallPoint {
     Late,
 }
 
+/// The owner that must retain a decoded `Event::NewChild` before any
+/// cancellation point can drop the stop that carries it.
+#[derive(Clone, Copy)]
+enum NewbornOwner<'a> {
+    /// Ordinary ptrace: the fatal session's retained kernel edge.
+    Ordinary(&'a FatalSession),
+    /// Dynamic LiteInst: the session cleanup guard's newborn table.
+    Liteinst(&'a StdMutex<HashMap<Pid, NewbornTracee>>),
+}
+
+impl NewbornOwner<'_> {
+    /// Synchronous and idempotent for the same child generation: a repeated
+    /// registration of an already retained child is a no-op, so a nested
+    /// handler and the run loop can both register the same stop.
+    fn register(self, parent: Pid, event: &Event) {
+        let Event::NewChild(op, child) = event else {
+            return;
+        };
+        match self {
+            Self::Ordinary(session) => session.capture(parent, *op, child),
+            Self::Liteinst(newborns) => {
+                newborns
+                    .lock()
+                    .unwrap()
+                    .entry(child.pid())
+                    .or_insert_with(|| NewbornTracee::from_event(parent, *op, child));
+            }
+        }
+    }
+}
+
+impl<G: GlobalTool> GlobalState<G> {
+    /// Borrows only the global state, so a closure passed to a nested stepper
+    /// that also borrows the task's timer can still register a newborn.
+    fn newborn_owner(&self) -> NewbornOwner<'_> {
+        // `liteinst_runtime.is_none()` is `TracedTask::ordinary_failure_enabled`.
+        match self.liteinst_runtime.as_ref() {
+            None => NewbornOwner::Ordinary(&self.fatal_session),
+            Some(runtime) => NewbornOwner::Liteinst(&runtime.newborn_tracees),
+        }
+    }
+}
+
 impl<G: GlobalTool> Clone for GlobalState<G> {
     fn clone(&self) -> Self {
         Self {
@@ -3946,9 +3989,17 @@ impl<L: Tool + 'static> TracedTask<L> {
             .as_ref()
             .map(|armer| Arc::clone(&armer.held_root_stop));
         let mut step = move |task| RootStopLease::new(task, held_root_stop.clone()).step(None);
+        let newborn_owner = self.global_state.newborn_owner();
         let mut observe = |wait: &Wait| {
-            if let (Some(armer), Wait::Stopped(task, event)) = (armer.as_ref(), wait) {
-                armer.arm(task, event)?;
+            if let Wait::Stopped(task, event) = wait {
+                // A step can decode a new child. `HandleFailure::Event` then
+                // hands it to `abort`, and a cancellation can drop the run
+                // loop before the loop-top registration. Retain it here,
+                // before arming, in the order `arm_liteinst_wait` uses.
+                newborn_owner.register(task.pid(), event);
+                if let Some(armer) = armer.as_ref() {
+                    armer.arm(task, event)?;
+                }
             }
             Ok(())
         };
@@ -7278,25 +7329,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// A grandchild is reported to its own non-root parent, so scoping this to
     /// the root leaves it unregistered.
     fn register_liteinst_newborn(&self, task: &Stopped, event: &Event) {
-        if self.ordinary_failure_enabled() {
-            if let Event::NewChild(op, child) = event {
-                self.global_state
-                    .fatal_session
-                    .capture(task.pid(), *op, child);
-            }
-            return;
-        }
-        let Some(runtime) = self.global_state.liteinst_runtime.as_ref() else {
-            return;
-        };
-        if let Event::NewChild(op, child) = event {
-            runtime
-                .newborn_tracees
-                .lock()
-                .unwrap()
-                .entry(child.pid())
-                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
-        }
+        self.global_state
+            .newborn_owner()
+            .register(task.pid(), event);
     }
 
     fn arm_liteinst_wait(&self, wait: &Wait) {
