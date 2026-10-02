@@ -6221,7 +6221,9 @@ impl Tool for ReplacingSleepTool {
 /// passed on unreported: the controller's `orig_rax` is -1, so a signal
 /// event injecting a sleep there would replace the guest's restart block
 /// unseen and `restart_syscall` would continue the injected 20 s sleep
-/// instead of the guest's 400 ms one.
+/// instead of the guest's 400 ms one. Known gap: the held signal is not
+/// reported at this restart
+/// (https://github.com/rrnewton/reverie/issues/853).
 #[tokio::test(flavor = "current_thread")]
 async fn host_hybrid_restart_syscall_with_a_held_signal_keeps_the_guest_restart_block() {
     let (_directory, guest) = compile_fixture("hybrid_restart.c");
