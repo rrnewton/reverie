@@ -2145,6 +2145,7 @@ fn vdso_callback(number: i64) -> io::Result<liteinst2::trampoline::HookCallback>
         libc::SYS_getcpu => Ok(installed_vdso_getcpu_hook),
         libc::SYS_gettimeofday => Ok(installed_vdso_gettimeofday_hook),
         libc::SYS_clock_getres => Ok(installed_vdso_clock_getres_hook),
+        libc::SYS_getrandom => Ok(installed_vdso_getrandom_hook),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unsupported LiteInst vDSO syscall number {number}"),
@@ -3007,6 +3008,10 @@ unsafe extern "C" fn installed_vdso_gettimeofday_hook(context: *mut HookContext)
 
 unsafe extern "C" fn installed_vdso_clock_getres_hook(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_clock_getres)) }
+}
+
+unsafe extern "C" fn installed_vdso_getrandom_hook(context: *mut HookContext) {
+    unsafe { installed_syscall_hook_for(context, Some(libc::SYS_getrandom)) }
 }
 
 unsafe fn locate_syscall_site(resume_address: u64) -> Option<u64> {
