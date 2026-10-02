@@ -383,10 +383,14 @@ async fn site_patching_off_runs_every_call_through_the_in_guest_fallback() {
         disabled >= 24,
         "expected every getpid, clock_gettime and gettimeofday on the fallback: {stats}"
     );
+    // Every fallback completes except the guest's final exit_group: it is
+    // dispatched through the fallback like any other call, but the Tool host
+    // submits the process statistics before that call exits the process, so
+    // its completion is never counted.
     assert_eq!(
         paths.count(&LiteinstDispatchPath::FallbackCompletionSigsys),
-        disabled,
-        "every fallback must complete: {stats}"
+        disabled - 1,
+        "every fallback but the final exit_group must complete: {stats}"
     );
     println!("{stats}");
 }

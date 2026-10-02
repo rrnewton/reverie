@@ -745,15 +745,21 @@ pub const ALT_STACK_ENV: &str = "REVERIE_LITEINST_ALT_STACK";
 pub const PROCESS_FORK_ENV: &str = "REVERIE_LITEINST_PROCESS_FORK";
 /// Selects whether an in-guest Reverie Tool patches trapping syscall sites.
 ///
-/// Unset or `1` keeps site patching on. `0` turns it off: no site is claimed or
-/// patched, and every trapping syscall runs the Tool through the in-guest
-/// `SIGSYS` fallback ([`crate::syscall_fallback`]). That includes subscribed
-/// vDSO fast paths: they get ptrace's whole `mov $nr, %eax; syscall; ret`
-/// stubs with no hook ([`reverie_ptrace::patch_current_vdso_trapping`]) instead
-/// of hooked bare `syscall`s. Any other value is
-/// rejected. Only an in-guest Reverie Tool (the `install_tool` family) honors
-/// `0`; the ptrace-hosted, built-in, `strace`, and `compat` runtimes always
-/// patch, so they refuse to start when this variable holds anything but `1`.
+/// Unset or `1` keeps site patching on. `0` turns it off for syscall sites: no
+/// syscall site is claimed or patched, and every trapping syscall runs the Tool
+/// through the in-guest `SIGSYS` fallback ([`crate::syscall_fallback`]). That
+/// includes subscribed vDSO fast paths: they get ptrace's whole
+/// `mov $nr, %eax; syscall; ret` stubs with no hook
+/// ([`reverie_ptrace::patch_current_vdso_trapping`]) instead of hooked bare
+/// `syscall`s. Subscribed `cpuid`, `rdtsc`, and `rdtscp` instructions are not
+/// covered: their first fault still claims and patches the instruction site.
+/// Any other value is rejected. Only an in-guest Reverie Tool (the
+/// `install_tool` family) honors `0`. When the runtime is selected from the
+/// environment, the ptrace-hosted, built-in, `strace`, and `compat` runtimes
+/// always patch, so they refuse to start when this variable holds anything but
+/// `1`; the explicit host initializer
+/// (`reverie_liteinst_initialize_host`) reads no environment selector and
+/// does not check this variable.
 pub const SITE_PATCHING_ENV: &str = "REVERIE_LITEINST_SITE_PATCHING";
 /// [`SITE_PATCHING_ENV`] for the non-allocating constructor check.
 const SITE_PATCHING_ENV_C: &CStr = c"REVERIE_LITEINST_SITE_PATCHING";
