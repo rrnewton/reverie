@@ -38293,9 +38293,9 @@ mod tests {
         error: &'a crate::Error,
     ) -> &'a crate::Error {
         let cause = if let Some(record) = snapshots.first() {
-            fault.cause_with_retention(error, record.retention_id)
+            fault.cause(error, Some(record.retention_id))
         } else {
-            fault.cause(error)
+            fault.cause(error, None)
         };
         cause.unwrap_or_else(|| panic!("{:?}: {error:?}", fault.case()))
     }
@@ -38416,7 +38416,7 @@ mod tests {
         fault.arm();
         let transport = getdents64(&mut memory, &state, &[0, 0, length as u64, 0, 0, 0]);
         let snapshots = getdents64_alias_ledger(&fault);
-        let expected_cursor = if fault.setup_succeeds() {
+        let expected_cursor = if fault.case().setup_succeeds() {
             native_cursor
         } else {
             before
@@ -38425,7 +38425,7 @@ mod tests {
         assert_eq!(duplicate.stream_position().unwrap(), expected_cursor);
         let mut actual = vec![0; length];
         observer.read_raw(0, &mut actual).unwrap();
-        let wanted_bytes = if fault.setup_succeeds() {
+        let wanted_bytes = if fault.case().setup_succeeds() {
             &expected_bytes
         } else {
             &sentinel
