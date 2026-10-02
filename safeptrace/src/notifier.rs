@@ -4937,6 +4937,7 @@ mod test {
                 line,
                 "unshare: unshare failed: Operation not permitted"
                     | "unshare: write failed /proc/self/uid_map: Operation not permitted"
+                    | "unshare: mount /proc failed: Operation not permitted"
             )
         });
         if known_unshare_denial && !exercised && !unavailable {
@@ -5866,6 +5867,20 @@ mod test {
         assert_eq!(
             classify_exact_reuse_output(
                 Some(&output),
+                "ACTUAL_PID_REUSE_EXERCISED",
+                "ACTUAL_PID_REUSE_UNAVAILABLE",
+            ),
+            Ok(ExactReuseOutcome::Unavailable)
+        );
+
+        let proc_mount = Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: b"unshare: mount /proc failed: Operation not permitted\n".to_vec(),
+        };
+        assert_eq!(
+            classify_exact_reuse_output(
+                Some(&proc_mount),
                 "ACTUAL_PID_REUSE_EXERCISED",
                 "ACTUAL_PID_REUSE_UNAVAILABLE",
             ),
