@@ -270,9 +270,38 @@ fn timer_label(outcome: i64) -> String {
     }
 }
 
+/// Bootstrap bytes the lifecycle tests pass to `*_preload_data` launches.
+const LIFECYCLE_TOOL_DATA: &[u8] = b"lifecycle";
+/// Set by the tests of the `*_preload_data` launchers. It makes the fixture
+/// fail unless it received its coordinator through the bootstrap descriptor,
+/// so those tests cannot pass through the environment branch.
+const EXPECT_BOOTSTRAP_ENV: &str = "REVERIE_LITEINST_LIFECYCLE_EXPECT_BOOTSTRAP";
+
 fn install_tool() {
-    let coordinator = std::env::var_os(reverie_liteinst::COORDINATOR_ENV)
-        .expect("lifecycle fixture requires a LiteInst coordinator");
+    if std::env::var_os(EXPECT_BOOTSTRAP_ENV).is_some() {
+        let environ = std::fs::read("/proc/self/environ").unwrap();
+        let entry = format!("{}=", reverie_liteinst::COORDINATOR_ENV);
+        assert!(
+            !environ
+                .split(|byte| *byte == 0)
+                .any(|variable| variable.starts_with(entry.as_bytes())),
+            "a bootstrap launch put {} in the initial environment",
+            reverie_liteinst::COORDINATOR_ENV
+        );
+    }
+    let coordinator = match std::env::var_os(reverie_liteinst::COORDINATOR_ENV) {
+        Some(coordinator) => std::path::PathBuf::from(coordinator),
+        // A `*_preload_data` launch passes the coordinator in an inherited
+        // bootstrap descriptor instead of the environment.
+        None => {
+            // SAFETY: main starts before application-created threads.
+            let bootstrap = unsafe { reverie_liteinst::take_preload_bootstrap() }
+                .unwrap()
+                .expect("lifecycle fixture requires a LiteInst coordinator");
+            assert_eq!(bootstrap.tool_data, LIFECYCLE_TOOL_DATA);
+            bootstrap.coordinator
+        }
+    };
     // SAFETY: main starts before application-created threads and installs once.
     unsafe { reverie_liteinst::install_tool_quiescent::<LifecycleTool>(coordinator) }.unwrap();
 }

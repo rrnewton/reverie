@@ -116,6 +116,14 @@ fn guest_command(mode: &str) -> Command {
     command
 }
 
+/// A guest for a `*_preload_data` launcher: it fails unless its coordinator
+/// came through the bootstrap descriptor rather than the environment.
+fn bootstrap_guest_command(mode: &str) -> Command {
+    let mut command = guest_command(mode);
+    command.env("REVERIE_LITEINST_LIFECYCLE_EXPECT_BOOTSTRAP", "1");
+    command
+}
+
 fn assert_reaped(pid: u32) {
     // Once the root exits this descendant is reparented to the host's subreaper.
     // Closing its inherited coordinator connection proves it has exited, but
@@ -229,6 +237,14 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
     assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
+    assert_fast_path_stats(&global, &stats);
+}
+
+/// Asserts the statistics of one `fast-path` guest run.
+fn assert_fast_path_stats(
+    global: &LifecycleGlobal,
+    stats: &reverie_liteinst::LiteinstBackendStatsSource,
+) {
     assert_eq!(stats.snapshot().process_reports(), 1, "{stats}");
     assert!(stats.distinct_rips() >= 1, "{stats}");
     assert!(stats.patch_candidates() >= 1, "{stats}");
@@ -260,14 +276,14 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
         record.counters.signal_traps >= record.sites.patched,
         "{record}"
     );
-    assert_physical_signals_agree(&stats, &record);
+    assert_physical_signals_agree(stats, &record);
     // The getpid site's first call trapped once and then entered through the
     // hook it installed; every call after that was a hook entry.
     assert!(
         record.counters.patched_direct_calls >= Some(8),
         "{record}\n{stats}"
     );
-    assert_tool_callbacks_were_delivered(&global, &stats);
+    assert_tool_callbacks_were_delivered(global, stats);
 }
 
 /// The handler's count of every `SIGSYS` it received equals the dispatcher's
@@ -339,6 +355,104 @@ async fn in_guest_tool_refuses_an_unsupported_site_patching_value() {
     );
     assert!(output.stdout.is_empty(), "{output:?}");
     assert_eq!(global.getpid.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bootstrap_run_with_output_reports_typed_instrumentation_stats() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload_data_and_stats::<CoordinatorOnlyTool>(
+            bootstrap_guest_command("fast-path"),
+            (),
+            preload,
+            b"lifecycle".to_vec(),
+        ),
+    )
+    .await
+    .expect("stats-enabled bootstrap run hung")
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
+    assert_fast_path_stats(&global, &stats);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bootstrap_run_with_inherited_stdio_reports_typed_instrumentation_stats() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_inherited_stdio_and_preload_data_and_stats::<CoordinatorOnlyTool>(
+            bootstrap_guest_command("fast-path"),
+            (),
+            preload,
+            b"lifecycle".to_vec(),
+        ),
+    )
+    .await
+    .expect("stats-enabled inherited-stdio bootstrap run hung")
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    // The guest wrote to the inherited stdout, not to a captured buffer.
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
+    assert_fast_path_stats(&global, &stats);
+}
+
+/// The status-only bootstrap launchers keep the caller's stdio: a guest whose
+/// stdout the caller pointed at a file writes there.
+#[tokio::test(flavor = "current_thread")]
+async fn bootstrap_status_run_keeps_caller_stdio_and_reports_stats() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let stdout_file = tempfile::NamedTempFile::new().unwrap();
+    let mut command = bootstrap_guest_command("fast-path");
+    command.stdout(reverie::process::Stdio::from(stdout_file.reopen().unwrap()));
+    let (status, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_preload_data_and_stats::<CoordinatorOnlyTool>(
+            command,
+            (),
+            preload.clone(),
+            b"lifecycle".to_vec(),
+        ),
+    )
+    .await
+    .expect("stats-enabled bootstrap status run hung")
+    .unwrap();
+
+    assert_eq!(status, ExitStatus::Exited(0));
+    assert_eq!(
+        std::fs::read(stdout_file.path()).unwrap(),
+        b"calls=8 traps=1 hooks=8\n"
+    );
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
+    assert_fast_path_stats(&global, &stats);
+
+    let stdout_file = tempfile::NamedTempFile::new().unwrap();
+    let mut command = bootstrap_guest_command("fast-path");
+    command.stdout(reverie::process::Stdio::from(stdout_file.reopen().unwrap()));
+    let (status, global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_preload_data::<CoordinatorOnlyTool>(
+            command,
+            (),
+            preload,
+            b"lifecycle".to_vec(),
+        ),
+    )
+    .await
+    .expect("bootstrap status run hung")
+    .unwrap();
+
+    assert_eq!(status, ExitStatus::Exited(0));
+    assert_eq!(
+        std::fs::read(stdout_file.path()).unwrap(),
+        b"calls=8 traps=1 hooks=8\n"
+    );
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
 }
 
 #[tokio::test(flavor = "current_thread")]
