@@ -119,6 +119,142 @@ pub enum InjectedReadResult {
     RecordedInterruption(InterruptedSyscall),
 }
 
+/// Identity of an offered private-helper interruption, not physical authority
+/// by itself. A Tool MUST first claim it through the current Guest before
+/// changing any operation state. Only the backend retaining this exact ticket
+/// and its original task/call/signal stop can accept that one-use claim.
+#[derive(Clone, Debug)]
+pub struct PrivateInterruption(std::sync::Arc<PrivateInterruptionFacts>);
+#[derive(Debug)]
+struct PrivateInterruptionFacts {
+    call: (reverie_syscalls::Sysno, reverie_syscalls::SyscallArgs),
+    helper: (reverie_syscalls::Sysno, reverie_syscalls::SyscallArgs),
+    signal: Signal,
+    recorded: bool,
+}
+impl PrivateInterruption {
+    /// Allocate a backend ticket. This public backend construction interface
+    /// grants no authority: a fabricated or stale ticket fails Guest's claim.
+    pub fn new_backend(
+        call: (reverie_syscalls::Sysno, reverie_syscalls::SyscallArgs),
+        helper: (reverie_syscalls::Sysno, reverie_syscalls::SyscallArgs),
+        signal: Signal,
+    ) -> Self {
+        Self(std::sync::Arc::new(PrivateInterruptionFacts {
+            call,
+            helper,
+            signal,
+            recorded: false,
+        }))
+    }
+    /// Allocate the distinct replay-wait offer. As with new_backend, only an
+    /// exact claim against the currently retaining backend supplies authority.
+    pub fn new_recorded_backend(
+        call: (reverie_syscalls::Sysno, reverie_syscalls::SyscallArgs),
+        helper: (reverie_syscalls::Sysno, reverie_syscalls::SyscallArgs),
+        signal: Signal,
+    ) -> Self {
+        Self(std::sync::Arc::new(PrivateInterruptionFacts {
+            call,
+            helper,
+            signal,
+            recorded: true,
+        }))
+    }
+    /// Logical call whose original Tool future remains suspended.
+    pub fn logical_call(&self) -> (reverie_syscalls::Sysno, reverie_syscalls::SyscallArgs) {
+        self.0.call
+    }
+    /// Private helper at the retained pre-ENTRY delivery stop.
+    pub fn helper(&self) -> (reverie_syscalls::Sysno, reverie_syscalls::SyscallArgs) {
+        self.0.helper
+    }
+    /// Original signal. Its complete siginfo remains with the held backend stop.
+    pub fn signal(&self) -> Signal {
+        self.0.signal
+    }
+    /// True only for the backend's explicit recorded-control wait. This is not
+    /// a native helper attempt or completion; the actual signal stop is real.
+    pub fn recorded(&self) -> bool {
+        self.0.recorded
+    }
+    /// Identity only, never equality of caller-supplied numbers.
+    pub fn same(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// One offered logical Read register handback. This is neither a private-helper
+/// EXIT nor an original native Read completion. The original signal is still
+/// held and no guest handler instruction has run. Claim through the current
+/// Guest before changing Tool state or running the common tail.
+#[derive(Clone, Debug)]
+pub struct PrivateReadCompletion(std::sync::Arc<PrivateReadCompletionFacts>);
+#[derive(Debug)]
+struct PrivateReadCompletionFacts {
+    interruption: PrivateInterruption,
+    completed: Option<i64>,
+}
+impl PrivateReadCompletion {
+    /// Backend construction alone grants no authority. A fabricated, stale or
+    /// wrong-phase ticket cannot satisfy Guest's exact one-use offer claim.
+    pub fn new_backend(interruption: PrivateInterruption, completed: Option<i64>) -> Self {
+        Self(std::sync::Arc::new(PrivateReadCompletionFacts {
+            interruption,
+            completed,
+        }))
+    }
+    /// The exact already-claimed original private interruption identity.
+    pub fn interruption(&self) -> &PrivateInterruption {
+        &self.0.interruption
+    }
+    /// Original logical Read, not the interrupted private helper.
+    pub fn logical_call(&self) -> (reverie_syscalls::Sysno, reverie_syscalls::SyscallArgs) {
+        self.0.interruption.logical_call()
+    }
+    /// Some(n) is positive committed progress. None is an INTERRUPTED,
+    /// RESTART-PENDING boundary with real logical -ERESTARTSYS registers, not a
+    /// completed syscall result. Linux has not yet applied the signal action.
+    pub fn completed(&self) -> Option<i64> {
+        self.0.completed
+    }
+    /// Identity only; caller-supplied numeric equality is never authority.
+    pub fn same(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// An explicit Tool semantic contract, not evidence of a physical helper EXIT.
+/// Unknown or not-yet-published Tool metadata must select `Unsupported`.
+#[derive(Debug)]
+pub enum PrivateInterruptionAction {
+    /// Retain the existing fatal containment behavior; do not invent a result.
+    Unsupported,
+    /// Complete this ONE pending helper and the SAME callback before any signal
+    /// handler instruction. The callback's return must equal the actual helper
+    /// result; no additional injection is allowed. The Tool certifies its entire
+    /// remaining tail (including post-hook) is finite, signal-state insensitive,
+    /// and needs no handler/guest progress or lock held by that progress. It must
+    /// also permit the ordinary signal hook to run now without same-task locks.
+    /// A helper's name alone is not this contract. General callbacks are not
+    /// opted in, and no suspended future is kept through a guest handler.
+    DrainHelperResult,
+    /// The Tool has settled the exact logical Read/request, but MUST NOT yet run
+    /// its register-observing common tail. The backend first installs and reads
+    /// back real logical registers on the SAME held stop, then offers the
+    /// one-use handle_private_read_completion hook for that tail exactly once.
+    /// `Some(n)` is its already committed positive byte count;
+    /// `None` is its explicit modeled no-progress Read interruption. Neither is
+    /// the unentered private helper's return. The backend drops that callback
+    /// without redispatch and gives the original signal to Linux with the logical
+    /// Read context, so Linux applies EINTR/SA_RESTART. This cannot acknowledge an
+    /// outstanding provider/native owner or substitute for its real cancellation.
+    FinishRead {
+        /// Positive committed count, or no progress. Zero/negative is refused.
+        completed: Option<i64>,
+    },
+}
+
 /// A representation of a guest task (thread).
 #[async_trait]
 pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
@@ -315,6 +451,44 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     ///    Failed calls to `execve` will still return, however. Thus, it is safe to
     ///    use [`Result::unwrap_err`] on the result of the `inject`.
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno>;
+
+    /// Consume the one allowed claim of the interruption currently offered by
+    /// this backend. Call before changing Tool/model/request state. This only
+    /// authenticates a held pre-ENTRY signal, never a native helper EXIT or a
+    /// completed Read. Default and foreign/stale/duplicate claims refuse.
+    fn claim_private_interruption(&mut self, _ticket: &PrivateInterruption) -> Result<(), Error> {
+        Err(Error::Tool(anyhow::anyhow!(
+            "backend has no matching private interruption"
+        )))
+    }
+
+    /// Authenticate the current logical-register handback, once. This is only
+    /// available inside Tool::handle_private_read_completion after the backend
+    /// has installed/read back the actual held task registers. It does not
+    /// authenticate a native EXIT or permit another injection/reentry.
+    fn claim_private_read_completion(
+        &mut self,
+        _ticket: &PrivateReadCompletion,
+    ) -> Result<(), Error> {
+        Err(Error::Tool(anyhow::anyhow!(
+            "backend has no matching private Read completion"
+        )))
+    }
+
+    /// Wait for a real signal at the recorded emulated-Read helper checkpoint
+    /// without executing the helper or a native Read. The backend calls the
+    /// same private-interruption hook with a one-use recorded ticket. Successful
+    /// FinishRead retires the original callback out-of-band; this cannot return
+    /// a fabricated helper result. The record itself supplies no stop authority.
+    async fn await_recorded_private_interruption(
+        &mut self,
+        _helper: reverie_syscalls::Syscall,
+        _signal: Signal,
+    ) -> Result<Never, Error> {
+        Err(Error::Tool(anyhow::anyhow!(
+            "backend has no recorded private interruption wait"
+        )))
+    }
 
     /// Executes one scalar Read without representing a pre-entry signal as an
     /// errno. The compatibility default uses `inject`; it cannot mint an
@@ -875,6 +1049,27 @@ where
         self.inner.inject(syscall).await
     }
 
+    fn claim_private_interruption(&mut self, ticket: &PrivateInterruption) -> Result<(), Error> {
+        self.inner.claim_private_interruption(ticket)
+    }
+
+    fn claim_private_read_completion(
+        &mut self,
+        ticket: &PrivateReadCompletion,
+    ) -> Result<(), Error> {
+        self.inner.claim_private_read_completion(ticket)
+    }
+
+    async fn await_recorded_private_interruption(
+        &mut self,
+        helper: reverie_syscalls::Syscall,
+        signal: Signal,
+    ) -> Result<Never, Error> {
+        self.inner
+            .await_recorded_private_interruption(helper, signal)
+            .await
+    }
+
     async fn inject_original_read(&mut self, syscall: crate::syscalls::Read) -> InjectedReadResult {
         self.inner.inject_original_read(syscall).await
     }
@@ -1003,5 +1198,110 @@ where
 
     fn detlog_memory_regions(&self) -> Option<Vec<DetlogMemoryRegion>> {
         self.inner.detlog_memory_regions()
+    }
+}
+
+#[cfg(test)]
+mod private_interruption_identity_tests {
+    use reverie_syscalls::SyscallArgs;
+    use reverie_syscalls::Sysno;
+
+    use super::*;
+
+    fn call() -> (Sysno, SyscallArgs) {
+        (
+            Sysno::read,
+            SyscallArgs {
+                arg0: 7,
+                arg1: 0x1234_5000,
+                arg2: 9,
+                arg3: 13,
+                arg4: 17,
+                arg5: 19,
+            },
+        )
+    }
+
+    fn helper() -> (Sysno, SyscallArgs) {
+        (Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0))
+    }
+
+    #[test]
+    fn interruption_clone_preserves_identity_and_all_facts() {
+        let original = PrivateInterruption::new_backend(call(), helper(), Signal::SIGUSR1);
+        let clone = original.clone();
+        assert!(original.same(&clone));
+        assert!(clone.same(&original));
+        for ticket in [&original, &clone] {
+            assert_eq!(ticket.logical_call(), call());
+            assert_eq!(ticket.helper(), helper());
+            assert_eq!(ticket.signal(), Signal::SIGUSR1);
+            assert!(!ticket.recorded());
+        }
+    }
+
+    #[test]
+    fn equal_facts_do_not_supply_interruption_identity() {
+        let original = PrivateInterruption::new_backend(call(), helper(), Signal::SIGUSR1);
+        let other = PrivateInterruption::new_backend(call(), helper(), Signal::SIGUSR1);
+        assert_eq!(original.logical_call(), other.logical_call());
+        assert_eq!(original.helper(), other.helper());
+        assert_eq!(original.signal(), other.signal());
+        assert_eq!(original.recorded(), other.recorded());
+        assert!(!original.same(&other));
+        assert!(!other.same(&original));
+
+        let recorded = PrivateInterruption::new_recorded_backend(call(), helper(), Signal::SIGUSR1);
+        let other_recorded =
+            PrivateInterruption::new_recorded_backend(call(), helper(), Signal::SIGUSR1);
+        assert!(recorded.recorded());
+        assert!(other_recorded.recorded());
+        assert!(recorded.same(&recorded.clone()));
+        assert!(!recorded.same(&other_recorded));
+        assert!(!recorded.same(&original));
+        assert_eq!(recorded.logical_call(), original.logical_call());
+        assert_eq!(recorded.helper(), original.helper());
+        assert_eq!(recorded.signal(), original.signal());
+    }
+
+    #[test]
+    fn completion_clone_preserves_original_interruption_and_exact_count() {
+        let interruption = PrivateInterruption::new_backend(call(), helper(), Signal::SIGUSR1);
+        for completed in [Some(3), None] {
+            let original = PrivateReadCompletion::new_backend(interruption.clone(), completed);
+            let clone = original.clone();
+            assert!(original.same(&clone));
+            assert!(clone.same(&original));
+            for ticket in [&original, &clone] {
+                assert!(ticket.interruption().same(&interruption));
+                assert_eq!(ticket.logical_call(), call());
+                assert_eq!(ticket.completed(), completed);
+            }
+            let new_offer = PrivateReadCompletion::new_backend(interruption.clone(), completed);
+            assert!(new_offer.interruption().same(&interruption));
+            assert_eq!(new_offer.logical_call(), original.logical_call());
+            assert_eq!(new_offer.completed(), original.completed());
+            assert!(!new_offer.same(&original));
+        }
+    }
+
+    #[test]
+    fn completion_does_not_substitute_equal_facts_or_another_result() {
+        let interruption = PrivateInterruption::new_backend(call(), helper(), Signal::SIGUSR1);
+        let foreign = PrivateInterruption::new_backend(call(), helper(), Signal::SIGUSR1);
+        let original = PrivateReadCompletion::new_backend(interruption.clone(), Some(3));
+        let foreign_completion = PrivateReadCompletion::new_backend(foreign.clone(), Some(3));
+        let interrupted = PrivateReadCompletion::new_backend(interruption.clone(), None);
+
+        assert_eq!(original.logical_call(), foreign_completion.logical_call());
+        assert_eq!(original.completed(), foreign_completion.completed());
+        assert!(!original.same(&foreign_completion));
+        assert!(!foreign_completion.interruption().same(&interruption));
+        assert!(foreign_completion.interruption().same(&foreign));
+        assert!(interrupted.interruption().same(&interruption));
+        assert_eq!(interrupted.logical_call(), original.logical_call());
+        assert_eq!(interrupted.completed(), None);
+        assert_eq!(original.completed(), Some(3));
+        assert!(!original.same(&interrupted));
     }
 }

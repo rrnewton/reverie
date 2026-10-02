@@ -765,6 +765,50 @@ pub trait Tool: Send + Sync + Default {
         guest.tail_inject(c).await
     }
 
+    /// Resolve a private-helper interruption using this Tool's logical operation
+    /// checkpoint. The original syscall future is still alive, so this hook MUST
+    /// NOT acquire a lock borrowed by that future or await its progress. It must
+    /// not inject to discover the missing checkpoint. Default Tools remain
+    /// contained rather than receiving a fabricated EINTR/ERESTARTSYS.
+    ///
+    /// See [`crate::PrivateInterruptionAction`] for the finite-drain and exact Read
+    /// finalization obligations. Opt-in is an explicit Tool implementation change,
+    /// not transparent compatibility for arbitrary existing Tool callbacks.
+    /// Claim the supplied ticket through Guest before any model/request mutation.
+    /// During this hook and a finite-drain tail, regs exposes the retained logical
+    /// context; set_regs may stage RCX/R11 canonicalization only. No physical stop
+    /// is replaced by those calls. Timers retain their ordinary queued behavior.
+    async fn handle_private_interruption<T: Guest<Self>>(
+        &self,
+        _guest: &mut T,
+        _interruption: &crate::PrivateInterruption,
+    ) -> Result<crate::PrivateInterruptionAction, Error> {
+        Ok(crate::PrivateInterruptionAction::Unsupported)
+    }
+
+    /// Finish the common logical Read tail after its operation/request was
+    /// settled by handle_private_interruption. Claim this distinct one-use
+    /// ticket before any mutation. regs() now reads actual installed logical
+    /// registers, not the earlier projected view: Some(n) has positive RAX;
+    /// None has logical -ERESTARTSYS and is interrupted/restart-pending, not a
+    /// completed exit. Preserve that distinction in observers and recording.
+    ///
+    /// The SAME original callback is still suspended: do not acquire its locks
+    /// or await its progress. No injection, tail injection or signal reentry is
+    /// permitted. Only RCX/R11 canonicalization may be written through set_regs;
+    /// queued timers retain their ordinary behavior. After successful return
+    /// the backend drops that callback, finalizes once and releases the real
+    /// signal. No future remains parked across handler execution/escape.
+    async fn handle_private_read_completion<T: Guest<Self>>(
+        &self,
+        _guest: &mut T,
+        _completion: &crate::PrivateReadCompletion,
+    ) -> Result<(), Error> {
+        Err(Error::Tool(anyhow::anyhow!(
+            "Tool has no private Read completion tail"
+        )))
+    }
+
     /// CPUID is trapped, the tool should implement this function to return
     /// `[eax, ebx, ecx, edx]`.
     ///
