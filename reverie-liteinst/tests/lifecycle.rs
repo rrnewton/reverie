@@ -403,6 +403,32 @@ async fn site_patching_off_runs_every_call_through_the_in_guest_fallback() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn in_guest_timer_requests_fail_closed_with_enosys() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (output, global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("timer-refused"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("timer-refused in-guest run hung")
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    // Nothing in the guest delivers a timer event, so both requests must be
+    // refused rather than accepted and never fired.
+    assert_eq!(
+        output.stdout, b"set_timer=ENOSYS set_timer_precise=ENOSYS\n",
+        "{output:?}"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn fallback_fork_reports_both_process_dispatch_paths() {
     let (_preload_directory, preload) = compile_noop_preload();
     let (output, global, stats) = tokio::time::timeout(
