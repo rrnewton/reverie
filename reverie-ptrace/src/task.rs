@@ -1769,6 +1769,65 @@ pub(crate) struct FatalForkPause {
     pub(crate) generation: StdMutex<Option<(u64, u64)>>,
     pub(crate) terminal_status: StdMutex<Option<(Pid, ExitStatus)>>,
     pub(crate) live_stop_opponent: AtomicBool,
+    /// Selects the timer-decoded fork control: the fork is decoded by a
+    /// precise-timer single step, and the run loop's receive of the aborted
+    /// stop is held so a sibling failure cancels the loop first.
+    pub(crate) timer: bool,
+    pub(crate) timer_parent: std::sync::atomic::AtomicI32,
+    pub(crate) timer_child: StdMutex<Option<FatalTimerChild>>,
+    pub(crate) timer_published: AtomicBool,
+    pub(crate) timer_receive_blocked: AtomicBool,
+}
+
+/// The actual child a timer step decoded, retained only for test assertions.
+/// It carries no cleanup ownership of its own.
+#[cfg(test)]
+pub(crate) struct FatalTimerChild {
+    pub(crate) pid: Pid,
+    pub(crate) start_time: u64,
+    pub(crate) proc_inode: u64,
+    pub(crate) terminal: Arc<safeptrace::TerminalCleanup>,
+}
+
+#[cfg(test)]
+fn record_timer_decoded_fork_for_test(task: &Stopped, event: &Event) {
+    let Event::NewChild(ChildOp::Fork, child) = event else {
+        return;
+    };
+    let Some(pause) = FATAL_FORK_PAUSE
+        .with(|slot| slot.borrow().clone())
+        .filter(|pause| pause.timer)
+    else {
+        return;
+    };
+    use std::os::unix::fs::MetadataExt;
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", child.pid())).unwrap();
+    let start = stat
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let inode = std::fs::metadata(format!("/proc/{}", child.pid()))
+        .unwrap()
+        .ino();
+    pause
+        .timer_parent
+        .store(task.pid().as_raw(), Ordering::SeqCst);
+    *pause.timer_child.lock().unwrap() = Some(FatalTimerChild {
+        pid: child.pid(),
+        start_time: start,
+        proc_inode: inode,
+        terminal: Arc::new(child.terminal_cleanup()),
+    });
+    eprintln!(
+        "timer decoded actual fork: parent={}, child={}, start={start}, inode={inode}",
+        task.pid(),
+        child.pid()
+    );
 }
 
 #[cfg(test)]
@@ -3997,6 +4056,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 // loop before the loop-top registration. Retain it here,
                 // before arming, in the order `arm_liteinst_wait` uses.
                 newborn_owner.register(task.pid(), event);
+                #[cfg(test)]
+                record_timer_decoded_fork_for_test(task, event);
                 if let Some(armer) = armer.as_ref() {
                     armer.arm(task, event)?;
                 }
@@ -7995,9 +8056,26 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// canceled. Thus, this function will never return so that execution of the
     /// current future doesn't proceed any further.
     async fn abort(&mut self, result: Result<Wait, TraceError>) -> ! {
+        #[cfg(test)]
+        let timer_pause = FATAL_FORK_PAUSE.with(|slot| {
+            slot.borrow().clone().filter(|pause| {
+                pause.timer
+                    && pause.timer_parent.load(Ordering::SeqCst) == self.tid().as_raw()
+                    && matches!(&result, Ok(Wait::Stopped(_, Event::NewChild(ChildOp::Fork, child)))
+                        if pause.timer_child.lock().unwrap().as_ref().is_some_and(|observed| observed.pid == child.pid()))
+            })
+        });
         if self.next_state.send(result).await.is_err() {
             panic!(
                 "failed to abort tracee {}: run-loop next-state channel is closed",
+                self.tid()
+            );
+        }
+        #[cfg(test)]
+        if let Some(pause) = timer_pause {
+            pause.timer_published.store(true, Ordering::SeqCst);
+            eprintln!(
+                "timer fork published to next-state channel: parent={}",
                 self.tid()
             );
         }
@@ -8244,6 +8322,30 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // loop from within `inject` or `tail_inject`.
                     let tid = self.tid();
                     let fut1 = next_state_rx.recv().fuse();
+                    // Holds the queued timer-decoded fork unconsumed, so the
+                    // control's sibling failure cancels this loop first.
+                    #[cfg(test)]
+                    let fut1 = {
+                        let mut receive = Box::pin(fut1);
+                        let pause = FATAL_FORK_PAUSE.with(|slot| slot.borrow().clone());
+                        future::poll_fn(move |cx| {
+                            if let Some(pause) = pause.as_ref().filter(|pause| {
+                                pause.timer
+                                    && pause.timer_parent.load(Ordering::SeqCst) == tid.as_raw()
+                                    && pause.timer_published.load(Ordering::SeqCst)
+                            }) {
+                                if !pause.timer_receive_blocked.swap(true, Ordering::SeqCst) {
+                                    eprintln!(
+                                        "timer fork receiver held before consuming queued child: parent={tid}"
+                                    );
+                                    pause.ready.notify_waiters();
+                                }
+                                return Poll::Pending;
+                            }
+                            receive.as_mut().poll(cx)
+                        })
+                        .fuse()
+                    };
                     let fut2 = self.handle_stop_event(stopped, event).fuse();
 
                     futures::pin_mut!(fut1, fut2);
