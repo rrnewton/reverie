@@ -117,6 +117,10 @@ and returns its status and final global state. Existing preload APIs retain the
 uses `run_with_output_and_preload_data` instead, passing the coordinator
 path and selector in a sealed, dynamically allocated memfd that the preload
 discovers, validates, consumes, and closes before guest `main`.
+`run_with_output_and_preload_data_and_stats` and
+`run_with_inherited_stdio_and_preload_data_and_stats` do the same and also
+return one statistics snapshot per process; the statistics coordinator path
+still travels in `REVERIE_LITEINST_STATS_COORDINATOR`.
 `REVERIE_LITEINST_TOOL_PRELOAD` must name a DSO that embeds the same concrete
 `T` and calls `install_tool::<T>`.
 
