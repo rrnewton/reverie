@@ -298,6 +298,19 @@ static EVENT_CAPTURE_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
 static CURRENT_OR_NEW_CAPTURE_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Pauses a failed registration after it released the registry, before
+/// `retain_failed_registrant` takes it again, until the test resumes it or
+/// drops its sender.
+#[cfg(test)]
+struct RetentionPause {
+    reached: mpsc::SyncSender<()>,
+    resume: mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+static RETENTION_PAUSES: LazyLock<Mutex<HashMap<Pid, RetentionPause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 #[cfg(test)]
 static SPAWN_FAILURE_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -2540,6 +2553,13 @@ impl Notifier {
     /// (`absorb_unregistered`). Otherwise a later capability could register
     /// another generation for the same task, whose reap never closes this
     /// one's TID gate. A generation without an identity names no task yet.
+    ///
+    /// The failed registration released `pids` before this runs, so the
+    /// generation registered for the task meanwhile may already have reaped
+    /// it and left the registry. Then nothing will redirect this one, so its
+    /// gate is closed here, as that reap closed the registered one's. With
+    /// `pids` held, a task that is not reaped yet can only be reaped through
+    /// a registration that comes after this one and redirects it.
     /// Called with `pids` held.
     fn retain_failed_registrant(
         &self,
@@ -2547,24 +2567,38 @@ impl Notifier {
         pid: Pid,
         handle: &EventHandle,
     ) {
-        let resolved = handle.resolved_handle();
-        let Some(identity) = resolved.identity() else {
+        let Some(identity) = handle.identity().cloned() else {
             return;
         };
-        if let Some(occupied) = pids.get(&pid) {
-            if occupied.handle == resolved {
-                return;
-            }
+        if let Some(occupied) = pids.get(&pid)
             // The same generation, alive or not: following a dead one's
             // registrant is harmless, and comparing needs no syscall that
             // could fail again.
-            if occupied.identity.same_generation(identity)
-                && handle.adopt_authoritative(&occupied.handle).is_ok()
-            {
-                return;
+            && occupied.identity.same_generation(&identity)
+        {
+            loop {
+                let resolved = handle.resolved_handle();
+                if occupied.handle.chain_contains(&resolved.0) {
+                    return;
+                }
+                match resolved.adopt_authoritative(&occupied.handle) {
+                    Ok(_) => return,
+                    // Another adoption redirected it first; follow it again.
+                    Err(Errno::EALREADY) => continue,
+                    Err(_) => break,
+                }
             }
         }
         self.keep_unregistered(pid, handle);
+        let reaped = match identity.pidfd_is_live() {
+            Ok(live) => !live,
+            // Without the pidfd's answer, procfs's: a reaped task's
+            // /proc/<pid> is gone or names another generation.
+            Err(_) => !identity.is_same_process_generation(),
+        };
+        if reaped {
+            handle.event().mark_terminal_reaping();
+        }
     }
 
     fn current_or_new(&self, pid: Pid) -> Result<EventHandle, Errno> {
@@ -2618,44 +2652,37 @@ impl Notifier {
             {
                 return Ok(occupied.handle.clone());
             }
-            match pids.entry(pid) {
-                Entry::Occupied(mut occupied) => {
-                    let handle = EventHandle::with_identity(Arc::clone(&current));
-                    occupied.insert(NotifierEntry {
-                        handle: handle.clone(),
-                        identity: current,
-                    });
-                    return Ok(handle);
-                }
-                Entry::Vacant(_) => {
-                    // A typed state may still use synchronous wait. Defer registry
-                    // insertion until async notification or terminal cleanup is
-                    // actually requested. Until then, hand every capability for
-                    // this live generation the same Event, so the reap that
-                    // registering any one of them leads to closes the TID gate
-                    // for all of them.
-                    let mut unregistered = self.unregistered.lock();
-                    let cached = unregistered.get(&pid).into_iter().flatten();
-                    for generation in cached.filter_map(Weak::upgrade) {
-                        let handle = EventHandle(generation);
-                        if let Some(bound) = handle.identity()
-                            && bound.same_live_generation(&current)?
-                        {
-                            return Ok(handle.resolved_handle());
-                        }
-                    }
-                    unregistered.retain(|_, generations| {
-                        generations.retain(|generation| generation.strong_count() > 0);
-                        !generations.is_empty()
-                    });
-                    let handle = EventHandle::with_identity(Arc::clone(&current));
-                    unregistered
-                        .entry(pid)
-                        .or_default()
-                        .push(Arc::downgrade(&handle.0));
-                    return Ok(handle);
+            // An entry left for a reaped generation of this PID would be
+            // replaced by an Event for this one that the generations cached
+            // for it below never follow: drop the entry instead, as its
+            // worker will once it retires.
+            pids.remove(&pid);
+            // A typed state may still use synchronous wait. Defer registry
+            // insertion until async notification or terminal cleanup is
+            // actually requested. Until then, hand every capability for
+            // this live generation the same Event, so the reap that
+            // registering any one of them leads to closes the TID gate
+            // for all of them.
+            let mut unregistered = self.unregistered.lock();
+            let cached = unregistered.get(&pid).into_iter().flatten();
+            for generation in cached.filter_map(Weak::upgrade) {
+                let handle = EventHandle(generation);
+                if let Some(bound) = handle.identity()
+                    && bound.same_live_generation(&current)?
+                {
+                    return Ok(handle.resolved_handle());
                 }
             }
+            unregistered.retain(|_, generations| {
+                generations.retain(|generation| generation.strong_count() > 0);
+                !generations.is_empty()
+            });
+            let handle = EventHandle::with_identity(Arc::clone(&current));
+            unregistered
+                .entry(pid)
+                .or_default()
+                .push(Arc::downgrade(&handle.0));
+            return Ok(handle);
         }
     }
 
@@ -2665,6 +2692,11 @@ impl Notifier {
     fn sync_handle(&self, pid: Pid, requested: &EventHandle) -> Result<EventHandle, Errno> {
         let result = self.resolve_sync_handle(pid, requested);
         if result.is_err() {
+            #[cfg(test)]
+            if let Some(pause) = RETENTION_PAUSES.lock().remove(&pid) {
+                let _ = pause.reached.send(());
+                let _ = pause.resume.recv();
+            }
             self.retain_failed_registrant(&self.pids.lock(), pid, requested);
         }
         result
@@ -2913,6 +2945,11 @@ impl Notifier {
     ) -> Result<EventRegistration, Errno> {
         let result = self.register_with_owner(pid, handle, requested, owner);
         if result.is_err() {
+            #[cfg(test)]
+            if let Some(pause) = RETENTION_PAUSES.lock().remove(&pid) {
+                let _ = pause.reached.send(());
+                let _ = pause.resume.recv();
+            }
             self.retain_failed_registrant(&self.pids.lock(), pid, handle);
         }
         result
@@ -3056,6 +3093,14 @@ impl Notifier {
                             Self::record_registration_error(handle, error);
                             return Err(error);
                         }
+                    }
+                    // The entry names a reaped generation; the generations
+                    // cached for this live one follow this registration as
+                    // they would into a vacant slot.
+                    if let Err(error) = self.absorb_unregistered(pid, &current, handle) {
+                        self.keep_unregistered(pid, handle);
+                        Self::record_registration_error(handle, error);
+                        return Err(error);
                     }
                     occupied.insert(NotifierEntry {
                         handle: handle.clone(),
@@ -4324,7 +4369,10 @@ mod test {
         }
     }
 
-    fn stopped_tracee_bounded(pid: Pid) -> io::Result<Stopped> {
+    fn stopped_tracee_bounded(
+        pid: Pid,
+        capability: impl FnOnce(crate::Pid) -> Stopped,
+    ) -> io::Result<Stopped> {
         let status = waitpid_status_bounded(pid, libc::WUNTRACED, TRACEE_WAIT_TIMEOUT)?;
         if !libc::WIFSTOPPED(status) {
             return Err(io::Error::other(format!(
@@ -4337,7 +4385,7 @@ mod test {
                 libc::WSTOPSIG(status)
             )));
         }
-        Ok(Stopped::new_unchecked(pid.into()))
+        Ok(capability(pid.into()))
     }
 
     fn reap_tracee_bounded(pid: Pid) -> io::Result<()> {
@@ -8917,6 +8965,15 @@ mod test {
     fn spawn_traced_process(
         requested_pid: Option<i32>,
     ) -> Option<(Pid, Stopped, TraceeCleanupGuard)> {
+        spawn_traced_process_as(requested_pid, Stopped::new_unchecked)
+    }
+
+    /// As `spawn_traced_process`, building the stopped tracee's capability
+    /// with `capability`.
+    fn spawn_traced_process_as(
+        requested_pid: Option<i32>,
+        capability: impl FnOnce(crate::Pid) -> Stopped,
+    ) -> Option<(Pid, Stopped, TraceeCleanupGuard)> {
         let child = if let Some(requested_pid) = requested_pid {
             #[repr(C)]
             #[derive(Default)]
@@ -8971,7 +9028,7 @@ mod test {
             let _ = reap_tracee_bounded(child);
             panic!("open duplicate-exit tracee pidfd: {error}");
         });
-        let stopped = stopped_tracee_bounded(child).unwrap_or_else(|error| {
+        let stopped = stopped_tracee_bounded(child, capability).unwrap_or_else(|error| {
             cleanup
                 .cleanup()
                 .unwrap_or_else(|cleanup_error| panic!("{error}; cleanup: {cleanup_error}"));
@@ -9662,6 +9719,12 @@ mod test {
         /// As `BoundLiveness`, through the synchronous wait's registration
         /// (`sync_handle`).
         SyncBoundLiveness,
+        /// As `BoundLiveness`, and the failed registration's own check
+        /// whether the task was reaped meanwhile fails the same way, so it
+        /// must fall back to procfs to keep the live task's gate open.
+        BoundLivenessTwice,
+        /// As `BoundLivenessTwice`, through `sync_handle`.
+        SyncBoundLivenessTwice,
     }
 
     /// How `failed_registration_refuses_after_reap` registers again after
@@ -9722,14 +9785,24 @@ mod test {
                     .insert(old_pid.into(), Errno::EIO);
                 Errno::EIO
             }
-            FailedRegistration::BoundLiveness | FailedRegistration::SyncBoundLiveness => {
+            FailedRegistration::BoundLiveness
+            | FailedRegistration::SyncBoundLiveness
+            | FailedRegistration::BoundLivenessTwice
+            | FailedRegistration::SyncBoundLivenessTwice => {
                 // The unbound token's registration makes no liveness check
                 // before it binds the identity and takes the registry lock.
+                // The second error, if any, fails the check that the failed
+                // registration makes as it keeps its generation.
+                let twice = matches!(
+                    failure,
+                    FailedRegistration::BoundLivenessTwice
+                        | FailedRegistration::SyncBoundLivenessTwice
+                );
                 PIDFD_LIVENESS_ERRORS
                     .lock()
                     .entry(old_pid.into())
                     .or_default()
-                    .push_back(Errno::EINVAL);
+                    .extend(std::iter::repeat_n(Errno::EINVAL, 1 + usize::from(twice)));
                 Errno::EINVAL
             }
             _ => {
@@ -9745,7 +9818,10 @@ mod test {
                 "{failure:?}: the failing capability's identity was bound before its registration"
             );
         }
-        let registration = if failure == FailedRegistration::SyncBoundLiveness {
+        let registration = if matches!(
+            failure,
+            FailedRegistration::SyncBoundLiveness | FailedRegistration::SyncBoundLivenessTwice
+        ) {
             NOTIFIER
                 .sync_handle(old_pid.into(), failed.1.event())
                 .map(drop)
@@ -9771,6 +9847,10 @@ mod test {
         assert!(
             !NOTIFIER.pids.lock().contains_key(&old_pid.into()),
             "{failure:?}: the failed registration stayed in the registry"
+        );
+        assert!(
+            failed.1.event().hold_tid().is_some(),
+            "{failure:?}: the failed registration closed a live task's TID gate"
         );
         let absorbed_after_failure = absorbed();
         let redirected_before_failure = matches!(
@@ -9801,6 +9881,8 @@ mod test {
             FailedRegistration::Absorption
                 | FailedRegistration::BoundLiveness
                 | FailedRegistration::SyncBoundLiveness
+                | FailedRegistration::BoundLivenessTwice
+                | FailedRegistration::SyncBoundLivenessTwice
         );
         let redirects = match (unjoined, retry) {
             (true, RegistrationRetry::Unbound) => 2,
@@ -9860,6 +9942,27 @@ mod test {
             "{failure:?}, {retry:?}: the retry did not redirect every earlier generation"
         );
 
+        assert_stale_refused_beside_replacement(
+            requested_pid,
+            old_pid,
+            stale,
+            &format!("{failure:?}, {retry:?}"),
+        )
+        .await
+    }
+
+    /// Spawns a tracee to replace the reaped `old_pid`, then requires every
+    /// capability in `stale` to refuse its requests instead of reaching the
+    /// replacement, while the replacement's own requests still work. With
+    /// `requested_pid`, the replacement actually reuses the old PID; without
+    /// it, each stale capability is rebuilt beside the replacement's PID with
+    /// its old token.
+    async fn assert_stale_refused_beside_replacement(
+        requested_pid: Option<i32>,
+        old_pid: Pid,
+        mut stale: Vec<(&'static str, Stopped)>,
+        case: &str,
+    ) -> bool {
         thread::sleep(Duration::from_millis(20));
         let Some((replacement_pid, replacement, mut replacement_cleanup)) =
             spawn_traced_process(requested_pid)
@@ -9869,7 +9972,7 @@ mod test {
         if requested_pid.is_some() {
             assert_eq!(
                 replacement_pid, old_pid,
-                "clone3 did not reuse the failed-registration PID"
+                "clone3 did not reuse the reaped tracee's PID"
             );
         } else {
             for (_, capability) in &mut stale {
@@ -9883,7 +9986,7 @@ mod test {
         for (name, capability) in &stale {
             assert!(
                 matches!(capability.getregs(), Err(Error::Died(_))),
-                "{failure:?}, {retry:?}: a request through the {name} capability reached the replacement"
+                "{case}: a request through the {name} capability reached the replacement"
             );
         }
         #[cfg(feature = "memory")]
@@ -10020,6 +10123,29 @@ mod test {
         .await;
     }
 
+    /// The failed registration cannot ask the pidfd whether its task was
+    /// reaped either: procfs must keep the live task's gate open for the
+    /// registration that reaps it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn repeated_liveness_failure_keeps_a_live_generation_open() {
+        failed_registration_reuse_through(
+            FailedRegistration::BoundLivenessTwice,
+            "SAFEPTRACE_REPEATED_LIVENESS_REUSE_INNER",
+            "notifier::test::repeated_liveness_failure_keeps_a_live_generation_open",
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn synchronous_repeated_liveness_failure_keeps_a_live_generation_open() {
+        failed_registration_reuse_through(
+            FailedRegistration::SyncBoundLivenessTwice,
+            "SAFEPTRACE_SYNC_REPEATED_LIVENESS_REUSE_INNER",
+            "notifier::test::synchronous_repeated_liveness_failure_keeps_a_live_generation_open",
+        )
+        .await;
+    }
+
     /// A registration that fails after binding its task's identity while
     /// another generation of the same task is registered must follow that
     /// generation, whose reap then closes its TID gate too.
@@ -10063,6 +10189,362 @@ mod test {
             failed.1.event().hold_tid().is_none(),
             "the failed capability's TID gate stayed open after the reap"
         );
+    }
+
+    /// A registration that fails beside a registered generation of the same
+    /// task, whose worker reaps the task and leaves the registry before the
+    /// failed generation is kept: nothing is left for the failed generation
+    /// to follow, so keeping it must close its TID gate. `sync` fails the
+    /// synchronous wait's registration (`sync_handle`) instead. With
+    /// `requested_pid`, a replacement then actually reuses the PID.
+    async fn retirement_before_retention_refuses_after_reap(
+        requested_pid: Option<i32>,
+        sync: bool,
+    ) -> bool {
+        let Some((pid, registered, mut cleanup)) = spawn_traced_process(requested_pid) else {
+            return false;
+        };
+        cleanup
+            .bind_notifier(&registered)
+            .expect("register the first capability");
+        let failed = Stopped::from_token(pid.into(), crate::TraceeToken::new());
+        PIDFD_LIVENESS_ERRORS
+            .lock()
+            .entry(pid.into())
+            .or_default()
+            .push_back(Errno::EINVAL);
+        let (reached_tx, reached_rx) = mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = mpsc::channel();
+        RETENTION_PAUSES.lock().insert(
+            pid.into(),
+            RetentionPause {
+                reached: reached_tx,
+                resume: resume_rx,
+            },
+        );
+        let token = failed.1.clone();
+        let registering = thread::spawn(move || {
+            if sync {
+                NOTIFIER.sync_handle(pid.into(), token.event()).map(drop)
+            } else {
+                TerminalCleanup::new_unregistered(pid.into(), &token).ensure_registered()
+            }
+        });
+        reached_rx
+            .recv_timeout(TRACEE_WAIT_TIMEOUT)
+            .expect("the failed registration did not reach retention");
+        assert!(
+            failed.1.event().identity().is_some(),
+            "sync={sync}: the failed registration did not bind the task's identity"
+        );
+        let running = registered
+            .resume(None)
+            .expect("resume the registered capability to exit");
+        let exited = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, running.next_state())
+            .await
+            .expect("registered capability's final status timed out")
+            .expect("wait the registered capability");
+        cleanup.disarm();
+        assert_eq!(
+            exited.assume_exited(),
+            (pid.into(), crate::ExitStatus::Exited(42))
+        );
+        // The worker publishes the final status before it leaves the registry.
+        let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
+        while NOTIFIER.pids.lock().contains_key(&pid.into()) {
+            assert!(
+                Instant::now() < deadline,
+                "the registered generation's worker did not leave the registry"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        drop(resume_tx);
+        assert_eq!(
+            registering.join().expect("join the failed registration"),
+            Err(Errno::EINVAL),
+            "sync={sync}: the registration did not fail as injected"
+        );
+        assert!(
+            PIDFD_LIVENESS_ERRORS
+                .lock()
+                .get(&pid.into())
+                .is_none_or(VecDeque::is_empty),
+            "sync={sync}: the injected liveness error was not consumed"
+        );
+        assert!(
+            failed.1.event().hold_tid().is_none(),
+            "sync={sync}: the failed capability's TID gate stayed open after the reap"
+        );
+        assert_stale_refused_beside_replacement(
+            requested_pid,
+            pid,
+            vec![("failed", failed)],
+            &format!("retirement before retention, sync={sync}"),
+        )
+        .await
+    }
+
+    async fn retirement_before_retention_reuse_through(sync: bool, inner_env: &str, inner: &str) {
+        if env::var_os(inner_env).is_some() {
+            if retirement_before_retention_refuses_after_reap(Some(100), sync).await {
+                println!("ACTUAL_RETIRED_AUTHORITY_PID_REUSE_EXERCISED");
+            } else {
+                println!("ACTUAL_RETIRED_AUTHORITY_PID_REUSE_UNAVAILABLE");
+            }
+            return;
+        }
+
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(inner_env, "1")]);
+        match classify_exact_reuse_output(
+            actual_reuse.as_ref(),
+            "ACTUAL_RETIRED_AUTHORITY_PID_REUSE_EXERCISED",
+            "ACTUAL_RETIRED_AUTHORITY_PID_REUSE_UNAVAILABLE",
+        )
+        .unwrap_or_else(|error| panic!("sync={sync} PID-reuse regression failed: {error}"))
+        {
+            ExactReuseOutcome::Exercised => return,
+            ExactReuseOutcome::Unavailable => {}
+        }
+
+        // Restricted runners may deny user namespaces or clone3(set_tid).
+        assert!(retirement_before_retention_refuses_after_reap(None, sync).await);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_registration_after_its_authority_retired_refuses_after_reap() {
+        retirement_before_retention_reuse_through(
+            false,
+            "SAFEPTRACE_RETIRED_AUTHORITY_REUSE_INNER",
+            "notifier::test::failed_registration_after_its_authority_retired_refuses_after_reap",
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn synchronous_failed_registration_after_its_authority_retired_refuses_after_reap() {
+        retirement_before_retention_reuse_through(
+            true,
+            "SAFEPTRACE_SYNC_RETIRED_AUTHORITY_REUSE_INNER",
+            "notifier::test::synchronous_failed_registration_after_its_authority_retired_refuses_after_reap",
+        )
+        .await;
+    }
+
+    /// How `stale_entry_refuses_after_reap` registers the tracee whose PID a
+    /// reaped generation's registry entry still names.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum StaleEntryRetry {
+        /// A later `Stopped::new_unchecked` capability, which must find the
+        /// failed generation rather than the stale entry, registers.
+        Unchecked,
+        /// A later capability on an unbound token registers over the stale
+        /// entry, so it must redirect the failed generation.
+        Unbound,
+    }
+
+    /// A tracee's registry entry outlives its reap until its worker removes
+    /// it, and the PID can be reused meanwhile. A registration for the new
+    /// tracee that fails then keeps its generation cached beside that stale
+    /// entry, and the registration that later reaps the new tracee must
+    /// still close the failed generation's TID gate. With `requested_pid`,
+    /// the new tracee actually reuses the old one's PID while the old
+    /// worker is paused before removing its entry, and a replacement reuses
+    /// it again; without it, the stale entry is modeled by registering the
+    /// old tracee's reaped generation under the new tracee's PID.
+    async fn stale_entry_refuses_after_reap(
+        requested_pid: Option<i32>,
+        retry: StaleEntryRetry,
+    ) -> bool {
+        let Some((old_pid, old, mut old_cleanup)) = spawn_traced_process(requested_pid) else {
+            return false;
+        };
+        old_cleanup
+            .bind_notifier(&old)
+            .expect("register the old tracee");
+        let old_handle = old.1.event().clone();
+        let old_event = Arc::clone(old_handle.event());
+        let (removing_tx, removing_rx) = mpsc::sync_channel(1);
+        // Dropping this sender, on every path out, releases the old worker.
+        let (resume_tx, resume_rx) = mpsc::channel();
+        if requested_pid.is_some() {
+            *old_event.registry_retirement_pause.lock() = Some(BoundedTestPause {
+                captured: removing_tx,
+                resume: resume_rx,
+            });
+        }
+        let running = old.resume(None).expect("resume the old tracee to exit");
+        let exited = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, running.next_state())
+            .await
+            .expect("old tracee's final status timed out")
+            .expect("wait the old tracee");
+        old_cleanup.disarm();
+        assert_eq!(
+            exited.assume_exited(),
+            (old_pid.into(), crate::ExitStatus::Exited(42))
+        );
+        if requested_pid.is_some() {
+            removing_rx
+                .recv_timeout(TRACEE_WAIT_TIMEOUT)
+                .expect("the old tracee's worker did not reach its registry removal");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+        // The new tracee's first capability is on an unbound token, so no
+        // constructor reaches the registry before the failed registration.
+        let Some((pid, failed, mut cleanup)) = spawn_traced_process_as(requested_pid, |pid| {
+            Stopped::from_token(pid, crate::TraceeToken::new())
+        }) else {
+            return false;
+        };
+        if requested_pid.is_some() {
+            assert_eq!(pid, old_pid, "clone3 did not reuse the old tracee's PID");
+        } else {
+            let identity = Arc::clone(
+                old_handle
+                    .identity()
+                    .expect("the old tracee's registered identity"),
+            );
+            NOTIFIER.pids.lock().insert(
+                pid.into(),
+                NotifierEntry {
+                    handle: old_handle.clone(),
+                    identity,
+                },
+            );
+        }
+        let stale_entry = || {
+            NOTIFIER
+                .pids
+                .lock()
+                .get(&pid.into())
+                .is_some_and(|entry| Arc::ptr_eq(entry.handle.event(), &old_event))
+        };
+        PIDFD_LIVENESS_ERRORS
+            .lock()
+            .entry(pid.into())
+            .or_default()
+            .push_back(Errno::EINVAL);
+        assert_eq!(
+            TerminalCleanup::new_unregistered(pid.into(), &failed.1).ensure_registered(),
+            Err(Errno::EINVAL),
+            "{retry:?}: the registration did not fail as injected"
+        );
+        assert!(
+            failed.1.event().identity().is_some(),
+            "{retry:?}: the failed registration did not bind the task's identity"
+        );
+        assert!(
+            failed.1.event().hold_tid().is_some(),
+            "{retry:?}: the failed registration closed a live task's TID gate"
+        );
+        assert!(
+            stale_entry(),
+            "{retry:?}: the old tracee's entry left the registry before the retry"
+        );
+
+        let absorbed = || {
+            ABSORBED_UNREGISTERED
+                .lock()
+                .get(&pid.into())
+                .copied()
+                .unwrap_or(0)
+        };
+        let absorbed_before = absorbed();
+        let later = match retry {
+            StaleEntryRetry::Unchecked => {
+                let later = Stopped::new_unchecked(pid.into());
+                assert!(
+                    Arc::ptr_eq(later.1.event().event(), failed.1.event().event()),
+                    "a capability made beside the stale entry left the failed generation's Event"
+                );
+                later
+            }
+            StaleEntryRetry::Unbound => Stopped::from_token(pid.into(), crate::TraceeToken::new()),
+        };
+        cleanup
+            .bind_notifier(&later)
+            .expect("register the later capability");
+        drop(resume_tx);
+        if retry == StaleEntryRetry::Unbound {
+            assert_eq!(
+                absorbed(),
+                absorbed_before + 1,
+                "registering over the stale entry did not redirect the failed generation"
+            );
+            assert!(Arc::ptr_eq(
+                later.1.event().event(),
+                failed.1.event().event()
+            ));
+        }
+        let running = later
+            .resume(None)
+            .expect("resume the later capability to exit");
+        let exited = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, running.next_state())
+            .await
+            .expect("later capability's final status timed out")
+            .expect("wait the later capability");
+        cleanup.disarm();
+        assert_eq!(
+            exited.assume_exited(),
+            (pid.into(), crate::ExitStatus::Exited(42))
+        );
+        assert!(
+            failed.1.event().hold_tid().is_none(),
+            "{retry:?}: the failed capability's TID gate stayed open after the reap"
+        );
+        assert_stale_refused_beside_replacement(
+            requested_pid,
+            pid,
+            vec![("failed", failed)],
+            &format!("stale entry, {retry:?}"),
+        )
+        .await
+    }
+
+    async fn stale_entry_reuse_through(retry: StaleEntryRetry, inner_env: &str, inner: &str) {
+        if env::var_os(inner_env).is_some() {
+            if stale_entry_refuses_after_reap(Some(100), retry).await {
+                println!("ACTUAL_STALE_ENTRY_PID_REUSE_EXERCISED");
+            } else {
+                println!("ACTUAL_STALE_ENTRY_PID_REUSE_UNAVAILABLE");
+            }
+            return;
+        }
+
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(inner_env, "1")]);
+        match classify_exact_reuse_output(
+            actual_reuse.as_ref(),
+            "ACTUAL_STALE_ENTRY_PID_REUSE_EXERCISED",
+            "ACTUAL_STALE_ENTRY_PID_REUSE_UNAVAILABLE",
+        )
+        .unwrap_or_else(|error| panic!("{retry:?} PID-reuse regression failed: {error}"))
+        {
+            ExactReuseOutcome::Exercised => return,
+            ExactReuseOutcome::Unavailable => {}
+        }
+
+        // Restricted runners may deny user namespaces or clone3(set_tid).
+        assert!(stale_entry_refuses_after_reap(None, retry).await);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn constructor_beside_a_stale_entry_shares_the_failed_generation() {
+        stale_entry_reuse_through(
+            StaleEntryRetry::Unchecked,
+            "SAFEPTRACE_STALE_ENTRY_UNCHECKED_REUSE_INNER",
+            "notifier::test::constructor_beside_a_stale_entry_shares_the_failed_generation",
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn registration_over_a_stale_entry_redirects_the_failed_generation() {
+        stale_entry_reuse_through(
+            StaleEntryRetry::Unbound,
+            "SAFEPTRACE_STALE_ENTRY_UNBOUND_REUSE_INNER",
+            "notifier::test::registration_over_a_stale_entry_redirects_the_failed_generation",
+        )
+        .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
