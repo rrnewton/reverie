@@ -49,6 +49,17 @@ pub enum Error {
     #[error("inherited stdin read retired after terminal cancellation")]
     TerminalReadCancelled,
 
+    /// The consumer cannot yet release its scheduler turn safely around this
+    /// external zero-count read. This is a terminal backend refusal, never a
+    /// successful read or a Linux syscall errno.
+    #[error(
+        "unsupported KVM zero-count read on guest fd {fd}: potentially blocking external endpoint requires consumer scheduling support"
+    )]
+    PotentiallyBlockingZeroRead {
+        /// The guest's low-word descriptor, including inherited stdin aliases.
+        fd: i32,
+    },
+
     /// A process-family wait observed its caller's already committed group
     /// exit. This private dispatch control must be consumed nonreturningly by
     /// Direct/Tool drivers before failure publication or any syscall result.

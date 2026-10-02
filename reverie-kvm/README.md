@@ -271,6 +271,33 @@ No gVisor code is copied. Unlike the gVisor Sentry VFS and `pkg/sentry/fsimpl/` 
 
 ## Current limits
 
+Zero-count scalar reads use the actual selected host descriptor, including
+inherited stdin, duplicates, and descriptors rebound to fd 0. A zero count does
+not guarantee that Linux returns immediately: an empty inotify descriptor can
+wait for an event. Until the consumer scheduler can admit that operation safely,
+the backend reports `PotentiallyBlockingZeroRead` before starting a host reader.
+This ends the run with a named unsupported-operation error; it does not return
+a successful zero or a made-up syscall errno. The consumer repair remains
+tracked at https://github.com/rrnewton/hermit/issues/3498.
+
+The admitted real endpoints are pipes, `/dev/null`, `/dev/zero`, positively
+identified eventfd/timerfd/signalfd objects, and regular files/directories on
+tmpfs, ext4, or btrfs. Synthetic proc/random/signalfd descriptions keep their
+existing routing. Sockets, inotify, and unknown endpoint/filesystem kinds are
+refused even when `O_NONBLOCK` is currently set: another alias can change that
+shared flag before injection. Native descriptor/address errors are preserved
+within the admitted surface, including invalid-address reads on sockets and
+inotify; an invalid address alone does not admit an unknown filesystem.
+
+This is a deliberately reduced support boundary. It relies on the backend's
+existing trusted host, procfs, metadata, and ordinary local-filesystem I/O
+contract. It is not a guarantee that every host metadata query or local-file
+read is wait-free: tmpfs may fault or swap a folio, and btrfs direct I/O may
+take an inode lock even for zero bytes. Primitive reader-retirement tests do
+not establish support for a refused guest operation. The real guest tests
+instead require the named failure, no reader ever started, no fabricated
+result, and completed teardown.
+
 Non-leader `execve` and supported-form `execveat` (`AT_FDCWD`, flags `0`)
 preserve safe preflight errors: `EFAULT` for invalid path/argv/envp pointers,
 `ENOENT` for missing absolute executable paths, and `ENOEXEC` for malformed

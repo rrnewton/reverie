@@ -7,10 +7,15 @@
  */
 
 // Included inside vm::tests to reuse its private minimal ELF builder.
+// These cases deliberately withdraw the former blocked-read success claim:
+// potentially blocking external zero reads are refused before host injection.
+// Refusal is a reduced supported contract, not native-equivalent execution.
 mod read_zero_guest_tests {
     use std::os::fd::AsRawFd;
     use std::os::fd::FromRawFd;
     use std::sync::mpsc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use reverie::GlobalTool;
@@ -20,7 +25,6 @@ mod read_zero_guest_tests {
 
     use super::*;
 
-    const STOP: i32 = 37;
     const RETURNED_READ: u32 = 99;
     const HIGH_FD: u64 = 0x5a5a_5a5a_0000_0000;
     const ADDRESS: u64 = 0x100;
@@ -60,7 +64,7 @@ mod read_zero_guest_tests {
             syscall: Syscall,
         ) -> std::result::Result<i64, reverie::Error> {
             let request = SyscallRequest::from_syscall(syscall);
-            // Record before injection: the terminal read must never return to
+            // Record before injection: the refused read must never return to
             // this callback or the guest. Recording only afterwards misses it.
             guest.send_rpc((request.number(), *request.args())).await;
             if matches!(syscall, Syscall::Exit(_) | Syscall::ExitGroup(_)) {
@@ -82,9 +86,9 @@ mod read_zero_guest_tests {
                 );
                 let returned = guest.inject(syscall).await;
                 // This must be synchronous and precede `?` or any other await:
-                // terminal admission could suppress a later observation, and
-                // both Ok and Err returns violate this read's cancellation.
-                panic!("selected terminal zero-read injection returned: {returned:?}");
+                // fatal admission could suppress a later observation, and
+                // both Ok and Err returns violate this read's run-level refusal.
+                panic!("selected refused zero-read injection returned: {returned:?}");
             }
             Ok(guest.inject(syscall).await?)
         }
@@ -155,7 +159,7 @@ mod read_zero_guest_tests {
         )
     }
 
-    type Outcome = Result<(i32, Vec<SyscallRequest>)>;
+    type Outcome = Result<(Result<i32>, Vec<SyscallRequest>)>;
 
     struct GuestRun {
         group: Arc<GuestThreadGroup>,
@@ -221,38 +225,79 @@ mod read_zero_guest_tests {
             libc::SYS_execve as u64,
             [initial_path, initial_argv, initial_envp, 0, 0, 0],
         );
-        let lifecycle = loaded
-            .task_lifecycle
-            .lock()
-            .unwrap()
-            .get(loaded.tid)
-            .expect("installed root has its exact task generation");
-        let task = reverie::SignalTaskIdentity {
-            process: reverie::SignalProcessId {
-                tgid: Pid::from_raw(loaded.pid),
-                generation: lifecycle.process_generation,
-            },
-            tid: Pid::from_raw(loaded.tid),
-            task_generation: lifecycle.generation,
-        };
         backend.set_backend_stats_request(BackendStatsRequest::new(true));
         let exits = backend.exit_collector.as_ref().unwrap().clone();
         let group = backend.thread_group.clone();
         let registry = group.terminal_reads.clone();
         let frame_memory = backend.memory.clone();
         let frame_address = backend.syscall_frame_address;
+        let result_address =
+            frame_address + (crate::syscall::RESULT_WORD * std::mem::size_of::<u64>()) as u64;
+        let request_words = frame_memory
+            .user()
+            .retain_translated_range(
+                frame_address,
+                crate::syscall::RESULT_WORD * std::mem::size_of::<u64>(),
+            )
+            .unwrap();
+        let result_word = frame_memory
+            .user()
+            .retain_translated_range(result_address, READ_RESULT_SENTINEL.len())
+            .unwrap();
+        // Initialize and retain the actual transport operands before the run.
+        // Retention owns their mapping without holding a copy token or
+        // preventing physical teardown.
+        frame_memory
+            .write_raw(result_address, &READ_RESULT_SENTINEL)
+            .unwrap();
+        let mut stored = [0; READ_RESULT_SENTINEL.len()];
+        frame_memory.read_raw(result_address, &mut stored).unwrap();
+        assert_eq!(stored, READ_RESULT_SENTINEL);
+        let read_dispatches = Arc::new(AtomicUsize::new(0));
+        let observed_dispatches = read_dispatches.clone();
+        // dup[/dup2/close] legitimately publish earlier results into this same
+        // word. Re-arm it at the selected read's existing dispatch hook, before
+        // endpoint admission, while its sole vCPU is stopped. This is not a
+        // blocked-reader witness and neither performs nor cancels a host read.
+        backend
+            .memory
+            .set_test_syscall_dispatch_observer(Arc::new(move |observed| {
+                if observed.number() == libc::SYS_read as u64 {
+                    assert_eq!(*observed, request, "exact refused read arguments");
+                    assert_eq!(
+                        observed_dispatches.fetch_add(1, Ordering::SeqCst),
+                        0,
+                        "selected read must dispatch exactly once"
+                    );
+                    assert_eq!(
+                        SyscallRequest::read_from(&frame_memory, frame_address).unwrap(),
+                        request,
+                        "the stopped transport frame must belong to the selected read"
+                    );
+                    frame_memory
+                        .write_raw(result_address, &READ_RESULT_SENTINEL)
+                        .unwrap();
+                }
+            }));
+        registry.assert_no_test_read_started();
         let (finished, completion) = mpsc::sync_channel(1);
         let thread = std::thread::spawn(move || {
-            let result = if tool {
+            let result: Outcome = if tool {
                 futures::executor::block_on(
-                    backend.run_static_elf_with_tool::<ForwardTool>((), true),
+                    backend.run_static_elf_with_tool_completion::<ForwardTool>((), true),
                 )
-                .map(|(global, status, stdout, stderr)| {
-                    assert!(stdout.is_empty() && stderr.is_empty());
-                    (status, global.requests.into_inner().unwrap())
+                .map(|completion| {
+                    let result = completion.result.map(|(status, stdout, stderr)| {
+                        assert!(stdout.is_empty() && stderr.is_empty());
+                        status
+                    });
+                    (
+                        result,
+                        completion.global_state.requests.into_inner().unwrap(),
+                    )
                 })
             } else {
-                backend.run_static_elf().map(|status| (status, Vec::new()))
+                Ok((backend.run_static_elf(), Vec::new()))
             };
             let _ = finished.send(());
             (backend, result)
@@ -261,43 +306,20 @@ mod read_zero_guest_tests {
             group: group.clone(),
             thread: Some(thread),
         };
-        let observed = registry.observe_registered_test_read(task, request, 0, status_flags);
-        assert!(matches!(
-            completion.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
-        assert_eq!(
-            SyscallRequest::read_from(&frame_memory, frame_address).unwrap(),
-            request,
-            "the stopped transport frame must belong to the observed read"
-        );
-        let result_address =
-            frame_address + (crate::syscall::RESULT_WORD * std::mem::size_of::<u64>()) as u64;
-        let result_word = frame_memory
-            .user()
-            .retain_translated_range(result_address, READ_RESULT_SENTINEL.len())
-            .unwrap();
-        // The exact reader is blocked, the vCPU is stopped at this transport,
-        // and this controller has not requested cancellation yet. Retain the
-        // actual result word before writing it; retaining an operand preserves
-        // its mapping without holding a copy token or preventing teardown.
-        frame_memory
-            .write_raw(result_address, &READ_RESULT_SENTINEL)
-            .unwrap();
-        let mut stored = [0; READ_RESULT_SENTINEL.len()];
-        frame_memory.read_raw(result_address, &mut stored).unwrap();
-        assert_eq!(stored, READ_RESULT_SENTINEL);
-        drop(frame_memory);
-        // This is deliberately after the exact kernel read witness, not after
-        // a delay or merely after registration/handle publication.
-        group.request_exit_group(ExitStatus::Exited(STOP));
         completion
             .recv_timeout(WAIT)
-            .expect("terminal group exit did not return the real guest run");
+            .expect("pre-injection refusal did not return the real guest run");
         let (backend, result) = run.thread.take().unwrap().join().unwrap();
-        let (status, forwarded) = result.unwrap();
-        assert_eq!(status, STOP, "the guest read returned to its failure exit");
-        observed.assert_retired(&registry);
+        let (result, forwarded) = result.expect("Tool global state must survive runtime refusal");
+        let error =
+            result.expect_err("refused read must not return a guest exit status, including 99");
+        let expected_fd = if rebound { 0 } else { 3 };
+        assert!(
+            matches!(error.primary(), Error::PotentiallyBlockingZeroRead { fd } if *fd == expected_fd),
+            "expected pre-injection refusal for guest fd {expected_fd}, got {error:?}"
+        );
+        assert_eq!(read_dispatches.load(Ordering::SeqCst), 1);
+        registry.assert_no_test_read_started();
         assert!(!group.has_worker_handles());
         backend.guest_worker_teardown_result().unwrap();
         assert_eq!(
@@ -332,37 +354,46 @@ mod read_zero_guest_tests {
             assert!(forwarded.is_empty());
         }
         drop(backend);
-        // SAFETY: the runner has joined, the reader's exact thread generation
-        // is gone, and backend teardown has completed. No guest or host writer
-        // remains. The retained operand owns the exact mapping and prevents
+        // SAFETY: the runner has joined, no host read started, and backend
+        // teardown has completed. No guest or host writer remains. The retained
+        // operand owns the exact mapping and prevents
         // its replacement, so this check does not depend on post-terminal
         // admission or on a pointer into the now-dropped backend.
+        let words = unsafe { request_words.read_volatile::<[u64; 7]>() };
+        assert_eq!(
+            SyscallRequest::new(words[0], words[1..].try_into().unwrap()),
+            request,
+            "the final transport must still name the exact refused read"
+        );
+        // SAFETY: the same joined, writer-free state applies to this separately
+        // retained result operand after the backend has been dropped.
         assert_eq!(
             unsafe { result_word.read_volatile::<[u8; 8]>() },
             READ_RESULT_SENTINEL,
-            "terminal cancellation stored a fabricated syscall result"
+            "pre-injection refusal stored a fabricated syscall result"
         );
+        drop(request_words);
         drop(result_word);
-        println!("ZERO_READ_GUEST_RETIRED tool={tool} rebound={rebound} status={status}");
+        println!("ZERO_READ_GUEST_REFUSED tool={tool} rebound={rebound} fd={expected_fd}");
     }
 
     #[test]
-    fn host_dup_zero_read_blocks_before_terminal_retirement() {
+    fn host_dup_zero_read_is_refused_before_injection() {
         run_case(false, false);
     }
 
     #[test]
-    fn host_rebound_zero_read_blocks_before_terminal_retirement() {
+    fn host_rebound_zero_read_is_refused_before_injection() {
         run_case(false, true);
     }
 
     #[test]
-    fn tool_dup_zero_read_blocks_before_terminal_retirement() {
+    fn tool_dup_zero_read_is_refused_before_injection() {
         run_case(true, false);
     }
 
     #[test]
-    fn tool_rebound_zero_read_blocks_before_terminal_retirement() {
+    fn tool_rebound_zero_read_is_refused_before_injection() {
         run_case(true, true);
     }
 }
