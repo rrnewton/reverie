@@ -4590,6 +4590,14 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
+    fn amd_family_19h_model_a0h_uses_reduced_skid_margin() {
+        let config = PmuConfig::from_family_model(0x19, 0xA0);
+        assert_eq!(config.raw_rcb_event(), 0x5100d1);
+        assert_eq!(config.skid_margin(), 1_000);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
     fn unknown_cpu_is_unavailable_to_fallible_in_guest_clock() {
         assert_eq!(PmuConfig::try_from_family_model(0x06, 0xCF), None);
         assert_eq!(PmuConfig::try_from_family_model(0xFF, 0x01), None);
