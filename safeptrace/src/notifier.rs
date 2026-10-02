@@ -163,6 +163,102 @@ struct BoundedTestPause {
 }
 
 #[cfg(test)]
+fn pause_retirement_for_test(slot: &Mutex<Option<BoundedTestPause>>) {
+    let pause = slot.lock().take();
+    if let Some(pause) = pause {
+        let _ = pause.captured.send(());
+        let _ = pause.resume.recv_timeout(Duration::from_secs(2));
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct WorkerDoneWaitProbe {
+    checked: mpsc::SyncSender<()>,
+    // The publisher's kernel thread ID, stored by the publisher just before
+    // it calls the real publication path; 0 until then.
+    publisher_attempted: Arc<AtomicI32>,
+    published: Mutex<mpsc::Receiver<()>>,
+    observation: Mutex<Option<WorkerDoneWaitObservation>>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct WorkerDoneWaitObservation {
+    check_sent: bool,
+    publisher_attempted: bool,
+    published: Result<(), mpsc::RecvTimeoutError>,
+    publisher_blocked_in_futex: bool,
+    publisher_syscall_unreadable: bool,
+}
+
+#[cfg(test)]
+fn pause_worker_done_wait_for_test(slot: &Mutex<Option<Arc<WorkerDoneWaitProbe>>>) {
+    let probe = slot.lock().take();
+    if let Some(probe) = probe {
+        let check_sent = probe.checked.try_send(()).is_ok();
+        let attempt_deadline = Instant::now() + Duration::from_secs(1);
+        let publisher_tid = loop {
+            let tid = probe.publisher_attempted.load(Ordering::Acquire);
+            if tid != 0 || Instant::now() >= attempt_deadline {
+                break tid;
+            }
+            thread::sleep(Duration::from_millis(1));
+        };
+        // The publisher announces its attempt with a plain atomic store, which
+        // cannot sleep. The publication path before the commit "Synchronize
+        // notifier retirement with completion waiters" then stored DONE
+        // and notified with no blocking call in between, so for that publisher
+        // a futex(2) sleep can be seen below only after its notification was
+        // already lost. A publisher that serializes with this waiter's mutex
+        // sleeps in futex(2) until the waiter parks. The window ends when the
+        // publication is received, when the publisher is seen asleep in
+        // futex(2), or after 250 ms. A run that saw neither forced no order,
+        // and the test rejects it: a descheduled publisher fails the test
+        // instead of passing it.
+        let window_deadline = Instant::now() + Duration::from_millis(250);
+        let published_receiver = probe.published.lock();
+        let mut publisher_blocked_in_futex = false;
+        let mut publisher_syscall_unreadable = false;
+        let published = loop {
+            let slice = window_deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(1));
+            let received = published_receiver.recv_timeout(slice);
+            if !matches!(received, Err(mpsc::RecvTimeoutError::Timeout)) {
+                break received;
+            }
+            if publisher_tid != 0 {
+                // The kernel prints a system call number here only while the
+                // thread is asleep in that call; a running or preempted
+                // thread reads as "running".
+                match fs::read_to_string(format!("/proc/self/task/{publisher_tid}/syscall")) {
+                    Ok(syscall) => {
+                        publisher_blocked_in_futex = syscall
+                            .split_ascii_whitespace()
+                            .next()
+                            .and_then(|nr| nr.parse::<libc::c_long>().ok())
+                            == Some(libc::SYS_futex);
+                    }
+                    Err(_) => publisher_syscall_unreadable = true,
+                }
+            }
+            if publisher_blocked_in_futex || Instant::now() >= window_deadline {
+                break received;
+            }
+        };
+        drop(published_receiver);
+        *probe.observation.lock() = Some(WorkerDoneWaitObservation {
+            check_sent,
+            publisher_attempted: publisher_tid != 0,
+            published,
+            publisher_blocked_in_futex,
+            publisher_syscall_unreadable,
+        });
+    }
+}
+
+#[cfg(test)]
 #[derive(Debug)]
 struct ExactTestMember {
     pid: Pid,
@@ -467,6 +563,12 @@ struct Event {
     worker_state: AtomicI32,
     worker_done_lock: Mutex<()>,
     worker_done_changed: Condvar,
+    #[cfg(test)]
+    worker_done_wait_probe: Mutex<Option<Arc<WorkerDoneWaitProbe>>>,
+    /// Test-only signal, sent once when a completion waiter is about to park
+    /// with time remaining while it holds `worker_done_lock`.
+    #[cfg(test)]
+    worker_done_park_signal: Mutex<Option<mpsc::SyncSender<()>>>,
 
     /// Serializes kernel wait-status ownership before either synchronous
     /// fallback/capture or notifier registration can inspect mutable state.
@@ -482,6 +584,10 @@ struct Event {
     cleanup_return_pause: Mutex<Option<BoundedTestPause>>,
     #[cfg(test)]
     terminal_publish_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    registry_retirement_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    worker_identity_retirement_pause: Mutex<Option<BoundedTestPause>>,
 }
 
 /// Keeps a generation's TID from being reaped. See [`EventHandle::hold_tid`].
@@ -698,6 +804,10 @@ impl Event {
             worker_state: AtomicI32::new(WORKER_NOT_STARTED),
             worker_done_lock: Mutex::new(()),
             worker_done_changed: Condvar::new(),
+            #[cfg(test)]
+            worker_done_wait_probe: Mutex::new(None),
+            #[cfg(test)]
+            worker_done_park_signal: Mutex::new(None),
             cleanup_cancel_requested: AtomicBool::new(false),
             cleanup_claim_waiters: AtomicUsize::new(0),
             wait_owner: AtomicU8::new(WAIT_OWNER_NONE),
@@ -709,6 +819,10 @@ impl Event {
             cleanup_return_pause: Mutex::new(None),
             #[cfg(test)]
             terminal_publish_pause: Mutex::new(None),
+            #[cfg(test)]
+            registry_retirement_pause: Mutex::new(None),
+            #[cfg(test)]
+            worker_identity_retirement_pause: Mutex::new(None),
         }
     }
 
@@ -1281,8 +1395,12 @@ impl Event {
         }
     }
 
-    fn finish_sync_terminal(&self) {
+    // Keep the synchronous owner's FINISHING -> registry removal -> DONE
+    // contract together. Its existing wait-owner claim excludes worker start;
+    // caller-owned typed states may retain the identity afterward.
+    fn finish_sync_terminal(self: &Arc<Self>, pid: Pid) {
         if self.try_begin_unstarted_completion() {
+            NOTIFIER.remove(pid, self);
             self.mark_worker_done();
         } else {
             debug_assert_eq!(self.worker_state.load(Ordering::Acquire), WORKER_DONE);
@@ -1426,9 +1544,15 @@ impl Event {
     }
 
     fn mark_worker_done(&self) {
-        let previous = self.worker_state.swap(WORKER_DONE, Ordering::AcqRel);
-        debug_assert!(matches!(previous, WORKER_RUNNING | WORKER_FINISHING));
-        self.worker_done_changed.notify_all();
+        {
+            // Serialize DONE publication with the waiter's predicate check
+            // and atomic unlock-and-park, so notification cannot be lost.
+            let _guard = self.worker_done_lock.lock();
+            let previous = self.worker_state.swap(WORKER_DONE, Ordering::AcqRel);
+            debug_assert!(matches!(previous, WORKER_RUNNING | WORKER_FINISHING));
+            self.worker_done_changed.notify_all();
+        }
+        // Do not hold worker_done_lock while acquiring wait_owner_lock.
         self.notify_wait_owner_change();
     }
 
@@ -1444,9 +1568,15 @@ impl Event {
             if self.worker_state.load(Ordering::Acquire) == WORKER_DONE {
                 return true;
             }
+            #[cfg(test)]
+            pause_worker_done_wait_for_test(&self.worker_done_wait_probe);
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return false;
+            }
+            #[cfg(test)]
+            if let Some(parking) = self.worker_done_park_signal.lock().take() {
+                let _ = parking.try_send(());
             }
             self.worker_done_changed.wait_for(&mut guard, remaining);
         }
@@ -2004,11 +2134,16 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
             break;
         }
     }
-    event.mark_worker_done();
     // The worker owns terminal registry cleanup. A WaitFuture may be dropped
     // before the final status is polled, and leaving cleanup to that future
     // would retain a stale event if the kernel later reuses this PID.
     NOTIFIER.remove(pid, &event);
+    #[cfg(test)]
+    pause_retirement_for_test(&event.worker_identity_retirement_pause);
+    // DONE acknowledges release of notifier-owned identity references, not
+    // merely receipt of terminal status. Event itself owns no descriptors.
+    drop(identity);
+    event.mark_worker_done();
 }
 
 fn try_replay_sync_terminal(pid: Pid, handle: &EventHandle) -> Option<Result<Wait, Error>> {
@@ -2121,9 +2256,10 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                         Err(error) => {
                             if error == Errno::ECHILD {
                                 event.mark_echild();
-                                event.finish_sync_terminal();
+                                event.finish_sync_terminal(pid);
+                            } else {
+                                NOTIFIER.remove(pid, &event);
                             }
-                            NOTIFIER.remove(pid, &event);
                             return Err(error.into());
                         }
                     };
@@ -2134,8 +2270,7 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                         pause.resume.wait();
                     }
                     if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
-                        event.finish_sync_terminal();
-                        NOTIFIER.remove(pid, &event);
+                        event.finish_sync_terminal(pid);
                         if cancelling {
                             drop(owner);
                             return Wait::from_raw_with_token(
@@ -2481,13 +2616,31 @@ impl Notifier {
         if event.try_begin_unstarted_completion() {
             // Publish the terminal result before completion becomes visible.
             event.mark_echild();
-            event.mark_worker_done();
+            // This cfg(test) pause runs while `pids`, the process-wide
+            // NOTIFIER registry lock, is held. While an armed pause waits,
+            // every other thread in the same `cargo test` process that takes
+            // `pids` (notifier registration, lookup, ECHILD resolution,
+            // raw-cleanup claim or removal) blocks until the test releases
+            // the pause or the 2 s timeout in pause_retirement_for_test
+            // expires. The test that arms it at this site is
+            // unstarted_echild_ack_follows_registry_release.
+            // It must sit under `pids`: the ECHILD publication above, the
+            // registry removal and DONE below form one critical section,
+            // and that test must observe its interior boundary (result
+            // published, entry still registered, DONE unpublished). A pause
+            // before the lock, like the one in remove(), would run before
+            // this completion is claimed and could not catch DONE published
+            // ahead of the removal; releasing the lock around the pause
+            // would change which steps the lock covers.
+            #[cfg(test)]
+            pause_retirement_for_test(&event.registry_retirement_pause);
             if pids
                 .get(&pid)
                 .is_some_and(|current| Arc::ptr_eq(current.handle.event(), &event))
             {
                 pids.remove(&pid);
             }
+            event.mark_worker_done();
         }
         handle
     }
@@ -2766,6 +2919,8 @@ impl Notifier {
 
     /// Removes a completed PID without disturbing a reused PID's event.
     fn remove(&self, pid: Pid, event: &Arc<Event>) {
+        #[cfg(test)]
+        pause_retirement_for_test(&event.registry_retirement_pause);
         let mut pids = self.pids.lock();
         if pids
             .get(&pid)
@@ -3105,8 +3260,10 @@ fn parse_bound_stat_flags(bytes: &[u8], pid: Pid) -> Result<u32, ProcStatError> 
         .ok_or(ProcStatError::Format("flags overflow u32"))
 }
 
-/// A synchronous acknowledgment that a PID's notifier worker has observed a
-/// terminal state and removed its registry entry.
+/// A synchronous acknowledgment that a PID's wait owner has observed a
+/// terminal state, removed its exact registry entry, and released the notifier
+/// worker's identity reference. Caller-owned typed states and cleanup handles
+/// may intentionally retain the same identity after this acknowledgment.
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-270): Trigger 2: review the public generation-bound
 // terminal-cleanup acknowledgment contract.
@@ -3195,8 +3352,8 @@ impl TerminalCleanup {
     fn finish_unstarted_raw_cleanup(&self) {
         let event = self.event.event();
         event.mark_echild();
-        event.mark_worker_done();
         NOTIFIER.remove(self.pid, event);
+        event.mark_worker_done();
     }
 
     /// Returns true when both handles carry the same immutable Event generation.
@@ -3204,8 +3361,11 @@ impl TerminalCleanup {
         Arc::ptr_eq(self.event.event(), other.event.event())
     }
 
-    /// Waits up to `timeout` for the notifier worker to unregister this PID.
+    /// Waits up to `timeout` for notifier-owned retirement of this generation.
     ///
+    /// Acknowledgment follows removal of this generation's registry entry and
+    /// release of the worker's identity reference. It does not release caller
+    /// handles or wait for the OS worker thread itself to finish returning.
     /// This does not call `waitpid`: after notifier registration, the worker
     /// thread remains the sole owner of wait statuses for the PID.
     pub fn wait(&self, timeout: Duration) -> bool {
@@ -3249,6 +3409,50 @@ impl TerminalCleanup {
             event: self.event.resolved(),
             state,
         })
+    }
+
+    /// Finishes a SIGKILL that the caller has already sent to this generation.
+    ///
+    /// Waits, for at most two seconds from the call, until [`Self::wait`]
+    /// acknowledges notifier-owned retirement, and then returns `Ok(())`.
+    /// While retirement is not acknowledged, it waits with the remaining
+    /// budget for a queued nonterminal status and consumes it. A consumed
+    /// status that is not a stop is discarded and the wait continues. A
+    /// consumed stop is resumed without a signal, and the method returns
+    /// `Ok(())` once that resume succeeds or fails with `Error::Died` or
+    /// `ESRCH`, without waiting for retirement. Once the terminal status has
+    /// been published with nothing queued, it waits for retirement with the
+    /// rest of the budget.
+    ///
+    /// Returns `ETIMEDOUT` when the deadline passes first. Decode errors and
+    /// other resume errors are returned unchanged. This sends no signal and
+    /// does not call `waitpid`.
+    pub fn wait_after_sigkill(&self) -> Result<(), Error> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if self.wait(Duration::ZERO) {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(reservation) = self.reserve_pending_for_cleanup(remaining) else {
+                if self.wait(deadline.saturating_duration_since(Instant::now())) {
+                    return Ok(());
+                }
+                return Err(Errno::ETIMEDOUT.into());
+            };
+            let state = reservation.decode()?;
+            let Wait::Stopped(stopped, _) = state else {
+                reservation.commit();
+                continue;
+            };
+            reservation.commit();
+            match stopped.resume(None) {
+                Ok(_) | Err(Error::Died(_)) | Err(Error::Errno(Errno::ESRCH)) => {
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// Returns true when no nonterminal status remains queued.
@@ -3472,6 +3676,8 @@ impl Future for ExitFuture {
 #[cfg(test)]
 mod test {
     include!("stop_observation_tests.rs");
+    include!("retirement_ack_tests.rs");
+    include!("completion_wakeup_tests.rs");
     use std::collections::hash_map::DefaultHasher;
     use std::env;
     use std::io;
