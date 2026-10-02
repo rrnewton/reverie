@@ -289,6 +289,93 @@ fn fast_path() {
     assert_eq!(hooks, FAST_CALLS);
 }
 
+/// Returns this process's `TracerPid` from procfs; zero means no ptrace attach.
+///
+/// Reads with `pread`: the fixture Tool answers `read` itself.
+fn tracer_pid() -> u64 {
+    let fd = unsafe { libc::open(c"/proc/self/status".as_ptr(), libc::O_RDONLY) };
+    assert!(fd >= 0, "open: {}", std::io::Error::last_os_error());
+    let mut status = vec![0u8; 64 * 1024];
+    let mut len = 0;
+    loop {
+        let read = unsafe {
+            libc::pread(
+                fd,
+                status[len..].as_mut_ptr().cast(),
+                status.len() - len,
+                len as libc::off_t,
+            )
+        };
+        assert!(read >= 0, "pread: {}", std::io::Error::last_os_error());
+        if read == 0 {
+            break;
+        }
+        len += read as usize;
+        assert!(len < status.len(), "procfs status filled the buffer");
+    }
+    assert_eq!(unsafe { libc::close(fd) }, 0);
+    std::str::from_utf8(&status[..len])
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("TracerPid:"))
+        .expect("procfs status has a TracerPid line")
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+fn patching_off() {
+    let mut expected = None;
+    for _ in 0..FAST_CALLS {
+        let observed = unsafe { reverie_liteinst_lifecycle_getpid() };
+        assert_eq!(*expected.get_or_insert(observed), observed);
+    }
+    // The vDSO fast paths must trap too. The fixture Tool answers both calls
+    // with 0 and writes nothing, so the sentinels survive only if the Tool,
+    // not the kernel or an unpatched vDSO, ran every call.
+    assert_ne!(
+        unsafe { libc::getauxval(libc::AT_SYSINFO_EHDR) },
+        0,
+        "the fixture needs a vDSO"
+    );
+    for _ in 0..FAST_CALLS {
+        let mut time = libc::timespec {
+            tv_sec: -1,
+            tv_nsec: -1,
+        };
+        assert_eq!(
+            unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) },
+            0
+        );
+        assert_eq!((time.tv_sec, time.tv_nsec), (-1, -1));
+        let mut day = libc::timeval {
+            tv_sec: -1,
+            tv_usec: -1,
+        };
+        assert_eq!(
+            unsafe { libc::gettimeofday(&mut day, core::ptr::null_mut()) },
+            0
+        );
+        assert_eq!((day.tv_sec, day.tv_usec), (-1, -1));
+    }
+    let address = core::ptr::addr_of!(reverie_liteinst_lifecycle_getpid_site) as usize as u64;
+    // Read every counter before procfs and stdout add their own syscalls.
+    let traps = reverie_liteinst::reverie_liteinst_site_trap_count(address);
+    let hooks = reverie_liteinst::reverie_liteinst_site_hook_count(address);
+    let fallback_getpid =
+        reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_getpid);
+    let fallback_clock_gettime =
+        reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_clock_gettime);
+    let fallback_gettimeofday =
+        reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_gettimeofday);
+    let tracer = tracer_pid();
+    println!(
+        "calls={FAST_CALLS} traps={traps} hooks={hooks} fallback_getpid={fallback_getpid} \
+         fallback_clock_gettime={fallback_clock_gettime} \
+         fallback_gettimeofday={fallback_gettimeofday} tracer_pid={tracer}"
+    );
+}
+
 fn restart_wait4() {
     let waited = unsafe { libc::waitpid(-1, core::ptr::null_mut(), libc::WNOHANG) };
     assert_eq!(waited, 4242, "wait4 callback was not restarted");
@@ -428,6 +515,7 @@ fn main() {
             &arguments.next().expect("missing child pid path"),
         )),
         Some("fast-path") => fast_path(),
+        Some("patching-off") => patching_off(),
         Some("restart-wait4") => restart_wait4(),
         Some("restart-read") => restart_read(),
         Some("nested-hook") => nested_hook(),

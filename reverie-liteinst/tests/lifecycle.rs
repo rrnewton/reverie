@@ -18,9 +18,12 @@ use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_liteinst::LiteinstBackend;
 use reverie_liteinst::LiteinstDispatchPath;
+use reverie_liteinst::SITE_PATCHING_ENV;
 use reverie_liteinst::TOOL_PRELOAD_ENV;
 
 const RPC_GETPID: u64 = 1;
+const RPC_CLOCK_GETTIME: u64 = 2;
+const RPC_GETTIMEOFDAY: u64 = 3;
 const RPC_FORK: u64 = 4;
 /// Tags a process's exit-time count of its Tool callbacks.
 const RPC_CALLBACK_COUNT: u64 = 1 << 32;
@@ -29,6 +32,8 @@ const BACKEND_OUTPUT_CHILD_ENV: &str = "REVERIE_LITEINST_BACKEND_OUTPUT_TEST_CHI
 #[derive(Debug, Default)]
 struct LifecycleGlobal {
     getpid: AtomicU64,
+    clock_gettime: AtomicU64,
+    gettimeofday: AtomicU64,
     fork: AtomicU64,
     /// Every in-guest Tool syscall callback, counted in guest memory
     /// independently of the backend's statistics and reported once per
@@ -50,6 +55,8 @@ impl GlobalTool for LifecycleGlobal {
         }
         let counter = match event {
             RPC_GETPID => &self.getpid,
+            RPC_CLOCK_GETTIME => &self.clock_gettime,
+            RPC_GETTIMEOFDAY => &self.gettimeofday,
             RPC_FORK => &self.fork,
             _ => panic!("unknown lifecycle fixture RPC {event}"),
         };
@@ -307,6 +314,92 @@ fn assert_tool_callbacks_were_delivered(
         callbacks <= guest_entries,
         "{callbacks} callbacks, {guest_entries} guest entries\n{stats}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn in_guest_tool_refuses_an_unsupported_site_patching_value() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let mut command = guest_command("patching-off");
+    command.env(SITE_PATCHING_ENV, "2");
+    let (output, global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(command, (), preload),
+    )
+    .await
+    .expect("in-guest run with an unsupported site-patching value hung")
+    .unwrap();
+
+    // The fixture unwraps the installation result, so the refusal is a panic
+    // before the fixture's workload: no output and no getpid RPC.
+    assert_eq!(output.status.code(), Some(101), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("unsupported REVERIE_LITEINST_SITE_PATCHING value"),
+        "{output:?}"
+    );
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn site_patching_off_runs_every_call_through_the_in_guest_fallback() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let mut command = guest_command("patching-off");
+    command.env(SITE_PATCHING_ENV, "0");
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload_and_stats::<CoordinatorOnlyTool>(
+            command,
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("patching-off in-guest run hung")
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    // No site is claimed, so the site keeps no trap or hook count; every
+    // getpid and every vDSO clock_gettime and gettimeofday reached the
+    // fallback, and no tracer is attached to the guest.
+    assert_eq!(
+        output.stdout,
+        b"calls=8 traps=0 hooks=0 fallback_getpid=8 fallback_clock_gettime=8 \
+          fallback_gettimeofday=8 tracer_pid=0\n",
+        "{output:?}"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
+    assert_eq!(global.clock_gettime.load(Ordering::Relaxed), 8);
+    assert_eq!(global.gettimeofday.load(Ordering::Relaxed), 8);
+    assert_eq!(stats.snapshot().process_reports(), 1, "{stats}");
+    assert_eq!(stats.snapshot().patch_shapes().patched_rips(), 0, "{stats}");
+    let paths = stats.dispatch_path_counts();
+    for (path, expected) in [
+        (LiteinstDispatchPath::DirectHook, 0),
+        (LiteinstDispatchPath::FirstSiteSeccomp, 0),
+        (LiteinstDispatchPath::PtraceInstallation, 0),
+        (LiteinstDispatchPath::CachelineStraddlerFallback, 0),
+        (LiteinstDispatchPath::UnpatchableOrOtherFallback, 0),
+        (LiteinstDispatchPath::FallbackRefusal, 0),
+    ] {
+        assert_eq!(paths.count(&path), expected, "{path}: {stats}");
+    }
+    let disabled = paths.count(&LiteinstDispatchPath::PatchingDisabledFallback);
+    assert!(
+        disabled >= 24,
+        "expected every getpid, clock_gettime and gettimeofday on the fallback: {stats}"
+    );
+    // Every fallback completes except the guest's final exit_group: it is
+    // dispatched through the fallback like any other call, but the Tool host
+    // submits the process statistics before that call exits the process, so
+    // its completion is never counted.
+    assert_eq!(
+        paths.count(&LiteinstDispatchPath::FallbackCompletionSigsys),
+        disabled - 1,
+        "every fallback but the final exit_group must complete: {stats}"
+    );
+    println!("{stats}");
 }
 
 #[tokio::test(flavor = "current_thread")]
