@@ -123,15 +123,11 @@ impl E9patchBackendStatsSnapshot {
     /// A recovered site that e9patch did not patch fell back to ptrace's
     /// seccomp stop. A non-ELF root was never analyzed, so nothing is measured.
     pub fn site_counters(&self) -> SiteCounters {
-        let as_u64 = |sites: Option<usize>| sites.map(|sites| sites as u64);
-        SiteCounters {
-            candidates: as_u64(self.recovered_sites),
-            patched: as_u64(self.patched_sites),
-            fell_back: self
-                .recovered_sites
-                .zip(self.patched_sites)
-                .map(|(recovered, patched)| recovered.saturating_sub(patched) as u64),
-        }
+        self.recovered_sites
+            .zip(self.patched_sites)
+            .map_or_else(SiteCounters::default, |(recovered, patched)| {
+                SiteCounters::from_rewrite(recovered as u64, patched as u64)
+            })
     }
 }
 

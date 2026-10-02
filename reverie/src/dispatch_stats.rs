@@ -131,6 +131,16 @@ impl SiteCounters {
         patched: Some(0),
         fell_back: Some(0),
     };
+
+    /// Sites of a rewrite that measured `candidates` sites and patched
+    /// `patched` of them, where every candidate it did not patch fell back.
+    pub fn from_rewrite(candidates: u64, patched: u64) -> Self {
+        Self {
+            candidates: Some(candidates),
+            patched: Some(patched),
+            fell_back: Some(candidates.saturating_sub(patched)),
+        }
+    }
 }
 
 /// The counters attributed to one guest process.

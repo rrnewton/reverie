@@ -31,6 +31,15 @@ use reverie::SiteCounters;
 /// Private descriptor setting shared with the SaBRe loader.
 pub const BACKEND_STATS_ENV: &str = "REVERIE_SABRE_BACKEND_STATS_FD";
 
+/// Lowest descriptor number the inherited statistics page may occupy.
+///
+/// The guest inherits this descriptor, so a low number would shift every
+/// descriptor the guest opens: its first `open` would no longer return 3.
+/// Placing it above the plugin's fixed RPC socket (descriptor 100) keeps the
+/// guest's low descriptor numbering identical whether or not statistics are
+/// collected.
+pub const INHERITED_FD_FLOOR: RawFd = 101;
+
 const BACKEND_STATS_MAGIC: u64 = 0x3154_4154_5352_4253;
 const BACKEND_STATS_VERSION: u32 = 2;
 const PATCH_BUCKETS: usize = 15;
@@ -263,12 +272,19 @@ impl SabreStats {
             return Ok(None);
         }
 
-        let fd = unsafe {
+        let created = unsafe {
             libc::memfd_create(
                 c"reverie-sabre-backend-stats".as_ptr(),
-                libc::MFD_ALLOW_SEALING,
+                libc::MFD_ALLOW_SEALING | libc::MFD_CLOEXEC,
             )
         };
+        if created == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        let created = unsafe { OwnedFd::from_raw_fd(created) };
+        // Only the duplicate is inherited: F_DUPFD clears close-on-exec, and
+        // the low-numbered original closes when `created` drops.
+        let fd = unsafe { libc::fcntl(created.as_raw_fd(), libc::F_DUPFD, INHERITED_FD_FLOOR) };
         if fd == -1 {
             return Err(io::Error::last_os_error());
         }
@@ -528,6 +544,41 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn inherited_descriptor_sits_above_the_guest_range_and_survives_exec() {
+        let stats = SabreStats::create(BackendStatsRequest::ENABLED)
+            .unwrap()
+            .unwrap();
+        let fd = stats.raw_fd();
+        assert!(
+            fd >= INHERITED_FD_FLOOR,
+            "stats descriptor {fd} is in the guest range"
+        );
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert_eq!(flags & libc::FD_CLOEXEC, 0, "the loader must inherit it");
+        // No low-numbered copy is left behind for the guest to inherit.
+        let memfds = std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(|entry| {
+                let entry = entry.unwrap();
+                let target = std::fs::read_link(entry.path()).ok()?;
+                target
+                    .to_string_lossy()
+                    .contains("reverie-sabre-backend-stats")
+                    .then(|| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .parse::<RawFd>()
+                            .unwrap()
+                    })
+            })
+            .filter(|&open| open < INHERITED_FD_FLOOR)
+            .filter(|&open| unsafe { libc::fcntl(open, libc::F_GETFD) } & libc::FD_CLOEXEC == 0)
+            .collect::<Vec<_>>();
+        assert_eq!(memfds, Vec::<RawFd>::new());
     }
 
     #[test]
