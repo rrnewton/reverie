@@ -630,6 +630,142 @@ impl LiteinstBackend {
             ChildWait::Status(_) => unreachable!("output run returned only a status"),
         }
     }
+
+    /// Runs a tool with captured output and opaque constructor bootstrap bytes,
+    /// and aggregates one typed statistics snapshot per process.
+    ///
+    /// Only the Tool coordinator travels in the bootstrap. The statistics
+    /// coordinator is still named by [`STATS_COORDINATOR_ENV`]; Tool
+    /// installation removes it from the environment, but the kernel's copy in
+    /// `/proc/self/environ` keeps it.
+    pub async fn run_with_output_and_preload_data_and_stats<T>(
+        mut command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+        tool_data: impl Into<Vec<u8>>,
+    ) -> Result<(Output, T::GlobalState, crate::LiteinstBackendStatsSource), Error>
+    where
+        T: Tool + 'static,
+    {
+        command.stdout(reverie::process::Stdio::piped());
+        command.stderr(reverie::process::Stdio::piped());
+        let (wait, global, stats) = launch::<T>(
+            command,
+            config,
+            preload.into(),
+            true,
+            Some(tool_data.into()),
+            BackendStatsRequest::ENABLED,
+        )
+        .await?;
+        let stats = stats.expect("enabled LiteInst run must return statistics");
+        match wait {
+            ChildWait::Output(output) => Ok((output, global, stats)),
+            ChildWait::Status(_) => unreachable!("output run returned only a status"),
+        }
+    }
+
+    /// Runs a tool with inherited guest stdio and opaque constructor bootstrap
+    /// bytes, and aggregates one typed statistics snapshot per process.
+    ///
+    /// As with [`Self::run_with_inherited_stdio_and_preload_data`], the
+    /// returned [`Output`] contains the guest status and empty byte buffers.
+    pub async fn run_with_inherited_stdio_and_preload_data_and_stats<T>(
+        mut command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+        tool_data: impl Into<Vec<u8>>,
+    ) -> Result<(Output, T::GlobalState, crate::LiteinstBackendStatsSource), Error>
+    where
+        T: Tool + 'static,
+    {
+        inherit_stdio(&mut command);
+        let (wait, global, stats) = launch::<T>(
+            command,
+            config,
+            preload.into(),
+            true,
+            Some(tool_data.into()),
+            BackendStatsRequest::ENABLED,
+        )
+        .await?;
+        let stats = stats.expect("enabled LiteInst run must return statistics");
+        match wait {
+            ChildWait::Output(output) => {
+                debug_assert!(output.stdout.is_empty());
+                debug_assert!(output.stderr.is_empty());
+                Ok((output, global, stats))
+            }
+            ChildWait::Status(_) => unreachable!("output run returned only a status"),
+        }
+    }
+
+    /// Runs a tool with opaque constructor bootstrap bytes and returns only the
+    /// guest's exit status.
+    ///
+    /// Unlike [`Self::run_with_inherited_stdio_and_preload_data`], this leaves
+    /// the command's stdio configuration exactly as the caller set it.
+    pub async fn run_with_preload_data<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+        tool_data: impl Into<Vec<u8>>,
+    ) -> Result<(ExitStatus, T::GlobalState), Error>
+    where
+        T: Tool + 'static,
+    {
+        let (wait, global, stats) = launch::<T>(
+            command,
+            config,
+            preload.into(),
+            false,
+            Some(tool_data.into()),
+            BackendStatsRequest::DISABLED,
+        )
+        .await?;
+        debug_assert!(stats.is_none());
+        match wait {
+            ChildWait::Status(status) => Ok((status.into(), global)),
+            ChildWait::Output(_) => unreachable!("status run returned captured output"),
+        }
+    }
+
+    /// Runs a tool with opaque constructor bootstrap bytes, returns the guest's
+    /// exit status, and aggregates one typed statistics snapshot per process.
+    ///
+    /// The statistics coordinator is named in the environment exactly as for
+    /// [`Self::run_with_output_and_preload_data_and_stats`].
+    pub async fn run_with_preload_data_and_stats<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+        tool_data: impl Into<Vec<u8>>,
+    ) -> Result<
+        (
+            ExitStatus,
+            T::GlobalState,
+            crate::LiteinstBackendStatsSource,
+        ),
+        Error,
+    >
+    where
+        T: Tool + 'static,
+    {
+        let (wait, global, stats) = launch::<T>(
+            command,
+            config,
+            preload.into(),
+            false,
+            Some(tool_data.into()),
+            BackendStatsRequest::ENABLED,
+        )
+        .await?;
+        let stats = stats.expect("enabled LiteInst run must return statistics");
+        match wait {
+            ChildWait::Status(status) => Ok((status.into(), global, stats)),
+            ChildWait::Output(_) => unreachable!("status run returned captured output"),
+        }
+    }
 }
 
 fn configure_host_command(command: &mut Command, preload: PathBuf) -> io::Result<PathBuf> {
