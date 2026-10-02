@@ -32,6 +32,7 @@ use reverie::Guest;
 use reverie::Pid;
 use reverie::Signal;
 use reverie::Subscription;
+use reverie::TimerSchedule;
 use reverie::Tool;
 use reverie::syscalls::Addr;
 use reverie::syscalls::AddrMut;
@@ -110,12 +111,14 @@ const MARKERS: usize = 1500;
 enum Report {
     Injected(Result<i64, i32>),
     Signal(i32),
+    Timer,
 }
 
 #[derive(Default)]
 struct Log {
     injected: Mutex<Vec<Result<i64, i32>>>,
     signals: Mutex<Vec<i32>>,
+    timers: AtomicUsize,
 }
 
 #[reverie::global_tool]
@@ -128,6 +131,9 @@ impl GlobalTool for Log {
         match report {
             Report::Injected(result) => self.injected.lock().unwrap().push(result),
             Report::Signal(signal) => self.signals.lock().unwrap().push(signal),
+            Report::Timer => {
+                self.timers.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -2390,6 +2396,8 @@ print(blocked, pending, len(runs), os.getpid())
 /// SIGTRAP lets Linux's synchronous dequeue take the still-blocked SIGBUS at
 /// the next resume (it is requeued again, as `strace -f` sees it); and once
 /// for its delivery. Nothing in the tracer remembers the earlier reports.
+/// The new program runs in the same process: its PID is the TGID the leader
+/// printed before the exec.
 #[test]
 fn requeued_signal_survives_a_nonleader_exec() {
     extern "C" fn worker(_: *mut libc::c_void) -> *mut libc::c_void {
@@ -2425,6 +2433,7 @@ fn requeued_signal_survives_a_nonleader_exec() {
     let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
         SIGSEGV_HANDLER_CALLS.store(0, Ordering::Relaxed);
         install_counter(libc::SIGSEGV, count_sigsegv);
+        println!("{}", libc::getpid());
         let mut thread: libc::pthread_t = 0;
         assert_eq!(
             libc::pthread_create(&mut thread, std::ptr::null(), worker, std::ptr::null_mut()),
@@ -2451,12 +2460,13 @@ fn requeued_signal_survives_a_nonleader_exec() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let (fields, pid) = stdout.trim().rsplit_once(' ').expect("program pid");
+    let (tgid, program) = stdout.trim().split_once('\n').expect("two lines");
+    let (fields, pid) = program.rsplit_once(' ').expect("program pid");
     assert_eq!(
         fields, "1 1 1",
         "SIGBUS stays blocked and pending across the exec, then runs the handler once"
     );
-    let _: i64 = pid.parse().expect("program pid");
+    assert_eq!(pid, tgid, "the program runs in the guest's process");
     assert_eq!(*injected, vec![Ok(0)], "the unblock runs once and succeeds");
     assert_eq!(
         *signals,
@@ -3434,6 +3444,113 @@ fn signal_hook_blocking_its_signal_keeps_it_pending() {
         *log.signals.lock().unwrap(),
         vec![libc::SIGUSR1, libc::SIGUSR1],
         "the signal is reported when delivered, and again once unblocked"
+    );
+}
+
+/// Like `ReplaceMarker`, but the first signal hook on each thread injects a
+/// `getpid`, reported, and requests a precise timer one retired conditional
+/// branch away, before passing the signal through. Each timer event is
+/// reported.
+#[derive(Clone, Copy, Debug, Default)]
+struct TimerInFirstSignalHook;
+
+#[reverie::tool]
+impl Tool for TimerInFirstSignalHook {
+    type GlobalState = Log;
+    /// Whether a signal hook has run on this thread.
+    type ThreadState = bool;
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        replace_marker(guest, syscall).await
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        if !std::mem::replace(guest.thread_state_mut(), true) {
+            let result = guest.inject(Getpid::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            guest
+                .set_timer_precise(TimerSchedule::Rcbs(1))
+                .expect("request a precise timer");
+        }
+        Ok(Some(signal))
+    }
+
+    async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
+        guest.send_rpc(Report::Timer).await;
+    }
+}
+
+/// As `always_injecting_hook_delivers_at_a_delivery_stop`, but the hook also
+/// requests a timer so near that Reverie kicks it with its own SIGSTKFLT,
+/// queued while the thread is still at the delivery stop. Reverie delivers
+/// the guest's signal under `ppoll`'s temporary mask first; the kick then
+/// stops the thread at the handler's first instruction and reaches the
+/// timer, which fires once, and the guest's signal is neither reported again
+/// nor lost.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn signal_hook_requesting_a_near_timer_delivers_its_signal_and_fires_once() {
+    reverie_ptrace::ret_without_perf!();
+    let (output, log) = test_fn::<TimerInFirstSignalHook, _>(|| unsafe {
+        install_recorder(libc::SIGUSR1);
+        block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let mut mask: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut mask);
+        let timeout = libc::timespec {
+            tv_sec: 5,
+            tv_nsec: 0,
+        };
+        let ret = libc::syscall(
+            libc::SYS_ppoll,
+            0usize,
+            0usize,
+            &timeout as *const libc::timespec,
+            &mask as *const libc::sigset_t,
+            8usize,
+        );
+        let errno = *libc::__errno_location();
+        print_recorded(ret, errno, libc::SIGUSR1);
+    })
+    .expect("run near-timer hook guest");
+    let pid = check_recorded(
+        &output,
+        "near-timer-hook",
+        &log,
+        &format!("-1 {}", libc::EINTR),
+        libc::SI_QUEUE,
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(pid)],
+        "the hook's getpid runs once"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1],
+        "the signal is reported once"
+    );
+    assert_eq!(
+        log.timers.load(Ordering::Relaxed),
+        1,
+        "the timer fires once"
     );
 }
 
