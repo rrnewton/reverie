@@ -43,6 +43,7 @@ use crate::liteinst_trap_only::RetiredReason;
 use crate::liteinst_trap_only::SLOT;
 use crate::liteinst_trap_only::SLOT_RET;
 use crate::liteinst_trap_only::SYSCALL_BYTES;
+use crate::liteinst_trap_only::StoredSiginfo;
 use crate::liteinst_trap_only::TAG_I386;
 use crate::liteinst_trap_only::TAG_SLOT;
 use crate::liteinst_trap_only::TrapOnlyFailure;
@@ -215,8 +216,8 @@ fn deferred_stops_next(status: Option<&HopThreadStatus>) -> DeferredStopsNext {
 /// before a second task can share the address space.
 #[derive(Clone, Copy, Default)]
 struct DeferredStops {
-    private: Option<libc::siginfo_t>,
-    shared: Option<libc::siginfo_t>,
+    private: Option<StoredSiginfo>,
+    shared: Option<StoredSiginfo>,
     count: usize,
 }
 
@@ -232,7 +233,7 @@ impl DeferredStops {
         };
         let kept = slot.is_none();
         if kept {
-            *slot = Some(info);
+            *slot = Some(StoredSiginfo(info));
         }
         (queue, kept)
     }
@@ -1043,29 +1044,33 @@ impl<L: Tool + 'static> TracedTask<L> {
                             },
                         ));
                     }
-                    let info = match task.getsiginfo() {
-                        Ok(info) => info,
-                        // A non-seized tracee's group stop looks like a
-                        // signal-delivery stop, but has no siginfo.
-                        Err(TraceError::Errno(Errno::EINVAL)) => {
-                            return Err(self.trap_only_failure(
-                                "trap-only hop",
-                                TrapOnlyFailure::HopUnexpectedStop {
-                                    phase: "H2 slot stop",
-                                    site,
-                                    stop: format!(
-                                        "SIGSTOP group stop (PTRACE_GETSIGINFO EINVAL) at rip {:#x}",
-                                        regs.rip
-                                    ),
-                                },
-                            ));
-                        }
-                        Err(error) => return Err(error),
+                    // A block, so that the `siginfo_t` (not `Send` from libc
+                    // 0.2.190) is gone before the `.await` below.
+                    let (queue, kept, code) = {
+                        let info = match task.getsiginfo() {
+                            Ok(info) => info,
+                            // A non-seized tracee's group stop looks like a
+                            // signal-delivery stop, but has no siginfo.
+                            Err(TraceError::Errno(Errno::EINVAL)) => {
+                                return Err(self.trap_only_failure(
+                                    "trap-only hop",
+                                    TrapOnlyFailure::HopUnexpectedStop {
+                                        phase: "H2 slot stop",
+                                        site,
+                                        stop: format!(
+                                            "SIGSTOP group stop (PTRACE_GETSIGINFO EINVAL) at rip {:#x}",
+                                            regs.rip
+                                        ),
+                                    },
+                                ));
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        let (queue, kept) = deferred.defer(info);
+                        (queue, kept, info.si_code)
                     };
-                    let (queue, kept) = deferred.defer(info);
                     self.trap_only_record(format!(
-                        "slot SIGSTOP deferred code={} queue={queue}{}",
-                        info.si_code,
+                        "slot SIGSTOP deferred code={code} queue={queue}{}",
                         if kept { "" } else { " (coalesced)" }
                     ));
                     wait = self.resume_stopped(task, None)?.next_state().await?;
@@ -1271,7 +1276,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.trap_only_record(format!(
                 "deferred SIGSTOP re-raised queue={} code={}",
                 if private { "private" } else { "shared" },
-                info.si_code
+                info.0.si_code
             ));
             if let Some(trap_only) = self.trap_only.as_mut() {
                 trap_only
@@ -1324,7 +1329,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Ok(());
         };
         let reraised = trap_only.reraised_stops.remove(index);
-        task.setsiginfo(&reraised.info)
+        task.setsiginfo(&reraised.info.0)
     }
 
     /// Forgets re-raised SIGSTOPs that were not delivered before this task's
@@ -2153,8 +2158,8 @@ mod hop_stop_tests {
         assert_eq!(deferred.defer(stop(libc::SI_KERNEL)), ("shared", false));
         assert!(!deferred.is_empty());
         assert_eq!(deferred.count, 5);
-        assert_eq!(deferred.shared.unwrap().si_code, libc::SI_USER);
-        assert_eq!(deferred.private.unwrap().si_code, libc::SI_TKILL);
+        assert_eq!(deferred.shared.unwrap().0.si_code, libc::SI_USER);
+        assert_eq!(deferred.private.unwrap().0.si_code, libc::SI_TKILL);
     }
 
     #[test]

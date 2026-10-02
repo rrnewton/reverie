@@ -94,34 +94,36 @@ mod fatal_parent_kill_tests {
             )
             .await?;
         word(address, 13).store((queued + 1) as usize, Ordering::SeqCst);
-        let mut observed = nix::sys::ptrace::getsiginfo(guest.tid().into())
+        // Only the fields are kept: from libc 0.2.190 a `siginfo_t` is not
+        // `Send`, so none may be alive at an `.await`.
+        let fields =
+            |info: libc::siginfo_t| (info.si_signo, info.si_code, unsafe { info.si_pid() });
+        let (mut signo, mut code, mut pid) = nix::sys::ptrace::getsiginfo(guest.tid().into())
+            .map(fields)
             .map_err(|error| Errno::new(error as i32))?;
-        eprintln!(
-            "forged callback first injection: queued={queued}, signo={}, code={}",
-            observed.si_signo, observed.si_code
-        );
-        if observed.si_code != (libc::PTRACE_EVENT_EXIT << 8) | libc::SIGTRAP {
+        eprintln!("forged callback first injection: queued={queued}, signo={signo}, code={code}");
+        if code != (libc::PTRACE_EVENT_EXIT << 8) | libc::SIGTRAP {
             // At most one additional legal injection; no raw resume, step,
             // SETSIGINFO, second waiter, timing retry or replacement capability.
             let result = guest.inject(Getpid::new()).await?;
             word(address, 14).store(result as usize, Ordering::SeqCst);
-            observed = nix::sys::ptrace::getsiginfo(guest.tid().into())
+            (signo, code, pid) = nix::sys::ptrace::getsiginfo(guest.tid().into())
+                .map(fields)
                 .map_err(|error| Errno::new(error as i32))?;
             eprintln!(
-                "forged callback second injection: result={result}, signo={}, code={}",
-                observed.si_signo, observed.si_code
+                "forged callback second injection: result={result}, signo={signo}, code={code}"
             );
         }
-        word(address, 11).store(observed.si_code as usize, Ordering::SeqCst);
-        word(address, 12).store(observed.si_signo as usize, Ordering::SeqCst);
+        word(address, 11).store(code as usize, Ordering::SeqCst);
+        word(address, 12).store(signo as usize, Ordering::SeqCst);
         assert_eq!(queued, 0, "self-queued guest syscall did not succeed");
-        assert_eq!(observed.si_signo, libc::SIGTRAP);
+        assert_eq!(signo, libc::SIGTRAP);
         assert_eq!(
-            observed.si_code,
+            code,
             (libc::PTRACE_EVENT_EXIT << 8) | libc::SIGTRAP,
             "finite legal Guest injection did not expose the forged stop"
         );
-        assert_eq!(unsafe { observed.si_pid() }, guest.tid().as_raw());
+        assert_eq!(pid, guest.tid().as_raw());
         Ok(())
     }
     type Entries = Vec<(u8, Pid, Option<ExitStatus>)>;

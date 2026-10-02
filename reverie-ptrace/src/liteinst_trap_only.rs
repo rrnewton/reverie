@@ -813,15 +813,29 @@ pub(crate) struct ReraisedStop {
     /// with `si_code` `SI_QUEUE` and the tracer's pid).
     pub(crate) tag: u64,
     /// The siginfo of the original SIGSTOP's delivery stop.
-    pub(crate) info: libc::siginfo_t,
+    pub(crate) info: StoredSiginfo,
 }
+
+/// A copy of a stop's siginfo, kept to be written back with
+/// `PTRACE_SETSIGINFO`. From libc 0.2.190 `siginfo_t` holds a raw pointer
+/// (`si_addr`), so it is neither `Send` nor `Sync`, and a task that keeps one
+/// could no longer be a `Guest`.
+#[derive(Clone, Copy)]
+pub(crate) struct StoredSiginfo(pub(crate) libc::siginfo_t);
+
+// SAFETY: the tracer only copies these bytes and hands them back to the
+// kernel. It never dereferences the pointer fields, which are addresses in
+// the guest's address space, not the tracer's.
+unsafe impl Send for StoredSiginfo {}
+// SAFETY: as above; a shared reference only reads the copied bytes.
+unsafe impl Sync for StoredSiginfo {}
 
 impl std::fmt::Debug for ReraisedStop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReraisedStop")
             .field("tag", &self.tag)
-            .field("si_signo", &self.info.si_signo)
-            .field("si_code", &self.info.si_code)
+            .field("si_signo", &self.info.0.si_signo)
+            .field("si_code", &self.info.0.si_code)
             .finish()
     }
 }

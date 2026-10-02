@@ -58,12 +58,13 @@ mod fatal_namespace_timer_tests {
         ) -> Result<Option<Signal>, Errno> {
             assert_eq!(signal, reverie::PERF_EVENT_SIGNAL);
             // Read-only observation of the actual current signal stop.
-            let info = nix::sys::ptrace::getsiginfo(guest.tid().into())
+            // Only the fields are kept: from libc 0.2.190 a `siginfo_t` is not
+            // `Send`, so none may be alive at the `.await`.
+            let (code, pid) = nix::sys::ptrace::getsiginfo(guest.tid().into())
+                .map(|info| (info.si_code, unsafe { info.si_pid() }))
                 .map_err(|error| Errno::new(error as i32))?;
             guest
-                .send_rpc((3, guest.tid().as_raw(), 0, info.si_code, unsafe {
-                    info.si_pid()
-                }))
+                .send_rpc((3, guest.tid().as_raw(), 0, code, pid))
                 .await;
             Ok(None)
         }
