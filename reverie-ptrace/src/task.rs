@@ -11341,11 +11341,19 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     async fn add_breakpoint(&mut self, addr: u64) -> Result<(), TraceError> {
+        // `Z0` must be idempotent (GDB remote protocol, "Z0"). Inserting again
+        // would save the int3 as the original byte, so a later `z0` would
+        // leave the breakpoint in the tracee for good.
+        if self.breakpoints.contains_key(&addr) {
+            return Ok(());
+        }
         if let Some(bkpt_addr) = AddrMut::from_raw(addr as usize) {
             let mut task = self.assume_stopped();
+            // The word read here can include the int3 of another live
+            // breakpoint up to 7 bytes later. That is harmless: only the
+            // lowest byte, this breakpoint's own, is ever restored.
             let saved_insn: u64 = task.read_value(bkpt_addr)?;
-            let insn = (saved_insn & !0xffu64) | 0xccu64;
-            task.write_value(bkpt_addr, &insn)?;
+            task.write_value(bkpt_addr, &breakpoint_inserted(saved_insn))?;
             self.breakpoints.insert(addr, saved_insn);
         }
         Ok(())
@@ -11393,7 +11401,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         let insn = self.breakpoints.remove(&addr).ok_or(Errno::ENOENT)?;
         let mut task = self.assume_stopped();
         if let Some(bkpt_addr) = AddrMut::from_raw(addr as usize) {
-            task.write_value(bkpt_addr, &insn)?;
+            // Restore this breakpoint's byte only. Writing the whole saved
+            // word back would also restore the 7 bytes after it as they were
+            // at insertion, erasing the int3 of any breakpoint inserted there
+            // since, such as GDB's breakpoint on a following short source
+            // line when it steps over this one.
+            let current: u64 = task.read_value(bkpt_addr)?;
+            task.write_value(bkpt_addr, &breakpoint_removed(current, insn))?;
         }
         Ok(())
     }
@@ -11674,6 +11688,72 @@ impl<'a, G: GlobalTool> GlobalRPC<G> for WrappedFrom<'a, G> {
     }
     fn config(&self) -> &G::Config {
         &self.1.cfg
+    }
+}
+
+/// The word at a software breakpoint's address with the breakpoint inserted:
+/// `int3` (0xcc) in the lowest byte, the address's own, and the other 7 bytes
+/// as they are.
+fn breakpoint_inserted(word: u64) -> u64 {
+    (word & !0xffu64) | 0xccu64
+}
+
+/// The word at a software breakpoint's address with the breakpoint removed:
+/// the lowest byte restored from `saved`, the word read when the breakpoint
+/// was inserted, and the other 7 bytes left as they are in `current`. They
+/// can hold breakpoints inserted or removed since `saved` was read.
+fn breakpoint_removed(current: u64, saved: u64) -> u64 {
+    (current & !0xffu64) | (saved & 0xffu64)
+}
+
+#[cfg(test)]
+mod breakpoint_word_tests {
+    use super::breakpoint_inserted;
+    use super::breakpoint_removed;
+
+    // Tracee bytes are little-endian: byte k of the word is the address + k.
+    fn word(bytes: [u8; 8]) -> u64 {
+        u64::from_le_bytes(bytes)
+    }
+
+    #[test]
+    fn inserting_writes_int3_at_the_address_only() {
+        let code = word([0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00, 0x90, 0xc3]);
+        assert_eq!(
+            breakpoint_inserted(code).to_le_bytes(),
+            [0xcc, 0x0f, 0x1f, 0x44, 0x00, 0x00, 0x90, 0xc3]
+        );
+    }
+
+    #[test]
+    fn removing_keeps_a_later_breakpoint_inserted_after_this_one() {
+        // A at offset 0, then B at offset 6, then A is removed.
+        let code = word([0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00, 0x66, 0x0f]);
+        let saved_a = code;
+        let with_a = breakpoint_inserted(code);
+        let mut bytes = with_a.to_le_bytes();
+        bytes[6] = 0xcc;
+        let with_a_and_b = word(bytes);
+        assert_eq!(
+            breakpoint_removed(with_a_and_b, saved_a).to_le_bytes(),
+            [0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00, 0xcc, 0x0f]
+        );
+    }
+
+    #[test]
+    fn removing_does_not_restore_a_later_breakpoint_removed_first() {
+        // B at offset 6 is live when A is inserted, so A's saved word holds
+        // B's int3. B is removed, then A.
+        let code = word([0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00, 0x66, 0x0f]);
+        let mut bytes = code.to_le_bytes();
+        bytes[6] = 0xcc;
+        let with_b = word(bytes);
+        let saved_a = with_b;
+        let with_a_and_b = breakpoint_inserted(with_b);
+        let mut bytes = with_a_and_b.to_le_bytes();
+        bytes[6] = 0x66;
+        let with_a = word(bytes);
+        assert_eq!(breakpoint_removed(with_a, saved_a), code);
     }
 }
 
