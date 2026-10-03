@@ -2,7 +2,10 @@
  * Licensed under the BSD-style license in the root LICENSE file. */
 
 //! One initial-EXEC lineage; postinitial exposure irreversibly closes it.
+use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::Sysno;
@@ -11,7 +14,7 @@ use safeptrace::SourceStop;
 use safeptrace::Stopped;
 
 #[derive(Default)]
-pub(crate) struct SourceEpoch(Mutex<State>);
+pub(crate) struct SourceEpoch(Mutex<State>, AtomicBool);
 #[derive(Default)]
 enum State {
     #[default]
@@ -81,12 +84,20 @@ impl SourceEpoch {
     }
 
     pub(crate) fn observe(&self, nr: Sysno, args: SyscallArgs) {
-        if exposes(nr, args) {
+        self.observe_classified(nr, args, false);
+    }
+
+    pub(super) fn observe_classified(&self, nr: Sysno, args: SyscallArgs, original_ioctl: bool) {
+        if exposes(nr, args) && !(nr == Sysno::ioctl && original_ioctl) {
             self.revoke();
         }
     }
 
     pub(crate) fn observe_resume(&self, stopped: &Stopped) {
+        self.observe_resume_classified(stopped, false);
+    }
+
+    pub(super) fn observe_resume_classified(&self, stopped: &Stopped, original_ioctl: bool) {
         if !matches!(*self.0.lock().unwrap(), State::Active(_)) {
             return;
         }
@@ -94,13 +105,24 @@ impl SourceEpoch {
         // rechecks the filter with recheck_after_trace=true and does not issue a
         // second TRACE stop. Inspect the actual pending operands before effect.
         match stopped.pending_syscall_entry() {
-            Ok(Some(entry)) => self.observe_raw(entry.number, entry.arguments),
+            Ok(Some(entry)) => {
+                self.observe_raw_classified(entry.number, entry.arguments, original_ioctl)
+            }
             Ok(None) => {}
             Err(_) => self.revoke(),
         }
     }
 
     pub(crate) fn observe_raw(&self, number: u64, arguments: [u64; 6]) {
+        self.observe_raw_classified(number, arguments, false);
+    }
+
+    pub(super) fn observe_raw_classified(
+        &self,
+        number: u64,
+        arguments: [u64; 6],
+        original_ioctl: bool,
+    ) {
         // Linux skips a negative syscall number before executing any effect.
         // Reverie's ordinary emulation uses -1; it must not poison subsequent
         // source operations merely for having skipped an earlier syscall.
@@ -110,7 +132,7 @@ impl SourceEpoch {
         if number as u32 >= 0x4000_0000 {
             self.revoke(); // x32 (or unknown high-number ABI) history is unsupported
         } else if let Some(&nr) = observed_syscalls().iter().find(|&&nr| nr as u64 == number) {
-            self.observe(
+            self.observe_classified(
                 nr,
                 SyscallArgs::new(
                     arguments[0] as usize,
@@ -120,6 +142,7 @@ impl SourceEpoch {
                     arguments[4] as usize,
                     arguments[5] as usize,
                 ),
+                original_ioctl,
             );
         }
     }
@@ -133,13 +156,75 @@ impl SourceEpoch {
         }
     }
 
+    pub(super) fn begin_ioctl(self: &Arc<Self>) -> Option<NativeIoctl> {
+        if !matches!(*self.0.lock().unwrap(), State::Active(_))
+            || self
+                .1
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            self.revoke();
+            return None;
+        }
+        Some(NativeIoctl {
+            epoch: Arc::clone(self),
+            completed: false,
+        })
+    }
+
     pub(crate) fn validate(&self, stop: &SourceStop) -> Result<(), Errno> {
         stop.validate_current()?;
         match &*self.0.lock().unwrap() {
-            State::Active(root) if stop.same_task(root) => Ok(()),
+            State::Active(root) if stop.same_task(root) => {
+                if self.1.load(Ordering::Acquire) {
+                    Err(Errno::EBUSY)
+                } else {
+                    Ok(())
+                }
+            }
             _ => Err(Errno::ENOTSUPP),
         }
     }
+}
+
+/// Carried by the existing NativeOperation, through actual return/restoration.
+/// Cancellation, missing completion and unexpected returns permanently revoke.
+pub(super) struct NativeIoctl {
+    epoch: Arc<SourceEpoch>,
+    completed: bool,
+}
+impl NativeIoctl {
+    pub(super) fn restored(mut self, result: i64) -> bool {
+        #[cfg(test)]
+        if OMIT_IOCTL_COMPLETION.with(|value| value.replace(false)) {
+            return false;
+        }
+        if result != -(libc::ENOTTY as i64) {
+            return false;
+        }
+        self.completed = true;
+        self.epoch.1.store(false, Ordering::Release);
+        true
+    }
+}
+impl Drop for NativeIoctl {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.epoch.revoke();
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static OMIT_IOCTL_COMPLETION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// A one-operation omission in the same native body, after actual return.
+#[cfg(test)]
+pub(crate) fn omit_next_ioctl_completion_for_test() {
+    OMIT_IOCTL_COMPLETION.with(|value| {
+        assert!(!value.replace(true));
+    });
 }
 
 #[cfg(all(test, target_arch = "x86_64"))]

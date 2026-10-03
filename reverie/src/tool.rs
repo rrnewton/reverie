@@ -536,6 +536,19 @@ pub trait Tool: Send + Sync + Default {
         false
     }
 
+    /// Classify a backend-owned original ioctl before its first exposure check.
+    /// The default retains conservative source-history revocation. This hook
+    /// is synchronous and read-only: no injection, RPC, or guest progress wait.
+    /// Its unsafe evidence issuer requires actual selected-file dispatch proof;
+    /// a Tool's ordinary ioctl classification or successful result is not one.
+    fn classify_original_source_ioctl(
+        &self,
+        _global_state: &Self::GlobalState,
+        _entry: &crate::OriginalIoctlEntry,
+    ) -> Option<crate::OriginalIoctlEffect> {
+        None
+    }
+
     /// Retain each observed native effect synchronously at its actual boundary.
     ///
     /// Opted-in `Prepared` precedes the first suspension or resume for the

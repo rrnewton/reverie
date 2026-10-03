@@ -98,10 +98,44 @@ cleanup:;
     return status;
 }
 
+static int terminal_ioctl_case(int mode) {
+    char *page = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (page == MAP_FAILED) return 102;
+    memcpy(page, "ABCD", 4);
+    unsigned char argument[128], original[128];
+    memset(argument, 0xa5, sizeof(argument));
+    memcpy(original, argument, sizeof(argument));
+    unsigned long request = mode == 8 ? TIOCGWINSZ : mode == 10 ? TCSETS : TCGETS;
+    int status = 0, actual_errno = 0;
+    long result = -2;
+    if (syscall(SYS_write, PRE_READ, page, 4) != 4) { status = 103; goto cleanup; }
+    errno = 0;
+    result = syscall(SYS_ioctl, STDIN_FILENO, request, argument);
+    actual_errno = errno;
+    if (result != -1 || actual_errno != ENOTTY || memcmp(argument, original, sizeof(argument)) || memcmp(page, "ABCD", 4)) { status = 104; goto cleanup; }
+    if (mode == 14) {
+        errno = 0;
+        long later = syscall(SYS_ioctl, STDIN_FILENO, request, argument);
+        int later_errno = errno;
+        if (later != -1 || later_errno != ENOTTY || memcmp(argument, original, sizeof(argument))) { status = 108; goto cleanup; }
+    }
+    if (syscall(SYS_write, POST_READ, page, 4) != 4) status = 105;
+cleanup:;
+    int closed = close(STDIN_FILENO);
+    if (closed || memcmp(page, "ABCD", 4) || munmap(page, 4096)) status = status ? status : 106;
+    char line[256];
+    int length = snprintf(line, sizeof(line), "OBSERVATION_TERMINAL mode=%d native_result=%ld errno=%d request=%lu bytes=ABCD close=%d status=%d\n", mode, result, actual_errno, request, closed, status);
+    if (length < 0 || (size_t)length >= sizeof(line) || syscall(SYS_write, STDOUT_FILENO, line, (size_t)length) != length) return 107;
+    return status;
+}
+
 int main(int argc, char **argv) {
-    if (argc != 2 || strlen(argv[1]) != 1 || argv[1][0] < '0'
-        || argv[1][0] > '5') return 82;
-    int mode = argv[1][0] - '0';
+    if (argc != 2) return 82;
+    char *end = 0;
+    long parsed = strtol(argv[1], &end, 10);
+    if (!end || *end || parsed < 0 || parsed > 14) return 82;
+    int mode = parsed;
+    if (mode >= 6) return terminal_ioctl_case(mode);
     if (mode >= 4) return ordinary_ioctl_case(mode);
     char *page = mmap(0, 4096, PROT_READ | PROT_WRITE,
                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

@@ -142,6 +142,7 @@ pub(super) struct NativeOperation {
     number: u64,
     syscall: Sysno,
     completed: bool,
+    source_ioctl: Option<super::source_epoch::NativeIoctl>,
 }
 pub(super) struct NativeReturn {
     owner: NativeOperation,
@@ -534,6 +535,14 @@ fn exposed(syscall: Sysno, args: SyscallArgs) -> bool {
 }
 impl Member {
     pub(super) fn native(&self, syscall: Sysno, args: SyscallArgs) -> Option<NativeOperation> {
+        self.native_classified(syscall, args, None)
+    }
+    pub(super) fn native_classified(
+        &self,
+        syscall: Sysno,
+        args: SyscallArgs,
+        source_ioctl: Option<super::source_epoch::NativeIoctl>,
+    ) -> Option<NativeOperation> {
         let mut h = self.history.0.lock().unwrap();
         if h.failed {
             return None;
@@ -541,7 +550,7 @@ impl Member {
         // Synchronous return is not retirement of asynchronous/exposed writers.
         // Keep the old exposure family closed; controlled birth has its own
         // original parent and child owners. No SourceEpoch rule is changed.
-        if exposed(syscall, args) {
+        if exposed(syscall, args) && !(syscall == Sysno::ioctl && source_ioctl.is_some()) {
             h.fail();
             return None;
         }
@@ -569,12 +578,20 @@ impl Member {
             number,
             syscall,
             completed: false,
+            source_ioctl,
         })
     }
     pub(super) fn close_observation(&self) {
         self.history.fail();
     }
     pub(super) fn observe_entry(&self, entry: safeptrace::SyscallEntry) {
+        self.observe_entry_classified(entry, false);
+    }
+    pub(super) fn observe_entry_classified(
+        &self,
+        entry: safeptrace::SyscallEntry,
+        original_ioctl: bool,
+    ) {
         // SourceEpoch still permanently revokes clone3. The followed cohort
         // instead retains the real native invocation until its typed outcome;
         // a pre-effect Tool observation alone does not authorize execution.
@@ -592,7 +609,8 @@ impl Member {
                     a[4] as usize,
                     a[5] as usize,
                 ),
-            ) {
+            ) && !(nr == Sysno::ioctl && original_ioctl)
+            {
                 self.history.fail();
             }
         } else if entry.number as i32 >= 0 {
@@ -600,15 +618,24 @@ impl Member {
         }
     }
     pub(super) fn before_entry_observation(&self, stopped: &Stopped) -> Option<ResumeOperation> {
-        self.before_resume_inner(stopped, true)
+        self.before_resume_inner(stopped, true, false)
     }
     pub(super) fn before_resume(&self, stopped: &Stopped) -> Option<ResumeOperation> {
-        self.before_resume_inner(stopped, false)
+        self.before_resume_inner(stopped, false, false)
+    }
+    pub(super) fn before_resume_classified(
+        &self,
+        stopped: &Stopped,
+        administrative: bool,
+        original_ioctl: bool,
+    ) -> Option<ResumeOperation> {
+        self.before_resume_inner(stopped, administrative, original_ioctl)
     }
     fn before_resume_inner(
         &self,
         stopped: &Stopped,
         administrative: bool,
+        original_ioctl: bool,
     ) -> Option<ResumeOperation> {
         if self.history.0.lock().unwrap().failed {
             return None;
@@ -633,7 +660,10 @@ impl Member {
                             ),
                         )
                     });
-                (syscall_effect(entry.number), exposure)
+                (
+                    syscall_effect(entry.number),
+                    exposure && !(entry.number == Sysno::ioctl as u64 && original_ioctl),
+                )
             }
             Err(_) => (Effect::Unknown, true),
         };
@@ -1111,6 +1141,16 @@ impl NativeReturn {
                 task.invocation = None;
                 self.owner.completed = true;
                 return;
+            }
+            if let Some(source) = self.owner.source_ioctl.take() {
+                if self.raw != -(libc::ENOTTY as i64) {
+                    h.fail();
+                    return;
+                }
+                if !source.restored(self.raw) {
+                    h.fail();
+                    return;
+                }
             }
             task.operations.remove(&self.owner.number);
             task.invocation = None;

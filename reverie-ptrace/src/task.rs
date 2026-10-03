@@ -6596,7 +6596,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.global_state
             .fatal_session
             .source_epoch
-            .observe(nr, args);
+            .observe_classified(nr, args, self.original_source_ioctl_matches(&task));
         let tool_subscribed = self
             .global_state
             .subscriptions
@@ -6949,14 +6949,27 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    fn original_source_ioctl_matches(&self, task: &Stopped) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(context) = self.source_context(Some(task)) {
+            return context.pending_ioctl_matches(task);
+        }
+        false
+    }
+
     #[cfg(target_arch = "x86_64")]
     fn source_context(&self, task: Option<&Stopped>) -> Option<source_observation::Context> {
+        let tool = Arc::clone(&self.process_state);
+        let global = Arc::clone(&self.global_state.gs_ref);
         Some(source_observation::Context {
             state: Arc::clone(&self.source_observer),
             member: self.cohort.clone()?,
             epoch: Arc::clone(&self.global_state.fatal_session.source_epoch),
             subscriptions: Arc::clone(&self.global_state.subscriptions),
             armer: task.and_then(|task| self.liteinst_root_stop_armer(task)),
+            ioctl_classifier: Arc::new(move |entry| {
+                tool.classify_original_source_ioctl(global.as_ref(), entry)
+            }),
         })
     }
 
@@ -7000,10 +7013,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             .fatal_session
             .source_epoch
             .observe_resume(&task);
-        let operation = self
-            .cohort
-            .as_ref()
-            .and_then(|member| member.before_resume(&task));
+        let operation = self.cohort.as_ref().and_then(|member| {
+            member.before_resume_classified(&task, false, self.original_source_ioctl_matches(&task))
+        });
         self.lease_liteinst_root_stop(task)
             .resume(signal)
             .map(|running| self.task_running(running, operation))
@@ -7029,10 +7041,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             .fatal_session
             .source_epoch
             .observe_resume(&task);
-        let operation = self
-            .cohort
-            .as_ref()
-            .and_then(|member| member.before_resume(&task));
+        let operation = self.cohort.as_ref().and_then(|member| {
+            member.before_resume_classified(&task, false, self.original_source_ioctl_matches(&task))
+        });
         self.lease_liteinst_root_stop(task)
             .step(signal)
             .map(|running| self.task_running(running, operation))
@@ -7053,11 +7064,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.global_state
             .fatal_session
             .source_epoch
-            .observe_resume(&task);
-        let operation = self
-            .cohort
-            .as_ref()
-            .and_then(|member| member.before_resume(&task));
+            .observe_resume_classified(&task, self.original_source_ioctl_matches(&task));
+        let operation = self.cohort.as_ref().and_then(|member| {
+            member.before_resume_classified(&task, false, self.original_source_ioctl_matches(&task))
+        });
         self.lease_liteinst_root_stop(task)
             .syscall(signal)
             .map(|running| self.task_running(running, operation))
@@ -7080,11 +7090,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.global_state
             .fatal_session
             .source_epoch
-            .observe_resume(&task);
-        let operation = self
-            .cohort
-            .as_ref()
-            .and_then(|member| member.before_resume(&task));
+            .observe_resume_classified(&task, self.original_source_ioctl_matches(&task));
+        let operation = self.cohort.as_ref().and_then(|member| {
+            member.before_resume_classified(&task, false, self.original_source_ioctl_matches(&task))
+        });
         self.lease_liteinst_root_stop(task)
             .sysemu_from_exit()
             .map(|running| self.task_running(running, operation))
@@ -10762,6 +10771,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Some(original) if original == (nr, args) => {
                     // Run the exact pending syscall and stop at its exit.
                     self.validate_liteinst_mapping_execution(nr, args)?;
+                    #[cfg(target_arch = "x86_64")]
+                    let cohort_native = self
+                        .source_context(Some(&task))
+                        .and_then(|context| context.native(&task, nr, args));
+                    #[cfg(not(target_arch = "x86_64"))]
                     let cohort_native = self
                         .cohort
                         .as_ref()

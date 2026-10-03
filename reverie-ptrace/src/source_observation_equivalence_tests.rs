@@ -24,6 +24,7 @@ type ReadObservation = (usize, usize, usize, Result<Vec<u8>, NativeUserReadError
 #[derive(Default)]
 struct ObservationLog {
     reads: StdMutex<Vec<ReadObservation>>,
+    followed_reads: StdMutex<Vec<Result<Vec<u8>, NativeUserReadError>>>,
     injected: StdMutex<Vec<(SyscallArgs, InjectedSyscallEvent)>>,
     injection_results: StdMutex<Vec<Result<i64, Errno>>>,
     signals: StdMutex<Vec<Signal>>,
@@ -38,15 +39,51 @@ impl GlobalTool for ObservationLog {
 }
 
 #[derive(Default)]
-struct ObservationTool;
+struct ObservationTool {
+    mode: u8,
+    classifications: AtomicUsize,
+}
 #[reverie::tool]
 impl Tool for ObservationTool {
     type GlobalState = ObservationLog;
     type ThreadState = ();
-    fn subscriptions(_: &u8) -> Subscription {
-        // MADVISE and IOCTL are deliberately absent: ordinary/private observation must
-        // not be supplied by a Tool subscription to the exposure itself.
-        [Sysno::write].into_iter().collect()
+    fn new(_: Pid, mode: &u8) -> Self {
+        Self {
+            mode: *mode,
+            classifications: AtomicUsize::new(0),
+        }
+    }
+    fn subscriptions(mode: &u8) -> Subscription {
+        // Preserve all original O/P/I and generic ioctl bodies unchanged.
+        if *mode >= 6 {
+            [Sysno::write, Sysno::ioctl].into_iter().collect()
+        } else {
+            [Sysno::write].into_iter().collect()
+        }
+    }
+    fn classify_original_source_ioctl(
+        &self,
+        _: &ObservationLog,
+        entry: &reverie::OriginalIoctlEntry,
+    ) -> Option<reverie::OriginalIoctlEffect> {
+        let attempt = self.classifications.fetch_add(1, Ordering::SeqCst);
+        if self.mode == 7 || (self.mode == 14 && attempt == 0) || entry.args().arg0 != 0 {
+            return None;
+        }
+        // Controlled native fixture: Command::stdin(null) is this backend's
+        // own normal open of /dev/null, inherited as fd0, and the fixture has
+        // performed no close/dup/exec/descriptor transfer before this call.
+        // On the qualified kernel memory_open installs null_fops (no handler).
+        // This tests consumption, not Hermit's separate provider proof issuer.
+        if self.mode == 9 {
+            let stale = unsafe {
+                reverie::OriginalIoctlEntry::from_original_backend_entry(entry.tid(), entry.args())
+            };
+            return unsafe {
+                stale.certify_dispatch(reverie::OriginalIoctlDispatch::NullFileOperations)
+            };
+        }
+        unsafe { entry.certify_dispatch(reverie::OriginalIoctlDispatch::NullFileOperations) }
     }
     fn observe_injected_syscalls(_: &u8) -> bool {
         true
@@ -60,6 +97,12 @@ impl Tool for ObservationTool {
         args: SyscallArgs,
         event: InjectedSyscallEvent,
     ) {
+        if self.mode == 12
+            && nr == Sysno::ioctl
+            && event == InjectedSyscallEvent::Returned(-(libc::ENOTTY as i64))
+        {
+            crate::task::source_epoch::omit_next_ioctl_completion_for_test();
+        }
         if nr == Sysno::madvise {
             log.injected.lock().unwrap().push((args, event));
         }
@@ -83,7 +126,23 @@ impl Tool for ObservationTool {
         guest: &mut G,
         call: Syscall,
     ) -> Result<i64, Error> {
-        let (_, args) = call.into_parts();
+        let (nr, args) = call.into_parts();
+        if self.mode == 13 && nr == Sysno::ioctl {
+            // This private syscall consumes/skips the original pending entry.
+            // A later numerically equal private ioctl must not borrow its proof.
+            guest
+                .inject(Syscall::Other(
+                    Sysno::getpid,
+                    SyscallArgs::new(0, 0, 0, 0, 0, 0),
+                ))
+                .await?;
+        }
+        if self.mode == 11 && nr == Sysno::ioctl {
+            let rewrite = SyscallArgs::new(
+                args.arg0, 0x5402, args.arg2, args.arg3, args.arg4, args.arg5,
+            );
+            return Ok(guest.inject(Syscall::Other(nr, rewrite)).await?);
+        }
         if matches!(args.arg0, PRE_READ | POST_READ) {
             let retention = Retention(guest.local_global_state().unwrap().retention_drops.clone());
             let result = guest
@@ -96,6 +155,18 @@ impl Tool for ObservationTool {
                 .lock()
                 .unwrap()
                 .push((args.arg0, args.arg1, args.arg2, result));
+            if self.mode >= 6 {
+                let followed = guest
+                    .stage_followed_source(args.arg1, args.arg2, Box::new(()))
+                    .await;
+                guest
+                    .local_global_state()
+                    .unwrap()
+                    .followed_reads
+                    .lock()
+                    .unwrap()
+                    .push(followed);
+            }
             // This is the test's sentinel protocol, not a guest syscall result
             // inferred from source success. Even bad publication reaches reap.
             return Ok(4);
@@ -131,6 +202,9 @@ fn observation_fixture() -> PathBuf {
 async fn observation_case(mode: u8) {
     let mut command = Command::new(observation_fixture());
     command.arg(mode.to_string());
+    if mode >= 6 {
+        command.stdin(reverie::process::Stdio::null());
+    }
     command.stdout(reverie::process::Stdio::piped());
     command.stderr(reverie::process::Stdio::piped());
     let started = Instant::now();
@@ -242,12 +316,29 @@ async fn observation_case(mode: u8) {
     );
     let native_result = if mode == 3 {
         i64::from(root.as_raw())
-    } else if mode == 4 {
+    } else if mode == 4 || mode >= 6 {
         -1
     } else {
         0
     };
-    if mode >= 4 {
+    if mode >= 6 {
+        let request = if mode == 8 {
+            0x5413
+        } else if mode == 10 {
+            0x5402
+        } else {
+            0x5401
+        };
+        let expected = format!(
+            "OBSERVATION_TERMINAL mode={mode} native_result=-1 errno={} request={request} bytes=ABCD close=0 status=0\n",
+            libc::ENOTTY
+        );
+        assert_eq!(
+            output.stdout,
+            expected.as_bytes(),
+            "original ioctl, unchanged argument/source, explicit close"
+        );
+    } else if mode >= 4 {
         let (errno, request, argument, flag_delta) = if mode == 4 {
             (libc::EBADF, 0x541b, 123456, 0)
         } else {
@@ -298,6 +389,26 @@ async fn observation_case(mode: u8) {
         Ok(b"ABCD".to_vec()),
         "actual source must work BEFORE exposure"
     );
+    if mode >= 6 {
+        let followed = log.followed_reads.lock().unwrap();
+        assert_eq!(followed.len(), 2);
+        assert_eq!(
+            followed[0],
+            Ok(b"ABCD".to_vec()),
+            "followed source works before query"
+        );
+        assert_eq!(
+            followed[1],
+            if matches!(mode, 6 | 8) {
+                Ok(b"ABCD".to_vec())
+            } else {
+                Err(NativeUserReadError::Refused(
+                    NativeUserReadRefusal::TargetState(Errno::ESTALE),
+                ))
+            },
+            "same native query must preserve or close BOTH source histories"
+        );
+    }
     let args = SyscallArgs::new(reads[0].1, 4096, libc::MADV_NORMAL as usize, 0, 0, 0);
     assert_eq!(
         *log.injected.lock().unwrap(),
@@ -319,7 +430,7 @@ async fn observation_case(mode: u8) {
         "OBSERVATION_EQ mode={mode} pre={:?} post={:?} native_result={native_result}",
         reads[0].3, reads[1].3
     );
-    if mode == 3 || mode == 5 {
+    if matches!(mode, 3 | 5 | 6 | 8) {
         assert_eq!(
             reads[1].3,
             Ok(b"ABCD".to_vec()),
@@ -339,7 +450,7 @@ async fn observation_case(mode: u8) {
             Err(NativeUserReadError::Refused(
                 NativeUserReadRefusal::TargetState(Errno::ENOTSUPP)
             )),
-            "actual MADV_NORMAL exposure must revoke publication after successful pre-read"
+            "unclassified exposure or missing completion must revoke publication after successful pre-read"
         );
     }
 }
@@ -368,4 +479,43 @@ async fn ordinary_failed_fionread_revokes_after_valid_source() {
 #[tokio::test(flavor = "current_thread")]
 async fn ordinary_fionbio_changes_owned_pipe_and_keeps_source_valid() {
     observation_case(5).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn original_null_tcgets_dispatch_keeps_source_valid() {
+    observation_case(6).await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn original_null_tcgets_without_dispatch_proof_revokes_source() {
+    observation_case(7).await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn original_null_tiocgwinsz_dispatch_keeps_source_valid() {
+    observation_case(8).await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn original_null_tcgets_stale_attempt_proof_revokes_source() {
+    observation_case(9).await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn original_null_tcsets_dispatch_remains_unclassified() {
+    observation_case(10).await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn original_null_tcgets_rewrite_cannot_borrow_proof() {
+    observation_case(11).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn original_null_tcgets_missing_completion_closes_both_source_histories() {
+    observation_case(12).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn private_ioctl_cannot_borrow_original_equal_tuple_proof() {
+    observation_case(13).await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn later_certified_ioctl_cannot_reset_revoked_histories() {
+    observation_case(14).await;
 }

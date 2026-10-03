@@ -38,6 +38,7 @@ pub(super) struct State {
     // Set only by the original initial EXEC/newborn owner. This consumes the
     // startup return, never a completion or a source/native-operation receipt.
     startup: bool,
+    original_ioctl: Option<OriginalIoctl>,
 }
 impl State {
     pub(super) fn startup() -> Self {
@@ -47,6 +48,7 @@ impl State {
             tool_step: None,
             raw_birth: None,
             startup: true,
+            original_ioctl: None,
         }
     }
     pub(super) fn birth(&self) -> Option<(Sysno, SyscallArgs)> {
@@ -95,6 +97,7 @@ impl State {
     }
     pub(super) fn abandon(&mut self) {
         self.pending = None;
+        self.original_ioctl = None;
         self.startup = false;
         // Exec/death cancels this logical instruction; it is not an EXIT or
         // completion of a private instruction subsequently executed by a Tool.
@@ -181,6 +184,25 @@ struct Attempt {
     child: bool,
 }
 
+struct OriginalIoctl {
+    entry: SyscallEntry,
+    task: TerminalCleanup,
+    _effect: reverie::OriginalIoctlEffect,
+    entered: bool,
+}
+impl OriginalIoctl {
+    fn matches(&self, task: &Stopped, entry: SyscallEntry) -> bool {
+        self.task.same_generation(&task.terminal_cleanup())
+            && self.entry.arch == entry.arch
+            && self.entry.number == entry.number
+            && self.entry.arguments == entry.arguments
+            && self.entry.instruction_pointer == entry.instruction_pointer
+            && self.entry.stack_pointer == entry.stack_pointer
+    }
+}
+type IoctlClassifier =
+    dyn Fn(&reverie::OriginalIoctlEntry) -> Option<reverie::OriginalIoctlEffect> + Send + Sync;
+
 #[derive(Clone)]
 pub(super) struct Context {
     pub(super) state: Arc<Mutex<State>>,
@@ -188,6 +210,7 @@ pub(super) struct Context {
     pub(super) epoch: Arc<source_epoch::SourceEpoch>,
     pub(super) subscriptions: Arc<Subscription>,
     pub(super) armer: Option<LiteinstRootStopArmer>,
+    pub(super) ioctl_classifier: Arc<IoctlClassifier>,
 }
 fn parts(entry: SyscallEntry) -> Option<(Sysno, SyscallArgs)> {
     if entry.arch != X86_64 || entry.number >= 0x4000_0000 {
@@ -233,12 +256,79 @@ impl Context {
         self.epoch.revoke();
         self.member.close_observation();
     }
-    fn observe_entry(&self, entry: SyscallEntry) {
+    fn observe_entry(&self, task: &Stopped, entry: SyscallEntry) {
+        let classified = self.original_ioctl_matches(task, entry);
         if unsupported_entry(entry) {
             self.epoch.revoke();
         }
-        self.epoch.observe_raw(entry.number, entry.arguments);
-        self.member.observe_entry(entry);
+        if classified {
+            self.epoch
+                .observe_raw_classified(entry.number, entry.arguments, true);
+            self.member.observe_entry_classified(entry, true);
+        } else {
+            self.epoch.observe_raw(entry.number, entry.arguments);
+            self.member.observe_entry(entry);
+        }
+    }
+    fn classify_original_ioctl(
+        &self,
+        task: &Stopped,
+        entry: SyscallEntry,
+    ) -> Option<OriginalIoctl> {
+        let (nr, args) = parts(entry)?;
+        if nr != Sysno::ioctl || !tool_entry(entry, &self.subscriptions) {
+            return None;
+        }
+        // This function is called only by the original administrative ENTRY
+        // owner, before any state mutex or Tool code. A private ENTRY cannot
+        // mint a proof, even if its numeric tuple equals an earlier operation.
+        let view =
+            unsafe { reverie::OriginalIoctlEntry::from_original_backend_entry(task.pid(), args) };
+        let effect = (self.ioctl_classifier)(&view)?;
+        view.accepts(&effect).then(|| OriginalIoctl {
+            entry,
+            task: task.terminal_cleanup(),
+            _effect: effect,
+            entered: false,
+        })
+    }
+    pub(super) fn original_ioctl_matches(&self, task: &Stopped, entry: SyscallEntry) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .original_ioctl
+            .as_ref()
+            .is_some_and(|proof| proof.matches(task, entry))
+    }
+    pub(super) fn pending_ioctl_matches(&self, task: &Stopped) -> bool {
+        task.pending_syscall_entry()
+            .ok()
+            .flatten()
+            .is_some_and(|entry| self.original_ioctl_matches(task, entry))
+    }
+    pub(super) fn native(
+        &self,
+        task: &Stopped,
+        nr: Sysno,
+        args: SyscallArgs,
+    ) -> Option<source_cohort::NativeOperation> {
+        let entry = task.pending_syscall_entry().ok().flatten();
+        let classified = {
+            let mut state = self.state.lock().unwrap();
+            match (state.original_ioctl.as_mut(), entry) {
+                (Some(proof), Some(entry))
+                    if !proof.entered
+                        && parts(entry) == Some((nr, args))
+                        && proof.matches(task, entry) =>
+                {
+                    proof.entered = true;
+                    true
+                }
+                _ => false,
+            }
+        };
+        let guard = classified.then(|| self.epoch.begin_ioctl()).flatten();
+        self.member.native_classified(nr, args, guard)
     }
     pub(super) fn begin_step(&self, task: &Stopped) -> Result<Option<Step>, TraceError> {
         if !native_step_abi(task.getregs()?.cs) {
@@ -288,7 +378,7 @@ impl Context {
             // Includes private injection and a Tool's rewritten original
             // effect. clone3 keeps SourceEpoch revoked and carries an unresolved
             // cohort birth debt; no userspace flags snapshot authorizes it.
-            self.observe_entry(entry);
+            self.observe_entry(task, entry);
             if parts(entry).is_some_and(|(nr, _)| {
                 matches!(
                     nr,
@@ -318,15 +408,23 @@ impl Context {
         task: &Stopped,
     ) -> Result<Option<source_cohort::ResumeOperation>, TraceError> {
         let info = task.syscall_stop_info()?;
+        if let SyscallStopInfo::Entry(entry) | SyscallStopInfo::Seccomp(entry) = info {
+            self.observe_entry(task, entry);
+        }
+        let classified = self.pending_ioctl_matches(task);
+        if let SyscallStopInfo::Entry(entry) = info
+            && tool_entry(entry, &self.subscriptions)
+        {
+            // Kernel seccomp/Tool opportunity still precedes actual effect.
+            return Ok(if classified {
+                self.member.before_resume_classified(task, true, true)
+            } else {
+                self.member.before_entry_observation(task)
+            });
+        }
         let mut state = self.state.lock().unwrap();
         match info {
-            SyscallStopInfo::Entry(entry) if tool_entry(entry, &self.subscriptions) => {
-                // Kernel seccomp/Tool opportunity still precedes actual effect.
-                self.observe_entry(entry);
-                return Ok(self.member.before_entry_observation(task));
-            }
             SyscallStopInfo::Entry(entry) | SyscallStopInfo::Seccomp(entry) => {
-                self.observe_entry(entry);
                 if state.pending.is_none() {
                     state.pending = Some(Attempt {
                         entry,
@@ -344,14 +442,23 @@ impl Context {
                 }
                 if !attempt.admitted {
                     attempt.entry = entry; // effective operands after a Tool rewrite
-                    attempt.native =
-                        parts(entry).and_then(|(nr, args)| self.member.native(nr, args));
                     attempt.admitted = true;
+                    drop(state);
+                    let native = parts(entry).and_then(|(nr, args)| self.native(task, nr, args));
+                    let mut state = self.state.lock().unwrap();
+                    state.pending.as_mut().unwrap().native = native;
+                    drop(state);
+                    return Ok(self
+                        .member
+                        .before_resume_classified(task, false, classified));
                 }
             }
             _ => {}
         }
-        Ok(self.member.before_resume(task))
+        drop(state);
+        Ok(self
+            .member
+            .before_resume_classified(task, false, classified))
     }
     pub(super) fn resume(
         &self,
@@ -395,10 +502,16 @@ impl Context {
             self.close();
             return Err(Errno::EPROTO.into());
         }
+        if let SyscallStopInfo::Entry(entry) = info {
+            if administrative {
+                let proof = self.classify_original_ioctl(task, entry);
+                self.state.lock().unwrap().original_ioctl = proof;
+            }
+            self.observe_entry(task, entry);
+        }
         let mut state = self.state.lock().unwrap();
         match info {
             SyscallStopInfo::Entry(entry) if administrative => {
-                self.observe_entry(entry);
                 if state.pending.is_some() {
                     self.close();
                     return Err(Errno::EPROTO.into());
@@ -413,7 +526,7 @@ impl Context {
                     child: false,
                 });
             }
-            SyscallStopInfo::Entry(entry) => self.observe_entry(entry),
+            SyscallStopInfo::Entry(_) => {}
             SyscallStopInfo::Seccomp(_) if administrative => {
                 // Transfer to the real Tool callback BEFORE native admission.
                 // The callback's existing injection owner or final resume owns
@@ -422,6 +535,7 @@ impl Context {
                 state.startup = false;
             }
             SyscallStopInfo::Exit { context, result } => {
+                state.original_ioctl = None;
                 if !administrative
                     && let Some((owner, _)) = state.raw_birth.take()
                     && !owner.same_generation(&task.terminal_cleanup())
