@@ -121,6 +121,49 @@ impl<L: Tool + 'static> TracedTask<L> {
             .await
     }
 
+    /// A finite original Sendto owner. The caller cannot select a private
+    /// helper or pass rewritten operands while asking for peer custody.
+    pub(super) async fn inject_peer_sendto_entry(
+        &mut self,
+        call: reverie::syscalls::Sendto,
+    ) -> Result<Result<i64, Errno>, TraceError> {
+        let session = Arc::clone(&self.global_state.fatal_session);
+        if session.is_failed()
+            || !session.source_jobs.enabled()
+            || !session.source_jobs.idle()
+            || self.cancel_handler.load(Ordering::Acquire)
+            || self.interrupted_read.is_some()
+            || self.pending_signal.is_some()
+        {
+            return Err(Errno::EBUSY.into());
+        }
+        let member = self.cohort.as_ref().ok_or(Errno::EOPNOTSUPP)?.clone();
+        let hold = member.acquire()?;
+        let (nr, args) = call.into_parts();
+        let (task, context) = self
+            .take_original_entry(nr, args, Some(args))?
+            .ok_or(Errno::EPROTO)?;
+        if context.is_some() {
+            return Err(Errno::EPROTO.into());
+        }
+        let source_stop = self.source_stop.as_ref().ok_or(Errno::EPROTO)?;
+        if !source_stop.same_generation(&task.terminal_cleanup()) {
+            return Err(Errno::ESTALE.into());
+        }
+        let entry = task.syscall_entry()?;
+        let observe = L::observe_injected_syscalls(&self.global_state.cfg);
+        let observation = observe.then_some((nr, args));
+        let preparation = (observe
+            && L::observe_injected_syscall_preparation(&self.global_state.cfg))
+        .then_some((nr, args));
+        self.observe_injected_syscall(preparation, InjectedSyscallEvent::Prepared);
+        let tasks = session.tree.lock().unwrap().tasks.clone();
+        let native = member.native_sendto_with_peers(hold, entry, &tasks, &session)?;
+        self.observe_injected_syscall(observation, InjectedSyscallEvent::Entered);
+        self.finish_entered_original_owned(task, nr, args, None, observation, Some(native))
+            .await
+    }
+
     pub(super) async fn finish_entered_original(
         &mut self,
         task: Stopped,
@@ -129,7 +172,6 @@ impl<L: Tool + 'static> TracedTask<L> {
         context: Option<libc::user_regs_struct>,
         observation: Option<(Sysno, SyscallArgs)>,
     ) -> Result<Result<i64, Errno>, TraceError> {
-        let entered = task.getregs()?;
         // This SAME original entry/effect future owns the cohort debt too.
         // Direction/Tool-step observation in syscall_stopped is not a native
         // invocation or a substitute for its authenticated return/restoration.
@@ -137,8 +179,28 @@ impl<L: Tool + 'static> TracedTask<L> {
             .cohort
             .as_ref()
             .and_then(|member| member.native(nr, args));
+        self.finish_entered_original_owned(task, nr, args, context, observation, cohort_native)
+            .await
+    }
+
+    async fn finish_entered_original_owned(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+        args: SyscallArgs,
+        context: Option<libc::user_regs_struct>,
+        observation: Option<(Sysno, SyscallArgs)>,
+        cohort_native: Option<source_cohort::NativeOperation>,
+    ) -> Result<Result<i64, Errno>, TraceError> {
+        let entered = task.getregs()?;
+        let peers = cohort_native
+            .as_ref()
+            .and_then(|native| native.peer_custody());
         let owner = task.terminal_cleanup();
-        let wait = self.syscall_stopped(task, None)?.next_state().await?;
+        let wait = self
+            .syscall_stopped_owned(task, None, peers.as_deref())?
+            .next_state()
+            .await?;
         self.arm_liteinst_wait(&wait);
         match wait {
             Wait::Stopped(stopped, Event::Syscall) => {
@@ -167,6 +229,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 if let Some(receipt) = cohort_return {
                     receipt.restored();
+                } else if peers.is_some() {
+                    return Err(Errno::EPROTO.into());
+                }
+                if let Some(peers) = peers {
+                    peers.retire()?;
                 }
                 let result = Errno::from_ret(raw as usize).map(|value| value as i64);
                 self.observe_liteinst_mapping_result(nr, args, result);

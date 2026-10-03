@@ -1995,7 +1995,7 @@ impl FatalSession {
         self.wait_retry(epoch).await;
     }
 
-    async fn freeze_and_kill(&self, task: &FatalTaskStop) {
+    pub(crate) async fn freeze_and_kill(&self, task: &FatalTaskStop) {
         // Physical source custody survives callback cancellation. The original
         // CompletionWork keeps polling the actual OS join while this waits.
         self.source_jobs.wait_followed_retirement().await;
@@ -2092,6 +2092,20 @@ impl FatalSession {
                 }
             };
             if let Some((tasks, mut newborns)) = cleanup {
+                // The selected sender's canceled native future leaves its peer
+                // gates in these original task owners. Transfer only after the
+                // actual all-task frozen barrier, before ANY cancellation signal.
+                for owner in &tasks {
+                    let peers = owner.peer_invocation.lock().unwrap().clone();
+                    if let Some(peers) = peers {
+                        loop {
+                            match peers.retire_frozen(&tasks) {
+                                Ok(()) => break,
+                                Err(error) => self.retry_after(error.into()).await,
+                            }
+                        }
+                    }
+                }
                 // This future, retained by the run driver on refusal, is the
                 // sole owner of these unhanded child receivers until reaping.
                 for newborn in &mut newborns {
@@ -7054,6 +7068,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<TaskRunning, TraceError> {
+        self.syscall_stopped_owned(task, signal, None)
+    }
+
+    fn syscall_stopped_owned<T: Into<Option<Signal>>>(
+        &self,
+        task: Stopped,
+        signal: T,
+        peers: Option<&source_cohort::NativePeers>,
+    ) -> Result<TaskRunning, TraceError> {
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
@@ -7068,6 +7091,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         let operation = self.cohort.as_ref().and_then(|member| {
             member.before_resume_classified(&task, false, self.original_source_ioctl_matches(&task))
         });
+        if let Some(peers) = peers {
+            peers.require_resume_owner(operation.as_ref())?;
+        }
         self.lease_liteinst_root_stop(task)
             .syscall(signal)
             .map(|running| self.task_running(running, operation))
@@ -9173,6 +9199,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             terminal,
             held: self.ordinary_held_stop.clone(),
             frozen: AtomicBool::new(false),
+            peer_invocation: StdMutex::new(None),
         });
         let slot = Arc::new(OrdinaryExecSlot {
             stop: stop.clone(),
@@ -9450,27 +9477,32 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             .fuse();
             futures::pin_mut!(exit);
-            futures::select_biased! {
-                () = cancelled => None,
-                () = task_failure => {
-                    if !session.is_failed() {
-                        let error = if let Some((tid, error)) = parent_failure.cause() {
-                            anyhow::anyhow!(
-                                "native parent syscall completion failed for {tid}: {error}"
-                            )
-                        } else {
-                            anyhow::anyhow!("GlobalTool reported a failed ptrace run")
-                        };
-                        session.fail(error.into());
-                    }
-                    None
-                },
-                task = exit => {
-                    session.source_cohort.terminal_selected(&task);
-                    Some(Either::Left(task))
-                },
-                result = run_loop => Some(Either::Right(result)),
-            }
+            let selection = async {
+                futures::select_biased! {
+                    () = cancelled => None,
+                    () = task_failure => {
+                        if !session.is_failed() {
+                            let error = if let Some((tid, error)) = parent_failure.cause() {
+                                anyhow::anyhow!(
+                                    "native parent syscall completion failed for {tid}: {error}"
+                                )
+                            } else {
+                                anyhow::anyhow!("GlobalTool reported a failed ptrace run")
+                            };
+                            session.fail(error.into());
+                        }
+                        None
+                    },
+                    task = exit => {
+                        session.source_cohort.terminal_selected(&task);
+                        Some(Either::Left(task))
+                    },
+                    result = run_loop => Some(Either::Right(result)),
+                }
+            };
+            #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+            let selection = source_cohort::peer_tests::gate_external_sender(stop, selection);
+            selection.await
         };
         drop(global);
         let outcome = match outcome {
@@ -11620,6 +11652,33 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         #[cfg(not(target_arch = "x86_64"))]
         {
             reverie::InjectedReadResult::Complete(self.inject(syscall).await)
+        }
+    }
+
+    async fn inject_original_sendto_with_stopped_peers(
+        &mut self,
+        syscall: reverie::syscalls::Sendto,
+    ) -> Result<i64, reverie::Error> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if self.private_signal.consulting
+                || self.private_signal.completing.is_some()
+                || self.private_signal.frame.is_some()
+                || self.private_signal.read.is_some()
+            {
+                self.abort(Err(TraceError::Errno(Errno::EPROTO))).await;
+            }
+            match self.inject_peer_sendto_entry(syscall).await {
+                Ok(result) => result.map_err(Into::into),
+                Err(error) => self.abort(Err(error)).await,
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = syscall;
+            Err(reverie::Error::Tool(anyhow::anyhow!(
+                "backend has no peer-held original Sendto"
+            )))
         }
     }
 

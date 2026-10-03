@@ -497,6 +497,18 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         InjectedReadResult::Complete(self.inject(syscall).await)
     }
 
+    /// Execute only the unchanged original Sendto while every followed peer
+    /// retains its actual stopped control. Unsupported backends must refuse;
+    /// neither generic injection nor a private helper supplies this custody.
+    async fn inject_original_sendto_with_stopped_peers(
+        &mut self,
+        _call: crate::syscalls::Sendto,
+    ) -> Result<i64, Error> {
+        Err(Error::Tool(anyhow::anyhow!(
+            "backend has no peer-held original Sendto"
+        )))
+    }
+
     /// Execute the epoll_ctl copy shape at its retained original syscall entry.
     /// Only epfd and fd become full-width -1; op, event pointer, and all other
     /// operands retain their original values. This does not register interest
@@ -1072,6 +1084,15 @@ where
 
     async fn inject_original_read(&mut self, syscall: crate::syscalls::Read) -> InjectedReadResult {
         self.inner.inject_original_read(syscall).await
+    }
+
+    async fn inject_original_sendto_with_stopped_peers(
+        &mut self,
+        call: crate::syscalls::Sendto,
+    ) -> Result<i64, Error> {
+        self.inner
+            .inject_original_sendto_with_stopped_peers(call)
+            .await
     }
 
     async fn inject_epoll_ctl_copy(

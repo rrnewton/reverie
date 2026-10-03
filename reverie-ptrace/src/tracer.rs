@@ -232,6 +232,8 @@ pub(crate) struct HeldRootStop {
     root_tid: Pid,
     status: HeldRootStopStatus,
     armed: bool,
+    // The exact source-cohort peer gate is also owned by this original stop.
+    peer_control: Option<Arc<safeptrace::ControlHold>>,
 }
 
 /// Ordinary cancellation retains the same event/stop authority as the running
@@ -241,6 +243,7 @@ pub(crate) struct FatalTaskStop {
     pub(crate) terminal: TerminalCleanup,
     pub(crate) held: Arc<StdMutex<Option<HeldRootStop>>>,
     pub(crate) frozen: AtomicBool,
+    pub(crate) peer_invocation: StdMutex<Option<Arc<crate::task::source_cohort::NativePeers>>>,
 }
 
 pub(crate) struct FatalNewborn {
@@ -338,7 +341,7 @@ impl FatalNewborn {
         let held = Arc::new(StdMutex::new(None));
         let mut next = stopped;
         let status = loop {
-            match finish_ordinary_terminal(next, &self.terminal, &held, session).await {
+            match finish_ordinary_terminal(next, &self.terminal, &held, session, None).await {
                 OrdinaryTerminal::Exited(status, _) => break status,
                 OrdinaryTerminal::Exec {
                     stopped, former, ..
@@ -487,7 +490,7 @@ pub(crate) async fn finish_ordinary_exit(
 ) -> OrdinaryTerminal {
     #[cfg(test)]
     pause_callback_exit_for_test(session, stop.tid, None).await;
-    finish_ordinary_terminal(stopped, &stop.terminal, &stop.held, session).await
+    finish_ordinary_terminal(stopped, &stop.terminal, &stop.held, session, Some(stop)).await
 }
 
 #[cfg(test)]
@@ -524,6 +527,7 @@ async fn finish_ordinary_terminal(
     terminal: &TerminalCleanup,
     held: &Arc<StdMutex<Option<HeldRootStop>>>,
     session: &FatalSession,
+    initialized: Option<&FatalTaskStop>,
 ) -> OrdinaryTerminal {
     #[cfg(test)]
     crate::task::source_cohort::tests::original_terminal_pending(terminal);
@@ -583,6 +587,48 @@ async fn finish_ordinary_terminal(
                                 continue;
                             }
                         }
+                    }
+                    // An external group signal can select ordinary EXIT for
+                    // both sender and held peers. Each original EXIT owner must
+                    // participate in the existing all-frozen transfer before
+                    // CONT: waiting on retry_epoch after an expected EBUSY would
+                    // leave no cleanup driver. Keep the real EXIT capability
+                    // and the payload captured above across this barrier.
+                    let peer_held = held
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .is_some_and(|current| current.peer_control.is_some());
+                    let sender_owned = initialized
+                        .is_some_and(|stop| stop.peer_invocation.lock().unwrap().is_some());
+                    if peer_held || sender_owned {
+                        let Some(stop) = initialized.filter(|stop| {
+                            stop.terminal.same_generation(terminal) && Arc::ptr_eq(&stop.held, held)
+                        }) else {
+                            session.retry_after(Errno::ESTALE.into()).await;
+                            continue;
+                        };
+                        // Presence selects stronger cleanup, never permission
+                        // to release a gate. The existing barrier validates the
+                        // complete original member set and exact bound Arcs.
+                        session.fail(
+                            anyhow::anyhow!(
+                                "original peer-held native cohort selected EXIT for {}",
+                                stopped.pid()
+                            )
+                            .into(),
+                        );
+                        #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+                        crate::task::source_cohort::peer_tests::terminal_transfer(
+                            stop, peer_held, false,
+                        );
+                        // Cleanup also owns newborn terminal continuations;
+                        // box this exceptional edge to keep that future finite.
+                        Box::pin(session.freeze_and_kill(stop)).await;
+                        #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+                        crate::task::source_cohort::peer_tests::terminal_transfer(
+                            stop, peer_held, true,
+                        );
                     }
                     #[cfg(test)]
                     let resumed_pid = stopped.pid();
@@ -748,6 +794,137 @@ async fn finish_ordinary_terminal(
 }
 
 impl FatalTaskStop {
+    fn distinct_peer_bindings(bindings: &[(Arc<Self>, Arc<safeptrace::ControlHold>)]) -> bool {
+        bindings.iter().enumerate().all(|(index, (task, control))| {
+            bindings[..index]
+                .iter()
+                .all(|(previous, previous_control)| {
+                    !Arc::ptr_eq(task, previous)
+                        && !Arc::ptr_eq(&task.held, &previous.held)
+                        && !Arc::ptr_eq(control, previous_control)
+                })
+        })
+    }
+    /// Join existing gates to existing armed cleanup stops before any resume.
+    /// All slots are checked before any binding is installed.
+    pub(crate) fn bind_peer_controls(
+        bindings: &[(Arc<Self>, Arc<safeptrace::ControlHold>)],
+    ) -> Result<(), Errno> {
+        if !Self::distinct_peer_bindings(bindings) {
+            return Err(Errno::EINVAL);
+        }
+        let mut slots: Vec<_> = bindings
+            .iter()
+            .map(|(task, _)| task.held.lock().unwrap())
+            .collect();
+        for ((task, control), slot) in bindings.iter().zip(&slots) {
+            let held = slot.as_ref().ok_or(Errno::ESTALE)?;
+            control.with_stopped(|stopped| {
+                if !held.armed
+                    || held.root_tid != task.tid
+                    || held.peer_control.is_some()
+                    || !held.terminal.same_generation(&task.terminal)
+                    || !task.terminal.same_generation(&stopped.terminal_cleanup())
+                {
+                    Err(Errno::ESTALE)
+                } else {
+                    Ok(())
+                }
+            })??;
+        }
+        for ((_, control), slot) in bindings.iter().zip(&mut slots) {
+            slot.as_mut().unwrap().peer_control = Some(Arc::clone(control));
+        }
+        Ok(())
+    }
+
+    /// Test-only malformed pre-entry inputs. The refusal is observed before
+    /// restoring the SAME original stop solely so normal fatal cleanup can run.
+    #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+    pub(crate) fn probe_missing_peer_stop(
+        bindings: &[(Arc<Self>, Arc<safeptrace::ControlHold>)],
+        unarmed: bool,
+    ) -> (Result<(), Errno>, bool) {
+        let task = &bindings[0].0;
+        let mut original = Some(
+            task.held
+                .lock()
+                .unwrap()
+                .take()
+                .expect("actual original held stop"),
+        );
+        assert!(
+            original
+                .as_ref()
+                .is_some_and(|stop| stop.armed && stop.peer_control.is_none())
+        );
+        if unarmed {
+            let mut stop = original.take().unwrap();
+            stop.armed = false;
+            *task.held.lock().unwrap() = Some(stop);
+        }
+        let result = Self::bind_peer_controls(bindings);
+        // Capture the failed predicate before the cleanup-only restoration.
+        let refused = result == Err(Errno::ESTALE);
+        if unarmed {
+            let mut stop = task.held.lock().unwrap().take().expect("same unarmed stop");
+            stop.armed = true;
+            original = Some(stop);
+        }
+        *task.held.lock().unwrap() = original;
+        (result, refused)
+    }
+
+    pub(crate) fn peer_controls_match(
+        bindings: &[(Arc<Self>, Arc<safeptrace::ControlHold>)],
+        frozen: bool,
+    ) -> bool {
+        bindings.iter().all(|(task, control)| {
+            let slot = task.held.lock().unwrap();
+            slot.as_ref().is_some_and(|held| {
+                held.armed
+                    && held.root_tid == task.tid
+                    && held.terminal.same_generation(&task.terminal)
+                    && held
+                        .peer_control
+                        .as_ref()
+                        .is_some_and(|bound| Arc::ptr_eq(bound, control))
+                    && (!frozen || task.frozen.load(std::sync::atomic::Ordering::Acquire))
+            })
+        })
+    }
+
+    /// Remove only a complete, pointer-identical set of original peer gates.
+    pub(crate) fn release_peer_controls(
+        bindings: &[(Arc<Self>, Arc<safeptrace::ControlHold>)],
+        frozen: bool,
+    ) -> Result<(), Errno> {
+        if !Self::distinct_peer_bindings(bindings) {
+            return Err(Errno::EINVAL);
+        }
+        let mut slots: Vec<_> = bindings
+            .iter()
+            .map(|(task, _)| task.held.lock().unwrap())
+            .collect();
+        for ((task, control), slot) in bindings.iter().zip(&slots) {
+            if !slot.as_ref().is_some_and(|held| {
+                held.armed
+                    && held.root_tid == task.tid
+                    && held.terminal.same_generation(&task.terminal)
+                    && held
+                        .peer_control
+                        .as_ref()
+                        .is_some_and(|bound| Arc::ptr_eq(bound, control))
+                    && (!frozen || task.frozen.load(std::sync::atomic::Ordering::Acquire))
+            }) {
+                return Err(Errno::ESTALE);
+            }
+        }
+        for slot in &mut slots {
+            slot.as_mut().unwrap().peer_control = None;
+        }
+        Ok(())
+    }
     pub(crate) async fn freeze(
         &self,
         deadline: Instant,
@@ -840,6 +1017,7 @@ impl HeldRootStop {
             root_tid: task.pid(),
             status,
             armed: true,
+            peer_control: None,
         }
     }
 
@@ -927,7 +1105,7 @@ impl HeldRootStop {
         slot: &Arc<StdMutex<Option<Self>>>,
         task: &Stopped,
     ) -> Result<(), TraceError> {
-        let replacement = Self::from_event(task, &Event::Exit);
+        let mut replacement = Self::from_event(task, &Event::Exit);
         let mut held = slot.lock().unwrap();
         match held.as_ref() {
             None => {
@@ -935,6 +1113,8 @@ impl HeldRootStop {
                 Ok(())
             }
             Some(current) if current.armed && current.same_root_generation(&replacement) => {
+                // Actual EXIT changes the stop, never the outstanding peer custody.
+                replacement.peer_control = held.as_mut().unwrap().peer_control.take();
                 *held = Some(replacement);
                 Ok(())
             }
@@ -967,7 +1147,15 @@ impl RootStopLease {
     fn take_for_transition(&mut self) -> Result<Stopped, TraceError> {
         let task = self.task.take().expect("root stop lease consumed once");
         if let Some(slot) = self.held_root_stop.as_ref() {
-            let mut held = slot.lock().unwrap().take().ok_or(Errno::EINVAL)?;
+            let mut slot_guard = slot.lock().unwrap();
+            if slot_guard
+                .as_ref()
+                .is_some_and(|held| held.peer_control.is_some())
+            {
+                return Err(Errno::EBUSY.into());
+            }
+            let mut held = slot_guard.take().ok_or(Errno::EINVAL)?;
+            drop(slot_guard);
             let current = task.terminal_cleanup();
             if held.root_tid != task.pid()
                 || !held.armed
@@ -1465,6 +1653,15 @@ impl LiteinstTraceeCleanup {
                 Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
                 self.capture_pending_children(terminal)
             );
+        }
+        if self
+            .held_root_stop
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|held| held.peer_control.is_some())
+        {
+            return Err(std::io::Error::from_raw_os_error(libc::EBUSY));
         }
         if let Some(mut held) = self.held_root_stop.lock().unwrap().take() {
             let owns_claimed_exit = matches!(held.status, HeldRootStopStatus::Exit);

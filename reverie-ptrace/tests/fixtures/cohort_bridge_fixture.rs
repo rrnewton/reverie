@@ -63,6 +63,10 @@ fn main() {
         Some("startup-deaths") => sequential_startup_deaths(),
         Some("startup-final") => sequential_startup_final(),
         Some("source-hold-688") => followed_source_hold(),
+        Some("peer-sendto-root") => followed_peer_sendto(false, false),
+        Some("peer-sendto-child") => followed_peer_sendto(true, false),
+        Some("peer-sendto-blocked-root") => followed_peer_sendto(false, true),
+        Some("peer-sendto-blocked-child") => followed_peer_sendto(true, true),
         Some("source-retirement-703") => retirement_source(),
         mode => panic!("unadmitted fixture mode: {mode:?}"),
     }
@@ -276,4 +280,56 @@ fn sequential_threads() {
         // acknowledging this marker; no second kernel waiter is introduced.
         marker(b"joined-raw");
     }
+}
+
+/// The marker is Tool-parked, but the selected Sendto really copies its eight
+/// stack bytes into a native Unix stream. The blocked variant fills that same
+/// socket before the rendezvous, so cancellation must freeze a running sender.
+fn followed_peer_sendto(child_sender: bool, blocked: bool) {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
+    let (sender, mut receiver) = UnixStream::pair().unwrap();
+    let fd = sender.as_raw_fd();
+    if blocked {
+        sender.set_nonblocking(true).unwrap();
+        let fill = [0u8; 4096];
+        loop {
+            let raw = unsafe { libc::write(fd, fill.as_ptr().cast(), fill.len()) };
+            if raw < 0 {
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EAGAIN)
+                );
+                break;
+            }
+            assert!(raw > 0);
+        }
+        sender.set_nonblocking(false).unwrap();
+    }
+    let act = move |selected: bool| {
+        let bytes = *b"peerSend";
+        let raw = unsafe {
+            if selected {
+                libc::syscall(
+                    libc::SYS_sendto,
+                    fd,
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    libc::MSG_NOSIGNAL,
+                    0usize,
+                    0usize,
+                )
+            } else {
+                libc::syscall(libc::SYS_write, 688, bytes.as_ptr(), bytes.len())
+            }
+        };
+        assert_eq!(raw, 8);
+    };
+    let child = std::thread::spawn(move || act(child_sender));
+    act(!child_sender);
+    child.join().unwrap();
+    let mut bytes = [0u8; 8];
+    receiver.read_exact(&mut bytes).unwrap();
+    assert_eq!(&bytes, b"peerSend");
 }

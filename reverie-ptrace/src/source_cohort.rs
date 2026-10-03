@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
 
 use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::Sysno;
@@ -84,6 +85,7 @@ struct Operation {
     // Only the actual native clone3 ENTRY installs this debt. No userspace
     // clone_args snapshot stands in for the kernel's eventual argument copy.
     indirect_birth: Option<IndirectBirth>,
+    peers: Option<Weak<NativePeers>>,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum IndirectBirth {
@@ -143,6 +145,7 @@ pub(super) struct NativeOperation {
     syscall: Sysno,
     completed: bool,
     source_ioctl: Option<super::source_epoch::NativeIoctl>,
+    peers: Option<Arc<NativePeers>>,
 }
 pub(super) struct NativeReturn {
     owner: NativeOperation,
@@ -211,6 +214,7 @@ impl History {
                 effect,
                 outcome: Outcome::Waiting,
                 indirect_birth: None,
+                peers: None,
             },
         );
         #[cfg(test)]
@@ -327,6 +331,7 @@ pub(crate) struct FollowedHold {
     sender: u64,
     ticket: Arc<()>,
     controls: BTreeMap<u64, Arc<safeptrace::ControlHold>>,
+    transferred: bool,
 }
 
 impl Member {
@@ -423,7 +428,333 @@ impl Member {
             sender: self.index,
             ticket,
             controls,
+            transferred: false,
         })
+    }
+}
+
+/// The existing original invocation's finite peer custody. The sender's
+/// FatalTaskStop also retains this owner; canceled Tool futures cannot drop gates.
+pub(crate) struct NativePeers {
+    member: Member,
+    number: u64,
+    entry: safeptrace::SyscallEntry,
+    ticket: Arc<()>,
+    members: BTreeMap<u64, TaskIdentity>,
+    sender: Weak<crate::tracer::FatalTaskStop>,
+    session: Weak<super::FatalSession>,
+    state: Mutex<NativePeerState>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativePeerPhase {
+    Armed,
+    Executing,
+    Restored,
+    Retired,
+    Unknown,
+}
+struct NativePeerState {
+    revision: u64,
+    phase: NativePeerPhase,
+    bindings: Vec<(
+        Arc<crate::tracer::FatalTaskStop>,
+        Arc<safeptrace::ControlHold>,
+    )>,
+}
+impl Member {
+    pub(super) fn native_sendto_with_peers(
+        &self,
+        mut hold: FollowedHold,
+        entry: safeptrace::SyscallEntry,
+        tasks: &[Arc<crate::tracer::FatalTaskStop>],
+        session: &Arc<super::FatalSession>,
+    ) -> Result<NativeOperation, safeptrace::Errno> {
+        use safeptrace::Errno;
+        hold.validate()?;
+        if !Arc::ptr_eq(&hold.history, &self.history)
+            || hold.sender != self.index
+            || entry.arch != 0xc000003e
+            || entry.number != Sysno::sendto as u64
+            || !entry.seccomp
+        {
+            return Err(Errno::EPROTO);
+        }
+        let actual = hold
+            .sender()
+            .with_stopped(|stopped| stopped.syscall_entry())?
+            .map_err(|_| Errno::EPROTO)?;
+        if actual != entry {
+            return Err(Errno::EPROTO);
+        }
+        let mut members = BTreeMap::new();
+        let mut bindings = Vec::new();
+        let mut sender = None;
+        {
+            let h = self.history.0.lock().unwrap();
+            if tasks.len() != h.tasks.len() {
+                return Err(Errno::ESTALE);
+            }
+            for (&id, member) in &h.tasks {
+                let mut matching = tasks.iter().filter(|task| {
+                    task.terminal
+                        .task_identity()
+                        .is_ok_and(|identity| member.identity.same_generation(&identity))
+                });
+                let task = matching.next().ok_or(Errno::ESTALE)?;
+                if matching.next().is_some()
+                    || task.frozen.load(std::sync::atomic::Ordering::Acquire)
+                {
+                    return Err(Errno::ESTALE);
+                }
+                members.insert(id, task.terminal.task_identity()?);
+                bindings.push((Arc::clone(task), Arc::clone(&hold.controls[&id])));
+                if id == self.index {
+                    sender = Some(Arc::clone(task));
+                }
+            }
+        }
+        let sender = sender.ok_or(Errno::ESTALE)?;
+        if sender.peer_invocation.lock().unwrap().is_some() {
+            return Err(Errno::EBUSY);
+        }
+        #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+        peer_tests::bind_controls(&bindings)?;
+        #[cfg(not(all(test, cohort_final_test, target_arch = "x86_64")))]
+        crate::tracer::FatalTaskStop::bind_peer_controls(&bindings)?;
+        let a = entry.arguments;
+        let args = SyscallArgs::new(
+            a[0] as usize,
+            a[1] as usize,
+            a[2] as usize,
+            a[3] as usize,
+            a[4] as usize,
+            a[5] as usize,
+        );
+        let Some(mut native) = self.native(Sysno::sendto, args) else {
+            // No sender gate or native effect was released on this branch.
+            crate::tracer::FatalTaskStop::release_peer_controls(&bindings, false)?;
+            return Err(Errno::ESTALE);
+        };
+        let mut h = self.history.0.lock().unwrap();
+        if h.failed
+            || !h
+                .tasks
+                .get(&self.index)
+                .is_some_and(|task| task.operations.contains_key(&native.number))
+        {
+            drop(h);
+            crate::tracer::FatalTaskStop::release_peer_controls(&bindings, false)?;
+            return Err(Errno::ESTALE);
+        }
+        let peers = Arc::new(NativePeers {
+            member: self.clone(),
+            number: native.number,
+            entry,
+            ticket: Arc::clone(&hold.ticket),
+            members,
+            sender: Arc::downgrade(&sender),
+            session: Arc::downgrade(session),
+            state: Mutex::new(NativePeerState {
+                revision: h.revision,
+                phase: NativePeerPhase::Armed,
+                bindings,
+            }),
+        });
+        h.tasks
+            .get_mut(&self.index)
+            .unwrap()
+            .operations
+            .get_mut(&native.number)
+            .unwrap()
+            .peers = Some(Arc::downgrade(&peers));
+        *sender.peer_invocation.lock().unwrap() = Some(Arc::clone(&peers));
+        native.peers = Some(Arc::clone(&peers));
+        // From here onward every error retains the original physical owner.
+        hold.transferred = true;
+        hold.controls.clear();
+        drop(h);
+        {
+            let mut state = peers.state.lock().unwrap();
+            let index = state
+                .bindings
+                .iter()
+                .position(|(task, _)| Arc::ptr_eq(task, &sender))
+                .ok_or(Errno::ESTALE)?;
+            crate::tracer::FatalTaskStop::release_peer_controls(
+                &state.bindings[index..index + 1],
+                false,
+            )?;
+            state.bindings.remove(index); // only this sender may now resume
+        }
+        Ok(native)
+    }
+}
+impl NativePeers {
+    fn matches_history(&self, h: &History, state: &NativePeerState) -> bool {
+        h.read_open()
+            && h.revision == state.revision
+            && h.hold
+                .as_ref()
+                .is_some_and(|ticket| Arc::ptr_eq(ticket, &self.ticket))
+            && h.tasks.keys().eq(self.members.keys())
+            && h.tasks.iter().all(|(id, task)| {
+                self.members[id].same_generation(&task.identity)
+                    && if *id == self.member.index {
+                        match state.phase {
+                            NativePeerPhase::Armed | NativePeerPhase::Executing => {
+                                task.invocation == Some(self.number)
+                                    && task.operations.len() == 1
+                                    && task.operations.contains_key(&self.number)
+                            }
+                            NativePeerPhase::Restored => task.quiescent(),
+                            NativePeerPhase::Retired | NativePeerPhase::Unknown => false,
+                        }
+                    } else {
+                        task.quiescent()
+                    }
+            })
+            && state
+                .bindings
+                .iter()
+                .all(|(_, control)| control.validate().is_ok())
+            && crate::tracer::FatalTaskStop::peer_controls_match(&state.bindings, false)
+    }
+    fn before_resume(
+        &self,
+        h: &History,
+        member: u64,
+        entry: Option<safeptrace::SyscallEntry>,
+    ) -> bool {
+        let state = self.state.lock().unwrap();
+        state.phase == NativePeerPhase::Armed
+            && self.matches_history(h, &state)
+            && member == self.member.index
+            && entry == Some(self.entry)
+            && h.tasks
+                .get(&member)
+                .is_some_and(|task| task.invocation == Some(self.number))
+    }
+    fn resumed(&self, revision: u64) {
+        let mut state = self.state.lock().unwrap();
+        state.phase = NativePeerPhase::Executing;
+        state.revision = revision;
+    }
+    /// A source observer's None never authorizes this physical transition.
+    /// The new original route checks this before actually releasing the stop.
+    pub(super) fn require_resume_owner(
+        &self,
+        operation: Option<&ResumeOperation>,
+    ) -> Result<(), safeptrace::Errno> {
+        let h = self.member.history.0.lock().unwrap();
+        let state = self.state.lock().unwrap();
+        if state.phase != NativePeerPhase::Executing
+            || !self.matches_history(&h, &state)
+            || !operation.is_some_and(|operation| {
+                operation.number == self.number
+                    && operation.member.index == self.member.index
+                    && Arc::ptr_eq(&operation.member.history, &self.member.history)
+            })
+        {
+            return Err(safeptrace::Errno::ESTALE);
+        }
+        Ok(())
+    }
+    fn returned(&self, h: &History) -> bool {
+        let state = self.state.lock().unwrap();
+        state.phase == NativePeerPhase::Executing
+            && self.matches_history(h, &state)
+            && h.tasks.get(&self.member.index).is_some_and(|task| {
+                task.life == Life::Stopped
+                    && task.invocation == Some(self.number)
+                    && task
+                        .operations
+                        .get(&self.number)
+                        .is_some_and(|op| op.outcome == Outcome::Stopped)
+            })
+    }
+    fn restored(&self) {
+        self.state.lock().unwrap().phase = NativePeerPhase::Restored;
+    }
+    fn unknown(&self) {
+        self.state.lock().unwrap().phase = NativePeerPhase::Unknown;
+        if let Some(session) = self.session.upgrade() {
+            session.fail(
+                anyhow::anyhow!("original peer-held Sendto lost return/restoration custody").into(),
+            );
+        }
+    }
+    pub(super) fn retire(self: &Arc<Self>) -> Result<(), safeptrace::Errno> {
+        use safeptrace::Errno;
+        let mut h = self.member.history.0.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        if state.phase != NativePeerPhase::Restored
+            || !self.matches_history(&h, &state)
+            || !h.tasks.values().all(Task::quiescent)
+        {
+            return Err(Errno::ESTALE);
+        }
+        let sender = self.sender.upgrade().ok_or(Errno::ESTALE)?;
+        let mut slot = sender.peer_invocation.lock().unwrap();
+        if !slot.as_ref().is_some_and(|owner| Arc::ptr_eq(owner, self)) {
+            return Err(Errno::ESTALE);
+        }
+        crate::tracer::FatalTaskStop::release_peer_controls(&state.bindings, false)?;
+        state.bindings.clear();
+        h.hold = None;
+        state.phase = NativePeerPhase::Retired;
+        *slot = None;
+        Ok(())
+    }
+    /// Only the original all-task-frozen cleanup barrier calls this. This is
+    /// fatal custody transfer, never a successful native result or source read.
+    pub(crate) fn retire_frozen(
+        self: &Arc<Self>,
+        tasks: &[Arc<crate::tracer::FatalTaskStop>],
+    ) -> Result<(), safeptrace::Errno> {
+        use std::sync::atomic::Ordering;
+
+        use safeptrace::Errno;
+        if tasks.len() != self.members.len()
+            || tasks
+                .iter()
+                .any(|task| !task.frozen.load(Ordering::Acquire))
+            || self.members.values().any(|identity| {
+                tasks
+                    .iter()
+                    .filter(|task| {
+                        task.terminal
+                            .task_identity()
+                            .is_ok_and(|actual| identity.same_generation(&actual))
+                    })
+                    .count()
+                    != 1
+            })
+        {
+            return Err(Errno::ESTALE);
+        }
+        let mut h = self.member.history.0.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        if state.phase == NativePeerPhase::Retired
+            || !h
+                .hold
+                .as_ref()
+                .is_some_and(|ticket| Arc::ptr_eq(ticket, &self.ticket))
+            || !crate::tracer::FatalTaskStop::peer_controls_match(&state.bindings, true)
+        {
+            return Err(Errno::ESTALE);
+        }
+        let sender = self.sender.upgrade().ok_or(Errno::ESTALE)?;
+        let mut slot = sender.peer_invocation.lock().unwrap();
+        if !slot.as_ref().is_some_and(|owner| Arc::ptr_eq(owner, self)) {
+            return Err(Errno::ESTALE);
+        }
+        h.fail(); // irreversible even if a later physical release refuses
+        crate::tracer::FatalTaskStop::release_peer_controls(&state.bindings, true)?;
+        state.bindings.clear();
+        h.hold = None;
+        state.phase = NativePeerPhase::Unknown;
+        *slot = None;
+        Ok(())
     }
 }
 
@@ -478,6 +809,9 @@ impl FollowedHold {
 
 impl Drop for FollowedHold {
     fn drop(&mut self) {
+        if self.transferred {
+            return;
+        }
         // Release physical gates before clearing the run-level signal fence.
         self.controls.clear();
         let mut h = self.history.0.lock().unwrap();
@@ -579,6 +913,7 @@ impl Member {
             syscall,
             completed: false,
             source_ioctl,
+            peers: None,
         })
     }
     pub(super) fn close_observation(&self) {
@@ -640,7 +975,9 @@ impl Member {
         if self.history.0.lock().unwrap().failed {
             return None;
         }
-        let (mut effect, exposure) = match stopped.pending_syscall_entry() {
+        let observed_entry = stopped.pending_syscall_entry();
+        let peer_entry = observed_entry.as_ref().ok().copied().flatten();
+        let (mut effect, exposure) = match observed_entry {
             Ok(None) => (Effect::Execution, false),
             Ok(Some(entry)) => {
                 let exposure = super::source_epoch::observed_syscalls()
@@ -687,8 +1024,27 @@ impl Member {
             h.fail();
             return None;
         }
-        h.advance();
         let invocation = h.tasks.get(&self.index)?.invocation;
+        let peers = invocation.and_then(|number| {
+            h.tasks
+                .get(&self.index)?
+                .operations
+                .get(&number)?
+                .peers
+                .as_ref()?
+                .upgrade()
+        });
+        if peers
+            .as_ref()
+            .is_some_and(|owner| !owner.before_resume(&h, self.index, peer_entry))
+        {
+            h.fail();
+            return None;
+        }
+        h.advance();
+        if let Some(owner) = &peers {
+            owner.resumed(h.revision);
+        }
         // CONT of an unowned native syscall has no typed return/restoration
         // owner. Do not reinterpret a later generic stop as its completion.
         if invocation.is_none() && !matches!(effect, Effect::Execution | Effect::Terminal) {
@@ -1033,6 +1389,9 @@ impl Drop for ResumeOperation {
     }
 }
 impl NativeOperation {
+    pub(super) fn peer_custody(&self) -> Option<Arc<NativePeers>> {
+        self.peers.as_ref().map(Arc::clone)
+    }
     /// Called at the original exit owner BEFORE register restoration.
     pub(super) fn syscall_return(self, stopped: &Stopped, raw: i64) -> Option<NativeReturn> {
         let valid = stopped.syscall_exit_result().is_ok_and(|r| r == raw)
@@ -1063,6 +1422,7 @@ impl NativeOperation {
         let identity = stopped.terminal_cleanup().task_identity();
         let h = self.member.history.0.lock().unwrap();
         let valid = valid
+            && self.peers.as_ref().is_none_or(|peers| peers.returned(&h))
             && !h.failed
             && identity.as_ref().is_ok_and(|id| {
                 h.tasks
@@ -1098,10 +1458,25 @@ impl Drop for NativeOperation {
             // physical custody is untouched; publication is permanently shut.
             h.fail();
         }
+        drop(h);
+        if !self.completed
+            && let Some(peers) = &self.peers
+        {
+            peers.unknown();
+        }
     }
 }
 impl NativeReturn {
     pub(super) fn restored(mut self) {
+        #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+        if self
+            .owner
+            .peers
+            .as_ref()
+            .is_some_and(peer_tests::abandon_restoration)
+        {
+            return;
+        }
         #[cfg(test)]
         if tests::abandon_completion() {
             return;
@@ -1155,6 +1530,9 @@ impl NativeReturn {
             task.operations.remove(&self.owner.number);
             task.invocation = None;
             self.owner.completed = true;
+            if let Some(peers) = &self.owner.peers {
+                peers.restored();
+            }
         } else {
             h.fail();
         }
@@ -1324,3 +1702,7 @@ pub(super) mod retirement_tests;
 #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
 #[path = "source_clone3_tests.rs"]
 pub(super) mod clone3_tests;
+
+#[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+#[path = "source_peer_tests.rs"]
+pub(crate) mod peer_tests;
