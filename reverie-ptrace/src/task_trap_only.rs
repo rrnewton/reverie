@@ -140,7 +140,7 @@ impl HopThreadStatus {
 /// Reads [`HopThreadStatus`] for thread `tid`; `Ok(None)` when the thread is
 /// gone (killed and reaped, or being reaped).
 fn read_hop_thread_status(tid: i32) -> Result<Option<HopThreadStatus>, String> {
-    match std::fs::read_to_string(format!("/proc/{tid}/status")) {
+    match crate::launch_window::read_to_string(format!("/proc/{tid}/status")) {
         Ok(status) => HopThreadStatus::parse(&status).map(Some),
         Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => Ok(None),
         Err(error) => Err(format!("read /proc/{tid}/status: {error}")),
@@ -365,6 +365,7 @@ fn creating_flags(tid: nix::unistd::Pid, nr: Sysno, args: &SyscallArgs) -> Optio
         Sysno::clone3 => {
             use std::os::unix::fs::FileExt;
             let mut flags = [0u8; 8];
+            let _open = crate::launch_window::TransientOpen::begin();
             Some(
                 match std::fs::File::open(format!("/proc/{tid}/mem"))
                     .and_then(|mem| mem.read_exact_at(&mut flags, args.arg0 as u64))
@@ -1638,18 +1639,20 @@ impl<L: Tool + 'static> TracedTask<L> {
         // A zeroed kernel `struct sigaction` (SIG_DFL, no flags, empty mask),
         // written below the red zone of the guest stack.
         let act = (regs.rsp.wrapping_sub(256)) & !15;
-        {
+        let written = {
             use std::os::unix::fs::FileExt;
-            let written = std::fs::OpenOptions::new()
+            // The guard ends before a failure is published.
+            let _open = crate::launch_window::TransientOpen::begin();
+            std::fs::OpenOptions::new()
                 .write(true)
                 .open(format!("/proc/{}/mem", task.pid()))
-                .and_then(|mem| mem.write_all_at(&[0u8; 32], act));
-            if let Err(error) = written {
-                return Err(self.trap_only_failure(
-                    "trap-only foreign int 0x80",
-                    foreign(format!("write SIG_DFL sigaction at {act:#x}: {error}")),
-                ));
-            }
+                .and_then(|mem| mem.write_all_at(&[0u8; 32], act))
+        };
+        if let Err(error) = written {
+            return Err(self.trap_only_failure(
+                "trap-only foreign int 0x80",
+                foreign(format!("write SIG_DFL sigaction at {act:#x}: {error}")),
+            ));
         }
         let restored = self
             .untraced_syscall(
