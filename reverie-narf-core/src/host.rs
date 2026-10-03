@@ -133,7 +133,9 @@ pub enum NarfFatal {
     /// ending ([`KernelServices::killed`]). reverie-ptrace, without a
     /// LiteInst runtime, also fails the run on the errno of a live task; for
     /// a task that is gone or exiting it parks the task instead, as the core
-    /// ends the callback with `RdtscOutcome::ContextManaged`.
+    /// ends the callback with `RdtscOutcome::ContextManaged`. The core then
+    /// discards the errno, whereas reverie-ptrace records it as a callback
+    /// diagnostic.
     Rdtsc(Errno),
     /// An RDTSC callback's transition made the task context-managed although
     /// the task was not ending ([`KernelServices::killed`]): a tail inject
@@ -207,9 +209,10 @@ pub enum Disposition {
 pub enum LifecycleOutcome {
     /// Let the task continue.
     Continue,
-    /// A tail-injected syscall exited or redirected the task, or, for a
-    /// kernel whose [`KernelServices::killed`] answers in lifecycle
-    /// callbacks, an inject found the task ending.
+    /// A tail-injected syscall, or an inject of `exit`, `exit_group`,
+    /// `execve`, `execveat` or `rt_sigreturn`, exited or redirected the
+    /// task, or, for a kernel whose [`KernelServices::killed`] answers in
+    /// lifecycle callbacks, an inject found the task ending.
     ContextManaged,
 }
 
@@ -221,14 +224,15 @@ pub enum RdtscOutcome {
     /// and, for RDTSCP, `aux` (zero if `None`) in `ECX`, as reverie-ptrace
     /// completes it.
     ///
-    /// The core returns this whenever the Tool answered, even for a task
-    /// that is ending ([`KernelServices::killed`]): completing the
-    /// instruction does not cancel a pending kill, which the kernel still
-    /// carries out.
+    /// The core returns this whenever the Tool answered and no fatal error
+    /// was recorded during the callback, even for a task that is ending
+    /// ([`KernelServices::killed`]): completing the instruction does not
+    /// cancel a pending kill, which the kernel still carries out.
     Complete(RdtscResult),
     /// The task is ending ([`KernelServices::killed`]) and the Tool gave no
-    /// value: it failed with an errno, or an inject or tail inject ended the
-    /// task. The kernel owns the task's context and must not complete the
+    /// value: it failed with an errno, an inject or tail inject ended the
+    /// task, or the task was killed while the Tool waited for another task.
+    /// The kernel owns the task's context and must not complete the
     /// instruction.
     ContextManaged,
 }
@@ -495,8 +499,9 @@ where
     /// RDTSC callbacks, and once it answers `true` in a callback it must
     /// keep answering `true` until the callback returns. Otherwise an inject
     /// that kills the task, or a kill from another task during the
-    /// callback, fails the run with [`NarfFatal::InjectParked`] or
-    /// [`NarfFatal::RdtscContextManaged`] instead of ending the task.
+    /// callback, fails the run with [`NarfFatal::InjectParked`],
+    /// [`NarfFatal::RdtscContextManaged`] or [`NarfFatal::Rdtsc`] instead of
+    /// ending the task.
     #[cfg(target_arch = "x86_64")]
     pub fn new_delivering_rdtsc(config: Config<T>) -> Result<Self, NarfFatal> {
         Self::build(config, true)
@@ -967,9 +972,12 @@ where
     ///   task's context without ending the task (`execve`, say), with
     ///   [`NarfFatal::RdtscContextManaged`].
     ///
-    /// A tail inject that returned a value fails with
-    /// [`NarfFatal::TailInjectOutsideSyscall`] whether or not the task is
-    /// ending.
+    /// Three failures end the run whether or not the task is ending: a
+    /// fatal error recorded during the callback (such as
+    /// [`NarfFatal::DaemonizeRefused`]), which wins over whatever the Tool
+    /// returned; a tail inject that returned a value, with
+    /// [`NarfFatal::TailInjectOutsideSyscall`]; and a wait the kernel cannot
+    /// perform, with [`NarfFatal::ToolSuspended`].
     ///
     /// A Tool future suspended in a parked inject of this task is first
     /// interrupted, as a new syscall entry would interrupt it: the task has
