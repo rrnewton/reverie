@@ -1699,15 +1699,17 @@ impl KvmBackend {
         cpuid_policy: CpuidPolicy,
     ) -> Result<InitializedKvmResources> {
         let kvm = Kvm::new()?;
-        // Serialize the capability record with physical publication. A file
-        // image created before attachment requires synchronous invalidation;
-        // a private image can still attach on a host lacking this capability,
-        // but must refuse a later file publication before changing the HVA.
-        memory.record_kvm_sync_mmu(kvm.check_extension(Cap::SyncMmu))?;
         let vm = kvm.create_vm()?;
         if !vm.check_extension(Cap::ExitHypercall) {
             return Err(Error::HypercallExitUnsupported);
         }
+        // Serialize the capability record with physical publication. A file
+        // image created before attachment requires synchronous invalidation;
+        // a private image can still attach on a host lacking this capability,
+        // but must refuse a later file publication before changing the HVA.
+        // VM creation and the hypercall capability check do not publish or use
+        // this HVA: slot registration below is its first attachment to the VM.
+        memory.record_kvm_sync_mmu(kvm.check_extension(Cap::SyncMmu))?;
 
         let mut cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)?;
         // TODO-HUMAN-REVIEW(PR-129): Review host-selected private hypercall transport.
