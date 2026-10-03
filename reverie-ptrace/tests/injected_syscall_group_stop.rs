@@ -3335,7 +3335,7 @@ fn check_requeued_known_gap(
     assert_eq!(
         fields[0],
         ret.replace("{pid}", &pid.to_string()),
-        "the guest's syscall returns the hook's last injection's value (known gap, https://github.com/rrnewton/reverie/issues/845)"
+        "the guest's syscall returns the hook's last injection's value (main leaks it, https://github.com/rrnewton/reverie/issues/892; a fix flips this pin)"
     );
     if let Some(errno) = errno {
         assert_eq!(fields[1], errno.to_string(), "errno");
@@ -3587,7 +3587,7 @@ fn always_injecting_hook_requeues_an_ignored_signal() {
     assert_eq!(
         fields,
         format!("{pid} 0 1 1"),
-        "ppoll returns the hook's getpid; the signal is blocked and still pending (known gap, https://github.com/rrnewton/reverie/issues/845)"
+        "ppoll returns the hook's getpid (main leaks it, https://github.com/rrnewton/reverie/issues/892); the signal is blocked and still pending (known gap, https://github.com/rrnewton/reverie/issues/845)"
     );
     assert_eq!(
         *log.injected.lock().unwrap(),
@@ -6689,8 +6689,9 @@ enum RestartBlockEnd {
 ///
 /// When it suppresses SIGALRM, untraced Linux would restart the guest's
 /// sleep, which the replaced restart block rules out. The guest sees the
-/// latest injection's result, as on main: the `getpid`'s PID, a known gap
-/// (https://github.com/rrnewton/reverie/issues/845), or, after the hook's
+/// latest injection's result, as on main: the `getpid`'s PID, which main
+/// leaks (<https://github.com/rrnewton/reverie/issues/892>; a fix flips that
+/// pin), or, after the hook's
 /// final 350 ms sleep outlasts the guest's 300 ms deadline, zero, what
 /// untraced Linux returns there.
 ///
@@ -6711,8 +6712,8 @@ enum RestartBlockEnd {
 /// With `SuppressAfterResume` the hook's interrupted `restart_syscall`
 /// leaves the guest's restart block in place, and untraced Linux would
 /// restart the guest's sleep to its own deadline and return zero. The guest
-/// sees the `getpid`'s PID, as on main, a known gap
-/// (https://github.com/rrnewton/reverie/issues/845).
+/// sees the `getpid`'s PID, which main leaks
+/// (<https://github.com/rrnewton/reverie/issues/892>; a fix flips that pin).
 ///
 /// In every case the second SIGALRM, held by the hook's `getpid`, is
 /// delivered at the guest's next subscribed syscall, its `println`.
@@ -6849,7 +6850,7 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
         RestartBlockEnd::SuppressAfterResume => assert_eq!(
             [fields[0], fields[2]],
             [pid.to_string().as_str(), "0"],
-            "the injected getpid's PID, as on main, and no handler run (known gap, https://github.com/rrnewton/reverie/issues/845)"
+            "the injected getpid's PID, which main leaks (https://github.com/rrnewton/reverie/issues/892; a fix flips this pin), and no handler run"
         ),
         RestartBlockEnd::SuppressAfterZeroingRax => assert_eq!(
             [fields[0], fields[2]],
