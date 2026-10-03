@@ -12,6 +12,7 @@ async-trait = "0.1.86"
 libc = "0.2.186"
 reverie = { package = "reverie-core", version = "0.2.0", path = "../reverie" }
 reverie-memory = { version = "0.2.0", path = "../reverie-memory" }
+reverie-narf-core = { version = "0.2.0", path = "../reverie-narf-core" }
 reverie-syscalls = { version = "0.2.0", path = "../reverie-syscalls" }
 
 [dev-dependencies]
