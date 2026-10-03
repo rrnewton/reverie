@@ -3057,8 +3057,10 @@ pub struct TracedTask<L: Tool> {
     /// Whether the guest's return register held `-ERESTART_RESTARTBLOCK` in
     /// a syscall during the running held-signal callback: in the registers
     /// an injection saved, or in those a Tool's register write
-    /// (`Guest::set_regs`) replaced. A Tool's write cannot hide it from
-    /// a later injection that replaces the restart block.
+    /// (`Guest::set_regs`) replaced, which that write notes only when its
+    /// read of the outgoing registers succeeds. `report_held_signal` starts
+    /// no held-signal callback while the guest's own return register holds
+    /// that code, so it comes from a Tool's write.
     signal_callback_guest_restart_block: bool,
 
     /// Whether the running `Tool::handle_signal_event` callback reports a
@@ -6286,6 +6288,16 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// callback the trap stops the guest's own code, where `handle_sigtrap`
     /// decides it from the guest's registers.
     ///
+    /// A signal is also passed on unreported while the guest's return
+    /// register holds `-ERESTART_RESTARTBLOCK` in a syscall. Linux restarts
+    /// that syscall through the thread's restart block, which any injected
+    /// syscall that returns the same code replaces; the guest would then
+    /// get the callback's last injection result in place of the restarted
+    /// syscall's (`signal_callback_guest_ret`). Main resumes the guest with
+    /// its own block there. A failed read of the mask, the pending set or
+    /// the registers passes the signal on unreported as well, as main
+    /// resumes it, rather than failing the resume.
+    ///
     /// A returning `tail_inject` from the callback ends it and passes the
     /// signal on (`report_signal`).
     async fn report_held_signal(
@@ -6305,10 +6317,26 @@ impl<L: Tool + 'static> TracedTask<L> {
         {
             return Ok(self.pass_held_signal_unreported(signal));
         }
-        let blocked = blocked_signal_mask(task.pid())?;
+        // A procfs or register read that fails passes the signal on
+        // unreported, as main resumes every held signal, rather than failing
+        // a resume main makes.
+        let Ok(blocked) = blocked_signal_mask(task.pid()) else {
+            return Ok(self.pass_held_signal_unreported(signal));
+        };
         if blocked & signal_mask_bit(sig) != 0
             || !task.getsigmask().is_ok_and(|saved| saved == blocked)
         {
+            return Ok(self.pass_held_signal_unreported(signal));
+        }
+        // The guest's syscall is to restart through its own restart block.
+        // A callback injection can replace that block, and the guest would
+        // then restart the injection's syscall or keep its result
+        // (`signal_callback_guest_ret`), where main, which reports no held
+        // signal, restarts the guest's own.
+        if !task.getregs().is_ok_and(|regs| {
+            (regs.orig_syscall() as i64) < 0
+                || Errno::from_ret(regs.ret() as usize) != Err(Errno::ERESTART_RESTARTBLOCK)
+        }) {
             return Ok(self.pass_held_signal_unreported(signal));
         }
         if let Some(count) = self.reported_requeued_signals.get_mut(&sig) {
@@ -6323,7 +6351,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         } else {
             0
         };
-        if pending_signal_mask(task.pid())? & !stale_step_trap != 0 {
+        if pending_signal_mask(task.pid()).map_or(true, |pending| pending & !stale_step_trap != 0) {
             return Ok(self.pass_held_signal_unreported(signal));
         }
         tracing::debug!(
@@ -6402,7 +6430,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             if stop.is_some() {
                 task.setsiginfo(&taken.siginfo.0)?;
             }
-            if stop.is_none() || blocked_signal_mask(task.pid())? & signal_mask_bit(sig) != 0 {
+            // An unreadable mask is counted as blocking: main reads nothing
+            // here, so the resume must not fail on it, and a count only
+            // leaves a later held instance unreported, as main does.
+            if stop.is_none()
+                || blocked_signal_mask(task.pid())
+                    .map_or(true, |blocked| blocked & signal_mask_bit(sig) != 0)
+            {
                 *self.reported_requeued_signals.entry(sig).or_default() += 1;
             }
         }
@@ -6673,6 +6707,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         former_tid: Pid,
     ) -> Result<Wait, TraceError> {
+        // A signal callback that injected the exec never resumes, so the
+        // replacement image runs outside it, and its state, which
+        // `report_signal` would have restored, must not reach the post-exec
+        // callbacks' injections: a held callback's injections keep the
+        // guest's return register.
+        self.in_signal_callback = false;
+        self.in_held_signal_callback = false;
+        self.signal_callback_replaced_restart_block = false;
+        self.signal_callback_guest_restart_block = false;
         // PTRACE_EVENT_EXEC proves replacement succeeded. Clear before any
         // post-exec Tool callback; failed exec attempts retain launch provenance.
         let initial_command = self.command_bootstrap;
@@ -11485,8 +11528,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 Event::Exec(former_tid) => {
                     // The callback that injected the exec never resumes, so
-                    // the replacement image runs outside it.
-                    self.in_signal_callback = false;
+                    // the replacement image runs outside it
+                    // (`handle_exec_event` ends its state).
                     // This should never return.
                     let next_state = self.handle_exec_event(stopped, former_tid).await?;
                     self.execve(next_state).await

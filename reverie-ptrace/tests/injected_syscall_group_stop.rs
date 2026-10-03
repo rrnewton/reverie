@@ -93,12 +93,22 @@ const EXEC_ARGS_FD: i32 = 910;
 /// `buf` left alone, once that `i32` is nonzero; the tool sets it to 1 when
 /// it injects the `tgkill`, so a restarted marker sends no second SIGSTOP.
 const SIGSTOP_THEN_GETPID_FD: i32 = 911;
+/// For a `TimedSleepArgs` at `buf`: `setitimer(ITIMER_REAL, &buf.timer,
+/// NULL)`, then `nanosleep(&buf.sleep, NULL)`, then `getpid`, each reported;
+/// the tool returns the `nanosleep` result.
+const TIMED_SLEEP_THEN_GETPID_FD: i32 = 912;
 
 /// Guest memory for the injected `ppoll`.
 #[repr(C)]
 struct PpollArgs {
     mask: libc::sigset_t,
     timeout: libc::timespec,
+}
+/// Guest memory for `TIMED_SLEEP_THEN_GETPID_FD`.
+#[repr(C)]
+struct TimedSleepArgs {
+    timer: libc::itimerval,
+    sleep: libc::timespec,
 }
 /// Guest memory for `UNBLOCK_GETPID_THEN_TRAP_FD`.
 #[repr(C)]
@@ -298,6 +308,42 @@ where
                 .await;
             Ok(result?)
         }
+        Syscall::Write(write) if write.fd() == TIMED_SLEEP_THEN_GETPID_FD && write.len() == 0 => {
+            let base = write.buf().map_or(0, |buf| buf.as_raw());
+            let timer = Syscall::from_raw(
+                Sysno::setitimer,
+                SyscallArgs::new(
+                    libc::ITIMER_REAL as usize,
+                    base + std::mem::offset_of!(TimedSleepArgs, timer),
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+            );
+            let sleep = Syscall::from_raw(
+                Sysno::nanosleep,
+                SyscallArgs::new(
+                    base + std::mem::offset_of!(TimedSleepArgs, sleep),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+            );
+            let mut slept = Ok(0);
+            for (i, syscall) in [timer, sleep, Getpid::new().into()].into_iter().enumerate() {
+                let result = guest.inject(syscall).await;
+                guest
+                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                    .await;
+                if i == 1 {
+                    slept = result;
+                }
+            }
+            Ok(slept?)
+        }
         Syscall::Write(write) if write.fd() == GETPPID_FD && write.len() == 0 => {
             let result = guest.inject(Getppid::new()).await;
             guest
@@ -462,7 +508,8 @@ struct ExecArgs {
 
 /// Keeps the `ExecArgs` a zero-length write to `EXEC_ARGS_FD` names, and
 /// executes them from the signal hook of the next SIGUSR2. In any program,
-/// `geteuid` is replaced with `getpid`.
+/// `geteuid` is replaced with `getpid`; other markers are replaced as by
+/// `ReplaceMarker`.
 #[derive(Clone, Copy, Debug, Default)]
 struct ExecInSignalHook;
 
@@ -490,7 +537,7 @@ impl Tool for ExecInSignalHook {
                 Ok(0)
             }
             Syscall::Geteuid(_) => guest.tail_inject(Getpid::new()).await,
-            other => Ok(guest.inject(other).await?),
+            other => replace_marker(guest, other).await,
         }
     }
 
@@ -3103,6 +3150,75 @@ fn exec_from_a_signal_hook_ends_the_callback() {
     assert!(log.injected.lock().unwrap().is_empty(), "the exec succeeds");
 }
 
+/// As `exec_from_a_signal_hook_ends_the_callback`, but the hook that
+/// executes the program is a held signal's: SIGUSR2, pending and blocked,
+/// is unblocked by the guest's marker, and the marker's `getpid` holds it.
+/// A held callback's injections keep the guest's return register; the
+/// replacement program runs outside that callback, so its `geteuid`, which
+/// the tool replaces with `getpid`, gets the PID and not the `-ENOSYS` the
+/// skipped syscall left.
+#[test]
+fn exec_from_a_held_signal_hook_ends_the_callback() {
+    let (output, log) = test_fn_bounded::<ExecInSignalHook, _>(
+        || unsafe {
+            let path = c"/usr/bin/id";
+            let argv = [c"id".as_ptr(), c"-u".as_ptr(), std::ptr::null()];
+            let envp = [std::ptr::null()];
+            let args = ExecArgs {
+                path: path.as_ptr(),
+                argv: argv.as_ptr(),
+                envp: envp.as_ptr(),
+            };
+            libc::syscall(
+                libc::SYS_write,
+                EXEC_ARGS_FD,
+                &args as *const ExecArgs,
+                0usize,
+            );
+            use std::io::Write;
+            println!("{}", libc::getpid());
+            std::io::stdout().flush().unwrap();
+            let set = block(&[libc::SIGUSR2]);
+            assert_eq!(libc::kill(libc::getpid(), libc::SIGUSR2), 0);
+            libc::syscall(
+                libc::SYS_write,
+                UNBLOCK_THEN_GETPID_FD,
+                &set as *const libc::sigset_t,
+                0usize,
+            );
+            // Reached only if the hook did not execute the program.
+            libc::_exit(3);
+        },
+        "exec from a held signal hook",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE held-exec-hook guest={:?} injected={:?} signals={:?} stderr={}",
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
+        "the unblock completes; SIGUSR2 interrupts getpid before it runs, and the exec succeeds"
+    );
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 2, "the guest's PID, then id's output");
+    assert_eq!(
+        lines[1], lines[0],
+        "id's geteuid, replaced with getpid, returns the PID"
+    );
+    assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR2]);
+}
+
 /// How many callbacks `InjectInEverySignalHook` injects in, so that a guest
 /// whose signal is never delivered still ends.
 const HOOK_INJECTIONS: u64 = 100;
@@ -5206,7 +5322,7 @@ fn signal_hook_mask_call_that_sets_nothing_requeues(
 ) {
     // Main leaks the second report's injected result into the unblock's;
     // see https://github.com/rrnewton/reverie/issues/892. A fix flips this
-    // to 0.
+    // to 0 where that result is not already 0 (`INJECT_QUERY`'s is).
     let unblocked: libc::c_long = match result {
         Ok(value) => value as libc::c_long,
         Err(_) => -1,
@@ -6652,8 +6768,10 @@ enum RestartBlockEnd {
     /// The hook injects `RESTART_BLOCK_FINAL_SLEEP` after its `getpid` and
     /// suppresses SIGALRM; the guest sleeps 300 ms instead of 3 seconds.
     SuppressAfterSleep,
-    /// The hook injects `restart_syscall` in place of its 5-second sleep and
-    /// suppresses SIGALRM; the guest sleeps 600 ms instead of 3 seconds.
+    /// The hook injects `restart_syscall` in place of its 5-second sleep,
+    /// which resumes the guest's 600 ms sleep until the hook's SIGALRM
+    /// interrupts it, and suppresses SIGALRM; the guest gets the `getpid`'s
+    /// PID (https://github.com/rrnewton/reverie/issues/892).
     SuppressAfterResume,
     /// The hook writes zero to the guest's return register after its
     /// `getpid` and suppresses SIGALRM.
@@ -6795,7 +6913,7 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
             let errno = *libc::__errno_location();
             let elapsed = start.elapsed().as_millis();
             let calls = SIGALRM_HANDLER_CALLS.load(Ordering::Relaxed);
-            println!("{ret} {errno} {calls} {elapsed}");
+            println!("{ret} {errno} {calls} {elapsed} {}", libc::getpid());
             println!("{}", SIGALRM_HANDLER_CALLS.load(Ordering::Relaxed));
         },
         "restart block replaced by a hook injection",
@@ -6828,6 +6946,12 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 2, "guest output: {stdout:?}");
     let fields: Vec<&str> = lines[0].split(' ').collect();
+    assert_eq!(fields.len(), 5, "guest output: {stdout:?}");
+    assert_eq!(
+        fields[4],
+        pid.to_string(),
+        "the injected getpid's result is the guest's own PID"
+    );
     match end {
         RestartBlockEnd::Deliver => assert_eq!(
             [fields[0], fields[2]],
@@ -6956,6 +7080,89 @@ fn blocked_signal_after_a_restart_block_replacing_injection_keeps_a_final_zero()
 #[test]
 fn delivered_signal_after_a_restart_block_replacing_injection_returns_the_injection_result() {
     check_restart_block_replaced_by_a_hook_injection(RestartBlockEnd::Deliver);
+}
+
+/// The guest ignores SIGALRM, and its marker arms a 200 ms `ITIMER_REAL`
+/// timer and injects an 800 ms `nanosleep`, which the timer's SIGALRM
+/// interrupts with `-ERESTART_RESTARTBLOCK`, and then a `getpid`, which the
+/// pending SIGALRM interrupts before it runs and so holds. The tool returns
+/// the sleep's `-ERESTART_RESTARTBLOCK`, for the kernel to restart through
+/// the thread's restart block, the sleep's.
+///
+/// The held SIGALRM is passed on unreported, as on main, which reports no
+/// held signal: the hook's injected sleep would replace that restart block,
+/// and the guest would get the hook's last result in place of the restarted
+/// sleep's. The ignored SIGALRM enters no handler, so the kernel restarts
+/// the sleep to its 800 ms deadline, and the guest gets its zero, as on
+/// main and untraced Linux.
+#[test]
+fn held_signal_is_not_reported_while_the_guest_restarts_through_its_restart_block() {
+    let (output, log) = test_fn_bounded::<RestartBlockInFirstSignalHook, _>(
+        || unsafe {
+            for flag in [
+                &RESTART_BLOCK_FINAL,
+                &RESTART_BLOCK_RESUME,
+                &RESTART_BLOCK_ZERO_RAX,
+                &RESTART_BLOCK_REWRITE,
+                &RESTART_BLOCK_REWRITE_LAST,
+                &RESTART_BLOCK_EARLY_RAX,
+                &RESTART_BLOCK_CACHED,
+                &RESTART_BLOCK_VERDICT,
+                &RESTART_BLOCK_POISON,
+            ] {
+                flag.store(0, Ordering::Relaxed);
+            }
+            RESTART_BLOCK_SUPPRESS.store(1, Ordering::Relaxed);
+            assert_ne!(libc::signal(libc::SIGALRM, libc::SIG_IGN), libc::SIG_ERR);
+            let mut args: TimedSleepArgs = std::mem::zeroed();
+            args.timer.it_value.tv_usec = 200_000;
+            args.sleep.tv_nsec = 800_000_000;
+            let start = std::time::Instant::now();
+            let ret = libc::syscall(
+                libc::SYS_write,
+                TIMED_SLEEP_THEN_GETPID_FD,
+                &args as *const TimedSleepArgs,
+                0usize,
+            );
+            println!("{ret} {}", start.elapsed().as_millis());
+        },
+        "held signal while the guest restarts through its restart block",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE held-restart-block guest={:?} injected={:?} signals={:?}",
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![
+            Ok(0),
+            Err(Errno::ERESTART_RESTARTBLOCK.into_raw()),
+            Err(Errno::ERESTARTSYS.into_raw())
+        ],
+        "the timer is armed, its SIGALRM interrupts the sleep, and the pending SIGALRM interrupts getpid before it runs"
+    );
+    let fields: Vec<&str> = stdout.trim().split(' ').collect();
+    assert_eq!(fields.len(), 2, "guest output: {stdout:?}");
+    assert_eq!(fields[0], "0", "the restarted sleep's zero, as on main");
+    let elapsed: u128 = fields[1].parse().expect("elapsed milliseconds");
+    assert!(
+        elapsed >= 800,
+        "the restarted sleep ends at its own 800 ms deadline: {elapsed} ms"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        Vec::<i32>::new(),
+        "the held SIGALRM is not reported, as on main"
+    );
 }
 
 /// A Tool whose signal hook of SIGUSR1 saves the guest's registers, reports

@@ -6675,11 +6675,11 @@ async fn host_hybrid_original_injection_with_a_pending_signal_follows_ptrace() {
 ///
 /// An injection the guest cannot observe must leave the outcome of the run
 /// without it, so the reference is plain ptrace with no injection. Plain
-/// ptrace with the injection was not a reference before
-/// https://github.com/rrnewton/reverie/pull/831: its signal-stop injection
-/// did not restore `rax`, which holds the pending `-ERESTARTSYS`, so the
-/// kernel returned the injected `getpid` result from the read instead of
-/// deciding the restart.
+/// ptrace with the injection is not a reference: its injection at a
+/// signal's delivery stop does not restore `rax`, which holds the pending
+/// `-ERESTARTSYS`, so the kernel returns the injected `getpid` result from
+/// the read instead of deciding the restart
+/// (https://github.com/rrnewton/reverie/issues/892).
 #[tokio::test(flavor = "current_thread")]
 async fn host_hybrid_tool_injection_at_the_deciding_signal_keeps_the_restart() {
     for (mode, signal, result, hooks) in [
