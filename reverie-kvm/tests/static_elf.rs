@@ -14827,8 +14827,12 @@ int main(void) {
   if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
                  0, pair) != 0) return 40;
   for (int index = 0; index < 2; ++index) {
-    if ((fcntl(pair[index], F_GETFD) & FD_CLOEXEC) == 0) return 41 + index;
-    if ((fcntl(pair[index], F_GETFL) & O_NONBLOCK) == 0) return 43 + index;
+    int descriptor_flags = fcntl(pair[index], F_GETFD);
+    if (descriptor_flags < 0 || (descriptor_flags & FD_CLOEXEC) == 0)
+      return 41 + index;
+    int status_flags = fcntl(pair[index], F_GETFL);
+    if (status_flags < 0 || (status_flags & O_NONBLOCK) == 0)
+      return 43 + index;
   }
   if (expect_option(pair[0], SO_TYPE, SOCK_STREAM, 45) ||
       expect_option(pair[0], SO_DOMAIN, AF_UNIX, 46) ||
@@ -14837,8 +14841,12 @@ int main(void) {
   int plain[2];
   if (socketpair(AF_UNIX, SOCK_DGRAM, 0, plain) != 0) return 49;
   for (int index = 0; index < 2; ++index) {
-    if ((fcntl(plain[index], F_GETFD) & FD_CLOEXEC) != 0) return 50 + index;
-    if ((fcntl(plain[index], F_GETFL) & O_NONBLOCK) != 0) return 52 + index;
+    int descriptor_flags = fcntl(plain[index], F_GETFD);
+    if (descriptor_flags < 0 || (descriptor_flags & FD_CLOEXEC) != 0)
+      return 50 + index;
+    int status_flags = fcntl(plain[index], F_GETFL);
+    if (status_flags < 0 || (status_flags & O_NONBLOCK) != 0)
+      return 52 + index;
   }
   if (expect_option(plain[0], SO_TYPE, SOCK_DGRAM, 54) ||
       expect_option(plain[0], SO_DOMAIN, AF_UNIX, 55) ||
@@ -14848,9 +14856,11 @@ int main(void) {
   if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, nonblocking) != 0)
     return 70;
   for (int index = 0; index < 2; ++index) {
-    if ((fcntl(nonblocking[index], F_GETFD) & FD_CLOEXEC) != 0)
+    int descriptor_flags = fcntl(nonblocking[index], F_GETFD);
+    if (descriptor_flags < 0 || (descriptor_flags & FD_CLOEXEC) != 0)
       return 71 + index;
-    if ((fcntl(nonblocking[index], F_GETFL) & O_NONBLOCK) == 0)
+    int status_flags = fcntl(nonblocking[index], F_GETFL);
+    if (status_flags < 0 || (status_flags & O_NONBLOCK) == 0)
       return 73 + index;
   }
 
