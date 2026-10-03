@@ -279,6 +279,10 @@ pub(crate) struct Parked {
 
 type ToolFuture = Pin<Box<dyn Future<Output = Result<i64, Error>> + Send>>;
 
+/// A lifecycle hook's future, its Tool error already mapped to the fatal
+/// the hook reports.
+type LifecycleFuture = Pin<Box<dyn Future<Output = Result<(), NarfFatal>> + Send>>;
+
 /// A Tool future suspended in a non-tail inject whose syscall parked the
 /// task, kept until the kernel re-executes that syscall.
 struct Continuation {
@@ -488,7 +492,19 @@ where
     /// Fails closed if the Tool needs an event source Narf cannot deliver, or
     /// if `init_global_state` does not complete in one poll.
     pub fn new(config: Config<T>) -> Result<Self, NarfFatal> {
-        Self::build(config, false)
+        Self::build(config, None, false)
+    }
+
+    /// Like [`Self::new`], but hosts `global`, a global state the caller
+    /// created for `config`, instead of creating one with
+    /// `init_global_state`. For a global state this backend creates another
+    /// way, such as Detcore's, whose scheduler runs as a future beside the
+    /// callbacks (`GlobalState::init_for_external_scheduler` in
+    /// `detcore/src/tool_global.rs`).
+    ///
+    /// Refuses the same event sources as [`Self::new`], dropping `global`.
+    pub fn with_global_state(config: Config<T>, global: T::GlobalState) -> Result<Self, NarfFatal> {
+        Self::build(config, Some(global), false)
     }
 
     /// Like [`Self::new`], but also accepts a Tool that subscribes to RDTSC
@@ -504,10 +520,24 @@ where
     /// ending the task.
     #[cfg(target_arch = "x86_64")]
     pub fn new_delivering_rdtsc(config: Config<T>) -> Result<Self, NarfFatal> {
-        Self::build(config, true)
+        Self::build(config, None, true)
     }
 
-    fn build(config: Config<T>, delivers_rdtsc: bool) -> Result<Self, NarfFatal> {
+    /// [`Self::new_delivering_rdtsc`], hosting `global` as
+    /// [`Self::with_global_state`] does.
+    #[cfg(target_arch = "x86_64")]
+    pub fn with_global_state_delivering_rdtsc(
+        config: Config<T>,
+        global: T::GlobalState,
+    ) -> Result<Self, NarfFatal> {
+        Self::build(config, Some(global), true)
+    }
+
+    fn build(
+        config: Config<T>,
+        global: Option<T::GlobalState>,
+        delivers_rdtsc: bool,
+    ) -> Result<Self, NarfFatal> {
         let subscription = T::subscriptions(&config);
         if subscription.has_cpuid() || (subscription.has_rdtsc() && !delivers_rdtsc) {
             return Err(NarfFatal::UnsupportedSubscription);
@@ -525,11 +555,14 @@ where
                 *word |= 1 << (id % 64);
             }
         }
-        let global = {
-            let mut init = T::GlobalState::init_global_state(&config);
-            match poll_once(init.as_mut()) {
-                Poll::Ready(global) => global,
-                Poll::Pending => return Err(NarfFatal::ToolSuspended),
+        let global = match global {
+            Some(global) => global,
+            None => {
+                let mut init = T::GlobalState::init_global_state(&config);
+                match poll_once(init.as_mut()) {
+                    Poll::Ready(global) => global,
+                    Poll::Pending => return Err(NarfFatal::ToolSuspended),
+                }
             }
         };
         Ok(Self {
@@ -885,35 +918,50 @@ where
 
     /// Runs the Tool's `handle_thread_start` for the current task, which the
     /// kernel calls before the task first enters user mode.
+    ///
+    /// The Tool may wait there for another task, as Detcore's thread start
+    /// waits for its scheduler to admit the thread: while the Tool's future
+    /// is pending, the host waits and polls it again as
+    /// [`Self::handle_syscall`] does ([`KernelServices::wait_for_repoll`]).
+    /// A task killed during a wait ends the callback with
+    /// [`LifecycleOutcome::ContextManaged`], and a wait the kernel cannot
+    /// perform fails it with [`NarfFatal::ToolSuspended`].
     pub fn handle_thread_start<K>(&self, kernel: &mut K) -> Result<LifecycleOutcome, NarfFatal>
     where
         K: KernelServices,
         K::Memory: 'static,
     {
-        self.lifecycle(kernel, |tool, guest| {
-            let mut future = tool.handle_thread_start(guest);
-            poll_once(future.as_mut()).map(|result| result.map_err(NarfFatal::Tool))
+        self.lifecycle(kernel, |tool, mut guest| {
+            Box::pin(async move {
+                tool.handle_thread_start(&mut guest)
+                    .await
+                    .map_err(NarfFatal::Tool)
+            })
         })
     }
 
     /// Runs the Tool's `handle_post_exec` for the current task, which the
     /// kernel calls after a successful exec and before the new image runs.
+    /// The Tool may wait there as in [`Self::handle_thread_start`].
     pub fn handle_post_exec<K>(&self, kernel: &mut K) -> Result<LifecycleOutcome, NarfFatal>
     where
         K: KernelServices,
         K::Memory: 'static,
     {
-        self.lifecycle(kernel, |tool, guest| {
-            let mut future = tool.handle_post_exec(guest);
-            poll_once(future.as_mut()).map(|result| result.map_err(NarfFatal::PostExec))
+        self.lifecycle(kernel, |tool, mut guest| {
+            Box::pin(async move {
+                tool.handle_post_exec(&mut guest)
+                    .await
+                    .map_err(NarfFatal::PostExec)
+            })
         })
     }
 
-    fn lifecycle<K, F>(&self, kernel: &mut K, run: F) -> Result<LifecycleOutcome, NarfFatal>
+    fn lifecycle<K, F>(&self, kernel: &mut K, start: F) -> Result<LifecycleOutcome, NarfFatal>
     where
         K: KernelServices,
         K::Memory: 'static,
-        F: FnOnce(&T, &mut NarfGuest<T, L, K::Memory>) -> Poll<Result<(), NarfFatal>>,
+        F: FnOnce(Arc<T>, NarfGuest<T, L, K::Memory>) -> LifecycleFuture,
     {
         let tid = kernel.tid();
         let Checkout {
@@ -921,7 +969,7 @@ where
         } = self.tasks.with(|table| table.checkout(tid))?;
         let result = {
             let slot = Arc::new(FrameSlot::default());
-            let mut guest = NarfGuest::new(slot.clone());
+            let mut future = start(tool.clone(), NarfGuest::new(slot.clone()));
             let mut frame = Frame {
                 host: self,
                 kernel: kernel as &mut dyn KernelServices<Memory = K::Memory>,
@@ -929,8 +977,19 @@ where
                 thread_state: &mut state,
                 call: CallState::new(None),
             };
-            // The future borrows `guest` and is dropped inside the poll.
-            let poll = slot.enter(&mut frame, || run(&tool, &mut guest));
+            let poll = match poll_repolling(&mut frame, &slot, &mut future) {
+                Some(poll) => poll,
+                None => {
+                    // Recorded before the drop, as `killed` records it.
+                    frame.call.terminal = Some(Terminal {
+                        outcome: NarfSyscallOutcome::ContextManaged,
+                        parked: None,
+                    });
+                    Poll::Pending
+                }
+            };
+            // Drop glue may still reach the guest, so the frame stays published.
+            slot.enter(&mut frame, move || drop(future));
             let call = &mut frame.call;
             match (call.fatal.take(), poll, call.terminal.take()) {
                 (Some(fatal), _, _) => Err(fatal),

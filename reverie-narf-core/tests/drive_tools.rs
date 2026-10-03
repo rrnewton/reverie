@@ -1461,6 +1461,212 @@ fn unsubscribed_syscalls_run_natively_and_still_register_children() {
 }
 
 // ----------------------------------------------------------------------------
+// Lifecycle callbacks that wait
+
+/// Thread start waits, through the global state, until another task's
+/// `gettid` callback has run, as Detcore's thread start waits for its
+/// scheduler to admit the thread. Every syscall is forwarded.
+#[derive(Default)]
+struct StartRendezvous;
+
+#[async_trait]
+impl Tool for StartRendezvous {
+    type GlobalState = Meeting;
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        if let Syscall::Gettid(_) = syscall {
+            guest.send_rpc(ARRIVE).await;
+        }
+        guest.tail_inject(syscall).await
+    }
+
+    async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+        while !guest.send_rpc(ASK).await {
+            YieldOnce(false).await;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn waiting_thread_start_finishes_once_another_tasks_callback_runs() {
+    let host = host::<StartRendezvous>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    let child = complete(kernel.syscall(&host, root, request(Sysno::fork, NONE)));
+    let child = pid(child as i32);
+    kernel.script_repoll(&[RepollWait::Yielded]);
+
+    // The child's start waits; while it is switched out, the root's
+    // callback runs to completion on the same host.
+    let mut arrived = None;
+    let mut others = || {
+        if arrived.is_none() {
+            arrived = Some(kernel.syscall(&host, root, request(Sysno::gettid, NONE)));
+        }
+    };
+    let started = kernel.thread_start_with_others(&host, child, &mut others);
+    assert_eq!(started.ok(), Some(LifecycleOutcome::Continue));
+    let arrived = arrived.expect("the root's callback ran during the wait");
+    assert_eq!(complete(arrived), 1000);
+    assert_eq!(
+        kernel.repoll_waits(),
+        [1001],
+        "only the child's start waited"
+    );
+    assert_eq!(kernel.violations(), []);
+    // The child's state was checked back in.
+    assert_eq!(host.with_thread_state(child, |_| ()), Some(()));
+}
+
+#[test]
+fn waiting_thread_start_fails_closed_where_the_kernel_cannot_wait() {
+    let host = host::<StartRendezvous>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+
+    let result = kernel.thread_start(&host, root);
+    assert!(
+        matches!(result, Err(NarfFatal::ToolSuspended)),
+        "{result:?}"
+    );
+    assert_eq!(
+        kernel.repoll_waits(),
+        [1000],
+        "the kernel was asked to wait and could not"
+    );
+    // The thread's state was checked back in; the task is not wedged.
+    assert_eq!(host.with_thread_state(root, |_| ()), Some(()));
+}
+
+/// Thread start waits for something that never happens.
+#[derive(Default)]
+struct StartNeverReady;
+
+#[async_trait]
+impl Tool for StartNeverReady {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_thread_start<G: Guest<Self>>(&self, _guest: &mut G) -> Result<(), Error> {
+        Forever.await.map(|_| ())
+    }
+}
+
+#[test]
+fn thread_start_killed_while_waiting_ends_the_callback() {
+    let host = host::<StartNeverReady>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    kernel.script_repoll(&[RepollWait::Yielded, RepollWait::Killed]);
+
+    // SIGKILL arrives during the second wait: the kernel owns the task, so
+    // the future is dropped without another poll.
+    assert_eq!(
+        kernel.thread_start(&host, root).ok(),
+        Some(LifecycleOutcome::ContextManaged)
+    );
+    assert_eq!(
+        FOREVER.get(),
+        (2, 1),
+        "polled before each wait, dropped once"
+    );
+    assert_eq!(kernel.repoll_waits(), [1000, 1000]);
+    assert_eq!(kernel.violations(), []);
+    // The callback checked the task back in, so the kill tears it down.
+    assert_teardowns(&kernel, &[(1000, exited(true))]);
+    assert_eq!((host.live_threads(), host.live_processes()), (0, 0));
+}
+
+/// Post-exec waits once between two steps, as `Suspender`'s syscall
+/// callback does.
+#[derive(Default)]
+struct PostExecSuspender;
+
+#[async_trait]
+impl Tool for PostExecSuspender {
+    type GlobalState = Steps;
+    type ThreadState = ();
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        guest.send_rpc(1).await;
+        YieldOnce(false).await;
+        guest.send_rpc(100).await;
+        Ok(())
+    }
+}
+
+#[test]
+fn post_exec_is_polled_again_after_the_kernel_yields() {
+    let host = host::<PostExecSuspender>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    kernel.script_repoll(&[RepollWait::Yielded]);
+
+    assert_eq!(
+        kernel.post_exec(&host, root).ok(),
+        Some(LifecycleOutcome::Continue)
+    );
+    assert_eq!(host.global().0.load(Ordering::SeqCst), 101);
+    assert_eq!(kernel.repoll_waits(), [1000], "one wait, between the polls");
+    assert_eq!(kernel.violations(), []);
+}
+
+// ----------------------------------------------------------------------------
+// A global state the caller creates
+
+/// A global state that `init_global_state` never finishes creating.
+#[derive(Default)]
+struct Unready(u64);
+
+#[async_trait]
+impl GlobalTool for Unready {
+    type Request = ();
+    type Response = u64;
+    type Config = ();
+
+    async fn init_global_state(_cfg: &()) -> Self {
+        core::future::pending().await
+    }
+
+    async fn receive_rpc(&self, _from: Pid, _request: ()) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Default)]
+struct UnreadyTool;
+
+#[async_trait]
+impl Tool for UnreadyTool {
+    type GlobalState = Unready;
+    type ThreadState = ();
+}
+
+#[test]
+fn global_state_the_caller_created_is_hosted_as_is() {
+    assert!(matches!(
+        FakeHost::<UnreadyTool>::new(()),
+        Err(NarfFatal::ToolSuspended)
+    ));
+    let host = match FakeHost::<UnreadyTool>::with_global_state((), Unready(7)) {
+        Ok(host) => host,
+        Err(fatal) => panic!("host: {fatal:?}"),
+    };
+    assert_eq!(host.global().0, 7);
+    // The event-source checks still apply.
+    assert!(matches!(
+        FakeHost::<WantsCpuid>::with_global_state((), ()),
+        Err(NarfFatal::UnsupportedSubscription)
+    ));
+}
+
+// ----------------------------------------------------------------------------
 // Refused configurations
 
 #[derive(Default)]
