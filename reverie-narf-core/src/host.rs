@@ -847,8 +847,18 @@ where
 {
     /// Tears down thread `tid` after the kernel has finished it.
     ///
-    /// Runs `on_exit_thread` with the thread's state, and `on_exit_process`
-    /// when it was its process's last thread. Each runs at most once: the
+    /// Runs `on_exit_thread` with the thread's state and `status`, and
+    /// `on_exit_process` with `process_status` when it was its process's last
+    /// thread. `status` is the thread's own exit status (its `exit` or
+    /// `exit_group` code, or its group's status when the group's exit or a
+    /// signal ended it); `process_status` is the status `wait4` reports for
+    /// the process (the first group exit's status, else the last thread's
+    /// own), as reverie-ptrace passes the thread-group leader's wait status
+    /// to `on_exit_process`. The two differ when, for example, a thread
+    /// calls `exit(5)` and the leader later calls `exit_group(7)`: the thread
+    /// gets 5, the leader and the process 7. `process_status` is ignored for
+    /// a thread that is not the last. Each
+    /// runs at most once: the
     /// thread leaves the table before either hook runs, so a repeated exit
     /// reports [`NarfFatal::UnknownTask`] and runs nothing. The teardown
     /// completes even if a hook fails; the first failure is returned.
@@ -858,7 +868,12 @@ where
     /// process's Tool is released before `on_exit_process`. It is dropped
     /// outside any poll, so a Tool whose drop glue calls a Guest method
     /// panics.
-    pub fn task_exited(&self, tid: Pid, status: ExitStatus) -> Result<TaskExit, NarfFatal> {
+    pub fn task_exited(
+        &self,
+        tid: Pid,
+        status: ExitStatus,
+        process_status: ExitStatus,
+    ) -> Result<TaskExit, NarfFatal> {
         let (removal, state, suspended) = self.tasks.with(|table| table.remove_thread(tid))?;
         drop(suspended);
         let Removal { tool, pid, last } = removal;
@@ -877,7 +892,7 @@ where
         }
         let process_result = match Arc::try_unwrap(tool) {
             Ok(tool) => {
-                let mut future = tool.on_exit_process(pid, &rpc, status);
+                let mut future = tool.on_exit_process(pid, &rpc, process_status);
                 exit_result(poll_once(future.as_mut()))
             }
             Err(_) => Err(NarfFatal::ProcessToolShared(pid)),
