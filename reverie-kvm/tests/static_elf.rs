@@ -812,6 +812,9 @@ mod pselect_zero;
 #[path = "support/epoll_pwait2.rs"]
 mod epoll_pwait2;
 
+#[path = "support/syncfs.rs"]
+mod syncfs;
+
 #[test]
 fn file_script_exec_plain() {
     file_script_exec_control("file_script_exec_plain", "plain");
@@ -11202,6 +11205,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "epoll_pwait2::inaccessible_output_depends_on_readiness",
         "epoll_pwait2::scalar_faults_preserve_bytes_and_oneshot_events",
         "epoll_pwait2::captured_output_and_dup_registrations_are_refused",
+        "syncfs::unchanged_six_check_durability_contract_matches_native",
         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
         "fchdir_consumes_low_descriptor_words_on_kvm",
         "getdents64_consumes_low_descriptor_words_on_kvm",
