@@ -3921,8 +3921,12 @@ fn always_injecting_hook_saves_the_mask_in_effect_in_every_frame_field() {
 /// the hook's `getpid` resumes SIGUSR1's delivery stop without a signal, so
 /// the kernel takes SIGUSR2 before the `syscall` runs and the injection
 /// reports ERESTARTSYS. SIGUSR2 is held by the callback's own injection and
-/// stays in the tracer's single hold slot, so `ppoll` restarts without it
-/// and times out. The guest's next intercepted syscall, the first line's
+/// stays in the tracer's single hold slot. `ppoll` does not restart: it
+/// returns `SYS_getpid` at once, the number the interrupted injection left
+/// in the guest's return register. Main leaks it there
+/// (<https://github.com/rrnewton/reverie/issues/892>); a fix flips that pin
+/// to `ppoll` restarting and timing out with 0. The guest's next
+/// intercepted syscall, the first line's
 /// `write`, resumes its syscall stop with SIGUSR2, where Linux queues it
 /// with a siginfo of its own (`SI_KERNEL`, no sender, no value). The
 /// restored saved mask blocks it, so the handler runs, and the hook reports
@@ -3974,10 +3978,13 @@ fn signal_held_by_a_hook_injection_at_a_delivery_stop_misses_the_syscall() {
     );
     let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
     let pid: i64 = pid.parse().expect("guest pid");
+    // Main leaks the interrupted getpid's number into ppoll's result; see
+    // https://github.com/rrnewton/reverie/issues/892. A fix flips this pin
+    // to format!("0\n0 0 0 {} 0 0 1 1 1", libc::SI_KERNEL).
     assert_eq!(
         fields,
-        format!("0\n0 0 0 {} 0 0 1 1 1", libc::SI_KERNEL),
-        "SIGUSR1 was discarded; ppoll times out, and SIGUSR2 runs once unblocked, with a kernel siginfo"
+        format!("0\n{} 0 0 {} 0 0 1 1 1", libc::SYS_getpid, libc::SI_KERNEL),
+        "SIGUSR1 was discarded; ppoll returns the leaked getpid number (known leak), and SIGUSR2 runs once unblocked, with a kernel siginfo"
     );
     assert_eq!(
         *log.injected.lock().unwrap(),
