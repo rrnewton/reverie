@@ -2588,7 +2588,7 @@ fn io_errno(error: std::io::Error) -> Errno {
 }
 
 fn process_start_time(tid: Pid) -> std::io::Result<u64> {
-    let stat = fs::read_to_string(format!("/proc/{tid}/stat"))?;
+    let stat = crate::launch_window::read_to_string(format!("/proc/{tid}/stat"))?;
     let fields = stat
         .rsplit_once(") ")
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed stat"))?
@@ -2617,7 +2617,7 @@ fn status_pid(status: &str, name: &str) -> std::io::Result<Pid> {
 
 fn tracee_snapshot(tid: Pid) -> std::io::Result<TraceeSnapshot> {
     let start_time = process_start_time(tid)?;
-    let status = fs::read_to_string(format!("/proc/{tid}/status"))?;
+    let status = crate::launch_window::read_to_string(format!("/proc/{tid}/status"))?;
     let snapshot = TraceeSnapshot {
         tgid: status_pid(&status, "Tgid:")?,
         ppid: status_pid(&status, "PPid:")?,
@@ -2657,6 +2657,7 @@ fn skippable_tracee_open_error(tid: Pid, error: Errno) -> bool {
 }
 
 static PROC_CHILDREN_SUPPORTED: LazyLock<bool> = LazyLock::new(|| {
+    let _open = crate::launch_window::TransientOpen::begin();
     fs::read_dir("/proc/self/task")
         .ok()
         .into_iter()
@@ -2666,6 +2667,7 @@ static PROC_CHILDREN_SUPPORTED: LazyLock<bool> = LazyLock::new(|| {
 });
 
 fn task_tids(root: Pid) -> std::io::Result<Vec<Pid>> {
+    let _open = crate::launch_window::TransientOpen::begin();
     let process_path = format!("/proc/{root}");
     let tasks = match fs::read_dir(format!("{process_path}/task")) {
         Ok(tasks) => tasks,
@@ -2691,6 +2693,8 @@ fn task_tids(root: Pid) -> std::io::Result<Vec<Pid>> {
 }
 
 fn direct_children(pid: Pid) -> std::io::Result<Vec<Pid>> {
+    // Held across the task directory and each `children` read below.
+    let _open = crate::launch_window::TransientOpen::begin();
     let process_path = format!("/proc/{pid}");
     let task_dir = match fs::read_dir(format!("{process_path}/task")) {
         Ok(task_dir) => task_dir,
@@ -5023,6 +5027,9 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
         command.seccomp(seccomp_filter(&traced_events, trap_only_patching));
 
+        // Command::spawn holds the launch lock from the child's first pipe
+        // until clone returns, and not while it waits for the child to start
+        // (`launch_window`).
         let mut child = command.spawn().context("Failed to spawn tracee")?;
         let guest_pid = child.id();
         if let Some(runtime) = self.liteinst_runtime.as_ref() {
@@ -5253,6 +5260,102 @@ fn exit_forked_guest(code: i32) -> ! {
     unsafe { libc::_exit(code) }
 }
 
+/// A descriptor of the parent that a `spawn_fn_with_config` guest keeps: its
+/// number and the file it named when the launch's guard ended.
+#[derive(Clone, Copy)]
+struct KeptDescriptor {
+    fd: i32,
+    dev: libc::dev_t,
+    ino: libc::ino_t,
+}
+
+/// The first descriptor `init_tracee` leaves open in a guest.
+const FIRST_UNCLOSED_DESCRIPTOR: i32 = 256;
+
+/// The calling process's open descriptors numbered 256 or above, sorted.
+fn descriptors_from_256() -> std::io::Result<Vec<KeptDescriptor>> {
+    let mut fds: Vec<i32> = fs::read_dir("/proc/self/fd")?
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+        .filter(|fd| *fd >= FIRST_UNCLOSED_DESCRIPTOR)
+        .collect();
+    fds.sort_unstable();
+    // Taken after the directory is closed, so its own descriptor drops out.
+    Ok(fds
+        .into_iter()
+        .filter_map(|fd| {
+            let stat = file_identity(fd)?;
+            Some(KeptDescriptor {
+                fd,
+                dev: stat.st_dev,
+                ino: stat.st_ino,
+            })
+        })
+        .collect())
+}
+
+/// `fd`'s `fstat`, or `None` if it is not open. Async-signal-safe.
+fn file_identity(fd: i32) -> Option<libc::stat> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `fstat` only writes the buffer, which is large enough.
+    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } == 0 {
+        // SAFETY: a successful `fstat` filled it.
+        Some(unsafe { stat.assume_init() })
+    } else {
+        None
+    }
+}
+
+/// Closes descriptors `first` to `last`, inclusive. Async-signal-safe.
+fn close_descriptor_range(first: i32, last: u32) {
+    let first = first as u32;
+    if first > last {
+        return;
+    }
+    // SAFETY: closes descriptors only.
+    if unsafe { libc::syscall(libc::SYS_close_range, first, last, 0) } == 0 {
+        return;
+    }
+    // Kernels before 5.9 have no `close_range`. A descriptor cannot be
+    // numbered at or above the larger NOFILE limit, capped here because
+    // the loop makes one `close` per number.
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `getrlimit` only writes `limit`.
+    let end = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0 {
+        limit.rlim_cur.max(limit.rlim_max).min(1 << 20) as u32
+    } else {
+        1 << 20
+    };
+    for fd in first..=last.min(end.saturating_sub(1)) {
+        // SAFETY: closes a descriptor only; a closed number gives EBADF.
+        unsafe { libc::close(fd as i32) };
+    }
+}
+
+/// Runs in a `spawn_fn_with_config` guest before its function: closes every
+/// descriptor numbered 256 or above other than `kept` (sorted by number),
+/// and any of `kept` that no longer names the file it named when the
+/// launch's guard ended. Such a descriptor was opened, by another thread of
+/// the parent, between that guard's end and the `fork`. Allocation-free and
+/// async-signal-safe.
+fn close_descriptors_opened_during_launch(kept: &[KeptDescriptor]) {
+    let mut next = FIRST_UNCLOSED_DESCRIPTOR;
+    for descriptor in kept {
+        close_descriptor_range(next, descriptor.fd as u32 - 1);
+        match file_identity(descriptor.fd) {
+            Some(stat) if stat.st_dev == descriptor.dev && stat.st_ino == descriptor.ino => {}
+            // SAFETY: closes a descriptor only.
+            _ => unsafe {
+                libc::close(descriptor.fd);
+            },
+        }
+        next = descriptor.fd + 1;
+    }
+    close_descriptor_range(next, u32::MAX);
+}
+
 /// Spawn a function with instrumentation rather than a subprocess indicated with
 /// a Command. This still creates a fresh child process and runs it under ptrace.
 /// However, the child process is a fork of the current process, and is used to
@@ -5267,6 +5370,10 @@ fn exit_forked_guest(code: i32) -> ! {
 /// child or inherited from the parent do not run. In particular, a coverage
 /// build's profile write-out (an `atexit` hook) is skipped, so code executed
 /// only inside the guest function is not counted in coverage reports.
+///
+/// The child keeps descriptors 0 to 2 and those numbered 256 or above that
+/// were open in the parent when the launch began, plus the output pipes
+/// when `capture_output` is false; it closes every other descriptor.
 pub async fn spawn_fn_with_config<L, F>(
     fun: F,
     config: <L::GlobalState as GlobalTool>::Config,
@@ -5286,8 +5393,30 @@ where
     // This path never runs trap-only LiteInst (`liteinst_trap_only: None`).
     let seccomp_filter = seccomp_filter(&events, false);
 
+    // While the descriptors are taken, no transient open of another thread
+    // may be in flight: its descriptor would take a pipe's number, or one
+    // the guest keeps. The guard ends before `fork`, which runs the
+    // process's `pthread_atfork` handlers (`launch_window`), so the child
+    // closes any descriptor numbered 256 or above opened since; `init_tracee`
+    // closes 3 to 255.
+    let launch = crate::launch_window::Launch::begin();
+    let mut kept = descriptors_from_256()?;
     let (read1, write1) = unistd::pipe().map_err(from_nix_error)?;
     let (read2, write2) = unistd::pipe().map_err(from_nix_error)?;
+    if !capture_output {
+        for fd in [write1.as_raw_fd(), write2.as_raw_fd()] {
+            if fd >= FIRST_UNCLOSED_DESCRIPTOR {
+                let stat = file_identity(fd).expect("a new pipe is open");
+                kept.push(KeptDescriptor {
+                    fd,
+                    dev: stat.st_dev,
+                    ino: stat.st_ino,
+                });
+            }
+        }
+        kept.sort_unstable_by_key(|descriptor| descriptor.fd);
+    }
+    drop(launch);
 
     // Disable io redirection just before forking. We want the child process to
     // be able to call `println!()` and have that output go to stdout.
@@ -5307,6 +5436,7 @@ where
                 write1.close()?;
                 write2.close()?;
             }
+            close_descriptors_opened_during_launch(&kept);
 
             init_tracee(events.has_rdtsc()).expect("init_tracee failed");
 
