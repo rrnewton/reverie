@@ -6414,7 +6414,8 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// the signal's own. Resumed with another signal than the one it stopped
     /// with, a signal-delivery stop delivers a siginfo that Linux makes up
     /// (`SI_USER`, the tracer's PID, no value), so the signal's own is
-    /// written back first.
+    /// written back first. When that write fails, the signal is still
+    /// delivered, with the made-up siginfo, as main delivers it.
     ///
     /// The kernel puts the signal back in its queue instead of delivering it
     /// when the guest's mask blocks it by now (`ptrace_signal`). From a stop
@@ -6435,8 +6436,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         if let (Some(sig), Some(taken), Some(stop)) = (signal, reported, self.latest_injection_stop)
             && sig == taken.signal
         {
-            if stop.is_some() {
-                task.setsiginfo(&taken.siginfo.0)?;
+            // Main writes no siginfo here, so a failed write must not fail
+            // the resume. A task that is gone fails the resume instead.
+            if stop.is_some()
+                && let Err(err) = task.setsiginfo(&taken.siginfo.0)
+            {
+                tracing::debug!("could not restore the siginfo of {sig:?}: {err}");
             }
             // An unreadable mask is counted as blocking: main reads nothing
             // here, so the resume must not fail on it, and a count only
@@ -6459,8 +6464,8 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// end it: the syscall callback whose scope cancels a tail injection
     /// has already returned. A `tail_inject` from a post-exec callback
     /// (`Tool::handle_post_exec`) after the callback executed a program ends
-    /// it as well, and the replacement image resumes with no signal. For a signal at its own delivery stop the
-    /// callback is still awaited directly
+    /// it as well, and the replacement image resumes with no signal. For a
+    /// signal at its own delivery stop the callback is still awaited directly
     /// (<https://github.com/rrnewton/reverie/issues/862>).
     async fn report_signal(
         &mut self,
@@ -6484,9 +6489,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             .await;
             let execed = self.signal_callback_execed;
             self.signal_callback_execed = outer_execed || execed;
-            // The program that held the signal is gone when the callback
-            // executed another: main delivered the signal to the guest, whose
-            // handler made the exec, and resumes the replacement image with
+            // A callback that executed a program cannot ask for the signal:
+            // a successful exec does not return from `Guest::inject`, and an
+            // ordinary signal callback's exec resumes the replacement with
+            // no signal. A held report matches, even when a post-exec
+            // `tail_inject` cancels it. On main the guest's handler took the
+            // signal when it made the exec, and the replacement resumed with
             // none.
             result.unwrap_or(Ok((!execed).then_some(sig)))
         } else {

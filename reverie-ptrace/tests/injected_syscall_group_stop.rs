@@ -3238,10 +3238,13 @@ fn exec_from_a_held_signal_hook_ends_the_callback() {
 
 /// As `exec_from_a_held_signal_hook_ends_the_callback`, but the replacement
 /// program's post-exec callback ends with `tail_inject(getpid)`, which ends
-/// the held signal's callback that made the exec. The held SIGUSR2 belonged
-/// to the replaced program: without a callback, its handler would have made
-/// the exec, so the replacement, whose SIGUSR2 is no longer caught, resumes
-/// with no signal instead of dying of it.
+/// the held signal's callback that made the exec. A successful exec does not
+/// return to the callback, so it cannot ask for the held SIGUSR2: as after an
+/// ordinary signal callback's exec, the replacement, whose SIGUSR2 is no
+/// longer caught, resumes with no signal instead of dying of it. Main has no
+/// held callback, so this guest dies of SIGUSR2 there; the input it guards
+/// is a guest whose own handler executes the program, which main resumes
+/// with no signal.
 #[test]
 fn held_signal_is_not_delivered_after_its_hook_executes_a_program() {
     let (output, log) = test_fn_bounded::<ExecInSignalHook, _>(
@@ -4688,6 +4691,171 @@ fn signal_keeps_its_siginfo_after_a_signal_hook_injection() {
         *log.injected.lock().unwrap(),
         vec![Ok(pid)],
         "the hook's getpid runs"
+    );
+    assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR1]);
+}
+
+/// Runs `f` as a guest on a new thread, whose tracer threads cannot write a
+/// siginfo: `PTRACE_SETSIGINFO` fails with EACCES (a seccomp filter on the
+/// thread, which the threads it creates inherit), and every other syscall
+/// is allowed.
+#[cfg(target_arch = "x86_64")]
+fn test_fn_without_setsiginfo<F: FnOnce() + Send + 'static>(
+    f: F,
+) -> (reverie::process::Output, Log) {
+    std::thread::spawn(move || {
+        let statement = |code: u32, k: u32, jt: u8, jf: u8| libc::sock_filter {
+            code: code as u16,
+            jt,
+            jf,
+            k,
+        };
+        let filter = [
+            // seccomp_data.nr is at offset 0, and the low half of args[0] at 16.
+            statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0, 0, 0),
+            statement(
+                libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+                libc::SYS_ptrace as u32,
+                0,
+                3,
+            ),
+            statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 16, 0, 0),
+            statement(
+                libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+                libc::PTRACE_SETSIGINFO,
+                0,
+                1,
+            ),
+            statement(
+                libc::BPF_RET | libc::BPF_K,
+                libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
+                0,
+                0,
+            ),
+            statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW, 0, 0),
+        ];
+        let program = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_ptr() as *mut libc::sock_filter,
+        };
+        // SAFETY: both calls restrict only this thread and the threads it
+        // creates, which end with the test.
+        unsafe {
+            assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+            assert_eq!(
+                libc::prctl(
+                    libc::PR_SET_SECCOMP,
+                    libc::SECCOMP_MODE_FILTER,
+                    &program as *const libc::sock_fprog
+                ),
+                0
+            );
+        }
+        test_fn::<InjectInFirstSignalHook, _>(f).expect("run guest without PTRACE_SETSIGINFO")
+    })
+    .join()
+    .expect("tracer thread")
+}
+
+/// Checks the guest's `print_recorded` line when the queued siginfo could
+/// not be written back: `ret`, `errno` and the handler running once, with
+/// the siginfo Linux makes up (`SI_USER`, another sender than the guest, no
+/// value), the signal blocked again and not pending, and no second run.
+/// Returns the guest's PID.
+#[cfg(target_arch = "x86_64")]
+fn check_recorded_made_up(
+    output: &reverie::process::Output,
+    probe: &str,
+    log: &Log,
+    ret_errno: &str,
+) -> i64 {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE {probe} guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fields: Vec<&str> = stdout.trim().split(' ').collect();
+    assert_eq!(fields.len(), 10, "one print_recorded line");
+    let pid: i64 = fields[9].parse().expect("guest pid");
+    assert_eq!(
+        fields[..4].join(" "),
+        format!("{ret_errno} 1 {}", libc::SI_USER),
+        "one handler run, with Linux's made-up code"
+    );
+    assert_ne!(fields[4], pid.to_string(), "the sender is not the guest");
+    assert_eq!(
+        fields[5..9].join(" "),
+        "0 1 0 1",
+        "no value; blocked again and not pending; no second run"
+    );
+    pid
+}
+
+/// `signal_keeps_its_siginfo_after_a_signal_hook_injection` with a tracer
+/// that cannot write the siginfo back. Main writes none, so the signal is
+/// still delivered, once, with the siginfo Linux makes up, and the guest
+/// exits 0.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn signal_is_delivered_when_its_siginfo_cannot_be_written_back() {
+    let (output, log) = test_fn_without_setsiginfo(|| unsafe {
+        install_recorder(libc::SIGUSR1);
+        block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        // Main leaks the hook's getpid into the unblock's result; see
+        // https://github.com/rrnewton/reverie/issues/892. A fix flips this to 0.
+        unblock_returning(libc::SIGUSR1, libc::getpid() as libc::c_long);
+        block(&[libc::SIGUSR1]);
+        print_recorded(0, 0, libc::SIGUSR1);
+    });
+    let pid = check_recorded_made_up(&output, "ordinary-no-setsiginfo", &log, "0 0");
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(pid)],
+        "the hook's getpid runs"
+    );
+    assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR1]);
+}
+
+/// `held_signal_keeps_its_siginfo_after_a_signal_hook_injection` with a
+/// tracer that cannot write the siginfo back: the held signal is still
+/// delivered, once, with the siginfo Linux makes up.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn held_signal_is_delivered_when_its_siginfo_cannot_be_written_back() {
+    let (output, log) = test_fn_without_setsiginfo(|| unsafe {
+        install_recorder(libc::SIGUSR1);
+        let set = block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let ret = libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_THEN_GETPID_FD,
+            &set as *const libc::sigset_t,
+            0usize,
+        );
+        let errno = *libc::__errno_location();
+        // Blocked again for `print_recorded`'s check.
+        block(&[libc::SIGUSR1]);
+        print_recorded(ret, errno, libc::SIGUSR1);
+    });
+    let pid = check_recorded_made_up(
+        &output,
+        "held-no-setsiginfo",
+        &log,
+        &format!("-1 {}", libc::EINTR),
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw()), Ok(pid)],
+        "the unblock completes, SIGUSR1 interrupts getpid before it runs, and the hook's getpid runs"
     );
     assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR1]);
 }
