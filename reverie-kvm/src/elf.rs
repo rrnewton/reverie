@@ -49,6 +49,9 @@ use crate::memory::RegionKind;
 use crate::signal::ProcessSignalState;
 use crate::signal::SharedThreadSignalState;
 
+#[path = "parent_death.rs"]
+pub(crate) mod parent_death;
+
 const PAGE_SIZE: u64 = 4096;
 pub(crate) const TASK_COMM_LEN: usize = 16;
 pub(crate) const STACK_LIMIT: u64 = 8 * 1024 * 1024;
@@ -251,6 +254,8 @@ pub(crate) struct TaskLifecycleState {
     pub pgid: i32,
     pub robust_list_head: u64,
     pub dumpable: bool,
+    pub real_parent: Option<reverie::SignalTaskIdentity>,
+    pub parent_death_signal: i32,
 }
 
 #[derive(Debug, Default)]
@@ -262,6 +267,7 @@ pub(crate) struct TaskLifecycleTable {
         std::sync::Weak<std::sync::Mutex<crate::signal::ThreadSignalState>>,
     >,
     process_exits: std::collections::BTreeMap<(i32, u64), ProcessExitState>,
+    pub(crate) parent_death: parent_death::ParentDeathState,
 }
 
 #[derive(Debug, Default)]
@@ -301,6 +307,8 @@ impl TaskLifecycleTable {
                 pgid,
                 robust_list_head: 0,
                 dumpable,
+                real_parent: None,
+                parent_death_signal: 0,
             },
         );
         // A reused numeric TID never inherits the old task's signal endpoint.
@@ -1250,6 +1258,10 @@ impl LoadedStaticElf {
             process_signals
                 .signalfd_carriers
                 .retain(|fd, _| files.contains_key(fd));
+            lifecycle.reset_parent_death_after_exec(
+                previous.tid,
+                previous.capability_bounding & !previous.capability_permitted != 0,
+            );
             lifecycle.reset_after_exec_with_signals(
                 previous.tid,
                 previous.pid,

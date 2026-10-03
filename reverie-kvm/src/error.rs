@@ -13,6 +13,16 @@ use thiserror::Error;
 /// Errors produced by the KVM backend prototype.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// A parent-thread-death operation cannot be represented or published.
+    /// This is terminal backend capability/failure, never a guest errno.
+    #[error("KVM parent-thread-death {operation} failed (errno {errno})")]
+    ParentDeathSignal {
+        /// Exact failed capability or publication operation.
+        operation: &'static str,
+        /// Original Linux-style failure, retained without collapsing precision.
+        errno: i32,
+    },
+
     /// Admission or retirement of guest execution could not be completed.
     #[error("KVM entry control failed during {operation}: {source}")]
     EntryControl {
