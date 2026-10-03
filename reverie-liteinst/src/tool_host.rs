@@ -338,7 +338,17 @@ where
             }
             // This is the original unsubscribed guest operation. Private
             // inject/tail_inject below deliberately keep caller rights.
-            event.result = unsafe { event.forward() };
+            match stripped_signal_mask(number, args) {
+                Err(error) => event.result = -i64::from(error.into_raw()),
+                Ok(None) => event.result = unsafe { event.forward() },
+                Ok(Some(mask)) => {
+                    // Linux reads this copy under the guest's keys; a refusal
+                    // is EFAULT with the mask unchanged.
+                    event.args[1] = (&raw const mask) as u64;
+                    event.result = unsafe { event.forward() };
+                    event.args[1] = args[1];
+                }
+            }
             return;
         }
         let args = guest.event.args.map(|arg| arg as usize);
@@ -780,9 +790,7 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
         // TODO-HUMAN-REVIEW(PR-133): Review fail-closed guest signal-handler policy.
         !runtime::signal_action_supported(number, args)
         // AUTONOMOUS-BOT-IMPLEMENTED
-        || (number == libc::SYS_sigaltstack && args[0] != 0)
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || (number == libc::SYS_rt_sigprocmask && args[1] != 0);
+        || (number == libc::SYS_sigaltstack && args[0] != 0);
 
     if unsupported_process {
         Some(Errno::EOPNOTSUPP)
@@ -791,6 +799,58 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
     } else {
         None
     }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-PENDING): Review stripping reserved signals from
+// rt_sigprocmask sets instead of refusing them.
+/// For an `rt_sigprocmask` that installs a set, returns a copy of that set
+/// without [`runtime::reserved_signal_mask`], to forward in its place.
+///
+/// Linux silently drops SIGKILL and SIGSTOP from such a set; the reserved
+/// signals are dropped the same way. A guest, or a Tool such as Detcore that
+/// blocks every signal around a blocking `wait4`, can then block everything
+/// else and keep running, instead of failing with EPERM. A later read of the
+/// mask shows the reserved signals unblocked, which Linux would not.
+///
+/// `Ok(None)` forwards the call unchanged: it installs no set, or its size is
+/// not 8, which Linux rejects with EINVAL before reading the set. A set that
+/// cannot be read returns `Err(EFAULT)`, as Linux would, and nothing is
+/// forwarded, so an unstripped set never reaches Linux. The set is read with
+/// `process_vm_readv`, which does not check protection keys: a set in memory
+/// whose key the guest's PKRU denies is accepted where Linux returns EFAULT.
+fn stripped_signal_mask(number: i64, args: [u64; 6]) -> Result<Option<u64>, Errno> {
+    const SIGSET_SIZE: u64 = core::mem::size_of::<u64>() as u64;
+    if number != libc::SYS_rt_sigprocmask || args[1] == 0 || args[3] != SIGSET_SIZE {
+        return Ok(None);
+    }
+    let mut requested = 0_u64;
+    let local = libc::iovec {
+        iov_base: (&raw mut requested).cast(),
+        iov_len: SIGSET_SIZE as usize,
+    };
+    let remote = libc::iovec {
+        iov_base: args[1] as usize as *mut libc::c_void,
+        iov_len: SIGSET_SIZE as usize,
+    };
+    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
+    let read = unsafe {
+        raw_syscall6(
+            libc::SYS_process_vm_readv,
+            [
+                pid as u64,
+                (&raw const local) as u64,
+                1,
+                (&raw const remote) as u64,
+                1,
+                0,
+            ],
+        )
+    };
+    if read != SIGSET_SIZE as i64 {
+        return Err(Errno::EFAULT);
+    }
+    Ok(Some(requested & !runtime::reserved_signal_mask()))
 }
 
 #[reverie::tool]
@@ -951,15 +1011,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             self.tail.set_exit(number, raw_args);
             return std::future::pending().await;
         }
-        let kernel_signal_mask =
-            (number == libc::SYS_rt_sigprocmask && raw_args[1] != 0).then(|| {
-                let requested = unsafe { (raw_args[1] as *const u64).read_unaligned() };
-                let mut reserved = 1_u64 << (libc::SIGSYS - 1);
-                if runtime::cpuid_interception_enabled() || runtime::rdtsc_interception_enabled() {
-                    reserved |= 1_u64 << (libc::SIGSEGV - 1);
-                }
-                requested & !reserved
-            });
+        let kernel_signal_mask = stripped_signal_mask(number, raw_args)?;
         if let Some(mask) = kernel_signal_mask.as_ref() {
             raw_args[1] = mask as *const u64 as u64;
         }
@@ -999,7 +1051,15 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
         } else {
-            let value = unsafe { raw_syscall6(number, args) };
+            let value = match stripped_signal_mask(number, args) {
+                Err(error) => -i64::from(error.into_raw()),
+                Ok(None) => unsafe { raw_syscall6(number, args) },
+                Ok(Some(mask)) => {
+                    let mut args = args;
+                    args[1] = (&raw const mask) as u64;
+                    unsafe { raw_syscall6(number, args) }
+                }
+            };
             self.tail.set_result(value);
         }
         std::future::pending().await
