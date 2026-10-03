@@ -118,6 +118,8 @@ where
     type CloneCb<'a> = Box<dyn FnMut() -> i32 + 'a>;
 
     extern "C" fn callback(data: *mut CloneCb) -> libc::c_int {
+        // No pthread_atfork handler runs in this child.
+        super::launch_window::reset_after_raw_clone();
         let cb: &mut CloneCb = unsafe { &mut *data };
         (*cb)() as libc::c_int
     }
@@ -177,6 +179,8 @@ where
 
     type CloneCb<'a> = Box<dyn FnMut() -> i32 + 'a>;
     extern "C" fn callback(data: *mut CloneCb) -> libc::c_int {
+        // No pthread_atfork handler runs in this child.
+        super::launch_window::reset_after_raw_clone();
         let cb: &mut CloneCb = unsafe { &mut *data };
         (*cb)() as libc::c_int
     }

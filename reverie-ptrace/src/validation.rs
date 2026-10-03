@@ -7,6 +7,7 @@
  */
 
 use core::mem;
+use std::cell::RefCell;
 
 use perf_event_open_sys::bindings as perf;
 use reverie::Errno;
@@ -131,9 +132,20 @@ impl From<i64> for ScopedFd {
 impl Drop for ScopedFd {
     fn drop(&mut self) {
         if let Err(errno) = Errno::result(unsafe { libc::close(self.0) }) {
-            warn!("Error while closing file descriptor - {:?}", errno);
+            defer_warning(format!("Error while closing file descriptor - {:?}", errno));
         }
     }
+}
+
+thread_local! {
+    /// Warnings raised while [`check_for_pmu_bugs`] holds its transient open,
+    /// logged after it closes: a log subscriber may block on a thread that
+    /// is launching a guest, which waits for that open to close.
+    static DEFERRED_WARNINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+fn defer_warning(message: String) {
+    DEFERRED_WARNINGS.with(|warnings| warnings.borrow_mut().push(message));
 }
 
 /// This function is a transcription of the function `check_for_bugs` from
@@ -141,12 +153,22 @@ impl Drop for ScopedFd {
 /// It checks for a collection of processor features that ensure that the pmu features
 /// required from Reverie to function correctly are available and trustworthy
 pub(crate) fn check_for_pmu_bugs() -> Result<(), PmuValidationError> {
-    check_for_ioc_period_bug(false)?;
-    check_working_counters(false)?;
-    check_for_arch_bugs(false)?;
-    check_for_ioc_period_bug(true)?;
-    check_working_counters(true)?;
-    check_for_arch_bugs(true)
+    let result = {
+        // Every counter below is opened and closed inside this block.
+        let _open = crate::launch_window::TransientOpen::begin();
+        (|| {
+            check_for_ioc_period_bug(false)?;
+            check_working_counters(false)?;
+            check_for_arch_bugs(false)?;
+            check_for_ioc_period_bug(true)?;
+            check_working_counters(true)?;
+            check_for_arch_bugs(true)
+        })()
+    };
+    for message in DEFERRED_WARNINGS.with(|warnings| warnings.take()) {
+        warn!("{message}");
+    }
+    result
 }
 
 /// This function is transcribed from the function with the same name in
@@ -227,7 +249,7 @@ fn start_counter(
                 if let Some(disabled) = disabled_txcp.as_mut() {
                     **disabled = true
                 }
-                warn!("kernel does not support IN_TXCP");
+                defer_warning("kernel does not support IN_TXCP".to_owned());
             }
 
             no_txcp_fd
