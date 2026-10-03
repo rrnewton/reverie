@@ -654,6 +654,15 @@ fn execute_basic_syscall_inner(
     } else if number == libc::SYS_epoll_pwait as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         epoll_wait(memory, state, args, true)
+    } else if number == libc::SYS_epoll_pwait2 as u64 {
+        let result = epoll_pwait2(memory, state, args);
+        // Alias infrastructure failure is terminal, even after successful
+        // kernel I/O. Forward the already-published cause without poisoning a
+        // second time or presenting its transport errno as a guest result.
+        if let Some(failure) = memory.entry_gate().pending_failure() {
+            return SyscallAction::Failure(failure.error());
+        }
+        result
     } else if number == libc::SYS_eventfd as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         eventfd2(state, args[0], 0)
@@ -2031,12 +2040,140 @@ impl RandomDeviceDescription {
     }
 }
 
+/// Positive provenance is minted only by the corresponding native creator.
+/// In particular, a virtual signalfd's eventfd carrier is not NativeEventFd.
+#[derive(Clone, Debug)]
+pub(crate) enum NativePollDescription {
+    EventFd(Arc<NativeEventFd>),
+    Epoll(Arc<()>),
+}
+
+/// Export can hand an eventfd writer to an untracked actor. This one-way bit
+/// follows the open description through every dup/fork, so exporting any
+/// alias removes admission from existing and future interest sets alike.
+#[derive(Debug, Default)]
+pub(crate) struct NativeEventFd {
+    escaped: AtomicBool,
+}
+
+/// Shared table identity, including histories that this backend does not
+/// model. A later creator must not erase an earlier unsupported table split.
+#[derive(Debug, Default)]
+pub(crate) struct NativePollTable {
+    unsafe_history: AtomicBool,
+}
+
+impl NativePollTable {
+    pub(crate) fn fork_identity(&self) -> Arc<Self> {
+        // A fork has a new table, but cannot certify a snapshot descended from
+        // an unmodeled split. CLONE_FILES keeps the original shared identity.
+        Arc::new(Self {
+            unsafe_history: AtomicBool::new(self.unsafe_history.load(Ordering::SeqCst)),
+        })
+    }
+}
+
+/// One logical descriptor entry, shared by CLONE_FILES snapshots. Its File
+/// may outlive a guest close in a stale snapshot, so Arc liveness alone does
+/// not establish that this binding is still part of the guest file table.
+#[derive(Debug)]
+pub(crate) struct NativePollBinding {
+    description: NativePollDescription,
+    live: AtomicBool,
+}
+
+impl NativePollBinding {
+    fn new(description: NativePollDescription) -> Arc<Self> {
+        Arc::new(Self {
+            description,
+            live: AtomicBool::new(true),
+        })
+    }
+
+    pub(crate) fn fork_binding(&self) -> Arc<Self> {
+        Self::new(self.description.clone())
+    }
+
+    /// Caller holds the family's epoll domain, serializing retirement with a
+    /// zero-time wait. This token never becomes live again.
+    pub(crate) fn retire(&self) {
+        self.live.store(false, Ordering::SeqCst);
+    }
+}
+
+#[derive(Debug)]
+struct EpollRegistration {
+    binding: std::sync::Weak<NativePollBinding>,
+    eventfd: Arc<NativeEventFd>,
+    host_key: RawFd,
+}
+
+#[derive(Debug)]
+struct EpollProof {
+    owner: std::sync::Weak<()>,
+    table: std::sync::Weak<NativePollTable>,
+    unsafe_history: bool,
+    registrations: std::collections::BTreeMap<i32, EpollRegistration>,
+}
+
+/// A leaf lock shared only within one guest family, not globally. Never hold
+/// it while acquiring other locks, calling guest-memory APIs that can notify
+/// or reenter, retiring a File, or constructing/finishing a writable alias.
+/// Kernel copyout through an already-retained alias is allowed. The records contain no File,
+/// memory, entry gate or callback, so their destruction cannot notify/reenter.
+#[derive(Debug, Default)]
+pub(crate) struct EpollDomain {
+    proofs: std::collections::BTreeMap<usize, EpollProof>,
+}
+
+fn epoll_identity_key(identity: &Arc<()>) -> usize {
+    // The record's Weak keeps this allocation from being reused until removal.
+    // This private token is unrelated to a host fd or anonymous inode number.
+    Arc::as_ptr(identity) as usize
+}
+
+fn native_poll_description(state: &LoadedStaticElf, fd: i32) -> Option<NativePollDescription> {
+    state
+        .native_poll_fds
+        .get(&fd)
+        .map(|binding| binding.description.clone())
+}
+
+fn install_native_poll_description(
+    state: &mut LoadedStaticElf,
+    fd: i32,
+    description: NativePollDescription,
+) {
+    state
+        .native_poll_fds
+        .insert(fd, NativePollBinding::new(description));
+}
+
+impl EpollProof {
+    fn admitted(&self, state: &LoadedStaticElf) -> bool {
+        !self.unsafe_history
+            && !state.poll_table_id.unsafe_history.load(Ordering::SeqCst)
+            && self.table.ptr_eq(&Arc::downgrade(&state.poll_table_id))
+            && self.registrations.values().all(|registration| {
+                registration.binding.upgrade().is_some_and(|binding| {
+                    binding.live.load(Ordering::SeqCst)
+                        && !registration.eventfd.escaped.load(Ordering::SeqCst)
+                        && matches!(&binding.description, NativePollDescription::EventFd(id)
+                            if Arc::ptr_eq(id, &registration.eventfd))
+                })
+            })
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct FileTableState {
     stdin: Option<std::fs::File>,
     stdin_entry_id: Arc<()>,
     files: std::collections::BTreeMap<i32, std::fs::File>,
     fd_entry_ids: std::collections::BTreeMap<i32, Arc<()>>,
+    epoll_domain: Arc<Mutex<EpollDomain>>,
+    poll_table_id: Arc<NativePollTable>,
+    native_poll_fds: std::collections::BTreeMap<i32, Arc<NativePollBinding>>,
     random_device_fds: std::collections::BTreeSet<i32>,
     random_device_descriptions: std::collections::BTreeMap<i32, Arc<RandomDeviceDescription>>,
     stdout_alias_fds: std::collections::BTreeSet<i32>,
@@ -2856,6 +2993,9 @@ impl FileTableState {
                 .map(|(fd, file)| (fd, file.into_file()))
                 .collect(),
             fd_entry_ids: state.fd_entry_ids.clone(),
+            epoll_domain: state.epoll_domain.clone(),
+            poll_table_id: state.poll_table_id.clone(),
+            native_poll_fds: state.native_poll_fds.clone(),
             random_device_fds: state.random_device_fds.clone(),
             random_device_descriptions: state.random_device_descriptions.clone(),
             stdout_alias_fds: state.stdout_alias_fds.clone(),
@@ -2932,6 +3072,9 @@ impl FileTableState {
                 .chain(previous_files.into_values()),
         );
         state.fd_entry_ids.clone_from(&self.fd_entry_ids);
+        state.epoll_domain.clone_from(&self.epoll_domain);
+        state.poll_table_id.clone_from(&self.poll_table_id);
+        state.native_poll_fds.clone_from(&self.native_poll_fds);
         state.random_device_fds.clone_from(&self.random_device_fds);
         state
             .random_device_descriptions
@@ -3665,6 +3808,10 @@ impl ElfExecutor {
         state.thread_group_leader_name = self.state.thread_group_leader_name.clone();
         state.thp_disabled = self.state.thp_disabled.clone();
         state.process_signals = self.state.process_signals.clone();
+        // The fork helper made private-table bindings. CLONE_FILES instead
+        // shares logical entry lifetime with the authoritative parent table.
+        state.poll_table_id = self.state.poll_table_id.clone();
+        state.native_poll_fds = self.state.native_poll_fds.clone();
         state.signal_transaction = self.state.signal_transaction.clone();
         state.thread_signals = self.state.thread_signals.for_clone_thread();
         state.thread_signals.lock().observe_ignored = observe_ignored;
@@ -3970,6 +4117,10 @@ impl ElfExecutor {
         let stdin = self.state.take_stdin();
         let retired = std::mem::take(&mut self.state.files);
         self.state.fd_entry_ids.clear();
+        // Snapshot retirement is not a logical close in a surviving table.
+        self.state.native_poll_fds.clear();
+        self.state.poll_table_id = Default::default();
+        self.state.epoll_domain = Default::default();
         self.file_table = Arc::new(Mutex::new(FileTableState::default()));
         let action = self.process_action.take();
         self.state
@@ -9820,6 +9971,7 @@ struct DuplicateFdSource {
     is_random: bool,
     random_description: Option<Arc<RandomDeviceDescription>>,
     signalfd_mask: Option<Arc<KernelSigset>>,
+    native_poll: Option<NativePollDescription>,
 }
 
 /// Stops supported generic writes from reaching the eventfd that privately
@@ -9924,6 +10076,9 @@ fn duplicate_fd_at_or_above(
     // SAFETY: fcntl returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
     let retired = state.insert_file(fd, file);
+    if let Some(description) = source.native_poll {
+        install_native_poll_description(state, fd, description);
+    }
     state.fd_object_inodes.insert(fd, source.object_inode);
     if source.is_random {
         state.random_device_fds.insert(fd);
@@ -9984,6 +10139,7 @@ fn duplicate_fd(
     let source_fdinfo = state.fdinfo_files.get(&old_fd).cloned();
     let source_is_random = state.random_device_fds.contains(&old_fd);
     let source_random_description = state.random_device_descriptions.get(&old_fd).cloned();
+    let source_native_poll = native_poll_description(state, old_fd);
     let source_signalfd_mask = signalfd_mask(state, old_fd);
     let Some(old_host_fd) = host_fd(state, old_fd) else {
         return negative_errno(libc::EBADF);
@@ -10019,6 +10175,9 @@ fn duplicate_fd(
     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
     if let Some(new_fd) = new_fd {
         let retired = state.insert_file(new_fd, file);
+        if let Some(description) = source_native_poll {
+            install_native_poll_description(state, new_fd, description);
+        }
         if let Some(description) = source_random_description {
             state.random_device_descriptions.insert(new_fd, description);
         }
@@ -10062,6 +10221,9 @@ fn duplicate_fd(
     } else {
         let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
         if new_fd >= 0 {
+            if let Some(description) = source_native_poll {
+                install_native_poll_description(state, new_fd as i32, description);
+            }
             if let Some(description) = source_random_description {
                 state
                     .random_device_descriptions
@@ -10699,7 +10861,30 @@ fn epoll_create1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
     }
     // SAFETY: epoll_create1 returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
-    insert_file_with_flags(state, file, flags & libc::EPOLL_CLOEXEC != 0, None)
+    let fd = insert_file_with_flags(state, file, flags & libc::EPOLL_CLOEXEC != 0, None);
+    if fd >= 0 {
+        let identity = Arc::new(());
+        {
+            let mut domain = state
+                .epoll_domain
+                .lock()
+                .expect("KVM epoll provenance lock poisoned");
+            domain
+                .proofs
+                .retain(|_, proof| proof.owner.strong_count() != 0);
+            domain.proofs.insert(
+                epoll_identity_key(&identity),
+                EpollProof {
+                    owner: Arc::downgrade(&identity),
+                    table: Arc::downgrade(&state.poll_table_id),
+                    unsafe_history: false,
+                    registrations: Default::default(),
+                },
+            );
+        }
+        install_native_poll_description(state, fd as i32, NativePollDescription::Epoll(identity));
+    }
+    fd
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
@@ -10726,9 +10911,220 @@ fn epoll_ctl(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
         // virtual signal readiness without carrying signalfd metadata itself.
         return negative_errno(libc::ENOSYS);
     }
-    // SAFETY: both descriptors were translated from live guest descriptors;
+    // Complete guest copies and signal/capture classification before taking
+    // the leaf domain lock. Existing ctl outcomes remain native; unsafe
+    // histories only remove admission to the newly supported syscall 441.
+    let epoll_identity = match native_poll_description(state, args[0] as i32) {
+        Some(NativePollDescription::Epoll(identity)) => Some(identity),
+        _ => None,
+    };
+    let target_binding = state.native_poll_fds.get(&(args[2] as i32)).cloned();
+    let captured = output_alias(state, args[2] as i32).is_some();
+    let mut domain = state
+        .epoll_domain
+        .lock()
+        .expect("KVM epoll provenance lock poisoned");
+    let proof = epoll_identity
+        .as_ref()
+        .and_then(|identity| domain.proofs.get_mut(&epoll_identity_key(identity)));
+    let target_eventfd = target_binding
+        .as_ref()
+        .and_then(|binding| match &binding.description {
+            NativePollDescription::EventFd(identity)
+                if binding.live.load(Ordering::SeqCst)
+                    && !identity.escaped.load(Ordering::SeqCst)
+                    && !captured =>
+            {
+                Some(identity.clone())
+            }
+            _ => None,
+        });
+    let guest_target = args[2] as i32;
+    let mut proof = proof;
+    if let Some(proof) = proof.as_mut()
+        && matches!(
+            operation,
+            libc::EPOLL_CTL_ADD | libc::EPOLL_CTL_MOD | libc::EPOLL_CTL_DEL
+        )
+    {
+        let same_key = proof
+            .registrations
+            .get(&guest_target)
+            .is_none_or(|registered| {
+                target_binding.as_ref().is_some_and(|binding| {
+                    registered.binding.ptr_eq(&Arc::downgrade(binding))
+                        && registered.host_key == target_fd
+                })
+            });
+        if !proof.admitted(state) || target_eventfd.is_none() || !same_key {
+            proof.unsafe_history = true;
+        }
+    }
+    // SAFETY: both descriptors were translated from live snapshot Files;
     // event is initialized and Linux validates the requested operation.
-    zero_or_errno(unsafe { libc::epoll_ctl(epoll_fd, operation, target_fd, &mut event) })
+    let result =
+        zero_or_errno(unsafe { libc::epoll_ctl(epoll_fd, operation, target_fd, &mut event) });
+    if result == 0
+        && let Some(proof) = proof
+        && !proof.unsafe_history
+    {
+        match operation {
+            libc::EPOLL_CTL_ADD => {
+                let registration = EpollRegistration {
+                    binding: Arc::downgrade(target_binding.as_ref().unwrap()),
+                    eventfd: target_eventfd.unwrap(),
+                    host_key: target_fd,
+                };
+                if proof
+                    .registrations
+                    .insert(guest_target, registration)
+                    .is_some()
+                {
+                    proof.unsafe_history = true;
+                }
+            }
+            libc::EPOLL_CTL_DEL => {
+                if proof.registrations.remove(&guest_target).is_none() {
+                    proof.unsafe_history = true;
+                }
+            }
+            libc::EPOLL_CTL_MOD => {
+                if !proof.registrations.contains_key(&guest_target) {
+                    proof.unsafe_history = true;
+                }
+            }
+            _ => proof.unsafe_history = true,
+        }
+    }
+    result
+}
+
+fn epoll_pwait2_bound(
+    domain: &EpollDomain,
+    state: &LoadedStaticElf,
+    binding: &NativePollBinding,
+) -> Option<usize> {
+    if !binding.live.load(Ordering::SeqCst) {
+        return None;
+    }
+    let NativePollDescription::Epoll(identity) = &binding.description else {
+        return None;
+    };
+    let proof = domain.proofs.get(&epoll_identity_key(identity))?;
+    proof.admitted(state).then_some(proof.registrations.len())
+}
+
+/// Immediate, unmasked readiness for a proven native eventfd interest set.
+/// Unknown/imported/nested/escaped descriptions and changed registration
+/// bindings remain unsupported; this is not general epoll virtualization.
+fn epoll_pwait2(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    // Linux fs/eventpoll.c copies/validates timeout before mask and descriptors.
+    let zero_timeout = if args[3] == 0 {
+        false
+    } else {
+        let timeout = match read_guest_struct::<libc::timespec>(memory, args[3]) {
+            Ok(timeout) => timeout,
+            Err(error) => return error,
+        };
+        if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+            return negative_errno(libc::EINVAL);
+        }
+        timeout.tv_sec == 0 && timeout.tv_nsec == 0
+    };
+    if args[4] != 0 {
+        if args[5] != KERNEL_SIGSET_SIZE as u64 {
+            return negative_errno(libc::EINVAL);
+        }
+        let mut mask = [0; KERNEL_SIGSET_SIZE];
+        if memory.user().read(args[4], &mut mask).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
+    }
+    if !zero_timeout || args[4] != 0 {
+        return negative_errno(libc::ENOSYS);
+    }
+    let guest_fd = args[0] as libc::c_int;
+    let Some(fd) = host_fd(state, guest_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let count = args[2] as libc::c_int;
+    let event_size = std::mem::size_of::<libc::epoll_event>();
+    if count <= 0 || count as usize > i32::MAX as usize / event_size {
+        return negative_errno(libc::EINVAL);
+    }
+    // Preserve access_ok on the FULL original request before bounding the
+    // alias by proven membership. This is numeric-only, not a mapping probe.
+    if let Err(error) = validate_guest_iovec_address(args[1], count as usize * event_size) {
+        return error;
+    }
+    let Some(binding) = state.native_poll_fds.get(&guest_fd) else {
+        return negative_errno(libc::ENOSYS);
+    };
+    if matches!(binding.description, NativePollDescription::EventFd(_)) {
+        return negative_errno(libc::EINVAL);
+    }
+    let capacity = {
+        let domain = state
+            .epoll_domain
+            .lock()
+            .expect("KVM epoll provenance lock poisoned");
+        let Some(bound) = epoll_pwait2_bound(&domain, state, binding) else {
+            return negative_errno(libc::ENOSYS);
+        };
+        (count as usize).min(bound).max(1)
+    };
+    // Construction and finalization can notify reentrant wakers. Neither may
+    // run under the provenance domain or an outer file-table transaction.
+    let user = memory.user();
+    let alias = match user.writable_alias(args[1], capacity * event_size) {
+        Ok(alias) => alias,
+        Err(_) => return negative_errno(libc::EFAULT),
+    };
+    let result = {
+        let domain = state
+            .epoll_domain
+            .lock()
+            .expect("KVM epoll provenance lock poisoned");
+        match epoll_pwait2_bound(&domain, state, binding) {
+            Some(bound) if (count as usize).min(bound).max(1) <= capacity => {
+                let host_count = (count as usize).min(bound).max(1);
+                let timeout = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                };
+                // Linux ep_send_events writes each mask/data field before
+                // committing that event's one-shot state. Direct alias copyout
+                // preserves partial effects and leaves a faulting event queued.
+                // A zero timeout returns before the ordinary pending-signal
+                // check; do not dequeue guest signals or install a host mask.
+                // SAFETY: alias owns a protected kernel operand of this size;
+                // snapshot fd is live and timeout is initialized/read-only.
+                let ready = unsafe {
+                    libc::syscall(
+                        libc::SYS_epoll_pwait2,
+                        fd,
+                        alias.address(),
+                        host_count as libc::c_int,
+                        &timeout,
+                        std::ptr::null::<libc::sigset_t>(),
+                        0usize,
+                    )
+                };
+                if ready < 0 {
+                    io_error(std::io::Error::last_os_error())
+                } else {
+                    ready as i64
+                }
+            }
+            _ => negative_errno(libc::ENOSYS),
+        }
+    };
+    // The domain guard drops before alias cleanup and notification, including
+    // on unwind. A cleanup failure remains a sticky backend failure.
+    if alias.finish().is_err() {
+        return negative_errno(libc::EFAULT);
+    }
+    result
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
@@ -10804,7 +11200,15 @@ fn eventfd2(state: &mut LoadedStaticElf, initial: u64, raw_flags: u64) -> i64 {
     }
     // SAFETY: eventfd returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
-    insert_file_with_flags(state, file, flags & libc::EFD_CLOEXEC != 0, None)
+    let fd = insert_file_with_flags(state, file, flags & libc::EFD_CLOEXEC != 0, None);
+    if fd >= 0 {
+        install_native_poll_description(
+            state,
+            fd as i32,
+            NativePollDescription::EventFd(Arc::new(NativeEventFd::default())),
+        );
+    }
+    fd
 }
 
 fn set_signalfd_ready(file: &std::fs::File, ready: bool) -> Result<(), i64> {
@@ -12606,6 +13010,30 @@ fn translate_outgoing_rights(
         {
             let guest_fd = read_control_fd(control, offset)?;
             let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
+            if let Some(description) = native_poll_description(state, guest_fd) {
+                // Once an untracked receiver might control this description,
+                // no known alias can prove its registration set. Invalidate
+                // BEFORE host sendmsg, then release the leaf lock. Even a
+                // later malformed element/failed send keeps new syscall 441
+                // outside admission; the existing send result is unchanged.
+                let mut domain = state
+                    .epoll_domain
+                    .lock()
+                    .expect("KVM epoll provenance lock poisoned");
+                match description {
+                    NativePollDescription::Epoll(identity) => {
+                        if let Some(proof) = domain.proofs.get_mut(&epoll_identity_key(&identity)) {
+                            proof.unsafe_history = true;
+                        }
+                    }
+                    NativePollDescription::EventFd(identity) => {
+                        // A foreign writer controls readiness even when nobody
+                        // exports the epoll itself. Never infer determinism
+                        // from the native carrier merely being an eventfd.
+                        identity.escaped.store(true, Ordering::SeqCst);
+                    }
+                }
+            }
             if state
                 .fdinfo_files
                 .get(&guest_fd)
@@ -15863,6 +16291,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
     let source_fdinfo = state.fdinfo_files.get(&guest_fd).cloned();
     let source_is_random = state.random_device_fds.contains(&guest_fd);
     let source_random_description = state.random_device_descriptions.get(&guest_fd).cloned();
+    let source_native_poll = native_poll_description(state, guest_fd);
     let source_signalfd_mask = signalfd_mask(state, guest_fd);
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
@@ -15883,6 +16312,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 is_random: source_is_random,
                 random_description: source_random_description,
                 signalfd_mask: source_signalfd_mask,
+                native_poll: source_native_poll,
             },
         ),
         libc::F_DUPFD_CLOEXEC => duplicate_fd_at_or_above(
@@ -15899,6 +16329,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 is_random: source_is_random,
                 random_description: source_random_description,
                 signalfd_mask: source_signalfd_mask,
+                native_poll: source_native_poll,
             },
         ),
         libc::F_GETFL => match fd_status_flags(host_fd) {
@@ -16148,6 +16579,19 @@ fn close_range(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     }
     if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 {
         return negative_errno(libc::EINVAL);
+    }
+    if flags & CLOSE_RANGE_UNSHARE != 0 {
+        // This backend's existing close_range path does not split CLONE_FILES.
+        // Preserve that syscall's outcome, but do not admit new epoll waits
+        // after this unmodeled table history, including CLOEXEC-only requests.
+        let _domain = state
+            .epoll_domain
+            .lock()
+            .expect("KVM epoll provenance lock poisoned");
+        state
+            .poll_table_id
+            .unsafe_history
+            .store(true, Ordering::SeqCst);
     }
 
     let in_range = |fd: libc::c_int| {
@@ -18995,6 +19439,9 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         files: std::collections::BTreeMap::new(),
         file_retirement: crate::elf::FileRetirement::default(),
         fd_entry_ids: std::collections::BTreeMap::new(),
+        epoll_domain: Default::default(),
+        poll_table_id: Default::default(),
+        native_poll_fds: Default::default(),
         random_device_fds: std::collections::BTreeSet::new(),
         random_device_descriptions: std::collections::BTreeMap::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
@@ -36999,6 +37446,936 @@ mod tests {
                 assert_eq!(Self::field(bytes, field, 10), Self::field(&raw, field, 10));
             }
         }
+    }
+
+    fn epoll_pwait2_test_interest(f: &mut FdinfoFixture, initial: u64) -> (i64, i64) {
+        f.memory.write(0x100, &[0; 16]).unwrap();
+        let ep = f.call(libc::SYS_epoll_create1, [0; 6]);
+        let event = f.call(
+            libc::SYS_eventfd2,
+            [initial, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
+        );
+        assert!(ep >= 3 && event > ep);
+        assert_eq!(
+            write_struct(
+                &mut f.memory,
+                0x200,
+                &libc::epoll_event {
+                    events: libc::EPOLLIN as u32,
+                    u64: 0x1234_5678_9abc_def0,
+                }
+            ),
+            0
+        );
+        assert_eq!(
+            f.call(
+                libc::SYS_epoll_ctl,
+                [
+                    ep as u64,
+                    libc::EPOLL_CTL_ADD as u64,
+                    event as u64,
+                    0x200,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        (ep, event)
+    }
+
+    fn epoll_pwait2_test_wait(f: &mut FdinfoFixture, ep: i64) -> i64 {
+        f.call(
+            libc::SYS_epoll_pwait2,
+            [ep as u64, 0x300, 1, 0x100, 0, u64::MAX],
+        )
+    }
+
+    #[test]
+    fn epoll_pwait2_validation_order_matches_native_and_checks_full_range() {
+        assert_eq!(std::mem::size_of::<libc::epoll_event>(), 12);
+        let mut f = FdinfoFixture::new(false);
+        let (ep, event) = epoll_pwait2_test_interest(&mut f, 0);
+        let zero = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // v6.18 do_epoll_wait gets the fd before ep_check_params. Deliberately
+        // combine invalid operands so an older kernel's ordering cannot pass.
+        for (fd, output, count, expected) in [
+            (-1, u64::MAX, 0, negative_errno(libc::EBADF)),
+            (-1, u64::MAX, 1, negative_errno(libc::EBADF)),
+            (ep, u64::MAX, 0, negative_errno(libc::EINVAL)),
+            (ep, u64::MAX, u32::MAX as u64, negative_errno(libc::EINVAL)),
+            (ep, u64::MAX, 1, negative_errno(libc::EFAULT)),
+            (event, u64::MAX, 1, negative_errno(libc::EFAULT)),
+            (event, 0, 1, negative_errno(libc::EINVAL)),
+            (ep, 0, 1, 0),
+            (ep, 0, (0xabc_u64 << 32) | 1, 0),
+        ] {
+            let native_fd = if fd == -1 {
+                -1
+            } else {
+                host_fd(&f.executor.state, fd as i32).unwrap()
+            };
+            // SAFETY: zero is valid. Invalid output is a kernel-checked user
+            // pointer; all interests are empty, so NULL is never dereferenced.
+            let raw = unsafe {
+                libc::syscall(
+                    libc::SYS_epoll_pwait2,
+                    native_fd,
+                    output,
+                    count,
+                    &zero,
+                    0usize,
+                    usize::MAX,
+                )
+            };
+            let native = if raw == -1 {
+                io_error(std::io::Error::last_os_error())
+            } else {
+                raw
+            };
+            assert_eq!(
+                native, expected,
+                "native fd={fd} count={count} output={output:#x}"
+            );
+            assert_eq!(
+                f.call(
+                    libc::SYS_epoll_pwait2,
+                    [fd as u64, output, count, 0x100, 0, u64::MAX]
+                ),
+                native
+            );
+        }
+        // The fixed four-level guest policy is checked on all requested bytes,
+        // even though the proven set can produce at most one event.
+        for (address, count, expected) in [
+            (X86_64_GUEST_USER_LIMIT - 12, 1, 0),
+            (
+                X86_64_GUEST_USER_LIMIT - 11,
+                1,
+                negative_errno(libc::EFAULT),
+            ),
+            (
+                X86_64_GUEST_USER_LIMIT - 12,
+                4,
+                negative_errno(libc::EFAULT),
+            ),
+            (u64::MAX - 11, 1, negative_errno(libc::EFAULT)),
+        ] {
+            assert_eq!(
+                f.call(
+                    libc::SYS_epoll_pwait2,
+                    [ep as u64, address, count, 0x100, 0, 0]
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn epoll_pwait2_unmasked_zero_probe_preserves_pending_signals_and_refusal_state() {
+        let mut f = FdinfoFixture::new(false);
+        let (ep, _) = epoll_pwait2_test_interest(&mut f, 0);
+        f.executor
+            .state
+            .thread_signals
+            .lock()
+            .pending
+            .enqueue(
+                event_for_thread(libc::SIGUSR1, f.executor.state.pid, f.executor.state.tid)
+                    .unwrap(),
+                0,
+            )
+            .unwrap();
+        f.executor
+            .state
+            .process_signals
+            .lock()
+            .unwrap()
+            .shared_pending
+            .enqueue(
+                event_for_process(libc::SIGUSR2, f.executor.state.pid).unwrap(),
+                0,
+            )
+            .unwrap();
+        let process = f.executor.state.process_signals.lock().unwrap().clone();
+        let thread = f.executor.state.thread_signals.lock().clone();
+        f.memory.write(0x300, &[0xa5; 24]).unwrap();
+        // Exercise the handler directly: the separate runtime delivery policy
+        // is not permitted to consume the seeded pending events in this test.
+        assert_eq!(
+            epoll_pwait2(
+                &f.memory,
+                &f.executor.state,
+                &[ep as u64, 0x300, 2, 0x100, 0, 0]
+            ),
+            0
+        );
+        f.memory.write(0x180, &[0; 8]).unwrap();
+        for (timeout, mask, size, expected) in [
+            (0, 0, 0, libc::ENOSYS),
+            (0x100, 0x180, 8, libc::ENOSYS),
+            (0x100, 0x180, 7, libc::EINVAL),
+            (0x100, u64::MAX, 8, libc::EFAULT),
+            (u64::MAX, 0x180, 7, libc::EFAULT),
+        ] {
+            assert_eq!(
+                epoll_pwait2(
+                    &f.memory,
+                    &f.executor.state,
+                    &[ep as u64, 0x300, 2, timeout, mask, size]
+                ),
+                negative_errno(expected)
+            );
+        }
+        f.memory.write(0x100, &1_i64.to_ne_bytes()).unwrap();
+        assert_eq!(
+            epoll_pwait2(
+                &f.memory,
+                &f.executor.state,
+                &[ep as u64, 0x300, 2, 0x100, 0, 0]
+            ),
+            negative_errno(libc::ENOSYS)
+        );
+        assert_eq!(
+            read_guest_bytes::<24>(&f.memory, 0x300).unwrap(),
+            [0xa5; 24]
+        );
+        assert_eq!(*f.executor.state.process_signals.lock().unwrap(), process);
+        assert_eq!(*f.executor.state.thread_signals.lock(), thread);
+    }
+
+    #[test]
+    fn epoll_pwait2_scm_failed_export_invalidates_every_alias_and_future_registration() {
+        for export_event in [false, true] {
+            let mut f = FdinfoFixture::new(false);
+            let (ep, event) = epoll_pwait2_test_interest(&mut f, 1);
+            let ep_alias = f.call(libc::SYS_dup, [ep as u64, 0, 0, 0, 0, 0]);
+            let event_alias = f.call(libc::SYS_dup, [event as u64, 0, 0, 0, 0, 0]);
+            assert!(ep_alias > event && event_alias > ep_alias);
+            assert_eq!(epoll_pwait2_test_wait(&mut f, ep), 1);
+            assert_eq!(
+                f.call(
+                    libc::SYS_socketpair,
+                    [
+                        libc::AF_UNIX as u64,
+                        libc::SOCK_STREAM as u64,
+                        0,
+                        0x900,
+                        0,
+                        0
+                    ]
+                ),
+                0
+            );
+            let sockets: [i32; 2] = read_struct(&f.memory, 0x900);
+            let sender = sockets[0];
+            assert_eq!(
+                f.call(libc::SYS_close, [sockets[1] as u64, 0, 0, 0, 0, 0]),
+                0
+            );
+            let donated = if export_event { event_alias } else { ep_alias };
+            let control = rights_control(&[donated as i32]);
+            f.memory.write(0x500, &control).unwrap();
+            f.memory.write(0x600, b"x").unwrap();
+            assert_eq!(
+                write_struct(
+                    &mut f.memory,
+                    0x700,
+                    &libc::iovec {
+                        iov_base: 0x600_usize as *mut libc::c_void,
+                        iov_len: 1
+                    }
+                ),
+                0
+            );
+            let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+            message.msg_iov = 0x700_usize as *mut libc::iovec;
+            message.msg_iovlen = 1;
+            message.msg_control = 0x500_usize as *mut libc::c_void;
+            message.msg_controllen = control.len();
+            assert_eq!(write_struct(&mut f.memory, 0x800, &message), 0);
+            assert_eq!(
+                f.call(
+                    libc::SYS_sendmsg,
+                    [sender as u64, 0x800, libc::MSG_NOSIGNAL as u64, 0, 0, 0]
+                ),
+                negative_errno(libc::EPIPE)
+            );
+            f.memory.write(0x300, &[0xa5; 24]).unwrap();
+            for alias in [ep, ep_alias] {
+                assert_eq!(
+                    epoll_pwait2_test_wait(&mut f, alias),
+                    negative_errno(libc::ENOSYS)
+                );
+                assert_eq!(
+                    read_guest_bytes::<24>(&f.memory, 0x300).unwrap(),
+                    [0xa5; 24]
+                );
+            }
+            assert_eq!(
+                read_guest_bytes::<24>(&f.memory, 0x500).unwrap().as_slice(),
+                control.as_slice()
+            );
+            if export_event {
+                let fresh = f.call(libc::SYS_epoll_create1, [0; 6]);
+                assert_eq!(
+                    f.call(
+                        libc::SYS_epoll_ctl,
+                        [
+                            fresh as u64,
+                            libc::EPOLL_CTL_ADD as u64,
+                            event as u64,
+                            0x200,
+                            0,
+                            0
+                        ]
+                    ),
+                    0
+                );
+                assert_eq!(
+                    epoll_pwait2_test_wait(&mut f, fresh),
+                    negative_errno(libc::ENOSYS)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn epoll_pwait2_unknown_import_nested_and_changed_host_keys_are_not_certified() {
+        let mut f = FdinfoFixture::new(false);
+        let (ep, event) = epoll_pwait2_test_interest(&mut f, 0);
+        // A duplicate of the actual native eventfd installed by the generic
+        // imported-right path still has no positive native creation history.
+        let imported = f.executor.state.files[&(event as i32)].try_clone().unwrap();
+        let imported = insert_file_with_flags(&mut f.executor.state, imported, false, None);
+        let other = epoll_create1(&mut f.executor.state, 0);
+        assert_eq!(
+            epoll_ctl(
+                &f.memory,
+                &f.executor.state,
+                &[
+                    other as u64,
+                    libc::EPOLL_CTL_ADD as u64,
+                    imported as u64,
+                    0x200,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        assert_eq!(
+            epoll_pwait2(
+                &f.memory,
+                &f.executor.state,
+                &[other as u64, 0x300, 1, 0x100, 0, 0]
+            ),
+            negative_errno(libc::ENOSYS)
+        );
+        let nested = epoll_create1(&mut f.executor.state, 0);
+        assert_eq!(
+            epoll_ctl(
+                &f.memory,
+                &f.executor.state,
+                &[
+                    nested as u64,
+                    libc::EPOLL_CTL_ADD as u64,
+                    ep as u64,
+                    0x200,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        assert_eq!(
+            epoll_pwait2(
+                &f.memory,
+                &f.executor.state,
+                &[nested as u64, 0x300, 1, 0x100, 0, 0]
+            ),
+            negative_errno(libc::ENOSYS)
+        );
+        // A real CLONE_FILES worker has another host-numbered duplicate. Linux
+        // rejects MOD on that key. Preserve that legacy result but revoke the
+        // new wait rather than pretending the key was the registered one.
+        let mut sibling = f.executor.thread_child(2).unwrap();
+        assert_ne!(
+            host_fd(&sibling.state, event as i32),
+            host_fd(&f.executor.state, event as i32)
+        );
+        assert_eq!(
+            sibling.execute(
+                &SyscallRequest::new(
+                    libc::SYS_epoll_ctl as u64,
+                    [
+                        ep as u64,
+                        libc::EPOLL_CTL_MOD as u64,
+                        event as u64,
+                        0x200,
+                        0,
+                        0
+                    ]
+                ),
+                &f.memory
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        assert_eq!(
+            epoll_pwait2_test_wait(&mut f, ep),
+            negative_errno(libc::ENOSYS)
+        );
+    }
+
+    const EPOLL_LIFECYCLE_DATA: u64 = 0x0123_4567_89ab_cdef;
+    const EPOLL_LIFECYCLE_EVENT: u64 = 0x200;
+    const EPOLL_LIFECYCLE_ZERO: u64 = 0x240;
+
+    fn epoll_lifecycle_pair(f: &mut FdinfoFixture) -> (i64, i64) {
+        let ep = f.call(libc::SYS_epoll_create1, [0; 6]);
+        let event = f.call(
+            libc::SYS_eventfd2,
+            [1, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
+        );
+        assert!(ep >= 3 && event >= 3);
+        let mut interest = [0_u8; 12];
+        interest[..4].copy_from_slice(&(libc::EPOLLIN as u32).to_ne_bytes());
+        interest[4..].copy_from_slice(&EPOLL_LIFECYCLE_DATA.to_ne_bytes());
+        f.memory.write(EPOLL_LIFECYCLE_EVENT, &interest).unwrap();
+        f.memory.write(EPOLL_LIFECYCLE_ZERO, &[0; 16]).unwrap();
+        assert_eq!(
+            f.call(
+                libc::SYS_epoll_ctl,
+                [
+                    ep as u64,
+                    libc::EPOLL_CTL_ADD as u64,
+                    event as u64,
+                    EPOLL_LIFECYCLE_EVENT,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        (ep, event)
+    }
+
+    fn epoll_lifecycle_wait(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        ep: i64,
+        expected_result: i64,
+    ) {
+        memory.write(PAGE_SIZE, &[0xa5; 64]).unwrap();
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_epoll_pwait2 as u64,
+                    [ep as u64, PAGE_SIZE, 4, EPOLL_LIFECYCLE_ZERO, 0, 0],
+                ),
+                memory,
+            ),
+            expected_result
+        );
+        let mut expected = [0xa5; 64];
+        if expected_result == 1 {
+            expected[..4].copy_from_slice(&(libc::EPOLLIN as u32).to_ne_bytes());
+            expected[4..12].copy_from_slice(&EPOLL_LIFECYCLE_DATA.to_ne_bytes());
+        }
+        let mut actual = [0; 64];
+        memory.read(PAGE_SIZE, &mut actual).unwrap();
+        assert_eq!(
+            actual, expected,
+            "complete event arena, including refusal tail"
+        );
+        let mut zero = [0xff; 16];
+        memory.read(EPOLL_LIFECYCLE_ZERO, &mut zero).unwrap();
+        assert_eq!(zero, [0; 16], "timeout is input-only");
+    }
+
+    #[test]
+    fn epoll_pwait2_fork_and_shared_snapshot_lifetimes_are_distinct() {
+        let mut f = FdinfoFixture::new(false);
+        let (ep, event) = epoll_lifecycle_pair(&mut f);
+        let parent_binding = f.executor.state.native_poll_fds[&(event as i32)].clone();
+        epoll_lifecycle_wait(&mut f.executor, &mut f.memory, ep, 1);
+
+        let mut private = f.executor.fork_child(2, false, false).unwrap();
+        let private_binding = private.state.native_poll_fds[&(event as i32)].clone();
+        assert!(!Arc::ptr_eq(&parent_binding, &private_binding));
+        assert!(!Arc::ptr_eq(
+            &f.executor.state.poll_table_id,
+            &private.state.poll_table_id,
+        ));
+        assert!(Arc::ptr_eq(
+            &f.executor.state.epoll_domain,
+            &private.state.epoll_domain,
+        ));
+        // A foreign table is outside this increment; it does not poison the
+        // origin merely by attempting an immediate wait or closing its own copy.
+        epoll_lifecycle_wait(
+            &mut private,
+            &mut f.memory,
+            ep,
+            negative_errno(libc::ENOSYS),
+        );
+        assert_eq!(
+            private.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [event as u64, 0, 0, 0, 0, 0]),
+                &f.memory,
+            ),
+            0
+        );
+        assert!(!private_binding.live.load(Ordering::SeqCst));
+        assert!(parent_binding.live.load(Ordering::SeqCst));
+        private.release_files_on_exit();
+        drop(private);
+        epoll_lifecycle_wait(&mut f.executor, &mut f.memory, ep, 1);
+
+        let mut snapshot = f.executor.thread_child(3).unwrap();
+        assert!(Arc::ptr_eq(
+            &parent_binding,
+            &snapshot.state.native_poll_fds[&(event as i32)],
+        ));
+        assert!(Arc::ptr_eq(&f.executor.file_table, &snapshot.file_table));
+        assert!(Arc::ptr_eq(
+            &f.executor.state.poll_table_id,
+            &snapshot.state.poll_table_id,
+        ));
+        snapshot.release_files_on_exit();
+        drop(snapshot);
+        assert!(parent_binding.live.load(Ordering::SeqCst));
+        epoll_lifecycle_wait(&mut f.executor, &mut f.memory, ep, 1);
+
+        let mut closer = f.executor.thread_child(4).unwrap();
+        assert_eq!(
+            closer.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [event as u64, 0, 0, 0, 0, 0]),
+                &f.memory,
+            ),
+            0
+        );
+        // The parent still retains its old File and binding before dispatch sync.
+        // Keeping this Arc alive rules out accidental success via Weak expiry.
+        assert!(f.executor.state.files.contains_key(&(event as i32)));
+        assert!(Arc::ptr_eq(
+            &parent_binding,
+            &f.executor.state.native_poll_fds[&(event as i32)],
+        ));
+        assert!(!parent_binding.live.load(Ordering::SeqCst));
+        epoll_lifecycle_wait(
+            &mut f.executor,
+            &mut f.memory,
+            ep,
+            negative_errno(libc::ENOSYS),
+        );
+    }
+
+    #[test]
+    fn epoll_pwait2_epoll_dup_survives_but_target_replacement_and_reuse_refuse() {
+        for replace_with_dup2 in [false, true] {
+            let mut f = FdinfoFixture::new(false);
+            let (ep, event) = epoll_lifecycle_pair(&mut f);
+            let alias = f.call(libc::SYS_dup, [ep as u64, 0, 0, 0, 0, 0]);
+            let target_keeper = f.call(libc::SYS_dup, [event as u64, 0, 0, 0, 0, 0]);
+            assert!(alias > event && target_keeper > alias);
+            assert_eq!(f.call(libc::SYS_close, [ep as u64, 0, 0, 0, 0, 0]), 0);
+            // Closing the original epoll binding does not retire the description
+            // still held by its dup. No watched target binding has changed yet.
+            epoll_lifecycle_wait(&mut f.executor, &mut f.memory, alias, 1);
+            let old = f.executor.state.native_poll_fds[&(event as i32)].clone();
+            // Fill the just-closed epoll's number, so the subsequent close/reopen
+            // control deterministically reuses exactly the watched target number.
+            let replacement = f.call(
+                libc::SYS_eventfd2,
+                [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
+            );
+            assert_eq!(replacement, ep);
+            if replace_with_dup2 {
+                assert_eq!(
+                    f.call(
+                        libc::SYS_dup2,
+                        [replacement as u64, event as u64, 0, 0, 0, 0]
+                    ),
+                    event
+                );
+            } else {
+                assert_eq!(f.call(libc::SYS_close, [event as u64, 0, 0, 0, 0, 0]), 0);
+                assert_eq!(
+                    f.call(
+                        libc::SYS_eventfd2,
+                        [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0]
+                    ),
+                    event
+                );
+            }
+            let current = &f.executor.state.native_poll_fds[&(event as i32)];
+            assert!(!Arc::ptr_eq(&old, current));
+            assert!(!old.live.load(Ordering::SeqCst));
+            assert!(current.live.load(Ordering::SeqCst));
+            // The keeper retains the old native eventfd description, so a stale
+            // registration can really remain ready; refusal is not empty readiness.
+            assert!(f.executor.state.files.contains_key(&(target_keeper as i32)));
+            epoll_lifecycle_wait(
+                &mut f.executor,
+                &mut f.memory,
+                alias,
+                negative_errno(libc::ENOSYS),
+            );
+        }
+    }
+
+    #[test]
+    fn epoll_pwait2_exec_filters_cloexec_without_replacing_surviving_identity() {
+        let mut f = FdinfoFixture::new(false);
+        let (surviving_ep, surviving_event) = epoll_lifecycle_pair(&mut f);
+        let (invalidated_ep, cloexec_event) = epoll_lifecycle_pair(&mut f);
+        let cloexec_ep = f.call(libc::SYS_dup, [surviving_ep as u64, 0, 0, 0, 0, 0]);
+        assert!(cloexec_ep >= 3);
+        for fd in [cloexec_event, cloexec_ep] {
+            assert_eq!(
+                f.call(
+                    libc::SYS_fcntl,
+                    [
+                        fd as u64,
+                        libc::F_SETFD as u64,
+                        libc::FD_CLOEXEC as u64,
+                        0,
+                        0,
+                        0
+                    ],
+                ),
+                0
+            );
+        }
+        let table = f.executor.state.poll_table_id.clone();
+        let domain = f.executor.state.epoll_domain.clone();
+        let surviving = [surviving_ep, surviving_event, invalidated_ep]
+            .map(|fd| (fd, f.executor.state.native_poll_fds[&(fd as i32)].clone()));
+        let retired = [cloexec_event, cloexec_ep]
+            .map(|fd| (fd, f.executor.state.native_poll_fds[&(fd as i32)].clone()));
+        f.executor.replace_after_exec(test_state(&f.root.0));
+        assert!(Arc::ptr_eq(&table, &f.executor.state.poll_table_id));
+        assert!(Arc::ptr_eq(&domain, &f.executor.state.epoll_domain));
+        for (fd, binding) in surviving {
+            assert!(binding.live.load(Ordering::SeqCst));
+            assert!(Arc::ptr_eq(
+                &binding,
+                &f.executor.state.native_poll_fds[&(fd as i32)],
+            ));
+        }
+        for (fd, binding) in retired {
+            assert!(!binding.live.load(Ordering::SeqCst));
+            assert!(!f.executor.state.native_poll_fds.contains_key(&(fd as i32)));
+            assert_eq!(
+                f.call(
+                    libc::SYS_fcntl,
+                    [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+                ),
+                negative_errno(libc::EBADF)
+            );
+        }
+        epoll_lifecycle_wait(&mut f.executor, &mut f.memory, surviving_ep, 1);
+        epoll_lifecycle_wait(
+            &mut f.executor,
+            &mut f.memory,
+            invalidated_ep,
+            negative_errno(libc::ENOSYS),
+        );
+    }
+
+    struct EpollAliasWake {
+        memory: GuestMemory,
+        domain: Arc<Mutex<EpollDomain>>,
+        files: Arc<Mutex<FileTableState>>,
+        enabled: AtomicBool,
+        subscriptions: Mutex<Vec<std::pin::Pin<Box<crate::entry::ObservedChange>>>>,
+        observations: Mutex<Vec<(usize, bool)>>,
+    }
+
+    impl EpollAliasWake {
+        fn arm(self: &Arc<Self>) {
+            use std::future::Future;
+            let mut next = Box::pin(self.memory.entry_gate().subscribe());
+            let waker = std::task::Waker::from(self.clone());
+            assert!(
+                next.as_mut()
+                    .poll(&mut std::task::Context::from_waker(&waker))
+                    .is_pending()
+            );
+            // Shared invokes this waker while holding its subscriber mutex.
+            // Dropping that old subscription here would reacquire the same
+            // mutex. Retain all subscriptions until stop(), outside any wake.
+            self.subscriptions.lock().unwrap().push(next);
+        }
+
+        fn stop(&self) {
+            self.enabled.store(false, Ordering::SeqCst);
+            self.subscriptions.lock().unwrap().clear();
+            // Retire the last subscription's waker without leaving a test-only
+            // cycle from gate -> waker -> memory. The disabled waker is inert.
+            self.memory.entry_gate().notify_unchanged_for_test();
+        }
+    }
+
+    impl std::task::Wake for EpollAliasWake {
+        fn wake(self: Arc<Self>) {
+            Self::wake_by_ref(&self);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            if !self.enabled.load(Ordering::SeqCst) {
+                return;
+            }
+            assert!(
+                self.domain.try_lock().is_ok(),
+                "epoll domain held during alias notification"
+            );
+            assert!(
+                self.files.try_lock().is_ok(),
+                "file table held during alias notification"
+            );
+            let state = self.memory.entry_gate().test_state();
+            assert_eq!(state.copies, 0);
+            self.observations.lock().unwrap().push((
+                state.retained_operands,
+                self.memory.entry_gate().pending_failure().is_some(),
+            ));
+            self.arm();
+        }
+    }
+
+    fn epoll_alias_watch(executor: &ElfExecutor, memory: &GuestMemory) -> Arc<EpollAliasWake> {
+        let observer = Arc::new(EpollAliasWake {
+            memory: memory.clone(),
+            domain: executor.state.epoll_domain.clone(),
+            files: executor.file_table.clone(),
+            enabled: AtomicBool::new(true),
+            subscriptions: Mutex::new(Vec::new()),
+            observations: Mutex::new(Vec::new()),
+        });
+        observer.arm();
+        observer
+    }
+
+    #[test]
+    fn epoll_pwait2_success_and_copyout_fault_notify_outside_all_locks() {
+        for writable in [true, false] {
+            let mut f = FdinfoFixture::new(false);
+            let (ep, _) = epoll_pwait2_test_interest(&mut f, 1);
+            f.memory
+                .map_user_permissions(0, 4 * PAGE_SIZE, true, true)
+                .unwrap();
+            f.memory
+                .map_user_permissions(PAGE_SIZE, PAGE_SIZE, true, writable)
+                .unwrap();
+            f.memory.enable_user_access();
+            let observer = epoll_alias_watch(&f.executor, &f.memory);
+            assert_eq!(
+                f.call(
+                    libc::SYS_epoll_pwait2,
+                    [ep as u64, PAGE_SIZE, 1, 0x100, 0, 0]
+                ),
+                if writable {
+                    1
+                } else {
+                    negative_errno(libc::EFAULT)
+                }
+            );
+            observer.stop();
+            assert_eq!(
+                *observer.observations.lock().unwrap(),
+                [(0, false), (1, false), (0, false)],
+                "input copy, alias preparation and finalization are all observed"
+            );
+        }
+    }
+
+    #[test]
+    fn epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks() {
+        let Some(fault) = crate::alias_failure::child_case(
+            "executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks",
+            crate::alias_failure::Case::CleanupAfterSuccess,
+        ) else {
+            return;
+        };
+        assert!(crate::memory::retained_write_aliases_for_test().is_empty());
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+        memory.write(0x100, &[0; 16]).unwrap();
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                0x200,
+                &libc::epoll_event {
+                    events: libc::EPOLLIN as u32,
+                    u64: 7
+                }
+            ),
+            0
+        );
+        let ep = epoll_create1(&mut state, 0);
+        // 700 proven interests require a real three-page alias, with writable
+        // first/last pages. No fabricated membership or test-only capacity.
+        for _ in 0..700 {
+            let event = eventfd2(&mut state, 0, libc::EFD_NONBLOCK as u64);
+            assert!(event >= 3);
+            assert_eq!(
+                epoll_ctl(
+                    &memory,
+                    &state,
+                    &[
+                        ep as u64,
+                        libc::EPOLL_CTL_ADD as u64,
+                        event as u64,
+                        0x200,
+                        0,
+                        0
+                    ]
+                ),
+                0
+            );
+        }
+        memory
+            .write_raw(PAGE_SIZE, &vec![0xa5; 3 * PAGE_SIZE as usize])
+            .unwrap();
+        memory
+            .map_user_permissions(0, 4 * PAGE_SIZE, true, true)
+            .unwrap();
+        memory
+            .map_user_permissions(2 * PAGE_SIZE, PAGE_SIZE, false, false)
+            .unwrap();
+        memory.enable_user_access();
+        let backing = memory.test_alias_backing_observer();
+        let mut executor = ElfExecutor::new(state, false);
+        let observer = epoll_alias_watch(&executor, &memory);
+        fault.arm();
+        let error = executor
+            .execute_checked(
+                &SyscallRequest::new(
+                    libc::SYS_epoll_pwait2 as u64,
+                    [ep as u64, PAGE_SIZE, 700, 0x100, 0, 0],
+                ),
+                &memory,
+            )
+            .unwrap_err();
+        observer.stop();
+        let retained = getdents64_alias_ledger(&fault);
+        assert!(
+            fault
+                .cause(&error, Some(retained[0].retention_id))
+                .is_some(),
+            "{error:?}"
+        );
+        assert_eq!(
+            *observer.observations.lock().unwrap(),
+            [(0, false), (1, false), (1, true), (0, true)]
+        );
+        let mut actual = vec![0; 3 * PAGE_SIZE as usize];
+        backing.read_raw(PAGE_SIZE, &mut actual).unwrap();
+        assert_eq!(
+            actual,
+            vec![0xa5; actual.len()],
+            "empty native interest set did not copy output"
+        );
+        let original = memory.entry_gate().pending_failure().unwrap();
+        assert!(memory.user().write(PAGE_SIZE, b"x").is_err());
+        assert!(Arc::ptr_eq(
+            &original,
+            &memory.entry_gate().pending_failure().unwrap()
+        ));
+        assert!(
+            executor
+                .execute_checked(
+                    &SyscallRequest::new(
+                        libc::SYS_epoll_pwait2 as u64,
+                        [ep as u64, PAGE_SIZE, 700, 0x100, 0, 0]
+                    ),
+                    &memory
+                )
+                .is_err()
+        );
+        drop(observer);
+        drop(executor);
+        drop(memory);
+        drop(backing);
+        drop(error);
+        drop(original);
+        assert_eq!(crate::memory::retained_write_aliases_for_test(), retained);
+        fault.assert_fired();
+    }
+
+    #[test]
+    fn epoll_pwait2_unshare_history_covers_epolls_created_after_the_request() {
+        const UNSHARE: u64 = 1 << 1;
+        const CLOEXEC: u64 = 1 << 2;
+        for flags in [CLOEXEC, CLOEXEC | UNSHARE] {
+            let mut f = FdinfoFixture::new(false);
+            let (existing, _) = epoll_lifecycle_pair(&mut f);
+            let mut sibling = f.executor.thread_child(2).unwrap();
+            // No descriptor falls in this range. The unsupported table split,
+            // rather than a coincidental close, is the admission boundary.
+            assert_eq!(
+                sibling.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_close_range as u64,
+                        [u32::MAX as u64, u32::MAX as u64, flags, 0, 0, 0]
+                    ),
+                    &f.memory
+                ),
+                0
+            );
+            let expected = if flags & UNSHARE == 0 {
+                1
+            } else {
+                negative_errno(libc::ENOSYS)
+            };
+            epoll_lifecycle_wait(&mut f.executor, &mut f.memory, existing, expected);
+            let (later, _) = epoll_lifecycle_pair(&mut f);
+            epoll_lifecycle_wait(&mut f.executor, &mut f.memory, later, expected);
+            epoll_lifecycle_wait(&mut sibling, &mut f.memory, later, expected);
+            let mut child = f.executor.fork_child(3, false, false).unwrap();
+            let empty = child.execute(
+                &SyscallRequest::new(libc::SYS_epoll_create1 as u64, [0; 6]),
+                &f.memory,
+            );
+            assert!(empty >= 0);
+            epoll_lifecycle_wait(
+                &mut child,
+                &mut f.memory,
+                empty,
+                if flags & UNSHARE == 0 { 0 } else { expected },
+            );
+        }
+    }
+
+    #[test]
+    fn epoll_pwait2_poisoned_provenance_cannot_become_success() {
+        let mut f = FdinfoFixture::new(false);
+        let (ep, _) = epoll_pwait2_test_interest(&mut f, 1);
+        f.memory.write(0x300, &[0xa5; 24]).unwrap();
+        let domain = f.executor.state.epoll_domain.clone();
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = domain.lock().unwrap();
+                panic!("planted provenance publication failure");
+            })
+            .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| epoll_pwait2_test_wait(
+                &mut f, ep
+            )))
+            .is_err()
+        );
+        assert_eq!(
+            read_guest_bytes::<24>(&f.memory, 0x300).unwrap(),
+            [0xa5; 24]
+        );
     }
 
     fn fdinfo_content_unsupported_targets(fixture: &mut FdinfoFixture) -> Vec<(&'static str, i64)> {
