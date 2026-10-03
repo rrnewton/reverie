@@ -4781,6 +4781,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             stage,
             foreign,
             displaced_child: StdOnceLock::new(),
+            displaced_generation: StdOnceLock::new(),
             outcome,
         }));
         self
