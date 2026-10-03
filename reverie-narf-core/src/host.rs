@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Tool lifetime, per-task state and single-poll dispatch.
+//! Tool lifetime, per-task state and the dispatch of Tool callbacks.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -398,8 +398,10 @@ impl<T: Tool> TaskTable<T> {
 /// Polls `future` exactly once with a waker that does nothing.
 ///
 /// Nothing ever wakes a Tool future. The core polls one again only when the
-/// kernel re-executes the syscall a parked inject awaits, or after the kernel
-/// let other tasks run while it waited for one of them ([`poll_repolling`]).
+/// kernel re-executes the syscall a parked inject awaits, once more when the
+/// task leaves that inject for another context ([`NarfToolHost::interrupt`]),
+/// or after the kernel let other tasks run while it was pending
+/// ([`poll_repolling`]).
 fn poll_once<F: Future + ?Sized>(future: Pin<&mut F>) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(Waker::noop()))
 }
@@ -594,13 +596,14 @@ where
     ///
     /// The Tool's future is polled with a waker that does nothing. While it
     /// is pending without a terminal transition, a parked inject or a
-    /// failure, it is waiting for another task (through the global state):
-    /// the host asks the kernel to let other tasks run
+    /// failure, the host treats it as waiting for another task (through
+    /// the global state, say): it asks the kernel to let other tasks run
     /// ([`KernelServices::wait_for_repoll`]) and polls it again, within this
-    /// entry, until it finishes, makes its terminal transition, parks, or the
-    /// task is killed. A killed task's future is dropped and the entry
-    /// returns [`Disposition::ContextManaged`]. If the kernel cannot wait,
-    /// the future fails closed with [`NarfFatal::ToolSuspended`].
+    /// entry, until it finishes, makes its terminal transition, parks, fails,
+    /// or the task is killed. The host sets no bound on the waits. A killed
+    /// task's future is dropped and the entry returns
+    /// [`Disposition::ContextManaged`]. If the kernel cannot wait, the future
+    /// fails closed with [`NarfFatal::ToolSuspended`].
     ///
     /// The future may stay pending across entries in exactly one case: a
     /// non-tail `inject` whose syscall parked the task. The host keeps the
@@ -947,8 +950,9 @@ fn exit_result(poll: Poll<Result<(), Error>>) -> Result<(), NarfFatal> {
 /// kernel let other tasks run.
 ///
 /// A future pending without a terminal transition, a parked inject or a
-/// failure is waiting for another task, so the core asks the kernel to wait
-/// ([`KernelServices::wait_for_repoll`]) and polls it again. The wait runs
+/// failure is treated as waiting for another task, so the core asks the
+/// kernel to wait ([`KernelServices::wait_for_repoll`]) and polls it again,
+/// with no limit of its own. The wait runs
 /// outside [`FrameSlot::enter`], so no frame is published while the task is
 /// switched out. Returns the last poll, or `None` if the task was killed
 /// during a wait.

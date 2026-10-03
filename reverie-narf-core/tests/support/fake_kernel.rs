@@ -19,14 +19,27 @@
 //! * after any transition reports `ContextManaged`, nothing may execute; a
 //!   later request is a [`Violation::AfterContextManaged`];
 //! * a created task is reported once, and exits are reported to the host after
-//!   the interceptor returns, as Narf's teardown would;
+//!   the interceptor returns, as Narf's teardown would. A task that exits
+//!   while its own callback runs (a sibling's `exit_group` during the other
+//!   tasks' work, say) is reported only once that callback has returned;
 //! * each process has its own fake address space, so memory read through the
 //!   wrong task's accessor faults;
 //! * `wait_for_repoll` answers from a script the test sets, and is
 //!   `Unsupported` once the script is used up; a `Yielded` answer first runs
 //!   whatever the test gave as the other tasks' work, and a `Killed` answer
 //!   ends the task's process with SIGKILL, as a pending SIGKILL ends Narf's
-//!   wait, and nothing may execute after it.
+//!   wait, and nothing may execute after it. If the other tasks' work ended
+//!   the waiting task's process, a `Yielded` answer becomes `Killed`, as
+//!   Narf checks for a kill again once the task runs again.
+//!
+//! What it does not model:
+//!
+//! * the script is shared by every task, so a callback that waits while it is
+//!   nested in another task's work takes the next answer; `repoll_waits`
+//!   records which task asked;
+//! * a task whose process ends in the middle of one of its own polls, with no
+//!   wait in between, can still run transitions; Narf's signal gate would make
+//!   them context-managed.
 
 #![allow(dead_code)]
 
@@ -181,6 +194,9 @@ struct World {
     natives: Vec<Native>,
     violations: Vec<Violation>,
     pending_exits: Vec<(i32, ExitStatus)>,
+    /// The tasks whose interceptor or lifecycle call is running, innermost
+    /// last. Their exits stay pending until the call returns.
+    in_callback: Vec<i32>,
     /// Each process's group exit status (`exit_group`), the first winning.
     /// With none, Linux reports the last thread's own status.
     group_status: BTreeMap<i32, ExitStatus>,
@@ -226,6 +242,7 @@ impl FakeKernel {
                 natives: Vec::new(),
                 violations: Vec::new(),
                 pending_exits: Vec::new(),
+                in_callback: Vec::new(),
                 group_status: BTreeMap::new(),
                 teardowns: Vec::new(),
                 repoll_script: Vec::new(),
@@ -319,10 +336,10 @@ impl FakeKernel {
         tid: Pid,
         entry: SyscallEntry,
     ) -> Result<Disposition, NarfFatal> {
-        let result = {
+        let result = self.in_callback(tid, || {
             let mut services = self.services(tid, Some(entry.request));
             host.handle_syscall(&mut services, entry)
-        };
+        });
         self.report_exits(host);
         result
     }
@@ -337,11 +354,11 @@ impl FakeKernel {
         request: NarfSyscallRequest,
         others: &mut (dyn FnMut() + Send + Sync),
     ) -> Result<Disposition, NarfFatal> {
-        let result = {
+        let result = self.in_callback(tid, || {
             let mut services = self.services(tid, Some(request));
             services.others = Some(others);
             host.handle_syscall(&mut services, SyscallEntry::new(request))
-        };
+        });
         self.report_exits(host);
         result
     }
@@ -352,16 +369,32 @@ impl FakeKernel {
         host: &FakeHost<T>,
         tid: Pid,
     ) -> Result<LifecycleOutcome, NarfFatal> {
-        let result = {
+        let result = self.in_callback(tid, || {
             let mut services = self.services(tid, None);
             host.handle_thread_start(&mut services)
-        };
+        });
         self.report_exits(host);
         result
     }
 
+    /// Runs `call` as `tid`'s callback: exits reported meanwhile skip `tid`.
+    fn in_callback<R>(&self, tid: Pid, call: impl FnOnce() -> R) -> R {
+        self.with(|world| world.in_callback.push(tid.as_raw()));
+        let result = call();
+        let innermost = self.with(|world| world.in_callback.pop());
+        assert_eq!(innermost, Some(tid.as_raw()), "callbacks nest");
+        result
+    }
+
+    /// Reports every pending exit of a task that is not inside a callback.
     fn report_exits<T: Tool>(&self, host: &FakeHost<T>) {
-        let exits = self.with(|world| core::mem::take(&mut world.pending_exits));
+        let exits = self.with(|world| {
+            let (now, later): (Vec<_>, Vec<_>) = core::mem::take(&mut world.pending_exits)
+                .into_iter()
+                .partition(|(tid, _)| !world.in_callback.contains(tid));
+            world.pending_exits = later;
+            now
+        });
         for (tid, status) in exits {
             let process_status = self.with(|world| {
                 let pid = world.tasks.get(&tid).map_or(tid, |task| task.pid);
@@ -764,6 +797,10 @@ impl<'k> KernelServices for FakeServices<'k> {
             RepollWait::Yielded => {
                 if let Some(others) = self.others.as_mut() {
                     others();
+                }
+                if self.kernel.with(|world| world.tasks[&tid].exited) {
+                    self.context_managed = true;
+                    return RepollWait::Killed;
                 }
             }
             RepollWait::Killed => {

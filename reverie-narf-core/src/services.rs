@@ -60,8 +60,10 @@ pub struct CreatedTask {
 /// the core reaches a `KernelServices` only synchronously, from the calling
 /// task, inside the interceptor call that created it: a Tool future kept
 /// across a park holds no reference to it, and sees the next call's services
-/// only while that call polls it. The task may resume on another CPU after
-/// [`wait_for_repoll`](Self::wait_for_repoll), still inside the same call.
+/// only while that call polls it. The task may be switched out inside
+/// [`wait_for_repoll`](Self::wait_for_repoll) and resume on another CPU,
+/// still inside the same call, so the wrapper must not rely on the CPU
+/// staying the same (by keeping per-CPU state across the wait, say).
 pub trait KernelServices: Send + Sync {
     /// Guest-memory accessor bound to the current task's address space.
     type Memory: MemoryAccess + Send;
@@ -107,9 +109,15 @@ pub trait KernelServices: Send + Sync {
     ///
     /// The core calls this only between two polls of a future that is
     /// pending without having made a terminal transition, parked an inject
-    /// or failed: a future waiting for another task (a global-state RPC,
-    /// say). Nothing wakes such a future, so the core polls it again after
-    /// every [`RepollWait::Yielded`]. The default cannot wait and returns
+    /// or failed, which it treats as waiting for another task (through a
+    /// global-state RPC, say). Nothing wakes such a future, so the core
+    /// polls it again after every [`RepollWait::Yielded`], with no limit:
+    /// any bound on the wait, or deadlock detection, belongs to the kernel
+    /// (or to the Tool). Without one, a future that never becomes ready
+    /// keeps its task yielding until the task is killed.
+    ///
+    /// The task may be switched out here and resume on another CPU; see the
+    /// `Send + Sync` requirement above. The default cannot wait and returns
     /// [`RepollWait::Unsupported`], which ends the callback as
     /// [`NarfFatal::ToolSuspended`](crate::NarfFatal::ToolSuspended).
     fn wait_for_repoll(&mut self) -> RepollWait {
