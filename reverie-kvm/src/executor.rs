@@ -71,6 +71,8 @@ pub(crate) use process_signal_publication::ProcessFamilyExit;
 #[path = "capture_identity.rs"]
 mod capture_identity;
 
+pub(crate) mod pipe_owner;
+
 #[cfg(test)]
 #[path = "executor/entry_host_wait_tests.rs"]
 mod entry_host_wait_tests;
@@ -2176,6 +2178,7 @@ pub(crate) struct FileTableState {
     epoll_domain: Arc<Mutex<EpollDomain>>,
     poll_table_id: Arc<NativePollTable>,
     native_poll_fds: std::collections::BTreeMap<i32, Arc<NativePollBinding>>,
+    pipe_owners: std::collections::BTreeMap<i32, Arc<pipe_owner::PipeOwner>>,
     random_device_fds: std::collections::BTreeSet<i32>,
     random_device_descriptions: std::collections::BTreeMap<i32, Arc<RandomDeviceDescription>>,
     stdout_alias_fds: std::collections::BTreeSet<i32>,
@@ -2998,6 +3001,7 @@ impl FileTableState {
             epoll_domain: state.epoll_domain.clone(),
             poll_table_id: state.poll_table_id.clone(),
             native_poll_fds: state.native_poll_fds.clone(),
+            pipe_owners: state.pipe_owners.clone(),
             random_device_fds: state.random_device_fds.clone(),
             random_device_descriptions: state.random_device_descriptions.clone(),
             stdout_alias_fds: state.stdout_alias_fds.clone(),
@@ -3077,6 +3081,7 @@ impl FileTableState {
         state.epoll_domain.clone_from(&self.epoll_domain);
         state.poll_table_id.clone_from(&self.poll_table_id);
         state.native_poll_fds.clone_from(&self.native_poll_fds);
+        state.pipe_owners.clone_from(&self.pipe_owners);
         state.random_device_fds.clone_from(&self.random_device_fds);
         state
             .random_device_descriptions
@@ -3810,6 +3815,7 @@ impl ElfExecutor {
         state.thread_group_leader_name = self.state.thread_group_leader_name.clone();
         state.thp_disabled = self.state.thp_disabled.clone();
         state.process_signals = self.state.process_signals.clone();
+        state.pipe_owner_process = self.state.pipe_owner_process.clone();
         // The fork helper made private-table bindings. CLONE_FILES instead
         // shares logical entry lifetime with the authoritative parent table.
         state.poll_table_id = self.state.poll_table_id.clone();
@@ -4121,6 +4127,7 @@ impl ElfExecutor {
         self.state.fd_entry_ids.clear();
         // Snapshot retirement is not a logical close in a surviving table.
         self.state.native_poll_fds.clear();
+        self.state.pipe_owners.clear();
         self.state.poll_table_id = Default::default();
         self.state.epoll_domain = Default::default();
         self.file_table = Arc::new(Mutex::new(FileTableState::default()));
@@ -9976,6 +9983,7 @@ struct DuplicateFdSource {
     random_description: Option<Arc<RandomDeviceDescription>>,
     signalfd_mask: Option<Arc<KernelSigset>>,
     native_poll: Option<NativePollDescription>,
+    pipe_owner: Option<Arc<pipe_owner::PipeOwner>>,
 }
 
 /// Stops supported generic writes from reaching the eventfd that privately
@@ -10080,6 +10088,9 @@ fn duplicate_fd_at_or_above(
     // SAFETY: fcntl returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
     let retired = state.insert_file(fd, file);
+    if let Some(owner) = source.pipe_owner {
+        state.pipe_owners.insert(fd, owner);
+    }
     if let Some(description) = source.native_poll {
         install_native_poll_description(state, fd, description);
     }
@@ -10145,6 +10156,7 @@ fn duplicate_fd(
     let source_random_description = state.random_device_descriptions.get(&old_fd).cloned();
     let source_native_poll = native_poll_description(state, old_fd);
     let source_signalfd_mask = signalfd_mask(state, old_fd);
+    let source_pipe_owner = state.pipe_owners.get(&old_fd).cloned();
     let Some(old_host_fd) = host_fd(state, old_fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -10179,6 +10191,9 @@ fn duplicate_fd(
     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
     if let Some(new_fd) = new_fd {
         let retired = state.insert_file(new_fd, file);
+        if let Some(owner) = source_pipe_owner {
+            state.pipe_owners.insert(new_fd, owner);
+        }
         if let Some(description) = source_native_poll {
             install_native_poll_description(state, new_fd, description);
         }
@@ -10225,6 +10240,9 @@ fn duplicate_fd(
     } else {
         let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
         if new_fd >= 0 {
+            if let Some(owner) = source_pipe_owner {
+                state.pipe_owners.insert(new_fd as i32, owner);
+            }
             if let Some(description) = source_native_poll {
                 install_native_poll_description(state, new_fd as i32, description);
             }
@@ -10284,12 +10302,14 @@ fn pipe2(
     let read_end = unsafe { std::fs::File::from_raw_fd(host_fds[0]) };
     // SAFETY: pipe2 returned two new owned descriptors on success.
     let write_end = unsafe { std::fs::File::from_raw_fd(host_fds[1]) };
+    let creator = state.pipe_owner_process.clone();
     insert_file_pair(
         memory,
         state,
         address,
         [read_end, write_end],
         flags & libc::O_CLOEXEC != 0,
+        Some(creator),
     )
 }
 
@@ -10300,6 +10320,7 @@ fn insert_file_pair(
     address: u64,
     files: [std::fs::File; 2],
     close_on_exec: bool,
+    pipe_creator: Option<Arc<()>>,
 ) -> i64 {
     let [first_file, second_file] = files.map(|file| state.file_retirement.stage(file));
     let first_fd = insert_file_with_flags(state, first_file.into_file(), close_on_exec, None);
@@ -10313,6 +10334,13 @@ fn insert_file_pair(
     }
 
     let fds = [first_fd as libc::c_int, second_fd as libc::c_int];
+    if let Some(creator) = pipe_creator {
+        for fd in fds {
+            state
+                .pipe_owners
+                .insert(fd, Arc::new(pipe_owner::PipeOwner::new(creator.clone())));
+        }
+    }
     let mut bytes = [0; std::mem::size_of::<[libc::c_int; 2]>()];
     bytes[..std::mem::size_of::<libc::c_int>()].copy_from_slice(&fds[0].to_ne_bytes());
     bytes[std::mem::size_of::<libc::c_int>()..].copy_from_slice(&fds[1].to_ne_bytes());
@@ -12716,6 +12744,7 @@ fn socketpair(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64
         args[3],
         [first, second],
         socket_type & libc::SOCK_CLOEXEC != 0,
+        None,
     )
 }
 
@@ -13082,6 +13111,9 @@ fn translate_outgoing_rights(
         {
             let guest_fd = read_control_fd(control, offset)?;
             let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
+            if let Some(owner) = state.pipe_owners.get(&guest_fd) {
+                owner.before_export()?;
+            }
             if let Some(description) = native_poll_description(state, guest_fd) {
                 // Once an untracked receiver might control this description,
                 // no known alias can prove its registration set. Invalidate
@@ -16365,11 +16397,20 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
     let source_random_description = state.random_device_descriptions.get(&guest_fd).cloned();
     let source_native_poll = native_poll_description(state, guest_fd);
     let source_signalfd_mask = signalfd_mask(state, guest_fd);
+    let source_pipe_owner = state.pipe_owners.get(&guest_fd).cloned();
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
     let source_object_inode = guest_fd_object_identity(state, guest_fd);
     match args[1] as libc::c_int {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-PENDING): Review bounded pipe-owner configuration dispatch.
+        command @ (libc::F_SETOWN
+        | libc::F_GETOWN
+        | libc::F_SETOWN_EX
+        | libc::F_GETOWN_EX
+        | libc::F_SETSIG
+        | libc::F_GETSIG) => pipe_owner::fcntl(memory, state, guest_fd, host_fd, command, args[2]),
         libc::F_DUPFD => duplicate_fd_at_or_above(
             state,
             host_fd,
@@ -16385,6 +16426,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 random_description: source_random_description,
                 signalfd_mask: source_signalfd_mask,
                 native_poll: source_native_poll,
+                pipe_owner: source_pipe_owner,
             },
         ),
         libc::F_DUPFD_CLOEXEC => duplicate_fd_at_or_above(
@@ -16402,6 +16444,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 random_description: source_random_description,
                 signalfd_mask: source_signalfd_mask,
                 native_poll: source_native_poll,
+                pipe_owner: source_pipe_owner,
             },
         ),
         libc::F_GETFL => match fd_status_flags(host_fd) {
@@ -16464,7 +16507,11 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 return negative_errno(libc::ENOSYS);
             }
             // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
-            zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) })
+            if let Some(owner) = source_pipe_owner {
+                owner.set_flags(host_fd, flags)
+            } else {
+                zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) })
+            }
         }
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-211): Review KVM advisory-lock forwarding.
@@ -16654,8 +16701,10 @@ fn close_range(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     }
     if flags & CLOSE_RANGE_UNSHARE != 0 {
         // This backend's existing close_range path does not split CLONE_FILES.
-        // Preserve that syscall's outcome, but do not admit new epoll waits
-        // after this unmodeled table history, including CLOEXEC-only requests.
+        // Preserve that syscall's outcome, but do not admit new epoll waits or
+        // pipe-owner configuration after this unmodeled table history,
+        // including CLOEXEC-only requests. Permanent pipe export/async guards
+        // remain attached to their shared descriptions independently.
         let _domain = state
             .epoll_domain
             .lock()
@@ -19477,6 +19526,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         fs_base: 0,
         gs_base: 0,
         pid: 1,
+        pipe_owner_process: Arc::new(()),
         pgid: 1,
         tid: 1,
         ppid: 0,
@@ -19510,6 +19560,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         )),
         files: std::collections::BTreeMap::new(),
         file_retirement: crate::elf::FileRetirement::default(),
+        pipe_owners: Default::default(),
         fd_entry_ids: std::collections::BTreeMap::new(),
         epoll_domain: Default::default(),
         poll_table_id: Default::default(),
@@ -19545,6 +19596,7 @@ pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf
 
 #[cfg(test)]
 mod tests {
+    include!("executor/pipe_owner_tests.rs");
     include!("executor/syncfs_tests.rs");
     include!("executor/read_zero_cancel_tests.rs");
     include!("executor/random_device_stream_tests.rs");

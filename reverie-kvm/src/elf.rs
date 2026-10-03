@@ -760,6 +760,9 @@ pub(crate) struct LoadedStaticElf {
     pub fs_base: u64,
     pub gs_base: u64,
     pub pid: i32,
+    /// Process incarnation for the bounded pipe-owner configuration domain.
+    /// Threads and exec retain it; a forked process receives a fresh token.
+    pub(crate) pipe_owner_process: std::sync::Arc<()>,
     /// Virtual process-group identity, inherited across `fork`.
     pub pgid: i32,
     // TODO-HUMAN-REVIEW(PR-132): Review single-vCPU thread identity transitions.
@@ -858,6 +861,8 @@ pub(crate) struct LoadedStaticElf {
     pub task_lifecycle: std::sync::Arc<std::sync::Mutex<TaskLifecycleTable>>,
     pub files: std::collections::BTreeMap<i32, std::fs::File>,
     pub file_retirement: FileRetirement,
+    pub(crate) pipe_owners:
+        std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::pipe_owner::PipeOwner>>,
     /// Identity of each descriptor entry, independent of its filesystem object.
     /// Insertion, including a dup destination, creates a new identity. Table
     /// snapshots and fork copies retain it so unchanged host handles stay stable.
@@ -931,6 +936,7 @@ impl LoadedStaticElf {
             }
         }
         self.random_device_descriptions.remove(&fd);
+        self.pipe_owners.remove(&fd);
         let mut retired: Vec<_> = self.files.insert(fd, file).into_iter().collect();
         if fd == libc::STDIN_FILENO {
             retired.extend(self.take_stdin());
@@ -956,6 +962,7 @@ impl LoadedStaticElf {
             }
         }
         self.random_device_descriptions.remove(&fd);
+        self.pipe_owners.remove(&fd);
         let file = self.files.remove(&fd);
         self.fd_entry_ids.remove(&fd);
         file
@@ -1011,6 +1018,7 @@ impl LoadedStaticElf {
             fs_base: self.fs_base,
             gs_base: self.gs_base,
             pid: child_pid,
+            pipe_owner_process: std::sync::Arc::new(()),
             pgid: self.pgid,
             tid: child_pid,
             ppid: self.pid,
@@ -1060,6 +1068,7 @@ impl LoadedStaticElf {
                 .map(|(fd, file)| (fd, file.into_file()))
                 .collect(),
             file_retirement: FileRetirement::default(),
+            pipe_owners: self.pipe_owners.clone(),
             fd_entry_ids: self.fd_entry_ids.clone(),
             epoll_domain: self.epoll_domain.clone(),
             poll_table_id: self.poll_table_id.fork_identity(),
@@ -1162,6 +1171,11 @@ impl LoadedStaticElf {
             .collect();
         let random_device_descriptions = previous
             .random_device_descriptions
+            .into_iter()
+            .filter(|(fd, _)| files.contains_key(fd))
+            .collect();
+        let pipe_owners = previous
+            .pipe_owners
             .into_iter()
             .filter(|(fd, _)| files.contains_key(fd))
             .collect();
@@ -1283,6 +1297,8 @@ impl LoadedStaticElf {
         self.task_lifecycle = task_lifecycle;
         retired.extend(std::mem::replace(&mut self.files, files).into_values());
         self.file_retirement = previous.file_retirement;
+        self.pipe_owner_process = previous.pipe_owner_process;
+        self.pipe_owners = pipe_owners;
         self.fd_entry_ids = fd_entry_ids;
         self.epoll_domain = previous.epoll_domain;
         self.poll_table_id = previous.poll_table_id;
@@ -1631,6 +1647,7 @@ fn load_executable(
         fs_base: 0,
         gs_base: 0,
         pid: 1,
+        pipe_owner_process: std::sync::Arc::new(()),
         pgid: 1,
         tid: 1,
         ppid: 0,
@@ -1668,6 +1685,7 @@ fn load_executable(
         ))),
         files: std::collections::BTreeMap::new(),
         file_retirement: FileRetirement::default(),
+        pipe_owners: Default::default(),
         fd_entry_ids: std::collections::BTreeMap::new(),
         epoll_domain: Default::default(),
         poll_table_id: Default::default(),
