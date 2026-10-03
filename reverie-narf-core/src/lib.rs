@@ -21,9 +21,12 @@
 //!   `ThreadState` per thread;
 //! * [`NarfToolHost::handle_syscall`] builds a [`NarfGuest`], which implements
 //!   [`reverie::Guest`] on top of [`KernelServices`], and polls the Tool's
-//!   `handle_syscall_event` future exactly once. A future that is still
+//!   `handle_syscall_event` future once per interceptor entry, with a waker
+//!   that does nothing. A future pending in a non-tail `inject` whose
+//!   syscall parked the task is kept and polled again, with the syscall's
+//!   value, when the kernel re-executes it; any other future that is still
 //!   pending without having made a terminal transition fails closed with
-//!   [`NarfFatal::ToolSuspended`]; it is never polled again;
+//!   [`NarfFatal::ToolSuspended`] and is never polled again;
 //! * global RPC is a direct call of [`reverie::GlobalTool::receive_rpc`] on the
 //!   singleton;
 //! * [`NarfToolHost::task_exited`] runs `on_exit_thread` exactly once per
@@ -311,7 +314,7 @@ mod tests {
         }
     }
 
-    fn host<T: Tool<GlobalState = Global>>() -> NarfToolHost<T, StdLock<TaskTable<T>>> {
+    fn host<T: Tool<GlobalState = Global> + 'static>() -> NarfToolHost<T, StdLock<TaskTable<T>>> {
         let host = NarfToolHost::new(()).expect("host");
         host.register_root(Pid::from_raw(TID), Pid::from_raw(TID))
             .expect("root");

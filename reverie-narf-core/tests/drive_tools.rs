@@ -50,6 +50,7 @@ use reverie::Subscription;
 use reverie::ThreadOwnership;
 use reverie::Tool;
 use reverie::syscalls::Addr;
+use reverie::syscalls::Errno;
 use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallArgs;
@@ -70,7 +71,7 @@ fn pid(raw: i32) -> Pid {
     Pid::from_raw(raw)
 }
 
-fn host<T: Tool>() -> FakeHost<T>
+fn host<T: Tool + 'static>() -> FakeHost<T>
 where
     <T::GlobalState as GlobalTool>::Config: Default,
 {
@@ -535,8 +536,120 @@ fn repeated_forward_of_the_original_runs_it_natively_once() {
 #[derive(Default)]
 struct InjectThenContinue;
 
+std::thread_local! {
+    /// What `InjectThenContinue` saw on this test's thread, in order: each
+    /// inject's result. (Every test's fake kernel numbers tasks from 1000.)
+    static INJECT_RESULTS: core::cell::RefCell<Vec<(i32, Result<i64, i32>)>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
 #[async_trait]
 impl Tool for InjectThenContinue {
+    type GlobalState = ();
+    type ThreadState = u64;
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        *guest.thread_state_mut() += 1;
+        let result = guest.inject(syscall).await;
+        let tid = guest.tid().as_raw();
+        INJECT_RESULTS.with_borrow_mut(|results| {
+            results.push((tid, result.map_err(|errno| errno.into_raw())))
+        });
+        // The thread state is reachable again after the await.
+        *guest.thread_state_mut() += 100;
+        Ok(result? + 1)
+    }
+}
+
+fn inject_results(tid: Pid) -> Vec<Result<i64, i32>> {
+    INJECT_RESULTS.with_borrow(|results| {
+        results
+            .iter()
+            .filter(|(t, _)| *t == tid.as_raw())
+            .map(|(_, r)| *r)
+            .collect()
+    })
+}
+
+#[test]
+fn inject_that_parks_resumes_the_tool_at_reexecution() {
+    let host = host::<InjectThenContinue>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    let read = request(Sysno::read, [PIPE_FD, (BASE + 0x100) as u64, 4, 0, 0, 0]);
+
+    // The inject parks: the Tool is suspended at its await, not failed.
+    context_managed(kernel.syscall(&host, root, read));
+    assert_eq!(inject_results(root), []);
+    // While suspended the thread state is checked in and readable.
+    assert_eq!(host.with_thread_state(root, |state| *state), Some(1));
+    // A backstop tick with nothing to read parks it again.
+    context_managed(kernel.reexecute(&host, root));
+    assert_eq!(inject_results(root), []);
+
+    kernel.push_pipe(b"xy");
+    // The re-execution runs the read and resumes the same future with its
+    // value; the Tool's own result (value + 1) completes the syscall.
+    assert_eq!(complete(kernel.reexecute(&host, root)), 3);
+    assert_eq!(inject_results(root), [Ok(2)]);
+    assert_eq!(host.with_thread_state(root, |state| *state), Some(101));
+    assert_eq!(kernel.peek(root, BASE + 0x100, 2), b"xy");
+    assert_eq!(
+        kernel.natives().len(),
+        3,
+        "first entry and two re-executions"
+    );
+    assert!(
+        kernel
+            .natives()
+            .iter()
+            .all(|n| n.via == Via::Original && n.request == read)
+    );
+
+    // The next syscall is an ordinary new callback.
+    let getpid = request(Sysno::getpid, NONE);
+    assert_eq!(complete(kernel.syscall(&host, root, getpid)), 1001);
+    assert_eq!(inject_results(root), [Ok(2), Ok(1000)]);
+    assert_eq!(kernel.violations(), []);
+}
+
+#[test]
+fn interrupted_parked_inject_returns_erestartsys_like_ptrace() {
+    let host = host::<InjectThenContinue>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    let read = request(Sysno::read, [PIPE_FD, BASE as u64, 1, 0, 0, 0]);
+
+    context_managed(kernel.syscall(&host, root, read));
+    // A different entry arrives instead of the re-execution, as when a
+    // signal handler runs while the task is parked: the suspended inject
+    // gets ERESTARTSYS, its result is discarded, and the new entry is
+    // handled as a callback of its own.
+    let getpid = request(Sysno::getpid, NONE);
+    assert_eq!(complete(kernel.syscall(&host, root, getpid)), 1001);
+    assert_eq!(
+        inject_results(root),
+        [Err(Errno::ERESTARTSYS.into_raw()), Ok(1000)]
+    );
+    assert_eq!(host.with_thread_state(root, |state| *state), Some(202));
+    assert_eq!(
+        kernel.natives().len(),
+        2,
+        "nothing ran for the interrupted Tool"
+    );
+    assert_eq!(kernel.violations(), []);
+}
+
+/// Keeps injecting after its parked inject was interrupted.
+#[derive(Default)]
+struct InjectAfterInterruption;
+
+#[async_trait]
+impl Tool for InjectAfterInterruption {
     type GlobalState = ();
     type ThreadState = ();
 
@@ -545,14 +658,59 @@ impl Tool for InjectThenContinue {
         guest: &mut G,
         syscall: Syscall,
     ) -> Result<i64, Error> {
-        let value = guest.inject(syscall).await?;
-        Ok(value + 1)
+        let result = guest.inject(syscall).await;
+        if result.is_err() {
+            let _ = guest
+                .inject(Syscall::from_raw(
+                    Sysno::getpid,
+                    SyscallArgs::new(0, 0, 0, 0, 0, 0),
+                ))
+                .await;
+        }
+        Ok(result?)
     }
 }
 
 #[test]
-fn inject_that_parks_fails_closed() {
-    let host = host::<InjectThenContinue>();
+fn transition_after_interruption_fails_closed() {
+    let host = host::<InjectAfterInterruption>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    let read = request(Sysno::read, [PIPE_FD, BASE as u64, 1, 0, 0, 0]);
+
+    context_managed(kernel.syscall(&host, root, read));
+    let result = kernel.syscall(&host, root, request(Sysno::getpid, NONE));
+    assert!(
+        matches!(result, Err(NarfFatal::TransitionAfterInterruption)),
+        "{result:?}"
+    );
+    assert_eq!(kernel.natives().len(), 1, "the late inject did not run");
+}
+
+/// Starts an inject, lets it park, and returns without awaiting it again.
+#[derive(Default)]
+struct AbandonParkedInject;
+
+#[async_trait]
+impl Tool for AbandonParkedInject {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let mut inject = guest.inject(syscall);
+        let parked = core::future::poll_fn(|cx| Poll::Ready(inject.as_mut().poll(cx))).await;
+        assert!(parked.is_pending());
+        Ok(7)
+    }
+}
+
+#[test]
+fn abandoning_a_parked_inject_fails_closed() {
+    let host = host::<AbandonParkedInject>();
     let kernel = FakeKernel::new();
     let root = kernel.spawn_root(&host, BASE);
     let read = request(Sysno::read, [PIPE_FD, BASE as u64, 1, 0, 0, 0]);
@@ -562,7 +720,55 @@ fn inject_that_parks_fails_closed() {
         matches!(result, Err(NarfFatal::InjectParked { number }) if number == read.number),
         "{result:?}"
     );
-    assert_eq!(kernel.violations(), []);
+}
+
+/// A lifecycle callback whose inject parks: no guest syscall re-executes.
+#[derive(Default)]
+struct ParkAtThreadStart;
+
+#[async_trait]
+impl Tool for ParkAtThreadStart {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+        let args = SyscallArgs::new(PIPE_FD as usize, BASE, 1, 0, 0, 0);
+        guest.inject(Syscall::from_raw(Sysno::read, args)).await?;
+        Ok(())
+    }
+}
+
+#[test]
+fn lifecycle_inject_that_parks_fails_closed() {
+    let host = host::<ParkAtThreadStart>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+
+    let result = kernel.thread_start(&host, root);
+    assert!(
+        matches!(result, Err(NarfFatal::InjectParked { number }) if number == Sysno::read.id() as u32),
+        "{result:?}"
+    );
+}
+
+/// A suspended Tool whose task exits drops cleanly and releases its Tool.
+#[test]
+fn exit_while_suspended_tears_down_the_process() {
+    let host = host::<InjectThenContinue>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    let read = request(Sysno::read, [PIPE_FD, BASE as u64, 1, 0, 0, 0]);
+
+    context_managed(kernel.syscall(&host, root, read));
+    // The kernel kills the parked task without re-executing its syscall.
+    assert!(matches!(
+        host.task_exited(root, ExitStatus::Exited(9)),
+        Ok(TaskExit {
+            process_exited: true
+        })
+    ));
+    assert_eq!(host.live_processes(), 0);
+    assert_eq!(inject_results(root), [], "the suspended Tool never resumed");
 }
 
 #[test]
