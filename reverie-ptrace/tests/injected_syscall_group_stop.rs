@@ -600,7 +600,9 @@ fn injected_syscall_completed_before_two_signal_deliveries_delivers_both() {
 /// the next resume, where the kernel turns the restart into `EINTR` because
 /// the handler lacks `SA_RESTART`. SIGUSR1 queued by `tgkill` is not
 /// synchronous-class, so the unblock's own step SIGTRAP is dequeued first and
-/// the signal stops the following `getpid` before its `syscall`.
+/// the signal stops the following `getpid` before its `syscall`. The Tool
+/// sees the held signal before that resume
+/// (<https://github.com/rrnewton/hermit/issues/703>).
 #[test]
 fn signal_pending_before_injected_syscall_interrupts_it() {
     let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
@@ -652,6 +654,13 @@ fn signal_pending_before_injected_syscall_interrupts_it() {
         stdout.trim(),
         format!("-1 {} 1", libc::EINTR),
         "guest sees EINTR and one handler run"
+    );
+    // https://github.com/rrnewton/hermit/issues/703: the injection holds the
+    // signal, and the Tool must still see it before the guest resumes with it.
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGUSR1],
+        "the held SIGUSR1 is reported to the tool"
     );
 }
 
@@ -898,15 +907,14 @@ fn injected_mask_swapping_syscall_requeues_a_signal_its_mask_blocks() {
 ///
 /// This is not native Linux, where both handlers run between the two
 /// syscalls and `getpid` succeeds; untraced the same guest body prints the
-/// pid. The tool list is pinned as it stands: the signal that stops
-/// `getpid` before its `syscall` is delivered through the single
-/// `pending_signal` slot, which bypasses `Tool::handle_signal_event`, so only
-/// SIGSEGV is observed. A fix for that bypass must update this assertion.
+/// pid. The signal that stops `getpid` before its `syscall` is held in the
+/// single `pending_signal` slot and reported to `Tool::handle_signal_event`
+/// before the guest resumes with it, so the tool sees both signals, SIGSYS
+/// first, as it would at two signal-delivery stops
+/// (https://github.com/rrnewton/hermit/issues/703).
 ///
-/// Known gaps pinned here, tracked in TaskGraph: the interrupted `getpid`
-/// and the signal parked in the single slot are `reverie_pending_signal_single_slot`;
-/// the tool never seeing SIGSYS is
-/// `reverie_held_signal_skips_tool_handle_signal_event`.
+/// Known gap pinned here, tracked in TaskGraph: the interrupted `getpid`
+/// and the signal parked in the single slot are `reverie_pending_signal_single_slot`.
 #[test]
 fn requeued_signals_interrupt_the_next_injected_syscall() {
     let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
@@ -958,8 +966,8 @@ fn requeued_signals_interrupt_the_next_injected_syscall() {
     );
     assert_eq!(
         *signals,
-        vec![libc::SIGSEGV],
-        "SIGSYS bypasses the tool through pending_signal (known gap)"
+        vec![libc::SIGSYS, libc::SIGSEGV],
+        "the held SIGSYS is reported to the tool before SIGSEGV is delivered"
     );
 }
 
@@ -973,10 +981,10 @@ fn requeued_signals_interrupt_the_next_injected_syscall() {
 /// Oracle: untraced Linux and `strace -f` both print "-1 4 1 1 1 1" (EINTR,
 /// each handler once, both blocked again once the saved mask is restored).
 ///
-/// Known gap pinned here: the held SIGSYS reaches the guest through the
-/// `pending_signal` slot and so bypasses `Tool::handle_signal_event`; only
-/// SIGSEGV, delivered from the kernel queue, is reported to the tool
-/// (TaskGraph `reverie_held_signal_skips_tool_handle_signal_event`).
+/// The held SIGSYS is reported to `Tool::handle_signal_event` before the
+/// guest resumes with it, then SIGSEGV is delivered from the kernel queue
+/// through a signal-delivery stop, so the tool sees both in delivery order
+/// (https://github.com/rrnewton/hermit/issues/703).
 #[test]
 fn injected_mask_swapping_syscall_holds_the_first_of_two_unblocked_signals() {
     let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
@@ -1033,8 +1041,8 @@ fn injected_mask_swapping_syscall_holds_the_first_of_two_unblocked_signals() {
     );
     assert_eq!(
         *signals,
-        vec![libc::SIGSEGV],
-        "the held SIGSYS bypasses the tool (known gap); SIGSEGV is reported"
+        vec![libc::SIGSYS, libc::SIGSEGV],
+        "the held SIGSYS is reported to the tool, then SIGSEGV"
     );
 }
 

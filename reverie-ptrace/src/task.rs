@@ -545,6 +545,24 @@ fn is_group_stop(task: &Stopped, sig: Signal) -> Result<bool, TraceError> {
     }
 }
 
+/// Whether the kernel delivers a signal passed on resume from `task`'s stop
+/// without a further stop that the Tool sees. Only a signal-delivery stop
+/// does. From a syscall stop the kernel sends the signal anew, and the Tool
+/// sees it at that signal's own stop; from a group stop or a `PTRACE_EVENT`
+/// stop, such as the seccomp stop that a tail injection resumes, the kernel
+/// drops it (see ptrace(2), "Signal injection and suppression").
+fn resume_delivers_signal_directly(task: &Stopped) -> Result<bool, TraceError> {
+    let siginfo = match task.getsiginfo() {
+        Ok(siginfo) => siginfo,
+        // Only a group stop has no siginfo (see `is_group_stop`).
+        Err(safeptrace::Error::Errno(Errno::EINVAL)) => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    let syscall_stop = siginfo.si_code == libc::SIGTRAP | 0x80;
+    let event_stop = siginfo.si_code > 0xff && siginfo.si_code & 0xff == libc::SIGTRAP;
+    Ok(siginfo.si_signo != libc::SIGTRAP || !(syscall_stop || event_stop))
+}
+
 /// The bit for `sig` in a kernel signal mask as read by `PTRACE_GETSIGMASK`.
 fn signal_mask_bit(sig: Signal) -> u64 {
     1u64 << (sig as i32 - 1)
@@ -6028,6 +6046,66 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(signal)
     }
 
+    /// Passes a guest signal that an injection held (`hold_pending_signal`)
+    /// to the Tool before the guest resumes with it, and returns the signal
+    /// the Tool decides to deliver.
+    ///
+    /// Without an injection the signal would reach the tracer as a
+    /// signal-delivery stop once the guest resumed, and `handle_signal` would
+    /// pass it to `Tool::handle_signal_event`. Resuming with the held signal
+    /// instead has the kernel deliver it directly, so the Tool never sees it:
+    /// whether a tool observes a SIGCHLD then depends on whether it arrived
+    /// during one of the tool's injections, which differs between recording
+    /// (the real syscall) and replay (an injected stand-in;
+    /// https://github.com/rrnewton/hermit/issues/703). The callback runs at
+    /// the same point in the guest's execution as it would from that later
+    /// stop: after the intercepted syscall completed, before the guest's next
+    /// instruction.
+    ///
+    /// The callback runs only when the guest resumes from a signal-delivery
+    /// stop, the one stop from which the kernel delivers the signal directly.
+    /// From a syscall stop the kernel sends it anew and the Tool sees it at
+    /// its own stop; from an event stop the kernel drops it (see
+    /// `resume_delivers_signal_directly`). Either way, a callback here would
+    /// report a signal the Tool sees twice or the guest never receives.
+    ///
+    /// Only plain ptrace routes the signal. The timer signal and SIGSTOP are
+    /// handed on as before: `handle_signal` gives each its own handling
+    /// rather than this callback, and neither is held in practice. LiteInst
+    /// sessions, with their own restart-landing state, are unchanged.
+    async fn tool_signal_for_held_resume(
+        &mut self,
+        task: &Stopped,
+        signal: Option<Signal>,
+    ) -> Result<Option<Signal>, TraceError> {
+        let Some(sig) = signal else {
+            return Ok(None);
+        };
+        if self.global_state.liteinst_runtime.is_some()
+            || sig == Timer::signal_type()
+            || sig == Signal::SIGSTOP
+            || !resume_delivers_signal_directly(task)?
+        {
+            return Ok(Some(sig));
+        }
+        tracing::debug!(
+            "[{}] passing held signal {} to the tool before resuming",
+            task.pid(),
+            sig
+        );
+        let result = self
+            .process_state
+            .clone()
+            .handle_signal_event(self, sig)
+            .await;
+        let sig = self
+            .ordinary_callback_errno("ptrace held-signal callback", result)
+            .await?;
+        self.ordinary_trace_continuation()?;
+        self.timer.finalize_requests();
+        Ok(sig)
+    }
+
     fn validate_nested_liteinst_activation_signal(
         &mut self,
         task: &Stopped,
@@ -7777,6 +7855,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.pre_syscall_for_test(&regs, PreSyscallPoint::Late)
                     .await;
             }
+            let sig = self.tool_signal_for_held_resume(&task, sig).await?;
             let running = self
                 .resume_stopped(task, sig)
                 .tracee_context(tid, "resume after seccomp stop")?;
