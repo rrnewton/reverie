@@ -5445,26 +5445,32 @@ fn trap_before_getppid_guest(tstp: bool) -> impl FnOnce() + Send + 'static {
     }
 }
 
-/// A SIGTRAP pending when the tool injects `getppid` (`TrapBeforeGetppid`)
-/// into the guest of `injected_syscall_trapped_by_guest_seccomp_reports_enosys`,
-/// on a tracer under no seccomp filter, with no descriptor left to open
-/// during the injection when `without_descriptors` is set, from before the
-/// guest's first SIGSYS when `from_first_sigsys` is also set. The trap stops
-/// the step before the `syscall` runs; it is discarded, and the step runs
-/// the `getppid`, which the guest's filter traps as without the SIGTRAP.
+/// Runs the guest of `injected_syscall_trapped_by_guest_seccomp_reports_enosys`
+/// with a SIGTRAP pending when the tool injects `getppid`
+/// (`TrapBeforeGetppid`), on a tracer under no seccomp filter, with no
+/// descriptor left to open during the injection when `without_descriptors`
+/// is set, from before the guest's first SIGSYS when `from_first_sigsys` is
+/// also set. The trap stops the step before the `syscall` runs.
 #[cfg(target_arch = "x86_64")]
-fn sigtrap_before_an_injected_syscall_is_discarded(
+fn trap_before_getppid_on_an_unfiltered_tracer(
     without_descriptors: bool,
     from_first_sigsys: bool,
-    probe: &str,
-) {
+) -> (reverie::process::Output, Log) {
     assert_tracer_unfiltered();
     TSTP_AFTER_TRAP.store(false, Ordering::Relaxed);
     GETPPID_WITHOUT_DESCRIPTORS.store(without_descriptors, Ordering::Relaxed);
     GETPPID_PRCTL_ACTION.store(0, Ordering::Relaxed);
     NO_DESCRIPTORS_FROM_FIRST_SIGSYS.store(from_first_sigsys, Ordering::Relaxed);
-    let (output, log) = test_fn::<TrapBeforeGetppid, _>(trap_before_getppid_guest(false))
-        .expect("run trap-before-getppid guest");
+    test_fn::<TrapBeforeGetppid, _>(trap_before_getppid_guest(false))
+        .expect("run trap-before-getppid guest")
+}
+
+/// `trap_before_getppid_on_an_unfiltered_tracer` with descriptors left. The
+/// trap is discarded, and the step runs the `getppid`, which the guest's
+/// filter traps as without the SIGTRAP.
+#[cfg(target_arch = "x86_64")]
+fn sigtrap_before_an_injected_syscall_is_discarded(probe: &str) {
+    let (output, log) = trap_before_getppid_on_an_unfiltered_tracer(false, false);
     let stdout = String::from_utf8_lossy(&output.stdout);
     eprintln!(
         "PROBE {probe} status={:?} guest={:?} injected={:?} signals={:?}",
@@ -5506,38 +5512,57 @@ fn sigtrap_before_an_injected_syscall_is_discarded(
 fn sigtrap_before_an_injected_syscall_is_discarded_and_the_syscall_runs() {
     const NAME: &str = "sigtrap_before_an_injected_syscall_is_discarded_and_the_syscall_runs";
     in_child_process(NAME, || {
-        sigtrap_before_an_injected_syscall_is_discarded(false, false, "trap-before-getppid")
+        sigtrap_before_an_injected_syscall_is_discarded("trap-before-getppid")
     });
 }
 
 /// As `sigtrap_before_an_injected_syscall_is_discarded_and_the_syscall_runs`,
-/// but no descriptor can be opened during the injection, so a newly opened
-/// procfs status cannot report the tracer thread's seccomp mode (EMFILE).
-/// The status the thread opened when it took the guest, read for the first
-/// time at the decision, reports mode 0, and the trap is discarded as with
-/// procfs.
+/// but no descriptor can be opened during the injection, so procfs cannot
+/// report the tracer thread's seccomp mode at the decision (EMFILE). The
+/// thread is taken as filtered, and the trap for the step's report, as on
+/// main: the `getppid` does not run.
+///
+/// Disclosed gap (coord ruling msg1001): where no fresh procfs read can
+/// report the tracer thread's seccomp mode at a decision, the step goes as
+/// on main before https://github.com/rrnewton/reverie/pull/831, without its
+/// correction (https://github.com/rrnewton/reverie/issues/845,
+/// https://github.com/rrnewton/reverie/issues/912).
 #[cfg(target_arch = "x86_64")]
 #[test]
-fn sigtrap_before_an_injected_syscall_is_discarded_with_no_descriptor_left() {
-    const NAME: &str = "sigtrap_before_an_injected_syscall_is_discarded_with_no_descriptor_left";
+fn sigtrap_before_an_injected_syscall_is_taken_as_on_main_with_no_descriptor_left() {
+    const NAME: &str =
+        "sigtrap_before_an_injected_syscall_is_taken_as_on_main_with_no_descriptor_left";
     in_child_process(NAME, || {
-        sigtrap_before_an_injected_syscall_is_discarded(true, false, "trap-before-getppid-emfile")
+        let (output, log) = trap_before_getppid_on_an_unfiltered_tracer(true, false);
+        check_trap_before_getppid_taken_as_on_main(
+            &output,
+            &log,
+            false,
+            "trap-before-getppid-emfile",
+        )
     });
 }
 
-/// As `..._is_discarded_with_no_descriptor_left`, but no descriptor can be
-/// opened from before the guest's first SIGSYS, whose stop cannot read the
-/// tracer thread's mode either. The held status is still unread at the
-/// decision, reports mode 0, and the trap is discarded.
+/// As `..._is_taken_as_on_main_with_no_descriptor_left`, but no descriptor
+/// can be opened from before the guest's first SIGSYS, whose stop cannot
+/// read the tracer thread's mode either.
+///
+/// Disclosed gap (coord ruling msg1001): where no fresh procfs read can
+/// report the tracer thread's seccomp mode at a decision, the step goes as
+/// on main before https://github.com/rrnewton/reverie/pull/831, without its
+/// correction (https://github.com/rrnewton/reverie/issues/845,
+/// https://github.com/rrnewton/reverie/issues/912).
 #[cfg(target_arch = "x86_64")]
 #[test]
-fn sigtrap_before_an_injected_syscall_is_discarded_with_no_descriptor_from_the_first_sigsys() {
-    const NAME: &str =
-        "sigtrap_before_an_injected_syscall_is_discarded_with_no_descriptor_from_the_first_sigsys";
+fn sigtrap_before_an_injected_syscall_is_taken_as_on_main_with_no_descriptor_from_the_first_sigsys()
+{
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_taken_as_on_main_with_no_descriptor_from_the_first_sigsys";
     in_child_process(NAME, || {
-        sigtrap_before_an_injected_syscall_is_discarded(
-            true,
-            true,
+        let (output, log) = trap_before_getppid_on_an_unfiltered_tracer(true, true);
+        check_trap_before_getppid_taken_as_on_main(
+            &output,
+            &log,
+            false,
             "trap-before-getppid-early-emfile",
         )
     });
@@ -5699,10 +5724,11 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_when_getsiginfo_is_refused(
     });
 }
 
-/// A tracer thread under a filter, whose mode a newly opened procfs status
-/// cannot report, is not asked for it with a syscall main does not make
-/// for this guest: here a filter kills the tracer at every `prctl`. The
-/// trap is taken for the step's report, as on main.
+/// A tracer thread under a filter, whose mode procfs cannot report at the
+/// decision (no descriptor can be opened), is not asked for it with a
+/// syscall main does not make for this guest: here a filter kills the
+/// tracer at every `prctl`. The trap is taken for the step's report, as on
+/// main.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_when_prctl_kills() {
@@ -5758,10 +5784,9 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_whe
 }
 
 /// As `..._with_no_descriptor_left_when_prctl_kills`, but no descriptor can
-/// be opened from before the guest's first SIGSYS, so the tracer thread is
-/// never seen filtered through a newly opened procfs status. The status it
-/// opened when it took the guest, read for the first time at the decision,
-/// reports the filter, and no `prctl` is made.
+/// be opened from before the guest's first SIGSYS, so procfs never reports
+/// the tracer thread's mode during the guest's run. The thread is taken as
+/// filtered at the decision, and no `prctl` is made.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_from_the_first_sigsys_when_prctl_kills()
@@ -5820,10 +5845,10 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_from_the
 /// `TrapBeforeGetppid` on a tracer under no seccomp filter when it takes the
 /// guest, which, from before the guest's first SIGSYS, gets a filter
 /// returning `prctl_action` for every `prctl` and no descriptor to open
-/// (`NO_DESCRIPTORS_FROM_FIRST_SIGSYS`). Procfs never shows the tracer
-/// thread filtered through a newly opened status; the status it held open
-/// from spawn does, so the thread is not asked with `prctl`, and the trap is
-/// taken for the step's report, as on main.
+/// (`NO_DESCRIPTORS_FROM_FIRST_SIGSYS`). Procfs never reports the tracer
+/// thread's mode once it is filtered, so it is taken as filtered at the
+/// decision, it is not asked with `prctl`, and the trap is taken for the
+/// step's report, as on main.
 #[cfg(target_arch = "x86_64")]
 fn sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_filter_added_after_spawn(
     prctl_action: u32,
@@ -6149,71 +6174,131 @@ fn sigtrap_before_each_injected_syscall(script: [u32; 2], retried: [bool; 2], pr
 }
 
 /// No descriptor can be opened during either injection, but can between
-/// them. The status the tracer thread holds, read at the first decision, is
-/// replaced once one can be opened again (here at the first injection's
-/// SIGSYS), so it reports mode 0 at the second decision too: both traps are
-/// discarded.
+/// them. Procfs cannot report the tracer thread's mode at either decision,
+/// so both traps are taken as on main.
+///
+/// Disclosed gap (coord ruling msg1001): where no fresh procfs read can
+/// report the tracer thread's seccomp mode at a decision, the step goes as
+/// on main before https://github.com/rrnewton/reverie/pull/831, without its
+/// correction (https://github.com/rrnewton/reverie/issues/845,
+/// https://github.com/rrnewton/reverie/issues/912).
 #[cfg(target_arch = "x86_64")]
 #[test]
-fn sigtrap_before_injected_syscalls_is_discarded_while_a_status_is_held_for_each() {
-    const NAME: &str =
-        "sigtrap_before_injected_syscalls_is_discarded_while_a_status_is_held_for_each";
+fn sigtrap_before_injected_syscalls_is_taken_as_on_main_with_no_descriptor_at_either_decision() {
+    const NAME: &str = "sigtrap_before_injected_syscalls_is_taken_as_on_main_with_no_descriptor_at_either_decision";
     in_child_process(NAME, || {
         sigtrap_before_each_injected_syscall(
             [LOWER | RESTORE, LOWER | RESTORE],
-            [true, true],
-            "trap-each-emfile-held-again",
+            [false, false],
+            "trap-each-emfile-each",
         )
     });
 }
 
-/// No descriptor can be opened from the first decision through the second.
-/// The held status is read at the first, which discards the trap, and none
-/// can be opened in its place, so nothing reports the thread's mode at the
-/// second: the trap there is taken as on main. This is the one case where
-/// the thread is under no filter but the step is taken as on main
-/// (https://github.com/rrnewton/reverie/issues/845): no syscall that needs
-/// no descriptor can ask the mode safely of a thread that may be filtered.
+/// No descriptor can be opened from the first decision through the second,
+/// so procfs cannot report the tracer thread's mode at either, and both
+/// traps are taken as on main.
+///
+/// Disclosed gap (coord ruling msg1001): where no fresh procfs read can
+/// report the tracer thread's seccomp mode at a decision, the step goes as
+/// on main before https://github.com/rrnewton/reverie/pull/831, without its
+/// correction (https://github.com/rrnewton/reverie/issues/845,
+/// https://github.com/rrnewton/reverie/issues/912).
 #[cfg(target_arch = "x86_64")]
 #[test]
-fn sigtrap_before_an_injected_syscall_is_taken_as_on_main_once_the_held_status_is_used_up() {
-    const NAME: &str =
-        "sigtrap_before_an_injected_syscall_is_taken_as_on_main_once_the_held_status_is_used_up";
+fn sigtrap_before_injected_syscalls_is_taken_as_on_main_with_no_descriptor_through_both_decisions()
+{
+    const NAME: &str = "sigtrap_before_injected_syscalls_is_taken_as_on_main_with_no_descriptor_through_both_decisions";
     in_child_process(NAME, || {
         sigtrap_before_each_injected_syscall(
             [LOWER, RESTORE],
-            [true, false],
-            "trap-each-emfile-used-up",
+            [false, false],
+            "trap-each-emfile-through-both",
         )
     });
 }
 
-/// As `..._once_the_held_status_is_used_up`, but a filter killing the
-/// tracer's process at `PTRACE_GETSIGMASK` and every `prctl` is added to the
-/// tracer's threads between the decisions. With nothing to report its mode,
-/// the thread is taken as filtered at the second decision, and the trap is
-/// taken as on main, without asking `prctl`; retried, the step would reach
-/// that `PTRACE_GETSIGMASK` at the guest's SIGSYS.
+/// As `..._with_no_descriptor_through_both_decisions`, but a filter killing
+/// the tracer's process at `PTRACE_GETSIGMASK` and every `prctl` is added to
+/// the tracer's threads between the decisions. With nothing to report its
+/// mode, the thread is taken as filtered at the second decision, and the
+/// trap is taken as on main, without asking `prctl`; retried, the step would
+/// reach that `PTRACE_GETSIGMASK` at the guest's SIGSYS. The first decision,
+/// on an unfiltered thread, is the gap below.
+///
+/// Disclosed gap (coord ruling msg1001): where no fresh procfs read can
+/// report the tracer thread's seccomp mode at a decision, the step goes as
+/// on main before https://github.com/rrnewton/reverie/pull/831, without its
+/// correction (https://github.com/rrnewton/reverie/issues/845,
+/// https://github.com/rrnewton/reverie/issues/912).
 #[cfg(target_arch = "x86_64")]
 #[test]
-fn sigtrap_before_an_injected_syscall_is_not_retried_under_a_filter_added_once_the_held_status_is_used_up()
- {
-    const NAME: &str = "sigtrap_before_an_injected_syscall_is_not_retried_under_a_filter_added_once_the_held_status_is_used_up";
+fn sigtrap_before_an_injected_syscall_is_not_retried_under_a_filter_added_with_no_descriptor_left()
+{
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_not_retried_under_a_filter_added_with_no_descriptor_left";
     in_child_process(NAME, || {
         sigtrap_before_each_injected_syscall(
             [LOWER, FILTER | RESTORE],
-            [true, false],
-            "trap-each-emfile-used-up-late-filter",
+            [false, false],
+            "trap-each-emfile-late-filter",
         )
     });
 }
 
-/// A guest that does not execute a program inherits no procfs status a
-/// tracer thread holds open, whatever its number: here descriptors 3 to 255,
-/// which a guest closes as on main, are all taken, so each status gets a
-/// higher number. One is held by another tracer thread, which has taken a
-/// guest and is still running, and one by this thread, after its first
-/// guest; the second guest lists the procfs statuses it has open.
+/// No descriptor can be opened during the first injection, but can during
+/// the second. Each decision reads procfs afresh: the first trap is taken as
+/// on main (the gap above), and the second, with mode 0 read, is discarded.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_discarded_again_once_a_descriptor_can_be_opened() {
+    const NAME: &str =
+        "sigtrap_before_an_injected_syscall_is_discarded_again_once_a_descriptor_can_be_opened";
+    in_child_process(NAME, || {
+        sigtrap_before_each_injected_syscall(
+            [LOWER | RESTORE, 0],
+            [false, true],
+            "trap-each-emfile-then-open",
+        )
+    });
+}
+
+/// A filter killing the tracer's process at `PTRACE_GETSIGMASK` and every
+/// `prctl` is added to the tracer's threads between the decisions. Procfs
+/// reports mode 0 at the first, whose trap is discarded, and the filter at
+/// the second, whose trap is taken as on main; retried, the step would
+/// reach that `PTRACE_GETSIGMASK` at the guest's SIGSYS.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_discarded_until_a_filter_is_added() {
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_discarded_until_a_filter_is_added";
+    in_child_process(NAME, || {
+        sigtrap_before_each_injected_syscall([0, FILTER], [true, false], "trap-each-late-filter")
+    });
+}
+
+/// As `..._is_discarded_until_a_filter_is_added`, but no descriptor can be
+/// opened during the second injection either, so procfs reports nothing
+/// there: the thread is taken as filtered, and the trap as on main.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_discarded_until_a_filter_is_added_with_no_descriptor_left()
+{
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_discarded_until_a_filter_is_added_with_no_descriptor_left";
+    in_child_process(NAME, || {
+        sigtrap_before_each_injected_syscall(
+            [0, LOWER | FILTER | RESTORE],
+            [true, false],
+            "trap-each-late-filter-emfile",
+        )
+    });
+}
+
+/// A guest that does not execute a program inherits no procfs status from
+/// the tracer, whatever its number: here descriptors 3 to 255, which a guest
+/// closes as on main, are all taken, so any status the tracer kept open
+/// would get a higher number. Another tracer thread has taken a guest and is
+/// still running, and this thread has run its first guest; the second guest
+/// lists the procfs statuses it has open.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn guest_inherits_no_held_seccomp_status() {
