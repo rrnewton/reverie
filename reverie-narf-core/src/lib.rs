@@ -39,6 +39,10 @@
 //!   task executed to the Tool's `handle_rdtsc_event` in the same way, for a
 //!   host built to deliver them. The instruction is not a syscall, so
 //!   nothing re-executes a syscall that parks the task during the callback;
+//! * [`NarfToolHost::handle_signal`] reports a signal the kernel is about to
+//!   deliver to the Tool's `handle_signal_event` in the same way, where the
+//!   task can wait, and returns whether the kernel delivers it, discards it,
+//!   or delivers the Tool's replacement;
 //! * global RPC is a direct call of [`reverie::GlobalTool::receive_rpc`] on the
 //!   singleton;
 //! * [`NarfToolHost::task_exited`] runs `on_exit_thread` exactly once per
@@ -66,6 +70,7 @@ pub use host::NarfFatal;
 pub use host::NarfToolHost;
 #[cfg(target_arch = "x86_64")]
 pub use host::RdtscOutcome;
+pub use host::SignalOutcome;
 pub use host::TaskExit;
 pub use host::TaskLock;
 pub use host::TaskTable;

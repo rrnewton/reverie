@@ -82,6 +82,7 @@ use reverie_narf_core::OriginalSyscallError;
 #[cfg(target_arch = "x86_64")]
 use reverie_narf_core::RdtscOutcome;
 use reverie_narf_core::RepollWait;
+use reverie_narf_core::SignalOutcome;
 use reverie_narf_core::SyscallEntry;
 use reverie_narf_core::TaskExit;
 use reverie_narf_core::TaskLock;
@@ -395,6 +396,29 @@ impl FakeKernel {
             let mut services = self.services(tid, None);
             services.kill_query = true;
             host.handle_rdtsc(&mut services, request)
+        });
+        self.report_exits(host);
+        result
+    }
+
+    /// Reports a signal about to be delivered to `tid` to `host`, as Narf
+    /// does after a syscall has finished, then reports any task that died.
+    /// Like Narf, it discards the task's park record first.
+    pub fn signal<T: Tool + 'static>(
+        &self,
+        host: &FakeHost<T>,
+        tid: Pid,
+        signal: Signal,
+    ) -> Result<SignalOutcome, NarfFatal> {
+        self.with(|world| {
+            if let Some(task) = world.tasks.get_mut(&tid.as_raw()) {
+                task.parked = None;
+            }
+        });
+        let result = self.in_callback(tid, || {
+            let mut services = self.services(tid, None);
+            services.kill_query = true;
+            host.handle_signal(&mut services, signal)
         });
         self.report_exits(host);
         result
