@@ -4368,7 +4368,7 @@ impl KvmBackend {
     /// the same global state. `CLONE_THREAD` workers are Tool-owned by default and
     /// may explicitly opt into host ownership through the existing thread-ownership
     /// contract. Tool `inject`/`tail_inject` calls are serviced by the ELF guest kernel
-    /// ([`ElfExecutor`]). Unlike [`Self::run_with_tool`], results are written
+    /// (`ElfExecutor`). Unlike [`Self::run_with_tool`], results are written
     /// back into the guest's syscall frame (the trampoline reads them and
     /// `SYSRET`s) and the guest exits via `exit`/`exit_group` rather than `HLT`.
     ///
