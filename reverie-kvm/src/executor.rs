@@ -525,6 +525,9 @@ fn execute_basic_syscall_inner(
     if let Some(error) = virtual_signalfd_write_error(state, number, args) {
         return continue_with(error);
     }
+    if let Some(error) = captured_output_socket_error(state, number, args, capture_output) {
+        return continue_with(error);
+    }
 
     if let Some(result) = random_device_early(memory, state, number as libc::c_long, args) {
         return match result {
@@ -695,6 +698,10 @@ fn execute_basic_syscall_inner(
     } else if number == libc::SYS_getsockname as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         getsockname(memory, state, args)
+    } else if number == libc::SYS_getpeername as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(kvm-socket-parity): Review bounded socket-name copyout.
+        getpeername(memory, state, args)
     } else if number == libc::SYS_socketpair as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         socketpair(memory, state, args)
@@ -11539,14 +11546,75 @@ fn socket(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     insert_file_with_flags(state, file, socket_type & libc::SOCK_CLOEXEC != 0, None)
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(kvm-socket-parity): Review captured-pipe and O_PATH precedence.
+fn captured_output_socket_error(
+    state: &LoadedStaticElf,
+    number: u64,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> Option<i64> {
+    if !capture_output
+        || ![
+            libc::SYS_setsockopt as u64,
+            libc::SYS_getsockopt as u64,
+            libc::SYS_getsockname as u64,
+            libc::SYS_getpeername as u64,
+        ]
+        .contains(&number)
+    {
+        return None;
+    }
+    let fd = args[0] as libc::c_int;
+    output_alias(state, fd)?;
+    // Captured output is a guest pipe even if its inherited host descriptor
+    // is a socket. These four calls reject the descriptor before inspecting
+    // guest pointers. Do not inspect ambient host fd 1/2 for implicit output.
+    // A proc-fd O_PATH reopen retains its alias but must still report EBADF.
+    if let Some(file) = state.files.get(&fd) {
+        match file_status_flags(file) {
+            Ok(flags) if flags & libc::O_PATH != 0 => return Some(negative_errno(libc::EBADF)),
+            Err(error) => return Some(error),
+            _ => {}
+        }
+    }
+    Some(negative_errno(libc::ENOTSOCK))
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(kvm-socket-parity): Review socket error precedence preflight.
+fn ensure_host_socket(host_fd: RawFd) -> Result<(), i64> {
+    let mut socket_type = 0_i32;
+    let mut length = std::mem::size_of_val(&socket_type) as libc::socklen_t;
+    // SAFETY: both output pointers name initialized host storage and host_fd is
+    // held live by the guest file table for this dispatch.
+    if unsafe {
+        libc::getsockopt(
+            host_fd,
+            libc::SOL_SOCKET,
+            libc::SO_TYPE,
+            std::ptr::from_mut(&mut socket_type).cast::<libc::c_void>(),
+            &mut length,
+        )
+    } == 0
+    {
+        Ok(())
+    } else {
+        Err(io_error(std::io::Error::last_os_error()))
+    }
+}
+
 // TODO-HUMAN-REVIEW(PR-213): Review bounded guest socket-option translation.
 fn setsockopt(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
     };
-    let Ok(length) = libc::socklen_t::try_from(args[4]) else {
-        return negative_errno(libc::EINVAL);
-    };
+    if let Err(error) = ensure_host_socket(host_fd) {
+        return error;
+    }
+    // The syscall ABI consumes a 32-bit socklen_t and ignores higher register
+    // bits. A low word above the bounded staging limit is rejected below.
+    let length = args[4] as libc::socklen_t;
     let length_usize = length as usize;
     if length_usize > MAX_HOST_IO {
         return negative_errno(libc::EINVAL);
@@ -11594,6 +11662,9 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
+    if let Err(error) = ensure_host_socket(host_fd) {
+        return error;
+    }
     if args[4] == 0 {
         return negative_errno(libc::EFAULT);
     }
@@ -11646,6 +11717,21 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     }
 
     if args[1] as libc::c_int != libc::SOL_SOCKET {
+        return negative_errno(libc::ENOPROTOOPT);
+    }
+    let option = args[2] as libc::c_int;
+    if !matches!(
+        option,
+        libc::SO_NETNS_COOKIE
+            | libc::SO_COOKIE
+            | libc::SO_INCOMING_CPU
+            | libc::SO_TYPE
+            | libc::SO_DOMAIN
+            | libc::SO_ACCEPTCONN
+            | libc::SO_REUSEADDR
+            | libc::SO_KEEPALIVE
+            | libc::SO_BROADCAST
+    ) {
         return negative_errno(libc::ENOPROTOOPT);
     }
     if capacity != 0 && args[3] == 0 {
@@ -11721,7 +11807,15 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         return write_struct(memory, args[4], &length);
     }
 
-    if args[2] as libc::c_int != libc::SO_TYPE {
+    if !matches!(
+        option,
+        libc::SO_TYPE
+            | libc::SO_DOMAIN
+            | libc::SO_ACCEPTCONN
+            | libc::SO_REUSEADDR
+            | libc::SO_KEEPALIVE
+            | libc::SO_BROADCAST
+    ) {
         return negative_errno(libc::ENOPROTOOPT);
     }
 
@@ -11737,7 +11831,7 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         libc::getsockopt(
             host_fd,
             libc::SOL_SOCKET,
-            libc::SO_TYPE,
+            option,
             value_pointer,
             &mut length,
         )
@@ -11806,42 +11900,103 @@ fn listen(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
 
 // TODO-HUMAN-REVIEW(PR-213): Review bounded getsockname copyback semantics.
 fn getsockname(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    socket_name(memory, state, args, SocketNameOperation::Local)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(kvm-socket-parity): Review peer-name error and copyout ordering.
+fn getpeername(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    socket_name(memory, state, args, SocketNameOperation::Peer)
+}
+
+#[derive(Clone, Copy)]
+enum SocketNameOperation {
+    Local,
+    Peer,
+}
+
+fn socket_name(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    operation: SocketNameOperation,
+) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
     };
-    if args[1] == 0 || args[2] == 0 {
-        return negative_errno(libc::EFAULT);
-    }
-    let Ok(mut length) = read_guest_struct::<libc::socklen_t>(memory, args[2]) else {
-        return negative_errno(libc::EFAULT);
+
+    // Query into fixed host storage before touching guest pointers. Linux gives
+    // EBADF, ENOTSOCK, and (for getpeername) ENOTCONN precedence over guest
+    // copy faults. A sockaddr_storage covers every admitted socket family.
+    // SAFETY: zero is a valid initialization for scratch sockaddr storage.
+    let mut address =
+        unsafe { std::mem::MaybeUninit::<libc::sockaddr_storage>::zeroed().assume_init() };
+    let mut returned_length = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+    // SAFETY: both pointers name initialized host storage and host_fd belongs to
+    // the guest descriptor table. The selected syscall does not retain them.
+    let result = unsafe {
+        match operation {
+            SocketNameOperation::Local => libc::getsockname(
+                host_fd,
+                std::ptr::from_mut(&mut address).cast::<libc::sockaddr>(),
+                &mut returned_length,
+            ),
+            SocketNameOperation::Peer => libc::getpeername(
+                host_fd,
+                std::ptr::from_mut(&mut address).cast::<libc::sockaddr>(),
+                &mut returned_length,
+            ),
+        }
     };
-    let capacity = length as usize;
-    if capacity > MAX_HOST_IO {
-        return negative_errno(libc::EINVAL);
-    }
-    let mut address = vec![0; capacity];
-    // SAFETY: address is writable for capacity bytes and length describes that
-    // allocation. host_fd belongs to the guest descriptor table.
-    if unsafe {
-        libc::getsockname(
-            host_fd,
-            address.as_mut_ptr().cast::<libc::sockaddr>(),
-            &mut length,
-        )
-    } != 0
-    {
+    if result != 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    let copy_length = capacity.min(length as usize);
+
+    if args[2] == 0 {
+        return negative_errno(libc::EFAULT);
+    }
+    let Ok(capacity) = read_guest_struct::<libc::socklen_t>(memory, args[2]) else {
+        return negative_errno(libc::EFAULT);
+    };
+    // Linux stores socklen_t in a signed kernel int and rejects high-bit input.
+    if capacity > libc::c_int::MAX as libc::socklen_t {
+        return negative_errno(libc::EINVAL);
+    }
+    let copy_length = (capacity as usize)
+        .min(returned_length as usize)
+        .min(std::mem::size_of::<libc::sockaddr_storage>());
+
+    // Linux >= 6.18 publishes the full returned length before copying the
+    // bounded address; addr/addrlen overlap and address faults expose the order.
+    // move_addr_to_user changed this in the following upstream commit; older
+    // kernels copied the address first:
+    // https://github.com/torvalds/linux/commit/1fb0e471611dc6a79dee609a7e0037eb1d124400
+    let length_result = write_struct(memory, args[2], &returned_length);
+    if length_result < 0 {
+        return length_result;
+    }
+    if copy_length != 0 && args[1] == 0 {
+        return negative_errno(libc::EFAULT);
+    }
     if copy_length != 0
         && memory
             .user()
-            .write(args[1], &address[..copy_length])
+            .write(
+                args[1],
+                // SAFETY: address is initialized and copy_length is bounded by
+                // sockaddr_storage above.
+                unsafe {
+                    std::slice::from_raw_parts(
+                        std::ptr::from_ref(&address).cast::<u8>(),
+                        copy_length,
+                    )
+                },
+            )
             .is_err()
     {
         return negative_errno(libc::EFAULT);
     }
-    write_struct(memory, args[2], &length)
+    0
 }
 
 // TODO-HUMAN-REVIEW(PR-218): Review blocking accept outside the shared descriptor-table lock.
@@ -31561,6 +31716,39 @@ mod tests {
         );
         assert_eq!(read_struct::<libc::socklen_t>(&memory, RESULT_LENGTH), 0);
 
+        for capacity in 1_u32..=3 {
+            memory.write(RESULT, &[0xa5; 8]).unwrap();
+            assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &capacity), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_getsockopt,
+                    [
+                        socket_fd as u64,
+                        libc::SOL_SOCKET as u64,
+                        libc::SO_TYPE as u64,
+                        RESULT,
+                        RESULT_LENGTH,
+                        0,
+                    ],
+                ),
+                0
+            );
+            assert_eq!(read_struct::<u32>(&memory, RESULT_LENGTH), capacity);
+            let mut observed = [0; 8];
+            memory.read(RESULT, &mut observed).unwrap();
+            let expected = libc::SOCK_STREAM.to_ne_bytes();
+            assert_eq!(
+                &observed[..capacity as usize],
+                &expected[..capacity as usize]
+            );
+            assert_eq!(
+                &observed[capacity as usize..],
+                &[0xa5; 8][capacity as usize..]
+            );
+        }
+
         let full_length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
         assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &full_length), 0);
         assert_eq!(
@@ -31588,6 +31776,50 @@ mod tests {
             libc::SOCK_STREAM
         );
 
+        memory.write(RESULT, &[0xa5; 8]).unwrap();
+        assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &8_u32), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getsockopt,
+                [
+                    socket_fd as u64,
+                    libc::SOL_SOCKET as u64,
+                    libc::SO_TYPE as u64,
+                    RESULT,
+                    RESULT_LENGTH,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_eq!(read_struct::<u32>(&memory, RESULT_LENGTH), 4);
+        let mut observed = [0; 8];
+        memory.read(RESULT, &mut observed).unwrap();
+        assert_eq!(&observed[..4], &libc::SOCK_STREAM.to_ne_bytes());
+        assert_eq!(&observed[4..], &[0xa5; 4]);
+
+        let invalid_length = u32::MAX;
+        assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &invalid_length), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getsockopt,
+                [
+                    socket_fd as u64,
+                    libc::SOL_SOCKET as u64,
+                    libc::SO_TYPE as u64,
+                    RESULT,
+                    RESULT_LENGTH,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(read_struct::<u32>(&memory, RESULT_LENGTH), invalid_length);
+
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -31604,6 +31836,804 @@ mod tests {
             ),
             negative_errno(libc::EFAULT)
         );
+    }
+
+    #[test]
+    fn getsockopt_scalar_allowlist_tracks_socket_state_and_stays_bounded() {
+        const VALUE: u64 = 0x100;
+        const LENGTH: u64 = 0x200;
+
+        fn scalar_option(
+            memory: &mut GuestMemory,
+            state: &mut LoadedStaticElf,
+            raw_fd: u64,
+            option: libc::c_int,
+        ) -> libc::c_int {
+            assert_eq!(write_struct(memory, VALUE, &0x5a5a_5a5a_i32), 0);
+            let length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            assert_eq!(write_struct(memory, LENGTH, &length), 0);
+            assert_eq!(
+                syscall_result(
+                    memory,
+                    state,
+                    libc::SYS_getsockopt,
+                    [
+                        raw_fd,
+                        libc::SOL_SOCKET as u64,
+                        option as u64,
+                        VALUE,
+                        LENGTH,
+                        0,
+                    ],
+                ),
+                0,
+                "getsockopt option={option}"
+            );
+            assert_eq!(
+                read_struct::<libc::socklen_t>(memory, LENGTH),
+                length,
+                "getsockopt length option={option}"
+            );
+            read_struct(memory, VALUE)
+        }
+
+        fn set_scalar_option(
+            memory: &mut GuestMemory,
+            state: &mut LoadedStaticElf,
+            fd: i64,
+            option: libc::c_int,
+            value: libc::c_int,
+            raw_length: u64,
+        ) {
+            assert_eq!(write_struct(memory, VALUE, &value), 0);
+            assert_eq!(
+                syscall_result(
+                    memory,
+                    state,
+                    libc::SYS_setsockopt,
+                    [
+                        fd as u64,
+                        libc::SOL_SOCKET as u64,
+                        option as u64,
+                        VALUE,
+                        raw_length,
+                        0,
+                    ],
+                ),
+                0,
+                "setsockopt option={option} value={value}"
+            );
+        }
+
+        fn host_scalar_option(
+            state: &LoadedStaticElf,
+            guest_fd: libc::c_int,
+            option: libc::c_int,
+        ) -> libc::c_int {
+            let host_fd = host_fd(state, guest_fd).unwrap();
+            let mut value = -1_i32;
+            let mut length = std::mem::size_of_val(&value) as libc::socklen_t;
+            // SAFETY: both output pointers name initialized host storage and
+            // the translated descriptor remains live in state.
+            assert_eq!(
+                unsafe {
+                    libc::getsockopt(
+                        host_fd,
+                        libc::SOL_SOCKET,
+                        option,
+                        std::ptr::from_mut(&mut value).cast::<libc::c_void>(),
+                        &mut length,
+                    )
+                },
+                0,
+                "raw host getsockopt option={option}"
+            );
+            assert_eq!(length as usize, std::mem::size_of_val(&value));
+            value
+        }
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let socket_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_socket,
+            [libc::AF_INET as u64, libc::SOCK_STREAM as u64, 0, 0, 0, 0],
+        );
+        assert!(socket_fd >= 0);
+
+        assert_eq!(
+            scalar_option(
+                &mut memory,
+                &mut state,
+                (0xa5a5_5a5a_u64 << 32) | u64::from(socket_fd as u32),
+                libc::SO_TYPE,
+            ),
+            libc::SOCK_STREAM
+        );
+        assert_eq!(
+            scalar_option(&mut memory, &mut state, socket_fd as u64, libc::SO_DOMAIN,),
+            libc::AF_INET
+        );
+        assert_eq!(
+            scalar_option(
+                &mut memory,
+                &mut state,
+                socket_fd as u64,
+                libc::SO_ACCEPTCONN,
+            ),
+            0
+        );
+
+        let datagram = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_socket,
+            [libc::AF_INET as u64, libc::SOCK_DGRAM as u64, 0, 0, 0, 0],
+        );
+        assert!(datagram >= 0);
+        assert_eq!(
+            scalar_option(&mut memory, &mut state, datagram as u64, libc::SO_TYPE,),
+            libc::SOCK_DGRAM,
+            "SO_TYPE must not be hard-coded to SOCK_STREAM"
+        );
+
+        let option_length = std::mem::size_of::<libc::c_int>() as u64;
+        let assert_mutable =
+            |memory: &mut GuestMemory, state: &mut LoadedStaticElf, expected: [libc::c_int; 3]| {
+                for (option, value) in [
+                    (libc::SO_REUSEADDR, expected[0]),
+                    (libc::SO_KEEPALIVE, expected[1]),
+                    (libc::SO_BROADCAST, expected[2]),
+                ] {
+                    assert_eq!(
+                        scalar_option(memory, state, socket_fd as u64, option),
+                        value,
+                        "getsockopt option={option} in simultaneous state {expected:?}"
+                    );
+                    assert_eq!(
+                        host_scalar_option(state, socket_fd as libc::c_int, option),
+                        value,
+                        "guest option={option} must name the same raw host option"
+                    );
+                }
+            };
+        assert_mutable(&mut memory, &mut state, [0, 0, 0]);
+        set_scalar_option(
+            &mut memory,
+            &mut state,
+            socket_fd,
+            libc::SO_REUSEADDR,
+            1,
+            option_length,
+        );
+        assert_mutable(&mut memory, &mut state, [1, 0, 0]);
+        set_scalar_option(
+            &mut memory,
+            &mut state,
+            socket_fd,
+            libc::SO_KEEPALIVE,
+            1,
+            option_length,
+        );
+        assert_mutable(&mut memory, &mut state, [1, 1, 0]);
+        set_scalar_option(
+            &mut memory,
+            &mut state,
+            socket_fd,
+            libc::SO_REUSEADDR,
+            0,
+            option_length,
+        );
+        assert_mutable(&mut memory, &mut state, [0, 1, 0]);
+        set_scalar_option(
+            &mut memory,
+            &mut state,
+            socket_fd,
+            libc::SO_BROADCAST,
+            1,
+            option_length,
+        );
+        assert_mutable(&mut memory, &mut state, [0, 1, 1]);
+        set_scalar_option(
+            &mut memory,
+            &mut state,
+            socket_fd,
+            libc::SO_KEEPALIVE,
+            0,
+            option_length,
+        );
+        assert_mutable(&mut memory, &mut state, [0, 0, 1]);
+        set_scalar_option(
+            &mut memory,
+            &mut state,
+            socket_fd,
+            libc::SO_BROADCAST,
+            0,
+            option_length,
+        );
+        assert_mutable(&mut memory, &mut state, [0, 0, 0]);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_listen,
+                [socket_fd as u64, 1, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            scalar_option(
+                &mut memory,
+                &mut state,
+                socket_fd as u64,
+                libc::SO_ACCEPTCONN,
+            ),
+            1
+        );
+
+        assert_eq!(write_struct(&mut memory, VALUE, &4_u32), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getsockopt,
+                [
+                    socket_fd as u64,
+                    libc::SOL_SOCKET as u64,
+                    libc::SO_DOMAIN as u64,
+                    VALUE,
+                    VALUE,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_eq!(
+            read_struct::<u32>(&memory, VALUE),
+            4,
+            "option length must win when value and length overlap"
+        );
+
+        for unsupported in [libc::SO_ERROR, libc::SO_SNDBUF] {
+            let sentinel = 0x5a5a_5a5a_i32;
+            let length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            assert_eq!(write_struct(&mut memory, VALUE, &sentinel), 0);
+            assert_eq!(write_struct(&mut memory, LENGTH, &length), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_getsockopt,
+                    [
+                        socket_fd as u64,
+                        libc::SOL_SOCKET as u64,
+                        unsupported as u64,
+                        VALUE,
+                        LENGTH,
+                        0,
+                    ],
+                ),
+                negative_errno(libc::ENOPROTOOPT),
+                "unsupported option={unsupported}"
+            );
+            assert_eq!(read_struct::<libc::c_int>(&memory, VALUE), sentinel);
+            assert_eq!(read_struct::<libc::socklen_t>(&memory, LENGTH), length);
+        }
+
+        let ordinary = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open("/dev/null").unwrap(),
+            false,
+            None,
+        ) as i32;
+        assert!(ordinary >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getsockopt,
+                [
+                    ordinary as u64,
+                    libc::SOL_SOCKET as u64,
+                    libc::SO_TYPE as u64,
+                    u64::MAX,
+                    u64::MAX,
+                    0,
+                ],
+            ),
+            negative_errno(libc::ENOTSOCK)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_setsockopt,
+                [
+                    ordinary as u64,
+                    libc::SOL_SOCKET as u64,
+                    libc::SO_REUSEADDR as u64,
+                    u64::MAX,
+                    std::mem::size_of::<libc::c_int>() as u64,
+                    0,
+                ],
+            ),
+            negative_errno(libc::ENOTSOCK)
+        );
+
+        let full_length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        assert_eq!(write_struct(&mut memory, LENGTH, &full_length), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getsockopt,
+                [
+                    socket_fd as u64,
+                    libc::SOL_SOCKET as u64,
+                    (libc::SO_ERROR + 0x4000) as u64,
+                    0,
+                    LENGTH,
+                    0,
+                ],
+            ),
+            negative_errno(libc::ENOPROTOOPT)
+        );
+
+        set_scalar_option(
+            &mut memory,
+            &mut state,
+            socket_fd,
+            libc::SO_REUSEADDR,
+            1,
+            (0xa5a5_5a5a_u64 << 32) | option_length,
+        );
+    }
+
+    #[test]
+    fn captured_socket_metadata_queries_reject_host_socket_aliases() {
+        const VALUE: u64 = 0x100;
+        const LENGTH: u64 = 0x200;
+        const HIGH_WORD: u64 = 0xa5a5_5a5a_0000_0000;
+        const CALLS: [libc::c_long; 4] = [
+            libc::SYS_setsockopt,
+            libc::SYS_getsockopt,
+            libc::SYS_getsockname,
+            libc::SYS_getpeername,
+        ];
+
+        fn arguments(number: libc::c_long, fd: u64, value: u64, length: u64) -> [u64; 6] {
+            if number == libc::SYS_setsockopt {
+                [
+                    fd,
+                    libc::SOL_SOCKET as u64,
+                    libc::SO_REUSEADDR as u64,
+                    value,
+                    std::mem::size_of::<libc::c_int>() as u64,
+                    0,
+                ]
+            } else if number == libc::SYS_getsockopt {
+                [
+                    fd,
+                    libc::SOL_SOCKET as u64,
+                    libc::SO_TYPE as u64,
+                    value,
+                    length,
+                    0,
+                ]
+            } else {
+                [fd, value, length, 0, 0, 0]
+            }
+        }
+
+        fn host_reuseaddr(fd: RawFd) -> libc::c_int {
+            let mut value = -1;
+            let mut length = std::mem::size_of_val(&value) as libc::socklen_t;
+            // SAFETY: fd remains owned by the guest table, and both pointers
+            // name initialized host storage for this scalar socket option.
+            assert_eq!(
+                unsafe {
+                    libc::getsockopt(
+                        fd,
+                        libc::SOL_SOCKET,
+                        libc::SO_REUSEADDR,
+                        std::ptr::from_mut(&mut value).cast(),
+                        &mut length,
+                    )
+                },
+                0
+            );
+            assert_eq!(length as usize, std::mem::size_of_val(&value));
+            value
+        }
+
+        fn assert_real_socket(
+            memory: &mut GuestMemory,
+            state: &mut LoadedStaticElf,
+            mut output: Option<&mut CapturedOutput>,
+            fd: u64,
+        ) {
+            for number in CALLS {
+                memory.write(VALUE, &[0xa5; 128]).unwrap();
+                assert_eq!(write_struct(memory, VALUE, &1_i32), 0);
+                assert_eq!(write_struct(memory, LENGTH, &128_u32), 0);
+                let args = arguments(number, fd, VALUE, LENGTH);
+                let result = if let Some(output) = output.as_deref_mut() {
+                    syscall_result_with_output(memory, state, output, number, args)
+                } else {
+                    syscall_result(memory, state, number, args)
+                };
+                assert_eq!(result, 0, "real socket fd={fd:#x} syscall={number}");
+                if number == libc::SYS_setsockopt {
+                    assert_eq!(host_reuseaddr(host_fd(state, fd as i32).unwrap()), 1);
+                } else if number == libc::SYS_getsockopt {
+                    assert_eq!(read_struct::<libc::c_int>(memory, VALUE), libc::SOCK_STREAM);
+                    assert_eq!(read_struct::<libc::socklen_t>(memory, LENGTH), 4);
+                } else {
+                    assert_eq!(
+                        read_struct::<libc::sa_family_t>(memory, VALUE),
+                        libc::AF_UNIX as libc::sa_family_t
+                    );
+                    assert_eq!(
+                        read_struct::<libc::socklen_t>(memory, LENGTH) as usize,
+                        std::mem::size_of::<libc::sa_family_t>()
+                    );
+                }
+            }
+        }
+
+        for alias in [OutputAlias::Stdout, OutputAlias::Stderr] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let mut output = CapturedOutput::default();
+            let (socket, _peer) = UnixStream::pair().unwrap();
+            // SAFETY: into_raw_fd transfers this endpoint's sole ownership.
+            let file =
+                unsafe { std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(socket)) };
+            let fd = insert_file_with_flags(&mut state, file, false, Some(alias));
+            assert!(fd >= 3);
+            let underlying_fd = host_fd(&state, fd as i32).unwrap();
+
+            // The same labelled descriptor is a real socket without capture.
+            // This prevents an ambient pipe from making the refusal pass.
+            assert_real_socket(&mut memory, &mut state, None, HIGH_WORD | fd as u64);
+            assert_eq!(write_struct(&mut memory, VALUE, &0_i32), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_setsockopt,
+                    arguments(libc::SYS_setsockopt, fd as u64, VALUE, LENGTH),
+                ),
+                0
+            );
+            assert_eq!(host_reuseaddr(underlying_fd), 0);
+
+            assert_eq!(
+                syscall_result_with_output(
+                    &mut memory,
+                    &mut state,
+                    &mut output,
+                    libc::SYS_fstat,
+                    [fd as u64, 0x400, 0, 0, 0, 0],
+                ),
+                0
+            );
+            assert_eq!(
+                read_struct::<libc::stat>(&memory, 0x400).st_mode & libc::S_IFMT,
+                libc::S_IFIFO
+            );
+
+            for raw_fd in [fd as u64, HIGH_WORD | fd as u64] {
+                for number in CALLS {
+                    for (value, length) in [
+                        (VALUE, LENGTH),
+                        (0, LENGTH),
+                        (u64::MAX, LENGTH),
+                        (VALUE, 0),
+                        (VALUE, u64::MAX),
+                    ] {
+                        memory.write(VALUE, &[0xa5; 0x200]).unwrap();
+                        assert_eq!(write_struct(&mut memory, VALUE, &1_i32), 0);
+                        assert_eq!(write_struct(&mut memory, LENGTH, &128_u32), 0);
+                        let mut before = [0; 0x200];
+                        memory.read(VALUE, &mut before).unwrap();
+                        assert_eq!(
+                            syscall_result_with_output(
+                                &mut memory,
+                                &mut state,
+                                &mut output,
+                                number,
+                                arguments(number, raw_fd, value, length),
+                            ),
+                            negative_errno(libc::ENOTSOCK),
+                            "captured fd={raw_fd:#x} syscall={number} value={value:#x} length={length:#x}"
+                        );
+                        let mut after = [0; 0x200];
+                        memory.read(VALUE, &mut after).unwrap();
+                        assert_eq!(after, before, "captured socket call changed guest output");
+                        assert_eq!(host_reuseaddr(underlying_fd), 0);
+                    }
+                }
+            }
+
+            // O_PATH retains the capture label, but Linux rejects this kind of
+            // descriptor with EBADF before inspecting socket arguments.
+            let path_file =
+                open_host_fd_path(underlying_fd, (libc::O_PATH | libc::O_CLOEXEC) as u64).unwrap();
+            let path_fd = insert_file_with_flags(&mut state, path_file, true, Some(alias));
+            assert!(path_fd >= 3);
+            assert_ne!(
+                fd_status_flags(host_fd(&state, path_fd as i32).unwrap()).unwrap() & libc::O_PATH,
+                0
+            );
+            for number in CALLS {
+                for (value, length) in [(VALUE, LENGTH), (u64::MAX, u64::MAX)] {
+                    let args = arguments(number, HIGH_WORD | path_fd as u64, value, length);
+                    assert_eq!(
+                        syscall_result(&mut memory, &mut state, number, args),
+                        negative_errno(libc::EBADF)
+                    );
+                    assert_eq!(
+                        syscall_result_with_output(
+                            &mut memory,
+                            &mut state,
+                            &mut output,
+                            number,
+                            args,
+                        ),
+                        negative_errno(libc::EBADF)
+                    );
+                }
+            }
+
+            // Only the guest table's fd 1 changes: no host dup2 or process-stdio
+            // redirection occurs. A real socket there must not become a pipe.
+            let (socket, _real_peer) = UnixStream::pair().unwrap();
+            // SAFETY: into_raw_fd transfers this endpoint's sole ownership.
+            let file =
+                unsafe { std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(socket)) };
+            let real_fd = insert_file_with_flags(&mut state, file, false, None);
+            assert!(real_fd >= 3);
+            assert_eq!(
+                syscall_result_with_output(
+                    &mut memory,
+                    &mut state,
+                    &mut output,
+                    libc::SYS_dup2,
+                    [real_fd as u64, libc::STDOUT_FILENO as u64, 0, 0, 0, 0],
+                ),
+                libc::STDOUT_FILENO as i64
+            );
+            assert!(output_alias(&state, libc::STDOUT_FILENO).is_none());
+            assert_real_socket(
+                &mut memory,
+                &mut state,
+                Some(&mut output),
+                HIGH_WORD | libc::STDOUT_FILENO as u64,
+            );
+            assert_eq!(host_reuseaddr(underlying_fd), 0);
+            assert_eq!(output.take(), (Vec::new(), Vec::new()));
+        }
+    }
+
+    #[test]
+    fn socket_name_queries_match_linux_ordering_and_peer_identity() {
+        const ADDRESS: u64 = 0x100;
+        const LENGTH: u64 = 0x200;
+        const PEER_ADDRESS: u64 = 0x300;
+        const OVERLAP: u64 = 0x400;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let (left, right) = UnixStream::pair().unwrap();
+        // SAFETY: into_raw_fd transfers each socket endpoint's sole ownership.
+        let left = unsafe { std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(left)) };
+        // SAFETY: into_raw_fd transfers each socket endpoint's sole ownership.
+        let right =
+            unsafe { std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(right)) };
+        let left = insert_file_with_flags(&mut state, left, false, None) as i32;
+        let _right = insert_file_with_flags(&mut state, right, false, None) as i32;
+        assert!(left >= 0);
+        let unnamed_length = std::mem::size_of::<libc::sa_family_t>() as libc::socklen_t;
+
+        for number in [libc::SYS_getsockname, libc::SYS_getpeername] {
+            assert_eq!(write_struct(&mut memory, LENGTH, &0_u32), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [left as u64, 0, LENGTH, 0, 0, 0],
+                ),
+                0
+            );
+            assert_eq!(
+                read_struct::<libc::socklen_t>(&memory, LENGTH),
+                unnamed_length
+            );
+
+            memory.write(ADDRESS, &[0xa5; 8]).unwrap();
+            assert_eq!(write_struct(&mut memory, LENGTH, &1_u32), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [left as u64, ADDRESS, LENGTH, 0, 0, 0],
+                ),
+                0
+            );
+            let mut observed = [0; 8];
+            memory.read(ADDRESS, &mut observed).unwrap();
+            assert_eq!(observed[0], libc::AF_UNIX as u8);
+            assert_eq!(&observed[1..], &[0xa5; 7]);
+            assert_eq!(
+                read_struct::<libc::socklen_t>(&memory, LENGTH),
+                unnamed_length
+            );
+
+            assert_eq!(write_struct(&mut memory, OVERLAP, &4_u32), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [left as u64, OVERLAP, OVERLAP, 0, 0, 0],
+                ),
+                0
+            );
+            assert_eq!(
+                read_struct::<u32>(&memory, OVERLAP),
+                libc::AF_UNIX as u32,
+                "address copy must follow the overlapping length copy"
+            );
+
+            assert_eq!(write_struct(&mut memory, LENGTH, &(i32::MAX as u32)), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [left as u64, ADDRESS, LENGTH, 0, 0, 0],
+                ),
+                0
+            );
+            assert_eq!(
+                read_struct::<libc::socklen_t>(&memory, LENGTH),
+                unnamed_length
+            );
+
+            for invalid_length in [0x8000_0000_u32, u32::MAX] {
+                assert_eq!(write_struct(&mut memory, LENGTH, &invalid_length), 0);
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        number,
+                        [left as u64, ADDRESS, LENGTH, 0, 0, 0],
+                    ),
+                    negative_errno(libc::EINVAL)
+                );
+                assert_eq!(read_struct::<u32>(&memory, LENGTH), invalid_length);
+            }
+        }
+
+        assert_eq!(write_struct(&mut memory, LENGTH, &4_u32), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getsockname,
+                [left as u64, 0, LENGTH, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            read_struct::<libc::socklen_t>(&memory, LENGTH),
+            unnamed_length,
+            "Linux publishes the returned length before the address fault"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getsockname,
+                [u64::MAX, u64::MAX, u64::MAX, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+
+        let ordinary = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open("/dev/null").unwrap(),
+            false,
+            None,
+        ) as i32;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getsockname,
+                [ordinary as u64, u64::MAX, u64::MAX, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOTSOCK)
+        );
+
+        // SAFETY: the arguments request an ordinary unconnected INET stream.
+        let disconnected =
+            unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+        assert!(disconnected >= 0);
+        // SAFETY: socket returned a new descriptor owned by this File.
+        let disconnected = unsafe { std::fs::File::from_raw_fd(disconnected) };
+        let disconnected = insert_file_with_flags(&mut state, disconnected, false, None) as i32;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpeername,
+                [disconnected as u64, u64::MAX, u64::MAX, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOTCONN)
+        );
+
+        assert_eq!(write_struct(&mut memory, LENGTH, &unnamed_length), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpeername,
+                [
+                    (0x5a5a_a5a5_u64 << 32) | u64::from(left as u32),
+                    ADDRESS,
+                    LENGTH,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let listener_address = listener.local_addr().unwrap();
+        let client = std::net::TcpStream::connect(listener_address).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        // SAFETY: into_raw_fd transfers the connected client's sole ownership.
+        let client =
+            unsafe { std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(client)) };
+        let client = insert_file_with_flags(&mut state, client, false, None) as i32;
+        let inet_length = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        assert_eq!(write_struct(&mut memory, LENGTH, &inet_length), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getsockname,
+                [client as u64, ADDRESS, LENGTH, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(write_struct(&mut memory, LENGTH, &inet_length), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpeername,
+                [client as u64, PEER_ADDRESS, LENGTH, 0, 0, 0],
+            ),
+            0
+        );
+        let local: libc::sockaddr_in = read_struct(&memory, ADDRESS);
+        let peer: libc::sockaddr_in = read_struct(&memory, PEER_ADDRESS);
+        assert_eq!(local.sin_family, libc::AF_INET as libc::sa_family_t);
+        assert_eq!(peer.sin_family, libc::AF_INET as libc::sa_family_t);
+        assert_ne!(local.sin_port, peer.sin_port);
+        assert_eq!(u16::from_be(peer.sin_port), listener_address.port());
     }
 
     #[test]
