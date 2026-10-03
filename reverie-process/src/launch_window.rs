@@ -29,6 +29,10 @@
 //! [`TransientOpen`] must not launch (that would wait for itself; it panics
 //! instead).
 //!
+//! The lock lives here, below `reverie-core`, `safeptrace` and
+//! `reverie-ptrace`, so that the transient opens in all three take the same
+//! lock. It is not part of Reverie's tool API.
+//!
 //! Descriptors held beyond one call (pidfds, perf counters, a gdb client's
 //! files) and forks outside Reverie are not covered.
 
@@ -99,13 +103,13 @@ fn wake_all() {
 
 /// Exclusive hold for one guest launch's descriptor allocation and fork.
 #[must_use]
-pub(crate) struct Launch {
+pub struct Launch {
     _not_send: PhantomData<*const ()>,
 }
 
 impl Launch {
     /// Waits until no transient open is held and no other launch runs.
-    pub(crate) fn begin() -> Self {
+    pub fn begin() -> Self {
         register_child_reset();
         assert_eq!(
             OPENS_HELD.with(Cell::get),
@@ -138,13 +142,13 @@ impl Drop for Launch {
 
 /// Shared hold for one transient descriptor, from its open to its close.
 #[must_use]
-pub(crate) struct TransientOpen {
+pub struct TransientOpen {
     _not_send: PhantomData<*const ()>,
 }
 
 impl TransientOpen {
     /// Waits only while another thread's launch is in progress.
-    pub(crate) fn begin() -> Self {
+    pub fn begin() -> Self {
         register_child_reset();
         assert!(
             !LAUNCHING_HERE.with(Cell::get),
@@ -184,13 +188,13 @@ impl Drop for TransientOpen {
 }
 
 /// [`std::fs::read_to_string`] as one transient open.
-pub(crate) fn read_to_string<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<String> {
+pub fn read_to_string<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<String> {
     let _open = TransientOpen::begin();
     std::fs::read_to_string(path)
 }
 
 /// [`std::fs::read`] as one transient open.
-pub(crate) fn read<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<Vec<u8>> {
+pub fn read<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<Vec<u8>> {
     let _open = TransientOpen::begin();
     std::fs::read(path)
 }
