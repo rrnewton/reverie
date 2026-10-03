@@ -429,6 +429,19 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         )))
     }
 
+    /// Join only the exact already-running, backend-marked peer observation
+    /// timers while this original callback stays stopped. This grants no
+    /// scheduler turn, source/store authority, or guest timeout. A fresh held
+    /// acquisition and the caller's current policy evidence remain required.
+    async fn join_followed_observation_timers(
+        &mut self,
+        _original: reverie_syscalls::Syscall,
+    ) -> Result<(), crate::Error> {
+        Err(crate::Error::Tool(anyhow::anyhow!(
+            "backend has no peer timer join"
+        )))
+    }
+
     /// Borrow a held writer after the dedicated receive timer restored this
     /// original callback. Ordinary inject does not qualify this path. The same
     /// per-original one-use claim and complete cohort custody remain required;
@@ -1098,6 +1111,13 @@ where
         self.inner
             .inject_receive_observation_timer(original, timeout)
             .await
+    }
+
+    async fn join_followed_observation_timers(
+        &mut self,
+        original: reverie_syscalls::Syscall,
+    ) -> Result<(), crate::Error> {
+        self.inner.join_followed_observation_timers(original).await
     }
 
     fn with_restored_followed_store<R>(

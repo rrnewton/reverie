@@ -21,8 +21,16 @@ pub(super) struct Logical {
     call: (Sysno, SyscallArgs),
     regs: libc::user_regs_struct,
     pub(super) receive: Option<followed_receive::Context>,
+    pub(super) timer_join_pending: bool,
 }
 impl Logical {
+    pub(super) fn unfinished(&self) -> bool {
+        self.timer_join_pending
+            || self
+                .receive
+                .as_ref()
+                .is_some_and(followed_receive::Context::unfinished)
+    }
     pub(super) fn matches_original(&self, task: &Stopped, call: (Sysno, SyscallArgs)) -> bool {
         self.call == call && self.task.same_generation(&task.terminal_cleanup())
     }
@@ -387,6 +395,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             call,
             regs: task.getregs()?,
             receive: None,
+            timer_join_pending: false,
         });
         Ok(())
     }

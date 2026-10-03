@@ -39,7 +39,11 @@ pub(super) struct Context {
 
 impl Context {
     pub(super) fn unfinished(&self) -> bool {
-        self.invalid || self.restored.is_none()
+        self.invalid
+            || self
+                .restored
+                .as_ref()
+                .is_none_or(|receipt| !receipt.receive_timer_published())
     }
 
     pub(super) fn invalidate(&mut self) {
@@ -69,6 +73,63 @@ impl Context {
             self.entry.retain_store_failure();
         }
         result
+    }
+}
+
+// Only this module constructs these borrows, after authenticating the real
+// original callback and retaining the same FatalTaskStop scratch owner.
+pub(super) struct TimerOrigin<'a> {
+    logical: &'a private_signal::Logical,
+    original: (Sysno, SyscallArgs),
+    scratch: &'a Arc<crate::tracer::ReceiveTimerScratch>,
+}
+impl TimerOrigin<'_> {
+    pub(super) fn validate(&self, stopped: &Stopped) -> Result<(), Errno> {
+        if !self.logical.matches_original(stopped, self.original) {
+            return Err(Errno::ESTALE);
+        }
+        let context = self.logical.receive.as_ref().ok_or(Errno::ESTALE)?;
+        if !context.invalid || context.restored.is_some() || context.call != self.original {
+            return Err(Errno::ESTALE);
+        }
+        context.entry.retained_store_state()
+    }
+    pub(super) fn original(&self) -> (Sysno, SyscallArgs) {
+        self.original
+    }
+    pub(super) fn scratch(&self) -> Arc<crate::tracer::ReceiveTimerScratch> {
+        Arc::clone(self.scratch)
+    }
+}
+
+// Constructed only after the exact scratch retirement succeeded. The borrowed
+// context must contain this exact receipt and still validate its entire frame.
+pub(super) struct TimerPublication<'a> {
+    task: &'a Stopped,
+    context: &'a Context,
+    original: (Sysno, SyscallArgs),
+    scratch: &'a Arc<crate::tracer::ReceiveTimerScratch>,
+}
+impl TimerPublication<'_> {
+    pub(super) fn validate(
+        &self,
+        receipt: &source_cohort::RestoredNativeContext,
+    ) -> Result<(), Errno> {
+        if !self
+            .context
+            .restored
+            .as_ref()
+            .is_some_and(|current| std::ptr::eq(current, receipt))
+        {
+            return Err(Errno::ESTALE);
+        }
+        self.context.validate(self.task, self.original)
+    }
+    pub(super) fn original(&self) -> (Sysno, SyscallArgs) {
+        self.original
+    }
+    pub(super) fn scratch(&self) -> &Arc<crate::tracer::ReceiveTimerScratch> {
+        self.scratch
     }
 }
 
@@ -152,7 +213,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Err(Errno::EINVAL.into());
         }
         let session = Arc::clone(&self.global_state.fatal_session);
-        if !session.source_jobs.enabled()
+        if self
+            .private_signal
+            .logical
+            .as_ref()
+            .is_some_and(|logical| logical.timer_join_pending)
+            || !session.source_jobs.enabled()
             || session.is_failed()
             || !session.source_jobs.idle()
             || self.cancel_handler.load(Ordering::Acquire)
@@ -327,7 +393,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         if !safeptrace::ControlStop::registers_equal(&actual_entry, &entered) {
             return Err(Errno::EPROTO.into());
         }
-        let native = member.native(nr, args).ok_or(Errno::ESTALE)?;
+        let native = member.native_receive_timer(
+            &task,
+            TimerOrigin {
+                logical: self.private_signal.logical.as_ref().ok_or(Errno::ESTALE)?,
+                original: call,
+                scratch: &scratch,
+            },
+            (nr, args),
+            &entered,
+        )?;
         self.observe_injected_syscall(observe.then_some((nr, args)), InjectedSyscallEvent::Entered);
         let wait = self.syscall_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait);
@@ -366,6 +441,24 @@ impl<L: Tool + 'static> TracedTask<L> {
         context.restored = Some(restored);
         context.invalid = false;
         self.validate_restored_receive(original)?;
+        #[cfg(all(test, cohort_final_test))]
+        {
+            assert!(self.followed_receive_context()?.unfinished());
+            source_cohort::timer_join_tests::pause_publication(&task).await;
+        }
+        let context = self.followed_receive_context()?;
+        context
+            .restored
+            .as_ref()
+            .ok_or(Errno::ESTALE)?
+            .publish_receive_timer(TimerPublication {
+                task: &task,
+                context,
+                original: call,
+                scratch: &scratch,
+            })?;
+        #[cfg(all(test, cohort_final_test))]
+        assert!(!self.followed_receive_context()?.unfinished());
         attempt.completed = true;
         Ok(())
     }

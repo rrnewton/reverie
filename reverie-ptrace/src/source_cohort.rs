@@ -18,13 +18,30 @@ use safeptrace::Stopped;
 use safeptrace::TaskIdentity;
 use safeptrace::TerminalCleanup;
 use safeptrace::Wait;
+use tokio::sync::Notify;
 
 use super::PreparedNewborn;
 use super::TraceError;
 use crate::regs::RegAccess;
 
 #[derive(Default)]
-pub(super) struct CohortHistory(Mutex<History>);
+pub(super) struct CohortHistory(Mutex<History>, Arc<Notify>);
+
+// Declare BEFORE a metadata guard. Wakers may reenter: Drop must run only
+// after that later-declared guard has released the cohort/cell mutexes.
+struct ChangeNotice(Vec<Arc<Notify>>);
+impl Drop for ChangeNotice {
+    fn drop(&mut self) {
+        for notify in &self.0 {
+            notify.notify_waiters();
+        }
+    }
+}
+impl CohortHistory {
+    fn changing(&self) -> ChangeNotice {
+        ChangeNotice(vec![Arc::clone(&self.1)])
+    }
+}
 #[derive(Default)]
 struct History {
     revision: u64,
@@ -39,14 +56,17 @@ struct History {
     hold: Option<Arc<()>>,
 }
 struct Task {
-    identity: TaskIdentity,
+    identity: Arc<TaskIdentity>,
     stop: Option<ControlStop>,
     origin: Origin,
     life: Life,
     next_operation: u64,
     operations: BTreeMap<u64, Operation>,
     invocation: Option<u64>,
+    #[cfg(target_arch = "x86_64")]
+    receive_timer: Option<Arc<ReceiveTimerObservation>>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Origin {
     Command,
     Child {
@@ -86,6 +106,8 @@ struct Operation {
     // clone_args snapshot stands in for the kernel's eventual argument copy.
     indirect_birth: Option<IndirectBirth>,
     peers: Option<Weak<NativePeers>>,
+    #[cfg(target_arch = "x86_64")]
+    receive_timer: Option<Arc<ReceiveTimerObservation>>,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum IndirectBirth {
@@ -146,6 +168,8 @@ pub(super) struct NativeOperation {
     completed: bool,
     source_ioctl: Option<super::source_epoch::NativeIoctl>,
     peers: Option<Arc<NativePeers>>,
+    #[cfg(target_arch = "x86_64")]
+    receive_timer: Option<Arc<ReceiveTimerObservation>>,
 }
 pub(super) struct NativeReturn {
     owner: NativeOperation,
@@ -159,10 +183,22 @@ pub(crate) struct RestoredNativeContext {
     member: Member,
     operation: u64,
     control_revision: u64,
+    timer_publication: Option<Arc<ReceiveTimerObservation>>,
 }
 
 #[cfg(target_arch = "x86_64")]
 impl RestoredNativeContext {
+    pub(super) fn receive_timer_published(&self) -> bool {
+        let h = self.member.history.0.lock().unwrap();
+        h.read_open()
+            && self.timer_publication.as_ref().is_some_and(|timer| {
+                *timer.progress.lock().unwrap()
+                    == ReceiveTimerProgress::Restored {
+                        control_revision: self.control_revision,
+                    }
+            })
+    }
+
     pub(crate) fn validate(&self, stopped: &Stopped) -> Result<(), safeptrace::Errno> {
         use safeptrace::Errno;
         let identity = stopped.terminal_cleanup().task_identity()?;
@@ -214,13 +250,15 @@ impl History {
         self.tasks.insert(
             id,
             Task {
-                identity,
+                identity: Arc::new(identity),
                 stop: None,
                 origin,
                 life: Life::Initializing,
                 next_operation: 0,
                 operations: BTreeMap::new(),
                 invocation: None,
+                #[cfg(target_arch = "x86_64")]
+                receive_timer: None,
             },
         );
         #[cfg(test)]
@@ -240,6 +278,17 @@ impl History {
             self.fail();
             return None;
         };
+        #[cfg(target_arch = "x86_64")]
+        if let Some(timer) = &task.receive_timer {
+            if !matches!(
+                *timer.progress.lock().unwrap(),
+                ReceiveTimerProgress::Restored { .. }
+            ) {
+                self.fail();
+                return None;
+            }
+            task.receive_timer = None;
+        }
         task.next_operation = next;
         task.operations.insert(
             n,
@@ -248,6 +297,8 @@ impl History {
                 outcome: Outcome::Waiting,
                 indirect_birth: None,
                 peers: None,
+                #[cfg(target_arch = "x86_64")]
+                receive_timer: None,
             },
         );
         #[cfg(test)]
@@ -260,6 +311,7 @@ impl CohortHistory {
     /// future admission under the SAME lock as acquisition, and refuse the
     /// physical signal while the current source job still owns its interval.
     pub(super) fn before_group_signal(&self) -> Result<(), safeptrace::Errno> {
+        let _change = self.changing();
         let mut h = self.0.lock().unwrap();
         h.fail();
         if h.hold.is_some() {
@@ -280,6 +332,7 @@ impl CohortHistory {
             self.fail();
             return;
         };
+        let _change = self.changing();
         let mut h = self.0.lock().unwrap();
         if h.failed {
             return;
@@ -300,11 +353,13 @@ impl CohortHistory {
         h.advance();
     }
     pub(super) fn fail(&self) {
+        let _change = self.changing();
         self.0.lock().unwrap().fail();
     }
     pub(super) fn initial_command(self: &Arc<Self>, stopped: &Stopped) -> Option<Member> {
         let identity = stopped.terminal_cleanup().task_identity().ok()?;
         let stop = stopped.control_stop().ok()?;
+        let _change = self.changing();
         let mut h = self.0.lock().unwrap();
         if h.initialized || h.failed {
             h.fail();
@@ -329,6 +384,7 @@ impl CohortHistory {
         terminal: &TerminalCleanup,
     ) -> Option<TerminalOperation> {
         let identity = terminal.task_identity().ok()?;
+        let _change = self.changing();
         let mut h = self.0.lock().unwrap();
         let Some(index) = h
             .tasks
@@ -371,6 +427,7 @@ impl Member {
     /// Only the original ordinary child spawn installs this single observer.
     pub(super) fn ordinary_child(&self, terminal: Arc<TerminalCleanup>) -> Option<ChildRetirement> {
         let identity = terminal.task_identity().ok()?;
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         if h.failed || h.source_closed {
             return None;
@@ -413,6 +470,7 @@ impl Member {
     /// success is inferred from a final wait or from the task counters.
     pub(super) fn ordinary_callbacks_completed(&self, terminal: &TerminalCleanup) {
         let identity = terminal.task_identity();
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         if h.failed {
             return;
@@ -433,6 +491,7 @@ impl Member {
 
     pub(super) fn acquire(&self) -> Result<FollowedHold, safeptrace::Errno> {
         use safeptrace::Errno;
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         if !h.read_open() || !h.tasks.contains_key(&self.index) {
             return Err(Errno::ESTALE);
@@ -442,6 +501,15 @@ impl Member {
         }
         let mut controls = BTreeMap::new();
         for (&id, task) in &h.tasks {
+            #[cfg(target_arch = "x86_64")]
+            if task.receive_timer.as_ref().is_some_and(|timer| {
+                !matches!(
+                    *timer.progress.lock().unwrap(),
+                    ReceiveTimerProgress::Restored { .. }
+                )
+            }) {
+                return Err(Errno::EBUSY);
+            }
             if !task.quiescent() {
                 return Err(Errno::EBUSY);
             }
@@ -568,6 +636,7 @@ impl Member {
             crate::tracer::FatalTaskStop::release_peer_controls(&bindings, false)?;
             return Err(Errno::ESTALE);
         };
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         if h.failed
             || !h
@@ -718,6 +787,7 @@ impl NativePeers {
     }
     pub(super) fn retire(self: &Arc<Self>) -> Result<(), safeptrace::Errno> {
         use safeptrace::Errno;
+        let _change = self.member.history.changing();
         let mut h = self.member.history.0.lock().unwrap();
         let mut state = self.state.lock().unwrap();
         if state.phase != NativePeerPhase::Restored
@@ -765,6 +835,7 @@ impl NativePeers {
         {
             return Err(Errno::ESTALE);
         }
+        let _change = self.member.history.changing();
         let mut h = self.member.history.0.lock().unwrap();
         let mut state = self.state.lock().unwrap();
         if state.phase == NativePeerPhase::Retired
@@ -887,6 +958,7 @@ impl Drop for FollowedHold {
         }
         // Release physical gates before clearing the run-level signal fence.
         self.controls.clear();
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         assert!(
             h.hold
@@ -950,6 +1022,7 @@ impl Member {
         args: SyscallArgs,
         source_ioctl: Option<super::source_epoch::NativeIoctl>,
     ) -> Option<NativeOperation> {
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         if h.failed {
             return None;
@@ -987,6 +1060,8 @@ impl Member {
             completed: false,
             source_ioctl,
             peers: None,
+            #[cfg(target_arch = "x86_64")]
+            receive_timer: None,
         })
     }
     pub(super) fn close_observation(&self) {
@@ -1081,6 +1156,7 @@ impl Member {
             effect = Effect::Execution;
         }
         let identity = stopped.terminal_cleanup().task_identity();
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         if h.failed {
             return None;
@@ -1144,6 +1220,7 @@ impl Member {
         #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
         clone3_tests::child_event();
         let identity = cleanup.task_identity();
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         if h.failed {
             return;
@@ -1197,6 +1274,7 @@ impl Member {
         cleanup: &TerminalCleanup,
     ) -> Option<(ChildMembership, ParentCompletion)> {
         let identity = cleanup.task_identity().ok()?;
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         if h.failed {
             return None;
@@ -1242,6 +1320,7 @@ impl Member {
         ))
     }
     pub(super) fn child_restored(&self) {
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         if h.failed {
             return;
@@ -1265,6 +1344,7 @@ impl Member {
         tests::restored(self);
     }
     pub(super) fn exec_observed(&self) {
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         if h.failed {
             return;
@@ -1280,6 +1360,7 @@ impl Member {
         self.history.fail();
     }
     pub(super) fn initial_ready(&self) {
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         if h.failed {
             return;
@@ -1293,6 +1374,7 @@ impl Member {
         }
     }
     pub(super) fn terminal_observed(&self) {
+        let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         h.terminal_pending(self.index);
         // The callback may follow retirement, but cannot resurrect a task.
@@ -1330,6 +1412,7 @@ impl ChildRetirement {
         }
         let actual = self.terminal.observed_terminal();
         let retired = self.terminal.wait(std::time::Duration::ZERO);
+        let _change = self.member.history.changing();
         let mut h = self.member.history.0.lock().unwrap();
         if h.failed {
             return;
@@ -1356,6 +1439,7 @@ impl ChildRetirement {
 impl Drop for ChildRetirement {
     fn drop(&mut self) {
         if !self.completed {
+            let _change = self.member.history.changing();
             let mut h = self.member.history.0.lock().unwrap();
             // Permanent refusal, without retiring unresolved observer work.
             h.source_closed = true;
@@ -1380,6 +1464,7 @@ impl ResumeOperation {
             self.member
                 .child_event(self.number, &child.terminal_cleanup());
         }
+        let _change = self.member.history.changing();
         let mut h = self.member.history.0.lock().unwrap();
         if h.failed {
             return;
@@ -1391,6 +1476,15 @@ impl ResumeOperation {
             h.fail();
             return;
         };
+        #[cfg(target_arch = "x86_64")]
+        if operation.receive_timer.is_some()
+            && !matches!(result, Ok(Wait::Stopped(_, Event::Syscall)))
+        {
+            // A marked timer has no signal/restart/private-trap continuation.
+            // Keep the original wait/cleanup owner, close only observation.
+            h.fail();
+            return;
+        }
         if operation.indirect_birth.is_some()
             && !matches!(
                 result,
@@ -1443,6 +1537,7 @@ impl ResumeOperation {
 }
 impl Drop for ResumeOperation {
     fn drop(&mut self) {
+        let _change = self.member.history.changing();
         let mut h = self.member.history.0.lock().unwrap();
         let exiting = h
             .tasks
@@ -1476,6 +1571,10 @@ impl NativeOperation {
         self.returned(stopped, raw, valid)
     }
     pub(super) fn private_return(self, stopped: &Stopped, raw: i64) -> Option<NativeReturn> {
+        #[cfg(target_arch = "x86_64")]
+        if self.receive_timer.is_some() {
+            return None;
+        }
         if self.syscall == Sysno::clone3 {
             // Indirect birth requires the actual typed EXIT, never a trap's RAX.
             return None;
@@ -1506,6 +1605,7 @@ impl NativeOperation {
         valid.then_some(NativeReturn { owner: self, raw })
     }
     pub(super) fn child_returned(mut self) {
+        let _change = self.member.history.changing();
         let mut h = self.member.history.0.lock().unwrap();
         if !h.failed {
             if let Some(task) = h.tasks.get_mut(&self.member.index)
@@ -1521,6 +1621,13 @@ impl NativeOperation {
 }
 impl Drop for NativeOperation {
     fn drop(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        if !self.completed
+            && let Some(timer) = &self.receive_timer
+        {
+            timer.fail(&self.member.history);
+        }
+        let _change = self.member.history.changing();
         let mut h = self.member.history.0.lock().unwrap();
         if !self.completed
             && h.tasks
@@ -1551,8 +1658,21 @@ impl NativeReturn {
         desired: &safeptrace::Regs,
     ) -> Result<RestoredNativeContext, TraceError> {
         use safeptrace::Errno;
+        let _timer_change = self
+            .owner
+            .receive_timer
+            .as_ref()
+            .map(|timer| ChangeNotice(vec![Arc::clone(&timer.changed)]));
         let result = (|| {
-            if matches!(self.raw, -512 | -513 | -514 | -516)
+            if let Some(timer) = &self.owner.receive_timer {
+                let mut expected = timer.entered;
+                expected.rax = 0;
+                if !ControlStop::registers_equal(&expected, expected_exit) {
+                    return Err(Errno::EPROTO.into());
+                }
+            }
+            if (self.owner.receive_timer.is_some() && self.raw != 0)
+                || matches!(self.raw, -512 | -513 | -514 | -516)
                 || self.raw == -(libc::EINTR as i64)
                 || self.owner.source_ioctl.is_some()
                 || self.owner.peers.is_some()
@@ -1565,6 +1685,7 @@ impl NativeReturn {
             }
             let identity = stopped.terminal_cleanup().task_identity()?;
             let (stop, revision, control_revision) = {
+                let _change = self.owner.member.history.changing();
                 let mut h = self.owner.member.history.0.lock().unwrap();
                 if !h.read_open() || h.hold.is_some() {
                     return Err(Errno::ESTALE.into());
@@ -1590,6 +1711,7 @@ impl NativeReturn {
             if control_revision.checked_add(1) != Some(issued_revision) {
                 return Err(Errno::ESTALE.into());
             }
+            let _change = self.owner.member.history.changing();
             let mut h = self.owner.member.history.0.lock().unwrap();
             if !h.read_open() || h.hold.is_some() || h.revision != revision {
                 return Err(Errno::ESTALE.into());
@@ -1606,6 +1728,23 @@ impl NativeReturn {
                 return Err(Errno::ESTALE.into());
             }
             stop.validate_current()?;
+            if let Some(timer) = &self.owner.receive_timer {
+                if !task
+                    .receive_timer
+                    .as_ref()
+                    .is_some_and(|t| Arc::ptr_eq(t, timer))
+                    || !task.operations[&self.owner.number]
+                        .receive_timer
+                        .as_ref()
+                        .is_some_and(|t| Arc::ptr_eq(t, timer))
+                    || *timer.progress.lock().unwrap() != ReceiveTimerProgress::PendingNative
+                {
+                    return Err(Errno::ESTALE.into());
+                }
+                *timer.progress.lock().unwrap() = ReceiveTimerProgress::PendingPublication {
+                    control_revision: issued_revision,
+                };
+            }
             task.stop = Some(stop);
             task.operations.remove(&self.owner.number);
             task.invocation = None;
@@ -1615,6 +1754,7 @@ impl NativeReturn {
                 member: self.owner.member.clone(),
                 operation: self.owner.number,
                 control_revision: issued_revision,
+                timer_publication: self.owner.receive_timer.take(),
             })
         })();
         if result.is_err() {
@@ -1626,6 +1766,10 @@ impl NativeReturn {
     }
 
     pub(super) fn restored(mut self) {
+        #[cfg(target_arch = "x86_64")]
+        if self.owner.receive_timer.is_some() {
+            return;
+        }
         #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
         if self
             .owner
@@ -1644,6 +1788,7 @@ impl NativeReturn {
         if matches!(self.raw, -512 | -513 | -514 | -516) {
             return;
         }
+        let _change = self.owner.member.history.changing();
         let mut h = self.owner.member.history.0.lock().unwrap();
         if h.failed {
             return;
@@ -1705,6 +1850,7 @@ impl ChildMembership {
             )),
             _ => None,
         };
+        let _change = self.member.history.changing();
         let mut h = self.member.history.0.lock().unwrap();
         if !h.failed {
             if let Some(task) = h.tasks.get_mut(&self.member.index) {
@@ -1744,6 +1890,7 @@ impl ChildMembership {
 }
 impl ParentCompletion {
     pub(super) fn returned_and_restored(mut self, raw: i64) {
+        let _change = self.member.history.changing();
         let mut h = self.member.history.0.lock().unwrap();
         if h.failed {
             return;
@@ -1782,6 +1929,7 @@ impl Drop for ParentCompletion {
 impl TerminalOperation {
     /// Only original final status AND retire_ordinary_terminal acknowledge it.
     pub(crate) fn completed(self) {
+        let _change = self.0.member.history.changing();
         let mut h = self.0.member.history.0.lock().unwrap();
         if h.failed {
             return;
@@ -1826,6 +1974,7 @@ impl TerminalOperation {
 }
 impl Drop for TerminalOperation {
     fn drop(&mut self) {
+        let _change = self.0.member.history.changing();
         let mut h = self.0.member.history.0.lock().unwrap();
         if h.tasks
             .get(&self.0.member.index)
@@ -1876,3 +2025,375 @@ mod restoration_tests;
 #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
 #[path = "restored_receive_tests.rs"]
 mod restored_receive_tests;
+
+// A closed role inside the existing native operation. Observer cells have no
+// Drop and own no physical stop, timer, wait or cleanup capability.
+#[cfg(target_arch = "x86_64")]
+struct ReceiveTimerObservation {
+    member: u64,
+    operation: u64,
+    identity: Arc<TaskIdentity>,
+    original: (Sysno, SyscallArgs),
+    entered: safeptrace::Regs,
+    scratch: Arc<crate::tracer::ReceiveTimerScratch>,
+    progress: Mutex<ReceiveTimerProgress>,
+    changed: Arc<Notify>,
+}
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReceiveTimerProgress {
+    PendingNative,
+    PendingPublication { control_revision: u64 },
+    Restored { control_revision: u64 },
+    Failed,
+}
+#[cfg(target_arch = "x86_64")]
+impl ReceiveTimerObservation {
+    fn fail(&self, history: &CohortHistory) {
+        let _change = ChangeNotice(vec![Arc::clone(&history.1), Arc::clone(&self.changed)]);
+        let _h = history.0.lock().unwrap();
+        *self.progress.lock().unwrap() = ReceiveTimerProgress::Failed;
+    }
+}
+#[cfg(target_arch = "x86_64")]
+impl Member {
+    /// The borrowed origin can only be constructed inside the dedicated real
+    /// receive timer path; a generic equal-shaped Ppoll never acquires this role.
+    pub(super) fn native_receive_timer(
+        &self,
+        stopped: &Stopped,
+        origin: super::followed_receive::TimerOrigin<'_>,
+        timer: (Sysno, SyscallArgs),
+        entered: &safeptrace::Regs,
+    ) -> Result<NativeOperation, TraceError> {
+        use safeptrace::Errno;
+        origin.validate(stopped)?;
+        super::original_context::check_entry(
+            stopped,
+            timer.0,
+            timer.1,
+            entered.rip,
+            entered.rsp,
+            false,
+        )?;
+        if timer.0 != Sysno::ppoll || !ControlStop::registers_equal(&stopped.getregs()?, entered) {
+            return Err(Errno::EPROTO.into());
+        }
+        let identity = stopped.terminal_cleanup().task_identity()?;
+        let mut native = self.native(timer.0, timer.1).ok_or(Errno::ESTALE)?;
+        let _change = self.history.changing();
+        let mut h = self.history.0.lock().unwrap();
+        if !h.read_open() || h.hold.is_some() {
+            return Err(Errno::ESTALE.into());
+        }
+        let task = h.tasks.get_mut(&self.index).ok_or(Errno::ESTALE)?;
+        if !task.identity.same_generation(&identity)
+            || task.life != Life::Stopped
+            || task.invocation != Some(native.number)
+            || task.operations.len() != 1
+            || native.number.checked_add(1) != Some(task.next_operation)
+            || task.receive_timer.as_ref().is_some_and(|old| {
+                !matches!(
+                    *old.progress.lock().unwrap(),
+                    ReceiveTimerProgress::Restored { .. }
+                )
+            })
+        {
+            return Err(Errno::ESTALE.into());
+        }
+        let operation = task
+            .operations
+            .get_mut(&native.number)
+            .ok_or(Errno::ESTALE)?;
+        if operation.effect != Effect::Native
+            || operation.outcome != Outcome::Waiting
+            || operation.indirect_birth.is_some()
+            || operation.peers.is_some()
+            || operation.receive_timer.is_some()
+        {
+            return Err(Errno::ESTALE.into());
+        }
+        let observation = Arc::new(ReceiveTimerObservation {
+            member: self.index,
+            operation: native.number,
+            identity: Arc::clone(&task.identity),
+            original: origin.original(),
+            entered: *entered,
+            scratch: origin.scratch(),
+            progress: Mutex::new(ReceiveTimerProgress::PendingNative),
+            changed: Arc::new(Notify::new()),
+        });
+        operation.receive_timer = Some(Arc::clone(&observation));
+        task.receive_timer = Some(Arc::clone(&observation));
+        native.receive_timer = Some(observation);
+        Ok(native)
+    }
+
+    pub(super) fn snapshot_receive_timers(&self) -> Result<ReceiveTimerJoin, safeptrace::Errno> {
+        use safeptrace::Errno;
+        let h = self.history.0.lock().unwrap();
+        if !h.read_open() || h.hold.is_some() || !h.tasks.contains_key(&self.index) {
+            return Err(Errno::ESTALE);
+        }
+        let mut members = BTreeMap::new();
+        for (&index, task) in &h.tasks {
+            let state = if task.quiescent() {
+                let stop = task.stop.as_ref().ok_or(Errno::ESTALE)?;
+                stop.validate_current()?;
+                if let Some(timer) = &task.receive_timer {
+                    let progress = *timer.progress.lock().unwrap();
+                    if progress
+                        != (ReceiveTimerProgress::Restored {
+                            control_revision: stop.control_revision(),
+                        })
+                        || timer.operation.checked_add(1) != Some(task.next_operation)
+                    {
+                        return Err(Errno::ESTALE);
+                    }
+                }
+                JoinMemberState::Stopped(stop.control_revision())
+            } else {
+                if index == self.index {
+                    return Err(Errno::EBUSY);
+                }
+                let timer = task.receive_timer.as_ref().ok_or(Errno::EBUSY)?;
+                if *timer.progress.lock().unwrap() != ReceiveTimerProgress::PendingNative {
+                    return Err(Errno::EBUSY);
+                }
+                timer.validate_native(task)?;
+                JoinMemberState::Timer(Arc::clone(timer))
+            };
+            members.insert(
+                index,
+                JoinMember {
+                    identity: Arc::clone(&task.identity),
+                    origin: task.origin,
+                    next_operation: task.next_operation,
+                    state,
+                },
+            );
+        }
+        Ok(ReceiveTimerJoin {
+            member: self.clone(),
+            revision: h.revision,
+            next_task: h.next_task,
+            members,
+        })
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl ReceiveTimerObservation {
+    fn validate_native(&self, task: &Task) -> Result<(), safeptrace::Errno> {
+        use safeptrace::Errno;
+        let operation = task.operations.get(&self.operation).ok_or(Errno::ESTALE)?;
+        if !self.identity.same_generation(&task.identity)
+            || self.operation.checked_add(1) != Some(task.next_operation)
+            || task.invocation != Some(self.operation)
+            || task.operations.len() != 1
+            || operation.effect != Effect::Native
+            || operation.indirect_birth.is_some()
+            || operation.peers.is_some()
+            || !operation
+                .receive_timer
+                .as_ref()
+                .is_some_and(|t| std::ptr::eq(&**t, self))
+            || !matches!(
+                task.origin,
+                Origin::Command
+                    | Origin::Child {
+                        custody: ChildCustody::Restored,
+                        ..
+                    }
+            )
+        {
+            return Err(Errno::ESTALE);
+        }
+        match (task.life, operation.outcome) {
+            (Life::Executing, Outcome::Waiting) if task.stop.is_none() => Ok(()),
+            (Life::Stopped, Outcome::Stopped) => {
+                // Checked SET/GET temporarily consumes Task.stop. There is no
+                // await there; the real producer owns it until reattachment.
+                if let Some(stop) = &task.stop {
+                    stop.validate_current()?;
+                }
+                Ok(())
+            }
+            _ => Err(Errno::EBUSY),
+        }
+    }
+}
+#[cfg(target_arch = "x86_64")]
+struct JoinMember {
+    identity: Arc<TaskIdentity>,
+    origin: Origin,
+    next_operation: u64,
+    state: JoinMemberState,
+}
+#[cfg(target_arch = "x86_64")]
+enum JoinMemberState {
+    Stopped(u64),
+    Timer(Arc<ReceiveTimerObservation>),
+}
+#[cfg(target_arch = "x86_64")]
+pub(super) struct ReceiveTimerJoin {
+    member: Member,
+    revision: u64,
+    next_task: u64,
+    members: BTreeMap<u64, JoinMember>,
+}
+#[cfg(target_arch = "x86_64")]
+impl ReceiveTimerJoin {
+    /// true means every originally captured timer published the checked
+    /// positive boundary. Removed operations alone never satisfy this check.
+    pub(super) fn status(&self) -> Result<bool, safeptrace::Errno> {
+        use safeptrace::Errno;
+        let h = self.member.history.0.lock().unwrap();
+        if !h.read_open()
+            || h.hold.is_some()
+            || h.next_task != self.next_task
+            || !h.tasks.keys().eq(self.members.keys())
+        {
+            return Err(Errno::ESTALE);
+        }
+        let mut restores = 0u64;
+        let mut ready = true;
+        for (&index, saved) in &self.members {
+            let task = &h.tasks[&index];
+            if !task.identity.same_generation(&saved.identity)
+                || task.origin != saved.origin
+                || task.next_operation != saved.next_operation
+            {
+                return Err(Errno::ESTALE);
+            }
+            let revision = match &saved.state {
+                JoinMemberState::Stopped(revision) => *revision,
+                JoinMemberState::Timer(timer) => {
+                    if timer.member != index
+                        || !task
+                            .receive_timer
+                            .as_ref()
+                            .is_some_and(|t| Arc::ptr_eq(t, timer))
+                    {
+                        return Err(Errno::ESTALE);
+                    }
+                    let progress = *timer.progress.lock().unwrap();
+                    match progress {
+                        ReceiveTimerProgress::PendingNative => {
+                            timer.validate_native(task)?;
+                            ready = false;
+                            continue;
+                        }
+                        ReceiveTimerProgress::PendingPublication { control_revision } => {
+                            restores = restores.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+                            ready = false;
+                            control_revision
+                        }
+                        ReceiveTimerProgress::Restored { control_revision } => {
+                            restores = restores.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+                            control_revision
+                        }
+                        ReceiveTimerProgress::Failed => return Err(Errno::ESTALE),
+                    }
+                }
+            };
+            if !task.quiescent() {
+                return Err(Errno::ESTALE);
+            }
+            let stop = task.stop.as_ref().ok_or(Errno::ESTALE)?;
+            if stop.control_revision() != revision {
+                return Err(Errno::ESTALE);
+            }
+            stop.validate_current()?;
+        }
+        if self.revision.checked_add(restores) != Some(h.revision) {
+            return Err(Errno::ESTALE);
+        }
+        Ok(ready)
+    }
+
+    pub(super) async fn wait(&self) -> Result<(), safeptrace::Errno> {
+        let mut notifications = vec![Arc::clone(&self.member.history.1)];
+        for saved in self.members.values() {
+            if let JoinMemberState::Timer(timer) = &saved.state {
+                notifications.push(Arc::clone(&timer.changed));
+            }
+        }
+        loop {
+            // Enable before checking: a completion before polling the await
+            // cannot be lost. No cohort/cell lock or ControlHold spans await.
+            let mut waiting: Vec<_> = notifications
+                .iter()
+                .map(|n| Box::pin(n.notified()))
+                .collect();
+            for notified in &mut waiting {
+                notified.as_mut().enable();
+            }
+            if self.status()? {
+                return Ok(());
+            }
+            futures::future::select_all(waiting).await;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl RestoredNativeContext {
+    pub(super) fn publish_receive_timer(
+        &self,
+        publication: super::followed_receive::TimerPublication<'_>,
+    ) -> Result<(), safeptrace::Errno> {
+        use safeptrace::Errno;
+        publication.validate(self)?;
+        let timer = self.timer_publication.as_ref().ok_or(Errno::ESTALE)?;
+        let _change = ChangeNotice(vec![
+            Arc::clone(&self.member.history.1),
+            Arc::clone(&timer.changed),
+        ]);
+        let h = self.member.history.0.lock().unwrap();
+        let task = h.tasks.get(&self.member.index).ok_or(Errno::ESTALE)?;
+        if !h.read_open()
+            || h.hold.is_some()
+            || !task.quiescent()
+            || self.operation != timer.operation
+            || self.member.index != timer.member
+            || timer.original != publication.original()
+            || !Arc::ptr_eq(&timer.scratch, publication.scratch())
+            || !task
+                .receive_timer
+                .as_ref()
+                .is_some_and(|t| Arc::ptr_eq(t, timer))
+            || *timer.progress.lock().unwrap()
+                != (ReceiveTimerProgress::PendingPublication {
+                    control_revision: self.control_revision,
+                })
+        {
+            return Err(Errno::ESTALE);
+        }
+        *timer.progress.lock().unwrap() = ReceiveTimerProgress::Restored {
+            control_revision: self.control_revision,
+        };
+        Ok(())
+    }
+}
+#[cfg(target_arch = "x86_64")]
+impl Drop for RestoredNativeContext {
+    fn drop(&mut self) {
+        if let Some(timer) = &self.timer_publication {
+            let _change = ChangeNotice(vec![
+                Arc::clone(&self.member.history.1),
+                Arc::clone(&timer.changed),
+            ]);
+            let mut h = self.member.history.0.lock().unwrap();
+            let mut progress = timer.progress.lock().unwrap();
+            if !matches!(*progress, ReceiveTimerProgress::Restored { .. }) {
+                *progress = ReceiveTimerProgress::Failed;
+                h.fail();
+            }
+        }
+    }
+}
+
+#[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+#[path = "receive_timer_join_tests.rs"]
+pub(super) mod timer_join_tests;

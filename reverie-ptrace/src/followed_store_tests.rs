@@ -114,6 +114,7 @@ impl Tool for Receiver {
                     assert_eq!(checks, [true; 4]);
                 }
                 drop(history);
+                assert_eq!(writer.validate_context(), Ok(()));
                 let outcome = writer.store(b"abcd");
                 // The existing Call analogue receives the actual result while all
                 // physical custody is still held, before callback return.
@@ -124,6 +125,14 @@ impl Tool for Receiver {
                         raw: Ok(4),
                         postcheck: Ok(())
                     }
+                );
+                assert_eq!(
+                    writer.validate_context(),
+                    Err(reverie::syscalls::NativeUserStoreRefusal::Evidence(
+                        reverie::syscalls::NativeUserReadRefusal::TargetState(
+                            safeptrace::Errno::EALREADY
+                        )
+                    ))
                 );
                 assert!(matches!(writer.store(b"WXYZ"), O::Refused(_)));
                 if panic_after {

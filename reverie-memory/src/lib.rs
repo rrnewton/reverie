@@ -83,6 +83,15 @@ pub enum NativeUserStoreOutcome {
 /// Implementations retain physical custody of the whole followed cohort and
 /// check the exact original scalar receive before and after the actual store.
 pub trait FollowedStore {
+    /// Revalidate the same unused original context and physical held interval.
+    /// This performs no write and claims no store; callers may use it directly
+    /// before committing a separately authorized no-store result.
+    fn validate_context(&self) -> Result<(), NativeUserStoreRefusal> {
+        Err(NativeUserStoreRefusal::Evidence(
+            NativeUserReadRefusal::UnsupportedBackend,
+        ))
+    }
+
     /// Write at the original receive destination. The backend qualifies every
     /// operand and preserves the actual kernel result through failed postchecks.
     fn store(&mut self, bytes: &[u8]) -> NativeUserStoreOutcome;

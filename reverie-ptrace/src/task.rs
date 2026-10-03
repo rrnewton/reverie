@@ -1595,6 +1595,8 @@ mod followed_receive;
 #[cfg(target_arch = "x86_64")]
 #[path = "task/followed_store.rs"]
 mod followed_store;
+#[cfg(target_arch = "x86_64")]
+mod followed_timer_join;
 
 #[path = "source_cohort.rs"]
 pub(crate) mod source_cohort;
@@ -6719,8 +6721,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .private_signal
                 .logical
                 .as_ref()
-                .and_then(|logical| logical.receive.as_ref())
-                .is_some_and(followed_receive::Context::unfinished)
+                .is_some_and(private_signal::Logical::unfinished)
             {
                 self.publish_ordinary_failure(
                     "retained receive callback abandoned its private timer",
@@ -10790,6 +10791,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         origin: InjectionOrigin,
     ) -> Result<Result<i64, Errno>, TraceError> {
         #[cfg(target_arch = "x86_64")]
+        if self
+            .private_signal
+            .logical
+            .as_ref()
+            .is_some_and(|logical| logical.timer_join_pending)
+        {
+            return Err(Errno::EBUSY.into());
+        }
+        #[cfg(target_arch = "x86_64")]
         if let Some(context) = self
             .private_signal
             .logical
@@ -11471,6 +11481,26 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
             let _ = (original, timeout);
             Err(reverie::Error::Tool(anyhow::anyhow!(
                 "backend has no retained receive timer"
+            )))
+        }
+    }
+
+    async fn join_followed_observation_timers(
+        &mut self,
+        original: Syscall,
+    ) -> Result<(), reverie::Error> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            match self.run_followed_timer_join(original).await {
+                Ok(()) => Ok(()),
+                Err(error) => self.abort(Err(error)).await,
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = original;
+            Err(reverie::Error::Tool(anyhow::anyhow!(
+                "backend has no peer timer join"
             )))
         }
     }

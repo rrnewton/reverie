@@ -20,11 +20,22 @@ struct Store<'a> {
     permit: safeptrace::NativeStorePermit<'a>,
     check: &'a dyn Fn() -> Result<(), Errno>,
     claim: &'a dyn Fn() -> Result<(), Errno>,
+    unused: &'a dyn Fn() -> Result<(), Errno>,
     address: usize,
     capacity: usize,
     used: bool,
 }
 impl FollowedStore for Store<'_> {
+    fn validate_context(&self) -> Result<(), Refusal> {
+        if self.used {
+            return Err(state(Errno::EALREADY));
+        }
+        (self.unused)()
+            .and_then(|_| (self.check)())
+            .and_then(|_| self.permit.validate())
+            .map_err(state)
+    }
+
     fn store(&mut self, bytes: &[u8]) -> Outcome {
         if std::mem::replace(&mut self.used, true) {
             return Outcome::Refused(state(Errno::EALREADY));
@@ -103,10 +114,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         };
         check().map_err(state)?;
         let claim = || self.claim_original_scalar_store();
+        let unused = || self.original_scalar_store_unused();
         let mut writer = Store {
             permit,
             check: &check,
             claim: &claim,
+            unused: &unused,
             address: args.arg1,
             capacity: args.arg2,
             used: false,
@@ -161,10 +174,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Err(Refusal::Evidence(Evidence::UnsupportedRange));
         }
         let claim = || entry.claim_retained_store();
+        let unused = || entry.retained_store_unused();
         let mut writer = Store {
             permit,
             check: &check,
             claim: &claim,
+            unused: &unused,
             address: args.arg1,
             capacity: args.arg2,
             used: false,

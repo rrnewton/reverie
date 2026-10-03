@@ -72,6 +72,9 @@ fn main() {
         Some("store-read-child") => followed_destination_store(true, false),
         Some("store-recv-root") => followed_destination_store(false, true),
         Some("store-recv-child") => followed_destination_store(true, true),
+        Some("timer-join-sendto") => followed_timer_join(0),
+        Some("timer-join-poll") => followed_timer_join(1),
+        Some("timer-join-read") => followed_timer_join(2),
         mode => panic!("unadmitted fixture mode: {mode:?}"),
     }
 }
@@ -411,6 +414,79 @@ fn followed_destination_store(child_receives: bool, recvfrom: bool) {
         }
         unsafe {
             libc::syscall(libc::SYS_futex, tid.as_ptr(), libc::FUTEX_WAIT, current, 0);
+        }
+    }
+}
+
+fn followed_timer_join(parent_kind: u8) {
+    use std::sync::atomic::AtomicI32;
+    use std::sync::atomic::Ordering;
+    #[repr(align(4096))]
+    struct Buffer([u8; 8]);
+    extern "C" fn child(argument: *mut libc::c_void) -> libc::c_int {
+        let fd = argument as usize;
+        let mut buffer = Buffer([0xa5; 8]);
+        let raw = unsafe { libc::syscall(libc::SYS_read, fd, buffer.0.as_mut_ptr(), 4usize) };
+        assert_eq!(raw, 0);
+        assert_eq!(buffer.0, [0xa5; 8]);
+        unsafe {
+            libc::syscall(libc::SYS_exit, 0);
+        }
+        unreachable!("original child exit returned")
+    }
+    let mut stacks = [vec![0u128; 16384], vec![0u128; 16384]];
+    let tids = [AtomicI32::new(0), AtomicI32::new(0)];
+    let flags = libc::CLONE_VM
+        | libc::CLONE_FS
+        | libc::CLONE_FILES
+        | libc::CLONE_SIGHAND
+        | libc::CLONE_THREAD
+        | libc::CLONE_SYSVSEM
+        | libc::CLONE_PARENT_SETTID
+        | libc::CLONE_CHILD_CLEARTID;
+    for index in 0..2 {
+        assert!(
+            unsafe {
+                libc::clone(
+                    child,
+                    stacks[index].as_mut_ptr().add(stacks[index].len()).cast(),
+                    flags,
+                    (744 + index) as *mut libc::c_void,
+                    tids[index].as_ptr(),
+                    std::ptr::null_mut::<libc::c_void>(),
+                    tids[index].as_ptr(),
+                )
+            } > 0
+        );
+    }
+    let mut buffer = Buffer([0xa5; 8]);
+    let raw = unsafe {
+        match parent_kind {
+            0 => libc::syscall(
+                libc::SYS_sendto,
+                746,
+                buffer.0.as_ptr(),
+                8usize,
+                libc::MSG_NOSIGNAL,
+                0usize,
+                0usize,
+            ),
+            1 => libc::syscall(libc::SYS_poll, 0usize, 0usize, 0usize),
+            2 => libc::syscall(libc::SYS_read, 746, buffer.0.as_mut_ptr(), 4usize),
+            _ => unreachable!(),
+        }
+    };
+    assert_eq!(raw, if parent_kind == 0 { 8 } else { 0 });
+    assert_eq!(buffer.0, [0xa5; 8]);
+    for tid in &tids {
+        loop {
+            let current = tid.load(Ordering::Acquire);
+            if current == 0 {
+                break;
+            }
+            unsafe {
+                libc::syscall(libc::SYS_futex, tid.as_ptr(), libc::FUTEX_WAIT, current, 0);
+            }
         }
     }
 }
