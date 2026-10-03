@@ -44,6 +44,8 @@ pub use mm_bound::NativeSourceReadPlan;
 #[path = "native_write.rs"]
 mod native_write;
 #[cfg(feature = "notifier")]
+pub(crate) use native_write::read_poll_row as read_held_poll_row;
+#[cfg(feature = "notifier")]
 pub(crate) use native_write::write as write_held_native;
 
 const PAGE: usize = 4096;

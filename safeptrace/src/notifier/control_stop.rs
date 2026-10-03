@@ -600,6 +600,37 @@ impl NativeStorePermit<'_> {
         self.hold
     }
 
+    /// Read the current original task's limit without changing it. The held
+    /// original generation cannot be replaced by a reused numeric TID. This is
+    /// backend evidence only, not a guest errno or an external-writer policy.
+    pub fn read_nofile_limit(&self) -> Result<(u64, u64), Errno> {
+        self.validate()?;
+        let mut limit = libc::rlimit64 {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        unsafe {
+            syscalls::syscall!(
+                syscalls::Sysno::prlimit64,
+                self.hold.expected_tid(),
+                libc::RLIMIT_NOFILE,
+                std::ptr::null::<libc::rlimit64>(),
+                &mut limit as *mut _
+            )
+        }?;
+        self.validate()?;
+        Ok((limit.rlim_cur, limit.rlim_max))
+    }
+
+    /// Fresh input-only qualification and full eight-byte read under the same
+    /// held store reservation. This consumes no write and cannot force access.
+    pub fn read_poll_row(
+        &self,
+        address: usize,
+    ) -> Result<[u8; 8], reverie_memory::NativeUserStoreRefusal> {
+        crate::memory::read_held_poll_row(self, address)
+    }
+
     /// Attempt at most one bounded private-anonymous native store. The caller
     /// retains every other followed task's hold and its semantic exclusion.
     /// No ptrace/proc-mem write fallback and no retry are performed.

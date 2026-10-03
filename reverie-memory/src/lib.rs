@@ -97,6 +97,30 @@ pub trait FollowedStore {
     fn store(&mut self, bytes: &[u8]) -> NativeUserStoreOutcome;
 }
 
+/// Observed original one-row Poll inputs. These values grant no readiness,
+/// deadline, descriptor, or memory authority. Initial revents is output-only.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OriginalPollInput {
+    /// Original signed descriptor copied by Linux's Poll input shape.
+    pub fd: i32,
+    /// Original requested event mask, excluding output-only revents.
+    pub events: i16,
+    /// Original timeout after the native signed-int argument conversion.
+    pub timeout_millis: i32,
+}
+
+/// A separate backend-issued, borrowed Poll output writer. The caller supplies
+/// a separately authorized complete PollState result; a timer is not readiness.
+pub trait FollowedPollStore {
+    /// Return the copied original inputs, never current readiness.
+    fn input(&self) -> OriginalPollInput;
+    /// Revalidate the unused original context, row inputs, limit and custody.
+    fn validate_context(&self) -> Result<(), NativeUserStoreRefusal>;
+    /// Write exactly the original row's two-byte revents, including zero. The
+    /// caller must retain the actual raw/postcheck outcome before returning.
+    fn store_revents(&mut self, revents: i16) -> NativeUserStoreOutcome;
+}
+
 /// A proven read-access denial for an admitted native source mapping.
 /// This does not determine the consuming syscall's errno. Translating a denial
 /// to guest `EFAULT` additionally requires caller proof of that syscall's error

@@ -54,6 +54,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         if logical.receive.is_some() {
             self.validate_restored_receive(original)?;
+        } else if logical.poll.is_some() {
+            self.validate_followed_poll(original)?;
         } else {
             if self.pending_syscall != Some(call) {
                 return Err(Errno::ESTALE.into());

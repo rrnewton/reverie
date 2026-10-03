@@ -192,10 +192,23 @@ impl RestoredNativeContext {
         let h = self.member.history.0.lock().unwrap();
         h.read_open()
             && self.timer_publication.as_ref().is_some_and(|timer| {
-                *timer.progress.lock().unwrap()
-                    == ReceiveTimerProgress::Restored {
-                        control_revision: self.control_revision,
-                    }
+                timer.role == ObservationTimerRole::Receive
+                    && *timer.progress.lock().unwrap()
+                        == ReceiveTimerProgress::Restored {
+                            control_revision: self.control_revision,
+                        }
+            })
+    }
+
+    pub(super) fn poll_timer_published(&self) -> bool {
+        let h = self.member.history.0.lock().unwrap();
+        h.read_open()
+            && self.timer_publication.as_ref().is_some_and(|timer| {
+                timer.role == ObservationTimerRole::Poll
+                    && *timer.progress.lock().unwrap()
+                        == ReceiveTimerProgress::Restored {
+                            control_revision: self.control_revision,
+                        }
             })
     }
 
@@ -2029,7 +2042,14 @@ mod restored_receive_tests;
 // A closed role inside the existing native operation. Observer cells have no
 // Drop and own no physical stop, timer, wait or cleanup capability.
 #[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservationTimerRole {
+    Receive,
+    Poll,
+}
+#[cfg(target_arch = "x86_64")]
 struct ReceiveTimerObservation {
+    role: ObservationTimerRole,
     member: u64,
     operation: u64,
     identity: Arc<TaskIdentity>,
@@ -2114,6 +2134,79 @@ impl Member {
             return Err(Errno::ESTALE.into());
         }
         let observation = Arc::new(ReceiveTimerObservation {
+            role: ObservationTimerRole::Receive,
+            member: self.index,
+            operation: native.number,
+            identity: Arc::clone(&task.identity),
+            original: origin.original(),
+            entered: *entered,
+            scratch: origin.scratch(),
+            progress: Mutex::new(ReceiveTimerProgress::PendingNative),
+            changed: Arc::new(Notify::new()),
+        });
+        operation.receive_timer = Some(Arc::clone(&observation));
+        task.receive_timer = Some(Arc::clone(&observation));
+        native.receive_timer = Some(observation);
+        Ok(native)
+    }
+
+    // Distinct origin constructor; no syscall-shape promotion of Receive.
+    pub(super) fn native_poll_timer(
+        &self,
+        stopped: &Stopped,
+        origin: super::followed_poll::TimerOrigin<'_>,
+        timer: (Sysno, SyscallArgs),
+        entered: &safeptrace::Regs,
+    ) -> Result<NativeOperation, TraceError> {
+        use safeptrace::Errno;
+        origin.validate(stopped)?;
+        super::original_context::check_entry(
+            stopped,
+            timer.0,
+            timer.1,
+            entered.rip,
+            entered.rsp,
+            false,
+        )?;
+        if timer.0 != Sysno::ppoll || !ControlStop::registers_equal(&stopped.getregs()?, entered) {
+            return Err(Errno::EPROTO.into());
+        }
+        let identity = stopped.terminal_cleanup().task_identity()?;
+        let mut native = self.native(timer.0, timer.1).ok_or(Errno::ESTALE)?;
+        let _change = self.history.changing();
+        let mut h = self.history.0.lock().unwrap();
+        if !h.read_open() || h.hold.is_some() {
+            return Err(Errno::ESTALE.into());
+        }
+        let task = h.tasks.get_mut(&self.index).ok_or(Errno::ESTALE)?;
+        if !task.identity.same_generation(&identity)
+            || task.life != Life::Stopped
+            || task.invocation != Some(native.number)
+            || task.operations.len() != 1
+            || native.number.checked_add(1) != Some(task.next_operation)
+            || task.receive_timer.as_ref().is_some_and(|old| {
+                !matches!(
+                    *old.progress.lock().unwrap(),
+                    ReceiveTimerProgress::Restored { .. }
+                )
+            })
+        {
+            return Err(Errno::ESTALE.into());
+        }
+        let operation = task
+            .operations
+            .get_mut(&native.number)
+            .ok_or(Errno::ESTALE)?;
+        if operation.effect != Effect::Native
+            || operation.outcome != Outcome::Waiting
+            || operation.indirect_birth.is_some()
+            || operation.peers.is_some()
+            || operation.receive_timer.is_some()
+        {
+            return Err(Errno::ESTALE.into());
+        }
+        let observation = Arc::new(ReceiveTimerObservation {
+            role: ObservationTimerRole::Poll,
             member: self.index,
             operation: native.number,
             identity: Arc::clone(&task.identity),
@@ -2187,7 +2280,14 @@ impl ReceiveTimerObservation {
     fn validate_native(&self, task: &Task) -> Result<(), safeptrace::Errno> {
         use safeptrace::Errno;
         let operation = task.operations.get(&self.operation).ok_or(Errno::ESTALE)?;
-        if !self.identity.same_generation(&task.identity)
+        let original_kind = match self.role {
+            ObservationTimerRole::Receive => {
+                matches!(self.original.0, Sysno::read | Sysno::recvfrom)
+            }
+            ObservationTimerRole::Poll => self.original.0 == Sysno::poll,
+        };
+        if !original_kind
+            || !self.identity.same_generation(&task.identity)
             || self.operation.checked_add(1) != Some(task.next_operation)
             || task.invocation != Some(self.operation)
             || task.operations.len() != 1
@@ -2357,6 +2457,44 @@ impl RestoredNativeContext {
             || !task.quiescent()
             || self.operation != timer.operation
             || self.member.index != timer.member
+            || timer.role != ObservationTimerRole::Receive
+            || timer.original != publication.original()
+            || !Arc::ptr_eq(&timer.scratch, publication.scratch())
+            || !task
+                .receive_timer
+                .as_ref()
+                .is_some_and(|t| Arc::ptr_eq(t, timer))
+            || *timer.progress.lock().unwrap()
+                != (ReceiveTimerProgress::PendingPublication {
+                    control_revision: self.control_revision,
+                })
+        {
+            return Err(Errno::ESTALE);
+        }
+        *timer.progress.lock().unwrap() = ReceiveTimerProgress::Restored {
+            control_revision: self.control_revision,
+        };
+        Ok(())
+    }
+    pub(super) fn publish_poll_timer(
+        &self,
+        publication: super::followed_poll::TimerPublication<'_>,
+    ) -> Result<(), safeptrace::Errno> {
+        use safeptrace::Errno;
+        publication.validate(self)?;
+        let timer = self.timer_publication.as_ref().ok_or(Errno::ESTALE)?;
+        let _change = ChangeNotice(vec![
+            Arc::clone(&self.member.history.1),
+            Arc::clone(&timer.changed),
+        ]);
+        let h = self.member.history.0.lock().unwrap();
+        let task = h.tasks.get(&self.member.index).ok_or(Errno::ESTALE)?;
+        if !h.read_open()
+            || h.hold.is_some()
+            || !task.quiescent()
+            || self.operation != timer.operation
+            || self.member.index != timer.member
+            || timer.role != ObservationTimerRole::Poll
             || timer.original != publication.original()
             || !Arc::ptr_eq(&timer.scratch, publication.scratch())
             || !task
@@ -2397,3 +2535,11 @@ impl Drop for RestoredNativeContext {
 #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
 #[path = "receive_timer_join_tests.rs"]
 pub(super) mod timer_join_tests;
+
+#[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+#[path = "original_poll_tests.rs"]
+mod original_poll_tests;
+
+#[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+#[path = "original_poll_join_tests.rs"]
+pub(super) mod original_poll_join_tests;

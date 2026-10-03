@@ -75,6 +75,13 @@ fn main() {
         Some("timer-join-sendto") => followed_timer_join(0),
         Some("timer-join-poll") => followed_timer_join(1),
         Some("timer-join-read") => followed_timer_join(2),
+        Some("original-poll-join") => followed_original_poll_join(false),
+        Some("original-poll-mixed") => followed_original_poll_join(true),
+        Some("original-poll") => {
+            let child = std::env::args().nth(2).unwrap().parse::<u8>().unwrap() != 0;
+            let kind = std::env::args().nth(3).unwrap().parse::<u8>().unwrap();
+            followed_original_poll(child, kind);
+        }
         mode => panic!("unadmitted fixture mode: {mode:?}"),
     }
 }
@@ -477,6 +484,224 @@ fn followed_timer_join(parent_kind: u8) {
         }
     };
     assert_eq!(raw, if parent_kind == 0 { 8 } else { 0 });
+    assert_eq!(buffer.0, [0xa5; 8]);
+    for tid in &tids {
+        loop {
+            let current = tid.load(Ordering::Acquire);
+            if current == 0 {
+                break;
+            }
+            unsafe {
+                libc::syscall(libc::SYS_futex, tid.as_ptr(), libc::FUTEX_WAIT, current, 0);
+            }
+        }
+    }
+}
+
+fn followed_original_poll(child_receives: bool, kind: u8) {
+    use std::sync::atomic::AtomicI32;
+    use std::sync::atomic::Ordering;
+    #[repr(align(4096))]
+    struct Destination([u8; 8]);
+    fn operation(receives: bool, kind: u8) {
+        let mut buffer = Destination([0xa5; 8]);
+        if receives {
+            let page = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    4096,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            assert_ne!(page, libc::MAP_FAILED);
+            let bytes = page.cast::<u8>();
+            unsafe {
+                std::ptr::write_bytes(bytes, 0xa5, 4096);
+            }
+            let row = unsafe { bytes.add(8).cast::<libc::pollfd>() };
+            unsafe {
+                row.write(libc::pollfd {
+                    fd: 744,
+                    events: libc::POLLIN,
+                    revents: 0x5a5a,
+                });
+            }
+            if kind == 6 {
+                assert_eq!(unsafe { libc::mprotect(page, 4096, libc::PROT_READ) }, 0);
+            }
+            let pointer = if kind == 13 {
+                let limit = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+                1usize as *mut libc::pollfd
+            } else {
+                row
+            };
+            let timeout = if kind == 1 { 0usize } else { 5000 };
+            let nfds = if kind == 14 { (1usize << 32) | 1 } else { 1 };
+            let timeout = if kind == 14 {
+                (1usize << 32) | timeout
+            } else {
+                timeout
+            };
+            let raw = unsafe {
+                libc::syscall(
+                    libc::SYS_poll,
+                    pointer,
+                    nfds,
+                    timeout,
+                    0x123usize,
+                    0x456usize,
+                    0x789usize,
+                )
+            };
+            assert_eq!(raw, if kind == 1 { 0 } else { 1 });
+            let actual = unsafe { row.read() };
+            assert_eq!((actual.fd, actual.events), (744, libc::POLLIN));
+            assert_eq!(actual.revents, if kind == 1 { 0 } else { libc::POLLIN });
+            for index in 0..8 {
+                assert_eq!(unsafe { *bytes.add(index) }, 0xa5);
+            }
+            for index in 16..24 {
+                assert_eq!(unsafe { *bytes.add(index) }, 0xa5);
+            }
+            assert_eq!(unsafe { libc::munmap(page, 4096) }, 0);
+        } else {
+            assert_eq!(
+                unsafe { libc::syscall(libc::SYS_write, 688, buffer.0.as_mut_ptr(), 8usize) },
+                8
+            );
+        }
+    }
+
+    extern "C" fn child(argument: *mut libc::c_void) -> libc::c_int {
+        let &(receives, kind) = unsafe { &*argument.cast::<(bool, u8)>() };
+        operation(receives, kind);
+        unsafe {
+            libc::syscall(libc::SYS_exit, 0);
+        }
+        unreachable!("original child exit returned")
+    }
+    let mut argument = (child_receives, kind);
+    let mut stack = vec![0u128; 16384];
+    let tid = AtomicI32::new(0);
+    let flags = libc::CLONE_VM
+        | libc::CLONE_FS
+        | libc::CLONE_FILES
+        | libc::CLONE_SIGHAND
+        | libc::CLONE_THREAD
+        | libc::CLONE_SYSVSEM
+        | libc::CLONE_PARENT_SETTID
+        | libc::CLONE_CHILD_CLEARTID;
+    assert!(
+        unsafe {
+            libc::clone(
+                child,
+                stack.as_mut_ptr().add(stack.len()).cast(),
+                flags,
+                (&mut argument as *mut (bool, u8)).cast(),
+                tid.as_ptr(),
+                std::ptr::null_mut::<libc::c_void>(),
+                tid.as_ptr(),
+            )
+        } > 0
+    );
+    operation(!child_receives, kind);
+    loop {
+        let current = tid.load(Ordering::Acquire);
+        if current == 0 {
+            break;
+        }
+        unsafe {
+            libc::syscall(libc::SYS_futex, tid.as_ptr(), libc::FUTEX_WAIT, current, 0);
+        }
+    }
+}
+
+fn followed_original_poll_join(mixed: bool) {
+    use std::sync::atomic::AtomicI32;
+    use std::sync::atomic::Ordering;
+    #[repr(align(4096))]
+    struct Buffer([u8; 8]);
+    extern "C" fn child(argument: *mut libc::c_void) -> libc::c_int {
+        let encoded = argument as usize;
+        let fd = encoded & 0xffff;
+        let mixed = encoded >> 16 != 0;
+        let mut buffer = Buffer([0xa5; 8]);
+        if mixed && fd == 745 {
+            assert_eq!(
+                unsafe { libc::syscall(libc::SYS_read, fd, buffer.0.as_mut_ptr(), 4usize) },
+                0
+            );
+            assert_eq!(buffer.0, [0xa5; 8]);
+        } else {
+            buffer.0[..4].copy_from_slice(&(fd as i32).to_ne_bytes());
+            buffer.0[4..6].copy_from_slice(&libc::POLLIN.to_ne_bytes());
+            buffer.0[6..8].copy_from_slice(&0x5a5ai16.to_ne_bytes());
+            let raw = unsafe {
+                libc::syscall(
+                    libc::SYS_poll,
+                    buffer.0.as_mut_ptr(),
+                    1usize,
+                    5000usize,
+                    fd,
+                    0usize,
+                    0usize,
+                )
+            };
+            assert_eq!(raw, 1);
+            assert_eq!(&buffer.0[..4], &(fd as i32).to_ne_bytes());
+            assert_eq!(&buffer.0[4..6], &libc::POLLIN.to_ne_bytes());
+            assert_eq!(&buffer.0[6..8], &libc::POLLIN.to_ne_bytes());
+        }
+        unsafe {
+            libc::syscall(libc::SYS_exit, 0);
+        }
+        unreachable!("original child exit returned")
+    }
+    let mut stacks = [vec![0u128; 16384], vec![0u128; 16384]];
+    let tids = [AtomicI32::new(0), AtomicI32::new(0)];
+    let flags = libc::CLONE_VM
+        | libc::CLONE_FS
+        | libc::CLONE_FILES
+        | libc::CLONE_SIGHAND
+        | libc::CLONE_THREAD
+        | libc::CLONE_SYSVSEM
+        | libc::CLONE_PARENT_SETTID
+        | libc::CLONE_CHILD_CLEARTID;
+    for index in 0..2 {
+        assert!(
+            unsafe {
+                libc::clone(
+                    child,
+                    stacks[index].as_mut_ptr().add(stacks[index].len()).cast(),
+                    flags,
+                    ((744 + index) | ((mixed as usize) << 16)) as *mut libc::c_void,
+                    tids[index].as_ptr(),
+                    std::ptr::null_mut::<libc::c_void>(),
+                    tids[index].as_ptr(),
+                )
+            } > 0
+        );
+    }
+    let buffer = Buffer([0xa5; 8]);
+    let raw = unsafe {
+        libc::syscall(
+            libc::SYS_sendto,
+            746,
+            buffer.0.as_ptr(),
+            8usize,
+            libc::MSG_NOSIGNAL,
+            0usize,
+            0usize,
+        )
+    };
+    assert_eq!(raw, 8);
     assert_eq!(buffer.0, [0xa5; 8]);
     for tid in &tids {
         loop {

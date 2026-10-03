@@ -268,3 +268,132 @@ mod tests {
         ));
     }
 }
+
+// Separate input qualification: neither the old write predicate nor the
+// anonymous reader is relaxed. Poll copies all eight input bytes but writes
+// only revents; read-only input is not a write fault at this boundary.
+fn qualify_poll_read(
+    permit: &crate::NativeStorePermit<'_>,
+    address: usize,
+    length: usize,
+) -> Result<(), StoreRefusal> {
+    let end = range_end(address, length).map_err(evidence)?;
+    permit.validate().map_err(state)?;
+    if unsafe { libc::sysconf(libc::_SC_PAGESIZE) } != PAGE as libc::c_long {
+        return Err(StoreRefusal::Evidence(Refusal::UnsupportedPlatform));
+    }
+    let control = permit.control();
+    let tid = control.expected_tid();
+    if tid <= 0 || permit.stopped().pid().as_raw() != tid {
+        return Err(StoreRefusal::Evidence(Refusal::WrongTask));
+    }
+    validate_native_mode(permit.stopped()).map_err(evidence)?;
+    let layout = native_pkru_layout()
+        .map_err(|_| StoreRefusal::Evidence(Refusal::UnsupportedPlatform))?
+        .ok_or(StoreRefusal::Evidence(Refusal::UnsupportedPlatform))?;
+    let root = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open("/proc")
+        .map_err(proc_error)
+        .map_err(evidence)?;
+    let mount = verify_proc(&root, None).map_err(evidence)?;
+    let caller_tid =
+        Errno::result(unsafe { libc::syscall(libc::SYS_gettid) }).map_err(state)? as usize;
+    proc_view(
+        &proc_file(&root, mount, "thread-self/status", MAX_STATUS).map_err(evidence)?,
+        caller_tid,
+    )
+    .map_err(evidence)?;
+    let original = control.task_directory();
+    mm_bound::directory_identity(original, control.task_directory_identity()).map_err(evidence)?;
+    verify_proc_fd(original, Some(mount)).map_err(evidence)?;
+    // Duplicate the already retained original directory; never reopen by TID.
+    let original = File::from(
+        original
+            .try_clone_to_owned()
+            .map_err(proc_error)
+            .map_err(evidence)?,
+    );
+    mm_bound::target_proc_view(
+        &proc_file(&original, mount, "status", MAX_STATUS).map_err(evidence)?,
+        tid as usize,
+    )
+    .map_err(evidence)?;
+    let smaps = proc_file(&original, mount, "smaps", MAX_SMAPS).map_err(evidence)?;
+    let selected = mapping(&smaps, address, end).map_err(evidence)?;
+    let xstate = permit
+        .stopped()
+        .getxstate()
+        .map_err(target_error)
+        .map_err(evidence)?;
+    let pkru = decode_native_pkru_xstate(&xstate.0, layout)
+        .map_err(|_| StoreRefusal::Evidence(Refusal::UnsupportedPlatform))?;
+    selected.read_access(pkru).map_err(evidence)?;
+    permit.validate().map_err(state)
+}
+
+pub(crate) fn read_poll_row(
+    permit: &crate::NativeStorePermit<'_>,
+    address: usize,
+) -> Result<[u8; 8], StoreRefusal> {
+    qualify_poll_read(permit, address, 8)?;
+    let mut bytes = [0u8; 8];
+    let local = libc::iovec {
+        iov_base: bytes.as_mut_ptr().cast(),
+        iov_len: 8,
+    };
+    let remote = libc::iovec {
+        iov_base: address as *mut libc::c_void,
+        iov_len: 8,
+    };
+    let raw = unsafe {
+        syscalls::syscall!(
+            syscalls::Sysno::process_vm_readv,
+            permit.control().expected_tid(),
+            &local as *const _,
+            1usize,
+            &remote as *const _,
+            1usize,
+            0usize
+        )
+    }
+    .map_err(state)?;
+    let bytes = complete_poll_row(raw, bytes)?;
+    permit.validate().map_err(state)?;
+    Ok(bytes)
+}
+
+fn complete_poll_row(raw: usize, bytes: [u8; 8]) -> Result<[u8; 8], StoreRefusal> {
+    if raw != bytes.len() {
+        return Err(state(Errno::EIO));
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod poll_input_tests {
+    use super::*;
+    #[test]
+    fn poll_input_requires_all_eight_native_bytes_and_preserves_arbitrary_output_bits() {
+        let bytes = [0xa5; 8];
+        for short in 0..8 {
+            assert_eq!(complete_poll_row(short, bytes), Err(state(Errno::EIO)));
+        }
+        assert_eq!(complete_poll_row(9, bytes), Err(state(Errno::EIO)));
+        assert_eq!(complete_poll_row(8, bytes), Ok(bytes));
+    }
+    #[test]
+    fn poll_input_read_permissions_do_not_require_write_permission() {
+        for key in 0..16 {
+            let text = format!(
+                "1000-2000 r--p 00000000 00:00 0\nKernelPageSize: 4 kB\nMMUPageSize: 4 kB\nLazyFree: 0 kB\nProtectionKey: {key}\nVmFlags: rd mr mw me sd\n"
+            );
+            let map = mapping(text.as_bytes(), 0x1000, 0x1008).unwrap();
+            assert_eq!(map.read_access(0), Ok(()));
+            assert_eq!(map.read_access(2 << (2 * key)), Ok(()));
+            assert!(map.read_access(1 << (2 * key)).is_err());
+            assert_eq!(map.write_access(0), Err(StoreRefusal::WriteDenied));
+        }
+    }
+}

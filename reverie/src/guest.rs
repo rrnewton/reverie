@@ -456,6 +456,43 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         ))
     }
 
+    /// Capture a separate original one-row Poll under complete followed-task
+    /// custody and true source-worker join. Initial revents is output-only.
+    /// Returned input values are observations, not readiness or FD authority.
+    async fn capture_original_followed_poll(
+        &mut self,
+        _original: reverie_syscalls::Syscall,
+        _retention: Box<dyn Send + Sync>,
+    ) -> Result<crate::syscalls::OriginalPollInput, crate::syscalls::NativeUserReadError> {
+        Err(crate::syscalls::NativeUserReadError::Refused(
+            crate::syscalls::NativeUserReadRefusal::UnsupportedBackend,
+        ))
+    }
+
+    /// Run a separately marked Poll-origin observation timer. Raw zero is only
+    /// physical completion; original deadline and full PollState stay external.
+    async fn inject_poll_observation_timer(
+        &mut self,
+        _original: reverie_syscalls::Syscall,
+        _timeout: std::time::Duration,
+    ) -> Result<(), crate::Error> {
+        Err(crate::Error::Tool(anyhow::anyhow!(
+            "backend has no retained Poll timer"
+        )))
+    }
+
+    /// Borrow the current original or positively restored Poll writer. The
+    /// exact two-byte effect, including zero, must be retained before returning.
+    fn with_followed_poll_store<R>(
+        &self,
+        _original: reverie_syscalls::Syscall,
+        _action: impl FnOnce(&mut dyn crate::syscalls::FollowedPollStore) -> R,
+    ) -> Result<R, crate::syscalls::NativeUserStoreRefusal> {
+        Err(crate::syscalls::NativeUserStoreRefusal::Evidence(
+            crate::syscalls::NativeUserReadRefusal::UnsupportedBackend,
+        ))
+    }
+
     /// Returns a mutable reference to thread state.
     fn thread_state_mut(&mut self) -> &mut T::ThreadState;
 
@@ -1126,6 +1163,32 @@ where
         action: impl FnOnce(&mut dyn crate::syscalls::FollowedStore) -> R,
     ) -> Result<R, crate::syscalls::NativeUserStoreRefusal> {
         self.inner.with_restored_followed_store(original, action)
+    }
+
+    async fn capture_original_followed_poll(
+        &mut self,
+        original: reverie_syscalls::Syscall,
+        retention: Box<dyn Send + Sync>,
+    ) -> Result<crate::syscalls::OriginalPollInput, crate::syscalls::NativeUserReadError> {
+        self.inner
+            .capture_original_followed_poll(original, retention)
+            .await
+    }
+    async fn inject_poll_observation_timer(
+        &mut self,
+        original: reverie_syscalls::Syscall,
+        timeout: std::time::Duration,
+    ) -> Result<(), crate::Error> {
+        self.inner
+            .inject_poll_observation_timer(original, timeout)
+            .await
+    }
+    fn with_followed_poll_store<R>(
+        &self,
+        original: reverie_syscalls::Syscall,
+        action: impl FnOnce(&mut dyn crate::syscalls::FollowedPollStore) -> R,
+    ) -> Result<R, crate::syscalls::NativeUserStoreRefusal> {
+        self.inner.with_followed_poll_store(original, action)
     }
 
     fn thread_state_mut(&mut self) -> &mut L::ThreadState {

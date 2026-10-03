@@ -1591,12 +1591,18 @@ enum LiteinstTrap {
 }
 
 #[cfg(target_arch = "x86_64")]
+#[path = "task/followed_poll.rs"]
+mod followed_poll;
+#[cfg(target_arch = "x86_64")]
 mod followed_receive;
 #[cfg(target_arch = "x86_64")]
 #[path = "task/followed_store.rs"]
 mod followed_store;
 #[cfg(target_arch = "x86_64")]
 mod followed_timer_join;
+#[cfg(target_arch = "x86_64")]
+#[path = "task/original_poll.rs"]
+mod original_poll;
 
 #[path = "source_cohort.rs"]
 pub(crate) mod source_cohort;
@@ -10811,6 +10817,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             context.invalidate();
         }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(context) = self
+            .private_signal
+            .logical
+            .as_mut()
+            .and_then(|l| l.poll.as_mut())
+        {
+            if context.unfinished() {
+                return Err(Errno::EBUSY.into());
+            }
+            context.invalidate();
+        }
         let task = self.assume_stopped();
         let observe_tool =
             origin == InjectionOrigin::Tool && L::observe_injected_syscalls(&self.global_state.cfg);
@@ -11531,6 +11549,61 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         #[cfg(target_arch = "x86_64")]
         {
             self.with_native_followed_store(original, action)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (original, action);
+            Err(reverie::syscalls::NativeUserStoreRefusal::Evidence(
+                reverie::syscalls::NativeUserReadRefusal::UnsupportedPlatform,
+            ))
+        }
+    }
+
+    async fn capture_original_followed_poll(
+        &mut self,
+        original: Syscall,
+        retention: Box<dyn Send + Sync>,
+    ) -> Result<reverie::syscalls::OriginalPollInput, reverie::syscalls::NativeUserReadError> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.capture_followed_poll(original, retention).await
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (original, retention);
+            Err(reverie::syscalls::NativeUserReadError::Refused(
+                reverie::syscalls::NativeUserReadRefusal::UnsupportedPlatform,
+            ))
+        }
+    }
+    async fn inject_poll_observation_timer(
+        &mut self,
+        original: Syscall,
+        timeout: std::time::Duration,
+    ) -> Result<(), reverie::Error> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            match self.run_followed_poll_timer(original, timeout).await {
+                Ok(()) => Ok(()),
+                Err(error) => self.abort(Err(error)).await,
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (original, timeout);
+            Err(reverie::Error::Tool(anyhow::anyhow!(
+                "backend has no retained Poll timer"
+            )))
+        }
+    }
+    fn with_followed_poll_store<R>(
+        &self,
+        original: Syscall,
+        action: impl FnOnce(&mut dyn reverie::syscalls::FollowedPollStore) -> R,
+    ) -> Result<R, reverie::syscalls::NativeUserStoreRefusal> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.with_native_followed_poll_store(original, action)
         }
         #[cfg(not(target_arch = "x86_64"))]
         {

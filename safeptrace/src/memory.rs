@@ -30,6 +30,8 @@ mod native_read;
 pub use native_read::FollowedSourceReadPlan;
 #[cfg(all(target_arch = "x86_64", feature = "notifier"))]
 pub use native_read::NativeSourceReadPlan;
+#[cfg(all(feature = "notifier", target_arch = "x86_64"))]
+pub(crate) use native_read::read_held_poll_row;
 #[cfg(all(target_arch = "x86_64", feature = "notifier"))]
 pub(crate) use native_read::write_held_native;
 
