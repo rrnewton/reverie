@@ -358,16 +358,20 @@ impl Session {
                     if let Some(id) = self.current {
                         let buffer_size = std::cmp::min(self.bufsiz, len);
                         let mut auxv: Vec<u8> = vec![0; buffer_size];
-                        if let Ok(nb) = fcntl::open(
-                            format!("/proc/{}/auxv", id.pid).as_str(),
-                            OFlag::O_RDONLY,
-                            Mode::from_bits_truncate(0o644),
-                        )
-                        .and_then(|fd| {
-                            let nb = uio::pread(&fd, &mut auxv, offset as libc::off_t)?;
-                            let _ = unistd::close(fd);
-                            Ok(nb)
-                        }) {
+                        let read = {
+                            let _open = crate::launch_window::TransientOpen::begin();
+                            fcntl::open(
+                                format!("/proc/{}/auxv", id.pid).as_str(),
+                                OFlag::O_RDONLY,
+                                Mode::from_bits_truncate(0o644),
+                            )
+                            .and_then(|fd| {
+                                let nb = uio::pread(&fd, &mut auxv, offset as libc::off_t)?;
+                                let _ = unistd::close(fd);
+                                Ok(nb)
+                            })
+                        };
+                        if let Ok(nb) = read {
                             writer.put_str("l");
                             writer.put_binary_encoded(&auxv[..nb]);
                         }

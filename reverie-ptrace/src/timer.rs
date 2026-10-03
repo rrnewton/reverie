@@ -305,7 +305,7 @@ fn kernel_is_preempt_rt() -> bool {
                 .into_owned()
         });
         version.is_none_or(|version| version_is_preempt_rt(&version))
-            || std::fs::read_to_string("/sys/kernel/realtime")
+            || crate::launch_window::read_to_string("/sys/kernel/realtime")
                 .is_ok_and(|value| value.trim() == "1")
     })
 }

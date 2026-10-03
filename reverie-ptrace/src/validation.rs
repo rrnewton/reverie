@@ -141,6 +141,8 @@ impl Drop for ScopedFd {
 /// It checks for a collection of processor features that ensure that the pmu features
 /// required from Reverie to function correctly are available and trustworthy
 pub(crate) fn check_for_pmu_bugs() -> Result<(), PmuValidationError> {
+    // Every counter below is opened and closed inside this call.
+    let _open = crate::launch_window::TransientOpen::begin();
     check_for_ioc_period_bug(false)?;
     check_working_counters(false)?;
     check_for_arch_bugs(false)?;

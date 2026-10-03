@@ -18,6 +18,8 @@ use super::error::Error;
 use super::fd::Fd;
 use super::fd::pipe;
 use super::id_map::make_id_map;
+use super::launch_window::Launch;
+use super::launch_window::TransientOpen;
 use super::seccomp::SeccompNotif;
 use super::stdio::ChildStderr;
 use super::stdio::ChildStdin;
@@ -30,11 +32,15 @@ impl Command {
     ///
     /// By default, stdin, stdout and stderr are inherited from the parent.
     pub fn spawn(&mut self) -> Result<Child, Error> {
+        // Every descriptor the child may inherit is made under the launch
+        // lock, which ends when clone returns (see `launch_window`).
+        let launch = Launch::begin();
+
         // Create a pipe to send back errors to the parent process if `execve`
         // fails.
         let (reader, mut writer) = pipe()?;
 
-        let child = self.spawn_with(|err| {
+        let child = self.spawn_launched(launch, |err| {
             send_error(&mut writer, err);
             1
         })?;
@@ -52,7 +58,14 @@ impl Command {
     /// child process if an error occurs during execution of the process. The
     /// `wait` function can be used to wait for the child to fully start up and
     /// to transform it into another type.
-    pub fn spawn_with<F>(&mut self, mut onfail: F) -> Result<Child, Error>
+    pub fn spawn_with<F>(&mut self, onfail: F) -> Result<Child, Error>
+    where
+        F: FnMut(Error) -> i32,
+    {
+        self.spawn_launched(Launch::begin(), onfail)
+    }
+
+    fn spawn_launched<F>(&mut self, launch: Launch, mut onfail: F) -> Result<Child, Error>
     where
         F: FnMut(Error) -> i32,
     {
@@ -90,6 +103,10 @@ impl Command {
             },
             clone_flags,
         )?;
+        // The child exists, so it cannot inherit what the parent opens from
+        // here on. The waits below for the child's startup must not hold the
+        // lock: the child's setup may wait on a thread that needs it.
+        drop(launch);
 
         drop(child_stdin);
         drop(child_stdout);
@@ -108,8 +125,11 @@ impl Command {
                 }
 
                 // Use pidfd_getfd to copy the file descriptor
-                let pidfd = Fd::pidfd_open(pid.into(), 0)?;
-                let fd = pidfd.pidfd_getfd(targetfd, 0)?;
+                let fd = {
+                    let _open = TransientOpen::begin();
+                    let pidfd = Fd::pidfd_open(pid.into(), 0)?;
+                    pidfd.pidfd_getfd(targetfd, 0)?
+                };
 
                 // We've successfully duplicated the file descriptor. Let the
                 // child continue on to execve.
