@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use goblin::elf::Elf;
 use nix::sys::mman::ProtFlags;
@@ -550,10 +551,23 @@ struct VdsoTable {
 /// The ptrace backend assumes every guest maps the same image, which the kernel
 /// shares between all 64-bit processes; [`vdso_patch`] refuses a guest whose
 /// mapping has a different length. In-guest backends read their own vDSO.
-static VDSO_TABLE: LazyLock<Result<Option<VdsoTable>, String>> = LazyLock::new(|| {
-    let maps = procfs::process::Process::myself()
-        .and_then(|process| process.maps())
-        .map_err(|error| format!("cannot read this process's mappings: {error}"))?;
+///
+/// Not a `LazyLock`: [`classify_this_vdso`] holds a transient open, so the
+/// table is read through [`vdso_table_entry`].
+static VDSO_TABLE: OnceLock<Result<Option<VdsoTable>, String>> = OnceLock::new();
+
+/// [`VDSO_TABLE`], computed through
+/// [`get_or_compute`](crate::launch_window::get_or_compute).
+fn vdso_table_entry() -> &'static Result<Option<VdsoTable>, String> {
+    crate::launch_window::get_or_compute(&VDSO_TABLE, classify_this_vdso)
+}
+
+fn classify_this_vdso() -> Result<Option<VdsoTable>, String> {
+    let maps = {
+        let _open = crate::launch_window::TransientOpen::begin();
+        procfs::process::Process::myself().and_then(|process| process.maps())
+    }
+    .map_err(|error| format!("cannot read this process's mappings: {error}"))?;
     let Some(vdso) = maps
         .iter()
         .find(|map| map.pathname == procfs::process::MMapPath::Vdso)
@@ -580,11 +594,11 @@ static VDSO_TABLE: LazyLock<Result<Option<VdsoTable>, String>> = LazyLock::new(|
         mapping_len,
         entries,
     }))
-});
+}
 
 /// The vDSO table, or the reason it could not be built.
 fn vdso_table() -> Result<Option<&'static VdsoTable>, Error> {
-    VDSO_TABLE
+    vdso_table_entry()
         .as_ref()
         .map(Option::as_ref)
         .map_err(|error| Error::from(std::io::Error::other(error.clone())))
@@ -880,14 +894,17 @@ where
     if replacements.is_empty() {
         return Ok(());
     }
-    if let Some(vdso) = procfs::process::Process::new(guest.pid().as_raw())
-        .map_or_else(
+    let guest_maps = {
+        let _open = crate::launch_window::TransientOpen::begin();
+        procfs::process::Process::new(guest.pid().as_raw()).map_or_else(
             |_| Vec::new(),
             |p| match p.maps() {
                 Ok(maps) => maps.0,
                 Err(_) => Vec::new(),
             },
         )
+    };
+    if let Some(vdso) = guest_maps
         .iter()
         .find(|e| e.pathname == procfs::process::MMapPath::Vdso)
     {
@@ -986,7 +1003,7 @@ mod tests {
     }
 
     fn host_table() -> &'static VdsoTable {
-        VDSO_TABLE
+        vdso_table_entry()
             .as_ref()
             .expect("the host vDSO must classify cleanly")
             .as_ref()

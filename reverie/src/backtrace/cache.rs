@@ -45,14 +45,17 @@ impl DebugInfoCache {
         }
     }
 
-    /// Loads the symbols for the given library. Returns an error if the symbols
-    /// failed to load.
-    pub fn load(&mut self, library: &Library) -> Result<Arc<Symbols>, anyhow::Error> {
-        match self.cache.entry(library.inode) {
-            Entry::Occupied(entry) => Ok(entry.get().clone()),
-            Entry::Vacant(entry) => {
-                let symbols = Arc::new(Symbols::load(&library.path)?);
+    /// The symbols already loaded for `library`, if any.
+    fn get(&self, library: &Library) -> Option<Arc<Symbols>> {
+        self.cache.get(&library.inode).cloned()
+    }
 
+    /// Records the symbols loaded for `library`, keeping an entry another
+    /// thread recorded first. Returns the symbols to use.
+    fn insert(&mut self, library: &Library, symbols: Arc<Symbols>) -> Arc<Symbols> {
+        match self.cache.entry(library.inode) {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => {
                 self.size += symbols.bytes_used();
 
                 let symbols = entry.insert(symbols).clone();
@@ -66,12 +69,28 @@ impl DebugInfoCache {
                     }
                 }
 
-                Ok(symbols)
+                symbols
             }
         }
     }
 }
 
-pub fn cache() -> MutexGuard<'static, DebugInfoCache> {
+/// Loads the symbols for the given library. Returns an error if the symbols
+/// failed to load.
+///
+/// The cache's lock is not held while the library's file is opened: the open
+/// takes a `launch_window::TransientOpen`, which waits for another thread's
+/// launch, and that launch's pthread_atfork prepare handlers could need this
+/// lock. Two threads may load the same library at once; the first to finish
+/// keeps its entry.
+pub fn load(library: &Library) -> Result<Arc<Symbols>, anyhow::Error> {
+    if let Some(symbols) = cache().get(library) {
+        return Ok(symbols);
+    }
+    let symbols = Arc::new(Symbols::load(&library.path)?);
+    Ok(cache().insert(library, symbols))
+}
+
+fn cache() -> MutexGuard<'static, DebugInfoCache> {
     CACHE.lock().expect("lock poisoned")
 }

@@ -25,7 +25,7 @@
 use core::ptr::NonNull;
 #[allow(unused_imports)] // only used if we have an error
 use std::compile_error;
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 
 use nix::sys::signal::Signal;
 use nix::unistd::SysconfVar;
@@ -40,7 +40,10 @@ use tracing::warn;
 use crate::validation::PmuValidationError;
 use crate::validation::check_for_pmu_bugs;
 
-static PMU_BUG: LazyLock<Result<(), PmuValidationError>> = LazyLock::new(check_for_pmu_bugs);
+/// The result of [`check_for_pmu_bugs`], computed through
+/// [`get_or_compute`](crate::launch_window::get_or_compute) because the checks
+/// hold transient opens.
+static PMU_BUG: OnceLock<Result<(), PmuValidationError>> = OnceLock::new();
 
 // Not available in the libc crate
 const F_SETOWN_EX: libc::c_int = 15;
@@ -329,7 +332,7 @@ impl Builder {
     }
 
     pub(crate) fn check_for_pmu_bugs(&mut self) -> &mut Self {
-        if let Err(pmu_error) = &*PMU_BUG {
+        if let Err(pmu_error) = crate::launch_window::get_or_compute(&PMU_BUG, check_for_pmu_bugs) {
             error!(
                 error = ?pmu_error,
                 "PMU validation failed; RCB timers may be unreliable"
@@ -1155,25 +1158,32 @@ fn test_perf_pmu_support() -> bool {
     let cpu: libc::c_int = -1; // across any CPU
     let group_fd: libc::c_int = -1;
     let flags = perf::PERF_FLAG_FD_CLOEXEC;
-    let res = Errno::result(unsafe {
-        libc::syscall(libc::SYS_perf_event_open, &attr, pid, cpu, group_fd, flags)
-    });
+    let res = {
+        // The probe counter is a transient open, from here to its close. The
+        // guard ends before anything is logged.
+        let _open = crate::launch_window::TransientOpen::begin();
+        let res = Errno::result(unsafe {
+            libc::syscall(libc::SYS_perf_event_open, &attr, pid, cpu, group_fd, flags)
+        });
+        res.map(|fd| Errno::result(unsafe { libc::close(fd as libc::c_int) }))
+    };
     match res {
-        Ok(fd) => {
-            Errno::result(unsafe { libc::close(fd as libc::c_int) })
-                .expect("perf feature check: close(fd) failed");
+        Ok(closed) => {
+            closed.expect("perf feature check: close(fd) failed");
             true
         }
         Err(errno) => handle_perf_pmu_error(errno),
     }
 }
 
-static IS_PERF_SUPPORTED: LazyLock<bool> = LazyLock::new(test_perf_pmu_support);
+/// Computed through [`get_or_compute`](crate::launch_window::get_or_compute)
+/// because the probe holds a transient open.
+static IS_PERF_SUPPORTED: OnceLock<bool> = OnceLock::new();
 
 /// Returns true if the current system configuration supports use of perf for
 /// hardware events.
 pub fn is_perf_supported() -> bool {
-    *IS_PERF_SUPPORTED
+    *crate::launch_window::get_or_compute(&IS_PERF_SUPPORTED, test_perf_pmu_support)
 }
 
 /// Concisely return if `is_perf_supported` is `false`. Useful for guarding

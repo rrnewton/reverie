@@ -295,7 +295,8 @@ fn kept_programming_checks() -> bool {
 /// version cannot be read counts as one.
 fn kernel_is_preempt_rt() -> bool {
     static PREEMPT_RT: OnceLock<bool> = OnceLock::new();
-    *PREEMPT_RT.get_or_init(|| {
+    // Not `get_or_init`: the computation holds a transient open.
+    *crate::launch_window::get_or_compute(&PREEMPT_RT, || {
         let mut uts = core::mem::MaybeUninit::<libc::utsname>::zeroed();
         // SAFETY: `uts` is valid for writes, and on success the kernel
         // NUL-terminates `version`.
@@ -305,7 +306,7 @@ fn kernel_is_preempt_rt() -> bool {
                 .into_owned()
         });
         version.is_none_or(|version| version_is_preempt_rt(&version))
-            || std::fs::read_to_string("/sys/kernel/realtime")
+            || crate::launch_window::read_to_string("/sys/kernel/realtime")
                 .is_ok_and(|value| value.trim() == "1")
     })
 }
@@ -322,7 +323,7 @@ fn version_is_preempt_rt(version: &str) -> bool {
 }
 
 pub(crate) fn get_pmu_config() -> &'static PmuConfig {
-    PMU_CONFIG.get_or_init(PmuConfig::new)
+    crate::launch_window::get_or_compute(&PMU_CONFIG, PmuConfig::new)
 }
 
 /// Processor-specific PMU event settings used by precise ptrace timers.

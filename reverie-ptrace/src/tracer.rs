@@ -23,6 +23,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
 use std::sync::LazyLock;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock as StdOnceLock;
@@ -2588,7 +2589,7 @@ fn io_errno(error: std::io::Error) -> Errno {
 }
 
 fn process_start_time(tid: Pid) -> std::io::Result<u64> {
-    let stat = fs::read_to_string(format!("/proc/{tid}/stat"))?;
+    let stat = crate::launch_window::read_to_string(format!("/proc/{tid}/stat"))?;
     let fields = stat
         .rsplit_once(") ")
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed stat"))?
@@ -2617,7 +2618,7 @@ fn status_pid(status: &str, name: &str) -> std::io::Result<Pid> {
 
 fn tracee_snapshot(tid: Pid) -> std::io::Result<TraceeSnapshot> {
     let start_time = process_start_time(tid)?;
-    let status = fs::read_to_string(format!("/proc/{tid}/status"))?;
+    let status = crate::launch_window::read_to_string(format!("/proc/{tid}/status"))?;
     let snapshot = TraceeSnapshot {
         tgid: status_pid(&status, "Tgid:")?,
         ppid: status_pid(&status, "PPid:")?,
@@ -2656,16 +2657,24 @@ fn skippable_tracee_open_error(tid: Pid, error: Errno) -> bool {
     matches!(error, Errno::ENOENT | Errno::ESRCH) && tracee_absent_or_replaced(tid)
 }
 
-static PROC_CHILDREN_SUPPORTED: LazyLock<bool> = LazyLock::new(|| {
-    fs::read_dir("/proc/self/task")
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .any(|task| task.path().join("children").exists())
-});
+/// Whether this kernel has `/proc/<pid>/task/<tid>/children`. Not a
+/// `LazyLock`: the computation holds a transient open, so it goes through
+/// [`get_or_compute`](crate::launch_window::get_or_compute).
+fn proc_children_supported() -> bool {
+    static SUPPORTED: StdOnceLock<bool> = StdOnceLock::new();
+    *crate::launch_window::get_or_compute(&SUPPORTED, || {
+        let _open = crate::launch_window::TransientOpen::begin();
+        fs::read_dir("/proc/self/task")
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .any(|task| task.path().join("children").exists())
+    })
+}
 
 fn task_tids(root: Pid) -> std::io::Result<Vec<Pid>> {
+    let _open = crate::launch_window::TransientOpen::begin();
     let process_path = format!("/proc/{root}");
     let tasks = match fs::read_dir(format!("{process_path}/task")) {
         Ok(tasks) => tasks,
@@ -2691,6 +2700,8 @@ fn task_tids(root: Pid) -> std::io::Result<Vec<Pid>> {
 }
 
 fn direct_children(pid: Pid) -> std::io::Result<Vec<Pid>> {
+    // Held across the task directory and each `children` read below.
+    let _open = crate::launch_window::TransientOpen::begin();
     let process_path = format!("/proc/{pid}");
     let task_dir = match fs::read_dir(format!("{process_path}/task")) {
         Ok(task_dir) => task_dir,
@@ -2729,7 +2740,7 @@ fn direct_children(pid: Pid) -> std::io::Result<Vec<Pid>> {
         ) {
             Ok(contents) => contents,
             Err(error)
-                if error.kind() == std::io::ErrorKind::NotFound && !*PROC_CHILDREN_SUPPORTED =>
+                if error.kind() == std::io::ErrorKind::NotFound && !proc_children_supported() =>
             {
                 continue;
             }
@@ -5023,6 +5034,9 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
         command.seccomp(seccomp_filter(&traced_events, trap_only_patching));
 
+        // Command::spawn holds the launch lock from the child's first pipe
+        // until clone returns, and not while it waits for the child to start
+        // (`launch_window`).
         let mut child = command.spawn().context("Failed to spawn tracee")?;
         let guest_pid = child.id();
         if let Some(runtime) = self.liteinst_runtime.as_ref() {
@@ -5286,6 +5300,10 @@ where
     // This path never runs trap-only LiteInst (`liteinst_trap_only: None`).
     let seccomp_filter = seccomp_filter(&events, false);
 
+    // From the first pipe until `fork` returns, no transient open of another
+    // thread may be in flight: its descriptor would take a pipe's number and
+    // stay open in the guest, which closes only 3 to 255 (`launch_window`).
+    let launch = crate::launch_window::Launch::begin();
     let (read1, write1) = unistd::pipe().map_err(from_nix_error)?;
     let (read2, write2) = unistd::pipe().map_err(from_nix_error)?;
 
@@ -5299,6 +5317,7 @@ where
     // panicking, etc).  We make a best-effort attempt to solve some of these issues.
     match unsafe { unistd::fork() }.expect("unistd::fork failed") {
         ForkResult::Child => {
+            drop(launch);
             read1.close()?;
             read2.close()?;
             if capture_output {
@@ -5325,6 +5344,7 @@ where
             };
         }
         ForkResult::Parent { child } => {
+            drop(launch);
             std::io::set_output_capture(output_capture);
 
             let guest_pid = Pid::from(child);
