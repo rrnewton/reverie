@@ -12,6 +12,11 @@
 #![no_std]
 
 extern crate alloc;
+// The host unit tests (`run.sh`'s execution step) need the test harness.
+#[cfg(test)]
+extern crate std;
+
+pub mod tool_contract;
 
 use reverie_memory::Addr;
 use reverie_memory::IoSlice;

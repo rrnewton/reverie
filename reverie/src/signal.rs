@@ -8,6 +8,8 @@
 
 //! Backend-neutral signal delivery metadata.
 
+use alloc::vec::Vec;
+
 use serde::Deserialize;
 use serde::Serialize;
 
