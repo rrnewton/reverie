@@ -737,6 +737,18 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
             b"unsubscribed-fork-reconstructed\n".as_slice(),
         ),
         ("tail-fork", b"tail-fork-reconstructed\n".as_slice()),
+        (
+            "mask-inject",
+            b"inject-mask full=0xffffffffbffbfeff trap-after-full-mask\nblocking-wait during=0xffffffffbffbfeff restored\n".as_slice(),
+        ),
+        (
+            "mask-unsubscribed",
+            b"unsubscribed-mask full=0xffffffffbffbfeff trap-after-full-mask\n".as_slice(),
+        ),
+        (
+            "mask-tail",
+            b"tail-mask full=0xffffffffbffbfeff trap-after-full-mask\n".as_slice(),
+        ),
     ] {
         let output = Command::new(binary)
             .arg(mode)
