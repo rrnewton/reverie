@@ -633,7 +633,7 @@ fn fcntl_owner_threads_and_exec_preserve_creator_and_cloexec_filtering() {
                     0
                 ]
             ),
-            &mut f.memory
+            &f.memory
         ),
         0
     );
