@@ -7,10 +7,23 @@
  */
 
 //! Backend-neutral implementation of the counter2 Reverie tool.
+//!
+//! This module names only `core` and `alloc`, so it also builds against
+//! reverie without `std` (the Narf kernel build); `nostd-gate` compiles and
+//! runs it that way. The one exception is the thread-exit diagnostic's
+//! `eprintln!` fallback, which exists only on targets with `std`: on
+//! `target_os = "none"` a backend that wants the diagnostic sets a reporter
+//! with [`CounterLocal::with_thread_exit_reporter`].
 
+extern crate alloc;
+#[cfg(not(target_os = "none"))]
+extern crate std;
+
+// The `#[reverie::tool]` expansion boxes each handler future by the bare name
+// `Box`, which is only in the prelude with `std`.
+use alloc::boxed::Box;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
-use std::sync::Mutex;
 
 use reverie::Error;
 use reverie::ExitStatus;
@@ -28,26 +41,24 @@ use tracing::debug;
 
 /// Global counter2 totals.
 #[derive(Debug, Default)]
-pub struct GlobalInner {
-    pub total_syscalls: u64,
-    pub exited_procs: u64,
-    pub exited_threads: u64,
-}
-
-#[derive(Debug, Default)]
 pub struct CounterGlobal {
-    pub inner: Mutex<GlobalInner>,
+    total_syscalls: AtomicU64,
+    exited_procs: AtomicU64,
+    exited_threads: AtomicU64,
 }
 
 impl CounterGlobal {
     /// Returns process-tree syscall, process, and thread totals.
+    ///
+    /// The three totals are read one at a time, so they agree with each
+    /// other once no process-exit RPC is in flight, which is when every
+    /// launcher reads them: after the run.
     #[allow(dead_code)]
     pub fn totals(&self) -> (u64, u64, u64) {
-        let state = self.inner.lock().unwrap();
         (
-            state.total_syscalls,
-            state.exited_procs,
-            state.exited_threads,
+            self.total_syscalls.load(Ordering::SeqCst),
+            self.exited_procs.load(Ordering::SeqCst),
+            self.exited_threads.load(Ordering::SeqCst),
         )
     }
 }
@@ -64,7 +75,9 @@ impl CounterLocal {
     /// Selects where this backend writes the existing thread-exit diagnostic.
     ///
     /// Injected backends must use their runtime output path because the guest
-    /// may close its own stderr before the lifecycle callback runs.
+    /// may close its own stderr before the lifecycle callback runs. Without
+    /// `std` there is no stderr fallback, so a backend there that wants the
+    /// diagnostic must set a reporter.
     #[allow(dead_code)]
     pub fn with_thread_exit_reporter(mut self, reporter: fn(Tid, u64)) -> Self {
         self.thread_exit_reporter = Some(reporter);
@@ -106,10 +119,9 @@ impl GlobalTool for CounterGlobal {
     }
 
     async fn receive_rpc(&self, _from: Pid, IncrMsg(n, t): IncrMsg) -> Self::Response {
-        let mut state = self.inner.lock().unwrap();
-        state.total_syscalls += n;
-        state.exited_threads += t;
-        state.exited_procs += 1;
+        self.total_syscalls.fetch_add(n, Ordering::SeqCst);
+        self.exited_threads.fetch_add(t, Ordering::SeqCst);
+        self.exited_procs.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -152,7 +164,8 @@ impl Tool for CounterLocal {
         if let Some(report) = self.thread_exit_reporter {
             report(tid, thread_syscalls);
         } else {
-            eprintln!("counter2-local thread={} syscalls={}", tid, thread_syscalls);
+            #[cfg(not(target_os = "none"))]
+            std::eprintln!("counter2-local thread={} syscalls={}", tid, thread_syscalls);
         }
         Ok(())
     }
