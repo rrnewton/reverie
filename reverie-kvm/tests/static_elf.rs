@@ -806,6 +806,9 @@ mod random_device_stream;
 #[path = "support/poll_descriptor_abi.rs"]
 mod poll_descriptor_abi;
 
+#[path = "support/pselect_zero.rs"]
+mod pselect_zero;
+
 #[test]
 fn file_script_exec_plain() {
     file_script_exec_control("file_script_exec_plain", "plain");
@@ -11186,6 +11189,9 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "kvm_direct_and_tool_match_prctl_identity_cell",
         "kvm_direct_and_tool_match_thp_disable_cell",
         "stable_socket_metadata_queries_match_native_linux_on_kvm",
+        "pselect_zero::readiness_matches_native_pipe_socket_and_path_states",
+        "pselect_zero::raw_abi_and_readonly_zero_timeout_match_native",
+        "pselect_zero::copyout_faults_order_and_aliasing_match_native",
         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
         "fchdir_consumes_low_descriptor_words_on_kvm",
         "getdents64_consumes_low_descriptor_words_on_kvm",
