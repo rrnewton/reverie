@@ -6069,6 +6069,16 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// `resume_delivers_signal_directly`). Either way, a callback here would
     /// report a signal the Tool sees twice or the guest never receives.
     ///
+    /// Nor does it run while the guest blocks the signal: the kernel then
+    /// requeues it rather than delivering it, and the Tool sees it at its own
+    /// stop once the guest unblocks it.
+    ///
+    /// The Tool may inject from the callback, and that injection may hold
+    /// another signal. When the Tool suppresses the first, the newly held
+    /// signal is routed the same way. When the Tool delivers the first, the
+    /// second stays in the single `pending_signal` slot for the next resume
+    /// (TaskGraph `reverie_pending_signal_single_slot`).
+    ///
     /// Only plain ptrace routes the signal. The timer signal and SIGSTOP are
     /// handed on as before: `handle_signal` gives each its own handling
     /// rather than this callback, and neither is held in practice. LiteInst
@@ -6076,34 +6086,38 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn tool_signal_for_held_resume(
         &mut self,
         task: &Stopped,
-        signal: Option<Signal>,
+        mut signal: Option<Signal>,
     ) -> Result<Option<Signal>, TraceError> {
-        let Some(sig) = signal else {
-            return Ok(None);
-        };
-        if self.global_state.liteinst_runtime.is_some()
-            || sig == Timer::signal_type()
-            || sig == Signal::SIGSTOP
-            || !resume_delivers_signal_directly(task)?
-        {
-            return Ok(Some(sig));
+        while let Some(sig) = signal {
+            if self.global_state.liteinst_runtime.is_some()
+                || sig == Timer::signal_type()
+                || sig == Signal::SIGSTOP
+                || !resume_delivers_signal_directly(task)?
+                || blocked_signal_mask(task.pid())? & signal_mask_bit(sig) != 0
+            {
+                return Ok(Some(sig));
+            }
+            tracing::debug!(
+                "[{}] passing held signal {} to the tool before resuming",
+                task.pid(),
+                sig
+            );
+            let result = self
+                .process_state
+                .clone()
+                .handle_signal_event(self, sig)
+                .await;
+            let delivered = self
+                .ordinary_callback_errno("ptrace held-signal callback", result)
+                .await?;
+            self.ordinary_trace_continuation()?;
+            self.timer.finalize_requests();
+            if delivered.is_some() {
+                return Ok(delivered);
+            }
+            signal = self.pending_signal.take();
         }
-        tracing::debug!(
-            "[{}] passing held signal {} to the tool before resuming",
-            task.pid(),
-            sig
-        );
-        let result = self
-            .process_state
-            .clone()
-            .handle_signal_event(self, sig)
-            .await;
-        let sig = self
-            .ordinary_callback_errno("ptrace held-signal callback", result)
-            .await?;
-        self.ordinary_trace_continuation()?;
-        self.timer.finalize_requests();
-        Ok(sig)
+        Ok(None)
     }
 
     fn validate_nested_liteinst_activation_signal(

@@ -894,9 +894,10 @@ fn injected_mask_swapping_syscall_requeues_a_signal_its_mask_blocks() {
         format!("-1 {} 1 0 1 1", libc::EINTR),
         "EINTR, SIGSYS run once, SIGBUS never run, saved mask restored (strace oracle)"
     );
-    assert!(
-        !signals.contains(&libc::SIGBUS),
-        "the still-blocked SIGBUS is never delivered: {signals:?}"
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS],
+        "the tool sees the held SIGSYS once and never the still-blocked SIGBUS"
     );
 }
 
@@ -1056,7 +1057,8 @@ fn injected_mask_swapping_syscall_holds_the_first_of_two_unblocked_signals() {
 /// `reverie_pending_signal_single_slot`: resuming the second step lets the
 /// kernel restore `ppoll`'s saved mask before the held SIGSYS is delivered,
 /// so it is requeued blocked and its handler never runs. Untraced, the same
-/// callback would return the pid after one SIGSYS handler run.
+/// callback would return the pid after one SIGSYS handler run. Because the
+/// guest blocks SIGSYS again when it resumes, the Tool is not told of it.
 #[test]
 fn injection_after_a_held_signal_discards_the_stale_step_trap() {
     let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
@@ -1113,6 +1115,11 @@ fn injection_after_a_held_signal_discards_the_stale_step_trap() {
         fields[..3],
         ["true", "0", "1"],
         "getpid ran and returned the pid; SIGSYS stays pending and blocked (known gap)"
+    );
+    assert_eq!(
+        *signals,
+        Vec::<i32>::new(),
+        "the tool is not told of a SIGSYS the guest never receives"
     );
 }
 
@@ -1266,5 +1273,171 @@ fn injected_syscall_trapped_by_guest_seccomp_reports_enosys() {
         *signals,
         vec![libc::SIGSYS, libc::SIGSYS],
         "each SIGSYS reaches the tool"
+    );
+}
+
+/// Guest address of the SIGUSR2 set that `UnblockFromSignalCallback`'s
+/// signal callback unblocks.
+static SIGUSR2_SET: AtomicUsize = AtomicUsize::new(0);
+
+static SIGUSR2_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn count_sigusr2(_signal: libc::c_int) {
+    SIGUSR2_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Like `ReplaceMarker` for `UNBLOCK_THEN_GETPID_FD`, whose buffer holds a
+/// SIGUSR1 set followed by a SIGUSR2 set. Its signal callback suppresses
+/// SIGUSR1 and itself injects the SIGUSR2 unblock and a `getpid`, so that
+/// injection holds SIGUSR2.
+#[derive(Clone, Copy, Debug, Default)]
+struct UnblockFromSignalCallback;
+
+impl UnblockFromSignalCallback {
+    async fn unblock_then_getpid<G: Guest<Self>>(
+        guest: &mut G,
+        set: Option<Addr<'static, libc::sigset_t>>,
+    ) -> Result<i64, Errno> {
+        let result = guest
+            .inject(
+                RtSigprocmask::new()
+                    .with_how(libc::SIG_UNBLOCK)
+                    .with_set(set)
+                    .with_oldset(None)
+                    .with_sigsetsize(8),
+            )
+            .await;
+        guest
+            .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+            .await;
+        result?;
+        let result = guest.inject(Getpid::new()).await;
+        guest
+            .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+            .await;
+        result
+    }
+}
+
+#[reverie::tool]
+impl Tool for UnblockFromSignalCallback {
+    type GlobalState = Log;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        match syscall {
+            Syscall::Write(write) if write.fd() == UNBLOCK_THEN_GETPID_FD && write.len() == 0 => {
+                let base = write.buf().map_or(0, |buf| buf.as_raw());
+                SIGUSR2_SET.store(
+                    base + std::mem::size_of::<libc::sigset_t>(),
+                    Ordering::SeqCst,
+                );
+                let _ = Self::unblock_then_getpid(guest, Addr::from_raw(base)).await;
+                Ok(0)
+            }
+            other => Ok(guest.inject(other).await?),
+        }
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        if signal != Signal::SIGUSR1 {
+            return Ok(Some(signal));
+        }
+        let set = Addr::from_raw(SIGUSR2_SET.load(Ordering::SeqCst));
+        let _ = Self::unblock_then_getpid(guest, set).await;
+        Ok(None)
+    }
+}
+
+/// A signal held by an injection that the Tool makes from its callback for
+/// another held signal reaches the Tool too. The callback for the held
+/// SIGUSR1 suppresses it and injects the SIGUSR2 unblock and a `getpid`,
+/// which holds SIGUSR2; the guest must not resume until the Tool has seen
+/// SIGUSR2, which it then delivers.
+#[test]
+fn signal_held_by_a_signal_callback_injection_reaches_the_tool() {
+    let (output, log) = test_fn::<UnblockFromSignalCallback, _>(|| unsafe {
+        SIGUSR1_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        SIGUSR2_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGUSR1, count_sigusr1);
+        install_counter(libc::SIGUSR2, count_sigusr2);
+        let sets = [block(&[libc::SIGUSR1]), block(&[libc::SIGUSR2])];
+        for signal in [libc::SIGUSR1, libc::SIGUSR2] {
+            assert_eq!(
+                libc::syscall(
+                    libc::SYS_tgkill,
+                    libc::getpid(),
+                    libc::syscall(libc::SYS_gettid),
+                    signal
+                ),
+                0
+            );
+        }
+        let ret = libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_THEN_GETPID_FD,
+            sets.as_ptr(),
+            0usize,
+        );
+        println!(
+            "{ret} {} {}",
+            SIGUSR1_HANDLER_CALLS.load(Ordering::Relaxed),
+            SIGUSR2_HANDLER_CALLS.load(Ordering::Relaxed)
+        );
+    })
+    .expect("run signal-callback injection guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE callback-injection guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    assert_eq!(
+        *injected,
+        vec![
+            Ok(0),
+            Err(Errno::ERESTARTSYS.into_raw()),
+            Ok(0),
+            Err(Errno::ERESTARTSYS.into_raw())
+        ],
+        "each unblock completes and the signal it unblocks interrupts the next getpid"
+    );
+    // The marker's return value is not compared: the callback's injection
+    // leaves its own state in the guest's RAX
+    // (https://github.com/rrnewton/reverie/issues/892).
+    let fields: Vec<&str> = stdout.trim().split(' ').collect();
+    assert_eq!(
+        fields[1..],
+        ["0", "1"],
+        "SIGUSR1 suppressed by the tool; SIGUSR2 delivered before the guest resumes"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGUSR1, libc::SIGUSR2],
+        "the tool sees the held SIGUSR1, then the SIGUSR2 its own injection held"
     );
 }
