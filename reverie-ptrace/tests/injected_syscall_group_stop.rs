@@ -6280,6 +6280,17 @@ static RESTART_BLOCK_ZERO_RAX: AtomicU64 = AtomicU64::new(0);
 /// registers back unchanged with `Guest::set_regs` before its final sleep.
 /// Read like `RESTART_BLOCK_SUPPRESS`.
 static RESTART_BLOCK_REWRITE: AtomicU64 = AtomicU64::new(0);
+/// Nonzero when `RestartBlockInFirstSignalHook` writes the guest's
+/// registers back unchanged with `Guest::set_regs` after its final sleep.
+/// Read like `RESTART_BLOCK_SUPPRESS`.
+static RESTART_BLOCK_REWRITE_LAST: AtomicU64 = AtomicU64::new(0);
+/// Nonzero when `RestartBlockInFirstSignalHook` writes
+/// `RESTART_BLOCK_EARLY_RET` to the guest's return register with
+/// `Guest::set_regs` before its first injection. Read like
+/// `RESTART_BLOCK_SUPPRESS`.
+static RESTART_BLOCK_EARLY_RAX: AtomicU64 = AtomicU64::new(0);
+/// What `RESTART_BLOCK_EARLY_RAX` writes.
+const RESTART_BLOCK_EARLY_RET: u64 = 123;
 /// The signal number `RestartBlockInFirstSignalHook` resumes with in place
 /// of SIGALRM, when nonzero; it then neither suppresses nor passes SIGALRM.
 /// Read like `RESTART_BLOCK_SUPPRESS`.
@@ -6321,20 +6332,23 @@ static RESTART_BLOCK_SLEEP: libc::timespec = libc::timespec {
 /// How many times `RestartBlockInFirstSignalHook` tries its `getpid`.
 const RESTART_BLOCK_GETPID_TRIES: usize = 3;
 
-/// Like `ReplaceMarker`, but the first signal hook of SIGALRM on each thread
-/// arms a 200 ms `ITIMER_REAL` timer, injects a 5-second `nanosleep` the
-/// timer's SIGALRM interrupts, which replaces the thread's restart block,
-/// or instead `restart_syscall` when `RESTART_BLOCK_RESUME` is set in the
-/// guest, which resumes the guest's sleep through that block until the
-/// SIGALRM interrupts it, then injects `getpid` until it succeeds, and then
-/// `RESTART_BLOCK_FINAL_SLEEP` when `RESTART_BLOCK_FINAL` is set in the
-/// guest, first writing the guest's registers back unchanged when
-/// `RESTART_BLOCK_REWRITE` is set; each injection is reported. It then writes zero to the guest's
-/// return register when `RESTART_BLOCK_ZERO_RAX` is set, and overwrites the
-/// guest's sleep request when `RESTART_BLOCK_POISON` is set. It resumes with
-/// the signal `RESTART_BLOCK_VERDICT` names when that is set, else
-/// suppresses the signal when `RESTART_BLOCK_SUPPRESS` is set in the guest
-/// and passes it through otherwise.
+/// Like `ReplaceMarker`, but the first signal hook of SIGALRM on each
+/// thread writes `RESTART_BLOCK_EARLY_RET` to the guest's return register
+/// when `RESTART_BLOCK_EARLY_RAX` is set, arms a 200 ms `ITIMER_REAL`
+/// timer, injects a 5-second `nanosleep` the timer's SIGALRM interrupts,
+/// which replaces the thread's restart block, or instead `restart_syscall`
+/// when `RESTART_BLOCK_RESUME` is set in the guest, which resumes the
+/// guest's sleep through that block until the SIGALRM interrupts it, then
+/// injects `getpid` until it succeeds, and then `RESTART_BLOCK_FINAL_SLEEP`
+/// when `RESTART_BLOCK_FINAL` is set in the guest, first writing the
+/// guest's registers back unchanged when `RESTART_BLOCK_REWRITE` is set,
+/// and after it when `RESTART_BLOCK_REWRITE_LAST` is set; each injection is
+/// reported. It then writes zero to the guest's return register when
+/// `RESTART_BLOCK_ZERO_RAX` is set, and overwrites the guest's sleep
+/// request when `RESTART_BLOCK_POISON` is set. It resumes with the signal
+/// `RESTART_BLOCK_VERDICT` names when that is set, else suppresses the
+/// signal when `RESTART_BLOCK_SUPPRESS` is set in the guest and passes it
+/// through otherwise.
 #[derive(Clone, Copy, Debug, Default)]
 struct RestartBlockInFirstSignalHook;
 
@@ -6367,6 +6381,17 @@ impl Tool for RestartBlockInFirstSignalHook {
         if signal != Signal::SIGALRM || std::mem::replace(guest.thread_state_mut(), true) {
             return Ok(Some(signal));
         }
+        let flag = |flag: &AtomicU64| {
+            Addr::<u64>::from_raw(flag as *const AtomicU64 as usize).ok_or(Errno::EFAULT)
+        };
+        if guest.memory().read_value(flag(&RESTART_BLOCK_EARLY_RAX)?)? != 0 {
+            let mut regs = guest.regs().await;
+            regs.rax = RESTART_BLOCK_EARLY_RET;
+            guest
+                .set_regs(regs)
+                .await
+                .expect("write the guest's registers");
+        }
         let timer = Syscall::from_raw(
             Sysno::setitimer,
             SyscallArgs::new(
@@ -6378,9 +6403,6 @@ impl Tool for RestartBlockInFirstSignalHook {
                 0,
             ),
         );
-        let flag = |flag: &AtomicU64| {
-            Addr::<u64>::from_raw(flag as *const AtomicU64 as usize).ok_or(Errno::EFAULT)
-        };
         let sleep = if guest.memory().read_value(flag(&RESTART_BLOCK_RESUME)?)? != 0 {
             Syscall::from_raw(Sysno::restart_syscall, SyscallArgs::new(0, 0, 0, 0, 0, 0))
         } else {
@@ -6437,6 +6459,17 @@ impl Tool for RestartBlockInFirstSignalHook {
                 .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
                 .await;
         }
+        if guest
+            .memory()
+            .read_value(flag(&RESTART_BLOCK_REWRITE_LAST)?)?
+            != 0
+        {
+            let regs = guest.regs().await;
+            guest
+                .set_regs(regs)
+                .await
+                .expect("write the guest's registers");
+        }
         if guest.memory().read_value(flag(&RESTART_BLOCK_ZERO_RAX)?)? != 0 {
             let mut regs = guest.regs().await;
             regs.rax = 0;
@@ -6485,6 +6518,13 @@ enum RestartBlockEnd {
     /// As `SuppressAfterSleep`, but the hook first writes the guest's
     /// registers back unchanged with `Guest::set_regs`.
     SuppressAfterRewriteAndSleep,
+    /// As `SuppressAfterSleep`, but the hook writes the guest's registers
+    /// back unchanged with `Guest::set_regs` after its final sleep.
+    SuppressAfterSleepAndRewrite,
+    /// As `SuppressAfterSleep`, but the hook writes
+    /// `RESTART_BLOCK_EARLY_RET` to the guest's return register with
+    /// `Guest::set_regs` before its first injection.
+    SuppressAfterEarlyWriteAndSleep,
     /// As `SuppressAfterSleep`, but the hook resumes with SIGURG, which the
     /// guest ignores by default, in place of suppressing SIGALRM.
     IgnoredAfterSleep,
@@ -6522,8 +6562,11 @@ enum RestartBlockEnd {
 /// (`IgnoredAfterSleep`) or blocks (`BlockedAfterSleep`), and the Tool's own
 /// zero when it writes one to the return register (`SuppressAfterZeroingRax`),
 /// as on main. A register write before the final sleep
-/// (`SuppressAfterRewriteAndSleep`) does not change that: the sleep's zero
-/// is the latest value, as on main.
+/// (`SuppressAfterRewriteAndSleep`), or before the hook's first injection
+/// (`SuppressAfterEarlyWriteAndSleep`), does not change that: the sleep's
+/// zero is the latest value, as on main. Nor does writing the registers back
+/// unchanged after the final sleep (`SuppressAfterSleepAndRewrite`): the
+/// hook reads the sleep's zero, as on main.
 ///
 /// With `SuppressAfterResume` the hook's interrupted `restart_syscall`
 /// leaves the guest's restart block in place, so the guest's own
@@ -6539,10 +6582,14 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
         end,
         RestartBlockEnd::SuppressAfterSleep
             | RestartBlockEnd::SuppressAfterRewriteAndSleep
+            | RestartBlockEnd::SuppressAfterSleepAndRewrite
+            | RestartBlockEnd::SuppressAfterEarlyWriteAndSleep
             | RestartBlockEnd::IgnoredAfterSleep
             | RestartBlockEnd::BlockedAfterSleep
     );
     let rewrite = end == RestartBlockEnd::SuppressAfterRewriteAndSleep;
+    let rewrite_last = end == RestartBlockEnd::SuppressAfterSleepAndRewrite;
+    let early_rax = end == RestartBlockEnd::SuppressAfterEarlyWriteAndSleep;
     let resume = end == RestartBlockEnd::SuppressAfterResume;
     let zero_rax = end == RestartBlockEnd::SuppressAfterZeroingRax;
     let verdict = match end {
@@ -6557,6 +6604,8 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
             RESTART_BLOCK_RESUME.store(resume as u64, Ordering::Relaxed);
             RESTART_BLOCK_ZERO_RAX.store(zero_rax as u64, Ordering::Relaxed);
             RESTART_BLOCK_REWRITE.store(rewrite as u64, Ordering::Relaxed);
+            RESTART_BLOCK_REWRITE_LAST.store(rewrite_last as u64, Ordering::Relaxed);
+            RESTART_BLOCK_EARLY_RAX.store(early_rax as u64, Ordering::Relaxed);
             RESTART_BLOCK_VERDICT.store(verdict as u64, Ordering::Relaxed);
             RESTART_BLOCK_POISON.store(0, Ordering::Relaxed);
             SIGALRM_HANDLER_CALLS.store(0, Ordering::Relaxed);
@@ -6639,7 +6688,10 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
             [pid.to_string().as_str(), "0"],
             "the injected getpid's PID, as on main, and no handler run"
         ),
-        RestartBlockEnd::SuppressAfterSleep | RestartBlockEnd::SuppressAfterRewriteAndSleep => {
+        RestartBlockEnd::SuppressAfterSleep
+        | RestartBlockEnd::SuppressAfterRewriteAndSleep
+        | RestartBlockEnd::SuppressAfterSleepAndRewrite
+        | RestartBlockEnd::SuppressAfterEarlyWriteAndSleep => {
             assert_eq!(
                 [fields[0], fields[2]],
                 ["0", "0"],
@@ -6705,6 +6757,18 @@ fn suppressed_signal_after_a_restart_block_replacing_injection_keeps_a_final_zer
 #[test]
 fn suppressed_signal_after_a_register_write_and_a_final_sleep_keeps_the_final_zero() {
     check_restart_block_replaced_by_a_hook_injection(RestartBlockEnd::SuppressAfterRewriteAndSleep);
+}
+
+#[test]
+fn suppressed_signal_after_a_final_sleep_and_a_register_write_keeps_the_final_zero() {
+    check_restart_block_replaced_by_a_hook_injection(RestartBlockEnd::SuppressAfterSleepAndRewrite);
+}
+
+#[test]
+fn suppressed_signal_after_an_early_register_write_and_a_final_sleep_keeps_the_final_zero() {
+    check_restart_block_replaced_by_a_hook_injection(
+        RestartBlockEnd::SuppressAfterEarlyWriteAndSleep,
+    );
 }
 
 #[test]
@@ -7208,6 +7272,9 @@ fn restart_block_verdict_raced_by_a_disposition_change_never_leaves_a_bare_eintr
             RESTART_BLOCK_FINAL.store(1, Ordering::Relaxed);
             RESTART_BLOCK_RESUME.store(0, Ordering::Relaxed);
             RESTART_BLOCK_ZERO_RAX.store(0, Ordering::Relaxed);
+            RESTART_BLOCK_REWRITE.store(0, Ordering::Relaxed);
+            RESTART_BLOCK_REWRITE_LAST.store(0, Ordering::Relaxed);
+            RESTART_BLOCK_EARLY_RAX.store(0, Ordering::Relaxed);
             RESTART_BLOCK_VERDICT.store(libc::SIGUSR2 as u64, Ordering::Relaxed);
             RESTART_BLOCK_POISON.store(1, Ordering::Relaxed);
             install_counter(libc::SIGALRM, count_sigalrm);
