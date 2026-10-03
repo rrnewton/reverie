@@ -582,9 +582,6 @@ struct SignalVerdict {
     /// The return register the callback's latest injection left, `None` if
     /// it injected nothing.
     injection_ret: Option<Reg>,
-    /// Whether an injection's restore gave the guest `-EINTR` for its
-    /// `-ERESTART_RESTARTBLOCK` (`signal_callback_guest_ret`).
-    restart_block_eintr: bool,
 }
 
 /// The signal mask the kernel dequeues under for the stopped thread `tid`
@@ -3069,13 +3066,12 @@ pub struct TracedTask<L: Tool> {
     /// guest's.
     signal_callback_replaced_restart_block: bool,
 
-    /// Whether `signal_callback_guest_ret` gave the guest `-EINTR` in place
-    /// of its `-ERESTART_RESTARTBLOCK` during the running
-    /// `Tool::handle_signal_event` callback. `Guest::set_regs` leaves it set:
-    /// a Tool that writes back the registers it read copies that `-EINTR`,
-    /// and a later injection's restore then sees `-EINTR`, not the guest's
-    /// `-ERESTART_RESTARTBLOCK`.
-    signal_callback_restart_block_eintr: bool,
+    /// Whether the guest's return register held `-ERESTART_RESTARTBLOCK` in
+    /// a syscall during the running `Tool::handle_signal_event` callback:
+    /// in the registers an injection saved, or in those a Tool's register
+    /// write (`Guest::set_regs`) replaced. A Tool's write cannot hide it from
+    /// a later injection that replaces the restart block.
+    signal_callback_guest_restart_block: bool,
 
     /// Whether the running `Tool::handle_signal_event` callback reports a
     /// held signal (`report_held_signal`). A signal that stops one of its
@@ -3298,7 +3294,7 @@ impl<L: Tool> TracedTask<L> {
             in_signal_callback: false,
             signal_callback_injection_ret: None,
             signal_callback_replaced_restart_block: false,
-            signal_callback_restart_block_eintr: false,
+            signal_callback_guest_restart_block: false,
             in_held_signal_callback: false,
             unreported_stop_signal: None,
             reported_requeued_signals: HashMap::new(),
@@ -3410,7 +3406,7 @@ impl<L: Tool> TracedTask<L> {
             in_signal_callback: false,
             signal_callback_injection_ret: None,
             signal_callback_replaced_restart_block: false,
-            signal_callback_restart_block_eintr: false,
+            signal_callback_guest_restart_block: false,
             in_held_signal_callback: false,
             unreported_stop_signal: None,
             reported_requeued_signals: HashMap::new(),
@@ -3488,7 +3484,7 @@ impl<L: Tool> TracedTask<L> {
             in_signal_callback: false,
             signal_callback_injection_ret: None,
             signal_callback_replaced_restart_block: false,
-            signal_callback_restart_block_eintr: false,
+            signal_callback_guest_restart_block: false,
             in_held_signal_callback: false,
             unreported_stop_signal: None,
             reported_requeued_signals: HashMap::new(),
@@ -6343,7 +6339,6 @@ impl<L: Tool + 'static> TracedTask<L> {
             sig
         );
         let verdict = self.report_signal(sig, true).await?;
-        self.keep_injection_ret_for_replaced_restart_block(task, &verdict)?;
         Ok(SignalResume {
             signal: verdict.signal,
             reported: taken.filter(|taken| taken.signal == sig),
@@ -6424,8 +6419,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Runs `Tool::handle_signal_event` for `sig` and returns its verdict,
     /// with the return register the callback's latest injection left
     /// (`Task::signal_callback_injection_ret`), `None` if it injected
-    /// nothing, and whether an injection's restore gave the guest `-EINTR`
-    /// for its `-ERESTART_RESTARTBLOCK` (`signal_callback_guest_ret`).
+    /// nothing.
     ///
     /// For a held signal (`held`, from `report_held_signal`), a returning
     /// `tail_inject` ends the callback (`do_tail_inject`) and the signal is
@@ -6443,7 +6437,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         let outer_ret = self.signal_callback_injection_ret.take();
         let outer_replaced =
             std::mem::replace(&mut self.signal_callback_replaced_restart_block, false);
-        let outer_eintr = std::mem::replace(&mut self.signal_callback_restart_block_eintr, false);
+        let outer_guest_block =
+            std::mem::replace(&mut self.signal_callback_guest_restart_block, false);
         let outer_held = std::mem::replace(&mut self.in_held_signal_callback, held);
         let result = if held {
             cancellable(self.cancel_handler.clone(), async {
@@ -6463,8 +6458,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.in_signal_callback = outer;
         self.in_held_signal_callback = outer_held;
         self.signal_callback_replaced_restart_block = outer_replaced;
-        let restart_block_eintr =
-            std::mem::replace(&mut self.signal_callback_restart_block_eintr, outer_eintr);
+        self.signal_callback_guest_restart_block = outer_guest_block;
         let injection_ret = std::mem::replace(&mut self.signal_callback_injection_ret, outer_ret);
         let signal = self
             .ordinary_callback_errno("ptrace signal callback", result)
@@ -6474,68 +6468,57 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(SignalVerdict {
             signal,
             injection_ret,
-            restart_block_eintr,
         })
     }
 
-    /// The guest's return register `ret`, saved in `context`, as a signal
-    /// callback's injection restores it: `-EINTR` in place of
-    /// `-ERESTART_RESTARTBLOCK` in a syscall once an injection replaced the
-    /// thread's restart block (`signal_callback_replaced_restart_block`).
-    /// Linux would restart the guest's syscall through `restart_syscall`,
-    /// which runs the injection's restart block instead: an interrupted
-    /// injected `nanosleep` would sleep out its own deadline in place of the
-    /// guest's. `-EINTR` is what the guest's syscall returns when a handler
-    /// is delivered. Reverie cannot tell whether one will be, so the guest
-    /// resumes with the injection's return register, as before this restore
-    /// existed (`keep_injection_ret_for_replaced_restart_block`).
-    fn signal_callback_guest_ret(&mut self, context: &libc::user_regs_struct, ret: Reg) -> Reg {
-        if self.signal_callback_replaced_restart_block
-            && (context.orig_syscall() as i64) >= 0
-            && Errno::from_ret(ret as usize) == Err(Errno::ERESTART_RESTARTBLOCK)
-        {
-            self.signal_callback_restart_block_eintr = true;
-            -(Errno::EINTR.into_raw() as i64) as Reg
-        } else {
-            ret
-        }
+    /// The guest's return register `ret`, saved in `context`, that a signal
+    /// callback's injection restores, or `None` to leave the injection's
+    /// own, as main always does.
+    ///
+    /// That is once an injection replaced the thread's restart block
+    /// (`signal_callback_replaced_restart_block`) while the guest's return
+    /// register held `-ERESTART_RESTARTBLOCK` in a syscall, now or earlier in
+    /// the callback (`signal_callback_guest_restart_block`), and for every
+    /// later injection of the callback. Restoring that code would make
+    /// Linux restart the guest's syscall through `restart_syscall`, which
+    /// runs the injection's restart block instead: an interrupted injected
+    /// `nanosleep` would sleep out its own deadline in place of the guest's.
+    /// The guest's return register is then what main leaves at every point:
+    /// the latest injection's return, or a Tool's write after it
+    /// (`Guest::set_regs`).
+    ///
+    /// That is right only when it happens to be what the guest's syscall
+    /// would have returned, as the zero of an injected sleep that outlasts
+    /// the guest's deadline. When no handler is delivered at the resume,
+    /// untraced Linux would restart the guest's syscall through its own
+    /// restart block, which the injection replaced, so Reverie cannot
+    /// restart it; when a handler runs, Linux returns `-EINTR`. The kernel
+    /// decides which at the resume, from dispositions that another thread
+    /// can change after any read Reverie could make, and so can a process
+    /// that shares them without being traced (`CLONE_SIGHAND` with
+    /// `CLONE_UNTRACED`), which procfs and `kcmp` cannot rule out: such a
+    /// process can make itself uninspectable, or create another and exit
+    /// while procfs is read (<https://github.com/rrnewton/reverie/issues/845>).
+    fn signal_callback_guest_ret(
+        &mut self,
+        context: &libc::user_regs_struct,
+        ret: Reg,
+    ) -> Option<Reg> {
+        self.note_guest_restart_block(context, ret);
+        let keep_injection_ret =
+            self.signal_callback_replaced_restart_block && self.signal_callback_guest_restart_block;
+        (!keep_injection_ret).then_some(ret)
     }
 
-    /// Puts back the return register a signal callback's latest injection
-    /// left in place of the `-EINTR` that `signal_callback_guest_ret` gave
-    /// the guest for its `-ERESTART_RESTARTBLOCK`, whatever signal the
-    /// callback resumes with. A Tool's own register write after the latest
-    /// injection clears `injection_ret` (`Guest::set_regs`) and is kept; an
-    /// injection after such a write records its own return again. The guest
-    /// thus resumes with whichever of the two came last, as on main.
-    ///
-    /// When no handler is delivered at the resume, `-EINTR` is not what the
-    /// guest's syscall would return: untraced Linux would restart it through
-    /// the guest's own restart block, which the injection replaced, so
-    /// Reverie cannot restart it. The kernel decides whether a handler is
-    /// delivered at the resume, from dispositions that another thread can
-    /// change after any read Reverie could make, and so can a process that
-    /// shares them without being traced (`CLONE_SIGHAND` with
-    /// `CLONE_UNTRACED`), which
-    /// procfs and `kcmp` cannot rule out: such a process can make itself
-    /// uninspectable, or create another and exit while procfs is read. So
-    /// the guest resumes with the injection's return register, as before
-    /// this restore existed. It is right only when it happens to be what the
-    /// guest's syscall would have returned, as the zero of an injected sleep
-    /// that outlasts the guest's deadline; when a handler runs, Linux returns
-    /// `-EINTR` instead (<https://github.com/rrnewton/reverie/issues/845>).
-    fn keep_injection_ret_for_replaced_restart_block(
-        &self,
-        task: &Stopped,
-        verdict: &SignalVerdict,
-    ) -> Result<(), TraceError> {
-        let (Some(ret), true) = (verdict.injection_ret, verdict.restart_block_eintr) else {
-            return Ok(());
-        };
-        let mut regs = task.getregs()?;
-        *regs.ret_mut() = ret;
-        task.setregs(&regs)?;
-        Ok(())
+    /// Notes in `signal_callback_guest_restart_block` whether `ret`, the
+    /// guest's return register in `regs`, is `-ERESTART_RESTARTBLOCK` in a
+    /// syscall.
+    fn note_guest_restart_block(&mut self, regs: &libc::user_regs_struct, ret: Reg) {
+        if (regs.orig_syscall() as i64) >= 0
+            && Errno::from_ret(ret as usize) == Err(Errno::ERESTART_RESTARTBLOCK)
+        {
+            self.signal_callback_guest_restart_block = true;
+        }
     }
 
     /// Puts back the return register a signal callback's latest injection
@@ -6705,7 +6688,6 @@ impl<L: Tool + 'static> TracedTask<L> {
             HandleSignalResult::SignalToDeliver(task, sig) => {
                 let taken = TakenSignal::at_stop(&task, sig);
                 let verdict = self.report_signal(sig, false).await?;
-                self.keep_injection_ret_for_replaced_restart_block(&task, &verdict)?;
                 let signal = verdict.signal;
                 self.keep_injection_ret_for_requeue(&task, signal, verdict.injection_ret)?;
                 self.restore_liteinst_restart_marker(&task)?;
@@ -10033,7 +10015,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.in_signal_callback = false;
                     self.signal_callback_injection_ret = None;
                     self.signal_callback_replaced_restart_block = false;
-                    self.signal_callback_restart_block_eintr = false;
+                    self.signal_callback_guest_restart_block = false;
                     self.in_held_signal_callback = false;
                     self.unreported_stop_signal = None;
                     self.reported_requeued_signals.clear();
@@ -11512,8 +11494,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                                     self.signal_callback_replaced_restart_block = true;
                                 }
                             }
-                            let retval =
-                                retval.map(|ret| self.signal_callback_guest_ret(&context, ret));
+                            let retval = retval
+                                .and_then(|ret| self.signal_callback_guest_ret(&context, ret));
                             restore_context(&stopped, context, retval, false)?;
                         }
                     }
@@ -11551,9 +11533,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // a signal callback leaves (`report_held_signal`).
                     self.note_injection_stop(&wait)?;
                     if let (Some(guest_ret), Wait::Stopped(parent, _)) = (guest_ret, &wait) {
-                        let mut regs = parent.getregs()?;
-                        *regs.ret_mut() = guest_ret;
-                        parent.setregs(&regs)?;
+                        if let Some(guest_ret) = guest_ret {
+                            let mut regs = parent.getregs()?;
+                            *regs.ret_mut() = guest_ret;
+                            parent.setregs(&regs)?;
+                        }
                         self.signal_callback_injection_ret = Some(ret as Reg);
                     }
                     Ok(Ok(ret))
@@ -12214,18 +12198,22 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), reverie::Error> {
         let task = self.assume_stopped();
 
+        if self.in_signal_callback {
+            // The registers this write replaces may hold the guest's
+            // `-ERESTART_RESTARTBLOCK` (`signal_callback_guest_ret`).
+            match self.read_guest_registers(&task) {
+                Ok(current) => self.note_guest_restart_block(&current, current.ret()),
+                Err(err) => self.abort(Err(err)).await,
+            }
+        }
         if let Err(err) = self.write_guest_registers(&task, &regs) {
             // Mirror `regs()`: a ptrace register access failure aborts the task.
             self.abort(Err(err)).await;
         }
         // The Tool's own write decides the guest's return register: a
-        // signal callback no longer puts back its latest injection's, neither
-        // after it replaced the guest's restart block
-        // (`keep_injection_ret_for_replaced_restart_block`) nor when the
+        // signal callback no longer puts back its latest injection's when the
         // guest's mask blocks the resumed signal
         // (`keep_injection_ret_for_requeue`), until it injects again.
-        // `signal_callback_restart_block_eintr` stays set, so the return of
-        // an injection after this write is put back.
         self.signal_callback_injection_ret = None;
         Ok(())
     }
