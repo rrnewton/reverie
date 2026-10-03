@@ -1375,6 +1375,9 @@ pub(crate) struct NewbornDisplacement {
     pub(crate) stage: NewbornDisplacementStage,
     pub(crate) foreign: Running,
     pub(crate) displaced_child: StdOnceLock<Pid>,
+    /// The displaced child's own generation, which the handler held until the
+    /// hook handed it `foreign`.
+    pub(crate) displaced_generation: StdOnceLock<safeptrace::TerminalCleanup>,
     pub(crate) outcome: mpsc::UnboundedSender<NewbornDisplacementOutcome>,
 }
 
@@ -1412,6 +1415,9 @@ impl LiteinstRuntimeConfig {
         if displacement.stage != stage || displacement.displaced_child.set(child_pid).is_err() {
             return generation;
         }
+        if displacement.displaced_generation.set(generation).is_err() {
+            unreachable!("only the child that set displaced_child stores its generation");
+        }
         NewbornTracee::register_generation_for_test(
             &self.newborn_tracees,
             child_pid,
@@ -1426,7 +1432,6 @@ impl LiteinstRuntimeConfig {
         &self,
         parent_pid: Pid,
         child_pid: Pid,
-        child: &safeptrace::TerminalCleanup,
         result: &Result<Wait, TraceError>,
     ) {
         let Some(displacement) = self.displace_newborn.as_ref() else {
@@ -1435,6 +1440,10 @@ impl LiteinstRuntimeConfig {
         if displacement.displaced_child.get() != Some(&child_pid) {
             return;
         }
+        let child = displacement
+            .displaced_generation
+            .get()
+            .expect("the hook stores the displaced child's generation with its pid");
         let foreign = displacement.foreign.terminal_cleanup();
         let newborns = self.newborn_tracees.lock().unwrap();
         let entry = newborns.get(&child_pid);
@@ -8710,19 +8719,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             future::pending::<()>().await;
         }
         #[cfg(test)]
-        let (parent_pid, child_pid, child_generation) =
-            (self.pid(), child.pid(), child.terminal_cleanup());
+        let (parent_pid, child_pid) = (self.pid(), child.pid());
         let result = self
             .handle_new_task(op, parent, child, context, child_context)
             .await;
         #[cfg(test)]
         if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
-            runtime.report_newborn_displacement_for_test(
-                parent_pid,
-                child_pid,
-                &child_generation,
-                &result,
-            );
+            runtime.report_newborn_displacement_for_test(parent_pid, child_pid, &result);
         }
         result
     }
