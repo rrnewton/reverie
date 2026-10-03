@@ -21,7 +21,10 @@ use reverie::RdtscResult;
 use reverie::Subscription;
 use reverie::Tid;
 use reverie::Tool;
+use reverie::syscalls::Addr;
+use reverie::syscalls::AddrMut;
 use reverie::syscalls::ExitGroup;
+use reverie::syscalls::RtSigprocmask;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
@@ -55,6 +58,7 @@ static LAST_MASK_RESULT: AtomicI64 = AtomicI64::new(0);
 static LAST_FIRST_USE_EXEC_RESULT: AtomicI64 = AtomicI64::new(0);
 static LAST_FIRST_USE_SIGNAL_RESULT: AtomicI64 = AtomicI64::new(0);
 static CHILD_RECONSTRUCTED: AtomicBool = AtomicBool::new(false);
+static MASK_DURING_WAIT: AtomicU64 = AtomicU64::new(0);
 static RCB_BEFORE: AtomicU64 = AtomicU64::new(0);
 static RCB_AFTER: AtomicU64 = AtomicU64::new(0);
 static RCB_CALLBACKS: AtomicU64 = AtomicU64::new(0);
@@ -448,6 +452,92 @@ impl Tool for TailForkTool {
             CHILD_RECONSTRUCTED.store(true, Ordering::Release);
         }
         Ok(())
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        guest.tail_inject(syscall).await
+    }
+}
+
+const SIGSET_SIZE: usize = core::mem::size_of::<u64>();
+
+const fn signal_bit(signal: libc::c_int) -> u64 {
+    1 << (signal - 1)
+}
+
+/// The mask left by blocking every signal under Mode A: Linux never blocks
+/// SIGKILL or SIGSTOP, and the runtime keeps SIGSYS unblocked.
+const FULL_MASK_UNDER_MODE_A: u64 =
+    !(signal_bit(libc::SIGKILL) | signal_bit(libc::SIGSTOP) | signal_bit(libc::SIGSYS));
+
+/// An `rt_sigprocmask` call on the Tool's own sets; 0 passes no set.
+fn signal_mask_call(how: libc::c_int, set: usize, old_set: usize) -> RtSigprocmask {
+    RtSigprocmask::new()
+        .with_how(how)
+        .with_set(Addr::from_raw(set))
+        .with_oldset(AddrMut::from_raw(old_set))
+        .with_sigsetsize(SIGSET_SIZE)
+}
+
+/// Blocks every signal around a guest `wait4`, as Detcore's blocking wait does.
+#[derive(Default)]
+struct BlockingWaitTool;
+
+#[reverie::tool]
+impl Tool for BlockingWaitTool {
+    type GlobalState = CounterGlobal;
+    type ThreadState = ();
+
+    fn subscriptions(_cfg: &()) -> Subscription {
+        [Sysno::rt_sigprocmask, Sysno::wait4].into_iter().collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        if syscall.number() != Sysno::wait4 {
+            return Ok(guest.inject(syscall).await?);
+        }
+        // Addresses, not raw pointers, keep the future `Send`; the sets live
+        // in the pinned future, so they stay put across each await.
+        let all = u64::MAX;
+        let mut previous = 0_u64;
+        let mut during = 0_u64;
+        let all_addr = (&raw const all) as usize;
+        let previous_addr = (&raw mut previous) as usize;
+        let during_addr = (&raw mut during) as usize;
+        guest
+            .inject(signal_mask_call(libc::SIG_SETMASK, all_addr, previous_addr))
+            .await?;
+        guest
+            .inject(signal_mask_call(libc::SIG_SETMASK, 0, during_addr))
+            .await?;
+        let during = unsafe { (during_addr as *const u64).read_volatile() };
+        MASK_DURING_WAIT.store(during, Ordering::Release);
+        let waited = guest.inject(syscall).await;
+        guest
+            .inject(signal_mask_call(libc::SIG_SETMASK, previous_addr, 0))
+            .await?;
+        Ok(waited?)
+    }
+}
+
+#[derive(Default)]
+struct TailMaskTool;
+
+#[reverie::tool]
+impl Tool for TailMaskTool {
+    type GlobalState = CounterGlobal;
+    type ThreadState = ();
+
+    fn subscriptions(_cfg: &()) -> Subscription {
+        [Sysno::rt_sigprocmask].into_iter().collect()
     }
 
     async fn handle_syscall_event<G: Guest<Self>>(
@@ -1331,6 +1421,93 @@ fn tail_fork_guest(path: &Path) {
     check_reconstructed_fork("tail");
 }
 
+fn guest_signal_mask(how: libc::c_int, set: *const u64, size: usize) -> (i64, u64) {
+    let mut old_set = 0_u64;
+    let result = unsafe { reverie_liteinst_rpc_sigprocmask(how as u64, set, &mut old_set, size) };
+    (result, old_set)
+}
+
+fn current_signal_mask() -> u64 {
+    let (result, mask) = guest_signal_mask(libc::SIG_BLOCK, core::ptr::null(), SIGSET_SIZE);
+    assert_eq!(result, 0);
+    mask
+}
+
+/// Checks a guest's own `rt_sigprocmask` calls under Mode A: each installs
+/// its set without the reserved SIGSYS, a later trap still reaches the
+/// runtime, and a refused call changes nothing.
+fn signal_mask_checks(label: &str, expected_uid: i64) -> u64 {
+    let initial = current_signal_mask();
+    let usr1 = signal_bit(libc::SIGUSR1);
+    assert_eq!(guest_signal_mask(libc::SIG_BLOCK, &usr1, SIGSET_SIZE).0, 0);
+    assert_eq!(current_signal_mask(), initial | usr1);
+    let all = u64::MAX;
+    assert_eq!(guest_signal_mask(libc::SIG_SETMASK, &all, SIGSET_SIZE).0, 0);
+    assert_eq!(current_signal_mask(), FULL_MASK_UNDER_MODE_A);
+    // The first call at this site traps with SIGSYS. Had SIGSYS been blocked,
+    // Linux would reset it to its default action and kill the process here.
+    let uid = unsafe { reverie_liteinst_rpc_getuid() };
+    assert_eq!(uid, expected_uid);
+    let getuid_site = core::ptr::addr_of!(reverie_liteinst_rpc_getuid_site) as usize as u64;
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_site_trap_count(getuid_site),
+        1
+    );
+    let unreadable = 0x10 as *const u64;
+    assert_eq!(
+        guest_signal_mask(libc::SIG_SETMASK, unreadable, SIGSET_SIZE).0,
+        -i64::from(libc::EFAULT)
+    );
+    assert_eq!(
+        guest_signal_mask(libc::SIG_SETMASK, &initial, SIGSET_SIZE / 2).0,
+        -i64::from(libc::EINVAL)
+    );
+    assert_eq!(
+        guest_signal_mask(99, &initial, SIGSET_SIZE).0,
+        -i64::from(libc::EINVAL)
+    );
+    assert_eq!(current_signal_mask(), FULL_MASK_UNDER_MODE_A);
+    assert_eq!(
+        guest_signal_mask(libc::SIG_SETMASK, &initial, SIGSET_SIZE).0,
+        0
+    );
+    assert_eq!(current_signal_mask(), initial);
+    println!("{label}-mask full={FULL_MASK_UNDER_MODE_A:#x} trap-after-full-mask");
+    initial
+}
+
+fn mask_inject_guest(path: &Path) {
+    let expected_uid = i64::from(unsafe { libc::getuid() });
+    unsafe { reverie_liteinst::install_tool::<BlockingWaitTool>(path) }.unwrap();
+    let initial = signal_mask_checks("inject", expected_uid);
+    let child = unsafe { libc::fork() };
+    assert!(
+        child >= 0,
+        "fork failed: {}",
+        std::io::Error::last_os_error()
+    );
+    if child == 0 {
+        unsafe { libc::_exit(0) };
+    }
+    wait_for_child(child);
+    let during = MASK_DURING_WAIT.load(Ordering::Acquire);
+    assert_eq!(during, FULL_MASK_UNDER_MODE_A);
+    assert_eq!(current_signal_mask(), initial);
+    println!("blocking-wait during={during:#x} restored");
+}
+
+fn mask_unsubscribed_guest(path: &Path) {
+    let expected_uid = i64::from(unsafe { libc::getuid() });
+    unsafe { reverie_liteinst::install_tool::<UnsubscribedForkTool>(path) }.unwrap();
+    signal_mask_checks("unsubscribed", expected_uid);
+}
+
+fn mask_tail_guest(path: &Path) {
+    let expected_uid = i64::from(unsafe { libc::getuid() });
+    unsafe { reverie_liteinst::install_tool::<TailMaskTool>(path) }.unwrap();
+    signal_mask_checks("tail", expected_uid);
+}
+
 fn main() {
     let mut args = std::env::args_os();
     let _program = args.next();
@@ -1370,6 +1547,9 @@ fn main() {
         Some("vfork-guest") => vfork_guest(Path::new(&path)),
         Some("unsubscribed-fork") => unsubscribed_fork_guest(Path::new(&path)),
         Some("tail-fork") => tail_fork_guest(Path::new(&path)),
+        Some("mask-inject") => mask_inject_guest(Path::new(&path)),
+        Some("mask-unsubscribed") => mask_unsubscribed_guest(Path::new(&path)),
+        Some("mask-tail") => mask_tail_guest(Path::new(&path)),
         _ => panic!("expected coordinator or guest"),
     }
 }
