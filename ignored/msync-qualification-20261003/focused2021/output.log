@@ -1,0 +1,6 @@
+warning: `--logfile` is deprecated
+running 1 test
+test executor::tests::shared_file_dispatch_tests::heap_growth_over_shared_file_refuses_before_break_or_bytes_change ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1180 filtered out; finished in 0.01s
+

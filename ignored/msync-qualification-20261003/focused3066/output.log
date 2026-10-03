@@ -1,0 +1,926 @@
+warning: `--logfile` is deprecated
+running 1 test
+test vm::tests::initialization_tests::initialization_bound_and_error_stage_matrix ... INITIALIZATION CASE open,2,4 attempts=3 injected=2 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-0 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=2 operation=open resources=([], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=3 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7fd00cf11000-7fd00cf14000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+result ([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7fd00cf11000-7fd00cf14000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED open,2,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.21s
+
+
+INITIALIZATION CASE open,3,4 attempts=3 injected=3 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-1 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=2 operation=open resources=([], [])
+attempt=3 operation=open resources=([], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED open,3,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.10s
+
+
+INITIALIZATION CASE open,1,5 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-2 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED open,1,5
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.09s
+
+
+INITIALIZATION CASE open,1,12 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-3 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED open,1,12
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.09s
+
+
+INITIALIZATION CASE create-vm,2,4 attempts=3 injected=2 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-4 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=3 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f57f034f000-7f57f0352000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+result ([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f57f034f000-7f57f0352000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED create-vm,2,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.20s
+
+
+INITIALIZATION CASE create-vm,3,4 attempts=3 injected=3 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-5 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED create-vm,3,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.13s
+
+
+INITIALIZATION CASE create-vm,1,5 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-6 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED create-vm,1,5
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.10s
+
+
+INITIALIZATION CASE create-vm,1,12 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-7 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED create-vm,1,12
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.10s
+
+
+INITIALIZATION CASE run-size,2,4 attempts=3 injected=2 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-8 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=3 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f6bb91db000-7f6bb91de000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+result ([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f6bb91db000-7f6bb91de000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED run-size,2,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.40s
+
+
+INITIALIZATION CASE run-size,3,4 attempts=3 injected=3 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-9 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED run-size,3,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.40s
+
+
+INITIALIZATION CASE run-size,1,5 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-10 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED run-size,1,5
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.14s
+
+
+INITIALIZATION CASE run-size,1,12 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-11 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED run-size,1,12
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.15s
+
+
+INITIALIZATION CASE cpuid,2,4 attempts=3 injected=2 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-12 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=3 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7efe0b65c000-7efe0b65f000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+result ([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7efe0b65c000-7efe0b65f000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED cpuid,2,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.73s
+
+
+INITIALIZATION CASE cpuid,3,4 attempts=3 injected=3 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-13 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED cpuid,3,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 3.71s
+
+
+INITIALIZATION CASE cpuid,1,5 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-14 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED cpuid,1,5
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.28s
+
+
+INITIALIZATION CASE cpuid,1,12 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-15 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED cpuid,1,12
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.41s
+
+
+INITIALIZATION CASE enable-cap,2,4 attempts=3 injected=2 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-16 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=3 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7ff321548000-7ff32154b000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+result ([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7ff321548000-7ff32154b000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED enable-cap,2,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.52s
+
+
+INITIALIZATION CASE enable-cap,3,4 attempts=3 injected=3 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-17 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED enable-cap,3,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.49s
+
+
+INITIALIZATION CASE enable-cap,1,5 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-18 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED enable-cap,1,5
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.16s
+
+
+INITIALIZATION CASE enable-cap,1,12 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-19 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED enable-cap,1,12
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.23s
+
+
+INITIALIZATION CASE memory,2,4 attempts=3 injected=2 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-20 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=3 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f337a7f9000-7f337a7fc000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+result ([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f337a7f9000-7f337a7fc000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED memory,2,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 5.00s
+
+
+INITIALIZATION CASE memory,3,4 attempts=3 injected=3 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-21 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED memory,3,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.38s
+
+
+INITIALIZATION CASE memory,1,5 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-22 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED memory,1,5
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.15s
+
+
+INITIALIZATION CASE memory,1,12 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-23 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED memory,1,12
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.16s
+
+
+INITIALIZATION CASE create-vcpu,2,4 attempts=3 injected=2 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-24 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=3 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f3523a61000-7f3523a64000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+result ([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f3523a61000-7f3523a64000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED create-vcpu,2,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.66s
+
+
+INITIALIZATION CASE create-vcpu,3,4 attempts=3 injected=3 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-25 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED create-vcpu,3,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 4.41s
+
+
+INITIALIZATION CASE create-vcpu,1,5 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-26 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED create-vcpu,1,5
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.17s
+
+
+INITIALIZATION CASE create-vcpu,1,12 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-27 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED create-vcpu,1,12
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.16s
+
+
+INITIALIZATION CASE run-mmap,2,4 attempts=3 injected=2 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-28 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=3 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f7beba94000-7f7beba97000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+result ([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f7beba94000-7f7beba97000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED run-mmap,2,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 5.00s
+
+
+INITIALIZATION CASE run-mmap,3,4 attempts=3 injected=3 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-29 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED run-mmap,3,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 4.73s
+
+
+INITIALIZATION CASE run-mmap,1,5 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-30 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED run-mmap,1,5
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.39s
+
+
+INITIALIZATION CASE run-mmap,1,12 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-31 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED run-mmap,1,12
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.24s
+
+
+INITIALIZATION CASE set-cpuid,2,4 attempts=3 injected=2 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-32 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=1 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f5c7347c000-7f5c7347f000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=2 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f5c7347c000-7f5c7347f000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=3 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f5c7347c000-7f5c7347f000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+result ([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f5c7347c000-7f5c7347f000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED set-cpuid,2,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.85s
+
+
+INITIALIZATION CASE set-cpuid,3,4 attempts=3 injected=3 expected=3 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-33 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=1 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f4d46d4b000-7f4d46d4e000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+attempt=2 operation=open resources=([], [])
+attempt=2 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=2 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=2 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=2 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f4d46d4b000-7f4d46d4e000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+attempt=3 operation=open resources=([], [])
+attempt=3 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=3 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=3 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=3 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f4d46d4b000-7f4d46d4e000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED set-cpuid,3,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 4.52s
+
+
+INITIALIZATION CASE set-cpuid,1,5 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-34 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=1 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7f561002c000-7f561002f000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED set-cpuid,1,5
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.22s
+
+
+INITIALIZATION CASE set-cpuid,1,12 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-35 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=enable-cap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=memory resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=create-vcpu resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=run-mmap resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], [])
+attempt=1 operation=set-cpuid resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm"), ("8", "anon_inode:kvm-vcpu:0")], ["7fde91082000-7fde91085000 rw-s 00000000 00:10 9225                       anon_inode:kvm-vcpu:0"])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED set-cpuid,1,12
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.18s
+
+
+INITIALIZATION CASE sigaction,1,4 attempts=0 injected=1 expected=0 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-36 passed=true
+attempt=0 operation=sigaction resources=([], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED sigaction,1,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.09s
+
+
+INITIALIZATION CASE capability,1,4 attempts=1 injected=1 expected=1 status=exit status: 0 completed=true evidence=/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp/reverie-init-3592853-37 passed=true
+attempt=0 operation=sigaction resources=([], [])
+attempt=1 operation=open resources=([], [])
+attempt=1 operation=create-vm resources=([("6", "/dev/kvm")], [])
+attempt=1 operation=run-size resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+attempt=1 operation=capability resources=([("6", "/dev/kvm"), ("7", "anon_inode:kvm-vm")], [])
+result ([], [])
+
+running 1 test
+INITIALIZATION CHILD VERIFIED capability,1,4
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.35s
+
+
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 36.49s
+

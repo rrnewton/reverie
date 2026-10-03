@@ -1,0 +1,10 @@
+warning: `--logfile` is deprecated
+running 1 test
+test executor::tests::read_zero_count_alias_test_admission_observer_panic_restores_endpoint ... BLOCKED_ZERO_READ operation=1 image=0 task=SignalTaskIdentity { process: SignalProcessId { tgid: Pid(1), generation: 1 }, tid: Pid(1), task_generation: 1 } request=SyscallRequest { number: 0, args: [6510615553911029763, 256, 0, 0, 0, 0] } host_fd=8 tid=3322164 start_time=58877823 syscall=0 0x8 0x100 0x0 0x8 0x0 0x7f791eff8f6f 0x7f791edfdb00 0x7f791f0ff4cc
+RETIRED_ZERO_READ operation=1 tid=3322164 start_time=58877823 state=5 senders=0
+BLOCKED_ZERO_READ operation=1 image=0 task=SignalTaskIdentity { process: SignalProcessId { tgid: Pid(1), generation: 1 }, tid: Pid(1), task_generation: 1 } request=SyscallRequest { number: 0, args: [6510615553911029760, 256, 0, 0, 0, 0] } host_fd=10 tid=3322165 start_time=58877823 syscall=0 0xa 0x100 0x0 0x8 0x0 0x7f791eff8f6f 0x7f791edfdb00 0x7f791f0ff4cc
+RETIRED_ZERO_READ operation=1 tid=3322165 start_time=58877823 state=5 senders=0
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.00s
+

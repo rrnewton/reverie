@@ -1,0 +1,1 @@
+ok memory::shared_file::tests::deferred_copy_failure_preserves_identity_and_notifies_after_allocation

@@ -1,0 +1,17 @@
+warning: `--logfile` is deprecated
+running 1 test
+test memory::shared_file::tests::wrapped_shared_file_primaries_preserve_identity_and_cleanup ... 
+thread 'memory::shared_file::tests::wrapped_shared_file_primaries_preserve_identity_and_cleanup' (2026705) panicked at reverie-kvm/src/memory/shared_file.rs:1146:21:
+assertion `left == right` failed
+  left: true
+ right: false
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    memory::shared_file::tests::wrapped_shared_file_primaries_preserve_identity_and_cleanup
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.00s
+

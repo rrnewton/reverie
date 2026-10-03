@@ -1,0 +1,15 @@
+warning: `--logfile` is deprecated
+running 1 test
+test memory::shared_file::tests::unrelated_shared_failure_keeps_its_wrapper_without_poisoning_memory ... 
+thread 'memory::shared_file::tests::unrelated_shared_failure_keeps_its_wrapper_without_poisoning_memory' (1852960) panicked at reverie-kvm/src/memory/shared_file.rs:1080:17:
+assertion failed: Arc::ptr_eq(&actual, &wrapped)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    memory::shared_file::tests::unrelated_shared_failure_keeps_its_wrapper_without_poisoning_memory
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.00s
+

@@ -1,0 +1,17 @@
+warning: `--logfile` is deprecated
+running 1 test
+test executor::tests::shared_file_dispatch_tests::pipe2_truncated_shared_copy_notifies_after_actual_file_table_unlock ... 
+thread 'executor::tests::shared_file_dispatch_tests::pipe2_truncated_shared_copy_notifies_after_actual_file_table_unlock' (1660486) panicked at reverie-kvm/src/executor/shared_file_tests.rs:300:9:
+assertion `left == right` failed
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    executor::tests::shared_file_dispatch_tests::pipe2_truncated_shared_copy_notifies_after_actual_file_table_unlock
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1183 filtered out; finished in 0.01s
+

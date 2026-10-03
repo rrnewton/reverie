@@ -1,0 +1,273 @@
+{
+  "phase": "clippy001",
+  "command": [
+    "with-proxy",
+    "cargo",
+    "clippy",
+    "--locked",
+    "-j8",
+    "-p",
+    "reverie-kvm",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-msync-writeback-20261003",
+  "source_head": "422ebc238b579224d63e00248fc51ba2f0085845",
+  "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "index_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "binding_sha256": "362b1dd5551a54ae1ee8662997b8af93e4e8e38ca8dc2c481fb5fd8bbdf7352d",
+  "slot_generation": 1,
+  "slot_record": {
+    "slot": "kvm-msync-writeback-20261003",
+    "generation": 1,
+    "agent": "native-kvm-msync-01a0d5c2",
+    "owner": {
+      "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+      "cgroup_path": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1571522-i1558401.scope",
+      "host_id": "82445a5655f849bd81550a91f9cb5260",
+      "pid": 1571522,
+      "start_ticks": 730624
+    },
+    "checkout": "worktrees/slots/kvm-msync-writeback-20261003"
+  },
+  "authorization_sha256": "3e7ed4c3138b34d9719a64860c593aba49e613640353cf413acda0b2e0297f60",
+  "grant_reference": "Root execution grant after E explicitly released allCPU: corrected reviewfindings; locked exact-head build, compiled inventory, 66 focused controls then source-bound targeted mutants, full library/lints/docs. Same280/265e9/max8CPU/nice10/j8; no overrides.",
+  "owner": {
+    "pid": 1571522,
+    "state": "S",
+    "ppid": 1570869,
+    "pgid": 1570869,
+    "sid": 1569709,
+    "start": 730624
+  },
+  "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+  "start_free_bytes": 1616706723840,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice_minimum": 10,
+  "seconds_bound": 2400.0,
+  "inherited_rlimits": {
+    "RLIMIT_FSIZE": [
+      -1,
+      -1
+    ],
+    "RLIMIT_NOFILE": [
+      524288,
+      524288
+    ],
+    "RLIMIT_NPROC": [
+      3091463,
+      3091463
+    ]
+  },
+  "started_et": "2026-10-03 04:32:49 PM ET",
+  "environment_bindings": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-msync-writeback-20261003/target/msync-001",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "XDG_CACHE_HOME": "/tmp/kvm-msync-root-20261003-jfgrj2p1/script-cache",
+    "TMPDIR": "/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "child": {
+    "pid": 121603,
+    "state": "R",
+    "ppid": 120636,
+    "pgid": 121603,
+    "sid": 121603,
+    "start": 58903864
+  },
+  "rc": 101,
+  "child_rc": 101,
+  "stop_reason": null,
+  "source_head_end": "422ebc238b579224d63e00248fc51ba2f0085845",
+  "wall_seconds": 22.774490445968695,
+  "child_user_cpu_seconds": 57.040615,
+  "child_system_cpu_seconds": 7.147897,
+  "minimum_free_bytes": 1579438866432,
+  "end_free_bytes": 1579438866432,
+  "output_bytes": 3702,
+  "output_sha256": "f25ad84e2a21860cd548f962d6bb2c74b4b3bbf540bb9d5b9e51bc65cd5acbbb",
+  "observed_process_generations": [
+    {
+      "pid": 121603,
+      "state": "Z",
+      "ppid": 120636,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58903864
+    },
+    {
+      "pid": 121715,
+      "state": "S",
+      "ppid": 121603,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58903870
+    },
+    {
+      "pid": 122970,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58903950
+    },
+    {
+      "pid": 123168,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58903959
+    },
+    {
+      "pid": 123287,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58903963
+    },
+    {
+      "pid": 123445,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58903971
+    },
+    {
+      "pid": 123600,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58903987
+    },
+    {
+      "pid": 123913,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904006
+    },
+    {
+      "pid": 124207,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904013
+    },
+    {
+      "pid": 124325,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904016
+    },
+    {
+      "pid": 124387,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904019
+    },
+    {
+      "pid": 125779,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904097
+    },
+    {
+      "pid": 125798,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904099
+    },
+    {
+      "pid": 128043,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904144
+    },
+    {
+      "pid": 129215,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904179
+    },
+    {
+      "pid": 130405,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904212
+    },
+    {
+      "pid": 132341,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904255
+    },
+    {
+      "pid": 140327,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904521
+    },
+    {
+      "pid": 142585,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904627
+    },
+    {
+      "pid": 142586,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58904627
+    },
+    {
+      "pid": 162269,
+      "state": "S",
+      "ppid": 121715,
+      "pgid": 121603,
+      "sid": 121603,
+      "start": 58905043
+    }
+  ],
+  "remaining_processes": []
+}

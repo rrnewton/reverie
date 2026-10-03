@@ -1,0 +1,15 @@
+warning: `--logfile` is deprecated
+running 1 test
+test memory::shared_file::tests::copy_early_exits_defer_notifications_under_allocation ... 
+thread 'memory::shared_file::tests::copy_early_exits_defer_notifications_under_allocation' (2204524) panicked at reverie-kvm/src/memory/shared_file.rs:1805:13:
+assertion failed: observation.rows.lock().unwrap().is_empty()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    memory::shared_file::tests::copy_early_exits_defer_notifications_under_allocation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1180 filtered out; finished in 0.00s
+

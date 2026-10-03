@@ -1,0 +1,1 @@
+ok memory::shared_file::tests::truncate_copy_keeps_exact_prefix_and_errno

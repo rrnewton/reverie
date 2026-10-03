@@ -1,0 +1,15 @@
+warning: `--logfile` is deprecated
+running 1 test
+test entry::tests::quiescent_unattached_publication_admits_only_its_first_real_participant ... 
+thread 'entry::tests::quiescent_unattached_publication_admits_only_its_first_real_participant' (1857572) panicked at reverie-kvm/src/entry.rs:1683:13:
+ordinary shared-file arena admitted a second participant
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    entry::tests::quiescent_unattached_publication_admits_only_its_first_real_participant
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1180 filtered out; finished in 0.00s
+

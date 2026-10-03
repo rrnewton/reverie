@@ -1,0 +1,1 @@
+ok entry::tests::quiescent_single_refuses_setup_running_and_retiring_without_interrupt

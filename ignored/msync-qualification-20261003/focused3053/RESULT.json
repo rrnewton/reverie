@@ -1,0 +1,109 @@
+{
+  "phase": "focused3053",
+  "command": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-msync-writeback-20261003/target/msync-001/debug/deps/reverie_kvm-d01b3aa6c2ed5b51",
+    "memory::shared_file::tests::private_replacement_and_partial_retirement_preserve_outgoing_file",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1",
+    "--logfile",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-msync-writeback-20261003/ignored/msync-qualification-20261003/focused3053/libtest.log"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-msync-writeback-20261003",
+  "source_head": "422ebc238b579224d63e00248fc51ba2f0085845",
+  "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "index_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "binding_sha256": "557385d101537dee789e53a02ae40b9c96014f5fdf670fe5e0bb5b0cf0896349",
+  "slot_generation": 1,
+  "slot_record": {
+    "slot": "kvm-msync-writeback-20261003",
+    "generation": 1,
+    "agent": "native-kvm-msync-01a0d5c2",
+    "owner": {
+      "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+      "cgroup_path": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1571522-i1558401.scope",
+      "host_id": "82445a5655f849bd81550a91f9cb5260",
+      "pid": 1571522,
+      "start_ticks": 730624
+    },
+    "checkout": "worktrees/slots/kvm-msync-writeback-20261003"
+  },
+  "authorization_sha256": "0b69e2af944d44a6a59a3e85c69af534d88f76109cf61a6a2d1bd4cfb8eeecea",
+  "grant_reference": "Root execution grant after E explicitly released allCPU: corrected reviewfindings; locked exact-head build, compiled inventory, 66 focused controls then source-bound targeted mutants, full library/lints/docs. Same280/265e9/max8CPU/nice10/j8; no overrides.",
+  "owner": {
+    "pid": 1571522,
+    "state": "S",
+    "ppid": 1570869,
+    "pgid": 1570869,
+    "sid": 1569709,
+    "start": 730624
+  },
+  "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+  "start_free_bytes": 1560539308032,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice_minimum": 10,
+  "seconds_bound": 300.0,
+  "inherited_rlimits": {
+    "RLIMIT_FSIZE": [
+      -1,
+      -1
+    ],
+    "RLIMIT_NOFILE": [
+      524288,
+      524288
+    ],
+    "RLIMIT_NPROC": [
+      3091463,
+      3091463
+    ]
+  },
+  "started_et": "2026-10-03 04:29:40 PM ET",
+  "environment_bindings": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-msync-writeback-20261003/target/msync-001",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "XDG_CACHE_HOME": "/tmp/kvm-msync-root-20261003-jfgrj2p1/script-cache",
+    "TMPDIR": "/tmp/kvm-msync-root-20261003-jfgrj2p1/tmp",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "child": {
+    "pid": 3503109,
+    "state": "R",
+    "ppid": 3501305,
+    "pgid": 3503109,
+    "sid": 3503109,
+    "start": 58884924
+  },
+  "rc": 0,
+  "child_rc": 0,
+  "stop_reason": null,
+  "source_head_end": "422ebc238b579224d63e00248fc51ba2f0085845",
+  "wall_seconds": 2.316027977038175,
+  "child_user_cpu_seconds": 0.07565399999999999,
+  "child_system_cpu_seconds": 2.469324,
+  "minimum_free_bytes": 1560539308032,
+  "end_free_bytes": 1560480980992,
+  "output_bytes": 255,
+  "output_sha256": "c4f79999d5c5e4ece4b27104880bcfc2a978074431d243f589dd90e52f7c1856",
+  "observed_process_generations": [
+    {
+      "pid": 3503109,
+      "state": "Z",
+      "ppid": 3501305,
+      "pgid": 3503109,
+      "sid": 3503109,
+      "start": 58884924
+    }
+  ],
+  "remaining_processes": []
+}

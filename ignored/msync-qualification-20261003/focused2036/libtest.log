@@ -1,0 +1,1 @@
+ok memory::shared_file::tests::atomic_store_refuses_before_private_prefix_and_permission_fault_wins

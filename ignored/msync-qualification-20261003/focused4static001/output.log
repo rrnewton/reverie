@@ -1,0 +1,6 @@
+warning: `--logfile` is deprecated
+running 1 test
+test msync::unchanged_five_check_contract_matches_native ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 432 filtered out; finished in 0.28s
+

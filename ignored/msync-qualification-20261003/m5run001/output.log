@@ -1,0 +1,15 @@
+warning: `--logfile` is deprecated
+running 1 test
+test memory::shared_file::tests::atomic_store_refuses_before_private_prefix_and_permission_fault_wins ... 
+thread 'memory::shared_file::tests::atomic_store_refuses_before_private_prefix_and_permission_fault_wins' (1651627) panicked at reverie-kvm/src/memory/shared_file.rs:1264:36:
+called `Result::unwrap_err()` on an `Ok` value: ()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    memory::shared_file::tests::atomic_store_refuses_before_private_prefix_and_permission_fault_wins
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1180 filtered out; finished in 0.00s
+

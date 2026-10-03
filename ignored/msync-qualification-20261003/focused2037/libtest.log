@@ -1,0 +1,1 @@
+ok memory::shared_file::tests::busy_copy_refuses_publication_without_reservation_or_byte_effect
