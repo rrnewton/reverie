@@ -133,6 +133,7 @@ use crate::liteinst_restart::restart_depends_on_handler;
 #[cfg(target_arch = "x86_64")]
 use crate::liteinst_restart::signal_bit;
 use crate::liteinst_stats::LiteinstPatchOutcome;
+use crate::liteinst_trap_only::StoredSiginfo;
 use crate::liteinst_trap_only::TrapOnlyTask;
 use crate::poll_on_wake::PollOnWake;
 
@@ -555,7 +556,7 @@ fn signal_mask_bit(sig: Signal) -> u64 {
 #[derive(Clone, Copy)]
 struct TakenSignal {
     signal: Signal,
-    siginfo: libc::siginfo_t,
+    siginfo: StoredSiginfo,
 }
 
 impl TakenSignal {
@@ -564,7 +565,7 @@ impl TakenSignal {
     fn at_stop(task: &Stopped, signal: Signal) -> Option<Self> {
         Some(Self {
             signal,
-            siginfo: task.getsiginfo().ok()?,
+            siginfo: StoredSiginfo(task.getsiginfo().ok()?),
         })
     }
 }
@@ -6399,7 +6400,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             && sig == taken.signal
         {
             if stop.is_some() {
-                task.setsiginfo(&taken.siginfo)?;
+                task.setsiginfo(&taken.siginfo.0)?;
             }
             if stop.is_none() || blocked_signal_mask(task.pid())? & signal_mask_bit(sig) != 0 {
                 *self.reported_requeued_signals.entry(sig).or_default() += 1;
