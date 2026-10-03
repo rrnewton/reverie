@@ -11014,6 +11014,74 @@ fn epoll_pwait2_bound(
     proof.admitted(state).then_some(proof.registrations.len())
 }
 
+// Linux 6.1/6.6 validate count/range before fdget; 6.18 validates the fd
+// first. Delegate only an absent guest fd through a guaranteed-invalid host
+// descriptor, preserving that host ABI without touching any epoll object.
+// do_epoll_wait primary sources:
+// https://github.com/torvalds/linux/blob/830b3c68c1fb1e9176028d02ef86f3cf76aa2476/fs/eventpoll.c#L2221
+// https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/eventpoll.c#L2451
+fn epoll_pwait2_missing_fd_with_host(
+    output: u64,
+    raw_count: u64,
+    invoke_host: impl FnOnce(
+        libc::c_int,
+        usize,
+        libc::c_int,
+        &libc::timespec,
+        usize,
+        usize,
+    ) -> std::io::Result<libc::c_long>,
+) -> i64 {
+    let count = raw_count as libc::c_int;
+    // Even INT_MAX * 12 fits in x86-64 usize. Preserve oversized counts for
+    // the kernel's count check; never shorten the ORIGINAL guest array here.
+    let valid_range = count <= 0
+        || (count as usize)
+            .checked_mul(std::mem::size_of::<libc::epoll_event>())
+            .is_some_and(|length| validate_guest_iovec_address(output, length).is_ok());
+    let host_output = if valid_range { 0 } else { usize::MAX };
+    let zero = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // Neither representative can be dereferenced: fd=-1 fails before ep_poll
+    // on both orders. NULL mask and zero timeout cannot install a host mask,
+    // wait, consume events, or write guest/output memory.
+    match invoke_host(-1, host_output, count, &zero, 0, 0) {
+        Err(error) => io_error(error),
+        // A nonnegative result cannot describe Linux's invalid-fd path. Refuse
+        // an unsupported host result rather than fabricate readiness success.
+        Ok(_) => negative_errno(libc::ENOSYS),
+    }
+}
+
+fn epoll_pwait2_missing_fd(output: u64, raw_count: u64) -> i64 {
+    epoll_pwait2_missing_fd_with_host(
+        output,
+        raw_count,
+        |fd, host_output, count, timeout, mask, mask_size| {
+            // SAFETY: fd is -1, so no epoll or output memory can be accessed;
+            // timeout is initialized input and the signal mask is NULL.
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_epoll_pwait2,
+                    fd,
+                    host_output,
+                    count,
+                    timeout,
+                    mask,
+                    mask_size,
+                )
+            };
+            if result < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(result)
+            }
+        },
+    )
+}
+
 /// Immediate, unmasked readiness for a proven native eventfd interest set.
 /// Unknown/imported/nested/escaped descriptions and changed registration
 /// bindings remain unsupported; this is not general epoll virtualization.
@@ -11045,7 +11113,7 @@ fn epoll_pwait2(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
     }
     let guest_fd = args[0] as libc::c_int;
     let Some(fd) = host_fd(state, guest_fd) else {
-        return negative_errno(libc::EBADF);
+        return epoll_pwait2_missing_fd(args[1], args[2]);
     };
     let count = args[2] as libc::c_int;
     let event_size = std::mem::size_of::<libc::epoll_event>();
@@ -37491,6 +37559,167 @@ mod tests {
         )
     }
 
+    fn epoll_pwait2_native_invalid_fd_order() -> (i64, i64) {
+        let zero = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let mut observed = [0; 2];
+        for (count, error) in observed.iter_mut().enumerate() {
+            // SAFETY: -1 can never identify an epoll; zero is valid input and
+            // no output access is reachable even with this invalid address.
+            let raw = unsafe {
+                libc::syscall(
+                    libc::SYS_epoll_pwait2,
+                    -1_i32,
+                    usize::MAX,
+                    count as i32,
+                    &zero,
+                    0usize,
+                    0usize,
+                )
+            };
+            let native_errno = std::io::Error::last_os_error();
+            assert_eq!(raw, -1, "native invalid-fd setup must fail");
+            *error = io_error(native_errno);
+        }
+        let expected_range = if observed[0] == negative_errno(libc::EINVAL) {
+            negative_errno(libc::EFAULT)
+        } else if observed[0] == negative_errno(libc::EBADF) {
+            negative_errno(libc::EBADF)
+        } else {
+            panic!("unrecognized native epoll_pwait2 order: {observed:?}");
+        };
+        assert_eq!(observed[1], expected_range, "native range/fd setup order");
+        eprintln!("native epoll_pwait2 invalid-fd setup: {observed:?}");
+        (observed[0], observed[1])
+    }
+
+    #[test]
+    fn epoll_pwait2_invalid_fd_projection_preserves_both_kernel_orders() {
+        assert_eq!(std::mem::size_of::<libc::epoll_event>(), 12);
+        assert_eq!(i32::MAX as usize * 12, 25_769_803_764);
+        let max_events = i32::MAX as u64 / 12;
+        // These outcomes come from the two retained Linux source paths, not
+        // from the adapter being tested. Include invalid counts without
+        // turning a negative int into a giant unsigned array.
+        for (output, count, pointer, legacy) in [
+            (u64::MAX, 0, 0, libc::EINVAL),
+            (u64::MAX, u32::MAX as u64, 0, libc::EINVAL),
+            (u64::MAX, i32::MIN as u32 as u64, 0, libc::EINVAL),
+            (0, max_events + 1, 0, libc::EINVAL),
+            (0, i32::MAX as u64, 0, libc::EINVAL),
+            (u64::MAX, 1, usize::MAX, libc::EFAULT),
+            (X86_64_GUEST_USER_LIMIT - 11, 1, usize::MAX, libc::EFAULT),
+            (X86_64_GUEST_USER_LIMIT - 12, 4, usize::MAX, libc::EFAULT),
+            (X86_64_GUEST_USER_LIMIT - 12, 1, 0, libc::EBADF),
+            (0, 1, 0, libc::EBADF),
+            (1, 1, 0, libc::EBADF),
+            (0, max_events, 0, libc::EBADF),
+        ] {
+            for upper in [0, 0xa5a5_5a5a_u64 << 32] {
+                let raw_count = upper | count;
+                for fd_first in [false, true] {
+                    let expected = if fd_first { libc::EBADF } else { legacy };
+                    let mut calls = 0;
+                    let result = epoll_pwait2_missing_fd_with_host(
+                        output,
+                        raw_count,
+                        |fd, host_output, decoded_count, timeout, mask, mask_size| {
+                            calls += 1;
+                            assert_eq!(fd, -1, "never reuse an ambient host fd");
+                            assert_eq!(host_output, pointer, "full guest numeric range");
+                            assert_eq!(decoded_count, raw_count as i32);
+                            assert_eq!((timeout.tv_sec, timeout.tv_nsec), (0, 0));
+                            assert_eq!((mask, mask_size), (0, 0));
+                            // A tiny kernel-path model supplies the actual raw
+                            // error. It never calls or shares the guest validator.
+                            let errno = if fd_first {
+                                libc::EBADF
+                            } else if decoded_count <= 0 || decoded_count > i32::MAX / 12 {
+                                libc::EINVAL
+                            } else if host_output == usize::MAX {
+                                libc::EFAULT
+                            } else {
+                                libc::EBADF
+                            };
+                            Err(std::io::Error::from_raw_os_error(errno))
+                        },
+                    );
+                    assert_eq!(result, negative_errno(expected));
+                    assert_eq!(calls, 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn epoll_pwait2_invalid_fd_preserves_denials_and_refuses_impossible_success() {
+        for errno in [libc::ENOSYS, libc::EPERM, libc::EACCES, libc::EIO] {
+            let mut calls = 0;
+            assert_eq!(
+                epoll_pwait2_missing_fd_with_host(
+                    0,
+                    1,
+                    |fd, output, count, timeout, mask, size| {
+                        calls += 1;
+                        assert_eq!((fd, output, count, mask, size), (-1, 0, 1, 0, 0));
+                        assert_eq!((timeout.tv_sec, timeout.tv_nsec), (0, 0));
+                        Err(std::io::Error::from_raw_os_error(errno))
+                    },
+                ),
+                negative_errno(errno)
+            );
+            assert_eq!(calls, 1);
+        }
+        for impossible in [0, 1, i64::MAX] {
+            let mut calls = 0;
+            assert_eq!(
+                epoll_pwait2_missing_fd_with_host(0, 1, |_, _, _, _, _, _| {
+                    calls += 1;
+                    Ok(impossible)
+                }),
+                negative_errno(libc::ENOSYS)
+            );
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[test]
+    fn epoll_pwait2_absent_guest_fd_cannot_poll_an_ambient_host_epoll() {
+        let mut f = FdinfoFixture::new(false);
+        let (ep, _) = epoll_pwait2_test_interest(&mut f, 1);
+        let first_absent = f.executor.state.files.keys().copied().max().unwrap().max(2) + 1;
+        let host_epoll = host_fd(&f.executor.state, ep as i32).unwrap();
+        // Create an owned host alias at a number outside the guest table. No
+        // standard descriptor or unrelated host descriptor is changed.
+        // SAFETY: host_epoll is live; F_DUPFD_CLOEXEC allocates a new descriptor.
+        let raw = unsafe { libc::fcntl(host_epoll, libc::F_DUPFD_CLOEXEC, first_absent) };
+        assert!(raw >= first_absent);
+        // SAFETY: raw is the newly returned, uniquely owned descriptor.
+        let ambient = unsafe { std::fs::File::from_raw_fd(raw) };
+        assert!(host_fd(&f.executor.state, raw).is_none());
+        let mut before = vec![0; PAGE_SIZE as usize];
+        f.memory.read(0, &mut before).unwrap();
+        for upper in [0, 0x5a5a_a5a5_u64 << 32] {
+            assert_eq!(
+                f.call(
+                    libc::SYS_epoll_pwait2,
+                    [upper | raw as u64, 0x180, 1, 0x100, 0, 0],
+                ),
+                negative_errno(libc::EBADF)
+            );
+            let mut after = vec![0; PAGE_SIZE as usize];
+            f.memory.read(0, &mut after).unwrap();
+            assert_eq!(after, before, "invalid-fd path must not write guest bytes");
+            assert!(f.memory.entry_gate().pending_failure().is_none());
+        }
+        // The guest's actual epoll still delivers the event; the failed calls
+        // did not poll the coincidentally numbered host epoll alias.
+        assert_eq!(epoll_pwait2_test_wait(&mut f, ep), 1);
+        drop(ambient);
+    }
+
     #[test]
     fn epoll_pwait2_validation_order_matches_native_and_checks_full_range() {
         assert_eq!(std::mem::size_of::<libc::epoll_event>(), 12);
@@ -37500,11 +37729,13 @@ mod tests {
             tv_sec: 0,
             tv_nsec: 0,
         };
-        // v6.18 do_epoll_wait gets the fd before ep_check_params. Deliberately
-        // combine invalid operands so an older kernel's ordering cannot pass.
+        // The native kernel ABI is an input, not a guest errno exemption.
+        // Classify it independently; every row still requires exact KVM/native
+        // equality and one precise expected native result for that context.
+        let (bad_count, bad_range) = epoll_pwait2_native_invalid_fd_order();
         for (fd, output, count, expected) in [
-            (-1, u64::MAX, 0, negative_errno(libc::EBADF)),
-            (-1, u64::MAX, 1, negative_errno(libc::EBADF)),
+            (-1, u64::MAX, 0, bad_count),
+            (-1, u64::MAX, 1, bad_range),
             (ep, u64::MAX, 0, negative_errno(libc::EINVAL)),
             (ep, u64::MAX, u32::MAX as u64, negative_errno(libc::EINVAL)),
             (ep, u64::MAX, 1, negative_errno(libc::EFAULT)),

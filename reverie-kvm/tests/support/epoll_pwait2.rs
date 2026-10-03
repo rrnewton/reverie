@@ -51,6 +51,42 @@ fn captured_run(
     stdout
 }
 
+fn native_invalid_fd_zero_count_errno() -> i32 {
+    let zero = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let mut errors = [0; 2];
+    for (count, error) in errors.iter_mut().enumerate() {
+        // SAFETY: -1 can never identify an epoll. The kernel cannot reach
+        // output copyout; timeout is valid input and no mask is requested.
+        let raw = unsafe {
+            libc::syscall(
+                libc::SYS_epoll_pwait2,
+                -1_i32,
+                usize::MAX,
+                count as i32,
+                &zero,
+                0usize,
+                0usize,
+            )
+        };
+        let native_errno = std::io::Error::last_os_error();
+        assert_eq!(raw, -1, "native invalid-fd ABI setup must fail");
+        *error = native_errno.raw_os_error().unwrap();
+    }
+    let expected_range = if errors[0] == libc::EINVAL {
+        libc::EFAULT
+    } else if errors[0] == libc::EBADF {
+        libc::EBADF
+    } else {
+        panic!("unrecognized native epoll_pwait2 ABI: {errors:?}");
+    };
+    assert_eq!(errors[1], expected_range, "native range/fd ABI setup");
+    eprintln!("native epoll_pwait2 ABI setup (two host-only calls): {errors:?}");
+    errors[0]
+}
+
 fn parity_cases(test: &str, modes: &[u8]) {
     if !leader_self_exec_bounded(test) {
         return;
@@ -62,8 +98,13 @@ fn parity_cases(test: &str, modes: &[u8]) {
         include_str!("../fixtures/epoll_pwait2.c"),
     );
     let image = std::fs::read(&program).unwrap();
+    let invalid_fd_errno = modes.contains(&14).then(native_invalid_fd_zero_count_errno);
     for &mode in modes {
-        let argument = mode.to_string();
+        let argument = if mode == 14 {
+            format!("14:{}", invalid_fd_errno.unwrap())
+        } else {
+            mode.to_string()
+        };
         let native = std::process::Command::new(&program)
             .current_dir(&directory.0)
             .arg(&argument)
@@ -81,7 +122,7 @@ fn parity_cases(test: &str, modes: &[u8]) {
             1 | 2 | 3 | 11 => (1, 0),
             5 | 7 | 9 | 10 => (-1, libc::EFAULT),
             12 | 13 | 15 => (-1, libc::EINVAL),
-            14 => (-1, libc::EBADF),
+            14 => (-1, invalid_fd_errno.unwrap()),
             _ => panic!("unregistered epoll_pwait2 mode {mode}"),
         };
         let retry = matches!(mode, 5 | 7 | 9 | 10 | 11);
