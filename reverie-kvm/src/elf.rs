@@ -862,6 +862,10 @@ pub(crate) struct LoadedStaticElf {
     /// Insertion, including a dup destination, creates a new identity. Table
     /// snapshots and fork copies retain it so unchanged host handles stay stable.
     pub fd_entry_ids: std::collections::BTreeMap<i32, std::sync::Arc<()>>,
+    pub(crate) epoll_domain: std::sync::Arc<std::sync::Mutex<crate::executor::EpollDomain>>,
+    pub(crate) poll_table_id: std::sync::Arc<crate::executor::NativePollTable>,
+    pub(crate) native_poll_fds:
+        std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::NativePollBinding>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Keep deterministic random descriptors on the Tool path.
     // TODO-HUMAN-REVIEW(PR-235): Review random-device descriptor lifecycle parity.
     pub random_device_fds: std::collections::BTreeSet<i32>,
@@ -919,6 +923,13 @@ impl LoadedStaticElf {
     /// callers retire them after both the authoritative file-table and
     /// signal-transaction guards are released.
     pub(crate) fn insert_file(&mut self, fd: i32, file: std::fs::File) -> Vec<std::fs::File> {
+        {
+            let domain = self.epoll_domain.clone();
+            let _proof = domain.lock().expect("KVM epoll provenance lock poisoned");
+            if let Some(binding) = self.native_poll_fds.remove(&fd) {
+                binding.retire();
+            }
+        }
         self.random_device_descriptions.remove(&fd);
         let mut retired: Vec<_> = self.files.insert(fd, file).into_iter().collect();
         if fd == libc::STDIN_FILENO {
@@ -937,6 +948,13 @@ impl LoadedStaticElf {
     }
 
     pub(crate) fn remove_file(&mut self, fd: i32) -> Option<std::fs::File> {
+        {
+            let domain = self.epoll_domain.clone();
+            let _proof = domain.lock().expect("KVM epoll provenance lock poisoned");
+            if let Some(binding) = self.native_poll_fds.remove(&fd) {
+                binding.retire();
+            }
+        }
         self.random_device_descriptions.remove(&fd);
         let file = self.files.remove(&fd);
         self.fd_entry_ids.remove(&fd);
@@ -1043,6 +1061,13 @@ impl LoadedStaticElf {
                 .collect(),
             file_retirement: FileRetirement::default(),
             fd_entry_ids: self.fd_entry_ids.clone(),
+            epoll_domain: self.epoll_domain.clone(),
+            poll_table_id: self.poll_table_id.fork_identity(),
+            native_poll_fds: self
+                .native_poll_fds
+                .iter()
+                .map(|(&fd, binding)| (fd, binding.fork_binding()))
+                .collect(),
             random_device_fds: self.random_device_fds.clone(),
             random_device_descriptions: self.random_device_descriptions.clone(),
             stdout_alias_fds: self.stdout_alias_fds.clone(),
@@ -1089,6 +1114,24 @@ impl LoadedStaticElf {
             std::sync::Arc::new(AtomicU8::new(previous.thp_disabled.load(Ordering::SeqCst)));
         let regular_create_directory_policy = previous.regular_create_directory_policy;
         let cloexec_fds = previous.cloexec_fds;
+        let native_poll_fds = {
+            let _proof = previous
+                .epoll_domain
+                .lock()
+                .expect("KVM epoll provenance lock poisoned");
+            previous
+                .native_poll_fds
+                .into_iter()
+                .filter_map(|(fd, binding)| {
+                    if cloexec_fds.contains(&fd) {
+                        binding.retire();
+                        None
+                    } else {
+                        Some((fd, binding))
+                    }
+                })
+                .collect()
+        };
         let mut retired = Vec::new();
         previous
             .file_retirement
@@ -1241,6 +1284,9 @@ impl LoadedStaticElf {
         retired.extend(std::mem::replace(&mut self.files, files).into_values());
         self.file_retirement = previous.file_retirement;
         self.fd_entry_ids = fd_entry_ids;
+        self.epoll_domain = previous.epoll_domain;
+        self.poll_table_id = previous.poll_table_id;
+        self.native_poll_fds = native_poll_fds;
         self.random_device_fds = random_device_fds;
         self.random_device_descriptions = random_device_descriptions;
         self.stdout_alias_fds = stdout_alias_fds;
@@ -1623,6 +1669,9 @@ fn load_executable(
         files: std::collections::BTreeMap::new(),
         file_retirement: FileRetirement::default(),
         fd_entry_ids: std::collections::BTreeMap::new(),
+        epoll_domain: Default::default(),
+        poll_table_id: Default::default(),
+        native_poll_fds: Default::default(),
         random_device_fds: std::collections::BTreeSet::new(),
         random_device_descriptions: std::collections::BTreeMap::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
