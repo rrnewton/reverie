@@ -3079,6 +3079,11 @@ pub struct TracedTask<L: Tool> {
     /// that a guest about to exit need not make.
     in_held_signal_callback: bool,
 
+    /// Set by every successful exec (`handle_exec_event`). A held signal's
+    /// report clears it before `Tool::handle_signal_event` runs, so it then
+    /// tells whether the callback executed a program (`report_signal`).
+    signal_callback_execed: bool,
+
     /// A job-control stop signal (SIGTSTP, SIGTTIN, SIGTTOU) that a stop
     /// resumed held and unreported (`pass_held_signal_unreported`). The
     /// group stop its delivery makes at the next stop is then reported
@@ -3292,6 +3297,7 @@ impl<L: Tool> TracedTask<L> {
             signal_callback_replaced_restart_block: false,
             signal_callback_guest_restart_block: false,
             in_held_signal_callback: false,
+            signal_callback_execed: false,
             unreported_stop_signal: None,
             reported_requeued_signals: HashMap::new(),
             child_procs: Arc::new(Mutex::new(Children::new())),
@@ -3403,6 +3409,7 @@ impl<L: Tool> TracedTask<L> {
             signal_callback_replaced_restart_block: false,
             signal_callback_guest_restart_block: false,
             in_held_signal_callback: false,
+            signal_callback_execed: false,
             unreported_stop_signal: None,
             reported_requeued_signals: HashMap::new(),
             child_procs: self.child_procs.clone(),
@@ -3480,6 +3487,7 @@ impl<L: Tool> TracedTask<L> {
             signal_callback_replaced_restart_block: false,
             signal_callback_guest_restart_block: false,
             in_held_signal_callback: false,
+            signal_callback_execed: false,
             unreported_stop_signal: None,
             reported_requeued_signals: HashMap::new(),
             child_procs: Arc::new(Mutex::new(Children::new())),
@@ -6449,7 +6457,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// `tail_inject` ends the callback (`do_tail_inject`) and the signal is
     /// passed on, as if the callback had returned it. Nothing else would
     /// end it: the syscall callback whose scope cancels a tail injection
-    /// has already returned. For a signal at its own delivery stop the
+    /// has already returned. A `tail_inject` from a post-exec callback
+    /// (`Tool::handle_post_exec`) after the callback executed a program ends
+    /// it as well, and the replacement image resumes with no signal. For a signal at its own delivery stop the
     /// callback is still awaited directly
     /// (<https://github.com/rrnewton/reverie/issues/862>).
     async fn report_signal(
@@ -6464,14 +6474,21 @@ impl<L: Tool + 'static> TracedTask<L> {
             std::mem::replace(&mut self.signal_callback_guest_restart_block, false);
         let outer_held = std::mem::replace(&mut self.in_held_signal_callback, held);
         let result = if held {
-            cancellable(self.cancel_handler.clone(), async {
+            let outer_execed = std::mem::replace(&mut self.signal_callback_execed, false);
+            let result = cancellable(self.cancel_handler.clone(), async {
                 self.process_state
                     .clone()
                     .handle_signal_event(self, sig)
                     .await
             })
-            .await
-            .unwrap_or(Ok(Some(sig)))
+            .await;
+            let execed = self.signal_callback_execed;
+            self.signal_callback_execed = outer_execed || execed;
+            // The program that held the signal is gone when the callback
+            // executed another: main delivered the signal to the guest, whose
+            // handler made the exec, and resumes the replacement image with
+            // none.
+            result.unwrap_or(Ok((!execed).then_some(sig)))
         } else {
             self.process_state
                 .clone()
@@ -6716,6 +6733,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.in_held_signal_callback = false;
         self.signal_callback_replaced_restart_block = false;
         self.signal_callback_guest_restart_block = false;
+        self.signal_callback_execed = true;
         // PTRACE_EVENT_EXEC proves replacement succeeded. Clear before any
         // post-exec Tool callback; failed exec attempts retain launch provenance.
         let initial_command = self.command_bootstrap;

@@ -97,6 +97,9 @@ const SIGSTOP_THEN_GETPID_FD: i32 = 911;
 /// NULL)`, then `nanosleep(&buf.sleep, NULL)`, then `getpid`, each reported;
 /// the tool returns the `nanosleep` result.
 const TIMED_SLEEP_THEN_GETPID_FD: i32 = 912;
+/// As `EXEC_ARGS_FD`, and the replacement program's post-exec callback ends
+/// with `tail_inject(getpid)`.
+const EXEC_ARGS_TAIL_AFTER_EXEC_FD: i32 = 913;
 
 /// Guest memory for the injected `ppoll`.
 #[repr(C)]
@@ -506,18 +509,19 @@ struct ExecArgs {
     envp: *const *const libc::c_char,
 }
 
-/// Keeps the `ExecArgs` a zero-length write to `EXEC_ARGS_FD` names, and
-/// executes them from the signal hook of the next SIGUSR2. In any program,
-/// `geteuid` is replaced with `getpid`; other markers are replaced as by
-/// `ReplaceMarker`.
+/// Keeps the `ExecArgs` a zero-length write to `EXEC_ARGS_FD` or
+/// `EXEC_ARGS_TAIL_AFTER_EXEC_FD` names, and executes them from the signal
+/// hook of the next SIGUSR2. In any program, `geteuid` is replaced with
+/// `getpid`; other markers are replaced as by `ReplaceMarker`.
 #[derive(Clone, Copy, Debug, Default)]
 struct ExecInSignalHook;
 
 #[reverie::tool]
 impl Tool for ExecInSignalHook {
     type GlobalState = Log;
-    /// The address of the kept `ExecArgs`.
-    type ThreadState = usize;
+    /// The address of the kept `ExecArgs`, and whether the post-exec
+    /// callback ends with `tail_inject(getpid)`.
+    type ThreadState = (usize, bool);
 
     fn subscriptions(_config: &()) -> Subscription {
         let mut subscription = Subscription::none();
@@ -532,13 +536,26 @@ impl Tool for ExecInSignalHook {
         syscall: Syscall,
     ) -> Result<i64, Error> {
         match syscall {
-            Syscall::Write(write) if write.fd() == EXEC_ARGS_FD && write.len() == 0 => {
-                *guest.thread_state_mut() = write.buf().map_or(0, |buf| buf.as_raw());
+            Syscall::Write(write)
+                if (write.fd() == EXEC_ARGS_FD || write.fd() == EXEC_ARGS_TAIL_AFTER_EXEC_FD)
+                    && write.len() == 0 =>
+            {
+                *guest.thread_state_mut() = (
+                    write.buf().map_or(0, |buf| buf.as_raw()),
+                    write.fd() == EXEC_ARGS_TAIL_AFTER_EXEC_FD,
+                );
                 Ok(0)
             }
             Syscall::Geteuid(_) => guest.tail_inject(Getpid::new()).await,
             other => replace_marker(guest, other).await,
         }
+    }
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        if !guest.thread_state_mut().1 {
+            return Ok(());
+        }
+        guest.tail_inject(Getpid::new()).await
     }
 
     async fn handle_signal_event<G: Guest<Self>>(
@@ -547,7 +564,7 @@ impl Tool for ExecInSignalHook {
         signal: Signal,
     ) -> Result<Option<Signal>, Errno> {
         guest.send_rpc(Report::Signal(signal as i32)).await;
-        let base = *guest.thread_state_mut();
+        let base = guest.thread_state_mut().0;
         if signal == Signal::SIGUSR2 && base != 0 {
             let field = |offset: usize| base + offset;
             let mut args = [0usize; 3];
@@ -3195,6 +3212,75 @@ fn exec_from_a_held_signal_hook_ends_the_callback() {
     eprintln!(
         "PROBE held-exec-hook guest={:?} injected={:?} signals={:?} stderr={}",
         stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
+        "the unblock completes; SIGUSR2 interrupts getpid before it runs, and the exec succeeds"
+    );
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 2, "the guest's PID, then id's output");
+    assert_eq!(
+        lines[1], lines[0],
+        "id's geteuid, replaced with getpid, returns the PID"
+    );
+    assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR2]);
+}
+
+/// As `exec_from_a_held_signal_hook_ends_the_callback`, but the replacement
+/// program's post-exec callback ends with `tail_inject(getpid)`, which ends
+/// the held signal's callback that made the exec. The held SIGUSR2 belonged
+/// to the replaced program: without a callback, its handler would have made
+/// the exec, so the replacement, whose SIGUSR2 is no longer caught, resumes
+/// with no signal instead of dying of it.
+#[test]
+fn held_signal_is_not_delivered_after_its_hook_executes_a_program() {
+    let (output, log) = test_fn_bounded::<ExecInSignalHook, _>(
+        || unsafe {
+            let path = c"/usr/bin/id";
+            let argv = [c"id".as_ptr(), c"-u".as_ptr(), std::ptr::null()];
+            let envp = [std::ptr::null()];
+            let args = ExecArgs {
+                path: path.as_ptr(),
+                argv: argv.as_ptr(),
+                envp: envp.as_ptr(),
+            };
+            libc::syscall(
+                libc::SYS_write,
+                EXEC_ARGS_TAIL_AFTER_EXEC_FD,
+                &args as *const ExecArgs,
+                0usize,
+            );
+            use std::io::Write;
+            println!("{}", libc::getpid());
+            std::io::stdout().flush().unwrap();
+            let set = block(&[libc::SIGUSR2]);
+            assert_eq!(libc::kill(libc::getpid(), libc::SIGUSR2), 0);
+            libc::syscall(
+                libc::SYS_write,
+                UNBLOCK_THEN_GETPID_FD,
+                &set as *const libc::sigset_t,
+                0usize,
+            );
+            // Reached only if the hook did not execute the program.
+            libc::_exit(3);
+        },
+        "held signal hook executing a program with a post-exec tail injection",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE held-exec-tail guest={:?} status={:?} injected={:?} signals={:?} stderr={}",
+        stdout.trim(),
+        output.status,
         *log.injected.lock().unwrap(),
         *log.signals.lock().unwrap(),
         String::from_utf8_lossy(&output.stderr)
