@@ -11840,10 +11840,26 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         return io_error(std::io::Error::last_os_error());
     }
     let copy_length = capacity.min(length as usize);
-    if copy_length != 0 && memory.user().write(args[3], &value[..copy_length]).is_err() {
+    // Linux copies the option bytes before publishing optlen. Use syscall
+    // copyout, which respects guest write permissions and preserves a copied
+    // prefix if a later page faults. sk_getsockopt uses copy_to_sockptr for
+    // BOTH value and length, unlike move_addr_to_user's scalar length store:
+    // https://github.com/torvalds/linux/blob/v6.18/net/core/sock.c#L2159
+    if memory
+        .user()
+        .copy_to_user(args[3], &value[..copy_length])
+        .is_err()
+    {
         return negative_errno(libc::EFAULT);
     }
-    write_struct(memory, args[4], &length)
+    if memory
+        .user()
+        .copy_to_user(args[4], &length.to_ne_bytes())
+        .is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+    0
 }
 
 // TODO-HUMAN-REVIEW(PR-213): Review bounded host-backed AF_INET bind translation.
@@ -11971,9 +11987,14 @@ fn socket_name(
     // move_addr_to_user changed this in the following upstream commit; older
     // kernels copied the address first:
     // https://github.com/torvalds/linux/commit/1fb0e471611dc6a79dee609a7e0037eb1d124400
-    let length_result = write_struct(memory, args[2], &returned_length);
-    if length_result < 0 {
-        return length_result;
+    // The length is a scalar put_user, followed by a possibly partial
+    // copy_to_user. Neither may write through a guest read-only page.
+    if memory
+        .user()
+        .put_user_i32(args[2], returned_length as i32)
+        .is_err()
+    {
+        return negative_errno(libc::EFAULT);
     }
     if copy_length != 0 && args[1] == 0 {
         return negative_errno(libc::EFAULT);
@@ -11981,7 +12002,7 @@ fn socket_name(
     if copy_length != 0
         && memory
             .user()
-            .write(
+            .copy_to_user(
                 args[1],
                 // SAFETY: address is initialized and copy_length is bounded by
                 // sockaddr_storage above.
@@ -32634,6 +32655,325 @@ mod tests {
         assert_eq!(peer.sin_family, libc::AF_INET as libc::sa_family_t);
         assert_ne!(local.sin_port, peer.sin_port);
         assert_eq!(u16::from_be(peer.sin_port), listener_address.port());
+    }
+
+    // Keep the native and guest buffers disjoint but identically initialized.
+    // Reading raw backing after a fault observes bytes without granting the
+    // syscall permission to write them. Native name ordering requires >= 6.18.
+    struct SocketQueryCopyoutBuffer {
+        guest: GuestMemory,
+        native: *mut libc::c_void,
+    }
+
+    impl SocketQueryCopyoutBuffer {
+        const LENGTH: usize = 2 * PAGE_SIZE as usize;
+
+        fn new() -> Self {
+            let guest = GuestMemory::new(0, Self::LENGTH).unwrap();
+            guest.write_raw(0, &[0xa5; Self::LENGTH]).unwrap();
+            guest
+                .map_user_permissions(0, Self::LENGTH as u64, true, true)
+                .unwrap();
+            guest.enable_user_access();
+            // SAFETY: this anonymous mapping is private and owned until Drop.
+            let native = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    Self::LENGTH,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            assert_ne!(native, libc::MAP_FAILED);
+            // SAFETY: the entire new mapping is writable.
+            unsafe { std::ptr::write_bytes(native.cast::<u8>(), 0xa5, Self::LENGTH) };
+            Self { guest, native }
+        }
+
+        fn pointer(&self, offset: u64) -> *mut libc::c_void {
+            if offset == 0 {
+                return std::ptr::null_mut();
+            }
+            assert!(offset < Self::LENGTH as u64);
+            // SAFETY: offset is within the owned allocation. The kernel, not
+            // Rust, dereferences this pointer while protections are installed.
+            unsafe { self.native.cast::<u8>().add(offset as usize).cast() }
+        }
+
+        fn length(&self, offset: u64, value: u32) {
+            assert!(offset != 0 && offset + 4 <= Self::LENGTH as u64);
+            self.guest.write_raw(offset, &value.to_ne_bytes()).unwrap();
+            // SAFETY: callers initialize the four bytes before protecting any
+            // page; unaligned storage deliberately covers scalar boundary faults.
+            unsafe { self.pointer(offset).cast::<u32>().write_unaligned(value) };
+        }
+
+        fn protect_page(&self, page: usize, protection: libc::c_int) {
+            assert!(page < 2);
+            // SAFETY: this is one page of the owned mapping.
+            assert_eq!(
+                unsafe {
+                    libc::mprotect(
+                        self.native
+                            .cast::<u8>()
+                            .add(page * PAGE_SIZE as usize)
+                            .cast(),
+                        PAGE_SIZE as usize,
+                        protection,
+                    )
+                },
+                0
+            );
+            self.guest
+                .map_user_permissions(
+                    page as u64 * PAGE_SIZE,
+                    PAGE_SIZE,
+                    protection != libc::PROT_NONE,
+                    protection & libc::PROT_WRITE != 0,
+                )
+                .unwrap();
+        }
+
+        fn bytes(&self) -> Vec<u8> {
+            let mut bytes = vec![0; Self::LENGTH];
+            self.guest.read_raw(0, &mut bytes).unwrap();
+            bytes
+        }
+
+        fn fault_matches_native(
+            &mut self,
+            state: &mut LoadedStaticElf,
+            fd: i32,
+            number: libc::c_long,
+            value: u64,
+            length: u64,
+        ) -> Vec<u8> {
+            let arguments = |fd, value, length| {
+                if number == libc::SYS_getsockopt {
+                    [
+                        fd,
+                        libc::SOL_SOCKET as u64,
+                        libc::SO_DOMAIN as u64,
+                        value,
+                        length,
+                        0,
+                    ]
+                } else {
+                    assert!([libc::SYS_getsockname, libc::SYS_getpeername].contains(&number));
+                    [fd, value, length, 0, 0, 0]
+                }
+            };
+            let args = arguments(
+                host_fd(state, fd).unwrap() as u64,
+                self.pointer(value) as u64,
+                self.pointer(length) as u64,
+            );
+            // SAFETY: the live socket and owned mapping supply the syscall's
+            // arguments. Protected pointers are checked by the kernel.
+            let native = unsafe {
+                libc::syscall(number, args[0], args[1], args[2], args[3], args[4], args[5])
+            };
+            let native = if native == -1 {
+                -i64::from(std::io::Error::last_os_error().raw_os_error().unwrap())
+            } else {
+                native
+            };
+            assert_eq!(
+                native,
+                negative_errno(libc::EFAULT),
+                "native syscall {number}"
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut self.guest,
+                    state,
+                    number,
+                    arguments(fd as u64, value, length)
+                ),
+                native,
+                "guest syscall {number}"
+            );
+            // SAFETY: restore readability only after both syscalls, so the
+            // complete snapshot also checks that faulting bytes stayed intact.
+            assert_eq!(
+                unsafe { libc::mprotect(self.native, Self::LENGTH, libc::PROT_READ) },
+                0
+            );
+            let actual = self.bytes();
+            // SAFETY: all owned bytes are now readable, and the snapshot has
+            // no mutable alias or concurrent writer.
+            let native =
+                unsafe { std::slice::from_raw_parts(self.native.cast::<u8>(), Self::LENGTH) };
+            assert_eq!(actual, native, "copyout bytes for syscall {number}");
+            actual
+        }
+    }
+
+    impl Drop for SocketQueryCopyoutBuffer {
+        fn drop(&mut self) {
+            // SAFETY: this exact allocation is still solely owned by the fixture.
+            unsafe { libc::munmap(self.native, Self::LENGTH) };
+        }
+    }
+
+    fn socket_query_copyout_pair(state: &mut LoadedStaticElf) -> (i32, UnixStream) {
+        let (socket, peer) = UnixStream::pair().unwrap();
+        // SAFETY: into_raw_fd transfers the endpoint's sole ownership to File.
+        let file =
+            unsafe { std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(socket)) };
+        let fd = insert_file_with_flags(state, file, false, None) as i32;
+        assert!(fd >= 0);
+        (fd, peer)
+    }
+
+    #[test]
+    fn socket_query_copyout_name_readonly_zero_capacity_length() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let (fd, _peer) = socket_query_copyout_pair(&mut state);
+        for number in [libc::SYS_getsockname, libc::SYS_getpeername] {
+            let mut buffer = SocketQueryCopyoutBuffer::new();
+            let length = PAGE_SIZE + 0x100;
+            buffer.length(length, 0);
+            let expected = buffer.bytes();
+            buffer.protect_page(1, libc::PROT_READ);
+            assert_eq!(
+                buffer.fault_matches_native(&mut state, fd, number, 0, length),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn socket_query_copyout_option_readonly_value_and_length_preserve_order() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let (fd, _peer) = socket_query_copyout_pair(&mut state);
+        for readonly_length in [false, true] {
+            let mut buffer = SocketQueryCopyoutBuffer::new();
+            let (value, length) = if readonly_length {
+                (0x100, PAGE_SIZE + 0x100)
+            } else {
+                (PAGE_SIZE + 0x100, 0x100)
+            };
+            buffer.length(length, 8);
+            let mut expected = buffer.bytes();
+            if readonly_length {
+                expected[0x100..0x104].copy_from_slice(&libc::AF_UNIX.to_ne_bytes());
+            }
+            buffer.protect_page(1, libc::PROT_READ);
+            assert_eq!(
+                buffer.fault_matches_native(&mut state, fd, libc::SYS_getsockopt, value, length),
+                expected,
+                "readonly length={readonly_length}: value copies first; either fault preserves length eight"
+            );
+        }
+    }
+
+    #[test]
+    fn socket_query_copyout_name_partial_address_publishes_length() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        // SAFETY: into_raw_fd transfers the client's sole ownership to File.
+        let file =
+            unsafe { std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(client)) };
+        let fd = insert_file_with_flags(&mut state, file, false, None) as i32;
+        assert!(fd >= 0);
+        for number in [libc::SYS_getsockname, libc::SYS_getpeername] {
+            let mut address = [0_u8; 128];
+            let mut length = address.len() as libc::socklen_t;
+            // SAFETY: both pointers name writable host storage; the same live
+            // endpoint supplies an independent full-address control.
+            assert_eq!(
+                unsafe {
+                    libc::syscall(
+                        number,
+                        host_fd(&state, fd).unwrap(),
+                        address.as_mut_ptr(),
+                        std::ptr::from_mut(&mut length),
+                    )
+                },
+                0
+            );
+            assert_eq!(length as usize, std::mem::size_of::<libc::sockaddr_in>());
+            let mut buffer = SocketQueryCopyoutBuffer::new();
+            buffer.length(0x100, 128);
+            let mut expected = buffer.bytes();
+            expected[0x100..0x104].copy_from_slice(&length.to_ne_bytes());
+            expected[PAGE_SIZE as usize - 8..PAGE_SIZE as usize].copy_from_slice(&address[..8]);
+            buffer.protect_page(1, libc::PROT_NONE);
+            assert_eq!(
+                buffer.fault_matches_native(&mut state, fd, number, PAGE_SIZE - 8, 0x100),
+                expected,
+                "the writable address prefix survives the later page fault"
+            );
+        }
+    }
+
+    #[test]
+    fn socket_query_copyout_option_partial_value_preserves_length() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let (fd, _peer) = socket_query_copyout_pair(&mut state);
+        let mut buffer = SocketQueryCopyoutBuffer::new();
+        buffer.length(0x100, 8);
+        let mut expected = buffer.bytes();
+        expected[PAGE_SIZE as usize - 2..PAGE_SIZE as usize]
+            .copy_from_slice(&libc::AF_UNIX.to_ne_bytes()[..2]);
+        buffer.protect_page(1, libc::PROT_NONE);
+        assert_eq!(
+            buffer.fault_matches_native(&mut state, fd, libc::SYS_getsockopt, PAGE_SIZE - 2, 0x100),
+            expected,
+            "the value prefix copies but a failed value copy cannot publish length four"
+        );
+    }
+
+    #[test]
+    fn socket_query_copyout_name_length_fault_is_atomic() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let (fd, _peer) = socket_query_copyout_pair(&mut state);
+        for number in [libc::SYS_getsockname, libc::SYS_getpeername] {
+            let mut buffer = SocketQueryCopyoutBuffer::new();
+            let length = PAGE_SIZE - 2;
+            buffer.length(length, 8);
+            let expected = buffer.bytes();
+            // Both pages remain readable for the initial four-byte capacity
+            // load. Only the second page refuses the later scalar store.
+            buffer.protect_page(1, libc::PROT_READ);
+            assert_eq!(
+                buffer.fault_matches_native(&mut state, fd, number, 0x100, length),
+                expected,
+                "a faulting scalar length store must not change its writable prefix"
+            );
+        }
+    }
+
+    #[test]
+    fn socket_query_copyout_option_partial_length_keeps_copied_value() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let (fd, _peer) = socket_query_copyout_pair(&mut state);
+        let mut buffer = SocketQueryCopyoutBuffer::new();
+        let length = PAGE_SIZE - 2;
+        // Positive and within MAX_HOST_IO, with a nonzero byte in the
+        // protected half so an incorrect complete store is observable.
+        buffer.length(length, 0x0001_0008);
+        let mut expected = buffer.bytes();
+        expected[0x100..0x104].copy_from_slice(&libc::AF_UNIX.to_ne_bytes());
+        expected[PAGE_SIZE as usize - 2..PAGE_SIZE as usize]
+            .copy_from_slice(&4_u32.to_ne_bytes()[..2]);
+        buffer.protect_page(1, libc::PROT_READ);
+        assert_eq!(
+            buffer.fault_matches_native(&mut state, fd, libc::SYS_getsockopt, 0x100, length),
+            expected,
+            "value copies first, then only the writable prefix of the option length"
+        );
     }
 
     #[test]
