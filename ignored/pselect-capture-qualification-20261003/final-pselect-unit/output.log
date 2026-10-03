@@ -1,0 +1,14 @@
+
+running 9 tests
+test executor::tests::pselect6_preflight_preserves_linux_validation_order_and_guest_state ... ok
+test executor::tests::pselect6_zero_capture_boundary_preserves_ordinary_and_opath_controls ... ok
+test executor::tests::pselect6_zero_captured_alias_preserves_validation_precedence ... ok
+test executor::tests::pselect6_zero_captured_alias_refuses_carrier_dependent_readiness ... ok
+test executor::tests::pselect6_zero_native_lowword_and_input_validation_order ... ok
+test executor::tests::pselect6_zero_native_ordered_partial_copyout_and_timeout_permissions ... ok
+test executor::tests::pselect6_zero_native_readiness_counts_sets_and_opath_is_not_absent ... ok
+test executor::tests::pselect6_zero_pending_signal_guard_is_read_only_and_ignores_delivery_permits ... ok
+test executor::tests::pselect6_zero_virtual_signalfd_hides_carrier_writability ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 1091 filtered out; finished in 0.04s
+

@@ -1,0 +1,1 @@
+[hermit2, unknown-agentname, gpt-6-astra, devbig014, role=impl]

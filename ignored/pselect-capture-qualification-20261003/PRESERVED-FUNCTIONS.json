@@ -1,0 +1,18 @@
+{
+  "select": {
+    "unchanged": true,
+    "sha256": "bc282609b3604229a5fb7bbadf173ec11a39cf09b3ecb476185d93bbcd35a2e6"
+  },
+  "poll": {
+    "unchanged": true,
+    "sha256": "80aa63f9dbcdee1173ee5da8cfdf3f4fed233dc9c30b2d2da02d3896f64f5c4b"
+  },
+  "ppoll": {
+    "unchanged": true,
+    "sha256": "4c77cca8396b4bad4bdbef30c48f47583d8dc9f98135af1ab60aaba7ed41c99f"
+  },
+  "has_eligible_pending_signal": {
+    "unchanged": true,
+    "sha256": "fc91a283157e8325d22f382ea4cd1f1273b64d0b54790c0f2aec62e6a2e8b949"
+  }
+}

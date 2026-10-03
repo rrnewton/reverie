@@ -1,0 +1,193 @@
+[
+  {
+    "phase": "baseline-build",
+    "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+    "rc": 0,
+    "actual_command_rc": 0,
+    "wall_seconds": 39.29444194200914,
+    "minimum_free_bytes": 1553991045120,
+    "output_bytes": 4192,
+    "output_sha256": "b896a7a3e8c4aca79a2ad1e310d02620d2b137be3ad1dc667c4ba5e365e9a537",
+    "terminal_test_summary": null
+  },
+  {
+    "phase": "baseline-unit",
+    "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+    "rc": 101,
+    "actual_command_rc": 101,
+    "wall_seconds": 0.41998313507065177,
+    "minimum_free_bytes": 1554287468544,
+    "output_bytes": 1447,
+    "output_sha256": "82b7a002c10778bb80ea7c9a0969bd080e293424722fb43badd19902802947f2",
+    "terminal_test_summary": {
+      "passed": 0,
+      "failed": 3,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 1097
+    }
+  },
+  {
+    "phase": "baseline-kvm-capture",
+    "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+    "rc": 101,
+    "actual_command_rc": 101,
+    "wall_seconds": 0.8205423420295119,
+    "minimum_free_bytes": 1554126483456,
+    "output_bytes": 7378,
+    "output_sha256": "ef3dce5bd41c1806c2303960f98b052539d7044d6cfbe311a2720285afd51b05",
+    "terminal_test_summary": {
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 420
+    }
+  },
+  {
+    "phase": "repaired-build",
+    "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+    "rc": 0,
+    "actual_command_rc": 0,
+    "wall_seconds": 27.661699864896946,
+    "minimum_free_bytes": 1553810513920,
+    "output_bytes": 413,
+    "output_sha256": "ecc52744cfb12faceb68cc45eb347180ea98b6a63597413dd787357388ba7a0f",
+    "terminal_test_summary": null
+  },
+  {
+    "phase": "repaired-pselect-unit",
+    "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+    "rc": 0,
+    "actual_command_rc": 0,
+    "wall_seconds": 0.4156762710772455,
+    "minimum_free_bytes": 1553810513920,
+    "output_bytes": 966,
+    "output_sha256": "c2b7e43c48c2fc4b1a8684327be202e84c47f07b0d8f00a208c19acec8cae548",
+    "terminal_test_summary": {
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 1091
+    }
+  },
+  {
+    "phase": "repaired-kvm-pselect",
+    "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+    "rc": 0,
+    "actual_command_rc": 0,
+    "wall_seconds": 3.880533786956221,
+    "minimum_free_bytes": 1553810513920,
+    "output_bytes": 411,
+    "output_sha256": "c6a6a03a6e3390c425e1a8be632da1221d172c60660aba3e46266fca7a655c84",
+    "terminal_test_summary": {
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 417
+    }
+  },
+  {
+    "phase": "required-kvm-control",
+    "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+    "rc": 0,
+    "actual_command_rc": 0,
+    "wall_seconds": 0.5599759559845552,
+    "minimum_free_bytes": 1553673588736,
+    "output_bytes": 2018,
+    "output_sha256": "ef3a7bc69b21719ada248954816126530c7d7bbaaee7ad14f6acdef30773ef9a",
+    "terminal_test_summary": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 420
+    }
+  },
+  {
+    "phase": "full-kvm-library",
+    "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+    "rc": 0,
+    "actual_command_rc": 0,
+    "wall_seconds": 59.556873537017964,
+    "minimum_free_bytes": 1552731922432,
+    "output_bytes": 238683,
+    "output_sha256": "97329073dd60ba156dc4af254099698c975dd38c5fcfb81d6486a2fe78be8ad5",
+    "terminal_test_summary": {
+      "passed": 1100,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    }
+  },
+  {
+    "phase": "clippy-kvm-alltargets",
+    "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+    "rc": 0,
+    "actual_command_rc": 0,
+    "wall_seconds": 20.89428218593821,
+    "minimum_free_bytes": 1552731922432,
+    "output_bytes": 3202,
+    "output_sha256": "5a471fe6f3439856126b7992d80e01229eaa9d539b10eced49d06b4b60b7dab6",
+    "terminal_test_summary": null
+  },
+  {
+    "phase": "workspace-docs",
+    "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+    "rc": 0,
+    "actual_command_rc": 0,
+    "wall_seconds": 42.75109472696204,
+    "minimum_free_bytes": 1553913413632,
+    "output_bytes": 13726,
+    "output_sha256": "9d7f975cc40f45d222795602dcdcc8b8c0cb05a2961d6cd264e3650ef77577a7",
+    "terminal_test_summary": null
+  },
+  {
+    "phase": "final-build",
+    "head": "d4971bca43fd65749b9d2a9c4fd5c7dee00ad505",
+    "rc": 0,
+    "actual_command_rc": 0,
+    "wall_seconds": 27.969807641929947,
+    "minimum_free_bytes": 1574355898368,
+    "output_bytes": 413,
+    "output_sha256": "b01c53c6b4392eca3ab851c67f175ed385ce14e796e37c57571d9ea1b83dd8ca",
+    "terminal_test_summary": null
+  },
+  {
+    "phase": "final-pselect-unit",
+    "head": "d4971bca43fd65749b9d2a9c4fd5c7dee00ad505",
+    "rc": 0,
+    "actual_command_rc": 0,
+    "wall_seconds": 0.48161701404023916,
+    "minimum_free_bytes": 1574676348928,
+    "output_bytes": 966,
+    "output_sha256": "cf62843cd4c8697a6165e649e832d0d4830c35d8aa863ba26141e2d613cc7f46",
+    "terminal_test_summary": {
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 1091
+    }
+  },
+  {
+    "phase": "final-kvm-pselect",
+    "head": "d4971bca43fd65749b9d2a9c4fd5c7dee00ad505",
+    "rc": 0,
+    "actual_command_rc": 0,
+    "wall_seconds": 4.652675796998665,
+    "minimum_free_bytes": 1575232299008,
+    "output_bytes": 411,
+    "output_sha256": "2df6a0b4711c215ffbe6cc7f7ce5c18ecca099094b2e2aa301486beddf3613b2",
+    "terminal_test_summary": {
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 417
+    }
+  }
+]

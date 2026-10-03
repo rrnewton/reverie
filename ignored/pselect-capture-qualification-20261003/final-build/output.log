@@ -1,0 +1,4 @@
+   Compiling reverie-kvm v0.4.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-capture-repair-20261003/reverie-kvm)
+    Finished `test` profile [unoptimized] target(s) in 27.67s
+  Executable unittests src/lib.rs (target/pselect-capture-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a)
+  Executable tests/static_elf.rs (target/pselect-capture-qualification/debug/deps/static_elf-9a322fcc3d61e965)

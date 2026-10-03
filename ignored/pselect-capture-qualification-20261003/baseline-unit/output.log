@@ -1,0 +1,31 @@
+
+running 3 tests
+test executor::tests::pselect6_zero_capture_boundary_preserves_ordinary_and_opath_controls ... 
+thread 'executor::tests::pselect6_zero_capture_boundary_preserves_ordinary_and_opath_controls' (50459) panicked at reverie-kvm/src/executor.rs:31856:13:
+assertion `left == right` failed: captured O_PATH unsupported
+  left: 3
+ right: -38
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test executor::tests::pselect6_zero_captured_alias_preserves_validation_precedence ... 
+thread 'executor::tests::pselect6_zero_captured_alias_preserves_validation_precedence' (50461) panicked at reverie-kvm/src/executor.rs:31731:13:
+assertion `left == right` failed: readonly output
+  left: -14
+ right: -38
+FAILED
+test executor::tests::pselect6_zero_captured_alias_refuses_carrier_dependent_readiness ... 
+thread 'executor::tests::pselect6_zero_captured_alias_refuses_carrier_dependent_readiness' (50468) panicked at reverie-kvm/src/executor.rs:31601:13:
+assertion `left == right` failed
+  left: [1, 0]
+ right: [-38, -38]
+FAILED
+
+failures:
+
+failures:
+    executor::tests::pselect6_zero_capture_boundary_preserves_ordinary_and_opath_controls
+    executor::tests::pselect6_zero_captured_alias_preserves_validation_precedence
+    executor::tests::pselect6_zero_captured_alias_refuses_carrier_dependent_readiness
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 1097 filtered out; finished in 0.01s
+

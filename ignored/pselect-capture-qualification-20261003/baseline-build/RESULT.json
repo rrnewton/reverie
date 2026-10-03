@@ -1,0 +1,437 @@
+{
+  "phase": "baseline-build",
+  "command": [
+    "env",
+    "GIT_CONFIG_GLOBAL=/dev/null",
+    "GIT_CONFIG_COUNT=1",
+    "GIT_CONFIG_KEY_0=credential.helper",
+    "GIT_CONFIG_VALUE_0=!gh auth git-credential",
+    "FLEET_REAL_GH=/home/newton/bin/gh",
+    "with-proxy",
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "--test",
+    "static_elf",
+    "--no-run",
+    "-j8"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-capture-repair-20261003",
+  "start_free_bytes": 1554130128896,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice": 10,
+  "seconds_bound": 1800.0,
+  "started_et": "2026-10-03 08:09:36 AM ET",
+  "source_before": {
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+    "reverie-kvm/src/executor.rs": "1608c2661008d08dfca1feaf5695686f38ce7b30e7b97464d47667fa13e284cf",
+    "reverie-kvm/tests/static_elf.rs": "2c712a6a2c15141a9f2f9e8dd355ba9f4f0b8dd70b04faa310e3aa63c969547f",
+    "reverie-kvm/tests/support/pselect_zero.rs": "5ef5717be11b0e4fbc5e1683d453889cf99e8465d359fd6febddd8df6f2163cd",
+    "reverie-kvm/tests/fixtures/pselect_zero.c": "1b319f5a90f13ee43ea1f308b27cdbb164656ad7924478c85c6896ef20ed2f03",
+    "reverie-kvm/tests/fixtures/pselect_captured_output.c": "1db20e344eb64de1e89bd518ea5cfc100dfe40fc5da91561e4f8378f6d52f7fc"
+  },
+  "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+  "resource_environment": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-capture-repair-20261003/target/pselect-capture-qualification",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "XDG_CACHE_HOME": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-capture-repair-20261003/target/pselect-capture-script-cache",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "leader": {
+    "pid": 4150635,
+    "state": "R",
+    "ppid": 4150361,
+    "pgid": 4150635,
+    "session": 4150635,
+    "start": 55884577
+  },
+  "remaining_descendants": [],
+  "cleanup": [
+    {
+      "signal": 15,
+      "targets": []
+    }
+  ],
+  "witnessed_descendants": [
+    {
+      "pid": 4150635,
+      "state": "S",
+      "ppid": 4150361,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884577
+    },
+    {
+      "pid": 4151076,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884603
+    },
+    {
+      "pid": 4151245,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884613
+    },
+    {
+      "pid": 4151621,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884641
+    },
+    {
+      "pid": 4151683,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884643
+    },
+    {
+      "pid": 4151939,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884655
+    },
+    {
+      "pid": 4152060,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884665
+    },
+    {
+      "pid": 4152552,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884722
+    },
+    {
+      "pid": 4153842,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884754
+    },
+    {
+      "pid": 4154091,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884769
+    },
+    {
+      "pid": 4154212,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884784
+    },
+    {
+      "pid": 4154249,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884791
+    },
+    {
+      "pid": 4154255,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884794
+    },
+    {
+      "pid": 4154318,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884806
+    },
+    {
+      "pid": 4154330,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884807
+    },
+    {
+      "pid": 4154388,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884817
+    },
+    {
+      "pid": 4154705,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884839
+    },
+    {
+      "pid": 4154718,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884839
+    },
+    {
+      "pid": 4154865,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884869
+    },
+    {
+      "pid": 4154925,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884884
+    },
+    {
+      "pid": 4156039,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884949
+    },
+    {
+      "pid": 4156243,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884968
+    },
+    {
+      "pid": 4156414,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55884999
+    },
+    {
+      "pid": 4156974,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885067
+    },
+    {
+      "pid": 4157093,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885074
+    },
+    {
+      "pid": 4157194,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885084
+    },
+    {
+      "pid": 4157266,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885091
+    },
+    {
+      "pid": 4157360,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885102
+    },
+    {
+      "pid": 4157365,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885102
+    },
+    {
+      "pid": 4158144,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885129
+    },
+    {
+      "pid": 4158442,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885143
+    },
+    {
+      "pid": 4158453,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885149
+    },
+    {
+      "pid": 4158686,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885189
+    },
+    {
+      "pid": 4159172,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885219
+    },
+    {
+      "pid": 4159268,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885223
+    },
+    {
+      "pid": 4161304,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885295
+    },
+    {
+      "pid": 4163416,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885510
+    },
+    {
+      "pid": 4166194,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885646
+    },
+    {
+      "pid": 4167173,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55885665
+    },
+    {
+      "pid": 4178663,
+      "state": "S",
+      "ppid": 4150635,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55886172
+    },
+    {
+      "pid": 15414,
+      "state": "S",
+      "ppid": 4167173,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55887994
+    },
+    {
+      "pid": 15420,
+      "state": "S",
+      "ppid": 15414,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55887997
+    },
+    {
+      "pid": 15421,
+      "state": "Z",
+      "ppid": 15420,
+      "pgid": 4150635,
+      "session": 4150635,
+      "start": 55887997
+    }
+  ],
+  "actual_command_rc": 0,
+  "source_after": {
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+    "reverie-kvm/src/executor.rs": "1608c2661008d08dfca1feaf5695686f38ce7b30e7b97464d47667fa13e284cf",
+    "reverie-kvm/tests/static_elf.rs": "2c712a6a2c15141a9f2f9e8dd355ba9f4f0b8dd70b04faa310e3aa63c969547f",
+    "reverie-kvm/tests/support/pselect_zero.rs": "5ef5717be11b0e4fbc5e1683d453889cf99e8465d359fd6febddd8df6f2163cd",
+    "reverie-kvm/tests/fixtures/pselect_zero.c": "1b319f5a90f13ee43ea1f308b27cdbb164656ad7924478c85c6896ef20ed2f03",
+    "reverie-kvm/tests/fixtures/pselect_captured_output.c": "1db20e344eb64de1e89bd518ea5cfc100dfe40fc5da91561e4f8378f6d52f7fc"
+  },
+  "stop_reason": null,
+  "wall_seconds": 39.29444194200914,
+  "minimum_free_bytes": 1553991045120,
+  "end_free_bytes": 1554287468544,
+  "output_bytes": 4192,
+  "output_sha256": "b896a7a3e8c4aca79a2ad1e310d02620d2b137be3ad1dc667c4ba5e365e9a537",
+  "cancel_signals": [],
+  "rc": 0,
+  "test_binaries": {
+    "target/pselect-capture-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a": "1e11294399352fff58003e1516299baa8f0bde059a1f1dd7037ff75e6c5ed6e5",
+    "target/pselect-capture-qualification/debug/deps/static_elf-9a322fcc3d61e965": "5fcf51948a6298681628063bb90bb48928107c518744f8c0fb3fb8ab5f2004e3"
+  }
+}

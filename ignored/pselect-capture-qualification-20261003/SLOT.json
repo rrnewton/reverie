@@ -1,0 +1,12 @@
+{
+  "slot": "kvm-pselect-capture-repair-20261003",
+  "generation": 1,
+  "agent": "native-kvm-pselect-capture-repair-01a0d5c2",
+  "owner_pid": 1571522,
+  "owner_start": 730624,
+  "boot": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+  "base": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+  "branch": "codex/kvm-pselect-capture-repair-20261003",
+  "cargo_lock_sha256": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+  "create_rc": 0
+}

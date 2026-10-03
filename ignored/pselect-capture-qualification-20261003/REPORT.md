@@ -1,0 +1,29 @@
+# Captured-output readiness escapes through the new pselect6 handler
+
+Background: Reverie can capture a guest's stdout and stderr in memory. Those guest descriptors and their aliases describe synthetic pipes, while an owned host file or socket may remain in the descriptor table as a carrier. Readiness must describe the guest object, not the carrier.
+
+Target: https://github.com/rrnewton/reverie/pull/903 at 954769e428d7a403d8d33fd3494d6e96443d51a9. This is a bounded source diagnosis and unapplied test proposal, not an independent approval or an executed regression result.
+
+## Finding
+
+The newly accepted zero-time pselect6 form polls the host carrier of captured output. The dispatcher computes capture_output but does not pass it to pselect6: [dispatcher](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/executor.rs#L504), [pselect dispatch](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/executor.rs#L638). The handler resolves selected descriptors through host_fd at line 10286 and calls host poll at line 10305: [selected-descriptor loop](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/executor.rs#L10280).
+
+[output_alias](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/executor.rs#L9647) recognizes open implicit guest 1/2 and labelled owned descriptors. [host_fd](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/executor.rs#L15820) returns either the owned carrier or ambient host 1/2. In contrast, [write](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/executor.rs#L6738) appends captured alias writes to an in-memory vector, bypassing the carrier. [CapturedOutput](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/executor.rs#L249) exposes no readiness abstraction.
+
+Concrete source-derived counterexample: insert a private regular File at guest fd 3 labelled Stdout and select its read bit. The new handler returns 1. Substitute an empty live UnixStream with its peer held open, keeping the same guest fd, label, capture object, and syscall arguments: it returns 0. The captured byte stream and synthetic identity are unchanged. The proposal plants both carriers without replacing or closing any host standard fd, and uses uncaptured native pselect6 calls to prove the two distinct carrier readiness values. These predicted values have not been executed in this audit.
+
+This is a reachable representation, not merely corruption of test state: existing [seekable alias coverage](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/executor.rs#L23777) and [synthetic stat/link coverage](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/executor.rs#L39413) explicitly retain regular-file carriers. [Proc-fd reopen](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/executor.rs#L9451) and [duplication](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/executor.rs#L9981) preserve the capture label. The previously refused pselect6 execution form now accepts this case; existing select/poll are outside this assignment.
+
+## Smallest bounded repair
+
+Pass capture_output to this handler. During its existing bounded descriptor scan, record whether any selected in-range descriptor has output_alias. Complete existence validation of *all* selected descriptors first, preserving EBADF for a later absent fd. Then, before host poll or any output, return ENOSYS for a captured alias. Do not put this in the four-call socket-metadata guard: pselect6 argument zero is nfds, not an fd.
+
+Preserve existing outer-wrapper, timeout, inner-mask, signed low-word nfds, input-set, and unsupported-form ordering. Preserve nfds=0, out-of-range bits, unselected aliases, capture=false descriptors, and ordinary replacements at guest fd 1. Refusal must leave the complete guest memory, capture vectors/identity, descriptor table, pending signals and blocked mask unchanged. A read-only output set is not touched and therefore reaches ENOSYS, whereas input and selected-fd errors retain EFAULT/EINVAL/EBADF before refusal.
+
+Captured O_PATH aliases can remain explicitly unsupported with ENOSYS in this narrow increment. Do not import EBADF from [captured_output_socket_error](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/executor.rs#L11638): select on an existing O_PATH description reports its requested sets through POLLNVAL. An unlabelled O_PATH descriptor must keep the native three-set positive result already covered by the new tests.
+
+The [private capture pipe keeper](https://github.com/rrnewton/reverie/blob/954769e428d7a403d8d33fd3494d6e96443d51a9/reverie-kvm/src/capture_identity.rs#L34) is deliberately never used for I/O or installed in a guest table. Its writer is closed immediately and it contains no data; it only reserves an inode. Polling it would fabricate a different readiness contract, not repair this bug.
+
+## Goalpost assessment and limits
+
+The proposal adds strict regression assertions and explicit refusal of a newly accepted but unfaithful subset. It does not weaken existing assertions, change tolerances, skip cases, relabel failures, delete gates, or claim ENOSYS equals native success. Native equality remains required for every ordinary supported control; captured readiness remains unsupported until a faithful model exists. No source was edited, no compiler/test/probe was run, and no product approval is claimed. The accompanying test-only patch is unapplied and requires the exact source digest in PRECONDITION.json.

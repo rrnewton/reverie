@@ -1,0 +1,1972 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 1c56ace0b28..add96bc3b45 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -635,7 +635,7 @@ fn execute_basic_syscall_inner(
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         select(memory, state, args)
+     } else if number == libc::SYS_pselect6 as u64 {
+-        pselect6_validation_preflight(memory, args)
++        pselect6(memory, state, args, capture_output)
+     } else if number == libc::SYS_poll as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         poll(memory, state, args)
+@@ -5698,21 +5698,10 @@ impl ElfExecutor {
+         Ok(pending)
+     }
+ 
+-    /// Recomputes every signalfd alias after another consumer removes or
+-    /// requeues pending state.
++    /// Reports current unblocked pending state without selecting a signal or
++    /// requiring a delivery permit.
+     pub(crate) fn has_eligible_pending_signal(&self) -> bool {
+-        let process_signals = self
+-            .state
+-            .process_signals
+-            .lock()
+-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+-        let generations = &process_signals.pending_generations;
+-        let thread_signals = self.state.thread_signals.lock();
+-        let blocked = thread_signals.blocked;
+-        thread_signals.pending.any_eligible(blocked, generations)
+-            || process_signals
+-                .shared_pending
+-                .any_eligible(blocked, generations)
++        has_eligible_pending_signal(&self.state)
+     }
+ 
+     /// Preflights a post-exec signal-mask injection. Lifecycle callbacks have
+@@ -10185,17 +10174,32 @@ struct Pselect6SigmaskArg {
+     sigsetsize: u64,
+ }
+ 
+-/// Reproduces Linux's non-mutating `pselect6` argument-validation boundary.
+-///
+-/// Detcore owns deterministic retries, virtual deadlines, and temporary signal
+-/// masks. The KVM executor cannot yet service a valid probe without crossing
+-/// that scheduler boundary, so it fails closed with `ENOSYS` only after every
+-/// access and value check that Linux performs before selecting descriptors.
+-/// In particular, this lets Detcore's deliberately malformed-timeout probe
+-/// distinguish an inaccessible outer wrapper from an inaccessible inner mask.
+-/// This helper never calls host `pselect`, installs a host signal mask, writes
+-/// guest memory, or mutates executor state.
+-fn pselect6_validation_preflight(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
++/// Queries the current guest signal generations without dequeuing, acquiring a
++/// delivery permit, or changing a mask. Keep the process-before-thread lock
++/// order shared with the ordinary return-to-user signal boundary.
++fn has_eligible_pending_signal(state: &LoadedStaticElf) -> bool {
++    let process_signals = state
++        .process_signals
++        .lock()
++        .unwrap_or_else(|poisoned| poisoned.into_inner());
++    let generations = &process_signals.pending_generations;
++    let thread_signals = state.thread_signals.lock();
++    let blocked = thread_signals.blocked;
++    thread_signals.pending.any_eligible(blocked, generations)
++        || process_signals
++            .shared_pending
++            .any_eligible(blocked, generations)
++}
++
++/// Implements one instantaneous, unmasked, one-word pselect6 readiness probe.
++/// Detcore owns retries and guest time. All other valid execution forms remain
++/// explicitly unsupported, after Linux's original argument-validation order.
++fn pselect6(
++    memory: &GuestMemory,
++    state: &LoadedStaticElf,
++    args: &[u64; 6],
++    capture_output: bool,
++) -> i64 {
+     // Linux first copies the complete outer { sigmask, sigsetsize } wrapper.
+     let sigmask_argument = if args[5] == 0 {
+         None
+@@ -10207,8 +10211,8 @@ fn pselect6_validation_preflight(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+     };
+ 
+     // do_pselect reads and validates the timeout before inspecting the inner
+-    // signal-mask pointer or size.
+-    if args[4] != 0 {
++    // signal-mask pointer or size. NULL means an unsupported infinite wait.
++    let zero_timeout = if args[4] != 0 {
+         let timeout = match read_guest_struct::<libc::timespec>(memory, args[4]) {
+             Ok(timeout) => timeout,
+             Err(error) => return error,
+@@ -10216,9 +10220,13 @@ fn pselect6_validation_preflight(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+         if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+             return negative_errno(libc::EINVAL);
+         }
+-    }
++        timeout.tv_sec == 0 && timeout.tv_nsec == 0
++    } else {
++        false
++    };
+ 
+     // set_user_sigmask ignores sigsetsize when the inner pointer is NULL.
++    let has_mask = sigmask_argument.is_some_and(|argument| argument.sigmask != 0);
+     if let Some(argument) = sigmask_argument
+         && argument.sigmask != 0
+     {
+@@ -10231,32 +10239,125 @@ fn pselect6_validation_preflight(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+         }
+     }
+ 
+-    // The raw syscall argument is an `int`; Linux observes its low 32 bits.
++    // The raw syscall argument is an int; Linux observes its signed low word.
+     let nfds = args[0] as libc::c_int;
+     if nfds < 0 {
+         return negative_errno(libc::EINVAL);
+     }
+-
+-    // Linux clamps this copy to the live fd-table capacity, which KVM does not
+-    // model yet. One machine word is exact for every fresh Linux table and for
+-    // Detcore's internal pselect probes. Refuse larger calls before touching
+-    // their fd sets rather than over-reading up to GUEST_NOFILE_LIMIT and
+-    // manufacturing an EFAULT that Linux would not return.
++    // Linux clamps to the live fd-table capacity. One machine word is exact
++    // even for its initial table; do not guess the size of a grown guest table.
+     if nfds > u64::BITS as libc::c_int {
+         return negative_errno(libc::ENOSYS);
+     }
+-    let word_count = (nfds as usize).div_ceil(u64::BITS as usize);
+-    let byte_length = word_count * std::mem::size_of::<u64>();
+-    let mut fd_set = vec![0; byte_length];
+-    if byte_length != 0 {
+-        for address in &args[1..4] {
+-            if *address != 0 && memory.user().read(*address, &mut fd_set).is_err() {
+-                return negative_errno(libc::EFAULT);
++    let mut sets = [0_u64; 3];
++    if nfds != 0 {
++        // Snapshot every input before descriptor checks or any output, including
++        // aliases. The n == 0 exemption must not inspect any fd-set pointer.
++        for (word, &address) in sets.iter_mut().zip(&args[1..4]) {
++            if address != 0 {
++                let mut bytes = [0; 8];
++                if memory.user().read(address, &mut bytes).is_err() {
++                    return negative_errno(libc::EFAULT);
++                }
++                *word = u64::from_ne_bytes(bytes);
+             }
+         }
+     }
++    if !zero_timeout || has_mask {
++        return negative_errno(libc::ENOSYS);
++    }
+ 
+-    negative_errno(libc::ENOSYS)
++    // fs/select.c POLLIN_SET/POLLOUT_SET/POLLEX_SET include normal/band bits
++    // and NVAL. An absent guest fd is EBADF, but poll's NVAL for an existing
++    // O_PATH description is readiness in all requested sets, as in Linux.
++    // https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/select.c#L459
++    const READ: libc::c_short = libc::POLLIN
++        | libc::POLLRDNORM
++        | libc::POLLRDBAND
++        | libc::POLLHUP
++        | libc::POLLERR
++        | libc::POLLNVAL;
++    const WRITE: libc::c_short =
++        libc::POLLOUT | libc::POLLWRNORM | libc::POLLWRBAND | libc::POLLERR | libc::POLLNVAL;
++    const EXCEPT: libc::c_short = libc::POLLPRI | libc::POLLNVAL;
++    let mut poll_fds = Vec::new();
++    let mut requested = Vec::new();
++    let mut captured_alias_selected = false;
++    for fd in 0..nfds {
++        let bit = 1_u64 << fd;
++        let membership = sets.map(|word| word & bit != 0);
++        if !membership.into_iter().any(|present| present) {
++            continue;
++        }
++        let Some(host_fd) = host_fd(state, fd) else {
++            return negative_errno(libc::EBADF);
++        };
++        captured_alias_selected |= capture_output && output_alias(state, fd).is_some();
++        let virtual_signalfd = signalfd_mask(state, fd).is_some();
++        let events = if virtual_signalfd {
++            if membership[0] { libc::POLLIN } else { 0 }
++        } else {
++            // Linux includes the exception mask in its poll key unconditionally.
++            EXCEPT | if membership[0] { READ } else { 0 } | if membership[1] { WRITE } else { 0 }
++        };
++        poll_fds.push(libc::pollfd {
++            fd: host_fd,
++            events,
++            revents: 0,
++        });
++        requested.push((bit, membership, virtual_signalfd));
++    }
++    // Captured output lives in memory, not in the retained host carrier (or
++    // ambient host stdout/stderr). Its readiness is not modeled yet. Validate
++    // every selected fd first so a later absent fd still wins with EBADF, then
++    // refuse before host polling or any guest copyout, including O_PATH aliases.
++    if captured_alias_selected {
++        return negative_errno(libc::ENOSYS);
++    }
++    // SAFETY: poll sees only initialized host-owned storage and a zero timeout;
++    // it never sees a guest pointer or changes the host signal mask.
++    if unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as libc::nfds_t, 0) } < 0 {
++        return io_error(std::io::Error::last_os_error());
++    }
++    let mut output = [0_u64; 3];
++    let mut ready_count = 0;
++    for (entry, (bit, membership, virtual_signalfd)) in poll_fds.iter().zip(requested) {
++        let readiness = if virtual_signalfd {
++            // Do not expose the private eventfd carrier's always-writable bit.
++            [entry.revents & libc::POLLIN != 0, false, false]
++        } else {
++            [READ, WRITE, EXCEPT].map(|mask| entry.revents & mask != 0)
++        };
++        for index in 0..3 {
++            if membership[index] && readiness[index] {
++                output[index] |= bit;
++                ready_count += 1;
++            }
++        }
++    }
++    // Linux checks pending signals only after a zero-readiness sample and before
++    // copyout (core_sys_select). Our ordinary success return cannot represent its
++    // restart outcome, so refuse this still-unsupported signal completion without
++    // dequeuing anything. Positive readiness wins even with an eligible signal.
++    if ready_count == 0 && has_eligible_pending_signal(state) {
++        return negative_errno(libc::ENOSYS);
++    }
++    if nfds != 0 {
++        for (&address, word) in args[1..4].iter().zip(output) {
++            if address != 0
++                && memory
++                    .user()
++                    .copy_to_user(address, &word.to_ne_bytes())
++                    .is_err()
++            {
++                return negative_errno(libc::EFAULT);
++            }
++        }
++    }
++    // poll_select_finish takes its no-update path for an initially zero timeout,
++    // on success AND failure. Even rewriting zero would wrongly fault on RO pages
++    // or overwrite an aliased fd-set result. Never write this timespec here.
++    ready_count
+ }
+ 
+ // AUTONOMOUS-BOT-IMPLEMENTED
+@@ -30645,10 +30746,11 @@ mod tests {
+         const EXCEPT_SET: u64 = 0x380;
+         const BAD_ADDRESS: u64 = 0x00f0_0000;
+ 
+-        fn assert_refused_without_mutation(
++        fn assert_result_without_mutation(
+             memory: &mut GuestMemory,
+             state: &mut LoadedStaticElf,
+             args: [u64; 6],
++            expected: i64,
+         ) {
+             let mut memory_before = vec![0; PAGE_SIZE as usize];
+             memory.read(0, &mut memory_before).unwrap();
+@@ -30656,7 +30758,7 @@ mod tests {
+             let files_before = state.files.keys().copied().collect::<Vec<_>>();
+             assert_eq!(
+                 syscall_result(memory, state, libc::SYS_pselect6, args),
+-                negative_errno(libc::ENOSYS)
++                expected,
+             );
+             let mut memory_after = vec![0; PAGE_SIZE as usize];
+             memory.read(0, &mut memory_after).unwrap();
+@@ -30668,6 +30770,14 @@ mod tests {
+             );
+         }
+ 
++        fn assert_refused_without_mutation(
++            memory: &mut GuestMemory,
++            state: &mut LoadedStaticElf,
++            args: [u64; 6],
++        ) {
++            assert_result_without_mutation(memory, state, args, negative_errno(libc::ENOSYS));
++        }
++
+         let root = TestDir::new();
+         let mut state = test_state(&root.0);
+         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+@@ -30790,10 +30900,11 @@ mod tests {
+             ),
+             negative_errno(libc::EINVAL)
+         );
+-        assert_refused_without_mutation(
++        assert_result_without_mutation(
+             &mut memory,
+             &mut state,
+             [0, BAD_ADDRESS, BAD_ADDRESS, BAD_ADDRESS, TIMEOUT, OUTER],
++            0,
+         );
+ 
+         // Up to one machine word, each non-null fd set must be readable before
+@@ -30833,10 +30944,20 @@ mod tests {
+         // Exactly 64 fds still copies one eight-byte word. Calls above that
+         // range are refused before fd-set access because KVM does not yet model
+         // Linux's live fd-table capacity and must not guess a copy length.
+-        assert_refused_without_mutation(
++        // The split-wrapper case left 0x200 here: retain it as an absent-fd
++        // control before deliberately initializing the positive empty-set case.
++        assert_result_without_mutation(
++            &mut memory,
++            &mut state,
++            [64, PAGE_SIZE - 8, 0, 0, TIMEOUT, 0],
++            negative_errno(libc::EBADF),
++        );
++        memory.write(PAGE_SIZE - 8, &0_u64.to_ne_bytes()).unwrap();
++        assert_result_without_mutation(
+             &mut memory,
+             &mut state,
+             [64, PAGE_SIZE - 8, 0, 0, TIMEOUT, 0],
++            0,
+         );
+         assert_refused_without_mutation(
+             &mut memory,
+@@ -30859,6 +30980,1100 @@ mod tests {
+             [1, READ_SET, WRITE_SET, EXCEPT_SET, TIMEOUT, OUTER],
+         );
+         assert_refused_without_mutation(&mut memory, &mut state, [0, 0, 0, 0, 0, OUTER]);
++        assert_refused_without_mutation(&mut memory, &mut state, [0, 0, 0, 0, 0, 0]);
++        assert_eq!(
++            write_struct(
++                &mut memory,
++                TIMEOUT,
++                &libc::timespec {
++                    tv_sec: 0,
++                    tv_nsec: 1
++                }
++            ),
++            0
++        );
++        assert_refused_without_mutation(
++            &mut memory,
++            &mut state,
++            [1, READ_SET, WRITE_SET, EXCEPT_SET, TIMEOUT, 0],
++        );
++    }
++
++    // Native raw-syscall controls share the existing protected two-page buffer
++    // fixture, but never pass guest backing to a host syscall.
++    fn pselect6_parity_word(buffer: &SocketQueryCopyoutBuffer, address: u64, value: u64) {
++        buffer
++            .guest
++            .write_raw(address, &value.to_ne_bytes())
++            .unwrap();
++        // SAFETY: all initialization precedes mprotect; address is in the fixture.
++        unsafe { buffer.pointer(address).cast::<u64>().write_unaligned(value) };
++    }
++
++    fn pselect6_parity_buffer() -> SocketQueryCopyoutBuffer {
++        let buffer = SocketQueryCopyoutBuffer::new();
++        pselect6_parity_word(&buffer, 0x100, 0);
++        pselect6_parity_word(&buffer, 0x108, 0);
++        buffer
++    }
++
++    fn pselect6_assert_native_bytes(
++        buffer: &mut SocketQueryCopyoutBuffer,
++        state: &mut LoadedStaticElf,
++        args: [u64; 6],
++        expected_result: i64,
++    ) -> Vec<u8> {
++        let pointer = |address| {
++            if address < SocketQueryCopyoutBuffer::LENGTH as u64 {
++                buffer.pointer(address) as u64
++            } else {
++                u64::MAX
++            }
++        };
++        // The outer wrapper is input-only. Translate its inner pointer into a
++        // disjoint native wrapper, leaving the arena's bytes comparable in full.
++        let outer = if args[5] != 0 && args[5] + 16 <= SocketQueryCopyoutBuffer::LENGTH as u64 {
++            let outer: Pselect6SigmaskArg = read_guest_struct(&buffer.guest, args[5]).unwrap();
++            Some(Pselect6SigmaskArg {
++                sigmask: pointer(outer.sigmask),
++                ..outer
++            })
++        } else {
++            None
++        };
++        let native_outer = outer.as_ref().map_or_else(
++            || pointer(args[5]),
++            |outer| std::ptr::from_ref(outer) as u64,
++        );
++        // SAFETY: these are valid owned or deliberately inaccessible user
++        // pointers; only Linux dereferences them. Every control is zero-time,
++        // or fails validation before waiting or changing a signal mask.
++        let result = unsafe {
++            libc::syscall(
++                libc::SYS_pselect6,
++                args[0],
++                pointer(args[1]),
++                pointer(args[2]),
++                pointer(args[3]),
++                pointer(args[4]),
++                native_outer,
++            )
++        };
++        let native = if result == -1 {
++            -i64::from(std::io::Error::last_os_error().raw_os_error().unwrap())
++        } else {
++            result
++        };
++        assert_eq!(native, expected_result, "native pselect6 args={args:x?}");
++        assert_eq!(
++            syscall_result(&mut buffer.guest, state, libc::SYS_pselect6, args),
++            native,
++            "guest pselect6 args={args:x?}",
++        );
++        // SAFETY: readability is restored only after both syscalls, for a full
++        // snapshot including untouched bytes on the failing destination page.
++        assert_eq!(
++            unsafe {
++                libc::mprotect(
++                    buffer.native,
++                    SocketQueryCopyoutBuffer::LENGTH,
++                    libc::PROT_READ,
++                )
++            },
++            0
++        );
++        let actual = buffer.bytes();
++        // SAFETY: the complete owned mapping is readable now.
++        let native = unsafe {
++            std::slice::from_raw_parts(buffer.native.cast::<u8>(), SocketQueryCopyoutBuffer::LENGTH)
++        };
++        assert_eq!(actual, native, "whole pselect6 arena args={args:x?}");
++        actual
++    }
++
++    #[test]
++    fn pselect6_zero_native_lowword_and_input_validation_order() {
++        const TIMEOUT: u64 = 0x100;
++        const OUTER: u64 = 0x180;
++        const BAD: u64 = 0x00f0_0000;
++        let root = TestDir::new();
++        // Malformed timeout beats mask/nfds; outer access beats timeout; inner
++        // size beats inner access, and both precede nfds and fd-set access.
++        for (name, nfds, set, timeout, outer, inner, size, nsec, errno) in [
++            (
++                "outer first",
++                u64::MAX,
++                BAD,
++                TIMEOUT,
++                BAD,
++                0,
++                0,
++                1_000_000_000,
++                libc::EFAULT,
++            ),
++            (
++                "timeout first",
++                u64::MAX,
++                BAD,
++                BAD,
++                OUTER,
++                BAD,
++                0,
++                0,
++                libc::EFAULT,
++            ),
++            (
++                "timeout value",
++                u64::MAX,
++                BAD,
++                TIMEOUT,
++                OUTER,
++                BAD,
++                8,
++                1_000_000_000,
++                libc::EINVAL,
++            ),
++            (
++                "inner size",
++                u64::MAX,
++                BAD,
++                TIMEOUT,
++                OUTER,
++                BAD,
++                7,
++                0,
++                libc::EINVAL,
++            ),
++            (
++                "inner access",
++                u64::MAX,
++                BAD,
++                TIMEOUT,
++                OUTER,
++                BAD,
++                8,
++                0,
++                libc::EFAULT,
++            ),
++            (
++                "signed low word",
++                0x1234_5678_ffff_ffff,
++                BAD,
++                TIMEOUT,
++                OUTER,
++                0,
++                u64::MAX,
++                0,
++                libc::EINVAL,
++            ),
++            (
++                "input after low word",
++                0x1234_5678_0000_0001,
++                BAD,
++                TIMEOUT,
++                OUTER,
++                0,
++                u64::MAX,
++                0,
++                libc::EFAULT,
++            ),
++        ] {
++            let mut state = test_state(&root.0);
++            let mut buffer = pselect6_parity_buffer();
++            pselect6_parity_word(&buffer, TIMEOUT + 8, nsec);
++            pselect6_parity_word(&buffer, OUTER, inner);
++            pselect6_parity_word(&buffer, OUTER + 8, size);
++            let before = buffer.bytes();
++            assert_eq!(
++                pselect6_assert_native_bytes(
++                    &mut buffer,
++                    &mut state,
++                    [nfds, set, 0, 0, timeout, outer],
++                    negative_errno(errno)
++                ),
++                before,
++                "{name}"
++            );
++        }
++        for nfds in [0, 0x1234_5678_0000_0000] {
++            let mut state = test_state(&root.0);
++            let mut buffer = pselect6_parity_buffer();
++            pselect6_parity_word(&buffer, OUTER, 0);
++            pselect6_parity_word(&buffer, OUTER + 8, u64::MAX);
++            let before = buffer.bytes();
++            assert_eq!(
++                pselect6_assert_native_bytes(
++                    &mut buffer,
++                    &mut state,
++                    [nfds, BAD, BAD, BAD, TIMEOUT, OUTER],
++                    0
++                ),
++                before
++            );
++        }
++    }
++
++    #[test]
++    fn pselect6_zero_native_ordered_partial_copyout_and_timeout_permissions() {
++        const READ: u64 = 0x200;
++        const WRITE: u64 = 0x280;
++        const EXCEPT: u64 = 0x300;
++        const TIMEOUT: u64 = 0x100;
++        const IGNORED: u64 = (1_u64 << 63) | (1_u64 << 32);
++        let root = TestDir::new();
++        for (name, addresses, readonly_page, expected, copied) in [
++            ("all writable", [READ, WRITE, EXCEPT], None, 0, [8, 8, 8]),
++            (
++                "first readonly",
++                [READ, PAGE_SIZE + WRITE, PAGE_SIZE + EXCEPT],
++                Some(0),
++                -i64::from(libc::EFAULT),
++                [0, 0, 0],
++            ),
++            (
++                "partial first",
++                [PAGE_SIZE - 6, WRITE, EXCEPT],
++                Some(1),
++                -i64::from(libc::EFAULT),
++                [6, 0, 0],
++            ),
++            (
++                "second readonly",
++                [READ, PAGE_SIZE + WRITE, EXCEPT],
++                Some(1),
++                -i64::from(libc::EFAULT),
++                [8, 0, 0],
++            ),
++            (
++                "third readonly",
++                [READ, WRITE, PAGE_SIZE + EXCEPT],
++                Some(1),
++                -i64::from(libc::EFAULT),
++                [8, 8, 0],
++            ),
++            (
++                "partial second",
++                [READ, PAGE_SIZE - 6, EXCEPT],
++                Some(1),
++                -i64::from(libc::EFAULT),
++                [8, 6, 0],
++            ),
++            (
++                "partial third",
++                [READ, WRITE, PAGE_SIZE - 6],
++                Some(1),
++                -i64::from(libc::EFAULT),
++                [8, 8, 6],
++            ),
++            (
++                "exact output aliases",
++                [READ, READ, READ],
++                None,
++                0,
++                [8, 8, 8],
++            ),
++            (
++                "readonly zero timeout",
++                [PAGE_SIZE + READ, PAGE_SIZE + WRITE, PAGE_SIZE + EXCEPT],
++                Some(0),
++                0,
++                [8, 8, 8],
++            ),
++        ] {
++            let mut state = test_state(&root.0);
++            let mut buffer = pselect6_parity_buffer();
++            for address in addresses {
++                pselect6_parity_word(&buffer, address, IGNORED);
++            }
++            let mut expected_bytes = buffer.bytes();
++            for (address, count) in addresses.into_iter().zip(copied) {
++                expected_bytes[address as usize..address as usize + count].fill(0);
++            }
++            if let Some(page) = readonly_page {
++                buffer.protect_page(page, libc::PROT_READ);
++            }
++            // Both upper bits are above nfds and must be cleared in the complete
++            // copied word. The bit at32 makes a six-byte partial prefix observable.
++            let actual = pselect6_assert_native_bytes(
++                &mut buffer,
++                &mut state,
++                [
++                    0x5a5a_5a5a_0000_0001,
++                    addresses[0],
++                    addresses[1],
++                    addresses[2],
++                    TIMEOUT,
++                    0,
++                ],
++                expected,
++            );
++            assert_eq!(actual, expected_bytes, "{name}: exact copy prefix/order");
++        }
++        let mut state = test_state(&root.0);
++        let mut buffer = pselect6_parity_buffer();
++        let before = buffer.bytes();
++        // An fd-set can alias the zero timeout; this must not add a writeback
++        // permission check or overwrite bytes after ordered fd-set copyout.
++        assert_eq!(
++            pselect6_assert_native_bytes(
++                &mut buffer,
++                &mut state,
++                [1, TIMEOUT, TIMEOUT + 8, 0, TIMEOUT, 0],
++                0
++            ),
++            before
++        );
++    }
++
++    fn pselect6_native_single_descriptor(fd: i32, membership: [bool; 3]) -> (i64, [bool; 3]) {
++        let word_count = (fd as usize + 1).div_ceil(64);
++        let mut sets = [
++            vec![0_u64; word_count],
++            vec![0_u64; word_count],
++            vec![0_u64; word_count],
++        ];
++        for (set, requested) in sets.iter_mut().zip(membership) {
++            if requested {
++                set[fd as usize / 64] = 1_u64 << (fd as usize % 64);
++            }
++        }
++        let pointers = sets.each_mut().map(|set| set.as_mut_ptr());
++        let mut timeout = libc::timespec {
++            tv_sec: 0,
++            tv_nsec: 0,
++        };
++        // SAFETY: each fd bitmap spans nfds and the timeout is a live zero value.
++        let result = unsafe {
++            libc::syscall(
++                libc::SYS_pselect6,
++                fd + 1,
++                pointers[0],
++                pointers[1],
++                pointers[2],
++                &mut timeout,
++                0_u64,
++            )
++        };
++        let result = if result == -1 {
++            -i64::from(std::io::Error::last_os_error().raw_os_error().unwrap())
++        } else {
++            result
++        };
++        assert_eq!((timeout.tv_sec, timeout.tv_nsec), (0, 0));
++        (
++            result,
++            sets.each_ref()
++                .map(|set| set[fd as usize / 64] & (1_u64 << (fd as usize % 64)) != 0),
++        )
++    }
++
++    #[test]
++    fn pselect6_zero_native_readiness_counts_sets_and_opath_is_not_absent() {
++        const FD: i32 = 7;
++        const SETS: [u64; 3] = [0x200, 0x280, 0x300];
++        const TIMEOUT: u64 = 0x100;
++        let root = TestDir::new();
++        let mut state = test_state(&root.0);
++        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++        assert_eq!(
++            write_struct(
++                &mut memory,
++                TIMEOUT,
++                &libc::timespec {
++                    tv_sec: 0,
++                    tv_nsec: 0
++                }
++            ),
++            0
++        );
++        let (socket, mut peer) = UnixStream::pair().unwrap();
++        // SAFETY: ownership transfers from the socket to File.
++        state.files.insert(FD, unsafe {
++            std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(socket))
++        });
++        for (buffered, expected) in [
++            (false, (1, [false, true, false])),
++            (true, (2, [true, true, false])),
++        ] {
++            if buffered {
++                peer.write_all(b"x").unwrap();
++            }
++            assert_eq!(
++                pselect6_native_single_descriptor(host_fd(&state, FD).unwrap(), [true; 3]),
++                expected
++            );
++            for address in SETS {
++                memory.write(address, &(1_u64 << FD).to_ne_bytes()).unwrap();
++            }
++            assert_eq!(
++                syscall_result(
++                    &mut memory,
++                    &mut state,
++                    libc::SYS_pselect6,
++                    [8, SETS[0], SETS[1], SETS[2], TIMEOUT, 0]
++                ),
++                expected.0
++            );
++            assert_eq!(
++                SETS.map(|address| read_struct::<u64>(&memory, address) != 0),
++                expected.1
++            );
++            for (address, ready) in SETS.into_iter().zip(expected.1) {
++                assert_eq!(
++                    read_struct::<u64>(&memory, address),
++                    if ready { 1_u64 << FD } else { 0 }
++                );
++            }
++        }
++        use std::os::unix::fs::OpenOptionsExt;
++        let path = std::fs::OpenOptions::new()
++            .read(true)
++            .custom_flags(libc::O_PATH)
++            .open(&root.0)
++            .unwrap();
++        assert_eq!(
++            pselect6_native_single_descriptor(path.as_raw_fd(), [true; 3]),
++            (3, [true; 3])
++        );
++        state.files.insert(FD, path);
++        for address in SETS {
++            memory.write(address, &(1_u64 << FD).to_ne_bytes()).unwrap();
++        }
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pselect6,
++                [8, SETS[0], SETS[1], SETS[2], TIMEOUT, 0]
++            ),
++            3
++        );
++        for address in SETS {
++            assert_eq!(read_struct::<u64>(&memory, address), 1_u64 << FD);
++        }
++        // The same bitmap selecting a now-absent guest descriptor is EBADF,
++        // before an output protection fault, and must change no arena byte.
++        state.files.remove(&FD);
++        memory
++            .map_user_permissions(0, PAGE_SIZE, true, false)
++            .unwrap();
++        memory.enable_user_access();
++        let mut before = vec![0; PAGE_SIZE as usize];
++        memory.read_raw(0, &mut before).unwrap();
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pselect6,
++                [8, SETS[0], SETS[1], SETS[2], TIMEOUT, 0]
++            ),
++            negative_errno(libc::EBADF)
++        );
++        let mut after = vec![0; PAGE_SIZE as usize];
++        memory.read_raw(0, &mut after).unwrap();
++        assert_eq!(after, before);
++    }
++
++    fn pselect6_capture_memory(sets: [u64; 3]) -> GuestMemory {
++        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++        memory.write(0, &vec![0xa5; PAGE_SIZE as usize]).unwrap();
++        memory.write(0x100, &[0; 16]).unwrap();
++        for (address, word) in [0x200, 0x280, 0x300].into_iter().zip(sets) {
++            memory.write(address, &word.to_ne_bytes()).unwrap();
++        }
++        memory
++    }
++
++    // Every probe preserves capture data/identity and the entire signal state;
++    // return the whole memory image so each case checks its exact copyout effect.
++    fn pselect6_capture_probe(
++        memory: &mut GuestMemory,
++        state: &mut LoadedStaticElf,
++        output: &mut CapturedOutput,
++        capture: bool,
++        args: [u64; 6],
++    ) -> (i64, Vec<u8>) {
++        let process_before = state.process_signals.lock().unwrap().clone();
++        let thread_before = state.thread_signals.lock().clone();
++        let files_before = state
++            .files
++            .iter()
++            .map(|(&fd, file)| (fd, file.as_raw_fd()))
++            .collect::<Vec<_>>();
++        let aliases_before = (
++            state.stdout_alias_fds.clone(),
++            state.stderr_alias_fds.clone(),
++        );
++        let identity_before = output.identities.clone();
++        let bytes_before = {
++            let inner = output.inner.lock().unwrap();
++            (inner.stdout.clone(), inner.stderr.clone())
++        };
++        let result = if capture {
++            syscall_result_with_output(memory, state, output, libc::SYS_pselect6, args)
++        } else {
++            syscall_result(memory, state, libc::SYS_pselect6, args)
++        };
++        assert_eq!(*state.process_signals.lock().unwrap(), process_before);
++        assert_eq!(*state.thread_signals.lock(), thread_before);
++        assert_eq!(
++            state
++                .files
++                .iter()
++                .map(|(&fd, file)| (fd, file.as_raw_fd()))
++                .collect::<Vec<_>>(),
++            files_before
++        );
++        assert_eq!(
++            (&state.stdout_alias_fds, &state.stderr_alias_fds),
++            (&aliases_before.0, &aliases_before.1)
++        );
++        assert!(Arc::ptr_eq(&output.identities, &identity_before));
++        let inner = output.inner.lock().unwrap();
++        assert_eq!(
++            (&inner.stdout, &inner.stderr),
++            (&bytes_before.0, &bytes_before.1)
++        );
++        let mut after = vec![0; PAGE_SIZE as usize];
++        memory.read_raw(0, &mut after).unwrap();
++        (result, after)
++    }
++
++    #[test]
++    fn pselect6_zero_captured_alias_refuses_carrier_dependent_readiness() {
++        let root = TestDir::new();
++        let path = root.0.join("captured-carrier");
++        std::fs::write(&path, b"private carrier").unwrap();
++        let mut output = CapturedOutput::default();
++        assert!(output.append(false, b"captured stdout"));
++        assert!(output.append(true, b"captured stderr"));
++        for alias in [OutputAlias::Stdout, OutputAlias::Stderr] {
++            let mut captured_results = Vec::new();
++            let mut captured_memory = Vec::new();
++            for regular in [true, false] {
++                let mut state = test_state(&root.0);
++                let (socket, peer) = UnixStream::pair().unwrap();
++                let file = if regular {
++                    std::fs::OpenOptions::new()
++                        .read(true)
++                        .write(true)
++                        .open(&path)
++                        .unwrap()
++                } else {
++                    // SAFETY: the socket transfers its owned endpoint to File.
++                    unsafe {
++                        std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(socket))
++                    }
++                };
++                let fd = insert_file_with_flags(&mut state, file, false, Some(alias));
++                assert_eq!(fd, 3);
++                // Both blocked queues are nonempty: preservation is not vacuous,
++                // and the pending-signal refusal cannot hide the carrier bug.
++                test_block_signal(&mut state, libc::SIGUSR1);
++                test_block_signal(&mut state, libc::SIGUSR2);
++                let shared = event_for_process(libc::SIGUSR1, state.pid).unwrap();
++                let local = event_for_thread(libc::SIGUSR2, state.pid, state.tid).unwrap();
++                state
++                    .process_signals
++                    .lock()
++                    .unwrap()
++                    .shared_pending
++                    .enqueue(shared, 0)
++                    .unwrap();
++                state
++                    .thread_signals
++                    .lock()
++                    .pending
++                    .enqueue(local, 0)
++                    .unwrap();
++                let native = pselect6_native_single_descriptor(
++                    host_fd(&state, 3).unwrap(),
++                    [true, false, false],
++                );
++                assert_eq!(native, (i64::from(regular), [regular, false, false]));
++                let mut memory = pselect6_capture_memory([1 << 3, 0, 0]);
++                let mut before = vec![0; PAGE_SIZE as usize];
++                memory.read(0, &mut before).unwrap();
++                let args = [4, 0x200, 0, 0, 0x100, 0];
++                let (uncaptured, actual) =
++                    pselect6_capture_probe(&mut memory, &mut state, &mut output, false, args);
++                let mut expected = before.clone();
++                expected[0x200..0x208]
++                    .copy_from_slice(&(if regular { 1_u64 << 3 } else { 0 }).to_ne_bytes());
++                assert_eq!(uncaptured, native.0);
++                assert_eq!(actual, expected);
++                memory.write(0, &before).unwrap();
++                let (captured, after) =
++                    pselect6_capture_probe(&mut memory, &mut state, &mut output, true, args);
++                captured_results.push(captured);
++                captured_memory.push((before, after));
++                // Keep the socket peer live until after the sample: no EOF/HUP.
++                drop(peer);
++            }
++            // Frozen bad production predicts [1, 0], although both descriptors
++            // name the same captured stream. Collect both before this assertion.
++            assert_eq!(captured_results, vec![negative_errno(libc::ENOSYS); 2]);
++            for (before, after) in captured_memory {
++                assert_eq!(after, before);
++            }
++        }
++    }
++
++    #[test]
++    fn pselect6_zero_captured_alias_preserves_validation_precedence() {
++        const BAD: u64 = 0x00f0_0000;
++        let root = TestDir::new();
++        let mut state = test_state(&root.0);
++        assert_eq!(
++            insert_file_with_flags(
++                &mut state,
++                std::fs::File::open(&root.0).unwrap(),
++                false,
++                Some(OutputAlias::Stdout)
++            ),
++            3
++        );
++        let mut output = CapturedOutput::default();
++        // An alias in the readable first input must not bypass later argument
++        // faults or an absent selected descriptor later in the numeric scan.
++        for (name, args, word, malformed, readonly, expected) in [
++            (
++                "outer before timeout",
++                [4, 0x200, 0, 0, BAD, BAD],
++                1_u64 << 3,
++                false,
++                false,
++                libc::EFAULT,
++            ),
++            (
++                "timeout access",
++                [4, 0x200, 0, 0, BAD, 0],
++                1 << 3,
++                false,
++                false,
++                libc::EFAULT,
++            ),
++            (
++                "timeout value",
++                [4, 0x200, 0, 0, 0x100, 0],
++                1 << 3,
++                true,
++                false,
++                libc::EINVAL,
++            ),
++            (
++                "negative nfds",
++                [u64::MAX, 0x200, 0, 0, 0x100, 0],
++                1 << 3,
++                false,
++                false,
++                libc::EINVAL,
++            ),
++            (
++                "read input",
++                [4, BAD, 0, 0, 0x100, 0],
++                1 << 3,
++                false,
++                false,
++                libc::EFAULT,
++            ),
++            (
++                "write input",
++                [4, 0x200, BAD, 0, 0x100, 0],
++                1 << 3,
++                false,
++                false,
++                libc::EFAULT,
++            ),
++            (
++                "except input",
++                [4, 0x200, 0, BAD, 0x100, 0],
++                1 << 3,
++                false,
++                false,
++                libc::EFAULT,
++            ),
++            (
++                "later absent fd",
++                [31, 0x200, 0, 0, 0x100, 0],
++                (1 << 3) | (1 << 30),
++                false,
++                false,
++                libc::EBADF,
++            ),
++            (
++                "readonly output",
++                [4, 0x200, 0, 0, 0x100, 0],
++                1 << 3,
++                false,
++                true,
++                libc::ENOSYS,
++            ),
++            (
++                "write-only captured selection",
++                [4, 0, 0x200, 0, 0x100, 0],
++                1 << 3,
++                false,
++                false,
++                libc::ENOSYS,
++            ),
++            (
++                "except-only captured selection",
++                [4, 0, 0, 0x200, 0x100, 0],
++                1 << 3,
++                false,
++                false,
++                libc::ENOSYS,
++            ),
++        ] {
++            let mut memory = pselect6_capture_memory([word, 0, 0]);
++            if malformed {
++                memory
++                    .write(0x108, &1_000_000_000_i64.to_ne_bytes())
++                    .unwrap();
++            }
++            if readonly {
++                memory
++                    .map_user_permissions(0, PAGE_SIZE, true, false)
++                    .unwrap();
++                memory.enable_user_access();
++            }
++            let mut before = vec![0; PAGE_SIZE as usize];
++            memory.read_raw(0, &mut before).unwrap();
++            let (result, after) =
++                pselect6_capture_probe(&mut memory, &mut state, &mut output, true, args);
++            assert_eq!(result, negative_errno(expected), "{name}");
++            assert_eq!(after, before, "{name}");
++        }
++    }
++
++    #[test]
++    fn pselect6_zero_capture_boundary_preserves_ordinary_and_opath_controls() {
++        const BAD: u64 = 0x00f0_0000;
++        let root = TestDir::new();
++        let mut state = test_state(&root.0);
++        let mut output = CapturedOutput::default();
++        assert_eq!(
++            insert_file_with_flags(
++                &mut state,
++                std::fs::File::open(&root.0).unwrap(),
++                false,
++                Some(OutputAlias::Stdout)
++            ),
++            3
++        );
++        assert_eq!(
++            insert_file_with_flags(
++                &mut state,
++                std::fs::File::open(&root.0).unwrap(),
++                false,
++                None
++            ),
++            4
++        );
++        for (source, alias, expected_fd) in [(3, Some(OutputAlias::Stdout), 5), (4, None, 6)] {
++            let path = open_host_fd_path(
++                host_fd(&state, source).unwrap(),
++                (libc::O_PATH | libc::O_CLOEXEC) as u64,
++            )
++            .unwrap();
++            assert_eq!(
++                pselect6_native_single_descriptor(path.as_raw_fd(), [true; 3]),
++                (3, [true; 3])
++            );
++            assert_eq!(
++                insert_file_with_flags(&mut state, path, true, alias),
++                expected_fd
++            );
++        }
++        // Only the guest table changes. No host dup2 or standard-fd mutation.
++        let mut memory = pselect6_capture_memory([0; 3]);
++        assert_eq!(
++            syscall_result_with_output(
++                &mut memory,
++                &mut state,
++                &mut output,
++                libc::SYS_dup2,
++                [4, 1, 0, 0, 0, 0]
++            ),
++            1
++        );
++        assert!(output_alias(&state, 1).is_none());
++        assert!(output_alias(&state, 3).is_some());
++        assert!(output_alias(&state, 5).is_some());
++        for (name, capture, args, input, expected_result, expected_sets) in [
++            (
++                "nfds zero ignores pointers",
++                true,
++                [0, BAD, BAD, BAD, 0x100, 0],
++                [1_u64 << 3, 0, 0],
++                0,
++                [1_u64 << 3, 0, 0],
++            ),
++            (
++                "capture outside nfds",
++                true,
++                [3, 0x200, 0x280, 0x300, 0x100, 0],
++                [1 << 3, 0, 0],
++                0,
++                [0, 0, 0],
++            ),
++            (
++                "capture unselected",
++                true,
++                [5, 0x200, 0x280, 0x300, 0x100, 0],
++                [1 << 4, 0, 0],
++                1,
++                [1 << 4, 0, 0],
++            ),
++            (
++                "ordinary replacement guest stdout",
++                true,
++                [2, 0x200, 0x280, 0x300, 0x100, 0],
++                [1 << 1, 0, 0],
++                1,
++                [1 << 1, 0, 0],
++            ),
++            (
++                "captured O_PATH unsupported",
++                true,
++                [6, 0x200, 0x280, 0x300, 0x100, 0],
++                [1 << 5; 3],
++                negative_errno(libc::ENOSYS),
++                [1 << 5; 3],
++            ),
++            (
++                "same O_PATH without capture",
++                false,
++                [6, 0x200, 0x280, 0x300, 0x100, 0],
++                [1 << 5; 3],
++                3,
++                [1 << 5; 3],
++            ),
++            (
++                "ordinary O_PATH",
++                true,
++                [7, 0x200, 0x280, 0x300, 0x100, 0],
++                [1 << 6; 3],
++                3,
++                [1 << 6; 3],
++            ),
++        ] {
++            let mut memory = pselect6_capture_memory(input);
++            let mut expected = vec![0; PAGE_SIZE as usize];
++            memory.read(0, &mut expected).unwrap();
++            for (address, word) in [0x200, 0x280, 0x300].into_iter().zip(expected_sets) {
++                expected[address..address + 8].copy_from_slice(&word.to_ne_bytes());
++            }
++            let (result, after) =
++                pselect6_capture_probe(&mut memory, &mut state, &mut output, capture, args);
++            assert_eq!(result, expected_result, "{name}");
++            assert_eq!(after, expected, "{name}");
++        }
++    }
++
++    #[test]
++    fn pselect6_zero_virtual_signalfd_hides_carrier_writability() {
++        const TIMEOUT: u64 = 0x100;
++        const MASK: u64 = 0x180;
++        const SETS: [u64; 3] = [0x200, 0x280, 0x300];
++        let root = TestDir::new();
++        let mut state = test_state(&root.0);
++        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++        test_block_signal(&mut state, libc::SIGUSR1);
++        let mut mask = KernelSigset::default();
++        mask.insert(libc::SIGUSR1);
++        memory.write(MASK, &mask.to_bytes()).unwrap();
++        assert_eq!(
++            write_struct(
++                &mut memory,
++                TIMEOUT,
++                &libc::timespec {
++                    tv_sec: 0,
++                    tv_nsec: 0
++                }
++            ),
++            0
++        );
++        let fd = syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_signalfd4,
++            [
++                u64::MAX,
++                MASK,
++                KERNEL_SIGSET_SIZE as u64,
++                (libc::SFD_NONBLOCK | libc::SFD_CLOEXEC) as u64,
++                0,
++                0,
++            ],
++        );
++        assert!((0..64).contains(&fd));
++        for pending in [false, true] {
++            if pending {
++                let event = event_for_process(libc::SIGUSR1, state.pid).unwrap();
++                queue_signal_event(&mut state, event, true).unwrap();
++            }
++            for address in SETS {
++                memory.write(address, &(1_u64 << fd).to_ne_bytes()).unwrap();
++            }
++            let process_before = state.process_signals.lock().unwrap().clone();
++            let thread_before = state.thread_signals.lock().clone();
++            assert_eq!(
++                syscall_result(
++                    &mut memory,
++                    &mut state,
++                    libc::SYS_pselect6,
++                    [fd as u64 + 1, SETS[0], SETS[1], SETS[2], TIMEOUT, 0]
++                ),
++                i64::from(pending)
++            );
++            assert_eq!(
++                read_struct::<u64>(&memory, SETS[0]),
++                if pending { 1_u64 << fd } else { 0 }
++            );
++            assert_eq!(read_struct::<u64>(&memory, SETS[1]), 0);
++            assert_eq!(read_struct::<u64>(&memory, SETS[2]), 0);
++            assert_eq!(*state.process_signals.lock().unwrap(), process_before);
++            assert_eq!(*state.thread_signals.lock(), thread_before);
++        }
++    }
++
++    #[test]
++    fn pselect6_zero_pending_signal_guard_is_read_only_and_ignores_delivery_permits() {
++        const TIMEOUT: u64 = 0x100;
++        const SET: u64 = 0x200;
++        const BAD: u64 = 0x00f0_0000;
++        let root = TestDir::new();
++        for shared in [false, true] {
++            for mode in [
++                "eligible",
++                "blocked",
++                "stale",
++                "ready",
++                "bad fd",
++                "bad input",
++            ] {
++                let mut executor = ElfExecutor::new(test_state(&root.0), false);
++                let global = Arc::new(());
++                let failure = crate::failure::RunFailure::new(&global);
++                executor.install_signal_control(
++                    reverie::BackendSignalControlMode::ToolControlled,
++                    &failure,
++                );
++                assert!(executor.signal_controlled());
++                assert!(executor.delivery_permit().is_none());
++                let signal = libc::SIGUSR1;
++                let event = if shared {
++                    event_for_process(signal, executor.state.pid).unwrap()
++                } else {
++                    event_for_thread(signal, executor.state.pid, executor.state.tid).unwrap()
++                };
++                // Seed the exact production pending containers without invoking a
++                // publication protocol. The syscall may read but not mutate them.
++                if shared {
++                    executor
++                        .state
++                        .process_signals
++                        .lock()
++                        .unwrap()
++                        .shared_pending
++                        .enqueue(event, 0)
++                        .unwrap();
++                } else {
++                    executor
++                        .state
++                        .thread_signals
++                        .lock()
++                        .pending
++                        .enqueue(event, 0)
++                        .unwrap();
++                }
++                if mode == "blocked" {
++                    executor.state.thread_signals.lock().blocked.insert(signal);
++                }
++                if mode == "stale" {
++                    executor
++                        .state
++                        .process_signals
++                        .lock()
++                        .unwrap()
++                        .pending_generations[signal as usize] = 1;
++                }
++                let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++                assert_eq!(
++                    write_struct(
++                        &mut memory,
++                        TIMEOUT,
++                        &libc::timespec {
++                            tv_sec: 0,
++                            tv_nsec: 0
++                        }
++                    ),
++                    0
++                );
++                let fd = 7;
++                if mode == "ready" {
++                    executor
++                        .state
++                        .files
++                        .insert(fd, std::fs::File::open(&root.0).unwrap());
++                }
++                let word = if matches!(mode, "ready" | "bad fd") {
++                    1_u64 << fd
++                } else {
++                    1_u64 << 63
++                };
++                memory.write(SET, &word.to_ne_bytes()).unwrap();
++                let mut expected_memory = vec![0; PAGE_SIZE as usize];
++                memory.read(0, &mut expected_memory).unwrap();
++                let process_before = executor.state.process_signals.lock().unwrap().clone();
++                let thread_before = executor.state.thread_signals.lock().clone();
++                let fd_before = executor.state.files.keys().copied().collect::<Vec<_>>();
++                let expected = match mode {
++                    "eligible" => negative_errno(libc::ENOSYS),
++                    "blocked" | "stale" => {
++                        expected_memory[SET as usize..SET as usize + 8].fill(0);
++                        0
++                    }
++                    "ready" => 1,
++                    "bad fd" => negative_errno(libc::EBADF),
++                    "bad input" => negative_errno(libc::EFAULT),
++                    _ => unreachable!(),
++                };
++                assert_eq!(
++                    syscall_result(
++                        &mut memory,
++                        &mut executor.state,
++                        libc::SYS_pselect6,
++                        [
++                            8,
++                            if mode == "bad input" { BAD } else { SET },
++                            0,
++                            0,
++                            TIMEOUT,
++                            0
++                        ]
++                    ),
++                    expected,
++                    "shared={shared}, mode={mode}"
++                );
++                let mut after = vec![0; PAGE_SIZE as usize];
++                memory.read(0, &mut after).unwrap();
++                assert_eq!(after, expected_memory, "shared={shared}, mode={mode}");
++                assert_eq!(
++                    *executor.state.process_signals.lock().unwrap(),
++                    process_before
++                );
++                assert_eq!(*executor.state.thread_signals.lock(), thread_before);
++                assert_eq!(
++                    executor.state.files.keys().copied().collect::<Vec<_>>(),
++                    fd_before
++                );
++                assert!(executor.delivery_permit().is_none());
++                assert!(failure.primary().is_none());
++            }
++        }
+     }
+ 
+     #[test]
+diff --git a/reverie-kvm/tests/fixtures/pselect_captured_output.c b/reverie-kvm/tests/fixtures/pselect_captured_output.c
+new file mode 100644
+index 00000000000..77821dcab67
+--- /dev/null
++++ b/reverie-kvm/tests/fixtures/pselect_captured_output.c
+@@ -0,0 +1,38 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++#define _GNU_SOURCE
++#include <errno.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/syscall.h>
++#include <time.h>
++#include <unistd.h>
++
++int main(void) {
++    /* These are guest-only duplicates, not changes to the test runner's fds. */
++    int fds[] = {STDOUT_FILENO, STDERR_FILENO, dup(STDOUT_FILENO), dup(STDERR_FILENO)};
++    if (fds[2] < 3 || fds[2] >= 64 || fds[3] < 3 || fds[3] >= 64) return 80;
++    for (unsigned i = 0; i < sizeof(fds) / sizeof(fds[0]); ++i) {
++        uint64_t sets[] = {UINT64_C(1) << fds[i], UINT64_C(1) << fds[i], UINT64_C(1) << fds[i]};
++        uint64_t before[3];
++        memcpy(before, sets, sizeof(sets));
++        struct timespec timeout = {0, 0};
++        errno = 0;
++        long result = syscall(SYS_pselect6, fds[i] + 1, &sets[0], &sets[1], &sets[2], &timeout, NULL);
++        int error = errno;
++        if (result != -1 || error != ENOSYS || memcmp(sets, before, sizeof(sets)) != 0 ||
++            timeout.tv_sec != 0 || timeout.tv_nsec != 0) {
++            dprintf(STDERR_FILENO, "captured pselect fd=%d result=%ld errno=%d\n", fds[i], result, error);
++            return 81;
++        }
++    }
++    if (close(fds[2]) != 0 || close(fds[3]) != 0) return 82;
++    static const char success[] = "captured pselect refused 4\n";
++    return write(STDOUT_FILENO, success, sizeof(success) - 1) == sizeof(success) - 1 ? 0 : 83;
++}
+diff --git a/reverie-kvm/tests/fixtures/pselect_zero.c b/reverie-kvm/tests/fixtures/pselect_zero.c
+new file mode 100644
+index 00000000000..3778d9b096c
+--- /dev/null
++++ b/reverie-kvm/tests/fixtures/pselect_zero.c
+@@ -0,0 +1,290 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <sys/socket.h>
++#include <sys/syscall.h>
++#include <time.h>
++#include <unistd.h>
++
++#define PAGE 4096
++#define ARENA (2 * PAGE)
++#define READ_FD 20
++#define WRITE_FD 21
++#define SOCKET_FD 22
++#define PEER_FD 23
++#define PATH_FD 24
++#define ABSENT_FD 30
++#define LAST_FD 63
++#define NONE UINT32_MAX
++#define BAD (UINT32_MAX - 1)
++#define BIT(fd) (UINT64_C(1) << (fd))
++#define REQUIRE(condition) do { \
++    if (!(condition)) { \
++        dprintf(2, "pselect zero: line %d, errno %d\n", __LINE__, errno); \
++        return 80; \
++    } \
++} while (0)
++
++struct mask_argument {
++    const void *mask;
++    uint64_t size;
++};
++
++struct report {
++    int64_t result;
++    int32_t error;
++    uint32_t mode;
++    uint64_t raw_nfds;
++    uint32_t offsets[3];
++    uint32_t reserved;
++    int64_t timeout[2];
++    uint64_t mask_size;
++};
++_Static_assert(sizeof(struct mask_argument) == 16, "x86-64 mask wrapper");
++_Static_assert(sizeof(struct timespec) == 16, "x86-64 timespec");
++_Static_assert(sizeof(struct report) == 64, "complete report layout");
++
++static int pin_pair(int pair[2], int first, int second) {
++    /* Retain both originals before replacing either destination. All changes
++     * affect only this fixture process, never the Rust test's descriptor table. */
++    int a = fcntl(pair[0], F_DUPFD_CLOEXEC, 80);
++    int b = fcntl(pair[1], F_DUPFD_CLOEXEC, 80);
++    REQUIRE(a >= 80 && b >= 80);
++    REQUIRE(close(pair[0]) == 0 && close(pair[1]) == 0);
++    REQUIRE(dup2(a, first) == first && dup2(b, second) == second);
++    REQUIRE(close(a) == 0 && close(b) == 0);
++    return 0;
++}
++
++static int fixed_descriptors(void) {
++    int numbers[] = {READ_FD, WRITE_FD, SOCKET_FD, PEER_FD,
++                     PATH_FD, ABSENT_FD, LAST_FD};
++    for (unsigned i = 0; i < sizeof(numbers) / sizeof(numbers[0]); ++i) {
++        errno = 0;
++        REQUIRE(close(numbers[i]) == 0 || errno == EBADF);
++    }
++    int pair[2];
++    REQUIRE(pipe(pair) == 0);
++    REQUIRE(pin_pair(pair, READ_FD, WRITE_FD) == 0);
++    REQUIRE(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
++    REQUIRE(pin_pair(pair, SOCKET_FD, PEER_FD) == 0);
++    int path = open(".", O_PATH | O_CLOEXEC);
++    REQUIRE(path >= 0);
++    REQUIRE(dup2(path, PATH_FD) == PATH_FD);
++    if (path != PATH_FD) REQUIRE(close(path) == 0);
++    REQUIRE(dup2(READ_FD, LAST_FD) == LAST_FD);
++    errno = 0;
++    REQUIRE(fcntl(ABSENT_FD, F_GETFD) == -1 && errno == EBADF);
++    return 0;
++}
++
++static void put_word(unsigned char *arena, uint32_t offset, uint64_t word) {
++    memcpy(arena + offset, &word, sizeof(word));
++}
++
++static void *set_pointer(unsigned char *arena, uint32_t offset) {
++    if (offset == NONE) return NULL;
++    if (offset == BAD) return (void *)(uintptr_t)-1;
++    return arena + offset;
++}
++
++static int write_all(const void *data, size_t length) {
++    const unsigned char *bytes = data;
++    while (length) {
++        ssize_t n = write(STDOUT_FILENO, bytes, length);
++        if (n < 0 && errno == EINTR) continue;
++        if (n <= 0) return -1;
++        bytes += n;
++        length -= (size_t)n;
++    }
++    return 0;
++}
++
++int main(int argc, char **argv) {
++    REQUIRE(argc == 2);
++    int mode = atoi(argv[1]);
++    REQUIRE(mode >= 0 && mode < 18);
++    REQUIRE(fixed_descriptors() == 0);
++    unsigned char *arena = mmap(NULL, ARENA, PROT_READ | PROT_WRITE,
++                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    struct timespec *zero = mmap(NULL, PAGE, PROT_READ | PROT_WRITE,
++                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    REQUIRE(arena != MAP_FAILED && zero != MAP_FAILED);
++    memset(arena, 0xa5, ARENA);
++    memset(zero, 0xa5, PAGE);
++    zero->tv_sec = zero->tv_nsec = 0;
++    unsigned char expected_timeout[PAGE];
++    memcpy(expected_timeout, zero, PAGE);
++    REQUIRE(mprotect(zero, PAGE, PROT_READ) == 0);
++
++    struct report output = {0};
++    output.mode = (uint32_t)mode;
++    output.raw_nfds = WRITE_FD + 1;
++    output.offsets[0] = 128;
++    output.offsets[1] = output.offsets[2] = NONE;
++    uint64_t inputs[3] = {BIT(READ_FD) | BIT(63), 0, 0};
++    uint64_t results[3] = {0, 0, 0};
++    long expected_result = 0;
++    int expected_error = 0;
++    int write_open = 1;
++    int protected_page = -1;
++    int protection = PROT_READ;
++
++    /* Every mode makes exactly one raw pselect6 call. Preparation is causal:
++     * no worker, timer, signal, retry, or observed clock affects readiness. */
++    switch (mode) {
++    case 0: /* Empty read end. */
++        break;
++    case 1: /* Buffered read end. */
++    case 7: /* Dirty high nfds bits must be ignored. */
++    case 9: /* NULL inner mask ignores even an absurd sigsetsize. */
++        REQUIRE(write(WRITE_FD, "r", 1) == 1);
++        results[0] = BIT(READ_FD);
++        expected_result = 1;
++        if (mode == 7) output.raw_nfds |= BIT(32) | BIT(63);
++        if (mode == 9) output.mask_size = UINT64_MAX;
++        break;
++    case 2: { /* A drained pipe with a live writer is not readable. */
++        char byte = 0;
++        REQUIRE(write(WRITE_FD, "r", 1) == 1);
++        REQUIRE(read(READ_FD, &byte, 1) == 1 && byte == 'r');
++        break;
++    }
++    case 3: /* EOF is readable without buffered data. */
++        REQUIRE(close(WRITE_FD) == 0);
++        write_open = 0;
++        results[0] = BIT(READ_FD);
++        expected_result = 1;
++        break;
++    case 4: /* The pipe write end is writable. */
++        output.offsets[0] = NONE;
++        output.offsets[1] = 256;
++        inputs[1] = BIT(WRITE_FD) | BIT(63);
++        results[1] = BIT(WRITE_FD);
++        expected_result = 1;
++        break;
++    case 5: /* One socket ready in two sets counts twice. */
++    case 15: /* All three output pointers alias; except is copied last. */
++        REQUIRE(write(PEER_FD, "s", 1) == 1);
++        output.raw_nfds = SOCKET_FD + 1;
++        output.offsets[1] = mode == 15 ? 128 : 256;
++        if (mode == 15) output.offsets[2] = 128;
++        inputs[0] = inputs[1] = inputs[2] = BIT(SOCKET_FD) | BIT(63);
++        results[0] = results[1] = BIT(SOCKET_FD);
++        expected_result = 2;
++        break;
++    case 6: /* Linux's open-fd check precedes fdget's O_PATH exclusion.
++             * Its POLLNVAL then contributes to all three select masks. */
++        output.raw_nfds = PATH_FD + 1;
++        output.offsets[1] = 256;
++        output.offsets[2] = 384;
++        inputs[0] = inputs[1] = inputs[2] = BIT(PATH_FD) | BIT(63);
++        results[0] = results[1] = results[2] = BIT(PATH_FD);
++        expected_result = 3;
++        break;
++    case 8: /* Low-word zero ignores every inaccessible fd-set pointer. */
++    case 17: /* A negative low word is EINVAL before fd-set access. */
++        output.raw_nfds = BIT(32) | (mode == 17 ? UINT32_MAX : 0);
++        output.offsets[0] = output.offsets[1] = output.offsets[2] = BAD;
++        if (mode == 17) {
++            expected_result = -1;
++            expected_error = EINVAL;
++        }
++        break;
++    case 10: /* Exactly one word at the readable mapping boundary. */
++        REQUIRE(write(WRITE_FD, "r", 1) == 1);
++        output.raw_nfds = 64;
++        output.offsets[0] = PAGE - 8;
++        inputs[0] = results[0] = BIT(LAST_FD);
++        expected_result = 1;
++        protected_page = 1;
++        protection = PROT_NONE;
++        break;
++    case 11: /* Readable input, entirely read-only output. */
++    case 12: /* An eight-byte fd set crosses writable -> read-only. */
++        output.offsets[0] = mode == 11 ? PAGE + 128 : PAGE - 4;
++        expected_result = -1;
++        expected_error = EFAULT;
++        protected_page = 1;
++        break;
++    case 13: /* Read output survives the second set's copyout fault. */
++    case 14: /* Read and write outputs survive the third set's fault. */
++        REQUIRE(write(WRITE_FD, "r", 1) == 1);
++        output.offsets[1] = mode == 13 ? PAGE + 128 : 256;
++        output.offsets[2] = mode == 14 ? PAGE + 128 : 384;
++        inputs[1] = BIT(WRITE_FD) | BIT(63);
++        inputs[2] = BIT(READ_FD) | BIT(63);
++        results[0] = BIT(READ_FD);
++        results[1] = BIT(WRITE_FD);
++        expected_result = -1;
++        expected_error = EFAULT;
++        protected_page = 1;
++        break;
++    case 16: /* A selected absent fd beats read-set copyout EFAULT. */
++        REQUIRE(write(WRITE_FD, "r", 1) == 1);
++        output.raw_nfds = ABSENT_FD + 1;
++        output.offsets[0] = PAGE + 128;
++        output.offsets[1] = 256;
++        inputs[1] = BIT(ABSENT_FD) | BIT(63);
++        expected_result = -1;
++        expected_error = EBADF;
++        protected_page = 1;
++        break;
++    }
++    for (unsigned i = 0; i < 3; ++i) {
++        if (output.offsets[i] < ARENA) put_word(arena, output.offsets[i], inputs[i]);
++    }
++    unsigned char expected[ARENA];
++    memcpy(expected, arena, ARENA);
++    if (expected_error == 0) {
++        /* This order is observable when all three pointers alias. */
++        for (unsigned i = 0; i < 3; ++i) {
++            if (output.offsets[i] < ARENA)
++                put_word(expected, output.offsets[i], results[i]);
++        }
++    } else if (mode == 12) {
++        /* The high half keeps its input sentinel; only the writable prefix clears. */
++        memset(expected + PAGE - 4, 0, 4);
++    } else if (mode == 13 || mode == 14) {
++        put_word(expected, output.offsets[0], results[0]);
++        if (mode == 14) put_word(expected, output.offsets[1], results[1]);
++    }
++    if (protected_page >= 0)
++        REQUIRE(mprotect(arena + protected_page * PAGE, PAGE, protection) == 0);
++
++    struct mask_argument mask = {.mask = NULL, .size = output.mask_size};
++    errno = 0;
++    output.result = syscall(SYS_pselect6, output.raw_nfds,
++                            set_pointer(arena, output.offsets[0]),
++                            set_pointer(arena, output.offsets[1]),
++                            set_pointer(arena, output.offsets[2]),
++                            zero, mode == 9 ? &mask : NULL);
++    output.error = output.result == -1 ? errno : 0;
++    memcpy(output.timeout, zero, sizeof(output.timeout));
++    REQUIRE(output.result == expected_result && output.error == expected_error);
++    REQUIRE(memcmp(zero, expected_timeout, PAGE) == 0);
++    REQUIRE(mask.mask == NULL && mask.size == output.mask_size);
++    /* Read inaccessible bytes only after the syscall so their preservation is
++     * compared too. This never grants the syscall extra write permission. */
++    REQUIRE(mprotect(arena, ARENA, PROT_READ) == 0);
++    REQUIRE(memcmp(arena, expected, ARENA) == 0);
++    REQUIRE(write_all(&output, sizeof(output)) == 0);
++    REQUIRE(write_all(arena, ARENA) == 0);
++    REQUIRE(munmap(arena, ARENA) == 0 && munmap(zero, PAGE) == 0);
++    REQUIRE(close(READ_FD) == 0 && close(LAST_FD) == 0);
++    if (write_open) REQUIRE(close(WRITE_FD) == 0);
++    REQUIRE(close(SOCKET_FD) == 0 && close(PEER_FD) == 0 && close(PATH_FD) == 0);
++    return 0;
++}
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index 55a0584ebaa..fd5ede1d170 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -806,6 +806,9 @@ mod random_device_stream;
+ #[path = "support/poll_descriptor_abi.rs"]
+ mod poll_descriptor_abi;
+ 
++#[path = "support/pselect_zero.rs"]
++mod pselect_zero;
++
+ #[test]
+ fn file_script_exec_plain() {
+     file_script_exec_control("file_script_exec_plain", "plain");
+@@ -11186,6 +11189,10 @@ fn repair_prctl_required_kvm_is_not_optional() {
+         "kvm_direct_and_tool_match_prctl_identity_cell",
+         "kvm_direct_and_tool_match_thp_disable_cell",
+         "stable_socket_metadata_queries_match_native_linux_on_kvm",
++        "pselect_zero::readiness_matches_native_pipe_socket_and_path_states",
++        "pselect_zero::raw_abi_and_readonly_zero_timeout_match_native",
++        "pselect_zero::copyout_faults_order_and_aliasing_match_native",
++        "pselect_zero::captured_outputs_and_dup_aliases_are_refused",
+         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
+         "fchdir_consumes_low_descriptor_words_on_kvm",
+         "getdents64_consumes_low_descriptor_words_on_kvm",
+diff --git a/reverie-kvm/tests/support/pselect_zero.rs b/reverie-kvm/tests/support/pselect_zero.rs
+new file mode 100644
+index 00000000000..335f1c5cf4c
+--- /dev/null
++++ b/reverie-kvm/tests/support/pselect_zero.rs
+@@ -0,0 +1,179 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++use super::*;
++
++fn pselect_zero_cases(test: &str, modes: &[u8]) {
++    if !leader_self_exec_bounded(test) {
++        return;
++    }
++    let directory = TestDirectory::new();
++    let program = compile_c_program(
++        &directory.0,
++        "pselect-zero",
++        include_str!("../fixtures/pselect_zero.c"),
++    );
++    let image = std::fs::read(&program).unwrap();
++    for &mode in modes {
++        let argument = mode.to_string();
++        let native = std::process::Command::new(&program)
++            .current_dir(&directory.0)
++            .arg(&argument)
++            .output()
++            .unwrap();
++        assert!(native.status.success(), "native mode={mode}: {native:?}");
++        assert!(native.stderr.is_empty(), "native mode={mode}: {native:?}");
++        assert_eq!(native.stdout.len(), 64 + 8192, "complete report and arena");
++        assert_eq!(&native.stdout[12..16], &u32::from(mode).to_ne_bytes());
++        let (result, error) = match mode {
++            0 | 2 | 8 => (0_i64, 0_i32),
++            1 | 3 | 4 | 7 | 9 | 10 => (1, 0),
++            5 | 15 => (2, 0),
++            6 => (3, 0),
++            11..=14 => (-1, libc::EFAULT),
++            16 => (-1, libc::EBADF),
++            17 => (-1, libc::EINVAL),
++            _ => panic!("unregistered pselect mode {mode}"),
++        };
++        assert_eq!(&native.stdout[..8], &result.to_ne_bytes());
++        assert_eq!(&native.stdout[8..12], &error.to_ne_bytes());
++        assert_eq!(&native.stdout[36..56], &[0; 20], "padding and zero timeout");
++        for ownership in [
++            None,
++            Some(ThreadOwnership::Host),
++            Some(ThreadOwnership::Tool),
++        ] {
++            let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++            backend
++                .install_static_elf_with_context(
++                    &image,
++                    &[program.to_str().unwrap(), &argument],
++                    &[],
++                    &directory.0,
++                )
++                .unwrap();
++            let (code, stdout, stderr) = if let Some(ownership) = ownership {
++                backend.set_thread_ownership(ownership);
++                let (trace, code, stdout, stderr) = futures::executor::block_on(
++                    backend.run_static_elf_with_tool::<StraceTool>((), true),
++                )
++                .unwrap();
++                assert_eq!(
++                    trace
++                        .syscalls()
++                        .iter()
++                        .filter(|name| name.as_str() == "pselect6")
++                        .count(),
++                    1,
++                    "one actual pselect6 callback: mode={mode} ownership={ownership:?}"
++                );
++                (code, stdout, stderr)
++            } else {
++                backend.run_static_elf_captured().unwrap()
++            };
++            eprintln!("pselect zero mode={mode} ownership={ownership:?} code={code}");
++            assert_eq!(code, 0, "mode={mode} ownership={ownership:?}");
++            assert!(
++                stderr.is_empty(),
++                "mode={mode} ownership={ownership:?}: {stderr:?}"
++            );
++            assert_eq!(
++                stdout, native.stdout,
++                "complete report and arena: mode={mode} ownership={ownership:?}"
++            );
++        }
++    }
++}
++
++#[test]
++fn readiness_matches_native_pipe_socket_and_path_states() {
++    pselect_zero_cases(
++        "pselect_zero::readiness_matches_native_pipe_socket_and_path_states",
++        &[0, 1, 2, 3, 4, 5, 6],
++    );
++}
++
++#[test]
++fn raw_abi_and_readonly_zero_timeout_match_native() {
++    pselect_zero_cases(
++        "pselect_zero::raw_abi_and_readonly_zero_timeout_match_native",
++        &[7, 8, 9, 10, 17],
++    );
++}
++
++#[test]
++fn copyout_faults_order_and_aliasing_match_native() {
++    pselect_zero_cases(
++        "pselect_zero::copyout_faults_order_and_aliasing_match_native",
++        &[11, 12, 13, 14, 15, 16],
++    );
++}
++
++#[test]
++fn captured_outputs_and_dup_aliases_are_refused() {
++    if !leader_self_exec_bounded("pselect_zero::captured_outputs_and_dup_aliases_are_refused") {
++        return;
++    }
++    let directory = TestDirectory::new();
++    let program = compile_c_program(
++        &directory.0,
++        "pselect-captured-output",
++        include_str!("../fixtures/pselect_captured_output.c"),
++    );
++    let image = std::fs::read(&program).unwrap();
++    let mut outcomes = Vec::new();
++    // This is an explicit unsupported-boundary test, not native parity: a
++    // native process has ordinary host streams, not Reverie's capture vectors.
++    for ownership in [
++        None,
++        Some(ThreadOwnership::Host),
++        Some(ThreadOwnership::Tool),
++    ] {
++        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++        backend
++            .install_static_elf_with_context(
++                &image,
++                &[program.to_str().unwrap()],
++                &[],
++                &directory.0,
++            )
++            .unwrap();
++        let (code, stdout, stderr, callbacks) = if let Some(ownership) = ownership {
++            backend.set_thread_ownership(ownership);
++            let (trace, code, stdout, stderr) = futures::executor::block_on(
++                backend.run_static_elf_with_tool::<StraceTool>((), true),
++            )
++            .unwrap();
++            let count = trace
++                .syscalls()
++                .iter()
++                .filter(|name| name.as_str() == "pselect6")
++                .count();
++            (code, stdout, stderr, Some(count))
++        } else {
++            let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
++            (code, stdout, stderr, None)
++        };
++        eprintln!(
++            "captured pselect ownership={ownership:?} code={code} callbacks={callbacks:?} stderr={stderr:?}"
++        );
++        outcomes.push((ownership, code, stdout, stderr, callbacks));
++    }
++    // Retain all three old-production outcomes before reporting the first
++    // failure, so direct and both Tool ownership routes are actually exercised.
++    for (ownership, code, stdout, stderr, callbacks) in outcomes {
++        assert_eq!(code, 0, "ownership={ownership:?}");
++        assert_eq!(
++            stdout, b"captured pselect refused 4\n",
++            "ownership={ownership:?}"
++        );
++        assert!(stderr.is_empty(), "ownership={ownership:?}: {stderr:?}");
++        if ownership.is_some() {
++            assert_eq!(callbacks, Some(4), "ownership={ownership:?}");
++        }
++    }
++}

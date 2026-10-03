@@ -1,0 +1,7 @@
+{
+  "reverie-kvm/src/executor.rs": "44a40715ff6ffa90be43223dbfdb901e4486d422eb517d97d4c75d46116c6ca4",
+  "reverie-kvm/tests/static_elf.rs": "2c712a6a2c15141a9f2f9e8dd355ba9f4f0b8dd70b04faa310e3aa63c969547f",
+  "reverie-kvm/tests/support/pselect_zero.rs": "5ef5717be11b0e4fbc5e1683d453889cf99e8465d359fd6febddd8df6f2163cd",
+  "reverie-kvm/tests/fixtures/pselect_captured_output.c": "1db20e344eb64de1e89bd518ea5cfc100dfe40fc5da91561e4f8378f6d52f7fc",
+  "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6"
+}

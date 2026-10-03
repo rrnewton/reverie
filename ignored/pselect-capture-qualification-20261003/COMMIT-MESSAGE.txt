@@ -1,0 +1,28 @@
+KVM: refuse captured-output pselect readiness
+
+[hermit2, unknown-agentname, gpt-6-astra, devbig014, role=impl]
+
+Background: Reverie stores captured stdout and stderr in memory and exposes
+them as guest pipes. The descriptor table can retain an ordinary host file
+or socket behind the same captured stream.
+
+The new zero-time pselect6 handler polled those host carriers, so identical
+captured streams could report different readiness. Pass the capture mode
+into this handler and refuse selected capture aliases with ENOSYS after
+validating all selected descriptors, before host polling or copyout.
+
+Keep native argument validation, later EBADF precedence, ordinary descriptor
+readiness, and the existing select/poll handlers unchanged. Add two-carrier
+unit controls, complete memory/capture/signal preservation assertions, and
+a real-KVM refusal test for stdout/stderr and guest dup aliases in direct,
+Strace Host, and Strace Tool execution.
+
+The old handler failed all three new unit tests (including captured results
+[1, 0]) and the new VM test in all three execution routes. The repaired
+source passes nine pselect units, four pselect VM tests, the required-device
+negative control, and all 1100 KVM library tests.
+
+Related: https://github.com/rrnewton/reverie/issues/620
+Related: https://github.com/rrnewton/reverie/pull/903
+The pre-existing select/poll capture gap remains separately tracked at
+https://github.com/rrnewton/reverie/issues/904 .

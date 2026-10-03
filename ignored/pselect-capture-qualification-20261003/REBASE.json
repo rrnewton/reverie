@@ -1,0 +1,14 @@
+{
+  "old_base": "3a196cfb9dbb775900a1acb02890b8ca10aedd0c",
+  "old_head": "9cde37e61019d61bcc0592ee42ad471bf1650802",
+  "new_base": "2475b71bce56235663eb7d556c46aa4aa0550ee2",
+  "new_head": "d4971bca43fd65749b9d2a9c4fd5c7dee00ad505",
+  "intervening_main_paths": [
+    "reverie-ptrace/src/task.rs",
+    "reverie-ptrace/tests/injected_syscall_group_stop.rs"
+  ],
+  "range_diff_all_equal": true,
+  "kvm_and_workspace_config_bytes_unchanged": true,
+  "shared_kvm_dependency_changes": false,
+  "full_library_repeat_required": false
+}

@@ -1,0 +1,25 @@
+{
+  "head": "d4971bca43fd65749b9d2a9c4fd5c7dee00ad505",
+  "tree": "a8e896fdcb2cf6dabb7dafa6c02f5a875497febf",
+  "base": "2475b71bce56235663eb7d556c46aa4aa0550ee2",
+  "source": {
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+    "reverie-kvm/src/executor.rs": "44a40715ff6ffa90be43223dbfdb901e4486d422eb517d97d4c75d46116c6ca4",
+    "reverie-kvm/tests/static_elf.rs": "2c712a6a2c15141a9f2f9e8dd355ba9f4f0b8dd70b04faa310e3aa63c969547f",
+    "reverie-kvm/tests/support/pselect_zero.rs": "5ef5717be11b0e4fbc5e1683d453889cf99e8465d359fd6febddd8df6f2163cd",
+    "reverie-kvm/tests/fixtures/pselect_zero.c": "1b319f5a90f13ee43ea1f308b27cdbb164656ad7924478c85c6896ef20ed2f03",
+    "reverie-kvm/tests/fixtures/pselect_captured_output.c": "1db20e344eb64de1e89bd518ea5cfc100dfe40fc5da91561e4f8378f6d52f7fc"
+  },
+  "test_binaries": {
+    "target/pselect-capture-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a": "252074ae72d7e497ba1564d26b56fb65630c82261b70fec90ff5dd83a42a8e62",
+    "target/pselect-capture-qualification/debug/deps/static_elf-9a322fcc3d61e965": "466ed347aeab78060a7f08ecb2127fba2649475103a836a1defa43236ce257aa"
+  },
+  "full_pr_paths": [
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/tests/fixtures/pselect_captured_output.c",
+    "reverie-kvm/tests/fixtures/pselect_zero.c",
+    "reverie-kvm/tests/static_elf.rs",
+    "reverie-kvm/tests/support/pselect_zero.rs"
+  ],
+  "guard_sha256": "4008a35437df52f41d35287f042d69829b6ad0ffd31cb1fb7f732d6c68dc454b"
+}

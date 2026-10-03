@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/rrnewton/reverie",
+  "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+  "path": "reverie-kvm/src/executor.rs",
+  "original_source_sha256": "29ed3c15526792c21c5c3af59a068cb93feb95391dd727f250b233b95f271e16",
+  "original_blob": "fce399823d8ee5fbefd0f328daf2f472c762e2bc",
+  "proposed_source_sha256": "993bdc94f91f6d4658adb31055fa14c673a630ee718c1d727a2c7f9661a61883",
+  "patch_sha256": "9042129e875fb17b18e027dcb2a33323c3b658081aaab869ba12e6695fdf3fca",
+  "applied": false,
+  "compiled": false,
+  "executed": false,
+  "production_changed": false,
+  "tests": [
+    "tests::pselect6_zero_captured_alias_refuses_carrier_dependent_readiness",
+    "tests::pselect6_zero_captured_alias_preserves_validation_precedence",
+    "tests::pselect6_zero_capture_boundary_preserves_ordinary_and_opath_controls"
+  ]
+}

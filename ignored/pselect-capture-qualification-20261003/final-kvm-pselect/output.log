@@ -1,0 +1,9 @@
+
+running 4 tests
+test pselect_zero::captured_outputs_and_dup_aliases_are_refused ... ok
+test pselect_zero::copyout_faults_order_and_aliasing_match_native ... ok
+test pselect_zero::raw_abi_and_readonly_zero_timeout_match_native ... ok
+test pselect_zero::readiness_matches_native_pipe_socket_and_path_states ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 417 filtered out; finished in 4.34s
+

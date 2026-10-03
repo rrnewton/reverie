@@ -1,0 +1,88 @@
+{
+  "phase": "repaired-pselect-unit",
+  "command": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-capture-repair-20261003/target/pselect-capture-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a",
+    "executor::tests::pselect6_",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-capture-repair-20261003",
+  "start_free_bytes": 1553810513920,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice": 10,
+  "seconds_bound": 180.0,
+  "started_et": "2026-10-03 08:11:53 AM ET",
+  "source_before": {
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+    "reverie-kvm/src/executor.rs": "44a40715ff6ffa90be43223dbfdb901e4486d422eb517d97d4c75d46116c6ca4",
+    "reverie-kvm/tests/static_elf.rs": "2c712a6a2c15141a9f2f9e8dd355ba9f4f0b8dd70b04faa310e3aa63c969547f",
+    "reverie-kvm/tests/support/pselect_zero.rs": "5ef5717be11b0e4fbc5e1683d453889cf99e8465d359fd6febddd8df6f2163cd",
+    "reverie-kvm/tests/fixtures/pselect_zero.c": "1b319f5a90f13ee43ea1f308b27cdbb164656ad7924478c85c6896ef20ed2f03",
+    "reverie-kvm/tests/fixtures/pselect_captured_output.c": "1db20e344eb64de1e89bd518ea5cfc100dfe40fc5da91561e4f8378f6d52f7fc"
+  },
+  "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+  "resource_environment": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-capture-repair-20261003/target/pselect-capture-qualification",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "XDG_CACHE_HOME": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-capture-repair-20261003/target/pselect-capture-script-cache",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "leader": {
+    "pid": 243706,
+    "state": "R",
+    "ppid": 243465,
+    "pgid": 243706,
+    "session": 243706,
+    "start": 55898241
+  },
+  "remaining_descendants": [],
+  "cleanup": [
+    {
+      "signal": 15,
+      "targets": []
+    }
+  ],
+  "witnessed_descendants": [
+    {
+      "pid": 243706,
+      "state": "Z",
+      "ppid": 243465,
+      "pgid": 243706,
+      "session": 243706,
+      "start": 55898241
+    }
+  ],
+  "actual_command_rc": 0,
+  "source_after": {
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+    "reverie-kvm/src/executor.rs": "44a40715ff6ffa90be43223dbfdb901e4486d422eb517d97d4c75d46116c6ca4",
+    "reverie-kvm/tests/static_elf.rs": "2c712a6a2c15141a9f2f9e8dd355ba9f4f0b8dd70b04faa310e3aa63c969547f",
+    "reverie-kvm/tests/support/pselect_zero.rs": "5ef5717be11b0e4fbc5e1683d453889cf99e8465d359fd6febddd8df6f2163cd",
+    "reverie-kvm/tests/fixtures/pselect_zero.c": "1b319f5a90f13ee43ea1f308b27cdbb164656ad7924478c85c6896ef20ed2f03",
+    "reverie-kvm/tests/fixtures/pselect_captured_output.c": "1db20e344eb64de1e89bd518ea5cfc100dfe40fc5da91561e4f8378f6d52f7fc"
+  },
+  "stop_reason": null,
+  "wall_seconds": 0.4156762710772455,
+  "minimum_free_bytes": 1553810513920,
+  "end_free_bytes": 1553810513920,
+  "output_bytes": 966,
+  "output_sha256": "c2b7e43c48c2fc4b1a8684327be202e84c47f07b0d8f00a208c19acec8cae548",
+  "cancel_signals": [],
+  "rc": 0,
+  "test_binaries": {
+    "target/pselect-capture-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a": "252074ae72d7e497ba1564d26b56fb65630c82261b70fec90ff5dd83a42a8e62",
+    "target/pselect-capture-qualification/debug/deps/static_elf-9a322fcc3d61e965": "466ed347aeab78060a7f08ecb2127fba2649475103a836a1defa43236ce257aa"
+  }
+}

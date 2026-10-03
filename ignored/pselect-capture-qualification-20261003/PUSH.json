@@ -1,0 +1,11 @@
+{
+  "args": [
+    "with-proxy",
+    "git",
+    "push",
+    "--force-with-lease=refs/heads/codex/kvm-pselect-capture-repair-20261003:",
+    "https://github.com/rrnewton/reverie",
+    "d4971bca43fd65749b9d2a9c4fd5c7dee00ad505:refs/heads/codex/kvm-pselect-capture-repair-20261003"
+  ],
+  "rc": 0
+}

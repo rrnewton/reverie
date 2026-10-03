@@ -1,0 +1,776 @@
+{
+  "phase": "full-kvm-library",
+  "command": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-capture-repair-20261003/target/pselect-capture-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-capture-repair-20261003",
+  "start_free_bytes": 1553729413120,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice": 10,
+  "seconds_bound": 900.0,
+  "started_et": "2026-10-03 08:12:51 AM ET",
+  "source_before": {
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+    "reverie-kvm/src/executor.rs": "44a40715ff6ffa90be43223dbfdb901e4486d422eb517d97d4c75d46116c6ca4",
+    "reverie-kvm/tests/static_elf.rs": "2c712a6a2c15141a9f2f9e8dd355ba9f4f0b8dd70b04faa310e3aa63c969547f",
+    "reverie-kvm/tests/support/pselect_zero.rs": "5ef5717be11b0e4fbc5e1683d453889cf99e8465d359fd6febddd8df6f2163cd",
+    "reverie-kvm/tests/fixtures/pselect_zero.c": "1b319f5a90f13ee43ea1f308b27cdbb164656ad7924478c85c6896ef20ed2f03",
+    "reverie-kvm/tests/fixtures/pselect_captured_output.c": "1db20e344eb64de1e89bd518ea5cfc100dfe40fc5da91561e4f8378f6d52f7fc"
+  },
+  "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+  "resource_environment": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-capture-repair-20261003/target/pselect-capture-qualification",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "XDG_CACHE_HOME": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-capture-repair-20261003/target/pselect-capture-script-cache",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "leader": {
+    "pid": 359858,
+    "state": "R",
+    "ppid": 359142,
+    "pgid": 359858,
+    "session": 359858,
+    "start": 55904074
+  },
+  "remaining_descendants": [],
+  "cleanup": [
+    {
+      "signal": 15,
+      "targets": [
+        {
+          "pid": 379033,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 378987,
+          "session": 359858,
+          "start": 55904781
+        },
+        {
+          "pid": 381167,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 381142,
+          "session": 359858,
+          "start": 55904809
+        },
+        {
+          "pid": 381914,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 381906,
+          "session": 359858,
+          "start": 55904842
+        },
+        {
+          "pid": 383007,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 383001,
+          "session": 359858,
+          "start": 55904875
+        },
+        {
+          "pid": 384330,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 384325,
+          "session": 359858,
+          "start": 55904909
+        },
+        {
+          "pid": 384828,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 384817,
+          "session": 359858,
+          "start": 55904926
+        },
+        {
+          "pid": 385253,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 385248,
+          "session": 359858,
+          "start": 55904940
+        },
+        {
+          "pid": 385574,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 385565,
+          "session": 359858,
+          "start": 55904952
+        },
+        {
+          "pid": 386327,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 386306,
+          "session": 359858,
+          "start": 55904977
+        },
+        {
+          "pid": 386917,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 386909,
+          "session": 359858,
+          "start": 55904993
+        },
+        {
+          "pid": 387258,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 387251,
+          "session": 359858,
+          "start": 55905006
+        },
+        {
+          "pid": 387812,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 387785,
+          "session": 359858,
+          "start": 55905020
+        },
+        {
+          "pid": 393425,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 393420,
+          "session": 359858,
+          "start": 55905224
+        },
+        {
+          "pid": 393928,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 393903,
+          "session": 359858,
+          "start": 55905241
+        },
+        {
+          "pid": 394619,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 394608,
+          "session": 359858,
+          "start": 55905255
+        },
+        {
+          "pid": 394780,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 394756,
+          "session": 359858,
+          "start": 55905266
+        },
+        {
+          "pid": 395474,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 395467,
+          "session": 359858,
+          "start": 55905289
+        },
+        {
+          "pid": 396482,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 396473,
+          "session": 359858,
+          "start": 55905306
+        },
+        {
+          "pid": 397131,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 397086,
+          "session": 359858,
+          "start": 55905321
+        },
+        {
+          "pid": 398978,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 398958,
+          "session": 359858,
+          "start": 55905334
+        },
+        {
+          "pid": 399532,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 399526,
+          "session": 359858,
+          "start": 55905363
+        },
+        {
+          "pid": 399814,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 399807,
+          "session": 359858,
+          "start": 55905382
+        },
+        {
+          "pid": 400887,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 400883,
+          "session": 359858,
+          "start": 55905438
+        },
+        {
+          "pid": 401137,
+          "state": "Z",
+          "ppid": 359142,
+          "pgid": 401133,
+          "session": 359858,
+          "start": 55905459
+        }
+      ]
+    }
+  ],
+  "witnessed_descendants": [
+    {
+      "pid": 359858,
+      "state": "S",
+      "ppid": 359142,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55904074
+    },
+    {
+      "pid": 364624,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55904255
+    },
+    {
+      "pid": 366743,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55904379
+    },
+    {
+      "pid": 378299,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 378299,
+      "session": 359858,
+      "start": 55904770
+    },
+    {
+      "pid": 378301,
+      "state": "S",
+      "ppid": 378299,
+      "pgid": 378299,
+      "session": 359858,
+      "start": 55904770
+    },
+    {
+      "pid": 379033,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 378987,
+      "session": 359858,
+      "start": 55904781
+    },
+    {
+      "pid": 381167,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 381142,
+      "session": 359858,
+      "start": 55904809
+    },
+    {
+      "pid": 381914,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 381906,
+      "session": 359858,
+      "start": 55904842
+    },
+    {
+      "pid": 383007,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 383001,
+      "session": 359858,
+      "start": 55904875
+    },
+    {
+      "pid": 383851,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 383851,
+      "session": 359858,
+      "start": 55904898
+    },
+    {
+      "pid": 383854,
+      "state": "S",
+      "ppid": 383851,
+      "pgid": 383851,
+      "session": 359858,
+      "start": 55904898
+    },
+    {
+      "pid": 384330,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 384325,
+      "session": 359858,
+      "start": 55904909
+    },
+    {
+      "pid": 384828,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 384817,
+      "session": 359858,
+      "start": 55904926
+    },
+    {
+      "pid": 385253,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 385248,
+      "session": 359858,
+      "start": 55904940
+    },
+    {
+      "pid": 385574,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 385565,
+      "session": 359858,
+      "start": 55904952
+    },
+    {
+      "pid": 386327,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 386306,
+      "session": 359858,
+      "start": 55904977
+    },
+    {
+      "pid": 386917,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 386909,
+      "session": 359858,
+      "start": 55904993
+    },
+    {
+      "pid": 387258,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 387251,
+      "session": 359858,
+      "start": 55905006
+    },
+    {
+      "pid": 387812,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 387785,
+      "session": 359858,
+      "start": 55905020
+    },
+    {
+      "pid": 388662,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 388662,
+      "session": 359858,
+      "start": 55905035
+    },
+    {
+      "pid": 388664,
+      "state": "S",
+      "ppid": 388662,
+      "pgid": 388662,
+      "session": 359858,
+      "start": 55905035
+    },
+    {
+      "pid": 392145,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 392145,
+      "session": 359858,
+      "start": 55905159
+    },
+    {
+      "pid": 392149,
+      "state": "S",
+      "ppid": 392145,
+      "pgid": 392145,
+      "session": 359858,
+      "start": 55905160
+    },
+    {
+      "pid": 393425,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 393420,
+      "session": 359858,
+      "start": 55905224
+    },
+    {
+      "pid": 393928,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 393903,
+      "session": 359858,
+      "start": 55905241
+    },
+    {
+      "pid": 394619,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 394608,
+      "session": 359858,
+      "start": 55905255
+    },
+    {
+      "pid": 394780,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 394756,
+      "session": 359858,
+      "start": 55905266
+    },
+    {
+      "pid": 395307,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 395307,
+      "session": 359858,
+      "start": 55905278
+    },
+    {
+      "pid": 395308,
+      "state": "S",
+      "ppid": 395307,
+      "pgid": 395307,
+      "session": 359858,
+      "start": 55905279
+    },
+    {
+      "pid": 395474,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 395467,
+      "session": 359858,
+      "start": 55905289
+    },
+    {
+      "pid": 396482,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 396473,
+      "session": 359858,
+      "start": 55905306
+    },
+    {
+      "pid": 397131,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 397086,
+      "session": 359858,
+      "start": 55905321
+    },
+    {
+      "pid": 398978,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 398958,
+      "session": 359858,
+      "start": 55905334
+    },
+    {
+      "pid": 399432,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 399432,
+      "session": 359858,
+      "start": 55905353
+    },
+    {
+      "pid": 399437,
+      "state": "S",
+      "ppid": 399432,
+      "pgid": 399432,
+      "session": 359858,
+      "start": 55905353
+    },
+    {
+      "pid": 399532,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 399526,
+      "session": 359858,
+      "start": 55905363
+    },
+    {
+      "pid": 399814,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 399807,
+      "session": 359858,
+      "start": 55905382
+    },
+    {
+      "pid": 400887,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 400883,
+      "session": 359858,
+      "start": 55905438
+    },
+    {
+      "pid": 401137,
+      "state": "Z",
+      "ppid": 359142,
+      "pgid": 401133,
+      "session": 359858,
+      "start": 55905459
+    },
+    {
+      "pid": 401878,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 401878,
+      "session": 359858,
+      "start": 55905500
+    },
+    {
+      "pid": 401879,
+      "state": "S",
+      "ppid": 401878,
+      "pgid": 401878,
+      "session": 359858,
+      "start": 55905501
+    },
+    {
+      "pid": 403190,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 403190,
+      "session": 359858,
+      "start": 55905566
+    },
+    {
+      "pid": 403195,
+      "state": "S",
+      "ppid": 403190,
+      "pgid": 403190,
+      "session": 359858,
+      "start": 55905566
+    },
+    {
+      "pid": 415565,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 415565,
+      "session": 359858,
+      "start": 55906047
+    },
+    {
+      "pid": 415567,
+      "state": "S",
+      "ppid": 415565,
+      "pgid": 415565,
+      "session": 359858,
+      "start": 55906047
+    },
+    {
+      "pid": 422113,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 422113,
+      "session": 359858,
+      "start": 55906365
+    },
+    {
+      "pid": 422116,
+      "state": "S",
+      "ppid": 422113,
+      "pgid": 422113,
+      "session": 359858,
+      "start": 55906365
+    },
+    {
+      "pid": 424720,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 424720,
+      "session": 359858,
+      "start": 55906479
+    },
+    {
+      "pid": 424723,
+      "state": "S",
+      "ppid": 424720,
+      "pgid": 424720,
+      "session": 359858,
+      "start": 55906479
+    },
+    {
+      "pid": 424732,
+      "state": "R",
+      "ppid": 424723,
+      "pgid": 424720,
+      "session": 359858,
+      "start": 55906480
+    },
+    {
+      "pid": 454050,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55907652
+    },
+    {
+      "pid": 456167,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55907759
+    },
+    {
+      "pid": 457317,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55907838
+    },
+    {
+      "pid": 461061,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55907944
+    },
+    {
+      "pid": 466368,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55908071
+    },
+    {
+      "pid": 468862,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55908174
+    },
+    {
+      "pid": 473225,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55908312
+    },
+    {
+      "pid": 474262,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55908397
+    },
+    {
+      "pid": 476192,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55908599
+    },
+    {
+      "pid": 478682,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55908735
+    },
+    {
+      "pid": 479847,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55908802
+    },
+    {
+      "pid": 483712,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55908944
+    },
+    {
+      "pid": 488128,
+      "state": "S",
+      "ppid": 359858,
+      "pgid": 359858,
+      "session": 359858,
+      "start": 55909109
+    }
+  ],
+  "actual_command_rc": 0,
+  "source_after": {
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+    "reverie-kvm/src/executor.rs": "44a40715ff6ffa90be43223dbfdb901e4486d422eb517d97d4c75d46116c6ca4",
+    "reverie-kvm/tests/static_elf.rs": "2c712a6a2c15141a9f2f9e8dd355ba9f4f0b8dd70b04faa310e3aa63c969547f",
+    "reverie-kvm/tests/support/pselect_zero.rs": "5ef5717be11b0e4fbc5e1683d453889cf99e8465d359fd6febddd8df6f2163cd",
+    "reverie-kvm/tests/fixtures/pselect_zero.c": "1b319f5a90f13ee43ea1f308b27cdbb164656ad7924478c85c6896ef20ed2f03",
+    "reverie-kvm/tests/fixtures/pselect_captured_output.c": "1db20e344eb64de1e89bd518ea5cfc100dfe40fc5da91561e4f8378f6d52f7fc"
+  },
+  "stop_reason": null,
+  "wall_seconds": 59.556873537017964,
+  "minimum_free_bytes": 1552731922432,
+  "end_free_bytes": 1552731922432,
+  "output_bytes": 238683,
+  "output_sha256": "97329073dd60ba156dc4af254099698c975dd38c5fcfb81d6486a2fe78be8ad5",
+  "cancel_signals": [],
+  "rc": 0,
+  "test_binaries": {
+    "target/pselect-capture-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a": "252074ae72d7e497ba1564d26b56fb65630c82261b70fec90ff5dd83a42a8e62",
+    "target/pselect-capture-qualification/debug/deps/static_elf-9a322fcc3d61e965": "466ed347aeab78060a7f08ecb2127fba2649475103a836a1defa43236ce257aa"
+  }
+}
