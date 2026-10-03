@@ -1372,13 +1372,6 @@ impl Closed {
         Ok(())
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the mapping publisher is deliberately non-activating"
-        )
-    )]
     pub(crate) fn belongs_to(&self, gate: &Arc<EntryGate>) -> bool {
         Arc::ptr_eq(&self.gate, gate)
     }
