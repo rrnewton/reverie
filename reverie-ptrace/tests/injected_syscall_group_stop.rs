@@ -4927,39 +4927,42 @@ fn held_signal_is_passed_on_unreported_under_a_tracer_seccomp_filter() {
     );
 }
 
-/// `held_signal_is_passed_on_unreported_under_a_tracer_seccomp_filter` with
-/// a filter that kills the tracer's process at a `PTRACE_GETSIGMASK`, which
-/// main does not make for this guest. The filter must decline the report
-/// before the ptrace requests that check it, so the guest runs as on main.
-/// The tracer runs in a child process of the test binary, which the filter
-/// would kill.
+/// Runs `test`, the body of the test `name`, in a child process of the test
+/// binary, and requires it to pass within 60 s. A tracer filter that kills
+/// the tracer's process would otherwise kill the test binary.
 #[cfg(target_arch = "x86_64")]
-#[test]
-fn held_signal_is_declined_before_a_ptrace_query_under_a_tracer_filter() {
-    const NAME: &str = "held_signal_is_declined_before_a_ptrace_query_under_a_tracer_filter";
+fn in_child_process(name: &str, test: impl FnOnce()) {
     const ROLE: &str = "REVERIE_FILTERED_TRACER";
-    if std::env::var(ROLE).as_deref() != Ok(NAME) {
-        let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
-            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
-            .env(ROLE, NAME)
-            .spawn()
-            .expect("start the filtered tracer");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        let status = loop {
-            if let Some(status) = child.try_wait().expect("wait for the filtered tracer") {
-                break status;
-            }
-            if std::time::Instant::now() > deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("the filtered tracer did not finish in 60 s");
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        };
-        assert!(status.success(), "filtered tracer: {status}");
+    if std::env::var(ROLE).as_deref() == Ok(name) {
+        test();
         return;
     }
-    let refused = (libc::PTRACE_GETSIGMASK, libc::SECCOMP_RET_KILL_PROCESS);
+    let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env(ROLE, name)
+        .spawn()
+        .expect("start the filtered tracer");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait for the filtered tracer") {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the filtered tracer did not finish in 60 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(status.success(), "filtered tracer: {status}");
+}
+
+/// `held_signal_is_passed_on_unreported_under_a_tracer_seccomp_filter` with
+/// a filter that kills the tracer's process at a `ptrace` of `request`,
+/// which main does not make for this guest. The guest must run as on main.
+#[cfg(target_arch = "x86_64")]
+fn held_signal_runs_as_on_main_when_the_tracer_is_killed_at(request: u32, probe: &str) {
+    let refused = (request, libc::SECCOMP_RET_KILL_PROCESS);
     let (output, log, _) = test_fn_under_tracer_filter(Some(refused), || unsafe {
         install_recorder(libc::SIGUSR1);
         let set = block(&[libc::SIGUSR1]);
@@ -4977,7 +4980,7 @@ fn held_signal_is_declined_before_a_ptrace_query_under_a_tracer_filter() {
     });
     check_recorded(
         &output,
-        "held-getsigmask-filter",
+        probe,
         &log,
         &format!("-1 {}", libc::EINTR),
         libc::SI_QUEUE,
@@ -4992,6 +4995,67 @@ fn held_signal_is_declined_before_a_ptrace_query_under_a_tracer_filter() {
         Vec::<i32>::new(),
         "the held signal is passed on unreported, as on main"
     );
+}
+
+/// The filter must decline the report before the `PTRACE_GETSIGMASK` that
+/// checks it.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn held_signal_is_declined_before_a_ptrace_query_under_a_tracer_filter() {
+    const NAME: &str = "held_signal_is_declined_before_a_ptrace_query_under_a_tracer_filter";
+    in_child_process(NAME, || {
+        held_signal_runs_as_on_main_when_the_tracer_is_killed_at(
+            libc::PTRACE_GETSIGMASK,
+            "held-getsigmask-filter",
+        )
+    });
+}
+
+/// The signal's siginfo is not read (`PTRACE_GETSIGINFO`) when it is held
+/// under a tracer filter.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn held_signal_siginfo_is_not_read_under_a_tracer_filter() {
+    const NAME: &str = "held_signal_siginfo_is_not_read_under_a_tracer_filter";
+    in_child_process(NAME, || {
+        held_signal_runs_as_on_main_when_the_tracer_is_killed_at(
+            libc::PTRACE_GETSIGINFO,
+            "held-getsiginfo-filter",
+        )
+    });
+}
+
+/// `signal_is_delivered_when_its_siginfo_cannot_be_written_back` with a
+/// filter that kills the tracer's process at a `PTRACE_GETSIGINFO`, which
+/// main does not make at an ordinary delivery stop. The siginfo is not read
+/// under a tracer filter, so the guest runs as on main: the signal is
+/// delivered once, after the hook's injection, with the siginfo Linux makes
+/// up.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn signal_siginfo_is_not_read_under_a_tracer_filter() {
+    const NAME: &str = "signal_siginfo_is_not_read_under_a_tracer_filter";
+    in_child_process(NAME, || {
+        let refused = (libc::PTRACE_GETSIGINFO, libc::SECCOMP_RET_KILL_PROCESS);
+        let (output, log, tracer) = test_fn_under_tracer_filter(Some(refused), || unsafe {
+            install_recorder(libc::SIGUSR1);
+            block(&[libc::SIGUSR1]);
+            queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+            // Main leaks the hook's getpid into the unblock's result; see
+            // https://github.com/rrnewton/reverie/issues/892. A fix flips this to 0.
+            unblock_returning(libc::SIGUSR1, libc::getpid() as libc::c_long);
+            block(&[libc::SIGUSR1]);
+            print_recorded(0, 0, libc::SIGUSR1);
+        });
+        let pid =
+            check_recorded_made_up(&output, "ordinary-getsiginfo-filter", &log, "0 0", tracer);
+        assert_eq!(
+            *log.injected.lock().unwrap(),
+            vec![Ok(pid)],
+            "the hook's getpid runs"
+        );
+        assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR1]);
+    });
 }
 
 /// What `ScriptedSignalHook`'s callbacks on a thread do, one entry per

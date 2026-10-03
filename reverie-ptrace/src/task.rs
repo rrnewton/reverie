@@ -561,8 +561,16 @@ struct TakenSignal {
 
 impl TakenSignal {
     /// Reads the record of `signal` at its signal-delivery stop, `None` if
-    /// the stop's siginfo cannot be read.
+    /// the stop's siginfo cannot be read, or if the tracer thread may be
+    /// under a seccomp filter (`thread_may_be_seccomp_filtered`). Main makes
+    /// no `PTRACE_GETSIGINFO` at these stops, and a filter can refuse it or
+    /// kill the tracer at it. Without the record, the signal is resumed as
+    /// main resumes it, and nothing is restored or counted for it
+    /// (`resume_with_signal`).
     fn at_stop(task: &Stopped, signal: Signal) -> Option<Self> {
+        if thread_may_be_seccomp_filtered() {
+            return None;
+        }
         Some(Self {
             signal,
             siginfo: StoredSiginfo(task.getsiginfo().ok()?),
@@ -6360,8 +6368,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         // fail while the guest is alive. An earlier request a filter allows
         // does not tell that it allows that later one. Checked before the
         // ptrace requests below, which main does not make here and a filter
-        // can deny as well. The requeue count below is left as it is: a
-        // filter is never removed, so no later held signal is reported.
+        // can deny as well. The record was not taken under a filter
+        // (`TakenSignal::at_stop`), and a filter is never removed, so no
+        // later held signal is reported.
         if thread_may_be_seccomp_filtered() {
             return Ok(self.pass_held_signal_unreported(signal));
         }
@@ -6454,8 +6463,10 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// the signal's own. Resumed with another signal than the one it stopped
     /// with, a signal-delivery stop delivers a siginfo that Linux makes up
     /// (`SI_USER`, the tracer's thread ID, no value), so the signal's own is
-    /// written back first. When that write fails, the signal is still
-    /// delivered, with the made-up siginfo. For a signal at its own delivery
+    /// written back first, when its stop recorded it (`TakenSignal::at_stop`,
+    /// which records nothing under a tracer seccomp filter). Without the
+    /// record, or when that write fails, the signal is still delivered, with
+    /// the made-up siginfo. For a signal at its own delivery
     /// stop that is what main delivers after the callback's injections. A
     /// held signal is reported only while the tracer thread is under no
     /// seccomp filter (`report_held_signal`), so its write can fail only when
@@ -6467,8 +6478,8 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// when the guest's mask blocks it by now (`ptrace_signal`). From a stop
     /// that is not a signal-delivery stop the outcome depends on the stop: a
     /// syscall stop queues the signal anew, while a ptrace event stop or a
-    /// group stop drops it. A reported signal resumed from such a stop, or
-    /// put back because the mask blocks it, is counted in
+    /// group stop drops it. A reported signal with a record resumed from
+    /// such a stop, or put back because the mask blocks it, is counted in
     /// `reported_requeued_signals`; the count does not tell a queued
     /// instance from a dropped one
     /// (<https://github.com/rrnewton/reverie/issues/845>). Only an injection
@@ -6496,7 +6507,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 || blocked_signal_mask(task.pid())
                     .map_or(true, |blocked| blocked & signal_mask_bit(sig) != 0)
             {
-                *self.reported_requeued_signals.entry(sig).or_default() += 1;
+                // Bounded: a count that is not consumed (`report_held_signal`
+                // declines first) must not overflow on a long run.
+                let count = self.reported_requeued_signals.entry(sig).or_default();
+                *count = count.saturating_add(1);
             }
         }
         self.resume_stopped(task, signal)?.next_state().await
