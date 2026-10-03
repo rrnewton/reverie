@@ -4000,6 +4000,8 @@ fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
             libc::close(i);
         }
     }
+    // Statuses tracer threads hold open can have any number.
+    crate::task::close_held_statuses_in_child();
 
     safeptrace::traceme_and_stop()?;
 
@@ -4176,6 +4178,8 @@ async fn postspawn<L: Tool + 'static>(
         }
     };
     assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+    // Again, in case no descriptor could be opened before the stop.
+    crate::task::hold_thread_seccomp_status();
 
     child.setoptions(
         ptrace::Options::PTRACE_O_TRACEEXEC
