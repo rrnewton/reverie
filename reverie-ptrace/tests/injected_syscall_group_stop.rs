@@ -68,6 +68,10 @@ const UNBLOCK_FD: i32 = 902;
 /// Like `UNBLOCK_FD`, followed by an injected `getpid` whose result the tool
 /// returns to the guest.
 const UNBLOCK_THEN_GETPID_FD: i32 = 903;
+/// Set by a test to run `UNBLOCK_THEN_GETPID_FD`'s `getpid` with the
+/// tracer's soft `RLIMIT_NOFILE` at 0, so no descriptor can be opened during
+/// it; the limit is restored when it returns.
+static GETPID_WITHOUT_DESCRIPTORS: AtomicBool = AtomicBool::new(false);
 /// A zero-length write to this descriptor is replaced with
 /// `ppoll(NULL, 0, &buf.timeout, &buf.mask, 8)` for a `PpollArgs` at `buf`.
 const PPOLL_FD: i32 = 904;
@@ -246,7 +250,27 @@ where
             if write.fd() == UNBLOCK_FD {
                 return Ok(result?);
             }
+            let limited = GETPID_WITHOUT_DESCRIPTORS.load(Ordering::Relaxed);
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if limited {
+                // SAFETY: both calls only read or set this process's limit.
+                unsafe {
+                    assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+                    let lowered = libc::rlimit {
+                        rlim_cur: 0,
+                        rlim_max: limit.rlim_max,
+                    };
+                    assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &lowered), 0);
+                }
+            }
             let result = guest.inject(Getpid::new()).await;
+            if limited {
+                // SAFETY: restores the limit read above.
+                unsafe { assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0) };
+            }
             guest
                 .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
                 .await;
@@ -4997,6 +5021,56 @@ fn held_signal_runs_as_on_main_when_the_tracer_is_killed_at(request: u32, probe:
     );
 }
 
+/// `held_signal_keeps_its_siginfo_after_a_signal_hook_injection` with no
+/// seccomp filter, but where the siginfo of the held SIGUSR1 cannot be
+/// recorded at its stop: the interrupted `getpid` runs with no descriptor
+/// left to open, so the read of the tracer thread's seccomp mode fails
+/// (EMFILE). That read succeeds again by the time the held signal would be
+/// reported. Without its record, the siginfo could not be written back after
+/// the hook's injection, so the signal is passed on unreported, as on main,
+/// and the handler sees the queued siginfo.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn held_signal_is_not_reported_without_its_recorded_siginfo() {
+    const NAME: &str = "held_signal_is_not_reported_without_its_recorded_siginfo";
+    in_child_process(NAME, || {
+        GETPID_WITHOUT_DESCRIPTORS.store(true, Ordering::Relaxed);
+        let (output, log) = test_fn::<InjectInFirstSignalHook, _>(|| unsafe {
+            install_recorder(libc::SIGUSR1);
+            let set = block(&[libc::SIGUSR1]);
+            queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+            let ret = libc::syscall(
+                libc::SYS_write,
+                UNBLOCK_THEN_GETPID_FD,
+                &set as *const libc::sigset_t,
+                0usize,
+            );
+            let errno = *libc::__errno_location();
+            // Blocked again for `print_recorded`'s check.
+            block(&[libc::SIGUSR1]);
+            print_recorded(ret, errno, libc::SIGUSR1);
+        })
+        .expect("run held-unrecorded guest");
+        check_recorded(
+            &output,
+            "held-unrecorded",
+            &log,
+            &format!("-1 {}", libc::EINTR),
+            libc::SI_QUEUE,
+        );
+        assert_eq!(
+            *log.injected.lock().unwrap(),
+            vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
+            "the unblock completes, SIGUSR1 interrupts getpid before it runs, and no hook runs"
+        );
+        assert_eq!(
+            *log.signals.lock().unwrap(),
+            Vec::<i32>::new(),
+            "the held signal is passed on unreported, as on main"
+        );
+    });
+}
+
 /// The filter must decline the report before the `PTRACE_GETSIGMASK` that
 /// checks it.
 #[cfg(target_arch = "x86_64")]
@@ -5055,6 +5129,60 @@ fn signal_siginfo_is_not_read_under_a_tracer_filter() {
             "the hook's getpid runs"
         );
         assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR1]);
+    });
+}
+
+/// `signal_siginfo_is_not_read_under_a_tracer_filter` with a handled
+/// SIGTSTP, under a filter that returns `action` for a `PTRACE_GETSIGINFO`.
+/// The tracer tells a job-control signal's delivery stop from a group stop
+/// with that request, which main does not make at an ordinary delivery
+/// stop. Under a tracer filter it is not made, so the guest runs as on
+/// main: SIGTSTP is reported once and delivered once, after the hook's
+/// injection, with the siginfo Linux makes up.
+#[cfg(target_arch = "x86_64")]
+fn job_control_signal_runs_as_on_main_under_a_tracer_filter(action: u32, probe: &str) {
+    let refused = (libc::PTRACE_GETSIGINFO, action);
+    let (output, log, tracer) = test_fn_under_tracer_filter(Some(refused), || unsafe {
+        install_recorder(libc::SIGTSTP);
+        block(&[libc::SIGTSTP]);
+        queue_value_to_self(libc::SIGTSTP, libc::SI_QUEUE);
+        // Main leaks the hook's getpid into the unblock's result; see
+        // https://github.com/rrnewton/reverie/issues/892. A fix flips this to 0.
+        unblock_returning(libc::SIGTSTP, libc::getpid() as libc::c_long);
+        block(&[libc::SIGTSTP]);
+        print_recorded(0, 0, libc::SIGTSTP);
+    });
+    let pid = check_recorded_made_up(&output, probe, &log, "0 0", tracer);
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(pid)],
+        "the hook's getpid runs"
+    );
+    assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGTSTP]);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn job_control_signal_is_not_classified_when_the_tracer_is_killed_at_its_query() {
+    const NAME: &str =
+        "job_control_signal_is_not_classified_when_the_tracer_is_killed_at_its_query";
+    in_child_process(NAME, || {
+        job_control_signal_runs_as_on_main_under_a_tracer_filter(
+            libc::SECCOMP_RET_KILL_PROCESS,
+            "ordinary-tstp-kill-filter",
+        )
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn job_control_signal_is_not_classified_when_its_query_is_refused() {
+    const NAME: &str = "job_control_signal_is_not_classified_when_its_query_is_refused";
+    in_child_process(NAME, || {
+        job_control_signal_runs_as_on_main_under_a_tracer_filter(
+            libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
+            "ordinary-tstp-deny-filter",
+        )
     });
 }
 

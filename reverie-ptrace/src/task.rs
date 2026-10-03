@@ -546,6 +546,22 @@ fn is_group_stop(task: &Stopped, sig: Signal) -> Result<bool, TraceError> {
     }
 }
 
+/// `is_group_stop` at a stop where main makes no `PTRACE_GETSIGINFO`:
+/// `false`, without the request, when the tracer thread may be under a
+/// seccomp filter (`thread_may_be_seccomp_filtered`), which can refuse it or
+/// kill the tracer at it. The stop is then taken for a signal-delivery stop,
+/// as main takes it.
+fn is_group_stop_unless_filtered(task: &Stopped, sig: Signal) -> Result<bool, TraceError> {
+    if !matches!(
+        sig,
+        Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU
+    ) || thread_may_be_seccomp_filtered()
+    {
+        return Ok(false);
+    }
+    is_group_stop(task, sig)
+}
+
 /// The bit for `sig` in a kernel signal mask as read by `PTRACE_GETSIGMASK`.
 fn signal_mask_bit(sig: Signal) -> u64 {
     1u64 << (sig as i32 - 1)
@@ -6328,6 +6344,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// its own block there. A failed read of the mask, the pending set or
     /// the registers passes the signal on unreported as well, as main
     /// resumes it, rather than failing the resume.
+    /// So does a signal whose siginfo was not recorded at its stop
+    /// (`TakenSignal::at_stop`), which could not be written back after the
+    /// callback's injections.
     ///
     /// A signal is also passed on unreported when the tracer thread may be
     /// under a seccomp filter, or its mode cannot be read
@@ -6403,6 +6422,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             return Ok(self.pass_held_signal_unreported(signal));
         }
+        // Without its record the siginfo cannot be written back after the
+        // callback's injections, and the guest would get one Linux makes up.
+        // The capture can fail where this check passes: a procfs open the
+        // capture made can fail (EMFILE) and a later one succeed.
+        let Some(taken) = taken.filter(|taken| taken.signal == sig) else {
+            return Ok(self.pass_held_signal_unreported(signal));
+        };
         let stale_step_trap = if self.stale_private_step_trap {
             signal_mask_bit(Signal::SIGTRAP)
         } else {
@@ -6419,7 +6445,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let verdict = self.report_signal(sig, true).await?;
         Ok(SignalResume {
             signal: verdict.signal,
-            reported: taken.filter(|taken| taken.signal == sig),
+            reported: Some(taken),
         })
     }
 
@@ -6714,7 +6740,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
             }
         }
-        if sig != Signal::SIGSTOP && !report_group_stop && is_group_stop(&task, sig)? {
+        if sig != Signal::SIGSTOP
+            && !report_group_stop
+            && is_group_stop_unless_filtered(&task, sig)?
+        {
             // A group stop follows a stop signal's delivery, which reported
             // it to the Tool on the thread that took it, unless that thread
             // resumed it held and unreported (`report_group_stop`). Reporting
@@ -6723,6 +6752,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             // does not honor the stop, so it is resumed without a signal.
             // Like a trap that `handle_sigtrap` discards, it makes no Tool
             // callback and leaves the timer event as it was.
+            // Under a tracer filter it is not told apart, as on main, and is
+            // reported again (`is_group_stop_unless_filtered`).
             let task = match self.timer.disregard_stop()? {
                 Some(unfinished) => self.drive_timer(task, Some(unfinished)).await?.1,
                 None => task,
@@ -11369,10 +11400,13 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     /// Records the stop an injection ended at in `latest_injection_stop`.
+    /// Under a tracer filter a group stop is recorded as its signal
+    /// (`is_group_stop_unless_filtered`); no held signal is reported there
+    /// (`report_held_signal`), and only a reported one uses the record.
     fn note_injection_stop(&mut self, wait: &Wait) -> Result<(), TraceError> {
         if let Wait::Stopped(stopped, event) = wait {
             self.latest_injection_stop = Some(match event {
-                Event::Signal(sig) if !is_group_stop(stopped, *sig)? => Some(*sig),
+                Event::Signal(sig) if !is_group_stop_unless_filtered(stopped, *sig)? => Some(*sig),
                 _ => None,
             });
         }
