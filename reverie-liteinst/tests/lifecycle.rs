@@ -513,6 +513,16 @@ async fn site_patching_off_runs_every_call_through_the_in_guest_fallback() {
         disabled - 1,
         "every fallback but the final exit_group must complete: {stats}"
     );
+    let record = stats
+        .snapshot()
+        .dispatch_stats()
+        .expect("in-guest LiteInst reports a dispatch record");
+    assert_eq!(record.inconsistencies(), Vec::<String>::new(), "{record}");
+    assert_eq!(record.counters.ptrace_seccomp_stops, Some(0), "{record}");
+    assert_eq!(record.counters.ptrace_sigtrap_stops, Some(0), "{record}");
+    assert_eq!(record.counters.patched_direct_calls, Some(0), "{record}");
+    assert_physical_signals_agree(&stats, &record);
+    assert_tool_callbacks_were_delivered(&global, &stats);
     println!("{stats}");
 }
 
