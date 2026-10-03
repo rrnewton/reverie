@@ -6688,7 +6688,7 @@ impl ElfExecutor {
         // CLONE_VM still creates another owner of this arena and is refused
         // before task-ID allocation, child copyout or ProcessAction.
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-PENDING): Review shared-file fork admission.
+        // TODO-HUMAN-REVIEW(PR-919): Review shared-file fork admission.
         if memory.entry_gate().single_member_domain_active() {
             let number = request.number();
             let args = request.args();

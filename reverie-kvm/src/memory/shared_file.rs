@@ -616,7 +616,7 @@ impl GuestMemory {
     /// all belong to the new child. Anonymous MAP_SHARED has no such metadata
     /// yet and retains its pre-existing behavior outside this bounded repair.
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-PENDING): Review shared-file fork ownership and copies.
+    // TODO-HUMAN-REVIEW(PR-919): Review shared-file fork ownership and copies.
     pub(super) fn snapshot_with_shared_files(
         &self,
         allocation: AllocationGuard<'_>,
