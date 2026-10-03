@@ -737,7 +737,7 @@ pub(crate) unsafe fn install_builtin_runtime(tool: BuiltinTool) -> io::Result<()
 ///
 /// When unset the shared default applies ([`RuntimeConfig::default`], alt stack
 /// **on**). It applies to the LiteInst-dispatcher install path
-/// ([`install_runtime`], used by the `strace`/`compat`/Detcore modes); a shared
+/// (`install_runtime`, used by the `strace`/`compat`/Detcore modes); a shared
 /// [`BuiltinTool`] runs through `install_builtin`, which uses the shared default.
 pub const ALT_STACK_ENV: &str = "REVERIE_LITEINST_ALT_STACK";
 /// Allows a caller to keep fork-family syscalls fail-closed while integrating
