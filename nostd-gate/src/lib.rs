@@ -46,3 +46,16 @@ fn copy(from: &[IoSlice], to: &mut [IoSliceMut]) -> Result<usize, Errno> {
 pub fn read_string(memory: &SameAddressSpace, addr: Addr<u8>) -> alloc::ffi::CString {
     memory.read_cstring(addr).unwrap_or_default()
 }
+
+/// Exercises the process-identity types the `Tool` contract names.
+pub fn describe_exit(pid: reverie_process::Pid, raw: i32) -> Option<reverie_process::Signal> {
+    use reverie_process::ExitStatus;
+    use reverie_process::Signal;
+
+    let _raw_pid: i32 = pid.as_raw();
+    match ExitStatus::from_raw(raw) {
+        ExitStatus::Exited(_) => None,
+        ExitStatus::Signaled(Signal::SIGSEGV, _) => Some(Signal::SIGSEGV),
+        ExitStatus::Signaled(sig, _) => Signal::try_from(sig as i32).ok(),
+    }
+}

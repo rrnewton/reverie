@@ -6,13 +6,58 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#[cfg(feature = "std")]
 use std::os::unix::process::ExitStatusExt;
 
+#[cfg(feature = "std")]
+use libc::WCOREDUMP;
+#[cfg(feature = "std")]
+use libc::WEXITSTATUS;
+#[cfg(feature = "std")]
+use libc::WIFEXITED;
+#[cfg(feature = "std")]
+use libc::WTERMSIG;
+#[cfg(feature = "std")]
 use nix::sys::signal;
+#[cfg(feature = "std")]
 use nix::sys::signal::SigHandler;
+#[cfg(feature = "std")]
 use nix::sys::signal::SigSet;
+#[cfg(feature = "std")]
 use nix::sys::signal::SigmaskHow;
-use nix::sys::signal::Signal;
+
+#[cfg(not(feature = "std"))]
+use self::wait_status::WCOREDUMP;
+#[cfg(not(feature = "std"))]
+use self::wait_status::WEXITSTATUS;
+#[cfg(not(feature = "std"))]
+use self::wait_status::WIFEXITED;
+#[cfg(not(feature = "std"))]
+use self::wait_status::WTERMSIG;
+use crate::Signal;
+
+/// glibc's x86_64 Linux wait-status macros, for builds without `libc`. The
+/// `wait_status_matches_libc` test checks them against `libc` for every
+/// 16-bit status.
+#[cfg(any(not(feature = "std"), test))]
+#[allow(non_snake_case)]
+mod wait_status {
+    pub const fn WTERMSIG(status: i32) -> i32 {
+        status & 0x7f
+    }
+
+    pub const fn WIFEXITED(status: i32) -> bool {
+        (status & 0x7f) == 0
+    }
+
+    pub const fn WEXITSTATUS(status: i32) -> i32 {
+        (status >> 8) & 0xff
+    }
+
+    pub const fn WCOREDUMP(status: i32) -> bool {
+        (status & 0x80) != 0
+    }
+}
 
 /// Describes the result of a process after it has exited.
 ///
@@ -33,13 +78,10 @@ impl ExitStatus {
 
     /// Construct an `ExitStatus` from a raw exit code.
     pub fn from_raw(code: i32) -> Self {
-        if libc::WIFEXITED(code) {
-            ExitStatus::Exited(libc::WEXITSTATUS(code))
+        if WIFEXITED(code) {
+            ExitStatus::Exited(WEXITSTATUS(code))
         } else {
-            ExitStatus::Signaled(
-                Signal::try_from(libc::WTERMSIG(code)).unwrap(),
-                libc::WCOREDUMP(code),
-            )
+            ExitStatus::Signaled(Signal::try_from(WTERMSIG(code)).unwrap(), WCOREDUMP(code))
         }
     }
 
@@ -83,6 +125,7 @@ impl ExitStatus {
 
     /// Propagate the exit status such that the current process exits in the same
     /// way that the child process exited.
+    #[cfg(feature = "std")]
     pub fn raise_or_exit(self) -> ! {
         match self {
             ExitStatus::Signaled(signal, core_dump) => {
@@ -113,12 +156,14 @@ impl ExitStatus {
     }
 }
 
+#[cfg(feature = "std")]
 impl From<ExitStatus> for std::process::ExitStatus {
     fn from(status: ExitStatus) -> Self {
         Self::from_raw(status.into_raw())
     }
 }
 
+#[cfg(feature = "std")]
 impl From<std::process::ExitStatus> for ExitStatus {
     fn from(status: std::process::ExitStatus) -> Self {
         if let Some(sig) = status.signal() {
@@ -151,7 +196,7 @@ impl<'de> serde::Deserialize<'de> for ExitStatus {
 // `sanitized` is a Meta-internal cfg (set for sanitizer builds to skip these
 // fork-based tests); it is never set in the open-source build. It is declared
 // via `check-cfg` in this crate's Cargo.toml so it is a known cfg name.
-#[cfg(all(test, not(sanitized)))]
+#[cfg(all(test, feature = "std", not(sanitized)))]
 mod tests_non_sanitized {
     use nix::sys::signal;
     use nix::sys::signal::Signal;
@@ -307,9 +352,19 @@ mod tests_non_sanitized {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wait_status_matches_libc() {
+        for status in 0..=0xffff_i32 {
+            assert_eq!(wait_status::WIFEXITED(status), libc::WIFEXITED(status));
+            assert_eq!(wait_status::WEXITSTATUS(status), libc::WEXITSTATUS(status));
+            assert_eq!(wait_status::WTERMSIG(status), libc::WTERMSIG(status));
+            assert_eq!(wait_status::WCOREDUMP(status), libc::WCOREDUMP(status));
+        }
+    }
 
     #[test]
     fn exit_code_into_raw() {

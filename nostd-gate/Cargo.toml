@@ -12,9 +12,12 @@ publish = false
 
 [dependencies]
 reverie-memory = { path = "../reverie-memory", default-features = false }
+reverie-process = { path = "../reverie-process", default-features = false }
 syscalls = { version = "0.6.18", default-features = false }
 
 [features]
-# Negative control only: enabling a contract crate's `std` feature on the
-# no-std target must fail to build, proving the positive build is not vacuous.
-negative-std = ["reverie-memory/std"]
+# Negative controls only: enabling one contract crate's `std` feature on the
+# no-std target must fail to build (E0463, no `std`), proving the positive
+# build of that crate is not vacuous. `run.sh` checks each one.
+negative-std-memory = ["reverie-memory/std"]
+negative-std-process = ["reverie-process/std"]

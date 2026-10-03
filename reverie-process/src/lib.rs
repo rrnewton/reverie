@@ -11,71 +11,137 @@
 
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
-#![cfg(target_os = "linux")]
+// Without `std` only the process-identity types remain (`Pid`, `ExitStatus`,
+// `Signal`); they build with `core` alone for the Narf kernel target.
+#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg(any(target_os = "linux", not(feature = "std")))]
 #![cfg_attr(feature = "nightly", feature(internal_output_capture))]
 
+// The `std`-free `Signal` uses x86_64 Linux signal numbers.
+#[cfg(all(not(feature = "std"), not(target_arch = "x86_64")))]
+compile_error!("reverie-process without `std` is only defined for x86_64");
+
+#[cfg(feature = "std")]
 mod builder;
+#[cfg(feature = "std")]
 mod child;
+#[cfg(feature = "std")]
 mod clone;
+#[cfg(feature = "std")]
 mod container;
+#[cfg(feature = "std")]
 mod env;
+#[cfg(feature = "std")]
 mod error;
 mod exit_status;
+#[cfg(feature = "std")]
 mod fd;
+#[cfg(feature = "std")]
 mod id_map;
+#[cfg(feature = "std")]
 mod mount;
+#[cfg(feature = "std")]
 mod namespace;
+#[cfg(feature = "std")]
 mod net;
+#[cfg(any(not(feature = "std"), test))]
+mod nostd_signal;
 mod pid;
+#[cfg(feature = "std")]
 mod pty;
+#[cfg(feature = "std")]
 pub mod seccomp;
+#[cfg(feature = "std")]
 mod spawn;
+#[cfg(feature = "std")]
 mod stdio;
+#[cfg(feature = "std")]
 mod util;
 
+#[cfg(feature = "std")]
 use std::ffi::CString;
+#[cfg(feature = "std")]
 use std::io;
 
+#[cfg(feature = "std")]
 pub use child::Child;
+#[cfg(feature = "std")]
 pub use child::Output;
+#[cfg(feature = "std")]
 pub use container::ChildCleanupObservation;
+#[cfg(feature = "std")]
 pub use container::ChildStartContext;
+#[cfg(feature = "std")]
 pub use container::Container;
+#[cfg(feature = "std")]
 pub use container::DeferredContainerRun;
+#[cfg(feature = "std")]
 pub use container::MAX_STARTUP_FDS;
+#[cfg(feature = "std")]
 pub use container::OwnedContainerCleanup;
+#[cfg(feature = "std")]
 pub use container::OwnedDecodeFailure;
+#[cfg(feature = "std")]
 pub use container::OwnedDeferredContainerRun;
+#[cfg(feature = "std")]
 pub use container::OwnedFinalization;
+#[cfg(feature = "std")]
 pub use container::OwnedFinalize;
+#[cfg(feature = "std")]
 pub use container::OwnedReapedResult;
+#[cfg(feature = "std")]
 pub use container::OwnedRunFailure;
+#[cfg(feature = "std")]
 pub use container::ParentStartContext;
+#[cfg(feature = "std")]
 pub use container::RunError;
+#[cfg(feature = "std")]
 pub use container::StartupError;
+#[cfg(feature = "std")]
 pub use container::StartupOwnedFailure;
+#[cfg(feature = "std")]
 pub use container::StartupRunError;
+#[cfg(feature = "std")]
 pub use error::Context;
+#[cfg(feature = "std")]
 pub use error::Error;
 pub use exit_status::ExitStatus;
+#[cfg(feature = "std")]
 pub use mount::Bind;
+#[cfg(feature = "std")]
 pub use mount::Mount;
+#[cfg(feature = "std")]
 pub use mount::MountFlags;
+#[cfg(feature = "std")]
 pub use mount::MountParseError;
+#[cfg(feature = "std")]
 pub use namespace::Namespace;
 // Re-export Signal since it is used by `Child::signal`.
+#[cfg(feature = "std")]
 pub use nix::sys::signal::Signal;
+#[cfg(not(feature = "std"))]
+pub use nostd_signal::Signal;
+#[cfg(not(feature = "std"))]
+pub use nostd_signal::SignalIterator;
 pub use pid::Pid;
+#[cfg(feature = "std")]
 pub use pty::Pty;
+#[cfg(feature = "std")]
 pub use pty::PtyChild;
+#[cfg(feature = "std")]
 pub use stdio::ChildStderr;
+#[cfg(feature = "std")]
 pub use stdio::ChildStdin;
+#[cfg(feature = "std")]
 pub use stdio::ChildStdout;
+#[cfg(feature = "std")]
 pub use stdio::Stdio;
+#[cfg(feature = "std")]
 use syscalls::Errno;
 
 /// A builder for spawning a process.
 // See the builder.rs for documentation of each field.
+#[cfg(feature = "std")]
 pub struct Command {
     program: CString,
     args: util::CStringArray,
@@ -83,6 +149,7 @@ pub struct Command {
     container: Container,
 }
 
+#[cfg(feature = "std")]
 impl Command {
     /// Converts [`std::process::Command`] into [`Command`]. Note that this is a
     /// very basic and *lossy* conversion.
@@ -212,7 +279,7 @@ impl Command {
 
 /// Names the unit test that a fresh single-test process was started to run; it
 /// is set only in that process, never in the libtest harness process.
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 pub(crate) const ISOLATED_TEST_MARKER: &str = "REVERIE_PROCESS_ISOLATED_TEST";
 
 /// Runs the calling unit test in a fresh single-test process.
@@ -246,7 +313,7 @@ pub(crate) const ISOLATED_TEST_MARKER: &str = "REVERIE_PROCESS_ISOLATED_TEST";
 /// with `--test-threads=1`, where the only other thread is libtest's main
 /// thread blocked in a channel receive, which is the documented
 /// single-threaded setting.
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 #[must_use]
 pub(crate) fn test_runs_in_own_process() -> bool {
     let thread = std::thread::current();
@@ -283,7 +350,7 @@ pub(crate) fn test_runs_in_own_process() -> bool {
     true
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
