@@ -6276,6 +6276,10 @@ static RESTART_BLOCK_RESUME: AtomicU64 = AtomicU64::new(0);
 /// return register with `Guest::set_regs` after its last injection. Read
 /// like `RESTART_BLOCK_SUPPRESS`.
 static RESTART_BLOCK_ZERO_RAX: AtomicU64 = AtomicU64::new(0);
+/// Nonzero when `RestartBlockInFirstSignalHook` writes the guest's
+/// registers back unchanged with `Guest::set_regs` before its final sleep.
+/// Read like `RESTART_BLOCK_SUPPRESS`.
+static RESTART_BLOCK_REWRITE: AtomicU64 = AtomicU64::new(0);
 /// The signal number `RestartBlockInFirstSignalHook` resumes with in place
 /// of SIGALRM, when nonzero; it then neither suppresses nor passes SIGALRM.
 /// Read like `RESTART_BLOCK_SUPPRESS`.
@@ -6324,7 +6328,8 @@ const RESTART_BLOCK_GETPID_TRIES: usize = 3;
 /// guest, which resumes the guest's sleep through that block until the
 /// SIGALRM interrupts it, then injects `getpid` until it succeeds, and then
 /// `RESTART_BLOCK_FINAL_SLEEP` when `RESTART_BLOCK_FINAL` is set in the
-/// guest; each injection is reported. It then writes zero to the guest's
+/// guest, first writing the guest's registers back unchanged when
+/// `RESTART_BLOCK_REWRITE` is set; each injection is reported. It then writes zero to the guest's
 /// return register when `RESTART_BLOCK_ZERO_RAX` is set, and overwrites the
 /// guest's sleep request when `RESTART_BLOCK_POISON` is set. It resumes with
 /// the signal `RESTART_BLOCK_VERDICT` names when that is set, else
@@ -6408,6 +6413,13 @@ impl Tool for RestartBlockInFirstSignalHook {
                 break;
             }
         }
+        if guest.memory().read_value(flag(&RESTART_BLOCK_REWRITE)?)? != 0 {
+            let regs = guest.regs().await;
+            guest
+                .set_regs(regs)
+                .await
+                .expect("write the guest's registers");
+        }
         if guest.memory().read_value(flag(&RESTART_BLOCK_FINAL)?)? != 0 {
             let sleep = Syscall::from_raw(
                 Sysno::nanosleep,
@@ -6470,6 +6482,9 @@ enum RestartBlockEnd {
     /// The hook writes zero to the guest's return register after its
     /// `getpid` and suppresses SIGALRM.
     SuppressAfterZeroingRax,
+    /// As `SuppressAfterSleep`, but the hook first writes the guest's
+    /// registers back unchanged with `Guest::set_regs`.
+    SuppressAfterRewriteAndSleep,
     /// As `SuppressAfterSleep`, but the hook resumes with SIGURG, which the
     /// guest ignores by default, in place of suppressing SIGALRM.
     IgnoredAfterSleep,
@@ -6478,8 +6493,8 @@ enum RestartBlockEnd {
     BlockedAfterSleep,
 }
 
-/// SIGALRM interrupts the guest's `nanosleep` (3 seconds, or 300 ms for
-/// `SuppressAfterSleep`), which leaves `-ERESTART_RESTARTBLOCK` for the
+/// SIGALRM interrupts the guest's `nanosleep` (3 seconds, or 300 ms when
+/// the hook ends with its final sleep), which leaves `-ERESTART_RESTARTBLOCK` for the
 /// kernel to restart through `restart_syscall` and the thread's restart
 /// block. Its hook injects a 5-second `nanosleep` that a second SIGALRM
 /// interrupts, which replaces that restart block with the injected sleep's,
@@ -6493,7 +6508,7 @@ enum RestartBlockEnd {
 /// (https://github.com/rrnewton/reverie/issues/845): whether the kernel
 /// delivers a handler is decided at the resume, from dispositions that
 /// another thread, or a process sharing them that Reverie does not trace,
-/// can change after Reverie reads them.
+/// can change until then.
 ///
 /// When it suppresses SIGALRM, untraced Linux would restart the guest's
 /// sleep, which the replaced restart block rules out. The guest sees the
@@ -6506,7 +6521,9 @@ enum RestartBlockEnd {
 /// with a signal that enters no handler, one the guest ignores
 /// (`IgnoredAfterSleep`) or blocks (`BlockedAfterSleep`), and the Tool's own
 /// zero when it writes one to the return register (`SuppressAfterZeroingRax`),
-/// as on main.
+/// as on main. A register write before the final sleep
+/// (`SuppressAfterRewriteAndSleep`) does not change that: the sleep's zero
+/// is the latest value, as on main.
 ///
 /// With `SuppressAfterResume` the hook's interrupted `restart_syscall`
 /// leaves the guest's restart block in place, so the guest's own
@@ -6521,9 +6538,11 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
     let final_sleep = matches!(
         end,
         RestartBlockEnd::SuppressAfterSleep
+            | RestartBlockEnd::SuppressAfterRewriteAndSleep
             | RestartBlockEnd::IgnoredAfterSleep
             | RestartBlockEnd::BlockedAfterSleep
     );
+    let rewrite = end == RestartBlockEnd::SuppressAfterRewriteAndSleep;
     let resume = end == RestartBlockEnd::SuppressAfterResume;
     let zero_rax = end == RestartBlockEnd::SuppressAfterZeroingRax;
     let verdict = match end {
@@ -6537,6 +6556,7 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
             RESTART_BLOCK_FINAL.store(final_sleep as u64, Ordering::Relaxed);
             RESTART_BLOCK_RESUME.store(resume as u64, Ordering::Relaxed);
             RESTART_BLOCK_ZERO_RAX.store(zero_rax as u64, Ordering::Relaxed);
+            RESTART_BLOCK_REWRITE.store(rewrite as u64, Ordering::Relaxed);
             RESTART_BLOCK_VERDICT.store(verdict as u64, Ordering::Relaxed);
             RESTART_BLOCK_POISON.store(0, Ordering::Relaxed);
             SIGALRM_HANDLER_CALLS.store(0, Ordering::Relaxed);
@@ -6619,11 +6639,13 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
             [pid.to_string().as_str(), "0"],
             "the injected getpid's PID, as on main, and no handler run"
         ),
-        RestartBlockEnd::SuppressAfterSleep => assert_eq!(
-            [fields[0], fields[2]],
-            ["0", "0"],
-            "the final injected sleep's zero, as on main and untraced Linux, and no handler run"
-        ),
+        RestartBlockEnd::SuppressAfterSleep | RestartBlockEnd::SuppressAfterRewriteAndSleep => {
+            assert_eq!(
+                [fields[0], fields[2]],
+                ["0", "0"],
+                "the final injected sleep's zero, as on main and untraced Linux, and no handler run"
+            )
+        }
         RestartBlockEnd::SuppressAfterResume => assert_eq!(
             [fields[0], fields[2]],
             ["0", "0"],
@@ -6678,6 +6700,11 @@ fn suppressed_signal_after_a_restart_block_replacing_injection_returns_the_injec
 #[test]
 fn suppressed_signal_after_a_restart_block_replacing_injection_keeps_a_final_zero() {
     check_restart_block_replaced_by_a_hook_injection(RestartBlockEnd::SuppressAfterSleep);
+}
+
+#[test]
+fn suppressed_signal_after_a_register_write_and_a_final_sleep_keeps_the_final_zero() {
+    check_restart_block_replaced_by_a_hook_injection(RestartBlockEnd::SuppressAfterRewriteAndSleep);
 }
 
 #[test]
@@ -7158,15 +7185,15 @@ const DISPOSITION_RACE_WORKERS: usize = 16;
 /// but the guest does not block SIGUSR2, and a sibling thread keeps switching
 /// its process-wide disposition between a handler and `SIG_IGN`. The hook
 /// resumes the guest's interrupted `nanosleep` with SIGUSR2 after its final
-/// injected sleep, and the disposition Reverie reads can differ from the one
-/// in force when the kernel delivers the signal. Untraced Linux, for a
-/// signal arriving while the sleep is interrupted, either runs the handler
+/// injected sleep, and the disposition in force when the kernel delivers the
+/// signal can differ from the one at the hook's verdict. Untraced Linux, for
+/// a signal arriving while the sleep is interrupted, either runs the handler
 /// and returns EINTR, or ignores the signal and restarts the sleep to its
-/// own deadline. Reverie does not rely on what it read: the guest resumes
+/// own deadline. Reverie does not read the disposition: the guest resumes
 /// with the final injected sleep's zero, as on main, and the handler runs
 /// or not as the kernel finds it at delivery. So each worker sees zero,
-/// with or without a handler run;
-/// EINTR with a handler run is a known gap here
+/// with or without a handler run; zero with a handler run, where untraced
+/// Linux returns EINTR, is a known gap here
 /// (https://github.com/rrnewton/reverie/issues/845). EINTR with no handler
 /// run, which no untraced run returns, is never seen, nor a restart of the
 /// guest's sleep with its original arguments, which would sleep 300 ms
