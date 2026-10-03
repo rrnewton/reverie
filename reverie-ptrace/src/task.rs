@@ -10772,6 +10772,34 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // Run the exact pending syscall and stop at its exit.
                     self.validate_liteinst_mapping_execution(nr, args)?;
                     #[cfg(target_arch = "x86_64")]
+                    if observe_tool {
+                        // The pending tuple alone cannot authenticate ENTRY:
+                        // the Tool may have changed the actual registers. Bind
+                        // this consumed original stop's task generation, then
+                        // check the kernel's native SECCOMP tuple and IP/SP.
+                        // This grants no source permission and resets no epoch.
+                        // https://github.com/rrnewton/reverie/issues/899
+                        let source_stop = self.source_stop.as_ref().ok_or(Errno::EPROTO)?;
+                        if !source_stop.same_generation(&task.terminal_cleanup()) {
+                            return Err(Errno::EPROTO.into());
+                        }
+                        let regs = task.getregs()?;
+                        original_context::check_entry(
+                            &task,
+                            nr,
+                            args,
+                            regs.ip(),
+                            regs.stack_ptr(),
+                            true,
+                        )?;
+                        // No helper, resume or suspension separates the actual
+                        // boundary from the observation in the owned Tool state.
+                        self.observe_injected_syscall(
+                            Some((nr, args)),
+                            InjectedSyscallEvent::Entered,
+                        );
+                    }
+                    #[cfg(target_arch = "x86_64")]
                     let cohort_native = self
                         .source_context(Some(&task))
                         .and_then(|context| context.native(&task, nr, args));

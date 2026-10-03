@@ -206,6 +206,7 @@ struct Thread {
     child_seen: Option<i32>,
     terminal: bool,
     prepared: usize,
+    entered: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -303,7 +304,13 @@ impl Tool for Observer {
                     assert_eq!(state.prepared, 0);
                     state.prepared += 1;
                 }
+                InjectedSyscallEvent::Entered => {
+                    assert_eq!(state.prepared, 1);
+                    assert_eq!(state.entered, 0);
+                    state.entered += 1;
+                }
                 InjectedSyscallEvent::Returned(raw) => {
+                    assert_eq!(state.entered, 1);
                     assert_eq!(
                         state.prepared, 1,
                         "actual result must follow preparation in the same owned state"
@@ -711,11 +718,14 @@ fn original_native_success_and_error_are_retained_before_continuation() {
         .iter()
         .filter(|entry| entry.nr == Sysno::setpgid)
         .collect();
-    assert_eq!(errors.len(), 1);
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors[0].event, InjectedSyscallEvent::Entered);
+    assert_eq!(errors[0].tid, errors[1].tid);
+    assert_eq!(errors[0].args, errors[1].args);
     assert_eq!(errors[0].args.arg0 as i32, -1);
     assert_eq!(errors[0].args.arg1, 0);
     assert_eq!(
-        errors[0].event,
+        errors[1].event,
         InjectedSyscallEvent::Returned(-(libc::EINVAL as i64))
     );
     assert!(observed.iter().any(|entry| entry.nr == Sysno::getpid
@@ -780,10 +790,14 @@ fn canceled_continuation(case: Case) {
     let observed = log.observations.lock().unwrap();
     assert_eq!(
         observed.len(),
-        1,
+        2,
         "unexpected native observations: {observed:?}"
     );
-    let entry = observed[0];
+    assert_eq!(observed[0].event, InjectedSyscallEvent::Entered);
+    assert_eq!(observed[0].tid, observed[1].tid);
+    assert_eq!(observed[0].nr, observed[1].nr);
+    assert_eq!(observed[0].args, observed[1].args);
+    let entry = observed[1];
     assert_eq!(
         entry.event,
         InjectedSyscallEvent::Returned(if case == Case::CancelSuccess {
@@ -992,10 +1006,14 @@ fn backend_setup_does_not_publish_as_tool_mprotect() {
     let observed = log.observations.lock().unwrap();
     assert_eq!(
         observed.len(),
-        1,
+        2,
         "unexpected native observations: {observed:?}"
     );
-    let entry = observed[0];
+    assert_eq!(observed[0].event, InjectedSyscallEvent::Entered);
+    assert_eq!(observed[0].tid, observed[1].tid);
+    assert_eq!(observed[0].nr, observed[1].nr);
+    assert_eq!(observed[0].args, observed[1].args);
+    let entry = observed[1];
     assert_eq!(entry.nr, Sysno::mprotect);
     assert_eq!(entry.args.arg1, 4096);
     assert_eq!(entry.args.arg2, libc::PROT_READ as usize);
@@ -1004,7 +1022,7 @@ fn backend_setup_does_not_publish_as_tool_mprotect() {
     assert_normal_terminal(&log, 1);
 }
 
-fn assert_child_completion_pair(log: &Log) {
+fn assert_child_completion_pair(log: &Log, original: bool) {
     let observations = log.observations.lock().unwrap();
     let births: Vec<_> = observations
         .iter()
@@ -1035,7 +1053,16 @@ fn assert_child_completion_pair(log: &Log) {
         !observations.iter().any(|entry| entry.nr == Sysno::fork
             && matches!(entry.event, InjectedSyscallEvent::Returned(_)))
     );
-    assert_eq!(observations.len(), 2);
+    assert_eq!(observations.len(), if original { 3 } else { 2 });
+    let observations = if original {
+        assert_eq!(observations[0].event, InjectedSyscallEvent::Entered);
+        assert_eq!(observations[0].tid, observations[1].tid);
+        assert_eq!(observations[0].nr, observations[1].nr);
+        assert_eq!(observations[0].args, observations[1].args);
+        &observations[1..]
+    } else {
+        &observations[..]
+    };
     assert!(matches!(
         observations[0].event,
         InjectedSyscallEvent::ChildCreated(_)
@@ -1066,7 +1093,7 @@ fn private_child_return_is_authenticated_before_frame_restoration() {
     )
     .expect("actual private fork parent return");
     assert_eq!(output.status, ExitStatus::Exited(0));
-    assert_child_completion_pair(&log);
+    assert_child_completion_pair(&log, false);
     assert_normal_terminal(&log, 2);
 }
 
@@ -1114,7 +1141,7 @@ fn queued_parent_signal_preserves_authentic_child_return_and_delivery() {
     assert_eq!(output.status, ExitStatus::Exited(0));
     assert!(log.signal_sent.load(Ordering::SeqCst));
     assert!(!log.killed.load(Ordering::SeqCst));
-    assert_child_completion_pair(&log);
+    assert_child_completion_pair(&log, true);
     assert_normal_terminal(&log, 2);
 }
 
@@ -1264,22 +1291,30 @@ fn queued_stop_and_child_continue_follow_authentic_parent_return() {
     assert!(log.stop_sent.load(Ordering::SeqCst));
     assert!(log.continued.load(Ordering::SeqCst));
     let events = log.observations.lock().unwrap();
-    assert_eq!(events.len(), 3);
-    let (parent, child) = match events[0].event {
-        InjectedSyscallEvent::ChildCreated(child) => (events[0].tid, child.as_raw()),
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[0].event, InjectedSyscallEvent::Entered);
+    let (parent, child) = match events[1].event {
+        InjectedSyscallEvent::ChildCreated(child) => (events[1].tid, child.as_raw()),
         event => panic!("expected actual birth: {event:?}"),
     };
-    assert_eq!(events[1].tid, parent);
+    assert_eq!(events[0].tid, parent);
+    assert_eq!(events[0].nr, events[1].nr);
+    assert_eq!(events[0].args, events[1].args);
+    assert_eq!(events[2].tid, parent);
     assert_eq!(
-        events[1].event,
+        events[2].event,
         InjectedSyscallEvent::ChildSyscallReturned {
             child: Pid::from_raw(child),
             raw: i64::from(child),
         }
     );
-    assert_eq!(events[2].tid, child);
+    assert_eq!(events[3].event, InjectedSyscallEvent::Entered);
+    assert_eq!(events[3].tid, child);
+    assert_eq!(events[3].nr, events[4].nr);
+    assert_eq!(events[3].args, events[4].args);
+    assert_eq!(events[4].tid, child);
     assert_eq!(
-        events[2].event,
+        events[4].event,
         InjectedSyscallEvent::Returned(i64::from(child))
     );
     drop(events);
@@ -1309,10 +1344,14 @@ fn vfork_child_death_signal_cancels_parent_return_wait_without_receipt() {
     .expect("vfork creator actual terminal and surviving child cleanup");
     assert_eq!(output.status, ExitStatus::Signaled(Signal::SIGKILL, false));
     let events = log.observations.lock().unwrap();
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.len(), 2);
     assert_eq!(events[0].nr, Sysno::vfork);
+    assert_eq!(events[0].event, InjectedSyscallEvent::Entered);
+    assert_eq!(events[0].tid, events[1].tid);
+    assert_eq!(events[0].nr, events[1].nr);
+    assert_eq!(events[0].args, events[1].args);
     let parent = events[0].tid;
-    let child = match events[0].event {
+    let child = match events[1].event {
         InjectedSyscallEvent::ChildCreated(child) => child.as_raw(),
         event => panic!("only early child identity is authorized: {event:?}"),
     };
@@ -1482,13 +1521,15 @@ fn opted_in_preparation_binds_same_owned_state_before_real_return_and_continuati
     .expect("actual opted-in preparation");
     assert_eq!(output.status, ExitStatus::Exited(0));
     let events = log.observations.lock().unwrap();
-    assert_eq!(events.len(), 2);
+    assert_eq!(events.len(), 3);
     assert_eq!(events[0].nr, Sysno::getpid);
     assert_eq!(events[0].event, InjectedSyscallEvent::Prepared);
-    assert_eq!(events[1].tid, events[0].tid);
-    assert_eq!(events[1].nr, events[0].nr);
+    assert_eq!(events[1].event, InjectedSyscallEvent::Entered);
+    assert!(events.iter().all(|event| event.tid == events[0].tid
+        && event.nr == events[0].nr
+        && event.args == events[0].args));
     assert_eq!(
-        events[1].event,
+        events[2].event,
         InjectedSyscallEvent::Returned(i64::from(events[0].tid))
     );
     drop(events);
