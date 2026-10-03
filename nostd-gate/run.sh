@@ -5,10 +5,10 @@
 # `default-features = false`, must build for `x86_64-unknown-none` (core and
 # alloc only). Execution: the gate's unit tests, built for the host with the
 # same `std`-free contract crates, must pass; they run reverie-examples'
-# counter1 tool through the gate's `Guest`, and counter1, counter2 and strace
-# through the Narf execution core. Negative: turning any one contract crate's
-# `std` feature back on must fail with E0463 (no `std` for this target);
-# otherwise the positive build would prove nothing about that crate.
+# counter1 tool through the gate's `Guest`, and counter1, counter2, strace and
+# chaos through the Narf execution core. Negative: turning any one contract
+# crate's `std` feature back on must fail with E0463 (no `std` for this
+# target); otherwise the positive build would prove nothing about that crate.
 #
 # Usage: nostd-gate/run.sh [LOG_DIR]
 # Exit status is 0 only if the positive build and the execution step pass and

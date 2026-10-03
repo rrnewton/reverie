@@ -22,7 +22,7 @@ use std::path::Path;
 pub mod e9patch_smoke;
 
 #[allow(dead_code)]
-#[path = "../chaos.rs"]
+#[path = "../chaos_tool.rs"]
 mod chaos;
 
 #[allow(dead_code)]
