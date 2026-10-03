@@ -22,6 +22,7 @@ members = [
     "reverie-memory",
     "reverie-narf",
     "reverie-narf-core",
+    "reverie-narf-tools",
     "reverie-process",
     "reverie-ptrace",
     "reverie-rpc-transport",
