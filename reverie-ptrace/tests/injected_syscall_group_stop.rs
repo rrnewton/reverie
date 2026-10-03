@@ -22,6 +22,7 @@
 
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -5207,6 +5208,49 @@ static TSTP_AFTER_TRAP: AtomicBool = AtomicBool::new(false);
 /// tracer's soft `RLIMIT_NOFILE` at 0, so no descriptor can be opened during
 /// it; the limit is restored when it returns.
 static GETPPID_WITHOUT_DESCRIPTORS: AtomicBool = AtomicBool::new(false);
+/// Set by a test, with `GETPPID_WITHOUT_DESCRIPTORS`, to a seccomp action
+/// that `TrapBeforeGetppid` has a filter return for every `prctl` of the
+/// tracer's threads, from just before that `getppid`; 0 for none.
+static GETPPID_PRCTL_ACTION: AtomicU32 = AtomicU32::new(0);
+
+/// Adds a seccomp filter returning `action` for every `prctl`, and allowing
+/// every other syscall, to all of the tracer's threads (they share the
+/// filters they already have, which `SECCOMP_FILTER_FLAG_TSYNC` requires).
+#[cfg(target_arch = "x86_64")]
+fn filter_tracer_prctl(action: u32) {
+    let statement = |code: u32, k: u32, jt: u8, jf: u8| libc::sock_filter {
+        code: code as u16,
+        jt,
+        jf,
+        k,
+    };
+    let filter = [
+        // seccomp_data.nr is at offset 0.
+        statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0, 0, 0),
+        statement(
+            libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+            libc::SYS_prctl as u32,
+            0,
+            1,
+        ),
+        statement(libc::BPF_RET | libc::BPF_K, action, 0, 0),
+        statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW, 0, 0),
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_ptr() as *mut libc::sock_filter,
+    };
+    // SAFETY: restricts only the tracer's threads, which end with the test.
+    let installed = unsafe {
+        libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            libc::SECCOMP_FILTER_FLAG_TSYNC,
+            &program as *const libc::sock_fprog,
+        )
+    };
+    assert_eq!(installed, 0, "filter prctl on every tracer thread");
+}
 
 /// `ReplaceMarker`, whose hook for `GETPPID_FD` first injects `getpid`, then
 /// sends SIGTRAP to the guest's thread from the tracer, then SIGTSTP when
@@ -5255,6 +5299,12 @@ impl Tool for TrapBeforeGetppid {
                 assert_eq!(sent, 0, "send signal {signal} to the guest");
             }
             if GETPPID_WITHOUT_DESCRIPTORS.load(Ordering::Relaxed) {
+                // The guest, forked from the tracer's thread, installs its
+                // own filter with prctl, so this one is added only now.
+                let action = GETPPID_PRCTL_ACTION.load(Ordering::Relaxed);
+                if action != 0 {
+                    filter_tracer_prctl(action);
+                }
                 let mut limit = libc::rlimit {
                     rlim_cur: 0,
                     rlim_max: 0,
@@ -5404,15 +5454,21 @@ fn sigtrap_before_an_injected_syscall_is_discarded_with_no_descriptor_left() {
 /// instead, as on main, and the guest runs as on main: the `getppid` does
 /// not run, and the injection returns the syscall number left in RAX (110),
 /// a known gap (https://github.com/rrnewton/reverie/issues/845). A pending
-/// SIGTSTP is then reported, and its handler runs once.
+/// SIGTSTP is then reported, and its handler runs once. With `prctl` set,
+/// no descriptor can be opened during the injected `getppid`, so procfs
+/// cannot report the tracer thread's mode, and every `prctl` of the tracer
+/// gets that action from then on.
 #[cfg(target_arch = "x86_64")]
 fn sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
     request: u32,
     action: u32,
     tstp: bool,
+    prctl: Option<u32>,
     probe: &str,
 ) {
     TSTP_AFTER_TRAP.store(tstp, Ordering::Relaxed);
+    GETPPID_WITHOUT_DESCRIPTORS.store(prctl.is_some(), Ordering::Relaxed);
+    GETPPID_PRCTL_ACTION.store(prctl.unwrap_or(0), Ordering::Relaxed);
     let (output, log, _) = test_tool_under_tracer_filter::<TrapBeforeGetppid, _>(
         Some((request, action)),
         trap_before_getppid_guest(tstp),
@@ -5468,6 +5524,7 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_a
             libc::PTRACE_GETSIGMASK,
             libc::SECCOMP_RET_KILL_PROCESS,
             false,
+            None,
             "trap-getsigmask-kill-filter",
         )
     });
@@ -5483,6 +5540,7 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_when_getsigmask_is_refused(
             libc::PTRACE_GETSIGMASK,
             libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
             false,
+            None,
             "trap-getsigmask-deny-filter",
         )
     });
@@ -5498,6 +5556,7 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_a
             libc::PTRACE_GETSIGINFO,
             libc::SECCOMP_RET_KILL_PROCESS,
             true,
+            None,
             "trap-tstp-getsiginfo-kill-filter",
         )
     });
@@ -5513,7 +5572,62 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_when_getsiginfo_is_refused(
             libc::PTRACE_GETSIGINFO,
             libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
             true,
+            None,
             "trap-tstp-getsiginfo-deny-filter",
+        )
+    });
+}
+
+/// A tracer thread already seen under a filter is not asked for its mode
+/// with `prctl` when procfs cannot report it: here a filter kills the tracer
+/// at every `prctl`. The trap is taken for the step's report, as on main.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_when_prctl_kills() {
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_when_prctl_kills";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
+            libc::PTRACE_GETSIGMASK,
+            libc::SECCOMP_RET_KILL_PROCESS,
+            false,
+            Some(libc::SECCOMP_RET_KILL_PROCESS),
+            "trap-emfile-prctl-kill-filter",
+        )
+    });
+}
+
+/// As `..._when_prctl_kills`, with a filter that traps every `prctl`
+/// (SIGSYS, which the tracer does not handle).
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_when_prctl_traps() {
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_when_prctl_traps";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
+            libc::PTRACE_GETSIGMASK,
+            libc::SECCOMP_RET_KILL_PROCESS,
+            false,
+            Some(libc::SECCOMP_RET_TRAP),
+            "trap-emfile-prctl-trap-filter",
+        )
+    });
+}
+
+/// As `..._when_prctl_kills`, with a filter that answers every `prctl`
+/// with 0 without running it, which would read as "no filter": the step is
+/// still not retried, so the refused `PTRACE_GETSIGMASK` is not reached.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_when_prctl_answers_0()
+{
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_when_prctl_answers_0";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
+            libc::PTRACE_GETSIGMASK,
+            libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
+            false,
+            Some(libc::SECCOMP_RET_ERRNO),
+            "trap-emfile-prctl-errno0-filter",
         )
     });
 }

@@ -648,30 +648,48 @@ fn thread_may_be_seccomp_filtered() -> bool {
     procfs_thread_unfiltered().is_none_or(|unfiltered| !unfiltered)
 }
 
+thread_local! {
+    /// Whether the calling thread has been seen under a seccomp filter (or
+    /// with no seccomp mode to read). A filter is never removed, so this
+    /// holds for the rest of the thread's life.
+    static SEEN_SECCOMP_FILTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Whether procfs reports the calling thread's seccomp mode as 0, `None` if
-/// its status cannot be read.
+/// its status cannot be read. A thread already seen filtered is reported
+/// filtered without reading it again.
 fn procfs_thread_unfiltered() -> Option<bool> {
+    if SEEN_SECCOMP_FILTERED.get() {
+        return Some(false);
+    }
     let status = std::fs::read_to_string("/proc/thread-self/status").ok()?;
-    Some(
-        status
-            .lines()
-            .find_map(|line| line.strip_prefix("Seccomp:"))
-            .is_some_and(|mode| mode.trim() == "0"),
-    )
+    let unfiltered = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Seccomp:"))
+        .is_some_and(|mode| mode.trim() == "0");
+    if !unfiltered {
+        SEEN_SECCOMP_FILTERED.set(true);
+    }
+    Some(unfiltered)
 }
 
 /// `thread_may_be_seccomp_filtered` for the steps an injection takes beyond
 /// main's, which correct main on an unfiltered thread. Where procfs cannot
-/// be read, for example with no descriptor left to open (EMFILE), it asks
-/// `prctl(PR_GET_SECCOMP)`, which needs none. A thread without a filter has
-/// nothing to refuse that request, so it is still told apart; a filtered
-/// thread's refusal or nonzero answer counts as filtered.
+/// be read, for example with no descriptor left to open (EMFILE), on a
+/// thread not yet seen filtered, it asks `prctl(PR_GET_SECCOMP)`, which
+/// needs none. A thread without a filter has nothing to refuse that request,
+/// so it is still told apart; a refusal or nonzero answer counts as
+/// filtered. A thread seen filtered is never asked, as its filter may kill
+/// it at that request or answer it falsely.
 fn step_thread_may_be_seccomp_filtered() -> bool {
     match procfs_thread_unfiltered() {
         Some(unfiltered) => !unfiltered,
         None => {
             // SAFETY: PR_GET_SECCOMP reads the calling thread's seccomp mode.
             let mode = unsafe { libc::prctl(libc::PR_GET_SECCOMP, 0, 0, 0, 0) };
+            if mode != 0 {
+                SEEN_SECCOMP_FILTERED.set(true);
+            }
             mode != 0
         }
     }
