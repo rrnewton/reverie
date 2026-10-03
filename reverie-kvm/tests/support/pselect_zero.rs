@@ -112,3 +112,68 @@ fn copyout_faults_order_and_aliasing_match_native() {
         &[11, 12, 13, 14, 15, 16],
     );
 }
+
+#[test]
+fn captured_outputs_and_dup_aliases_are_refused() {
+    if !leader_self_exec_bounded("pselect_zero::captured_outputs_and_dup_aliases_are_refused") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "pselect-captured-output",
+        include_str!("../fixtures/pselect_captured_output.c"),
+    );
+    let image = std::fs::read(&program).unwrap();
+    let mut outcomes = Vec::new();
+    // This is an explicit unsupported-boundary test, not native parity: a
+    // native process has ordinary host streams, not Reverie's capture vectors.
+    for ownership in [
+        None,
+        Some(ThreadOwnership::Host),
+        Some(ThreadOwnership::Tool),
+    ] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[program.to_str().unwrap()],
+                &[],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr, callbacks) = if let Some(ownership) = ownership {
+            backend.set_thread_ownership(ownership);
+            let (trace, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            let count = trace
+                .syscalls()
+                .iter()
+                .filter(|name| name.as_str() == "pselect6")
+                .count();
+            (code, stdout, stderr, Some(count))
+        } else {
+            let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+            (code, stdout, stderr, None)
+        };
+        eprintln!(
+            "captured pselect ownership={ownership:?} code={code} callbacks={callbacks:?} stderr={stderr:?}"
+        );
+        outcomes.push((ownership, code, stdout, stderr, callbacks));
+    }
+    // Retain all three old-production outcomes before reporting the first
+    // failure, so direct and both Tool ownership routes are actually exercised.
+    for (ownership, code, stdout, stderr, callbacks) in outcomes {
+        assert_eq!(code, 0, "ownership={ownership:?}");
+        assert_eq!(
+            stdout, b"captured pselect refused 4\n",
+            "ownership={ownership:?}"
+        );
+        assert!(stderr.is_empty(), "ownership={ownership:?}: {stderr:?}");
+        if ownership.is_some() {
+            assert_eq!(callbacks, Some(4), "ownership={ownership:?}");
+        }
+    }
+}

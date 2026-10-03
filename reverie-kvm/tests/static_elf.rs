@@ -11192,6 +11192,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "pselect_zero::readiness_matches_native_pipe_socket_and_path_states",
         "pselect_zero::raw_abi_and_readonly_zero_timeout_match_native",
         "pselect_zero::copyout_faults_order_and_aliasing_match_native",
+        "pselect_zero::captured_outputs_and_dup_aliases_are_refused",
         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
         "fchdir_consumes_low_descriptor_words_on_kvm",
         "getdents64_consumes_low_descriptor_words_on_kvm",
