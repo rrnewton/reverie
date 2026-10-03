@@ -1,0 +1,22 @@
+{
+  "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+  "base": "36bf964b3a98a0206f2b4d11daf0dd9d9872da22",
+  "tree": "e02f3dab6d13e343f99d0d9dc0a9cb3e1d348e5d",
+  "source": {
+    "reverie-kvm/src/elf.rs": "aeb5fb2200bbd3fd1219d82bfebdb9d24f8bbfa9ff112edad28c7b58541fffe0",
+    "reverie-kvm/src/executor.rs": "0bb747ee1ec1266115ed94d8fa1113135f898a328073aac843fe7aaf38f916c9",
+    "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+    "reverie-kvm/tests/fixtures/epoll_pwait2.c": "fab72bd6cca54bae150d639951fc4ca0579f0c52b1063ce78750a391169501f5",
+    "reverie-kvm/tests/support/epoll_pwait2.rs": "09e48b81ce37eee2a713aca8076f169bc6d59a1c0bf222ef6dcaac25ba4518ce"
+  },
+  "cargo_lock_sha256": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+  "uname": {
+    "system": "Linux",
+    "node": "devbig014.atn7.facebook.com",
+    "release": "7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf",
+    "version": "#1 SMP PREEMPT Mon Aug 24 01:30:09 PDT 2026",
+    "machine": "x86_64",
+    "processor": "x86_64"
+  },
+  "working_status": "?? ignored/\n"
+}

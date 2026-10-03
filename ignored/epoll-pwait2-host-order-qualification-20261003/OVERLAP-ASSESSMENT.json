@@ -1,0 +1,45 @@
+{
+  "required-kvm": {
+    "started_et": "2026-10-03 10:43:16 AM ET",
+    "guard_wall_seconds": 30.01385712600313,
+    "leader": {
+      "pid": 3105607,
+      "state": "R",
+      "ppid": 3104915,
+      "pgid": 3105607,
+      "session": 3105607,
+      "start": 56806521
+    },
+    "actual_command_rc": 0,
+    "rc": 0,
+    "stop_reason": null,
+    "remaining_descendants": [],
+    "receipt_written_et": "2026-10-03T10:43:46.620544-04:00",
+    "output_sha256": "31c9e5071456a0b5a8f93ad062236007f23d3b8d7a47a0814e043ce098673968",
+    "cargo_lock_wait_reported": true,
+    "compilation_or_checking_reported": true
+  },
+  "final-clippy": {
+    "started_et": "2026-10-03 10:43:32 AM ET",
+    "guard_wall_seconds": 22.050219291006215,
+    "leader": {
+      "pid": 3175190,
+      "state": "R",
+      "ppid": 3174478,
+      "pgid": 3175190,
+      "session": 3175190,
+      "start": 56808093
+    },
+    "actual_command_rc": -15,
+    "rc": 94,
+    "stop_reason": "wrapper received cancellation signal",
+    "remaining_descendants": [],
+    "receipt_written_et": "2026-10-03T10:43:54.375649-04:00",
+    "output_sha256": "bd7915348416a0a73d2af923286a2921a65dcadf46fbc7dfce668e0f18e4a29b",
+    "cargo_lock_wait_reported": true,
+    "compilation_or_checking_reported": true
+  },
+  "stop_record_written_et": "2026-10-03T10:43:53.881258-04:00",
+  "timing_limits": "Guard started_et has one-second precision. Stop-record file mtime is the retained write time immediately after the generation-bound signal, not a claimed timestamp of the signal syscall itself. Receipt mtime follows cleanup and binary hashing.",
+  "assessment": "Orchestration error; canceled Clippy is not qualification. Passed required-KVM was not repeated. Source/assertions unchanged; corrected Clippy starts after both prior guards are terminal."
+}

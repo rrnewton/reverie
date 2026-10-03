@@ -1,0 +1,7 @@
+{
+  "reverie-kvm/src/elf.rs": "aeb5fb2200bbd3fd1219d82bfebdb9d24f8bbfa9ff112edad28c7b58541fffe0",
+  "reverie-kvm/src/executor.rs": "0bb747ee1ec1266115ed94d8fa1113135f898a328073aac843fe7aaf38f916c9",
+  "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+  "reverie-kvm/tests/fixtures/epoll_pwait2.c": "fab72bd6cca54bae150d639951fc4ca0579f0c52b1063ce78750a391169501f5",
+  "reverie-kvm/tests/support/epoll_pwait2.rs": "09e48b81ce37eee2a713aca8076f169bc6d59a1c0bf222ef6dcaac25ba4518ce"
+}

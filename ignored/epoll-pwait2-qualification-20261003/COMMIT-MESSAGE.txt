@@ -1,0 +1,11 @@
+Support bounded epoll_pwait2 eventfd probes
+
+[hermit2, unknown-agentname, gpt-6-astra, devbig014, role=impl]
+
+Background: the KVM backend executes guest Linux syscalls using owned host descriptors. Epoll readiness probes need provenance so virtual or externally escaped carriers cannot silently define guest readiness.
+
+Implement syscall 441 for an explicit zero timeout and null signal mask, limited to known eventfd interest sets in their originating table. Track descriptor retirement, table history and SCM_RIGHTS escape through shared identities; refuse unsupported histories without changing existing epoll/select/poll behavior. Copy directly through retained guest-memory aliases so Linux partial-copy and oneshot effects remain visible.
+
+Add native, direct KVM and both Tool-ownership controls plus exact lifecycle, error-order and alias-notification regressions. Focused qualification and causal failures are retained; full qualification follows this checkpoint.
+
+https://github.com/rrnewton/reverie/issues/905

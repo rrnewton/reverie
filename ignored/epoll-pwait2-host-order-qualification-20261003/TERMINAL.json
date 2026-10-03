@@ -1,0 +1,174 @@
+{
+  "status": "QUALIFIED_FOCUSED_LOCAL_NOT_CANONICAL",
+  "head": "f78354c066fc77e160216e959d1fb979c0348696",
+  "tree": "57f9d3fb658204102b410b373143a2db44c3b59d",
+  "source": {
+    "reverie-kvm/src/executor.rs": "5b54e1847c9200f4fdc5907a2857d95d8e0e2df2c4b318df30135c0ee4df0d18",
+    "reverie-kvm/src/elf.rs": "aeb5fb2200bbd3fd1219d82bfebdb9d24f8bbfa9ff112edad28c7b58541fffe0",
+    "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+    "reverie-kvm/tests/support/epoll_pwait2.rs": "457d36dfbf28176aabdbd4e4a482b79e1beccadf784d827f14f0b0dfeed372ce",
+    "reverie-kvm/tests/fixtures/epoll_pwait2.c": "1d6e53f147b9bb02b150e989a2411ea6a5400fa9cb7f1ff071771911a927ffbd",
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6"
+  },
+  "report_sha256": "d821ed74a483f7ccd2861fe94d4ac3b2e882e5ae410b26097263af6f0f405995",
+  "product_success_phases": [
+    "focused-units",
+    "focused-integration",
+    "final-library",
+    "required-kvm",
+    "final-clippy-serial",
+    "final-docs",
+    "final-format"
+  ],
+  "all_phases": {
+    "format-artifact": {
+      "rc": 1,
+      "actual_command_rc": 1,
+      "stop_reason": null,
+      "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+      "wall_seconds": 0.45827657997142524,
+      "receipt_sha256": "ac2bbdf06b9b14bc744942fc6642eeca802c9fa2e26c92b7e3ff892738013366"
+    },
+    "format-complete-artifact": {
+      "rc": 1,
+      "actual_command_rc": 1,
+      "stop_reason": null,
+      "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+      "wall_seconds": 1.252636619959958,
+      "receipt_sha256": "03d69590fd760c8d76f4fbd62f456b17c74496ee072ca5002c40a9b017924ed8"
+    },
+    "format-module-complete-artifact": {
+      "rc": 0,
+      "actual_command_rc": 0,
+      "stop_reason": null,
+      "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+      "wall_seconds": 0.8487366969930008,
+      "receipt_sha256": "14104cd534c2672a6be0a5edd4d652940e033ad3b8bb88f647c69e0e38b70b25"
+    },
+    "formatting-before-checkpoint": {
+      "rc": 0,
+      "actual_command_rc": 0,
+      "stop_reason": null,
+      "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+      "wall_seconds": 3.8630319110816345,
+      "receipt_sha256": "17a77c294599626742efae29a0f60875530916b12b4cfd5b6cb93287890a1d0c"
+    },
+    "checkpoint-commit": {
+      "rc": 94,
+      "actual_command_rc": 0,
+      "stop_reason": "live descendants remained after command completion",
+      "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+      "wall_seconds": 0.47280855500139296,
+      "receipt_sha256": "c0e4e0fb516b9beb4d7c0889b0eba9ec1112ac537e791994cef42cff4e2d6b75"
+    },
+    "replay-main": {
+      "rc": 0,
+      "actual_command_rc": 0,
+      "stop_reason": null,
+      "head": "a44ae04cf06d2ee8e64ca35ef129c35a9f181480",
+      "wall_seconds": 1.6943285530433059,
+      "receipt_sha256": "64eff65e7a2e0d813d91127a0f38e2669e0989e4c05be759d430f79df25a94ea"
+    },
+    "focused-units": {
+      "rc": 0,
+      "actual_command_rc": 0,
+      "stop_reason": null,
+      "head": "f78354c066fc77e160216e959d1fb979c0348696",
+      "wall_seconds": 25.405605535954237,
+      "receipt_sha256": "f4ea3ba5feacd213c2f1ed188b9691aabbe41689dfda46515752519315b6ae6a"
+    },
+    "focused-integration": {
+      "rc": 0,
+      "actual_command_rc": 0,
+      "stop_reason": null,
+      "head": "f78354c066fc77e160216e959d1fb979c0348696",
+      "wall_seconds": 34.446991310920566,
+      "receipt_sha256": "c798d789cbc6a5a2339f48d74dbb7cbe24c7adac9e4d1f2f29e6cdedaff5439d"
+    },
+    "mutant-fixed-ebadf": {
+      "rc": 101,
+      "actual_command_rc": 101,
+      "stop_reason": null,
+      "head": "f78354c066fc77e160216e959d1fb979c0348696",
+      "wall_seconds": 24.377909636008553,
+      "receipt_sha256": "d4ef3401b112a0b1aeaf64f6e29afa6ef225a4958e003372b4f341f2675595a9"
+    },
+    "mutant-fixed-einval": {
+      "rc": 101,
+      "actual_command_rc": 101,
+      "stop_reason": null,
+      "head": "f78354c066fc77e160216e959d1fb979c0348696",
+      "wall_seconds": 24.14911735302303,
+      "receipt_sha256": "df933e0b6b18db7d1f3caaf7bc11f41bba0f9b8a78484e830ce6b7dfae229e0d"
+    },
+    "mutant-invalid-pointer-as-null": {
+      "rc": 101,
+      "actual_command_rc": 101,
+      "stop_reason": null,
+      "head": "f78354c066fc77e160216e959d1fb979c0348696",
+      "wall_seconds": 25.608577200910076,
+      "receipt_sha256": "656a2ca8f37829fb96d9441606c46b4a731cd6fe3ec916ebd1d3bf94ae959b91"
+    },
+    "mutant-false-success": {
+      "rc": 101,
+      "actual_command_rc": 101,
+      "stop_reason": null,
+      "head": "f78354c066fc77e160216e959d1fb979c0348696",
+      "wall_seconds": 25.06864437193144,
+      "receipt_sha256": "d75180329df09ee1f30fcd7e0d9eb19a88d6b12ac6a13d25a3e622ce5984cd32"
+    },
+    "final-library": {
+      "rc": 0,
+      "actual_command_rc": 0,
+      "stop_reason": null,
+      "head": "f78354c066fc77e160216e959d1fb979c0348696",
+      "wall_seconds": 89.83202304609586,
+      "receipt_sha256": "15c7e90fb8c93ccaace60cbeb74eb544641357692af22fdcf8ca612da4a4399c"
+    },
+    "required-kvm": {
+      "rc": 0,
+      "actual_command_rc": 0,
+      "stop_reason": null,
+      "head": "f78354c066fc77e160216e959d1fb979c0348696",
+      "wall_seconds": 30.01385712600313,
+      "receipt_sha256": "5fe3dd21dc321a889a1bf65c404349ad9112f44eda507124a17cd25376d5e82a"
+    },
+    "final-clippy": {
+      "rc": 94,
+      "actual_command_rc": -15,
+      "stop_reason": "wrapper received cancellation signal",
+      "head": "f78354c066fc77e160216e959d1fb979c0348696",
+      "wall_seconds": 22.050219291006215,
+      "receipt_sha256": "fc7c3448e96b4ecbf024ff6be859d7dcb61e163f3b42a4167c76d8fe6215f4e4"
+    },
+    "final-clippy-serial": {
+      "rc": 0,
+      "actual_command_rc": 0,
+      "stop_reason": null,
+      "head": "f78354c066fc77e160216e959d1fb979c0348696",
+      "wall_seconds": 17.710463771945797,
+      "receipt_sha256": "2d120c44ea2c2febf9b67188dd738f237ae62df07e5ce048c143ee4607faf216"
+    },
+    "final-docs": {
+      "rc": 0,
+      "actual_command_rc": 0,
+      "stop_reason": null,
+      "head": "f78354c066fc77e160216e959d1fb979c0348696",
+      "wall_seconds": 15.774899607989937,
+      "receipt_sha256": "7f11b51601fee886fe0b9b8b4cde7edc8ff9be63d6a6304e26a8e6b9c05d9179"
+    },
+    "final-format": {
+      "rc": 0,
+      "actual_command_rc": 0,
+      "stop_reason": null,
+      "head": "f78354c066fc77e160216e959d1fb979c0348696",
+      "wall_seconds": 4.252166804042645,
+      "receipt_sha256": "19b231b1ab616c0701e16be328abb5055d2586e3497bcb34ebdb030e7d46bd7c"
+    }
+  },
+  "final_tracked_clean": true,
+  "untracked_evidence_present": true,
+  "all_guard_descendants_retired": true,
+  "original_archive_url": "https://github.com/rrnewton/reverie/pull/907#issuecomment-5969808050",
+  "original_archive_sha256": "c91864c49e8cac1a208fa659e63718e78e55e6c32e55b5273a4a41ff36a1194c"
+}

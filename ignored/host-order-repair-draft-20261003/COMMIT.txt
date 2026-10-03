@@ -1,0 +1,30 @@
+Preserve host epoll error ordering for absent guest descriptors
+
+[hermit2, unknown-agentname, gpt-6-astra, devbig014, role=impl]
+
+Background: the KVM backend forwards admitted epoll_pwait2 readiness to
+Linux, but its missing-descriptor preflight fixed one kernel version's
+conflicting-error order. Linux 6.1/6.6 validate count and range before fdget;
+Linux 6.18 validates fd first. No project-wide Linux 6.18 minimum exists.
+
+Delegate an absent guest descriptor through guaranteed-invalid host fd -1,
+using safe representatives of the full original guest numeric range. This
+preserves the actual host ABI without polling an epoll, writing output,
+changing masks, caching kernel policy, or modifying the admitted wait path.
+Preserve host refusal errors and refuse impossible nonnegative results.
+
+Keep exact native/KVM comparisons and every existing fixture mode. Supply
+one independently measured native errno to mode14, and add strict legacy/
+current order, low-word/full-range, denial/false-success and ambient-host-fd
+controls. Forced kernel-order contexts are models, not older-kernel runs.
+
+Linux primary sources:
+https://github.com/torvalds/linux/blob/830b3c68c1fb1e9176028d02ef86f3cf76aa2476/fs/eventpoll.c#L2221
+https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/eventpoll.c#L2451
+
+Repairs the source-review finding on
+https://github.com/rrnewton/reverie/pull/907
+Tracked product work: https://github.com/rrnewton/reverie/issues/905
+
+This checkpoint passed cargo fmt --all -- --check. Product qualification
+follows at the final replayed head; no new runtime pass is claimed here.

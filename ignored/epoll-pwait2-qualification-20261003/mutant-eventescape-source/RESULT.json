@@ -1,0 +1,29 @@
+{
+  "kind": "eventescape",
+  "original_sha256": "0bb747ee1ec1266115ed94d8fa1113135f898a328073aac843fe7aaf38f916c9",
+  "mutant_sha256": "8a38617c27c4659b8cd42935cc650afe6dd3f9182a7468740d2e6f3ee1d8a1ee",
+  "expected_test_rc": 101,
+  "cancel_signals": [],
+  "command": [
+    "python3",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll-pwait2-qualification-20261003/run_guard.py",
+    "--phase",
+    "mutant-eventescape",
+    "--seconds",
+    "300",
+    "--",
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "executor::tests::epoll_pwait2_scm_failed_export_invalidates_every_alias_and_future_registration",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "guard_rc": 101,
+  "restored_sha256": "0bb747ee1ec1266115ed94d8fa1113135f898a328073aac843fe7aaf38f916c9"
+}

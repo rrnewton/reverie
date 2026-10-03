@@ -1,0 +1,101 @@
+{
+  "phase": "base-contract",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "reverie-kvm",
+    "--test",
+    "static_elf",
+    "epoll_pwait2::seven_check_contract_matches_native",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003",
+  "start_free_bytes": 1548249542656,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice": 10,
+  "seconds_bound": 180.0,
+  "started_et": "2026-10-03 09:24:26 AM ET",
+  "source_before": {
+    "Cargo.toml": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c",
+    "reverie-kvm/Cargo.toml": "85202626bea214d699f7abd6c7764e1a21e962af6d7c3dde8f16345eba037442",
+    "reverie-kvm/src/elf.rs": "08ac2e477f54cc4afcc81ef0f6ab7c73c1479e0f0ebeb7ad7139533393e92fad",
+    "reverie-kvm/src/executor.rs": "44a40715ff6ffa90be43223dbfdb901e4486d422eb517d97d4c75d46116c6ca4",
+    "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+    "reverie-kvm/tests/support/epoll_pwait2.rs": "09e48b81ce37eee2a713aca8076f169bc6d59a1c0bf222ef6dcaac25ba4518ce",
+    "reverie-kvm/tests/fixtures/epoll_pwait2.c": "fab72bd6cca54bae150d639951fc4ca0579f0c52b1063ce78750a391169501f5",
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6"
+  },
+  "head": "43fce717f1c7710b7ef7345e4146821422a3aaa6",
+  "lock_before": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+  "resource_environment": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/target/epoll-pwait2-qualification",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "XDG_CACHE_HOME": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/target/epoll-pwait2-script-cache",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "leader": {
+    "pid": 290866,
+    "state": "R",
+    "ppid": 290397,
+    "pgid": 290866,
+    "session": 290866,
+    "start": 56333504
+  },
+  "remaining_descendants": [],
+  "cleanup": [
+    {
+      "signal": 15,
+      "targets": []
+    }
+  ],
+  "witnessed_descendants": [
+    {
+      "pid": 290866,
+      "state": "R",
+      "ppid": 290397,
+      "pgid": 290866,
+      "session": 290866,
+      "start": 56333504
+    }
+  ],
+  "actual_command_rc": 101,
+  "lock_after": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+  "source_after": {
+    "Cargo.toml": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c",
+    "reverie-kvm/Cargo.toml": "85202626bea214d699f7abd6c7764e1a21e962af6d7c3dde8f16345eba037442",
+    "reverie-kvm/src/elf.rs": "08ac2e477f54cc4afcc81ef0f6ab7c73c1479e0f0ebeb7ad7139533393e92fad",
+    "reverie-kvm/src/executor.rs": "44a40715ff6ffa90be43223dbfdb901e4486d422eb517d97d4c75d46116c6ca4",
+    "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+    "reverie-kvm/tests/support/epoll_pwait2.rs": "09e48b81ce37eee2a713aca8076f169bc6d59a1c0bf222ef6dcaac25ba4518ce",
+    "reverie-kvm/tests/fixtures/epoll_pwait2.c": "fab72bd6cca54bae150d639951fc4ca0579f0c52b1063ce78750a391169501f5",
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6"
+  },
+  "stop_reason": null,
+  "wall_seconds": 0.6091044730274007,
+  "minimum_free_bytes": 1548249542656,
+  "end_free_bytes": 1548249542656,
+  "output_bytes": 1422,
+  "output_sha256": "6ee0853134510611cdf421f91cb33f93b5b9048d182e3810200887819343e09d",
+  "cancel_signals": [],
+  "rc": 101,
+  "test_binaries": {
+    "target/epoll-pwait2-qualification/debug/deps/static_elf-9a322fcc3d61e965": "f646286ec7e719f6ab9a24130a2fb02f73d2342716103a27fe8417b8ab9d8d62"
+  }
+}

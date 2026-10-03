@@ -1,0 +1,14 @@
+{
+  "head": "f78354c066fc77e160216e959d1fb979c0348696",
+  "all_declared_sources_and_lock_match": true,
+  "tracked_clean": true,
+  "mutants_complete": true,
+  "source": {
+    "reverie-kvm/src/executor.rs": "5b54e1847c9200f4fdc5907a2857d95d8e0e2df2c4b318df30135c0ee4df0d18",
+    "reverie-kvm/src/elf.rs": "aeb5fb2200bbd3fd1219d82bfebdb9d24f8bbfa9ff112edad28c7b58541fffe0",
+    "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+    "reverie-kvm/tests/support/epoll_pwait2.rs": "457d36dfbf28176aabdbd4e4a482b79e1beccadf784d827f14f0b0dfeed372ce",
+    "reverie-kvm/tests/fixtures/epoll_pwait2.c": "1d6e53f147b9bb02b150e989a2411ea6a5400fa9cb7f1ff071771911a927ffbd",
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6"
+  }
+}

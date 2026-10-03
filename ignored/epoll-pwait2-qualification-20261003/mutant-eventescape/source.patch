@@ -1,0 +1,13 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index ce810c869d7..56d56afc772 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -13030,7 +13030,7 @@ fn translate_outgoing_rights(
+                         // A foreign writer controls readiness even when nobody
+                         // exports the epoll itself. Never infer determinism
+                         // from the native carrier merely being an eventfd.
+-                        identity.escaped.store(true, Ordering::SeqCst);
++                        let _ = identity; // planted missing export invalidation
+                     }
+                 }
+             }

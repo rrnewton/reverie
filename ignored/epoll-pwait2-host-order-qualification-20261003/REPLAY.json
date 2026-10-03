@@ -1,0 +1,15 @@
+{
+  "old_base": "36bf964b3a98a0206f2b4d11daf0dd9d9872da22",
+  "old_head": "a44ae04cf06d2ee8e64ca35ef129c35a9f181480",
+  "new_base": "a28f7cd0b8b75187756b2a7681ca8536e47b2fe4",
+  "new_head": "f78354c066fc77e160216e959d1fb979c0348696",
+  "tree": "57f9d3fb658204102b410b373143a2db44c3b59d",
+  "kvm_tree": "64cfd5ef35cd8d3bd957cd90c66c620116b05d28",
+  "all_range_diff_rows_equal": true,
+  "changed_paths_between_heads": [
+    "reverie-ptrace/src/task.rs",
+    "reverie-ptrace/tests/injected_syscall_group_stop.rs"
+  ],
+  "lock_sha256": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+  "tracked_status": ""
+}

@@ -1,0 +1,14 @@
+   Compiling reverie-kvm v0.4.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/reverie-kvm)
+    Finished `test` profile [unoptimized] target(s) in 27.01s
+     Running tests/static_elf.rs (target/epoll-pwait2-qualification/debug/deps/static_elf-9a322fcc3d61e965)
+
+running 6 tests
+test epoll_pwait2::captured_output_and_dup_registrations_are_refused ... ok
+test epoll_pwait2::empty_and_ready_eventfd_match_native ... ok
+test epoll_pwait2::inaccessible_output_depends_on_readiness ... ok
+test epoll_pwait2::raw_abi_and_readonly_timeout_match_native ... ok
+test epoll_pwait2::scalar_faults_preserve_bytes_and_oneshot_events ... ok
+test epoll_pwait2::seven_check_contract_matches_native ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 421 filtered out; finished in 3.46s
+

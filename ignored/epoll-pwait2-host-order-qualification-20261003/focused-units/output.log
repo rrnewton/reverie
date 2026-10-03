@@ -1,0 +1,32 @@
+   Compiling reverie-kvm v0.4.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/reverie-kvm)
+    Finished `test` profile [unoptimized] target(s) in 24.68s
+     Running unittests src/lib.rs (target/epoll-pwait2-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a)
+
+running 14 tests
+test executor::tests::epoll_pwait2_absent_guest_fd_cannot_poll_an_ambient_host_epoll ... ok
+test executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks ... 
+stage=5 Output { status: ExitStatus(unix_wait_status(0)), stdout: "\nrunning 1 test\ntest executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1113 filtered out; finished in 0.22s\n\n", stderr: "warning: `--logfile` is deprecated\natomic alias case=CleanupAfterSuccess operation=1 counters=[1, 2, 2, 0, 0, 1, 0, 1, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0] addresses=AliasAddresses { base: 140119180820480, length: 12288, wrong: 0, ambiguous: 0, operation: 1 }\n" }
+ok
+test executor::tests::epoll_pwait2_epoll_dup_survives_but_target_replacement_and_reuse_refuse ... ok
+test executor::tests::epoll_pwait2_exec_filters_cloexec_without_replacing_surviving_identity ... ok
+test executor::tests::epoll_pwait2_fork_and_shared_snapshot_lifetimes_are_distinct ... ok
+test executor::tests::epoll_pwait2_invalid_fd_preserves_denials_and_refuses_impossible_success ... ok
+test executor::tests::epoll_pwait2_invalid_fd_projection_preserves_both_kernel_orders ... ok
+test executor::tests::epoll_pwait2_poisoned_provenance_cannot_become_success ... 
+thread 'executor::tests::epoll_pwait2_poisoned_provenance_cannot_become_success' (1978014) panicked at reverie-kvm/src/executor.rs:38596:17:
+planted provenance publication failure
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'executor::tests::epoll_pwait2_poisoned_provenance_cannot_become_success' (1978014) panicked at reverie-kvm/src/executor.rs:11138:14:
+KVM epoll provenance lock poisoned: PoisonError { .. }
+ok
+test executor::tests::epoll_pwait2_scm_failed_export_invalidates_every_alias_and_future_registration ... ok
+test executor::tests::epoll_pwait2_success_and_copyout_fault_notify_outside_all_locks ... ok
+test executor::tests::epoll_pwait2_unknown_import_nested_and_changed_host_keys_are_not_certified ... ok
+test executor::tests::epoll_pwait2_unmasked_zero_probe_preserves_pending_signals_and_refusal_state ... ok
+test executor::tests::epoll_pwait2_unshare_history_covers_epolls_created_after_the_request ... ok
+test executor::tests::epoll_pwait2_validation_order_matches_native_and_checks_full_range ... native epoll_pwait2 invalid-fd setup: [-9, -9]
+ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 1100 filtered out; finished in 0.40s
+

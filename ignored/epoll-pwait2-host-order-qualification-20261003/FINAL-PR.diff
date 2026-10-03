@@ -1,0 +1,2523 @@
+diff --git a/reverie-kvm/src/elf.rs b/reverie-kvm/src/elf.rs
+index 8740efdfc74..1b4931e40e0 100644
+--- a/reverie-kvm/src/elf.rs
++++ b/reverie-kvm/src/elf.rs
+@@ -862,6 +862,10 @@ pub(crate) struct LoadedStaticElf {
+     /// Insertion, including a dup destination, creates a new identity. Table
+     /// snapshots and fork copies retain it so unchanged host handles stay stable.
+     pub fd_entry_ids: std::collections::BTreeMap<i32, std::sync::Arc<()>>,
++    pub(crate) epoll_domain: std::sync::Arc<std::sync::Mutex<crate::executor::EpollDomain>>,
++    pub(crate) poll_table_id: std::sync::Arc<crate::executor::NativePollTable>,
++    pub(crate) native_poll_fds:
++        std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::NativePollBinding>>,
+     // AUTONOMOUS-BOT-IMPLEMENTED: Keep deterministic random descriptors on the Tool path.
+     // TODO-HUMAN-REVIEW(PR-235): Review random-device descriptor lifecycle parity.
+     pub random_device_fds: std::collections::BTreeSet<i32>,
+@@ -919,6 +923,13 @@ impl LoadedStaticElf {
+     /// callers retire them after both the authoritative file-table and
+     /// signal-transaction guards are released.
+     pub(crate) fn insert_file(&mut self, fd: i32, file: std::fs::File) -> Vec<std::fs::File> {
++        {
++            let domain = self.epoll_domain.clone();
++            let _proof = domain.lock().expect("KVM epoll provenance lock poisoned");
++            if let Some(binding) = self.native_poll_fds.remove(&fd) {
++                binding.retire();
++            }
++        }
+         self.random_device_descriptions.remove(&fd);
+         let mut retired: Vec<_> = self.files.insert(fd, file).into_iter().collect();
+         if fd == libc::STDIN_FILENO {
+@@ -937,6 +948,13 @@ impl LoadedStaticElf {
+     }
+ 
+     pub(crate) fn remove_file(&mut self, fd: i32) -> Option<std::fs::File> {
++        {
++            let domain = self.epoll_domain.clone();
++            let _proof = domain.lock().expect("KVM epoll provenance lock poisoned");
++            if let Some(binding) = self.native_poll_fds.remove(&fd) {
++                binding.retire();
++            }
++        }
+         self.random_device_descriptions.remove(&fd);
+         let file = self.files.remove(&fd);
+         self.fd_entry_ids.remove(&fd);
+@@ -1043,6 +1061,13 @@ impl LoadedStaticElf {
+                 .collect(),
+             file_retirement: FileRetirement::default(),
+             fd_entry_ids: self.fd_entry_ids.clone(),
++            epoll_domain: self.epoll_domain.clone(),
++            poll_table_id: self.poll_table_id.fork_identity(),
++            native_poll_fds: self
++                .native_poll_fds
++                .iter()
++                .map(|(&fd, binding)| (fd, binding.fork_binding()))
++                .collect(),
+             random_device_fds: self.random_device_fds.clone(),
+             random_device_descriptions: self.random_device_descriptions.clone(),
+             stdout_alias_fds: self.stdout_alias_fds.clone(),
+@@ -1089,6 +1114,24 @@ impl LoadedStaticElf {
+             std::sync::Arc::new(AtomicU8::new(previous.thp_disabled.load(Ordering::SeqCst)));
+         let regular_create_directory_policy = previous.regular_create_directory_policy;
+         let cloexec_fds = previous.cloexec_fds;
++        let native_poll_fds = {
++            let _proof = previous
++                .epoll_domain
++                .lock()
++                .expect("KVM epoll provenance lock poisoned");
++            previous
++                .native_poll_fds
++                .into_iter()
++                .filter_map(|(fd, binding)| {
++                    if cloexec_fds.contains(&fd) {
++                        binding.retire();
++                        None
++                    } else {
++                        Some((fd, binding))
++                    }
++                })
++                .collect()
++        };
+         let mut retired = Vec::new();
+         previous
+             .file_retirement
+@@ -1241,6 +1284,9 @@ impl LoadedStaticElf {
+         retired.extend(std::mem::replace(&mut self.files, files).into_values());
+         self.file_retirement = previous.file_retirement;
+         self.fd_entry_ids = fd_entry_ids;
++        self.epoll_domain = previous.epoll_domain;
++        self.poll_table_id = previous.poll_table_id;
++        self.native_poll_fds = native_poll_fds;
+         self.random_device_fds = random_device_fds;
+         self.random_device_descriptions = random_device_descriptions;
+         self.stdout_alias_fds = stdout_alias_fds;
+@@ -1623,6 +1669,9 @@ fn load_executable(
+         files: std::collections::BTreeMap::new(),
+         file_retirement: FileRetirement::default(),
+         fd_entry_ids: std::collections::BTreeMap::new(),
++        epoll_domain: Default::default(),
++        poll_table_id: Default::default(),
++        native_poll_fds: Default::default(),
+         random_device_fds: std::collections::BTreeSet::new(),
+         random_device_descriptions: std::collections::BTreeMap::new(),
+         stdout_alias_fds: std::collections::BTreeSet::new(),
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index add96bc3b45..812315335a0 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -654,6 +654,15 @@ fn execute_basic_syscall_inner(
+     } else if number == libc::SYS_epoll_pwait as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         epoll_wait(memory, state, args, true)
++    } else if number == libc::SYS_epoll_pwait2 as u64 {
++        let result = epoll_pwait2(memory, state, args);
++        // Alias infrastructure failure is terminal, even after successful
++        // kernel I/O. Forward the already-published cause without poisoning a
++        // second time or presenting its transport errno as a guest result.
++        if let Some(failure) = memory.entry_gate().pending_failure() {
++            return SyscallAction::Failure(failure.error());
++        }
++        result
+     } else if number == libc::SYS_eventfd as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         eventfd2(state, args[0], 0)
+@@ -2031,12 +2040,140 @@ impl RandomDeviceDescription {
+     }
+ }
+ 
++/// Positive provenance is minted only by the corresponding native creator.
++/// In particular, a virtual signalfd's eventfd carrier is not NativeEventFd.
++#[derive(Clone, Debug)]
++pub(crate) enum NativePollDescription {
++    EventFd(Arc<NativeEventFd>),
++    Epoll(Arc<()>),
++}
++
++/// Export can hand an eventfd writer to an untracked actor. This one-way bit
++/// follows the open description through every dup/fork, so exporting any
++/// alias removes admission from existing and future interest sets alike.
++#[derive(Debug, Default)]
++pub(crate) struct NativeEventFd {
++    escaped: AtomicBool,
++}
++
++/// Shared table identity, including histories that this backend does not
++/// model. A later creator must not erase an earlier unsupported table split.
++#[derive(Debug, Default)]
++pub(crate) struct NativePollTable {
++    unsafe_history: AtomicBool,
++}
++
++impl NativePollTable {
++    pub(crate) fn fork_identity(&self) -> Arc<Self> {
++        // A fork has a new table, but cannot certify a snapshot descended from
++        // an unmodeled split. CLONE_FILES keeps the original shared identity.
++        Arc::new(Self {
++            unsafe_history: AtomicBool::new(self.unsafe_history.load(Ordering::SeqCst)),
++        })
++    }
++}
++
++/// One logical descriptor entry, shared by CLONE_FILES snapshots. Its File
++/// may outlive a guest close in a stale snapshot, so Arc liveness alone does
++/// not establish that this binding is still part of the guest file table.
++#[derive(Debug)]
++pub(crate) struct NativePollBinding {
++    description: NativePollDescription,
++    live: AtomicBool,
++}
++
++impl NativePollBinding {
++    fn new(description: NativePollDescription) -> Arc<Self> {
++        Arc::new(Self {
++            description,
++            live: AtomicBool::new(true),
++        })
++    }
++
++    pub(crate) fn fork_binding(&self) -> Arc<Self> {
++        Self::new(self.description.clone())
++    }
++
++    /// Caller holds the family's epoll domain, serializing retirement with a
++    /// zero-time wait. This token never becomes live again.
++    pub(crate) fn retire(&self) {
++        self.live.store(false, Ordering::SeqCst);
++    }
++}
++
++#[derive(Debug)]
++struct EpollRegistration {
++    binding: std::sync::Weak<NativePollBinding>,
++    eventfd: Arc<NativeEventFd>,
++    host_key: RawFd,
++}
++
++#[derive(Debug)]
++struct EpollProof {
++    owner: std::sync::Weak<()>,
++    table: std::sync::Weak<NativePollTable>,
++    unsafe_history: bool,
++    registrations: std::collections::BTreeMap<i32, EpollRegistration>,
++}
++
++/// A leaf lock shared only within one guest family, not globally. Never hold
++/// it while acquiring other locks, calling guest-memory APIs that can notify
++/// or reenter, retiring a File, or constructing/finishing a writable alias.
++/// Kernel copyout through an already-retained alias is allowed. The records contain no File,
++/// memory, entry gate or callback, so their destruction cannot notify/reenter.
++#[derive(Debug, Default)]
++pub(crate) struct EpollDomain {
++    proofs: std::collections::BTreeMap<usize, EpollProof>,
++}
++
++fn epoll_identity_key(identity: &Arc<()>) -> usize {
++    // The record's Weak keeps this allocation from being reused until removal.
++    // This private token is unrelated to a host fd or anonymous inode number.
++    Arc::as_ptr(identity) as usize
++}
++
++fn native_poll_description(state: &LoadedStaticElf, fd: i32) -> Option<NativePollDescription> {
++    state
++        .native_poll_fds
++        .get(&fd)
++        .map(|binding| binding.description.clone())
++}
++
++fn install_native_poll_description(
++    state: &mut LoadedStaticElf,
++    fd: i32,
++    description: NativePollDescription,
++) {
++    state
++        .native_poll_fds
++        .insert(fd, NativePollBinding::new(description));
++}
++
++impl EpollProof {
++    fn admitted(&self, state: &LoadedStaticElf) -> bool {
++        !self.unsafe_history
++            && !state.poll_table_id.unsafe_history.load(Ordering::SeqCst)
++            && self.table.ptr_eq(&Arc::downgrade(&state.poll_table_id))
++            && self.registrations.values().all(|registration| {
++                registration.binding.upgrade().is_some_and(|binding| {
++                    binding.live.load(Ordering::SeqCst)
++                        && !registration.eventfd.escaped.load(Ordering::SeqCst)
++                        && matches!(&binding.description, NativePollDescription::EventFd(id)
++                            if Arc::ptr_eq(id, &registration.eventfd))
++                })
++            })
++    }
++}
++
+ #[derive(Debug, Default)]
+ pub(crate) struct FileTableState {
+     stdin: Option<std::fs::File>,
+     stdin_entry_id: Arc<()>,
+     files: std::collections::BTreeMap<i32, std::fs::File>,
+     fd_entry_ids: std::collections::BTreeMap<i32, Arc<()>>,
++    epoll_domain: Arc<Mutex<EpollDomain>>,
++    poll_table_id: Arc<NativePollTable>,
++    native_poll_fds: std::collections::BTreeMap<i32, Arc<NativePollBinding>>,
+     random_device_fds: std::collections::BTreeSet<i32>,
+     random_device_descriptions: std::collections::BTreeMap<i32, Arc<RandomDeviceDescription>>,
+     stdout_alias_fds: std::collections::BTreeSet<i32>,
+@@ -2856,6 +2993,9 @@ impl FileTableState {
+                 .map(|(fd, file)| (fd, file.into_file()))
+                 .collect(),
+             fd_entry_ids: state.fd_entry_ids.clone(),
++            epoll_domain: state.epoll_domain.clone(),
++            poll_table_id: state.poll_table_id.clone(),
++            native_poll_fds: state.native_poll_fds.clone(),
+             random_device_fds: state.random_device_fds.clone(),
+             random_device_descriptions: state.random_device_descriptions.clone(),
+             stdout_alias_fds: state.stdout_alias_fds.clone(),
+@@ -2932,6 +3072,9 @@ impl FileTableState {
+                 .chain(previous_files.into_values()),
+         );
+         state.fd_entry_ids.clone_from(&self.fd_entry_ids);
++        state.epoll_domain.clone_from(&self.epoll_domain);
++        state.poll_table_id.clone_from(&self.poll_table_id);
++        state.native_poll_fds.clone_from(&self.native_poll_fds);
+         state.random_device_fds.clone_from(&self.random_device_fds);
+         state
+             .random_device_descriptions
+@@ -3665,6 +3808,10 @@ impl ElfExecutor {
+         state.thread_group_leader_name = self.state.thread_group_leader_name.clone();
+         state.thp_disabled = self.state.thp_disabled.clone();
+         state.process_signals = self.state.process_signals.clone();
++        // The fork helper made private-table bindings. CLONE_FILES instead
++        // shares logical entry lifetime with the authoritative parent table.
++        state.poll_table_id = self.state.poll_table_id.clone();
++        state.native_poll_fds = self.state.native_poll_fds.clone();
+         state.signal_transaction = self.state.signal_transaction.clone();
+         state.thread_signals = self.state.thread_signals.for_clone_thread();
+         state.thread_signals.lock().observe_ignored = observe_ignored;
+@@ -3970,6 +4117,10 @@ impl ElfExecutor {
+         let stdin = self.state.take_stdin();
+         let retired = std::mem::take(&mut self.state.files);
+         self.state.fd_entry_ids.clear();
++        // Snapshot retirement is not a logical close in a surviving table.
++        self.state.native_poll_fds.clear();
++        self.state.poll_table_id = Default::default();
++        self.state.epoll_domain = Default::default();
+         self.file_table = Arc::new(Mutex::new(FileTableState::default()));
+         let action = self.process_action.take();
+         self.state
+@@ -9820,6 +9971,7 @@ struct DuplicateFdSource {
+     is_random: bool,
+     random_description: Option<Arc<RandomDeviceDescription>>,
+     signalfd_mask: Option<Arc<KernelSigset>>,
++    native_poll: Option<NativePollDescription>,
+ }
+ 
+ /// Stops supported generic writes from reaching the eventfd that privately
+@@ -9924,6 +10076,9 @@ fn duplicate_fd_at_or_above(
+     // SAFETY: fcntl returned a new owned descriptor.
+     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+     let retired = state.insert_file(fd, file);
++    if let Some(description) = source.native_poll {
++        install_native_poll_description(state, fd, description);
++    }
+     state.fd_object_inodes.insert(fd, source.object_inode);
+     if source.is_random {
+         state.random_device_fds.insert(fd);
+@@ -9984,6 +10139,7 @@ fn duplicate_fd(
+     let source_fdinfo = state.fdinfo_files.get(&old_fd).cloned();
+     let source_is_random = state.random_device_fds.contains(&old_fd);
+     let source_random_description = state.random_device_descriptions.get(&old_fd).cloned();
++    let source_native_poll = native_poll_description(state, old_fd);
+     let source_signalfd_mask = signalfd_mask(state, old_fd);
+     let Some(old_host_fd) = host_fd(state, old_fd) else {
+         return negative_errno(libc::EBADF);
+@@ -10019,6 +10175,9 @@ fn duplicate_fd(
+     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+     if let Some(new_fd) = new_fd {
+         let retired = state.insert_file(new_fd, file);
++        if let Some(description) = source_native_poll {
++            install_native_poll_description(state, new_fd, description);
++        }
+         if let Some(description) = source_random_description {
+             state.random_device_descriptions.insert(new_fd, description);
+         }
+@@ -10062,6 +10221,9 @@ fn duplicate_fd(
+     } else {
+         let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
+         if new_fd >= 0 {
++            if let Some(description) = source_native_poll {
++                install_native_poll_description(state, new_fd as i32, description);
++            }
+             if let Some(description) = source_random_description {
+                 state
+                     .random_device_descriptions
+@@ -10699,7 +10861,30 @@ fn epoll_create1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
+     }
+     // SAFETY: epoll_create1 returned a new owned descriptor.
+     let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
+-    insert_file_with_flags(state, file, flags & libc::EPOLL_CLOEXEC != 0, None)
++    let fd = insert_file_with_flags(state, file, flags & libc::EPOLL_CLOEXEC != 0, None);
++    if fd >= 0 {
++        let identity = Arc::new(());
++        {
++            let mut domain = state
++                .epoll_domain
++                .lock()
++                .expect("KVM epoll provenance lock poisoned");
++            domain
++                .proofs
++                .retain(|_, proof| proof.owner.strong_count() != 0);
++            domain.proofs.insert(
++                epoll_identity_key(&identity),
++                EpollProof {
++                    owner: Arc::downgrade(&identity),
++                    table: Arc::downgrade(&state.poll_table_id),
++                    unsafe_history: false,
++                    registrations: Default::default(),
++                },
++            );
++        }
++        install_native_poll_description(state, fd as i32, NativePollDescription::Epoll(identity));
++    }
++    fd
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
+@@ -10726,9 +10911,288 @@ fn epoll_ctl(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
+         // virtual signal readiness without carrying signalfd metadata itself.
+         return negative_errno(libc::ENOSYS);
+     }
+-    // SAFETY: both descriptors were translated from live guest descriptors;
++    // Complete guest copies and signal/capture classification before taking
++    // the leaf domain lock. Existing ctl outcomes remain native; unsafe
++    // histories only remove admission to the newly supported syscall 441.
++    let epoll_identity = match native_poll_description(state, args[0] as i32) {
++        Some(NativePollDescription::Epoll(identity)) => Some(identity),
++        _ => None,
++    };
++    let target_binding = state.native_poll_fds.get(&(args[2] as i32)).cloned();
++    let captured = output_alias(state, args[2] as i32).is_some();
++    let mut domain = state
++        .epoll_domain
++        .lock()
++        .expect("KVM epoll provenance lock poisoned");
++    let proof = epoll_identity
++        .as_ref()
++        .and_then(|identity| domain.proofs.get_mut(&epoll_identity_key(identity)));
++    let target_eventfd = target_binding
++        .as_ref()
++        .and_then(|binding| match &binding.description {
++            NativePollDescription::EventFd(identity)
++                if binding.live.load(Ordering::SeqCst)
++                    && !identity.escaped.load(Ordering::SeqCst)
++                    && !captured =>
++            {
++                Some(identity.clone())
++            }
++            _ => None,
++        });
++    let guest_target = args[2] as i32;
++    let mut proof = proof;
++    if let Some(proof) = proof.as_mut()
++        && matches!(
++            operation,
++            libc::EPOLL_CTL_ADD | libc::EPOLL_CTL_MOD | libc::EPOLL_CTL_DEL
++        )
++    {
++        let same_key = proof
++            .registrations
++            .get(&guest_target)
++            .is_none_or(|registered| {
++                target_binding.as_ref().is_some_and(|binding| {
++                    registered.binding.ptr_eq(&Arc::downgrade(binding))
++                        && registered.host_key == target_fd
++                })
++            });
++        if !proof.admitted(state) || target_eventfd.is_none() || !same_key {
++            proof.unsafe_history = true;
++        }
++    }
++    // SAFETY: both descriptors were translated from live snapshot Files;
+     // event is initialized and Linux validates the requested operation.
+-    zero_or_errno(unsafe { libc::epoll_ctl(epoll_fd, operation, target_fd, &mut event) })
++    let result =
++        zero_or_errno(unsafe { libc::epoll_ctl(epoll_fd, operation, target_fd, &mut event) });
++    if result == 0
++        && let Some(proof) = proof
++        && !proof.unsafe_history
++    {
++        match operation {
++            libc::EPOLL_CTL_ADD => {
++                let registration = EpollRegistration {
++                    binding: Arc::downgrade(target_binding.as_ref().unwrap()),
++                    eventfd: target_eventfd.unwrap(),
++                    host_key: target_fd,
++                };
++                if proof
++                    .registrations
++                    .insert(guest_target, registration)
++                    .is_some()
++                {
++                    proof.unsafe_history = true;
++                }
++            }
++            libc::EPOLL_CTL_DEL => {
++                if proof.registrations.remove(&guest_target).is_none() {
++                    proof.unsafe_history = true;
++                }
++            }
++            libc::EPOLL_CTL_MOD => {
++                if !proof.registrations.contains_key(&guest_target) {
++                    proof.unsafe_history = true;
++                }
++            }
++            _ => proof.unsafe_history = true,
++        }
++    }
++    result
++}
++
++fn epoll_pwait2_bound(
++    domain: &EpollDomain,
++    state: &LoadedStaticElf,
++    binding: &NativePollBinding,
++) -> Option<usize> {
++    if !binding.live.load(Ordering::SeqCst) {
++        return None;
++    }
++    let NativePollDescription::Epoll(identity) = &binding.description else {
++        return None;
++    };
++    let proof = domain.proofs.get(&epoll_identity_key(identity))?;
++    proof.admitted(state).then_some(proof.registrations.len())
++}
++
++// Linux 6.1/6.6 validate count/range before fdget; 6.18 validates the fd
++// first. Delegate only an absent guest fd through a guaranteed-invalid host
++// descriptor, preserving that host ABI without touching any epoll object.
++// do_epoll_wait primary sources:
++// https://github.com/torvalds/linux/blob/830b3c68c1fb1e9176028d02ef86f3cf76aa2476/fs/eventpoll.c#L2221
++// https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/eventpoll.c#L2451
++fn epoll_pwait2_missing_fd_with_host(
++    output: u64,
++    raw_count: u64,
++    invoke_host: impl FnOnce(
++        libc::c_int,
++        usize,
++        libc::c_int,
++        &libc::timespec,
++        usize,
++        usize,
++    ) -> std::io::Result<libc::c_long>,
++) -> i64 {
++    let count = raw_count as libc::c_int;
++    // Even INT_MAX * 12 fits in x86-64 usize. Preserve oversized counts for
++    // the kernel's count check; never shorten the ORIGINAL guest array here.
++    let valid_range = count <= 0
++        || (count as usize)
++            .checked_mul(std::mem::size_of::<libc::epoll_event>())
++            .is_some_and(|length| validate_guest_iovec_address(output, length).is_ok());
++    let host_output = if valid_range { 0 } else { usize::MAX };
++    let zero = libc::timespec {
++        tv_sec: 0,
++        tv_nsec: 0,
++    };
++    // Neither representative can be dereferenced: fd=-1 fails before ep_poll
++    // on both orders. NULL mask and zero timeout cannot install a host mask,
++    // wait, consume events, or write guest/output memory.
++    match invoke_host(-1, host_output, count, &zero, 0, 0) {
++        Err(error) => io_error(error),
++        // A nonnegative result cannot describe Linux's invalid-fd path. Refuse
++        // an unsupported host result rather than fabricate readiness success.
++        Ok(_) => negative_errno(libc::ENOSYS),
++    }
++}
++
++fn epoll_pwait2_missing_fd(output: u64, raw_count: u64) -> i64 {
++    epoll_pwait2_missing_fd_with_host(
++        output,
++        raw_count,
++        |fd, host_output, count, timeout, mask, mask_size| {
++            // SAFETY: fd is -1, so no epoll or output memory can be accessed;
++            // timeout is initialized input and the signal mask is NULL.
++            let result = unsafe {
++                libc::syscall(
++                    libc::SYS_epoll_pwait2,
++                    fd,
++                    host_output,
++                    count,
++                    timeout,
++                    mask,
++                    mask_size,
++                )
++            };
++            if result < 0 {
++                Err(std::io::Error::last_os_error())
++            } else {
++                Ok(result)
++            }
++        },
++    )
++}
++
++/// Immediate, unmasked readiness for a proven native eventfd interest set.
++/// Unknown/imported/nested/escaped descriptions and changed registration
++/// bindings remain unsupported; this is not general epoll virtualization.
++fn epoll_pwait2(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
++    // Linux fs/eventpoll.c copies/validates timeout before mask and descriptors.
++    let zero_timeout = if args[3] == 0 {
++        false
++    } else {
++        let timeout = match read_guest_struct::<libc::timespec>(memory, args[3]) {
++            Ok(timeout) => timeout,
++            Err(error) => return error,
++        };
++        if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
++            return negative_errno(libc::EINVAL);
++        }
++        timeout.tv_sec == 0 && timeout.tv_nsec == 0
++    };
++    if args[4] != 0 {
++        if args[5] != KERNEL_SIGSET_SIZE as u64 {
++            return negative_errno(libc::EINVAL);
++        }
++        let mut mask = [0; KERNEL_SIGSET_SIZE];
++        if memory.user().read(args[4], &mut mask).is_err() {
++            return negative_errno(libc::EFAULT);
++        }
++    }
++    if !zero_timeout || args[4] != 0 {
++        return negative_errno(libc::ENOSYS);
++    }
++    let guest_fd = args[0] as libc::c_int;
++    let Some(fd) = host_fd(state, guest_fd) else {
++        return epoll_pwait2_missing_fd(args[1], args[2]);
++    };
++    let count = args[2] as libc::c_int;
++    let event_size = std::mem::size_of::<libc::epoll_event>();
++    if count <= 0 || count as usize > i32::MAX as usize / event_size {
++        return negative_errno(libc::EINVAL);
++    }
++    // Preserve access_ok on the FULL original request before bounding the
++    // alias by proven membership. This is numeric-only, not a mapping probe.
++    if let Err(error) = validate_guest_iovec_address(args[1], count as usize * event_size) {
++        return error;
++    }
++    let Some(binding) = state.native_poll_fds.get(&guest_fd) else {
++        return negative_errno(libc::ENOSYS);
++    };
++    if matches!(binding.description, NativePollDescription::EventFd(_)) {
++        return negative_errno(libc::EINVAL);
++    }
++    let capacity = {
++        let domain = state
++            .epoll_domain
++            .lock()
++            .expect("KVM epoll provenance lock poisoned");
++        let Some(bound) = epoll_pwait2_bound(&domain, state, binding) else {
++            return negative_errno(libc::ENOSYS);
++        };
++        (count as usize).min(bound).max(1)
++    };
++    // Construction and finalization can notify reentrant wakers. Neither may
++    // run under the provenance domain or an outer file-table transaction.
++    let user = memory.user();
++    let alias = match user.writable_alias(args[1], capacity * event_size) {
++        Ok(alias) => alias,
++        Err(_) => return negative_errno(libc::EFAULT),
++    };
++    let result = {
++        let domain = state
++            .epoll_domain
++            .lock()
++            .expect("KVM epoll provenance lock poisoned");
++        match epoll_pwait2_bound(&domain, state, binding) {
++            Some(bound) if (count as usize).min(bound).max(1) <= capacity => {
++                let host_count = (count as usize).min(bound).max(1);
++                let timeout = libc::timespec {
++                    tv_sec: 0,
++                    tv_nsec: 0,
++                };
++                // Linux ep_send_events writes each mask/data field before
++                // committing that event's one-shot state. Direct alias copyout
++                // preserves partial effects and leaves a faulting event queued.
++                // A zero timeout returns before the ordinary pending-signal
++                // check; do not dequeue guest signals or install a host mask.
++                // SAFETY: alias owns a protected kernel operand of this size;
++                // snapshot fd is live and timeout is initialized/read-only.
++                let ready = unsafe {
++                    libc::syscall(
++                        libc::SYS_epoll_pwait2,
++                        fd,
++                        alias.address(),
++                        host_count as libc::c_int,
++                        &timeout,
++                        std::ptr::null::<libc::sigset_t>(),
++                        0usize,
++                    )
++                };
++                if ready < 0 {
++                    io_error(std::io::Error::last_os_error())
++                } else {
++                    ready as i64
++                }
++            }
++            _ => negative_errno(libc::ENOSYS),
++        }
++    };
++    // The domain guard drops before alias cleanup and notification, including
++    // on unwind. A cleanup failure remains a sticky backend failure.
++    if alias.finish().is_err() {
++        return negative_errno(libc::EFAULT);
++    }
++    result
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
+@@ -10804,7 +11268,15 @@ fn eventfd2(state: &mut LoadedStaticElf, initial: u64, raw_flags: u64) -> i64 {
+     }
+     // SAFETY: eventfd returned a new owned descriptor.
+     let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
+-    insert_file_with_flags(state, file, flags & libc::EFD_CLOEXEC != 0, None)
++    let fd = insert_file_with_flags(state, file, flags & libc::EFD_CLOEXEC != 0, None);
++    if fd >= 0 {
++        install_native_poll_description(
++            state,
++            fd as i32,
++            NativePollDescription::EventFd(Arc::new(NativeEventFd::default())),
++        );
++    }
++    fd
+ }
+ 
+ fn set_signalfd_ready(file: &std::fs::File, ready: bool) -> Result<(), i64> {
+@@ -12606,6 +13078,30 @@ fn translate_outgoing_rights(
+         {
+             let guest_fd = read_control_fd(control, offset)?;
+             let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
++            if let Some(description) = native_poll_description(state, guest_fd) {
++                // Once an untracked receiver might control this description,
++                // no known alias can prove its registration set. Invalidate
++                // BEFORE host sendmsg, then release the leaf lock. Even a
++                // later malformed element/failed send keeps new syscall 441
++                // outside admission; the existing send result is unchanged.
++                let mut domain = state
++                    .epoll_domain
++                    .lock()
++                    .expect("KVM epoll provenance lock poisoned");
++                match description {
++                    NativePollDescription::Epoll(identity) => {
++                        if let Some(proof) = domain.proofs.get_mut(&epoll_identity_key(&identity)) {
++                            proof.unsafe_history = true;
++                        }
++                    }
++                    NativePollDescription::EventFd(identity) => {
++                        // A foreign writer controls readiness even when nobody
++                        // exports the epoll itself. Never infer determinism
++                        // from the native carrier merely being an eventfd.
++                        identity.escaped.store(true, Ordering::SeqCst);
++                    }
++                }
++            }
+             if state
+                 .fdinfo_files
+                 .get(&guest_fd)
+@@ -15863,6 +16359,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) ->
+     let source_fdinfo = state.fdinfo_files.get(&guest_fd).cloned();
+     let source_is_random = state.random_device_fds.contains(&guest_fd);
+     let source_random_description = state.random_device_descriptions.get(&guest_fd).cloned();
++    let source_native_poll = native_poll_description(state, guest_fd);
+     let source_signalfd_mask = signalfd_mask(state, guest_fd);
+     let Some(host_fd) = host_fd(state, guest_fd) else {
+         return negative_errno(libc::EBADF);
+@@ -15883,6 +16380,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) ->
+                 is_random: source_is_random,
+                 random_description: source_random_description,
+                 signalfd_mask: source_signalfd_mask,
++                native_poll: source_native_poll,
+             },
+         ),
+         libc::F_DUPFD_CLOEXEC => duplicate_fd_at_or_above(
+@@ -15899,6 +16397,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) ->
+                 is_random: source_is_random,
+                 random_description: source_random_description,
+                 signalfd_mask: source_signalfd_mask,
++                native_poll: source_native_poll,
+             },
+         ),
+         libc::F_GETFL => match fd_status_flags(host_fd) {
+@@ -16149,6 +16648,19 @@ fn close_range(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+     if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 {
+         return negative_errno(libc::EINVAL);
+     }
++    if flags & CLOSE_RANGE_UNSHARE != 0 {
++        // This backend's existing close_range path does not split CLONE_FILES.
++        // Preserve that syscall's outcome, but do not admit new epoll waits
++        // after this unmodeled table history, including CLOEXEC-only requests.
++        let _domain = state
++            .epoll_domain
++            .lock()
++            .expect("KVM epoll provenance lock poisoned");
++        state
++            .poll_table_id
++            .unsafe_history
++            .store(true, Ordering::SeqCst);
++    }
+ 
+     let in_range = |fd: libc::c_int| {
+         let fd = fd as u32;
+@@ -18995,6 +19507,9 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
+         files: std::collections::BTreeMap::new(),
+         file_retirement: crate::elf::FileRetirement::default(),
+         fd_entry_ids: std::collections::BTreeMap::new(),
++        epoll_domain: Default::default(),
++        poll_table_id: Default::default(),
++        native_poll_fds: Default::default(),
+         random_device_fds: std::collections::BTreeSet::new(),
+         random_device_descriptions: std::collections::BTreeMap::new(),
+         stdout_alias_fds: std::collections::BTreeSet::new(),
+@@ -37001,6 +37516,1099 @@ mod tests {
+         }
+     }
+ 
++    fn epoll_pwait2_test_interest(f: &mut FdinfoFixture, initial: u64) -> (i64, i64) {
++        f.memory.write(0x100, &[0; 16]).unwrap();
++        let ep = f.call(libc::SYS_epoll_create1, [0; 6]);
++        let event = f.call(
++            libc::SYS_eventfd2,
++            [initial, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
++        );
++        assert!(ep >= 3 && event > ep);
++        assert_eq!(
++            write_struct(
++                &mut f.memory,
++                0x200,
++                &libc::epoll_event {
++                    events: libc::EPOLLIN as u32,
++                    u64: 0x1234_5678_9abc_def0,
++                }
++            ),
++            0
++        );
++        assert_eq!(
++            f.call(
++                libc::SYS_epoll_ctl,
++                [
++                    ep as u64,
++                    libc::EPOLL_CTL_ADD as u64,
++                    event as u64,
++                    0x200,
++                    0,
++                    0
++                ]
++            ),
++            0
++        );
++        (ep, event)
++    }
++
++    fn epoll_pwait2_test_wait(f: &mut FdinfoFixture, ep: i64) -> i64 {
++        f.call(
++            libc::SYS_epoll_pwait2,
++            [ep as u64, 0x300, 1, 0x100, 0, u64::MAX],
++        )
++    }
++
++    fn epoll_pwait2_native_invalid_fd_order() -> (i64, i64) {
++        let zero = libc::timespec {
++            tv_sec: 0,
++            tv_nsec: 0,
++        };
++        let mut observed = [0; 2];
++        for (count, error) in observed.iter_mut().enumerate() {
++            // SAFETY: -1 can never identify an epoll; zero is valid input and
++            // no output access is reachable even with this invalid address.
++            let raw = unsafe {
++                libc::syscall(
++                    libc::SYS_epoll_pwait2,
++                    -1_i32,
++                    usize::MAX,
++                    count as i32,
++                    &zero,
++                    0usize,
++                    0usize,
++                )
++            };
++            let native_errno = std::io::Error::last_os_error();
++            assert_eq!(raw, -1, "native invalid-fd setup must fail");
++            *error = io_error(native_errno);
++        }
++        let expected_range = if observed[0] == negative_errno(libc::EINVAL) {
++            negative_errno(libc::EFAULT)
++        } else if observed[0] == negative_errno(libc::EBADF) {
++            negative_errno(libc::EBADF)
++        } else {
++            panic!("unrecognized native epoll_pwait2 order: {observed:?}");
++        };
++        assert_eq!(observed[1], expected_range, "native range/fd setup order");
++        eprintln!("native epoll_pwait2 invalid-fd setup: {observed:?}");
++        (observed[0], observed[1])
++    }
++
++    #[test]
++    fn epoll_pwait2_invalid_fd_projection_preserves_both_kernel_orders() {
++        assert_eq!(std::mem::size_of::<libc::epoll_event>(), 12);
++        assert_eq!(i32::MAX as usize * 12, 25_769_803_764);
++        let max_events = i32::MAX as u64 / 12;
++        // These outcomes come from the two retained Linux source paths, not
++        // from the adapter being tested. Include invalid counts without
++        // turning a negative int into a giant unsigned array.
++        for (output, count, pointer, legacy) in [
++            (u64::MAX, 0, 0, libc::EINVAL),
++            (u64::MAX, u32::MAX as u64, 0, libc::EINVAL),
++            (u64::MAX, i32::MIN as u32 as u64, 0, libc::EINVAL),
++            (0, max_events + 1, 0, libc::EINVAL),
++            (0, i32::MAX as u64, 0, libc::EINVAL),
++            (u64::MAX, 1, usize::MAX, libc::EFAULT),
++            (X86_64_GUEST_USER_LIMIT - 11, 1, usize::MAX, libc::EFAULT),
++            (X86_64_GUEST_USER_LIMIT - 12, 4, usize::MAX, libc::EFAULT),
++            (X86_64_GUEST_USER_LIMIT - 12, 1, 0, libc::EBADF),
++            (0, 1, 0, libc::EBADF),
++            (1, 1, 0, libc::EBADF),
++            (0, max_events, 0, libc::EBADF),
++        ] {
++            for upper in [0, 0xa5a5_5a5a_u64 << 32] {
++                let raw_count = upper | count;
++                for fd_first in [false, true] {
++                    let expected = if fd_first { libc::EBADF } else { legacy };
++                    let mut calls = 0;
++                    let result = epoll_pwait2_missing_fd_with_host(
++                        output,
++                        raw_count,
++                        |fd, host_output, decoded_count, timeout, mask, mask_size| {
++                            calls += 1;
++                            assert_eq!(fd, -1, "never reuse an ambient host fd");
++                            assert_eq!(host_output, pointer, "full guest numeric range");
++                            assert_eq!(decoded_count, raw_count as i32);
++                            assert_eq!((timeout.tv_sec, timeout.tv_nsec), (0, 0));
++                            assert_eq!((mask, mask_size), (0, 0));
++                            // A tiny kernel-path model supplies the actual raw
++                            // error. It never calls or shares the guest validator.
++                            let errno = if fd_first {
++                                libc::EBADF
++                            } else if decoded_count <= 0 || decoded_count > i32::MAX / 12 {
++                                libc::EINVAL
++                            } else if host_output == usize::MAX {
++                                libc::EFAULT
++                            } else {
++                                libc::EBADF
++                            };
++                            Err(std::io::Error::from_raw_os_error(errno))
++                        },
++                    );
++                    assert_eq!(result, negative_errno(expected));
++                    assert_eq!(calls, 1);
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn epoll_pwait2_invalid_fd_preserves_denials_and_refuses_impossible_success() {
++        for errno in [libc::ENOSYS, libc::EPERM, libc::EACCES, libc::EIO] {
++            let mut calls = 0;
++            assert_eq!(
++                epoll_pwait2_missing_fd_with_host(
++                    0,
++                    1,
++                    |fd, output, count, timeout, mask, size| {
++                        calls += 1;
++                        assert_eq!((fd, output, count, mask, size), (-1, 0, 1, 0, 0));
++                        assert_eq!((timeout.tv_sec, timeout.tv_nsec), (0, 0));
++                        Err(std::io::Error::from_raw_os_error(errno))
++                    },
++                ),
++                negative_errno(errno)
++            );
++            assert_eq!(calls, 1);
++        }
++        for impossible in [0, 1, i64::MAX] {
++            let mut calls = 0;
++            assert_eq!(
++                epoll_pwait2_missing_fd_with_host(0, 1, |_, _, _, _, _, _| {
++                    calls += 1;
++                    Ok(impossible)
++                }),
++                negative_errno(libc::ENOSYS)
++            );
++            assert_eq!(calls, 1);
++        }
++    }
++
++    #[test]
++    fn epoll_pwait2_absent_guest_fd_cannot_poll_an_ambient_host_epoll() {
++        let mut f = FdinfoFixture::new(false);
++        let (ep, _) = epoll_pwait2_test_interest(&mut f, 1);
++        let first_absent = f.executor.state.files.keys().copied().max().unwrap().max(2) + 1;
++        let host_epoll = host_fd(&f.executor.state, ep as i32).unwrap();
++        // Create an owned host alias at a number outside the guest table. No
++        // standard descriptor or unrelated host descriptor is changed.
++        // SAFETY: host_epoll is live; F_DUPFD_CLOEXEC allocates a new descriptor.
++        let raw = unsafe { libc::fcntl(host_epoll, libc::F_DUPFD_CLOEXEC, first_absent) };
++        assert!(raw >= first_absent);
++        // SAFETY: raw is the newly returned, uniquely owned descriptor.
++        let ambient = unsafe { std::fs::File::from_raw_fd(raw) };
++        assert!(host_fd(&f.executor.state, raw).is_none());
++        let mut before = vec![0; PAGE_SIZE as usize];
++        f.memory.read(0, &mut before).unwrap();
++        for upper in [0, 0x5a5a_a5a5_u64 << 32] {
++            assert_eq!(
++                f.call(
++                    libc::SYS_epoll_pwait2,
++                    [upper | raw as u64, 0x180, 1, 0x100, 0, 0],
++                ),
++                negative_errno(libc::EBADF)
++            );
++            let mut after = vec![0; PAGE_SIZE as usize];
++            f.memory.read(0, &mut after).unwrap();
++            assert_eq!(after, before, "invalid-fd path must not write guest bytes");
++            assert!(f.memory.entry_gate().pending_failure().is_none());
++        }
++        // The guest's actual epoll still delivers the event; the failed calls
++        // did not poll the coincidentally numbered host epoll alias.
++        assert_eq!(epoll_pwait2_test_wait(&mut f, ep), 1);
++        drop(ambient);
++    }
++
++    #[test]
++    fn epoll_pwait2_validation_order_matches_native_and_checks_full_range() {
++        assert_eq!(std::mem::size_of::<libc::epoll_event>(), 12);
++        let mut f = FdinfoFixture::new(false);
++        let (ep, event) = epoll_pwait2_test_interest(&mut f, 0);
++        let zero = libc::timespec {
++            tv_sec: 0,
++            tv_nsec: 0,
++        };
++        // The native kernel ABI is an input, not a guest errno exemption.
++        // Classify it independently; every row still requires exact KVM/native
++        // equality and one precise expected native result for that context.
++        let (bad_count, bad_range) = epoll_pwait2_native_invalid_fd_order();
++        for (fd, output, count, expected) in [
++            (-1, u64::MAX, 0, bad_count),
++            (-1, u64::MAX, 1, bad_range),
++            (ep, u64::MAX, 0, negative_errno(libc::EINVAL)),
++            (ep, u64::MAX, u32::MAX as u64, negative_errno(libc::EINVAL)),
++            (ep, u64::MAX, 1, negative_errno(libc::EFAULT)),
++            (event, u64::MAX, 1, negative_errno(libc::EFAULT)),
++            (event, 0, 1, negative_errno(libc::EINVAL)),
++            (ep, 0, 1, 0),
++            (ep, 0, (0xabc_u64 << 32) | 1, 0),
++        ] {
++            let native_fd = if fd == -1 {
++                -1
++            } else {
++                host_fd(&f.executor.state, fd as i32).unwrap()
++            };
++            // SAFETY: zero is valid. Invalid output is a kernel-checked user
++            // pointer; all interests are empty, so NULL is never dereferenced.
++            let raw = unsafe {
++                libc::syscall(
++                    libc::SYS_epoll_pwait2,
++                    native_fd,
++                    output,
++                    count,
++                    &zero,
++                    0usize,
++                    usize::MAX,
++                )
++            };
++            let native = if raw == -1 {
++                io_error(std::io::Error::last_os_error())
++            } else {
++                raw
++            };
++            assert_eq!(
++                native, expected,
++                "native fd={fd} count={count} output={output:#x}"
++            );
++            assert_eq!(
++                f.call(
++                    libc::SYS_epoll_pwait2,
++                    [fd as u64, output, count, 0x100, 0, u64::MAX]
++                ),
++                native
++            );
++        }
++        // The fixed four-level guest policy is checked on all requested bytes,
++        // even though the proven set can produce at most one event.
++        for (address, count, expected) in [
++            (X86_64_GUEST_USER_LIMIT - 12, 1, 0),
++            (
++                X86_64_GUEST_USER_LIMIT - 11,
++                1,
++                negative_errno(libc::EFAULT),
++            ),
++            (
++                X86_64_GUEST_USER_LIMIT - 12,
++                4,
++                negative_errno(libc::EFAULT),
++            ),
++            (u64::MAX - 11, 1, negative_errno(libc::EFAULT)),
++        ] {
++            assert_eq!(
++                f.call(
++                    libc::SYS_epoll_pwait2,
++                    [ep as u64, address, count, 0x100, 0, 0]
++                ),
++                expected
++            );
++        }
++    }
++
++    #[test]
++    fn epoll_pwait2_unmasked_zero_probe_preserves_pending_signals_and_refusal_state() {
++        let mut f = FdinfoFixture::new(false);
++        let (ep, _) = epoll_pwait2_test_interest(&mut f, 0);
++        f.executor
++            .state
++            .thread_signals
++            .lock()
++            .pending
++            .enqueue(
++                event_for_thread(libc::SIGUSR1, f.executor.state.pid, f.executor.state.tid)
++                    .unwrap(),
++                0,
++            )
++            .unwrap();
++        f.executor
++            .state
++            .process_signals
++            .lock()
++            .unwrap()
++            .shared_pending
++            .enqueue(
++                event_for_process(libc::SIGUSR2, f.executor.state.pid).unwrap(),
++                0,
++            )
++            .unwrap();
++        let process = f.executor.state.process_signals.lock().unwrap().clone();
++        let thread = f.executor.state.thread_signals.lock().clone();
++        f.memory.write(0x300, &[0xa5; 24]).unwrap();
++        // Exercise the handler directly: the separate runtime delivery policy
++        // is not permitted to consume the seeded pending events in this test.
++        assert_eq!(
++            epoll_pwait2(
++                &f.memory,
++                &f.executor.state,
++                &[ep as u64, 0x300, 2, 0x100, 0, 0]
++            ),
++            0
++        );
++        f.memory.write(0x180, &[0; 8]).unwrap();
++        for (timeout, mask, size, expected) in [
++            (0, 0, 0, libc::ENOSYS),
++            (0x100, 0x180, 8, libc::ENOSYS),
++            (0x100, 0x180, 7, libc::EINVAL),
++            (0x100, u64::MAX, 8, libc::EFAULT),
++            (u64::MAX, 0x180, 7, libc::EFAULT),
++        ] {
++            assert_eq!(
++                epoll_pwait2(
++                    &f.memory,
++                    &f.executor.state,
++                    &[ep as u64, 0x300, 2, timeout, mask, size]
++                ),
++                negative_errno(expected)
++            );
++        }
++        f.memory.write(0x100, &1_i64.to_ne_bytes()).unwrap();
++        assert_eq!(
++            epoll_pwait2(
++                &f.memory,
++                &f.executor.state,
++                &[ep as u64, 0x300, 2, 0x100, 0, 0]
++            ),
++            negative_errno(libc::ENOSYS)
++        );
++        assert_eq!(
++            read_guest_bytes::<24>(&f.memory, 0x300).unwrap(),
++            [0xa5; 24]
++        );
++        assert_eq!(*f.executor.state.process_signals.lock().unwrap(), process);
++        assert_eq!(*f.executor.state.thread_signals.lock(), thread);
++    }
++
++    #[test]
++    fn epoll_pwait2_scm_failed_export_invalidates_every_alias_and_future_registration() {
++        for export_event in [false, true] {
++            let mut f = FdinfoFixture::new(false);
++            let (ep, event) = epoll_pwait2_test_interest(&mut f, 1);
++            let ep_alias = f.call(libc::SYS_dup, [ep as u64, 0, 0, 0, 0, 0]);
++            let event_alias = f.call(libc::SYS_dup, [event as u64, 0, 0, 0, 0, 0]);
++            assert!(ep_alias > event && event_alias > ep_alias);
++            assert_eq!(epoll_pwait2_test_wait(&mut f, ep), 1);
++            assert_eq!(
++                f.call(
++                    libc::SYS_socketpair,
++                    [
++                        libc::AF_UNIX as u64,
++                        libc::SOCK_STREAM as u64,
++                        0,
++                        0x900,
++                        0,
++                        0
++                    ]
++                ),
++                0
++            );
++            let sockets: [i32; 2] = read_struct(&f.memory, 0x900);
++            let sender = sockets[0];
++            assert_eq!(
++                f.call(libc::SYS_close, [sockets[1] as u64, 0, 0, 0, 0, 0]),
++                0
++            );
++            let donated = if export_event { event_alias } else { ep_alias };
++            let control = rights_control(&[donated as i32]);
++            f.memory.write(0x500, &control).unwrap();
++            f.memory.write(0x600, b"x").unwrap();
++            assert_eq!(
++                write_struct(
++                    &mut f.memory,
++                    0x700,
++                    &libc::iovec {
++                        iov_base: 0x600_usize as *mut libc::c_void,
++                        iov_len: 1
++                    }
++                ),
++                0
++            );
++            let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
++            message.msg_iov = 0x700_usize as *mut libc::iovec;
++            message.msg_iovlen = 1;
++            message.msg_control = 0x500_usize as *mut libc::c_void;
++            message.msg_controllen = control.len();
++            assert_eq!(write_struct(&mut f.memory, 0x800, &message), 0);
++            assert_eq!(
++                f.call(
++                    libc::SYS_sendmsg,
++                    [sender as u64, 0x800, libc::MSG_NOSIGNAL as u64, 0, 0, 0]
++                ),
++                negative_errno(libc::EPIPE)
++            );
++            f.memory.write(0x300, &[0xa5; 24]).unwrap();
++            for alias in [ep, ep_alias] {
++                assert_eq!(
++                    epoll_pwait2_test_wait(&mut f, alias),
++                    negative_errno(libc::ENOSYS)
++                );
++                assert_eq!(
++                    read_guest_bytes::<24>(&f.memory, 0x300).unwrap(),
++                    [0xa5; 24]
++                );
++            }
++            assert_eq!(
++                read_guest_bytes::<24>(&f.memory, 0x500).unwrap().as_slice(),
++                control.as_slice()
++            );
++            if export_event {
++                let fresh = f.call(libc::SYS_epoll_create1, [0; 6]);
++                assert_eq!(
++                    f.call(
++                        libc::SYS_epoll_ctl,
++                        [
++                            fresh as u64,
++                            libc::EPOLL_CTL_ADD as u64,
++                            event as u64,
++                            0x200,
++                            0,
++                            0
++                        ]
++                    ),
++                    0
++                );
++                assert_eq!(
++                    epoll_pwait2_test_wait(&mut f, fresh),
++                    negative_errno(libc::ENOSYS)
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn epoll_pwait2_unknown_import_nested_and_changed_host_keys_are_not_certified() {
++        let mut f = FdinfoFixture::new(false);
++        let (ep, event) = epoll_pwait2_test_interest(&mut f, 0);
++        // A duplicate of the actual native eventfd installed by the generic
++        // imported-right path still has no positive native creation history.
++        let imported = f.executor.state.files[&(event as i32)].try_clone().unwrap();
++        let imported = insert_file_with_flags(&mut f.executor.state, imported, false, None);
++        let other = epoll_create1(&mut f.executor.state, 0);
++        assert_eq!(
++            epoll_ctl(
++                &f.memory,
++                &f.executor.state,
++                &[
++                    other as u64,
++                    libc::EPOLL_CTL_ADD as u64,
++                    imported as u64,
++                    0x200,
++                    0,
++                    0
++                ]
++            ),
++            0
++        );
++        assert_eq!(
++            epoll_pwait2(
++                &f.memory,
++                &f.executor.state,
++                &[other as u64, 0x300, 1, 0x100, 0, 0]
++            ),
++            negative_errno(libc::ENOSYS)
++        );
++        let nested = epoll_create1(&mut f.executor.state, 0);
++        assert_eq!(
++            epoll_ctl(
++                &f.memory,
++                &f.executor.state,
++                &[
++                    nested as u64,
++                    libc::EPOLL_CTL_ADD as u64,
++                    ep as u64,
++                    0x200,
++                    0,
++                    0
++                ]
++            ),
++            0
++        );
++        assert_eq!(
++            epoll_pwait2(
++                &f.memory,
++                &f.executor.state,
++                &[nested as u64, 0x300, 1, 0x100, 0, 0]
++            ),
++            negative_errno(libc::ENOSYS)
++        );
++        // A real CLONE_FILES worker has another host-numbered duplicate. Linux
++        // rejects MOD on that key. Preserve that legacy result but revoke the
++        // new wait rather than pretending the key was the registered one.
++        let mut sibling = f.executor.thread_child(2).unwrap();
++        assert_ne!(
++            host_fd(&sibling.state, event as i32),
++            host_fd(&f.executor.state, event as i32)
++        );
++        assert_eq!(
++            sibling.execute(
++                &SyscallRequest::new(
++                    libc::SYS_epoll_ctl as u64,
++                    [
++                        ep as u64,
++                        libc::EPOLL_CTL_MOD as u64,
++                        event as u64,
++                        0x200,
++                        0,
++                        0
++                    ]
++                ),
++                &f.memory
++            ),
++            negative_errno(libc::ENOENT)
++        );
++        assert_eq!(
++            epoll_pwait2_test_wait(&mut f, ep),
++            negative_errno(libc::ENOSYS)
++        );
++    }
++
++    const EPOLL_LIFECYCLE_DATA: u64 = 0x0123_4567_89ab_cdef;
++    const EPOLL_LIFECYCLE_EVENT: u64 = 0x200;
++    const EPOLL_LIFECYCLE_ZERO: u64 = 0x240;
++
++    fn epoll_lifecycle_pair(f: &mut FdinfoFixture) -> (i64, i64) {
++        let ep = f.call(libc::SYS_epoll_create1, [0; 6]);
++        let event = f.call(
++            libc::SYS_eventfd2,
++            [1, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
++        );
++        assert!(ep >= 3 && event >= 3);
++        let mut interest = [0_u8; 12];
++        interest[..4].copy_from_slice(&(libc::EPOLLIN as u32).to_ne_bytes());
++        interest[4..].copy_from_slice(&EPOLL_LIFECYCLE_DATA.to_ne_bytes());
++        f.memory.write(EPOLL_LIFECYCLE_EVENT, &interest).unwrap();
++        f.memory.write(EPOLL_LIFECYCLE_ZERO, &[0; 16]).unwrap();
++        assert_eq!(
++            f.call(
++                libc::SYS_epoll_ctl,
++                [
++                    ep as u64,
++                    libc::EPOLL_CTL_ADD as u64,
++                    event as u64,
++                    EPOLL_LIFECYCLE_EVENT,
++                    0,
++                    0,
++                ],
++            ),
++            0
++        );
++        (ep, event)
++    }
++
++    fn epoll_lifecycle_wait(
++        executor: &mut ElfExecutor,
++        memory: &mut GuestMemory,
++        ep: i64,
++        expected_result: i64,
++    ) {
++        memory.write(PAGE_SIZE, &[0xa5; 64]).unwrap();
++        assert_eq!(
++            executor.execute(
++                &SyscallRequest::new(
++                    libc::SYS_epoll_pwait2 as u64,
++                    [ep as u64, PAGE_SIZE, 4, EPOLL_LIFECYCLE_ZERO, 0, 0],
++                ),
++                memory,
++            ),
++            expected_result
++        );
++        let mut expected = [0xa5; 64];
++        if expected_result == 1 {
++            expected[..4].copy_from_slice(&(libc::EPOLLIN as u32).to_ne_bytes());
++            expected[4..12].copy_from_slice(&EPOLL_LIFECYCLE_DATA.to_ne_bytes());
++        }
++        let mut actual = [0; 64];
++        memory.read(PAGE_SIZE, &mut actual).unwrap();
++        assert_eq!(
++            actual, expected,
++            "complete event arena, including refusal tail"
++        );
++        let mut zero = [0xff; 16];
++        memory.read(EPOLL_LIFECYCLE_ZERO, &mut zero).unwrap();
++        assert_eq!(zero, [0; 16], "timeout is input-only");
++    }
++
++    #[test]
++    fn epoll_pwait2_fork_and_shared_snapshot_lifetimes_are_distinct() {
++        let mut f = FdinfoFixture::new(false);
++        let (ep, event) = epoll_lifecycle_pair(&mut f);
++        let parent_binding = f.executor.state.native_poll_fds[&(event as i32)].clone();
++        epoll_lifecycle_wait(&mut f.executor, &mut f.memory, ep, 1);
++
++        let mut private = f.executor.fork_child(2, false, false).unwrap();
++        let private_binding = private.state.native_poll_fds[&(event as i32)].clone();
++        assert!(!Arc::ptr_eq(&parent_binding, &private_binding));
++        assert!(!Arc::ptr_eq(
++            &f.executor.state.poll_table_id,
++            &private.state.poll_table_id,
++        ));
++        assert!(Arc::ptr_eq(
++            &f.executor.state.epoll_domain,
++            &private.state.epoll_domain,
++        ));
++        // A foreign table is outside this increment; it does not poison the
++        // origin merely by attempting an immediate wait or closing its own copy.
++        epoll_lifecycle_wait(
++            &mut private,
++            &mut f.memory,
++            ep,
++            negative_errno(libc::ENOSYS),
++        );
++        assert_eq!(
++            private.execute(
++                &SyscallRequest::new(libc::SYS_close as u64, [event as u64, 0, 0, 0, 0, 0]),
++                &f.memory,
++            ),
++            0
++        );
++        assert!(!private_binding.live.load(Ordering::SeqCst));
++        assert!(parent_binding.live.load(Ordering::SeqCst));
++        private.release_files_on_exit();
++        drop(private);
++        epoll_lifecycle_wait(&mut f.executor, &mut f.memory, ep, 1);
++
++        let mut snapshot = f.executor.thread_child(3).unwrap();
++        assert!(Arc::ptr_eq(
++            &parent_binding,
++            &snapshot.state.native_poll_fds[&(event as i32)],
++        ));
++        assert!(Arc::ptr_eq(&f.executor.file_table, &snapshot.file_table));
++        assert!(Arc::ptr_eq(
++            &f.executor.state.poll_table_id,
++            &snapshot.state.poll_table_id,
++        ));
++        snapshot.release_files_on_exit();
++        drop(snapshot);
++        assert!(parent_binding.live.load(Ordering::SeqCst));
++        epoll_lifecycle_wait(&mut f.executor, &mut f.memory, ep, 1);
++
++        let mut closer = f.executor.thread_child(4).unwrap();
++        assert_eq!(
++            closer.execute(
++                &SyscallRequest::new(libc::SYS_close as u64, [event as u64, 0, 0, 0, 0, 0]),
++                &f.memory,
++            ),
++            0
++        );
++        // The parent still retains its old File and binding before dispatch sync.
++        // Keeping this Arc alive rules out accidental success via Weak expiry.
++        assert!(f.executor.state.files.contains_key(&(event as i32)));
++        assert!(Arc::ptr_eq(
++            &parent_binding,
++            &f.executor.state.native_poll_fds[&(event as i32)],
++        ));
++        assert!(!parent_binding.live.load(Ordering::SeqCst));
++        epoll_lifecycle_wait(
++            &mut f.executor,
++            &mut f.memory,
++            ep,
++            negative_errno(libc::ENOSYS),
++        );
++    }
++
++    #[test]
++    fn epoll_pwait2_epoll_dup_survives_but_target_replacement_and_reuse_refuse() {
++        for replace_with_dup2 in [false, true] {
++            let mut f = FdinfoFixture::new(false);
++            let (ep, event) = epoll_lifecycle_pair(&mut f);
++            let alias = f.call(libc::SYS_dup, [ep as u64, 0, 0, 0, 0, 0]);
++            let target_keeper = f.call(libc::SYS_dup, [event as u64, 0, 0, 0, 0, 0]);
++            assert!(alias > event && target_keeper > alias);
++            assert_eq!(f.call(libc::SYS_close, [ep as u64, 0, 0, 0, 0, 0]), 0);
++            // Closing the original epoll binding does not retire the description
++            // still held by its dup. No watched target binding has changed yet.
++            epoll_lifecycle_wait(&mut f.executor, &mut f.memory, alias, 1);
++            let old = f.executor.state.native_poll_fds[&(event as i32)].clone();
++            // Fill the just-closed epoll's number, so the subsequent close/reopen
++            // control deterministically reuses exactly the watched target number.
++            let replacement = f.call(
++                libc::SYS_eventfd2,
++                [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
++            );
++            assert_eq!(replacement, ep);
++            if replace_with_dup2 {
++                assert_eq!(
++                    f.call(
++                        libc::SYS_dup2,
++                        [replacement as u64, event as u64, 0, 0, 0, 0]
++                    ),
++                    event
++                );
++            } else {
++                assert_eq!(f.call(libc::SYS_close, [event as u64, 0, 0, 0, 0, 0]), 0);
++                assert_eq!(
++                    f.call(
++                        libc::SYS_eventfd2,
++                        [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0]
++                    ),
++                    event
++                );
++            }
++            let current = &f.executor.state.native_poll_fds[&(event as i32)];
++            assert!(!Arc::ptr_eq(&old, current));
++            assert!(!old.live.load(Ordering::SeqCst));
++            assert!(current.live.load(Ordering::SeqCst));
++            // The keeper retains the old native eventfd description, so a stale
++            // registration can really remain ready; refusal is not empty readiness.
++            assert!(f.executor.state.files.contains_key(&(target_keeper as i32)));
++            epoll_lifecycle_wait(
++                &mut f.executor,
++                &mut f.memory,
++                alias,
++                negative_errno(libc::ENOSYS),
++            );
++        }
++    }
++
++    #[test]
++    fn epoll_pwait2_exec_filters_cloexec_without_replacing_surviving_identity() {
++        let mut f = FdinfoFixture::new(false);
++        let (surviving_ep, surviving_event) = epoll_lifecycle_pair(&mut f);
++        let (invalidated_ep, cloexec_event) = epoll_lifecycle_pair(&mut f);
++        let cloexec_ep = f.call(libc::SYS_dup, [surviving_ep as u64, 0, 0, 0, 0, 0]);
++        assert!(cloexec_ep >= 3);
++        for fd in [cloexec_event, cloexec_ep] {
++            assert_eq!(
++                f.call(
++                    libc::SYS_fcntl,
++                    [
++                        fd as u64,
++                        libc::F_SETFD as u64,
++                        libc::FD_CLOEXEC as u64,
++                        0,
++                        0,
++                        0
++                    ],
++                ),
++                0
++            );
++        }
++        let table = f.executor.state.poll_table_id.clone();
++        let domain = f.executor.state.epoll_domain.clone();
++        let surviving = [surviving_ep, surviving_event, invalidated_ep]
++            .map(|fd| (fd, f.executor.state.native_poll_fds[&(fd as i32)].clone()));
++        let retired = [cloexec_event, cloexec_ep]
++            .map(|fd| (fd, f.executor.state.native_poll_fds[&(fd as i32)].clone()));
++        f.executor.replace_after_exec(test_state(&f.root.0));
++        assert!(Arc::ptr_eq(&table, &f.executor.state.poll_table_id));
++        assert!(Arc::ptr_eq(&domain, &f.executor.state.epoll_domain));
++        for (fd, binding) in surviving {
++            assert!(binding.live.load(Ordering::SeqCst));
++            assert!(Arc::ptr_eq(
++                &binding,
++                &f.executor.state.native_poll_fds[&(fd as i32)],
++            ));
++        }
++        for (fd, binding) in retired {
++            assert!(!binding.live.load(Ordering::SeqCst));
++            assert!(!f.executor.state.native_poll_fds.contains_key(&(fd as i32)));
++            assert_eq!(
++                f.call(
++                    libc::SYS_fcntl,
++                    [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
++                ),
++                negative_errno(libc::EBADF)
++            );
++        }
++        epoll_lifecycle_wait(&mut f.executor, &mut f.memory, surviving_ep, 1);
++        epoll_lifecycle_wait(
++            &mut f.executor,
++            &mut f.memory,
++            invalidated_ep,
++            negative_errno(libc::ENOSYS),
++        );
++    }
++
++    struct EpollAliasWake {
++        memory: GuestMemory,
++        domain: Arc<Mutex<EpollDomain>>,
++        files: Arc<Mutex<FileTableState>>,
++        enabled: AtomicBool,
++        subscriptions: Mutex<Vec<std::pin::Pin<Box<crate::entry::ObservedChange>>>>,
++        observations: Mutex<Vec<(usize, bool)>>,
++    }
++
++    impl EpollAliasWake {
++        fn arm(self: &Arc<Self>) {
++            use std::future::Future;
++            let mut next = Box::pin(self.memory.entry_gate().subscribe());
++            let waker = std::task::Waker::from(self.clone());
++            assert!(
++                next.as_mut()
++                    .poll(&mut std::task::Context::from_waker(&waker))
++                    .is_pending()
++            );
++            // Shared invokes this waker while holding its subscriber mutex.
++            // Dropping that old subscription here would reacquire the same
++            // mutex. Retain all subscriptions until stop(), outside any wake.
++            self.subscriptions.lock().unwrap().push(next);
++        }
++
++        fn stop(&self) {
++            self.enabled.store(false, Ordering::SeqCst);
++            self.subscriptions.lock().unwrap().clear();
++            // Retire the last subscription's waker without leaving a test-only
++            // cycle from gate -> waker -> memory. The disabled waker is inert.
++            self.memory.entry_gate().notify_unchanged_for_test();
++        }
++    }
++
++    impl std::task::Wake for EpollAliasWake {
++        fn wake(self: Arc<Self>) {
++            Self::wake_by_ref(&self);
++        }
++
++        fn wake_by_ref(self: &Arc<Self>) {
++            if !self.enabled.load(Ordering::SeqCst) {
++                return;
++            }
++            assert!(
++                self.domain.try_lock().is_ok(),
++                "epoll domain held during alias notification"
++            );
++            assert!(
++                self.files.try_lock().is_ok(),
++                "file table held during alias notification"
++            );
++            let state = self.memory.entry_gate().test_state();
++            assert_eq!(state.copies, 0);
++            self.observations.lock().unwrap().push((
++                state.retained_operands,
++                self.memory.entry_gate().pending_failure().is_some(),
++            ));
++            self.arm();
++        }
++    }
++
++    fn epoll_alias_watch(executor: &ElfExecutor, memory: &GuestMemory) -> Arc<EpollAliasWake> {
++        let observer = Arc::new(EpollAliasWake {
++            memory: memory.clone(),
++            domain: executor.state.epoll_domain.clone(),
++            files: executor.file_table.clone(),
++            enabled: AtomicBool::new(true),
++            subscriptions: Mutex::new(Vec::new()),
++            observations: Mutex::new(Vec::new()),
++        });
++        observer.arm();
++        observer
++    }
++
++    #[test]
++    fn epoll_pwait2_success_and_copyout_fault_notify_outside_all_locks() {
++        for writable in [true, false] {
++            let mut f = FdinfoFixture::new(false);
++            let (ep, _) = epoll_pwait2_test_interest(&mut f, 1);
++            f.memory
++                .map_user_permissions(0, 4 * PAGE_SIZE, true, true)
++                .unwrap();
++            f.memory
++                .map_user_permissions(PAGE_SIZE, PAGE_SIZE, true, writable)
++                .unwrap();
++            f.memory.enable_user_access();
++            let observer = epoll_alias_watch(&f.executor, &f.memory);
++            assert_eq!(
++                f.call(
++                    libc::SYS_epoll_pwait2,
++                    [ep as u64, PAGE_SIZE, 1, 0x100, 0, 0]
++                ),
++                if writable {
++                    1
++                } else {
++                    negative_errno(libc::EFAULT)
++                }
++            );
++            observer.stop();
++            assert_eq!(
++                *observer.observations.lock().unwrap(),
++                [(0, false), (1, false), (0, false)],
++                "input copy, alias preparation and finalization are all observed"
++            );
++        }
++    }
++
++    #[test]
++    fn epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks() {
++        let Some(fault) = crate::alias_failure::child_case(
++            "executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks",
++            crate::alias_failure::Case::CleanupAfterSuccess,
++        ) else {
++            return;
++        };
++        assert!(crate::memory::retained_write_aliases_for_test().is_empty());
++        let root = TestDir::new();
++        let mut state = test_state(&root.0);
++        let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
++        memory.write(0x100, &[0; 16]).unwrap();
++        assert_eq!(
++            write_struct(
++                &mut memory,
++                0x200,
++                &libc::epoll_event {
++                    events: libc::EPOLLIN as u32,
++                    u64: 7
++                }
++            ),
++            0
++        );
++        let ep = epoll_create1(&mut state, 0);
++        // 700 proven interests require a real three-page alias, with writable
++        // first/last pages. No fabricated membership or test-only capacity.
++        for _ in 0..700 {
++            let event = eventfd2(&mut state, 0, libc::EFD_NONBLOCK as u64);
++            assert!(event >= 3);
++            assert_eq!(
++                epoll_ctl(
++                    &memory,
++                    &state,
++                    &[
++                        ep as u64,
++                        libc::EPOLL_CTL_ADD as u64,
++                        event as u64,
++                        0x200,
++                        0,
++                        0
++                    ]
++                ),
++                0
++            );
++        }
++        memory
++            .write_raw(PAGE_SIZE, &vec![0xa5; 3 * PAGE_SIZE as usize])
++            .unwrap();
++        memory
++            .map_user_permissions(0, 4 * PAGE_SIZE, true, true)
++            .unwrap();
++        memory
++            .map_user_permissions(2 * PAGE_SIZE, PAGE_SIZE, false, false)
++            .unwrap();
++        memory.enable_user_access();
++        let backing = memory.test_alias_backing_observer();
++        let mut executor = ElfExecutor::new(state, false);
++        let observer = epoll_alias_watch(&executor, &memory);
++        fault.arm();
++        let error = executor
++            .execute_checked(
++                &SyscallRequest::new(
++                    libc::SYS_epoll_pwait2 as u64,
++                    [ep as u64, PAGE_SIZE, 700, 0x100, 0, 0],
++                ),
++                &memory,
++            )
++            .unwrap_err();
++        observer.stop();
++        let retained = getdents64_alias_ledger(&fault);
++        assert!(
++            fault
++                .cause(&error, Some(retained[0].retention_id))
++                .is_some(),
++            "{error:?}"
++        );
++        assert_eq!(
++            *observer.observations.lock().unwrap(),
++            [(0, false), (1, false), (1, true), (0, true)]
++        );
++        let mut actual = vec![0; 3 * PAGE_SIZE as usize];
++        backing.read_raw(PAGE_SIZE, &mut actual).unwrap();
++        assert_eq!(
++            actual,
++            vec![0xa5; actual.len()],
++            "empty native interest set did not copy output"
++        );
++        let original = memory.entry_gate().pending_failure().unwrap();
++        assert!(memory.user().write(PAGE_SIZE, b"x").is_err());
++        assert!(Arc::ptr_eq(
++            &original,
++            &memory.entry_gate().pending_failure().unwrap()
++        ));
++        assert!(
++            executor
++                .execute_checked(
++                    &SyscallRequest::new(
++                        libc::SYS_epoll_pwait2 as u64,
++                        [ep as u64, PAGE_SIZE, 700, 0x100, 0, 0]
++                    ),
++                    &memory
++                )
++                .is_err()
++        );
++        drop(observer);
++        drop(executor);
++        drop(memory);
++        drop(backing);
++        drop(error);
++        drop(original);
++        assert_eq!(crate::memory::retained_write_aliases_for_test(), retained);
++        fault.assert_fired();
++    }
++
++    #[test]
++    fn epoll_pwait2_unshare_history_covers_epolls_created_after_the_request() {
++        const UNSHARE: u64 = 1 << 1;
++        const CLOEXEC: u64 = 1 << 2;
++        for flags in [CLOEXEC, CLOEXEC | UNSHARE] {
++            let mut f = FdinfoFixture::new(false);
++            let (existing, _) = epoll_lifecycle_pair(&mut f);
++            let mut sibling = f.executor.thread_child(2).unwrap();
++            // No descriptor falls in this range. The unsupported table split,
++            // rather than a coincidental close, is the admission boundary.
++            assert_eq!(
++                sibling.execute(
++                    &SyscallRequest::new(
++                        libc::SYS_close_range as u64,
++                        [u32::MAX as u64, u32::MAX as u64, flags, 0, 0, 0]
++                    ),
++                    &f.memory
++                ),
++                0
++            );
++            let expected = if flags & UNSHARE == 0 {
++                1
++            } else {
++                negative_errno(libc::ENOSYS)
++            };
++            epoll_lifecycle_wait(&mut f.executor, &mut f.memory, existing, expected);
++            let (later, _) = epoll_lifecycle_pair(&mut f);
++            epoll_lifecycle_wait(&mut f.executor, &mut f.memory, later, expected);
++            epoll_lifecycle_wait(&mut sibling, &mut f.memory, later, expected);
++            let mut child = f.executor.fork_child(3, false, false).unwrap();
++            let empty = child.execute(
++                &SyscallRequest::new(libc::SYS_epoll_create1 as u64, [0; 6]),
++                &f.memory,
++            );
++            assert!(empty >= 0);
++            epoll_lifecycle_wait(
++                &mut child,
++                &mut f.memory,
++                empty,
++                if flags & UNSHARE == 0 { 0 } else { expected },
++            );
++        }
++    }
++
++    #[test]
++    fn epoll_pwait2_poisoned_provenance_cannot_become_success() {
++        let mut f = FdinfoFixture::new(false);
++        let (ep, _) = epoll_pwait2_test_interest(&mut f, 1);
++        f.memory.write(0x300, &[0xa5; 24]).unwrap();
++        let domain = f.executor.state.epoll_domain.clone();
++        assert!(
++            std::panic::catch_unwind(|| {
++                let _guard = domain.lock().unwrap();
++                panic!("planted provenance publication failure");
++            })
++            .is_err()
++        );
++        assert!(
++            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| epoll_pwait2_test_wait(
++                &mut f, ep
++            )))
++            .is_err()
++        );
++        assert_eq!(
++            read_guest_bytes::<24>(&f.memory, 0x300).unwrap(),
++            [0xa5; 24]
++        );
++    }
++
+     fn fdinfo_content_unsupported_targets(fixture: &mut FdinfoFixture) -> Vec<(&'static str, i64)> {
+         let synthetic_proc = fixture.open("/proc/uptime", libc::O_RDONLY);
+         let random = fixture.open("/dev/urandom", libc::O_RDONLY);
+diff --git a/reverie-kvm/tests/fixtures/epoll_pwait2.c b/reverie-kvm/tests/fixtures/epoll_pwait2.c
+new file mode 100644
+index 00000000000..51ab176de9e
+--- /dev/null
++++ b/reverie-kvm/tests/fixtures/epoll_pwait2.c
+@@ -0,0 +1,345 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/epoll.h>
++#include <sys/eventfd.h>
++#include <sys/mman.h>
++#include <sys/syscall.h>
++#include <time.h>
++#include <unistd.h>
++
++#ifndef SYS_epoll_pwait2
++#define SYS_epoll_pwait2 441
++#endif
++
++#define PAGE 4096
++#define ARENA (2 * PAGE)
++#define EPOLL_FD 20
++#define EVENT_FD 21
++#define SECOND_FD 22
++#define NULL_OFFSET UINT32_MAX
++#define DATA_A UINT64_C(0x0123456789abcdef)
++#define DATA_B UINT64_C(0xfedcba9876543210)
++#define NOISE UINT64_C(0x8000000100000000)
++#define REQUIRE(condition) do { \
++    if (!(condition)) { \
++        dprintf(2, "epoll_pwait2: line %d, errno %d\n", __LINE__, errno); \
++        return 80; \
++    } \
++} while (0)
++
++_Static_assert(sizeof(struct epoll_event) == 12, "x86-64 packed epoll event");
++_Static_assert(sizeof(struct timespec) == 16, "x86-64 timespec");
++
++static long wait_zero(uint64_t fd, void *out, uint64_t count,
++                      const struct timespec *zero, uint64_t mask_size) {
++    return syscall(SYS_epoll_pwait2, fd, out, count, zero, NULL, mask_size);
++}
++
++/* Keep all seven checks and the exact success line of Hermit's original cell:
++ * https://github.com/rrnewton/hermit/blob/0f028322361f7357203ed4ef841dc63a770a2180/tests/c/epoll_pwait2_readiness.c
++ */
++static int seven_check_contract(void) {
++    enum { EXPECTED_CHECKS = 7 };
++    int ok = 0;
++    struct timespec zero = {0, 0};
++    int efd = eventfd(0, EFD_NONBLOCK);
++    int ep = epoll_create1(EPOLL_CLOEXEC);
++    if (efd < 0 || ep < 0) {
++        printf("epoll_pwait2 SETUP_FAIL\n");
++        return 1;
++    }
++    struct epoll_event ev;
++    memset(&ev, 0, sizeof(ev));
++    ev.events = EPOLLIN;
++    ev.data.fd = efd;
++    if (epoll_ctl(ep, EPOLL_CTL_ADD, efd, &ev) == 0) ok++;
++    uint64_t one = 1;
++    if (write(efd, &one, sizeof(one)) == (ssize_t)sizeof(one)) ok++;
++    struct epoll_event out[4];
++    memset(out, 0, sizeof(out));
++    int n = (int)wait_zero(ep, out, 4, &zero, 0);
++    if (n == 1) ok++;
++    if (n == 1 && out[0].data.fd == efd) ok++;
++    if (n == 1 && (out[0].events & EPOLLIN)) ok++;
++    if (epoll_ctl(ep, EPOLL_CTL_DEL, efd, &ev) == 0) ok++;
++    int n2 = (int)wait_zero(ep, out, 4, &zero, 0);
++    if (n2 == 0) ok++;
++    close(efd);
++    close(ep);
++    printf("epoll_pwait2 ok=%d\n", ok);
++    return ok == EXPECTED_CHECKS ? EXIT_SUCCESS : EXIT_FAILURE;
++}
++
++static int pin_descriptor(int fd, int destination) {
++    REQUIRE(fd >= 0);
++    if (fd != destination) {
++        REQUIRE(dup2(fd, destination) == destination);
++        REQUIRE(close(fd) == 0);
++    }
++    return 0;
++}
++
++static int register_event(int ep, int fd, uint64_t data) {
++    struct epoll_event event = {.events = EPOLLIN | EPOLLONESHOT};
++    event.data.u64 = data;
++    REQUIRE(epoll_ctl(ep, EPOLL_CTL_ADD, fd, &event) == 0);
++    return 0;
++}
++
++static int arm_event(int fd) {
++    uint64_t one = 1;
++    REQUIRE(write(fd, &one, sizeof(one)) == sizeof(one));
++    return 0;
++}
++
++static void expected_event(unsigned char *arena, unsigned offset, uint64_t data) {
++    uint32_t events = EPOLLIN;
++    memcpy(arena + offset, &events, sizeof(events));
++    memcpy(arena + offset + sizeof(events), &data, sizeof(data));
++}
++
++static int write_all(const void *data, size_t length) {
++    const unsigned char *bytes = data;
++    while (length) {
++        ssize_t count = write(STDOUT_FILENO, bytes, length);
++        if (count < 0 && errno == EINTR) continue;
++        if (count <= 0) return -1;
++        bytes += count;
++        length -= (size_t)count;
++    }
++    return 0;
++}
++
++struct report {
++    int64_t result;
++    int32_t error;
++    uint32_t mode;
++    uint64_t raw_fd;
++    uint64_t raw_count;
++    uint32_t offset;
++    uint32_t calls;
++    int64_t retry_result;
++    int64_t after_result;
++    uint64_t mask_size;
++};
++_Static_assert(sizeof(struct report) == 64, "complete report layout");
++
++static int parity_case(unsigned mode, int expected_bad_fd_errno) {
++    REQUIRE(mode < 16);
++    REQUIRE(pin_descriptor(epoll_create1(EPOLL_CLOEXEC), EPOLL_FD) == 0);
++    REQUIRE(pin_descriptor(eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC), EVENT_FD) == 0);
++    REQUIRE(register_event(EPOLL_FD, EVENT_FD, DATA_A) == 0);
++    unsigned char *arena = mmap(NULL, ARENA, PROT_READ | PROT_WRITE,
++                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    struct timespec *zero = mmap(NULL, PAGE, PROT_READ | PROT_WRITE,
++                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    REQUIRE(arena != MAP_FAILED && zero != MAP_FAILED);
++    memset(arena, 0xa5, ARENA);
++    memset(zero, 0xa5, PAGE);
++    zero->tv_sec = zero->tv_nsec = 0;
++    unsigned char expected_timeout[PAGE];
++    memcpy(expected_timeout, zero, PAGE);
++    REQUIRE(mprotect(zero, PAGE, PROT_READ) == 0);
++
++    struct report output = {0};
++    output.mode = mode;
++    output.raw_fd = EPOLL_FD;
++    output.raw_count = 4;
++    output.offset = 128;
++    output.calls = 1;
++    long expected_result = 0;
++    int expected_error = 0;
++    int ready = 0;
++    int protection = -1;
++    int retry = 0;
++    switch (mode) {
++    case 0: /* A registered but empty eventfd produces no output. */
++        break;
++    case 1: /* The ready event is copied exactly once. */
++    case 2: /* epfd and maxevents use signed low 32-bit words. */
++    case 3: /* NULL sigmask ignores even an absurd sigsetsize. */
++        ready = 1;
++        expected_result = 1;
++        if (mode == 2) {
++            output.raw_fd |= NOISE;
++            output.raw_count |= NOISE;
++        }
++        if (mode == 3) output.mask_size = UINT64_MAX;
++        break;
++    case 4: /* Empty epoll does not write a numerically valid NULL output. */
++    case 5: /* Ready epoll faults at NULL and keeps its one-shot event armed. */
++        output.offset = NULL_OFFSET;
++        ready = retry = mode == 5;
++        break;
++    case 6: /* Empty epoll does not require writable output pages. */
++    case 7: /* Ready epoll faults on read-only output. */
++        output.offset = PAGE + 128;
++        protection = PROT_READ;
++        ready = retry = mode == 7;
++        break;
++    case 8: /* Empty epoll does not even require mapped/readable output. */
++    case 9: /* Ready epoll faults on PROT_NONE output. */
++        output.offset = PAGE + 128;
++        protection = PROT_NONE;
++        ready = retry = mode == 9;
++        break;
++    case 10: /* Mask store succeeds; the following eight-byte data store faults. */
++        output.offset = PAGE - 4;
++        protection = PROT_NONE;
++        ready = retry = 1;
++        break;
++    case 11: /* A complete first event survives the second event's data fault. */
++        REQUIRE(pin_descriptor(eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC), SECOND_FD) == 0);
++        REQUIRE(register_event(EPOLL_FD, SECOND_FD, DATA_B) == 0);
++        output.offset = PAGE - 16;
++        protection = PROT_NONE;
++        expected_result = 1;
++        ready = retry = 1;
++        break;
++    case 12: /* Zero low count wins over an inaccessible output. */
++        output.raw_count = NOISE;
++        output.offset = NULL_OFFSET;
++        expected_result = -1;
++        expected_error = EINVAL;
++        break;
++    case 13: /* Negative low count wins over an inaccessible output. */
++        output.raw_count = NOISE | UINT32_MAX;
++        output.offset = NULL_OFFSET;
++        expected_result = -1;
++        expected_error = EINVAL;
++        break;
++    case 14: /* Require the exact host-ABI errno supplied by the native harness. */
++        REQUIRE(expected_bad_fd_errno > 0);
++        output.raw_fd = UINT64_MAX;
++        output.raw_count = 0;
++        expected_result = -1;
++        expected_error = expected_bad_fd_errno;
++        break;
++    case 15: /* A proven eventfd is not an epoll instance. */
++        output.raw_fd = EVENT_FD;
++        expected_result = -1;
++        expected_error = EINVAL;
++        break;
++    }
++    if (retry && mode != 11) {
++        expected_result = -1;
++        expected_error = EFAULT;
++    }
++    if (ready) REQUIRE(arm_event(EVENT_FD) == 0);
++    /* Kernel ready-list order comes from these two sequential writes, with no
++     * other writer or asynchronous source. No sorting can hide a lost event. */
++    if (mode == 11) REQUIRE(arm_event(SECOND_FD) == 0);
++    unsigned char expected[ARENA];
++    memcpy(expected, arena, ARENA);
++    if (expected_result == 1) expected_event(expected, output.offset, DATA_A);
++    if (mode == 10 || mode == 11) {
++        uint32_t events = EPOLLIN;
++        memcpy(expected + PAGE - 4, &events, sizeof(events));
++    }
++    if (protection >= 0) REQUIRE(mprotect(arena + PAGE, PAGE, protection) == 0);
++    void *events = output.offset == NULL_OFFSET ? NULL : arena + output.offset;
++    errno = 0;
++    output.result = wait_zero(output.raw_fd, events, output.raw_count, zero, output.mask_size);
++    output.error = output.result == -1 ? errno : 0;
++    REQUIRE(output.result == expected_result && output.error == expected_error);
++    if (retry) {
++        /* The failed event must still be deliverable. Its one-shot state is
++         * disabled only by this successful copy, not the earlier EFAULT. */
++        output.calls = 3;
++        errno = 0;
++        output.retry_result = wait_zero(EPOLL_FD, arena + 512, 4, zero, 0);
++        REQUIRE(output.retry_result == 1 && errno == 0);
++        expected_event(expected, 512, mode == 11 ? DATA_B : DATA_A);
++        errno = 0;
++        output.after_result = wait_zero(EPOLL_FD, arena + 544, 4, zero, 0);
++        REQUIRE(output.after_result == 0 && errno == 0);
++    }
++    REQUIRE(memcmp(zero, expected_timeout, PAGE) == 0);
++    /* Inspect protected bytes only after the tested calls: the complete arena,
++     * including untouched suffixes, must equal the explicit expected bytes. */
++    REQUIRE(mprotect(arena, ARENA, PROT_READ) == 0);
++    REQUIRE(memcmp(arena, expected, ARENA) == 0);
++    REQUIRE(write_all(&output, sizeof(output)) == 0);
++    REQUIRE(write_all(arena, ARENA) == 0);
++    REQUIRE(write_all(zero, PAGE) == 0);
++    REQUIRE(munmap(arena, ARENA) == 0 && munmap(zero, PAGE) == 0);
++    REQUIRE(close(EVENT_FD) == 0 && close(EPOLL_FD) == 0);
++    if (mode == 11) REQUIRE(close(SECOND_FD) == 0);
++    return 0;
++}
++
++static int captured_case(void) {
++    struct timespec zero = {0, 0};
++    /* Prove that capture alone is allowed before selecting a captured carrier. */
++    int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
++    int ep = epoll_create1(EPOLL_CLOEXEC);
++    REQUIRE(efd >= 0 && ep >= 0);
++    REQUIRE(register_event(ep, efd, DATA_A) == 0 && arm_event(efd) == 0);
++    unsigned char events[64], expected[64];
++    memset(events, 0xa5, sizeof(events));
++    memcpy(expected, events, sizeof(events));
++    expected_event(expected, 0, DATA_A);
++    REQUIRE(wait_zero(ep, events, 4, &zero, 0) == 1);
++    REQUIRE(memcmp(events, expected, sizeof(events)) == 0);
++    REQUIRE(close(ep) == 0 && close(efd) == 0);
++
++    int alias = dup(STDOUT_FILENO);
++    REQUIRE(alias >= 3);
++    int targets[] = {STDOUT_FILENO, alias};
++    for (unsigned i = 0; i < sizeof(targets) / sizeof(targets[0]); ++i) {
++        ep = epoll_create1(EPOLL_CLOEXEC);
++        REQUIRE(ep >= 0);
++        struct epoll_event interest = {.events = EPOLLOUT};
++        interest.data.u64 = DATA_B;
++        /* The bounded libtest child has a pipe at host stdout. Require a real
++         * registration; EPERM on a regular-file carrier is not this test. */
++        REQUIRE(epoll_ctl(ep, EPOLL_CTL_ADD, targets[i], &interest) == 0);
++        memset(events, 0xa5, sizeof(events));
++        memcpy(expected, events, sizeof(events));
++        errno = 0;
++        REQUIRE(wait_zero(ep, events, 4, &zero, 0) == -1 && errno == ENOSYS);
++        REQUIRE(memcmp(events, expected, sizeof(events)) == 0);
++        REQUIRE(zero.tv_sec == 0 && zero.tv_nsec == 0);
++        REQUIRE(close(ep) == 0);
++    }
++    REQUIRE(close(alias) == 0);
++    static const char success[] = "captured epoll_pwait2 refused 2\n";
++    REQUIRE(write_all(success, sizeof(success) - 1) == 0);
++    return 0;
++}
++
++int main(int argc, char **argv) {
++    REQUIRE(argc == 2);
++    if (strcmp(argv[1], "contract") == 0) return seven_check_contract();
++    if (strcmp(argv[1], "captured") == 0) return captured_case();
++    char *end = NULL;
++    unsigned long mode = strtoul(argv[1], &end, 10);
++    REQUIRE(end != argv[1] && mode < 16);
++    int expected_bad_fd_errno = 0;
++    if (mode == 14) {
++        /* This input is identical for native and every KVM path. Never probe
++         * inside the guest: that would let the tested implementation choose
++         * its own expected errno. No alternative errno is accepted here. */
++        REQUIRE(*end == ':');
++        char *error_end = NULL;
++        unsigned long error = strtoul(end + 1, &error_end, 10);
++        REQUIRE(error_end != end + 1 && *error_end == '\0' && error > 0 && error <= INT_MAX);
++        expected_bad_fd_errno = (int)error;
++    } else {
++        REQUIRE(*end == '\0');
++    }
++    return parity_case((unsigned)mode, expected_bad_fd_errno);
++}
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index fd5ede1d170..8af8030930d 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -809,6 +809,9 @@ mod poll_descriptor_abi;
+ #[path = "support/pselect_zero.rs"]
+ mod pselect_zero;
+ 
++#[path = "support/epoll_pwait2.rs"]
++mod epoll_pwait2;
++
+ #[test]
+ fn file_script_exec_plain() {
+     file_script_exec_control("file_script_exec_plain", "plain");
+@@ -11193,6 +11196,12 @@ fn repair_prctl_required_kvm_is_not_optional() {
+         "pselect_zero::raw_abi_and_readonly_zero_timeout_match_native",
+         "pselect_zero::copyout_faults_order_and_aliasing_match_native",
+         "pselect_zero::captured_outputs_and_dup_aliases_are_refused",
++        "epoll_pwait2::seven_check_contract_matches_native",
++        "epoll_pwait2::empty_and_ready_eventfd_match_native",
++        "epoll_pwait2::raw_abi_and_readonly_timeout_match_native",
++        "epoll_pwait2::inaccessible_output_depends_on_readiness",
++        "epoll_pwait2::scalar_faults_preserve_bytes_and_oneshot_events",
++        "epoll_pwait2::captured_output_and_dup_registrations_are_refused",
+         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
+         "fchdir_consumes_low_descriptor_words_on_kvm",
+         "getdents64_consumes_low_descriptor_words_on_kvm",
+diff --git a/reverie-kvm/tests/support/epoll_pwait2.rs b/reverie-kvm/tests/support/epoll_pwait2.rs
+new file mode 100644
+index 00000000000..204c2ec0e67
+--- /dev/null
++++ b/reverie-kvm/tests/support/epoll_pwait2.rs
+@@ -0,0 +1,263 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++use super::*;
++
++fn captured_run(
++    directory: &TestDirectory,
++    program: &std::path::Path,
++    image: &[u8],
++    argument: &str,
++    ownership: Option<ThreadOwnership>,
++    calls: usize,
++) -> Vec<u8> {
++    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++    backend
++        .install_static_elf_with_context(
++            image,
++            &[program.to_str().unwrap(), argument],
++            &[],
++            &directory.0,
++        )
++        .unwrap();
++    let (code, stdout, stderr) = if let Some(ownership) = ownership {
++        backend.set_thread_ownership(ownership);
++        let (trace, code, stdout, stderr) =
++            futures::executor::block_on(backend.run_static_elf_with_tool::<StraceTool>((), true))
++                .unwrap();
++        assert_eq!(
++            trace
++                .syscalls()
++                .iter()
++                .filter(|name| name.as_str() == "epoll_pwait2")
++                .count(),
++            calls,
++            "actual syscall-441 callbacks: argument={argument} ownership={ownership:?}"
++        );
++        (code, stdout, stderr)
++    } else {
++        backend.run_static_elf_captured().unwrap()
++    };
++    eprintln!("epoll_pwait2 argument={argument} ownership={ownership:?} code={code}");
++    assert_eq!(code, 0, "argument={argument} ownership={ownership:?}");
++    assert!(
++        stderr.is_empty(),
++        "argument={argument} ownership={ownership:?}: {stderr:?}"
++    );
++    stdout
++}
++
++fn native_invalid_fd_zero_count_errno() -> i32 {
++    let zero = libc::timespec {
++        tv_sec: 0,
++        tv_nsec: 0,
++    };
++    let mut errors = [0; 2];
++    for (count, error) in errors.iter_mut().enumerate() {
++        // SAFETY: -1 can never identify an epoll. The kernel cannot reach
++        // output copyout; timeout is valid input and no mask is requested.
++        let raw = unsafe {
++            libc::syscall(
++                libc::SYS_epoll_pwait2,
++                -1_i32,
++                usize::MAX,
++                count as i32,
++                &zero,
++                0usize,
++                0usize,
++            )
++        };
++        let native_errno = std::io::Error::last_os_error();
++        assert_eq!(raw, -1, "native invalid-fd ABI setup must fail");
++        *error = native_errno.raw_os_error().unwrap();
++    }
++    let expected_range = if errors[0] == libc::EINVAL {
++        libc::EFAULT
++    } else if errors[0] == libc::EBADF {
++        libc::EBADF
++    } else {
++        panic!("unrecognized native epoll_pwait2 ABI: {errors:?}");
++    };
++    assert_eq!(errors[1], expected_range, "native range/fd ABI setup");
++    eprintln!("native epoll_pwait2 ABI setup (two host-only calls): {errors:?}");
++    errors[0]
++}
++
++fn parity_cases(test: &str, modes: &[u8]) {
++    if !leader_self_exec_bounded(test) {
++        return;
++    }
++    let directory = TestDirectory::new();
++    let program = compile_c_program(
++        &directory.0,
++        "epoll-pwait2",
++        include_str!("../fixtures/epoll_pwait2.c"),
++    );
++    let image = std::fs::read(&program).unwrap();
++    let invalid_fd_errno = modes.contains(&14).then(native_invalid_fd_zero_count_errno);
++    for &mode in modes {
++        let argument = if mode == 14 {
++            format!("14:{}", invalid_fd_errno.unwrap())
++        } else {
++            mode.to_string()
++        };
++        let native = std::process::Command::new(&program)
++            .current_dir(&directory.0)
++            .arg(&argument)
++            .output()
++            .unwrap();
++        assert!(native.status.success(), "native mode={mode}: {native:?}");
++        assert!(native.stderr.is_empty(), "native mode={mode}: {native:?}");
++        assert_eq!(
++            native.stdout.len(),
++            64 + 8192 + 4096,
++            "complete report, output arena and readonly timeout page"
++        );
++        let (result, error) = match mode {
++            0 | 4 | 6 | 8 => (0_i64, 0_i32),
++            1 | 2 | 3 | 11 => (1, 0),
++            5 | 7 | 9 | 10 => (-1, libc::EFAULT),
++            12 | 13 | 15 => (-1, libc::EINVAL),
++            14 => (-1, invalid_fd_errno.unwrap()),
++            _ => panic!("unregistered epoll_pwait2 mode {mode}"),
++        };
++        let retry = matches!(mode, 5 | 7 | 9 | 10 | 11);
++        let calls = if retry { 3_u32 } else { 1_u32 };
++        let retry_result = if retry { 1_i64 } else { 0_i64 };
++        assert_eq!(&native.stdout[..8], &result.to_ne_bytes());
++        assert_eq!(&native.stdout[8..12], &error.to_ne_bytes());
++        assert_eq!(&native.stdout[12..16], &u32::from(mode).to_ne_bytes());
++        assert_eq!(&native.stdout[36..40], &calls.to_ne_bytes());
++        assert_eq!(
++            &native.stdout[40..48],
++            &retry_result.to_ne_bytes(),
++            "faulted one-shot event remains queued"
++        );
++        assert_eq!(
++            &native.stdout[48..56],
++            &0_i64.to_ne_bytes(),
++            "successful retry disables the one-shot registration"
++        );
++        assert_eq!(&native.stdout[64 + 8192..64 + 8192 + 16], &[0; 16]);
++        assert_eq!(&native.stdout[64 + 8192 + 16..], &[0xa5; 4096 - 16]);
++        // The C fixture independently checks every arena byte against its
++        // explicit Linux outcome. Compare all bytes here; no sorting, masked
++        // fields, tolerated errors or native/KVM "either" result is accepted.
++        for ownership in [
++            None,
++            Some(ThreadOwnership::Host),
++            Some(ThreadOwnership::Tool),
++        ] {
++            let stdout = captured_run(
++                &directory,
++                &program,
++                &image,
++                &argument,
++                ownership,
++                calls as usize,
++            );
++            assert_eq!(
++                stdout, native.stdout,
++                "complete report and arenas: mode={mode} ownership={ownership:?}"
++            );
++        }
++    }
++}
++
++#[test]
++fn seven_check_contract_matches_native() {
++    const TEST: &str = "epoll_pwait2::seven_check_contract_matches_native";
++    if !leader_self_exec_bounded(TEST) {
++        return;
++    }
++    let directory = TestDirectory::new();
++    let program = compile_c_program(
++        &directory.0,
++        "epoll-pwait2-contract",
++        include_str!("../fixtures/epoll_pwait2.c"),
++    );
++    let image = std::fs::read(&program).unwrap();
++    let native = std::process::Command::new(&program)
++        .arg("contract")
++        .output()
++        .unwrap();
++    assert!(native.status.success(), "{native:?}");
++    assert!(native.stderr.is_empty(), "{native:?}");
++    assert_eq!(native.stdout, b"epoll_pwait2 ok=7\n");
++    for ownership in [
++        None,
++        Some(ThreadOwnership::Host),
++        Some(ThreadOwnership::Tool),
++    ] {
++        assert_eq!(
++            captured_run(&directory, &program, &image, "contract", ownership, 2),
++            native.stdout,
++            "ownership={ownership:?}"
++        );
++    }
++}
++
++#[test]
++fn empty_and_ready_eventfd_match_native() {
++    parity_cases(
++        "epoll_pwait2::empty_and_ready_eventfd_match_native",
++        &[0, 1],
++    );
++}
++
++#[test]
++fn raw_abi_and_readonly_timeout_match_native() {
++    parity_cases(
++        "epoll_pwait2::raw_abi_and_readonly_timeout_match_native",
++        &[2, 3, 12, 13, 14, 15],
++    );
++}
++
++#[test]
++fn inaccessible_output_depends_on_readiness() {
++    parity_cases(
++        "epoll_pwait2::inaccessible_output_depends_on_readiness",
++        &[4, 5, 6, 7, 8, 9],
++    );
++}
++
++#[test]
++fn scalar_faults_preserve_bytes_and_oneshot_events() {
++    parity_cases(
++        "epoll_pwait2::scalar_faults_preserve_bytes_and_oneshot_events",
++        &[10, 11],
++    );
++}
++
++#[test]
++fn captured_output_and_dup_registrations_are_refused() {
++    const TEST: &str = "epoll_pwait2::captured_output_and_dup_registrations_are_refused";
++    if !leader_self_exec_bounded(TEST) {
++        return;
++    }
++    let directory = TestDirectory::new();
++    let program = compile_c_program(
++        &directory.0,
++        "epoll-pwait2-captured",
++        include_str!("../fixtures/epoll_pwait2.c"),
++    );
++    let image = std::fs::read(&program).unwrap();
++    // This is an explicit unsupported-boundary assertion, not native parity.
++    // leader_self_exec_bounded gives this child a pipe at host stdout, and the
++    // fixture insists that both captured targets really entered the epoll set.
++    for ownership in [
++        None,
++        Some(ThreadOwnership::Host),
++        Some(ThreadOwnership::Tool),
++    ] {
++        assert_eq!(
++            captured_run(&directory, &program, &image, "captured", ownership, 3),
++            b"captured epoll_pwait2 refused 2\n",
++            "ownership={ownership:?}"
++        );
++    }
++}

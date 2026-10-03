@@ -1,0 +1,21 @@
+   Compiling reverie-kvm v0.4.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/reverie-kvm)
+    Finished `test` profile [unoptimized] target(s) in 23.77s
+     Running unittests src/lib.rs (target/epoll-pwait2-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a)
+
+running 1 test
+test executor::tests::epoll_pwait2_invalid_fd_projection_preserves_both_kernel_orders ... 
+thread 'executor::tests::epoll_pwait2_invalid_fd_projection_preserves_both_kernel_orders' (2368145) panicked at reverie-kvm/src/executor.rs:37649:21:
+assertion `left == right` failed
+  left: -22
+ right: -9
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    executor::tests::epoll_pwait2_invalid_fd_projection_preserves_both_kernel_orders
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1113 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

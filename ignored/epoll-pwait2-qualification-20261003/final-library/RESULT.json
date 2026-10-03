@@ -1,0 +1,836 @@
+{
+  "phase": "final-library",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003",
+  "start_free_bytes": 1540542205952,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice": 10,
+  "seconds_bound": 1800.0,
+  "started_et": "2026-10-03 09:42:41 AM ET",
+  "source_before": {
+    "Cargo.toml": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c",
+    "reverie-kvm/Cargo.toml": "85202626bea214d699f7abd6c7764e1a21e962af6d7c3dde8f16345eba037442",
+    "reverie-kvm/src/elf.rs": "aeb5fb2200bbd3fd1219d82bfebdb9d24f8bbfa9ff112edad28c7b58541fffe0",
+    "reverie-kvm/src/executor.rs": "0bb747ee1ec1266115ed94d8fa1113135f898a328073aac843fe7aaf38f916c9",
+    "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+    "reverie-kvm/tests/support/epoll_pwait2.rs": "09e48b81ce37eee2a713aca8076f169bc6d59a1c0bf222ef6dcaac25ba4518ce",
+    "reverie-kvm/tests/fixtures/epoll_pwait2.c": "fab72bd6cca54bae150d639951fc4ca0579f0c52b1063ce78750a391169501f5",
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6"
+  },
+  "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+  "lock_before": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+  "resource_environment": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/target/epoll-pwait2-qualification",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "XDG_CACHE_HOME": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/target/epoll-pwait2-script-cache",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "leader": {
+    "pid": 2203071,
+    "state": "R",
+    "ppid": 2203018,
+    "pgid": 2203071,
+    "session": 2203071,
+    "start": 56443006
+  },
+  "remaining_descendants": [],
+  "cleanup": [
+    {
+      "signal": 15,
+      "targets": [
+        {
+          "pid": 2209425,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2209421,
+          "session": 2203071,
+          "start": 56443566
+        },
+        {
+          "pid": 2209934,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2209930,
+          "session": 2203071,
+          "start": 56443601
+        },
+        {
+          "pid": 2209995,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2209991,
+          "session": 2203071,
+          "start": 56443623
+        },
+        {
+          "pid": 2210018,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2210014,
+          "session": 2203071,
+          "start": 56443639
+        },
+        {
+          "pid": 2210973,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2210966,
+          "session": 2203071,
+          "start": 56443676
+        },
+        {
+          "pid": 2211450,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2211446,
+          "session": 2203071,
+          "start": 56443699
+        },
+        {
+          "pid": 2211555,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2211548,
+          "session": 2203071,
+          "start": 56443712
+        },
+        {
+          "pid": 2211725,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2211720,
+          "session": 2203071,
+          "start": 56443726
+        },
+        {
+          "pid": 2211782,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2211777,
+          "session": 2203071,
+          "start": 56443750
+        },
+        {
+          "pid": 2211799,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2211795,
+          "session": 2203071,
+          "start": 56443765
+        },
+        {
+          "pid": 2211897,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2211893,
+          "session": 2203071,
+          "start": 56443778
+        },
+        {
+          "pid": 2212051,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2212044,
+          "session": 2203071,
+          "start": 56443794
+        },
+        {
+          "pid": 2214911,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2214907,
+          "session": 2203071,
+          "start": 56444016
+        },
+        {
+          "pid": 2214990,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2214986,
+          "session": 2203071,
+          "start": 56444037
+        },
+        {
+          "pid": 2215250,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2215232,
+          "session": 2203071,
+          "start": 56444104
+        },
+        {
+          "pid": 2216263,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2216258,
+          "session": 2203071,
+          "start": 56444137
+        },
+        {
+          "pid": 2216631,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2216627,
+          "session": 2203071,
+          "start": 56444166
+        },
+        {
+          "pid": 2216746,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2216742,
+          "session": 2203071,
+          "start": 56444186
+        },
+        {
+          "pid": 2216916,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2216912,
+          "session": 2203071,
+          "start": 56444206
+        },
+        {
+          "pid": 2217217,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2217213,
+          "session": 2203071,
+          "start": 56444224
+        },
+        {
+          "pid": 2217667,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2217657,
+          "session": 2203071,
+          "start": 56444247
+        },
+        {
+          "pid": 2218078,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2218069,
+          "session": 2203071,
+          "start": 56444265
+        },
+        {
+          "pid": 2218717,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2218703,
+          "session": 2203071,
+          "start": 56444279
+        },
+        {
+          "pid": 2218884,
+          "state": "Z",
+          "ppid": 2203018,
+          "pgid": 2218880,
+          "session": 2203071,
+          "start": 56444293
+        }
+      ]
+    }
+  ],
+  "witnessed_descendants": [
+    {
+      "pid": 2203071,
+      "state": "S",
+      "ppid": 2203018,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56443006
+    },
+    {
+      "pid": 2203106,
+      "state": "S",
+      "ppid": 2203071,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56443020
+    },
+    {
+      "pid": 2203111,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203111,
+      "session": 2203071,
+      "start": 56443020
+    },
+    {
+      "pid": 2203112,
+      "state": "S",
+      "ppid": 2203111,
+      "pgid": 2203111,
+      "session": 2203071,
+      "start": 56443020
+    },
+    {
+      "pid": 2203113,
+      "state": "R",
+      "ppid": 2203112,
+      "pgid": 2203111,
+      "session": 2203071,
+      "start": 56443020
+    },
+    {
+      "pid": 2203674,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56443149
+    },
+    {
+      "pid": 2205117,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56443267
+    },
+    {
+      "pid": 2209413,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2209413,
+      "session": 2203071,
+      "start": 56443556
+    },
+    {
+      "pid": 2209414,
+      "state": "S",
+      "ppid": 2209413,
+      "pgid": 2209413,
+      "session": 2203071,
+      "start": 56443556
+    },
+    {
+      "pid": 2209416,
+      "state": "S",
+      "ppid": 2209414,
+      "pgid": 2209413,
+      "session": 2203071,
+      "start": 56443556
+    },
+    {
+      "pid": 2209425,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2209421,
+      "session": 2203071,
+      "start": 56443566
+    },
+    {
+      "pid": 2209934,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2209930,
+      "session": 2203071,
+      "start": 56443601
+    },
+    {
+      "pid": 2209995,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2209991,
+      "session": 2203071,
+      "start": 56443623
+    },
+    {
+      "pid": 2210018,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2210014,
+      "session": 2203071,
+      "start": 56443639
+    },
+    {
+      "pid": 2210742,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2210742,
+      "session": 2203071,
+      "start": 56443666
+    },
+    {
+      "pid": 2210746,
+      "state": "S",
+      "ppid": 2210742,
+      "pgid": 2210742,
+      "session": 2203071,
+      "start": 56443666
+    },
+    {
+      "pid": 2210973,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2210966,
+      "session": 2203071,
+      "start": 56443676
+    },
+    {
+      "pid": 2211450,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2211446,
+      "session": 2203071,
+      "start": 56443699
+    },
+    {
+      "pid": 2211555,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2211548,
+      "session": 2203071,
+      "start": 56443712
+    },
+    {
+      "pid": 2211725,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2211720,
+      "session": 2203071,
+      "start": 56443726
+    },
+    {
+      "pid": 2211758,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2211758,
+      "session": 2203071,
+      "start": 56443740
+    },
+    {
+      "pid": 2211759,
+      "state": "S",
+      "ppid": 2211758,
+      "pgid": 2211758,
+      "session": 2203071,
+      "start": 56443740
+    },
+    {
+      "pid": 2211782,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2211777,
+      "session": 2203071,
+      "start": 56443750
+    },
+    {
+      "pid": 2211799,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2211795,
+      "session": 2203071,
+      "start": 56443765
+    },
+    {
+      "pid": 2211897,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2211893,
+      "session": 2203071,
+      "start": 56443778
+    },
+    {
+      "pid": 2212051,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2212044,
+      "session": 2203071,
+      "start": 56443794
+    },
+    {
+      "pid": 2212651,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2212651,
+      "session": 2203071,
+      "start": 56443856
+    },
+    {
+      "pid": 2212652,
+      "state": "S",
+      "ppid": 2212651,
+      "pgid": 2212651,
+      "session": 2203071,
+      "start": 56443856
+    },
+    {
+      "pid": 2214851,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2214851,
+      "session": 2203071,
+      "start": 56444005
+    },
+    {
+      "pid": 2214857,
+      "state": "S",
+      "ppid": 2214851,
+      "pgid": 2214851,
+      "session": 2203071,
+      "start": 56444006
+    },
+    {
+      "pid": 2214911,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2214907,
+      "session": 2203071,
+      "start": 56444016
+    },
+    {
+      "pid": 2214990,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2214986,
+      "session": 2203071,
+      "start": 56444037
+    },
+    {
+      "pid": 2215250,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2215232,
+      "session": 2203071,
+      "start": 56444104
+    },
+    {
+      "pid": 2216263,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2216258,
+      "session": 2203071,
+      "start": 56444137
+    },
+    {
+      "pid": 2216631,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2216627,
+      "session": 2203071,
+      "start": 56444166
+    },
+    {
+      "pid": 2216746,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2216742,
+      "session": 2203071,
+      "start": 56444186
+    },
+    {
+      "pid": 2216916,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2216912,
+      "session": 2203071,
+      "start": 56444206
+    },
+    {
+      "pid": 2217217,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2217213,
+      "session": 2203071,
+      "start": 56444224
+    },
+    {
+      "pid": 2217530,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2217530,
+      "session": 2203071,
+      "start": 56444237
+    },
+    {
+      "pid": 2217531,
+      "state": "S",
+      "ppid": 2217530,
+      "pgid": 2217530,
+      "session": 2203071,
+      "start": 56444237
+    },
+    {
+      "pid": 2217537,
+      "state": "S",
+      "ppid": 2217531,
+      "pgid": 2217530,
+      "session": 2203071,
+      "start": 56444237
+    },
+    {
+      "pid": 2217667,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2217657,
+      "session": 2203071,
+      "start": 56444247
+    },
+    {
+      "pid": 2218078,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2218069,
+      "session": 2203071,
+      "start": 56444265
+    },
+    {
+      "pid": 2218717,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2218703,
+      "session": 2203071,
+      "start": 56444279
+    },
+    {
+      "pid": 2218884,
+      "state": "Z",
+      "ppid": 2203018,
+      "pgid": 2218880,
+      "session": 2203071,
+      "start": 56444293
+    },
+    {
+      "pid": 2219733,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2219733,
+      "session": 2203071,
+      "start": 56444355
+    },
+    {
+      "pid": 2219734,
+      "state": "S",
+      "ppid": 2219733,
+      "pgid": 2219733,
+      "session": 2203071,
+      "start": 56444355
+    },
+    {
+      "pid": 2219742,
+      "state": "S",
+      "ppid": 2219734,
+      "pgid": 2219733,
+      "session": 2203071,
+      "start": 56444355
+    },
+    {
+      "pid": 2219744,
+      "state": "R",
+      "ppid": 2219742,
+      "pgid": 2219733,
+      "session": 2203071,
+      "start": 56444355
+    },
+    {
+      "pid": 2225627,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2225627,
+      "session": 2203071,
+      "start": 56444654
+    },
+    {
+      "pid": 2225629,
+      "state": "S",
+      "ppid": 2225627,
+      "pgid": 2225627,
+      "session": 2203071,
+      "start": 56444654
+    },
+    {
+      "pid": 2229516,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2229516,
+      "session": 2203071,
+      "start": 56444792
+    },
+    {
+      "pid": 2229517,
+      "state": "S",
+      "ppid": 2229516,
+      "pgid": 2229516,
+      "session": 2203071,
+      "start": 56444792
+    },
+    {
+      "pid": 2229518,
+      "state": "R",
+      "ppid": 2229517,
+      "pgid": 2229516,
+      "session": 2203071,
+      "start": 56444792
+    },
+    {
+      "pid": 2235513,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2235513,
+      "session": 2203071,
+      "start": 56445117
+    },
+    {
+      "pid": 2235514,
+      "state": "S",
+      "ppid": 2235513,
+      "pgid": 2235513,
+      "session": 2203071,
+      "start": 56445117
+    },
+    {
+      "pid": 2235515,
+      "state": "R",
+      "ppid": 2235514,
+      "pgid": 2235513,
+      "session": 2203071,
+      "start": 56445117
+    },
+    {
+      "pid": 2237657,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2237657,
+      "session": 2203071,
+      "start": 56445325
+    },
+    {
+      "pid": 2237666,
+      "state": "S",
+      "ppid": 2237657,
+      "pgid": 2237657,
+      "session": 2203071,
+      "start": 56445325
+    },
+    {
+      "pid": 2245459,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56446379
+    },
+    {
+      "pid": 2245789,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56446488
+    },
+    {
+      "pid": 2248983,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56446599
+    },
+    {
+      "pid": 2249499,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56446696
+    },
+    {
+      "pid": 2251362,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56446928
+    },
+    {
+      "pid": 2252009,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56447031
+    },
+    {
+      "pid": 2252732,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56447174
+    },
+    {
+      "pid": 2254597,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56447283
+    },
+    {
+      "pid": 2254664,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56447362
+    },
+    {
+      "pid": 2255642,
+      "state": "S",
+      "ppid": 2203106,
+      "pgid": 2203071,
+      "session": 2203071,
+      "start": 56447516
+    }
+  ],
+  "actual_command_rc": 0,
+  "lock_after": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+  "source_after": {
+    "Cargo.toml": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c",
+    "reverie-kvm/Cargo.toml": "85202626bea214d699f7abd6c7764e1a21e962af6d7c3dde8f16345eba037442",
+    "reverie-kvm/src/elf.rs": "aeb5fb2200bbd3fd1219d82bfebdb9d24f8bbfa9ff112edad28c7b58541fffe0",
+    "reverie-kvm/src/executor.rs": "0bb747ee1ec1266115ed94d8fa1113135f898a328073aac843fe7aaf38f916c9",
+    "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+    "reverie-kvm/tests/support/epoll_pwait2.rs": "09e48b81ce37eee2a713aca8076f169bc6d59a1c0bf222ef6dcaac25ba4518ce",
+    "reverie-kvm/tests/fixtures/epoll_pwait2.c": "fab72bd6cca54bae150d639951fc4ca0579f0c52b1063ce78750a391169501f5",
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6"
+  },
+  "stop_reason": null,
+  "wall_seconds": 54.706044020014815,
+  "minimum_free_bytes": 1540542205952,
+  "end_free_bytes": 1540599504896,
+  "output_bytes": 241003,
+  "output_sha256": "c93b39fd9237ff8219a8425e778b367a82186c3d42557e61a964b421e9179ce0",
+  "cancel_signals": [],
+  "rc": 0,
+  "test_binaries": {
+    "target/epoll-pwait2-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a": "d2da7943507289ebbd6d8dde3b2795f8dc98f9fd0b1843654bccf12224bcc9e8",
+    "target/epoll-pwait2-qualification/debug/deps/static_elf-9a322fcc3d61e965": "52b73649be37f8e627842b2bd84128820435fb7553f795c9968ca9a5864bf680"
+  }
+}

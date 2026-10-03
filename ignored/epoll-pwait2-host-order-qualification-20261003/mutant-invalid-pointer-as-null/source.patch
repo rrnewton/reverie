@@ -1,0 +1,13 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 812315335a0..62118c5c89a 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -11039,7 +11039,7 @@ fn epoll_pwait2_missing_fd_with_host(
+         || (count as usize)
+             .checked_mul(std::mem::size_of::<libc::epoll_event>())
+             .is_some_and(|length| validate_guest_iovec_address(output, length).is_ok());
+-    let host_output = if valid_range { 0 } else { usize::MAX };
++    let host_output = { let _ = valid_range; 0 };
+     let zero = libc::timespec {
+         tv_sec: 0,
+         tv_nsec: 0,

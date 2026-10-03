@@ -1,0 +1,13 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 812315335a0..2c92c5567c3 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -11051,7 +11051,7 @@ fn epoll_pwait2_missing_fd_with_host(
+         Err(error) => io_error(error),
+         // A nonnegative result cannot describe Linux's invalid-fd path. Refuse
+         // an unsupported host result rather than fabricate readiness success.
+-        Ok(_) => negative_errno(libc::ENOSYS),
++        Ok(result) => result as i64,
+     }
+ }
+ 

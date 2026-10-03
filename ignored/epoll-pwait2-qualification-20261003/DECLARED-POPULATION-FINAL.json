@@ -1,0 +1,31 @@
+{
+  "basis": "Named integration inventory and route population were written before compilation in integration-report.md; unit cases declared to root before focused/full qualification. Exact binary full-library inventory follows before full run. Additional unshare-history test was planted and observed red before its repair; final declaration precedes full-library execution.",
+  "base_library": 1100,
+  "new_unit": [
+    "executor::tests::epoll_pwait2_validation_order_matches_native_and_checks_full_range",
+    "executor::tests::epoll_pwait2_unmasked_zero_probe_preserves_pending_signals_and_refusal_state",
+    "executor::tests::epoll_pwait2_scm_failed_export_invalidates_every_alias_and_future_registration",
+    "executor::tests::epoll_pwait2_unknown_import_nested_and_changed_host_keys_are_not_certified",
+    "executor::tests::epoll_pwait2_fork_and_shared_snapshot_lifetimes_are_distinct",
+    "executor::tests::epoll_pwait2_epoll_dup_survives_but_target_replacement_and_reuse_refuse",
+    "executor::tests::epoll_pwait2_exec_filters_cloexec_without_replacing_surviving_identity",
+    "executor::tests::epoll_pwait2_success_and_copyout_fault_notify_outside_all_locks",
+    "executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks",
+    "executor::tests::epoll_pwait2_poisoned_provenance_cannot_become_success",
+    "executor::tests::epoll_pwait2_unshare_history_covers_epolls_created_after_the_request"
+  ],
+  "full_library_expected": 1111,
+  "integration": [
+    "epoll_pwait2::seven_check_contract_matches_native",
+    "epoll_pwait2::empty_and_ready_eventfd_match_native",
+    "epoll_pwait2::raw_abi_and_readonly_timeout_match_native",
+    "epoll_pwait2::inaccessible_output_depends_on_readiness",
+    "epoll_pwait2::scalar_faults_preserve_bytes_and_oneshot_events",
+    "epoll_pwait2::captured_output_and_dup_registrations_are_refused"
+  ],
+  "native_executions": 17,
+  "direct_executions": 18,
+  "host_tool_executions": 18,
+  "tool_owned_executions": 18,
+  "earlier_integration_report_sha256": "bf19f260fffb19a0af22a9f66248a81c6d620640cc70c2036b13973ff7701ebf"
+}

@@ -1,0 +1,26 @@
+[
+  {
+    "pid": 3174426,
+    "start": "56808075",
+    "command": [
+      "python3",
+      "ignored/epoll-pwait2-host-order-qualification-20261003/run_guard.py",
+      "--phase",
+      "final-clippy",
+      "--seconds",
+      "1200",
+      "--",
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "reverie-kvm",
+      "--all-targets",
+      "-j8",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "reason": "stop inadvertently overlapped Clippy; required-KVM prior phase not yet terminal"
+  }
+]

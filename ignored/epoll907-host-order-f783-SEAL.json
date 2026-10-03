@@ -1,0 +1,16 @@
+{
+  "head": "f78354c066fc77e160216e959d1fb979c0348696",
+  "archive": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll907-host-order-f783.tar.xz",
+  "archive_bytes": 491020,
+  "archive_sha256": "eda4b1f90fa76a7a693a35adbb7f44a122efbf9311fa2efdd2ab0897b4eb22f3",
+  "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll-pwait2-host-order-qualification-20261003/CONTENT-MANIFEST.json",
+  "manifest_sha256": "38804c3455e33a52e80b08755f1424cbb312e1aa7148cc42ed8e9f97edf37b06",
+  "report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll-pwait2-host-order-qualification-20261003/REPORT.md",
+  "report_sha256": "d821ed74a483f7ccd2861fe94d4ac3b2e882e5ae410b26097263af6f0f405995",
+  "terminal_sha256": "d1d4bd8df2a584ca6494b38677bb8d3694957ba58200a0f0cb284307fca3ce0d",
+  "content_files": 99,
+  "archive_members_including_manifest": 100,
+  "uncompressed_content_bytes": 6108615,
+  "all_members_roundtrip_verified": true,
+  "archive_wall_seconds": 1.7531604480464011
+}

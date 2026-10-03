@@ -1,0 +1,111 @@
+{
+  "phase": "formatting-before-checkpoint",
+  "command": [
+    "cargo",
+    "fmt",
+    "--all",
+    "--",
+    "--check"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003",
+  "start_free_bytes": 1522664005632,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice": 10,
+  "seconds_bound": 60.0,
+  "started_et": "2026-10-03 10:36:34 AM ET",
+  "source_before": {
+    "Cargo.toml": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c",
+    "reverie-kvm/Cargo.toml": "85202626bea214d699f7abd6c7764e1a21e962af6d7c3dde8f16345eba037442",
+    "reverie-kvm/src/elf.rs": "aeb5fb2200bbd3fd1219d82bfebdb9d24f8bbfa9ff112edad28c7b58541fffe0",
+    "reverie-kvm/src/executor.rs": "5b54e1847c9200f4fdc5907a2857d95d8e0e2df2c4b318df30135c0ee4df0d18",
+    "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+    "reverie-kvm/tests/support/epoll_pwait2.rs": "457d36dfbf28176aabdbd4e4a482b79e1beccadf784d827f14f0b0dfeed372ce",
+    "reverie-kvm/tests/fixtures/epoll_pwait2.c": "1d6e53f147b9bb02b150e989a2411ea6a5400fa9cb7f1ff071771911a927ffbd",
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6"
+  },
+  "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+  "lock_before": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+  "resource_environment": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/target/epoll-pwait2-qualification",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "XDG_CACHE_HOME": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/target/epoll-pwait2-script-cache",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "leader": {
+    "pid": 1674007,
+    "state": "R",
+    "ppid": 1673373,
+    "pgid": 1674007,
+    "session": 1674007,
+    "start": 56766310
+  },
+  "remaining_descendants": [],
+  "cleanup": [
+    {
+      "signal": 15,
+      "targets": []
+    }
+  ],
+  "witnessed_descendants": [
+    {
+      "pid": 1674007,
+      "state": "S",
+      "ppid": 1673373,
+      "pgid": 1674007,
+      "session": 1674007,
+      "start": 56766310
+    },
+    {
+      "pid": 1674134,
+      "state": "R",
+      "ppid": 1674007,
+      "pgid": 1674007,
+      "session": 1674007,
+      "start": 56766315
+    },
+    {
+      "pid": 1675120,
+      "state": "R",
+      "ppid": 1674007,
+      "pgid": 1674007,
+      "session": 1674007,
+      "start": 56766347
+    }
+  ],
+  "actual_command_rc": 0,
+  "lock_after": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+  "source_after": {
+    "Cargo.toml": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c",
+    "reverie-kvm/Cargo.toml": "85202626bea214d699f7abd6c7764e1a21e962af6d7c3dde8f16345eba037442",
+    "reverie-kvm/src/elf.rs": "aeb5fb2200bbd3fd1219d82bfebdb9d24f8bbfa9ff112edad28c7b58541fffe0",
+    "reverie-kvm/src/executor.rs": "5b54e1847c9200f4fdc5907a2857d95d8e0e2df2c4b318df30135c0ee4df0d18",
+    "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+    "reverie-kvm/tests/support/epoll_pwait2.rs": "457d36dfbf28176aabdbd4e4a482b79e1beccadf784d827f14f0b0dfeed372ce",
+    "reverie-kvm/tests/fixtures/epoll_pwait2.c": "1d6e53f147b9bb02b150e989a2411ea6a5400fa9cb7f1ff071771911a927ffbd",
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6"
+  },
+  "stop_reason": null,
+  "wall_seconds": 3.8630319110816345,
+  "minimum_free_bytes": 1522664005632,
+  "end_free_bytes": 1522664005632,
+  "output_bytes": 0,
+  "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "cancel_signals": [],
+  "rc": 0,
+  "test_binaries": {
+    "target/epoll-pwait2-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a": "d2da7943507289ebbd6d8dde3b2795f8dc98f9fd0b1843654bccf12224bcc9e8",
+    "target/epoll-pwait2-qualification/debug/deps/static_elf-9a322fcc3d61e965": "52b73649be37f8e627842b2bd84128820435fb7553f795c9968ca9a5864bf680"
+  }
+}

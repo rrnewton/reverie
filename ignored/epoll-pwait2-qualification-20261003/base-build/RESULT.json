@@ -1,0 +1,441 @@
+{
+  "phase": "base-build",
+  "command": [
+    "env",
+    "GIT_CONFIG_GLOBAL=/dev/null",
+    "GIT_CONFIG_COUNT=1",
+    "GIT_CONFIG_KEY_0=credential.helper",
+    "GIT_CONFIG_VALUE_0=!gh auth git-credential",
+    "FLEET_REAL_GH=/home/newton/bin/gh",
+    "with-proxy",
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "reverie-kvm",
+    "--test",
+    "static_elf",
+    "--no-run",
+    "-j8"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003",
+  "start_free_bytes": 1548080451584,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice": 10,
+  "seconds_bound": 1800.0,
+  "started_et": "2026-10-03 09:23:26 AM ET",
+  "source_before": {
+    "Cargo.toml": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c",
+    "reverie-kvm/Cargo.toml": "85202626bea214d699f7abd6c7764e1a21e962af6d7c3dde8f16345eba037442",
+    "reverie-kvm/src/elf.rs": "08ac2e477f54cc4afcc81ef0f6ab7c73c1479e0f0ebeb7ad7139533393e92fad",
+    "reverie-kvm/src/executor.rs": "44a40715ff6ffa90be43223dbfdb901e4486d422eb517d97d4c75d46116c6ca4",
+    "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+    "reverie-kvm/tests/support/epoll_pwait2.rs": "09e48b81ce37eee2a713aca8076f169bc6d59a1c0bf222ef6dcaac25ba4518ce",
+    "reverie-kvm/tests/fixtures/epoll_pwait2.c": "fab72bd6cca54bae150d639951fc4ca0579f0c52b1063ce78750a391169501f5",
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6"
+  },
+  "head": "43fce717f1c7710b7ef7345e4146821422a3aaa6",
+  "lock_before": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+  "resource_environment": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/target/epoll-pwait2-qualification",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "XDG_CACHE_HOME": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/target/epoll-pwait2-script-cache",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "leader": {
+    "pid": 210631,
+    "state": "R",
+    "ppid": 210546,
+    "pgid": 210631,
+    "session": 210631,
+    "start": 56327497
+  },
+  "remaining_descendants": [],
+  "cleanup": [
+    {
+      "signal": 15,
+      "targets": []
+    }
+  ],
+  "witnessed_descendants": [
+    {
+      "pid": 210631,
+      "state": "S",
+      "ppid": 210546,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327497
+    },
+    {
+      "pid": 211051,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327521
+    },
+    {
+      "pid": 211343,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327532
+    },
+    {
+      "pid": 211882,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327562
+    },
+    {
+      "pid": 211896,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327564
+    },
+    {
+      "pid": 212101,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327576
+    },
+    {
+      "pid": 212114,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327580
+    },
+    {
+      "pid": 212300,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327605
+    },
+    {
+      "pid": 212648,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327642
+    },
+    {
+      "pid": 212785,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327670
+    },
+    {
+      "pid": 212819,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327673
+    },
+    {
+      "pid": 213029,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327702
+    },
+    {
+      "pid": 213101,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327707
+    },
+    {
+      "pid": 213163,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327711
+    },
+    {
+      "pid": 213241,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327717
+    },
+    {
+      "pid": 213254,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327718
+    },
+    {
+      "pid": 213480,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327733
+    },
+    {
+      "pid": 213581,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327754
+    },
+    {
+      "pid": 213665,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327763
+    },
+    {
+      "pid": 214606,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327812
+    },
+    {
+      "pid": 214635,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327816
+    },
+    {
+      "pid": 214862,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327871
+    },
+    {
+      "pid": 214867,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327873
+    },
+    {
+      "pid": 214927,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327914
+    },
+    {
+      "pid": 215082,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327958
+    },
+    {
+      "pid": 215193,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327987
+    },
+    {
+      "pid": 215197,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56327988
+    },
+    {
+      "pid": 215223,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56328006
+    },
+    {
+      "pid": 215234,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56328015
+    },
+    {
+      "pid": 215568,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56328061
+    },
+    {
+      "pid": 215599,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56328072
+    },
+    {
+      "pid": 215606,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56328076
+    },
+    {
+      "pid": 215640,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56328092
+    },
+    {
+      "pid": 215657,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56328111
+    },
+    {
+      "pid": 215706,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56328121
+    },
+    {
+      "pid": 216041,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56328150
+    },
+    {
+      "pid": 216375,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56328225
+    },
+    {
+      "pid": 217735,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56328425
+    },
+    {
+      "pid": 218474,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56328555
+    },
+    {
+      "pid": 220651,
+      "state": "S",
+      "ppid": 210631,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56329048
+    },
+    {
+      "pid": 251183,
+      "state": "S",
+      "ppid": 220651,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56331231
+    },
+    {
+      "pid": 251193,
+      "state": "S",
+      "ppid": 251183,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56331233
+    },
+    {
+      "pid": 251194,
+      "state": "R",
+      "ppid": 251193,
+      "pgid": 210631,
+      "session": 210631,
+      "start": 56331233
+    }
+  ],
+  "actual_command_rc": 0,
+  "lock_after": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+  "source_after": {
+    "Cargo.toml": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c",
+    "reverie-kvm/Cargo.toml": "85202626bea214d699f7abd6c7764e1a21e962af6d7c3dde8f16345eba037442",
+    "reverie-kvm/src/elf.rs": "08ac2e477f54cc4afcc81ef0f6ab7c73c1479e0f0ebeb7ad7139533393e92fad",
+    "reverie-kvm/src/executor.rs": "44a40715ff6ffa90be43223dbfdb901e4486d422eb517d97d4c75d46116c6ca4",
+    "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+    "reverie-kvm/tests/support/epoll_pwait2.rs": "09e48b81ce37eee2a713aca8076f169bc6d59a1c0bf222ef6dcaac25ba4518ce",
+    "reverie-kvm/tests/fixtures/epoll_pwait2.c": "fab72bd6cca54bae150d639951fc4ca0579f0c52b1063ce78750a391169501f5",
+    "Cargo.lock": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6"
+  },
+  "stop_reason": null,
+  "wall_seconds": 38.06949044007342,
+  "minimum_free_bytes": 1548080451584,
+  "end_free_bytes": 1548290969600,
+  "output_bytes": 4026,
+  "output_sha256": "1f798cfebdb1300422e18f0147239a7122ceba2f4d20299f541f182e8f0cf2a2",
+  "cancel_signals": [],
+  "rc": 0,
+  "test_binaries": {
+    "target/epoll-pwait2-qualification/debug/deps/static_elf-9a322fcc3d61e965": "f646286ec7e719f6ab9a24130a2fb02f73d2342716103a27fe8417b8ab9d8d62"
+  }
+}

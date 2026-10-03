@@ -1,0 +1,12 @@
+{
+  "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+  "branch": "refs/heads/codex/kvm-epoll-pwait2-20261003",
+  "before": {
+    "refs/heads/main": "36bf964b3a98a0206f2b4d11daf0dd9d9872da22"
+  },
+  "rc": 0,
+  "after": {
+    "refs/heads/codex/kvm-epoll-pwait2-20261003": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+    "refs/heads/main": "36bf964b3a98a0206f2b4d11daf0dd9d9872da22"
+  }
+}

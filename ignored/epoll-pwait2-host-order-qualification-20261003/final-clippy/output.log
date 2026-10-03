@@ -1,0 +1,3 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+    Checking reverie-kvm v0.4.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/reverie-kvm)

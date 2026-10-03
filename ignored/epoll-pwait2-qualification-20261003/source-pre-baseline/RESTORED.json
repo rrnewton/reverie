@@ -1,0 +1,15 @@
+{
+  "exact_restoration": true,
+  "rows": [
+    {
+      "path": "reverie-kvm/src/elf.rs",
+      "implementation_sha256": "d4f1216047a35029b9e27a904640eebcb0820936c57a9e3a10a67ababb22e0c7",
+      "base_sha256": "08ac2e477f54cc4afcc81ef0f6ab7c73c1479e0f0ebeb7ad7139533393e92fad"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "implementation_sha256": "268d5360d8bf018d7ccde212c79895bb53fd80e39f0dc24dd445133a81f90ae1",
+      "base_sha256": "44a40715ff6ffa90be43223dbfdb901e4486d422eb517d97d4c75d46116c6ca4"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "status": "source-grounded counterexample; correction proposed before full qualification",
+  "old_behavior": "close_range accepts UNSHARE but does not replace or split authoritative CLONE_FILES table",
+  "new_guard_gap": "marking only currently known epoll proofs misses epolls created after UNSHARE",
+  "trace": [
+    "create shared worker",
+    "worker close_range(UINT_MAX, UINT_MAX, UNSHARE|CLOEXEC) returns0 without splitting table",
+    "parent creates epoll/eventfd after this call; sibling still shares those entries",
+    "new epoll proof is currently born safe and441 accepts it"
+  ],
+  "proposal": "put permanent unsafe_history on shared table identity; every proof checks it, including later creation. Preserve existing close_range results; no general unshare implementation.",
+  "test": "existing and later epolls refused after UNSHARE; ordinary CLOEXEC-only call is positive; descriptor-table scopes and full output bytes remain exact"
+}

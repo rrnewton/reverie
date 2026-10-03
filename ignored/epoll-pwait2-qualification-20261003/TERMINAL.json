@@ -1,0 +1,187 @@
+{
+  "status": "QUALIFIED_FOCUSED_AND_PACKAGE_CHECKS_NOT_CANONICAL",
+  "completed_et": "2026-10-03T09:48:47.281383-04:00",
+  "source": {
+    "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+    "base": "36bf964b3a98a0206f2b4d11daf0dd9d9872da22",
+    "tree": "e02f3dab6d13e343f99d0d9dc0a9cb3e1d348e5d",
+    "source": {
+      "reverie-kvm/src/elf.rs": "aeb5fb2200bbd3fd1219d82bfebdb9d24f8bbfa9ff112edad28c7b58541fffe0",
+      "reverie-kvm/src/executor.rs": "0bb747ee1ec1266115ed94d8fa1113135f898a328073aac843fe7aaf38f916c9",
+      "reverie-kvm/tests/static_elf.rs": "ec492d3f28f735089b9670079c671d919f9b85174fc65e9fcccd0013101049c7",
+      "reverie-kvm/tests/fixtures/epoll_pwait2.c": "fab72bd6cca54bae150d639951fc4ca0579f0c52b1063ce78750a391169501f5",
+      "reverie-kvm/tests/support/epoll_pwait2.rs": "09e48b81ce37eee2a713aca8076f169bc6d59a1c0bf222ef6dcaac25ba4518ce"
+    },
+    "cargo_lock_sha256": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+    "uname": {
+      "system": "Linux",
+      "node": "devbig014.atn7.facebook.com",
+      "release": "7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf",
+      "version": "#1 SMP PREEMPT Mon Aug 24 01:30:09 PDT 2026",
+      "machine": "x86_64",
+      "processor": "x86_64"
+    },
+    "working_status": "?? ignored/\n"
+  },
+  "phases": {
+    "final-units": {
+      "result_path": "ignored/epoll-pwait2-qualification-20261003/final-units/RESULT.json",
+      "result_sha256": "18ecc38c1612332804a24ae0c5d3697996dc36a5e6ae64f7cf65021422b91688",
+      "wall_seconds": 23.540282769012265,
+      "output_sha256": "e2026161ae9e06f470db8afe00c8e8427a5cd8c5c80f7dd6df88feb0db62e751",
+      "rc": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "executor::tests::epoll_pwait2_",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ]
+    },
+    "final-integration": {
+      "result_path": "ignored/epoll-pwait2-qualification-20261003/final-integration/RESULT.json",
+      "result_sha256": "a44b08b4a5a06704f4410377907ab3f7d933c39cbdac7c4189ba03713c43622f",
+      "wall_seconds": 33.27451042900793,
+      "output_sha256": "d979d845187dcb0e32ee812c44238bdc5fe88ef0644118caef518abb604f5a32",
+      "rc": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--test",
+        "static_elf",
+        "epoll_pwait2::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ]
+    },
+    "final-inventory": {
+      "result_path": "ignored/epoll-pwait2-qualification-20261003/final-inventory/RESULT.json",
+      "result_sha256": "f7ce5c0a33357ed1386b3d8d557ca3d6fdeb48b2e19dfd2e91294f4750007404",
+      "wall_seconds": 0.7088367829564959,
+      "output_sha256": "a53db9f9bacfffe94d4ce0c545fafef9cd0d8ed0e8f6b10d845088a1c7b28eaf",
+      "rc": 0,
+      "command": [
+        "python3",
+        "ignored/epoll-pwait2-qualification-20261003/inventory-final.py"
+      ]
+    },
+    "final-library": {
+      "result_path": "ignored/epoll-pwait2-qualification-20261003/final-library/RESULT.json",
+      "result_sha256": "1cd7ae1e55a7b7c8343d11d204670a86234920700aff8b566b575dc259a3de22",
+      "wall_seconds": 54.706044020014815,
+      "output_sha256": "c93b39fd9237ff8219a8425e778b367a82186c3d42557e61a964b421e9179ce0",
+      "rc": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ]
+    },
+    "required-kvm": {
+      "result_path": "ignored/epoll-pwait2-qualification-20261003/required-kvm/RESULT.json",
+      "result_sha256": "6204b5a6bf46d9847b7a0d865a89b5d258a29a53200b66b202d51d47445b8bcf",
+      "wall_seconds": 0.7640871639596298,
+      "output_sha256": "a409be623428cf4d25aba8882fddd12189c8a796bdbe9508412718a24a4bc7fb",
+      "rc": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--test",
+        "static_elf",
+        "repair_prctl_required_kvm_is_not_optional",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ]
+    },
+    "final-clippy": {
+      "result_path": "ignored/epoll-pwait2-qualification-20261003/final-clippy/RESULT.json",
+      "result_sha256": "26361b6671a843278e156c6004863c4e39baceba7b5cb5de17b34d291c5b5dd6",
+      "wall_seconds": 20.383644121000543,
+      "output_sha256": "d5718e8cf61cbf946ccdd36724c67397621ac0e07e983cb308cb7820df1729b5",
+      "rc": 0,
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ]
+    },
+    "final-docs": {
+      "result_path": "ignored/epoll-pwait2-qualification-20261003/final-docs/RESULT.json",
+      "result_sha256": "a8c0e2e464856dd5bb81c120837a2d777782c6c5df88f982838672fc34303f2e",
+      "wall_seconds": 42.5605298980372,
+      "output_sha256": "14dde77cc8d0a6121d32107e9bc9bb88345468fd3b4a3b5e2b88d7b69993dbd6",
+      "rc": 0,
+      "command": [
+        "env",
+        "RUSTDOCFLAGS=-Dwarnings",
+        "GIT_CONFIG_GLOBAL=/dev/null",
+        "GIT_CONFIG_COUNT=1",
+        "GIT_CONFIG_KEY_0=credential.helper",
+        "GIT_CONFIG_VALUE_0=!gh auth git-credential",
+        "FLEET_REAL_GH=/home/newton/bin/gh",
+        "with-proxy",
+        "cargo",
+        "doc",
+        "--locked",
+        "--workspace",
+        "--no-deps",
+        "-j8"
+      ]
+    },
+    "final-format": {
+      "result_path": "ignored/epoll-pwait2-qualification-20261003/final-format/RESULT.json",
+      "result_sha256": "9c661dfa2297422fd16ecf656d47cb2517cde8f52443e84cfc72d4694b81c333",
+      "wall_seconds": 3.5533817150862888,
+      "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rc": 0,
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ]
+    }
+  },
+  "report_path": "ignored/epoll-pwait2-implementation-20261003/REPORT.md",
+  "report_sha256": "b57b9e2d5556f31bc86476718859c491d5d3240198f7db678cd49409a2622ab4",
+  "historical_failed_phases_preserved": [
+    "base-contract",
+    "repair-units-001",
+    "repair-units-002",
+    "mutant-zero",
+    "mutant-copyback",
+    "unshare-red",
+    "mutant-eventescape"
+  ],
+  "independent_review": false,
+  "canonical_validation": false,
+  "landing_authority": false,
+  "consumer_replay_claim": false
+}

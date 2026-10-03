@@ -1,0 +1,13 @@
+{
+  "archive": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll905-evidence-5914.tar.gz",
+  "archive_bytes": 3361452,
+  "archive_sha256": "4210e5fca1b8d3dec0e83a90a1208e2d3a0946a8f1c106273d89b3ec066138c6",
+  "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll905-EVIDENCE-MANIFEST.json",
+  "manifest_sha256": "e168036471412360cd426012d67b9ff879a637f62dcf92d88d3d316917ed8af7",
+  "file_count": 124,
+  "uncompressed_bytes": 19394509,
+  "roundtrip_verified": true,
+  "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+  "terminal_sha256": "b9456f79a66238d063ab5771ba80e2e62686f20385c9a3ff755031d4b66fc83d",
+  "report_sha256": "c4ef40ade98d7338b211b82b64ad699e06bdd30307bd39c4093c1687ef71a71f"
+}

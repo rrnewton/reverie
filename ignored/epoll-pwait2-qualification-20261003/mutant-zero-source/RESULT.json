@@ -1,0 +1,30 @@
+{
+  "kind": "zero",
+  "original_sha256": "fa8c960b43f5f0a6e74e59d5acd05050b116eb02976a3bcf070109a50051b797",
+  "mutant_sha256": "22cc4d02746ac101c8b6df6b2a24f80d56e03ab7681c010950fa0e6e5f3fc6bb",
+  "expected_test_rc": 101,
+  "cancel_signals": [],
+  "command": [
+    "python3",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll-pwait2-qualification-20261003/run_guard.py",
+    "--phase",
+    "mutant-zero",
+    "--seconds",
+    "300",
+    "--",
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "reverie-kvm",
+    "--test",
+    "static_elf",
+    "epoll_pwait2::seven_check_contract_matches_native",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "guard_rc": 101,
+  "restored_sha256": "fa8c960b43f5f0a6e74e59d5acd05050b116eb02976a3bcf070109a50051b797"
+}

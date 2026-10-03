@@ -1,0 +1,15 @@
+{
+  "classification": "failed diagnostic, not a pass",
+  "run_rc": 94,
+  "command_signal": 15,
+  "wall_seconds": 85.3445294459816,
+  "completed_passes": 5,
+  "completed_failures": 1,
+  "started_unfinished_tests": 1,
+  "not_reached_tests": 3,
+  "nested_cleanup_case_exit": 124,
+  "source_path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/future/shared.rs",
+  "source_sha256": "bb281d9e3868a3e1f02dd61a60c357721fb804a01543606af625000c789fd8d8",
+  "futures_util_version": "0.3.34",
+  "cause": "Shared::Notifier::wake_by_ref holds notifier.wakers at lines406-417; Shared::drop reacquires notifier.wakers at383-400. Test observer replaced/dropped its old subscription from that wake. Retain subscriptions until stop outside callback; keep exact notification traces and deadlines."
+}

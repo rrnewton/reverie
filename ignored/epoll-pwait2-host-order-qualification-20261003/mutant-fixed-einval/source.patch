@@ -1,0 +1,13 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 812315335a0..9a426b98637 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -11048,7 +11048,7 @@ fn epoll_pwait2_missing_fd_with_host(
+     // on both orders. NULL mask and zero timeout cannot install a host mask,
+     // wait, consume events, or write guest/output memory.
+     match invoke_host(-1, host_output, count, &zero, 0, 0) {
+-        Err(error) => io_error(error),
++        Err(error) => { let _ = error; negative_errno(libc::EINVAL) },
+         // A nonnegative result cannot describe Linux's invalid-fd path. Refuse
+         // an unsupported host result rather than fabricate readiness success.
+         Ok(_) => negative_errno(libc::ENOSYS),

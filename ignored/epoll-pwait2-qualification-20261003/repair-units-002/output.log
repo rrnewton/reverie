@@ -1,0 +1,51 @@
+   Compiling reverie-kvm v0.4.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/reverie-kvm)
+    Finished `test` profile [unoptimized] target(s) in 22.56s
+     Running unittests src/lib.rs (target/epoll-pwait2-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a)
+
+running 10 tests
+test executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks ... 
+stage=5 Output { status: ExitStatus(unix_wait_status(25856)), stdout: "\nrunning 1 test\ntest executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks ... FAILED\n\nfailures:\n\nfailures:\n    executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1109 filtered out; finished in 0.29s\n\n", stderr: "warning: `--logfile` is deprecated\nthread 'executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks' (595075) panicked at reverie-kvm/src/executor.rs:38243:14:\ncalled `Result::unwrap_err()` on an `Ok` value: -14\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n" }
+
+thread 'executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks' (594915) panicked at reverie-kvm/src/../tests/support/alias_failure.rs:212:9:
+executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks: stage=5 status=Some(101) stdout=
+running 1 test
+test executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks ... FAILED
+
+failures:
+
+failures:
+    executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1109 filtered out; finished in 0.29s
+
+ stderr=warning: `--logfile` is deprecated
+thread 'executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks' (595075) panicked at reverie-kvm/src/executor.rs:38243:14:
+called `Result::unwrap_err()` on an `Ok` value: -14
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test executor::tests::epoll_pwait2_epoll_dup_survives_but_target_replacement_and_reuse_refuse ... ok
+test executor::tests::epoll_pwait2_exec_filters_cloexec_without_replacing_surviving_identity ... ok
+test executor::tests::epoll_pwait2_fork_and_shared_snapshot_lifetimes_are_distinct ... ok
+test executor::tests::epoll_pwait2_poisoned_provenance_cannot_become_success ... 
+thread 'executor::tests::epoll_pwait2_poisoned_provenance_cannot_become_success' (595225) panicked at reverie-kvm/src/executor.rs:38299:17:
+planted provenance publication failure
+
+thread 'executor::tests::epoll_pwait2_poisoned_provenance_cannot_become_success' (595225) panicked at reverie-kvm/src/executor.rs:11045:14:
+KVM epoll provenance lock poisoned: PoisonError { .. }
+ok
+test executor::tests::epoll_pwait2_scm_failed_export_invalidates_every_alias_and_future_registration ... ok
+test executor::tests::epoll_pwait2_success_and_copyout_fault_notify_outside_all_locks ... ok
+test executor::tests::epoll_pwait2_unknown_import_nested_and_changed_host_keys_are_not_certified ... ok
+test executor::tests::epoll_pwait2_unmasked_zero_probe_preserves_pending_signals_and_refusal_state ... ok
+test executor::tests::epoll_pwait2_validation_order_matches_native_and_checks_full_range ... ok
+
+failures:
+
+failures:
+    executor::tests::epoll_pwait2_cleanup_failure_is_terminal_and_notifies_outside_all_locks
+
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 1100 filtered out; finished in 0.47s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

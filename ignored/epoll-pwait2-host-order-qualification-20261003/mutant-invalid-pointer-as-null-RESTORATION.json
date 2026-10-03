@@ -1,0 +1,29 @@
+{
+  "phase": "mutant-invalid-pointer-as-null",
+  "base_sha256": "5b54e1847c9200f4fdc5907a2857d95d8e0e2df2c4b318df30135c0ee4df0d18",
+  "mutant_sha256": "27d6e5bfd54e6a8f4beb45d63ff6054cbd5150b607ca415111354a9c967b9572",
+  "head": "f78354c066fc77e160216e959d1fb979c0348696",
+  "command": [
+    "/usr/local/fbcode/platform010/bin/python3.12",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll-pwait2-host-order-qualification-20261003/run_guard.py",
+    "--phase",
+    "mutant-invalid-pointer-as-null",
+    "--seconds",
+    "300",
+    "--",
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "executor::tests::epoll_pwait2_invalid_fd_projection_preserves_both_kernel_orders",
+    "-j8",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "launcher_rc": 101,
+  "restored_sha256": "5b54e1847c9200f4fdc5907a2857d95d8e0e2df2c4b318df30135c0ee4df0d18"
+}

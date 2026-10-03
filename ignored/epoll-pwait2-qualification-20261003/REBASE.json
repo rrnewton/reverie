@@ -1,0 +1,14 @@
+{
+  "old_base": "43fce717f1c7710b7ef7345e4146821422a3aaa6",
+  "new_base": "36bf964b3a98a0206f2b4d11daf0dd9d9872da22",
+  "pre_rebase_head": "f5973ac9f187a62265dd764f6330facd365f4a2a",
+  "main_delta_files": [
+    "reverie-ptrace/src/task.rs",
+    "reverie-ptrace/tests/injected_syscall_group_stop.rs"
+  ],
+  "kvm_subtree_equal": true,
+  "cargo_shared_diff": "",
+  "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+  "range_diff": "1:  f5973ac9f18 = 1:  5914bcb59a4 Support bounded epoll_pwait2 eventfd probes",
+  "whole_kvm_subtree_equal": true
+}

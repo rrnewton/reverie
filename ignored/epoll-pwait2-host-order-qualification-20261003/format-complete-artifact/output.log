@@ -1,0 +1,7 @@
+error: couldn't find file `/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/host-order-repair-draft-20261003/proposed/reverie-kvm/src/child_wait.rs`
+  --> /home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/host-order-repair-draft-20261003/proposed/reverie-kvm/src/process_signal_publication.rs:46:1
+   |
+46 | mod child_wait;
+   | ^^^^^^^^^^^^^^^
+
+Error writing files: failed to resolve mod `child_wait`: /home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/host-order-repair-draft-20261003/proposed/reverie-kvm/src/child_wait.rs does not exist

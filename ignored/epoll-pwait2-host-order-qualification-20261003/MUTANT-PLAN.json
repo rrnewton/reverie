@@ -1,0 +1,51 @@
+{
+  "head": "f78354c066fc77e160216e959d1fb979c0348696",
+  "production_function": "epoll_pwait2_missing_fd_with_host",
+  "cases": [
+    {
+      "phase": "mutant-fixed-ebadf",
+      "old": "Err(error) => io_error(error),",
+      "new": "Err(error) => { let _ = error; negative_errno(libc::EBADF) },",
+      "exact_test": "executor::tests::epoll_pwait2_invalid_fd_projection_preserves_both_kernel_orders",
+      "expected_rc": 101,
+      "expected_failed": 1,
+      "expected_passed": 0,
+      "expected_filtered": 1113,
+      "seconds_bound": 300
+    },
+    {
+      "phase": "mutant-fixed-einval",
+      "old": "Err(error) => io_error(error),",
+      "new": "Err(error) => { let _ = error; negative_errno(libc::EINVAL) },",
+      "exact_test": "executor::tests::epoll_pwait2_invalid_fd_projection_preserves_both_kernel_orders",
+      "expected_rc": 101,
+      "expected_failed": 1,
+      "expected_passed": 0,
+      "expected_filtered": 1113,
+      "seconds_bound": 300
+    },
+    {
+      "phase": "mutant-invalid-pointer-as-null",
+      "old": "let host_output = if valid_range { 0 } else { usize::MAX };",
+      "new": "let host_output = { let _ = valid_range; 0 };",
+      "exact_test": "executor::tests::epoll_pwait2_invalid_fd_projection_preserves_both_kernel_orders",
+      "expected_rc": 101,
+      "expected_failed": 1,
+      "expected_passed": 0,
+      "expected_filtered": 1113,
+      "seconds_bound": 300
+    },
+    {
+      "phase": "mutant-false-success",
+      "old": "Ok(_) => negative_errno(libc::ENOSYS),",
+      "new": "Ok(result) => result as i64,",
+      "exact_test": "executor::tests::epoll_pwait2_invalid_fd_preserves_denials_and_refuses_impossible_success",
+      "expected_rc": 101,
+      "expected_failed": 1,
+      "expected_passed": 0,
+      "expected_filtered": 1113,
+      "seconds_bound": 300
+    }
+  ],
+  "restoration": "exact saved executor.rs bytes and SHA256 in finally; stop on any unexpected rc or guard refusal; final focused+full qualification rebuild restored code"
+}

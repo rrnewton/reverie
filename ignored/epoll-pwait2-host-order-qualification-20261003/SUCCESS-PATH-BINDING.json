@@ -1,0 +1,7 @@
+{
+  "base": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+  "sole_handler_change": "replace absent-guest-fd EBADF return with host error-order delegation",
+  "base_function_sha256": "a6b4a0ca2eba98279478b9625d2c44335a69f6b912dc9a3113d626fffe5f58d6",
+  "new_function_sha256": "4b270bdd3e0f413d8cebd7155273c219f1508ef8c0583bcba571d3c1bedc66ba",
+  "asserted_equal_after_exact_absent_fd_substitution": true
+}

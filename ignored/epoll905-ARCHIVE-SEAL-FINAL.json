@@ -1,0 +1,26 @@
+{
+  "head": "5914bcb59a45038a12400ae30d03ebc0c1382b79",
+  "archives": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll905-evidence-5914-final.tar.gz",
+      "bytes": 3361903,
+      "sha256": "da957a088cac860f1ca86984985231e49e261a9721170db0d64c329f03ab05e3",
+      "roundtrip_verified": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll905-evidence-5914-final.tar.xz",
+      "bytes": 426608,
+      "sha256": "c91864c49e8cac1a208fa659e63718e78e55e6c32e55b5273a4a41ff36a1194c",
+      "roundtrip_verified": true
+    }
+  ],
+  "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll905-EVIDENCE-MANIFEST-FINAL.json",
+  "manifest_sha256": "13f7a4a8cb51f822d9a2d016f133e98c8a8aac078797c79b27029bd3a00d65b5",
+  "file_count": 127,
+  "uncompressed_bytes": 19399168,
+  "terminal": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll-pwait2-qualification-20261003/TERMINAL.json",
+  "terminal_sha256": "c2e9146e3933ec9ae600b2671e24c8fdd51101e3a4687e233a8863fa55d5279f",
+  "report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/epoll-pwait2-implementation-20261003/REPORT.md",
+  "report_sha256": "b57b9e2d5556f31bc86476718859c491d5d3240198f7db678cd49409a2622ab4",
+  "supersedes_local_pre_format_seal": "epoll905-ARCHIVE-SEAL.json"
+}

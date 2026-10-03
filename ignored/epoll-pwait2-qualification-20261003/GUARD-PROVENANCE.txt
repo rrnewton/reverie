@@ -1,0 +1,2 @@
+Recovered public PR903 guard SHA256 4008a35437df52f41d35287f042d69829b6ad0ffd31cb1fb7f732d6c68dc454b. Adapted literal N paths and source manifest; resolve-lock alone records the expected absent-to-created lock transition, all later phases bind Cargo.lock without exception.
+0779ec0ad8f3b37e69ec1de88f8c6b53e385517a02b37a7e7faa1332723cbf4e

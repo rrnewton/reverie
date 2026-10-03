@@ -1,0 +1,7 @@
+error: couldn't find file `/home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/host-order-repair-draft-20261003/proposed/reverie-kvm/src/process_signal_publication.rs`
+  --> /home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/host-order-repair-draft-20261003/proposed/reverie-kvm/src/executor.rs:65:1
+   |
+65 | mod process_signal_publication;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Error writing files: failed to resolve mod `process_signal_publication`: /home/newton/work/dev-hermit/worktrees/slots/kvm-epoll-pwait2-20261003/ignored/host-order-repair-draft-20261003/proposed/reverie-kvm/src/process_signal_publication.rs does not exist
