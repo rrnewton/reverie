@@ -27,6 +27,10 @@
 //!   returns `-ERESTARTSYS`, and the one after that returns the pid.
 //! * A `SIGKILL` ends the tracee inside the inject that raised it: that
 //!   inject never returns to the Tool, and nothing after it runs.
+//! * An `exit_group` injected after `kill(self, SIGTERM)` is no exception:
+//!   it is the inject in which the stop is seen, so it returns
+//!   `-ERESTARTSYS` without running, the next inject runs, and the tracee
+//!   dies of the `SIGTERM` rather than exiting with the `exit_group` code.
 
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU32;
@@ -53,6 +57,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 const CASE_KILL_SIGTERM: u32 = 1;
 const CASE_ALARM_DURING_PAUSE: u32 = 2;
 const CASE_KILL_SIGKILL: u32 = 3;
+const CASE_SIGTERM_THEN_EXIT_GROUP: u32 = 4;
 
 /// Marks a step the Tool reached before issuing it.
 const REACHED: i64 = i64::MIN;
@@ -134,6 +139,22 @@ impl Tool for Parity {
                 let r = value(guest.inject(syscalls::Getpid::new()).await);
                 guest.send_rpc((3, r)).await;
             }
+            CASE_SIGTERM_THEN_EXIT_GROUP => {
+                let kill = syscalls::Kill::new()
+                    .with_pid(pid)
+                    .with_sig(Signal::SIGTERM as i32);
+                let r = value(guest.inject(kill).await);
+                guest.send_rpc((1, r)).await;
+                guest.send_rpc((2, REACHED)).await;
+                let r = value(
+                    guest
+                        .inject(syscalls::ExitGroup::new().with_status(7))
+                        .await,
+                );
+                guest.send_rpc((3, r)).await;
+                let r = value(guest.inject(syscalls::Getpid::new()).await);
+                guest.send_rpc((4, r)).await;
+            }
             _ => {}
         }
         guest.tail_inject(syscall).await
@@ -182,4 +203,16 @@ fn inject_kill_self_sigkill_never_returns() {
     assert!(pid > 0);
     assert_eq!(steps, vec![(0, pid), (1, REACHED)]);
     assert_eq!(status, ExitStatus::Signaled(Signal::SIGKILL, false));
+}
+
+#[test]
+fn exit_group_injected_while_sigterm_is_pending_returns_erestartsys_and_does_not_run() {
+    let (status, steps, pid) = run(CASE_SIGTERM_THEN_EXIT_GROUP);
+    eprintln!("kill(self, SIGTERM) then exit_group(7): status {status:?} steps {steps:?}");
+    assert!(pid > 0);
+    assert_eq!(
+        steps,
+        vec![(0, pid), (1, 0), (2, REACHED), (3, -512), (4, pid)]
+    );
+    assert_eq!(status, ExitStatus::Signaled(Signal::SIGTERM, false));
 }
