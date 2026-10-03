@@ -70,11 +70,11 @@ fn fcntl_owner_initial_self_clear_and_signal_width_match_native() {
         0
     );
     assert_eq!(
-        owner_test_call(&mut memory, &mut state, read, libc::F_GETSIG, u64::MAX),
+        owner_test_call(&mut memory, &mut state, read, LINUX_F_GETSIG, u64::MAX),
         0
     );
     assert_eq!(
-        owner_test_call(&mut memory, &mut state, read, libc::F_GETOWN_EX, 0x200),
+        owner_test_call(&mut memory, &mut state, read, LINUX_F_GETOWN_EX, 0x200),
         0
     );
     assert_eq!(read_struct::<[i32; 2]>(&memory, 0x200), [0, 0]);
@@ -88,30 +88,30 @@ fn fcntl_owner_initial_self_clear_and_signal_width_match_native() {
         1_u64 << 32,
         0x8000_0000,
     ] {
-        let before = owner_native_call(host, libc::F_GETSIG, 0);
-        let native_result = owner_native_call(host, libc::F_SETSIG, argument);
+        let before = owner_native_call(host, LINUX_F_GETSIG, 0);
+        let native_result = owner_native_call(host, LINUX_F_SETSIG, argument);
         assert_eq!(
-            owner_test_call(&mut memory, &mut state, read, libc::F_SETSIG, argument),
+            owner_test_call(&mut memory, &mut state, read, LINUX_F_SETSIG, argument),
             native_result,
             "SETSIG argument={argument:#x}"
         );
-        let after = owner_native_call(host, libc::F_GETSIG, 0);
+        let after = owner_native_call(host, LINUX_F_GETSIG, 0);
         if native_result < 0 {
             assert_eq!(after, before);
         }
         assert_eq!(
-            owner_test_call(&mut memory, &mut state, read, libc::F_GETSIG, 0),
+            owner_test_call(&mut memory, &mut state, read, LINUX_F_GETSIG, 0),
             after
         );
     }
     // SETSIG alone keeps the initial TID/0 owner type, and pipe ends are distinct.
     assert_eq!(
-        owner_test_call(&mut memory, &mut state, read, libc::F_GETOWN_EX, 0x200),
+        owner_test_call(&mut memory, &mut state, read, LINUX_F_GETOWN_EX, 0x200),
         0
     );
     assert_eq!(read_struct::<[i32; 2]>(&memory, 0x200), [0, 0]);
     assert_eq!(
-        owner_test_call(&mut memory, &mut state, write, libc::F_GETSIG, 0),
+        owner_test_call(&mut memory, &mut state, write, LINUX_F_GETSIG, 0),
         0
     );
     let pid = state.pid;
@@ -137,7 +137,7 @@ fn fcntl_owner_initial_self_clear_and_signal_width_match_native() {
         i64::from(pid)
     );
     assert_eq!(
-        owner_test_call(&mut memory, &mut state, read, libc::F_GETOWN_EX, 0x200),
+        owner_test_call(&mut memory, &mut state, read, LINUX_F_GETOWN_EX, 0x200),
         0
     );
     assert_eq!(read_struct::<[i32; 2]>(&memory, 0x200), [1, pid]);
@@ -151,7 +151,7 @@ fn fcntl_owner_initial_self_clear_and_signal_width_match_native() {
         0
     );
     assert_eq!(
-        owner_test_call(&mut memory, &mut state, read, libc::F_GETOWN_EX, 0x200),
+        owner_test_call(&mut memory, &mut state, read, LINUX_F_GETOWN_EX, 0x200),
         0
     );
     assert_eq!(read_struct::<[i32; 2]>(&memory, 0x200), [1, 0]);
@@ -196,13 +196,13 @@ fn fcntl_owner_input_errors_preserve_state_and_linux_order() {
         assert_eq!(
             owner_native_call(
                 native[0].as_raw_fd(),
-                libc::F_SETOWN_EX,
+                LINUX_F_SETOWN_EX,
                 input.as_ptr() as u64
             ),
             negative_errno(expected)
         );
         assert_eq!(
-            owner_test_call(&mut memory, &mut state, fd, libc::F_SETOWN_EX, 0x201),
+            owner_test_call(&mut memory, &mut state, fd, LINUX_F_SETOWN_EX, 0x201),
             negative_errno(expected)
         );
         assert_eq!(
@@ -210,7 +210,7 @@ fn fcntl_owner_input_errors_preserve_state_and_linux_order() {
             i64::from(pid)
         );
     }
-    for command in [libc::F_SETOWN_EX, libc::F_GETOWN_EX] {
+    for command in [LINUX_F_SETOWN_EX, LINUX_F_GETOWN_EX] {
         for raw in [u64::MAX, X86_64_GUEST_USER_LIMIT - 4] {
             assert_eq!(
                 owner_test_call(&mut memory, &mut state, fd, command, raw),
@@ -253,10 +253,10 @@ fn fcntl_owner_input_errors_preserve_state_and_linux_order() {
     for command in [
         libc::F_GETOWN,
         libc::F_SETOWN,
-        libc::F_GETOWN_EX,
-        libc::F_SETOWN_EX,
-        libc::F_SETSIG,
-        libc::F_GETSIG,
+        LINUX_F_GETOWN_EX,
+        LINUX_F_SETOWN_EX,
+        LINUX_F_SETSIG,
+        LINUX_F_GETSIG,
     ] {
         assert_eq!(
             owner_native_call(host_fd(&state, path_fd).unwrap(), command, u64::MAX),
@@ -283,7 +283,7 @@ fn fcntl_owner_input_errors_preserve_state_and_linux_order() {
             &mut memory,
             &mut state,
             fd,
-            libc::F_SETOWN_EX,
+            LINUX_F_SETOWN_EX,
             PAGE_SIZE - 4
         ),
         negative_errno(libc::EFAULT)
@@ -344,13 +344,13 @@ fn fcntl_owner_getown_ex_copyout_matches_complete_native_arenas() {
         assert_eq!(
             owner_native_call(
                 native[0].as_raw_fd(),
-                libc::F_GETOWN_EX,
+                LINUX_F_GETOWN_EX,
                 buffer.pointer(offset) as u64
             ),
             expected
         );
         assert_eq!(
-            owner_test_call(&mut buffer.guest, &mut state, fd, libc::F_GETOWN_EX, offset),
+            owner_test_call(&mut buffer.guest, &mut state, fd, LINUX_F_GETOWN_EX, offset),
             expected
         );
         // SAFETY: restore readability of our allocation only after both calls.
@@ -428,7 +428,7 @@ fn fcntl_owner_copyout_notifies_after_releasing_configuration_lock() {
                 .is_pending()
         );
         assert_eq!(
-            owner_test_call(&mut memory, &mut state, fd, libc::F_GETOWN_EX, 0x200),
+            owner_test_call(&mut memory, &mut state, fd, LINUX_F_GETOWN_EX, 0x200),
             if writable {
                 0
             } else {
@@ -523,7 +523,7 @@ fn fcntl_owner_fork_keeps_permanent_guards_after_creator_is_dropped() {
             &mut memory,
             &mut parent,
             fd,
-            libc::F_SETSIG,
+            LINUX_F_SETSIG,
             libc::SIGUSR1 as u64
         ),
         0
@@ -549,10 +549,10 @@ fn fcntl_owner_fork_keeps_permanent_guards_after_creator_is_dropped() {
     for (command, argument) in [
         (libc::F_SETOWN, child.pid as u64),
         (libc::F_GETOWN, 0),
-        (libc::F_SETOWN_EX, 0x200),
-        (libc::F_GETOWN_EX, 0x200),
-        (libc::F_SETSIG, libc::SIGUSR2 as u64),
-        (libc::F_GETSIG, 0),
+        (LINUX_F_SETOWN_EX, 0x200),
+        (LINUX_F_GETOWN_EX, 0x200),
+        (LINUX_F_SETSIG, libc::SIGUSR2 as u64),
+        (LINUX_F_GETSIG, 0),
     ] {
         assert_eq!(
             owner_test_call(&mut memory, &mut child, fd, command, argument),
@@ -626,7 +626,7 @@ fn fcntl_owner_threads_and_exec_preserve_creator_and_cloexec_filtering() {
                 libc::SYS_fcntl as u64,
                 [
                     fd as u64,
-                    libc::F_SETSIG as u64,
+                    LINUX_F_SETSIG as u64,
                     libc::SIGUSR2 as u64,
                     0,
                     0,
@@ -640,7 +640,7 @@ fn fcntl_owner_threads_and_exec_preserve_creator_and_cloexec_filtering() {
     assert_eq!(
         f.call(
             libc::SYS_fcntl,
-            [fd as u64, libc::F_GETSIG as u64, 0, 0, 0, 0]
+            [fd as u64, LINUX_F_GETSIG as u64, 0, 0, 0, 0]
         ),
         i64::from(libc::SIGUSR2)
     );
