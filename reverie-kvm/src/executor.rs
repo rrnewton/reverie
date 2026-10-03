@@ -470,6 +470,43 @@ fn execute_basic_syscall_with_read_context(
         reverie::SignalTaskIdentity,
     )>,
 ) -> SyscallAction {
+    let owner = memory.clone();
+    let notifications = owner.defer_notifications();
+    let action = execute_basic_syscall_dispatch(
+        memory,
+        state,
+        request,
+        current_user_stack_pointer,
+        output,
+        terminal_read,
+    );
+    let action = match action {
+        SyscallAction::Failure(error) => {
+            SyscallAction::Failure(memory.capture_shared_file_error(error))
+        }
+        action => action,
+    };
+    // Direct dispatch has now released its allocation and copy guards. A
+    // Tool dispatch keeps its enclosing scope until its file-table guard also
+    // retires; an inner scope must never wake observers under that lock.
+    drop(notifications);
+    if let Some(failure) = memory.entry_gate().pending_failure() {
+        return SyscallAction::Failure(failure.error());
+    }
+    action
+}
+
+fn execute_basic_syscall_dispatch(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    request: &SyscallRequest,
+    current_user_stack_pointer: Option<u64>,
+    output: Option<&mut CapturedOutput>,
+    terminal_read: Option<(
+        &mut crate::terminal_read::ReadContext,
+        reverie::SignalTaskIdentity,
+    )>,
+) -> SyscallAction {
     let mutates_layout = matches!(request.number(), number if
         number == libc::SYS_brk as u64 || number == libc::SYS_mmap as u64
         || number == libc::SYS_mremap as u64 || number == libc::SYS_munmap as u64
@@ -489,7 +526,7 @@ fn execute_basic_syscall_with_read_context(
     // Individual copy/policy methods take state themselves, so holding state
     // here would recursively lock it. General I/O and futex waits do not hold
     // it; mmap file population retains the existing serialized allocation scope.
-    let _transaction = owner.allocation_guard();
+    let transaction = owner.allocation_guard();
     let cursors = owner
         .allocation_cursors()
         .unwrap_or_else(|| AllocationCursors::from_elf(state));
@@ -497,6 +534,58 @@ fn execute_basic_syscall_with_read_context(
     state.mmap_base = cursors.mmap_base;
     state.mmap_next = cursors.mmap_next;
     state.mmap_limit = cursors.mmap_limit;
+    let number = request.number();
+    let args = request.args();
+    let new_shared_file = number == libc::SYS_mmap as u64
+        && args[3] & libc::MAP_ANONYMOUS as u64 == 0
+        && args[3] & libc::MAP_SHARED as u64 != 0;
+    if number == libc::SYS_mmap as u64 && (new_shared_file || owner.contains_shared_file()) {
+        return match mmap_with_shared_files(memory, state, args, output.is_some(), transaction) {
+            Ok(result) => continue_with(result),
+            Err(error) => SyscallAction::Failure(error),
+        };
+    }
+    if number == libc::SYS_munmap as u64
+        && owner.range_contains_shared_file(args[0], args[1].try_into().unwrap_or(usize::MAX))
+    {
+        return match munmap_shared_file(&owner, args[0], args[1], transaction) {
+            Ok(result) => continue_with(result),
+            Err(error) => SyscallAction::Failure(error),
+        };
+    }
+    let touches_file_remap = number == libc::SYS_mremap as u64
+        && shared_file::remap_requires_shared_capability(&owner, state, args);
+    let touches_file_brk = number == libc::SYS_brk as u64
+        && args[0] >= BOOT_RESERVED_END
+        && args[0] < state.brk_limit
+        && if args[0] > state.program_break {
+            owner.range_contains_shared_file(
+                state.program_break,
+                (args[0] - state.program_break)
+                    .try_into()
+                    .unwrap_or(usize::MAX),
+            )
+        } else {
+            // Shrinking also retires mappings. Check the exact page-rounded
+            // interval used by brk, before its legacy errno adapter could
+            // hide a shared-file capability refusal as the old break value.
+            match (
+                align_up(args[0], PAGE_SIZE),
+                align_up(state.program_break, PAGE_SIZE),
+            ) {
+                (Some(start), Some(end)) if end > start => {
+                    owner.range_contains_shared_file(start, (end - start) as usize)
+                }
+                _ => false,
+            }
+        };
+    if touches_file_remap || touches_file_brk {
+        drop(transaction);
+        return SyscallAction::Failure(crate::Error::SharedFileCapability {
+            operation: if touches_file_remap { "mremap" } else { "brk" },
+            reason: "this layout operation intersects an ordinary shared-file view",
+        });
+    }
     let action = execute_basic_syscall_inner(
         memory,
         state,
@@ -506,6 +595,7 @@ fn execute_basic_syscall_with_read_context(
         terminal_read,
     );
     owner.set_allocation_cursors(AllocationCursors::from_elf(state));
+    drop(transaction);
     action
 }
 
@@ -1041,9 +1131,10 @@ fn execute_basic_syscall_inner(
     } else if number == libc::SYS_munmap as u64 {
         munmap(memory, args[0], args[1])
     } else if number == libc::SYS_msync as u64 {
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-227): Review in-memory mapping synchronization semantics.
-        msync(memory, args)
+        match msync(memory, args) {
+            Ok(result) => result,
+            Err(error) => return SyscallAction::Failure(error),
+        }
     } else if number == libc::SYS_mremap as u64 {
         mremap(memory, state, args)
     } else if number == libc::SYS_mprotect as u64 {
@@ -4522,6 +4613,15 @@ impl ElfExecutor {
                 Ok(ready) => ready,
                 Err(error) => return Some(Err(error)),
             };
+            // wait4 without a result never accesses status. Leave its ordinary
+            // child collection intact and let the raw path distinguish ECHILD
+            // and WNOHANG before checking a prospective scalar store. waitid's
+            // existing no-result path writes its zero-valued fields instead.
+            if (waitid_call || ready)
+                && let Err(error) = preflight_wait_shared_outputs(memory, args, waitid_call)
+            {
+                return Some(Err(error));
+            }
             let own_children: Vec<_> = self
                 .pending_processes
                 .keys()
@@ -6563,6 +6663,26 @@ impl ElfExecutor {
         memory: &GuestMemory,
         terminal_read: Option<&mut crate::terminal_read::ReadContext>,
     ) -> crate::Result<i64> {
+        // This scope outlives execute_checked_dispatch's descriptor-table
+        // guard. Nested memory-copy or basic-dispatch scopes retire accounting
+        // immediately but keep all notifications here until those locks drop.
+        let notifications = memory.defer_notifications();
+        let result = self
+            .execute_checked_dispatch(request, memory, terminal_read)
+            .map_err(|error| memory.capture_shared_file_error(error));
+        drop(notifications);
+        if let Some(failure) = memory.entry_gate().pending_failure() {
+            return Err(failure.error());
+        }
+        result
+    }
+
+    fn execute_checked_dispatch(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+        terminal_read: Option<&mut crate::terminal_read::ReadContext>,
+    ) -> crate::Result<i64> {
         #[cfg(test)]
         memory.observe_test_syscall_dispatch(request);
         if let Some(receipt) = self.state.consumed_child_wait.as_ref() {
@@ -6572,6 +6692,18 @@ impl ElfExecutor {
             });
         }
         self.bind_address_space(memory);
+        // A retained file image is not a private snapshot. Refuse unsupported
+        // creation before task-ID allocation, child copyout or ProcessAction.
+        if memory.entry_gate().single_member_domain_active()
+            && matches!(request.number(), n if n == libc::SYS_fork as u64
+                || n == libc::SYS_vfork as u64 || n == libc::SYS_clone as u64
+                || n == libc::SYS_clone3 as u64)
+        {
+            return Err(crate::Error::SharedFileCapability {
+                operation: "fork/clone",
+                reason: "ordinary shared-file views require one vCPU in this address space",
+            });
+        }
         let _retirement = self.state.file_retirement.hold();
         if let Some(result) = self.execute_child_wait(request, memory) {
             return result;
@@ -17375,9 +17507,9 @@ fn munmap(memory: &mut GuestMemory, address: u64, length: u64) -> i64 {
     }
 }
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-227): Review in-memory mapping synchronization semantics.
-fn msync(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+// Ordinary shared views synchronize the retained host mappings. Private and
+// anonymous mappings retain Linux's mapped-range and flag validation behavior.
+fn msync(memory: &GuestMemory, args: &[u64; 6]) -> crate::Result<i64> {
     let address = args[0];
     let requested_length = args[1];
     let flags = args[2] as libc::c_int;
@@ -17386,23 +17518,55 @@ fn msync(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
         || flags & !allowed_flags != 0
         || flags & libc::MS_ASYNC != 0 && flags & libc::MS_SYNC != 0
     {
-        return negative_errno(libc::EINVAL);
+        return Ok(negative_errno(libc::EINVAL));
     }
     if requested_length == 0 {
-        return 0;
+        return Ok(0);
     }
     let Some(length) = align_up(requested_length, PAGE_SIZE) else {
-        return negative_errno(libc::ENOMEM);
+        return Ok(negative_errno(libc::ENOMEM));
     };
-    if !range_is_valid(memory, address, length) || !memory.user_range_is_mapped(address, length) {
-        return negative_errno(libc::ENOMEM);
-    }
-
-    // File-backed mappings are deterministic snapshots copied into guest
-    // memory by mmap. There is no host page cache to flush, so a valid msync
-    // completes once the mapped-range contract above has been checked.
-    0
+    let Ok(length) = usize::try_from(length) else {
+        return Ok(negative_errno(libc::ENOMEM));
+    };
+    memory.sync_shared_file_range(address, length, flags)
 }
+
+fn munmap_shared_file(
+    memory: &GuestMemory,
+    address: u64,
+    length: u64,
+    allocation: crate::memory::AllocationGuard<'_>,
+) -> crate::Result<i64> {
+    let Some(length) = align_up(length, PAGE_SIZE) else {
+        return Ok(negative_errno(libc::EINVAL));
+    };
+    if address < BOOT_RESERVED_END
+        || !address.is_multiple_of(PAGE_SIZE)
+        || length == 0
+        || !range_is_valid(memory, address, length)
+    {
+        return Ok(negative_errno(libc::EINVAL));
+    }
+    let Ok(length) = usize::try_from(length) else {
+        return Ok(negative_errno(libc::EINVAL));
+    };
+    memory.publish_private_range(
+        allocation,
+        crate::memory::PrivateRangePlan {
+            address,
+            length,
+            contents: None,
+            permissions: None,
+            cursors: None,
+        },
+    )?;
+    Ok(0)
+}
+
+#[path = "executor/shared_file.rs"]
+mod shared_file;
+use shared_file::mmap_with_shared_files;
 
 // TODO-HUMAN-REVIEW(PR-132): Review KVM mprotect user-copy enforcement.
 fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
@@ -17421,6 +17585,23 @@ fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     };
     if !range_is_valid(memory, address, length) || !memory.user_range_is_mapped(address, length) {
         return negative_errno(libc::ENOMEM);
+    }
+    if protection & libc::PROT_EXEC as u64 != 0
+        && memory.range_contains_shared_file(address, length as usize)
+    {
+        // A metadata-only permission upgrade cannot establish the file's
+        // mount noexec policy. Preserve the same named domain as mmap; the
+        // allocation owner publishes this cause only after it unlocks.
+        let _ = memory.capture_shared_file_error(crate::Error::SharedFileCapability {
+            operation: "mprotect",
+            reason: "executable ordinary shared-file mappings are not implemented",
+        });
+        return negative_errno(libc::EIO);
+    }
+    if protection & libc::PROT_WRITE as u64 != 0
+        && !memory.file_write_permitted(address, length as usize)
+    {
+        return negative_errno(libc::EACCES);
     }
     match memory.map_user_permissions(
         address,
@@ -19029,6 +19210,50 @@ fn parent_terminated_wait(state: &LoadedStaticElf) -> crate::Result<i64> {
     })
 }
 
+/// Shared-file scalar copyout has no fault-contained atomic host primitive.
+/// Refuse that capability before consuming a child. Ordinary permission faults
+/// retain Linux's existing consume-then-copyout behavior: they are NOT moved
+/// ahead of selection, and earlier faulting fields still win over later ones.
+fn preflight_wait_shared_outputs(
+    memory: &GuestMemory,
+    args: &[u64; 6],
+    waitid_call: bool,
+) -> crate::Result<()> {
+    let address = if waitid_call { args[2] } else { args[1] };
+    if address == 0 || (waitid_call && address >= X86_64_GUEST_USER_LIMIT) {
+        return Ok(());
+    }
+    let offsets: &[u64] = if waitid_call {
+        &[0, 4, 8, 16, 20, 24]
+    } else {
+        &[0]
+    };
+    if !offsets.iter().any(|offset| {
+        address
+            .checked_add(*offset)
+            .is_some_and(|address| memory.range_contains_shared_file(address, 4))
+    }) {
+        return Ok(());
+    }
+    for offset in offsets {
+        let Some(field) = address.checked_add(*offset) else {
+            return Ok(());
+        };
+        if waitid_call && field + 4 > X86_64_GUEST_USER_LIMIT {
+            return Ok(());
+        }
+        match memory.user().preflight_atomic_store(field, 4) {
+            Ok(()) => {}
+            Err(
+                crate::Error::InvalidGuestAddress { .. }
+                | crate::Error::GuestMemoryAccessDenied { .. },
+            ) => return Ok(()),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 fn wait4_result(
     memory: &GuestMemory,
     state: &mut LoadedStaticElf,
@@ -19040,16 +19265,33 @@ fn wait4_result(
     if !wait4_options_supported(args[2]) {
         return Ok(negative_errno(libc::EINVAL));
     }
-    let selected = match state.children.select(
-        (requested > 0).then_some(requested),
-        true,
-        args[2] as libc::c_int & libc::WNOHANG != 0,
-    )? {
-        ChildWaitSelection::Ready(selected) => selected,
-        ChildWaitSelection::ParentTerminated => return parent_terminated_wait(state),
-        ChildWaitSelection::Pending => return Ok(0),
-        ChildWaitSelection::NoChild => return Ok(negative_errno(libc::ECHILD)),
-    };
+    let nonblocking = args[2] as libc::c_int & libc::WNOHANG != 0;
+    if args[1] != 0 && memory.range_contains_shared_file(args[1], 4) {
+        // This observation never consumes a ready child. A no-result return
+        // does not attempt a status store, so its native ECHILD/zero result
+        // precedes the shared scalar capability check. A ready or potentially
+        // blocking result still refuses before any consuming selection.
+        match state
+            .children
+            .select((requested > 0).then_some(requested), false, true)?
+        {
+            ChildWaitSelection::NoChild => return Ok(negative_errno(libc::ECHILD)),
+            ChildWaitSelection::Pending if nonblocking => return Ok(0),
+            ChildWaitSelection::ParentTerminated => return parent_terminated_wait(state),
+            ChildWaitSelection::Pending | ChildWaitSelection::Ready(_) => {}
+        }
+    }
+    preflight_wait_shared_outputs(memory, args, false)?;
+    let selected =
+        match state
+            .children
+            .select((requested > 0).then_some(requested), true, nonblocking)?
+        {
+            ChildWaitSelection::Ready(selected) => selected,
+            ChildWaitSelection::ParentTerminated => return parent_terminated_wait(state),
+            ChildWaitSelection::Pending => return Ok(0),
+            ChildWaitSelection::NoChild => return Ok(negative_errno(libc::ECHILD)),
+        };
     let child_pid = selected.child.tgid.as_raw();
     let status = selected.status.into_raw();
     // Selection already consumed the exact family edge. Preserve that receipt
@@ -19186,6 +19428,7 @@ fn waitid_result(
             ));
         }
     };
+    preflight_wait_shared_outputs(memory, args, true)?;
     let selected = match state.children.select(
         requested,
         args[3] as libc::c_int & libc::WNOWAIT == 0,
@@ -19605,6 +19848,7 @@ pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf
 mod tests {
     include!("executor/pipe_owner_tests.rs");
     include!("executor/syncfs_tests.rs");
+    include!("executor/shared_file_tests.rs");
     include!("executor/read_zero_cancel_tests.rs");
     include!("executor/random_device_stream_tests.rs");
     include!("executor/random_device_carrier_tests.rs");

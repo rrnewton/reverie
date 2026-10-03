@@ -35,6 +35,12 @@ use crate::failure::FailureContext;
 
 const PAGE_SIZE: usize = 4096;
 
+mod shared_file;
+pub(crate) use shared_file::AllocationGuard;
+use shared_file::MemoryCopyAccess;
+pub(crate) use shared_file::PrivateRangePlan;
+pub(crate) use shared_file::SharedFileRangePlan;
+
 #[cfg(test)]
 type SyscallDispatchObserver = Arc<dyn Fn(&crate::SyscallRequest) + Send + Sync>;
 
@@ -46,6 +52,11 @@ struct TestUserCopyFailure {
     calls: std::sync::atomic::AtomicUsize,
     copied: std::sync::atomic::AtomicUsize,
 }
+
+#[cfg(test)]
+type SharedMapHook = Arc<dyn Fn(usize, usize) -> Option<io::Result<usize>> + Send + Sync>;
+#[cfg(test)]
+type SharedSyncHook = Arc<dyn Fn(usize, usize, i32) -> Option<i32> + Send + Sync>;
 
 /// A contiguous, page-aligned guest-physical memory region.
 #[derive(Clone)]
@@ -65,6 +76,10 @@ pub struct GuestMemory {
     test_user_copy_failure: Option<Arc<TestUserCopyFailure>>,
     #[cfg(test)]
     test_user_copy_backing_wait: Option<Arc<std::sync::atomic::AtomicBool>>,
+    #[cfg(test)]
+    test_shared_map: Option<SharedMapHook>,
+    #[cfg(test)]
+    test_shared_sync: Option<SharedSyncHook>,
 }
 
 impl std::fmt::Debug for GuestMemory {
@@ -90,11 +105,18 @@ impl RawMemoryRead<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackingKind {
+    Fixed,
+    OrdinaryFile { max_writable: bool },
+}
+
 #[derive(Debug)]
 struct Backing {
     fd: OwnedFd,
     length: usize,
     host_access: Mutex<()>,
+    kind: BackingKind,
 }
 
 impl Backing {
@@ -116,6 +138,7 @@ impl Backing {
             fd,
             length,
             host_access: Mutex::new(()),
+            kind: BackingKind::Fixed,
         })
     }
 }
@@ -142,7 +165,7 @@ impl BackingSlice {
         libc::off_t::try_from(offset).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "backing offset exceeds off_t")
         })?;
-        if end > backing.length {
+        if backing.kind == BackingKind::Fixed && end > backing.length {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "backing slice exceeds its backing",
@@ -172,6 +195,9 @@ struct Mapping {
     address_space: Mutex<AddressSpaceState>,
     allocation: Mutex<()>,
     entry_gate: Arc<EntryGate>,
+    retirement: Mutex<Option<Box<WriteAliasMapping>>>,
+    deferred: Mutex<shared_file::DeferredFailures>,
+    sync_mmu: Mutex<Option<bool>>,
 }
 
 #[derive(Clone, Debug)]
@@ -196,10 +222,11 @@ struct InstalledBackingPage {
     mapping: NonNull<u8>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct HostChunk {
     mapping: NonNull<u8>,
     length: usize,
+    backing: Arc<Backing>,
 }
 
 /// Compatibility placement for the current fixed physical arena. Coverage is
@@ -343,6 +370,17 @@ struct WriteAliasMapping {
     next: Option<Box<WriteAliasMapping>>,
 }
 
+impl std::fmt::Debug for WriteAliasMapping {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteAliasMapping")
+            .field("address", &self.address)
+            .field("length", &self.length)
+            .field("ambiguous", &self.ambiguous.is_some())
+            .field("backings", &self._extents.len())
+            .finish()
+    }
+}
+
 // Like the terminal-reader ledger, this intentionally has no process teardown
 // destructor that retries uncertain addresses or forgets refused ownership.
 // getdents64 bounds each reservation to 16 MiB + one page. This does not bound
@@ -412,16 +450,10 @@ impl WriteAliasMapping {
         };
     }
 
-    fn retire(mut self: Box<Self>) -> WriteAliasRetirement {
-        for (index, owned) in self.owned.iter_mut().enumerate() {
-            let Some(range) = *owned else {
-                continue;
-            };
+    fn retire(self: Box<Self>) -> WriteAliasRetirement {
+        self.retire_with(|range| {
             // SAFETY: this interval remains ours. Failed fixed targets and
-            // already retired intervals never enter this array. Linux's normal
-            // munmap error paths leave these pages mapped, even if a VMA split
-            // occurred before refusal (5.15 __do_munmap; 7.1
-            // do_vmi_align_munmap's explicit point of no return).
+            // already retired intervals never enter the ownership array.
             let result = unsafe {
                 libc::munmap(
                     std::ptr::with_exposed_provenance_mut::<libc::c_void>(range.address),
@@ -429,12 +461,29 @@ impl WriteAliasMapping {
                 )
             };
             if result == 0 {
-                *owned = None;
+                Ok(())
             } else {
-                let errno = io::Error::last_os_error()
+                Err(io::Error::last_os_error()
                     .raw_os_error()
-                    .unwrap_or(libc::EIO);
-                self.cleanup[index] = Some(WriteAliasCleanupFailure { range, errno });
+                    .unwrap_or(libc::EIO))
+            }
+        })
+    }
+
+    fn retire_with(
+        mut self: Box<Self>,
+        mut unmap: impl FnMut(WriteAliasRange) -> std::result::Result<(), i32>,
+    ) -> WriteAliasRetirement {
+        for (index, owned) in self.owned.iter_mut().enumerate() {
+            let Some(range) = *owned else {
+                continue;
+            };
+            // Linux's normal munmap error paths leave these pages mapped,
+            // even if a VMA split occurred before refusal (5.15 __do_munmap;
+            // 7.1 do_vmi_align_munmap's explicit point of no return).
+            match unmap(range) {
+                Ok(()) => *owned = None,
+                Err(errno) => self.cleanup[index] = Some(WriteAliasCleanupFailure { range, errno }),
             }
         }
         let retained = self.ambiguous.is_some() || self.owned.iter().any(Option::is_some);
@@ -616,36 +665,15 @@ impl Drop for UserWriteAlias<'_> {
 /// Proof returned only after the memory owner has retained an installed mmap
 /// view. Closed admission consumes this receipt before advancing the sole
 /// mapping generation.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the mapping publisher is deliberately non-activating"
-    )
-)]
 pub(crate) struct InstalledMapping {
     generation: MappingGeneration,
 }
 
 impl InstalledMapping {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the mapping publisher is deliberately non-activating"
-        )
-    )]
     fn new(generation: MappingGeneration) -> Self {
         Self { generation }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the mapping publisher is deliberately non-activating"
-        )
-    )]
     pub(crate) fn generation(&self) -> MappingGeneration {
         self.generation
     }
@@ -672,7 +700,12 @@ impl HostMemoryOperand {
             .expect("retained host operand belongs to its mapping");
         let chunks = self._memory.mapping.host_chunks(offset, length);
         assert_eq!(chunks.len(), 1, "test value crosses an mmap boundary");
-        let chunk = chunks[0];
+        let chunk = &chunks[0];
+        assert_eq!(
+            chunk.backing.kind,
+            BackingKind::Fixed,
+            "volatile Rust dereference requires fixed backing"
+        );
         // SAFETY: the caller excludes concurrent writers. The retained operand
         // prevents publication, and host_chunks returned the exact live mmap
         // pointer rather than reconstructing it from the numeric HVA.
@@ -693,7 +726,7 @@ impl HostMemoryOperand {
 )]
 pub(crate) struct PendingBackingPage<'a> {
     memory: &'a GuestMemory,
-    _allocation: MutexGuard<'a, ()>,
+    _allocation: AllocationGuard<'a>,
     page: u64,
     expected_generation: MappingGeneration,
     slice: Option<BackingSlice>,
@@ -747,13 +780,16 @@ enum UserPageState {
 // SAFETY: Mapping owns every mmap view until Drop, not a Rust reference.
 // Arc<Backing> retains the shared host_access mutex and each file descriptor
 // needed for backing operations. Host access through all views is serialized
-// by the original backing's mutex. Rust dereferences are split at mmap page
-// boundaries and use the exact live pointer for that page. The KVM backend
+// by the original backing's mutex. Rust dereferences touch only fixed RAM,
+// split at mmap page boundaries with the exact live pointer for that page.
+// Truncate-capable ordinary files are accessed only by fault-contained kernel
+// copies using retained raw addresses, never Rust slices or raw memcpy.
+// The KVM backend
 // exposes handles only while its single vCPU is stopped at an exit; the host
 // mutex does not stop vCPU access.
 unsafe impl Send for Mapping {}
 // SAFETY: See the Send implementation. All host reads and writes take the
-// backing's mutex before dereferencing the pointer.
+// backing's mutex before dereferencing fixed RAM or issuing a contained file copy.
 unsafe impl Sync for Mapping {}
 
 impl GuestMemory {
@@ -781,6 +817,12 @@ impl GuestMemory {
 
     fn from_backing_slice(guest_base: u64, slice: BackingSlice) -> Result<Self> {
         Self::validate_layout(guest_base, slice.length)?;
+        if slice.backing.kind != BackingKind::Fixed {
+            return Err(Error::SharedFileCapability {
+                operation: "initial memory image",
+                reason: "ordinary files require the retained publication path",
+            });
+        }
 
         // SAFETY: slice owns a live memfd and a validated page-aligned range;
         // its offset fits off_t. The returned view is released once in Drop.
@@ -819,6 +861,9 @@ impl GuestMemory {
                 address_space: Mutex::new(AddressSpaceState::new(guest_base, size)),
                 allocation: Mutex::new(()),
                 entry_gate: EntryGate::new(),
+                retirement: Mutex::new(None),
+                deferred: Mutex::new(shared_file::DeferredFailures::default()),
+                sync_mmu: Mutex::new(None),
             }),
             failure_context: None,
             operation_origin: None,
@@ -834,6 +879,10 @@ impl GuestMemory {
             test_user_copy_failure: None,
             #[cfg(test)]
             test_user_copy_backing_wait: None,
+            #[cfg(test)]
+            test_shared_map: None,
+            #[cfg(test)]
+            test_shared_sync: None,
         })
     }
 
@@ -865,17 +914,22 @@ impl GuestMemory {
         }
     }
 
-    fn copy_access(&self) -> Result<CopyAccess> {
+    fn copy_access(&self) -> Result<MemoryCopyAccess<'_>> {
+        self.check_copy_failure()?;
         self.mapping
             .entry_gate
             .copy_blocking(self.entry_origin())
+            .map(|copy| MemoryCopyAccess::new(self, copy))
             .map_err(|failure| failure.error())
     }
 
     fn check_copy_failure(&self) -> Result<()> {
         match self.mapping.entry_gate.pending_failure() {
             Some(failure) => Err(failure.error()),
-            None => Ok(()),
+            None => match self.deferred_failure() {
+                Some(cause) => Err(Error::SharedFailure(cause)),
+                None => Ok(()),
+            },
         }
     }
 
@@ -887,6 +941,10 @@ impl GuestMemory {
         let result = operation(&copy);
         // An admitted operation may have effects before poison. Keep them,
         // but do not turn an observed backend failure into ordinary success.
+        let prior = self.check_copy_failure();
+        drop(copy);
+        let result = result.map_err(|error| self.capture_shared_file_error(error));
+        prior?;
         self.check_copy_failure()?;
         result
     }
@@ -898,6 +956,7 @@ impl GuestMemory {
         &self,
         operation: impl FnOnce(&RawMemoryRead<'_>) -> Result<T>,
     ) -> Result<Option<T>> {
+        self.check_copy_failure()?;
         let Some(copy) = self
             .mapping
             .entry_gate
@@ -906,10 +965,15 @@ impl GuestMemory {
         else {
             return Ok(None);
         };
+        let copy = MemoryCopyAccess::new(self, copy);
         let result = operation(&RawMemoryRead {
             memory: self,
             copy: &copy,
         });
+        let prior = self.check_copy_failure();
+        drop(copy);
+        let result = result.map_err(|error| self.capture_shared_file_error(error));
+        prior?;
         self.check_copy_failure()?;
         result.map(Some)
     }
@@ -976,6 +1040,12 @@ impl GuestMemory {
 
         self.check_copy_failure()?;
         let _allocation = self.allocation_guard();
+        if self.contains_shared_file() || self.entry_gate().single_member_domain_active() {
+            return Err(Error::SharedFileCapability {
+                operation: "memory snapshot",
+                reason: "shared-file history cannot be copied into a private child image",
+            });
+        }
         let snapshot = Self::new(self.guest_base(), self.len())?;
         let user_access = self
             .mapping
@@ -1072,13 +1142,6 @@ impl GuestMemory {
         UserMemory {
             memory: self.clone(),
         }
-    }
-
-    pub(crate) fn allocation_guard(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.mapping
-            .allocation
-            .lock()
-            .expect("KVM allocation transaction lock poisoned")
     }
 
     /// Prepare one page replacement without changing the live HVA or KVM
@@ -1255,6 +1318,13 @@ impl GuestMemory {
 
     // TODO-HUMAN-REVIEW(PR-132): Review the host-side KVM user mapping API.
     pub(crate) fn clear_user_access(&self) {
+        if self.contains_shared_file() {
+            self.capture_shared_file_error(Error::SharedFileCapability {
+                operation: "clear user access",
+                reason: "ordinary-file views must retire before reset",
+            });
+            return;
+        }
         let mut access = self
             .mapping
             .address_space
@@ -1305,6 +1375,24 @@ impl GuestMemory {
             .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
+        if writable
+            && access
+                .backing_pages
+                .range(first_page..=last_page)
+                .any(|(_, page)| {
+                    matches!(
+                        page._slice.backing.kind,
+                        BackingKind::OrdinaryFile {
+                            max_writable: false
+                        }
+                    )
+                })
+        {
+            return Err(Error::GuestMemoryAccessDenied {
+                address: guest_address,
+                length: length as usize,
+            });
+        }
         for page in first_page..=last_page {
             access.pages.insert(page, state);
             access.reservations.entry(page).or_insert(RegionKind::User);
@@ -1314,6 +1402,12 @@ impl GuestMemory {
 
     // TODO-HUMAN-REVIEW(PR-132): Review the host-side KVM user mapping API.
     pub(crate) fn unmap_user_range(&self, guest_address: u64, length: u64) -> Result<()> {
+        if self.range_contains_shared_file(guest_address, length as usize) {
+            return Err(Error::SharedFileCapability {
+                operation: "metadata-only unmap",
+                reason: "ordinary-file backing requires physical private replacement",
+            });
+        }
         let Some((first_page, last_page)) = self.checked_page_range(guest_address, length)? else {
             return Ok(());
         };
@@ -1401,6 +1495,14 @@ impl GuestMemory {
         new_address: u64,
         new_length: u64,
     ) -> Result<()> {
+        if self.range_contains_shared_file(old_address, old_length as usize)
+            || self.range_contains_shared_file(new_address, new_length as usize)
+        {
+            return Err(Error::SharedFileCapability {
+                operation: "memory remap",
+                reason: "ordinary-file source or destination is not supported by the private-copy remapper",
+            });
+        }
         let Some((old_first, old_last)) = self.checked_page_range(old_address, old_length)? else {
             return Ok(());
         };
@@ -1522,29 +1624,7 @@ impl GuestMemory {
                 observe();
             }
         }
-        let _guard = self
-            .mapping
-            .slice
-            .backing
-            .host_access
-            .lock()
-            .expect("guest memory lock poisoned");
-        let mut copied = 0;
-        for chunk in chunks {
-            // SAFETY: host_chunks split the validated range at mmap boundaries
-            // and returned the exact live pointer for this chunk. Destination
-            // is a distinct mutable slice with the same remaining length.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    chunk.mapping.as_ptr(),
-                    destination.as_mut_ptr().add(copied),
-                    chunk.length,
-                );
-            }
-            copied += chunk.length;
-        }
-        debug_assert_eq!(copied, destination.len());
-        Ok(())
+        self.read_host_chunks(&chunks, guest_address, destination)
     }
 
     /// Copies bytes from a host slice into guest memory.
@@ -1594,6 +1674,7 @@ impl GuestMemory {
     /// The owner must subscribe, recheck its stop predicates and await before
     /// retrying; None is neither a completed copy nor a guest memory fault.
     pub(crate) fn try_write_raw(&self, guest_address: u64, source: &[u8]) -> Result<Option<()>> {
+        self.check_copy_failure()?;
         let Some(copy) = self
             .mapping
             .entry_gate
@@ -1602,7 +1683,12 @@ impl GuestMemory {
         else {
             return Ok(None);
         };
+        let copy = MemoryCopyAccess::new(self, copy);
         let result = self.write_raw_admitted(guest_address, source, &copy);
+        let prior = self.check_copy_failure();
+        drop(copy);
+        let result = result.map_err(|error| self.capture_shared_file_error(error));
+        prior?;
         self.check_copy_failure()?;
         result.map(Some)
     }
@@ -1615,14 +1701,13 @@ impl GuestMemory {
     ) -> Result<()> {
         let offset = self.checked_offset(guest_address, source.len())?;
         let chunks = self.mapping.host_chunks(offset, source.len());
-        self.write_host_chunks(&chunks, source);
-        Ok(())
+        self.write_host_chunks(&chunks, guest_address, source)
     }
 
     /// Write through pointers already resolved under the caller's applicable
     /// address-space guard. Keeping resolution separate lets permission-aware
     /// copyout retain that guard through the actual write without re-locking.
-    fn write_host_chunks(&self, chunks: &[HostChunk], source: &[u8]) {
+    fn write_host_chunks(&self, chunks: &[HostChunk], address: u64, source: &[u8]) -> Result<()> {
         #[cfg(test)]
         if let Some(observed) = &self.test_user_copy_backing_wait {
             // Passive observation of an actual failed lock attempt. The test
@@ -1644,20 +1729,19 @@ impl GuestMemory {
             .expect("guest memory lock poisoned");
         let mut copied = 0;
         for chunk in chunks {
-            // SAFETY: host_chunks split the validated range at mmap boundaries
-            // and returned the exact live pointer for this chunk. The source
-            // slice has the same remaining length and does not overlap guest
-            // RAM.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    source.as_ptr().add(copied),
-                    chunk.mapping.as_ptr(),
-                    chunk.length,
-                );
+            let local = unsafe { source.as_ptr().add(copied).cast_mut() };
+            match chunk.backing.kind {
+                BackingKind::OrdinaryFile { .. } => {
+                    self.copy_file_chunk(chunk, local, true, address, source.len(), copied)?
+                }
+                BackingKind::Fixed => unsafe {
+                    std::ptr::copy_nonoverlapping(local, chunk.mapping.as_ptr(), chunk.length);
+                },
             }
             copied += chunk.length;
         }
         debug_assert_eq!(copied, source.len());
+        Ok(())
     }
     /// Zeros a guest-physical address range.
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
@@ -1699,11 +1783,23 @@ impl GuestMemory {
             .lock()
             .expect("guest memory lock poisoned");
         let mut zeroed = 0;
+        let mut zeros = [0_u8; PAGE_SIZE];
         for chunk in chunks {
-            // SAFETY: host_chunks split the validated range at mmap boundaries
-            // and returned the exact live pointer for this chunk.
-            unsafe {
-                std::ptr::write_bytes(chunk.mapping.as_ptr(), 0, chunk.length);
+            match chunk.backing.kind {
+                BackingKind::OrdinaryFile { .. } => {
+                    debug_assert!(chunk.length <= zeros.len());
+                    self.copy_file_chunk(
+                        &chunk,
+                        zeros.as_mut_ptr(),
+                        true,
+                        guest_address,
+                        length,
+                        zeroed,
+                    )?;
+                }
+                BackingKind::Fixed => unsafe {
+                    std::ptr::write_bytes(chunk.mapping.as_ptr(), 0, chunk.length);
+                },
             }
             zeroed += chunk.length;
         }
@@ -1738,6 +1834,15 @@ impl GuestMemory {
             });
         }
         let chunks = self.mapping.host_chunks(offset, length);
+        if chunks
+            .iter()
+            .any(|chunk| matches!(chunk.backing.kind, BackingKind::OrdinaryFile { .. }))
+        {
+            return Err(Error::SharedFileCapability {
+                operation: "discard pages",
+                reason: "ordinary-file views must be physically retired before reset",
+            });
+        }
         let _guard = self
             .mapping
             .slice
@@ -1852,51 +1957,70 @@ impl PendingBackingPage<'_> {
         )
         .expect("mapping offset must fit usize");
         let origin = self.memory.entry_origin();
+        let memory = self.memory;
+        let allocation = self._allocation;
+        let mut prepared = mapping.address_space.lock().unwrap().clone();
+        prepared.backing_pages.insert(
+            page,
+            InstalledBackingPage {
+                _generation: expected_generation,
+                _slice: slice.clone(),
+                mapping: mapping.original_pages[offset / PAGE_SIZE],
+            },
+        );
+        let ledger = self.memory.prepare_mapping_retirement(&prepared);
         let generation = closed
-            .publish(origin, expected_generation, |generation| {
-                let mut state = mapping
-                    .address_space
-                    .lock()
-                    .expect("guest memory access map lock poisoned");
-                let target_address = mapping
-                    .base_address
-                    .checked_add(offset)
-                    .expect("validated mapping address cannot overflow");
-                // SAFETY: admission is closed, every short copy is drained,
-                // retained operands were refused by Closed::publish, and slice
-                // owns a page-aligned live memfd. MAP_FIXED is the intended
-                // backing replacement. The target pointer supplies only the
-                // exposed numeric HVA; Rust dereferences retain mmap's returned
-                // pointer below. Failure poisons the gate.
-                let installed = unsafe {
-                    libc::mmap(
-                        std::ptr::with_exposed_provenance_mut::<u8>(target_address).cast(),
-                        PAGE_SIZE,
+            .publish(origin, expected_generation, move |generation| {
+                let outcome = (|| {
+                    let mut ownership = mapping.retirement.lock().unwrap();
+                    *ownership = Some(ledger);
+                    let target_address = mapping.base_address + offset;
+                    // All cleanup authority and metadata nodes are already
+                    // allocated. The target becomes ambiguous on any failure.
+                    ownership
+                        .as_mut()
+                        .unwrap()
+                        .lose_fixed_target(offset, PAGE_SIZE, None);
+                    let installed = memory.map_shared_image(
+                        target_address,
+                        &slice,
                         libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_SHARED | libc::MAP_FIXED,
-                        slice.backing.fd.as_raw_fd(),
-                        slice.offset as libc::off_t,
-                    )
-                };
-                if installed == libc::MAP_FAILED {
-                    return Err(Error::MemoryMapping(std::io::Error::last_os_error()));
-                }
-                let installed: NonNull<u8> =
-                    NonNull::new(installed.cast()).expect("MAP_FIXED returned a null guest page");
-                if installed.as_ptr().expose_provenance() != target_address {
-                    return Err(Error::MemoryMapping(std::io::Error::other(
-                        "MAP_FIXED installed a guest page at an unexpected address",
-                    )));
-                }
-                state.backing_pages.insert(
-                    page,
-                    InstalledBackingPage {
-                        _generation: generation,
-                        _slice: slice,
-                        mapping: installed,
-                    },
-                );
-                Ok(InstalledMapping::new(generation))
+                    );
+                    let installed = match installed {
+                        Ok(installed) => installed,
+                        Err(error) => {
+                            ownership.as_mut().unwrap().mapping_errno = error.raw_os_error();
+                            return Err(Error::MemoryMapping(error));
+                        }
+                    };
+                    if installed.expose_provenance() != target_address {
+                        ownership
+                            .as_mut()
+                            .unwrap()
+                            .note_unexpected_address(installed.expose_provenance(), PAGE_SIZE);
+                        return Err(Error::MemoryMapping(io::Error::other(
+                            "MAP_FIXED installed a guest page at an unexpected address",
+                        )));
+                    }
+                    let owner = ownership.as_mut().unwrap();
+                    owner.ambiguous = None;
+                    owner.owned = [
+                        Some(WriteAliasRange {
+                            address: mapping.base_address,
+                            length: mapping.slice.length,
+                        }),
+                        None,
+                        None,
+                    ];
+                    let page_state = prepared.backing_pages.get_mut(&page).unwrap();
+                    page_state._generation = generation;
+                    page_state.mapping =
+                        NonNull::new(installed.cast()).expect("nonzero fixed arena");
+                    *mapping.address_space.lock().unwrap() = prepared;
+                    Ok(InstalledMapping::new(generation))
+                })();
+                drop(allocation);
+                outcome
             })
             .map_err(|failure| failure.error())?;
         Ok(generation)
@@ -2283,29 +2407,8 @@ impl UserMemory {
                     .memory
                     .mapping
                     .host_chunks_from_state(&access, offset, length);
-                let _backing = self
-                    .memory
-                    .mapping
-                    .slice
-                    .backing
-                    .host_access
-                    .lock()
-                    .expect("guest memory lock poisoned");
-                let mut copied = 0;
-                for chunk in chunks {
-                    // SAFETY: the address-space lock retains these mappings,
-                    // backing is locked, and the destination is a distinct host
-                    // slice with space for the complete validated prefix.
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            chunk.mapping.as_ptr(),
-                            destination.as_mut_ptr().add(copied),
-                            chunk.length,
-                        );
-                    }
-                    copied += chunk.length;
-                }
-                debug_assert_eq!(copied, length);
+                self.memory
+                    .read_host_chunks(&chunks, guest_address, &mut destination[..length])?;
             }
             drop(access);
             Ok(length)
@@ -2371,7 +2474,20 @@ impl UserMemory {
                 .memory
                 .mapping
                 .host_chunks_from_state(&access, offset, length);
-            self.memory.write_host_chunks(&chunks, &source[..length]);
+            // Permission failure takes precedence. A scalar must refuse the
+            // entire destination before even a preceding private chunk changes.
+            if !partial
+                && chunks
+                    .iter()
+                    .any(|chunk| matches!(chunk.backing.kind, BackingKind::OrdinaryFile { .. }))
+            {
+                return Err(Error::SharedFileCapability {
+                    operation: "atomic scalar store",
+                    reason: "truncate-capable file backing has no proven fault-contained atomic store",
+                });
+            }
+            self.memory
+                .write_host_chunks(&chunks, guest_address, &source[..length])?;
         }
         // Preserve the API's permission-atomicity contract through the write.
         drop(access);
@@ -2560,7 +2676,13 @@ impl MemoryAccess for GuestMemory {
             }
             let destination =
                 &mut write_to[destination_index][destination_offset..destination_offset + count];
-            if self.read_raw_admitted(address, destination, &copy).is_err() {
+            if let Err(error) = self.read_raw_admitted(address, destination, &copy) {
+                drop(copy);
+                let error =
+                    self.capture_shared_file_error(shared_file::vector_copy_error(error, total));
+                if matches!(error, Error::SharedFailure(_)) {
+                    return Err(Errno::EIO);
+                }
                 self.check_copy_failure().map_err(|_| Errno::EIO)?;
                 return if total == 0 {
                     Err(Errno::EFAULT)
@@ -2625,7 +2747,13 @@ impl MemoryAccess for GuestMemory {
                 };
             }
             let source = &read_from[source_index][source_offset..source_offset + count];
-            if self.write_raw_admitted(address, source, &copy).is_err() {
+            if let Err(error) = self.write_raw_admitted(address, source, &copy) {
+                drop(copy);
+                let error =
+                    self.capture_shared_file_error(shared_file::vector_copy_error(error, total));
+                if matches!(error, Error::SharedFailure(_)) {
+                    return Err(Errno::EIO);
+                }
                 self.check_copy_failure().map_err(|_| Errno::EIO)?;
                 return if total == 0 {
                     Err(Errno::EFAULT)
@@ -2814,7 +2942,11 @@ impl Mapping {
             // SAFETY: no page of the original whole-range mmap has ever been
             // replaced, and the validated range remains within that mapping.
             let mapping = unsafe { NonNull::new_unchecked(self.mapping.as_ptr().add(offset)) };
-            return vec![HostChunk { mapping, length }];
+            return vec![HostChunk {
+                mapping,
+                length,
+                backing: self.slice.backing.clone(),
+            }];
         }
 
         let mut chunks = Vec::with_capacity(length.div_ceil(PAGE_SIZE) + 1);
@@ -2824,9 +2956,12 @@ impl Mapping {
             let within_page = cursor % PAGE_SIZE;
             let chunk_length = (PAGE_SIZE - within_page).min(end - cursor);
             let page = self.guest_base / PAGE_SIZE as u64 + relative_page as u64;
-            let page_start = match state.backing_pages.get(&page) {
-                Some(installed) => installed.mapping,
-                None => self.original_pages[relative_page],
+            let (page_start, backing) = match state.backing_pages.get(&page) {
+                Some(installed) => (installed.mapping, installed._slice.backing.clone()),
+                None => (
+                    self.original_pages[relative_page],
+                    self.slice.backing.clone(),
+                ),
             };
             // SAFETY: page_start is the exact live pointer for this page and
             // chunk_length cannot cross the page boundary.
@@ -2834,6 +2969,7 @@ impl Mapping {
             chunks.push(HostChunk {
                 mapping,
                 length: chunk_length,
+                backing,
             });
             cursor += chunk_length;
         }
@@ -2843,9 +2979,20 @@ impl Mapping {
 
 impl Drop for Mapping {
     fn drop(&mut self) {
-        // SAFETY: base_address and slice length are the exact stable arena
-        // bounds. munmap consumes the numeric address and releases every
-        // current VMA in that range, including installed page replacements.
+        if let Some(ledger) = self
+            .retirement
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let retired = ledger.retire();
+            if let Some(error) = retired.error(None) {
+                self.entry_gate.poison(None, error);
+            }
+            return;
+        }
+        // No MAP_FIXED has ever affected this arena. Only that untouched
+        // initial case still owns the complete original interval.
         unsafe {
             libc::munmap(
                 std::ptr::with_exposed_provenance_mut::<u8>(self.base_address).cast(),
@@ -3462,7 +3609,11 @@ impl MemoryAccess for UserMemory {
         let (local_result, post_copy_failure) = {
             // Admission failures are already retained. Do not classify them
             // together with fresh helper errors and poison the same cause again.
-            let copy = gate.copy_blocking(origin.clone()).map_err(|_| Errno::EIO)?;
+            self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
+            let copy = MemoryCopyAccess::new(
+                &self.memory,
+                gate.copy_blocking(origin.clone()).map_err(|_| Errno::EIO)?,
+            );
             let local_result =
                 self.write_user_prefix_admitted(addr.as_raw() as u64, buf, true, &copy);
             #[cfg(test)]
@@ -3500,11 +3651,20 @@ impl MemoryAccess for UserMemory {
                 // Its fresh unexpected error must remain typed. Capture only
                 // after our token/guards retire; a peer may have captured first,
                 // in which case the gate retains this distinct cause as cleanup.
-                gate.poison(origin, error);
+                if matches!(
+                    &error,
+                    Error::SharedFileCopy { .. }
+                        | Error::SharedFileCapability { .. }
+                        | Error::SharedFailure(_)
+                ) {
+                    self.memory.capture_shared_file_error(error);
+                } else {
+                    gate.poison(origin, error);
+                }
                 return Err(Errno::EIO);
             }
         };
-        if post_copy_failure.is_some() || gate.pending_failure().is_some() {
+        if post_copy_failure.is_some() || self.memory.check_copy_failure().is_err() {
             Err(Errno::EIO)
         } else {
             ordinary
@@ -3554,10 +3714,14 @@ impl MemoryAccess for UserMemory {
             }
             let destination =
                 &mut write_to[destination_index][destination_offset..destination_offset + count];
-            if self
-                .read_translated_raw_admitted(address, destination, &copy)
-                .is_err()
-            {
+            if let Err(error) = self.read_translated_raw_admitted(address, destination, &copy) {
+                drop(copy);
+                let error = self
+                    .memory
+                    .capture_shared_file_error(shared_file::vector_copy_error(error, total));
+                if matches!(error, Error::SharedFailure(_)) {
+                    return Err(Errno::EIO);
+                }
                 self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
                 return if total == 0 {
                     Err(Errno::EFAULT)
@@ -3621,10 +3785,14 @@ impl MemoryAccess for UserMemory {
                 };
             }
             let source = &read_from[source_index][source_offset..source_offset + count];
-            if self
-                .write_translated_raw_admitted(address, source, &copy)
-                .is_err()
-            {
+            if let Err(error) = self.write_translated_raw_admitted(address, source, &copy) {
+                drop(copy);
+                let error = self
+                    .memory
+                    .capture_shared_file_error(shared_file::vector_copy_error(error, total));
+                if matches!(error, Error::SharedFailure(_)) {
+                    return Err(Errno::EIO);
+                }
                 self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
                 return if total == 0 {
                     Err(Errno::EFAULT)
