@@ -140,7 +140,7 @@ impl HopThreadStatus {
 /// Reads [`HopThreadStatus`] for thread `tid`; `Ok(None)` when the thread is
 /// gone (killed and reaped, or being reaped).
 fn read_hop_thread_status(tid: i32) -> Result<Option<HopThreadStatus>, String> {
-    match std::fs::read_to_string(format!("/proc/{tid}/status")) {
+    match crate::launch_window::read_to_string(format!("/proc/{tid}/status")) {
         Ok(status) => HopThreadStatus::parse(&status).map(Some),
         Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => Ok(None),
         Err(error) => Err(format!("read /proc/{tid}/status: {error}")),
@@ -365,6 +365,7 @@ fn creating_flags(tid: nix::unistd::Pid, nr: Sysno, args: &SyscallArgs) -> Optio
         Sysno::clone3 => {
             use std::os::unix::fs::FileExt;
             let mut flags = [0u8; 8];
+            let _open = crate::launch_window::TransientOpen::begin();
             Some(
                 match std::fs::File::open(format!("/proc/{tid}/mem"))
                     .and_then(|mem| mem.read_exact_at(&mut flags, args.arg0 as u64))
@@ -1640,6 +1641,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let act = (regs.rsp.wrapping_sub(256)) & !15;
         {
             use std::os::unix::fs::FileExt;
+            let _open = crate::launch_window::TransientOpen::begin();
             let written = std::fs::OpenOptions::new()
                 .write(true)
                 .open(format!("/proc/{}/mem", task.pid()))

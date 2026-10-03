@@ -1155,6 +1155,8 @@ fn test_perf_pmu_support() -> bool {
     let cpu: libc::c_int = -1; // across any CPU
     let group_fd: libc::c_int = -1;
     let flags = perf::PERF_FLAG_FD_CLOEXEC;
+    // The probe counter is a transient open, from here to its close.
+    let _open = crate::launch_window::TransientOpen::begin();
     let res = Errno::result(unsafe {
         libc::syscall(libc::SYS_perf_event_open, &attr, pid, cpu, group_fd, flags)
     });
