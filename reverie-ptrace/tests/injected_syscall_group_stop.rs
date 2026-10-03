@@ -5203,6 +5203,10 @@ fn job_control_signal_is_not_classified_when_its_query_is_refused() {
 
 /// Set by a test so that `TrapBeforeGetppid` sends SIGTSTP after SIGTRAP.
 static TSTP_AFTER_TRAP: AtomicBool = AtomicBool::new(false);
+/// Set by a test so that `TrapBeforeGetppid` injects `getppid` with the
+/// tracer's soft `RLIMIT_NOFILE` at 0, so no descriptor can be opened during
+/// it; the limit is restored when it returns.
+static GETPPID_WITHOUT_DESCRIPTORS: AtomicBool = AtomicBool::new(false);
 
 /// `ReplaceMarker`, whose hook for `GETPPID_FD` first injects `getpid`, then
 /// sends SIGTRAP to the guest's thread from the tracer, then SIGTSTP when
@@ -5249,6 +5253,28 @@ impl Tool for TrapBeforeGetppid {
                     )
                 };
                 assert_eq!(sent, 0, "send signal {signal} to the guest");
+            }
+            if GETPPID_WITHOUT_DESCRIPTORS.load(Ordering::Relaxed) {
+                let mut limit = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                // SAFETY: both calls only read or set this process's limit.
+                unsafe {
+                    assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+                    let lowered = libc::rlimit {
+                        rlim_cur: 0,
+                        rlim_max: limit.rlim_max,
+                    };
+                    assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &lowered), 0);
+                }
+                let result = guest.inject(Getppid::new()).await;
+                // SAFETY: restores the limit read above.
+                unsafe { assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0) };
+                guest
+                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                    .await;
+                return Ok(result?);
             }
         }
         replace_marker(guest, syscall).await
@@ -5299,52 +5325,72 @@ fn trap_before_getppid_guest(tstp: bool) -> impl FnOnce() + Send + 'static {
 }
 
 /// A SIGTRAP pending when the tool injects `getppid` (`TrapBeforeGetppid`)
-/// into the guest of `injected_syscall_trapped_by_guest_seccomp_reports_enosys`.
-/// The trap stops the step before the `syscall` runs; it is discarded, and
-/// the step runs the `getppid`, which the guest's filter traps as without
-/// the SIGTRAP.
+/// into the guest of `injected_syscall_trapped_by_guest_seccomp_reports_enosys`,
+/// on a tracer under no seccomp filter, with no descriptor left to open
+/// during the injection when `without_descriptors` is set. The trap stops
+/// the step before the `syscall` runs; it is discarded, and the step runs
+/// the `getppid`, which the guest's filter traps as without the SIGTRAP.
+#[cfg(target_arch = "x86_64")]
+fn sigtrap_before_an_injected_syscall_is_discarded(without_descriptors: bool, probe: &str) {
+    assert_tracer_unfiltered();
+    GETPPID_WITHOUT_DESCRIPTORS.store(without_descriptors, Ordering::Relaxed);
+    let (output, log) = test_fn::<TrapBeforeGetppid, _>(trap_before_getppid_guest(false))
+        .expect("run trap-before-getppid guest");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE {probe} status={:?} guest={:?} injected={:?} signals={:?}",
+        output.status,
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Err(libc::ENOSYS)],
+        "the trapped getppid did not run"
+    );
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines,
+        [
+            format!("4242 1 1 {} {}", libc::SYS_getppid, libc::SYS_getppid),
+            format!("4242 2 1 {} {}", libc::SYS_getppid, -libc::ENOSYS),
+            "0".to_string(),
+        ],
+        "in place and injected, the guest's SIGSYS handler emulates getppid once"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGSYS, libc::SIGSYS],
+        "each SIGSYS reaches the tool, and the discarded SIGTRAP does not"
+    );
+}
+
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn sigtrap_before_an_injected_syscall_is_discarded_and_the_syscall_runs() {
     const NAME: &str = "sigtrap_before_an_injected_syscall_is_discarded_and_the_syscall_runs";
     in_child_process(NAME, || {
-        assert_tracer_unfiltered();
-        let (output, log) = test_fn::<TrapBeforeGetppid, _>(trap_before_getppid_guest(false))
-            .expect("run trap-before-getppid guest");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        eprintln!(
-            "PROBE trap-before-getppid status={:?} guest={:?} injected={:?} signals={:?}",
-            output.status,
-            stdout.trim(),
-            *log.injected.lock().unwrap(),
-            *log.signals.lock().unwrap()
-        );
-        assert_eq!(
-            output.status,
-            ExitStatus::Exited(0),
-            "stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            *log.injected.lock().unwrap(),
-            vec![Err(libc::ENOSYS)],
-            "the trapped getppid did not run"
-        );
-        let lines: Vec<&str> = stdout.trim().lines().collect();
-        assert_eq!(
-            lines,
-            [
-                format!("4242 1 1 {} {}", libc::SYS_getppid, libc::SYS_getppid),
-                format!("4242 2 1 {} {}", libc::SYS_getppid, -libc::ENOSYS),
-                "0".to_string(),
-            ],
-            "in place and injected, the guest's SIGSYS handler emulates getppid once"
-        );
-        assert_eq!(
-            *log.signals.lock().unwrap(),
-            vec![libc::SIGSYS, libc::SIGSYS],
-            "each SIGSYS reaches the tool, and the discarded SIGTRAP does not"
-        );
+        sigtrap_before_an_injected_syscall_is_discarded(false, "trap-before-getppid")
+    });
+}
+
+/// As `sigtrap_before_an_injected_syscall_is_discarded_and_the_syscall_runs`,
+/// but no descriptor can be opened during the injection, so procfs cannot
+/// report the tracer thread's seccomp mode (EMFILE). `prctl(PR_GET_SECCOMP)`
+/// still does, and the trap is discarded as with procfs.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_discarded_with_no_descriptor_left() {
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_discarded_with_no_descriptor_left";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_is_discarded(true, "trap-before-getppid-emfile")
     });
 }
 
@@ -5468,6 +5514,146 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_when_getsiginfo_is_refused(
             libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
             true,
             "trap-tstp-getsiginfo-deny-filter",
+        )
+    });
+}
+
+/// Counts SIGUSR1, then submits the `GETPPID_FD` marker, which the tool
+/// replaces with an injected `getppid`.
+#[cfg(target_arch = "x86_64")]
+extern "C" fn count_sigusr1_then_inject_getppid(_signal: libc::c_int) {
+    SIGUSR1_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: a zero-length write from no buffer.
+    unsafe { libc::syscall(libc::SYS_write, GETPPID_FD, std::ptr::null::<u8>(), 0usize) };
+}
+
+/// The guest of `signal_is_delivered_after_a_signal_hook_vfork_at_its_delivery_stop`,
+/// whose SIGUSR1 handler also has the tool inject `getppid`, which a filter
+/// the guest loads first traps (`trap_getppid`).
+#[cfg(target_arch = "x86_64")]
+fn vfork_hook_guest_injecting_in_its_handler() -> impl FnOnce() + Send + 'static {
+    || unsafe {
+        SIGUSR1_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        trap_getppid();
+        install_counter(libc::SIGUSR1, count_sigusr1_then_inject_getppid);
+        block(&[libc::SIGCHLD]);
+        let ret = syscall_exiting_a_vfork_child(
+            libc::SYS_tgkill,
+            libc::getpid() as i64,
+            libc::syscall(libc::SYS_gettid),
+            libc::SIGUSR1 as i64,
+        );
+        let calls = SIGUSR1_HANDLER_CALLS.load(Ordering::Relaxed);
+        let mut status = 0;
+        let child = libc::waitpid(-1, &mut status, 0);
+        println!("{ret} {calls} {child} {status}");
+    }
+}
+
+/// Checks a `vfork_hook_guest_injecting_in_its_handler` run: the guest's
+/// line, `{ret} {handler runs} {reaped child} {status}`, with `ret` the
+/// leaked vfork child PID (https://github.com/rrnewton/reverie/issues/892),
+/// and the injections and signals the tool saw: the hook's vfork, then, if
+/// the handler ran, its trapped `getppid` (`ENOSYS`) and that SIGSYS.
+#[cfg(target_arch = "x86_64")]
+fn check_vfork_hook_injecting_in_its_handler(
+    output: &reverie::process::Output,
+    log: &Log,
+    probe: &str,
+    handled: bool,
+) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE {probe} status={:?} guest={:?} injected={:?} signals={:?}",
+        output.status,
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let Some(&Ok(child)) = injected.first() else {
+        panic!("vfork failed: {:?}", *injected);
+    };
+    let mut expected = vec![Ok(child)];
+    let mut expected_signals = vec![libc::SIGUSR1];
+    if handled {
+        expected.push(Err(libc::ENOSYS));
+        expected_signals.push(libc::SIGSYS);
+    }
+    assert_eq!(*injected, expected);
+    let fields: Vec<&str> = stdout.trim().split(' ').collect();
+    assert_eq!(
+        fields,
+        [
+            child.to_string().as_str(),
+            if handled { "1" } else { "0" },
+            &child.to_string(),
+            "0"
+        ],
+        "the guest gets the leaked child PID, runs the SIGUSR1 handler once or not at all, and reaps the hook's child"
+    );
+    assert_eq!(*signals, expected_signals);
+}
+
+/// With no tracer filter, the vfork injection steps on past its vfork-done
+/// stop, so SIGUSR1 is delivered and its handler's injected `getppid` runs.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn signal_hook_vfork_delivers_a_signal_whose_handler_injects() {
+    const NAME: &str = "signal_hook_vfork_delivers_a_signal_whose_handler_injects";
+    in_child_process(NAME, || {
+        assert_tracer_unfiltered();
+        let (output, log) =
+            test_fn::<VforkInFirstSignalHook, _>(vfork_hook_guest_injecting_in_its_handler())
+                .expect("run vfork-hook guest");
+        check_vfork_hook_injecting_in_its_handler(&output, &log, "vfork-handler-injects", true);
+    });
+}
+
+/// `signal_hook_vfork_delivers_a_signal_whose_handler_injects` under a
+/// tracer filter that returns `action` for `PTRACE_GETSIGMASK`. Stepped on,
+/// the injection would deliver SIGUSR1, and the handler's `getppid` would
+/// raise a guest SIGSYS, whose check makes that request, which main does not
+/// make for this guest. Under a tracer filter the injection keeps the
+/// vfork-done stop, as on main, and the guest runs as on main: Linux drops
+/// SIGUSR1, and the handler does not run.
+#[cfg(target_arch = "x86_64")]
+fn signal_hook_vfork_runs_as_on_main_under_a_tracer_filter(action: u32, probe: &str) {
+    let (output, log, _) = test_tool_under_tracer_filter::<VforkInFirstSignalHook, _>(
+        Some((libc::PTRACE_GETSIGMASK, action)),
+        vfork_hook_guest_injecting_in_its_handler(),
+    );
+    check_vfork_hook_injecting_in_its_handler(&output, &log, probe, false);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn signal_hook_vfork_is_not_stepped_on_when_the_tracer_is_killed_at_getsigmask() {
+    const NAME: &str =
+        "signal_hook_vfork_is_not_stepped_on_when_the_tracer_is_killed_at_getsigmask";
+    in_child_process(NAME, || {
+        signal_hook_vfork_runs_as_on_main_under_a_tracer_filter(
+            libc::SECCOMP_RET_KILL_PROCESS,
+            "vfork-getsigmask-kill-filter",
+        )
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn signal_hook_vfork_is_not_stepped_on_when_getsigmask_is_refused() {
+    const NAME: &str = "signal_hook_vfork_is_not_stepped_on_when_getsigmask_is_refused";
+    in_child_process(NAME, || {
+        signal_hook_vfork_runs_as_on_main_under_a_tracer_filter(
+            libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
+            "vfork-getsigmask-deny-filter",
         )
     });
 }

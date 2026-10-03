@@ -645,12 +645,36 @@ fn pending_signal_mask(tid: Pid) -> Result<u64, TraceError> {
 /// gets one only by installing it or by another thread synchronizing its
 /// own (`SECCOMP_FILTER_FLAG_TSYNC`).
 fn thread_may_be_seccomp_filtered() -> bool {
-    std::fs::read_to_string("/proc/thread-self/status").map_or(true, |status| {
+    procfs_thread_unfiltered().is_none_or(|unfiltered| !unfiltered)
+}
+
+/// Whether procfs reports the calling thread's seccomp mode as 0, `None` if
+/// its status cannot be read.
+fn procfs_thread_unfiltered() -> Option<bool> {
+    let status = std::fs::read_to_string("/proc/thread-self/status").ok()?;
+    Some(
         status
             .lines()
             .find_map(|line| line.strip_prefix("Seccomp:"))
-            .is_none_or(|mode| mode.trim() != "0")
-    })
+            .is_some_and(|mode| mode.trim() == "0"),
+    )
+}
+
+/// `thread_may_be_seccomp_filtered` for the steps an injection takes beyond
+/// main's, which correct main on an unfiltered thread. Where procfs cannot
+/// be read, for example with no descriptor left to open (EMFILE), it asks
+/// `prctl(PR_GET_SECCOMP)`, which needs none. A thread without a filter has
+/// nothing to refuse that request, so it is still told apart; a filtered
+/// thread's refusal or nonzero answer counts as filtered.
+fn step_thread_may_be_seccomp_filtered() -> bool {
+    match procfs_thread_unfiltered() {
+        Some(unfiltered) => !unfiltered,
+        None => {
+            // SAFETY: PR_GET_SECCOMP reads the calling thread's seccomp mode.
+            let mode = unsafe { libc::prctl(libc::PR_GET_SECCOMP, 0, 0, 0, 0) };
+            mode != 0
+        }
+    }
 }
 
 /// `si_code` of a SIGSYS raised by a seccomp filter's `SECCOMP_RET_TRAP`.
@@ -10933,11 +10957,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         // during LiteInst activation the trap is rejected there. Under a
         // tracer filter the trap is not discarded, as on main: the retried
         // step can stop again at requests that filter may refuse or kill the
-        // tracer at (`thread_may_be_seccomp_filtered`).
+        // tracer at (`step_thread_may_be_seccomp_filtered`).
         while child_context.is_none()
             && !self.liteinst_activation_in_progress()
             && is_sigtrap_before_private_syscall(&wait)?
-            && !thread_may_be_seccomp_filtered()
+            && !step_thread_may_be_seccomp_filtered()
         {
             let Wait::Stopped(stopped, _) = wait else {
                 unreachable!("a SIGTRAP stop");
@@ -11631,9 +11655,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // steps once more, to the step trap the syscall's return
                     // reports: the stop a fork parent's step ends at. No guest
                     // instruction runs in between. Other injections keep the
-                    // event stop, which the LiteInst backend's matches.
+                    // event stop, which the LiteInst backend's matches. So
+                    // does a signal callback's under a tracer filter, as on
+                    // main, where the signal is dropped: delivered, its
+                    // handler can make requests of the tracer that the filter
+                    // may refuse or kill it at
+                    // (`step_thread_may_be_seccomp_filtered`).
                     let wait = match wait {
-                        Wait::Stopped(parent, Event::VforkDone) if self.in_signal_callback => {
+                        Wait::Stopped(parent, Event::VforkDone)
+                            if self.in_signal_callback
+                                && !step_thread_may_be_seccomp_filtered() =>
+                        {
                             let wait = self.step_stopped(parent, None)?.next_state().await?;
                             self.arm_liteinst_wait(&wait);
                             wait
