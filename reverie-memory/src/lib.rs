@@ -49,6 +49,45 @@ impl RemoteIoVec {
     }
 }
 
+/// Evidence missing before a followed-task destination store. This is never a
+/// guest syscall errno or an assertion about Linux syscall error precedence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeUserStoreRefusal {
+    /// A shared register, range, procfs, mapping, or task check refused.
+    Evidence(NativeUserReadRefusal),
+    /// The complete ordinary private mapping lacks write permission.
+    WriteDenied,
+    /// Actual target PKRU denies access or writing for this mapping's key.
+    ProtectionKey(u8),
+}
+
+/// Result of a single native store, preserving its effect separately from
+/// subsequent custody validation. An attempted store must never be retried or
+/// reclassified as pre-effect refusal, including after a failed postcheck.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeUserStoreOutcome {
+    /// No native payload transfer was attempted.
+    Refused(NativeUserStoreRefusal),
+    /// Exactly one native transfer was attempted. Neither a positive count nor
+    /// successful postcheck alone establishes the consuming syscall's result.
+    Attempted {
+        /// The actual kernel return, without retry or fallback.
+        raw: Result<usize, Errno>,
+        /// Validation after the actual transfer, while custody remains held.
+        postcheck: Result<(), Errno>,
+    },
+}
+
+/// A backend-issued, borrowed, single-use destination writer. It grants neither
+/// syscall completion nor permission to consume a recorded network prefix.
+/// Implementations retain physical custody of the whole followed cohort and
+/// check the exact original scalar receive before and after the actual store.
+pub trait FollowedStore {
+    /// Write at the original receive destination. The backend qualifies every
+    /// operand and preserves the actual kernel result through failed postchecks.
+    fn store(&mut self, bytes: &[u8]) -> NativeUserStoreOutcome;
+}
+
 /// A proven read-access denial for an admitted native source mapping.
 /// This does not determine the consuming syscall's errno. Translating a denial
 /// to guest `EFAULT` additionally requires caller proof of that syscall's error

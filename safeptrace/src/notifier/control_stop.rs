@@ -211,8 +211,14 @@ impl ControlHold {
             || state.control_stop != Some(self.revision)
             || state.mutation.is_some()
             || state.signals != 0
-            || !state.hold.as_ref().is_some_and(|ticket| Arc::ptr_eq(ticket, &self.ticket))
-            || self.generation.cleanup_cancel_requested.load(Ordering::Acquire)
+            || !state
+                .hold
+                .as_ref()
+                .is_some_and(|ticket| Arc::ptr_eq(ticket, &self.ticket))
+            || self
+                .generation
+                .cleanup_cancel_requested
+                .load(Ordering::Acquire)
             || self.generation.exit_status.load(Ordering::Acquire) != EXIT_PENDING
         {
             return Err(Errno::ESTALE);
@@ -366,4 +372,131 @@ impl CompletedRegisterWrite {
 pub(super) fn abandon_register_write(stop: ControlStop) -> Result<(), Errno> {
     drop(stop.begin_register_write()?);
     Ok(())
+}
+
+/// A distinct native-store reservation on the original Event, control revision
+/// and WorkerIdentity. The notifier cannot consume/reap this task while it is
+/// held. The backend separately excludes controls by all followed MM users.
+/// External authorized writers/signals remain outside that cohort proof.
+#[cfg(all(feature = "memory", target_arch = "x86_64"))]
+pub struct NativeStorePermit<'a> {
+    hold: &'a ControlHold,
+    ticket: Arc<()>,
+    stopped: Stopped,
+    used: std::cell::Cell<bool>,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(all(feature = "memory", target_arch = "x86_64"))]
+impl ControlHold {
+    /// Reserve one store on the original committed-wait thread. This does not
+    /// release the hold or admit ordinary mutation through another alias.
+    pub fn begin_native_store(&self) -> Result<NativeStorePermit<'_>, Errno> {
+        if self.thread != thread::current().id() {
+            return Err(Errno::EPERM);
+        }
+        self.validate()?;
+        let mut state = self.generation.source.lock();
+        if state.revision != self.revision
+            || state.control_stop != Some(self.revision)
+            || state.mutation.is_some()
+            || state.register_capture.is_some()
+            || state.held_write.is_some()
+            || state.signals != 0
+            || !state
+                .hold
+                .as_ref()
+                .is_some_and(|t| Arc::ptr_eq(t, &self.ticket))
+            || self
+                .generation
+                .cleanup_cancel_requested
+                .load(Ordering::Acquire)
+            || self.generation.exit_status.load(Ordering::Acquire) != EXIT_PENDING
+        {
+            return Err(Errno::EBUSY);
+        }
+        let ticket = Arc::new(());
+        state.held_write = Some(Arc::clone(&ticket));
+        drop(state);
+        let permit = NativeStorePermit {
+            hold: self,
+            ticket,
+            stopped: Stopped::from_token(self.pid, TraceeToken::from_event(self.handle.clone())),
+            used: std::cell::Cell::new(false),
+            _thread: std::marker::PhantomData,
+        };
+        permit.validate()?;
+        Ok(permit)
+    }
+}
+
+#[cfg(all(feature = "memory", target_arch = "x86_64"))]
+impl NativeStorePermit<'_> {
+    /// Revalidate original custody and check for a new kernel wait status
+    /// without consuming it. External fatal teardown may progress despite a
+    /// ptrace stop; observing it refuses success and does not hide prior effects.
+    pub fn validate(&self) -> Result<(), Errno> {
+        if self.hold.thread != thread::current().id() {
+            return Err(Errno::EPERM);
+        }
+        self.hold.validate()?;
+        {
+            let state = self.hold.generation.source.lock();
+            if !state
+                .held_write
+                .as_ref()
+                .is_some_and(|t| Arc::ptr_eq(t, &self.ticket))
+            {
+                return Err(Errno::ESTALE);
+            }
+        }
+        let flags = WaitPidFlag::from_bits_retain(
+            WaitPidFlag::WEXITED.bits()
+                | WaitPidFlag::WSTOPPED.bits()
+                | WaitPidFlag::WNOHANG.bits()
+                | WaitPidFlag::WNOWAIT.bits()
+                | libc::__WALL,
+        );
+        if waitid::waitpidfd(self.hold.identity.pidfd.as_raw_fd(), flags)?.is_some() {
+            return Err(Errno::ESTALE);
+        }
+        self.hold.validate()
+    }
+
+    pub(crate) fn stopped(&self) -> &Stopped {
+        &self.stopped
+    }
+    pub(crate) fn control(&self) -> &ControlHold {
+        self.hold
+    }
+
+    /// Attempt at most one bounded private-anonymous native store. The caller
+    /// retains every other followed task's hold and its semantic exclusion.
+    /// No ptrace/proc-mem write fallback and no retry are performed.
+    pub fn write(&self, address: usize, bytes: &[u8]) -> reverie_memory::NativeUserStoreOutcome {
+        use reverie_memory::NativeUserReadRefusal as E;
+        use reverie_memory::NativeUserStoreOutcome as O;
+        use reverie_memory::NativeUserStoreRefusal as R;
+        if self.used.replace(true) {
+            return O::Refused(R::Evidence(E::TargetState(Errno::EALREADY)));
+        }
+        crate::memory::write_held_native(self, address, bytes)
+    }
+}
+
+#[cfg(all(feature = "memory", target_arch = "x86_64"))]
+impl Drop for NativeStorePermit<'_> {
+    fn drop(&mut self) {
+        let mut state = self.hold.generation.source.lock();
+        assert!(
+            state
+                .held_write
+                .as_ref()
+                .is_some_and(|t| Arc::ptr_eq(t, &self.ticket)),
+            "native store cannot release another owner's ticket"
+        );
+        state.held_write = None;
+        drop(state);
+        self.hold.generation.source_idle.notify_all();
+    }
 }

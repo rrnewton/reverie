@@ -68,6 +68,10 @@ fn main() {
         Some("peer-sendto-blocked-root") => followed_peer_sendto(false, true),
         Some("peer-sendto-blocked-child") => followed_peer_sendto(true, true),
         Some("source-retirement-703") => retirement_source(),
+        Some("store-read-root") => followed_destination_store(false, false),
+        Some("store-read-child") => followed_destination_store(true, false),
+        Some("store-recv-root") => followed_destination_store(false, true),
+        Some("store-recv-child") => followed_destination_store(true, true),
         mode => panic!("unadmitted fixture mode: {mode:?}"),
     }
 }
@@ -332,4 +336,81 @@ fn followed_peer_sendto(child_sender: bool, blocked: bool) {
     let mut bytes = [0u8; 8];
     receiver.read_exact(&mut bytes).unwrap();
     assert_eq!(&bytes, b"peerSend");
+}
+
+fn followed_destination_store(child_receives: bool, recvfrom: bool) {
+    use std::sync::atomic::AtomicI32;
+    use std::sync::atomic::Ordering;
+    #[repr(align(4096))]
+    struct Destination([u8; 8]);
+    fn operation(receives: bool, recvfrom: bool) {
+        let mut buffer = Destination([0xa5; 8]);
+        let raw = if receives {
+            unsafe {
+                libc::syscall(
+                    if recvfrom {
+                        libc::SYS_recvfrom
+                    } else {
+                        libc::SYS_read
+                    },
+                    744,
+                    buffer.0.as_mut_ptr().add(1),
+                    4usize,
+                    0usize,
+                    0usize,
+                    0usize,
+                )
+            }
+        } else {
+            unsafe { libc::syscall(libc::SYS_write, 688, buffer.0.as_ptr(), 8usize) }
+        };
+        if receives {
+            assert_eq!(raw, 4);
+            assert_eq!(buffer.0, [0xa5, b'a', b'b', b'c', b'd', 0xa5, 0xa5, 0xa5]);
+        } else {
+            assert_eq!(raw, 8);
+        }
+    }
+    extern "C" fn child(argument: *mut libc::c_void) -> libc::c_int {
+        let &(receives, recvfrom) = unsafe { &*argument.cast::<(bool, bool)>() };
+        operation(receives, recvfrom);
+        unsafe {
+            libc::syscall(libc::SYS_exit, 0);
+        }
+        unreachable!("original child exit returned")
+    }
+    let mut argument = (child_receives, recvfrom);
+    let mut stack = vec![0u128; 16384];
+    let tid = AtomicI32::new(0);
+    let flags = libc::CLONE_VM
+        | libc::CLONE_FS
+        | libc::CLONE_FILES
+        | libc::CLONE_SIGHAND
+        | libc::CLONE_THREAD
+        | libc::CLONE_SYSVSEM
+        | libc::CLONE_PARENT_SETTID
+        | libc::CLONE_CHILD_CLEARTID;
+    assert!(
+        unsafe {
+            libc::clone(
+                child,
+                stack.as_mut_ptr().add(stack.len()).cast(),
+                flags,
+                (&mut argument as *mut (bool, bool)).cast(),
+                tid.as_ptr(),
+                std::ptr::null_mut::<libc::c_void>(),
+                tid.as_ptr(),
+            )
+        } > 0
+    );
+    operation(!child_receives, recvfrom);
+    loop {
+        let current = tid.load(Ordering::Acquire);
+        if current == 0 {
+            break;
+        }
+        unsafe {
+            libc::syscall(libc::SYS_futex, tid.as_ptr(), libc::FUTEX_WAIT, current, 0);
+        }
+    }
 }

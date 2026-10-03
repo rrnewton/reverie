@@ -30,6 +30,8 @@ mod native_read;
 pub use native_read::FollowedSourceReadPlan;
 #[cfg(all(target_arch = "x86_64", feature = "notifier"))]
 pub use native_read::NativeSourceReadPlan;
+#[cfg(all(target_arch = "x86_64", feature = "notifier"))]
+pub(crate) use native_read::write_held_native;
 
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
@@ -1050,7 +1052,8 @@ mod test {
                 let payload = *b"12345678";
                 let local = [io::IoSlice::new(&payload)];
                 let remote_ranges = [remote(address, 4), remote(address + 4, 4)];
-                let first = memory.write_native_user_vectored(child.as_raw(), &local, &remote_ranges);
+                let first =
+                    memory.write_native_user_vectored(child.as_raw(), &local, &remote_ranges);
                 let mut expected = [0xa5; 32];
                 expected[8..12].copy_from_slice(&payload[..4]);
                 let after_prefix = native_write_readback(&memory, address - 8);

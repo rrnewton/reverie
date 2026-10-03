@@ -12,6 +12,8 @@ use super::*;
 mod control_stop;
 pub use control_stop::ControlHold;
 pub use control_stop::ControlStop;
+#[cfg(all(feature = "memory", target_arch = "x86_64"))]
+pub use control_stop::NativeStorePermit;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct SourceStamp {
@@ -80,12 +82,19 @@ pub(crate) struct SourceState {
     // Only the synchronous native register pair owns this ticket. It never
     // spans proc IO, worker execution, or the rest of an acquisition/hold.
     pub(super) register_capture: Option<Arc<()>>,
+    // Distinct whole native-store interval, including proc observation and
+    // postchecks. Never borrow the short register-capture ticket for this.
+    pub(super) held_write: Option<Arc<()>>,
 }
 
 impl SourceState {
     #[cfg(all(feature = "memory", target_arch = "x86_64"))]
     fn reserve_register_capture(&mut self) -> Result<Arc<()>, Errno> {
-        if self.register_capture.is_some() || self.mutation.is_some() || self.signals != 0 {
+        if self.register_capture.is_some()
+            || self.held_write.is_some()
+            || self.mutation.is_some()
+            || self.signals != 0
+        {
             return Err(Errno::EBUSY);
         }
         let ticket = Arc::new(());
@@ -100,6 +109,7 @@ impl SourceState {
             || self.signals != 0
             || self.acquiring
             || self.hold.is_some()
+            || self.held_write.is_some()
         {
             return Err(Errno::EBUSY);
         }
@@ -528,7 +538,10 @@ impl SourceAcquisition {
             || !state.consumed
             || !self.stamp.receipt.matches(&state, &self.generation)
             || !Arc::ptr_eq(&self.generation, self.token.event().event())
-            || self.generation.cleanup_cancel_requested.load(Ordering::Acquire)
+            || self
+                .generation
+                .cleanup_cancel_requested
+                .load(Ordering::Acquire)
             || self.generation.exit_status.load(Ordering::Acquire) != EXIT_PENDING
         {
             return Err(Errno::ESTALE);
@@ -670,6 +683,8 @@ mod tests {
 
     #[cfg(all(feature = "memory", target_arch = "x86_64"))]
     include!("register_capture_tests.rs");
+    #[cfg(all(feature = "memory", target_arch = "x86_64"))]
+    include!("native_store_tests.rs");
 
     include!("control_stop_native_tests.rs");
 

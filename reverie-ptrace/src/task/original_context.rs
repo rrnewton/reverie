@@ -253,6 +253,9 @@ pub(super) struct OriginalReadEntry {
     nr: Sysno,
     entry: safeptrace::SyscallEntry,
     failure: StdMutex<Option<String>>,
+    // One attempted destination operation for this immutable original entry.
+    // Drop, refusal, unwind and a fresh callback can never renew it.
+    store_attempted: AtomicBool,
 }
 
 #[cfg(test)]
@@ -328,6 +331,7 @@ impl OriginalReadEntry {
             nr,
             entry,
             failure: StdMutex::new(None),
+            store_attempted: AtomicBool::new(false),
         })
     }
 
@@ -566,7 +570,7 @@ impl ReadRangeOracle {
 static READ_RANGE_ORACLE: StdOnceLock<StdMutex<ReadRangeOracle>> = StdOnceLock::new();
 
 impl<L: Tool + 'static> TracedTask<L> {
-    fn inspect_native_scalar_receive_range(
+    pub(super) fn inspect_native_scalar_receive_range(
         &self,
         nr: Sysno,
         args: SyscallArgs,
@@ -619,6 +623,65 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         };
         check().map_err(|error| reverie::Error::Tool(anyhow::anyhow!(error)))
+    }
+
+    pub(super) fn original_scalar_store_unused(&self) -> Result<(), Errno> {
+        let entry = self
+            .original_read_entry
+            .as_ref()
+            .ok_or(Errno::ESTALE)?
+            .as_ref()
+            .map_err(|_| Errno::ESTALE)?;
+        if entry.store_attempted.load(Ordering::Acquire) {
+            Err(Errno::EALREADY)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn claim_original_scalar_store(&self) -> Result<(), Errno> {
+        let entry = self
+            .original_read_entry
+            .as_ref()
+            .ok_or(Errno::ESTALE)?
+            .as_ref()
+            .map_err(|_| Errno::ESTALE)?;
+        entry
+            .store_attempted
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| Errno::EALREADY)
+    }
+
+    pub(super) fn validate_original_scalar_store(
+        &self,
+        nr: Sysno,
+        args: SyscallArgs,
+    ) -> Result<(), Errno> {
+        let entry = self
+            .original_read_entry
+            .as_ref()
+            .ok_or(Errno::ESTALE)?
+            .as_ref()
+            .map_err(|_| Errno::ESTALE)?;
+        let mut failure = entry.failure.lock().map_err(|_| Errno::ESTALE)?;
+        if failure.is_some() {
+            return Err(Errno::ESTALE);
+        }
+        let checked = if self.injected_syscall_frame.is_some()
+            || self.pending_syscall_already_skipped
+            || self.interrupted_read.is_some()
+            || self.pending_signal.is_some()
+            || self.pending_syscall != Some((nr, args))
+        {
+            Err("original scalar store context changed".to_owned())
+        } else {
+            entry.check(&self.assume_stopped(), nr, args)
+        };
+        checked.map_err(|error| {
+            failure.get_or_insert(error);
+            Errno::ESTALE
+        })
     }
 
     pub(super) fn inspect_native_read_range(

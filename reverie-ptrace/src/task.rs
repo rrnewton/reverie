@@ -1590,6 +1590,10 @@ enum LiteinstTrap {
     Invalid,
 }
 
+#[cfg(target_arch = "x86_64")]
+#[path = "task/followed_store.rs"]
+mod followed_store;
+
 #[path = "source_cohort.rs"]
 pub(crate) mod source_cohort;
 #[path = "source_epoch.rs"]
@@ -11400,6 +11404,24 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         receive: reverie::syscalls::Recvfrom,
     ) -> Result<reverie::OriginalReadRangeVerdict, reverie::Error> {
         self.inspect_native_recvfrom_range(receive)
+    }
+
+    fn with_followed_store<R>(
+        &self,
+        original: Syscall,
+        action: impl FnOnce(&mut dyn reverie::syscalls::FollowedStore) -> R,
+    ) -> Result<R, reverie::syscalls::NativeUserStoreRefusal> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.with_native_followed_store(original, action)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (original, action);
+            Err(reverie::syscalls::NativeUserStoreRefusal::Evidence(
+                reverie::syscalls::NativeUserReadRefusal::UnsupportedPlatform,
+            ))
+        }
     }
 
     async fn stage_followed_source(

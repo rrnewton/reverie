@@ -394,6 +394,26 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         ))
     }
 
+    /// Borrow a backend-issued one-use scalar receive writer while every
+    /// followed task remains physically held. Only the exact retained original
+    /// native Read or flags=0/addressless Recvfrom is supported. No guest code,
+    /// injection or asynchronous continuation occurs inside the callback.
+    /// Helpers that consume the original entry currently cause refusal.
+    ///
+    /// The callback must retain actual/possible effects on its existing Call
+    /// before returning. A positive raw count alone is not completion: inspect
+    /// the postcheck too. This capability remains inactive in Detcore and does
+    /// not supply independent MM/FD/prefix/external-writer authority.
+    fn with_followed_store<R>(
+        &self,
+        _original: reverie_syscalls::Syscall,
+        _action: impl FnOnce(&mut dyn crate::syscalls::FollowedStore) -> R,
+    ) -> Result<R, crate::syscalls::NativeUserStoreRefusal> {
+        Err(crate::syscalls::NativeUserStoreRefusal::Evidence(
+            crate::syscalls::NativeUserReadRefusal::UnsupportedBackend,
+        ))
+    }
+
     /// Returns a mutable reference to thread state.
     fn thread_state_mut(&mut self) -> &mut T::ThreadState;
 
@@ -1031,6 +1051,14 @@ where
         self.inner
             .stage_followed_source(address, length, retention)
             .await
+    }
+
+    fn with_followed_store<R>(
+        &self,
+        original: reverie_syscalls::Syscall,
+        action: impl FnOnce(&mut dyn crate::syscalls::FollowedStore) -> R,
+    ) -> Result<R, crate::syscalls::NativeUserStoreRefusal> {
+        self.inner.with_followed_store(original, action)
     }
 
     fn thread_state_mut(&mut self) -> &mut L::ThreadState {

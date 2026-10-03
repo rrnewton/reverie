@@ -40,6 +40,12 @@ pub use mm_bound::FollowedSourceReadPlan;
 #[cfg(feature = "notifier")]
 pub use mm_bound::NativeSourceReadPlan;
 
+#[cfg(feature = "notifier")]
+#[path = "native_write.rs"]
+mod native_write;
+#[cfg(feature = "notifier")]
+pub(crate) use native_write::write as write_held_native;
+
 const PAGE: usize = 4096;
 const MAX_READ: usize = 512;
 const MAX_SMAPS: usize = 1024 * 1024;

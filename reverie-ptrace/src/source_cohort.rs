@@ -1706,3 +1706,7 @@ pub(super) mod clone3_tests;
 #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
 #[path = "source_peer_tests.rs"]
 pub(crate) mod peer_tests;
+
+#[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+#[path = "followed_store_tests.rs"]
+mod store_tests;

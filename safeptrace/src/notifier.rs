@@ -2245,7 +2245,10 @@ fn consume_pidfd_status(
             Err(error) => return Err(error),
         }
         let mut source = event.source.lock();
-        while source.mutation.is_some() || source.register_capture.is_some() {
+        while source.mutation.is_some()
+            || source.register_capture.is_some()
+            || source.held_write.is_some()
+        {
             #[cfg(all(test, feature = "memory", target_arch = "x86_64"))]
             if let Some(observer) = event.capture_consume_observer.lock().as_ref() {
                 let _ = observer.send(CaptureConsumeObservation::Waiting {

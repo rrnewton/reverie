@@ -58,6 +58,8 @@ pub use crate::notifier::TerminalCleanup;
 pub use crate::notifier::source::ControlHold;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::source::ControlStop;
+#[cfg(all(feature = "notifier", feature = "memory", target_arch = "x86_64"))]
+pub use crate::notifier::source::NativeStorePermit;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::source::SourceAcquisition;
 #[cfg(feature = "notifier")]

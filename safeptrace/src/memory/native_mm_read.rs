@@ -261,7 +261,10 @@ pub(super) fn bounded_read(file: &mut File, limit: usize) -> Result<Vec<u8>, Err
     Ok(bytes)
 }
 
-fn directory_identity(directory: BorrowedFd<'_>, expected: (u64, u64)) -> Result<(), Error> {
+pub(super) fn directory_identity(
+    directory: BorrowedFd<'_>,
+    expected: (u64, u64),
+) -> Result<(), Error> {
     let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
     Errno::result(unsafe { libc::fstat(directory.as_raw_fd(), metadata.as_mut_ptr()) })
         .map_err(|e| refused(Refusal::Procfs(e)))?;
