@@ -4745,6 +4745,19 @@ fn test_fn_under_tracer_filter<F: FnOnce() + Send + 'static>(
     refused: Option<(u32, u32)>,
     f: F,
 ) -> (reverie::process::Output, Log, libc::pid_t) {
+    test_tool_under_tracer_filter::<InjectInFirstSignalHook, _>(refused, f)
+}
+
+/// `test_fn_under_tracer_filter` with the tool `T`.
+#[cfg(target_arch = "x86_64")]
+fn test_tool_under_tracer_filter<T, F>(
+    refused: Option<(u32, u32)>,
+    f: F,
+) -> (reverie::process::Output, Log, libc::pid_t)
+where
+    T: Tool<GlobalState = Log> + 'static,
+    F: FnOnce() + Send + 'static,
+{
     std::thread::spawn(move || {
         let statement = |code: u32, k: u32, jt: u8, jf: u8| libc::sock_filter {
             code: code as u16,
@@ -4790,8 +4803,7 @@ fn test_fn_under_tracer_filter<F: FnOnce() + Send + 'static>(
         }
         // SAFETY: gettid has no preconditions.
         let tracer = unsafe { libc::gettid() };
-        let (output, log) =
-            test_fn::<InjectInFirstSignalHook, _>(f).expect("run guest under a tracer filter");
+        let (output, log) = test_fn::<T, _>(f).expect("run guest under a tracer filter");
         (output, log, tracer)
     })
     .join()
@@ -5034,6 +5046,9 @@ fn held_signal_runs_as_on_main_when_the_tracer_is_killed_at(request: u32, probe:
 fn held_signal_is_not_reported_without_its_recorded_siginfo() {
     const NAME: &str = "held_signal_is_not_reported_without_its_recorded_siginfo";
     in_child_process(NAME, || {
+        // Under a filter the held signal is passed on unreported without
+        // reaching the record check.
+        assert_tracer_unfiltered();
         GETPID_WITHOUT_DESCRIPTORS.store(true, Ordering::Relaxed);
         let (output, log) = test_fn::<InjectInFirstSignalHook, _>(|| unsafe {
             install_recorder(libc::SIGUSR1);
@@ -5182,6 +5197,277 @@ fn job_control_signal_is_not_classified_when_its_query_is_refused() {
         job_control_signal_runs_as_on_main_under_a_tracer_filter(
             libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
             "ordinary-tstp-deny-filter",
+        )
+    });
+}
+
+/// Set by a test so that `TrapBeforeGetppid` sends SIGTSTP after SIGTRAP.
+static TSTP_AFTER_TRAP: AtomicBool = AtomicBool::new(false);
+
+/// `ReplaceMarker`, whose hook for `GETPPID_FD` first injects `getpid`, then
+/// sends SIGTRAP to the guest's thread from the tracer, then SIGTSTP when
+/// `TSTP_AFTER_TRAP` is set. Linux dequeues the SIGTRAP when the injected `getppid` is stepped,
+/// before its `syscall` runs.
+#[derive(Clone, Copy, Debug, Default)]
+struct TrapBeforeGetppid;
+
+#[reverie::tool]
+impl Tool for TrapBeforeGetppid {
+    type GlobalState = Log;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        if matches!(syscall, Syscall::Write(write) if write.fd() == GETPPID_FD && write.len() == 0)
+        {
+            // A complete injection first, unreported: an earlier injection's
+            // step SIGTRAP can still be queued, and a SIGTRAP sent now would
+            // coalesce with it and be discarded as that stale trap
+            // (`TrapThenGetpidInSigusr1Hook`).
+            guest.inject(Getpid::new()).await?;
+            let mut signals = vec![libc::SIGTRAP];
+            if TSTP_AFTER_TRAP.load(Ordering::Relaxed) {
+                signals.push(libc::SIGTSTP);
+            }
+            for signal in signals {
+                // SAFETY: tgkill has no memory-safety preconditions.
+                let sent = unsafe {
+                    libc::syscall(
+                        libc::SYS_tgkill,
+                        guest.pid().as_raw(),
+                        guest.tid().as_raw(),
+                        signal,
+                    )
+                };
+                assert_eq!(sent, 0, "send signal {signal} to the guest");
+            }
+        }
+        replace_marker(guest, syscall).await
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        Ok(Some(signal))
+    }
+}
+
+static SIGTSTP_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn count_sigtstp(_signal: libc::c_int) {
+    SIGTSTP_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Requires the calling thread, the tracer's, to be under no seccomp filter.
+#[cfg(target_arch = "x86_64")]
+fn assert_tracer_unfiltered() {
+    let status = std::fs::read_to_string("/proc/thread-self/status").expect("read thread status");
+    assert!(
+        status.lines().any(|line| line == "Seccomp:\t0"),
+        "the tracer thread must be under no seccomp filter: {status}"
+    );
+}
+
+/// The guest of `injected_syscall_trapped_by_guest_seccomp_reports_enosys`,
+/// run with `TrapBeforeGetppid`, and with a handler counting SIGTSTP when
+/// `tstp` is set. Prints the handler's count last.
+#[cfg(target_arch = "x86_64")]
+fn trap_before_getppid_guest(tstp: bool) -> impl FnOnce() + Send + 'static {
+    move || unsafe {
+        SIGTSTP_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        if tstp {
+            install_counter(libc::SIGTSTP, count_sigtstp);
+        }
+        trap_getppid();
+        print_seccomp_trap(libc::syscall(libc::SYS_getppid));
+        let ret = libc::syscall(libc::SYS_write, GETPPID_FD, std::ptr::null::<u8>(), 0usize);
+        print_seccomp_trap(ret);
+        println!("{}", SIGTSTP_HANDLER_CALLS.load(Ordering::Relaxed));
+    }
+}
+
+/// A SIGTRAP pending when the tool injects `getppid` (`TrapBeforeGetppid`)
+/// into the guest of `injected_syscall_trapped_by_guest_seccomp_reports_enosys`.
+/// The trap stops the step before the `syscall` runs; it is discarded, and
+/// the step runs the `getppid`, which the guest's filter traps as without
+/// the SIGTRAP.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_discarded_and_the_syscall_runs() {
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_discarded_and_the_syscall_runs";
+    in_child_process(NAME, || {
+        assert_tracer_unfiltered();
+        let (output, log) = test_fn::<TrapBeforeGetppid, _>(trap_before_getppid_guest(false))
+            .expect("run trap-before-getppid guest");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        eprintln!(
+            "PROBE trap-before-getppid status={:?} guest={:?} injected={:?} signals={:?}",
+            output.status,
+            stdout.trim(),
+            *log.injected.lock().unwrap(),
+            *log.signals.lock().unwrap()
+        );
+        assert_eq!(
+            output.status,
+            ExitStatus::Exited(0),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            *log.injected.lock().unwrap(),
+            vec![Err(libc::ENOSYS)],
+            "the trapped getppid did not run"
+        );
+        let lines: Vec<&str> = stdout.trim().lines().collect();
+        assert_eq!(
+            lines,
+            [
+                format!("4242 1 1 {} {}", libc::SYS_getppid, libc::SYS_getppid),
+                format!("4242 2 1 {} {}", libc::SYS_getppid, -libc::ENOSYS),
+                "0".to_string(),
+            ],
+            "in place and injected, the guest's SIGSYS handler emulates getppid once"
+        );
+        assert_eq!(
+            *log.signals.lock().unwrap(),
+            vec![libc::SIGSYS, libc::SIGSYS],
+            "each SIGSYS reaches the tool, and the discarded SIGTRAP does not"
+        );
+    });
+}
+
+/// `sigtrap_before_an_injected_syscall_is_discarded_and_the_syscall_runs`
+/// under a tracer filter that returns `action` for a `ptrace` of `request`,
+/// with SIGTSTP pending after the SIGTRAP when `tstp` is set. Retried, the
+/// step would stop at requests main does not make for this guest: at the
+/// guest filter's SIGSYS, the `PTRACE_GETSIGMASK` that checks it; at the
+/// SIGTSTP, the `PTRACE_GETSIGINFO` that tells its delivery from a group
+/// stop. Under a tracer filter the trap is taken for the step's report
+/// instead, as on main, and the guest runs as on main: the `getppid` does
+/// not run, and the injection returns the syscall number left in RAX (110),
+/// a known gap (https://github.com/rrnewton/reverie/issues/845). A pending
+/// SIGTSTP is then reported, and its handler runs once.
+#[cfg(target_arch = "x86_64")]
+fn sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
+    request: u32,
+    action: u32,
+    tstp: bool,
+    probe: &str,
+) {
+    TSTP_AFTER_TRAP.store(tstp, Ordering::Relaxed);
+    let (output, log, _) = test_tool_under_tracer_filter::<TrapBeforeGetppid, _>(
+        Some((request, action)),
+        trap_before_getppid_guest(tstp),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE {probe} status={:?} guest={:?} injected={:?} signals={:?}",
+        output.status,
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(libc::SYS_getppid)],
+        "the SIGTRAP is taken for the step's report, as on main"
+    );
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines,
+        [
+            format!("4242 1 1 {} {}", libc::SYS_getppid, libc::SYS_getppid),
+            format!(
+                "{} 1 1 {} {}",
+                libc::SYS_getppid,
+                libc::SYS_getppid,
+                libc::SYS_getppid
+            ),
+            usize::from(tstp).to_string(),
+        ],
+        "the injected getppid does not run, and a SIGTSTP handler runs once"
+    );
+    let mut signals = vec![libc::SIGSYS];
+    if tstp {
+        signals.push(libc::SIGTSTP);
+    }
+    assert_eq!(*log.signals.lock().unwrap(), signals);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_at_getsigmask() {
+    const NAME: &str =
+        "sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_at_getsigmask";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
+            libc::PTRACE_GETSIGMASK,
+            libc::SECCOMP_RET_KILL_PROCESS,
+            false,
+            "trap-getsigmask-kill-filter",
+        )
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_when_getsigmask_is_refused() {
+    const NAME: &str =
+        "sigtrap_before_an_injected_syscall_is_not_retried_when_getsigmask_is_refused";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
+            libc::PTRACE_GETSIGMASK,
+            libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
+            false,
+            "trap-getsigmask-deny-filter",
+        )
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_at_getsiginfo() {
+    const NAME: &str =
+        "sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_at_getsiginfo";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
+            libc::PTRACE_GETSIGINFO,
+            libc::SECCOMP_RET_KILL_PROCESS,
+            true,
+            "trap-tstp-getsiginfo-kill-filter",
+        )
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_when_getsiginfo_is_refused() {
+    const NAME: &str =
+        "sigtrap_before_an_injected_syscall_is_not_retried_when_getsiginfo_is_refused";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
+            libc::PTRACE_GETSIGINFO,
+            libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
+            true,
+            "trap-tstp-getsiginfo-deny-filter",
         )
     });
 }
