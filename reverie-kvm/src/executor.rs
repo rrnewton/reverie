@@ -16404,7 +16404,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
     let source_object_inode = guest_fd_object_identity(state, guest_fd);
     match args[1] as libc::c_int {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-PENDING): Review bounded pipe-owner configuration dispatch.
+        // TODO-HUMAN-REVIEW(PR-910): Review bounded pipe-owner configuration dispatch.
         command @ (libc::F_SETOWN
         | libc::F_GETOWN
         | libc::F_SETOWN_EX
