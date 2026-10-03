@@ -49196,7 +49196,7 @@ mod tests {
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, (BOOT_RESERVED_END + 8 * PAGE_SIZE) as usize).unwrap();
         let aligned = BOOT_RESERVED_END;
-        let top_page = u64::MAX & !(PAGE_SIZE - 1);
+        let top_page = !(PAGE_SIZE - 1);
         for (address, length, flags, expected) in [
             (aligned, 0, libc::MS_SYNC, 0),
             (aligned, u64::MAX, libc::MS_SYNC, 0),
