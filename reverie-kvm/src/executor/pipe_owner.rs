@@ -99,7 +99,7 @@ fn owner_pointer_valid(address: u64) -> bool {
 /// Linux source: fs/fcntl.c f_setown/f_{get,set}own_ex/f_owner_sig at
 /// https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/fcntl.c
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-PENDING): Review creator-incarnation and permanent shared pipe guards.
+// TODO-HUMAN-REVIEW(PR-910): Review creator-incarnation and permanent shared pipe guards.
 pub(super) fn fcntl(
     memory: &GuestMemory,
     state: &LoadedStaticElf,
