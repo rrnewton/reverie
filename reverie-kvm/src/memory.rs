@@ -2678,9 +2678,11 @@ impl MemoryAccess for GuestMemory {
                 &mut write_to[destination_index][destination_offset..destination_offset + count];
             if let Err(error) = self.read_raw_admitted(address, destination, &copy) {
                 drop(copy);
-                let error =
+                if matches!(
+                    error.primary(),
+                    Error::SharedFileCopy { .. } | Error::SharedFileCapability { .. }
+                ) {
                     self.capture_shared_file_error(shared_file::vector_copy_error(error, total));
-                if matches!(error, Error::SharedFailure(_)) {
                     return Err(Errno::EIO);
                 }
                 self.check_copy_failure().map_err(|_| Errno::EIO)?;
@@ -2749,9 +2751,11 @@ impl MemoryAccess for GuestMemory {
             let source = &read_from[source_index][source_offset..source_offset + count];
             if let Err(error) = self.write_raw_admitted(address, source, &copy) {
                 drop(copy);
-                let error =
+                if matches!(
+                    error.primary(),
+                    Error::SharedFileCopy { .. } | Error::SharedFileCapability { .. }
+                ) {
                     self.capture_shared_file_error(shared_file::vector_copy_error(error, total));
-                if matches!(error, Error::SharedFailure(_)) {
                     return Err(Errno::EIO);
                 }
                 self.check_copy_failure().map_err(|_| Errno::EIO)?;
@@ -3652,13 +3656,13 @@ impl MemoryAccess for UserMemory {
                 // after our token/guards retire; a peer may have captured first,
                 // in which case the gate retains this distinct cause as cleanup.
                 if matches!(
-                    &error,
-                    Error::SharedFileCopy { .. }
-                        | Error::SharedFileCapability { .. }
-                        | Error::SharedFailure(_)
+                    error.primary(),
+                    Error::SharedFileCopy { .. } | Error::SharedFileCapability { .. }
                 ) {
                     self.memory.capture_shared_file_error(error);
                 } else {
+                    // SharedFailure also wraps unrelated typed failures. They
+                    // still require the original unexpected-copy capture.
                     gate.poison(origin, error);
                 }
                 return Err(Errno::EIO);
@@ -3716,10 +3720,12 @@ impl MemoryAccess for UserMemory {
                 &mut write_to[destination_index][destination_offset..destination_offset + count];
             if let Err(error) = self.read_translated_raw_admitted(address, destination, &copy) {
                 drop(copy);
-                let error = self
-                    .memory
-                    .capture_shared_file_error(shared_file::vector_copy_error(error, total));
-                if matches!(error, Error::SharedFailure(_)) {
+                if matches!(
+                    error.primary(),
+                    Error::SharedFileCopy { .. } | Error::SharedFileCapability { .. }
+                ) {
+                    self.memory
+                        .capture_shared_file_error(shared_file::vector_copy_error(error, total));
                     return Err(Errno::EIO);
                 }
                 self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
@@ -3787,10 +3793,12 @@ impl MemoryAccess for UserMemory {
             let source = &read_from[source_index][source_offset..source_offset + count];
             if let Err(error) = self.write_translated_raw_admitted(address, source, &copy) {
                 drop(copy);
-                let error = self
-                    .memory
-                    .capture_shared_file_error(shared_file::vector_copy_error(error, total));
-                if matches!(error, Error::SharedFailure(_)) {
+                if matches!(
+                    error.primary(),
+                    Error::SharedFileCopy { .. } | Error::SharedFileCapability { .. }
+                ) {
+                    self.memory
+                        .capture_shared_file_error(shared_file::vector_copy_error(error, total));
                     return Err(Errno::EIO);
                 }
                 self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;

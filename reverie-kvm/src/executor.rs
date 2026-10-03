@@ -17524,9 +17524,13 @@ fn msync(memory: &GuestMemory, args: &[u64; 6]) -> crate::Result<i64> {
     if requested_length == 0 {
         return Ok(0);
     }
-    let Some(length) = align_up(requested_length, PAGE_SIZE) else {
-        return Ok(negative_errno(libc::ENOMEM));
-    };
+    // Linux mm/msync.c rounds the unsigned length with wrapping arithmetic.
+    // A rounded zero is a no-op; overflowing address + rounded length is not.
+    // https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/mm/msync.c#L51
+    let length = requested_length.wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    if length == 0 {
+        return Ok(0);
+    }
     let Ok(length) = usize::try_from(length) else {
         return Ok(negative_errno(libc::ENOMEM));
     };
@@ -49184,6 +49188,69 @@ mod tests {
             ),
             negative_errno(libc::ENOMEM)
         );
+    }
+
+    #[test]
+    fn msync_length_rounding_and_address_overflow_match_native() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (BOOT_RESERVED_END + 8 * PAGE_SIZE) as usize).unwrap();
+        let aligned = BOOT_RESERVED_END;
+        let top_page = u64::MAX & !(PAGE_SIZE - 1);
+        for (address, length, flags, expected) in [
+            (aligned, 0, libc::MS_SYNC, 0),
+            (aligned, u64::MAX, libc::MS_SYNC, 0),
+            (aligned, u64::MAX - (PAGE_SIZE - 2), libc::MS_SYNC, 0),
+            (
+                aligned,
+                u64::MAX - (PAGE_SIZE - 1),
+                libc::MS_SYNC,
+                negative_errno(libc::ENOMEM),
+            ),
+            (top_page, u64::MAX, libc::MS_SYNC, 0),
+            (
+                top_page,
+                PAGE_SIZE,
+                libc::MS_SYNC,
+                negative_errno(libc::ENOMEM),
+            ),
+            (
+                aligned + 1,
+                u64::MAX,
+                libc::MS_SYNC,
+                negative_errno(libc::EINVAL),
+            ),
+            (
+                aligned,
+                u64::MAX,
+                libc::MS_SYNC | libc::MS_ASYNC,
+                negative_errno(libc::EINVAL),
+            ),
+        ] {
+            // These cases either round to zero or fail argument/range validation;
+            // the native syscall cannot access a nonempty mapped interval.
+            let rc =
+                unsafe { libc::syscall(libc::SYS_msync, address as usize, length as usize, flags) };
+            let native = if rc == -1 {
+                negative_errno(std::io::Error::last_os_error().raw_os_error().unwrap())
+            } else {
+                rc as i64
+            };
+            assert_eq!(
+                native, expected,
+                "native address={address:#x} length={length:#x} flags={flags}"
+            );
+            let guest = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_msync,
+                [address, length, flags as u64, 0, 0, 0],
+            );
+            assert_eq!(
+                guest, native,
+                "KVM address={address:#x} length={length:#x} flags={flags}"
+            );
+        }
     }
 
     #[test]
