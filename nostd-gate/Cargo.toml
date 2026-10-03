@@ -13,6 +13,7 @@ publish = false
 [dependencies]
 reverie = { package = "reverie-core", path = "../reverie", default-features = false }
 reverie-memory = { path = "../reverie-memory", default-features = false }
+reverie-narf-core = { path = "../reverie-narf-core" }
 reverie-process = { path = "../reverie-process", default-features = false }
 reverie-syscalls = { path = "../reverie-syscalls", default-features = false }
 serde = { version = "1.0.219", features = ["derive"], default-features = false }

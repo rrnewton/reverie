@@ -16,6 +16,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod narf_core;
 pub mod tool_contract;
 
 use reverie_memory::Addr;
