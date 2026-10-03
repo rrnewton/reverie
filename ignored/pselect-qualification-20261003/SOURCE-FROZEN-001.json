@@ -1,0 +1,10 @@
+{
+  "base": "3a196cfb9dbb775900a1acb02890b8ca10aedd0c",
+  "files": {
+    "reverie-kvm/src/executor.rs": "29ed3c15526792c21c5c3af59a068cb93feb95391dd727f250b233b95f271e16",
+    "reverie-kvm/tests/static_elf.rs": "f5386250ce2e0d03c97079bea640298e05523cd10877815ae9263cca002d4a61",
+    "reverie-kvm/tests/support/pselect_zero.rs": "c27a1f7fd5d7f02c4c40ca22c06737466cdbcdb81f7c6427661370b3897bf5f9",
+    "reverie-kvm/tests/fixtures/pselect_zero.c": "1b319f5a90f13ee43ea1f308b27cdbb164656ad7924478c85c6896ef20ed2f03"
+  },
+  "state": "source-frozen, uncommitted first qualification"
+}

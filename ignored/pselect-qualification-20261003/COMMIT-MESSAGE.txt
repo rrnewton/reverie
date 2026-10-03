@@ -1,0 +1,28 @@
+Support bounded zero-time KVM pselect6 readiness probes
+
+[hermit2, unknown-agentname, gpt-6-astra, devbig014, role=impl]
+
+Background: Reverie's KVM backend implements guest Linux system calls on
+virtual file descriptors. Hermit probes readiness with a zero timeout before
+its scheduler decides whether a guest should wait. Valid pselect6 probes
+previously ended in ENOSYS, keeping the poll-readiness KVM cell disabled.
+
+Implement one unmasked, zero-time readiness sample for signed low-word nfds
+0..64. Preserve Linux validation order, snapshot inputs before output, count
+readiness per selected set, and copy outputs in order with partial EFAULT
+effects. Keep an initially zero timeout untouched, including read-only pages.
+Hide a virtual signalfd's private carrier writability. Refuse zero readiness
+with an eligible guest signal because that completion/restart contract remains
+unsupported. No host blocking wait, signal-mask change or scheduler change.
+
+Native and actual KVM fixtures cover 18 cases through direct, Host and Tool
+execution; unit tests cover validation, copyout, signalfd and pending-state
+preservation. A restored old ENOSYS handler and a removed pending-signal guard
+each fail their new regression test. No deadline or comparator is relaxed.
+
+Linux semantics reference:
+https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/select.c
+
+Partial progress on https://github.com/rrnewton/reverie/issues/620 .
+Masked/blocking waits, larger fd sets and signal-interrupted completion remain
+open. The Hermit consumer cell still requires its own qualification and flip.

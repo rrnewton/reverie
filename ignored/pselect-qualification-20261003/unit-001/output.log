@@ -1,0 +1,13 @@
+    Finished `test` profile [unoptimized] target(s) in 0.07s
+     Running unittests src/lib.rs (target/pselect620-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a)
+
+running 6 tests
+test executor::tests::pselect6_preflight_preserves_linux_validation_order_and_guest_state ... ok
+test executor::tests::pselect6_zero_native_lowword_and_input_validation_order ... ok
+test executor::tests::pselect6_zero_native_ordered_partial_copyout_and_timeout_permissions ... ok
+test executor::tests::pselect6_zero_native_readiness_counts_sets_and_opath_is_not_absent ... ok
+test executor::tests::pselect6_zero_pending_signal_guard_is_read_only_and_ignores_delivery_permits ... ok
+test executor::tests::pselect6_zero_virtual_signalfd_hides_carrier_writability ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 1091 filtered out; finished in 0.02s
+

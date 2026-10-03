@@ -1,0 +1,9 @@
+{
+  "cargo_lock_sha256": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+  "cargo": "cargo 1.99.0-nightly (3efb1f477 2026-07-17)",
+  "rustc": "rustc 1.99.0-nightly (26ae60a9e 2026-07-28)",
+  "kernel": "7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf",
+  "kvm_device": "os.stat_result(st_mode=8630, st_ino=3659, st_dev=7, st_nlink=1, st_uid=0, st_gid=36, st_size=0, st_atime=1791027847, st_mtime=1791027847, st_ctime=1791027847)",
+  "lock_generated": true,
+  "lock_tracked": false
+}

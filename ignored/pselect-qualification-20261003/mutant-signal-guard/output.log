@@ -1,0 +1,21 @@
+   Compiling reverie-kvm v0.4.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003/reverie-kvm)
+    Finished `test` profile [unoptimized] target(s) in 23.64s
+     Running unittests src/lib.rs (target/pselect620-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a)
+
+running 1 test
+test executor::tests::pselect6_zero_pending_signal_guard_is_read_only_and_ignores_delivery_permits ... 
+thread 'executor::tests::pselect6_zero_pending_signal_guard_is_read_only_and_ignores_delivery_permits' (856620) panicked at reverie-kvm/src/executor.rs:31632:17:
+assertion `left == right` failed: shared=false, mode=eligible
+  left: 0
+ right: -38
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    executor::tests::pselect6_zero_pending_signal_guard_is_read_only_and_ignores_delivery_permits
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1096 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

@@ -1,0 +1,38 @@
+{
+  "phase": "lib-001",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "-j",
+    "8",
+    "--",
+    "--test-threads=1"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+  "start_free_bytes": 1556863934464,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice": 10,
+  "seconds_bound": 600.0,
+  "started_et": "2026-10-03 07:43:00 AM ET",
+  "pid": 606672,
+  "rc": 0,
+  "stop_reason": null,
+  "wall_seconds": 68.0130456200568,
+  "minimum_free_bytes": 1556863934464,
+  "end_free_bytes": 1557519163392,
+  "output_bytes": 104108,
+  "output_sha256": "e2770627cce5d0cce699c380e761f19d8a3b54963821422929e080d83721b180"
+}

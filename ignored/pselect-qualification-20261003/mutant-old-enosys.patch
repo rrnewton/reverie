@@ -1,0 +1,169 @@
+--- candidate/executor.rs
++++ mutant/executor.rs
+@@ -10194,7 +10194,7 @@
+ /// Implements one instantaneous, unmasked, one-word pselect6 readiness probe.
+ /// Detcore owns retries and guest time. All other valid execution forms remain
+ /// explicitly unsupported, after Linux's original argument-validation order.
+-fn pselect6(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
++fn pselect6(memory: &GuestMemory, _state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+     // Linux first copies the complete outer { sigmask, sigsetsize } wrapper.
+     let sigmask_argument = if args[5] == 0 {
+         None
+@@ -10206,8 +10206,8 @@
+     };
+ 
+     // do_pselect reads and validates the timeout before inspecting the inner
+-    // signal-mask pointer or size. NULL means an unsupported infinite wait.
+-    let zero_timeout = if args[4] != 0 {
++    // signal-mask pointer or size.
++    if args[4] != 0 {
+         let timeout = match read_guest_struct::<libc::timespec>(memory, args[4]) {
+             Ok(timeout) => timeout,
+             Err(error) => return error,
+@@ -10215,13 +10215,9 @@
+         if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+             return negative_errno(libc::EINVAL);
+         }
+-        timeout.tv_sec == 0 && timeout.tv_nsec == 0
+-    } else {
+-        false
+-    };
++    }
+ 
+     // set_user_sigmask ignores sigsetsize when the inner pointer is NULL.
+-    let has_mask = sigmask_argument.is_some_and(|argument| argument.sigmask != 0);
+     if let Some(argument) = sigmask_argument
+         && argument.sigmask != 0
+     {
+@@ -10234,116 +10230,32 @@
+         }
+     }
+ 
+-    // The raw syscall argument is an int; Linux observes its signed low word.
++    // The raw syscall argument is an `int`; Linux observes its low 32 bits.
+     let nfds = args[0] as libc::c_int;
+     if nfds < 0 {
+         return negative_errno(libc::EINVAL);
+     }
+-    // Linux clamps to the live fd-table capacity. One machine word is exact
+-    // even for its initial table; do not guess the size of a grown guest table.
++
++    // Linux clamps this copy to the live fd-table capacity, which KVM does not
++    // model yet. One machine word is exact for every fresh Linux table and for
++    // Detcore's internal pselect probes. Refuse larger calls before touching
++    // their fd sets rather than over-reading up to GUEST_NOFILE_LIMIT and
++    // manufacturing an EFAULT that Linux would not return.
+     if nfds > u64::BITS as libc::c_int {
+         return negative_errno(libc::ENOSYS);
+     }
+-    let mut sets = [0_u64; 3];
+-    if nfds != 0 {
+-        // Snapshot every input before descriptor checks or any output, including
+-        // aliases. The n == 0 exemption must not inspect any fd-set pointer.
+-        for (word, &address) in sets.iter_mut().zip(&args[1..4]) {
+-            if address != 0 {
+-                let mut bytes = [0; 8];
+-                if memory.user().read(address, &mut bytes).is_err() {
+-                    return negative_errno(libc::EFAULT);
+-                }
+-                *word = u64::from_ne_bytes(bytes);
+-            }
+-        }
+-    }
+-    if !zero_timeout || has_mask {
+-        return negative_errno(libc::ENOSYS);
+-    }
+-
+-    // fs/select.c POLLIN_SET/POLLOUT_SET/POLLEX_SET include normal/band bits
+-    // and NVAL. An absent guest fd is EBADF, but poll's NVAL for an existing
+-    // O_PATH description is readiness in all requested sets, as in Linux.
+-    // https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/select.c#L459
+-    const READ: libc::c_short = libc::POLLIN
+-        | libc::POLLRDNORM
+-        | libc::POLLRDBAND
+-        | libc::POLLHUP
+-        | libc::POLLERR
+-        | libc::POLLNVAL;
+-    const WRITE: libc::c_short =
+-        libc::POLLOUT | libc::POLLWRNORM | libc::POLLWRBAND | libc::POLLERR | libc::POLLNVAL;
+-    const EXCEPT: libc::c_short = libc::POLLPRI | libc::POLLNVAL;
+-    let mut poll_fds = Vec::new();
+-    let mut requested = Vec::new();
+-    for fd in 0..nfds {
+-        let bit = 1_u64 << fd;
+-        let membership = sets.map(|word| word & bit != 0);
+-        if !membership.into_iter().any(|present| present) {
+-            continue;
+-        }
+-        let Some(host_fd) = host_fd(state, fd) else {
+-            return negative_errno(libc::EBADF);
+-        };
+-        let virtual_signalfd = signalfd_mask(state, fd).is_some();
+-        let events = if virtual_signalfd {
+-            if membership[0] { libc::POLLIN } else { 0 }
+-        } else {
+-            // Linux includes the exception mask in its poll key unconditionally.
+-            EXCEPT | if membership[0] { READ } else { 0 } | if membership[1] { WRITE } else { 0 }
+-        };
+-        poll_fds.push(libc::pollfd {
+-            fd: host_fd,
+-            events,
+-            revents: 0,
+-        });
+-        requested.push((bit, membership, virtual_signalfd));
+-    }
+-    // SAFETY: poll sees only initialized host-owned storage and a zero timeout;
+-    // it never sees a guest pointer or changes the host signal mask.
+-    if unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as libc::nfds_t, 0) } < 0 {
+-        return io_error(std::io::Error::last_os_error());
+-    }
+-    let mut output = [0_u64; 3];
+-    let mut ready_count = 0;
+-    for (entry, (bit, membership, virtual_signalfd)) in poll_fds.iter().zip(requested) {
+-        let readiness = if virtual_signalfd {
+-            // Do not expose the private eventfd carrier's always-writable bit.
+-            [entry.revents & libc::POLLIN != 0, false, false]
+-        } else {
+-            [READ, WRITE, EXCEPT].map(|mask| entry.revents & mask != 0)
+-        };
+-        for index in 0..3 {
+-            if membership[index] && readiness[index] {
+-                output[index] |= bit;
+-                ready_count += 1;
+-            }
+-        }
+-    }
+-    // Linux checks pending signals only after a zero-readiness sample and before
+-    // copyout (core_sys_select). Our ordinary success return cannot represent its
+-    // restart outcome, so refuse this still-unsupported signal completion without
+-    // dequeuing anything. Positive readiness wins even with an eligible signal.
+-    if ready_count == 0 && has_eligible_pending_signal(state) {
+-        return negative_errno(libc::ENOSYS);
+-    }
+-    if nfds != 0 {
+-        for (&address, word) in args[1..4].iter().zip(output) {
+-            if address != 0
+-                && memory
+-                    .user()
+-                    .copy_to_user(address, &word.to_ne_bytes())
+-                    .is_err()
+-            {
++    let word_count = (nfds as usize).div_ceil(u64::BITS as usize);
++    let byte_length = word_count * std::mem::size_of::<u64>();
++    let mut fd_set = vec![0; byte_length];
++    if byte_length != 0 {
++        for address in &args[1..4] {
++            if *address != 0 && memory.user().read(*address, &mut fd_set).is_err() {
+                 return negative_errno(libc::EFAULT);
+             }
+         }
+     }
+-    // poll_select_finish takes its no-update path for an initially zero timeout,
+-    // on success AND failure. Even rewriting zero would wrongly fault on RO pages
+-    // or overwrite an aliased fd-set result. Never write this timespec here.
+-    ready_count
++
++    negative_errno(libc::ENOSYS)
+ }
+ 
+ // AUTONOMOUS-BOT-IMPLEMENTED

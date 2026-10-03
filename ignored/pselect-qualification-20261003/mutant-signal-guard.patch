@@ -1,0 +1,11 @@
+--- candidate/executor.rs
++++ mutant/executor.rs
+@@ -10325,7 +10325,7 @@
+     // copyout (core_sys_select). Our ordinary success return cannot represent its
+     // restart outcome, so refuse this still-unsupported signal completion without
+     // dequeuing anything. Positive readiness wins even with an eligible signal.
+-    if ready_count == 0 && has_eligible_pending_signal(state) {
++    if false && ready_count == 0 && has_eligible_pending_signal(state) {
+         return negative_errno(libc::ENOSYS);
+     }
+     if nfds != 0 {

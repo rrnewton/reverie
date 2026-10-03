@@ -1,0 +1,39 @@
+{
+  "phase": "clippy-001",
+  "command": [
+    "cargo",
+    "clippy",
+    "--locked",
+    "-p",
+    "reverie-kvm",
+    "--all-targets",
+    "-j",
+    "8",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+  "start_free_bytes": 1557519163392,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice": 10,
+  "seconds_bound": 600.0,
+  "started_et": "2026-10-03 07:44:31 AM ET",
+  "pid": 708046,
+  "rc": 0,
+  "stop_reason": null,
+  "wall_seconds": 20.00539946591016,
+  "minimum_free_bytes": 1557519163392,
+  "end_free_bytes": 1557566455808,
+  "output_bytes": 3152,
+  "output_sha256": "909b462b1a09c76bec56720a9273bd2de433f014bc487d0af8e9d0204588883c"
+}

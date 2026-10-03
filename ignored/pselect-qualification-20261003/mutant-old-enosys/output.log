@@ -1,0 +1,41 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling reverie-kvm v0.4.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003/reverie-kvm)
+    Finished `test` profile [unoptimized] target(s) in 27.78s
+     Running tests/static_elf.rs (target/pselect620-qualification/debug/deps/static_elf-9a322fcc3d61e965)
+
+running 1 test
+test pselect_zero::readiness_matches_native_pipe_socket_and_path_states ... 
+thread 'pselect_zero::readiness_matches_native_pipe_socket_and_path_states' (817455) panicked at reverie-kvm/tests/static_elf.rs:2347:5:
+pselect_zero::readiness_matches_native_pipe_socket_and_path_states: status=Some(101) stdout=
+running 1 test
+test pselect_zero::readiness_matches_native_pipe_socket_and_path_states ... FAILED
+
+failures:
+
+failures:
+    pselect_zero::readiness_matches_native_pipe_socket_and_path_states
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 419 filtered out; finished in 0.15s
+
+ stderr=warning: `--logfile` is deprecatedpselect zero mode=0 ownership=None code=80
+
+thread 'pselect_zero::readiness_matches_native_pipe_socket_and_path_states' (817458) panicked at reverie-kvm/tests/support/pselect_zero.rs:79:13:
+assertion `left == right` failed: mode=0 ownership=None
+  left: 80
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    pselect_zero::readiness_matches_native_pipe_socket_and_path_states
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 419 filtered out; finished in 0.15s
+
+error: test failed, to rerun pass `-p reverie-kvm --test static_elf`

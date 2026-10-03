@@ -1,0 +1,26 @@
+{
+  "reverie_head": "3a196cfb9dbb775900a1acb02890b8ca10aedd0c",
+  "hermit_consumer_head": "5d8cf0cf1d9a087503bfe8b1df368df72b9c44d7",
+  "linux_tag": "v6.18",
+  "linux_commit": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+  "sources": [
+    {
+      "name": "linux-v6.18-fs-select.c",
+      "bytes": 35634,
+      "sha256": "1d3469c39eb5bd9adef56f7e29d471c15e4fbc98477b39e1d22241ac7e3616dc",
+      "git_blob_sha1": "082cf60c7e2357dfd419c2128e38da95e3ef2ef3"
+    },
+    {
+      "name": "linux-v6.18-kernel-signal.c",
+      "bytes": 134558,
+      "sha256": "074166696c837c48ba5edc1fcefa4dd3e4b0736b2093545b0824a3f60f9c18e5",
+      "git_blob_sha1": "fe9190d84f281e650a2f2b356f6fe692e22dadd4"
+    },
+    {
+      "name": "linux-v6.18-include-linux-fdtable.h",
+      "bytes": 3155,
+      "sha256": "57626bfc142bab7cf6b3f5c6b3d4b95ed880a17a8ba9209619bb71c8d458b00d",
+      "git_blob_sha1": "c45306a9f00723f971692aef26ecbe4b3bc75449"
+    }
+  ]
+}

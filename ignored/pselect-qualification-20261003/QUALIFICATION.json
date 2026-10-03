@@ -1,0 +1,676 @@
+{
+  "head": "954769e428d7a403d8d33fd3494d6e96443d51a9",
+  "tree": "163469a6973cc2eadf34bdebb687f880afaee52f",
+  "base": "3a196cfb9dbb775900a1acb02890b8ca10aedd0c",
+  "source_files": {
+    "reverie-kvm/src/executor.rs": "29ed3c15526792c21c5c3af59a068cb93feb95391dd727f250b233b95f271e16",
+    "reverie-kvm/tests/static_elf.rs": "f5386250ce2e0d03c97079bea640298e05523cd10877815ae9263cca002d4a61",
+    "reverie-kvm/tests/support/pselect_zero.rs": "c27a1f7fd5d7f02c4c40ca22c06737466cdbcdb81f7c6427661370b3897bf5f9",
+    "reverie-kvm/tests/fixtures/pselect_zero.c": "1b319f5a90f13ee43ea1f308b27cdbb164656ad7924478c85c6896ef20ed2f03"
+  },
+  "qualification_timing": "Commands began on frozen uncommitted source; all four source files match the committed head byte-for-byte. docs began before commit and completed after it.",
+  "records": {
+    "build-001": {
+      "phase": "build-001",
+      "command": [
+        "env",
+        "GIT_CONFIG_GLOBAL=/dev/null",
+        "GIT_CONFIG_COUNT=1",
+        "GIT_CONFIG_KEY_0=credential.helper",
+        "GIT_CONFIG_VALUE_0=!gh auth git-credential",
+        "FLEET_REAL_GH=/home/newton/bin/gh",
+        "with-proxy",
+        "cargo",
+        "test",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--test",
+        "static_elf",
+        "--no-run",
+        "-j",
+        "8"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+      "start_free_bytes": 1558238236672,
+      "cpu_affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "nice": 10,
+      "seconds_bound": 1800.0,
+      "started_et": "2026-10-03 07:40:21 AM ET",
+      "pid": 435191,
+      "rc": 0,
+      "stop_reason": null,
+      "wall_seconds": 39.00789309700485,
+      "minimum_free_bytes": 1557567279104,
+      "end_free_bytes": 1557567279104,
+      "output_bytes": 5328,
+      "output_sha256": "e1e88f00758998e0c62086f9109b9a1548d674ae87bf3a7f54c130b038b93954"
+    },
+    "clippy-001": {
+      "phase": "clippy-001",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--all-targets",
+        "-j",
+        "8",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+      "start_free_bytes": 1557519163392,
+      "cpu_affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "nice": 10,
+      "seconds_bound": 600.0,
+      "started_et": "2026-10-03 07:44:31 AM ET",
+      "pid": 708046,
+      "rc": 0,
+      "stop_reason": null,
+      "wall_seconds": 20.00539946591016,
+      "minimum_free_bytes": 1557519163392,
+      "end_free_bytes": 1557566455808,
+      "output_bytes": 3152,
+      "output_sha256": "909b462b1a09c76bec56720a9273bd2de433f014bc487d0af8e9d0204588883c"
+    },
+    "docs-001": {
+      "phase": "docs-001",
+      "command": [
+        "env",
+        "RUSTDOCFLAGS=-D warnings",
+        "cargo",
+        "doc",
+        "--locked",
+        "--workspace",
+        "--no-deps",
+        "-j",
+        "8"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+      "start_free_bytes": 1557541715968,
+      "cpu_affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "nice": 10,
+      "seconds_bound": 600.0,
+      "started_et": "2026-10-03 07:46:35 AM ET",
+      "pid": 904425,
+      "rc": 0,
+      "stop_reason": null,
+      "wall_seconds": 44.016999442945234,
+      "minimum_free_bytes": 1556766162944,
+      "end_free_bytes": 1556766162944,
+      "output_bytes": 13156,
+      "output_sha256": "33840049ce85144d4ba765519bbcf0be194062496029e8ea423b73c0eb1f98af"
+    },
+    "integration-001": {
+      "phase": "integration-001",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--test",
+        "static_elf",
+        "pselect_zero::",
+        "-j",
+        "8",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+      "start_free_bytes": 1556749860864,
+      "cpu_affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "nice": 10,
+      "seconds_bound": 300.0,
+      "started_et": "2026-10-03 07:42:26 AM ET",
+      "pid": 568384,
+      "rc": 0,
+      "stop_reason": null,
+      "wall_seconds": 9.004085976048373,
+      "minimum_free_bytes": 1556749860864,
+      "end_free_bytes": 1556863934464,
+      "output_bytes": 507,
+      "output_sha256": "28a98ee1924e432479f15026ffa370e4dd59a11eab3d86859ded5db67a4c8b3e"
+    },
+    "integration-restored-head": {
+      "phase": "integration-restored-head",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--test",
+        "static_elf",
+        "pselect_zero::",
+        "-j",
+        "8",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+      "start_free_bytes": 1555281600512,
+      "cpu_affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "nice": 10,
+      "seconds_bound": 300.0,
+      "started_et": "2026-10-03 07:48:47 AM ET",
+      "pid": 1288770,
+      "rc": 0,
+      "stop_reason": null,
+      "wall_seconds": 33.007174786995165,
+      "minimum_free_bytes": 1554746077184,
+      "end_free_bytes": 1554746077184,
+      "output_bytes": 625,
+      "output_sha256": "ae897df859f6e263a0e248824c1fac31c9df26a4fbe1bee85dd211faeff6e990"
+    },
+    "lib-001": {
+      "phase": "lib-001",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "-j",
+        "8",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+      "start_free_bytes": 1556863934464,
+      "cpu_affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "nice": 10,
+      "seconds_bound": 600.0,
+      "started_et": "2026-10-03 07:43:00 AM ET",
+      "pid": 606672,
+      "rc": 0,
+      "stop_reason": null,
+      "wall_seconds": 68.0130456200568,
+      "minimum_free_bytes": 1556863934464,
+      "end_free_bytes": 1557519163392,
+      "output_bytes": 104108,
+      "output_sha256": "e2770627cce5d0cce699c380e761f19d8a3b54963821422929e080d83721b180"
+    },
+    "mutant-old-enosys": {
+      "phase": "mutant-old-enosys",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--test",
+        "static_elf",
+        "pselect_zero::readiness_matches_native_pipe_socket_and_path_states",
+        "-j",
+        "8",
+        "--",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+      "start_free_bytes": 1557685198848,
+      "cpu_affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "nice": 10,
+      "seconds_bound": 300.0,
+      "started_et": "2026-10-03 07:45:22 AM ET",
+      "pid": 778591,
+      "rc": 101,
+      "stop_reason": null,
+      "wall_seconds": 28.008164714090526,
+      "minimum_free_bytes": 1557549395968,
+      "end_free_bytes": 1557549395968,
+      "output_bytes": 1846,
+      "output_sha256": "efa3df385d48ebe7c1801309ad3944c4aad4e83408ad010500ebef15d5a6d744"
+    },
+    "mutant-signal-guard": {
+      "phase": "mutant-signal-guard",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "executor::tests::pselect6_zero_pending_signal_guard_is_read_only_and_ignores_delivery_permits",
+        "-j",
+        "8",
+        "--",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+      "start_free_bytes": 1557549395968,
+      "cpu_affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "nice": 10,
+      "seconds_bound": 300.0,
+      "started_et": "2026-10-03 07:45:51 AM ET",
+      "pid": 817876,
+      "rc": 101,
+      "stop_reason": null,
+      "wall_seconds": 24.00653668900486,
+      "minimum_free_bytes": 1557549395968,
+      "end_free_bytes": 1557541715968,
+      "output_bytes": 1018,
+      "output_sha256": "f4614e458985cd5ab7967f05d0be824d59bb183f551bf46d5ecb03245e952cfd"
+    },
+    "required-kvm-001": {
+      "phase": "required-kvm-001",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--test",
+        "static_elf",
+        "repair_prctl_required_kvm_is_not_optional",
+        "-j",
+        "8",
+        "--",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+      "start_free_bytes": 1557519163392,
+      "cpu_affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "nice": 10,
+      "seconds_bound": 180.0,
+      "started_et": "2026-10-03 07:44:20 AM ET",
+      "pid": 692066,
+      "rc": 0,
+      "stop_reason": null,
+      "wall_seconds": 1.0023128660395741,
+      "minimum_free_bytes": 1557519163392,
+      "end_free_bytes": 1557519163392,
+      "output_bytes": 2185,
+      "output_sha256": "016281545780471f8133567f44587758adb7f896de706b5a45ea9d8f473dc3f1"
+    },
+    "unit-001": {
+      "phase": "unit-001",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "pselect6_",
+        "-j",
+        "8",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+      "start_free_bytes": 1556749860864,
+      "cpu_affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "nice": 10,
+      "seconds_bound": 300.0,
+      "started_et": "2026-10-03 07:42:07 AM ET",
+      "pid": 549389,
+      "rc": 0,
+      "stop_reason": null,
+      "wall_seconds": 1.0019421089673415,
+      "minimum_free_bytes": 1556749860864,
+      "end_free_bytes": 1556749860864,
+      "output_bytes": 853,
+      "output_sha256": "f8e0a046c0b4193fe59bfbcff658beea3f0f4c05c93cda7683537802e8ee5b73"
+    },
+    "unit-restored-head": {
+      "phase": "unit-restored-head",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "pselect6_",
+        "-j",
+        "8",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+      "start_free_bytes": 1555780825088,
+      "cpu_affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "nice": 10,
+      "seconds_bound": 300.0,
+      "started_et": "2026-10-03 07:48:16 AM ET",
+      "pid": 1197315,
+      "rc": 0,
+      "stop_reason": null,
+      "wall_seconds": 25.006669875001535,
+      "minimum_free_bytes": 1555780825088,
+      "end_free_bytes": 1555780825088,
+      "output_bytes": 971,
+      "output_sha256": "0641d42ba5836e0d081488c2a3136c11d21a6be187d07f9d3ca5e2135f73f1d0"
+    }
+  },
+  "mutants": {
+    "results": [
+      {
+        "phase": "mutant-old-enosys",
+        "rc": 101,
+        "source_sha256": "dafeed6fc7f79ae23e43ab087522d98429682ffcb0d5e0218a41e4b471b6aaaf",
+        "compiled_and_ran": true
+      },
+      {
+        "phase": "mutant-signal-guard",
+        "rc": 101,
+        "source_sha256": "feaaedd55d90ea4c70cc8fb525a52d559ae65f1bea07d1fc31bf681d99c54a40",
+        "compiled_and_ran": true
+      }
+    ],
+    "restored_sha256": "29ed3c15526792c21c5c3af59a068cb93feb95391dd727f250b233b95f271e16"
+  },
+  "build_inputs": {
+    "cargo_lock_sha256": "f19530a3aa1d79d5771cdf17d36d127922495973ab7cbfc56a726326e8cecee6",
+    "cargo": "cargo 1.99.0-nightly (3efb1f477 2026-07-17)",
+    "rustc": "rustc 1.99.0-nightly (26ae60a9e 2026-07-28)",
+    "kernel": "7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf",
+    "kvm_device": "os.stat_result(st_mode=8630, st_ino=3659, st_dev=7, st_nlink=1, st_uid=0, st_gid=36, st_size=0, st_atime=1791027847, st_mtime=1791027847, st_ctime=1791027847)",
+    "lock_generated": true,
+    "lock_tracked": false
+  },
+  "canonical_validation": false,
+  "hermit_cell_qualification": false,
+  "exact_committed_head_phases": [
+    "unit-restored-head",
+    "integration-restored-head"
+  ],
+  "final_test_binaries": {
+    "unit-restored-head": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003/target/pselect620-qualification/debug/deps/reverie_kvm-7ad745a0abdfb62a",
+      "sha256": "fc870574a3edc7f42f67b379e6f585fed4e5a86f2acee3271087161e9270877a",
+      "bytes": 60154616
+    },
+    "integration-restored-head": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003/target/pselect620-qualification/debug/deps/static_elf-9a322fcc3d61e965",
+      "sha256": "6624b3b1b64f6c6fdd4b9263b3034e24d89645c07bd88e5f14043bb724d4f7df",
+      "bytes": 96625736
+    }
+  },
+  "note_binary_identity": "Original precommit binaries were replaced by intentional mutants and were not hashed before replacement. Final restored-head binaries are hashed above; source equality binds the earlier runs, not an invented original binary digest.",
+  "remaining_owned_process_group_members": [],
+  "evidence_files": {
+    "BUILD-INPUTS.json": {
+      "sha256": "b6d018b8baf51f4e44ecda36d13df82061e2040f4b94f7e8d9a4e5c81883b574",
+      "bytes": 488
+    },
+    "COMMIT-MESSAGE.txt": {
+      "sha256": "4598888a011a7f83c3fa18c6af3308b145c0651bf28321aca5baf901d04f833c",
+      "bytes": 1611
+    },
+    "MUTANTS.json": {
+      "sha256": "82d233395a25b5c8146bcfc5dc355040513cf591599766becbf9e51852d965e2",
+      "bytes": 489
+    },
+    "PR-BODY.md": {
+      "sha256": "507b9005a7b670098d19cdb27b10ab0d470e1057618893462410d476e2670a96",
+      "bytes": 2723
+    },
+    "PR.json": {
+      "sha256": "ea19e78831af245166430c40a3c2da9b124b826a1dd7ea84946397c7840de2f3",
+      "bytes": 2928
+    },
+    "PUSH.json": {
+      "sha256": "8d8a0173c50e8dadfd184189e6c51ec4f9c89975ca296d1a75fb129a3466c00e",
+      "bytes": 331
+    },
+    "SOURCE-FROZEN-001.json": {
+      "sha256": "530c5ae2499f00601322785234ab7ab04948f1761a6c5b363fa101c82d6170d4",
+      "bytes": 579
+    },
+    "backlog-selection.md": {
+      "sha256": "790c38953be28e1eb1ef5d5882cc9bb22c24396d1613035ff1e65f5a5df02e57",
+      "bytes": 9025
+    },
+    "build-001/RESULT.json": {
+      "sha256": "603f037cfb309b41f231dd66847c517697a77ef3547058cf01c04ca3ddab8a0b",
+      "bytes": 962
+    },
+    "build-001/output.log": {
+      "sha256": "e1e88f00758998e0c62086f9109b9a1548d674ae87bf3a7f54c130b038b93954",
+      "bytes": 5328
+    },
+    "clippy-001/RESULT.json": {
+      "sha256": "2f20eb00d0eed14348d66204e3c67e89c06f3f87b2e40dfec053b49a35b9d2fc",
+      "bytes": 753
+    },
+    "clippy-001/output.log": {
+      "sha256": "909b462b1a09c76bec56720a9273bd2de433f014bc487d0af8e9d0204588883c",
+      "bytes": 3152
+    },
+    "commit.log": {
+      "sha256": "9cbb219df71dd6fa2341edba612726ebc5a1e99bc0561e83a079d46f0a03c0be",
+      "bytes": 280
+    },
+    "consumer-REPORT.md": {
+      "sha256": "cef570d09d900e1530b257ba62fa892809f36c01f630661faf8295f752ca7409",
+      "bytes": 9159
+    },
+    "consumer-SOURCE-BINDING.json": {
+      "sha256": "ee66f3d5d07cf1fd931fda71bfed2f98ce00f7332fe90a45db277aec076cf206",
+      "bytes": 3073
+    },
+    "design-REPORT.md": {
+      "sha256": "b582aa9786756d88700d8733d2c2cfe3b49c760fc2f9fb508efcf261d9832ab9",
+      "bytes": 18057
+    },
+    "design-SOURCE-BINDING.json": {
+      "sha256": "b0aeab01bc61715408bd6933da2e8b1fdda8ac5439a151298db92e4aebb6247d",
+      "bytes": 934
+    },
+    "docs-001/RESULT.json": {
+      "sha256": "86c927af5830a4aeda0d8caabf895234cdb54dbe6cb30439906eeb0c65826ffc",
+      "bytes": 743
+    },
+    "docs-001/output.log": {
+      "sha256": "33840049ce85144d4ba765519bbcf0be194062496029e8ea423b73c0eb1f98af",
+      "bytes": 13156
+    },
+    "integration-001/RESULT.json": {
+      "sha256": "14943ed3d2ed0bcdf84c9427e9b7bcd9e3158aba173ca66eea39a9a94598ed38",
+      "bytes": 805
+    },
+    "integration-001/output.log": {
+      "sha256": "28a98ee1924e432479f15026ffa370e4dd59a11eab3d86859ded5db67a4c8b3e",
+      "bytes": 507
+    },
+    "integration-restored-head/RESULT.json": {
+      "sha256": "cc05b27ede7ce2bc1607e6608f114d418b4b02151edf0bb5538ace9e31c2331c",
+      "bytes": 817
+    },
+    "integration-restored-head/output.log": {
+      "sha256": "ae897df859f6e263a0e248824c1fac31c9df26a4fbe1bee85dd211faeff6e990",
+      "bytes": 625
+    },
+    "lib-001/RESULT.json": {
+      "sha256": "9ebf4b54aee50e46a679f2a744ffec89a9668ad2576be665e3b0959f5f3939b8",
+      "bytes": 739
+    },
+    "lib-001/output.log": {
+      "sha256": "e2770627cce5d0cce699c380e761f19d8a3b54963821422929e080d83721b180",
+      "bytes": 104108
+    },
+    "mutant-old-enosys/RESULT.json": {
+      "sha256": "c88282762b8807b88dd32c5f1b6d336ad7545d53c0d312b678096881a11ce3f9",
+      "bytes": 878
+    },
+    "mutant-old-enosys/output.log": {
+      "sha256": "efa3df385d48ebe7c1801309ad3944c4aad4e83408ad010500ebef15d5a6d744",
+      "bytes": 1846
+    },
+    "mutant-old-enosys.patch": {
+      "sha256": "990f2f5799510f6907346736b50b92ce387951dcf9e30297bcc9ab9ebf2320aa",
+      "bytes": 7348
+    },
+    "mutant-signal-guard/RESULT.json": {
+      "sha256": "82c69c7fdd233fa0a8e9fe5ae74afd51b6a6d665a3c77e0a685c48a33c740f56",
+      "bytes": 887
+    },
+    "mutant-signal-guard/output.log": {
+      "sha256": "f4614e458985cd5ab7967f05d0be824d59bb183f551bf46d5ecb03245e952cfd",
+      "bytes": 1018
+    },
+    "mutant-signal-guard.patch": {
+      "sha256": "46f39bf5af13505e1646f0241068feff9cb7de39d0d1c0e509abfebe85d147a2",
+      "bytes": 535
+    },
+    "pr-create.log": {
+      "sha256": "49a34f2018213d11a1126891122677ddaa9a356a5937ba37823c13d3367885dd",
+      "bytes": 45
+    },
+    "push.log": {
+      "sha256": "375e8c5f13da53becda9052c5bdcf205bd42fb4d6b3bbc586444c75dd5718a9b",
+      "bytes": 359
+    },
+    "required-kvm-001/RESULT.json": {
+      "sha256": "3f1cc0753fc76fc5554eca3aa4db0dcc347c8377b1764aae6fbbed134087f423",
+      "bytes": 850
+    },
+    "required-kvm-001/output.log": {
+      "sha256": "016281545780471f8133567f44587758adb7f896de706b5a45ea9d8f473dc3f1",
+      "bytes": 2185
+    },
+    "run_guard.py": {
+      "sha256": "f831f989a58219e64d35deb554fc098072700ea853099cf45a8c030cbc682ae5",
+      "bytes": 3655
+    },
+    "run_mutants.py": {
+      "sha256": "b750114e1f8cef9d92592244b3f93b1c4d32841b43250bac05753c23f06280da",
+      "bytes": 2431
+    },
+    "unit-001/RESULT.json": {
+      "sha256": "627a23524502e015288f91d701187d16a91c540ee8a9c278cc9b550f842cbf7b",
+      "bytes": 775
+    },
+    "unit-001/output.log": {
+      "sha256": "f8e0a046c0b4193fe59bfbcff658beea3f0f4c05c93cda7683537802e8ee5b73",
+      "bytes": 853
+    },
+    "unit-restored-head/RESULT.json": {
+      "sha256": "4f3ca228a9ee6ec0c6dd8a90ebe780ece222f29260f720e62c45b01df8d2b1d0",
+      "bytes": 786
+    },
+    "unit-restored-head/output.log": {
+      "sha256": "0641d42ba5836e0d081488c2a3136c11d21a6be187d07f9d3ca5e2135f73f1d0",
+      "bytes": 971
+    },
+    "working-diff-001.patch": {
+      "sha256": "c21c8848e5b5f9c609b6ca09f6a9e6b14b555b1f7e64f52d374097f0bd4eaada",
+      "bytes": 40233
+    }
+  }
+}

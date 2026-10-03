@@ -1,0 +1,37 @@
+{
+  "phase": "docs-001",
+  "command": [
+    "env",
+    "RUSTDOCFLAGS=-D warnings",
+    "cargo",
+    "doc",
+    "--locked",
+    "--workspace",
+    "--no-deps",
+    "-j",
+    "8"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+  "start_free_bytes": 1557541715968,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice": 10,
+  "seconds_bound": 600.0,
+  "started_et": "2026-10-03 07:46:35 AM ET",
+  "pid": 904425,
+  "rc": 0,
+  "stop_reason": null,
+  "wall_seconds": 44.016999442945234,
+  "minimum_free_bytes": 1556766162944,
+  "end_free_bytes": 1556766162944,
+  "output_bytes": 13156,
+  "output_sha256": "33840049ce85144d4ba765519bbcf0be194062496029e8ea423b73c0eb1f98af"
+}

@@ -1,0 +1,85 @@
+{
+  "hermit_head": "9e7dd6e33cf6fc76f3b9a744f50441120b32f0d6",
+  "sources": [
+    {
+      "path": "detcore/src/syscalls/io.rs",
+      "bytes": 86314,
+      "sha256": "5a4cdc6dbf0b7a35d0de6998495e7264f27175bc6b69c8304d74ab6b0c97914b",
+      "git_blob": "d7cde3a97d557bc9d1d33e2b4ede8e36ce87a0c2"
+    },
+    {
+      "path": "detcore/src/syscalls/helpers.rs",
+      "bytes": 70133,
+      "sha256": "ca3017ea41513e398a6224f369aba234150515d1c1cc22961f1a97317511a60b",
+      "git_blob": "c2a78eb310a3932bf71200a958d43b664f52eccd"
+    },
+    {
+      "path": "tests/c/poll_readiness.c",
+      "bytes": 5169,
+      "sha256": "0b49a5b5083a7445cf368d3332b17fbf55381ba2a285d24d215901303b5ab19c",
+      "git_blob": "65f60f33aa298f5a2d2f0879aedf51fe7f2b9a4e"
+    },
+    {
+      "path": "tests/e2e/manifests/c-programs.yaml",
+      "bytes": 796425,
+      "sha256": "1b6224ecd807d19b90fa7dd839e49905477c4ba1d2677e7f5665830186610603",
+      "git_blob": "c5e81c5e3a49fc96b3174358725b55a36294c8df"
+    },
+    {
+      "path": "ci/manifest-plan/src/bin/test-harness.rs",
+      "bytes": 328678,
+      "sha256": "9e2a23b2cb8e93bac6323dfd83ac227eaf0698f7a16fa2405678ebd97636c996",
+      "git_blob": "74ac7c5081586acf430f83a91ce0cabb799942e6"
+    },
+    {
+      "path": "ci/manifest-plan/src/runner.rs",
+      "bytes": 608853,
+      "sha256": "2ef2c97959200db5fe49fa7f606e5ce25ebb4492d9224ba41f99c26e95327f5f",
+      "git_blob": "acad3807651251538c4c2f5195dc223aae8469d8"
+    },
+    {
+      "path": "Cargo.lock",
+      "bytes": 74400,
+      "sha256": "4cf98e25b947b722e3e1679dbd54570c9d5dba55cb5bf5bf9d1d4a738a0fe57c",
+      "git_blob": "ba54eaa9f032e7b4621db9d3df94da2442866625"
+    },
+    {
+      "path": "Cargo.toml",
+      "bytes": 4877,
+      "sha256": "0c0e439bb7ece3ce98c923373191412f8384fa342c6e9022aa8dd7ae1ee6a0a2",
+      "git_blob": "7de9b7894fc0bd43ceb22ef104f4f3dbc45429dc"
+    },
+    {
+      "path": "detcore/Cargo.toml",
+      "bytes": 4387,
+      "sha256": "5a0192b5eb7789682beaacdb19c89b20643b7b9be4f436c28d4bb2df8212a6de",
+      "git_blob": "eefeda6d78a9b512d573138d4efeb246bd60e55a"
+    },
+    {
+      "path": "hermit-cli/Cargo.toml",
+      "bytes": 5137,
+      "sha256": "457a9865b4b75dbe090e22d17ce83cf116da529c0686879637d8d749c8775cf7",
+      "git_blob": "c1c8058a7c791325171abb5a88487ae295068542"
+    },
+    {
+      "path": "ci/manifest-plan/src/timeouts.rs",
+      "bytes": 67921,
+      "sha256": "91f4848278336e590c9a026b21a5c027f067d9229e10b1a78bb30e862f29ceb4",
+      "git_blob": "ac7779e8dfddddaa48b7718f176889df2a5f5975"
+    }
+  ],
+  "comparison_with_socket_activation_5d8": {
+    "detcore/src/syscalls/io.rs": {
+      "identical": true,
+      "previous_sha256": "5a4cdc6dbf0b7a35d0de6998495e7264f27175bc6b69c8304d74ab6b0c97914b"
+    },
+    "tests/c/poll_readiness.c": {
+      "identical": true,
+      "previous_sha256": "0b49a5b5083a7445cf368d3332b17fbf55381ba2a285d24d215901303b5ab19c"
+    },
+    "tests/e2e/manifests/c-programs.yaml": {
+      "identical": true,
+      "previous_sha256": "1b6224ecd807d19b90fa7dd839e49905477c4ba1d2677e7f5665830186610603"
+    }
+  }
+}

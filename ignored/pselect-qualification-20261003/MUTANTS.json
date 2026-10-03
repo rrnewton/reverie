@@ -1,0 +1,17 @@
+{
+  "results": [
+    {
+      "phase": "mutant-old-enosys",
+      "rc": 101,
+      "source_sha256": "dafeed6fc7f79ae23e43ab087522d98429682ffcb0d5e0218a41e4b471b6aaaf",
+      "compiled_and_ran": true
+    },
+    {
+      "phase": "mutant-signal-guard",
+      "rc": 101,
+      "source_sha256": "feaaedd55d90ea4c70cc8fb525a52d559ae65f1bea07d1fc31bf681d99c54a40",
+      "compiled_and_ran": true
+    }
+  ],
+  "restored_sha256": "29ed3c15526792c21c5c3af59a068cb93feb95391dd727f250b233b95f271e16"
+}

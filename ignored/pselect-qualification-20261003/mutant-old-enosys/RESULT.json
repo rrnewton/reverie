@@ -1,0 +1,42 @@
+{
+  "phase": "mutant-old-enosys",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "reverie-kvm",
+    "--test",
+    "static_elf",
+    "pselect_zero::readiness_matches_native_pipe_socket_and_path_states",
+    "-j",
+    "8",
+    "--",
+    "--exact",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-pselect-zero-20261003",
+  "start_free_bytes": 1557685198848,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice": 10,
+  "seconds_bound": 300.0,
+  "started_et": "2026-10-03 07:45:22 AM ET",
+  "pid": 778591,
+  "rc": 101,
+  "stop_reason": null,
+  "wall_seconds": 28.008164714090526,
+  "minimum_free_bytes": 1557549395968,
+  "end_free_bytes": 1557549395968,
+  "output_bytes": 1846,
+  "output_sha256": "efa3df385d48ebe7c1801309ad3944c4aad4e83408ad010500ebef15d5a6d744"
+}
