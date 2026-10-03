@@ -2337,6 +2337,10 @@ int main(void) {{
 }
 
 fn leader_self_exec_bounded(test: &str) -> bool {
+    leader_self_exec_bounded_with_output(test, false)
+}
+
+fn leader_self_exec_bounded_with_output(test: &str, forward_output: bool) -> bool {
     if !kvm_available(test) {
         return false;
     }
@@ -2357,6 +2361,10 @@ fn leader_self_exec_bounded(test: &str) -> bool {
         .env("REVERIE_LEADER_EXEC_CHILD", test)
         .output()
         .unwrap();
+    if forward_output {
+        std::io::Write::write_all(&mut std::io::stdout().lock(), &output.stdout).unwrap();
+        std::io::Write::write_all(&mut std::io::stderr().lock(), &output.stderr).unwrap();
+    }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -11221,6 +11229,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "msync::unchanged_five_check_contract_matches_native",
         "msync_lifecycle::shared_coherence_and_mapping_lifetime_match_native",
         "shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native",
+        "shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner",
         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
         "fchdir_consumes_low_descriptor_words_on_kvm",
         "getdents64_consumes_low_descriptor_words_on_kvm",
@@ -21042,5 +21051,99 @@ fn shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native(
         assert_eq!(stderr, native.stderr, "mode={name}");
         assert_eq!(stdout, native.stdout, "mode={name}");
         eprintln!("shared-file-fork completed {name}: child=0 syncs=2");
+    }
+}
+
+#[test]
+fn shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner() {
+    const TEST: &str = "shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner";
+    if !leader_self_exec_bounded_with_output(TEST, true) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "shared-file-fork-clear-tid",
+        include_str!("fixtures/shared_file_fork_clear_tid.c"),
+    );
+    let image = std::fs::read(&program).unwrap();
+    let native_directory = directory.0.join("native");
+    std::fs::create_dir(&native_directory).unwrap();
+    let native = std::process::Command::new(&program)
+        .arg("native")
+        .current_dir(&native_directory)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert!(native.stderr.is_empty(), "{native:?}");
+    const SUMMARY: &str =
+        "shared clear-tid clone=2 fork-set=2 ordinary=ok memfd=ok markers=4 children=0\n";
+    let native_text = std::str::from_utf8(&native.stdout).unwrap();
+    let native_lines: Vec<_> = native_text.split_inclusive('\n').collect();
+    assert_eq!(native_lines.len(), 5, "{native:?}");
+    let mut expected_kvm = String::new();
+    for registration in 0..2 {
+        for backing in 0..2 {
+            let marker = 0x3152_6475_i32 + backing * 0x0101_0101 + registration;
+            let observation = |mode, actual| {
+                format!(
+                    "clear-tid mode={mode} registration={registration} backing={backing} expected={marker} actual={actual} waitstatus=0\n"
+                )
+            };
+            let native_line = native_lines[(registration * 2 + backing) as usize];
+            assert!(
+                native_line == observation("native", marker)
+                    || native_line == observation("native", 0),
+                "unexpected native clear-tid observation: {native_line:?}"
+            );
+            expected_kvm.push_str(&observation("kvm", marker));
+        }
+    }
+    assert_eq!(native_lines[4], SUMMARY);
+    expected_kvm.push_str(SUMMARY);
+    std::io::Write::write_all(&mut std::io::stdout().lock(), &native.stdout).unwrap();
+    eprintln!("shared-file-clear-tid completed native: markers=4 children=0");
+    for (name, ownership) in [
+        ("direct", None),
+        ("host", Some(ThreadOwnership::Host)),
+        ("tool", Some(ThreadOwnership::Tool)),
+    ] {
+        let guest_directory = directory.0.join(name);
+        std::fs::create_dir(&guest_directory).unwrap();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[program.to_str().unwrap(), "kvm"],
+                &[],
+                &guest_directory,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if let Some(ownership) = ownership {
+            backend.set_thread_ownership(ownership);
+            let (trace, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            for (syscall, expected) in [("clone", 2), ("fork", 2)] {
+                assert_eq!(
+                    trace
+                        .syscalls()
+                        .iter()
+                        .filter(|name| name.as_str() == syscall)
+                        .count(),
+                    expected,
+                    "ownership={ownership:?}: syscall={syscall} code={code} stdout={stdout:?} stderr={stderr:?}"
+                );
+            }
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(code, 0, "mode={name}: stdout={stdout:?} stderr={stderr:?}");
+        assert_eq!(stderr, native.stderr, "mode={name}");
+        assert_eq!(stdout, expected_kvm.as_bytes(), "mode={name}");
+        std::io::Write::write_all(&mut std::io::stdout().lock(), &stdout).unwrap();
+        eprintln!("shared-file-clear-tid completed {name}: markers=4 children=0");
     }
 }

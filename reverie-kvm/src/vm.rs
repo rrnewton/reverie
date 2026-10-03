@@ -1466,6 +1466,12 @@ pub struct KvmBackend {
     completed_tool_panics: Mutex<Vec<CompletedToolPanic>>,
     thread_slot: Option<usize>,
     is_guest_thread: bool,
+    // Conservative certificate for a non-CLONE_VM process snapshot. The
+    // ordinary shared-file domain separately excludes additional same-mm
+    // participants. Initial roots and legacy vfork snapshots have no certificate;
+    // a later CLONE_VM process preparation revokes it instead of guessing when
+    // the other process has stopped using the guest mm.
+    independent_process_mm: bool,
     // Who owns this backend's guest threads. The single value drives BOTH the
     // CLONE_THREAD worker dispatch path (`run_process_action_with_tool`) and
     // `futex`/CLEARTID ownership (`is_backend_owned_syscall`), so the two can
@@ -1783,6 +1789,7 @@ impl KvmBackend {
             completed_tool_panics: Mutex::new(Vec::new()),
             thread_slot: None,
             is_guest_thread: false,
+            independent_process_mm: false,
             // Effective ownership before any tool run resolves it. The direct
             // (non-tool) personality never dispatches threads through a Tool loop,
             // so Host is the correct effective value there; when a tool runs,
@@ -2556,6 +2563,14 @@ impl KvmBackend {
                 child_executor
             }
         };
+        // A successfully prepared non-CLONE_VM process gets an independent
+        // guest mm. The legacy vfork path also creates a backend snapshot, so
+        // distinct host mappings alone cannot confer this certificate. Never
+        // recover a revoked parent certificate from a guessed join condition.
+        child.independent_process_mm = !share_address_space;
+        if share_address_space {
+            self.independent_process_mm = false;
+        }
         if shared_file_snapshot {
             // Child TID may itself lie in a shared file, so neither TID store
             // precedes fallible VM setup or descriptor/lifecycle preparation.
@@ -4568,6 +4583,24 @@ impl KvmBackend {
             return;
         };
         debug_assert!(self.thread_slot.is_none());
+        if self.independent_process_mm
+            && !self.is_guest_thread
+            && self.memory.contains_shared_file()
+            && self.memory.entry_gate().single_member_domain_active()
+        {
+            // Linux mm_release discards clear_child_tid in either case, but
+            // stores/wakes only for mm_users > 1. File pages shared with a
+            // different process do not share the guest mm. This certificate
+            // plus the exclusive file domain proves the virtual last-user
+            // case; it is not a general model of host mm_users, which temporary
+            // /proc readers can also increment. No virtual observer owns such
+            // a reference here. Consume the registration without accessing its
+            // address; existing gate failures remain pending and unchanged.
+            // https://github.com/gregkh/linux/blob/v7.1.3/kernel/fork.c#L1463
+            #[cfg(test)]
+            clear_tid_diagnostic::stopped("single-owner shared-file process mm");
+            return;
+        }
         // Errors below are dropped on purpose. A bad guest address is Linux's
         // EFAULT: mm_release ignores the failed store ("if userspace has not
         // set up a proper pointer then tough luck") and the exit proceeds with
@@ -7888,6 +7921,70 @@ mod tests {
         fn report_backend_failure(&self, event: reverie::BackendFailure) {
             self.events.lock().unwrap().push(event);
         }
+    }
+
+    #[test]
+    fn independent_process_mm_certificate_excludes_vfork_and_stays_revoked() {
+        let mut parent =
+            KvmBackend::new(16 * 1024 * 1024).expect("independent mm control requires KVM");
+        parent
+            .install_static_elf(&minimal_test_elf(&[0xf4]), "/bin/independent-mm")
+            .unwrap();
+        let executor = ElfExecutor::new(parent.static_elf.take().unwrap(), false);
+        let registers = parent.vcpu.get_regs().unwrap();
+        stage_process_syscall_return(
+            &mut parent.memory,
+            &parent.vcpu,
+            parent.syscall_frame_address,
+            registers,
+        )
+        .unwrap();
+        assert!(!parent.independent_process_mm);
+        let mut child = parent
+            .prepare_forked_process(
+                &executor, 2, None, None, None, None, false, false, false, None,
+            )
+            .unwrap();
+        assert!(child.backend.independent_process_mm);
+        assert!(!parent.independent_process_mm);
+
+        let vfork_child = child
+            .backend
+            .prepare_forked_process(
+                &child.executor,
+                3,
+                None,
+                None,
+                None,
+                None,
+                false,
+                true,
+                false,
+                None,
+            )
+            .unwrap();
+        assert!(!vfork_child.backend.independent_process_mm);
+        assert!(!child.backend.independent_process_mm);
+        drop(vfork_child);
+        assert!(!child.backend.independent_process_mm);
+
+        let independent_child = child
+            .backend
+            .prepare_forked_process(
+                &child.executor,
+                4,
+                None,
+                None,
+                None,
+                None,
+                false,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        assert!(independent_child.backend.independent_process_mm);
+        assert!(!child.backend.independent_process_mm);
     }
 
     // This control requires KVM construction and snapshot/register ioctls. It
