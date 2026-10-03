@@ -2628,7 +2628,7 @@ fn io_errno(error: std::io::Error) -> Errno {
 }
 
 fn process_start_time(tid: Pid) -> std::io::Result<u64> {
-    let stat = fs::read_to_string(format!("/proc/{tid}/stat"))?;
+    let stat = crate::launch_window::read_to_string(format!("/proc/{tid}/stat"))?;
     let fields = stat
         .rsplit_once(") ")
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed stat"))?
@@ -2657,7 +2657,7 @@ fn status_pid(status: &str, name: &str) -> std::io::Result<Pid> {
 
 fn tracee_snapshot(tid: Pid) -> std::io::Result<TraceeSnapshot> {
     let start_time = process_start_time(tid)?;
-    let status = fs::read_to_string(format!("/proc/{tid}/status"))?;
+    let status = crate::launch_window::read_to_string(format!("/proc/{tid}/status"))?;
     let snapshot = TraceeSnapshot {
         tgid: status_pid(&status, "Tgid:")?,
         ppid: status_pid(&status, "PPid:")?,
@@ -2697,6 +2697,7 @@ fn skippable_tracee_open_error(tid: Pid, error: Errno) -> bool {
 }
 
 static PROC_CHILDREN_SUPPORTED: LazyLock<bool> = LazyLock::new(|| {
+    let _open = crate::launch_window::TransientOpen::begin();
     fs::read_dir("/proc/self/task")
         .ok()
         .into_iter()
@@ -2706,6 +2707,7 @@ static PROC_CHILDREN_SUPPORTED: LazyLock<bool> = LazyLock::new(|| {
 });
 
 fn task_tids(root: Pid) -> std::io::Result<Vec<Pid>> {
+    let _open = crate::launch_window::TransientOpen::begin();
     let process_path = format!("/proc/{root}");
     let tasks = match fs::read_dir(format!("{process_path}/task")) {
         Ok(tasks) => tasks,
@@ -2731,6 +2733,8 @@ fn task_tids(root: Pid) -> std::io::Result<Vec<Pid>> {
 }
 
 fn direct_children(pid: Pid) -> std::io::Result<Vec<Pid>> {
+    // Held across the task directory and each `children` read below.
+    let _open = crate::launch_window::TransientOpen::begin();
     let process_path = format!("/proc/{pid}");
     let task_dir = match fs::read_dir(format!("{process_path}/task")) {
         Ok(task_dir) => task_dir,
@@ -5085,6 +5089,9 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
         command.seccomp(seccomp_filter(&traced_events, trap_only_patching));
 
+        // Command::spawn holds the launch lock from the child's first pipe
+        // until clone returns, and not while it waits for the child to start
+        // (`launch_window`).
         let mut child = command.spawn().context("Failed to spawn tracee")?;
         let guest_pid = child.id();
         if let Some(runtime) = self.liteinst_runtime.as_ref() {
@@ -5348,8 +5355,16 @@ where
     // This path never runs trap-only LiteInst (`liteinst_trap_only: None`).
     let seccomp_filter = seccomp_filter(&events, false);
 
-    let (read1, write1) = unistd::pipe().map_err(from_nix_error)?;
-    let (read2, write2) = unistd::pipe().map_err(from_nix_error)?;
+    // While the pipes are made, no transient open of another thread may be
+    // in flight: its descriptor would take a number from the pipes' budget.
+    // Only the two pipe calls run under the guard, which allocate nothing
+    // and take no lock; it ends before `fork`, which runs the process's
+    // `pthread_atfork` handlers (`launch_window`). Any error is built after
+    // the guard ends.
+    let launch = crate::launch_window::Launch::begin();
+    let pipes = unistd::pipe().and_then(|output| Ok((output, unistd::pipe()?)));
+    drop(launch);
+    let ((read1, write1), (read2, write2)) = pipes.map_err(from_nix_error)?;
 
     // Disable io redirection just before forking. We want the child process to
     // be able to call `println!()` and have that output go to stdout.
