@@ -8,6 +8,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -136,7 +137,7 @@ struct report {
 };
 _Static_assert(sizeof(struct report) == 64, "complete report layout");
 
-static int parity_case(unsigned mode) {
+static int parity_case(unsigned mode, int expected_bad_fd_errno) {
     REQUIRE(mode < 16);
     REQUIRE(pin_descriptor(epoll_create1(EPOLL_CLOEXEC), EPOLL_FD) == 0);
     REQUIRE(pin_descriptor(eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC), EVENT_FD) == 0);
@@ -220,11 +221,12 @@ static int parity_case(unsigned mode) {
         expected_result = -1;
         expected_error = EINVAL;
         break;
-    case 14: /* Invalid fd wins over zero maxevents. */
+    case 14: /* Require the exact host-ABI errno supplied by the native harness. */
+        REQUIRE(expected_bad_fd_errno > 0);
         output.raw_fd = UINT64_MAX;
         output.raw_count = 0;
         expected_result = -1;
-        expected_error = EBADF;
+        expected_error = expected_bad_fd_errno;
         break;
     case 15: /* A proven eventfd is not an epoll instance. */
         output.raw_fd = EVENT_FD;
@@ -325,6 +327,19 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "captured") == 0) return captured_case();
     char *end = NULL;
     unsigned long mode = strtoul(argv[1], &end, 10);
-    REQUIRE(end != argv[1] && *end == '\0' && mode < 16);
-    return parity_case((unsigned)mode);
+    REQUIRE(end != argv[1] && mode < 16);
+    int expected_bad_fd_errno = 0;
+    if (mode == 14) {
+        /* This input is identical for native and every KVM path. Never probe
+         * inside the guest: that would let the tested implementation choose
+         * its own expected errno. No alternative errno is accepted here. */
+        REQUIRE(*end == ':');
+        char *error_end = NULL;
+        unsigned long error = strtoul(end + 1, &error_end, 10);
+        REQUIRE(error_end != end + 1 && *error_end == '\0' && error > 0 && error <= INT_MAX);
+        expected_bad_fd_errno = (int)error;
+    } else {
+        REQUIRE(*end == '\0');
+    }
+    return parity_case((unsigned)mode, expected_bad_fd_errno);
 }
