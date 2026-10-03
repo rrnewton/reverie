@@ -123,6 +123,27 @@ pub trait KernelServices: Send + Sync {
     fn wait_for_repoll(&mut self) -> RepollWait {
         RepollWait::Unsupported
     }
+
+    /// Whether the current task is ending: it was killed, or its process
+    /// exited, during this callback, so it will not run user code again.
+    ///
+    /// The core asks after a non-tail inject reports
+    /// [`NarfSyscallOutcome::ContextManaged`], and when an RDTSC callback
+    /// ends with the task context-managed. If the task is ending, the
+    /// callback ends there: the kernel owns the task's context, and the core
+    /// drops the Tool future. Otherwise the core treats the inject as parked,
+    /// which only a syscall callback survives, by keeping its future until
+    /// the guest's syscall is re-executed. A callback with no guest syscall
+    /// to re-execute, such as thread start or an RDTSC event, then fails
+    /// closed with [`NarfFatal::InjectParked`](crate::NarfFatal::InjectParked),
+    /// or, after a tail inject in an RDTSC event, with
+    /// [`NarfFatal::RdtscContextManaged`](crate::NarfFatal::RdtscContextManaged).
+    ///
+    /// The default answers `false`, so every such inject is treated as
+    /// parked.
+    fn killed(&self) -> bool {
+        false
+    }
 }
 
 /// How the kernel's [`KernelServices::wait_for_repoll`] ended.

@@ -35,6 +35,10 @@
 //!   again, and so does one pending in thread start, post-exec, an exit
 //!   hook, an interrupted inject or `init_global_state`, which are polled
 //!   once;
+//! * on x86_64, `NarfToolHost::handle_rdtsc` delivers an RDTSC or RDTSCP the
+//!   task executed to the Tool's `handle_rdtsc_event` in the same way, for a
+//!   host built to deliver them. The instruction is not a syscall, so
+//!   nothing re-executes a syscall that parks the task during the callback;
 //! * global RPC is a direct call of [`reverie::GlobalTool::receive_rpc`] on the
 //!   singleton;
 //! * [`NarfToolHost::task_exited`] runs `on_exit_thread` exactly once per
@@ -60,6 +64,8 @@ pub use host::Disposition;
 pub use host::LifecycleOutcome;
 pub use host::NarfFatal;
 pub use host::NarfToolHost;
+#[cfg(target_arch = "x86_64")]
+pub use host::RdtscOutcome;
 pub use host::TaskExit;
 pub use host::TaskLock;
 pub use host::TaskTable;

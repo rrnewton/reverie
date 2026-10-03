@@ -30,7 +30,13 @@
 //!   ends the task's process with SIGKILL, as a pending SIGKILL ends Narf's
 //!   wait, and nothing may execute after it. If the other tasks' work ended
 //!   the waiting task's process, a `Yielded` answer becomes `Killed`, as
-//!   Narf checks for a kill again once the task runs again.
+//!   Narf checks for a kill again once the task runs again;
+//! * `kill(getpid(), SIGKILL)` ends the caller's process and is
+//!   context-managed;
+//! * an RDTSC callback first forgets the task's parked syscall, as Narf
+//!   drops its park record when it delivers the instruction, and its
+//!   `killed` answers whether the task has exited. Syscall and lifecycle
+//!   callbacks answer `false`, as Narf's syscall transitions do.
 //!
 //! What it does not model:
 //!
@@ -53,6 +59,8 @@ use core::sync::atomic::Ordering;
 use reverie::Auxv;
 use reverie::ExitStatus;
 use reverie::Pid;
+#[cfg(target_arch = "x86_64")]
+use reverie::Rdtsc;
 use reverie::Signal;
 use reverie::Tool;
 use reverie::syscalls::Errno;
@@ -71,6 +79,8 @@ use reverie_narf_core::NarfSyscallOutcome;
 use reverie_narf_core::NarfSyscallRequest;
 use reverie_narf_core::NarfToolHost;
 use reverie_narf_core::OriginalSyscallError;
+#[cfg(target_arch = "x86_64")]
+use reverie_narf_core::RdtscOutcome;
 use reverie_narf_core::RepollWait;
 use reverie_narf_core::SyscallEntry;
 use reverie_narf_core::TaskExit;
@@ -298,6 +308,7 @@ impl FakeKernel {
             context_managed: false,
             created: None,
             others: None,
+            kill_query: false,
         }
     }
 
@@ -358,6 +369,29 @@ impl FakeKernel {
             let mut services = self.services(tid, Some(request));
             services.others = Some(others);
             host.handle_syscall(&mut services, SyscallEntry::new(request))
+        });
+        self.report_exits(host);
+        result
+    }
+
+    /// Delivers an RDTSC or RDTSCP that `tid` executed to `host`, then
+    /// reports any task that died.
+    #[cfg(target_arch = "x86_64")]
+    pub fn rdtsc<T: Tool + 'static>(
+        &self,
+        host: &FakeHost<T>,
+        tid: Pid,
+        request: Rdtsc,
+    ) -> Result<RdtscOutcome, NarfFatal> {
+        self.with(|world| {
+            if let Some(task) = world.tasks.get_mut(&tid.as_raw()) {
+                task.parked = None;
+            }
+        });
+        let result = self.in_callback(tid, || {
+            let mut services = self.services(tid, None);
+            services.kill_query = true;
+            host.handle_rdtsc(&mut services, request)
         });
         self.report_exits(host);
         result
@@ -540,6 +574,9 @@ pub struct FakeServices<'k> {
     created: Option<CreatedTask>,
     /// The other tasks' work, run at each wait answered `Yielded`.
     others: Option<&'k mut (dyn FnMut() + Send + Sync)>,
+    /// Whether `killed` reports the task's exit, as Narf's instruction
+    /// transition does.
+    kill_query: bool,
 }
 
 impl FakeServices<'_> {
@@ -683,6 +720,10 @@ fn run_native(
             exit_process(world, pid, ExitStatus::Exited(a0 as i32));
             (ContextManaged, None)
         }
+        Some(Sysno::kill) if a0 == pid as u64 && a1 == Signal::SIGKILL as u64 => {
+            exit_process(world, pid, ExitStatus::Signaled(Signal::SIGKILL, false));
+            (ContextManaged, None)
+        }
         // A NULL filename fails as Linux fails it, before anything is
         // replaced.
         Some(Sysno::execve) if a0 == 0 => (Returned(fault), None),
@@ -813,6 +854,10 @@ impl<'k> KernelServices for FakeServices<'k> {
             RepollWait::Unsupported => {}
         }
         answer
+    }
+
+    fn killed(&self) -> bool {
+        self.kill_query && self.kernel.with(|world| world.tasks[&self.tid].exited)
     }
 }
 
