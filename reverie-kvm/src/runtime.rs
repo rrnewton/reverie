@@ -4442,6 +4442,7 @@ impl KvmBackend {
         // Capture setup can fail before image consumption or any Tool state.
         // Keep this root owner until the later executor and its workers retire.
         let capture_owner = self.prepare_captured_output(capture_output)?;
+        self.prepare_capture_descriptions(&capture_owner)?;
         let mut loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         // Output capture replaces stdout and stderr with the executor's pipes,
         // but an explicitly configured stdin remains the guest's input. Use

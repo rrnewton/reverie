@@ -74,6 +74,7 @@ use crate::elf::TaskLifecycleTable;
 use crate::elf::initial_thread_name;
 use crate::elf::load_static_elf;
 use crate::elf::load_static_elf_file;
+use crate::elf::load_static_elf_with_authority;
 use crate::executor::AbandonedRuns;
 use crate::executor::CapturedOutput;
 #[cfg(test)]
@@ -2229,7 +2230,14 @@ impl KvmBackend {
 
         let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
-        let mut loaded = load_static_elf(&mut self.memory, image, &argv, &envp, executor.cwd())?;
+        let mut loaded = load_static_elf_with_authority(
+            &mut self.memory,
+            image,
+            &argv,
+            &envp,
+            executor.cwd(),
+            executor.proc_carrier_authority(),
+        )?;
         let (executable_path, executable_file) = executable;
         loaded.executable_path = executable_file
             .as_ref()
@@ -4676,6 +4684,7 @@ impl KvmBackend {
         // Declared before the executor so its private pipe identities outlive
         // executor/child cleanup, including early-return and unwind paths.
         let capture_owner = self.prepare_captured_output(true)?;
+        self.prepare_capture_descriptions(&capture_owner)?;
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
         let result = self.run_static_elf_process(&mut executor);
@@ -4696,6 +4705,21 @@ impl KvmBackend {
                 .into_iter()
                 .collect(),
         )
+    }
+
+    pub(crate) fn prepare_capture_descriptions(
+        &mut self,
+        output: &Option<CapturedOutput>,
+    ) -> Result<()> {
+        if let Some(output) = output {
+            let state = self
+                .static_elf
+                .as_mut()
+                .ok_or(Error::StaticElfNotInstalled)?;
+            crate::executor::initialize_capture_descriptions(state, output)
+                .map_err(|errno| std::io::Error::from_raw_os_error((-errno) as i32))?;
+        }
+        Ok(())
     }
 
     pub(crate) fn prepare_captured_output(

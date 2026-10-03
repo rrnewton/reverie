@@ -2233,6 +2233,10 @@ impl UserMemory {
         self.write_user(guest_address, &value.to_ne_bytes(), false)
     }
 
+    pub(crate) fn put_user_u64(&self, guest_address: u64, value: u64) -> Result<()> {
+        self.write_user(guest_address, &value.to_ne_bytes(), false)
+    }
+
     pub(crate) fn copy_to_user_prefix(&self, guest_address: u64, source: &[u8]) -> Result<usize> {
         self.write_user_prefix(guest_address, source, true)
     }
