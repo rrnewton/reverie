@@ -105,6 +105,10 @@ const TIMED_SLEEP_THEN_GETPID_FD: i32 = 912;
 /// As `EXEC_ARGS_FD`, and the replacement program's post-exec callback ends
 /// with `tail_inject(getpid)`.
 const EXEC_ARGS_TAIL_AFTER_EXEC_FD: i32 = 913;
+/// `TrapBeforeGetppid` leaves the tracer without descriptors at a
+/// zero-length write here (`tracer_without_descriptors`) until its injected
+/// `getppid` returns; the tool returns 0 to the guest.
+const NO_DESCRIPTORS_FD: i32 = 914;
 
 /// Guest memory for the injected `ppoll`.
 #[repr(C)]
@@ -5212,6 +5216,14 @@ static GETPPID_WITHOUT_DESCRIPTORS: AtomicBool = AtomicBool::new(false);
 /// that `TrapBeforeGetppid` has a filter return for every `prctl` of the
 /// tracer's threads, from just before that `getppid`; 0 for none.
 static GETPPID_PRCTL_ACTION: AtomicU32 = AtomicU32::new(0);
+/// Set by a test, with `GETPPID_WITHOUT_DESCRIPTORS`, so that the guest of
+/// `trap_before_getppid_guest` leaves the tracer without descriptors from
+/// before its first SIGSYS (`NO_DESCRIPTORS_FD`), not only during the
+/// injected `getppid`.
+static NO_DESCRIPTORS_FROM_FIRST_SIGSYS: AtomicBool = AtomicBool::new(false);
+/// The tracer's `RLIMIT_NOFILE` while `tracer_without_descriptors` has
+/// lowered it, restored when the injected `getppid` returns.
+static SAVED_NOFILE: Mutex<Option<libc::rlimit>> = Mutex::new(None);
 
 /// Adds a seccomp filter returning `action` for every `prctl`, and allowing
 /// every other syscall, to all of the tracer's threads (they share the
@@ -5242,6 +5254,8 @@ fn filter_tracer_prctl(action: u32) {
     };
     // SAFETY: restricts only the tracer's threads, which end with the test.
     let installed = unsafe {
+        // Required to add a filter without CAP_SYS_ADMIN, if not yet set.
+        assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
         libc::syscall(
             libc::SYS_seccomp,
             libc::SECCOMP_SET_MODE_FILTER,
@@ -5250,6 +5264,32 @@ fn filter_tracer_prctl(action: u32) {
         )
     };
     assert_eq!(installed, 0, "filter prctl on every tracer thread");
+}
+
+/// Adds the `prctl` filter of `GETPPID_PRCTL_ACTION`, if any, then sets the
+/// tracer's soft `RLIMIT_NOFILE` to 0, so no descriptor can be opened, saving
+/// the limit in `SAVED_NOFILE`. The guest, forked from the tracer's thread,
+/// installs its own filter with prctl, so the tracer's is added only now.
+#[cfg(target_arch = "x86_64")]
+fn tracer_without_descriptors() {
+    let action = GETPPID_PRCTL_ACTION.load(Ordering::Relaxed);
+    if action != 0 {
+        filter_tracer_prctl(action);
+    }
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: both calls only read or set this process's limit.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+        let lowered = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: limit.rlim_max,
+        };
+        assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &lowered), 0);
+    }
+    *SAVED_NOFILE.lock().unwrap() = Some(limit);
 }
 
 /// `ReplaceMarker`, whose hook for `GETPPID_FD` first injects `getpid`, then
@@ -5275,6 +5315,11 @@ impl Tool for TrapBeforeGetppid {
         guest: &mut G,
         syscall: Syscall,
     ) -> Result<i64, Error> {
+        if matches!(syscall, Syscall::Write(write) if write.fd() == NO_DESCRIPTORS_FD && write.len() == 0)
+        {
+            tracer_without_descriptors();
+            return Ok(0);
+        }
         if matches!(syscall, Syscall::Write(write) if write.fd() == GETPPID_FD && write.len() == 0)
         {
             // A complete injection first, unreported: an earlier injection's
@@ -5299,27 +5344,12 @@ impl Tool for TrapBeforeGetppid {
                 assert_eq!(sent, 0, "send signal {signal} to the guest");
             }
             if GETPPID_WITHOUT_DESCRIPTORS.load(Ordering::Relaxed) {
-                // The guest, forked from the tracer's thread, installs its
-                // own filter with prctl, so this one is added only now.
-                let action = GETPPID_PRCTL_ACTION.load(Ordering::Relaxed);
-                if action != 0 {
-                    filter_tracer_prctl(action);
-                }
-                let mut limit = libc::rlimit {
-                    rlim_cur: 0,
-                    rlim_max: 0,
-                };
-                // SAFETY: both calls only read or set this process's limit.
-                unsafe {
-                    assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
-                    let lowered = libc::rlimit {
-                        rlim_cur: 0,
-                        rlim_max: limit.rlim_max,
-                    };
-                    assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &lowered), 0);
+                if SAVED_NOFILE.lock().unwrap().is_none() {
+                    tracer_without_descriptors();
                 }
                 let result = guest.inject(Getppid::new()).await;
-                // SAFETY: restores the limit read above.
+                let limit = SAVED_NOFILE.lock().unwrap().take().unwrap();
+                // SAFETY: restores the limit `tracer_without_descriptors` read.
                 unsafe { assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0) };
                 guest
                     .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
@@ -5358,7 +5388,9 @@ fn assert_tracer_unfiltered() {
 
 /// The guest of `injected_syscall_trapped_by_guest_seccomp_reports_enosys`,
 /// run with `TrapBeforeGetppid`, and with a handler counting SIGTSTP when
-/// `tstp` is set. Prints the handler's count last.
+/// `tstp` is set. Prints the handler's count last. With
+/// `NO_DESCRIPTORS_FROM_FIRST_SIGSYS` set, it submits `NO_DESCRIPTORS_FD`
+/// after loading its filter.
 #[cfg(target_arch = "x86_64")]
 fn trap_before_getppid_guest(tstp: bool) -> impl FnOnce() + Send + 'static {
     move || unsafe {
@@ -5367,6 +5399,15 @@ fn trap_before_getppid_guest(tstp: bool) -> impl FnOnce() + Send + 'static {
             install_counter(libc::SIGTSTP, count_sigtstp);
         }
         trap_getppid();
+        if NO_DESCRIPTORS_FROM_FIRST_SIGSYS.load(Ordering::Relaxed) {
+            let ret = libc::syscall(
+                libc::SYS_write,
+                NO_DESCRIPTORS_FD,
+                std::ptr::null::<u8>(),
+                0usize,
+            );
+            assert_eq!(ret, 0, "the tracer is left without descriptors");
+        }
         print_seccomp_trap(libc::syscall(libc::SYS_getppid));
         let ret = libc::syscall(libc::SYS_write, GETPPID_FD, std::ptr::null::<u8>(), 0usize);
         print_seccomp_trap(ret);
@@ -5457,22 +5498,40 @@ fn sigtrap_before_an_injected_syscall_is_discarded_with_no_descriptor_left() {
 /// SIGTSTP is then reported, and its handler runs once. With `prctl` set,
 /// no descriptor can be opened during the injected `getppid`, so procfs
 /// cannot report the tracer thread's mode, and every `prctl` of the tracer
-/// gets that action from then on.
+/// gets that action from then on. With `from_first_sigsys` also set, that
+/// starts before the guest's first SIGSYS, whose delivery stop is then the
+/// first at which the tracer could open procfs to read its mode.
 #[cfg(target_arch = "x86_64")]
 fn sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
     request: u32,
     action: u32,
     tstp: bool,
     prctl: Option<u32>,
+    from_first_sigsys: bool,
     probe: &str,
 ) {
     TSTP_AFTER_TRAP.store(tstp, Ordering::Relaxed);
     GETPPID_WITHOUT_DESCRIPTORS.store(prctl.is_some(), Ordering::Relaxed);
     GETPPID_PRCTL_ACTION.store(prctl.unwrap_or(0), Ordering::Relaxed);
+    NO_DESCRIPTORS_FROM_FIRST_SIGSYS.store(from_first_sigsys, Ordering::Relaxed);
     let (output, log, _) = test_tool_under_tracer_filter::<TrapBeforeGetppid, _>(
         Some((request, action)),
         trap_before_getppid_guest(tstp),
     );
+    check_trap_before_getppid_taken_as_on_main(&output, &log, tstp, probe);
+}
+
+/// Checks main's outcome for `trap_before_getppid_guest(tstp)`: the SIGTRAP
+/// is taken for the step's report, so the injected `getppid` does not run
+/// and returns the syscall number left in RAX (110), and a SIGTSTP handler
+/// runs once.
+#[cfg(target_arch = "x86_64")]
+fn check_trap_before_getppid_taken_as_on_main(
+    output: &reverie::process::Output,
+    log: &Log,
+    tstp: bool,
+    probe: &str,
+) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     eprintln!(
         "PROBE {probe} status={:?} guest={:?} injected={:?} signals={:?}",
@@ -5525,6 +5584,7 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_a
             libc::SECCOMP_RET_KILL_PROCESS,
             false,
             None,
+            false,
             "trap-getsigmask-kill-filter",
         )
     });
@@ -5541,6 +5601,7 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_when_getsigmask_is_refused(
             libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
             false,
             None,
+            false,
             "trap-getsigmask-deny-filter",
         )
     });
@@ -5557,6 +5618,7 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_a
             libc::SECCOMP_RET_KILL_PROCESS,
             true,
             None,
+            false,
             "trap-tstp-getsiginfo-kill-filter",
         )
     });
@@ -5573,6 +5635,7 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_when_getsiginfo_is_refused(
             libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
             true,
             None,
+            false,
             "trap-tstp-getsiginfo-deny-filter",
         )
     });
@@ -5591,6 +5654,7 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_whe
             libc::SECCOMP_RET_KILL_PROCESS,
             false,
             Some(libc::SECCOMP_RET_KILL_PROCESS),
+            false,
             "trap-emfile-prctl-kill-filter",
         )
     });
@@ -5608,6 +5672,7 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_whe
             libc::SECCOMP_RET_KILL_PROCESS,
             false,
             Some(libc::SECCOMP_RET_TRAP),
+            false,
             "trap-emfile-prctl-trap-filter",
         )
     });
@@ -5627,7 +5692,116 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_whe
             libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
             false,
             Some(libc::SECCOMP_RET_ERRNO),
+            false,
             "trap-emfile-prctl-errno0-filter",
+        )
+    });
+}
+
+/// As `..._with_no_descriptor_left_when_prctl_kills`, but no descriptor can
+/// be opened from before the guest's first SIGSYS, so the tracer thread is
+/// never seen filtered through a newly opened procfs status. The status it
+/// held open when it took the guest still reports the filter, and it is
+/// not asked with `prctl`.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_from_the_first_sigsys_when_prctl_kills()
+ {
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_from_the_first_sigsys_when_prctl_kills";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
+            libc::PTRACE_GETSIGMASK,
+            libc::SECCOMP_RET_KILL_PROCESS,
+            false,
+            Some(libc::SECCOMP_RET_KILL_PROCESS),
+            true,
+            "trap-early-emfile-prctl-kill-filter",
+        )
+    });
+}
+
+/// As `..._from_the_first_sigsys_when_prctl_kills`, with a filter that traps
+/// every `prctl`.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_from_the_first_sigsys_when_prctl_traps()
+ {
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_from_the_first_sigsys_when_prctl_traps";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
+            libc::PTRACE_GETSIGMASK,
+            libc::SECCOMP_RET_KILL_PROCESS,
+            false,
+            Some(libc::SECCOMP_RET_TRAP),
+            true,
+            "trap-early-emfile-prctl-trap-filter",
+        )
+    });
+}
+
+/// As `..._from_the_first_sigsys_when_prctl_kills`, with a filter that
+/// answers every `prctl` with 0 without running it.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_from_the_first_sigsys_when_prctl_answers_0()
+ {
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_from_the_first_sigsys_when_prctl_answers_0";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
+            libc::PTRACE_GETSIGMASK,
+            libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
+            false,
+            Some(libc::SECCOMP_RET_ERRNO),
+            true,
+            "trap-early-emfile-prctl-errno0-filter",
+        )
+    });
+}
+
+/// `TrapBeforeGetppid` on a tracer under no seccomp filter when it takes the
+/// guest, which, from before the guest's first SIGSYS, gets a filter
+/// returning `prctl_action` for every `prctl` and no descriptor to open
+/// (`NO_DESCRIPTORS_FROM_FIRST_SIGSYS`). Procfs never shows the tracer
+/// thread filtered through a newly opened status; the status it held open
+/// from spawn does, so the thread is not asked with `prctl`, and the trap is
+/// taken for the step's report, as on main.
+#[cfg(target_arch = "x86_64")]
+fn sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_filter_added_after_spawn(
+    prctl_action: u32,
+    probe: &str,
+) {
+    assert_tracer_unfiltered();
+    TSTP_AFTER_TRAP.store(false, Ordering::Relaxed);
+    GETPPID_WITHOUT_DESCRIPTORS.store(true, Ordering::Relaxed);
+    GETPPID_PRCTL_ACTION.store(prctl_action, Ordering::Relaxed);
+    NO_DESCRIPTORS_FROM_FIRST_SIGSYS.store(true, Ordering::Relaxed);
+    let (output, log) = test_fn::<TrapBeforeGetppid, _>(trap_before_getppid_guest(false))
+        .expect("run trap-before-getppid guest");
+    check_trap_before_getppid_taken_as_on_main(&output, &log, false, probe);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_under_a_filter_added_after_spawn_when_prctl_kills()
+ {
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_not_retried_under_a_filter_added_after_spawn_when_prctl_kills";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_filter_added_after_spawn(
+            libc::SECCOMP_RET_KILL_PROCESS,
+            "trap-late-filter-emfile-prctl-kill",
+        )
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_under_a_filter_added_after_spawn_when_prctl_traps()
+ {
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_not_retried_under_a_filter_added_after_spawn_when_prctl_traps";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_filter_added_after_spawn(
+            libc::SECCOMP_RET_TRAP,
+            "trap-late-filter-emfile-prctl-trap",
         )
     });
 }

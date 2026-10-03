@@ -653,6 +653,53 @@ thread_local! {
     /// with no seccomp mode to read). A filter is never removed, so this
     /// holds for the rest of the thread's life.
     static SEEN_SECCOMP_FILTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The calling thread's procfs status, held open by
+    /// `hold_thread_seccomp_status` so that its seccomp mode can be read
+    /// again with no descriptor left to open.
+    static HELD_THREAD_STATUS: std::cell::RefCell<Option<std::fs::File>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether a procfs status reports seccomp mode 0.
+fn status_unfiltered(status: &str) -> bool {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Seccomp:"))
+        .is_some_and(|mode| mode.trim() == "0")
+}
+
+/// Holds the calling thread's procfs status open, if it is not already, for
+/// `step_thread_may_be_seccomp_filtered`, and reads it once. Called on the
+/// tracer thread when it takes a guest, before the guest runs, so a filter
+/// present then is seen before the guest can use up the tracer's
+/// descriptors, and a later one is seen through the held status.
+pub(crate) fn hold_thread_seccomp_status() {
+    HELD_THREAD_STATUS.with_borrow_mut(|held| {
+        if held.is_none() {
+            *held = std::fs::File::open("/proc/thread-self/status").ok();
+        }
+    });
+    held_thread_unfiltered();
+}
+
+/// `procfs_thread_unfiltered` through the status `hold_thread_seccomp_status`
+/// holds, which needs no new descriptor; `None` if none is held or it cannot
+/// be read.
+fn held_thread_unfiltered() -> Option<bool> {
+    use std::io::Read;
+    use std::io::Seek;
+    let status = HELD_THREAD_STATUS.with_borrow_mut(|held| {
+        let file = held.as_mut()?;
+        file.rewind().ok()?;
+        let mut status = String::new();
+        file.read_to_string(&mut status).ok()?;
+        Some(status)
+    })?;
+    let unfiltered = status_unfiltered(&status);
+    if !unfiltered {
+        SEEN_SECCOMP_FILTERED.set(true);
+    }
+    Some(unfiltered)
 }
 
 /// Whether procfs reports the calling thread's seccomp mode as 0, `None` if
@@ -663,10 +710,7 @@ fn procfs_thread_unfiltered() -> Option<bool> {
         return Some(false);
     }
     let status = std::fs::read_to_string("/proc/thread-self/status").ok()?;
-    let unfiltered = status
-        .lines()
-        .find_map(|line| line.strip_prefix("Seccomp:"))
-        .is_some_and(|mode| mode.trim() == "0");
+    let unfiltered = status_unfiltered(&status);
     if !unfiltered {
         SEEN_SECCOMP_FILTERED.set(true);
     }
@@ -675,14 +719,15 @@ fn procfs_thread_unfiltered() -> Option<bool> {
 
 /// `thread_may_be_seccomp_filtered` for the steps an injection takes beyond
 /// main's, which correct main on an unfiltered thread. Where procfs cannot
-/// be read, for example with no descriptor left to open (EMFILE), on a
-/// thread not yet seen filtered, it asks `prctl(PR_GET_SECCOMP)`, which
-/// needs none. A thread without a filter has nothing to refuse that request,
-/// so it is still told apart; a refusal or nonzero answer counts as
-/// filtered. A thread seen filtered is never asked, as its filter may kill
-/// it at that request or answer it falsely.
+/// be opened, for example with no descriptor left to open (EMFILE), on a
+/// thread not yet seen filtered, it reads the status
+/// `hold_thread_seccomp_status` holds, and only without that asks
+/// `prctl(PR_GET_SECCOMP)`, which needs none. A thread without a filter has
+/// nothing to refuse that request, so it is still told apart; a refusal or
+/// nonzero answer counts as filtered. A thread seen filtered is never asked,
+/// as its filter may kill it at that request or answer it falsely.
 fn step_thread_may_be_seccomp_filtered() -> bool {
-    match procfs_thread_unfiltered() {
+    match procfs_thread_unfiltered().or_else(held_thread_unfiltered) {
         Some(unfiltered) => !unfiltered,
         None => {
             // SAFETY: PR_GET_SECCOMP reads the calling thread's seccomp mode.

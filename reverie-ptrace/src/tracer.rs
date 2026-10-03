@@ -4162,6 +4162,7 @@ async fn postspawn<L: Tool + 'static>(
     gdbserver: Option<GdbServer>,
 ) -> Result<AttachedRun, PostspawnError> {
     let pid = child.pid();
+    crate::task::hold_thread_seccomp_status();
 
     // Wait for the child to enter a stopped state. The child will enter a
     // stopped state immediately after ptrace::traceme is called.
