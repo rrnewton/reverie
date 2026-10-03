@@ -1818,6 +1818,22 @@ async fn trap_only_p2_resume_signal_matches_ptrace() {
         "ptrace drops a signal passed on resume from the seccomp stop:\n{}",
         ptrace.report
     );
+    // The Tool sees each SIGUSR1 the guest handles exactly once, whether the
+    // kernel delivered it directly or sent it anew, and never the one it
+    // dropped (https://github.com/rrnewton/hermit/issues/703).
+    let handled = ptrace
+        .report
+        .lines()
+        .filter(|line| line.starts_with("resume_"))
+        .count();
+    let reported = ptrace
+        .tool_events
+        .values()
+        .flatten()
+        .filter(|event| event.starts_with("signal SIGUSR1 "))
+        .count();
+    assert!(handled > 0, "{}", ptrace.report);
+    assert_eq!(reported, handled, "{:#?}", ptrace.tool_events);
 }
 
 /// Guest code that runs the private page's traced slot outside any hop fails
