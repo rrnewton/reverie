@@ -6330,7 +6330,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Main resumes it with the siginfo of the stop it is resumed from, which
     /// with no injection in between is its own. A request the filter allowed
     /// earlier does not show that it allows this one: a filter that denies
-    /// after a first success would see the earlier one succeed. The cost is
+    /// after a first success would see the earlier one succeed. This is
+    /// checked before the other checks' ptrace requests, which main does not
+    /// make here and a filter can refuse, or kill the tracer at. The cost is
     /// that a tracer run under such a policy (a container's default seccomp
     /// profile, for one) gets no held report, as on main.
     ///
@@ -6351,6 +6353,16 @@ impl<L: Tool + 'static> TracedTask<L> {
             || self.latest_injection_stop.unwrap_or(stop_signal).is_none()
             || self.sigtrap_may_be_claimed()
         {
+            return Ok(self.pass_held_signal_unreported(signal));
+        }
+        // `resume_with_signal` writes the siginfo back with
+        // `PTRACE_SETSIGINFO`, which a seccomp filter of the tracer can make
+        // fail while the guest is alive. An earlier request a filter allows
+        // does not tell that it allows that later one. Checked before the
+        // ptrace requests below, which main does not make here and a filter
+        // can deny as well. The requeue count below is left as it is: a
+        // filter is never removed, so no later held signal is reported.
+        if thread_may_be_seccomp_filtered() {
             return Ok(self.pass_held_signal_unreported(signal));
         }
         // A procfs or register read that fails passes the signal on
@@ -6388,13 +6400,6 @@ impl<L: Tool + 'static> TracedTask<L> {
             0
         };
         if pending_signal_mask(task.pid()).map_or(true, |pending| pending & !stale_step_trap != 0) {
-            return Ok(self.pass_held_signal_unreported(signal));
-        }
-        // `resume_with_signal` writes the siginfo back with
-        // `PTRACE_SETSIGINFO`, which a seccomp filter of the tracer can make
-        // fail while the guest is alive. An earlier request a filter allows
-        // does not tell that it allows that later one.
-        if thread_may_be_seccomp_filtered() {
             return Ok(self.pass_held_signal_unreported(signal));
         }
         tracing::debug!(

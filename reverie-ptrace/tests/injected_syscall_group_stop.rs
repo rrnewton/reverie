@@ -4703,16 +4703,22 @@ fn signal_keeps_its_siginfo_after_a_signal_hook_injection() {
 fn test_fn_without_setsiginfo<F: FnOnce() + Send + 'static>(
     f: F,
 ) -> (reverie::process::Output, Log, libc::pid_t) {
-    test_fn_under_tracer_filter(true, f)
+    test_fn_under_tracer_filter(
+        Some((
+            libc::PTRACE_SETSIGINFO,
+            libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
+        )),
+        f,
+    )
 }
 
 /// Runs `f` as a guest on a new thread under a seccomp filter, which the
-/// threads it creates inherit. The filter makes `PTRACE_SETSIGINFO` fail
-/// with EACCES if `deny_setsiginfo`, and allows every other syscall. Also
-/// returns that thread's ID, the tracer's.
+/// threads it creates inherit. With `refused` as `(request, action)`, the
+/// filter returns `action` for a `ptrace` of `request`; it allows every other
+/// syscall. Also returns that thread's ID, the tracer's.
 #[cfg(target_arch = "x86_64")]
 fn test_fn_under_tracer_filter<F: FnOnce() + Send + 'static>(
-    deny_setsiginfo: bool,
+    refused: Option<(u32, u32)>,
     f: F,
 ) -> (reverie::process::Output, Log, libc::pid_t) {
     std::thread::spawn(move || {
@@ -4723,7 +4729,7 @@ fn test_fn_under_tracer_filter<F: FnOnce() + Send + 'static>(
             k,
         };
         let allow = statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW, 0, 0);
-        let filter = if deny_setsiginfo {
+        let filter = if let Some((request, action)) = refused {
             vec![
                 // seccomp_data.nr is at offset 0, and the low half of args[0] at 16.
                 statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0, 0, 0),
@@ -4734,18 +4740,8 @@ fn test_fn_under_tracer_filter<F: FnOnce() + Send + 'static>(
                     3,
                 ),
                 statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 16, 0, 0),
-                statement(
-                    libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
-                    libc::PTRACE_SETSIGINFO,
-                    0,
-                    1,
-                ),
-                statement(
-                    libc::BPF_RET | libc::BPF_K,
-                    libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
-                    0,
-                    0,
-                ),
+                statement(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K, request, 0, 1),
+                statement(libc::BPF_RET | libc::BPF_K, action, 0, 0),
                 allow,
             ]
         } else {
@@ -4897,7 +4893,7 @@ fn held_signal_keeps_its_siginfo_when_it_cannot_be_written_back() {
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn held_signal_is_passed_on_unreported_under_a_tracer_seccomp_filter() {
-    let (output, log, _) = test_fn_under_tracer_filter(false, || unsafe {
+    let (output, log, _) = test_fn_under_tracer_filter(None, || unsafe {
         install_recorder(libc::SIGUSR1);
         let set = block(&[libc::SIGUSR1]);
         queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
@@ -4915,6 +4911,73 @@ fn held_signal_is_passed_on_unreported_under_a_tracer_seccomp_filter() {
     check_recorded(
         &output,
         "held-allowing-filter",
+        &log,
+        &format!("-1 {}", libc::EINTR),
+        libc::SI_QUEUE,
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
+        "the unblock completes, SIGUSR1 interrupts getpid before it runs, and no hook runs"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        Vec::<i32>::new(),
+        "the held signal is passed on unreported, as on main"
+    );
+}
+
+/// `held_signal_is_passed_on_unreported_under_a_tracer_seccomp_filter` with
+/// a filter that kills the tracer's process at a `PTRACE_GETSIGMASK`, which
+/// main does not make for this guest. The filter must decline the report
+/// before the ptrace requests that check it, so the guest runs as on main.
+/// The tracer runs in a child process of the test binary, which the filter
+/// would kill.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn held_signal_is_declined_before_a_ptrace_query_under_a_tracer_filter() {
+    const NAME: &str = "held_signal_is_declined_before_a_ptrace_query_under_a_tracer_filter";
+    const ROLE: &str = "REVERIE_FILTERED_TRACER";
+    if std::env::var(ROLE).as_deref() != Ok(NAME) {
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env(ROLE, NAME)
+            .spawn()
+            .expect("start the filtered tracer");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("wait for the filtered tracer") {
+                break status;
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the filtered tracer did not finish in 60 s");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(status.success(), "filtered tracer: {status}");
+        return;
+    }
+    let refused = (libc::PTRACE_GETSIGMASK, libc::SECCOMP_RET_KILL_PROCESS);
+    let (output, log, _) = test_fn_under_tracer_filter(Some(refused), || unsafe {
+        install_recorder(libc::SIGUSR1);
+        let set = block(&[libc::SIGUSR1]);
+        queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
+        let ret = libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_THEN_GETPID_FD,
+            &set as *const libc::sigset_t,
+            0usize,
+        );
+        let errno = *libc::__errno_location();
+        // Blocked again for `print_recorded`'s check.
+        block(&[libc::SIGUSR1]);
+        print_recorded(ret, errno, libc::SIGUSR1);
+    });
+    check_recorded(
+        &output,
+        "held-getsigmask-filter",
         &log,
         &format!("-1 {}", libc::EINTR),
         libc::SI_QUEUE,
