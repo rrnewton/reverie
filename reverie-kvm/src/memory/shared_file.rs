@@ -637,12 +637,12 @@ impl GuestMemory {
         if length == 0 {
             return Ok(0);
         }
-        let Some(rounded) = length
-            .checked_add(PAGE_SIZE - 1)
-            .map(|n| n & !(PAGE_SIZE - 1))
-        else {
-            return Ok(-(libc::ENOMEM as i64));
-        };
+        // Match Linux mm/msync.c's unsigned page rounding: a length that
+        // wraps to zero succeeds, while a nonzero interval may still overflow.
+        let rounded = length.wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        if rounded == 0 {
+            return Ok(0);
+        }
         let Some(end) = address.checked_add(rounded as u64) else {
             return Ok(-(libc::ENOMEM as i64));
         };
@@ -1724,7 +1724,14 @@ mod tests {
                 libc::MS_SYNC | libc::MS_ASYNC,
                 libc::EINVAL,
             ),
-            (BASE, usize::MAX, libc::MS_SYNC, libc::ENOMEM),
+            (BASE, usize::MAX, libc::MS_SYNC, 0),
+            (BASE, usize::MAX - (PAGE_SIZE - 2), libc::MS_SYNC, 0),
+            (
+                BASE,
+                usize::MAX - (PAGE_SIZE - 1),
+                libc::MS_SYNC,
+                libc::ENOMEM,
+            ),
         ] {
             assert_eq!(
                 memory
