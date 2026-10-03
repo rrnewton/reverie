@@ -1040,10 +1040,13 @@ impl GuestMemory {
 
         self.check_copy_failure()?;
         let _allocation = self.allocation_guard();
-        if self.contains_shared_file() || self.entry_gate().single_member_domain_active() {
+        if self.contains_shared_file() {
+            return self.snapshot_with_shared_files(_allocation);
+        }
+        if self.entry_gate().single_member_domain_active() {
             return Err(Error::SharedFileCapability {
                 operation: "memory snapshot",
-                reason: "shared-file history cannot be copied into a private child image",
+                reason: "shared-file publication is not quiescent",
             });
         }
         let snapshot = Self::new(self.guest_base(), self.len())?;

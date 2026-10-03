@@ -6684,17 +6684,52 @@ impl ElfExecutor {
             });
         }
         self.bind_address_space(memory);
-        // A retained file image is not a private snapshot. Refuse unsupported
-        // creation before task-ID allocation, child copyout or ProcessAction.
-        if memory.entry_gate().single_member_domain_active()
-            && matches!(request.number(), n if n == libc::SYS_fork as u64
-                || n == libc::SYS_vfork as u64 || n == libc::SYS_clone as u64
-                || n == libc::SYS_clone3 as u64)
-        {
-            return Err(crate::Error::SharedFileCapability {
-                operation: "fork/clone",
-                reason: "ordinary shared-file views require one vCPU in this address space",
-            });
+        // A fork gets a separate arena/gate and inherits the real shared VMAs.
+        // CLONE_VM still creates another owner of this arena and is refused
+        // before task-ID allocation, child copyout or ProcessAction.
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-PENDING): Review shared-file fork admission.
+        if memory.entry_gate().single_member_domain_active() {
+            let number = request.number();
+            let args = request.args();
+            let refusal = || crate::Error::SharedFileCapability {
+                operation: "CLONE_VM/thread creation",
+                reason: "ordinary shared-file views require one vCPU per address space",
+            };
+            if number == libc::SYS_vfork as u64
+                || (number == libc::SYS_clone as u64
+                    && args[0] & (libc::CLONE_VM | libc::CLONE_THREAD) as u64 != 0)
+            {
+                return Err(refusal());
+            }
+            if number == libc::SYS_clone3 as u64 {
+                // Read once: the checked flags must be the flags actually used
+                // to create the ProcessAction, not a second mutable copyin.
+                let clone = match read_clone3(memory, args[0], args[1]) {
+                    Ok(clone) => clone,
+                    Err(error) => return Ok(error),
+                };
+                if clone.flags & (libc::CLONE_VM | libc::CLONE_THREAD) as u64 != 0 {
+                    return Err(refusal());
+                }
+                if let Err(error) = validate_process_clone_flags(clone.flags) {
+                    return Ok(error);
+                }
+                if clone.flags & PROCESS_CLONE_TID_FLAGS != 0
+                    || clone.parent_tid.is_some()
+                    || clone.child_tid.is_some()
+                {
+                    return Ok(negative_errno(libc::ENOTSUP));
+                }
+                return Ok(self.prepare_fork(
+                    clone.child_stack,
+                    None,
+                    None,
+                    None,
+                    clone.flags & CLONE_CLEAR_SIGHAND != 0,
+                    false,
+                ));
+            }
         }
         let _retirement = self.state.file_retirement.hold();
         if let Some(result) = self.execute_child_wait(request, memory) {

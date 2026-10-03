@@ -11220,6 +11220,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "fcntl_owner::fork_aliases_keep_configuration_and_permanent_guards",
         "msync::unchanged_five_check_contract_matches_native",
         "msync_lifecycle::shared_coherence_and_mapping_lifetime_match_native",
+        "shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native",
         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
         "fchdir_consumes_low_descriptor_words_on_kvm",
         "getdents64_consumes_low_descriptor_words_on_kvm",
@@ -20972,3 +20973,74 @@ mod natural_retirement;
 
 #[path = "support/exit_descriptor_ordering.rs"]
 mod exit_descriptor_ordering;
+
+#[test]
+fn shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native() {
+    const TEST: &str =
+        "shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "shared-file-fork",
+        include_str!("fixtures/shared_file_fork.c"),
+    );
+    let image = std::fs::read(&program).unwrap();
+    let native_directory = directory.0.join("native");
+    std::fs::create_dir(&native_directory).unwrap();
+    let native = std::process::Command::new(&program)
+        .current_dir(&native_directory)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert!(native.stderr.is_empty(), "{native:?}");
+    assert_eq!(
+        native.stdout,
+        b"shared fork ordinary=ok memfd=ok offset=ok reuse=ok cow=ok child=0 syncs=2\n"
+    );
+    eprintln!("shared-file-fork completed native: child=0 syncs=2");
+    for (name, ownership) in [
+        ("direct", None),
+        ("host", Some(ThreadOwnership::Host)),
+        ("tool", Some(ThreadOwnership::Tool)),
+    ] {
+        let guest_directory = directory.0.join(name);
+        std::fs::create_dir(&guest_directory).unwrap();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[program.to_str().unwrap()],
+                &[],
+                &guest_directory,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if let Some(ownership) = ownership {
+            backend.set_thread_ownership(ownership);
+            let (trace, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            for (syscall, expected) in [("fork", 1), ("msync", 2)] {
+                assert_eq!(
+                    trace
+                        .syscalls()
+                        .iter()
+                        .filter(|name| name.as_str() == syscall)
+                        .count(),
+                    expected,
+                    "ownership={ownership:?}: syscall={syscall} code={code} stdout={stdout:?} stderr={stderr:?}"
+                );
+            }
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(code, 0, "mode={name}: stdout={stdout:?} stderr={stderr:?}");
+        assert_eq!(stderr, native.stderr, "mode={name}");
+        assert_eq!(stdout, native.stdout, "mode={name}");
+        eprintln!("shared-file-fork completed {name}: child=0 syncs=2");
+    }
+}

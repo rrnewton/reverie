@@ -19,6 +19,18 @@ pub(crate) struct AllocationGuard<'a> {
     id: u128,
 }
 
+struct ClosedSnapshot<'a> {
+    allocation: Option<AllocationGuard<'a>>,
+    closed: Option<Closed>,
+}
+
+impl Drop for ClosedSnapshot<'_> {
+    fn drop(&mut self) {
+        drop(self.allocation.take());
+        drop(self.closed.take());
+    }
+}
+
 #[derive(Default)]
 pub(super) struct DeferredFailures {
     next: u128,
@@ -389,6 +401,21 @@ impl GuestMemory {
         permissions: Option<(bool, bool)>,
         cursors: Option<AllocationCursors>,
     ) -> Result<()> {
+        self.publish_range_from(allocation, address, slice, permissions, cursors, None)
+    }
+
+    // Only snapshot_with_shared_files may supply a source VMA. Its parent
+    // allocation and Closed token retain that exact installed source until
+    // this operation returns. Normal mmap continues to validate new VMA rights.
+    fn publish_range_from<'a>(
+        &'a self,
+        allocation: AllocationGuard<'a>,
+        address: u64,
+        slice: BackingSlice,
+        permissions: Option<(bool, bool)>,
+        cursors: Option<AllocationCursors>,
+        inherited: Option<NonNull<u8>>,
+    ) -> Result<()> {
         self.check_copy_failure()?;
         if self.mapping.sync_mmu.lock().unwrap().as_ref() == Some(&false) {
             return Err(Error::SynchronousMmuUnsupported);
@@ -529,7 +556,10 @@ impl GuestMemory {
                         .as_mut()
                         .unwrap()
                         .lose_fixed_target(offset, slice.length, None);
-                    let installed = self.map_shared_image(target, &slice, protection);
+                    let installed = match inherited {
+                        Some(source) => self.duplicate_shared_image(source, target, slice.length),
+                        None => self.map_shared_image(target, &slice, protection),
+                    };
                     let installed = match installed {
                         Ok(installed) => installed,
                         Err(error) => {
@@ -579,6 +609,139 @@ impl GuestMemory {
             .map_err(|failure| failure.error());
         drop(closed);
         result.map(|_| ())
+    }
+
+    /// Fork into a distinct address space, preserving retained shared VMAs.
+    /// This is not CLONE_VM: private bytes, permissions, gate and HVA ownership
+    /// all belong to the new child. Anonymous MAP_SHARED has no such metadata
+    /// yet and retains its pre-existing behavior outside this bounded repair.
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-PENDING): Review shared-file fork ownership and copies.
+    pub(super) fn snapshot_with_shared_files(
+        &self,
+        allocation: AllocationGuard<'_>,
+    ) -> Result<Self> {
+        if !Arc::ptr_eq(&allocation.memory.mapping, &self.mapping) {
+            return Err(Error::MappingPublicationGateMismatch);
+        }
+        let gate = self.entry_gate();
+        let closed = match gate.try_close_quiescent_single().map_err(|e| e.error())? {
+            Some(closed) => closed,
+            None => gate.try_close_quiescent_unattached().map_err(|e| e.error())?
+                .ok_or(Error::SharedFileCapability {
+                    operation: "shared-file fork snapshot",
+                    reason: "requires one stopped vCPU (or unattached memory), no copies and no retained operands",
+                })?,
+        };
+        // Drop releases allocation BEFORE Closed, including during unwinding.
+        // Opening admission may synchronously notify a caller-owned observer.
+        let authority = ClosedSnapshot {
+            allocation: Some(allocation),
+            closed: Some(closed),
+        };
+        let parent_state = self.mapping.address_space.lock().unwrap().clone();
+        let child = Self::new(self.guest_base(), self.len())?;
+        #[cfg(test)]
+        let child = {
+            let mut child = child;
+            child.test_shared_map = self.test_shared_map.clone();
+            child
+        };
+        let mut buffer = vec![0; (1024 * 1024).min(self.len())];
+        let mut cursor = self.guest_base();
+        let mut inherited = Vec::new();
+        for (&page, installed) in &parent_state.backing_pages {
+            if !matches!(
+                installed._slice.backing.kind,
+                BackingKind::OrdinaryFile { .. }
+            ) {
+                continue;
+            }
+            let address = page * PAGE_SIZE as u64;
+            self.copy_private_snapshot_interval(
+                authority.closed.as_ref().unwrap(),
+                &child,
+                cursor,
+                address,
+                &mut buffer,
+            )?;
+            inherited.push((page, installed.clone()));
+            cursor = address + PAGE_SIZE as u64;
+        }
+        self.copy_private_snapshot_interval(
+            authority.closed.as_ref().unwrap(),
+            &child,
+            cursor,
+            self.guest_end(),
+            &mut buffer,
+        )?;
+        let mut child_state = parent_state.clone();
+        // All private extents now belong to the child's base backing. Shared
+        // installed pointers are recreated only from actual child syscall results.
+        child_state.backing_pages.clear();
+        *child.mapping.address_space.lock().unwrap() = child_state;
+        for (page, installed) in inherited {
+            let permissions = match parent_state.pages.get(&page) {
+                Some(UserPageState::Accessible { writable }) => Some((true, *writable)),
+                Some(UserPageState::NoAccess) => Some((false, false)),
+                None => None,
+            };
+            // A page is always contained in one existing host VMA. Do not
+            // merge numerically adjacent publications into an unproved VMA.
+            child.publish_range_from(
+                child.allocation_guard(),
+                page * PAGE_SIZE as u64,
+                installed._slice,
+                permissions,
+                None,
+                Some(installed.mapping),
+            )?;
+        }
+        self.check_copy_failure()?;
+        child.check_copy_failure()?;
+        drop(authority);
+        Ok(child)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_shared_snapshot_duplication_for_test(&mut self) {
+        self.test_shared_map = Some(Arc::new(|_, _| {
+            Some(Err(io::Error::from_raw_os_error(libc::ENOMEM)))
+        }));
+    }
+
+    fn copy_private_snapshot_interval(
+        &self,
+        closed: &Closed,
+        child: &GuestMemory,
+        mut address: u64,
+        end: u64,
+        buffer: &mut [u8],
+    ) -> Result<()> {
+        if !closed.belongs_to(&self.entry_gate()) {
+            return Err(Error::MappingPublicationGateMismatch);
+        }
+        while address < end {
+            let length = usize::try_from(end - address).unwrap().min(buffer.len());
+            let offset = self.checked_offset(address, length)?;
+            let chunks = self.mapping.host_chunks(offset, length);
+            if chunks
+                .iter()
+                .any(|chunk| chunk.backing.kind != BackingKind::Fixed)
+            {
+                return Err(Error::SharedFileCapability {
+                    operation: "shared-file fork private copy",
+                    reason: "a retained file extent must be inherited without reading its bytes",
+                });
+            }
+            // The exact Closed token excludes guest entry and every ordinary
+            // host copy; allocation excludes publication. Taking CopyAccess
+            // here would wait for our own close. No file pointer is dereferenced.
+            self.read_host_chunks(&chunks, address, &mut buffer[..length])?;
+            child.write_raw(address, &buffer[..length])?;
+            address += length as u64;
+        }
+        Ok(())
     }
 
     pub(crate) fn retire_shared_files_for_exec(&self) -> Result<()> {
@@ -904,6 +1067,44 @@ impl GuestMemory {
 }
 
 impl GuestMemory {
+    fn duplicate_shared_image(
+        &self,
+        source: NonNull<u8>,
+        target: usize,
+        length: usize,
+    ) -> io::Result<*mut libc::c_void> {
+        #[cfg(test)]
+        if let Some(result) = self
+            .test_shared_map
+            .as_ref()
+            .and_then(|hook| hook(target, length))
+        {
+            return result.map(std::ptr::with_exposed_provenance_mut::<libc::c_void>);
+        }
+        // Linux mremap(old_size=0) duplicates an existing shareable VMA,
+        // retaining its vm_file, vm_pgoff and flags. Unlike a fresh mmap, it
+        // preserves an existing writable view after F_SEAL_FUTURE_WRITE.
+        // https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/mm/mremap.c#L1683
+        // SAFETY: parent Closed+allocation retain this exact one-page source;
+        // target belongs to the child's preallocated ownership ledger. FIXED
+        // can unmap target before a later failure, so the caller marked it
+        // ambiguous before entering this syscall and never retries that hole.
+        let result = unsafe {
+            libc::mremap(
+                source.as_ptr().cast::<libc::c_void>(),
+                0,
+                length,
+                libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED,
+                std::ptr::with_exposed_provenance_mut::<libc::c_void>(target),
+            )
+        };
+        if result == libc::MAP_FAILED {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(result)
+        }
+    }
+
     pub(super) fn map_shared_image(
         &self,
         target: usize,
@@ -1478,19 +1679,305 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_discard_and_metadata_remap_refuse_shared_history() {
-        // Each terminal refusal has an independent Mapping. These are named
-        // capability boundaries, not a claim of Linux fork/remap equivalence.
-        for operation in 0..4 {
+    fn snapshot_shares_file_offsets_and_keeps_private_memory_independent() {
+        let memory = fixture(5);
+        let original = file(3);
+        install(&memory, &original, BASE + P, 2, P);
+        install(&memory, &original, BASE + 3 * P, 1, P);
+        memory.write_raw(BASE, b"private-parent").unwrap();
+        let participant = memory.entry_gate().register().unwrap();
+        let child = memory.snapshot().unwrap();
+        assert!(!Arc::ptr_eq(&memory.mapping, &child.mapping));
+        assert!(!Arc::ptr_eq(&memory.entry_gate(), &child.entry_gate()));
+        assert_ne!(memory.host_address(), child.host_address());
+        assert!(memory.entry_gate().single_member_domain_active());
+        assert!(child.entry_gate().single_member_domain_active());
+        assert_eq!(child.separately_backed_pages(), 3);
+        child.write_raw(BASE, b"private-child!").unwrap();
+        assert_eq!(read(&memory, BASE, 14), b"private-parent");
+        assert_eq!(read(&child, BASE, 14), b"private-child!");
+        child.write_raw(BASE + P + 9, b"child").unwrap();
+        assert_eq!(read(&memory, BASE + P + 9, 5), b"child");
+        assert_eq!(read(&memory, BASE + 3 * P + 9, 5), b"child");
+        assert_eq!(bytes(&original, P + 9, 5), b"child");
+        original.write_all_at(b"file!", 2 * P + 13).unwrap();
+        assert_eq!(read(&child, BASE + 2 * P + 13, 5), b"file!");
+        assert_eq!(bytes(&original, 0, PAGE_SIZE), vec![0x11; PAGE_SIZE]);
+        // Permission metadata belongs to the child, not its source process.
+        child
+            .map_user_permissions(BASE + P, P, true, false)
+            .unwrap();
+        assert!(child.user().copy_to_user(BASE + P, b"x").is_err());
+        memory.user().copy_to_user(BASE + P, b"p").unwrap();
+        assert_eq!(read(&child, BASE + P, 1), b"p");
+        let second = memory.snapshot().unwrap();
+        second.write_raw(BASE + P + 20, b"second").unwrap();
+        assert_eq!(read(&child, BASE + P + 20, 6), b"second");
+        drop(participant);
+        drop(memory);
+        child.write_raw(BASE + 2 * P, b"alive").unwrap();
+        assert_eq!(read(&second, BASE + 2 * P, 5), b"alive");
+        assert_eq!(bytes(&original, 2 * P, 5), b"alive");
+    }
+
+    #[test]
+    fn snapshot_keeps_shared_storage_after_fd_reuse_and_parent_retirement() {
+        let memory = fixture(3);
+        let original = file(2);
+        let observer = original.try_clone().unwrap();
+        install(&memory, &original, BASE, 2, 0);
+        let unrelated = file(1);
+        unrelated.write_all_at(b"other", 0).unwrap();
+        assert_eq!(
+            unsafe { libc::dup2(unrelated.as_raw_fd(), original.as_raw_fd()) },
+            original.as_raw_fd()
+        );
+        drop(original);
+        let child = memory.snapshot().unwrap();
+        replace(&memory, BASE, 1, Some(b"new-private"), true);
+        memory.retire_shared_files_for_exec().unwrap();
+        assert!(!memory.contains_shared_file());
+        assert!(child.contains_shared_file());
+        child.write_raw(BASE + P, b"child").unwrap();
+        assert_eq!(bytes(&observer, P, 5), b"child");
+        assert_eq!(bytes(&observer, 0, 5), vec![0x11; 5]);
+        assert_eq!(bytes(&unrelated, 0, 5), b"other");
+        assert_eq!(read(&memory, BASE, 11), b"new-private");
+        assert_eq!(
+            child
+                .sync_shared_file_range(BASE, 2 * PAGE_SIZE, libc::MS_SYNC)
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn snapshot_preserves_preexisting_memfd_vma_after_future_write_seal() {
+        let fd = unsafe {
+            libc::memfd_create(
+                c"fork-inherited-view".as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        assert!(fd >= 0, "memfd setup: {}", io::Error::last_os_error());
+        let file = unsafe { File::from_raw_fd(fd) };
+        file.set_len(2 * P).unwrap();
+        file.write_all_at(b"before", P).unwrap();
+        let memory = fixture(2);
+        install(&memory, &file, BASE, 1, P);
+        assert_eq!(
+            unsafe {
+                libc::fcntl(
+                    file.as_raw_fd(),
+                    libc::F_ADD_SEALS,
+                    libc::F_SEAL_FUTURE_WRITE,
+                )
+            },
+            0
+        );
+        let fresh = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGE_SIZE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                P as libc::off_t,
+            )
+        };
+        assert_eq!(
+            fresh,
+            libc::MAP_FAILED,
+            "a fresh writable VMA must not impersonate inheritance"
+        );
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+        let child = memory.snapshot().unwrap();
+        assert!(child.file_write_permitted(BASE, PAGE_SIZE));
+        child.write_raw(BASE, b"after!").unwrap();
+        assert_eq!(read(&memory, BASE, 6), b"after!");
+        assert_eq!(bytes(&file, P, 6), b"after!");
+        assert_eq!(bytes(&file, 0, PAGE_SIZE), vec![0; PAGE_SIZE]);
+    }
+
+    #[test]
+    fn snapshot_readonly_file_preserves_maximum_and_protection() {
+        let memory = fixture(2);
+        let original = file(1);
+        let readonly = File::open(format!("/proc/self/fd/{}", original.as_raw_fd())).unwrap();
+        memory
+            .publish_shared_file_range(
+                memory.allocation_guard(),
+                SharedFileRangePlan {
+                    address: BASE,
+                    length: PAGE_SIZE,
+                    file: readonly.into(),
+                    offset: 0,
+                    readable: true,
+                    writable: false,
+                    max_writable: false,
+                    cursors: None,
+                },
+            )
+            .unwrap();
+        let child = memory.snapshot().unwrap();
+        assert_eq!(read(&child, BASE, PAGE_SIZE), vec![0x11; PAGE_SIZE]);
+        assert!(!child.file_write_permitted(BASE, PAGE_SIZE));
+        assert!(matches!(
+            child.map_user_permissions(BASE, P, true, true),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
+        assert!(child.user().copy_to_user(BASE, b"x").is_err());
+        assert!(child.entry_gate().pending_failure().is_none());
+        original.write_all_at(b"host", 0).unwrap();
+        assert_eq!(read(&child, BASE, 4), b"host");
+        assert_eq!(read(&memory, BASE, 4), b"host");
+    }
+
+    #[test]
+    fn snapshot_never_reads_truncated_shared_pages() {
+        let memory = fixture(3);
+        let original = file(1);
+        install(&memory, &original, BASE + P, 1, 0);
+        memory.write_raw(BASE, b"private").unwrap();
+        original.set_len(0).unwrap();
+        let child = memory.snapshot().unwrap();
+        assert_eq!(read(&child, BASE, 7), b"private");
+        assert!(memory.entry_gate().pending_failure().is_none());
+        assert!(child.entry_gate().pending_failure().is_none());
+        let mut output = [0x7b; 4];
+        let failure = child.read_raw(BASE + P, &mut output).unwrap_err();
+        assert!(matches!(failure.primary(), Error::SharedFileCopy {
+            address, requested: 4, transferred: 0, source, ..
+        } if *address == BASE + P && source.raw_os_error() == Some(libc::EFAULT)));
+        assert_eq!(output, [0x7b; 4]);
+        assert!(child.entry_gate().pending_failure().is_some());
+        assert!(
+            memory.entry_gate().pending_failure().is_none(),
+            "child cancellation owns its gate only"
+        );
+    }
+
+    #[test]
+    fn snapshot_requires_quiescence_and_notifies_after_parent_unlock() {
+        let memory = fixture(2);
+        let original = file(1);
+        install(&memory, &original, BASE, 1, 0);
+        let participant = memory.entry_gate().register().unwrap();
+        let gate = memory.entry_gate();
+        let copy = gate.try_copy(None).unwrap().unwrap();
+        assert!(matches!(
+            memory.snapshot().unwrap_err(),
+            Error::SharedFileCapability { .. }
+        ));
+        let retained = gate.retain_operand(&copy).unwrap();
+        drop(copy);
+        assert!(matches!(
+            memory.snapshot().unwrap_err(),
+            Error::SharedFileCapability { .. }
+        ));
+        assert!(gate.pending_failure().is_none());
+        drop(retained);
+        let observation = observations(&memory);
+        let mut change = Box::pin(gate.subscribe());
+        assert!(
+            change
+                .as_mut()
+                .poll(&mut Context::from_waker(&Waker::from(observation.clone())))
+                .is_pending()
+        );
+        let child = memory.snapshot().unwrap();
+        assert!(child.contains_shared_file());
+        let rows = observation.rows.lock().unwrap();
+        assert!(!rows.is_empty());
+        assert!(
+            rows.iter().all(|row| *row == (true, true, true, 0)),
+            "notifications must follow every parent guard release: {rows:?}"
+        );
+        drop(rows);
+        assert_eq!(gate.test_state().copies, 0);
+        drop(participant);
+    }
+
+    #[test]
+    fn snapshot_failed_duplication_preserves_parent_and_foreign_destination() {
+        let mut memory = fixture(3);
+        let original = file(2);
+        install(&memory, &original, BASE, 2, 0);
+        let before = bytes(&original, 0, 2 * PAGE_SIZE);
+        let foreign = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let target_record = foreign.clone();
+        let call_record = calls.clone();
+        memory.test_shared_map = Some(Arc::new(move |target, length| {
+            if call_record.fetch_add(1, Ordering::SeqCst) == 0 {
+                return None;
+            }
+            assert_eq!(length, PAGE_SIZE);
+            let ptr = unsafe {
+                libc::mmap(
+                    std::ptr::with_exposed_provenance_mut(target),
+                    length,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            assert_eq!(ptr.addr(), target);
+            unsafe { std::ptr::write_bytes(ptr.cast::<u8>(), 0xa7, length) };
+            target_record.store(target, Ordering::SeqCst);
+            Some(Err(io::Error::from_raw_os_error(libc::ENOMEM)))
+        }));
+        assert!(
+            matches!(memory.snapshot().unwrap_err().primary(), Error::MemoryMapping(e) if e.raw_os_error() == Some(libc::ENOMEM))
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(memory.entry_gate().pending_failure().is_none());
+        assert_eq!(read(&memory, BASE, 2 * PAGE_SIZE), before);
+        assert_eq!(bytes(&original, 0, 2 * PAGE_SIZE), before);
+        let target = foreign.load(Ordering::SeqCst);
+        assert_ne!(target, 0);
+        let mut resident = 0;
+        assert_eq!(
+            unsafe {
+                libc::mincore(
+                    std::ptr::with_exposed_provenance_mut(target),
+                    PAGE_SIZE,
+                    &mut resident,
+                )
+            },
+            0
+        );
+        assert_eq!(
+            unsafe {
+                std::slice::from_raw_parts(
+                    std::ptr::with_exposed_provenance::<u8>(target),
+                    PAGE_SIZE,
+                )
+            },
+            vec![0xa7; PAGE_SIZE]
+        );
+        // Only this test owns the planted foreign mapping; production cleanup
+        // must have excluded it, even after a preceding child VMA succeeded.
+        assert_eq!(
+            unsafe { libc::munmap(std::ptr::with_exposed_provenance_mut(target), PAGE_SIZE) },
+            0
+        );
+    }
+
+    #[test]
+    fn discard_and_metadata_remap_still_refuse_shared_history() {
+        // Fork is now a real inherited view. These other unsupported layout
+        // operations retain their no-effect capability boundaries unchanged.
+        for operation in 0..3 {
             let memory = fixture(2);
             let file = file(1);
             install(&memory, &file, BASE, 1, 0);
             let before = bytes(&file, 0, PAGE_SIZE);
             let result = match operation {
-                0 => memory.snapshot().map(|_| ()),
-                1 => memory.discard_pages(BASE, 2 * PAGE_SIZE),
-                2 => memory.remap_user_range(BASE, P, BASE + P, P),
-                3 => memory.unmap_user_range(BASE, P),
+                0 => memory.discard_pages(BASE, 2 * PAGE_SIZE),
+                1 => memory.remap_user_range(BASE, P, BASE + P, P),
+                2 => memory.unmap_user_range(BASE, P),
                 _ => unreachable!(),
             };
             assert!(matches!(

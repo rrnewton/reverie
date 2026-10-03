@@ -2473,11 +2473,25 @@ impl KvmBackend {
         fault: Option<&PageZeroFault>,
         stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
     ) -> Result<Option<ForkedProcess>> {
-        let mut child_executor =
-            executor.fork_child(child_pid, clear_sighand, share_address_space)?;
-        #[cfg(test)]
-        tests::entry_action_tests::observe("fork_executor");
-        child_executor.set_clear_child_tid(clear_child_tid);
+        let shared_file_snapshot = self.memory.contains_shared_file();
+        if shared_file_snapshot && share_address_space {
+            return Err(Error::SharedFileCapability {
+                operation: "CLONE_VM/thread creation",
+                reason: "ordinary shared-file views require one vCPU per address space",
+            });
+        }
+        // Preserve the existing private-fork preparation order. For real file
+        // views, duplication may fail after unmapping a child destination;
+        // finish that owned snapshot/VM preparation before publishing a child
+        // lifecycle or writing the parent's TID word.
+        let mut prepared_executor = if shared_file_snapshot {
+            None
+        } else {
+            let child = executor.fork_child(child_pid, clear_sighand, share_address_space)?;
+            #[cfg(test)]
+            tests::entry_action_tests::observe("fork_executor");
+            Some(child)
+        };
         if park_syscall_return
             && !self
                 .park_process_action("parent did not park at fork", stop)
@@ -2486,9 +2500,14 @@ impl KvmBackend {
             return Ok(None);
         }
         let child_snapshot = self.snapshot_process()?;
-        write_tid_best_effort(&mut self.memory, parent_tid, child_pid);
+        if !shared_file_snapshot {
+            write_tid_best_effort(&mut self.memory, parent_tid, child_pid);
+        }
 
         let mut child = Self::from_process_snapshot(child_snapshot)?;
+        if let Some(child_executor) = prepared_executor.as_mut() {
+            child_executor.set_clear_child_tid(clear_child_tid);
+        }
         // Forked children inherit the parent's thread ownership so execution and
         // `is_backend_owned_syscall`'s futex classification stay consistent.
         child.thread_ownership = self.thread_ownership;
@@ -2498,10 +2517,20 @@ impl KvmBackend {
                 .map(|failure| failure.for_process(Pid::from_raw(child_pid))),
         );
         child.set_operation_origin(self.memory.entry_origin().operation);
-        child_executor.bind_address_space(&child.memory);
+        if let Some(child_executor) = prepared_executor.as_mut() {
+            child_executor.bind_address_space(&child.memory);
+        }
         child.exit_collector = self.exit_collector.clone();
-        write_tid_best_effort(&mut child.memory, child_tid, child_pid);
-        let (fs_base, gs_base) = child_executor.segment_bases();
+        if !shared_file_snapshot {
+            write_tid_best_effort(&mut child.memory, child_tid, child_pid);
+        }
+        // The shared-file child has not registered a lifecycle yet. Its segment
+        // bases are inherited unchanged, so use the parent during fallible VM
+        // setup rather than creating observable child state prematurely.
+        let (fs_base, gs_base) = prepared_executor
+            .as_ref()
+            .unwrap_or(executor)
+            .segment_bases();
         set_user_segment_base(&child.vcpu, SegmentBase::Fs, fs_base)?;
         set_user_segment_base(&child.vcpu, SegmentBase::Gs, gs_base)?;
         // The child uses root transport for future syscalls, but its initial
@@ -2515,6 +2544,23 @@ impl KvmBackend {
         )?;
         if let Some(fault) = fault {
             fault.configure_child(&mut child, child_stack)?;
+        }
+        let child_executor = match prepared_executor {
+            Some(child) => child,
+            None => {
+                let mut child_executor = executor.fork_child(child_pid, clear_sighand, false)?;
+                #[cfg(test)]
+                tests::entry_action_tests::observe("fork_executor");
+                child_executor.set_clear_child_tid(clear_child_tid);
+                child_executor.bind_address_space(&child.memory);
+                child_executor
+            }
+        };
+        if shared_file_snapshot {
+            // Child TID may itself lie in a shared file, so neither TID store
+            // precedes fallible VM setup or descriptor/lifecycle preparation.
+            write_tid_best_effort(&mut child.memory, child_tid, child_pid);
+            write_tid_best_effort(&mut self.memory, parent_tid, child_pid);
         }
         Ok(Some(ForkedProcess {
             pid: child_pid,
@@ -7527,6 +7573,92 @@ mod tests {
                 .teardown_result()
                 .unwrap();
             backend.thread_group.terminal_reads.rearm_after_exec();
+        }
+    }
+
+    #[test]
+    fn shared_file_preparation_failures_precede_child_lifecycle_and_shared_tid_copyout() {
+        for fail_duplication in [true, false] {
+            let mut parent = KvmBackend::new(16 * 1024 * 1024)
+                .expect("shared-file fork failure control requires /dev/kvm");
+            parent
+                .install_static_elf(&minimal_test_elf(&[HLT]), "/bin/shared-fork-failure")
+                .unwrap();
+            let state = parent.static_elf.take().unwrap();
+            let lifecycle = state.task_lifecycle.clone();
+            let executor = ElfExecutor::new(state, false);
+            let fd =
+                unsafe { libc::memfd_create(c"shared-fork-failure".as_ptr(), libc::MFD_CLOEXEC) };
+            assert!(fd >= 0, "memfd setup: {}", std::io::Error::last_os_error());
+            // SAFETY: memfd_create returned the new descriptor owned by this File.
+            let backing = unsafe { File::from_raw_fd(fd) };
+            backing.set_len(PAGE_SIZE).unwrap();
+            parent
+                .memory
+                .publish_shared_file_range(
+                    parent.memory.allocation_guard(),
+                    crate::memory::SharedFileRangePlan {
+                        address: 0x40_0000,
+                        length: PAGE_SIZE as usize,
+                        file: backing.try_clone().unwrap().into(),
+                        offset: 0,
+                        readable: true,
+                        writable: true,
+                        max_writable: true,
+                        cursors: None,
+                    },
+                )
+                .unwrap();
+            const TID: u64 = 0x30_0000;
+            parent
+                .memory
+                .write_raw(TID, &0x11223344_u32.to_ne_bytes())
+                .unwrap();
+            const CHILD_TID: u64 = 0x40_0100;
+            parent
+                .memory
+                .write_raw(CHILD_TID, &0xaabbccdd_u32.to_ne_bytes())
+                .unwrap();
+            if fail_duplication {
+                parent.memory.fail_shared_snapshot_duplication_for_test();
+            } else {
+                // The real frame import fails after child VM allocation. This must
+                // still precede lifecycle registration and either shared TID store.
+                parent.syscall_frame_address = 32 * 1024 * 1024;
+            }
+            assert!(lifecycle.lock().unwrap().get(2).is_none());
+            let result = parent.prepare_forked_process(
+                &executor,
+                2,
+                None,
+                Some(TID),
+                Some(CHILD_TID),
+                None,
+                false,
+                false,
+                false,
+                None,
+            );
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("injected duplication failure succeeded"),
+            };
+            if fail_duplication {
+                assert!(
+                    matches!(error.primary(), Error::MemoryMapping(e) if e.raw_os_error() == Some(libc::ENOMEM))
+                );
+            } else {
+                assert!(matches!(error.primary(), Error::InvalidGuestAddress { .. }));
+            }
+            assert!(lifecycle.lock().unwrap().get(2).is_none());
+            assert!(!executor.has_pending_child_process(2));
+            let mut bytes = [0; 4];
+            parent.memory.read_raw(TID, &mut bytes).unwrap();
+            assert_eq!(bytes, 0x11223344_u32.to_ne_bytes());
+            parent.memory.read_raw(CHILD_TID, &mut bytes).unwrap();
+            assert_eq!(bytes, 0xaabbccdd_u32.to_ne_bytes());
+            assert!(parent.memory.entry_gate().pending_failure().is_none());
+            assert!(!parent.thread_group.has_worker_handles());
         }
     }
 
