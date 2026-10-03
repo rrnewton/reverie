@@ -1462,6 +1462,21 @@ unsafe fn is_pending(signal: libc::c_int) -> libc::c_int {
 /// # Safety
 /// Changes the calling thread's signal mask.
 unsafe fn unblock(signal: libc::c_int) {
+    unsafe { unblock_returning(signal, 0) }
+}
+
+/// As `unblock`, but checks that the unblock returns `ret`.
+///
+/// A signal the unblock lets through stops the guest at its delivery stop
+/// as the unblock returns. A hook that injects there leaves its last
+/// injection's return value in the guest's return register, so the unblock
+/// returns that value instead of 0. Main leaks the injected result this way
+/// (<https://github.com/rrnewton/reverie/issues/892>); tests that pin the
+/// leak pass the leaked value as `ret`, and a fix flips those pins to 0.
+///
+/// # Safety
+/// Changes the calling thread's signal mask.
+unsafe fn unblock_returning(signal: libc::c_int, ret: libc::c_long) {
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut set);
@@ -1474,7 +1489,7 @@ unsafe fn unblock(signal: libc::c_int) {
                 0usize,
                 8usize
             ),
-            0
+            ret
         );
     }
 }
@@ -2417,8 +2432,12 @@ unsafe fn print_and_exit_unintercepted(line: &str) -> ! {
 ///
 /// Known gap pinned here: SIGUSR1 stays in the tracer's single hold slot,
 /// which nothing resumes from, so it is never reported or delivered
-/// (https://github.com/rrnewton/reverie/issues/845). The unblock's own result is the guest's 0, not
-/// the hook's `getpid`.
+/// (https://github.com/rrnewton/reverie/issues/845). Also pinned: the
+/// unblock's own result is `SYS_getpid`, the number of the hook's
+/// injection, which SIGUSR1 interrupted before its `syscall`. Main leaks the
+/// injection's register state into the guest's result here
+/// (<https://github.com/rrnewton/reverie/issues/892>); a fix flips this pin
+/// to 0.
 #[test]
 fn signal_held_by_a_signal_hook_injection_is_not_delivered() {
     let (output, log) = test_fn::<InjectInFirstSignalHook, _>(|| unsafe {
@@ -2467,9 +2486,13 @@ fn signal_held_by_a_signal_hook_injection_is_not_delivered() {
         *signals
     );
     let (fields, _pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
+    // Main leaks the injection's syscall number into the unblock's result;
+    // see https://github.com/rrnewton/reverie/issues/892. A fix flips this
+    // pin to "0 1 0".
     assert_eq!(
-        fields, "0 1 0",
-        "the unblock succeeds and SIGSYS runs its handler; SIGUSR1 never does (known gap)"
+        fields,
+        format!("{} 1 0", libc::SYS_getpid),
+        "the unblock returns the hook's getpid number (known leak) and SIGSYS runs its handler; SIGUSR1 never does (known gap)"
     );
     assert_eq!(
         *injected,
@@ -2905,13 +2928,16 @@ unsafe fn syscall_exiting_a_vfork_child(nr: libc::c_long, a0: i64, a1: i64, a2: 
 
 /// Checks a vfork-hook guest's line, `{ret} {handler runs} {reaped child}
 /// {status}`, and the injections after `before`, and that the hook saw
-/// SIGUSR1 once.
+/// SIGUSR1 once. `ret` is the guest's expected result, or `None` where the
+/// guest gets the hook's vfork child PID instead: main leaks an ordinary
+/// signal callback's injected result into the guest's syscall
+/// (<https://github.com/rrnewton/reverie/issues/892>).
 #[cfg(target_arch = "x86_64")]
 fn check_vfork_hook_outcome(
     output: &reverie::process::Output,
     log: &Log,
     probe: &str,
-    ret: i64,
+    ret: Option<i64>,
     before: &[Result<i64, i32>],
 ) {
     assert_eq!(
@@ -2937,8 +2963,13 @@ fn check_vfork_hook_outcome(
     let fields: Vec<&str> = stdout.trim().split(' ').collect();
     assert_eq!(
         fields,
-        [&ret.to_string(), "1", &child.to_string(), "0"],
-        "the guest keeps its result, runs the SIGUSR1 handler once, and reaps the hook's child"
+        [
+            &ret.unwrap_or(child).to_string(),
+            "1",
+            &child.to_string(),
+            "0"
+        ],
+        "the guest gets its result (or, where ret is None, the leaked child PID), runs the SIGUSR1 handler once, and reaps the hook's child"
     );
     assert_eq!(*signals, vec![libc::SIGUSR1], "the hook sees SIGUSR1 once");
 }
@@ -2983,13 +3014,17 @@ fn held_signal_is_delivered_after_a_signal_hook_vfork() {
         &output,
         &log,
         "held-vfork",
-        -(libc::EINTR as i64),
+        Some(-(libc::EINTR as i64)),
         &[Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
     );
 }
 
 /// As `held_signal_is_delivered_after_a_signal_hook_vfork`, but SIGUSR1 is
 /// reported at its own signal-delivery stop, after the guest's `tgkill`.
+/// Untraced Linux returns 0 from `tgkill`. Pinned: the guest's `tgkill`
+/// returns the hook's vfork child PID. Main leaks the injected result here
+/// (<https://github.com/rrnewton/reverie/issues/892>); a fix flips this pin
+/// to `Some(0)`.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn signal_is_delivered_after_a_signal_hook_vfork_at_its_delivery_stop() {
@@ -3009,14 +3044,16 @@ fn signal_is_delivered_after_a_signal_hook_vfork_at_its_delivery_stop() {
         println!("{ret} {calls} {child} {status}");
     })
     .expect("run delivery-stop vfork guest");
-    check_vfork_hook_outcome(&output, &log, "delivery-vfork", 0, &[]);
+    // Main leaks the hook's vfork result into tgkill's; see
+    // https://github.com/rrnewton/reverie/issues/892. A fix flips this to Some(0).
+    check_vfork_hook_outcome(&output, &log, "delivery-vfork", None, &[]);
 }
 
 /// A signal hook executes another program. The replacement program's
 /// `geteuid`, which the tool replaces with `getpid`, gets the PID: the
 /// callback that injected the exec never resumed, and nothing of it, notably
-/// that a signal callback was running (whose injections keep the guest's
-/// return register), outlives it.
+/// that a signal callback was running (a held-signal callback's injections
+/// keep the guest's return register), outlives it.
 #[test]
 fn exec_from_a_signal_hook_ends_the_callback() {
     let (output, log) = test_fn::<ExecInSignalHook, _>(|| unsafe {
@@ -3197,11 +3234,25 @@ unsafe fn queue_value_to_self(signal: libc::c_int, si_code: libc::c_int) {
 /// # Safety
 /// Changes the calling thread's signal mask.
 unsafe fn print_recorded(ret: libc::c_long, errno: libc::c_int, signal: libc::c_int) {
+    unsafe { print_recorded_unblocking_to(ret, errno, signal, 0) }
+}
+
+/// As `print_recorded`, but checks that the unblock returns `unblocked`
+/// (`unblock_returning`).
+///
+/// # Safety
+/// Changes the calling thread's signal mask.
+unsafe fn print_recorded_unblocking_to(
+    ret: libc::c_long,
+    errno: libc::c_int,
+    signal: libc::c_int,
+    unblocked: libc::c_long,
+) {
     unsafe {
         let calls = RECORDED_CALLS.load(Ordering::Relaxed);
         let blocked = is_blocked(signal);
         let pending = is_pending(signal);
-        unblock(signal);
+        unblock_returning(signal, unblocked);
         println!(
             "{ret} {errno} {calls} {} {} {} {blocked} {pending} {} {}",
             RECORDED_CODE.load(Ordering::Relaxed),
@@ -3309,8 +3360,10 @@ fn check_requeued_known_gap(
 /// every callback, so the guest keeps the injection's return value instead,
 /// as on main: `ppoll` returns the hook's getpid, `signal` stays pending,
 /// and its handler runs when the guest unblocks it, after a second report.
-/// (On main the leaked value also reaches the guest's next syscall, so the
-/// guest's unblock fails.)
+/// The second report's getpid is likewise left in the guest's return
+/// register, so the unblock returns the guest's pid. Main leaks the injected
+/// result into both (<https://github.com/rrnewton/reverie/issues/892>); a
+/// fix flips these pins.
 ///
 /// `code` is the queued `si_code`: a positive one is synchronous-class, which
 /// the kernel dequeues ahead of a step's SIGTRAP.
@@ -3334,7 +3387,9 @@ fn always_injecting_hook_requeues_at_a_delivery_stop(signal: libc::c_int, code: 
             8usize,
         );
         let errno = *libc::__errno_location();
-        print_recorded(ret, errno, signal);
+        // Main leaks the hook's getpid into the unblock's result; see
+        // https://github.com/rrnewton/reverie/issues/892. A fix flips this to 0.
+        print_recorded_unblocking_to(ret, errno, signal, libc::getpid() as libc::c_long);
     })
     .expect("run always-injecting hook guest");
     let pid =
@@ -3407,8 +3462,11 @@ unsafe fn filter_ppoll(action: u32) {
 /// installed answers `ppoll`, which neither the guest nor the hook makes,
 /// with `action`. Untraced Linux prints EINTR, one handler run with the
 /// queued siginfo, and the signal blocked again. Pinned at the same known gap
-/// (<https://github.com/rrnewton/reverie/issues/845>); Reverie makes no
-/// syscall the guest did not, so the filter is never consulted.
+/// (<https://github.com/rrnewton/reverie/issues/845>), including the unblock
+/// that returns the guest's pid, which main leaks there
+/// (<https://github.com/rrnewton/reverie/issues/892>; a fix flips that pin).
+/// Reverie makes no syscall the guest did not, so the filter is never
+/// consulted.
 fn always_injecting_hook_requeues_under_a_guest_seccomp_filter(action: u32) {
     let (output, log) = test_fn::<InjectInEverySignalHook, _>(move || unsafe {
         install_recorder(libc::SIGUSR1);
@@ -3432,7 +3490,9 @@ fn always_injecting_hook_requeues_under_a_guest_seccomp_filter(action: u32) {
             sigmask.as_ptr(),
         );
         let errno = *libc::__errno_location();
-        print_recorded(ret, errno, libc::SIGUSR1);
+        // Main leaks the hook's getpid into the unblock's result; see
+        // https://github.com/rrnewton/reverie/issues/892. A fix flips this to 0.
+        print_recorded_unblocking_to(ret, errno, libc::SIGUSR1, libc::getpid() as libc::c_long);
     })
     .expect("run seccomp-filtered always-injecting hook guest");
     let pid = check_requeued_known_gap(
@@ -3814,7 +3874,9 @@ const fn bit(signal: libc::c_int) -> u64 {
 /// Known gap pinned here (https://github.com/rrnewton/reverie/issues/845):
 /// SIGUSR1 is requeued as there, so the handler runs only when the guest
 /// unblocks SIGUSR1 after `ppoll`, after the guest has printed the masks,
-/// which are therefore empty.
+/// which are therefore empty. The unblock returns the hook's getpid: main
+/// leaks the injected result there
+/// (<https://github.com/rrnewton/reverie/issues/892>); a fix flips that pin.
 #[test]
 fn always_injecting_hook_saves_the_mask_in_effect_in_every_frame_field() {
     let (output, log) = test_fn::<InjectInEverySignalHook, _>(|| unsafe {
@@ -3824,7 +3886,9 @@ fn always_injecting_hook_saves_the_mask_in_effect_in_every_frame_field() {
         let ret = ppoll_with_empty_mask();
         let errno = *libc::__errno_location();
         print_frame_masks();
-        print_recorded(ret, errno, libc::SIGUSR1);
+        // Main leaks the hook's getpid into the unblock's result; see
+        // https://github.com/rrnewton/reverie/issues/892. A fix flips this to 0.
+        print_recorded_unblocking_to(ret, errno, libc::SIGUSR1, libc::getpid() as libc::c_long);
     })
     .expect("run frame-mask always-injecting hook guest");
     let (masks, output) = split_frame_masks(output);
@@ -3862,7 +3926,9 @@ fn always_injecting_hook_saves_the_mask_in_effect_in_every_frame_field() {
 /// `write`, resumes its syscall stop with SIGUSR2, where Linux queues it
 /// with a siginfo of its own (`SI_KERNEL`, no sender, no value). The
 /// restored saved mask blocks it, so the handler runs, and the hook reports
-/// it, only when the guest unblocks it.
+/// it, only when the guest unblocks it; that report's getpid is left in the
+/// unblock's return register. Main leaks the injected result there
+/// (<https://github.com/rrnewton/reverie/issues/892>); a fix flips that pin.
 #[test]
 fn signal_held_by_a_hook_injection_at_a_delivery_stop_misses_the_syscall() {
     let (output, log) = test_fn::<InjectInEverySignalHook, _>(|| unsafe {
@@ -3888,7 +3954,9 @@ fn signal_held_by_a_hook_injection_at_a_delivery_stop_misses_the_syscall() {
         );
         let errno = *libc::__errno_location();
         println!("{}", is_pending(libc::SIGUSR1));
-        print_recorded(ret, errno, libc::SIGUSR2);
+        // Main leaks the hook's getpid into the unblock's result; see
+        // https://github.com/rrnewton/reverie/issues/892. A fix flips this to 0.
+        print_recorded_unblocking_to(ret, errno, libc::SIGUSR2, libc::getpid() as libc::c_long);
     })
     .expect("run ignored-then-caught always-injecting hook guest");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -4267,7 +4335,10 @@ fn standard_sibling_queued_by_a_signal_hook_reaches_the_tool() {
 /// Known gaps pinned here (https://github.com/rrnewton/reverie/issues/845),
 /// both as on main: a SIGUSR1 is requeued as in
 /// `always_injecting_hook_requeues_at_a_delivery_stop`, so the guest's
-/// result is the hook's getpid and the signal is reported twice. A
+/// result is the hook's getpid, the signal is reported twice, and the
+/// guest's unblock also returns the hook's getpid (main leaks the injected
+/// result into both, <https://github.com/rrnewton/reverie/issues/892>; a fix
+/// flips those pins). A
 /// synchronous-class SIGSYS, which the kernel dequeues ahead of the step's
 /// SIGTRAP, is passed on unreported: the guest sees what untraced Linux
 /// prints, but the Tool never sees the signal.
@@ -4286,7 +4357,15 @@ fn always_injecting_hook_after_a_held_signal(signal: libc::c_int, code: libc::c_
             0usize,
         );
         let errno = *libc::__errno_location();
-        print_recorded(ret, errno, signal);
+        // Main leaks the requeued SIGUSR1's second getpid into the unblock's
+        // result; see https://github.com/rrnewton/reverie/issues/892. A fix
+        // flips this to 0. The unreported SIGSYS runs no hook.
+        let unblocked = if code > 0 {
+            0
+        } else {
+            libc::getpid() as libc::c_long
+        };
+        print_recorded_unblocking_to(ret, errno, signal, unblocked);
     })
     .expect("run always-injecting hook guest");
     if code > 0 {
@@ -4379,13 +4458,18 @@ fn held_signal_keeps_its_siginfo_after_a_signal_hook_injection() {
 /// `held_signal_keeps_its_siginfo_after_a_signal_hook_injection` itself,
 /// with an `rt_sigprocmask` the tool does not intercept, and it is delivered
 /// as that syscall returns. The hook's `getpid` must not cost it its siginfo.
+/// Pinned: the unblock returns the hook's getpid, not 0. Main leaks the
+/// injected result here (<https://github.com/rrnewton/reverie/issues/892>);
+/// a fix flips this pin to 0.
 #[test]
 fn signal_keeps_its_siginfo_after_a_signal_hook_injection() {
     let (output, log) = test_fn::<InjectInFirstSignalHook, _>(|| unsafe {
         install_recorder(libc::SIGUSR1);
         block(&[libc::SIGUSR1]);
         queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
-        unblock(libc::SIGUSR1);
+        // Main leaks the hook's getpid into the unblock's result; see
+        // https://github.com/rrnewton/reverie/issues/892. A fix flips this to 0.
+        unblock_returning(libc::SIGUSR1, libc::getpid() as libc::c_long);
         block(&[libc::SIGUSR1]);
         print_recorded(0, 0, libc::SIGUSR1);
     })
@@ -5103,13 +5187,23 @@ fn exec_hook_does_not_run_for_a_requeued_signal() {
 /// Known gap pinned here (https://github.com/rrnewton/reverie/issues/845):
 /// SIGUSR1 is requeued as there, so `ppoll` returns the hook's
 /// `rt_sigprocmask` result (`ret`, `errno`), and the signal is reported
-/// again, and handled, when the guest unblocks it.
+/// again, and handled, when the guest unblocks it. The second report's
+/// injection result (`result`) is also what the unblock returns. Main leaks
+/// the injected result into both (<https://github.com/rrnewton/reverie/issues/892>);
+/// a fix flips these pins.
 fn signal_hook_mask_call_that_sets_nothing_requeues(
     inject: u64,
     result: Result<i64, i32>,
     ret: &str,
     errno: Option<i32>,
 ) {
+    // Main leaks the second report's injected result into the unblock's;
+    // see https://github.com/rrnewton/reverie/issues/892. A fix flips this
+    // to 0.
+    let unblocked: libc::c_long = match result {
+        Ok(value) => value as libc::c_long,
+        Err(_) => -1,
+    };
     let (output, log) = test_fn::<ScriptedSignalHook, _>(move || unsafe {
         set_script(&[action(inject, VERDICT_PASS, 0); 4]);
         install_recorder(libc::SIGUSR1);
@@ -5117,7 +5211,7 @@ fn signal_hook_mask_call_that_sets_nothing_requeues(
         queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
         let ret = ppoll_with_empty_mask();
         let errno = *libc::__errno_location();
-        print_recorded(ret, errno, libc::SIGUSR1);
+        print_recorded_unblocking_to(ret, errno, libc::SIGUSR1, unblocked);
     })
     .expect("run mask-call hook guest");
     check_requeued_known_gap(
@@ -5199,7 +5293,10 @@ fn signal_hook_block_that_faults_after_writing_requeues() {
 /// SIGUSR1 is requeued as in
 /// `always_injecting_hook_requeues_at_a_delivery_stop`: `ppoll` returns the
 /// hook's EFAULT, and the signal is reported again, and handled, when the
-/// guest unblocks it.
+/// guest unblocks it. The unblock returns -1, the second report's EFAULT.
+/// Main leaks the injected result into both
+/// (<https://github.com/rrnewton/reverie/issues/892>); a fix flips these
+/// pins.
 #[test]
 fn signal_hook_block_that_faults_before_writing_requeues() {
     let (output, log) = test_fn::<ScriptedSignalHook, _>(|| unsafe {
@@ -5209,7 +5306,10 @@ fn signal_hook_block_that_faults_before_writing_requeues() {
         queue_value_to_self(libc::SIGUSR1, libc::SI_QUEUE);
         let ret = ppoll_with_empty_mask();
         let errno = *libc::__errno_location();
-        print_recorded(ret, errno, libc::SIGUSR1);
+        // Main leaks the hook's failed injection into the unblock's result;
+        // see https://github.com/rrnewton/reverie/issues/892. A fix flips
+        // this to 0.
+        print_recorded_unblocking_to(ret, errno, libc::SIGUSR1, -1);
     })
     .expect("run bad-set hook guest");
     check_requeued_known_gap(
@@ -5413,6 +5513,13 @@ struct Iocb {
 /// passing it through requeues it. On untraced
 /// Linux the saved mask is restored before the `write`, and the SIGSYS
 /// handler runs under it plus SIGSYS, with the saved mask in its frame.
+///
+/// Pinned: the hook's getpid result is left in the guest's return register,
+/// so the next `syscall`'s number is the guest's pid, not 1: it fails with
+/// ENOSYS, the filter never traps, and no SIGSYS handler runs. Main leaks
+/// the injected result here (<https://github.com/rrnewton/reverie/issues/892>);
+/// a fix flips these pins back to the untraced masks, one handler run and a
+/// reported SIGSYS.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn trapped_syscall_after_a_discarded_signal_runs_under_the_saved_mask() {
@@ -5470,17 +5577,20 @@ fn trapped_syscall_after_a_discarded_signal_runs_under_the_saved_mask() {
     let stdout = check_exited(&output, "trapped-syscall-after-discard", &log);
     let (calls, pid) = stdout.trim().split_once(' ').expect("calls and pid");
     let pid: i64 = pid.parse().expect("guest pid");
-    let saved = bit(libc::SIGUSR1);
+    // Main leaks the hook's getpid into the next syscall's number; see
+    // https://github.com/rrnewton/reverie/issues/892. A fix flips these pins:
+    // masks `{saved|SIGSYS} {saved} {saved}` with saved = SIGUSR1's bit, one
+    // handler run, and signals [SIGUSR1, SIGSYS].
     assert_eq!(
-        masks,
-        format!("{:#x} {saved:#x} {saved:#x}", saved | bit(libc::SIGSYS)),
-        "the SIGSYS handler runs under the saved mask, which its frame saves"
+        masks, "0x0 0x0 0x0",
+        "no SIGSYS handler runs: the write's number is the leaked pid (known leak)"
     );
-    assert_eq!(calls, "1", "the SIGSYS handler runs once");
+    assert_eq!(calls, "0", "no SIGSYS handler runs (known leak)");
     assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid)]);
     assert_eq!(
         *log.signals.lock().unwrap(),
-        vec![libc::SIGUSR1, libc::SIGSYS]
+        vec![libc::SIGUSR1],
+        "only SIGUSR1 is reported; no SIGSYS is raised (known leak)"
     );
 }
 
@@ -5652,9 +5762,14 @@ fn parked_hook_does_not_run_for_a_requeued_signal() {
 /// Known gap pinned here (https://github.com/rrnewton/reverie/issues/845):
 /// the first hook's injections restore the saved mask, which blocks
 /// SIGUSR1, so SIGUSR1 is requeued, and SIGSTKFLT and SIGWINCH stay
-/// pending behind the saved mask. `epoll_pwait` returns EINTR; SIGWINCH is
-/// reported when the guest unblocks it, and the second hook suppresses it,
-/// so its handler never runs. SIGSTKFLT is never reported.
+/// pending behind the saved mask. SIGWINCH is reported when the guest
+/// unblocks it, and the second hook suppresses it, so its handler never
+/// runs. SIGSTKFLT is never reported.
+///
+/// Also pinned: `epoll_pwait` returns 0, the first hook's last injection's
+/// result, instead of EINTR. Main leaks the injected result here
+/// (<https://github.com/rrnewton/reverie/issues/892>); a fix flips this pin
+/// to `-1 EINTR`.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn signal_pending_behind_a_requeued_signal_waits_for_the_unblock() {
@@ -5677,6 +5792,8 @@ fn signal_pending_behind_a_requeued_signal_waits_for_the_unblock() {
         let mut events: [libc::epoll_event; 1] = std::mem::zeroed();
         let mut mask: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut mask);
+        // A successful return leaves errno alone, so clear any earlier value.
+        *libc::__errno_location() = 0;
         let ret = libc::epoll_pwait(epfd, events.as_mut_ptr(), 1, 5000, &mask);
         let errno = *libc::__errno_location();
         print_recorded(ret as libc::c_long, errno, libc::SIGWINCH);
@@ -5685,10 +5802,12 @@ fn signal_pending_behind_a_requeued_signal_waits_for_the_unblock() {
     let stdout = check_exited(&output, "suppressed-signal", &log);
     let (fields, pid) = stdout.trim().rsplit_once(' ').expect("guest pid");
     let pid: i64 = pid.parse().expect("guest pid");
+    // Main leaks the hook's last injected result into epoll_pwait's; see
+    // https://github.com/rrnewton/reverie/issues/892. A fix flips this pin
+    // to format!("-1 {} 0 0 0 0 1 1 0", libc::EINTR).
     assert_eq!(
-        fields,
-        format!("-1 {} 0 0 0 0 1 1 0", libc::EINTR),
-        "EINTR; SIGWINCH blocked and pending, then suppressed at the unblock (known gap)"
+        fields, "0 0 0 0 0 0 1 1 0",
+        "epoll_pwait returns the leaked 0 (known leak); SIGWINCH blocked and pending, then suppressed at the unblock (known gap)"
     );
     assert_eq!(*log.injected.lock().unwrap(), vec![Ok(pid), Ok(0), Ok(0)]);
     assert_eq!(
