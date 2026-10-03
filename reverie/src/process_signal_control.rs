@@ -255,9 +255,10 @@ pub trait ProcessSignalControl: Debug + Send + Sync {
     /// Call after validating the existing fence and before releasing it. This
     /// method cannot call Tool code or retain a sender transaction while taking
     /// a receiver transaction. Exact duplicate calls return the retained result.
-    fn publish_parent_death(&self, _boundary: SignalBoundaryReceipt)
-        -> ParentDeathPublicationResult
-    {
+    fn publish_parent_death(
+        &self,
+        _boundary: SignalBoundaryReceipt,
+    ) -> ParentDeathPublicationResult {
         ParentDeathPublicationResult::RejectedBeforeCommit(Errno::ENOSYS)
     }
 

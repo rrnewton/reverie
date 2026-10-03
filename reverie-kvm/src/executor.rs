@@ -3780,12 +3780,22 @@ impl ElfExecutor {
         file_table = Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?));
         state.fdinfo_table = Arc::downgrade(&file_table);
         let task_generation = {
-            let mut lifecycle = state.task_lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+            let mut lifecycle = state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let generation = lifecycle.register_with_signals(
-                state.tid, state.pid, state.pgid, state.dumpable, &state.thread_signals,
+                state.tid,
+                state.pid,
+                state.pgid,
+                state.dumpable,
+                &state.thread_signals,
             );
             if let Err(errno) = lifecycle.inherit_real_parent(
-                state.tid, generation, self.admitted_signal_identity(), false,
+                state.tid,
+                generation,
+                self.admitted_signal_identity(),
+                false,
             ) {
                 lifecycle.remove(state.tid, generation);
                 return Err(crate::Error::Reverie(errno.into()));
@@ -3923,12 +3933,22 @@ impl ElfExecutor {
         state.thread_signals = self.state.thread_signals.for_clone_thread();
         state.thread_signals.lock().observe_ignored = observe_ignored;
         let task_generation = {
-            let mut lifecycle = state.task_lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+            let mut lifecycle = state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let generation = lifecycle.register_with_signals(
-                state.tid, state.pid, state.pgid, state.dumpable, &state.thread_signals,
+                state.tid,
+                state.pid,
+                state.pgid,
+                state.dumpable,
+                &state.thread_signals,
             );
             if let Err(errno) = lifecycle.inherit_real_parent(
-                state.tid, generation, self.admitted_signal_identity(), true,
+                state.tid,
+                generation,
+                self.admitted_signal_identity(),
+                true,
             ) {
                 lifecycle.remove(state.tid, generation);
                 return Err(crate::Error::Reverie(errno.into()));
@@ -5299,53 +5319,104 @@ impl ElfExecutor {
     /// Enrollment is sticky and recipient creation is refused, so this check
     /// cannot race another task's SET or mask change in the recipient process.
     fn parent_death_injection_preflight(&self, request: &SyscallRequest) -> crate::Result<()> {
-        if !self.parent_death_enrolled() { return Ok(()); }
+        if !self.parent_death_enrolled() {
+            return Ok(());
+        }
         let number = request.number() as libc::c_long;
         let args = request.args();
-        let refusal = |operation| crate::Error::ParentDeathSignal { operation, errno: libc::ENOSYS };
+        let refusal = |operation| crate::Error::ParentDeathSignal {
+            operation,
+            errno: libc::ENOSYS,
+        };
         match number {
-            libc::SYS_futex if matches!(args[1] as i32 & libc::FUTEX_CMD_MASK,
-                libc::FUTEX_WAIT | libc::FUTEX_WAIT_BITSET | libc::FUTEX_WAIT_REQUEUE_PI
-                    | libc::FUTEX_LOCK_PI) =>
-                return Err(refusal("unsupported enrolled futex wait")),
-            libc::SYS_wait4 if args[2] as i32 & libc::WNOHANG == 0 =>
-                return Err(refusal("unsupported enrolled blocking child wait")),
-            libc::SYS_waitid if args[3] as i32 & libc::WNOHANG == 0 =>
-                return Err(refusal("unsupported enrolled blocking child wait")),
-            libc::SYS_fcntl if matches!(args[1] as i32, libc::F_SETLKW | libc::F_OFD_SETLKW) =>
-                return Err(refusal("unsupported enrolled blocking record lock")),
-            libc::SYS_flock if args[1] as i32 & libc::LOCK_NB == 0
-                && args[1] as i32 & libc::LOCK_UN == 0 =>
-                return Err(refusal("unsupported enrolled blocking flock")),
-            libc::SYS_open | libc::SYS_openat | libc::SYS_creat =>
-                return Err(refusal("unsupported enrolled open without a nonblocking per-call capability")),
+            libc::SYS_futex
+                if matches!(
+                    args[1] as i32 & libc::FUTEX_CMD_MASK,
+                    libc::FUTEX_WAIT
+                        | libc::FUTEX_WAIT_BITSET
+                        | libc::FUTEX_WAIT_REQUEUE_PI
+                        | libc::FUTEX_LOCK_PI
+                ) =>
+            {
+                return Err(refusal("unsupported enrolled futex wait"));
+            }
+            libc::SYS_wait4 if args[2] as i32 & libc::WNOHANG == 0 => {
+                return Err(refusal("unsupported enrolled blocking child wait"));
+            }
+            libc::SYS_waitid if args[3] as i32 & libc::WNOHANG == 0 => {
+                return Err(refusal("unsupported enrolled blocking child wait"));
+            }
+            libc::SYS_fcntl if matches!(args[1] as i32, libc::F_SETLKW | libc::F_OFD_SETLKW) => {
+                return Err(refusal("unsupported enrolled blocking record lock"));
+            }
+            libc::SYS_flock
+                if args[1] as i32 & libc::LOCK_NB == 0 && args[1] as i32 & libc::LOCK_UN == 0 =>
+            {
+                return Err(refusal("unsupported enrolled blocking flock"));
+            }
+            libc::SYS_open | libc::SYS_openat | libc::SYS_creat => {
+                return Err(refusal(
+                    "unsupported enrolled open without a nonblocking per-call capability",
+                ));
+            }
             // These waits are completed by the opted-in Tool's authenticated
             // pause/nanosleep protocol, never injected as a host wait.
-            libc::SYS_nanosleep | libc::SYS_clock_nanosleep | libc::SYS_pause =>
-                return Err(refusal("enrolled sleep requires the authenticated parked protocol")),
-            libc::SYS_connect | libc::SYS_accept | libc::SYS_accept4
-            | libc::SYS_sendto | libc::SYS_sendmsg | libc::SYS_recvfrom | libc::SYS_recvmsg =>
-                return Err(refusal("unsupported enrolled socket I/O")),
+            libc::SYS_nanosleep | libc::SYS_clock_nanosleep | libc::SYS_pause => {
+                return Err(refusal(
+                    "enrolled sleep requires the authenticated parked protocol",
+                ));
+            }
+            libc::SYS_connect
+            | libc::SYS_accept
+            | libc::SYS_accept4
+            | libc::SYS_sendto
+            | libc::SYS_sendmsg
+            | libc::SYS_recvfrom
+            | libc::SYS_recvmsg => return Err(refusal("unsupported enrolled socket I/O")),
             _ => {}
         }
-        let io = matches!(number, libc::SYS_read | libc::SYS_readv | libc::SYS_pread64
-            | libc::SYS_preadv | libc::SYS_preadv2 | libc::SYS_write | libc::SYS_writev
-            | libc::SYS_pwrite64 | libc::SYS_pwritev | libc::SYS_pwritev2);
-        if !io { return Ok(()); }
+        let io = matches!(
+            number,
+            libc::SYS_read
+                | libc::SYS_readv
+                | libc::SYS_pread64
+                | libc::SYS_preadv
+                | libc::SYS_preadv2
+                | libc::SYS_write
+                | libc::SYS_writev
+                | libc::SYS_pwrite64
+                | libc::SYS_pwritev
+                | libc::SYS_pwritev2
+        );
+        if !io {
+            return Ok(());
+        }
         let fd = args[0] as i32;
         let table = self.file_table.lock().unwrap_or_else(|p| p.into_inner());
-        let standard = (fd == 1 || fd == 2) && !table.closed_standard_fds.contains(&fd)
+        let standard = (fd == 1 || fd == 2)
+            && !table.closed_standard_fds.contains(&fd)
             && !table.files.contains_key(&fd);
         if matches!(number, libc::SYS_write | libc::SYS_writev)
             && self.output.is_some()
-            && output_alias_from_sets(fd, &table.stdout_alias_fds, &table.stderr_alias_fds, standard).is_some()
+            && output_alias_from_sets(
+                fd,
+                &table.stdout_alias_fds,
+                &table.stderr_alias_fds,
+                standard,
+            )
+            .is_some()
         {
             return Ok(());
         }
-        let file = table.files.get(&fd).or_else(||
-            (fd == 0 && !table.closed_standard_fds.contains(&fd)).then_some(table.stdin.as_ref()).flatten());
+        let file = table.files.get(&fd).or_else(|| {
+            (fd == 0 && !table.closed_standard_fds.contains(&fd))
+                .then_some(table.stdin.as_ref())
+                .flatten()
+        });
         let Some(file) = file else {
-            if standard { return Err(refusal("unsupported enrolled ambient output I/O")); }
+            if standard {
+                return Err(refusal("unsupported enrolled ambient output I/O"));
+            }
             // Preserve the real EBADF for an absent descriptor.
             return Ok(());
         };
@@ -5356,13 +5427,18 @@ impl ElfExecutor {
         }
         // SAFETY: successful fstat initialized every field read here.
         if unsafe { stat.assume_init() }.st_mode & libc::S_IFMT != libc::S_IFREG {
-            return Err(refusal("unsupported enrolled nonregular I/O; no pre-attempt nonblocking authority"));
+            return Err(refusal(
+                "unsupported enrolled nonregular I/O; no pre-attempt nonblocking authority",
+            ));
         }
         Ok(())
     }
 
     pub(crate) fn parent_death_enrolled(&self) -> bool {
-        self.state.task_lifecycle.lock().unwrap_or_else(|p| p.into_inner())
+        self.state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .parent_death_enrolled(self.admitted_signal_identity().process)
     }
 
@@ -6280,12 +6356,16 @@ impl ElfExecutor {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if guest_death {
                 let outcome = reverie::SignalBoundaryOutcome::Terminated {
-                    group, wait_status: status.into_raw(),
+                    group,
+                    wait_status: status.into_raw(),
                 };
-                let boundary = self.owned_delivery_permit().map(|permit|
-                    reverie::SignalBoundaryReceipt { permit, outcome });
+                let boundary = self
+                    .owned_delivery_permit()
+                    .map(|permit| reverie::SignalBoundaryReceipt { permit, outcome });
                 if let Err(errno) = lifecycle.freeze_parent_death(
-                    self.admitted_signal_identity(), outcome, boundary,
+                    self.admitted_signal_identity(),
+                    outcome,
+                    boundary,
                 ) {
                     self.signal_registry.retain_parent_death_error(errno);
                 }
@@ -6338,23 +6418,33 @@ impl ElfExecutor {
 
     pub(crate) fn prepare_parent_death_exec(&self) -> crate::Result<()> {
         let outcome = reverie::SignalBoundaryOutcome::ImageReplaced;
-        let boundary = self.owned_delivery_permit().map(|permit|
-            reverie::SignalBoundaryReceipt { permit, outcome });
-        let result = self.state.task_lifecycle.lock().unwrap_or_else(|p| p.into_inner())
+        let boundary = self
+            .owned_delivery_permit()
+            .map(|permit| reverie::SignalBoundaryReceipt { permit, outcome });
+        let result = self
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .freeze_parent_death(self.admitted_signal_identity(), outcome, boundary);
-        result.map(|_| ()).map_err(|errno| crate::Error::ParentDeathSignal {
-            operation: "exec sibling death admission", errno: errno.into_raw(),
-        })
+        result
+            .map(|_| ())
+            .map_err(|errno| crate::Error::ParentDeathSignal {
+                operation: "exec sibling death admission",
+                errno: errno.into_raw(),
+            })
     }
 
     pub(crate) fn check_parent_death_failure(&self) -> crate::Result<()> {
         self.signal_registry.check_parent_death_failure()
     }
 
-    pub(crate) fn check_parent_death_boundary(&self, boundary: reverie::SignalBoundaryReceipt)
-        -> crate::Result<()>
-    {
-        self.signal_registry.parent_death_boundary_finished(boundary)
+    pub(crate) fn check_parent_death_boundary(
+        &self,
+        boundary: reverie::SignalBoundaryReceipt,
+    ) -> crate::Result<()> {
+        self.signal_registry
+            .parent_death_boundary_finished(boundary)
     }
 
     pub(crate) fn retire_failed_thread(&mut self) {
@@ -17054,19 +17144,26 @@ fn prctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-PENDING): https://github.com/rrnewton/reverie/issues/916.
         // prctl option is an int; its signal operand remains unsigned long.
-        option if option as i32 == libc::PR_SET_PDEATHSIG => state.task_lifecycle
-            .lock().unwrap_or_else(|p| p.into_inner())
+        option if option as i32 == libc::PR_SET_PDEATHSIG => state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .set_parent_death_signal(state.tid, args[1])
             .map_or_else(|errno| negative_errno(errno.into_raw()), |_| 0),
         option if option as i32 == libc::PR_GET_PDEATHSIG => {
-            let signal = state.task_lifecycle.lock().unwrap_or_else(|p| p.into_inner())
+            let signal = state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .parent_death_signal(state.tid);
             match signal {
-                Ok(signal) => memory.user().put_user_i32(args[1], signal)
+                Ok(signal) => memory
+                    .user()
+                    .put_user_i32(args[1], signal)
                     .map_or_else(|_| negative_errno(libc::EFAULT), |_| 0),
                 Err(errno) => negative_errno(errno.into_raw()),
             }
-        },
+        }
         // TODO-HUMAN-REVIEW(PR-537): Review deterministic transparent-hugepage state and lifecycle.
         option if option == libc::PR_SET_THP_DISABLE as u64 => {
             if args[3..5].iter().any(|argument| *argument != 0)

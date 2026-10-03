@@ -13,10 +13,15 @@
 //! AUTONOMOUS-BOT-IMPLEMENTED
 //! TODO-HUMAN-REVIEW(PR-PENDING): Review https://github.com/rrnewton/reverie/issues/916.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Mutex, Weak};
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::sync::Mutex;
+use std::sync::Weak;
 
-use reverie::{SignalBoundaryOutcome, SignalBoundaryReceipt, SignalProcessId, SignalTaskIdentity};
+use reverie::SignalBoundaryOutcome;
+use reverie::SignalBoundaryReceipt;
+use reverie::SignalProcessId;
+use reverie::SignalTaskIdentity;
 use reverie::syscalls::Errno;
 
 use super::TaskLifecycleTable;
@@ -62,8 +67,15 @@ pub(crate) struct ParentDeathState {
 /// signals require a stopped-task protocol. Realtime queues are not modeled.
 pub(crate) fn supported_signal(signal: i32) -> bool {
     (1..=31).contains(&signal)
-        && !matches!(signal, libc::SIGKILL | libc::SIGCONT | libc::SIGSTOP
-            | libc::SIGTSTP | libc::SIGTTIN | libc::SIGTTOU)
+        && !matches!(
+            signal,
+            libc::SIGKILL
+                | libc::SIGCONT
+                | libc::SIGSTOP
+                | libc::SIGTSTP
+                | libc::SIGTTIN
+                | libc::SIGTTOU
+        )
 }
 
 fn identity(tid: i32, task: super::TaskLifecycleState) -> SignalTaskIdentity {
@@ -85,9 +97,16 @@ impl TaskLifecycleTable {
         creator: SignalTaskIdentity,
         thread: bool,
     ) -> Result<(), Errno> {
-        let parent = self.tasks.get(&creator.tid.as_raw()).copied().ok_or(Errno::ESRCH)?;
+        let parent = self
+            .tasks
+            .get(&creator.tid.as_raw())
+            .copied()
+            .ok_or(Errno::ESRCH)?;
         if identity(creator.tid.as_raw(), parent) != creator
-            || self.parent_death.dead.contains(&(creator.tid.as_raw(), creator.task_generation))
+            || self
+                .parent_death
+                .dead
+                .contains(&(creator.tid.as_raw(), creator.task_generation))
         {
             return Err(Errno::ESRCH);
         }
@@ -95,14 +114,21 @@ impl TaskLifecycleTable {
         if child.generation != generation {
             return Err(Errno::ESRCH);
         }
-        child.real_parent = if thread { parent.real_parent } else { Some(creator) };
+        child.real_parent = if thread {
+            parent.real_parent
+        } else {
+            Some(creator)
+        };
         // Linux copy_process clears it even for CLONE_THREAD.
         child.parent_death_signal = 0;
         Ok(())
     }
 
     pub(crate) fn parent_death_signal(&self, tid: i32) -> Result<i32, Errno> {
-        self.tasks.get(&tid).map(|task| task.parent_death_signal).ok_or(Errno::ESRCH)
+        self.tasks
+            .get(&tid)
+            .map(|task| task.parent_death_signal)
+            .ok_or(Errno::ESRCH)
     }
 
     pub(crate) fn set_parent_death_signal(&mut self, tid: i32, raw: u64) -> Result<(), Errno> {
@@ -111,14 +137,24 @@ impl TaskLifecycleTable {
             return Err(Errno::EINVAL);
         }
         let signal = raw as i32;
-        if signal != 0 && (!supported_signal(signal)
-            || !self.parent_death.controlled || !self.parent_death.adopted)
+        if signal != 0
+            && (!supported_signal(signal)
+                || !self.parent_death.controlled
+                || !self.parent_death.adopted)
         {
             return Err(Errno::ENOSYS);
         }
         let current = self.tasks.get(&tid).copied().ok_or(Errno::ESRCH)?;
-        if signal != 0 && self.tasks.values().filter(|task|
-            task.tgid == current.tgid && task.process_generation == current.process_generation).count() != 1
+        if signal != 0
+            && self
+                .tasks
+                .values()
+                .filter(|task| {
+                    task.tgid == current.tgid
+                        && task.process_generation == current.process_generation
+                })
+                .count()
+                != 1
         {
             return Err(Errno::ENOSYS);
         }
@@ -130,13 +166,17 @@ impl TaskLifecycleTable {
         if signal != 0 {
             // Sticky across clear/exec: a frozen or already pending death is
             // not undone by a later SET(0). Fork gets a fresh process generation.
-            self.parent_death.enrolled.insert((task.tgid, task.process_generation));
+            self.parent_death
+                .enrolled
+                .insert((task.tgid, task.process_generation));
         }
         Ok(())
     }
 
     pub(crate) fn parent_death_enrolled(&self, process: SignalProcessId) -> bool {
-        self.parent_death.enrolled.contains(&(process.tgid.as_raw(), process.generation))
+        self.parent_death
+            .enrolled
+            .contains(&(process.tgid.as_raw(), process.generation))
     }
 
     pub(crate) fn reset_parent_death_after_exec(&mut self, tid: i32, gains_permitted: bool) {
@@ -162,19 +202,29 @@ impl TaskLifecycleTable {
         if identity(owner.tid.as_raw(), owner_task) != owner {
             return Err(Errno::ESRCH);
         }
-        let dying: BTreeSet<TaskKey> = self.tasks.iter().filter_map(|(&tid, &task)| {
-            let selected = match outcome {
-                SignalBoundaryOutcome::Terminated { group: true, .. } =>
-                    task.tgid == owner_task.tgid && task.process_generation == owner_task.process_generation,
-                SignalBoundaryOutcome::Terminated { group: false, .. } => tid == owner.tid.as_raw(),
-                SignalBoundaryOutcome::ImageReplaced =>
-                    tid != owner.tid.as_raw() && task.tgid == owner_task.tgid
-                        && task.process_generation == owner_task.process_generation,
-                _ => false,
-            };
-            (selected && !self.parent_death.dead.contains(&(tid, task.generation)))
-                .then_some((tid, task.generation))
-        }).collect();
+        let dying: BTreeSet<TaskKey> = self
+            .tasks
+            .iter()
+            .filter_map(|(&tid, &task)| {
+                let selected = match outcome {
+                    SignalBoundaryOutcome::Terminated { group: true, .. } => {
+                        task.tgid == owner_task.tgid
+                            && task.process_generation == owner_task.process_generation
+                    }
+                    SignalBoundaryOutcome::Terminated { group: false, .. } => {
+                        tid == owner.tid.as_raw()
+                    }
+                    SignalBoundaryOutcome::ImageReplaced => {
+                        tid != owner.tid.as_raw()
+                            && task.tgid == owner_task.tgid
+                            && task.process_generation == owner_task.process_generation
+                    }
+                    _ => false,
+                };
+                (selected && !self.parent_death.dead.contains(&(tid, task.generation)))
+                    .then_some((tid, task.generation))
+            })
+            .collect();
         // Retain even an empty real terminal/exec boundary for an opted-in
         // consumer. An owned permit alone is not proof that its claimed
         // outcome happened; otherwise a fabricated Terminated could consume
@@ -185,55 +235,92 @@ impl TaskLifecycleTable {
             if supplied.permit.task != owner || supplied.outcome != outcome {
                 return Err(Errno::EINVAL);
             }
-            if let Some(batch) = self.parent_death.batches.values()
+            if let Some(batch) = self
+                .parent_death
+                .batches
+                .values()
                 .find(|batch| batch.boundary == Some(supplied))
             {
                 return Ok(Some(batch.sequence));
             }
         }
-        if dying.is_empty() && !retain_boundary { return Ok(None); }
+        if dying.is_empty() && !retain_boundary {
+            return Ok(None);
+        }
         let mut changes = Vec::new();
         let mut events = Vec::new();
         for (&tid, &child) in &self.tasks {
-            let Some(parent) = child.real_parent else { continue; };
+            let Some(parent) = child.real_parent else {
+                continue;
+            };
             if !dying.contains(&(parent.tid.as_raw(), parent.task_generation))
                 || dying.contains(&(tid, child.generation))
                 || self.parent_death.dead.contains(&(tid, child.generation))
-            { continue; }
+            {
+                continue;
+            }
             let reaper = self.tasks.iter().find_map(|(&candidate, &task)| {
                 (task.tgid == parent.process.tgid.as_raw()
                     && task.process_generation == parent.process.generation
                     && !dying.contains(&(candidate, task.generation))
-                    && !self.parent_death.dead.contains(&(candidate, task.generation)))
-                    .then(|| identity(candidate, task))
+                    && !self
+                        .parent_death
+                        .dead
+                        .contains(&(candidate, task.generation)))
+                .then(|| identity(candidate, task))
             });
             changes.push((tid, reaper));
             if child.parent_death_signal != 0 {
-                let signals = self.parent_death.signals
+                let signals = self
+                    .parent_death
+                    .signals
                     .get(&(child.tgid, child.process_generation))
-                    .and_then(Weak::upgrade).ok_or(Errno::ESRCH)?;
+                    .and_then(Weak::upgrade)
+                    .ok_or(Errno::ESRCH)?;
                 let signals = signals.lock().unwrap_or_else(|p| p.into_inner());
                 let signal = child.parent_death_signal;
                 events.push(ParentDeathEvent {
-                    registered_task: identity(tid, child), sender: parent, signal,
+                    registered_task: identity(tid, child),
+                    sender: parent,
+                    signal,
                     pending_generation: signals.pending_generation(signal),
-                    ignored: signals.dispositions.get(&signal).is_some_and(|action| action.is_ignored()),
+                    ignored: signals
+                        .dispositions
+                        .get(&signal)
+                        .is_some_and(|action| action.is_ignored()),
                 });
             }
         }
-        let sequence = if events.is_empty() && !retain_boundary { None } else {
-            Some(self.parent_death.next_batch.checked_add(1).ok_or(Errno::EOVERFLOW)?)
+        let sequence = if events.is_empty() && !retain_boundary {
+            None
+        } else {
+            Some(
+                self.parent_death
+                    .next_batch
+                    .checked_add(1)
+                    .ok_or(Errno::EOVERFLOW)?,
+            )
         };
         // All fallible snapshot work precedes ancestry/dead-set mutation.
         for (tid, reaper) in changes {
-            self.tasks.get_mut(&tid).expect("locked child exists").real_parent = reaper;
+            self.tasks
+                .get_mut(&tid)
+                .expect("locked child exists")
+                .real_parent = reaper;
         }
         self.parent_death.dead.extend(dying);
         if let Some(sequence) = sequence {
             self.parent_death.next_batch = sequence;
-            self.parent_death.batches.insert(sequence, ParentDeathBatch {
-                sequence, owner, outcome, boundary, events,
-            });
+            self.parent_death.batches.insert(
+                sequence,
+                ParentDeathBatch {
+                    sequence,
+                    owner,
+                    outcome,
+                    boundary,
+                    events,
+                },
+            );
         }
         Ok(sequence)
     }
