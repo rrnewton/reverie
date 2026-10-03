@@ -12665,12 +12665,9 @@ mod tests {
     async fn new_task_refuses_a_generation_that_does_not_own_the_registration() {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "sleep 60 & wait"]);
-        let (outcome, error, root_pid) = run_with_displaced_newborn(
-            command,
-            NewbornDisplacementStage::RegistrationLookup,
-            true,
-        )
-        .await;
+        let (outcome, error, root_pid) =
+            run_with_displaced_newborn(command, NewbornDisplacementStage::RegistrationLookup, true)
+                .await;
         assert_eq!(outcome.errno, Some(Errno::ESRCH), "{error}");
         assert!(outcome.child_owns_entry, "{outcome:?}");
         assert!(!outcome.child_identity_stored, "{outcome:?}");
