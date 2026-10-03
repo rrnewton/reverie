@@ -62,7 +62,7 @@ fn classify_shared_mmap_file(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(msync-writeback-pending): Review ordinary-file publication.
+// TODO-HUMAN-REVIEW(PR-911): Review ordinary-file publication.
 // https://github.com/rrnewton/reverie/issues/891
 pub(super) fn mmap_with_shared_files(
     memory: &mut GuestMemory,

@@ -6,7 +6,7 @@
  */
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Retain ordinary shared files in the stable KVM arena.
-// TODO-HUMAN-REVIEW(PR-PENDING): Review publication, fault containment and retirement.
+// TODO-HUMAN-REVIEW(PR-911): Review publication, fault containment and retirement.
 use super::*;
 
 /// An allocation owner also defers terminal notifications until its real mutex
