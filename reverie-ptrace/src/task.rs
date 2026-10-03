@@ -545,6 +545,24 @@ fn is_group_stop(task: &Stopped, sig: Signal) -> Result<bool, TraceError> {
     }
 }
 
+/// Whether the kernel delivers a signal passed on resume from `task`'s stop
+/// without a further stop that the Tool sees. Only a signal-delivery stop
+/// does. From a syscall stop the kernel sends the signal anew, and the Tool
+/// sees it at that signal's own stop; from a group stop or a `PTRACE_EVENT`
+/// stop, such as the seccomp stop that a tail injection resumes, the kernel
+/// drops it (see ptrace(2), "Signal injection and suppression").
+fn resume_delivers_signal_directly(task: &Stopped) -> Result<bool, TraceError> {
+    let siginfo = match task.getsiginfo() {
+        Ok(siginfo) => siginfo,
+        // Only a group stop has no siginfo (see `is_group_stop`).
+        Err(safeptrace::Error::Errno(Errno::EINVAL)) => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    let syscall_stop = siginfo.si_code == libc::SIGTRAP | 0x80;
+    let event_stop = siginfo.si_code > 0xff && siginfo.si_code & 0xff == libc::SIGTRAP;
+    Ok(siginfo.si_signo != libc::SIGTRAP || !(syscall_stop || event_stop))
+}
+
 /// The bit for `sig` in a kernel signal mask as read by `PTRACE_GETSIGMASK`.
 fn signal_mask_bit(sig: Signal) -> u64 {
     1u64 << (sig as i32 - 1)
@@ -4764,8 +4782,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             // the injection took, is finished at the syscall's return, where
             // the guest would have taken the notification.
             //
-            // A guest signal that the injection held is instead delivered as
-            // the guest resumes. Only a signal that Linux dequeues ahead of
+            // A guest signal that the injection held is instead passed to the
+            // Tool (`tool_signal_for_held_resume`) and, unless the Tool
+            // suppresses it, delivered as the guest resumes. Only a signal
+            // that Linux dequeues ahead of
             // the step's SIGTRAP is held: a synchronous one with a positive
             // si_code, such as the SIGSYS of a seccomp filter that traps the
             // injected syscall. An asynchronous signal, such as SIGCHLD or
@@ -4793,6 +4813,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             let signal = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeInjectedSyscall,
             )?;
+            let signal = self.tool_signal_for_held_resume(&task, signal).await?;
             return self.resume_stopped(task, signal)?.next_state().await;
         }
 
@@ -4870,6 +4891,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             let signal = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeInterceptedInjectedSyscall,
             )?;
+            let signal = self.tool_signal_for_held_resume(&task, signal).await?;
             let wait = self.resume_stopped(task, signal)?.next_state().await?;
             tracing::trace!(
                 target: "reverie_ptrace::syscall",
@@ -6026,6 +6048,92 @@ impl<L: Tool + 'static> TracedTask<L> {
             ));
         }
         Ok(signal)
+    }
+
+    /// Passes a guest signal that an injection held (`hold_pending_signal`)
+    /// to the Tool before the guest resumes with it, and returns the signal
+    /// the Tool decides to deliver.
+    ///
+    /// Without an injection the signal would reach the tracer as a
+    /// signal-delivery stop once the guest resumed, and `handle_signal` would
+    /// pass it to `Tool::handle_signal_event`. Resuming with the held signal
+    /// instead has the kernel deliver it directly, so the Tool never sees it:
+    /// whether a tool observes a SIGCHLD then depends on whether it arrived
+    /// during one of the tool's injections, which differs between recording
+    /// (the real syscall) and replay (an injected stand-in;
+    /// https://github.com/rrnewton/hermit/issues/703). The callback runs at
+    /// the same point in the guest's execution as it would from that later
+    /// stop: after the intercepted syscall completed, before the guest's next
+    /// instruction.
+    ///
+    /// The callback runs only when the guest resumes from a signal-delivery
+    /// stop, the one stop from which the kernel delivers the signal directly.
+    /// From a syscall stop the kernel sends it anew and the Tool sees it at
+    /// its own stop; from an event stop the kernel drops it (see
+    /// `resume_delivers_signal_directly`). Either way, a callback here would
+    /// report a signal the Tool sees twice or the guest never receives.
+    ///
+    /// Nor does it run while the guest blocks the signal: the kernel then
+    /// requeues it rather than delivering it, and the Tool sees it at its own
+    /// stop once the guest unblocks it.
+    ///
+    /// The Tool may inject from the callback, and that injection may hold
+    /// another signal. When the Tool suppresses the first, the newly held
+    /// signal is routed the same way. When the Tool delivers the first, the
+    /// second stays in the single `pending_signal` slot for the next resume
+    /// (TaskGraph `reverie_pending_signal_single_slot`).
+    ///
+    /// The callback is a Tool-visible event: it is observed by the timer, so
+    /// it cancels a timer event that an earlier callback requested, and
+    /// timer requests it makes are finalized before the guest resumes.
+    ///
+    /// The seccomp-stop resume and both resumes of a plain-ptrace injected
+    /// syscall trap (`handle_injected_syscall`) route the signal here.
+    ///
+    /// Only plain ptrace routes the signal. The timer signal and SIGSTOP are
+    /// handed on as before: `handle_signal` gives each its own handling
+    /// rather than this callback, and neither is held in practice. LiteInst
+    /// sessions, with their own restart-landing state, are unchanged.
+    async fn tool_signal_for_held_resume(
+        &mut self,
+        task: &Stopped,
+        mut signal: Option<Signal>,
+    ) -> Result<Option<Signal>, TraceError> {
+        while let Some(sig) = signal {
+            if self.global_state.liteinst_runtime.is_some()
+                || sig == Timer::signal_type()
+                || sig == Signal::SIGSTOP
+                || !resume_delivers_signal_directly(task)?
+                || blocked_signal_mask(task.pid())? & signal_mask_bit(sig) != 0
+            {
+                return Ok(Some(sig));
+            }
+            tracing::debug!(
+                "[{}] passing held signal {} to the tool before resuming",
+                task.pid(),
+                sig
+            );
+            // The callback is a Tool-visible event, so it decides a timer
+            // event an earlier callback requested, as the signal's own stop
+            // would have (see `handle_stop_event`).
+            self.timer.observe_event(&Event::Signal(sig));
+            self.timer.expire_overflow_records(task);
+            let result = self
+                .process_state
+                .clone()
+                .handle_signal_event(self, sig)
+                .await;
+            let delivered = self
+                .ordinary_callback_errno("ptrace held-signal callback", result)
+                .await?;
+            self.ordinary_trace_continuation()?;
+            self.timer.finalize_requests();
+            if delivered.is_some() {
+                return Ok(delivered);
+            }
+            signal = self.pending_signal.take();
+        }
+        Ok(None)
     }
 
     fn validate_nested_liteinst_activation_signal(
@@ -7777,6 +7885,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.pre_syscall_for_test(&regs, PreSyscallPoint::Late)
                     .await;
             }
+            let sig = self.tool_signal_for_held_resume(&task, sig).await?;
             let running = self
                 .resume_stopped(task, sig)
                 .tracee_context(tid, "resume after seccomp stop")?;
