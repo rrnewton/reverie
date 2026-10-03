@@ -1,0 +1,19 @@
+# libc names that appear in reverie-syscalls/src or reverie/src but are not
+# copied into src/libc_shim.rs. One extended regex per line, matched against
+# the whole name.
+#
+# C scalar types: the shim re-exports core::ffi's.
+c_[a-z]+
+# Functions, called only by std-only code in reverie/src/auxv.rs.
+getgid
+getuid
+# Named only inside `#[cfg(any())]`-disabled variants in args/ioctl.rs,
+# because libc does not define them.
+async_struct
+serial_struct
+tty_struct
+# Named only in comments: reverie/src/auxv.rs (getauxval) and
+# reverie-syscalls/src/syscalls.rs (syscall, ustat).
+getauxval
+syscall
+ustat

@@ -8,28 +8,29 @@
 
 use core::fmt;
 
-use nix::fcntl::AtFlags;
-use nix::fcntl::OFlag;
-use nix::sched::CloneFlags;
-use nix::sys::epoll::EpollCreateFlags;
-use nix::sys::eventfd::EfdFlags;
-use nix::sys::inotify::InitFlags;
-use nix::sys::mman::MapFlags;
-use nix::sys::mman::ProtFlags;
-use nix::sys::signalfd::SfdFlags;
-use nix::sys::socket::AddressFamily;
-use nix::sys::socket::SockFlag;
-use nix::sys::socket::SockProtocol;
-use nix::sys::stat::Mode;
-use nix::sys::stat::SFlag;
-use nix::sys::timerfd::TimerFlags;
-use nix::sys::wait::WaitPidFlag;
-use nix::unistd::Pid;
-
 use crate::Addr;
 use crate::AddrMut;
 use crate::Errno;
 use crate::MemoryAccess;
+use crate::nix::fcntl::AtFlags;
+use crate::nix::fcntl::OFlag;
+use crate::nix::sched::CloneFlags;
+use crate::nix::sys::epoll::EpollCreateFlags;
+use crate::nix::sys::eventfd::EfdFlags;
+use crate::nix::sys::inotify::InitFlags;
+use crate::nix::sys::mman::MapFlags;
+use crate::nix::sys::mman::ProtFlags;
+use crate::nix::sys::signalfd::SfdFlags;
+#[cfg(feature = "std")]
+use crate::nix::sys::socket::AddressFamily;
+use crate::nix::sys::socket::SockFlag;
+#[cfg(feature = "std")]
+use crate::nix::sys::socket::SockProtocol;
+use crate::nix::sys::stat::Mode;
+use crate::nix::sys::stat::SFlag;
+use crate::nix::sys::timerfd::TimerFlags;
+use crate::nix::sys::wait::WaitPidFlag;
+use crate::nix::unistd::Pid;
 
 /// A wrapper that combines an address space and a syscall. This is useful for
 /// displaying the contents of syscall pointer inputs.
@@ -190,7 +191,7 @@ macro_rules! displayable_ptr {
         #[allow(missing_docs)]
         pub struct $type<'a>(pub $crate::$pointer<'a, $value>);
 
-        impl<'a> $crate::FromToRaw for std::option::Option<$type<'a>> {
+        impl<'a> $crate::FromToRaw for ::core::option::Option<$type<'a>> {
             fn from_raw(raw: usize) -> Self {
                 $crate::$pointer::from_ptr(raw as *const $value).map($type)
             }
@@ -212,13 +213,13 @@ macro_rules! displayable_ptr {
             }
         }
 
-        impl<'a> $crate::Displayable for std::option::Option<$type<'a>> {
+        impl<'a> $crate::Displayable for ::core::option::Option<$type<'a>> {
             fn fmt<M: $crate::MemoryAccess>(
                 &self,
                 memory: &M,
                 outputs: bool,
-                f: &mut std::fmt::Formatter,
-            ) -> std::fmt::Result {
+                f: &mut ::core::fmt::Formatter,
+            ) -> ::core::fmt::Result {
                 $crate::fmt_nullable_ptr(f, &self.map(|x| x.0), memory, outputs)
             }
         }
@@ -249,8 +250,13 @@ impl_displayable!(Debug EfdFlags);
 impl_displayable!(Debug SfdFlags);
 impl_displayable!(Debug InitFlags);
 impl_displayable!(Debug SockFlag);
+// nix's socket enums have no `std`-free stand-in: no syscall argument here
+// uses them, so without `std` these impls are simply absent.
+#[cfg(feature = "std")]
 impl_displayable!(Debug AddressFamily);
+#[cfg(feature = "std")]
 impl_displayable!(Debug SockProtocol);
+#[cfg(feature = "std")]
 impl_displayable!(Debug Option<SockProtocol>);
 impl_displayable!(Debug TimerFlags);
 

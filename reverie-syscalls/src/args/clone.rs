@@ -14,6 +14,7 @@ use serde::Serialize;
 use crate::Displayable;
 use crate::FromToRaw;
 use crate::MemoryAccess;
+use crate::libc;
 
 bitflags::bitflags! {
     /// Flags used with the `clone`, `clone3`, or `unshare` syscalls.
@@ -99,8 +100,8 @@ impl FromToRaw for CloneFlags {
     }
 }
 
-impl From<nix::sched::CloneFlags> for CloneFlags {
-    fn from(flags: nix::sched::CloneFlags) -> Self {
+impl From<crate::nix::sched::CloneFlags> for CloneFlags {
+    fn from(flags: crate::nix::sched::CloneFlags) -> Self {
         CloneFlags::from_bits_retain(flags.bits() as u64)
     }
 }
