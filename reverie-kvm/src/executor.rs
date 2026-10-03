@@ -42698,7 +42698,8 @@ mod tests {
             .map(|fd| (fd, f.executor.state.native_poll_fds[&(fd as i32)].clone()));
         let retired = [cloexec_event, cloexec_ep]
             .map(|fd| (fd, f.executor.state.native_poll_fds[&(fd as i32)].clone()));
-        f.executor.replace_after_exec(test_state(&f.root.0));
+        let replacement = test_exec_replacement(&f.root.0, &f.executor.state);
+        f.executor.replace_after_exec(replacement);
         assert!(Arc::ptr_eq(&table, &f.executor.state.poll_table_id));
         assert!(Arc::ptr_eq(&domain, &f.executor.state.epoll_domain));
         for (fd, binding) in surviving {
