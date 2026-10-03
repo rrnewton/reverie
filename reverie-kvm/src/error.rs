@@ -285,6 +285,38 @@ pub enum Error {
         retention_id: usize,
     },
 
+    /// An ordinary shared-file history requires an unsupported backend capability.
+    /// This is terminal, not a Linux syscall errno or fabricated guest SIGBUS.
+    #[error("unsupported KVM shared-file operation {operation}: {reason}")]
+    SharedFileCapability {
+        /// Operation refused before its unsupported memory effect.
+        operation: &'static str,
+        /// Exact capability boundary, independent of host timing retries.
+        reason: &'static str,
+    },
+
+    /// A fault-contained copy involving mutable ordinary-file backing stopped.
+    /// The recorded prefix is real and is never rolled back or reported as a
+    /// complete copy; source preserves the actual host errno on a failed call.
+    #[error(
+        "shared-file {operation} at {address:#x} copied {transferred}/{requested} bytes after {prior_transferred} earlier vector bytes: {source}"
+    )]
+    SharedFileCopy {
+        /// Copy direction or initialization operation.
+        operation: &'static str,
+        /// First guest address of the complete requested copy.
+        address: u64,
+        /// Complete requested byte count.
+        requested: usize,
+        /// Actual prefix transferred, including earlier stable chunks.
+        transferred: usize,
+        /// Bytes completed by preceding vector elements, independent of this segment.
+        prior_transferred: usize,
+        /// Kernel error, or an explicit short-copy diagnostic.
+        #[source]
+        source: std::io::Error,
+    },
+
     /// Live backing replacement requires KVM to observe host mmap changes.
     #[error("KVM does not support synchronous host memory-map updates")]
     SynchronousMmuUnsupported,

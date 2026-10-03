@@ -817,6 +817,11 @@ mod syncfs;
 
 #[path = "support/fcntl_owner.rs"]
 mod fcntl_owner;
+#[path = "support/msync.rs"]
+mod msync;
+
+#[path = "support/msync_lifecycle.rs"]
+mod msync_lifecycle;
 
 #[test]
 fn file_script_exec_plain() {
@@ -11212,6 +11217,8 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "fcntl_owner::unchanged_six_check_contract_matches_native",
         "fcntl_owner::unchanged_negative_control_preserves_failure",
         "fcntl_owner::fork_aliases_keep_configuration_and_permanent_guards",
+        "msync::unchanged_five_check_contract_matches_native",
+        "msync_lifecycle::shared_coherence_and_mapping_lifetime_match_native",
         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
         "fchdir_consumes_low_descriptor_words_on_kvm",
         "getdents64_consumes_low_descriptor_words_on_kvm",
