@@ -7,7 +7,6 @@
  */
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::io;
 
 use byteorder::NativeEndian;
@@ -40,7 +39,7 @@ impl Auxv {
     /// Reads the auxiliary values from `/proc/{pid}/auxv`.
     pub(crate) fn new(pid: Pid) -> io::Result<Self> {
         let mut map = BTreeMap::new();
-        let buf = fs::read(format!("/proc/{}/auxv", pid))?;
+        let buf = crate::process::launch_window::read(format!("/proc/{}/auxv", pid))?;
 
         // The file size should be a multiple of `size_of::<u64>() * 2`.
         debug_assert_eq!(

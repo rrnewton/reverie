@@ -109,6 +109,7 @@ use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use parking_lot::RwLock;
 use parking_lot::RwLockReadGuard;
+use reverie_process::launch_window;
 
 use super::Errno;
 use super::Error;
@@ -236,7 +237,9 @@ fn pause_worker_done_wait_for_test(slot: &Mutex<Option<Arc<WorkerDoneWaitProbe>>
                 // The kernel prints a system call number here only while the
                 // thread is asleep in that call; a running or preempted
                 // thread reads as "running".
-                match fs::read_to_string(format!("/proc/self/task/{publisher_tid}/syscall")) {
+                match launch_window::read_to_string(format!(
+                    "/proc/self/task/{publisher_tid}/syscall"
+                )) {
                     Ok(syscall) => {
                         publisher_blocked_in_futex = syscall
                             .split_ascii_whitespace()
@@ -2833,7 +2836,7 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
 }
 
 fn worker_process_start_time(pid: Pid) -> std::io::Result<u64> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let stat = launch_window::read_to_string(format!("/proc/{pid}/stat"))?;
     let fields = stat
         .rsplit_once(") ")
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed stat"))?
@@ -2862,7 +2865,7 @@ fn worker_status_pid(status: &str, name: &str) -> std::io::Result<Pid> {
 
 fn worker_proc_snapshot(pid: Pid) -> std::io::Result<WorkerProcSnapshot> {
     let start_time = worker_process_start_time(pid)?;
-    let status = fs::read_to_string(format!("/proc/{pid}/status"))?;
+    let status = launch_window::read_to_string(format!("/proc/{pid}/status"))?;
     let snapshot = WorkerProcSnapshot {
         tgid: worker_status_pid(&status, "Tgid:")?,
         tracer_pid: worker_status_pid(&status, "TracerPid:")?,
@@ -3918,6 +3921,7 @@ impl StoppedObservation {
 }
 
 fn read_bound_stat_flags(identity: &WorkerIdentity) -> Result<u32, ProcStatError> {
+    let _open = launch_window::TransientOpen::begin();
     let raw = unsafe {
         libc::openat(
             identity.proc_dir.as_raw_fd(),

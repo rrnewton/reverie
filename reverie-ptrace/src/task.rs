@@ -614,7 +614,7 @@ struct SignalVerdict {
 /// syscall's restore is pending (`TIF_RESTORE_SIGMASK`), so it cannot tell
 /// whether that syscall's temporary mask blocks a signal.
 fn blocked_signal_mask(tid: Pid) -> Result<u64, TraceError> {
-    let status = std::fs::read_to_string(format!("/proc/{tid}/status"))
+    let status = crate::launch_window::read_to_string(format!("/proc/{tid}/status"))
         .map_err(|err| Errno::new(err.raw_os_error().unwrap_or(libc::EIO)))?;
     status
         .lines()
@@ -626,7 +626,7 @@ fn blocked_signal_mask(tid: Pid) -> Result<u64, TraceError> {
 /// The signals pending in the kernel for the stopped thread `tid`: its own
 /// and its thread group's (procfs `SigPnd` and `ShdPnd`).
 fn pending_signal_mask(tid: Pid) -> Result<u64, TraceError> {
-    let status = std::fs::read_to_string(format!("/proc/{tid}/status"))
+    let status = crate::launch_window::read_to_string(format!("/proc/{tid}/status"))
         .map_err(|err| Errno::new(err.raw_os_error().unwrap_or(libc::EIO)))?;
     let field = |name: &str| {
         status
@@ -655,7 +655,7 @@ fn pending_signal_mask(tid: Pid) -> Result<u64, TraceError> {
 /// disclosed gap (https://github.com/rrnewton/reverie/issues/845,
 /// https://github.com/rrnewton/reverie/issues/912).
 fn thread_may_be_seccomp_filtered() -> bool {
-    std::fs::read_to_string("/proc/thread-self/status")
+    crate::launch_window::read_to_string("/proc/thread-self/status")
         .ok()
         .is_none_or(|status| !status_unfiltered(&status))
 }
@@ -934,7 +934,7 @@ fn mapped_file_size(object: &CensusObject) -> std::io::Result<u64> {
     if stat.stx_mask & wanted != wanted {
         return Err(std::io::Error::from_raw_os_error(libc::EOPNOTSUPP));
     }
-    let mountinfo = std::fs::read_to_string("/proc/thread-self/mountinfo")?;
+    let mountinfo = crate::launch_window::read_to_string("/proc/thread-self/mountinfo")?;
     let (major, minor) = mount_device(&mountinfo, stat.stx_mnt_id)
         .ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENOENT))?;
     if (major, minor, stat.stx_ino) != object.file {
@@ -1032,7 +1032,8 @@ fn read_census<M: CensusMemory>(
 /// end of the file reads as the file's tail and zeros, so it does not count.
 ///
 /// Each answer is logged at warning level, so that a refusal, or a run that
-/// fails because of the read, says which page and file.
+/// fails because of the read, says which page and file. The caller holds the
+/// census's transient open, so the warning waits until it closes.
 fn faults_past_end_of_file<M: CensusMemory>(
     memory: &M,
     object: &CensusObject,
@@ -1048,11 +1049,12 @@ fn faults_past_end_of_file<M: CensusMemory>(
     let size = match memory.file_size(object) {
         Ok(size) => size,
         Err(error) => {
-            tracing::warn!(
+            let message = format!(
                 "[liteinst] the entry census read of {:?} faulted at {address:#x}, \
                  and the tracer cannot find the mapped file: {error}",
                 object.path
             );
+            crate::launch_window::run_after_guards(move || tracing::warn!("{message}"));
             return Err(Errno::EIO);
         }
     };
@@ -1060,12 +1062,13 @@ fn faults_past_end_of_file<M: CensusMemory>(
     // `offset`: the page lies wholly past the end exactly when it starts at or
     // after it.
     let past = offset >= size;
-    tracing::warn!(
+    let message = format!(
         "[liteinst] the entry census read of {:?} faulted at {address:#x}, file \
          offset {offset:#x}, which is {} the file's {size} bytes",
         object.path,
         if past { "past the end of" } else { "within" }
     );
+    crate::launch_window::run_after_guards(move || tracing::warn!("{message}"));
     Ok(past)
 }
 
@@ -1122,7 +1125,7 @@ fn census_site_entries(
 }
 
 fn read_guest_maps(pid: Pid) -> std::io::Result<Vec<GuestMap>> {
-    let maps = std::fs::read(format!("/proc/{pid}/maps"))?;
+    let maps = crate::launch_window::read(format!("/proc/{pid}/maps"))?;
     Ok(maps
         .split(|byte| *byte == b'\n')
         .filter_map(parse_guest_map)
@@ -1209,7 +1212,7 @@ fn decode_proc_maps_path(bytes: &[u8]) -> PathBuf {
 }
 
 fn guest_auxv_entry(pid: Pid, key: u64) -> Option<u64> {
-    let bytes = std::fs::read(format!("/proc/{pid}/auxv")).ok()?;
+    let bytes = crate::launch_window::read(format!("/proc/{pid}/auxv")).ok()?;
     bytes.as_chunks::<16>().0.iter().find_map(|entry| {
         let entry_key = u64::from_ne_bytes(entry[..8].try_into().ok()?);
         let value = u64::from_ne_bytes(entry[8..].try_into().ok()?);
@@ -8229,10 +8232,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         let census = match cached {
             Some(census) => census,
             None => {
-                let memory = std::fs::File::open(format!("/proc/{}/mem", task.pid()))
-                    .map(TraceeMemory)
-                    .map_err(|error| Errno::new(error.raw_os_error().unwrap_or(libc::EIO)))?;
-                let census = Arc::new(read_census(&memory, &object)?);
+                let census = {
+                    // The guard ends before the runtime lock is taken.
+                    let _open = crate::launch_window::TransientOpen::begin();
+                    let memory = std::fs::File::open(format!("/proc/{}/mem", task.pid()))
+                        .map(TraceeMemory)
+                        .map_err(|error| Errno::new(error.raw_os_error().unwrap_or(libc::EIO)))?;
+                    Arc::new(read_census(&memory, &object)?)
+                };
                 let mut state = self.liteinst_runtime.lock().unwrap();
                 if !Arc::ptr_eq(&state.census_maps, &maps) {
                     return Ok(Err(Refusal::NoCensus(CHANGED_CENSUS_OBJECT)));

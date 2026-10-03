@@ -62,6 +62,7 @@ mod tracer;
 mod validation;
 mod vdso;
 
+// Shared with the transient opens in reverie-core and safeptrace.
 pub use backend::PtraceBackend;
 pub use failure::CapturedPrefix;
 pub use failure::LegacyCleanupDiagnostics;
@@ -86,6 +87,7 @@ pub use liteinst_trap_only::SitePatching;
 pub use liteinst_trap_only::SiteTable;
 pub use liteinst_trap_only::probe_ia32_emulation;
 pub use perf::is_perf_supported;
+use reverie::process::launch_window;
 pub use stats::PtraceBackendStatsSnapshot;
 pub use stats::PtraceBackendStatsSource;
 pub use timer::PmuConfig;
