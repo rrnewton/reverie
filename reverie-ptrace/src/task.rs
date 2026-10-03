@@ -651,13 +651,81 @@ fn thread_may_be_seccomp_filtered() -> bool {
 thread_local! {
     /// Whether the calling thread has been seen under a seccomp filter (or
     /// with no seccomp mode to read). A filter is never removed, so this
-    /// holds for the rest of the thread's life.
+    /// holds for the rest of the thread's life, and in a child it forks.
     static SEEN_SECCOMP_FILTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// The calling thread's procfs status, held open by
-    /// `hold_thread_seccomp_status` so that its seccomp mode can be read
-    /// again with no descriptor left to open.
-    static HELD_THREAD_STATUS: std::cell::RefCell<Option<std::fs::File>> =
-        const { std::cell::RefCell::new(None) };
+    /// The calling thread's procfs status, opened by
+    /// `hold_thread_seccomp_status` and not yet read, for
+    /// `step_thread_may_be_seccomp_filtered` to read once with no descriptor
+    /// left to open.
+    static HELD_THREAD_STATUS: std::cell::RefCell<HeldStatus> =
+        const { std::cell::RefCell::new(HeldStatus::Never) };
+}
+
+/// A tracer thread's held procfs status (`HELD_THREAD_STATUS`).
+enum HeldStatus {
+    /// The thread has not taken a guest, so it holds no status.
+    Never,
+    /// The thread has taken a guest, but holds no status: it could not be
+    /// opened or registered, or it has been read.
+    Empty,
+    Held(HeldStatusFile),
+}
+
+/// A held status file, registered in `HELD_STATUS_FDS` so that a guest
+/// forked from any tracer thread closes it (`close_held_statuses_in_child`).
+/// Read at most once, from its start, with `read` alone: a file offset
+/// cannot be moved back without `lseek` or `pread`, which main does not
+/// make, so a filter could kill the tracer at them.
+struct HeldStatusFile {
+    file: std::mem::ManuallyDrop<std::fs::File>,
+    /// The index of its descriptor in `HELD_STATUS_FDS`.
+    slot: usize,
+    /// `HELD_STATUS_GENERATION` when it was opened. A forked child sees a
+    /// later generation: its copy's descriptor is closed already, and its
+    /// number may be in use.
+    generation: u64,
+}
+
+impl Drop for HeldStatusFile {
+    fn drop(&mut self) {
+        // SAFETY: `file` is not used again.
+        let file = unsafe { std::mem::ManuallyDrop::take(&mut self.file) };
+        if self.generation == HELD_STATUS_GENERATION.load(Ordering::Relaxed) {
+            // Unregistered before it is closed: a guest forked between the
+            // two can inherit it, but none closes a descriptor that reuses
+            // its number.
+            HELD_STATUS_FDS[self.slot].store(-1, Ordering::SeqCst);
+            drop(file);
+        } else {
+            use std::os::fd::IntoRawFd;
+            let _ = file.into_raw_fd();
+        }
+    }
+}
+
+/// The descriptors of every tracer thread's held status, -1 for a free
+/// slot. A thread holds none when every slot is taken.
+static HELD_STATUS_FDS: [std::sync::atomic::AtomicI32; 256] =
+    [const { std::sync::atomic::AtomicI32::new(-1) }; 256];
+
+/// Advanced in each forked guest (`close_held_statuses_in_child`).
+static HELD_STATUS_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Closes, in a guest just forked from a tracer thread, the status every
+/// tracer thread held (`HELD_STATUS_FDS`), whatever its number, so that a
+/// guest that does not execute a program does not inherit it. Main closes
+/// only descriptors 3 to 255 there. Makes only `close`, and touches no
+/// thread-local state.
+pub(crate) fn close_held_statuses_in_child() {
+    HELD_STATUS_GENERATION.fetch_add(1, Ordering::Relaxed);
+    for slot in &HELD_STATUS_FDS {
+        let fd = slot.swap(-1, Ordering::SeqCst);
+        if fd >= 0 {
+            // SAFETY: the descriptor is this child's copy of a held status,
+            // which nothing in the child uses.
+            unsafe { libc::close(fd) };
+        }
+    }
 }
 
 /// Whether a procfs status reports seccomp mode 0.
@@ -668,34 +736,70 @@ fn status_unfiltered(status: &str) -> bool {
         .is_some_and(|mode| mode.trim() == "0")
 }
 
-/// Holds the calling thread's procfs status open, if it is not already, for
-/// `step_thread_may_be_seccomp_filtered`, and reads it once. Called on the
-/// tracer thread when it takes a guest, before the guest runs, so a filter
-/// present then is seen before the guest can use up the tracer's
-/// descriptors, and a later one is seen through the held status.
+/// Opens the calling thread's procfs status, without reading it, and holds
+/// it for `step_thread_may_be_seccomp_filtered`, unless one is held. Called
+/// on the tracer thread when it takes a guest, before and again after the
+/// guest's first stop, so that a status is held even when no descriptor
+/// could be opened at the first try, and again when one is read.
 pub(crate) fn hold_thread_seccomp_status() {
     HELD_THREAD_STATUS.with_borrow_mut(|held| {
-        if held.is_none() {
-            *held = std::fs::File::open("/proc/thread-self/status").ok();
+        if let HeldStatus::Held(status) = held
+            && status.generation == HELD_STATUS_GENERATION.load(Ordering::Relaxed)
+        {
+            return;
         }
+        *held = open_held_status();
     });
-    held_thread_unfiltered();
 }
 
-/// `procfs_thread_unfiltered` through the status `hold_thread_seccomp_status`
-/// holds, which needs no new descriptor; `None` if none is held or it cannot
-/// be read.
-fn held_thread_unfiltered() -> Option<bool> {
+/// A newly opened and registered `HeldStatus::Held`, or `HeldStatus::Empty`.
+fn open_held_status() -> HeldStatus {
+    use std::os::fd::AsRawFd;
+    let Ok(file) = std::fs::File::open("/proc/thread-self/status") else {
+        return HeldStatus::Empty;
+    };
+    let fd = file.as_raw_fd();
+    let Some(slot) = HELD_STATUS_FDS.iter().position(|slot| {
+        slot.compare_exchange(-1, fd, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }) else {
+        return HeldStatus::Empty;
+    };
+    HeldStatus::Held(HeldStatusFile {
+        file: std::mem::ManuallyDrop::new(file),
+        slot,
+        generation: HELD_STATUS_GENERATION.load(Ordering::Relaxed),
+    })
+}
+
+/// Whether the status the calling thread holds reports seccomp mode 0,
+/// read now from its start, which needs no new descriptor; `None` if none
+/// is held or it cannot be read. The status is used up: it is closed, and
+/// another is opened if a descriptor can be.
+fn read_held_thread_status() -> Option<bool> {
     use std::io::Read;
-    use std::io::Seek;
     let status = HELD_THREAD_STATUS.with_borrow_mut(|held| {
-        let file = held.as_mut()?;
-        file.rewind().ok()?;
-        let mut status = String::new();
-        file.read_to_string(&mut status).ok()?;
-        Some(status)
+        let HeldStatus::Held(status) = std::mem::replace(held, HeldStatus::Empty) else {
+            return None;
+        };
+        if status.generation != HELD_STATUS_GENERATION.load(Ordering::Relaxed) {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        let mut buf = [0u8; 4096];
+        let read = loop {
+            match (&*status.file).read(&mut buf) {
+                Ok(0) => break Some(bytes),
+                Ok(n) => bytes.extend_from_slice(&buf[..n]),
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break None,
+            }
+        };
+        drop(status);
+        *held = open_held_status();
+        read
     })?;
-    let unfiltered = status_unfiltered(&status);
+    let unfiltered = status_unfiltered(&String::from_utf8_lossy(&status));
     if !unfiltered {
         SEEN_SECCOMP_FILTERED.set(true);
     }
@@ -704,7 +808,8 @@ fn held_thread_unfiltered() -> Option<bool> {
 
 /// Whether procfs reports the calling thread's seccomp mode as 0, `None` if
 /// its status cannot be read. A thread already seen filtered is reported
-/// filtered without reading it again.
+/// filtered without reading it again. A tracer thread whose held status has
+/// been read opens another once a descriptor can be opened.
 fn procfs_thread_unfiltered() -> Option<bool> {
     if SEEN_SECCOMP_FILTERED.get() {
         return Some(false);
@@ -714,6 +819,11 @@ fn procfs_thread_unfiltered() -> Option<bool> {
     if !unfiltered {
         SEEN_SECCOMP_FILTERED.set(true);
     }
+    HELD_THREAD_STATUS.with_borrow_mut(|held| {
+        if matches!(held, HeldStatus::Empty) {
+            *held = open_held_status();
+        }
+    });
     Some(unfiltered)
 }
 
@@ -721,23 +831,15 @@ fn procfs_thread_unfiltered() -> Option<bool> {
 /// main's, which correct main on an unfiltered thread. Where procfs cannot
 /// be opened, for example with no descriptor left to open (EMFILE), on a
 /// thread not yet seen filtered, it reads the status
-/// `hold_thread_seccomp_status` holds, and only without that asks
-/// `prctl(PR_GET_SECCOMP)`, which needs none. A thread without a filter has
-/// nothing to refuse that request, so it is still told apart; a refusal or
-/// nonzero answer counts as filtered. A thread seen filtered is never asked,
-/// as its filter may kill it at that request or answer it falsely.
+/// `hold_thread_seccomp_status` holds. Either is read at the decision, and a
+/// filter is never removed, so mode 0 there means no filter can refuse the
+/// step's requests. Without either, the thread is taken as filtered, and
+/// the step as on main: no syscall can ask the mode safely, as a filter can
+/// kill the tracer at it or answer it falsely (`prctl(PR_GET_SECCOMP)`).
 fn step_thread_may_be_seccomp_filtered() -> bool {
-    match procfs_thread_unfiltered().or_else(held_thread_unfiltered) {
-        Some(unfiltered) => !unfiltered,
-        None => {
-            // SAFETY: PR_GET_SECCOMP reads the calling thread's seccomp mode.
-            let mode = unsafe { libc::prctl(libc::PR_GET_SECCOMP, 0, 0, 0, 0) };
-            if mode != 0 {
-                SEEN_SECCOMP_FILTERED.set(true);
-            }
-            mode != 0
-        }
-    }
+    !procfs_thread_unfiltered()
+        .or_else(read_held_thread_status)
+        .unwrap_or(false)
 }
 
 /// `si_code` of a SIGSYS raised by a seccomp filter's `SECCOMP_RET_TRAP`.

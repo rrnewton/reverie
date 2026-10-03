@@ -4763,6 +4763,21 @@ where
     T: Tool<GlobalState = Log> + 'static,
     F: FnOnce() + Send + 'static,
 {
+    test_tool_under_tracer_filters::<T, F>(refused, &[], f)
+}
+
+/// `test_tool_under_tracer_filter` whose filter also returns `action` for
+/// every syscall `nr` of `numbers`, whatever its arguments.
+#[cfg(target_arch = "x86_64")]
+fn test_tool_under_tracer_filters<T, F>(
+    refused: Option<(u32, u32)>,
+    numbers: &'static [(libc::c_long, u32)],
+    f: F,
+) -> (reverie::process::Output, Log, libc::pid_t)
+where
+    T: Tool<GlobalState = Log> + 'static,
+    F: FnOnce() + Send + 'static,
+{
     std::thread::spawn(move || {
         let statement = |code: u32, k: u32, jt: u8, jf: u8| libc::sock_filter {
             code: code as u16,
@@ -4771,10 +4786,27 @@ where
             k,
         };
         let allow = statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW, 0, 0);
-        let filter = if let Some((request, action)) = refused {
-            vec![
-                // seccomp_data.nr is at offset 0, and the low half of args[0] at 16.
-                statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0, 0, 0),
+        let mut filter = Vec::new();
+        if refused.is_some() || !numbers.is_empty() {
+            // seccomp_data.nr is at offset 0, and the low half of args[0] at 16.
+            filter.push(statement(
+                libc::BPF_LD | libc::BPF_W | libc::BPF_ABS,
+                0,
+                0,
+                0,
+            ));
+        }
+        for &(nr, action) in numbers {
+            filter.push(statement(
+                libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+                nr as u32,
+                0,
+                1,
+            ));
+            filter.push(statement(libc::BPF_RET | libc::BPF_K, action, 0, 0));
+        }
+        if let Some((request, action)) = refused {
+            filter.extend([
                 statement(
                     libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
                     libc::SYS_ptrace as u32,
@@ -4784,11 +4816,9 @@ where
                 statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 16, 0, 0),
                 statement(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K, request, 0, 1),
                 statement(libc::BPF_RET | libc::BPF_K, action, 0, 0),
-                allow,
-            ]
-        } else {
-            vec![allow]
-        };
+            ]);
+        }
+        filter.push(allow);
         let program = libc::sock_fprog {
             len: filter.len() as u16,
             filter: filter.as_ptr() as *mut libc::sock_filter,
@@ -5418,13 +5448,21 @@ fn trap_before_getppid_guest(tstp: bool) -> impl FnOnce() + Send + 'static {
 /// A SIGTRAP pending when the tool injects `getppid` (`TrapBeforeGetppid`)
 /// into the guest of `injected_syscall_trapped_by_guest_seccomp_reports_enosys`,
 /// on a tracer under no seccomp filter, with no descriptor left to open
-/// during the injection when `without_descriptors` is set. The trap stops
+/// during the injection when `without_descriptors` is set, from before the
+/// guest's first SIGSYS when `from_first_sigsys` is also set. The trap stops
 /// the step before the `syscall` runs; it is discarded, and the step runs
 /// the `getppid`, which the guest's filter traps as without the SIGTRAP.
 #[cfg(target_arch = "x86_64")]
-fn sigtrap_before_an_injected_syscall_is_discarded(without_descriptors: bool, probe: &str) {
+fn sigtrap_before_an_injected_syscall_is_discarded(
+    without_descriptors: bool,
+    from_first_sigsys: bool,
+    probe: &str,
+) {
     assert_tracer_unfiltered();
+    TSTP_AFTER_TRAP.store(false, Ordering::Relaxed);
     GETPPID_WITHOUT_DESCRIPTORS.store(without_descriptors, Ordering::Relaxed);
+    GETPPID_PRCTL_ACTION.store(0, Ordering::Relaxed);
+    NO_DESCRIPTORS_FROM_FIRST_SIGSYS.store(from_first_sigsys, Ordering::Relaxed);
     let (output, log) = test_fn::<TrapBeforeGetppid, _>(trap_before_getppid_guest(false))
         .expect("run trap-before-getppid guest");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -5468,20 +5506,40 @@ fn sigtrap_before_an_injected_syscall_is_discarded(without_descriptors: bool, pr
 fn sigtrap_before_an_injected_syscall_is_discarded_and_the_syscall_runs() {
     const NAME: &str = "sigtrap_before_an_injected_syscall_is_discarded_and_the_syscall_runs";
     in_child_process(NAME, || {
-        sigtrap_before_an_injected_syscall_is_discarded(false, "trap-before-getppid")
+        sigtrap_before_an_injected_syscall_is_discarded(false, false, "trap-before-getppid")
     });
 }
 
 /// As `sigtrap_before_an_injected_syscall_is_discarded_and_the_syscall_runs`,
-/// but no descriptor can be opened during the injection, so procfs cannot
-/// report the tracer thread's seccomp mode (EMFILE). `prctl(PR_GET_SECCOMP)`
-/// still does, and the trap is discarded as with procfs.
+/// but no descriptor can be opened during the injection, so a newly opened
+/// procfs status cannot report the tracer thread's seccomp mode (EMFILE).
+/// The status the thread opened when it took the guest, read for the first
+/// time at the decision, reports mode 0, and the trap is discarded as with
+/// procfs.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn sigtrap_before_an_injected_syscall_is_discarded_with_no_descriptor_left() {
     const NAME: &str = "sigtrap_before_an_injected_syscall_is_discarded_with_no_descriptor_left";
     in_child_process(NAME, || {
-        sigtrap_before_an_injected_syscall_is_discarded(true, "trap-before-getppid-emfile")
+        sigtrap_before_an_injected_syscall_is_discarded(true, false, "trap-before-getppid-emfile")
+    });
+}
+
+/// As `..._is_discarded_with_no_descriptor_left`, but no descriptor can be
+/// opened from before the guest's first SIGSYS, whose stop cannot read the
+/// tracer thread's mode either. The held status is still unread at the
+/// decision, reports mode 0, and the trap is discarded.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_discarded_with_no_descriptor_from_the_first_sigsys() {
+    const NAME: &str =
+        "sigtrap_before_an_injected_syscall_is_discarded_with_no_descriptor_from_the_first_sigsys";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_is_discarded(
+            true,
+            true,
+            "trap-before-getppid-early-emfile",
+        )
     });
 }
 
@@ -5641,9 +5699,10 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_when_getsiginfo_is_refused(
     });
 }
 
-/// A tracer thread already seen under a filter is not asked for its mode
-/// with `prctl` when procfs cannot report it: here a filter kills the tracer
-/// at every `prctl`. The trap is taken for the step's report, as on main.
+/// A tracer thread under a filter, whose mode a newly opened procfs status
+/// cannot report, is not asked for it with a syscall main does not make
+/// for this guest: here a filter kills the tracer at every `prctl`. The
+/// trap is taken for the step's report, as on main.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_when_prctl_kills() {
@@ -5701,8 +5760,8 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_left_whe
 /// As `..._with_no_descriptor_left_when_prctl_kills`, but no descriptor can
 /// be opened from before the guest's first SIGSYS, so the tracer thread is
 /// never seen filtered through a newly opened procfs status. The status it
-/// held open when it took the guest still reports the filter, and it is
-/// not asked with `prctl`.
+/// opened when it took the guest, read for the first time at the decision,
+/// reports the filter, and no `prctl` is made.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn sigtrap_before_an_injected_syscall_is_not_retried_with_no_descriptor_from_the_first_sigsys_when_prctl_kills()
@@ -5803,6 +5862,415 @@ fn sigtrap_before_an_injected_syscall_is_not_retried_under_a_filter_added_after_
             libc::SECCOMP_RET_TRAP,
             "trap-late-filter-emfile-prctl-trap",
         )
+    });
+}
+
+/// `sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_at_getsigmask`
+/// with a tracer filter that also returns `action` for every syscall `nr`,
+/// which main does not make for this guest. Reading the tracer thread's
+/// seccomp mode makes no such syscall, so the guest runs as on main.
+#[cfg(target_arch = "x86_64")]
+fn sigtrap_before_an_injected_syscall_runs_as_on_main_when_the_tracer_filters(
+    numbers: &'static [(libc::c_long, u32)],
+    probe: &str,
+) {
+    TSTP_AFTER_TRAP.store(false, Ordering::Relaxed);
+    GETPPID_WITHOUT_DESCRIPTORS.store(false, Ordering::Relaxed);
+    GETPPID_PRCTL_ACTION.store(0, Ordering::Relaxed);
+    NO_DESCRIPTORS_FROM_FIRST_SIGSYS.store(false, Ordering::Relaxed);
+    let (output, log, _) = test_tool_under_tracer_filters::<TrapBeforeGetppid, _>(
+        Some((libc::PTRACE_GETSIGMASK, libc::SECCOMP_RET_KILL_PROCESS)),
+        numbers,
+        trap_before_getppid_guest(false),
+    );
+    check_trap_before_getppid_taken_as_on_main(&output, &log, false, probe);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_at_lseek() {
+    const NAME: &str =
+        "sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_at_lseek";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_when_the_tracer_filters(
+            &[(libc::SYS_lseek, libc::SECCOMP_RET_KILL_PROCESS)],
+            "trap-lseek-kill-filter",
+        )
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_when_lseek_traps() {
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_not_retried_when_lseek_traps";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_when_the_tracer_filters(
+            &[(libc::SYS_lseek, libc::SECCOMP_RET_TRAP)],
+            "trap-lseek-trap-filter",
+        )
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_at_pread() {
+    const NAME: &str =
+        "sigtrap_before_an_injected_syscall_is_not_retried_when_the_tracer_is_killed_at_pread";
+    in_child_process(NAME, || {
+        sigtrap_before_an_injected_syscall_runs_as_on_main_when_the_tracer_filters(
+            &[
+                (libc::SYS_pread64, libc::SECCOMP_RET_KILL_PROCESS),
+                (libc::SYS_preadv, libc::SECCOMP_RET_KILL_PROCESS),
+                (libc::SYS_preadv2, libc::SECCOMP_RET_KILL_PROCESS),
+            ],
+            "trap-pread-kill-filter",
+        )
+    });
+}
+
+/// What `TrapBeforeEachGetppid` does around the injection for each
+/// `GETPPID_FD` marker, in order: whether it first sets the tracer's soft
+/// `RLIMIT_NOFILE` to 0 (`LOWER`), first adds a filter to every tracer
+/// thread that kills its process at `PTRACE_GETSIGMASK` and every `prctl`
+/// (`FILTER`), or restores the limit after the injection (`RESTORE`).
+static EACH_GETPPID_SCRIPT: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
+const LOWER: u32 = 1;
+const FILTER: u32 = 2;
+const RESTORE: u32 = 4;
+/// `GETPPID_FD` markers `TrapBeforeEachGetppid` has handled.
+static EACH_GETPPID_MARKERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Sets the tracer's soft `RLIMIT_NOFILE` to 0, so no descriptor can be
+/// opened, and returns the limit to restore.
+#[cfg(target_arch = "x86_64")]
+fn lower_nofile() -> libc::rlimit {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: both calls only read or set this process's limit.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+        let lowered = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: limit.rlim_max,
+        };
+        assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &lowered), 0);
+    }
+    limit
+}
+
+/// Restores a limit `lower_nofile` returned.
+#[cfg(target_arch = "x86_64")]
+fn restore_nofile(limit: libc::rlimit) {
+    // SAFETY: only sets this process's limit.
+    unsafe { assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0) };
+}
+
+/// Adds a filter to every tracer thread (`SECCOMP_FILTER_FLAG_TSYNC`) that
+/// kills its process at `PTRACE_GETSIGMASK` and at every `prctl`.
+#[cfg(target_arch = "x86_64")]
+fn filter_tracer_getsigmask_and_prctl() {
+    let statement = |code: u32, k: u32, jt: u8, jf: u8| libc::sock_filter {
+        code: code as u16,
+        jt,
+        jf,
+        k,
+    };
+    let kill = libc::SECCOMP_RET_KILL_PROCESS;
+    let filter = [
+        // seccomp_data.nr is at offset 0, and the low half of args[0] at 16.
+        statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0, 0, 0),
+        statement(
+            libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+            libc::SYS_prctl as u32,
+            0,
+            1,
+        ),
+        statement(libc::BPF_RET | libc::BPF_K, kill, 0, 0),
+        statement(
+            libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+            libc::SYS_ptrace as u32,
+            0,
+            3,
+        ),
+        statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 16, 0, 0),
+        statement(
+            libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+            libc::PTRACE_GETSIGMASK,
+            0,
+            1,
+        ),
+        statement(libc::BPF_RET | libc::BPF_K, kill, 0, 0),
+        statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW, 0, 0),
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_ptr() as *mut libc::sock_filter,
+    };
+    // SAFETY: restricts only the tracer's threads, which end with the test.
+    let installed = unsafe {
+        // Required to add a filter without CAP_SYS_ADMIN, if not yet set.
+        assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+        libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            libc::SECCOMP_FILTER_FLAG_TSYNC,
+            &program as *const libc::sock_fprog,
+        )
+    };
+    assert_eq!(installed, 0, "filter the tracer's threads");
+}
+
+/// `TrapBeforeGetppid` for two `GETPPID_FD` markers, each with the
+/// `EACH_GETPPID_SCRIPT` entry of its turn.
+#[derive(Clone, Copy, Debug, Default)]
+struct TrapBeforeEachGetppid;
+
+#[reverie::tool]
+impl Tool for TrapBeforeEachGetppid {
+    type GlobalState = Log;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        if !matches!(syscall, Syscall::Write(write) if write.fd() == GETPPID_FD && write.len() == 0)
+        {
+            return replace_marker(guest, syscall).await;
+        }
+        let turn = EACH_GETPPID_MARKERS.fetch_add(1, Ordering::Relaxed);
+        let script = EACH_GETPPID_SCRIPT[turn].load(Ordering::Relaxed);
+        // As in `TrapBeforeGetppid`, a complete injection first.
+        guest.inject(Getpid::new()).await?;
+        // SAFETY: tgkill has no memory-safety preconditions.
+        let sent = unsafe {
+            libc::syscall(
+                libc::SYS_tgkill,
+                guest.pid().as_raw(),
+                guest.tid().as_raw(),
+                libc::SIGTRAP,
+            )
+        };
+        assert_eq!(sent, 0, "send SIGTRAP to the guest");
+        if script & LOWER != 0 {
+            *SAVED_NOFILE.lock().unwrap() = Some(lower_nofile());
+        }
+        if script & FILTER != 0 {
+            filter_tracer_getsigmask_and_prctl();
+        }
+        let result = guest.inject(Getppid::new()).await;
+        if script & RESTORE != 0 {
+            restore_nofile(SAVED_NOFILE.lock().unwrap().take().unwrap());
+        }
+        guest
+            .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+            .await;
+        Ok(result?)
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        Ok(Some(signal))
+    }
+}
+
+/// Runs `TrapBeforeEachGetppid` with `script`, on a tracer thread under no
+/// seccomp filter when it takes the guest, which, after its filter trapping
+/// `getppid`, calls `getppid` and then submits two `GETPPID_FD` markers. For
+/// each marker, checks whether the step is retried (`true`: the trap is
+/// discarded, and the guest's filter traps the `getppid`, which returns
+/// `ENOSYS` to the tool, and whose SIGSYS the guest handles) or the trap is
+/// taken for the step's report, as on main (`false`: the injection returns
+/// the syscall number left in RAX, and nothing runs in the guest).
+#[cfg(target_arch = "x86_64")]
+fn sigtrap_before_each_injected_syscall(script: [u32; 2], retried: [bool; 2], probe: &str) {
+    assert_tracer_unfiltered();
+    EACH_GETPPID_MARKERS.store(0, Ordering::Relaxed);
+    for (entry, value) in EACH_GETPPID_SCRIPT.iter().zip(script) {
+        entry.store(value, Ordering::Relaxed);
+    }
+    let (output, log) = test_fn::<TrapBeforeEachGetppid, _>(|| unsafe {
+        trap_getppid();
+        print_seccomp_trap(libc::syscall(libc::SYS_getppid));
+        for _ in 0..2 {
+            let ret = libc::syscall(libc::SYS_write, GETPPID_FD, std::ptr::null::<u8>(), 0usize);
+            print_seccomp_trap(ret);
+        }
+    })
+    .expect("run trap-before-each-getppid guest");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE {probe} status={:?} guest={:?} injected={:?} signals={:?}",
+        output.status,
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let getppid = libc::SYS_getppid;
+    let mut lines = vec![format!("4242 1 1 {getppid} {getppid}")];
+    let mut injected = Vec::new();
+    let mut signals = vec![libc::SIGSYS];
+    let (mut traps, mut rax) = (1, getppid);
+    for retried in retried {
+        if retried {
+            traps += 1;
+            rax = -libc::ENOSYS as i64;
+            lines.push(format!("4242 {traps} 1 {getppid} {rax}"));
+            injected.push(Err(libc::ENOSYS));
+            signals.push(libc::SIGSYS);
+        } else {
+            lines.push(format!("{getppid} {traps} 1 {getppid} {rax}"));
+            injected.push(Ok(getppid));
+        }
+    }
+    let got: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(got, lines);
+    assert_eq!(*log.injected.lock().unwrap(), injected);
+    assert_eq!(*log.signals.lock().unwrap(), signals);
+}
+
+/// No descriptor can be opened during either injection, but can between
+/// them. The status the tracer thread holds, read at the first decision, is
+/// replaced once one can be opened again (here at the first injection's
+/// SIGSYS), so it reports mode 0 at the second decision too: both traps are
+/// discarded.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_injected_syscalls_is_discarded_while_a_status_is_held_for_each() {
+    const NAME: &str =
+        "sigtrap_before_injected_syscalls_is_discarded_while_a_status_is_held_for_each";
+    in_child_process(NAME, || {
+        sigtrap_before_each_injected_syscall(
+            [LOWER | RESTORE, LOWER | RESTORE],
+            [true, true],
+            "trap-each-emfile-held-again",
+        )
+    });
+}
+
+/// No descriptor can be opened from the first decision through the second.
+/// The held status is read at the first, which discards the trap, and none
+/// can be opened in its place, so nothing reports the thread's mode at the
+/// second: the trap there is taken as on main. This is the one case where
+/// the thread is under no filter but the step is taken as on main
+/// (https://github.com/rrnewton/reverie/issues/845): no syscall that needs
+/// no descriptor can ask the mode safely of a thread that may be filtered.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_taken_as_on_main_once_the_held_status_is_used_up() {
+    const NAME: &str =
+        "sigtrap_before_an_injected_syscall_is_taken_as_on_main_once_the_held_status_is_used_up";
+    in_child_process(NAME, || {
+        sigtrap_before_each_injected_syscall(
+            [LOWER, RESTORE],
+            [true, false],
+            "trap-each-emfile-used-up",
+        )
+    });
+}
+
+/// As `..._once_the_held_status_is_used_up`, but a filter killing the
+/// tracer's process at `PTRACE_GETSIGMASK` and every `prctl` is added to the
+/// tracer's threads between the decisions. With nothing to report its mode,
+/// the thread is taken as filtered at the second decision, and the trap is
+/// taken as on main, without asking `prctl`; retried, the step would reach
+/// that `PTRACE_GETSIGMASK` at the guest's SIGSYS.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sigtrap_before_an_injected_syscall_is_not_retried_under_a_filter_added_once_the_held_status_is_used_up()
+ {
+    const NAME: &str = "sigtrap_before_an_injected_syscall_is_not_retried_under_a_filter_added_once_the_held_status_is_used_up";
+    in_child_process(NAME, || {
+        sigtrap_before_each_injected_syscall(
+            [LOWER, FILTER | RESTORE],
+            [true, false],
+            "trap-each-emfile-used-up-late-filter",
+        )
+    });
+}
+
+/// A guest that does not execute a program inherits no procfs status a
+/// tracer thread holds open, whatever its number: here descriptors 3 to 255,
+/// which a guest closes as on main, are all taken, so each status gets a
+/// higher number. One is held by another tracer thread, which has taken a
+/// guest and is still running, and one by this thread, after its first
+/// guest; the second guest lists the procfs statuses it has open.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn guest_inherits_no_held_seccomp_status() {
+    const NAME: &str = "guest_inherits_no_held_seccomp_status";
+    in_child_process(NAME, || {
+        use std::os::fd::IntoRawFd;
+        assert_tracer_unfiltered();
+        let null = std::fs::File::open("/dev/null")
+            .expect("open /dev/null")
+            .into_raw_fd();
+        for fd in 3..256 {
+            // SAFETY: fills free descriptors only, with copies of `null`.
+            unsafe {
+                if libc::fcntl(fd, libc::F_GETFD) == -1 {
+                    assert_eq!(libc::dup2(null, fd), fd);
+                }
+            }
+        }
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let other = std::thread::spawn(move || {
+            let (output, _) = test_fn::<ReplaceMarker, _>(|| {}).expect("run first guest");
+            ready_tx.send(()).unwrap();
+            done_rx.recv().unwrap();
+            output
+        });
+        ready_rx.recv().unwrap();
+        let (first, _) = test_fn::<ReplaceMarker, _>(|| {}).expect("run first guest");
+        let (second, _) = test_fn::<ReplaceMarker, _>(|| {
+            for entry in std::fs::read_dir("/proc/self/fd").expect("list descriptors") {
+                let entry = entry.expect("descriptor");
+                if let Ok(target) = std::fs::read_link(entry.path()) {
+                    let target = target.to_string_lossy().into_owned();
+                    if target.starts_with("/proc/") && target.ends_with("/status") {
+                        println!("{} {target}", entry.file_name().to_string_lossy());
+                    }
+                }
+            }
+        })
+        .expect("run second guest");
+        done_tx.send(()).unwrap();
+        let other = other.join().expect("other tracer thread");
+        let stdout = String::from_utf8_lossy(&second.stdout);
+        eprintln!(
+            "PROBE held-status-inheritance status={:?} statuses={:?}",
+            second.status,
+            stdout.trim()
+        );
+        for output in [&other, &first, &second] {
+            assert_eq!(
+                output.status,
+                ExitStatus::Exited(0),
+                "stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        assert_eq!(stdout.trim(), "", "the guest has no procfs status open");
     });
 }
 
