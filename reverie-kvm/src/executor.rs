@@ -619,6 +619,8 @@ fn execute_basic_syscall_inner(
         sync_file(state, args[0], false)
     } else if number == libc::SYS_fdatasync as u64 {
         sync_file(state, args[0], true)
+    } else if number == libc::SYS_syncfs as u64 {
+        sync_filesystem(state, args[0], capture_output)
     } else if number == libc::SYS_readahead as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-227): Review translated host readahead semantics.
@@ -8879,6 +8881,8 @@ fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
         io_error(std::io::Error::last_os_error())
     }
 }
+
+include!("executor/syncfs.rs");
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-227): Review translated host readahead semantics.
@@ -19541,6 +19545,7 @@ pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf
 
 #[cfg(test)]
 mod tests {
+    include!("executor/syncfs_tests.rs");
     include!("executor/read_zero_cancel_tests.rs");
     include!("executor/random_device_stream_tests.rs");
     include!("executor/random_device_carrier_tests.rs");
