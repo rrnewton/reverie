@@ -129,14 +129,21 @@ pub enum NarfFatal {
     /// A lifecycle or RDTSC callback tail-injected a syscall that returned;
     /// there is no guest syscall to deliver the value to.
     TailInjectOutsideSyscall,
-    /// `handle_rdtsc_event` failed with this errno. reverie-ptrace fails the
-    /// run on the same error.
+    /// `handle_rdtsc_event` failed with this errno while the task was not
+    /// ending ([`KernelServices::killed`]). reverie-ptrace, without a
+    /// LiteInst runtime, also fails the run on the errno of a live task; for
+    /// a task that is gone or exiting it parks the task instead, as the core
+    /// ends the callback with `RdtscOutcome::ContextManaged`.
     Rdtsc(Errno),
     /// An RDTSC callback's transition made the task context-managed although
     /// the task was not ending ([`KernelServices::killed`]): a tail inject
     /// parked it, or an inject ended its context. No guest syscall exists
     /// for the kernel to re-execute, and the instruction has no value.
     RdtscContextManaged,
+    /// The kernel delivered an RDTSC event to a host that does not deliver
+    /// them: one not built with `NarfToolHost::new_delivering_rdtsc`, or one
+    /// whose Tool did not subscribe to RDTSC events.
+    UnexpectedRdtsc,
 }
 
 impl fmt::Debug for NarfFatal {
@@ -179,6 +186,7 @@ impl fmt::Debug for NarfFatal {
             Self::TailInjectOutsideSyscall => f.write_str("TailInjectOutsideSyscall"),
             Self::Rdtsc(errno) => f.debug_tuple("Rdtsc").field(errno).finish(),
             Self::RdtscContextManaged => f.write_str("RdtscContextManaged"),
+            Self::UnexpectedRdtsc => f.write_str("UnexpectedRdtsc"),
         }
     }
 }
@@ -199,7 +207,9 @@ pub enum Disposition {
 pub enum LifecycleOutcome {
     /// Let the task continue.
     Continue,
-    /// A tail-injected syscall exited or redirected the task.
+    /// A tail-injected syscall exited or redirected the task, or, for a
+    /// kernel whose [`KernelServices::killed`] answers in lifecycle
+    /// callbacks, an inject found the task ending.
     ContextManaged,
 }
 
@@ -210,9 +220,16 @@ pub enum RdtscOutcome {
     /// Complete the instruction with these values: the counter in `EDX:EAX`
     /// and, for RDTSCP, `aux` (zero if `None`) in `ECX`, as reverie-ptrace
     /// completes it.
+    ///
+    /// The core returns this whenever the Tool answered, even for a task
+    /// that is ending ([`KernelServices::killed`]): completing the
+    /// instruction does not cancel a pending kill, which the kernel still
+    /// carries out.
     Complete(RdtscResult),
-    /// The task is ending ([`KernelServices::killed`]); the kernel owns its
-    /// context and must not complete the instruction.
+    /// The task is ending ([`KernelServices::killed`]) and the Tool gave no
+    /// value: it failed with an errno, or an inject or tail inject ended the
+    /// task. The kernel owns the task's context and must not complete the
+    /// instruction.
     ContextManaged,
 }
 
@@ -448,6 +465,10 @@ pub struct NarfToolHost<T: Tool, L> {
     global: T::GlobalState,
     config: Config<T>,
     subscribed: [u64; 8],
+    /// Whether the kernel delivers RDTSC events to the Tool: the host was
+    /// built with [`Self::new_delivering_rdtsc`] and the Tool subscribed.
+    #[cfg(target_arch = "x86_64")]
+    rdtsc_events: bool,
     /// Builds each hosted process's Tool (see [`Self::with_tool_constructor`]).
     new_tool: fn(Pid, &Config<T>) -> T,
     tasks: L,
@@ -469,6 +490,13 @@ where
     /// Like [`Self::new`], but also accepts a Tool that subscribes to RDTSC
     /// events, for a kernel that delivers every RDTSC and RDTSCP a hosted
     /// task executes to [`Self::handle_rdtsc`] while the Tool subscribes.
+    ///
+    /// Such a kernel must also answer [`KernelServices::killed`] in its
+    /// RDTSC callbacks, and once it answers `true` in a callback it must
+    /// keep answering `true` until the callback returns. Otherwise an inject
+    /// that kills the task, or a kill from another task during the
+    /// callback, fails the run with [`NarfFatal::InjectParked`] or
+    /// [`NarfFatal::RdtscContextManaged`] instead of ending the task.
     #[cfg(target_arch = "x86_64")]
     pub fn new_delivering_rdtsc(config: Config<T>) -> Result<Self, NarfFatal> {
         Self::build(config, true)
@@ -503,6 +531,8 @@ where
             global,
             config,
             subscribed,
+            #[cfg(target_arch = "x86_64")]
+            rdtsc_events: delivers_rdtsc && subscription.has_rdtsc(),
             new_tool: T::new,
             tasks: L::new(TaskTable::new()),
         })
@@ -915,20 +945,31 @@ where
     }
 
     /// Delivers an RDTSC or RDTSCP the current task executed to the Tool's
-    /// `handle_rdtsc_event`, for a host built with
-    /// [`new_delivering_rdtsc`](Self::new_delivering_rdtsc). The kernel calls
-    /// this from the instruction's trap, before the instruction completes.
+    /// `handle_rdtsc_event`. The kernel calls this from the instruction's
+    /// trap, before the instruction completes, and only on a host built with
+    /// [`new_delivering_rdtsc`](Self::new_delivering_rdtsc) whose Tool
+    /// subscribed to RDTSC events. Any other host refuses the event with
+    /// [`NarfFatal::UnexpectedRdtsc`] and runs nothing.
     ///
     /// The Tool may use the guest as in a syscall callback: it may inject
     /// syscalls and wait for other tasks, which the host handles as
     /// [`Self::handle_syscall`] does, a task killed during a wait included.
     /// The event is not a syscall, though, so nothing re-executes a syscall
-    /// for it. Unless the task is ending ([`KernelServices::killed`]), an
-    /// inject that parks the task fails closed with
-    /// [`NarfFatal::InjectParked`], and a tail inject with
-    /// [`NarfFatal::TailInjectOutsideSyscall`] (or
-    /// [`NarfFatal::RdtscContextManaged`] if it made the task
-    /// context-managed).
+    /// for it, and a tail inject has no guest syscall to return a value to.
+    /// If the task is ending ([`KernelServices::killed`]), a callback that
+    /// ends without a value returns [`RdtscOutcome::ContextManaged`]: the
+    /// Tool failed with an errno, or an inject or tail inject ended the
+    /// task. Otherwise such a callback fails closed:
+    ///
+    /// - a Tool errno with [`NarfFatal::Rdtsc`];
+    /// - an inject that parks the task with [`NarfFatal::InjectParked`];
+    /// - a tail inject that parks the task, and an inject that ends the
+    ///   task's context without ending the task (`execve`, say), with
+    ///   [`NarfFatal::RdtscContextManaged`].
+    ///
+    /// A tail inject that returned a value fails with
+    /// [`NarfFatal::TailInjectOutsideSyscall`] whether or not the task is
+    /// ending.
     ///
     /// A Tool future suspended in a parked inject of this task is first
     /// interrupted, as a new syscall entry would interrupt it: the task has
@@ -942,6 +983,9 @@ where
         K: KernelServices,
         K::Memory: 'static,
     {
+        if !self.rdtsc_events {
+            return Err(NarfFatal::UnexpectedRdtsc);
+        }
         let tid = kernel.tid();
         let Checkout {
             tool,
@@ -1205,9 +1249,11 @@ fn settle(
 /// Turns one polled RDTSC callback into the kernel's outcome.
 ///
 /// As in [`settle`], a recorded fatal error wins over anything the Tool
-/// returned. A pending future is accepted only if its task is ending. No
-/// inject awaits here: with no guest syscall to re-execute, a parked inject
-/// fails as [`NarfFatal::InjectParked`] instead.
+/// returned. A pending future, and a Tool errno, are accepted only if the
+/// task is ending: reverie-ptrace likewise parks, rather than fails, a task
+/// that is gone or exiting when its Tool fails. No inject awaits here: with
+/// no guest syscall to re-execute, a parked inject fails as
+/// [`NarfFatal::InjectParked`] instead.
 #[cfg(target_arch = "x86_64")]
 fn settle_rdtsc(
     mut call: CallState,
@@ -1219,6 +1265,7 @@ fn settle_rdtsc(
     }
     match poll {
         Poll::Ready(Ok(result)) => Ok(RdtscOutcome::Complete(result)),
+        Poll::Ready(Err(_)) if ending => Ok(RdtscOutcome::ContextManaged),
         Poll::Ready(Err(errno)) => Err(NarfFatal::Rdtsc(errno)),
         Poll::Pending => match call.terminal.take() {
             Some(Terminal {
