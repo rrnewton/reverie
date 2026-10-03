@@ -70,14 +70,19 @@ pub enum NarfSyscallOutcome {
     ContextManaged,
 }
 
-/// The original transition had already been consumed.
+/// Why the intercepted original syscall can no longer execute.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct OriginalAlreadyExecuted;
+pub enum OriginalSyscallError {
+    /// The original syscall already executed once.
+    AlreadyExecuted,
+    /// Another transition parked, exited, execed, or redirected the live task.
+    ContextManaged,
+}
 
 /// Narf's kernel-owned native transition for the current callback.
 pub trait KernelTransition {
     /// Execute the intercepted original syscall at most once.
-    fn execute_original(&mut self) -> Result<NarfSyscallOutcome, OriginalAlreadyExecuted>;
+    fn execute_original(&mut self) -> Result<NarfSyscallOutcome, OriginalSyscallError>;
 
     /// Execute one explicit request, bypassing interception.
     fn execute_injected(&mut self, request: NarfSyscallRequest) -> NarfSyscallOutcome;
@@ -209,10 +214,14 @@ where
     }
 
     fn execute(&mut self, request: NarfSyscallRequest) -> NarfSyscallOutcome {
-        if request == self.original
-            && let Ok(outcome) = self.kernel.execute_original()
-        {
-            return outcome;
+        if request == self.original {
+            match self.kernel.execute_original() {
+                Ok(outcome) => return outcome,
+                Err(OriginalSyscallError::ContextManaged) => {
+                    return NarfSyscallOutcome::ContextManaged;
+                }
+                Err(OriginalSyscallError::AlreadyExecuted) => {}
+            }
         }
         self.kernel.execute_injected(request)
     }
@@ -329,9 +338,9 @@ mod tests {
     }
 
     impl KernelTransition for Kernel {
-        fn execute_original(&mut self) -> Result<NarfSyscallOutcome, OriginalAlreadyExecuted> {
+        fn execute_original(&mut self) -> Result<NarfSyscallOutcome, OriginalSyscallError> {
             if self.calls != 0 {
-                return Err(OriginalAlreadyExecuted);
+                return Err(OriginalSyscallError::AlreadyExecuted);
             }
             self.calls += 1;
             Ok(NarfSyscallOutcome::Returned(37))
