@@ -6291,6 +6291,11 @@ static RESTART_BLOCK_REWRITE_LAST: AtomicU64 = AtomicU64::new(0);
 static RESTART_BLOCK_EARLY_RAX: AtomicU64 = AtomicU64::new(0);
 /// What `RESTART_BLOCK_EARLY_RAX` writes.
 const RESTART_BLOCK_EARLY_RET: u64 = 123;
+/// Nonzero when `RestartBlockInFirstSignalHook` saves the guest's
+/// registers after its timer injection, before its sleep, and writes them
+/// back with `Guest::set_regs` after its final sleep. Read like
+/// `RESTART_BLOCK_SUPPRESS`.
+static RESTART_BLOCK_CACHED: AtomicU64 = AtomicU64::new(0);
 /// The signal number `RestartBlockInFirstSignalHook` resumes with in place
 /// of SIGALRM, when nonzero; it then neither suppresses nor passes SIGALRM.
 /// Read like `RESTART_BLOCK_SUPPRESS`.
@@ -6342,8 +6347,9 @@ const RESTART_BLOCK_GETPID_TRIES: usize = 3;
 /// injects `getpid` until it succeeds, and then `RESTART_BLOCK_FINAL_SLEEP`
 /// when `RESTART_BLOCK_FINAL` is set in the guest, first writing the
 /// guest's registers back unchanged when `RESTART_BLOCK_REWRITE` is set,
-/// and after it when `RESTART_BLOCK_REWRITE_LAST` is set; each injection is
-/// reported. It then writes zero to the guest's return register when
+/// and after it when `RESTART_BLOCK_REWRITE_LAST` is set, or the registers
+/// it saved after its timer injection when `RESTART_BLOCK_CACHED` is set;
+/// each injection is reported. It then writes zero to the guest's return register when
 /// `RESTART_BLOCK_ZERO_RAX` is set, and overwrites the guest's sleep
 /// request when `RESTART_BLOCK_POISON` is set. It resumes with the signal
 /// `RESTART_BLOCK_VERDICT` names when that is set, else suppresses the
@@ -6418,11 +6424,16 @@ impl Tool for RestartBlockInFirstSignalHook {
                 ),
             )
         };
+        let cache = guest.memory().read_value(flag(&RESTART_BLOCK_CACHED)?)? != 0;
+        let mut cached = None;
         for syscall in [timer, sleep] {
             let result = guest.inject(syscall).await;
             guest
                 .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
                 .await;
+            if cache && cached.is_none() {
+                cached = Some(guest.regs().await);
+            }
         }
         // The timer's SIGALRM, pending after the sleep's step, stops the
         // first `getpid` before it runs.
@@ -6458,6 +6469,12 @@ impl Tool for RestartBlockInFirstSignalHook {
             guest
                 .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
                 .await;
+        }
+        if let Some(regs) = cached {
+            guest
+                .set_regs(regs)
+                .await
+                .expect("write the guest's registers");
         }
         if guest
             .memory()
@@ -6525,6 +6542,10 @@ enum RestartBlockEnd {
     /// `RESTART_BLOCK_EARLY_RET` to the guest's return register with
     /// `Guest::set_regs` before its first injection.
     SuppressAfterEarlyWriteAndSleep,
+    /// As `SuppressAfterSleep`, but the hook saves the guest's registers
+    /// after its timer injection and writes them back with
+    /// `Guest::set_regs` after its final sleep.
+    SuppressAfterSleepAndCachedWrite,
     /// As `SuppressAfterSleep`, but the hook resumes with SIGURG, which the
     /// guest ignores by default, in place of suppressing SIGALRM.
     IgnoredAfterSleep,
@@ -6538,17 +6559,14 @@ enum RestartBlockEnd {
 /// kernel to restart through `restart_syscall` and the thread's restart
 /// block. Its hook injects a 5-second `nanosleep` that a second SIGALRM
 /// interrupts, which replaces that restart block with the injected sleep's,
-/// and then a successful `getpid`. Restoring the guest's
-/// `-ERESTART_RESTARTBLOCK` would make Linux restart the injected sleep in
-/// place of the guest's.
+/// and then a successful `getpid`. The hook runs at SIGALRM's own delivery
+/// stop, so each injection leaves its own return register, as on main: the
+/// guest sees the latest injection's result, or the Tool's latest write.
 ///
 /// When the hook passes SIGALRM through, the handler runs, well before
 /// either deadline, and the guest sees the `getpid`'s PID, as on main.
 /// Untraced Linux returns EINTR there, a known gap
-/// (https://github.com/rrnewton/reverie/issues/845): whether the kernel
-/// delivers a handler is decided at the resume, from dispositions that
-/// another thread, or a process sharing them that Reverie does not trace,
-/// can change until then.
+/// (https://github.com/rrnewton/reverie/issues/845).
 ///
 /// When it suppresses SIGALRM, untraced Linux would restart the guest's
 /// sleep, which the replaced restart block rules out. The guest sees the
@@ -6566,13 +6584,16 @@ enum RestartBlockEnd {
 /// (`SuppressAfterEarlyWriteAndSleep`), does not change that: the sleep's
 /// zero is the latest value, as on main. Nor does writing the registers back
 /// unchanged after the final sleep (`SuppressAfterSleepAndRewrite`): the
-/// hook reads the sleep's zero, as on main.
+/// hook reads the sleep's zero, as on main. Writing back after the final
+/// sleep the registers saved after the timer injection
+/// (`SuppressAfterSleepAndCachedWrite`) returns the timer's zero they hold,
+/// as on main.
 ///
 /// With `SuppressAfterResume` the hook's interrupted `restart_syscall`
-/// leaves the guest's restart block in place, so the guest's own
-/// `-ERESTART_RESTARTBLOCK` stays, and the suppressed SIGALRM lets Linux
-/// restart the guest's sleep to its own deadline and return zero, as
-/// untraced Linux does. Main returns the `getpid`'s PID there.
+/// leaves the guest's restart block in place, and untraced Linux would
+/// restart the guest's sleep to its own deadline and return zero. The guest
+/// sees the `getpid`'s PID, as on main, a known gap
+/// (https://github.com/rrnewton/reverie/issues/845).
 ///
 /// In every case the second SIGALRM, held by the hook's `getpid`, is
 /// delivered at the guest's next subscribed syscall, its `println`.
@@ -6584,12 +6605,14 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
             | RestartBlockEnd::SuppressAfterRewriteAndSleep
             | RestartBlockEnd::SuppressAfterSleepAndRewrite
             | RestartBlockEnd::SuppressAfterEarlyWriteAndSleep
+            | RestartBlockEnd::SuppressAfterSleepAndCachedWrite
             | RestartBlockEnd::IgnoredAfterSleep
             | RestartBlockEnd::BlockedAfterSleep
     );
     let rewrite = end == RestartBlockEnd::SuppressAfterRewriteAndSleep;
     let rewrite_last = end == RestartBlockEnd::SuppressAfterSleepAndRewrite;
     let early_rax = end == RestartBlockEnd::SuppressAfterEarlyWriteAndSleep;
+    let cached = end == RestartBlockEnd::SuppressAfterSleepAndCachedWrite;
     let resume = end == RestartBlockEnd::SuppressAfterResume;
     let zero_rax = end == RestartBlockEnd::SuppressAfterZeroingRax;
     let verdict = match end {
@@ -6606,6 +6629,7 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
             RESTART_BLOCK_REWRITE.store(rewrite as u64, Ordering::Relaxed);
             RESTART_BLOCK_REWRITE_LAST.store(rewrite_last as u64, Ordering::Relaxed);
             RESTART_BLOCK_EARLY_RAX.store(early_rax as u64, Ordering::Relaxed);
+            RESTART_BLOCK_CACHED.store(cached as u64, Ordering::Relaxed);
             RESTART_BLOCK_VERDICT.store(verdict as u64, Ordering::Relaxed);
             RESTART_BLOCK_POISON.store(0, Ordering::Relaxed);
             SIGALRM_HANDLER_CALLS.store(0, Ordering::Relaxed);
@@ -6698,10 +6722,15 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
                 "the final injected sleep's zero, as on main and untraced Linux, and no handler run"
             )
         }
-        RestartBlockEnd::SuppressAfterResume => assert_eq!(
+        RestartBlockEnd::SuppressAfterSleepAndCachedWrite => assert_eq!(
             [fields[0], fields[2]],
             ["0", "0"],
-            "the guest's restarted sleep's zero, as untraced Linux, and no handler run"
+            "the timer injection's zero that the hook saved, as on main, and no handler run"
+        ),
+        RestartBlockEnd::SuppressAfterResume => assert_eq!(
+            [fields[0], fields[2]],
+            [pid.to_string().as_str(), "0"],
+            "the injected getpid's PID, as on main, and no handler run (known gap, https://github.com/rrnewton/reverie/issues/845)"
         ),
         RestartBlockEnd::SuppressAfterZeroingRax => assert_eq!(
             [fields[0], fields[2]],
@@ -6719,11 +6748,10 @@ fn check_restart_block_replaced_by_a_hook_injection(end: RestartBlockEnd) {
         elapsed < 2000,
         "the guest's sleep ends well before the injected sleep's deadline: {elapsed} ms"
     );
-    if final_sleep || resume {
-        let deadline = if resume { 600 } else { 300 };
+    if final_sleep {
         assert!(
-            elapsed >= deadline,
-            "the guest's sleep ends after its own {deadline} ms deadline: {elapsed} ms"
+            elapsed >= 300,
+            "the guest's sleep ends after its own 300 ms deadline: {elapsed} ms"
         );
     }
     assert_eq!(
@@ -6772,7 +6800,14 @@ fn suppressed_signal_after_an_early_register_write_and_a_final_sleep_keeps_the_f
 }
 
 #[test]
-fn suppressed_signal_after_an_injected_restart_syscall_restarts_the_guest_sleep() {
+fn suppressed_signal_after_a_final_sleep_and_a_cached_register_write_keeps_the_cached_zero() {
+    check_restart_block_replaced_by_a_hook_injection(
+        RestartBlockEnd::SuppressAfterSleepAndCachedWrite,
+    );
+}
+
+#[test]
+fn suppressed_signal_after_an_injected_restart_syscall_returns_the_injection_result() {
     check_restart_block_replaced_by_a_hook_injection(RestartBlockEnd::SuppressAfterResume);
 }
 
@@ -6844,9 +6879,7 @@ impl Tool for RestoreRegsAfterGetpidHook {
 /// `-ERESTARTSYS` again, and resumes with SIGUSR2, which the guest blocks.
 /// Linux requeues SIGUSR2, enters no handler, and restarts the `read`, which
 /// returns the byte: 1, as on main. The Tool's own write decides the return
-/// register; Reverie does not put the injection's PID back over it
-/// (`keep_injection_ret_for_requeue`,
-/// <https://github.com/rrnewton/reverie/issues/845>).
+/// register.
 #[test]
 fn blocked_verdict_after_the_tool_restores_its_registers_restarts_the_read() {
     let (output, log) = test_fn_bounded::<RestoreRegsAfterGetpidHook, _>(
@@ -7275,6 +7308,7 @@ fn restart_block_verdict_raced_by_a_disposition_change_never_leaves_a_bare_eintr
             RESTART_BLOCK_REWRITE.store(0, Ordering::Relaxed);
             RESTART_BLOCK_REWRITE_LAST.store(0, Ordering::Relaxed);
             RESTART_BLOCK_EARLY_RAX.store(0, Ordering::Relaxed);
+            RESTART_BLOCK_CACHED.store(0, Ordering::Relaxed);
             RESTART_BLOCK_VERDICT.store(libc::SIGUSR2 as u64, Ordering::Relaxed);
             RESTART_BLOCK_POISON.store(1, Ordering::Relaxed);
             install_counter(libc::SIGALRM, count_sigalrm);
