@@ -32,6 +32,7 @@ use reverie::Guest;
 use reverie::Pid;
 use reverie::Signal;
 use reverie::Subscription;
+use reverie::TimerSchedule;
 use reverie::Tool;
 use reverie::syscalls::Addr;
 use reverie::syscalls::AddrMut;
@@ -43,6 +44,8 @@ use reverie::syscalls::RtSigprocmask;
 use reverie::syscalls::RtTgsigqueueinfo;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::Sysno;
+use reverie_ptrace::ret_without_perf;
+use reverie_ptrace::testing::do_branches;
 use reverie_ptrace::testing::test_fn;
 use serde::Deserialize;
 use serde::Serialize;
@@ -81,12 +84,14 @@ const MARKERS: usize = 1500;
 enum Report {
     Injected(Result<i64, i32>),
     Signal(i32),
+    Timer,
 }
 
 #[derive(Default)]
 struct Log {
     injected: Mutex<Vec<Result<i64, i32>>>,
     signals: Mutex<Vec<i32>>,
+    timers: AtomicUsize,
 }
 
 #[reverie::global_tool]
@@ -99,6 +104,9 @@ impl GlobalTool for Log {
         match report {
             Report::Injected(result) => self.injected.lock().unwrap().push(result),
             Report::Signal(signal) => self.signals.lock().unwrap().push(signal),
+            Report::Timer => {
+                self.timers.fetch_add(1, Ordering::SeqCst);
+            }
         }
     }
 }
@@ -1293,30 +1301,29 @@ extern "C" fn count_sigusr2(_signal: libc::c_int) {
 #[derive(Clone, Copy, Debug, Default)]
 struct UnblockFromSignalCallback;
 
-impl UnblockFromSignalCallback {
-    async fn unblock_then_getpid<G: Guest<Self>>(
-        guest: &mut G,
-        set: Option<Addr<'static, libc::sigset_t>>,
-    ) -> Result<i64, Errno> {
-        let result = guest
-            .inject(
-                RtSigprocmask::new()
-                    .with_how(libc::SIG_UNBLOCK)
-                    .with_set(set)
-                    .with_oldset(None)
-                    .with_sigsetsize(8),
-            )
-            .await;
-        guest
-            .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
-            .await;
-        result?;
-        let result = guest.inject(Getpid::new()).await;
-        guest
-            .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
-            .await;
-        result
-    }
+/// Injects an unblock of `set` and a `getpid`, reporting each result.
+async fn unblock_then_getpid<T: Tool<GlobalState = Log>, G: Guest<T>>(
+    guest: &mut G,
+    set: Option<Addr<'static, libc::sigset_t>>,
+) -> Result<i64, Errno> {
+    let result = guest
+        .inject(
+            RtSigprocmask::new()
+                .with_how(libc::SIG_UNBLOCK)
+                .with_set(set)
+                .with_oldset(None)
+                .with_sigsetsize(8),
+        )
+        .await;
+    guest
+        .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+        .await;
+    result?;
+    let result = guest.inject(Getpid::new()).await;
+    guest
+        .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+        .await;
+    result
 }
 
 #[reverie::tool]
@@ -1342,7 +1349,7 @@ impl Tool for UnblockFromSignalCallback {
                     base + std::mem::size_of::<libc::sigset_t>(),
                     Ordering::SeqCst,
                 );
-                let _ = Self::unblock_then_getpid(guest, Addr::from_raw(base)).await;
+                let _ = unblock_then_getpid(guest, Addr::from_raw(base)).await;
                 Ok(0)
             }
             other => Ok(guest.inject(other).await?),
@@ -1359,7 +1366,7 @@ impl Tool for UnblockFromSignalCallback {
             return Ok(Some(signal));
         }
         let set = Addr::from_raw(SIGUSR2_SET.load(Ordering::SeqCst));
-        let _ = Self::unblock_then_getpid(guest, set).await;
+        let _ = unblock_then_getpid(guest, set).await;
         Ok(None)
     }
 }
@@ -1439,5 +1446,115 @@ fn signal_held_by_a_signal_callback_injection_reaches_the_tool() {
         *signals,
         vec![libc::SIGUSR1, libc::SIGUSR2],
         "the tool sees the held SIGUSR1, then the SIGUSR2 its own injection held"
+    );
+}
+
+/// Above the largest skid margin in Reverie's PMU table, so the request
+/// programs a real PMU notification on every host in the table.
+const PERF_RCBS: u64 = 30_000;
+
+/// Requests a precise timer event in the callback for an
+/// `UNBLOCK_THEN_GETPID_FD` marker, then injects the unblock and a `getpid`,
+/// which holds the pending SIGUSR1. Its signal callback suppresses SIGUSR1.
+#[derive(Clone, Copy, Debug, Default)]
+struct TimerThenHeldSignal;
+
+#[reverie::tool]
+impl Tool for TimerThenHeldSignal {
+    type GlobalState = Log;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        match syscall {
+            Syscall::Write(write) if write.fd() == UNBLOCK_THEN_GETPID_FD && write.len() == 0 => {
+                guest
+                    .set_timer_precise(TimerSchedule::Rcbs(PERF_RCBS))
+                    .unwrap();
+                let set = write.buf().and_then(|buf| Addr::from_raw(buf.as_raw()));
+                let _ = unblock_then_getpid(guest, set).await;
+                Ok(0)
+            }
+            other => Ok(guest.inject(other).await?),
+        }
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        Ok(if signal == Signal::SIGUSR1 {
+            None
+        } else {
+            Some(signal)
+        })
+    }
+
+    async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
+        guest.send_rpc(Report::Timer).await;
+    }
+}
+
+/// The callback for a held signal is a Tool-visible event, so it cancels a
+/// timer event that the syscall callback requested, as the signal's own
+/// delivery stop would have without the injection. The guest then runs well
+/// past the event's target; the cancelled event must not fire.
+#[test]
+fn held_signal_callback_cancels_a_timer_requested_before_it() {
+    ret_without_perf!();
+    let (output, log) = test_fn::<TimerThenHeldSignal, _>(|| unsafe {
+        SIGUSR1_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGUSR1, count_sigusr1);
+        let set = block(&[libc::SIGUSR1]);
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_tgkill,
+                libc::getpid(),
+                libc::syscall(libc::SYS_gettid),
+                libc::SIGUSR1
+            ),
+            0
+        );
+        libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_THEN_GETPID_FD,
+            &set as *const libc::sigset_t,
+            0usize,
+        );
+        do_branches(4 * PERF_RCBS);
+        println!("{}", SIGUSR1_HANDLER_CALLS.load(Ordering::Relaxed));
+    })
+    .expect("run timer-then-held-signal guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
+        "the unblock completes and SIGUSR1 interrupts the getpid, which holds it"
+    );
+    // The marker's return value is not compared
+    // (https://github.com/rrnewton/reverie/issues/892).
+    assert_eq!(stdout.trim(), "0", "SIGUSR1 suppressed by the tool");
+    assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR1]);
+    assert_eq!(
+        log.timers.load(Ordering::SeqCst),
+        0,
+        "the held signal's callback must cancel the timer event"
     );
 }
