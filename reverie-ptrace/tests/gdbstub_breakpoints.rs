@@ -57,6 +57,54 @@ impl Tool for NoopTool {
     type ThreadState = ();
 }
 
+/// Compiles `tests/fixtures/<fixture>.c` with `cc -O0 -g -no-pie` and the
+/// extra `args`, and returns the guest's path and the addresses of `symbols`.
+fn build_guest(fixture: &str, args: &[&str], symbols: &[&str]) -> (PathBuf, Vec<u64>) {
+    // Prefer the run-time CARGO_MANIFEST_DIR, which Cargo and the fbsource
+    // BUCK rule set. The compile-time value is a directory on the build
+    // host and is missing on the test host when the binary was built
+    // remotely.
+    let source = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from)
+        .join(format!("tests/fixtures/{fixture}.c"));
+    // One guest beside the test binary, compiled by each process and
+    // renamed into place, as for the trap-only parity guest.
+    let directory = std::env::current_exe()
+        .expect("locate the test binary")
+        .parent()
+        .expect("the test binary has a directory")
+        .to_path_buf();
+    let name = format!("reverie-{}", fixture.replace('_', "-"));
+    let path = directory.join(&name);
+    let staging = directory.join(format!("{name}.{}.tmp", std::process::id()));
+    // -no-pie: the symbol values below are then run-time addresses.
+    let status = std::process::Command::new("cc")
+        .args(["-O0", "-g", "-no-pie"])
+        .args(args)
+        .arg(&source)
+        .arg("-o")
+        .arg(&staging)
+        .status()
+        .unwrap_or_else(|error| panic!("invoke cc for {}: {error}", source.display()));
+    assert!(status.success(), "compile {}", source.display());
+    std::fs::rename(&staging, &path)
+        .unwrap_or_else(|error| panic!("publish {}: {error}", path.display()));
+
+    let image = std::fs::read(&path).expect("read the guest");
+    let elf = goblin::elf::Elf::parse(&image).expect("parse the guest");
+    let addresses = symbols
+        .iter()
+        .map(|name| {
+            elf.syms
+                .iter()
+                .find(|sym| elf.strtab.get_at(sym.st_name) == Some(name))
+                .unwrap_or_else(|| panic!("the guest has no symbol {name}"))
+                .st_value
+        })
+        .collect();
+    (path, addresses)
+}
+
 /// The guest and the addresses of its two breakpoint sites.
 struct Guest {
     path: PathBuf,
@@ -68,53 +116,41 @@ struct Guest {
 
 fn guest() -> &'static Guest {
     static GUEST: LazyLock<Guest> = LazyLock::new(|| {
-        // Prefer the run-time CARGO_MANIFEST_DIR, which Cargo and the fbsource
-        // BUCK rule set. The compile-time value is a directory on the build
-        // host and is missing on the test host when the binary was built
-        // remotely.
-        let source = std::env::var_os("CARGO_MANIFEST_DIR")
-            .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from)
-            .join("tests/fixtures/gdbstub_adjacent_breakpoints.c");
-        // One guest beside the test binary, compiled by each process and
-        // renamed into place, as for the trap-only parity guest.
-        let directory = std::env::current_exe()
-            .expect("locate the test binary")
-            .parent()
-            .expect("the test binary has a directory")
-            .to_path_buf();
-        let path = directory.join("reverie-gdbstub-adjacent-breakpoints");
-        let staging = directory.join(format!(
-            "reverie-gdbstub-adjacent-breakpoints.{}.tmp",
-            std::process::id()
-        ));
-        // -no-pie: the symbol values below are then run-time addresses.
-        let status = std::process::Command::new("cc")
-            .args(["-O0", "-g", "-no-pie"])
-            .arg(&source)
-            .arg("-o")
-            .arg(&staging)
-            .status()
-            .expect("invoke cc for the adjacent-breakpoints guest");
-        assert!(status.success(), "compile {}", source.display());
-        std::fs::rename(&staging, &path).expect("publish the adjacent-breakpoints guest");
-
-        let image = std::fs::read(&path).expect("read the adjacent-breakpoints guest");
-        let elf = goblin::elf::Elf::parse(&image).expect("parse the adjacent-breakpoints guest");
-        let symbol = |name: &str| {
-            elf.syms
-                .iter()
-                .find(|sym| elf.strtab.get_at(sym.st_name) == Some(name))
-                .unwrap_or_else(|| panic!("the guest has no symbol {name}"))
-                .st_value
-        };
-        let a = symbol("reverie_bkpt_a");
-        let b = symbol("reverie_bkpt_b");
+        let (path, addresses) = build_guest(
+            "gdbstub_adjacent_breakpoints",
+            &[],
+            &["reverie_bkpt_a", "reverie_bkpt_b"],
+        );
+        let (a, b) = (addresses[0], addresses[1]);
         assert_eq!(
             b,
             a + 6,
             "the guest's breakpoint sites are not 6 bytes apart"
         );
         Guest { path, a, b }
+    });
+    &GUEST
+}
+
+/// The two-thread guest and the address of its breakpoint site, which the
+/// main thread reaches after the second thread has exited.
+struct ThreadGuest {
+    path: PathBuf,
+    /// `reverie_bkpt_main`.
+    site: u64,
+}
+
+fn thread_guest() -> &'static ThreadGuest {
+    static GUEST: LazyLock<ThreadGuest> = LazyLock::new(|| {
+        let (path, addresses) = build_guest(
+            "gdbstub_thread_breakpoint",
+            &["-pthread"],
+            &["reverie_bkpt_main"],
+        );
+        ThreadGuest {
+            path,
+            site: addresses[0],
+        }
     });
     &GUEST
 }
@@ -267,9 +303,19 @@ fn assert_exited_zero(reply: &str, context: &str) {
     );
 }
 
-/// Runs the guest under Reverie's GDB server, with `client` as GDB, and
-/// checks that the guest exits 0.
+/// Runs the adjacent-breakpoints guest under Reverie's GDB server, with
+/// `client` as GDB, and checks that the guest exits 0.
 async fn debug_guest<F, Fut>(name: &str, client: F)
+where
+    F: FnOnce(Remote) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    debug(&guest().path, name, client).await
+}
+
+/// Runs `path` under Reverie's GDB server, with `client` as GDB, and checks
+/// that the guest exits 0.
+async fn debug<F, Fut>(path: &Path, name: &str, client: F)
 where
     F: FnOnce(Remote) -> Fut,
     Fut: Future<Output = ()>,
@@ -279,7 +325,7 @@ where
         std::process::id()
     ));
     let _ = std::fs::remove_file(&socket);
-    let command = Command::new(&guest().path);
+    let command = Command::new(path);
     let tracer = async {
         TracerBuilder::<NoopTool>::new(command)
             .gdbserver(socket.clone())
@@ -396,6 +442,55 @@ async fn inserting_a_breakpoint_twice_is_idempotent() {
             &format!("after removing the breakpoint, code from a {restored:02x?}"),
         );
         assert_eq!(restored, original, "the guest's code at a was not restored");
+    })
+    .await;
+}
+
+/// Each thread's task keeps its own copy of the breakpoint table, copied from
+/// its parent's when the thread is created. A breakpoint removed through one
+/// thread is therefore still listed in the other's copy, although its `int3`
+/// is gone from the shared code. Inserting it again through the other thread
+/// must write the `int3` back rather than treat the stale entry as proof
+/// that the breakpoint is live; otherwise the guest runs past it.
+#[tokio::test]
+async fn reinserting_through_another_thread_writes_the_breakpoint_back() {
+    let ThreadGuest { path, site } = thread_guest();
+    let site = *site;
+    debug(path, "threads", |mut remote| async move {
+        let pid = remote.pid;
+        let main = remote.thread.clone();
+        remote.insert(site).await;
+
+        // The stop for the second thread's creation. Both threads' tables now
+        // list the breakpoint.
+        let stop = remote.resume().await;
+        let created = stop
+            .strip_prefix("T05create:")
+            .and_then(|rest| rest.split(';').next())
+            .unwrap_or_else(|| panic!("expected a thread-creation stop, got {stop:?}"))
+            .to_owned();
+        assert_ne!(created, main, "the creation stop names the main thread");
+
+        // Remove the breakpoint through the second thread and insert it
+        // again through the main thread, whose table still lists it.
+        assert_eq!(remote.request(&format!("Hg{created}")).await, "OK");
+        remote.remove(site).await;
+        assert_eq!(guest_bytes(pid, site, 1), [0x0f]);
+        assert_eq!(remote.request(&format!("Hg{main}")).await, "OK");
+        remote.insert(site).await;
+        let reinserted = guest_bytes(pid, site, 1)[0];
+
+        let stop = remote.resume().await;
+        assert!(
+            stop.starts_with("T05swbreak:"),
+            "the main thread did not stop at the breakpoint inserted again; \
+             the byte there was {reinserted:#04x}: {stop:?}"
+        );
+        assert_eq!(stop_rip(&stop), site, "stopped away from the breakpoint");
+        assert_eq!(reinserted, 0xcc);
+
+        remote.remove(site).await;
+        assert_exited_zero(&remote.resume().await, "after removing the breakpoint");
     })
     .await;
 }

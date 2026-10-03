@@ -11341,18 +11341,22 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     async fn add_breakpoint(&mut self, addr: u64) -> Result<(), TraceError> {
-        // `Z0` must be idempotent (GDB remote protocol, "Z0"). Inserting again
-        // would save the int3 as the original byte, so a later `z0` would
-        // leave the breakpoint in the tracee for good.
-        if self.breakpoints.contains_key(&addr) {
-            return Ok(());
-        }
         if let Some(bkpt_addr) = AddrMut::from_raw(addr as usize) {
             let mut task = self.assume_stopped();
             // The word read here can include the int3 of another live
             // breakpoint up to 7 bytes later. That is harmless: only the
             // lowest byte, this breakpoint's own, is ever restored.
             let saved_insn: u64 = task.read_value(bkpt_addr)?;
+            // `Z0` must be idempotent (GDB remote protocol, "Z0"). Inserting again
+            // would save the int3 as the original byte, so a later `z0` would
+            // leave the breakpoint in the tracee for good. Each thread keeps
+            // its own copy of `breakpoints` (see the field), so an entry here
+            // can be stale: another thread may have removed the breakpoint.
+            // Trust the entry only while the int3 is still in memory;
+            // otherwise insert again, replacing the stale entry.
+            if self.breakpoints.contains_key(&addr) && saved_insn & 0xff == 0xcc {
+                return Ok(());
+            }
             task.write_value(bkpt_addr, &breakpoint_inserted(saved_insn))?;
             self.breakpoints.insert(addr, saved_insn);
         }
