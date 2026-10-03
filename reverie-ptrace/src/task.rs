@@ -3071,7 +3071,10 @@ pub struct TracedTask<L: Tool> {
 
     /// Whether `signal_callback_guest_ret` gave the guest `-EINTR` in place
     /// of its `-ERESTART_RESTARTBLOCK` during the running
-    /// `Tool::handle_signal_event` callback.
+    /// `Tool::handle_signal_event` callback. `Guest::set_regs` leaves it set:
+    /// a Tool that writes back the registers it read copies that `-EINTR`,
+    /// and a later injection's restore then sees `-EINTR`, not the guest's
+    /// `-ERESTART_RESTARTBLOCK`.
     signal_callback_restart_block_eintr: bool,
 
     /// Whether the running `Tool::handle_signal_event` callback reports a
@@ -6501,17 +6504,19 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Puts back the return register a signal callback's latest injection
     /// left in place of the `-EINTR` that `signal_callback_guest_ret` gave
     /// the guest for its `-ERESTART_RESTARTBLOCK`, whatever signal the
-    /// callback resumes with. A Tool's own register write after the
-    /// injection clears `restart_block_eintr` (`Guest::set_regs`) and is
-    /// kept.
+    /// callback resumes with. A Tool's own register write after the latest
+    /// injection clears `injection_ret` (`Guest::set_regs`) and is kept; an
+    /// injection after such a write records its own return again. The guest
+    /// thus resumes with whichever of the two came last, as on main.
     ///
     /// When no handler is delivered at the resume, `-EINTR` is not what the
     /// guest's syscall would return: untraced Linux would restart it through
     /// the guest's own restart block, which the injection replaced, so
     /// Reverie cannot restart it. The kernel decides whether a handler is
     /// delivered at the resume, from dispositions that another thread can
-    /// change after Reverie reads them, and so can a process that shares them
-    /// without being traced (`CLONE_SIGHAND` with `CLONE_UNTRACED`), which
+    /// change after any read Reverie could make, and so can a process that
+    /// shares them without being traced (`CLONE_SIGHAND` with
+    /// `CLONE_UNTRACED`), which
     /// procfs and `kcmp` cannot rule out: such a process can make itself
     /// uninspectable, or create another and exit while procfs is read. So
     /// the guest resumes with the injection's return register, as before
@@ -12218,8 +12223,9 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         // after it replaced the guest's restart block
         // (`keep_injection_ret_for_replaced_restart_block`) nor when the
         // guest's mask blocks the resumed signal
-        // (`keep_injection_ret_for_requeue`).
-        self.signal_callback_restart_block_eintr = false;
+        // (`keep_injection_ret_for_requeue`), until it injects again.
+        // `signal_callback_restart_block_eintr` stays set, so the return of
+        // an injection after this write is put back.
         self.signal_callback_injection_ret = None;
         Ok(())
     }
