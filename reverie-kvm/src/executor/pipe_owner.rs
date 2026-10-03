@@ -125,7 +125,7 @@ pub(super) fn fcntl(
             }
             Some((1, pid))
         }
-        libc::F_SETOWN_EX => {
+        LINUX_F_SETOWN_EX => {
             let mut bytes = [0; 8];
             if !owner_pointer_valid(argument) || memory.user().read(argument, &mut bytes).is_err() {
                 return negative_errno(libc::EFAULT);
@@ -179,7 +179,7 @@ pub(super) fn fcntl(
     }
     match command {
         libc::F_GETOWN => i64::from(configuration.owner_pid),
-        libc::F_GETOWN_EX => {
+        LINUX_F_GETOWN_EX => {
             let mut bytes = [0; 8];
             bytes[..4].copy_from_slice(&configuration.owner_type.to_ne_bytes());
             bytes[4..].copy_from_slice(&configuration.owner_pid.to_ne_bytes());
@@ -192,7 +192,7 @@ pub(super) fn fcntl(
                 0
             }
         }
-        libc::F_SETSIG | libc::F_GETSIG => {
+        LINUX_F_SETSIG | LINUX_F_GETSIG => {
             // Linux v6.1 validates the whole unsigned-long SETSIG argument;
             // v6.18 first narrows to int. Retain the exact host ABI, with no
             // classifier/accept-set. This changes only the owned pipe's signal
@@ -204,7 +204,7 @@ pub(super) fn fcntl(
             if result < 0 {
                 io_error(std::io::Error::last_os_error())
             } else {
-                if command == libc::F_SETSIG && result == 0 {
+                if command == LINUX_F_SETSIG && result == 0 {
                     configuration.phase = Phase::Managed;
                 }
                 result

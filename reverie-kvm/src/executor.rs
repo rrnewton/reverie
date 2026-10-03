@@ -132,6 +132,13 @@ const PROC_SUPER_MAGIC: libc::c_long = 0x9fa0;
 // Linux UAPI value added with executable memfd policy. Keep the literal so
 // this crate continues to build with libc versions that predate the binding.
 const LINUX_F_SEAL_EXEC: libc::c_int = 0x0020;
+// x86_64 Linux fcntl UAPI commands not exported by the libc crate. These
+// values also match reverie-syscalls/src/args/fcntl.rs:
+// https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/asm-generic/fcntl.h
+const LINUX_F_SETSIG: libc::c_int = 10;
+const LINUX_F_GETSIG: libc::c_int = 11;
+const LINUX_F_SETOWN_EX: libc::c_int = 15;
+const LINUX_F_GETOWN_EX: libc::c_int = 16;
 const SYNTHETIC_PROC_REQUIRED_SEALS: libc::c_int =
     libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 const SYNTHETIC_PROC_PRESERVED_STATUS_FLAGS: libc::c_int = libc::O_APPEND
@@ -16407,10 +16414,10 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
         // TODO-HUMAN-REVIEW(PR-910): Review bounded pipe-owner configuration dispatch.
         command @ (libc::F_SETOWN
         | libc::F_GETOWN
-        | libc::F_SETOWN_EX
-        | libc::F_GETOWN_EX
-        | libc::F_SETSIG
-        | libc::F_GETSIG) => pipe_owner::fcntl(memory, state, guest_fd, host_fd, command, args[2]),
+        | LINUX_F_SETOWN_EX
+        | LINUX_F_GETOWN_EX
+        | LINUX_F_SETSIG
+        | LINUX_F_GETSIG) => pipe_owner::fcntl(memory, state, guest_fd, host_fd, command, args[2]),
         libc::F_DUPFD => duplicate_fd_at_or_above(
             state,
             host_fd,
