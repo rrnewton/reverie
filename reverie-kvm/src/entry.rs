@@ -1844,12 +1844,16 @@ mod tests {
                 "token decremented a retired copy again"
             );
             assert_eq!(observer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            // Shared::poll wakes its registered tasks when it observes Ready.
+            // Use a non-counting waker only for this completion observation;
+            // the Pending polls above still count the retirement's actual wake.
             assert!(
                 changed
                     .as_mut()
-                    .poll(&mut Context::from_waker(&waker))
+                    .poll(&mut Context::from_waker(futures::task::noop_waker_ref()))
                     .is_ready()
             );
+            assert_eq!(observer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 
             let ordinary = gate.try_copy(None).unwrap().unwrap();
             let mut next = pin!(gate.subscribe());
@@ -1863,9 +1867,10 @@ mod tests {
             assert_eq!(observer.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
             assert!(
                 next.as_mut()
-                    .poll(&mut Context::from_waker(&waker))
+                    .poll(&mut Context::from_waker(futures::task::noop_waker_ref()))
                     .is_ready()
             );
+            assert_eq!(observer.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
         }
     }
 
