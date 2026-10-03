@@ -809,6 +809,9 @@ mod poll_descriptor_abi;
 #[path = "support/pselect_zero.rs"]
 mod pselect_zero;
 
+#[path = "support/epoll_pwait2.rs"]
+mod epoll_pwait2;
+
 #[test]
 fn file_script_exec_plain() {
     file_script_exec_control("file_script_exec_plain", "plain");
@@ -11193,6 +11196,12 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "pselect_zero::raw_abi_and_readonly_zero_timeout_match_native",
         "pselect_zero::copyout_faults_order_and_aliasing_match_native",
         "pselect_zero::captured_outputs_and_dup_aliases_are_refused",
+        "epoll_pwait2::seven_check_contract_matches_native",
+        "epoll_pwait2::empty_and_ready_eventfd_match_native",
+        "epoll_pwait2::raw_abi_and_readonly_timeout_match_native",
+        "epoll_pwait2::inaccessible_output_depends_on_readiness",
+        "epoll_pwait2::scalar_faults_preserve_bytes_and_oneshot_events",
+        "epoll_pwait2::captured_output_and_dup_registrations_are_refused",
         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
         "fchdir_consumes_low_descriptor_words_on_kvm",
         "getdents64_consumes_low_descriptor_words_on_kvm",
