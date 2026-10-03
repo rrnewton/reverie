@@ -551,9 +551,11 @@ struct VdsoTable {
 /// shares between all 64-bit processes; [`vdso_patch`] refuses a guest whose
 /// mapping has a different length. In-guest backends read their own vDSO.
 static VDSO_TABLE: LazyLock<Result<Option<VdsoTable>, String>> = LazyLock::new(|| {
-    let maps = procfs::process::Process::myself()
-        .and_then(|process| process.maps())
-        .map_err(|error| format!("cannot read this process's mappings: {error}"))?;
+    let maps = {
+        let _open = crate::launch_window::TransientOpen::begin();
+        procfs::process::Process::myself().and_then(|process| process.maps())
+    }
+    .map_err(|error| format!("cannot read this process's mappings: {error}"))?;
     let Some(vdso) = maps
         .iter()
         .find(|map| map.pathname == procfs::process::MMapPath::Vdso)

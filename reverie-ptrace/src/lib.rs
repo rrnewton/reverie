@@ -44,6 +44,7 @@ mod failure;
 mod gdbstub;
 mod in_guest;
 mod injected_syscall;
+mod launch_window;
 pub mod liteinst_census;
 mod liteinst_restart;
 mod liteinst_stats;

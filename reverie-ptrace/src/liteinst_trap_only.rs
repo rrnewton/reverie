@@ -618,6 +618,7 @@ fn proc_mem(tid: nix::unistd::Pid, write: bool) -> std::io::Result<std::fs::File
 pub(crate) fn read_site(tid: nix::unistd::Pid, site: u64) -> std::io::Result<[u8; 2]> {
     use std::os::unix::fs::FileExt;
     let mut bytes = [0u8; 2];
+    let _open = crate::launch_window::TransientOpen::begin();
     proc_mem(tid, false)?.read_exact_at(&mut bytes, site)?;
     Ok(bytes)
 }
@@ -635,6 +636,7 @@ pub(crate) fn write_site(
     skip_write: bool,
 ) -> Result<(), anyhow::Error> {
     use std::os::unix::fs::FileExt;
+    let _open = crate::launch_window::TransientOpen::begin();
     let mem = proc_mem(tid, true)?;
     if !skip_write {
         mem.write_all_at(&bytes, site)?;
@@ -687,7 +689,7 @@ pub(crate) fn site_mapping_is_patchable(
     tid: nix::unistd::Pid,
     site: u64,
 ) -> Result<Result<(), PatchDecline>, std::io::Error> {
-    let maps = std::fs::read_to_string(format!("/proc/{tid}/maps"))?;
+    let maps = crate::launch_window::read_to_string(format!("/proc/{tid}/maps"))?;
     for line in maps.lines() {
         let mut fields = line.split_whitespace();
         let (Some(range), Some(perms)) = (fields.next(), fields.next()) else {
@@ -1408,10 +1410,13 @@ mod probe_in_child {
                 "{filter}, so int 0x80 must be probed in a child, and {what}"
             ))
         };
-        let pid_max = std::fs::read_to_string("/proc/sys/kernel/pid_max")
+        let pid_max = crate::launch_window::read_to_string("/proc/sys/kernel/pid_max")
             .ok()
             .and_then(|text| text.trim().parse::<libc::pid_t>().ok())
             .unwrap_or(32768);
+        // Like a guest launch, the result pipe and the probe child's fork run
+        // with no transient open of another thread in flight.
+        let launch = crate::launch_window::Launch::begin();
         let mut fds = [0; 2];
         // SAFETY: pipe2 writes two descriptors into `fds`.
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -1459,6 +1464,7 @@ mod probe_in_child {
                 ));
             }
         }
+        drop(launch);
         let Some(child) = child else {
             return refuse(format!(
                 "no PID in {lowest}..{pid_max} was free for the probe child"
@@ -1744,7 +1750,7 @@ mod guarded_fault {
 /// Names an `ia32_emulation=` boot parameter, when present, for diagnostics.
 #[cfg(target_arch = "x86_64")]
 fn boot_parameter_note() -> String {
-    std::fs::read_to_string("/proc/cmdline")
+    crate::launch_window::read_to_string("/proc/cmdline")
         .ok()
         .and_then(|cmdline| {
             cmdline
