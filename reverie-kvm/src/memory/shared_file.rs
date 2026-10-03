@@ -197,11 +197,12 @@ impl GuestMemory {
     /// An enclosing layout transaction queues the same Arc until its allocator
     /// unlock; trait adapters still return EIO rather than fabricate EFAULT.
     pub(crate) fn capture_shared_file_error(&self, error: Error) -> Error {
+        // SharedFailure is an ownership wrapper used by unrelated failures
+        // too. Only an actual shared-file primary belongs to this terminal
+        // path; preserve the caller's wrappers and cleanup evidence below.
         if !matches!(
-            &error,
-            Error::SharedFileCapability { .. }
-                | Error::SharedFileCopy { .. }
-                | Error::SharedFailure(_)
+            error.primary(),
+            Error::SharedFileCapability { .. } | Error::SharedFileCopy { .. }
         ) {
             return error;
         }
@@ -1045,6 +1046,121 @@ mod tests {
         let mut bytes = vec![0; length];
         memory.read_raw(address, &mut bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    fn unrelated_shared_failure_keeps_its_wrapper_without_poisoning_memory() {
+        for deferred in [false, true] {
+            for file_cleanup in [false, true] {
+                let memory = fixture(1);
+                let gate = memory.entry_gate();
+                let generation = gate.generation().unwrap();
+                let original = Arc::new(Error::GuestWorkerPanic);
+                let wrapped = if file_cleanup {
+                    // A secondary file error must not replace the unrelated
+                    // primary as the reason to poison this memory domain.
+                    Arc::new(Error::WithCleanup {
+                        primary: original.clone(),
+                        cleanup: vec![Arc::new(Error::SharedFileCapability {
+                            operation: "cleanup control",
+                            reason: "secondary is not the primary",
+                        })],
+                    })
+                } else {
+                    original.clone()
+                };
+                let notifications = deferred.then(|| memory.defer_notifications());
+                let returned =
+                    memory.capture_shared_file_error(Error::SharedFailure(wrapped.clone()));
+                let Error::SharedFailure(actual) = returned else {
+                    panic!("unrelated failure ownership wrapper changed");
+                };
+                assert!(Arc::ptr_eq(&actual, &wrapped));
+                assert!(matches!(actual.primary(), Error::GuestWorkerPanic));
+                assert!(memory.deferred_failure().is_none());
+                assert!(gate.pending_failure().is_none());
+                drop(notifications);
+                assert!(memory.deferred_failure().is_none());
+                assert!(gate.pending_failure().is_none());
+                assert_eq!(gate.generation().unwrap(), generation);
+                assert_eq!(read(&memory, BASE, 4), [0; 4]);
+            }
+        }
+    }
+
+    #[test]
+    fn wrapped_shared_file_primaries_preserve_identity_and_cleanup() {
+        fn assert_cleanup(error: &Error, cause: &Arc<Error>, cleanup_cause: &Arc<Error>) {
+            match error {
+                Error::SharedFailure(inner) => assert_cleanup(inner, cause, cleanup_cause),
+                Error::WithCleanup { primary, cleanup } => {
+                    assert!(Arc::ptr_eq(primary, cause));
+                    assert_eq!(cleanup.len(), 1);
+                    assert!(Arc::ptr_eq(&cleanup[0], cleanup_cause));
+                }
+                _ => panic!("shared-file capture lost the cleanup wrapper"),
+            }
+        }
+
+        for deferred in [false, true] {
+            for file_copy in [false, true] {
+                for wrapper in 0..3 {
+                    let memory = fixture(1);
+                    let gate = memory.entry_gate();
+                    let cause = Arc::new(if file_copy {
+                        Error::SharedFileCopy {
+                            operation: "write",
+                            address: BASE,
+                            requested: 8,
+                            transferred: 2,
+                            prior_transferred: 4,
+                            source: io::Error::from_raw_os_error(libc::EFAULT),
+                        }
+                    } else {
+                        Error::SharedFileCapability {
+                            operation: "atomic scalar store",
+                            reason: "capture identity control",
+                        }
+                    });
+                    let cleanup = Arc::new(Error::GuestWorkerPanic);
+                    let make_aggregate = || Error::WithCleanup {
+                        primary: cause.clone(),
+                        cleanup: vec![cleanup.clone()],
+                    };
+                    let shared_wrapper = Arc::new(make_aggregate());
+                    let error = match wrapper {
+                        0 => Error::SharedFailure(cause.clone()),
+                        1 => Error::SharedFailure(shared_wrapper.clone()),
+                        2 => make_aggregate(),
+                        _ => unreachable!(),
+                    };
+                    let notifications = deferred.then(|| memory.defer_notifications());
+                    let returned = memory.capture_shared_file_error(error);
+                    assert!(returned.retains_primary(&cause));
+                    if wrapper == 1 {
+                        assert!(returned.retains_primary(&shared_wrapper));
+                    }
+                    if wrapper != 0 {
+                        assert_cleanup(&returned, &cause, &cleanup);
+                    }
+                    assert_eq!(gate.pending_failure().is_none(), deferred);
+                    drop(notifications);
+                    let pending = gate
+                        .pending_failure()
+                        .expect("file primary was not captured");
+                    let terminal = pending.error();
+                    assert!(terminal.retains_primary(&cause));
+                    if wrapper == 1 {
+                        assert!(terminal.retains_primary(&shared_wrapper));
+                    }
+                    if wrapper != 0 {
+                        assert_cleanup(&terminal, &cause, &cleanup);
+                    }
+                    assert_eq!(pending.causes().len(), 1);
+                    assert!(memory.deferred_failure().is_none());
+                }
+            }
+        }
     }
 
     #[test]

@@ -470,8 +470,6 @@ fn execute_basic_syscall_with_read_context(
         reverie::SignalTaskIdentity,
     )>,
 ) -> SyscallAction {
-    let owner = memory.clone();
-    let notifications = owner.defer_notifications();
     let action = execute_basic_syscall_dispatch(
         memory,
         state,
@@ -486,10 +484,9 @@ fn execute_basic_syscall_with_read_context(
         }
         action => action,
     };
-    // Direct dispatch has now released its allocation and copy guards. A
-    // Tool dispatch keeps its enclosing scope until its file-table guard also
-    // retires; an inner scope must never wake observers under that lock.
-    drop(notifications);
+    // Direct dispatch has released its allocation and copy guards. Checked
+    // dispatch separately defers notifications only while its actual shared
+    // descriptor-table guard remains held.
     if let Some(failure) = memory.entry_gate().pending_failure() {
         return SyscallAction::Failure(failure.error());
     }
@@ -6663,14 +6660,9 @@ impl ElfExecutor {
         memory: &GuestMemory,
         terminal_read: Option<&mut crate::terminal_read::ReadContext>,
     ) -> crate::Result<i64> {
-        // This scope outlives execute_checked_dispatch's descriptor-table
-        // guard. Nested memory-copy or basic-dispatch scopes retire accounting
-        // immediately but keep all notifications here until those locks drop.
-        let notifications = memory.defer_notifications();
         let result = self
             .execute_checked_dispatch(request, memory, terminal_read)
             .map_err(|error| memory.capture_shared_file_error(error));
-        drop(notifications);
         if let Some(failure) = memory.entry_gate().pending_failure() {
             return Err(failure.error());
         }
@@ -6718,6 +6710,11 @@ impl ElfExecutor {
         // through the update; potentially blocking I/O releases it after the
         // snapshot so QEMU AIO workers can continue to make progress.
         let file_table = self.file_table.clone();
+        // Tie notification deferral to the lock that requires it, rather than
+        // to the whole syscall. Register before taking the table lock so even
+        // a concurrently published first shared-file view is covered. Copies
+        // after the snapshot unlock keep their ordinary notification order.
+        let mut notifications = Some(memory.defer_notifications());
         let mut shared_files = Some(file_table.lock().expect("KVM file-table lock poisoned"));
         if let Err(error) = shared_files
             .as_ref()
@@ -6733,6 +6730,7 @@ impl ElfExecutor {
         let mutating_file_table = mutates_file_table(request.number());
         if !mutating_file_table {
             shared_files.take();
+            drop(notifications.take());
             self.state.file_retirement.drain_unlocked();
         }
         if let Some(result) = self.execute_process_action(request, memory) {
@@ -6766,6 +6764,9 @@ impl ElfExecutor {
                 .update_from_elf(&self.state)
                 .expect("clone updated KVM file table");
         }
+        // The mutating path has now updated and released its table guard.
+        // Accounting retired at each copy; callbacks may run only now.
+        drop(notifications);
         match action {
             SyscallAction::Failure(error) => Err(error),
             SyscallAction::Continue { result, segment } => {
