@@ -727,67 +727,103 @@ mod shared_file_dispatch_tests {
     }
 
     #[test]
-    fn fork_and_clone_refuse_before_ids_copyout_or_process_action() {
-        for number in [
-            libc::SYS_fork,
-            libc::SYS_vfork,
-            libc::SYS_clone,
-            libc::SYS_clone3,
+    fn shared_file_fork_and_non_vm_clone_admit_exact_private_snapshot() {
+        for number in [libc::SYS_fork, libc::SYS_clone, libc::SYS_clone3] {
+            let mut f = Fixture::new();
+            let fd = f.open(true);
+            let shared = f.shared(fd, 0, PAGE_SIZE, true);
+            let private = f.private();
+            f.memory.write_raw(private, b"parent").unwrap();
+            let args = if number == libc::SYS_clone {
+                [libc::SIGCHLD as u64, 0, 0, 0, 0, 0]
+            } else if number == libc::SYS_clone3 {
+                let mut raw = [0_u8; 88];
+                raw[32..40].copy_from_slice(&(libc::SIGCHLD as u64).to_ne_bytes());
+                f.memory.write_raw(0x100, &raw).unwrap();
+                [0x100, 88, 0, 0, 0, 0]
+            } else { [0; 6] };
+            let mut executor = f.take_executor();
+            let before = layout(&f.memory, &executor.state);
+            let next = executor.next_pid.load(Ordering::SeqCst);
+            assert_eq!(executor.execute_checked(&SyscallRequest::new(number as u64, args), &f.memory).unwrap(), i64::from(next));
+            assert_eq!(executor.next_pid.load(Ordering::SeqCst), next + 1);
+            match executor.take_process_action() {
+                Some(ProcessAction::Fork { child_pid, share_address_space, parent_tid, child_tid, .. }) => {
+                    assert_eq!(child_pid, next);
+                    assert!(!share_address_space);
+                    assert_eq!((parent_tid, child_tid), (None, None));
+                }
+                _ => panic!("non-VM fork must publish exactly one process action"),
+            }
+            assert_eq!(layout(&f.memory, &executor.state), before);
+            let snapshot = f.memory.snapshot().unwrap();
+            snapshot.write_raw(private, b"child!").unwrap();
+            snapshot.write_raw(shared + 17, b"shared").unwrap();
+            let mut bytes = [0; 6];
+            f.memory.read_raw(private, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"parent");
+            f.memory.read_raw(shared + 17, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"shared");
+            let file = std::fs::read(&f.path).unwrap();
+            assert_eq!(&file[PAGE_SIZE as usize + 17..PAGE_SIZE as usize + 23], b"shared");
+            assert_eq!(&file[..PAGE_SIZE as usize], &f.expected[..PAGE_SIZE as usize]);
+            assert!(f.memory.entry_gate().pending_failure().is_none());
+            assert!(snapshot.entry_gate().pending_failure().is_none());
+        }
+    }
+
+    #[test]
+    fn shared_file_vm_and_thread_clone_refuse_before_ids_copyout_or_process_action() {
+        for (number, flags) in [
+            (libc::SYS_vfork, 0),
+            (libc::SYS_clone, libc::CLONE_VM),
+            (libc::SYS_clone, libc::CLONE_VM | libc::CLONE_THREAD | libc::CLONE_SIGHAND),
+            (libc::SYS_clone3, libc::CLONE_VM),
+            (libc::SYS_clone3, libc::CLONE_VM | libc::CLONE_THREAD | libc::CLONE_SIGHAND),
         ] {
             let mut f = Fixture::new();
             let fd = f.open(true);
             f.shared(fd, 0, 0, true);
+            let args = if number == libc::SYS_clone {
+                [(flags | libc::CLONE_PARENT_SETTID | libc::CLONE_CHILD_SETTID) as u64,
+                    0, 0x100, 0x108, 0, 0]
+            } else if number == libc::SYS_clone3 {
+                let mut raw = [0_u8; 88];
+                raw[..8].copy_from_slice(&(flags as u64).to_ne_bytes());
+                f.memory.write_raw(0x100, &raw).unwrap();
+                [0x100, 88, 0, 0, 0, 0]
+            } else { [0; 6] };
             let mut executor = f.take_executor();
             let before = layout(&f.memory, &executor.state);
             let next = executor.next_pid.load(Ordering::SeqCst);
-            assert!(
-                executor
-                    .state
-                    .task_lifecycle
-                    .lock()
-                    .unwrap()
-                    .get(next)
-                    .is_none()
-            );
-            let args = if number == libc::SYS_clone {
-                [
-                    (libc::SIGCHLD | libc::CLONE_PARENT_SETTID | libc::CLONE_CHILD_SETTID) as u64,
-                    0,
-                    0x100,
-                    0x108,
-                    0,
-                    0,
-                ]
-            } else if number == libc::SYS_clone3 {
-                // The capability must precede importing or creating a child;
-                // no malformed-pointer errno can conceal an allocated ID.
-                [u64::MAX, 88, 0, 0, 0, 0]
-            } else {
-                [0; 6]
-            };
-            let error = executor
-                .execute_checked(&SyscallRequest::new(number as u64, args), &f.memory)
-                .unwrap_err();
-            capability(
-                &error,
-                "fork/clone",
-                "ordinary shared-file views require one vCPU in this address space",
-            );
+            assert!(executor.state.task_lifecycle.lock().unwrap().get(next).is_none());
+            let error = executor.execute_checked(&SyscallRequest::new(number as u64, args), &f.memory).unwrap_err();
+            capability(&error, "CLONE_VM/thread creation",
+                "ordinary shared-file views require one vCPU per address space");
             assert_eq!(executor.next_pid.load(Ordering::SeqCst), next);
             assert!(executor.take_process_action().is_none());
             assert!(executor.pending_processes.is_empty());
-            assert!(
-                executor
-                    .state
-                    .task_lifecycle
-                    .lock()
-                    .unwrap()
-                    .get(next)
-                    .is_none()
-            );
+            assert!(executor.state.task_lifecycle.lock().unwrap().get(next).is_none());
             assert_eq!(layout(&f.memory, &executor.state), before);
             assert_eq!(std::fs::read(&f.path).unwrap(), f.expected);
         }
+    }
+
+    #[test]
+    fn shared_file_clone3_invalid_copyin_has_no_process_effect() {
+        let mut f = Fixture::new();
+        let fd = f.open(true);
+        f.shared(fd, 0, 0, true);
+        let mut executor = f.take_executor();
+        let before = layout(&f.memory, &executor.state);
+        let next = executor.next_pid.load(Ordering::SeqCst);
+        assert_eq!(executor.execute_checked(&SyscallRequest::new(libc::SYS_clone3 as u64,
+            [u64::MAX, 88, 0, 0, 0, 0]), &f.memory).unwrap(), negative_errno(libc::EFAULT));
+        assert_eq!(executor.next_pid.load(Ordering::SeqCst), next);
+        assert!(executor.take_process_action().is_none());
+        assert!(executor.pending_processes.is_empty());
+        assert_eq!(layout(&f.memory, &executor.state), before);
+        assert_eq!(std::fs::read(&f.path).unwrap(), f.expected);
     }
 
     #[test]
