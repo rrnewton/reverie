@@ -1591,6 +1591,9 @@ enum LiteinstTrap {
 }
 
 #[cfg(target_arch = "x86_64")]
+#[path = "task/followed_executable_source.rs"]
+mod followed_executable_source;
+#[cfg(target_arch = "x86_64")]
 #[path = "task/followed_poll.rs"]
 mod followed_poll;
 #[cfg(target_arch = "x86_64")]
@@ -11609,6 +11612,27 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         {
             let _ = (original, action);
             Err(reverie::syscalls::NativeUserStoreRefusal::Evidence(
+                reverie::syscalls::NativeUserReadRefusal::UnsupportedPlatform,
+            ))
+        }
+    }
+
+    async fn stage_followed_executable_source(
+        &mut self,
+        address: usize,
+        length: usize,
+        retention: Box<dyn Send + Sync>,
+        armer: Box<dyn reverie::syscalls::ExecutableSourceArmer>,
+    ) -> Result<Vec<u8>, reverie::syscalls::NativeUserReadError> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.stage_executable_source(address, length, retention, armer)
+                .await
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (address, length, retention, armer);
+            Err(reverie::syscalls::NativeUserReadError::Refused(
                 reverie::syscalls::NativeUserReadRefusal::UnsupportedPlatform,
             ))
         }

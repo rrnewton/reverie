@@ -2543,3 +2543,7 @@ mod original_poll_tests;
 #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
 #[path = "original_poll_join_tests.rs"]
 pub(super) mod original_poll_join_tests;
+
+#[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+#[path = "executable_source_tests.rs"]
+pub(super) mod executable_tests;

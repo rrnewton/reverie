@@ -27,6 +27,8 @@ mod source_mutation_tests;
 mod native_read;
 
 #[cfg(all(target_arch = "x86_64", feature = "notifier"))]
+pub use native_read::FollowedExecutableSourceReadPlan;
+#[cfg(all(target_arch = "x86_64", feature = "notifier"))]
 pub use native_read::FollowedSourceReadPlan;
 #[cfg(all(target_arch = "x86_64", feature = "notifier"))]
 pub use native_read::NativeSourceReadPlan;

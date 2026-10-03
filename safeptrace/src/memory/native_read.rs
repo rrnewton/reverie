@@ -36,6 +36,8 @@ use super::native_pkru_layout;
 mod mm_bound;
 
 #[cfg(feature = "notifier")]
+pub use mm_bound::FollowedExecutableSourceReadPlan;
+#[cfg(feature = "notifier")]
 pub use mm_bound::FollowedSourceReadPlan;
 #[cfg(feature = "notifier")]
 pub use mm_bound::NativeSourceReadPlan;

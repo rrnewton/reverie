@@ -375,6 +375,23 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         ))
     }
 
+    /// Stage an executable-backed range under the actual whole followed hold.
+    /// Positive original-ptracer ARM precedes native PRSTATUS/XSTATE capture;
+    /// collection and read run on the registered worker through true join.
+    /// The armer cannot issue backend or backing authority through safe code.
+    async fn stage_followed_executable_source(
+        &mut self,
+        address: usize,
+        length: usize,
+        retention: Box<dyn Send + Sync>,
+        armer: Box<dyn crate::syscalls::ExecutableSourceArmer>,
+    ) -> Result<Vec<u8>, crate::syscalls::NativeUserReadError> {
+        let _ = (address, length, retention, armer);
+        Err(crate::syscalls::NativeUserReadError::Refused(
+            crate::syscalls::NativeUserReadRefusal::UnsupportedBackend,
+        ))
+    }
+
     /// Stage a bounded, permission-checked source under physical exclusion of
     /// every authenticated followed task, through the original worker's join.
     /// Busy/incomplete native histories refuse; this never interrupts tasks.
@@ -1118,6 +1135,18 @@ where
     ) -> Result<Vec<u8>, crate::syscalls::NativeUserReadError> {
         self.inner
             .read_native_source(address, length, retention)
+            .await
+    }
+
+    async fn stage_followed_executable_source(
+        &mut self,
+        address: usize,
+        length: usize,
+        retention: Box<dyn Send + Sync>,
+        armer: Box<dyn crate::syscalls::ExecutableSourceArmer>,
+    ) -> Result<Vec<u8>, crate::syscalls::NativeUserReadError> {
+        self.inner
+            .stage_followed_executable_source(address, length, retention, armer)
             .await
     }
 

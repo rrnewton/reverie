@@ -15,6 +15,12 @@ use std::ffi::CStr;
 
 use super::*;
 
+#[cfg(feature = "notifier")]
+#[path = "native_executable_read.rs"]
+mod executable;
+#[cfg(feature = "notifier")]
+pub use executable::FollowedExecutableSourceReadPlan;
+
 /// A permission-checked staged read under a retained physical control hold.
 /// The backend must independently retain the WHOLE followed cohort through
 /// true OS join. This type is not a source/publication certificate.

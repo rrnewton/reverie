@@ -7,6 +7,7 @@
  */
 
 mod addr;
+mod executable_source;
 mod local;
 
 use core::mem;
@@ -17,6 +18,7 @@ pub use addr::Addr;
 pub use addr::AddrMut;
 pub use addr::AddrSlice;
 pub use addr::AddrSliceMut;
+pub use executable_source::*;
 pub use local::LocalMemory;
 use syscalls::Errno;
 

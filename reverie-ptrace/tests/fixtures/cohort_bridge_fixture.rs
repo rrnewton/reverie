@@ -63,6 +63,7 @@ fn main() {
         Some("startup-deaths") => sequential_startup_deaths(),
         Some("startup-final") => sequential_startup_final(),
         Some("source-hold-688") => followed_source_hold(),
+        Some("executable-source-754") => executable_source(),
         Some("peer-sendto-root") => followed_peer_sendto(false, false),
         Some("peer-sendto-child") => followed_peer_sendto(true, false),
         Some("peer-sendto-blocked-root") => followed_peer_sendto(false, true),
@@ -712,6 +713,64 @@ fn followed_original_poll_join(mixed: bool) {
             unsafe {
                 libc::syscall(libc::SYS_futex, tid.as_ptr(), libc::FUTEX_WAIT, current, 0);
             }
+        }
+    }
+}
+
+fn executable_source() {
+    use std::sync::atomic::AtomicI32;
+    use std::sync::atomic::Ordering;
+    #[repr(align(4096))]
+    struct Source([u8; 8]);
+    static ROOT: Source = Source(*b"root-754");
+    static CHILD: Source = Source(*b"child754");
+    extern "C" fn child(_: *mut libc::c_void) -> libc::c_int {
+        let source = &CHILD;
+        let count =
+            unsafe { libc::syscall(libc::SYS_write, 754, source.0.as_ptr(), source.0.len()) };
+        unsafe {
+            libc::syscall(libc::SYS_exit, if count == 8 { 0 } else { 82 });
+        }
+        unreachable!("SYS_exit returned");
+    }
+    // Reuse the existing raw followed-thread fixture's finite stack and
+    // original clear-child-tid/futex join. No TLS destructor/madvise shortcut.
+    let mut stack = vec![0u128; 16384];
+    let tid = AtomicI32::new(0);
+    let top = unsafe { stack.as_mut_ptr().add(stack.len()) }.cast();
+    let flags = libc::CLONE_VM
+        | libc::CLONE_FS
+        | libc::CLONE_FILES
+        | libc::CLONE_SIGHAND
+        | libc::CLONE_THREAD
+        | libc::CLONE_SYSVSEM
+        | libc::CLONE_PARENT_SETTID
+        | libc::CLONE_CHILD_CLEARTID;
+    assert!(
+        unsafe {
+            libc::clone(
+                child,
+                top,
+                flags,
+                std::ptr::null_mut::<libc::c_void>(),
+                tid.as_ptr(),
+                std::ptr::null_mut::<libc::c_void>(),
+                tid.as_ptr(),
+            )
+        } > 0
+    );
+    let source = &ROOT;
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_write, 754, source.0.as_ptr(), source.0.len()) },
+        8
+    );
+    loop {
+        let current = tid.load(Ordering::Acquire);
+        if current == 0 {
+            break;
+        }
+        unsafe {
+            libc::syscall(libc::SYS_futex, tid.as_ptr(), libc::FUTEX_WAIT, current, 0);
         }
     }
 }
