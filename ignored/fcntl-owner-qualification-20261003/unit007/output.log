@@ -1,0 +1,6 @@
+
+running 1 test
+test executor::tests::fcntl_owner_threads_and_exec_preserve_creator_and_cloexec_filtering ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1129 filtered out; finished in 0.00s
+

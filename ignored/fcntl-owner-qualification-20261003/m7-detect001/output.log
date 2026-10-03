@@ -1,0 +1,15 @@
+
+running 1 test
+test executor::tests::fcntl_owner_copyout_notifies_after_releasing_configuration_lock ... 
+thread 'executor::tests::fcntl_owner_copyout_notifies_after_releasing_configuration_lock' (1924667) panicked at reverie-kvm/src/executor/pipe_owner_tests.rs:400:13:
+pipe owner lock held during guest copy notification
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    executor::tests::fcntl_owner_copyout_notifies_after_releasing_configuration_lock
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1129 filtered out; finished in 0.00s
+

@@ -1,0 +1,17 @@
+
+running 1 test
+test executor::tests::fcntl_owner_failed_export_poison_is_shared_but_managed_export_delivers_nothing ... 
+thread 'executor::tests::fcntl_owner_failed_export_poison_is_shared_but_managed_export_delivers_nothing' (1551257) panicked at reverie-kvm/src/executor/pipe_owner_tests.rs:726:5:
+assertion `left == right` failed
+  left: 1
+ right: -38
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    executor::tests::fcntl_owner_failed_export_poison_is_shared_but_managed_export_delivers_nothing
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1129 filtered out; finished in 0.00s
+

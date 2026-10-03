@@ -1,0 +1,17 @@
+
+running 1 test
+test executor::tests::fcntl_owner_getown_ex_copyout_matches_complete_native_arenas ... 
+thread 'executor::tests::fcntl_owner_getown_ex_copyout_matches_complete_native_arenas' (1836370) panicked at reverie-kvm/src/executor/pipe_owner_tests.rs:352:9:
+assertion `left == right` failed
+  left: 0
+ right: -14
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    executor::tests::fcntl_owner_getown_ex_copyout_matches_complete_native_arenas
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1129 filtered out; finished in 0.00s
+

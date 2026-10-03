@@ -1,0 +1,370 @@
+{
+  "phase": "build002",
+  "command": [
+    "with-proxy",
+    "cargo",
+    "test",
+    "--locked",
+    "-j8",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "--test",
+    "static_elf",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-fcntl-owner-20261003",
+  "source_head": "43be956c5d0e837a72586595ae3eb6035cd605fc",
+  "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "index_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "binding_sha256": "ac701f318ae4d1893f6db28678fa8bcae76cb651a41739caeb73e842cb969f51",
+  "slot_generation": 1,
+  "slot_record": {
+    "slot": "kvm-fcntl-owner-20261003",
+    "generation": 1,
+    "agent": "native-kvm-fcntl-owner-01a0d5c2",
+    "owner": {
+      "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+      "cgroup_path": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1571522-i1558401.scope",
+      "host_id": "82445a5655f849bd81550a91f9cb5260",
+      "pid": 1571522,
+      "start_ticks": 730624
+    },
+    "checkout": "worktrees/slots/kvm-fcntl-owner-20261003"
+  },
+  "authorization_sha256": "8b5573dd3bb002185da1f6da06e6aeaa9eed146657839f957d1be010e8431c79",
+  "grant_reference": "root dispatch: PR910 created/read back; next bounded sequence metadata, lock, inventories, old-production control, restored nine units/three integrations/device refusal; 2026-10-03",
+  "owner": {
+    "pid": 1571522,
+    "state": "S",
+    "ppid": 1570869,
+    "pgid": 1570869,
+    "sid": 1569709,
+    "start": 730624
+  },
+  "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+  "start_free_bytes": 1731445907456,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice_minimum": 10,
+  "seconds_bound": 2400.0,
+  "inherited_rlimits": {
+    "RLIMIT_FSIZE": [
+      -1,
+      -1
+    ],
+    "RLIMIT_NOFILE": [
+      524288,
+      524288
+    ],
+    "RLIMIT_NPROC": [
+      3091463,
+      3091463
+    ]
+  },
+  "started_et": "2026-10-03 02:02:36 PM ET",
+  "environment_bindings": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-fcntl-owner-20261003/target/fcntl-owner-001",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "XDG_CACHE_HOME": "/tmp/kvm-fcntl-owner-qualification-plan-20261003-1vedhftn/script-cache",
+    "TMPDIR": "/tmp/kvm-fcntl-owner-qualification-plan-20261003-1vedhftn/tmp",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "child": {
+    "pid": 3137106,
+    "state": "R",
+    "ppid": 3135178,
+    "pgid": 3137106,
+    "sid": 3137106,
+    "start": 58002483
+  },
+  "rc": 101,
+  "child_rc": 101,
+  "stop_reason": null,
+  "source_head_end": "43be956c5d0e837a72586595ae3eb6035cd605fc",
+  "wall_seconds": 27.846927767968737,
+  "child_user_cpu_seconds": 80.621421,
+  "child_system_cpu_seconds": 16.200944999999997,
+  "minimum_free_bytes": 1731445907456,
+  "end_free_bytes": 1732441821184,
+  "output_bytes": 279775,
+  "output_sha256": "b2ced1c4d2d17c4164de9793aa7f4bcbae7aa0cb72719bfbd6599cc69d10af7e",
+  "observed_process_generations": [
+    {
+      "pid": 3137106,
+      "state": "Z",
+      "ppid": 3135178,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002483
+    },
+    {
+      "pid": 3138297,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002512
+    },
+    {
+      "pid": 3138845,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002525
+    },
+    {
+      "pid": 3140308,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002570
+    },
+    {
+      "pid": 3140743,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002587
+    },
+    {
+      "pid": 3142897,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002627
+    },
+    {
+      "pid": 3143287,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002649
+    },
+    {
+      "pid": 3145096,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002720
+    },
+    {
+      "pid": 3146004,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002759
+    },
+    {
+      "pid": 3146132,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002766
+    },
+    {
+      "pid": 3146145,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002767
+    },
+    {
+      "pid": 3146228,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002772
+    },
+    {
+      "pid": 3146274,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002774
+    },
+    {
+      "pid": 3146348,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002783
+    },
+    {
+      "pid": 3147599,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002823
+    },
+    {
+      "pid": 3151800,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002888
+    },
+    {
+      "pid": 3152026,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58002902
+    },
+    {
+      "pid": 3155138,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003006
+    },
+    {
+      "pid": 3155875,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003022
+    },
+    {
+      "pid": 3157280,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003064
+    },
+    {
+      "pid": 3157441,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003068
+    },
+    {
+      "pid": 3157514,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003070
+    },
+    {
+      "pid": 3157563,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003071
+    },
+    {
+      "pid": 3157567,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003071
+    },
+    {
+      "pid": 3160944,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003124
+    },
+    {
+      "pid": 3161195,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003131
+    },
+    {
+      "pid": 3163476,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003145
+    },
+    {
+      "pid": 3166029,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003180
+    },
+    {
+      "pid": 3170943,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003240
+    },
+    {
+      "pid": 3174564,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003349
+    },
+    {
+      "pid": 3180966,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003554
+    },
+    {
+      "pid": 3184446,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003696
+    },
+    {
+      "pid": 3184885,
+      "state": "S",
+      "ppid": 3137106,
+      "pgid": 3137106,
+      "sid": 3137106,
+      "start": 58003716
+    }
+  ],
+  "remaining_processes": []
+}

@@ -1,0 +1,138 @@
+{
+  "phase": "restored-build001",
+  "command": [
+    "with-proxy",
+    "cargo",
+    "test",
+    "--locked",
+    "-j8",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "--test",
+    "static_elf",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-fcntl-owner-20261003",
+  "source_head": "208a9c834e0c51f4a6dc6e265a6abc01116b389e",
+  "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "index_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "binding_sha256": "1921151995c8ac80c7eea3dbae779f8c6c8ab2fb90e325be84e4284b492f0769",
+  "slot_generation": 1,
+  "slot_record": {
+    "slot": "kvm-fcntl-owner-20261003",
+    "generation": 1,
+    "agent": "native-kvm-fcntl-owner-01a0d5c2",
+    "owner": {
+      "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+      "cgroup_path": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1571522-i1558401.scope",
+      "host_id": "82445a5655f849bd81550a91f9cb5260",
+      "pid": 1571522,
+      "start_ticks": 730624
+    },
+    "checkout": "worktrees/slots/kvm-fcntl-owner-20261003"
+  },
+  "authorization_sha256": "0dc0b955930ea50d355aca53e583df66f73ec19f9ceaed1ada32be167eb12e4b",
+  "grant_reference": "root dispatch: PR910 created/read back; next bounded sequence metadata, lock, inventories, old-production control, restored nine units/three integrations/device refusal; 2026-10-03; root narrow compiler repair and resume grant at208a",
+  "owner": {
+    "pid": 1571522,
+    "state": "S",
+    "ppid": 1570869,
+    "pgid": 1570869,
+    "sid": 1569709,
+    "start": 730624
+  },
+  "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+  "start_free_bytes": 1726843858944,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice_minimum": 10,
+  "seconds_bound": 2400.0,
+  "inherited_rlimits": {
+    "RLIMIT_FSIZE": [
+      -1,
+      -1
+    ],
+    "RLIMIT_NOFILE": [
+      524288,
+      524288
+    ],
+    "RLIMIT_NPROC": [
+      3091463,
+      3091463
+    ]
+  },
+  "started_et": "2026-10-03 02:08:47 PM ET",
+  "environment_bindings": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-fcntl-owner-20261003/target/fcntl-owner-001",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "XDG_CACHE_HOME": "/tmp/kvm-fcntl-owner-qualification-plan-20261003-1vedhftn/script-cache",
+    "TMPDIR": "/tmp/kvm-fcntl-owner-qualification-plan-20261003-1vedhftn/tmp",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "child": {
+    "pid": 237845,
+    "state": "R",
+    "ppid": 237424,
+    "pgid": 237845,
+    "sid": 237845,
+    "start": 58039598
+  },
+  "rc": 0,
+  "child_rc": 0,
+  "stop_reason": null,
+  "source_head_end": "208a9c834e0c51f4a6dc6e265a6abc01116b389e",
+  "wall_seconds": 28.36596482002642,
+  "child_user_cpu_seconds": 74.004057,
+  "child_system_cpu_seconds": 7.495901,
+  "minimum_free_bytes": 1726255988736,
+  "end_free_bytes": 1726255988736,
+  "output_bytes": 127864,
+  "output_sha256": "6a269c515118ac57fe92abaff90d41de2550ffcaaf068d4cf848afea7c4bbcbc",
+  "observed_process_generations": [
+    {
+      "pid": 237845,
+      "state": "Z",
+      "ppid": 237424,
+      "pgid": 237845,
+      "sid": 237845,
+      "start": 58039598
+    },
+    {
+      "pid": 237985,
+      "state": "S",
+      "ppid": 237845,
+      "pgid": 237845,
+      "sid": 237845,
+      "start": 58039609
+    },
+    {
+      "pid": 237989,
+      "state": "S",
+      "ppid": 237845,
+      "pgid": 237845,
+      "sid": 237845,
+      "start": 58039609
+    },
+    {
+      "pid": 244230,
+      "state": "S",
+      "ppid": 237845,
+      "pgid": 237845,
+      "sid": 237845,
+      "start": 58040146
+    }
+  ],
+  "remaining_processes": []
+}

@@ -1,0 +1,120 @@
+{
+  "phase": "m1-build001",
+  "command": [
+    "with-proxy",
+    "cargo",
+    "test",
+    "--locked",
+    "-j8",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-fcntl-owner-20261003",
+  "source_head": "ba413a6cc8b50832d49e4fa8624b14a7bdb6cc52",
+  "source_diff_sha256": "d5b3cd45bc07e288d9ca03c5d694f0a02f3a1d9c85a4957c2186d1f9be598e9c",
+  "index_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "binding_sha256": "47f66288d773b4ee2c451baaddf9ed57c26250b88871908d38543cad38650cc3",
+  "slot_generation": 1,
+  "slot_record": {
+    "slot": "kvm-fcntl-owner-20261003",
+    "generation": 1,
+    "agent": "native-kvm-fcntl-owner-01a0d5c2",
+    "owner": {
+      "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+      "cgroup_path": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1571522-i1558401.scope",
+      "host_id": "82445a5655f849bd81550a91f9cb5260",
+      "pid": 1571522,
+      "start_ticks": 730624
+    },
+    "checkout": "worktrees/slots/kvm-fcntl-owner-20261003"
+  },
+  "authorization_sha256": "876b556b03d6351563b3b07ece9b58706b3862fecd091492e75665afed73583e",
+  "grant_reference": "root dispatch: PR910 created/read back; next bounded sequence metadata, lock, inventories, old-production control, restored nine units/three integrations/device refusal; 2026-10-03; root narrow compiler repair and resume grant at208a; root independently verified13 focused cases, then granted full1130 library1800s, Clippy/docs2400s/fmt300s; root one-token shared-borrow repair, affected exact test and Clippy/docs/fmt, eight byte-identical production mutants and restores",
+  "owner": {
+    "pid": 1571522,
+    "state": "S",
+    "ppid": 1570869,
+    "pgid": 1570869,
+    "sid": 1569709,
+    "start": 730624
+  },
+  "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+  "start_free_bytes": 1670095810560,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice_minimum": 10,
+  "seconds_bound": 2400.0,
+  "inherited_rlimits": {
+    "RLIMIT_FSIZE": [
+      -1,
+      -1
+    ],
+    "RLIMIT_NOFILE": [
+      524288,
+      524288
+    ],
+    "RLIMIT_NPROC": [
+      3091463,
+      3091463
+    ]
+  },
+  "started_et": "2026-10-03 02:17:54 PM ET",
+  "environment_bindings": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-fcntl-owner-20261003/target/fcntl-owner-001",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "XDG_CACHE_HOME": "/tmp/kvm-fcntl-owner-qualification-plan-20261003-1vedhftn/script-cache",
+    "TMPDIR": "/tmp/kvm-fcntl-owner-qualification-plan-20261003-1vedhftn/tmp",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "child": {
+    "pid": 1291742,
+    "state": "R",
+    "ppid": 1291035,
+    "pgid": 1291742,
+    "sid": 1291742,
+    "start": 58094348
+  },
+  "rc": 0,
+  "child_rc": 0,
+  "stop_reason": null,
+  "source_head_end": "ba413a6cc8b50832d49e4fa8624b14a7bdb6cc52",
+  "wall_seconds": 24.713753281044774,
+  "child_user_cpu_seconds": 35.643756999999994,
+  "child_system_cpu_seconds": 4.636807999999999,
+  "minimum_free_bytes": 1669913276416,
+  "end_free_bytes": 1670029778944,
+  "output_bytes": 128156,
+  "output_sha256": "b71db5af67a80b1adab47382c6a823e5728a108d761f66c097faf39766d6a7fd",
+  "observed_process_generations": [
+    {
+      "pid": 1291742,
+      "state": "Z",
+      "ppid": 1291035,
+      "pgid": 1291742,
+      "sid": 1291742,
+      "start": 58094348
+    },
+    {
+      "pid": 1292044,
+      "state": "S",
+      "ppid": 1291742,
+      "pgid": 1291742,
+      "sid": 1291742,
+      "start": 58094361
+    }
+  ],
+  "remaining_processes": []
+}

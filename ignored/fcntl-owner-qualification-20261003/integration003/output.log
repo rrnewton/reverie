@@ -1,0 +1,6 @@
+
+running 1 test
+test fcntl_owner::fork_aliases_keep_configuration_and_permanent_guards ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 430 filtered out; finished in 0.42s
+
