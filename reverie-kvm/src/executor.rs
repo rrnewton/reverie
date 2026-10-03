@@ -635,7 +635,7 @@ fn execute_basic_syscall_inner(
         // AUTONOMOUS-BOT-IMPLEMENTED
         select(memory, state, args)
     } else if number == libc::SYS_pselect6 as u64 {
-        pselect6(memory, state, args)
+        pselect6(memory, state, args, capture_output)
     } else if number == libc::SYS_poll as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         poll(memory, state, args)
@@ -10194,7 +10194,12 @@ fn has_eligible_pending_signal(state: &LoadedStaticElf) -> bool {
 /// Implements one instantaneous, unmasked, one-word pselect6 readiness probe.
 /// Detcore owns retries and guest time. All other valid execution forms remain
 /// explicitly unsupported, after Linux's original argument-validation order.
-fn pselect6(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn pselect6(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     // Linux first copies the complete outer { sigmask, sigsetsize } wrapper.
     let sigmask_argument = if args[5] == 0 {
         None
@@ -10277,6 +10282,7 @@ fn pselect6(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
     const EXCEPT: libc::c_short = libc::POLLPRI | libc::POLLNVAL;
     let mut poll_fds = Vec::new();
     let mut requested = Vec::new();
+    let mut captured_alias_selected = false;
     for fd in 0..nfds {
         let bit = 1_u64 << fd;
         let membership = sets.map(|word| word & bit != 0);
@@ -10286,6 +10292,7 @@ fn pselect6(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
         let Some(host_fd) = host_fd(state, fd) else {
             return negative_errno(libc::EBADF);
         };
+        captured_alias_selected |= capture_output && output_alias(state, fd).is_some();
         let virtual_signalfd = signalfd_mask(state, fd).is_some();
         let events = if virtual_signalfd {
             if membership[0] { libc::POLLIN } else { 0 }
@@ -10299,6 +10306,13 @@ fn pselect6(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
             revents: 0,
         });
         requested.push((bit, membership, virtual_signalfd));
+    }
+    // Captured output lives in memory, not in the retained host carrier (or
+    // ambient host stdout/stderr). Its readiness is not modeled yet. Validate
+    // every selected fd first so a later absent fd still wins with EBADF, then
+    // refuse before host polling or any guest copyout, including O_PATH aliases.
+    if captured_alias_selected {
+        return negative_errno(libc::ENOSYS);
     }
     // SAFETY: poll sees only initialized host-owned storage and a zero timeout;
     // it never sees a guest pointer or changes the host signal mask.
@@ -31458,6 +31472,404 @@ mod tests {
         let mut after = vec![0; PAGE_SIZE as usize];
         memory.read_raw(0, &mut after).unwrap();
         assert_eq!(after, before);
+    }
+
+    fn pselect6_capture_memory(sets: [u64; 3]) -> GuestMemory {
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(0, &vec![0xa5; PAGE_SIZE as usize]).unwrap();
+        memory.write(0x100, &[0; 16]).unwrap();
+        for (address, word) in [0x200, 0x280, 0x300].into_iter().zip(sets) {
+            memory.write(address, &word.to_ne_bytes()).unwrap();
+        }
+        memory
+    }
+
+    // Every probe preserves capture data/identity and the entire signal state;
+    // return the whole memory image so each case checks its exact copyout effect.
+    fn pselect6_capture_probe(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        output: &mut CapturedOutput,
+        capture: bool,
+        args: [u64; 6],
+    ) -> (i64, Vec<u8>) {
+        let process_before = state.process_signals.lock().unwrap().clone();
+        let thread_before = state.thread_signals.lock().clone();
+        let files_before = state
+            .files
+            .iter()
+            .map(|(&fd, file)| (fd, file.as_raw_fd()))
+            .collect::<Vec<_>>();
+        let aliases_before = (
+            state.stdout_alias_fds.clone(),
+            state.stderr_alias_fds.clone(),
+        );
+        let identity_before = output.identities.clone();
+        let bytes_before = {
+            let inner = output.inner.lock().unwrap();
+            (inner.stdout.clone(), inner.stderr.clone())
+        };
+        let result = if capture {
+            syscall_result_with_output(memory, state, output, libc::SYS_pselect6, args)
+        } else {
+            syscall_result(memory, state, libc::SYS_pselect6, args)
+        };
+        assert_eq!(*state.process_signals.lock().unwrap(), process_before);
+        assert_eq!(*state.thread_signals.lock(), thread_before);
+        assert_eq!(
+            state
+                .files
+                .iter()
+                .map(|(&fd, file)| (fd, file.as_raw_fd()))
+                .collect::<Vec<_>>(),
+            files_before
+        );
+        assert_eq!(
+            (&state.stdout_alias_fds, &state.stderr_alias_fds),
+            (&aliases_before.0, &aliases_before.1)
+        );
+        assert!(Arc::ptr_eq(&output.identities, &identity_before));
+        let inner = output.inner.lock().unwrap();
+        assert_eq!(
+            (&inner.stdout, &inner.stderr),
+            (&bytes_before.0, &bytes_before.1)
+        );
+        let mut after = vec![0; PAGE_SIZE as usize];
+        memory.read_raw(0, &mut after).unwrap();
+        (result, after)
+    }
+
+    #[test]
+    fn pselect6_zero_captured_alias_refuses_carrier_dependent_readiness() {
+        let root = TestDir::new();
+        let path = root.0.join("captured-carrier");
+        std::fs::write(&path, b"private carrier").unwrap();
+        let mut output = CapturedOutput::default();
+        assert!(output.append(false, b"captured stdout"));
+        assert!(output.append(true, b"captured stderr"));
+        for alias in [OutputAlias::Stdout, OutputAlias::Stderr] {
+            let mut captured_results = Vec::new();
+            let mut captured_memory = Vec::new();
+            for regular in [true, false] {
+                let mut state = test_state(&root.0);
+                let (socket, peer) = UnixStream::pair().unwrap();
+                let file = if regular {
+                    std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&path)
+                        .unwrap()
+                } else {
+                    // SAFETY: the socket transfers its owned endpoint to File.
+                    unsafe {
+                        std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(socket))
+                    }
+                };
+                let fd = insert_file_with_flags(&mut state, file, false, Some(alias));
+                assert_eq!(fd, 3);
+                // Both blocked queues are nonempty: preservation is not vacuous,
+                // and the pending-signal refusal cannot hide the carrier bug.
+                test_block_signal(&mut state, libc::SIGUSR1);
+                test_block_signal(&mut state, libc::SIGUSR2);
+                let shared = event_for_process(libc::SIGUSR1, state.pid).unwrap();
+                let local = event_for_thread(libc::SIGUSR2, state.pid, state.tid).unwrap();
+                state
+                    .process_signals
+                    .lock()
+                    .unwrap()
+                    .shared_pending
+                    .enqueue(shared, 0)
+                    .unwrap();
+                state
+                    .thread_signals
+                    .lock()
+                    .pending
+                    .enqueue(local, 0)
+                    .unwrap();
+                let native = pselect6_native_single_descriptor(
+                    host_fd(&state, 3).unwrap(),
+                    [true, false, false],
+                );
+                assert_eq!(native, (i64::from(regular), [regular, false, false]));
+                let mut memory = pselect6_capture_memory([1 << 3, 0, 0]);
+                let mut before = vec![0; PAGE_SIZE as usize];
+                memory.read(0, &mut before).unwrap();
+                let args = [4, 0x200, 0, 0, 0x100, 0];
+                let (uncaptured, actual) =
+                    pselect6_capture_probe(&mut memory, &mut state, &mut output, false, args);
+                let mut expected = before.clone();
+                expected[0x200..0x208]
+                    .copy_from_slice(&(if regular { 1_u64 << 3 } else { 0 }).to_ne_bytes());
+                assert_eq!(uncaptured, native.0);
+                assert_eq!(actual, expected);
+                memory.write(0, &before).unwrap();
+                let (captured, after) =
+                    pselect6_capture_probe(&mut memory, &mut state, &mut output, true, args);
+                captured_results.push(captured);
+                captured_memory.push((before, after));
+                // Keep the socket peer live until after the sample: no EOF/HUP.
+                drop(peer);
+            }
+            // Frozen bad production predicts [1, 0], although both descriptors
+            // name the same captured stream. Collect both before this assertion.
+            assert_eq!(captured_results, vec![negative_errno(libc::ENOSYS); 2]);
+            for (before, after) in captured_memory {
+                assert_eq!(after, before);
+            }
+        }
+    }
+
+    #[test]
+    fn pselect6_zero_captured_alias_preserves_validation_precedence() {
+        const BAD: u64 = 0x00f0_0000;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        assert_eq!(
+            insert_file_with_flags(
+                &mut state,
+                std::fs::File::open(&root.0).unwrap(),
+                false,
+                Some(OutputAlias::Stdout)
+            ),
+            3
+        );
+        let mut output = CapturedOutput::default();
+        // An alias in the readable first input must not bypass later argument
+        // faults or an absent selected descriptor later in the numeric scan.
+        for (name, args, word, malformed, readonly, expected) in [
+            (
+                "outer before timeout",
+                [4, 0x200, 0, 0, BAD, BAD],
+                1_u64 << 3,
+                false,
+                false,
+                libc::EFAULT,
+            ),
+            (
+                "timeout access",
+                [4, 0x200, 0, 0, BAD, 0],
+                1 << 3,
+                false,
+                false,
+                libc::EFAULT,
+            ),
+            (
+                "timeout value",
+                [4, 0x200, 0, 0, 0x100, 0],
+                1 << 3,
+                true,
+                false,
+                libc::EINVAL,
+            ),
+            (
+                "negative nfds",
+                [u64::MAX, 0x200, 0, 0, 0x100, 0],
+                1 << 3,
+                false,
+                false,
+                libc::EINVAL,
+            ),
+            (
+                "read input",
+                [4, BAD, 0, 0, 0x100, 0],
+                1 << 3,
+                false,
+                false,
+                libc::EFAULT,
+            ),
+            (
+                "write input",
+                [4, 0x200, BAD, 0, 0x100, 0],
+                1 << 3,
+                false,
+                false,
+                libc::EFAULT,
+            ),
+            (
+                "except input",
+                [4, 0x200, 0, BAD, 0x100, 0],
+                1 << 3,
+                false,
+                false,
+                libc::EFAULT,
+            ),
+            (
+                "later absent fd",
+                [31, 0x200, 0, 0, 0x100, 0],
+                (1 << 3) | (1 << 30),
+                false,
+                false,
+                libc::EBADF,
+            ),
+            (
+                "readonly output",
+                [4, 0x200, 0, 0, 0x100, 0],
+                1 << 3,
+                false,
+                true,
+                libc::ENOSYS,
+            ),
+            (
+                "write-only captured selection",
+                [4, 0, 0x200, 0, 0x100, 0],
+                1 << 3,
+                false,
+                false,
+                libc::ENOSYS,
+            ),
+            (
+                "except-only captured selection",
+                [4, 0, 0, 0x200, 0x100, 0],
+                1 << 3,
+                false,
+                false,
+                libc::ENOSYS,
+            ),
+        ] {
+            let mut memory = pselect6_capture_memory([word, 0, 0]);
+            if malformed {
+                memory
+                    .write(0x108, &1_000_000_000_i64.to_ne_bytes())
+                    .unwrap();
+            }
+            if readonly {
+                memory
+                    .map_user_permissions(0, PAGE_SIZE, true, false)
+                    .unwrap();
+                memory.enable_user_access();
+            }
+            let mut before = vec![0; PAGE_SIZE as usize];
+            memory.read_raw(0, &mut before).unwrap();
+            let (result, after) =
+                pselect6_capture_probe(&mut memory, &mut state, &mut output, true, args);
+            assert_eq!(result, negative_errno(expected), "{name}");
+            assert_eq!(after, before, "{name}");
+        }
+    }
+
+    #[test]
+    fn pselect6_zero_capture_boundary_preserves_ordinary_and_opath_controls() {
+        const BAD: u64 = 0x00f0_0000;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut output = CapturedOutput::default();
+        assert_eq!(
+            insert_file_with_flags(
+                &mut state,
+                std::fs::File::open(&root.0).unwrap(),
+                false,
+                Some(OutputAlias::Stdout)
+            ),
+            3
+        );
+        assert_eq!(
+            insert_file_with_flags(
+                &mut state,
+                std::fs::File::open(&root.0).unwrap(),
+                false,
+                None
+            ),
+            4
+        );
+        for (source, alias, expected_fd) in [(3, Some(OutputAlias::Stdout), 5), (4, None, 6)] {
+            let path = open_host_fd_path(
+                host_fd(&state, source).unwrap(),
+                (libc::O_PATH | libc::O_CLOEXEC) as u64,
+            )
+            .unwrap();
+            assert_eq!(
+                pselect6_native_single_descriptor(path.as_raw_fd(), [true; 3]),
+                (3, [true; 3])
+            );
+            assert_eq!(
+                insert_file_with_flags(&mut state, path, true, alias),
+                expected_fd
+            );
+        }
+        // Only the guest table changes. No host dup2 or standard-fd mutation.
+        let mut memory = pselect6_capture_memory([0; 3]);
+        assert_eq!(
+            syscall_result_with_output(
+                &mut memory,
+                &mut state,
+                &mut output,
+                libc::SYS_dup2,
+                [4, 1, 0, 0, 0, 0]
+            ),
+            1
+        );
+        assert!(output_alias(&state, 1).is_none());
+        assert!(output_alias(&state, 3).is_some());
+        assert!(output_alias(&state, 5).is_some());
+        for (name, capture, args, input, expected_result, expected_sets) in [
+            (
+                "nfds zero ignores pointers",
+                true,
+                [0, BAD, BAD, BAD, 0x100, 0],
+                [1_u64 << 3, 0, 0],
+                0,
+                [1_u64 << 3, 0, 0],
+            ),
+            (
+                "capture outside nfds",
+                true,
+                [3, 0x200, 0x280, 0x300, 0x100, 0],
+                [1 << 3, 0, 0],
+                0,
+                [0, 0, 0],
+            ),
+            (
+                "capture unselected",
+                true,
+                [5, 0x200, 0x280, 0x300, 0x100, 0],
+                [1 << 4, 0, 0],
+                1,
+                [1 << 4, 0, 0],
+            ),
+            (
+                "ordinary replacement guest stdout",
+                true,
+                [2, 0x200, 0x280, 0x300, 0x100, 0],
+                [1 << 1, 0, 0],
+                1,
+                [1 << 1, 0, 0],
+            ),
+            (
+                "captured O_PATH unsupported",
+                true,
+                [6, 0x200, 0x280, 0x300, 0x100, 0],
+                [1 << 5; 3],
+                negative_errno(libc::ENOSYS),
+                [1 << 5; 3],
+            ),
+            (
+                "same O_PATH without capture",
+                false,
+                [6, 0x200, 0x280, 0x300, 0x100, 0],
+                [1 << 5; 3],
+                3,
+                [1 << 5; 3],
+            ),
+            (
+                "ordinary O_PATH",
+                true,
+                [7, 0x200, 0x280, 0x300, 0x100, 0],
+                [1 << 6; 3],
+                3,
+                [1 << 6; 3],
+            ),
+        ] {
+            let mut memory = pselect6_capture_memory(input);
+            let mut expected = vec![0; PAGE_SIZE as usize];
+            memory.read(0, &mut expected).unwrap();
+            for (address, word) in [0x200, 0x280, 0x300].into_iter().zip(expected_sets) {
+                expected[address..address + 8].copy_from_slice(&word.to_ne_bytes());
+            }
+            let (result, after) =
+                pselect6_capture_probe(&mut memory, &mut state, &mut output, capture, args);
+            assert_eq!(result, expected_result, "{name}");
+            assert_eq!(after, expected, "{name}");
+        }
     }
 
     #[test]
