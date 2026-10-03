@@ -882,14 +882,17 @@ where
     if replacements.is_empty() {
         return Ok(());
     }
-    if let Some(vdso) = procfs::process::Process::new(guest.pid().as_raw())
-        .map_or_else(
+    let guest_maps = {
+        let _open = crate::launch_window::TransientOpen::begin();
+        procfs::process::Process::new(guest.pid().as_raw()).map_or_else(
             |_| Vec::new(),
             |p| match p.maps() {
                 Ok(maps) => maps.0,
                 Err(_) => Vec::new(),
             },
         )
+    };
+    if let Some(vdso) = guest_maps
         .iter()
         .find(|e| e.pathname == procfs::process::MMapPath::Vdso)
     {
