@@ -1699,6 +1699,11 @@ impl KvmBackend {
         cpuid_policy: CpuidPolicy,
     ) -> Result<InitializedKvmResources> {
         let kvm = Kvm::new()?;
+        // Serialize the capability record with physical publication. A file
+        // image created before attachment requires synchronous invalidation;
+        // a private image can still attach on a host lacking this capability,
+        // but must refuse a later file publication before changing the HVA.
+        memory.record_kvm_sync_mmu(kvm.check_extension(Cap::SyncMmu))?;
         let vm = kvm.create_vm()?;
         if !vm.check_extension(Cap::ExitHypercall) {
             return Err(Error::HypercallExitUnsupported);
@@ -2225,6 +2230,9 @@ impl KvmBackend {
         // is the same point-of-no-return behavior as the prior zero_raw reset.
         let user_length = usize::try_from(self.memory.guest_end() - BOOT_RESERVED_END)
             .expect("guest memory length must fit usize");
+        // Replace file-backed HVA pages before discarding the new private
+        // image. Clearing the outgoing file mapping would corrupt its file.
+        self.memory.retire_shared_files_for_exec()?;
         self.memory.discard_pages(BOOT_RESERVED_END, user_length)?;
 
         let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
@@ -4521,6 +4529,8 @@ impl KvmBackend {
         // a backend failure already recorded on the entry gate. Reading it
         // here does not consume it: it stays pending on the gate, and
         // route_entry_outcome folds it into the exiting thread's outcome.
+        // This also retains a typed shared-file scalar capability refusal;
+        // it is never presented as a successful store or invented SIGBUS.
         let _ = self.memory.user().put_user_i32(address, 0);
         if self.memory.user().user_accessible_prefix(address, 4).ok() != Some(4) {
             #[cfg(test)]
