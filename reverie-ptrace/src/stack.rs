@@ -137,6 +137,13 @@ pub struct StackGuard {
 // `reverie::Stack::StackGuard` requires `Drop`. The flag release itself happens
 // in the `StackToken` field's own drop glue, which runs after this; an explicit
 // (empty) impl is only needed to satisfy that trait bound.
+#[cfg(all(test, cohort_final_test))]
+impl StackGuard {
+    pub(crate) fn test_checkout_held(&self) -> bool {
+        self._token.flag.load(Ordering::SeqCst)
+    }
+}
+
 impl Drop for StackGuard {
     fn drop(&mut self) {}
 }

@@ -20,6 +20,15 @@ pub(super) struct Logical {
     task: TerminalCleanup,
     call: (Sysno, SyscallArgs),
     regs: libc::user_regs_struct,
+    pub(super) receive: Option<followed_receive::Context>,
+}
+impl Logical {
+    pub(super) fn matches_original(&self, task: &Stopped, call: (Sysno, SyscallArgs)) -> bool {
+        self.call == call && self.task.same_generation(&task.terminal_cleanup())
+    }
+    pub(super) fn matches_frame(&self, actual: &libc::user_regs_struct) -> bool {
+        safeptrace::ControlStop::registers_equal(actual, &self.regs)
+    }
 }
 pub(super) struct ReadHandback {
     stop: Stopped,
@@ -377,6 +386,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             task: task.terminal_cleanup(),
             call,
             regs: task.getregs()?,
+            receive: None,
         });
         Ok(())
     }

@@ -244,6 +244,28 @@ pub(crate) struct FatalTaskStop {
     pub(crate) held: Arc<StdMutex<Option<HeldRootStop>>>,
     pub(crate) frozen: AtomicBool,
     pub(crate) peer_invocation: StdMutex<Option<Arc<crate::task::source_cohort::NativePeers>>>,
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) receive_scratch: StdMutex<Option<Arc<ReceiveTimerScratch>>>,
+}
+
+/// Physical kernel output storage owned by the original task's cleanup owner.
+/// A callback may retain an observation Arc, but dropping that observation must
+/// not return the stack checkout while Ppoll can still write its timeout.
+#[cfg(target_arch = "x86_64")]
+pub(crate) struct ReceiveTimerScratch {
+    terminal: TerminalCleanup,
+    guard: StdMutex<Option<crate::stack::StackGuard>>,
+}
+
+#[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+impl ReceiveTimerScratch {
+    pub(crate) fn test_checkout_held(&self) -> bool {
+        self.guard
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(crate::stack::StackGuard::test_checkout_held)
+    }
 }
 
 pub(crate) struct FatalNewborn {
@@ -794,6 +816,93 @@ async fn finish_ordinary_terminal(
 }
 
 impl FatalTaskStop {
+    /// Retain committed timer storage before any native timer resume. This
+    /// joins existing stopped and cleanup identities; it grants no resume or
+    /// restoration authority and never captures another numeric PID.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn bind_receive_scratch(
+        self: &Arc<Self>,
+        stopped: &Stopped,
+        guard: crate::stack::StackGuard,
+    ) -> Result<Arc<ReceiveTimerScratch>, Errno> {
+        let terminal = stopped.terminal_cleanup();
+        let held = self.held.lock().unwrap();
+        let current = held.as_ref().ok_or(Errno::ESTALE)?;
+        if stopped.pid() != self.tid
+            || !self.terminal.same_generation(&terminal)
+            || !current.armed
+            || current.root_tid != self.tid
+            || !current.terminal.same_generation(&self.terminal)
+            || !current.observation.same_generation(&self.terminal)
+        {
+            return Err(Errno::ESTALE);
+        }
+        let mut slot = self.receive_scratch.lock().unwrap();
+        if slot.is_some() {
+            return Err(Errno::EBUSY);
+        }
+        let scratch = Arc::new(ReceiveTimerScratch {
+            terminal,
+            guard: StdMutex::new(Some(guard)),
+        });
+        *slot = Some(Arc::clone(&scratch));
+        Ok(scratch)
+    }
+
+    /// Only a genuine checked EXIT/restoration can release a live task's
+    /// scratch. The caller has already authenticated the timer's exact tuple
+    /// and successful raw result. A stale or different restoration is refused.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn retire_receive_scratch(
+        &self,
+        scratch: &Arc<ReceiveTimerScratch>,
+        stopped: &Stopped,
+        restored: &crate::task::source_cohort::RestoredNativeContext,
+    ) -> Result<(), Errno> {
+        restored.validate(stopped)?;
+        if stopped.pid() != self.tid
+            || !self.terminal.same_generation(&stopped.terminal_cleanup())
+            || !self.terminal.same_generation(&scratch.terminal)
+        {
+            return Err(Errno::ESTALE);
+        }
+        let mut slot = self.receive_scratch.lock().unwrap();
+        if !slot
+            .as_ref()
+            .is_some_and(|bound| Arc::ptr_eq(bound, scratch))
+        {
+            return Err(Errno::ESTALE);
+        }
+        let guard = scratch.guard.lock().unwrap().take().ok_or(Errno::ESTALE)?;
+        slot.take();
+        drop(guard);
+        Ok(())
+    }
+
+    /// Retire abandoned scratch only after this original generation's actual
+    /// final wait AND notifier retirement. An EXIT stop, freeze acknowledgement,
+    /// or submitted SIGKILL is not sufficient. Refusals retain the entire slot.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn retire_receive_scratch_terminal(&self) -> Result<(), Errno> {
+        let mut slot = self.receive_scratch.lock().unwrap();
+        let Some(scratch) = slot.as_ref() else {
+            return Ok(());
+        };
+        if !self.terminal.same_generation(&scratch.terminal) {
+            return Err(Errno::ESTALE);
+        }
+        if !self.terminal.wait(Duration::ZERO) {
+            return Err(Errno::EBUSY);
+        }
+        self.terminal
+            .observed_exit_status()?
+            .ok_or(Errno::ENODATA)?;
+        let guard = scratch.guard.lock().unwrap().take().ok_or(Errno::ESTALE)?;
+        slot.take();
+        drop(guard);
+        Ok(())
+    }
+
     fn distinct_peer_bindings(bindings: &[(Arc<Self>, Arc<safeptrace::ControlHold>)]) -> bool {
         bindings.iter().enumerate().all(|(index, (task, control))| {
             bindings[..index]

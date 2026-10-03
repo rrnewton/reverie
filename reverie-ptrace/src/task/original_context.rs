@@ -266,7 +266,7 @@ std::thread_local! {
 /// The syscall ABI and NT_PRSTATUS view are separate kernel facts. A changed
 /// saved CS can select the 68-byte compat view even at a native syscall stop.
 /// Never decode a short register set, in debug or release builds.
-fn checked_entry_registers(task: &Stopped) -> Result<libc::user_regs_struct, String> {
+pub(super) fn checked_entry_registers(task: &Stopped) -> Result<libc::user_regs_struct, String> {
     let mut regs: libc::user_regs_struct = unsafe { std::mem::zeroed() };
     let mut iov = libc::iovec {
         iov_base: (&mut regs as *mut libc::user_regs_struct).cast(),
@@ -300,6 +300,52 @@ fn checked_entry_registers(task: &Stopped) -> Result<libc::user_regs_struct, Str
 }
 
 impl OriginalReadEntry {
+    // Separate restored-callback consumer. These methods never validate an
+    // EXIT as an original entry and never clear the original failure/once bits.
+    pub(super) fn retained_store_state(&self) -> Result<(), Errno> {
+        if self.failure.lock().map_err(|_| Errno::ESTALE)?.is_some() {
+            Err(Errno::ESTALE)
+        } else {
+            Ok(())
+        }
+    }
+    pub(super) fn retain_store_failure(&self) {
+        if let Ok(mut failure) = self.failure.lock() {
+            failure.get_or_insert_with(|| "retained receive context changed".to_owned());
+        }
+    }
+    pub(super) fn retained_store_unused(&self) -> Result<(), Errno> {
+        self.retained_store_state()?;
+        if self.store_attempted.load(Ordering::Acquire) {
+            Err(Errno::EALREADY)
+        } else {
+            Ok(())
+        }
+    }
+    pub(super) fn claim_retained_store(&self) -> Result<(), Errno> {
+        self.retained_store_state()?;
+        self.store_attempted
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| Errno::EALREADY)
+    }
+    pub(super) fn inspect_retained_range(
+        &self,
+    ) -> Result<reverie::OriginalReadRangeVerdict, Errno> {
+        self.retained_store_state()?;
+        let result = READ_RANGE_ORACLE
+            .get_or_init(|| StdMutex::new(ReadRangeOracle::default()))
+            .lock()
+            .map_err(|_| Errno::ESTALE)?
+            .inspect(
+                self.entry.arguments[1] as usize,
+                self.entry.arguments[2] as usize,
+            );
+        result.map_err(|_| {
+            self.retain_store_failure();
+            Errno::ESTALE
+        })
+    }
     pub(super) fn capture(task: &Stopped, nr: Sysno, args: SyscallArgs) -> Result<Self, String> {
         let entry = task.syscall_entry().map_err(|error| error.to_string())?;
         if entry.arch != 0xc000003e {

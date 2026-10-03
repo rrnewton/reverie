@@ -1591,6 +1591,8 @@ enum LiteinstTrap {
 }
 
 #[cfg(target_arch = "x86_64")]
+mod followed_receive;
+#[cfg(target_arch = "x86_64")]
 #[path = "task/followed_store.rs"]
 mod followed_store;
 
@@ -1895,6 +1897,20 @@ impl FatalSession {
     }
 
     fn finished(&self, stop: &FatalTaskStop) {
+        #[cfg(target_arch = "x86_64")]
+        if let Err(error) = stop.retire_receive_scratch_terminal() {
+            // Retain the original owner, including scratch still reachable by
+            // a native helper. Only its actual final wait may discharge it.
+            self.fail_at(
+                BackendFailure {
+                    pid: stop.tid,
+                    tid: stop.tid,
+                    phase: "receive timer scratch terminal retirement",
+                },
+                error.into(),
+            );
+            return;
+        }
         let mut tree = self.tree.lock().unwrap();
         tree.tasks
             .retain(|task| !task.terminal.same_generation(&stop.terminal));
@@ -6699,6 +6715,24 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.source_stop = None;
 
             #[cfg(target_arch = "x86_64")]
+            if self
+                .private_signal
+                .logical
+                .as_ref()
+                .and_then(|logical| logical.receive.as_ref())
+                .is_some_and(followed_receive::Context::unfinished)
+            {
+                self.publish_ordinary_failure(
+                    "retained receive callback abandoned its private timer",
+                    anyhow::anyhow!(
+                        "no authenticated timer EXIT/restoration before callback return"
+                    )
+                    .into(),
+                );
+                return future::pending().await;
+            }
+
+            #[cfg(target_arch = "x86_64")]
             if let Some(wait) = self.finish_private_signal_callback(&retval).await? {
                 return Ok(wait);
             }
@@ -9204,6 +9238,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             held: self.ordinary_held_stop.clone(),
             frozen: AtomicBool::new(false),
             peer_invocation: StdMutex::new(None),
+            #[cfg(target_arch = "x86_64")]
+            receive_scratch: StdMutex::new(None),
         });
         let slot = Arc::new(OrdinaryExecSlot {
             stop: stop.clone(),
@@ -10753,6 +10789,18 @@ impl<L: Tool + 'static> TracedTask<L> {
         args: SyscallArgs,
         origin: InjectionOrigin,
     ) -> Result<Result<i64, Errno>, TraceError> {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(context) = self
+            .private_signal
+            .logical
+            .as_mut()
+            .and_then(|l| l.receive.as_mut())
+        {
+            if context.unfinished() {
+                return Err(Errno::EBUSY.into());
+            }
+            context.invalidate();
+        }
         let task = self.assume_stopped();
         let observe_tool =
             origin == InjectionOrigin::Tool && L::observe_injected_syscalls(&self.global_state.cfg);
@@ -11404,6 +11452,45 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         receive: reverie::syscalls::Recvfrom,
     ) -> Result<reverie::OriginalReadRangeVerdict, reverie::Error> {
         self.inspect_native_recvfrom_range(receive)
+    }
+
+    async fn inject_receive_observation_timer(
+        &mut self,
+        original: Syscall,
+        timeout: std::time::Duration,
+    ) -> Result<(), reverie::Error> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            match self.run_followed_receive_timer(original, timeout).await {
+                Ok(()) => Ok(()),
+                Err(error) => self.abort(Err(error)).await,
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (original, timeout);
+            Err(reverie::Error::Tool(anyhow::anyhow!(
+                "backend has no retained receive timer"
+            )))
+        }
+    }
+
+    fn with_restored_followed_store<R>(
+        &self,
+        original: Syscall,
+        action: impl FnOnce(&mut dyn reverie::syscalls::FollowedStore) -> R,
+    ) -> Result<R, reverie::syscalls::NativeUserStoreRefusal> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.with_restored_native_followed_store(original, action)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (original, action);
+            Err(reverie::syscalls::NativeUserStoreRefusal::Evidence(
+                reverie::syscalls::NativeUserReadRefusal::UnsupportedPlatform,
+            ))
+        }
     }
 
     fn with_followed_store<R>(

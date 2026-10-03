@@ -152,6 +152,39 @@ pub(super) struct NativeReturn {
     raw: i64,
 }
 
+/// Observation of one positively restored private invocation. The current
+/// ControlStop stays in the original Task; this receipt duplicates no authority.
+#[cfg(target_arch = "x86_64")]
+pub(crate) struct RestoredNativeContext {
+    member: Member,
+    operation: u64,
+    control_revision: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl RestoredNativeContext {
+    pub(crate) fn validate(&self, stopped: &Stopped) -> Result<(), safeptrace::Errno> {
+        use safeptrace::Errno;
+        let identity = stopped.terminal_cleanup().task_identity()?;
+        let h = self.member.history.0.lock().unwrap();
+        let task = h.tasks.get(&self.member.index).ok_or(Errno::ESTALE)?;
+        if !h.read_open()
+            || !task.identity.same_generation(&identity)
+            || !task.quiescent()
+            || self.operation.checked_add(1) != Some(task.next_operation)
+        {
+            return Err(Errno::ESTALE);
+        }
+        let stop = task.stop.as_ref().ok_or(Errno::ESTALE)?;
+        if stop.control_revision() != self.control_revision {
+            return Err(Errno::ESTALE);
+        }
+        // A peer completion may legitimately advance h.revision. This exact
+        // task's issued control revision and operation frontier must not move.
+        stop.validate_current()
+    }
+}
+
 impl History {
     fn fail(&mut self) {
         self.failed = true;
@@ -759,6 +792,30 @@ impl NativePeers {
 }
 
 impl Task {
+    #[cfg(target_arch = "x86_64")]
+    fn checked_return_phase(&self, number: u64) -> bool {
+        number.checked_add(1) == Some(self.next_operation)
+            && matches!(
+                self.origin,
+                Origin::Command
+                    | Origin::Child {
+                        custody: ChildCustody::Restored,
+                        ..
+                    }
+            )
+            && self.operations.get(&number).is_some_and(|operation| {
+                checked_return_phase(
+                    self.life,
+                    self.operations.len(),
+                    self.invocation,
+                    number,
+                    operation.effect,
+                    operation.outcome,
+                ) && operation.indirect_birth.is_none()
+                    && operation.peers.is_none()
+            })
+    }
+
     fn quiescent(&self) -> bool {
         settled_phase(
             self.life,
@@ -774,6 +831,22 @@ impl Task {
             ),
         )
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn checked_return_phase(
+    life: Life,
+    operations: usize,
+    invocation: Option<u64>,
+    number: u64,
+    effect: Effect,
+    outcome: Outcome,
+) -> bool {
+    life == Life::Stopped
+        && operations == 1
+        && invocation == Some(number)
+        && effect == Effect::Native
+        && outcome == Outcome::Stopped
 }
 
 // A metadata predicate, never a stop/hold constructor.
@@ -1467,6 +1540,91 @@ impl Drop for NativeOperation {
     }
 }
 impl NativeReturn {
+    /// Restore a private helper's authenticated EXIT while its native debt
+    /// remains present. No metadata lock spans ptrace. The old restoration and
+    /// legacy source-history behavior are separate and unchanged.
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn restore_checked(
+        mut self,
+        stopped: &Stopped,
+        expected_exit: &safeptrace::Regs,
+        desired: &safeptrace::Regs,
+    ) -> Result<RestoredNativeContext, TraceError> {
+        use safeptrace::Errno;
+        let result = (|| {
+            if matches!(self.raw, -512 | -513 | -514 | -516)
+                || self.raw == -(libc::EINTR as i64)
+                || self.owner.source_ioctl.is_some()
+                || self.owner.peers.is_some()
+                || expected_exit.orig_rax != self.owner.syscall as u64
+                || expected_exit.rax as i64 != self.raw
+                || desired.rax != expected_exit.rax
+                || stopped.syscall_exit_result()? != self.raw
+            {
+                return Err(Errno::EPROTO.into());
+            }
+            let identity = stopped.terminal_cleanup().task_identity()?;
+            let (stop, revision, control_revision) = {
+                let mut h = self.owner.member.history.0.lock().unwrap();
+                if !h.read_open() || h.hold.is_some() {
+                    return Err(Errno::ESTALE.into());
+                }
+                let revision = h.revision;
+                let task = h
+                    .tasks
+                    .get_mut(&self.owner.member.index)
+                    .ok_or(Errno::ESTALE)?;
+                if !task.identity.same_generation(&identity)
+                    || !task.checked_return_phase(self.owner.number)
+                {
+                    return Err(Errno::ESTALE.into());
+                }
+                let stop = task.stop.take().ok_or(Errno::ESTALE)?;
+                stop.validate_current()?;
+                let control_revision = stop.control_revision();
+                (stop, revision, control_revision)
+            };
+            let stop = stop.setregs_checked(expected_exit, desired)?;
+            stop.validate_current()?;
+            let issued_revision = stop.control_revision();
+            if control_revision.checked_add(1) != Some(issued_revision) {
+                return Err(Errno::ESTALE.into());
+            }
+            let mut h = self.owner.member.history.0.lock().unwrap();
+            if !h.read_open() || h.hold.is_some() || h.revision != revision {
+                return Err(Errno::ESTALE.into());
+            }
+            let next_revision = revision.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+            let task = h
+                .tasks
+                .get_mut(&self.owner.member.index)
+                .ok_or(Errno::ESTALE)?;
+            if !task.identity.same_generation(&identity)
+                || !task.checked_return_phase(self.owner.number)
+                || task.stop.is_some()
+            {
+                return Err(Errno::ESTALE.into());
+            }
+            stop.validate_current()?;
+            task.stop = Some(stop);
+            task.operations.remove(&self.owner.number);
+            task.invocation = None;
+            h.revision = next_revision;
+            self.owner.completed = true;
+            Ok(RestoredNativeContext {
+                member: self.owner.member.clone(),
+                operation: self.owner.number,
+                control_revision: issued_revision,
+            })
+        })();
+        if result.is_err() {
+            // A failed write/readback/owner join cannot erase its unknown native
+            // effect. Close source observation; original stop/cleanup owners live.
+            self.owner.member.history.fail();
+        }
+        result
+    }
+
     pub(super) fn restored(mut self) {
         #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
         if self
@@ -1710,3 +1868,11 @@ pub(crate) mod peer_tests;
 #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
 #[path = "followed_store_tests.rs"]
 mod store_tests;
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "source_restoration_tests.rs"]
+mod restoration_tests;
+
+#[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+#[path = "restored_receive_tests.rs"]
+mod restored_receive_tests;

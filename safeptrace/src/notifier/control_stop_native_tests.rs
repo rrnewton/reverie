@@ -10,10 +10,33 @@ mod control_stop_native_tests {
     #[cfg(target_arch = "x86_64")]
     fn registers(regs: &crate::Regs) -> [u64; 27] {
         [
-            regs.r15, regs.r14, regs.r13, regs.r12, regs.rbp, regs.rbx, regs.r11, regs.r10,
-            regs.r9, regs.r8, regs.rax, regs.rcx, regs.rdx, regs.rsi, regs.rdi, regs.orig_rax,
-            regs.rip, regs.cs, regs.eflags, regs.rsp, regs.ss, regs.fs_base, regs.gs_base,
-            regs.ds, regs.es, regs.fs, regs.gs,
+            regs.r15,
+            regs.r14,
+            regs.r13,
+            regs.r12,
+            regs.rbp,
+            regs.rbx,
+            regs.r11,
+            regs.r10,
+            regs.r9,
+            regs.r8,
+            regs.rax,
+            regs.rcx,
+            regs.rdx,
+            regs.rsi,
+            regs.rdi,
+            regs.orig_rax,
+            regs.rip,
+            regs.cs,
+            regs.eflags,
+            regs.rsp,
+            regs.ss,
+            regs.fs_base,
+            regs.gs_base,
+            regs.ds,
+            regs.es,
+            regs.fs,
+            regs.gs,
         ]
     }
 
@@ -135,5 +158,177 @@ mod control_stop_native_tests {
         stop.validate_current().unwrap();
         finish(stopped);
         assert_eq!(stop.validate_current(), Err(Errno::ESTALE));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn change_field(r: &mut crate::Regs, index: usize) {
+        let fields = [
+            &mut r.r15,
+            &mut r.r14,
+            &mut r.r13,
+            &mut r.r12,
+            &mut r.rbp,
+            &mut r.rbx,
+            &mut r.r11,
+            &mut r.r10,
+            &mut r.r9,
+            &mut r.r8,
+            &mut r.rax,
+            &mut r.rcx,
+            &mut r.rdx,
+            &mut r.rsi,
+            &mut r.rdi,
+            &mut r.orig_rax,
+            &mut r.rip,
+            &mut r.cs,
+            &mut r.eflags,
+            &mut r.rsp,
+            &mut r.ss,
+            &mut r.fs_base,
+            &mut r.gs_base,
+            &mut r.ds,
+            &mut r.es,
+            &mut r.fs,
+            &mut r.gs,
+        ];
+        *fields.into_iter().nth(index).unwrap() ^= 1;
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn checked_register_write_reads_back_and_never_renews_legacy_source() {
+        let (_cleanup, stopped) = child_stop();
+        let legacy = stopped.source_stop().unwrap();
+        let stop = stopped.control_stop().unwrap();
+        let revision = stop.control_revision();
+        let original = stopped.getregs().unwrap();
+        let mut desired = original;
+        desired.r15 ^= 1;
+        let stop = stop.setregs_checked(&original, &desired).unwrap();
+        assert_eq!(stop.control_revision(), revision + 1);
+        stop.validate_current().unwrap();
+        assert!(ControlStop::registers_equal(
+            &stopped.getregs().unwrap(),
+            &desired
+        ));
+        assert_eq!(legacy.validate_current(), Err(Errno::ESTALE));
+        assert!(stopped.source_stop().is_err());
+        assert!(stopped.control_stop().is_err());
+        let stop = stop.setregs_checked(&desired, &original).unwrap();
+        assert_eq!(stop.control_revision(), revision + 2);
+        assert!(ControlStop::registers_equal(
+            &stopped.getregs().unwrap(),
+            &original
+        ));
+        assert_eq!(legacy.validate_current(), Err(Errno::ESTALE));
+        finish(stopped);
+        assert_eq!(stop.validate_current(), Err(Errno::ESTALE));
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn checked_register_write_refuses_each_of_27_wrong_exit_fields_before_write() {
+        for field in 0..27 {
+            let (cleanup, stopped) = child_stop();
+            let legacy = stopped.source_stop().unwrap();
+            let stop = stopped.control_stop().unwrap();
+            let original = stopped.getregs().unwrap();
+            let mut expected = original;
+            change_field(&mut expected, field);
+            assert!(!ControlStop::registers_equal(&expected, &original));
+            let result = stop.setregs_checked(&expected, &original);
+            let after = stopped.getregs().unwrap();
+            let legacy_stale = legacy.validate_current();
+            let no_new_stop = stopped.control_stop().is_err();
+            cleanup
+                .cleanup()
+                .expect("original child must be killed and reaped");
+            assert!(
+                matches!(result, Err(crate::Error::Errno(Errno::ESTALE))),
+                "field{field}"
+            );
+            assert!(
+                ControlStop::registers_equal(&after, &original),
+                "field{field}"
+            );
+            assert_eq!(legacy_stale, Err(Errno::ESTALE));
+            assert!(no_new_stop);
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn checked_register_write_refuses_short_real_pre_and_post_replies() {
+        for phase in [0, 1] {
+            let (cleanup, stopped) = child_stop();
+            let legacy = stopped.source_stop().unwrap();
+            let stop = stopped.control_stop().unwrap();
+            let original = stopped.getregs().unwrap();
+            let mut desired = original;
+            desired.r15 ^= 1;
+            // Only the returned length of an actual successful GETREGSET is
+            // shortened. This cannot fabricate a positive register receipt.
+            control_stop::shorten_checked_reply_for_test(Some(phase));
+            let result = stop.setregs_checked(&original, &desired);
+            control_stop::shorten_checked_reply_for_test(None);
+            let after = stopped.getregs().unwrap();
+            let legacy_stale = legacy.validate_current();
+            let no_new_stop = stopped.control_stop().is_err();
+            cleanup
+                .cleanup()
+                .expect("original child must be killed and reaped");
+            assert!(matches!(result, Err(crate::Error::Errno(Errno::EPROTO))));
+            assert!(ControlStop::registers_equal(
+                &after,
+                if phase == 0 { &original } else { &desired }
+            ));
+            assert_eq!(legacy_stale, Err(Errno::ESTALE));
+            assert!(no_new_stop);
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn checked_register_write_requires_actual_readback_not_only_successful_set() {
+        let (cleanup, stopped) = child_stop();
+        let stop = stopped.control_stop().unwrap();
+        let original = stopped.getregs().unwrap();
+        let mut desired = original;
+        // Linux preserves the privileged IF bit in ptrace's EFLAGS setter.
+        // SETREGSET succeeds but its full readback must reject this demand.
+        desired.eflags ^= 1 << 9;
+        let result = stop.setregs_checked(&original, &desired);
+        let after = stopped.getregs().unwrap();
+        let no_new_stop = stopped.control_stop().is_err();
+        cleanup
+            .cleanup()
+            .expect("original child must be killed and reaped");
+        assert!(matches!(result, Err(crate::Error::Errno(Errno::EPROTO))));
+        assert!(!ControlStop::registers_equal(&after, &desired));
+        assert_eq!(after.eflags & (1 << 9), original.eflags & (1 << 9));
+        assert!(no_new_stop);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn checked_register_write_refuses_changed_then_restored_alias() {
+        let (cleanup, stopped) = child_stop();
+        let stop = stopped.control_stop().unwrap();
+        let original = stopped.getregs().unwrap();
+        let mut changed = original;
+        changed.r15 ^= 1;
+        stopped.setregs(&changed).unwrap();
+        stopped.setregs(&original).unwrap();
+        assert!(ControlStop::registers_equal(
+            &stopped.getregs().unwrap(),
+            &original
+        ));
+        let result = stop.setregs_checked(&original, &original);
+        let no_new_stop = stopped.control_stop().is_err();
+        cleanup
+            .cleanup()
+            .expect("original child must be killed and reaped");
+        assert!(matches!(result, Err(crate::Error::Errno(Errno::ESTALE))));
+        assert!(no_new_stop);
     }
 }

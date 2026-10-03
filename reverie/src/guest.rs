@@ -414,6 +414,35 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         ))
     }
 
+    /// Run one explicitly marked receive observation timer (0 < timeout <= 1ms)
+    /// while retaining the same original scalar receive callback. This is host
+    /// observation latency, never a guest timeout or a virtual-time increment.
+    /// The backend must authenticate actual native entry/exit and restoration.
+    /// It does not wait for a peer's scheduler continuation or grant a turn.
+    async fn inject_receive_observation_timer(
+        &mut self,
+        _original: reverie_syscalls::Syscall,
+        _timeout: std::time::Duration,
+    ) -> Result<(), crate::Error> {
+        Err(crate::Error::Tool(anyhow::anyhow!(
+            "backend has no retained receive timer"
+        )))
+    }
+
+    /// Borrow a held writer after the dedicated receive timer restored this
+    /// original callback. Ordinary inject does not qualify this path. The same
+    /// per-original one-use claim and complete cohort custody remain required;
+    /// the caller must retain the actual raw/postcheck outcome before return.
+    fn with_restored_followed_store<R>(
+        &self,
+        _original: reverie_syscalls::Syscall,
+        _action: impl FnOnce(&mut dyn crate::syscalls::FollowedStore) -> R,
+    ) -> Result<R, crate::syscalls::NativeUserStoreRefusal> {
+        Err(crate::syscalls::NativeUserStoreRefusal::Evidence(
+            crate::syscalls::NativeUserReadRefusal::UnsupportedBackend,
+        ))
+    }
+
     /// Returns a mutable reference to thread state.
     fn thread_state_mut(&mut self) -> &mut T::ThreadState;
 
@@ -1059,6 +1088,24 @@ where
         action: impl FnOnce(&mut dyn crate::syscalls::FollowedStore) -> R,
     ) -> Result<R, crate::syscalls::NativeUserStoreRefusal> {
         self.inner.with_followed_store(original, action)
+    }
+
+    async fn inject_receive_observation_timer(
+        &mut self,
+        original: reverie_syscalls::Syscall,
+        timeout: std::time::Duration,
+    ) -> Result<(), crate::Error> {
+        self.inner
+            .inject_receive_observation_timer(original, timeout)
+            .await
+    }
+
+    fn with_restored_followed_store<R>(
+        &self,
+        original: reverie_syscalls::Syscall,
+        action: impl FnOnce(&mut dyn crate::syscalls::FollowedStore) -> R,
+    ) -> Result<R, crate::syscalls::NativeUserStoreRefusal> {
+        self.inner.with_restored_followed_store(original, action)
     }
 
     fn thread_state_mut(&mut self) -> &mut L::ThreadState {

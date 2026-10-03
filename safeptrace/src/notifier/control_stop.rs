@@ -146,6 +146,39 @@ impl ControlStop {
         self.begin_register_write()?.write(registers)
     }
 
+    /// Observe this control revision. This number grants no authority: callers
+    /// must retain this witness and validate its original task and current state.
+    pub fn control_revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Compare every native x86_64 PRSTATUS field, including segment selectors
+    /// and bases. Do not compare padding or accept only the syscall operands.
+    #[cfg(target_arch = "x86_64")]
+    pub fn registers_equal(left: &crate::Regs, right: &crate::Regs) -> bool {
+        fn words(r: &crate::Regs) -> [u64; 27] {
+            [
+                r.r15, r.r14, r.r13, r.r12, r.rbp, r.rbx, r.r11, r.r10, r.r9, r.r8, r.rax, r.rcx,
+                r.rdx, r.rsi, r.rdi, r.orig_rax, r.rip, r.cs, r.eflags, r.rsp, r.ss, r.fs_base,
+                r.gs_base, r.ds, r.es, r.fs, r.gs,
+            ]
+        }
+        words(left) == words(right)
+    }
+
+    /// Consume exactly this control stop, require the complete expected native
+    /// frame, and verify the complete restored frame under the SAME mutation
+    /// ticket. Failure publishes no replacement control or legacy source stamp.
+    #[cfg(target_arch = "x86_64")]
+    pub fn setregs_checked(
+        self,
+        expected: &crate::Regs,
+        desired: &crate::Regs,
+    ) -> Result<Self, crate::Error> {
+        self.begin_register_write()?
+            .write_checked(expected, desired)
+    }
+
     /// Reserve physical control exclusion from this original, current stop.
     /// Non-resuming mutation, resume and owned fatal signalling refuse while
     /// the hold exists. This proves neither cohort completeness nor immunity
@@ -340,6 +373,103 @@ impl RegisterWrite {
         }?;
         CompletedRegisterWrite(self).finish().map_err(Into::into)
     }
+
+    #[cfg(target_arch = "x86_64")]
+    fn validate_checked(&self) -> Result<(), Errno> {
+        let state = self.stop.generation.source.lock();
+        if self.stop.thread == thread::current().id()
+            && self.stop.live()
+            && state.revision == self.next
+            && state.signals == 0
+            && state
+                .mutation
+                .as_ref()
+                .is_some_and(|ticket| Arc::ptr_eq(ticket, &self.control.ticket))
+        {
+            Ok(())
+        } else {
+            Err(Errno::ESTALE)
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn read_checked(&self, _phase: u8) -> Result<crate::Regs, crate::Error> {
+        self.validate_checked()?;
+        let mut registers = core::mem::MaybeUninit::<crate::Regs>::uninit();
+        let mut iov = libc::iovec {
+            iov_base: registers.as_mut_ptr().cast(),
+            iov_len: core::mem::size_of::<crate::Regs>(),
+        };
+        unsafe {
+            syscalls::syscall!(
+                syscalls::Sysno::ptrace,
+                libc::PTRACE_GETREGSET,
+                self.stop.pid.as_raw(),
+                libc::NT_PRSTATUS,
+                &mut iov as *mut _
+            )
+        }?;
+        #[cfg(test)]
+        CHECKED_SHORT_REPLY.with(|fault| {
+            if fault.get() == Some(_phase) && iov.iov_len == core::mem::size_of::<crate::Regs>() {
+                fault.set(None);
+                iov.iov_len -= 1;
+            }
+        });
+        if iov.iov_len != core::mem::size_of::<crate::Regs>() {
+            return Err(Errno::EPROTO.into());
+        }
+        self.validate_checked()?;
+        // The successful native GETREGSET wrote the entire typed buffer.
+        Ok(unsafe { registers.assume_init() })
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn write_checked(
+        self,
+        expected: &crate::Regs,
+        desired: &crate::Regs,
+    ) -> Result<ControlStop, crate::Error> {
+        if !ControlStop::registers_equal(&self.read_checked(0)?, expected) {
+            return Err(Errno::ESTALE.into());
+        }
+        let mut iov = libc::iovec {
+            iov_base: desired as *const _ as *mut _,
+            iov_len: core::mem::size_of::<crate::Regs>(),
+        };
+        // No lock spans ptrace. The original mutation/admission ticket remains
+        // owned through both complete reads, the write, and checked publication.
+        self.validate_checked()?;
+        unsafe {
+            syscalls::syscall!(
+                syscalls::Sysno::ptrace,
+                libc::PTRACE_SETREGSET,
+                self.stop.pid.as_raw(),
+                libc::NT_PRSTATUS,
+                &mut iov as *mut _
+            )
+        }?;
+        if iov.iov_len != core::mem::size_of::<crate::Regs>() {
+            return Err(Errno::EPROTO.into());
+        }
+        if !ControlStop::registers_equal(&self.read_checked(1)?, desired) {
+            return Err(Errno::EPROTO.into());
+        }
+        self.validate_checked()?;
+        CompletedRegisterWrite(self).finish().map_err(Into::into)
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+thread_local! {
+    // Negative controls shorten a genuinely successful GETREGSET reply. They
+    // cannot supply a stop, operation, completed write, or successful readback.
+    static CHECKED_SHORT_REPLY: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+pub(super) fn shorten_checked_reply_for_test(phase: Option<u8>) {
+    CHECKED_SHORT_REPLY.with(|fault| fault.set(phase));
 }
 
 impl CompletedRegisterWrite {

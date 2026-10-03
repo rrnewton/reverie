@@ -117,3 +117,58 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(action(&mut writer))
     }
 }
+
+impl<L: Tool + 'static> TracedTask<L> {
+    pub(super) fn with_restored_native_followed_store<R>(
+        &self,
+        original: Syscall,
+        action: impl FnOnce(&mut dyn FollowedStore) -> R,
+    ) -> Result<R, Refusal> {
+        let session = &self.global_state.fatal_session;
+        let alive = || {
+            if !session.source_jobs.enabled()
+                || session.is_failed()
+                || self.cancel_handler.load(Ordering::Acquire)
+            {
+                Err(Errno::ECANCELED)
+            } else if !session.source_jobs.idle() {
+                Err(Errno::EBUSY)
+            } else {
+                Ok(())
+            }
+        };
+        alive().map_err(state)?;
+        let entry = self.restored_receive_entry().map_err(state)?;
+        entry.retained_store_unused().map_err(state)?;
+        self.validate_restored_receive(original).map_err(state)?;
+        let (_, args) = original.into_parts();
+        let member = self
+            .cohort
+            .as_ref()
+            .ok_or(Refusal::Evidence(Evidence::UnsupportedBackend))?;
+        let hold = member.acquire().map_err(state)?;
+        let sender = hold.sender();
+        let permit = sender.begin_native_store().map_err(state)?;
+        let check = || {
+            alive()?;
+            hold.validate()?;
+            self.validate_restored_receive(original)
+        };
+        check().map_err(state)?;
+        let verdict = entry.inspect_retained_range().map_err(state)?;
+        check().map_err(state)?;
+        if verdict != reverie::OriginalReadRangeVerdict::Allowed {
+            return Err(Refusal::Evidence(Evidence::UnsupportedRange));
+        }
+        let claim = || entry.claim_retained_store();
+        let mut writer = Store {
+            permit,
+            check: &check,
+            claim: &claim,
+            address: args.arg1,
+            capacity: args.arg2,
+            used: false,
+        };
+        Ok(action(&mut writer))
+    }
+}
