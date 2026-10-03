@@ -6306,6 +6306,13 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// the registers passes the signal on unreported as well, as main
     /// resumes it, rather than failing the resume.
     ///
+    /// A signal is also passed on unreported when its siginfo could not be
+    /// written back (`PTRACE_SETSIGINFO` fails, for one, under a seccomp
+    /// policy of the tracer). Resumed from a callback injection's stop, it
+    /// would reach the guest with the siginfo Linux makes up (`SI_USER`, the
+    /// tracer's thread ID, no value); main resumes it from its own stop, with
+    /// its own siginfo.
+    ///
     /// A returning `tail_inject` from the callback ends it and passes the
     /// signal on (`report_signal`).
     async fn report_held_signal(
@@ -6362,6 +6369,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         if pending_signal_mask(task.pid()).map_or(true, |pending| pending & !stale_step_trap != 0) {
             return Ok(self.pass_held_signal_unreported(signal));
         }
+        // Writing the stop's own siginfo back changes nothing, and tells
+        // whether `resume_with_signal` can write it back after the
+        // callback's injections.
+        if !task
+            .getsiginfo()
+            .is_ok_and(|siginfo| task.setsiginfo(&siginfo).is_ok())
+        {
+            return Ok(self.pass_held_signal_unreported(signal));
+        }
         tracing::debug!(
             "[{}] reporting held signal {} before resuming",
             self.tid(),
@@ -6413,9 +6429,12 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// callback's injections ran, the stop is the latest injection's, not
     /// the signal's own. Resumed with another signal than the one it stopped
     /// with, a signal-delivery stop delivers a siginfo that Linux makes up
-    /// (`SI_USER`, the tracer's PID, no value), so the signal's own is
+    /// (`SI_USER`, the tracer's thread ID, no value), so the signal's own is
     /// written back first. When that write fails, the signal is still
-    /// delivered, with the made-up siginfo, as main delivers it.
+    /// delivered, with the made-up siginfo. For a signal at its own delivery
+    /// stop that is what main delivers after the callback's injections. A
+    /// held signal is reported only when a write at its stop succeeded
+    /// (`report_held_signal`), so its write fails only when a later one does.
     ///
     /// The kernel puts the signal back in its queue instead of delivering it
     /// when the guest's mask blocks it by now (`ptrace_signal`). From a stop
