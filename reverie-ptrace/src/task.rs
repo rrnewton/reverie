@@ -10930,10 +10930,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         // syscall. A held signal is not reported while the trap could be
         // claimed (`sigtrap_may_be_claimed`). A LiteInst frame-mode injection
         // holds the trap for the resume instead (`status_to_result`), and
-        // during LiteInst activation the trap is rejected there.
+        // during LiteInst activation the trap is rejected there. Under a
+        // tracer filter the trap is not discarded, as on main: the retried
+        // step can stop again at requests that filter may refuse or kill the
+        // tracer at (`thread_may_be_seccomp_filtered`).
         while child_context.is_none()
             && !self.liteinst_activation_in_progress()
             && is_sigtrap_before_private_syscall(&wait)?
+            && !thread_may_be_seccomp_filtered()
         {
             let Wait::Stopped(stopped, _) = wait else {
                 unreachable!("a SIGTRAP stop");
