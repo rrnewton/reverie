@@ -737,6 +737,18 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
             b"unsubscribed-fork-reconstructed\n".as_slice(),
         ),
         ("tail-fork", b"tail-fork-reconstructed\n".as_slice()),
+        (
+            "mask-inject",
+            b"inject-mask full=0xffffffffbffbfeff write-only-set first-call fallback-site trap-after-full-mask\nblocking-wait during=0xffffffffbffbfeff probe=EINVAL,EFAULT parent-asleep-in-wait seeded-mask-restored blocked-signal-pending\n".as_slice(),
+        ),
+        (
+            "mask-unsubscribed",
+            b"unsubscribed-mask full=0xffffffffbffbfeff write-only-set first-call fallback-site trap-after-full-mask\n".as_slice(),
+        ),
+        (
+            "mask-tail",
+            b"tail-mask full=0xffffffffbffbfeff write-only-set first-call fallback-site trap-after-full-mask\n".as_slice(),
+        ),
     ] {
         let output = Command::new(binary)
             .arg(mode)
@@ -745,6 +757,37 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
             .unwrap();
         assert!(output.status.success(), "{mode}: {output:?}");
         assert_eq!(output.stdout, expected, "{mode}: {output:?}");
+    }
+
+    // With CPUID and RDTSC subscribed, the runtime also keeps SIGSEGV out of
+    // the guest's mask, and an RDTSC after a full-mask set still reaches the
+    // Tool. The Tool subscribes the same instructions as the instruction
+    // modes above, so their capability result decides this mode's outcome.
+    let mut mask_instruction = Command::new(binary);
+    mask_instruction.arg("mask-instruction").arg(&socket).env(
+        STRADDLER_STALENESS_TICKS_ENV,
+        TEST_STRADDLER_STALENESS_TICKS,
+    );
+    let mask_instruction = output_with_timeout(mask_instruction, Duration::from_secs(10));
+    if instruction_control_available {
+        assert!(mask_instruction.status.success(), "{mask_instruction:?}");
+        assert_eq!(
+            mask_instruction.stdout,
+            b"instruction-mask full=0xffffffffbffbfaff write-only-set first-call fallback-site trap-after-full-mask\nrdtsc-after-full-mask=tool\n",
+            "{mask_instruction:?}"
+        );
+        assert!(mask_instruction.stderr.is_empty(), "{mask_instruction:?}");
+    } else {
+        assert_eq!(
+            mask_instruction.status.code(),
+            Some(INSTRUCTION_CONTROL_UNAVAILABLE_STATUS),
+            "{mask_instruction:?}"
+        );
+        assert!(mask_instruction.stdout.is_empty(), "{mask_instruction:?}");
+        assert_eq!(
+            mask_instruction.stderr, b"instruction-control-unavailable\n",
+            "{mask_instruction:?}"
+        );
     }
 
     let guest = Command::new(binary)

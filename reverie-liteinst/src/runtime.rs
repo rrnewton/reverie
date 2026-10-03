@@ -855,6 +855,20 @@ pub(crate) fn rdtsc_interception_enabled() -> bool {
     INSTRUCTION_SUBSCRIPTIONS.load(Ordering::Acquire) & INSTRUCTION_RDTSC != 0
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-913): Review the reserved-signal set kept unblocked.
+/// Signals the runtime receives as forced signals and so must never be
+/// blocked: SIGSYS for every trapped system call, and SIGSEGV for CPUID or
+/// RDTSC faulting while an instruction is subscribed. Linux resets a blocked
+/// forced signal to its default action, which kills the process.
+pub(crate) fn reserved_signal_mask() -> u64 {
+    let mut reserved = 1_u64 << (libc::SIGSYS - 1);
+    if INSTRUCTION_SUBSCRIPTIONS.load(Ordering::Acquire) != 0 {
+        reserved |= 1_u64 << (libc::SIGSEGV - 1);
+    }
+    reserved
+}
+
 pub(crate) fn preflight_instruction_faulting(
     subscriptions: InstructionSubscriptions,
 ) -> io::Result<()> {
@@ -3342,9 +3356,7 @@ fn protect_runtime_control(event: &mut SyscallEvent) -> bool {
         // TODO-HUMAN-REVIEW(PR-133): Review fail-closed guest signal-handler policy.
         !signal_action_supported(event.number, event.args)
         // AUTONOMOUS-BOT-IMPLEMENTED
-        || (event.number == libc::SYS_sigaltstack && event.args[0] != 0)
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || (event.number == libc::SYS_rt_sigprocmask && event.args[1] != 0);
+        || (event.number == libc::SYS_sigaltstack && event.args[0] != 0);
 
     if unsupported_process {
         event.result = -i64::from(libc::ENOTSUP);
