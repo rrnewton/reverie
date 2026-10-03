@@ -6,6 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+// This module names only `core` and `alloc`, so it also builds without
+// `std` (reverie-narf-tools compiles it for the Narf kernel).
+extern crate alloc;
+
+use alloc::vec::Vec;
+
 use serde::Deserialize;
 use serde::Serialize;
 

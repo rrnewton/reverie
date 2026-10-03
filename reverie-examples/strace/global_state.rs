@@ -6,6 +6,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+// This module names only `core` and `alloc`, so it also builds without
+// `std` (reverie-narf-tools compiles it for the Narf kernel).
+extern crate alloc;
+
+// The `#[reverie::global_tool]` expansion boxes each handler future by the
+// bare name `Box`, which is only in the prelude with `std`.
+use alloc::boxed::Box;
+
 use reverie::GlobalTool;
 use reverie::Pid;
 

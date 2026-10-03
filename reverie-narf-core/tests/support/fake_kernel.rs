@@ -590,6 +590,9 @@ fn run_native(
             }
             (ContextManaged, None)
         }
+        // A NULL filename fails as Linux fails it, before anything is
+        // replaced.
+        Some(Sysno::execve) if a0 == 0 => (Returned(fault), None),
         Some(Sysno::execve) => (ContextManaged, None),
         _ => (Returned(ENOSYS_RET), None),
     }

@@ -64,7 +64,10 @@ impl Pid {
     ///
     /// Note that while the same PIDs always have the same color, different PIDs
     /// may also have the same color if they fall into the same color bucket.
-    #[cfg(feature = "std")]
+    ///
+    /// Without `std` there is no terminal to detect, so the result displays
+    /// exactly as the `Pid` does, as it does with `std` when not writing to a
+    /// terminal.
     pub fn colored(self) -> ColoredPid {
         ColoredPid(self)
     }
@@ -103,13 +106,12 @@ impl fmt::Display for Pid {
 }
 
 /// A colored pid.
-#[cfg(feature = "std")]
 pub struct ColoredPid(Pid);
 
-#[cfg(feature = "std")]
 impl ColoredPid {
     /// Gets the ansi color code for the current PID. Returns `None` if not
     /// writing to a terminal.
+    #[cfg(feature = "std")]
     fn ansi_code(&self) -> Option<&'static str> {
         if colored::control::SHOULD_COLORIZE.should_colorize() {
             // Why not just use `colored::Colorize` you ask? It allocates a
@@ -136,9 +138,14 @@ impl ColoredPid {
             None
         }
     }
+
+    /// Without `std` there is no terminal, so there is never a color code.
+    #[cfg(not(feature = "std"))]
+    fn ansi_code(&self) -> Option<&'static str> {
+        None
+    }
 }
 
-#[cfg(feature = "std")]
 impl fmt::Display for ColoredPid {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(color) = self.ansi_code() {
