@@ -114,10 +114,12 @@ const STEPPED_ENTRY_PREFIX: &str = "stepped-entry ";
 /// RFLAGS' arithmetic status flags: CF, PF, AF, ZF, SF and OF.
 const RFLAGS_STATUS: u64 = 0x8d5;
 
-/// The root's thread-start is the child side of the launcher's fork, before
-/// `execve`. Its r11 is the RFLAGS image saved at that `clone`, so the status
-/// flags are whatever the tracer's own code last computed; neither backend
-/// sets them. Every other thread-start keeps its exact r11.
+/// The root's thread-start is the SIGSTOP that the launcher's fork child
+/// raises in `traceme_and_stop`, before `execve`. Its r11 is the RFLAGS image
+/// the kernel saved at glibc's `raise` -> `tgkill`, so the status flags are
+/// whatever that libc code last computed (platform010's glibc tests the host
+/// tid there, making PF follow it); neither backend sets them, and `execve`
+/// discards them. Every other thread-start keeps its exact r11.
 fn mask_launcher_status_flags(event: String) -> String {
     if !event.starts_with("thread-start ") {
         return event;
