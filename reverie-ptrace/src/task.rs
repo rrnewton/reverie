@@ -614,6 +614,21 @@ fn pending_signal_mask(tid: Pid) -> Result<u64, TraceError> {
     Ok(field("SigPnd:")? | field("ShdPnd:")?)
 }
 
+/// Whether a seccomp filter may restrict the calling thread's syscalls, or
+/// its mode cannot be read (procfs `Seccomp` of `/proc/thread-self`). Called
+/// on the tracer thread, which makes every ptrace request. Filters are never
+/// removed, so a thread without one has had none since it started, and it
+/// gets one only by installing it or by another thread synchronizing its
+/// own (`SECCOMP_FILTER_FLAG_TSYNC`).
+fn thread_may_be_seccomp_filtered() -> bool {
+    std::fs::read_to_string("/proc/thread-self/status").map_or(true, |status| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("Seccomp:"))
+            .is_none_or(|mode| mode.trim() != "0")
+    })
+}
+
 /// `si_code` of a SIGSYS raised by a seccomp filter's `SECCOMP_RET_TRAP`.
 const SYS_SECCOMP: libc::c_int = 1;
 
@@ -6306,12 +6321,18 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// the registers passes the signal on unreported as well, as main
     /// resumes it, rather than failing the resume.
     ///
-    /// A signal is also passed on unreported when its siginfo could not be
-    /// written back (`PTRACE_SETSIGINFO` fails, for one, under a seccomp
-    /// policy of the tracer). Resumed from a callback injection's stop, it
-    /// would reach the guest with the siginfo Linux makes up (`SI_USER`, the
-    /// tracer's thread ID, no value); main resumes it from its own stop, with
-    /// its own siginfo.
+    /// A signal is also passed on unreported when the tracer thread may be
+    /// under a seccomp filter, or its mode cannot be read
+    /// (`thread_may_be_seccomp_filtered`). A filter can make the
+    /// `PTRACE_SETSIGINFO` of `resume_with_signal` fail, and a signal resumed
+    /// from a callback injection's stop would then reach the guest with the
+    /// siginfo Linux makes up (`SI_USER`, the tracer's thread ID, no value).
+    /// Main resumes it with the siginfo of the stop it is resumed from, which
+    /// with no injection in between is its own. A request the filter allowed
+    /// earlier does not show that it allows this one: a filter that denies
+    /// after a first success would see the earlier one succeed. The cost is
+    /// that a tracer run under such a policy (a container's default seccomp
+    /// profile, for one) gets no held report, as on main.
     ///
     /// A returning `tail_inject` from the callback ends it and passes the
     /// signal on (`report_signal`).
@@ -6369,13 +6390,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         if pending_signal_mask(task.pid()).map_or(true, |pending| pending & !stale_step_trap != 0) {
             return Ok(self.pass_held_signal_unreported(signal));
         }
-        // Writing the stop's own siginfo back changes nothing, and tells
-        // whether `resume_with_signal` can write it back after the
-        // callback's injections.
-        if !task
-            .getsiginfo()
-            .is_ok_and(|siginfo| task.setsiginfo(&siginfo).is_ok())
-        {
+        // `resume_with_signal` writes the siginfo back with
+        // `PTRACE_SETSIGINFO`, which a seccomp filter of the tracer can make
+        // fail while the guest is alive. An earlier request a filter allows
+        // does not tell that it allows that later one.
+        if thread_may_be_seccomp_filtered() {
             return Ok(self.pass_held_signal_unreported(signal));
         }
         tracing::debug!(
@@ -6433,8 +6452,11 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// written back first. When that write fails, the signal is still
     /// delivered, with the made-up siginfo. For a signal at its own delivery
     /// stop that is what main delivers after the callback's injections. A
-    /// held signal is reported only when a write at its stop succeeded
-    /// (`report_held_signal`), so its write fails only when a later one does.
+    /// held signal is reported only while the tracer thread is under no
+    /// seccomp filter (`report_held_signal`), so its write can fail only when
+    /// the guest is gone, when the callback installs a filter on the tracer
+    /// thread, or when something else outside Reverie fails the request
+    /// (<https://github.com/rrnewton/reverie/issues/845>).
     ///
     /// The kernel puts the signal back in its queue instead of delivering it
     /// when the guest's mask blocks it by now (`ptrace_signal`). From a stop
