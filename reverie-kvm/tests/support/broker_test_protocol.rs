@@ -15,6 +15,7 @@ pub fn selected(test: &str) -> bool {
             | "pdeathsig::actual_creator_death_wakes_controlled_pause_and_nanosleep"
             | "pdeathsig::linger_process::creator_process_queued_tcp_exit_publishes_before_peer_drain"
             | "executor::tests::terminal_cleanup_preserves_live_shared_table_and_does_not_wait_for_its_lock"
+            | "executor::tests::terminal_cleanup_retires_socket_despite_fdinfo_observer_table_pin"
             | "terminal_cleanup::tests::dropped_waiter_keeps_native_wait_and_owned_service_alive"
             | "executor::tests::pdeath_abi_adoption_full_width_and_scalar_copyout_are_exact"
             | "executor::tests::pdeath_close_replacement_and_exec_cloexec_require_owned_completion_authority"
