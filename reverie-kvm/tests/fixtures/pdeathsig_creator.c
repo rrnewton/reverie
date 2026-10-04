@@ -24,6 +24,7 @@ static int resumed;
 static pid_t parent_pid;
 static uid_t parent_uid;
 static pid_t child_pid;
+static pid_t creator_tid;
 static volatile sig_atomic_t calls;
 static volatile sig_atomic_t valid_info;
 
@@ -139,6 +140,8 @@ static void recipient(void) {
 }
 static void *creator(void *unused) {
   (void)unused;
+  creator_tid = (pid_t)syscall(SYS_gettid);
+  if (creator_tid <= 0 || creator_tid == parent_pid) fail(19);
   child_pid = fork();
   if (child_pid < 0) fail(20);
   if (child_pid == 0) recipient();
@@ -163,6 +166,20 @@ int main(int argc, char **argv) {
   pthread_t worker;
   if (pthread_create(&worker, 0, creator, 0)) return 13;
   if (pthread_join(worker, 0)) return 14;
+  /* Linux clears the pthread join word in exit_mm/mm_release, before
+   * exit_notify generates the parent-death signal. Complete task retirement
+   * is the causal witness: PID lookup removal follows forget_original_parent.
+   * No new thread is created in this TGID, so a reused numeric TID cannot be
+   * mistaken for this creator. This is not a retry of the pending assertion.
+   * Keep the existing outer test deadline; no sleeps or new timeout.
+   */
+  for (;;) {
+    errno = 0;
+    long exists = syscall(SYS_tgkill, parent_pid, creator_tid, 0);
+    if (exists == -1 && errno == ESRCH) break;
+    if (exists != 0) return 19;
+    syscall(SYS_sched_yield);
+  }
   store(1, 1);
   int status = 0;
   if (waitpid(child_pid, &status, 0) != child_pid ||
