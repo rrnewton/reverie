@@ -8,7 +8,7 @@
 //! Authenticated, retained parent-death publication at an existing Tool fence.
 //! No sender transaction survives into the recipient transaction.
 //! AUTONOMOUS-BOT-IMPLEMENTED
-//! TODO-HUMAN-REVIEW(PR-PENDING): <https://github.com/rrnewton/reverie/issues/916>.
+//! TODO-HUMAN-REVIEW(PR-925): <https://github.com/rrnewton/reverie/issues/916>.
 
 use reverie::ParentDeathPublication;
 use reverie::ParentDeathPublicationResult;
