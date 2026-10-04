@@ -756,6 +756,12 @@ pub(super) struct LegacyWaitOwner {
     // Opening status through this retained directory resolves the original
     // PID object. It cannot authenticate a later reused numeric host TID.
     lifetime: OwnedFd,
+    // Current gettid is relative to the caller's active PID namespace. A
+    // copied driver can have the same numeric ID after a fork into another
+    // namespace while this original owner remains live. Resolve genuine
+    // thread-self through the capture-time mount to authenticate the task
+    // executing now without consulting a later absolute /proc overmount.
+    proc_root: AlignedProcfs,
 }
 
 /// The task selected before an initial numeric attachment. The raw ptrace
@@ -825,6 +831,7 @@ impl LegacyWaitOwner {
             tid,
             tgid: Pid::from(nix::unistd::getpid()),
             lifetime,
+            proc_root: root,
         })
     }
 
@@ -837,7 +844,11 @@ impl LegacyWaitOwner {
     }
 
     fn is_current(&self) -> Result<bool, Errno> {
-        Ok(self.tid == Pid::from(nix::unistd::gettid()) && self.is_live()?)
+        if self.tid != Pid::from(nix::unistd::gettid()) || !self.is_live()? {
+            return Ok(false);
+        }
+        let current = self.proc_root.current_thread_status()?;
+        Ok(current.pid == self.tid && current.tgid == self.tgid)
     }
 }
 
@@ -3314,6 +3325,25 @@ impl AlignedProcfs {
         } else {
             Ok(unsafe { OwnedFd::from_raw_fd(raw) })
         }
+    }
+
+    fn current_thread_status(&self) -> Result<RetainedProcStatus, Errno> {
+        let _open = launch_window::TransientOpen::begin();
+        // procfs's thread-self link resolves the executing kernel task in
+        // this retained mount's namespace. Follow that genuine kernel link;
+        // the mount was authenticated before capturing the original owner.
+        let raw = unsafe {
+            libc::openat(
+                self.root.as_raw_fd(),
+                c"thread-self".as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if raw < 0 {
+            return Err(Errno::last());
+        }
+        let directory = unsafe { OwnedFd::from_raw_fd(raw) };
+        retained_proc_status(directory.as_raw_fd())
     }
 }
 
