@@ -1290,6 +1290,7 @@ async fn explicit_copied_owner_namespace_refuses_before_consuming_any_report() {
             let owner = owned.affinity.owner.as_ref().unwrap().clone();
             assert_eq!(owner.tid.as_raw(), 2);
             assert!(owner.is_current().unwrap());
+            assert_eq!(original.identity().unwrap().pidfd_is_live(), Ok(true));
             let (resume, capture) = if native {
                 legacy_owner_until(|| !terminal.queued_raw_statuses().is_empty());
                 (None, None)
@@ -1360,7 +1361,23 @@ async fn explicit_copied_owner_namespace_refuses_before_consuming_any_report() {
                                     original.identity().unwrap().current_tracer_pid(),
                                     Ok(owner.tid)
                                 );
-                                assert_eq!(original.identity().unwrap().pidfd_is_live(), Ok(true));
+                                let target = retained_proc_status(
+                                    original.identity().unwrap().proc_dir.as_raw_fd(),
+                                )
+                                .unwrap();
+                                assert_eq!(target.pid, tid.into());
+                                assert_eq!(target.tgid, root.into());
+                                assert_eq!(target.tracer_pid, owner.tid);
+                                // pidfd_send_signal refuses signaling an
+                                // ancestor PID namespace from a descendant
+                                // with EINVAL before permission/delivery.
+                                // Keep that error exact; original liveness
+                                // above comes from the retained directory,
+                                // not from interpreting this denial.
+                                assert_eq!(
+                                    original.identity().unwrap().pidfd_is_live(),
+                                    Err(Errno::EINVAL)
+                                );
                                 assert_eq!(
                                     require_aligned_proc_pid_namespace(),
                                     if realign_proc {
@@ -1464,9 +1481,19 @@ async fn explicit_copied_owner_namespace_refuses_before_consuming_any_report() {
                                     stop,
                                 );
                                 assert!(owner.is_live().unwrap());
-                                assert_eq!(original.identity().unwrap().pidfd_is_live(), Ok(true));
+                                let target = retained_proc_status(
+                                    original.identity().unwrap().proc_dir.as_raw_fd(),
+                                )
+                                .unwrap();
+                                assert_eq!(target.pid, tid.into());
+                                assert_eq!(target.tgid, root.into());
+                                assert_eq!(target.tracer_pid, owner.tid);
+                                assert_eq!(
+                                    original.identity().unwrap().pidfd_is_live(),
+                                    Err(Errno::EINVAL)
+                                );
                                 println!(
-                                    "COPIED_OWNER_REFUSAL native={native} forced={forced} realigned={realign_proc} current_tid={} original_tid={} original_live=true target_live=true replacement_stop_preserved=true replacement_exit=42",
+                                    "COPIED_OWNER_REFUSAL native={native} forced={forced} realigned={realign_proc} current_tid={} original_tid={} original_live=true target_live=true ancestor_signal0=EINVAL replacement_stop_preserved=true replacement_exit=42",
                                     nix::unistd::gettid(),
                                     owner.tid
                                 );
@@ -1484,6 +1511,8 @@ async fn explicit_copied_owner_namespace_refuses_before_consuming_any_report() {
             let status = waitpid_status_bounded(intermediate, 0, TRACEE_WAIT_TIMEOUT).unwrap();
             assert!(libc::WIFEXITED(status));
             assert_eq!(libc::WEXITSTATUS(status), 0);
+            assert!(owner.is_current().unwrap());
+            assert_eq!(original.identity().unwrap().pidfd_is_live(), Ok(true));
             if let Some(resume) = resume {
                 resume.send(()).unwrap();
             }
