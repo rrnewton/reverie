@@ -127,6 +127,167 @@ fn pdeath_creator_thread_exit_publishes_process_si_user_once() {
     assert!(child.take_pending_signal_for_delivery().unwrap().is_none());
 }
 
+fn pdeath_zero_probe(executor: &ElfExecutor, tgid: Option<i32>, tid: i32) -> i64 {
+    result_of(send_thread_signal(&executor.state, tgid, tid, 0))
+}
+
+fn pdeath_existence_marker(executor: &ElfExecutor, boundary: reverie::SignalBoundaryReceipt)
+    -> Arc<std::sync::atomic::AtomicBool>
+{
+    executor.state.task_lifecycle.lock().unwrap().parent_death.batches.values()
+        .find(|batch| batch.boundary == Some(boundary)).unwrap().unpublished.clone()
+}
+
+#[test]
+fn pdeath_signal_zero_waits_for_publication_without_reviving_delivery() {
+    let root = TestDir::new();
+    let leader = ElfExecutor::new(test_state(&root.0), true);
+    let _run = pdeath_adopt(&leader);
+    let mut creator = leader.thread_child(2).unwrap();
+    let mut child = creator.fork_child(3, false, false).unwrap();
+    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+    pdeath_mask(&mut child, &mut memory, libc::SIGUSR1, libc::SIG_BLOCK);
+    assert_eq!(pdeath_set(&mut child, &memory, libc::SIGUSR1 as u64), 0);
+    let permit = pdeath_permit(&creator, 1);
+    let exit = commit_test_exit(&mut creator, 0, false);
+    let boundary = reverie::SignalBoundaryReceipt { permit, outcome:
+        reverie::SignalBoundaryOutcome::Terminated { group: false, wait_status: exit.status.into_raw() } };
+    assert!(child.state.task_lifecycle.lock().unwrap().get(2).is_none());
+    assert!(creator.signal_task_identity().is_none(), "existence is not live admission");
+    assert_eq!(result_of(send_thread_signal(&child.state, Some(1), 2, libc::SIGUSR1)),
+        -i64::from(libc::ESRCH), "existence never authorizes delivery");
+    for request in [
+        SyscallRequest::new(libc::SYS_tgkill as u64, [1, 2, 0, 0, 0, 0]),
+        SyscallRequest::new(libc::SYS_tkill as u64, [2, 0, 0, 0, 0, 0]),
+    ] {
+        assert_eq!(child.execute_checked(&request, &memory).unwrap(), 0,
+            "actual signal-zero syscall must wait for publication");
+    }
+    assert_eq!(pdeath_zero_probe(&child, Some(99), 2), -i64::from(libc::ESRCH));
+    {
+        let signals = child.state.process_signals.lock().unwrap();
+        assert!(!signals.shared_pending.pending_mask(&signals.pending_generations).contains(libc::SIGUSR1));
+    }
+    let control = creator.backend_signal_control().process;
+    let wrong = reverie::SignalBoundaryReceipt { outcome: reverie::SignalBoundaryOutcome::ImageReplaced, ..boundary };
+    assert!(matches!(control.publish_parent_death(wrong), reverie::ParentDeathPublicationResult::RejectedBeforeCommit(_)));
+    assert_eq!(pdeath_zero_probe(&child, Some(1), 2), 0, "rejection cannot release existence");
+    let result = control.publish_parent_death(boundary);
+    let reverie::ParentDeathPublicationResult::Committed(receipt) = result else { panic!("{result:?}"); };
+    assert_eq!(receipt.signals.len(), 1);
+    assert!(!receipt.signals[0].discarded);
+    assert_eq!(pdeath_zero_probe(&child, Some(1), 2), -i64::from(libc::ESRCH));
+    assert_eq!(pdeath_zero_probe(&child, None, 2), -i64::from(libc::ESRCH));
+    {
+        let signals = child.state.process_signals.lock().unwrap();
+        assert!(signals.shared_pending.pending_mask(&signals.pending_generations).contains(libc::SIGUSR1),
+            "real shared queue insertion must precede the ESRCH witness");
+    }
+    assert!(!pdeath_existence_marker(&child, boundary).load(Ordering::Acquire));
+    assert_eq!(control.publish_parent_death(boundary), reverie::ParentDeathPublicationResult::Committed(receipt));
+}
+
+#[test]
+fn pdeath_signal_zero_covers_group_exec_empty_and_ignored_batches() {
+    for image_replaced in [false, true] {
+        for ignored in [false, true] {
+            let root = TestDir::new();
+            let mut leader = ElfExecutor::new(test_state(&root.0), true);
+            let _run = pdeath_adopt(&leader);
+            let mut creator = leader.thread_child(2).unwrap();
+            let mut sibling = leader.thread_child(4).unwrap();
+            let mut child = creator.fork_child(3, false, false).unwrap();
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            if ignored {
+                pdeath_action(&mut child, &mut memory, libc::SIGUSR1, libc::SIG_IGN as u64);
+                assert_eq!(pdeath_set(&mut child, &memory, libc::SIGUSR1 as u64), 0);
+            }
+            let permit = pdeath_permit(&leader, 1);
+            let outcome = if image_replaced {
+                leader.prepare_parent_death_exec().unwrap();
+                reverie::SignalBoundaryOutcome::ImageReplaced
+            } else {
+                let exit = commit_test_exit(&mut leader, 0, true);
+                reverie::SignalBoundaryOutcome::Terminated { group: true, wait_status: exit.status.into_raw() }
+            };
+            let boundary = reverie::SignalBoundaryReceipt { permit, outcome };
+            creator.retire_current_thread(ExitStatus::SUCCESS, false);
+            sibling.retire_current_thread(ExitStatus::SUCCESS, false);
+            let expected_dying = if image_replaced { vec![creator.admitted_signal_identity(), sibling.admitted_signal_identity()] }
+                else { vec![leader.admitted_signal_identity(), creator.admitted_signal_identity(), sibling.admitted_signal_identity()] };
+            {
+                let life = child.state.task_lifecycle.lock().unwrap();
+                let batch = life.parent_death.batches.values().find(|b| b.boundary == Some(boundary)).unwrap();
+                assert_eq!(batch.dying, expected_dying, "full exact logical group/exec membership");
+            }
+            for task in &expected_dying {
+                assert_eq!(pdeath_zero_probe(&child, Some(task.process.tgid.as_raw()), task.tid.as_raw()), 0,
+                    "empty/ignored batch still holds existence");
+            }
+            if image_replaced { leader.replace_after_exec(test_state(&root.0)); }
+            let result = leader.backend_signal_control().process.publish_parent_death(boundary);
+            let reverie::ParentDeathPublicationResult::Committed(receipt) = result else { panic!("{result:?}"); };
+            assert_eq!(receipt.signals.len(), usize::from(ignored));
+            assert!(receipt.signals.iter().all(|signal| signal.discarded));
+            for task in &expected_dying {
+                assert_eq!(pdeath_zero_probe(&child, Some(task.process.tgid.as_raw()), task.tid.as_raw()), -i64::from(libc::ESRCH));
+            }
+            assert_eq!(pdeath_zero_probe(&child, Some(1), 1), if image_replaced { 0 } else { -i64::from(libc::ESRCH) });
+            assert!(!child.has_eligible_pending_signal());
+        }
+    }
+}
+
+#[test]
+fn pdeath_signal_zero_duplicate_completion_survives_binding_loss_and_reuse() {
+    let root = TestDir::new();
+    let leader = ElfExecutor::new(test_state(&root.0), true);
+    let _run = pdeath_adopt(&leader);
+    let mut creator = leader.thread_child(2).unwrap();
+    let child = creator.fork_child(3, false, false).unwrap();
+    let old_binding = Arc::downgrade(&creator.signal_binding);
+    let permit = pdeath_permit(&creator, 1);
+    let exit = commit_test_exit(&mut creator, 0, false);
+    let boundary = reverie::SignalBoundaryReceipt { permit, outcome:
+        reverie::SignalBoundaryOutcome::Terminated { group: false, wait_status: exit.status.into_raw() } };
+    let marker = pdeath_existence_marker(&child, boundary);
+    let control = creator.backend_signal_control().process;
+    let result = control.publish_parent_death(boundary);
+    assert!(matches!(&result, reverie::ParentDeathPublicationResult::Committed(receipt) if receipt.signals.is_empty()));
+    assert!(!marker.load(Ordering::Acquire));
+    // Test-only interleaving seam: results committed, first caller not yet at
+    // its final Release store. Production never turns a completed marker on.
+    marker.store(true, Ordering::Release);
+    control.release_delivery(permit).unwrap();
+    drop(creator); drop(leader);
+    assert!(old_binding.upgrade().is_none(), "no sender binding may help the duplicate");
+    assert_eq!(pdeath_zero_probe(&child, Some(1), 2), 0);
+    // The runtime allocator is monotonic. Plant reuse to prove the fallback
+    // nevertheless cannot shadow a live row or clear a newer exact batch.
+    let mut replacement = child.fork_child(2, false, false).unwrap();
+    assert_ne!(replacement.admitted_signal_identity(), permit.task);
+    assert_eq!(pdeath_zero_probe(&child, Some(1), 2), -i64::from(libc::ESRCH), "live TGID2 wins over retained TGID1");
+    assert_eq!(pdeath_zero_probe(&child, Some(2), 2), 0);
+    assert_eq!(control.publish_parent_death(boundary), result);
+    assert!(!marker.load(Ordering::Acquire));
+    assert_eq!(pdeath_zero_probe(&child, Some(2), 2), 0, "old completion cannot retire live replacement");
+    marker.store(true, Ordering::Release);
+    let next = pdeath_permit(&replacement, 2);
+    let exit = commit_test_exit(&mut replacement, 0, false);
+    let new_boundary = reverie::SignalBoundaryReceipt { permit: next, outcome:
+        reverie::SignalBoundaryOutcome::Terminated { group: false, wait_status: exit.status.into_raw() } };
+    let new_marker = pdeath_existence_marker(&child, new_boundary);
+    assert!(!Arc::ptr_eq(&marker, &new_marker));
+    assert_eq!(control.publish_parent_death(boundary), result);
+    assert!(!marker.load(Ordering::Acquire));
+    assert!(new_marker.load(Ordering::Acquire), "duplicate clears only its exact batch");
+    assert_eq!(pdeath_zero_probe(&child, Some(1), 2), -i64::from(libc::ESRCH));
+    assert_eq!(pdeath_zero_probe(&child, Some(2), 2), 0);
+    assert!(matches!(control.publish_parent_death(new_boundary), reverie::ParentDeathPublicationResult::Committed(_)));
+    assert!(!new_marker.load(Ordering::Acquire));
+    assert_eq!(pdeath_zero_probe(&child, Some(2), 2), -i64::from(libc::ESRCH));
+}
+
 #[test]
 fn pdeath_registration_reset_sticky_domain_and_exec_capability_gain() {
     let root = TestDir::new();
@@ -449,8 +610,13 @@ fn pdeath_publication_failure_retains_exact_prefix_and_survives_sender_cleanup()
     let boundary = reverie::SignalBoundaryReceipt { permit, outcome:
         reverie::SignalBoundaryOutcome::Terminated { group: false, wait_status: 0 } };
     let control = creator.backend_signal_control().process;
+    assert_eq!(pdeath_zero_probe(&second, Some(1), 2), 0);
+    let marker = pdeath_existence_marker(&second, boundary);
     let result = control.publish_parent_death(boundary);
     let reverie::ParentDeathPublicationResult::FailedAfterCommit { receipt, errno } = &result else { panic!("{result:?}"); };
+    assert!(marker.load(Ordering::Acquire));
+    assert_eq!(pdeath_zero_probe(&second, Some(1), 2), 0, "failed prefix cannot publish a death-completion witness");
+    assert!(creator.check_parent_death_failure().is_err(), "this is terminal, not successful continued execution");
     assert_eq!(*errno, reverie::syscalls::Errno::EBADF);
     assert_eq!(receipt.batches.len(), 1);
     assert_eq!(receipt.signals.len(), 1);
@@ -468,6 +634,8 @@ fn pdeath_publication_failure_retains_exact_prefix_and_survives_sender_cleanup()
     assert_eq!(control.publish_parent_death(boundary), result,
         "a retained committed prefix does not depend on sender registry lifetime");
     assert!(!second.has_eligible_pending_signal());
+    assert!(marker.load(Ordering::Acquire));
+    assert_eq!(pdeath_zero_probe(&second, Some(1), 2), 0, "failed duplicate retains existence after sender cleanup");
     first.state.process_signals.lock().unwrap().signalfd_carriers.insert(fd as i32, retained_carrier);
 }
 

@@ -20206,14 +20206,18 @@ fn send_thread_signal(
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if signal == 0 {
+            return continue_with(if lifecycle.signal_zero_task_exists(target, tgid) {
+                0
+            } else {
+                negative_errno(libc::ESRCH)
+            });
+        }
         let Some(task) = lifecycle.get(target) else {
             return continue_with(negative_errno(libc::ESRCH));
         };
         if tgid.is_some_and(|tgid| tgid != task.tgid) {
             return continue_with(negative_errno(libc::ESRCH));
-        }
-        if signal == 0 {
-            return continue_with(0);
         }
         if task.tgid != state.pid {
             return continue_with(negative_errno(libc::ENOSYS));
