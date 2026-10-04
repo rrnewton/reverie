@@ -27,6 +27,9 @@ use reverie_kvm::native_exit_broker::RetryReason;
 use reverie_kvm::native_exit_broker::SocketReference;
 
 const OBSERVATION: Duration = Duration::from_secs(5);
+// This new cleanup-only budget cannot convert the already-recorded five-second
+// before-drain failure to success. The existing outer 30s/kill2 bound is unchanged.
+const MISSED_OBSERVATION_CLEANUP: Duration = Duration::from_secs(5);
 const MAX_QUEUED: usize = 8 * 1024 * 1024;
 
 #[derive(Default)]
@@ -49,7 +52,139 @@ struct WorkerLimit {
 pub struct CaseFailure {
     pub message: String,
     pub resources: Resources,
+    pub observation: Option<BeforeDrainRecord>,
+    pub cleanup: Option<CleanupCensus>,
+    pub completed_receipt: Option<CaseReceipt>,
 }
+#[derive(Clone, Debug)]
+pub struct BeforeDrainRecord {
+    pub bound_millis: u128,
+    pub observed_micros: u128,
+    pub completed_before_drain: bool,
+    pub receipt_observed_after_bound: bool,
+    pub stage_at_deadline: Option<JobStage>,
+    pub parent_references_retired_at_deadline: bool,
+    // Shared Arc is a live-foreign-owner control, never a last-close witness.
+    pub last_owner_case: bool,
+}
+#[derive(Debug)]
+pub struct CleanupCensus {
+    pub completed_native_waits: usize,
+    pub supplied_file_references: usize,
+    pub foreign_file_reference: bool,
+    pub active_worker_limit: bool,
+    pub retained_unexpected_rights: usize,
+    pub native_job_complete: bool,
+    pub queued_stream_exact_and_eof: bool,
+    // The caller still owns the live broker. Only its actual shutdown/wait can
+    // complete the whole case; this is not an invented zero-process census.
+    pub broker_shutdown_still_required: bool,
+}
+impl Resources {
+    fn empty_after_confirmed_cleanup(&self) -> bool {
+        self.job.is_none()
+            && self.files.is_empty()
+            && self.tcp.is_none()
+            && self.unix_peer.is_none()
+            && self.foreign.is_none()
+            && self.worker_limit.is_none()
+    }
+
+    pub fn print_retained_owners(&self) {
+        eprintln!(
+            "NATIVE_CASE_RETAINED_OWNERS job_present={} supplied_files={} tcp_peer_present={} unix_peer_present={} foreign_file_present={} worker_limit_present={}",
+            self.job.is_some(),
+            self.files.len(),
+            self.tcp.is_some(),
+            self.unix_peer.is_some(),
+            self.foreign.is_some(),
+            self.worker_limit.is_some()
+        );
+        if let Some(job) = &self.job {
+            eprintln!(
+                "NATIVE_CASE_RETAINED_JOB stage={:?} native_pid={:?} parent_refs_retired={} acknowledged_prefix={} unexpected_rights={} attempts={}",
+                job.stage(),
+                job.native_worker_pid(),
+                job.parent_references_retired(),
+                job.acknowledged_prefix(),
+                job.retained_unexpected_rights().len(),
+                job.attempts()
+            );
+        }
+        if let Some(limit) = &self.worker_limit {
+            // These are the actual retained restoration preimage and generation,
+            // not a guess that restoration succeeded or that a PID is still live.
+            eprintln!(
+                "NATIVE_CASE_RETAINED_WORKER_LIMIT pid={} start_ticks={} pidfd={} original_soft={} original_hard={} applied={}",
+                limit.pid,
+                limit.start_ticks,
+                limit._pidfd.as_raw_fd(),
+                limit.original.rlim_cur,
+                limit.original.rlim_max,
+                limit.applied
+            );
+        }
+    }
+}
+
+impl CaseFailure {
+    pub fn cleaned_observation_miss(&self) -> bool {
+        let Some(before) = &self.observation else {
+            return false;
+        };
+        let Some(cleanup) = &self.cleanup else {
+            return false;
+        };
+        let Some(receipt) = &self.completed_receipt else {
+            return false;
+        };
+        !before.completed_before_drain
+            && before.bound_millis == OBSERVATION.as_millis()
+            && cleanup.native_job_complete
+            && cleanup.queued_stream_exact_and_eof
+            && cleanup.supplied_file_references == 0
+            && !cleanup.foreign_file_reference
+            && !cleanup.active_worker_limit
+            && cleanup.retained_unexpected_rights == 0
+            && cleanup.completed_native_waits == receipt.waits.len()
+            && cleanup.broker_shutdown_still_required
+            && receipt
+                .waits
+                .iter()
+                .all(|wait| wait.job > 0 && wait.native_pid > 0 && wait.raw_wait_status == 0)
+            && !receipt.waits.is_empty()
+            && self.resources.empty_after_confirmed_cleanup()
+    }
+
+    pub fn causal_last_close_witness(&self) -> bool {
+        self.cleaned_observation_miss()
+            && self.observation.as_ref().is_some_and(|before| {
+                before.last_owner_case
+                    && !before.receipt_observed_after_bound
+                    && before.stage_at_deadline == Some(JobStage::NativeWait)
+                    && before.parent_references_retired_at_deadline
+            })
+    }
+
+    pub fn classification(&self) -> &'static str {
+        if self.cleaned_observation_miss() {
+            if self.causal_last_close_witness() {
+                "cleaned-causal-before-drain-miss"
+            } else {
+                "cleaned-before-drain-miss-not-last-close-proof"
+            }
+        } else if self
+            .observation
+            .as_ref()
+            .is_some_and(|before| !before.completed_before_drain)
+        {
+            "cleanup-infrastructure-failure-after-observation-miss"
+        } else {
+            "setup-protocol-or-unsettled-assertion-failure"
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct CaseReceipt {
     pub case: String,
@@ -59,6 +194,7 @@ pub struct CaseReceipt {
     pub notsent: i32,
     pub first_chunk_acknowledged: bool,
     pub fault: Option<FaultRecord>,
+    pub before_drain: Option<BeforeDrainRecord>,
 }
 
 #[derive(Debug)]
@@ -208,6 +344,54 @@ fn complete(r: &mut Resources, deadline: Instant) -> Result<NativeExitReceipt, S
                 return Ok(receipt);
             }
             JobProgress::Pending => wait_job(job, deadline)?,
+        }
+    }
+}
+
+// Only a deadline is a missed observation. Protocol/I/O/setup errors stay Err,
+// retain their original errno/message and are not causal-mutant detection.
+fn observe_before_drain(
+    r: &mut Resources,
+    started: Instant,
+) -> Result<(Option<NativeExitReceipt>, bool), String> {
+    let deadline = started + OBSERVATION;
+    loop {
+        if Instant::now() >= deadline {
+            return Ok((None, false));
+        }
+        let job = r.job.as_mut().ok_or("missing reserved native job")?;
+        match job.advance(&mut r.files).map_err(core)? {
+            JobProgress::Complete(receipt) => {
+                require(
+                    receipt.native_pid > 0 && receipt.job > 0 && receipt.raw_wait_status == 0,
+                    "exact successful native wait receipt",
+                )?;
+                require(
+                    job.parent_references_retired() && r.files.is_empty(),
+                    "all supplied references retired",
+                )?;
+                return Ok((Some(receipt), Instant::now() < deadline));
+            }
+            JobProgress::Pending => {
+                // Recheck before wait_job, whose own generic timeout error must
+                // not erase the typed deadline-vs-protocol distinction here.
+                if Instant::now() >= deadline {
+                    return Ok((None, false));
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                let mut interests = job.poll_interests();
+                let millis = job
+                    .retry_after()
+                    .unwrap_or(Duration::from_millis(10))
+                    .min(left)
+                    .as_millis()
+                    .clamp(1, 10) as i32;
+                let rc =
+                    unsafe { libc::poll(interests.as_mut_ptr(), interests.len() as _, millis) };
+                if rc < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                    return Err(io(std::io::Error::last_os_error()));
+                }
+            }
         }
     }
 }
@@ -369,9 +553,14 @@ fn queue_right(socket: RawFd, right: RawFd) -> Result<(), String> {
 }
 
 /// Called only by the isolated, already-bootstrapped launcher. The caller keeps
-/// any returned failure resources alive while its existing guard settles them.
+/// failure resources alive if cleanup is unconfirmed. A before-drain miss is
+/// returned only after the same job's drain/wait/EOF, or as a distinct cleanup
+/// infrastructure failure retaining that original observation.
 pub fn run_queued_case(case: &str, client: &BrokerClient) -> Result<CaseReceipt, CaseFailure> {
     let mut resources = Resources::default();
+    let mut observation: Option<BeforeDrainRecord> = None;
+    let mut cleanup_census = None;
+    let mut completed_receipt = None;
     let result = (|| -> Result<CaseReceipt, String> {
         QueuedTcp::setup(&mut resources)?;
         let tcp = resources.tcp.as_ref().unwrap();
@@ -383,6 +572,7 @@ pub fn run_queued_case(case: &str, client: &BrokerClient) -> Result<CaseReceipt,
             notsent: tcp.notsent,
             first_chunk_acknowledged: false,
             fault: None,
+            before_drain: None,
         };
         match case {
             "single" => {}
@@ -412,19 +602,48 @@ pub fn run_queued_case(case: &str, client: &BrokerClient) -> Result<CaseReceipt,
         }
         reserve(&mut resources, client, Instant::now() + OBSERVATION)?;
         let expected_refs = if case == "shared-arc" { 2 } else { 1 };
-        let native = complete(&mut resources, Instant::now() + OBSERVATION)?;
+        let started = Instant::now();
+        let (observed, within_bound) = observe_before_drain(&mut resources, started)?;
+        let missed = !within_bound;
+        let job = resources.job.as_ref().unwrap();
+        observation = Some(BeforeDrainRecord {
+            bound_millis: OBSERVATION.as_millis(),
+            observed_micros: started.elapsed().as_micros(),
+            completed_before_drain: !missed,
+            receipt_observed_after_bound: missed && observed.is_some(),
+            stage_at_deadline: missed.then(|| job.stage()),
+            parent_references_retired_at_deadline: missed && job.parent_references_retired(),
+            last_owner_case: case != "shared-arc",
+        });
+        // This one absolute budget covers ALL cleanup below after a miss. It is
+        // never another attempt at the before-drain predicate, and cannot turn
+        // that predicate true after peer reads make progress possible.
+        let cleanup_deadline = missed.then(|| Instant::now() + MISSED_OBSERVATION_CLEANUP);
+        let next_deadline = || cleanup_deadline.unwrap_or_else(|| Instant::now() + OBSERVATION);
+        let mut received = Vec::new();
+        let native = match observed {
+            Some(native) => native,
+            None => {
+                // The same already-sent exact stream releases the native close.
+                // Do not replace, cancel or retry this job before its real wait.
+                resources
+                    .tcp
+                    .as_mut()
+                    .unwrap()
+                    .drain_payload(&mut received, next_deadline())?;
+                complete(&mut resources, next_deadline())?
+            }
+        };
         require(
             native.socket_references == expected_refs && native.transferred_descriptors == 1,
             "exact Arc owner count and distinct kernel-right count",
         )?;
         receipt.waits.push(native);
-        // Successful wait was observed BEFORE permitting any peer drain.
-        let mut received = Vec::new();
         resources
             .tcp
             .as_mut()
             .unwrap()
-            .drain_payload(&mut received, Instant::now() + OBSERVATION)?;
+            .drain_payload(&mut received, next_deadline())?;
         if case == "shared-arc" {
             let fd = resources.foreign.as_ref().unwrap().as_raw_fd();
             require(linger(fd)? == (1, 600), "foreign owner SO_LINGER unchanged")?;
@@ -432,24 +651,70 @@ pub fn run_queued_case(case: &str, client: &BrokerClient) -> Result<CaseReceipt,
             resources
                 .files
                 .push(SocketReference::Shared(resources.foreign.take().unwrap()));
-            reserve(&mut resources, client, Instant::now() + OBSERVATION)?;
+            reserve(&mut resources, client, next_deadline())?;
             receipt
                 .waits
-                .push(complete(&mut resources, Instant::now() + OBSERVATION)?);
+                .push(complete(&mut resources, next_deadline())?);
             resources
                 .tcp
                 .as_mut()
                 .unwrap()
-                .drain_payload(&mut received, Instant::now() + OBSERVATION)?;
+                .drain_payload(&mut received, next_deadline())?;
         }
-        resources
-            .tcp
-            .as_mut()
-            .unwrap()
-            .eof(Instant::now() + OBSERVATION)?;
+        resources.tcp.as_mut().unwrap().eof(next_deadline())?;
+        receipt.before_drain = observation.clone();
+        let job = resources.job.as_ref().unwrap();
+        let census = CleanupCensus {
+            completed_native_waits: receipt.waits.len(),
+            supplied_file_references: resources.files.len(),
+            foreign_file_reference: resources.foreign.is_some(),
+            active_worker_limit: resources.worker_limit.is_some(),
+            retained_unexpected_rights: job.retained_unexpected_rights().len(),
+            native_job_complete: job.stage() == JobStage::Complete
+                && job.last_native_status() == receipt.waits.last().copied()
+                && job.parent_references_retired(),
+            queued_stream_exact_and_eof: true, // reached only after exact reads above.
+            broker_shutdown_still_required: true,
+        };
+        require(
+            census.native_job_complete
+                && census.supplied_file_references == 0
+                && !census.foreign_file_reference
+                && !census.active_worker_limit
+                && census.retained_unexpected_rights == 0,
+            "actual completed case ownership census",
+        )?;
+        // This drops only a confirmed complete job/control channel and an
+        // already-EOF peer. The launcher's own broker client/owner remains live.
+        resources.job = None;
+        resources.tcp = None;
+        cleanup_census = Some(census);
+        if missed {
+            completed_receipt = Some(receipt);
+            let before = observation.as_ref().unwrap();
+            return Err(
+                if before.last_owner_case
+                    && before.stage_at_deadline == Some(JobStage::NativeWait)
+                    && before.parent_references_retired_at_deadline
+                {
+                    "CAUSAL BEFORE-DRAIN FAILURE: no native wait within original 5s; same job drained/reaped afterwards".into()
+                } else {
+                    // A shared Arc or pre-transfer deadline is not a last-close
+                    // mutant witness, even if later cleanup succeeds.
+                    "BEFORE-DRAIN DEADLINE FAILURE: no completion within original 5s; not a proven last-close causal witness".into()
+                },
+            );
+        }
         Ok(receipt)
     })();
-    result.map_err(|message| CaseFailure { message, resources })
+    result.map_err(|message| {
+        let message = if observation.as_ref().is_some_and(|o| !o.completed_before_drain)
+            && cleanup_census.is_none()
+        {
+            format!("CLEANUP INFRASTRUCTURE FAILURE after retained original before-drain miss: {message}")
+        } else { message };
+        CaseFailure { message, resources, observation, cleanup: cleanup_census, completed_receipt }
+    })
 }
 
 // Chunk/fault body is deliberately distinct from queued-TCP causal cases.
@@ -676,10 +941,14 @@ pub fn run_chunk_abort_case(owner: &BrokerOwner) -> Result<CaseReceipt, CaseFail
                 original_soft: baseline.rlim_cur,
                 original_hard: baseline.rlim_max,
             }),
+            before_drain: None,
         })
     })();
     result.map_err(|message| CaseFailure {
         message,
         resources: r,
+        observation: None,
+        cleanup: None,
+        completed_receipt: None,
     })
 }
