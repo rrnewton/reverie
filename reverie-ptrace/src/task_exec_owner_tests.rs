@@ -226,8 +226,6 @@ fn ordinary_post_exec_owner_cell(force_legacy: bool, unrelated_signal: bool) {
             command_bootstrap: false,
             events: &events,
             injected_syscall_trap: None,
-            liteinst_runtime: None,
-            liteinst_trap_only: None,
             backend_stats: None,
             final_resume_signal_for_test: None,
             pre_syscall_for_test: None,
@@ -288,7 +286,7 @@ fn ordinary_post_exec_owner_cell(force_legacy: bool, unrelated_signal: bool) {
         }
         // This is the real ordinary production handler, including its post-exec
         // single-step wait, preinitialization and normal post-exec continuation.
-        traced.handle_exec_event(stopped, pid).await
+        traced.handle_exec_event(stopped).await
     });
     match &result {
         Ok(Wait::Exited(tid, status)) => eprintln!(
