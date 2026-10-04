@@ -131,6 +131,14 @@ fn legacy_owner_reap_root(root: Pid, cleanup: &mut TraceeCleanupGuard) {
 /// clone3(set_tid) provides real numeric reuse in a fresh PID namespace.
 #[cfg(not(sanitized))]
 fn legacy_owner_replacement(requested: Option<Pid>) -> Option<(Pid, TraceeCleanupGuard, i32)> {
+    legacy_owner_replacement_after_stop(requested, || {})
+}
+
+#[cfg(not(sanitized))]
+fn legacy_owner_replacement_after_stop(
+    requested: Option<Pid>,
+    after_stop: impl FnOnce(),
+) -> Option<(Pid, TraceeCleanupGuard, i32)> {
     let child = if let Some(requested) = requested {
         #[repr(C)]
         #[derive(Default)]
@@ -165,6 +173,7 @@ fn legacy_owner_replacement(requested: Option<Pid>) -> Option<(Pid, TraceeCleanu
         }
         if result == 0 {
             crate::traceme_and_stop().unwrap();
+            after_stop();
             unsafe { libc::_exit(42) };
         }
         let child = Pid::from_raw(result as i32);
@@ -175,6 +184,7 @@ fn legacy_owner_replacement(requested: Option<Pid>) -> Option<(Pid, TraceeCleanu
             ForkResult::Parent { child } => child,
             ForkResult::Child => {
                 crate::traceme_and_stop().unwrap();
+                after_stop();
                 unsafe { libc::_exit(42) };
             }
         }

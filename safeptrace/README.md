@@ -78,6 +78,10 @@ The explicit operations also authenticate the executing host thread through
 the original retained proc mount. Copying a driver into a process with the
 same numeric thread ID in another PID namespace does not transfer authority.
 A later overmount of `/proc` does not redirect this retained identity check.
+The same check applies when converting an already-bound generic state to an
+explicit interface, and to numeric ptrace requests, memory access, and stopped
+observations through an explicit state. A new host owner is authenticated
+through the Event's original proc mount before any queued status is transferred.
 
 These kernel mechanisms do not by themselves establish a qualified minimum
 kernel for every SDK operation or for Hermit. Consult the execution engine's
