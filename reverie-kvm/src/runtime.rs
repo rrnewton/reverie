@@ -4439,6 +4439,7 @@ impl KvmBackend {
             // removing Guest on which to acknowledge its pending-state effects.
             return Err(Error::SignalObservationRequiresToolThreads);
         }
+        self.admit_host_metadata_timestamps(self.thread_ownership.executes_on_tool())?;
         // Capture setup can fail before image consumption or any Tool state.
         // Keep this root owner until the later executor and its workers retire.
         let capture_owner = self.prepare_captured_output(capture_output)?;

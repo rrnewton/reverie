@@ -2100,6 +2100,56 @@ impl KvmBackend {
         Ok(())
     }
 
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/924):
+    // Review host metadata timestamps for Tool runs.
+    /// Report the kernel's timestamps from `stat`, `fstat`, `newfstatat` and
+    /// `statx` on real host files and descriptors, instead of the fixed
+    /// timestamp the backend uses by default. Captured output, synthetic
+    /// `/proc` files, guest descriptor links and virtual random devices keep
+    /// their fixed timestamps.
+    ///
+    /// Host timestamps are host wall-clock values, so enable this only for a
+    /// Tool that rewrites every timestamp it returns to the guest, such as
+    /// Detcore with virtual metadata. The Tool can then read the values the
+    /// kernel stored, for example to confirm that `utimensat` stored the
+    /// requested time. A run without a Tool, or with host-owned threads
+    /// (see [`Self::unmonitored_threads`]), refuses to start while this is
+    /// enabled, because those syscalls would reach the guest unrewritten.
+    ///
+    /// A successful call writes the stored values into the guest's buffer
+    /// before the Tool rewrites them. The backend cannot see whether another
+    /// guest thread runs in that interval, so the Tool must also keep every
+    /// other guest thread from running until it has rewritten the result, as
+    /// Detcore does when it sequentializes threads. A failed call is not
+    /// rewritten, so the backend leaves only fixed timestamps in the part of
+    /// a buffer that a faulting copy reached.
+    pub fn set_host_metadata_timestamps(&mut self, enabled: bool) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        let loaded = self
+            .static_elf
+            .as_mut()
+            .ok_or(Error::StaticElfNotInstalled)?;
+        loaded.host_metadata_timestamps = enabled;
+        Ok(())
+    }
+
+    /// Whether the installed image reports host metadata timestamps.
+    fn host_metadata_timestamps_enabled(&self) -> bool {
+        self.static_elf
+            .as_ref()
+            .is_some_and(|loaded| loaded.host_metadata_timestamps)
+    }
+
+    /// Refuses a run that would show host metadata timestamps to the guest:
+    /// one without a Tool, or one whose threads the Tool does not all own.
+    pub(crate) fn admit_host_metadata_timestamps(&self, tool_owns_threads: bool) -> Result<()> {
+        if self.host_metadata_timestamps_enabled() && !tool_owns_threads {
+            return Err(Error::HostMetadataTimestampsRequireToolThreads);
+        }
+        Ok(())
+    }
+
     /// Returns the stable ring-zero continuation for a consumed syscall
     /// hypercall. KVM reports RIP at the VMCALL/VMMCALL instruction; after
     /// userspace publishes `exit.ret`, the next KVM_RUN advances past it.
@@ -4748,6 +4798,7 @@ impl KvmBackend {
     }
 
     fn run_admitted_static_elf(&mut self) -> Result<i32> {
+        self.admit_host_metadata_timestamps(false)?;
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         let mut executor = ElfExecutor::with_output(loaded, None);
         let result = self.run_static_elf_process(&mut executor);
@@ -4764,6 +4815,7 @@ impl KvmBackend {
     }
 
     fn run_admitted_static_elf_captured(&mut self) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+        self.admit_host_metadata_timestamps(false)?;
         // Declared before the executor so its private pipe identities outlive
         // executor/child cleanup, including early-return and unwind paths.
         let capture_owner = self.prepare_captured_output(true)?;
@@ -5732,6 +5784,79 @@ mod tests {
     include!("vm/inline_interrupt_tests.rs");
     include!("vm/memory_publication_tests.rs");
     include!("vm/read_zero_guest_tests.rs");
+
+    #[derive(Default)]
+    struct HostMetadataTimestampsTool;
+
+    #[reverie::tool]
+    impl reverie::Tool for HostMetadataTimestampsTool {
+        type GlobalState = ();
+        type ThreadState = ();
+    }
+
+    #[test]
+    fn host_metadata_timestamps_require_tool_owned_threads() {
+        // mov eax, 60; xor edi, edi; syscall
+        let code = [0xb8, 60, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05];
+        let mut backend = KvmBackend::new(16 * 1024 * 1024)
+            .expect("host metadata timestamp admission requires /dev/kvm");
+        assert!(
+            matches!(
+                backend.set_host_metadata_timestamps(true),
+                Err(Error::StaticElfNotInstalled)
+            ),
+            "the setting belongs to an installed image"
+        );
+        backend
+            .install_static_elf(&minimal_test_elf(&code), "/bin/host-metadata-timestamps")
+            .unwrap();
+        assert!(
+            !backend.host_metadata_timestamps_enabled(),
+            "an installed image reports fixed timestamps by default"
+        );
+        backend.set_host_metadata_timestamps(true).unwrap();
+        assert!(backend.host_metadata_timestamps_enabled());
+
+        assert!(
+            matches!(
+                backend.run_static_elf(),
+                Err(Error::HostMetadataTimestampsRequireToolThreads)
+            ),
+            "a run without a Tool would show host timestamps to the guest"
+        );
+        assert!(
+            matches!(
+                backend.run_static_elf_captured(),
+                Err(Error::HostMetadataTimestampsRequireToolThreads)
+            ),
+            "a captured run without a Tool would show host timestamps to the guest"
+        );
+        backend.unmonitored_threads();
+        assert!(
+            matches!(
+                futures::executor::block_on(
+                    backend.run_static_elf_with_tool_completion::<HostMetadataTimestampsTool>(
+                        (),
+                        false,
+                    ),
+                ),
+                Err(Error::HostMetadataTimestampsRequireToolThreads)
+            ),
+            "host-owned threads would show host timestamps to the guest"
+        );
+
+        // The refusals left the image installed. Tool-owned threads admit it.
+        assert!(backend.host_metadata_timestamps_enabled());
+        backend.set_thread_ownership(ThreadOwnership::Tool);
+        let completion = futures::executor::block_on(
+            backend.run_static_elf_with_tool_completion::<HostMetadataTimestampsTool>((), false),
+        )
+        .unwrap();
+        let (status, stdout, stderr) = completion.result.unwrap();
+        assert_eq!(status, 0);
+        assert!(stdout.is_empty());
+        assert!(stderr.is_empty());
+    }
 
     #[test]
     fn action_parent_captures_yield_for_close_and_keep_stop_and_validation() {

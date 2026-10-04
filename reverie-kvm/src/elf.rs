@@ -206,6 +206,13 @@ const AT_SYSINFO_EHDR: u64 = 33;
 #[derive(Debug)]
 pub(crate) struct GuestFileIdentity {
     pub inode: u64,
+    /// Whether the object is a virtual file the backend made, such as the
+    /// carrier for `/proc/self/loginuid`. Its timestamps stay fixed even in a
+    /// run that reports host metadata timestamps, because its host times are
+    /// those of the carrier rather than of any guest-visible file. Every alias
+    /// shares this identity: a dup, a `/proc/self/fd` reopen, a fork, an exec,
+    /// and an SCM_RIGHTS transfer.
+    pub synthetic_metadata: bool,
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review the identity entry lifetime API.
@@ -239,6 +246,10 @@ pub(crate) struct GuestFileIdentityTable {
     /// keyed by their pinned backing memfd.
     pub proc_transfers:
         std::collections::BTreeMap<(libc::dev_t, libc::ino_t), crate::executor::ProcTransfer>,
+    /// Virtual-file identities sent with SCM_RIGHTS and not yet received,
+    /// keyed by their pinned host object.
+    pub synthetic_transfers:
+        std::collections::BTreeMap<(libc::dev_t, libc::ino_t), crate::executor::SyntheticTransfer>,
 }
 
 /// Process-tree-wide state whose lifetime follows a guest task rather than an
@@ -806,6 +817,17 @@ pub(crate) struct LoadedStaticElf {
     /// fork/thread starts at zero under its own virtual TID; exec preserves
     /// the caller's position. Only successful copyout advances the stream.
     pub getrandom_offset: u64,
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/924):
+    // Review host metadata timestamps for Tool runs.
+    /// Whether `stat`, `fstat`, `newfstatat` and `statx` report the kernel's
+    /// timestamps for real host files and descriptors. When false (the
+    /// default) every timestamp in those results is the fixed
+    /// `DETERMINISTIC_METADATA_SECONDS`. Synthetic objects keep fixed
+    /// timestamps either way. Set through
+    /// [`crate::KvmBackend::set_host_metadata_timestamps`]; fork, clone and
+    /// exec carry it unchanged.
+    pub host_metadata_timestamps: bool,
     /// Linux task name (`comm`), including the terminating NUL byte.
     ///
     /// This is per-thread state: fork and clone inherit the caller's value,
@@ -1029,6 +1051,7 @@ impl LoadedStaticElf {
             umask: self.umask,
             random_seed: self.random_seed,
             getrandom_offset: 0,
+            host_metadata_timestamps: self.host_metadata_timestamps,
             thread_name: self.thread_name,
             thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(self.thread_name)),
             thp_disabled: std::sync::Arc::new(AtomicU8::new(
@@ -1275,6 +1298,7 @@ impl LoadedStaticElf {
         self.umask = previous.umask;
         self.random_seed = previous.random_seed;
         self.getrandom_offset = previous.getrandom_offset;
+        self.host_metadata_timestamps = previous.host_metadata_timestamps;
         // `thread_name` intentionally remains the replacement image's name.
         self.thp_disabled = thp_disabled;
         self.keep_capabilities = false;
@@ -1660,6 +1684,7 @@ fn load_executable(
         umask: 0o022,
         random_seed: 0,
         getrandom_offset: 0,
+        host_metadata_timestamps: false,
         thread_name,
         thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(thread_name)),
         thp_disabled: std::sync::Arc::new(AtomicU8::new(0)),
@@ -1709,6 +1734,7 @@ fn load_executable(
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
             proc_transfers: std::collections::BTreeMap::new(),
+            synthetic_transfers: std::collections::BTreeMap::new(),
         })),
     })
 }

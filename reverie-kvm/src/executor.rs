@@ -2312,6 +2312,22 @@ pub(crate) struct ProcTransfer {
     in_flight: usize,
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/924):
+// Review host metadata timestamps for Tool runs.
+/// A virtual file's identity carried by SCM_RIGHTS in a run that reports host
+/// metadata timestamps. The receiver finds the identity, and with it the
+/// fixed-timestamp marking, by the host object's identity even after every
+/// sender descriptor has closed. The pin keeps the inode from being reused
+/// while a message may still carry it; `in_flight` counts rights sent and not
+/// yet received.
+#[derive(Debug)]
+pub(crate) struct SyntheticTransfer {
+    identity: Arc<GuestFileIdentity>,
+    _pin: std::fs::File,
+    in_flight: usize,
+}
+
 fn host_file_key(fd: RawFd) -> Result<(libc::dev_t, libc::ino_t), i64> {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
     // SAFETY: stat is writable and fd is live.
@@ -2323,11 +2339,29 @@ fn host_file_key(fd: RawFd) -> Result<(libc::dev_t, libc::ino_t), i64> {
     Ok((stat.st_dev, stat.st_ino))
 }
 
-/// Bounds the process proc rights in flight across the namespace. Linux bounds
-/// a user's in-flight rights by RLIMIT_NOFILE and fails the send with
-/// ETOOMANYREFS; here each tracked description also pins a host descriptor, and
-/// a right the host discards unreceived is never released, so the bound is small.
+/// Bounds the tracked rights in flight across the namespace: process proc
+/// descriptions and, in a run that reports host metadata timestamps, virtual
+/// files. Linux bounds a user's in-flight rights by RLIMIT_NOFILE and fails the
+/// send with ETOOMANYREFS; here each tracked right also pins a host descriptor,
+/// and a right the host discards unreceived is never released, so the bound is
+/// small.
 const PROC_TRANSFER_LIMIT: usize = 1024;
+
+/// Counts the tracked rights in flight, process proc descriptions and virtual
+/// files together, against [`PROC_TRANSFER_LIMIT`].
+fn tracked_rights_in_flight(table: &crate::elf::GuestFileIdentityTable) -> usize {
+    let proc: usize = table
+        .proc_transfers
+        .values()
+        .map(|transfer| transfer.in_flight)
+        .sum();
+    let synthetic: usize = table
+        .synthetic_transfers
+        .values()
+        .map(|transfer| transfer.in_flight)
+        .sum();
+    proc + synthetic
+}
 
 /// Records one in-flight right for the process proc description at `guest_fd`.
 fn register_proc_transfer(
@@ -2345,12 +2379,7 @@ fn register_proc_transfer(
         .file_identity_table
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let in_flight: usize = table
-        .proc_transfers
-        .values()
-        .map(|transfer| transfer.in_flight)
-        .sum();
-    if in_flight >= PROC_TRANSFER_LIMIT {
+    if tracked_rights_in_flight(&table) >= PROC_TRANSFER_LIMIT {
         return Err(negative_errno(libc::ETOOMANYREFS));
     }
     match table.proc_transfers.entry(key) {
@@ -2371,6 +2400,46 @@ fn register_proc_transfer(
                 description: description.clone(),
                 proc_inode,
                 nofollow: state.synthetic_proc_nofollow_fds.contains(&guest_fd),
+                // SAFETY: successful F_DUPFD_CLOEXEC transfers ownership.
+                _pin: unsafe { std::fs::File::from_raw_fd(pin) },
+                in_flight: 1,
+            });
+        }
+    }
+    Ok(key)
+}
+
+/// Records one in-flight right for the virtual file whose identity is
+/// `identity` and whose carrier is `host_fd`.
+fn register_synthetic_transfer(
+    state: &LoadedStaticElf,
+    identity: &Arc<GuestFileIdentity>,
+    host_fd: RawFd,
+) -> Result<(libc::dev_t, libc::ino_t), i64> {
+    let key = host_file_key(host_fd)?;
+    let mut table = state
+        .file_identity_table
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if tracked_rights_in_flight(&table) >= PROC_TRANSFER_LIMIT {
+        return Err(negative_errno(libc::ETOOMANYREFS));
+    }
+    match table.synthetic_transfers.entry(key) {
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            // The pin makes a different identity at this host object impossible.
+            if !Arc::ptr_eq(&entry.get().identity, identity) {
+                return Err(negative_errno(libc::ENOSYS));
+            }
+            entry.get_mut().in_flight += 1;
+        }
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            // SAFETY: host_fd is live; success returns a new owned descriptor.
+            let pin = unsafe { libc::fcntl(host_fd, libc::F_DUPFD_CLOEXEC, 0) };
+            if pin < 0 {
+                return Err(io_error(std::io::Error::last_os_error()));
+            }
+            entry.insert(SyntheticTransfer {
+                identity: identity.clone(),
                 // SAFETY: successful F_DUPFD_CLOEXEC transfers ownership.
                 _pin: unsafe { std::fs::File::from_raw_fd(pin) },
                 in_flight: 1,
@@ -2432,13 +2501,17 @@ fn release_dropped_proc_transfers<'a>(
     release_proc_transfers(state, &keys);
 }
 
-/// Consumes one in-flight right, returning its description state.
+/// Consumes one in-flight right, returning its description state. A virtual
+/// file's right has no description state; consuming it only releases its
+/// identity pin, after a receiver has taken the identity or once the right can
+/// no longer be received.
 fn take_proc_transfer(
     table: &mut crate::elf::GuestFileIdentityTable,
     key: (libc::dev_t, libc::ino_t),
 ) -> Option<(Arc<FdinfoDescription>, u64, bool)> {
     let std::collections::btree_map::Entry::Occupied(mut entry) = table.proc_transfers.entry(key)
     else {
+        take_synthetic_transfer(table, key);
         return None;
     };
     let transfer = entry.get_mut();
@@ -2452,6 +2525,21 @@ fn take_proc_transfer(
         entry.remove();
     }
     Some(received)
+}
+
+/// Consumes one in-flight virtual-file right, dropping its pin with the last.
+fn take_synthetic_transfer(
+    table: &mut crate::elf::GuestFileIdentityTable,
+    key: (libc::dev_t, libc::ino_t),
+) {
+    if let std::collections::btree_map::Entry::Occupied(mut entry) =
+        table.synthetic_transfers.entry(key)
+    {
+        entry.get_mut().in_flight -= 1;
+        if entry.get().in_flight == 0 {
+            entry.remove();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -9553,7 +9641,7 @@ fn open_virtual_file(
         Err(error) => return io_error(error),
     };
     drop(file);
-    insert_file_with_flags(state, read_only, close_on_exec, None)
+    insert_virtual_file(state, read_only, close_on_exec)
 }
 
 // TODO-HUMAN-REVIEW(PR-205): Review the deterministic read-only CPU frequency surface.
@@ -10059,6 +10147,7 @@ fn downgrade_file_identity(state: &LoadedStaticElf, key: (libc::dev_t, libc::ino
 fn allocate_fd_object_inode(
     state: &LoadedStaticElf,
     file: &std::fs::File,
+    synthetic_metadata: bool,
 ) -> Result<Arc<GuestFileIdentity>, i64> {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
     // SAFETY: stat is writable and file owns a live descriptor.
@@ -10091,6 +10180,12 @@ fn allocate_fd_object_inode(
         .get(&key)
         .and_then(GuestFileIdentityEntry::identity)
     {
+        // A virtual file's carrier is created just before its insertion, so
+        // no live identity can already name it. Refuse rather than report a
+        // carrier's host timestamps through an identity without the marking.
+        if synthetic_metadata && !identity.synthetic_metadata {
+            return Err(negative_errno(libc::EIO));
+        }
         return Ok(identity);
     }
 
@@ -10098,11 +10193,16 @@ fn allocate_fd_object_inode(
     table.next_inode = inode
         .checked_add(1)
         .ok_or_else(|| negative_errno(libc::EOVERFLOW))?;
-    let identity = Arc::new(GuestFileIdentity { inode });
+    let identity = Arc::new(GuestFileIdentity {
+        inode,
+        synthetic_metadata,
+    });
     // Linked filesystem objects keep Linux inode identity across close/reopen.
     // Anonymous or deleted objects cannot be reopened by path, so retain them
-    // only while a descriptor in any forked state holds a strong identity.
-    let entry = if persistent {
+    // only while a descriptor in any forked state holds a strong identity. A
+    // virtual file's marking must end with its carrier, so that a later object
+    // at a reused host inode never inherits it.
+    let entry = if persistent && !synthetic_metadata {
         GuestFileIdentityEntry::Persistent(identity.clone())
     } else {
         GuestFileIdentityEntry::Ephemeral(Arc::downgrade(&identity))
@@ -10118,13 +10218,36 @@ fn insert_file_with_flags(
     close_on_exec: bool,
     output_alias: Option<OutputAlias>,
 ) -> i64 {
+    insert_file_with_identity(state, file, close_on_exec, output_alias, false)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/924):
+// Review host metadata timestamps for Tool runs.
+/// Inserts the carrier of a virtual file the backend made. Its identity is
+/// marked so that every alias keeps fixed timestamps.
+fn insert_virtual_file(
+    state: &mut LoadedStaticElf,
+    file: std::fs::File,
+    close_on_exec: bool,
+) -> i64 {
+    insert_file_with_identity(state, file, close_on_exec, None, true)
+}
+
+fn insert_file_with_identity(
+    state: &mut LoadedStaticElf,
+    file: std::fs::File,
+    close_on_exec: bool,
+    output_alias: Option<OutputAlias>,
+    synthetic_metadata: bool,
+) -> i64 {
     let Some(fd) = (0..GUEST_NOFILE_LIMIT)
         .find(|fd| !is_open_standard(state, *fd) && !state.files.contains_key(fd))
     else {
         state.file_retirement.retire([file]);
         return negative_errno(libc::EMFILE);
     };
-    let object_inode = match allocate_fd_object_inode(state, &file) {
+    let object_inode = match allocate_fd_object_inode(state, &file, synthetic_metadata) {
         Ok(inode) => inode,
         Err(error) => {
             state.file_retirement.retire([file]);
@@ -13331,6 +13454,15 @@ fn translate_outgoing_rights(
                 // cannot reconstruct private stream/signalfd metadata. Refuse
                 // before host sendmsg delivers any payload or descriptors.
                 return Err(negative_errno(libc::ENOSYS));
+            } else if state.host_metadata_timestamps
+                && let Some(identity) = state
+                    .fd_object_inodes
+                    .get(&guest_fd)
+                    .filter(|identity| identity.synthetic_metadata)
+            {
+                // The receiver keeps the fixed-timestamp marking even if every
+                // sender descriptor closes before it receives the right.
+                transfers.push(register_synthetic_transfer(state, identity, host_fd)?);
             }
             write_control_fd(control, offset, host_fd)?;
         }
@@ -13519,7 +13651,7 @@ fn install_received_rights(
 
     while let Some(((control_offset, file), guest_fd)) = pending.next() {
         let prepared = received_proc_inode(file.as_file()).and_then(|proc_inode| {
-            let object_inode = allocate_fd_object_inode(state, file.as_file())?;
+            let object_inode = allocate_fd_object_inode(state, file.as_file(), false)?;
             let transfer = received_proc_transfer(state, file.as_file(), peek)?;
             Ok((proc_inode, object_inode, transfer))
         });
@@ -14748,23 +14880,62 @@ fn fstatat_impl(
         if let Some(inode) = empty_path_proc_inode {
             sanitize_proc_stat(&mut stat, inode);
         } else {
-            sanitize_stat_timestamps(&mut stat);
+            sanitize_host_stat_timestamps(state, &mut stat);
         }
     }
     if executable.is_some() {
-        let bytes = unsafe {
-            std::slice::from_raw_parts(
-                std::ptr::from_ref(&stat).cast::<u8>(),
-                std::mem::size_of::<libc::stat>(),
-            )
-        };
-        match memory.user().copy_to_user(output_address, bytes) {
-            Ok(()) => 0,
-            Err(_) => negative_errno(libc::EFAULT),
-        }
+        copy_executable_stat(memory, state, output_address, &stat)
     } else {
         write_struct(memory, output_address, &stat)
     }
+}
+
+/// Copies a `stat` result for the retained executable. As in Linux, a copy
+/// that faults leaves the bytes before the fault in guest memory and fails
+/// with `EFAULT`.
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/924):
+// Review host metadata timestamps for Tool runs.
+// A failed call is not rewritten by the Tool, so the prefix a faulting copy
+// leaves must not hold a stored host timestamp. A run that reports host
+// timestamps therefore copies the fixed timestamps first, and copies the
+// stored ones only after that copy has shown the whole buffer is writable.
+fn copy_executable_stat(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    output_address: u64,
+    stat: &libc::stat,
+) -> i64 {
+    let copy = |memory: &mut GuestMemory, stat: &libc::stat| {
+        // SAFETY: libc::stat is initialized plain data. The byte view is
+        // bounded to stat and copied into guest memory before stat is dropped.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref(stat).cast::<u8>(),
+                std::mem::size_of::<libc::stat>(),
+            )
+        };
+        memory.user().copy_to_user(output_address, bytes).is_ok()
+    };
+    if !state.host_metadata_timestamps {
+        return if copy(memory, stat) {
+            0
+        } else {
+            negative_errno(libc::EFAULT)
+        };
+    }
+    let mut fixed = *stat;
+    sanitize_stat_timestamps(&mut fixed);
+    if !copy(memory, &fixed) {
+        return negative_errno(libc::EFAULT);
+    }
+    if !copy(memory, stat) {
+        // The buffer stopped being writable between the two copies. Put the
+        // fixed timestamps back over whatever prefix the second copy left.
+        copy(memory, &fixed);
+        return negative_errno(libc::EFAULT);
+    }
+    0
 }
 
 fn statx(
@@ -14919,7 +15090,7 @@ fn statx(
     if let Some(fd) = descriptor {
         sanitize_guest_fd_statx(state, fd, &mut stat);
     } else {
-        sanitize_statx_timestamps(&mut stat);
+        sanitize_host_statx_timestamps(state, &mut stat);
     }
     write_struct(memory, args[4], &stat)
 }
@@ -14944,6 +15115,27 @@ fn sanitize_statx_timestamps(stat: &mut libc::statx) {
     ] {
         timestamp.tv_sec = DETERMINISTIC_METADATA_SECONDS;
         timestamp.tv_nsec = 0;
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/924):
+// Review host metadata timestamps for Tool runs.
+/// Sets the timestamps of a `stat` result read from a real host file or
+/// descriptor. A run that reports host metadata timestamps keeps the kernel's
+/// values: its Tool rewrites every timestamp the guest sees, and needs the
+/// stored values for its own lookups, such as confirming that `utimensat`
+/// stored the requested mtime. Every other run gets the fixed timestamp.
+fn sanitize_host_stat_timestamps(state: &LoadedStaticElf, stat: &mut libc::stat) {
+    if !state.host_metadata_timestamps {
+        sanitize_stat_timestamps(stat);
+    }
+}
+
+/// The `statx` form of [`sanitize_host_stat_timestamps`].
+fn sanitize_host_statx_timestamps(state: &LoadedStaticElf, stat: &mut libc::statx) {
+    if !state.host_metadata_timestamps {
+        sanitize_statx_timestamps(stat);
     }
 }
 
@@ -16399,6 +16591,7 @@ fn guest_fd_object_identity(
         .unwrap_or_else(|| {
             Arc::new(GuestFileIdentity {
                 inode: synthetic_guest_fd_inode(guest_fd, false),
+                synthetic_metadata: false,
             })
         })
 }
@@ -16424,8 +16617,15 @@ fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: 
         let identity = guest_fd_object_identity(state, guest_fd);
         stat.st_dev = synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR);
         stat.st_ino = identity.inode;
+        // A virtual random device is synthetic, so its timestamps stay fixed.
+        sanitize_stat_timestamps(stat);
+        return;
     }
-    sanitize_stat_timestamps(stat);
+    if is_virtual_file(state, guest_fd) {
+        sanitize_stat_timestamps(stat);
+        return;
+    }
+    sanitize_host_stat_timestamps(state, stat);
 }
 
 fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: &mut libc::statx) {
@@ -16446,8 +16646,27 @@ fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat:
         stat.stx_dev_major = libc::major(synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
         stat.stx_dev_minor = libc::minor(synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
         stat.stx_ino = identity.inode;
+        // A virtual random device is synthetic, so its timestamps stay fixed.
+        sanitize_statx_timestamps(stat);
+        return;
     }
-    sanitize_statx_timestamps(stat);
+    if is_virtual_file(state, guest_fd) {
+        sanitize_statx_timestamps(stat);
+        return;
+    }
+    sanitize_host_statx_timestamps(state, stat);
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/924):
+// Review host metadata timestamps for Tool runs.
+/// Whether `guest_fd` names a virtual file the backend made, whose host
+/// timestamps are those of its carrier and so stay fixed.
+fn is_virtual_file(state: &LoadedStaticElf, guest_fd: libc::c_int) -> bool {
+    state
+        .fd_object_inodes
+        .get(&guest_fd)
+        .is_some_and(|identity| identity.synthetic_metadata)
 }
 
 fn synthetic_guest_fd_symlink_stat(guest_fd: libc::c_int) -> libc::stat {
@@ -19826,6 +20045,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         umask: 0o022,
         random_seed: 0,
         getrandom_offset: 0,
+        host_metadata_timestamps: false,
         thread_name: *b"test\0\0\0\0\0\0\0\0\0\0\0\0",
         thread_group_leader_name: Arc::new(Mutex::new(*b"test\0\0\0\0\0\0\0\0\0\0\0\0")),
         thp_disabled: Arc::new(std::sync::atomic::AtomicU8::new(0)),
@@ -19875,6 +20095,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
             proc_transfers: std::collections::BTreeMap::new(),
+            synthetic_transfers: std::collections::BTreeMap::new(),
         })),
     }
 }
@@ -42374,6 +42595,732 @@ mod tests {
                 [0xa5; 4]
             );
             assert_eq!(read_guest_bytes::<4>(&memory, SAVED).unwrap(), [0xa5; 4]);
+        }
+    }
+
+    #[test]
+    fn host_metadata_timestamps_report_stored_times_for_host_files_only() {
+        const PATH_ADDRESS: u64 = 0x100;
+        const RANDOM_ADDRESS: u64 = 0x180;
+        const EMPTY_ADDRESS: u64 = 0x1c0;
+        const TIMES_ADDRESS: u64 = 0x200;
+        const STAT_ADDRESS: u64 = 0x1000;
+        const STATX_ADDRESS: u64 = 0x2000;
+        // Whole seconds, so that every host filesystem stores them exactly.
+        const ATIME: libc::time_t = 2_000_000_000;
+        const MTIME: libc::time_t = 2_222_222_222;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        assert!(
+            !state.host_metadata_timestamps,
+            "fixed timestamps are the default"
+        );
+        state.host_metadata_timestamps = true;
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        write_c_string(&mut memory, PATH_ADDRESS, "stamped");
+        write_c_string(&mut memory, RANDOM_ADDRESS, "/dev/urandom");
+        write_c_string(&mut memory, EMPTY_ADDRESS, "");
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                TIMES_ADDRESS,
+                &[
+                    libc::timespec {
+                        tv_sec: ATIME,
+                        tv_nsec: 0,
+                    },
+                    libc::timespec {
+                        tv_sec: MTIME,
+                        tv_nsec: 0,
+                    },
+                ],
+            ),
+            0
+        );
+
+        let fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                PATH_ADDRESS,
+                (libc::O_CREAT | libc::O_RDWR) as u64,
+                0o600,
+                0,
+                0,
+            ],
+        );
+        assert!(fd >= 0, "open stamped failed: {fd}");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_utimensat,
+                [fd as u64, 0, TIMES_ADDRESS, 0, 0, 0],
+            ),
+            0
+        );
+        let host = std::fs::metadata(root.0.join("stamped")).unwrap();
+        assert_eq!((host.atime(), host.mtime()), (ATIME, MTIME));
+
+        let assert_host_stat = |stat: &libc::stat, call: &str| {
+            assert_eq!(stat.st_ino, host.ino(), "{call} names the host file");
+            assert_eq!(
+                (stat.st_atime, stat.st_atime_nsec),
+                (ATIME, 0),
+                "{call} reports the stored atime"
+            );
+            assert_eq!(
+                (stat.st_mtime, stat.st_mtime_nsec),
+                (MTIME, 0),
+                "{call} reports the stored mtime"
+            );
+            assert_eq!(
+                (stat.st_ctime, stat.st_ctime_nsec),
+                (host.ctime(), host.ctime_nsec()),
+                "{call} reports the host ctime"
+            );
+        };
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fstat,
+                [fd as u64, STAT_ADDRESS, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_host_stat(&read_struct(&memory, STAT_ADDRESS), "fstat");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_newfstatat,
+                [libc::AT_FDCWD as u64, PATH_ADDRESS, STAT_ADDRESS, 0, 0, 0],
+            ),
+            0
+        );
+        assert_host_stat(&read_struct(&memory, STAT_ADDRESS), "path newfstatat");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_newfstatat,
+                [
+                    fd as u64,
+                    EMPTY_ADDRESS,
+                    STAT_ADDRESS,
+                    libc::AT_EMPTY_PATH as u64,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_host_stat(&read_struct(&memory, STAT_ADDRESS), "empty-path newfstatat");
+
+        let statx_mask = (libc::STATX_BASIC_STATS | libc::STATX_BTIME) as u64;
+        for (dirfd, path, flags, call) in [
+            (libc::AT_FDCWD as u64, PATH_ADDRESS, 0, "path statx"),
+            (
+                fd as u64,
+                EMPTY_ADDRESS,
+                libc::AT_EMPTY_PATH as u64,
+                "empty-path statx",
+            ),
+        ] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_statx,
+                    [dirfd, path, flags, statx_mask, STATX_ADDRESS, 0],
+                ),
+                0,
+                "{call}"
+            );
+            let extended: libc::statx = read_struct(&memory, STATX_ADDRESS);
+            assert_eq!(extended.stx_ino, host.ino(), "{call} names the host file");
+            assert_eq!(
+                (extended.stx_atime.tv_sec, extended.stx_atime.tv_nsec),
+                (ATIME, 0),
+                "{call} reports the stored atime"
+            );
+            assert_eq!(
+                (extended.stx_mtime.tv_sec, extended.stx_mtime.tv_nsec),
+                (MTIME, 0),
+                "{call} reports the stored mtime"
+            );
+            assert_eq!(
+                (
+                    extended.stx_ctime.tv_sec,
+                    i64::from(extended.stx_ctime.tv_nsec)
+                ),
+                (host.ctime(), host.ctime_nsec()),
+                "{call} reports the host ctime"
+            );
+            if extended.stx_mask & libc::STATX_BTIME != 0 {
+                let created = host
+                    .created()
+                    .unwrap()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap();
+                assert_eq!(
+                    (extended.stx_btime.tv_sec, extended.stx_btime.tv_nsec),
+                    (created.as_secs() as i64, created.subsec_nanos()),
+                    "{call} reports the host btime"
+                );
+            }
+        }
+
+        // A virtual random device is synthetic and keeps the fixed timestamps.
+        let random = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                RANDOM_ADDRESS,
+                libc::O_RDONLY as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert!(random >= 0, "open /dev/urandom failed: {random}");
+        assert!(
+            state
+                .random_device_descriptions
+                .contains_key(&(random as libc::c_int))
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fstat,
+                [random as u64, STAT_ADDRESS, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let random_stat: libc::stat = read_struct(&memory, STAT_ADDRESS);
+        for timestamp in [
+            random_stat.st_atime,
+            random_stat.st_mtime,
+            random_stat.st_ctime,
+        ] {
+            assert_eq!(timestamp, DETERMINISTIC_METADATA_SECONDS);
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_statx,
+                [
+                    random as u64,
+                    EMPTY_ADDRESS,
+                    libc::AT_EMPTY_PATH as u64,
+                    statx_mask,
+                    STATX_ADDRESS,
+                    0,
+                ],
+            ),
+            0
+        );
+        let random_statx: libc::statx = read_struct(&memory, STATX_ADDRESS);
+        for timestamp in [
+            random_statx.stx_atime,
+            random_statx.stx_btime,
+            random_statx.stx_ctime,
+            random_statx.stx_mtime,
+        ] {
+            assert_eq!(
+                (timestamp.tv_sec, timestamp.tv_nsec),
+                (DETERMINISTIC_METADATA_SECONDS, 0)
+            );
+        }
+
+        // Without the setting the same host file reports the fixed timestamps.
+        state.host_metadata_timestamps = false;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fstat,
+                [fd as u64, STAT_ADDRESS, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let fixed: libc::stat = read_struct(&memory, STAT_ADDRESS);
+        for timestamp in [fixed.st_atime, fixed.st_mtime, fixed.st_ctime] {
+            assert_eq!(timestamp, DETERMINISTIC_METADATA_SECONDS);
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_statx,
+                [
+                    libc::AT_FDCWD as u64,
+                    PATH_ADDRESS,
+                    0,
+                    statx_mask,
+                    STATX_ADDRESS,
+                    0,
+                ],
+            ),
+            0
+        );
+        let fixed_statx: libc::statx = read_struct(&memory, STATX_ADDRESS);
+        for timestamp in [
+            fixed_statx.stx_atime,
+            fixed_statx.stx_btime,
+            fixed_statx.stx_ctime,
+            fixed_statx.stx_mtime,
+        ] {
+            assert_eq!(timestamp.tv_sec, DETERMINISTIC_METADATA_SECONDS);
+        }
+    }
+
+    #[test]
+    fn host_metadata_timestamps_survive_fork_clone_and_exec() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.host_metadata_timestamps = true;
+        let child = state.try_clone_for_fork(2).unwrap();
+        assert!(child.host_metadata_timestamps);
+        let mut fresh = test_state(&root.0);
+        assert!(!fresh.host_metadata_timestamps);
+        fresh.inherit_process_state(state);
+        assert!(fresh.host_metadata_timestamps);
+    }
+
+    /// Asserts that every stat route to `fd` reports only the fixed timestamp
+    /// `fixed`: fstat, empty-path newfstatat and statx, and newfstatat and
+    /// statx through its `/proc/self/fd` link.
+    fn assert_fixed_descriptor_timestamps(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        fd: libc::c_int,
+        fixed: libc::time_t,
+        what: &str,
+    ) {
+        const EMPTY_ADDRESS: u64 = 0x2c0;
+        const LINK_ADDRESS: u64 = 0x300;
+        const STAT_ADDRESS: u64 = 0x1000;
+        const STATX_ADDRESS: u64 = 0x1200;
+        write_c_string(memory, EMPTY_ADDRESS, "");
+        write_c_string(memory, LINK_ADDRESS, &format!("/proc/self/fd/{fd}"));
+        for (call, number, args) in [
+            (
+                "fstat",
+                libc::SYS_fstat,
+                [fd as u64, STAT_ADDRESS, 0, 0, 0, 0],
+            ),
+            (
+                "empty-path newfstatat",
+                libc::SYS_newfstatat,
+                [
+                    fd as u64,
+                    EMPTY_ADDRESS,
+                    STAT_ADDRESS,
+                    libc::AT_EMPTY_PATH as u64,
+                    0,
+                    0,
+                ],
+            ),
+            (
+                "/proc/self/fd newfstatat",
+                libc::SYS_newfstatat,
+                [libc::AT_FDCWD as u64, LINK_ADDRESS, STAT_ADDRESS, 0, 0, 0],
+            ),
+        ] {
+            memory
+                .write(STAT_ADDRESS, &[0xa5; std::mem::size_of::<libc::stat>()])
+                .unwrap();
+            assert_eq!(
+                syscall_result(memory, state, number, args),
+                0,
+                "{what}: {call}"
+            );
+            let stat: libc::stat = read_struct(memory, STAT_ADDRESS);
+            assert_eq!(
+                [
+                    (stat.st_atime, stat.st_atime_nsec),
+                    (stat.st_mtime, stat.st_mtime_nsec),
+                    (stat.st_ctime, stat.st_ctime_nsec),
+                ],
+                [(fixed, 0); 3],
+                "{what}: {call} reports only fixed timestamps"
+            );
+        }
+        let statx_mask = (libc::STATX_BASIC_STATS | libc::STATX_BTIME) as u64;
+        for (call, args) in [
+            (
+                "empty-path statx",
+                [
+                    fd as u64,
+                    EMPTY_ADDRESS,
+                    libc::AT_EMPTY_PATH as u64,
+                    statx_mask,
+                    STATX_ADDRESS,
+                    0,
+                ],
+            ),
+            (
+                "/proc/self/fd statx",
+                [
+                    libc::AT_FDCWD as u64,
+                    LINK_ADDRESS,
+                    0,
+                    statx_mask,
+                    STATX_ADDRESS,
+                    0,
+                ],
+            ),
+        ] {
+            memory
+                .write(STATX_ADDRESS, &[0xa5; std::mem::size_of::<libc::statx>()])
+                .unwrap();
+            assert_eq!(
+                syscall_result(memory, state, libc::SYS_statx, args),
+                0,
+                "{what}: {call}"
+            );
+            let extended: libc::statx = read_struct(memory, STATX_ADDRESS);
+            assert_eq!(
+                [
+                    extended.stx_atime,
+                    extended.stx_btime,
+                    extended.stx_ctime,
+                    extended.stx_mtime,
+                ]
+                .map(|timestamp| (timestamp.tv_sec, timestamp.tv_nsec)),
+                [(fixed, 0); 4],
+                "{what}: {call} reports only fixed timestamps"
+            );
+        }
+    }
+
+    #[test]
+    fn host_metadata_timestamps_keep_virtual_files_fixed_through_every_alias() {
+        const LOGINUID_ADDRESS: u64 = 0x100;
+        const FREQUENCY_ADDRESS: u64 = 0x140;
+        const UPTIME_ADDRESS: u64 = 0x180;
+        const PAIR_FDS: u64 = 0x1c0;
+        const REOPEN_ADDRESS: u64 = 0x340;
+        const SEND_SEGMENT: u64 = 0x400;
+        const SEND_IOV: u64 = 0x420;
+        const SEND_MSG: u64 = 0x460;
+        const SEND_CONTROL: u64 = 0x4c0;
+        const RECV_SEGMENT: u64 = 0x500;
+        const RECV_IOV: u64 = 0x520;
+        const RECV_MSG: u64 = 0x560;
+        const RECV_CONTROL: u64 = 0x5c0;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.host_metadata_timestamps = true;
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        write_c_string(&mut memory, LOGINUID_ADDRESS, "/proc/self/loginuid");
+        write_c_string(
+            &mut memory,
+            FREQUENCY_ADDRESS,
+            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+        );
+        write_c_string(&mut memory, UPTIME_ADDRESS, "/proc/uptime");
+
+        let open = |memory: &mut GuestMemory, state: &mut LoadedStaticElf, path: u64| {
+            let fd = syscall_result(
+                memory,
+                state,
+                libc::SYS_openat,
+                [libc::AT_FDCWD as u64, path, libc::O_RDONLY as u64, 0, 0, 0],
+            );
+            assert!(fd >= 0, "open failed: {fd}");
+            fd as libc::c_int
+        };
+        let loginuid = open(&mut memory, &mut state, LOGINUID_ADDRESS);
+        let frequency = open(&mut memory, &mut state, FREQUENCY_ADDRESS);
+        let uptime = open(&mut memory, &mut state, UPTIME_ADDRESS);
+        // loginuid and the CPU frequency are the backend's virtual files;
+        // uptime is a synthetic /proc file.
+        for fd in [loginuid, frequency] {
+            assert!(state.fd_object_inodes[&fd].synthetic_metadata);
+        }
+
+        // A synthetic /proc file reports the epoch; a virtual file reports the
+        // backend's fixed metadata time.
+        let carriers = [
+            (
+                loginuid,
+                DETERMINISTIC_METADATA_SECONDS,
+                "/proc/self/loginuid",
+            ),
+            (
+                frequency,
+                DETERMINISTIC_METADATA_SECONDS,
+                "cpu0 scaling_cur_freq",
+            ),
+            (uptime, 0, "/proc/uptime"),
+        ];
+        let mut aliases = Vec::new();
+        for (fd, fixed, name) in carriers {
+            assert_fixed_descriptor_timestamps(&mut memory, &mut state, fd, fixed, name);
+            let duplicate = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup,
+                [fd as u64, 0, 0, 0, 0, 0],
+            );
+            assert!(duplicate >= 0, "{name}: dup failed: {duplicate}");
+            assert_fixed_descriptor_timestamps(
+                &mut memory,
+                &mut state,
+                duplicate as libc::c_int,
+                fixed,
+                &format!("{name} dup"),
+            );
+            write_c_string(&mut memory, REOPEN_ADDRESS, &format!("/proc/self/fd/{fd}"));
+            let reopened = open(&mut memory, &mut state, REOPEN_ADDRESS);
+            assert_fixed_descriptor_timestamps(
+                &mut memory,
+                &mut state,
+                reopened,
+                fixed,
+                &format!("{name} /proc/self/fd reopen"),
+            );
+            aliases.push((fd, duplicate as libc::c_int, reopened));
+        }
+
+        // A forked child, and the image that child then execs, inherit them.
+        let mut child = state.try_clone_for_fork(2).unwrap();
+        let mut image = test_state(&root.0);
+        for (fd, fixed, name) in carriers {
+            assert_fixed_descriptor_timestamps(
+                &mut memory,
+                &mut child,
+                fd,
+                fixed,
+                &format!("{name} in a forked child"),
+            );
+        }
+        image.inherit_process_state(child);
+        assert!(image.host_metadata_timestamps);
+        for (fd, fixed, name) in carriers {
+            assert_fixed_descriptor_timestamps(
+                &mut memory,
+                &mut image,
+                fd,
+                fixed,
+                &format!("{name} after exec"),
+            );
+        }
+        drop(image);
+
+        // A right still in flight after every sender descriptor has closed
+        // keeps the marking.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_DGRAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let sockets: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        memory.write(SEND_SEGMENT, b"x").unwrap();
+        let send_iov = libc::iovec {
+            iov_base: SEND_SEGMENT as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, SEND_IOV, &send_iov), 0);
+        let send_control = rights_control(&[loginuid]);
+        memory.write(SEND_CONTROL, &send_control).unwrap();
+        // SAFETY: libc::msghdr is plain data; a zeroed value is valid.
+        let mut send_msg = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        send_msg.msg_iov = SEND_IOV as usize as *mut libc::iovec;
+        send_msg.msg_iovlen = 1;
+        send_msg.msg_control = SEND_CONTROL as usize as *mut libc::c_void;
+        send_msg.msg_controllen = send_control.len();
+        assert_eq!(write_struct(&mut memory, SEND_MSG, &send_msg), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendmsg,
+                [sockets[0] as u64, SEND_MSG, 0, 0, 0, 0],
+            ),
+            1
+        );
+        let (_, loginuid_duplicate, loginuid_reopened) = aliases[0];
+        for fd in [loginuid, loginuid_duplicate, loginuid_reopened] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [fd as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+        }
+        let recv_iov = libc::iovec {
+            iov_base: RECV_SEGMENT as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, RECV_IOV, &recv_iov), 0);
+        memory.write(RECV_CONTROL, &[0_u8; 64]).unwrap();
+        // SAFETY: libc::msghdr is plain data; a zeroed value is valid.
+        let mut recv_msg = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        recv_msg.msg_iov = RECV_IOV as usize as *mut libc::iovec;
+        recv_msg.msg_iovlen = 1;
+        recv_msg.msg_control = RECV_CONTROL as usize as *mut libc::c_void;
+        recv_msg.msg_controllen = 64;
+        assert_eq!(write_struct(&mut memory, RECV_MSG, &recv_msg), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmsg,
+                [sockets[1] as u64, RECV_MSG, 0, 0, 0, 0],
+            ),
+            1
+        );
+        let received_msg: libc::msghdr = read_struct(&memory, RECV_MSG);
+        let mut received_control = vec![0; received_msg.msg_controllen];
+        memory.read(RECV_CONTROL, &mut received_control).unwrap();
+        let received = control_rights(&received_control);
+        assert_eq!(received.len(), 1);
+        assert!(state.fd_object_inodes[&received[0]].synthetic_metadata);
+        assert_fixed_descriptor_timestamps(
+            &mut memory,
+            &mut state,
+            received[0],
+            DETERMINISTIC_METADATA_SECONDS,
+            "/proc/self/loginuid received after the sender closed",
+        );
+        let table = state
+            .file_identity_table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            table.synthetic_transfers.is_empty(),
+            "the receive releases the in-flight pin"
+        );
+    }
+
+    #[test]
+    fn host_metadata_timestamps_never_leave_stored_times_in_a_faulting_executable_stat() {
+        const PATH_ADDRESS: u64 = 0x100;
+        const WHOLE_ADDRESS: u64 = 0x1000;
+        const MEMORY_LENGTH: usize = 0x2000;
+        // The bytes of a stat result that fit before the end of guest memory
+        // when the buffer starts at STRADDLE_ADDRESS.
+        const PREFIX: usize = 128;
+        const STRADDLE_ADDRESS: u64 = (MEMORY_LENGTH - PREFIX) as u64;
+        const ATIME: libc::time_t = 2_000_000_000;
+        const MTIME: libc::time_t = 2_222_222_222;
+        // The prefix holds every timestamp field and only part of the result.
+        assert!(std::mem::offset_of!(libc::stat, st_ctime_nsec) + 8 <= PREFIX);
+        assert!(PREFIX < std::mem::size_of::<libc::stat>());
+
+        let root = TestDir::new();
+        let executable = root.0.join("program");
+        std::fs::write(&executable, FAKE_ELF).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&executable)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_accessed(
+                        std::time::UNIX_EPOCH + std::time::Duration::from_secs(ATIME as u64),
+                    )
+                    .set_modified(
+                        std::time::UNIX_EPOCH + std::time::Duration::from_secs(MTIME as u64),
+                    ),
+            )
+            .unwrap();
+        let host = std::fs::metadata(&executable).unwrap();
+        assert_eq!((host.atime(), host.mtime()), (ATIME, MTIME));
+
+        // An exec leaves the opened image in executable_file; a stat of
+        // /proc/self/exe then reports that file.
+        let mut state = test_state(&root.0);
+        state.executable_path = executable.clone();
+        state.executable_file = Some(Arc::new(std::fs::File::open(&executable).unwrap()));
+        let mut memory = GuestMemory::new(0, MEMORY_LENGTH).unwrap();
+        write_c_string(&mut memory, PATH_ADDRESS, "/proc/self/exe");
+
+        for host_metadata_timestamps in [true, false] {
+            state.host_metadata_timestamps = host_metadata_timestamps;
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_newfstatat,
+                    [libc::AT_FDCWD as u64, PATH_ADDRESS, WHOLE_ADDRESS, 0, 0, 0],
+                ),
+                0
+            );
+            let whole: libc::stat = read_struct(&memory, WHOLE_ADDRESS);
+            assert_eq!(whole.st_ino, host.ino(), "the stat names the executable");
+            let expected = if host_metadata_timestamps {
+                (ATIME, MTIME)
+            } else {
+                (
+                    DETERMINISTIC_METADATA_SECONDS,
+                    DETERMINISTIC_METADATA_SECONDS,
+                )
+            };
+            assert_eq!((whole.st_atime, whole.st_mtime), expected);
+
+            // A buffer that runs off the end of guest memory fails with EFAULT
+            // and keeps the prefix that fits, with only fixed timestamps in it.
+            memory.write(STRADDLE_ADDRESS, &[0xa5; PREFIX]).unwrap();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_newfstatat,
+                    [
+                        libc::AT_FDCWD as u64,
+                        PATH_ADDRESS,
+                        STRADDLE_ADDRESS,
+                        0,
+                        0,
+                        0
+                    ],
+                ),
+                negative_errno(libc::EFAULT)
+            );
+            let mut prefix = [0; PREFIX];
+            memory.read(STRADDLE_ADDRESS, &mut prefix).unwrap();
+            let mut fixed = whole;
+            sanitize_stat_timestamps(&mut fixed);
+            // SAFETY: libc::stat is initialized plain data, viewed in place.
+            let fixed_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    std::ptr::from_ref(&fixed).cast::<u8>(),
+                    std::mem::size_of::<libc::stat>(),
+                )
+            };
+            assert_eq!(
+                prefix,
+                fixed_bytes[..PREFIX],
+                "host_metadata_timestamps={host_metadata_timestamps}: the faulting copy \
+                 keeps the prefix, with fixed timestamps"
+            );
         }
     }
 

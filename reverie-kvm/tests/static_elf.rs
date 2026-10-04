@@ -20099,6 +20099,10 @@ fn dropped_public_run_case(
         ("the VM fd", backend.vm_fd().map(drop)),
         ("a root pid", backend.set_root_pid(DROPPED_RUN_ROOT)),
         ("a random seed", backend.set_random_seed(1)),
+        (
+            "host metadata timestamps",
+            backend.set_host_metadata_timestamps(true),
+        ),
     ] {
         assert_refused(&case, entry, refused);
     }

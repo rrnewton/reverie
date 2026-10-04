@@ -405,6 +405,11 @@ pub enum Error {
     #[error("KVM signal dequeue observation requires Tool-owned threads")]
     SignalObservationRequiresToolThreads,
 
+    /// Host metadata timestamps would reach the guest without a Tool to
+    /// rewrite them: the run has no Tool, or its threads are host-owned.
+    #[error("KVM host metadata timestamps require a Tool that owns every guest thread")]
+    HostMetadataTimestampsRequireToolThreads,
+
     /// Replacing the process image from a guest thread is not implemented.
     #[error("KVM guest threads cannot replace the process image")]
     GuestThreadExecUnsupported,
