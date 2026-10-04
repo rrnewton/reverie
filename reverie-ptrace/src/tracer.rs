@@ -5357,12 +5357,16 @@ where
 
     // While the pipes are made, no transient open of another thread may be
     // in flight: its descriptor would take a number from the pipes' budget.
-    // Only the two pipe calls run under the guard, which allocate nothing
+    // Only the two pipe calls, each retried at most once after a bounded
+    // spin (`Launch::allocate`), run under the guard, which allocate nothing
     // and take no lock; it ends before `fork`, which runs the process's
     // `pthread_atfork` handlers (`launch_window`). Any error is built after
     // the guard ends.
     let launch = crate::launch_window::Launch::begin();
-    let pipes = unistd::pipe().and_then(|output| Ok((output, unistd::pipe()?)));
+    let errno = |err: nix::Error| err as i32;
+    let pipes = launch
+        .allocate(unistd::pipe, errno)
+        .and_then(|output| Ok((output, launch.allocate(unistd::pipe, errno)?)));
     drop(launch);
     let ((read1, write1), (read2, write2)) = pipes.map_err(from_nix_error)?;
 
