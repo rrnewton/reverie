@@ -376,6 +376,12 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
     ) -> Option<reverie::CallbackSignalSite> {
         None
     }
+    fn parent_death_syscall_preflight(
+        &self,
+        _call: reverie::syscalls::Syscall,
+    ) -> std::result::Result<reverie::ParentDeathSyscallAdmission, reverie::Error> {
+        Err(Errno::ENOSYS.into())
+    }
     fn set_signal_guard(&mut self, _guard: SignalGuard) -> SignalGuard {
         SignalGuard::Ordinary
     }
@@ -640,6 +646,23 @@ struct StaticElfSyscallExecutor<'a> {
     signal_guard: SignalGuard,
 }
 
+impl Drop for StaticElfSyscallExecutor<'_> {
+    fn drop(&mut self) {
+        if matches!(
+            self.process_context,
+            ProcessExecutionContext::SyscallBoundary(_)
+        ) && self.original_syscall.is_some_and(|request| {
+            matches!(
+                request.number() as libc::c_long,
+                libc::SYS_execve | libc::SYS_execveat
+            )
+        }) && let Some(site) = self.callback_site
+        {
+            self.executor.retire_parent_death_exec(site);
+        }
+    }
+}
+
 impl<T> GuestSyscallExecutor<T> for StaticElfSyscallExecutor<'_>
 where
     T: Tool + 'static,
@@ -694,6 +717,12 @@ where
             ProcessExecutionContext::InitialExec(expected)
                 if matches_initial_exec(expected, request)
         ) {
+            if self.executor.parent_death_enrolled() {
+                return Err(crate::Error::ParentDeathSignal {
+                    operation: "enrolled synthetic initial exec has no original image authority",
+                    errno: libc::ENOSYS,
+                });
+            }
             self.last_result = Some(0);
             self.process_context = ProcessExecutionContext::InitialExecCompleted;
             return Ok(0);
@@ -852,6 +881,39 @@ where
         // equality above; distinct upper argument bits do not share admission.
         let fd = request.args()[0] as libc::c_int;
         self.executor.captured_write_site(site, fd)
+    }
+    fn parent_death_syscall_preflight(
+        &self,
+        call: reverie::syscalls::Syscall,
+    ) -> std::result::Result<reverie::ParentDeathSyscallAdmission, reverie::Error> {
+        let refuse = || {
+            reverie::Error::Tool(anyhow::Error::new(Error::ParentDeathSignal {
+                operation: "original-call preflight outside active callback",
+                errno: libc::ENOSYS,
+            }))
+        };
+        if self.signal_guard != SignalGuard::Ordinary
+            || self.last_result.is_some()
+            || *self.process_completed
+            || self.executor.has_prepared_signal()
+        {
+            return Err(refuse());
+        }
+        let site = self.callback_site.ok_or_else(refuse)?;
+        let original = matches!(
+            self.process_context,
+            ProcessExecutionContext::SyscallBoundary(_)
+        )
+        .then_some(self.original_syscall)
+        .flatten();
+        self.executor
+            .parent_death_original_syscall_preflight(
+                site,
+                &SyscallRequest::from_syscall(call),
+                original,
+                self.current_parked_site() == Some(site),
+            )
+            .map_err(|error| reverie::Error::Tool(anyhow::Error::new(error)))
     }
     fn set_signal_guard(&mut self, guard: SignalGuard) -> SignalGuard {
         std::mem::replace(&mut self.signal_guard, guard)
@@ -1391,6 +1453,23 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         } else {
             self.executor.captured_write_signal_site(call)
         }
+    }
+    fn parent_death_syscall_preflight(
+        &self,
+        call: reverie::syscalls::Syscall,
+    ) -> std::result::Result<reverie::ParentDeathSyscallAdmission, reverie::Error> {
+        if self.notifying_dequeue
+            || self.observation_lease.is_some()
+            || self.stack_checked_out.load(Ordering::Acquire)
+        {
+            return Err(reverie::Error::Tool(anyhow::Error::new(
+                Error::ParentDeathSignal {
+                    operation: "original-call preflight during foreign observation",
+                    errno: libc::ENOSYS,
+                },
+            )));
+        }
+        self.executor.parent_death_syscall_preflight(call)
     }
     fn signal_observation_lease(&self) -> Option<reverie::ParkedObservationLease> {
         self.observation_lease
@@ -2668,6 +2747,9 @@ where
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ToolExitDisposition {
     GuestExit,
+    /// Already retired through an authenticated existing group decision; this
+    /// completion must not freeze a second logical death in the finalizer.
+    CommittedGroupFollower,
     ExplicitCancellation,
     Retirement,
 }
@@ -2688,13 +2770,21 @@ impl ProcessExit {
 }
 
 impl ToolProcessExit {
+    fn commit_guest_death(&mut self, executor: &mut ElfExecutor) {
+        if self.disposition == ToolExitDisposition::GuestExit {
+            self.exit = executor.retire_guest_thread(self.exit.status, self.exit.group);
+        }
+    }
+
     fn joins_live_peers(self) -> bool {
         self.disposition != ToolExitDisposition::ExplicitCancellation && !self.exit.group
     }
 
     fn signal_boundary_outcome(self) -> reverie::SignalBoundaryOutcome {
         match self.disposition {
-            ToolExitDisposition::GuestExit => self.exit.signal_boundary_outcome(),
+            ToolExitDisposition::GuestExit | ToolExitDisposition::CommittedGroupFollower => {
+                self.exit.signal_boundary_outcome()
+            }
             ToolExitDisposition::ExplicitCancellation | ToolExitDisposition::Retirement => {
                 reverie::SignalBoundaryOutcome::Cancelled
             }
@@ -3788,9 +3878,13 @@ impl KvmBackend {
     ) -> Result<ToolProcessExit> {
         let exit = executor.retire_child_wait_group_exit(status)?;
         self.request_guest_thread_group_exit(exit.status);
-        // This is an actual committed group termination. The existing process
-        // finalizer settles any owned signal permit with that exact outcome.
-        Ok(exit.into())
+        // This is an acknowledgement of the existing group death, not another
+        // source of events. Only a previously owned permit can have an empty
+        // retained batch; finalization must not recreate removed task authority.
+        Ok(ToolProcessExit {
+            exit,
+            disposition: ToolExitDisposition::CommittedGroupFollower,
+        })
     }
 
     fn cancelled_tool_thread_status(&self, executor: &mut ElfExecutor) -> ToolProcessExit {
@@ -3846,13 +3940,11 @@ impl KvmBackend {
             Err(Error::ExecWorkerTeardown(primary)) => (Err(*primary), true),
             outcome => (outcome, false),
         };
-        let outcome = self.route_entry_outcome(outcome).await;
-        // A real guest exit must freeze task-death causation before its receipt.
-        // ExplicitCancellation/Retirement and failed backend cleanup do not.
-        if let Ok(exit) = &outcome
-            && exit.disposition == ToolExitDisposition::GuestExit
-        {
-            executor.retire_guest_thread(exit.exit.status, exit.exit.group);
+        let mut outcome = self.route_entry_outcome(outcome).await;
+        // Preserve the committed group's winning status in BOTH the retained
+        // death batch and the emitted receipt. Cleanup/cancellation is distinct.
+        if let Ok(exit) = &mut outcome {
+            exit.commit_guest_death(executor);
         }
         let settlement = self
             .finish_signal_boundary(
@@ -7332,3 +7424,7 @@ mod entry_operation_tests;
 
 #[cfg(test)]
 mod exit_descriptor_tests;
+
+#[cfg(test)]
+#[path = "runtime/parent_death_tests.rs"]
+mod parent_death_tests;

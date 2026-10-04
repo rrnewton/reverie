@@ -1513,9 +1513,23 @@ pub(crate) struct ElfExecutor {
     exit_group: bool,
     clear_child_tid: Option<u64>,
     signal_callback_nonce: u64,
+    parent_death_exec: Mutex<Option<ParentDeathExecSnapshot>>,
     parked_signals: Option<ParkedSignalState>,
     completed_signal_effects: Vec<reverie::SignalDequeue>,
     signal_effect_raw_result: Option<i64>,
+}
+
+/// Private authority staged by the first original-call preflight. The guest
+/// pathname may change afterward, but this exact callback never resolves it
+/// again. Retain the consumed tombstone until the next callback so neither
+/// repeated preflight nor a second injection can resurrect it.
+struct ParentDeathExecSnapshot {
+    site: reverie::CallbackSignalSite,
+    original: SyscallRequest,
+    alias: Vec<u8>,
+    file: Arc<std::fs::File>,
+    image: Arc<[u8]>,
+    consumed: bool,
 }
 
 /// Keeps one exact process-generation registry binding alive without exposing
@@ -3371,6 +3385,7 @@ impl ElfExecutor {
             signal_registry,
             signal_binding,
             signal_callback_nonce: 0,
+            parent_death_exec: Mutex::new(None),
             parked_signals: None,
             completed_signal_effects: Vec::new(),
             signal_effect_raw_result: None,
@@ -3489,18 +3504,8 @@ impl ElfExecutor {
                 Err(error) => error,
             });
         }
-        if number == libc::SYS_execve as u64 {
-            return Some(self.prepare_exec(memory, args[0], args[1], args[2], libc::AT_FDCWD, 0));
-        }
-        if number == libc::SYS_execveat as u64 {
-            return Some(self.prepare_exec(
-                memory,
-                args[1],
-                args[2],
-                args[3],
-                args[0] as i32,
-                args[4],
-            ));
+        if number == libc::SYS_execve as u64 || number == libc::SYS_execveat as u64 {
+            return Some(self.prepare_exec(memory, request, None));
         }
         None
     }
@@ -3651,22 +3656,33 @@ impl ElfExecutor {
     fn prepare_exec(
         &mut self,
         memory: &GuestMemory,
-        path_address: u64,
-        argv_address: u64,
-        envp_address: u64,
-        dirfd: i32,
-        flags: u64,
+        request: &SyscallRequest,
+        retained: Option<ResolvedExecutable>,
     ) -> i64 {
+        let args = request.args();
+        let (path_address, argv_address, envp_address, dirfd, flags) =
+            if request.number() == libc::SYS_execve as u64 {
+                (args[0], args[1], args[2], libc::AT_FDCWD, 0)
+            } else {
+                (args[1], args[2], args[3], args[0] as i32, args[4])
+            };
         if self.process_action.is_some() {
             return negative_errno(libc::EBUSY);
         }
         if flags != 0 || dirfd != libc::AT_FDCWD {
             return negative_errno(libc::ENOTSUP);
         }
-        let path = match read_c_string(memory, path_address, 4096) {
-            Ok(path) if !path.is_empty() => path,
-            Ok(_) => return negative_errno(libc::ENOENT),
-            Err(error) => return read_c_string_errno(error),
+        let retained_static_image = retained.is_some();
+        let path = if retained_static_image {
+            // The admitted pathname bytes and target are already retained;
+            // reading the guest pointer again would reopen a TOCTOU window.
+            Vec::new()
+        } else {
+            match read_c_string(memory, path_address, 4096) {
+                Ok(path) if !path.is_empty() => path,
+                Ok(_) => return negative_errno(libc::ENOENT),
+                Err(error) => return read_c_string_errno(error),
+            }
         };
         let argv = match read_string_array(memory, argv_address) {
             Ok(argv) => argv,
@@ -3676,9 +3692,33 @@ impl ElfExecutor {
             Ok(envp) => envp,
             Err(error) => return error,
         };
-        let executable = match resolve_guest_exec_image(&self.state, path, &envp) {
-            Ok(executable) => executable,
-            Err(error) => return error,
+        let executable = match retained {
+            Some(executable) => {
+                // Admission proves a supported target, not guaranteed exec
+                // success. Preserve the normal permission errno at preparation
+                // without reopening or re-resolving the captured pathname.
+                let file = executable
+                    .file
+                    .as_ref()
+                    .expect("retained exec owns its image file");
+                let access = unsafe {
+                    libc::syscall(
+                        libc::SYS_faccessat2,
+                        file.as_raw_fd(),
+                        c"".as_ptr(),
+                        libc::X_OK,
+                        libc::AT_EMPTY_PATH | libc::AT_EACCESS,
+                    )
+                };
+                if access != 0 {
+                    return io_error(std::io::Error::last_os_error());
+                }
+                executable
+            }
+            None => match resolve_guest_exec_image(&self.state, path, &envp) {
+                Ok(executable) => executable,
+                Err(error) => return error,
+            },
         };
         let path = executable.path;
         let image = executable.image;
@@ -3693,13 +3733,19 @@ impl ElfExecutor {
         // execs a `#!`-script must have its interpreter resolved here, as the
         // kernel's binfmt_script loader does.
         let executable_path = path.clone();
-        let (image, argv) = match resolve_exec_shebang(path, image, argv, |interpreter| {
-            let resolved = read_executable_file(&self.state, interpreter)?;
-            executable_file = resolved.file;
-            Ok(resolved.image)
-        }) {
-            Ok((_interpreter, image, argv)) => (image, argv),
-            Err(errno) => return errno,
+        let (image, argv) = if retained_static_image {
+            // Parsed static ELF was part of admission. No shebang or external
+            // PT_INTERP lookup can be reached through this retained authority.
+            (image, argv)
+        } else {
+            match resolve_exec_shebang(path, image, argv, |interpreter| {
+                let resolved = read_executable_file(&self.state, interpreter)?;
+                executable_file = resolved.file;
+                Ok(resolved.image)
+            }) {
+                Ok((_interpreter, image, argv)) => (image, argv),
+                Err(errno) => return errno,
+            }
         };
         // TODO-HUMAN-REVIEW(PR-156): Review preflight validation before exec image replacement.
         // Loading the live image clears guest memory, so validate against an
@@ -3853,6 +3899,7 @@ impl ElfExecutor {
             signal_registry: self.signal_registry.clone(),
             signal_binding,
             signal_callback_nonce: 0,
+            parent_death_exec: Mutex::new(None),
             parked_signals: None,
             completed_signal_effects: Vec::new(),
             signal_effect_raw_result: None,
@@ -3981,6 +4028,7 @@ impl ElfExecutor {
             signal_registry: self.signal_registry.clone(),
             signal_binding: self.signal_binding.clone(),
             signal_callback_nonce: 0,
+            parent_death_exec: Mutex::new(None),
             parked_signals: None,
             completed_signal_effects: Vec::new(),
             signal_effect_raw_result: None,
@@ -5290,6 +5338,14 @@ impl ElfExecutor {
     }
 
     pub(crate) fn begin_signal_callback(&mut self) -> Option<reverie::CallbackSignalSite> {
+        // Called at a callback boundary with no file-table/recipient guard.
+        // Release the private snapshot lock before dropping its retained file.
+        let obsolete = self
+            .parent_death_exec
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        drop(obsolete);
         let identity = self.signal_task_identity()?;
         self.signal_callback_nonce = self.signal_callback_nonce.checked_add(1)?;
         Some(reverie::CallbackSignalSite {
@@ -5323,6 +5379,285 @@ impl ElfExecutor {
         if !self.parent_death_enrolled() {
             return Ok(());
         }
+        self.parent_death_operation_preflight(request, false)
+    }
+
+    /// Original-call proof with no guest-visible effect. Retained-image exec
+    /// stages private authority for this callback only; other operations stage
+    /// no authority. The immediate result is never a reusable injection permit.
+    pub(crate) fn parent_death_original_syscall_preflight(
+        &self,
+        site: reverie::CallbackSignalSite,
+        request: &SyscallRequest,
+        original: Option<SyscallRequest>,
+        parked_protocol: bool,
+    ) -> crate::Result<reverie::ParentDeathSyscallAdmission> {
+        let enrolled = {
+            let lifecycle = self
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let identity = reverie::SignalTaskIdentity {
+                process: site.process,
+                tid: site.tid,
+                task_generation: site.task_generation,
+            };
+            if site.callback_nonce != self.signal_callback_nonce
+                || site.boundary_nonce != site.callback_nonce
+                || identity != self.admitted_signal_identity()
+                || lifecycle.parent_death_signal(identity).is_err()
+            {
+                return Err(crate::Error::ParentDeathSignal {
+                    operation: "stale original-call identity",
+                    errno: libc::ESRCH,
+                });
+            }
+            lifecycle.parent_death_enrolled(identity.process)
+        };
+        // The callback's full identity is live even for the root's synthetic
+        // initial exec. Absence of an original call is NEVER an unenrolled proof.
+        if !enrolled {
+            return Ok(reverie::ParentDeathSyscallAdmission::Unenrolled);
+        }
+        if original != Some(*request) {
+            return Err(crate::Error::ParentDeathSignal {
+                operation: "original-call operands or context mismatch",
+                errno: libc::ENOSYS,
+            });
+        }
+        if matches!(
+            request.number() as libc::c_long,
+            libc::SYS_execve | libc::SYS_execveat
+        ) {
+            self.stage_parent_death_exec(site, request)?;
+        }
+        self.parent_death_operation_preflight(request, parked_protocol)?;
+        Ok(reverie::ParentDeathSyscallAdmission::Admitted)
+    }
+
+    fn parent_death_exec_error(operation: &'static str) -> crate::Error {
+        crate::Error::ParentDeathSignal {
+            operation,
+            errno: libc::ENOSYS,
+        }
+    }
+
+    fn stage_parent_death_exec(
+        &self,
+        site: reverie::CallbackSignalSite,
+        request: &SyscallRequest,
+    ) -> crate::Result<()> {
+        {
+            let staged = self
+                .parent_death_exec
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if let Some(staged) = staged.as_ref() {
+                if staged.site == site && staged.original == *request && !staged.consumed {
+                    // In particular, do NOT refresh the alias from guest
+                    // memory on repeated preflight in this same callback.
+                    return Ok(());
+                }
+                return Err(Self::parent_death_exec_error(
+                    "retained exec callback already staged or consumed",
+                ));
+            }
+        }
+        self.parent_death_exec_close_preflight()?;
+        let args = request.args();
+        let path_address = match request.number() as libc::c_long {
+            libc::SYS_execve => args[0],
+            libc::SYS_execveat if args[0] as i32 == libc::AT_FDCWD && args[4] == 0 => args[1],
+            _ => {
+                return Err(Self::parent_death_exec_error(
+                    "unsupported enrolled exec form",
+                ));
+            }
+        };
+        let memory = self.address_space.as_ref().ok_or_else(|| {
+            Self::parent_death_exec_error("enrolled exec has no bound address space")
+        })?;
+        let alias = read_c_string(memory, path_address, 4096)
+            .map_err(|_| Self::parent_death_exec_error("enrolled exec alias is not readable"))?;
+        if guest_proc_exe_path(&self.state, &alias) != Some(true) {
+            return Err(Self::parent_death_exec_error(
+                "enrolled exec requires retained current-image authority",
+            ));
+        }
+        let file = self.state.executable_file.as_ref().ok_or_else(|| {
+            Self::parent_death_exec_error("enrolled exec has no retained executable file")
+        })?;
+        if file_mode(file)
+            .map_err(|_| Self::parent_death_exec_error("enrolled exec file inspection failed"))?
+            & libc::S_IFMT
+            != libc::S_IFREG
+        {
+            return Err(Self::parent_death_exec_error(
+                "enrolled exec requires a retained regular file",
+            ));
+        }
+        let image = &self.state.executable_image;
+        let elf = goblin::elf::Elf::parse(image).map_err(|_| {
+            Self::parent_death_exec_error("enrolled exec requires a retained static ELF")
+        })?;
+        if elf
+            .program_headers
+            .iter()
+            .any(|header| header.p_type == goblin::elf::program_header::PT_INTERP)
+        {
+            return Err(Self::parent_death_exec_error(
+                "enrolled exec cannot resolve an interpreter",
+            ));
+        }
+        let staged = ParentDeathExecSnapshot {
+            site,
+            original: *request,
+            alias,
+            file: file.clone(),
+            image: image.clone(),
+            consumed: false,
+        };
+        let mut slot = self
+            .parent_death_exec
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // The exclusive callback cannot concurrently change its identity.
+        // Still never overwrite prior authority if a future caller violates
+        // that assumption; owned locals drop only after this guard releases.
+        if slot.is_some() {
+            return Err(Self::parent_death_exec_error(
+                "retained exec staging raced another preflight",
+            ));
+        }
+        *slot = Some(staged);
+        Ok(())
+    }
+
+    fn parent_death_exec_matches(
+        &self,
+        staged: &ParentDeathExecSnapshot,
+        request: &SyscallRequest,
+    ) -> bool {
+        if staged.consumed
+            || !self.signal_site_is_current(staged.site)
+            || !self
+                .state
+                .executable_file
+                .as_ref()
+                .is_some_and(|file| Arc::ptr_eq(file, &staged.file))
+            || !Arc::ptr_eq(&self.state.executable_image, &staged.image)
+        {
+            return false;
+        }
+        if *request == staged.original {
+            return true;
+        }
+        if staged.original.number() != libc::SYS_execve as u64 {
+            return false;
+        }
+        // This is exactly reverie-syscalls' From<Execve> for Execveat,
+        // including preserved raw arg5. No rewritten target/argv/envp or
+        // recorder O_PATH preamble receives this private authority.
+        let original = staged.original.args();
+        *request
+            == SyscallRequest::new(
+                libc::SYS_execveat as u64,
+                [
+                    libc::AT_FDCWD as u64,
+                    original[0],
+                    original[1],
+                    original[2],
+                    0,
+                    original[5],
+                ],
+            )
+    }
+
+    fn parent_death_exec_close_preflight(&self) -> crate::Result<()> {
+        let close_set: Vec<i32> = self
+            .file_table
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cloexec_fds
+            .iter()
+            .copied()
+            .collect();
+        // Enrollment fixes a single live recipient task, and process clones
+        // do not share this descriptor table. No guest sibling can add a
+        // lingering endpoint during Tool scheduling. Injection checks again
+        // so a Tool's own intervening descriptor mutations grant no authority.
+        for fd in close_set {
+            self.parent_death_io_preflight(fd, true, true)?;
+        }
+        Ok(())
+    }
+
+    fn check_parent_death_exec(&self, request: &SyscallRequest) -> crate::Result<()> {
+        self.parent_death_exec_close_preflight()?;
+        let slot = self
+            .parent_death_exec
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if slot
+            .as_ref()
+            .is_some_and(|staged| self.parent_death_exec_matches(staged, request))
+        {
+            Ok(())
+        } else {
+            Err(Self::parent_death_exec_error(
+                "enrolled exec lacks exact unconsumed callback authority",
+            ))
+        }
+    }
+
+    pub(crate) fn retire_parent_death_exec(&self, site: reverie::CallbackSignalSite) {
+        let mut slot = self
+            .parent_death_exec
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(staged) = slot.as_mut().filter(|staged| staged.site == site) {
+            // Revoke authority even when a Tool returns before injection or its
+            // callback future is cancelled. Keep ownership until an unlocked
+            // callback boundary/owner drop, never close the last file here.
+            staged.consumed = true;
+        }
+    }
+
+    fn take_parent_death_exec(
+        &self,
+        request: &SyscallRequest,
+    ) -> crate::Result<ResolvedExecutable> {
+        let (alias, file, image) = {
+            let mut slot = self
+                .parent_death_exec
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let staged = slot
+                .as_mut()
+                .filter(|staged| self.parent_death_exec_matches(staged, request))
+                .ok_or_else(|| {
+                    Self::parent_death_exec_error("retained exec authority is stale or consumed")
+                })?;
+            staged.consumed = true;
+            (
+                staged.alias.clone(),
+                staged.file.clone(),
+                staged.image.clone(),
+            )
+        };
+        Ok(ResolvedExecutable {
+            path: std::path::PathBuf::from(std::ffi::OsString::from_vec(alias)),
+            file: Some(file),
+            image: image.to_vec(),
+        })
+    }
+
+    fn parent_death_operation_preflight(
+        &self,
+        request: &SyscallRequest,
+        parked_protocol: bool,
+    ) -> crate::Result<()> {
         let number = request.number() as libc::c_long;
         let args = request.args();
         let refusal = |operation| crate::Error::ParentDeathSignal {
@@ -5330,6 +5665,35 @@ impl ElfExecutor {
             errno: libc::ENOSYS,
         };
         match number {
+            libc::SYS_close => return self.parent_death_io_preflight(args[0] as i32, true, true),
+            libc::SYS_close_range => {
+                return Err(refusal(
+                    "unsupported enrolled range close or CLOEXEC mutation",
+                ));
+            }
+            libc::SYS_dup2 | libc::SYS_dup3 if args[0] as i32 != args[1] as i32 => {
+                // Replacing a descriptor implicitly closes its old endpoint.
+                self.parent_death_io_preflight(args[1] as i32, true, true)?;
+            }
+            libc::SYS_execve | libc::SYS_execveat => return self.check_parent_death_exec(request),
+            libc::SYS_vfork => {
+                return Err(refusal(
+                    "unsupported enrolled shared-address-space child wait",
+                ));
+            }
+            libc::SYS_clone if args[0] & (libc::CLONE_VM | libc::CLONE_THREAD) as u64 != 0 => {
+                return Err(refusal(
+                    "unsupported enrolled shared-address-space or thread creation",
+                ));
+            }
+            libc::SYS_clone3 => {
+                // clone3's pointed-to flags can change during Tool work. This
+                // first increment admits scalar clone/fork only, rather than
+                // let a later rejection follow consumer metadata effects.
+                return Err(refusal(
+                    "unsupported enrolled clone3 without an immutable request snapshot",
+                ));
+            }
             libc::SYS_futex
                 if matches!(
                     args[1] as i32 & libc::FUTEX_CMD_MASK,
@@ -5337,6 +5701,7 @@ impl ElfExecutor {
                         | libc::FUTEX_WAIT_BITSET
                         | libc::FUTEX_WAIT_REQUEUE_PI
                         | libc::FUTEX_LOCK_PI
+                        | libc::FUTEX_LOCK_PI2
                 ) =>
             {
                 return Err(refusal("unsupported enrolled futex wait"));
@@ -5362,7 +5727,9 @@ impl ElfExecutor {
             }
             // These waits are completed by the opted-in Tool's authenticated
             // pause/nanosleep protocol, never injected as a host wait.
-            libc::SYS_nanosleep | libc::SYS_clock_nanosleep | libc::SYS_pause => {
+            libc::SYS_nanosleep | libc::SYS_clock_nanosleep | libc::SYS_pause
+                if !parked_protocol =>
+            {
                 return Err(refusal(
                     "enrolled sleep requires the authenticated parked protocol",
                 ));
@@ -5372,9 +5739,60 @@ impl ElfExecutor {
             | libc::SYS_accept4
             | libc::SYS_sendto
             | libc::SYS_sendmsg
+            | libc::SYS_sendmmsg
+            | libc::SYS_recvmmsg
             | libc::SYS_recvfrom
             | libc::SYS_recvmsg => return Err(refusal("unsupported enrolled socket I/O")),
+            // A sampled descriptor flag or a later retry conversion is not
+            // authority to enter an external wait before its first effect.
+            libc::SYS_poll if args[2] as i32 != 0 => {
+                return Err(refusal("unsupported enrolled readiness wait"));
+            }
+            libc::SYS_epoll_wait | libc::SYS_epoll_pwait if args[3] as i32 != 0 => {
+                return Err(refusal("unsupported enrolled readiness wait"));
+            }
+            libc::SYS_ppoll | libc::SYS_select | libc::SYS_pselect6 | libc::SYS_epoll_pwait2 => {
+                let address = match number {
+                    libc::SYS_ppoll => args[2],
+                    libc::SYS_epoll_pwait2 => args[3],
+                    _ => args[4],
+                };
+                // timeval and timespec both encode an explicit zero as these
+                // 16 zero bytes. NULL is an unbounded wait, never an authority.
+                let mut timeout = [0_u8; 16];
+                if address == 0
+                    || !self.address_space.as_ref().is_some_and(|memory| {
+                        memory.user().read(address, &mut timeout).is_ok() && timeout == [0; 16]
+                    })
+                {
+                    return Err(refusal("unsupported enrolled readiness wait"));
+                }
+            }
             _ => {}
+        }
+        if matches!(
+            number,
+            libc::SYS_fsync
+                | libc::SYS_fdatasync
+                | libc::SYS_syncfs
+                | libc::SYS_sync_file_range
+                | libc::SYS_fallocate
+                | libc::SYS_ftruncate
+                | libc::SYS_readahead
+        ) {
+            // Ordinary filesystem completion is admitted; an arbitrary device
+            // driver or imported socket is not a storage-completion authority.
+            return self.parent_death_io_preflight(args[0] as i32, false, false);
+        }
+        if number == libc::SYS_mmap && args[3] as i32 & libc::MAP_ANONYMOUS == 0 {
+            return self.parent_death_io_preflight(args[4] as i32, false, false);
+        }
+        if number == libc::SYS_sendfile {
+            self.parent_death_io_preflight(args[1] as i32, false, false)?;
+            // sendfile's table-owned output takes the host fast path even for
+            // a captured alias. Only its bare standard-output fallback uses
+            // capture; an aliased pipe must still be rejected before transfer.
+            return self.parent_death_io_preflight(args[0] as i32, true, false);
         }
         let io = matches!(
             number,
@@ -5390,14 +5808,220 @@ impl ElfExecutor {
                 | libc::SYS_pwritev2
         );
         if !io {
-            return Ok(());
+            // Finite opt-in domain: in-memory operations, bounded descriptor
+            // queries/creation, ordinary filesystem operations, and the wait
+            // forms checked above. Existing host-filesystem completion remains
+            // an assumption; this does not promise interruptible storage I/O.
+            // A newly implemented syscall requires an explicit domain audit.
+            return if matches!(
+                number,
+                libc::SYS_access
+                    | libc::SYS_arch_prctl
+                    | libc::SYS_bind
+                    | libc::SYS_brk
+                    | libc::SYS_capget
+                    | libc::SYS_capset
+                    | libc::SYS_chdir
+                    | libc::SYS_chmod
+                    | libc::SYS_chown
+                    | libc::SYS_clock_gettime
+                    | libc::SYS_clock_nanosleep
+                    | libc::SYS_close
+                    | libc::SYS_close_range
+                    | libc::SYS_dup
+                    | libc::SYS_dup2
+                    | libc::SYS_dup3
+                    | libc::SYS_epoll_create1
+                    | libc::SYS_epoll_ctl
+                    | libc::SYS_epoll_pwait
+                    | libc::SYS_epoll_pwait2
+                    | libc::SYS_epoll_wait
+                    | libc::SYS_eventfd
+                    | libc::SYS_eventfd2
+                    | libc::SYS_exit
+                    | libc::SYS_exit_group
+                    | libc::SYS_faccessat
+                    | libc::SYS_faccessat2
+                    | libc::SYS_fallocate
+                    | libc::SYS_fchdir
+                    | libc::SYS_fchmod
+                    | libc::SYS_fchmodat
+                    | libc::SYS_fchmodat2
+                    | libc::SYS_fchown
+                    | libc::SYS_fchownat
+                    | libc::SYS_fcntl
+                    | libc::SYS_fdatasync
+                    | libc::SYS_fgetxattr
+                    | libc::SYS_flistxattr
+                    | libc::SYS_flock
+                    | libc::SYS_fremovexattr
+                    | libc::SYS_fsetxattr
+                    | libc::SYS_fstat
+                    | libc::SYS_fstatfs
+                    | libc::SYS_fsync
+                    | libc::SYS_ftruncate
+                    | libc::SYS_futex
+                    | libc::SYS_get_robust_list
+                    | libc::SYS_getcpu
+                    | libc::SYS_getcwd
+                    | libc::SYS_getdents64
+                    | libc::SYS_getegid
+                    | libc::SYS_geteuid
+                    | libc::SYS_getgid
+                    | libc::SYS_getgroups
+                    | libc::SYS_getpeername
+                    | libc::SYS_getpgrp
+                    | libc::SYS_getpid
+                    | libc::SYS_getppid
+                    | libc::SYS_getpriority
+                    | libc::SYS_getrandom
+                    | libc::SYS_getresgid
+                    | libc::SYS_getresuid
+                    | libc::SYS_getsockname
+                    | libc::SYS_getsockopt
+                    | libc::SYS_gettid
+                    | libc::SYS_gettimeofday
+                    | libc::SYS_getuid
+                    | libc::SYS_getxattr
+                    | libc::SYS_ioctl
+                    | libc::SYS_ioprio_get
+                    | libc::SYS_ioprio_set
+                    | libc::SYS_kill
+                    | libc::SYS_lchown
+                    | libc::SYS_lgetxattr
+                    | libc::SYS_link
+                    | libc::SYS_linkat
+                    | libc::SYS_listen
+                    | libc::SYS_listxattr
+                    | libc::SYS_llistxattr
+                    | libc::SYS_lremovexattr
+                    | libc::SYS_lseek
+                    | libc::SYS_lsetxattr
+                    | libc::SYS_lstat
+                    | libc::SYS_madvise
+                    | libc::SYS_membarrier
+                    | libc::SYS_memfd_create
+                    | libc::SYS_mincore
+                    | libc::SYS_mkdir
+                    | libc::SYS_mkdirat
+                    | libc::SYS_mknod
+                    | libc::SYS_mknodat
+                    | libc::SYS_mmap
+                    | libc::SYS_mprotect
+                    | libc::SYS_mremap
+                    | libc::SYS_msync
+                    | libc::SYS_munlock
+                    | libc::SYS_munlockall
+                    | libc::SYS_munmap
+                    | libc::SYS_nanosleep
+                    | libc::SYS_newfstatat
+                    | libc::SYS_pidfd_open
+                    | libc::SYS_pipe
+                    | libc::SYS_pipe2
+                    | libc::SYS_poll
+                    | libc::SYS_ppoll
+                    | libc::SYS_prctl
+                    | libc::SYS_prlimit64
+                    | libc::SYS_pselect6
+                    | libc::SYS_readahead
+                    | libc::SYS_readlink
+                    | libc::SYS_readlinkat
+                    | libc::SYS_removexattr
+                    | libc::SYS_rename
+                    | libc::SYS_renameat
+                    | libc::SYS_renameat2
+                    | libc::SYS_rmdir
+                    | libc::SYS_rseq
+                    | libc::SYS_rt_sigaction
+                    | libc::SYS_rt_sigpending
+                    | libc::SYS_rt_sigprocmask
+                    | libc::SYS_rt_sigtimedwait
+                    | libc::SYS_sched_get_priority_max
+                    | libc::SYS_sched_get_priority_min
+                    | libc::SYS_sched_getaffinity
+                    | libc::SYS_sched_getattr
+                    | libc::SYS_sched_getparam
+                    | libc::SYS_sched_getscheduler
+                    | libc::SYS_sched_setparam
+                    | libc::SYS_sched_setscheduler
+                    | libc::SYS_sched_yield
+                    | libc::SYS_seccomp
+                    | libc::SYS_select
+                    | libc::SYS_set_robust_list
+                    | libc::SYS_setpriority
+                    | libc::SYS_setsockopt
+                    | libc::SYS_setxattr
+                    | libc::SYS_shutdown
+                    | libc::SYS_sigaltstack
+                    | libc::SYS_signalfd
+                    | libc::SYS_signalfd4
+                    | libc::SYS_socket
+                    | libc::SYS_socketpair
+                    | libc::SYS_stat
+                    | libc::SYS_statfs
+                    | libc::SYS_statx
+                    | libc::SYS_symlink
+                    | libc::SYS_symlinkat
+                    | libc::SYS_sync_file_range
+                    | libc::SYS_syncfs
+                    | libc::SYS_tgkill
+                    | libc::SYS_timerfd_create
+                    | libc::SYS_timerfd_gettime
+                    | libc::SYS_timerfd_settime
+                    | libc::SYS_tkill
+                    | libc::SYS_truncate
+                    | libc::SYS_umask
+                    | libc::SYS_uname
+                    | libc::SYS_unlink
+                    | libc::SYS_unlinkat
+                    | libc::SYS_utimensat
+                    | libc::SYS_wait4
+                    | libc::SYS_waitid
+                    | libc::SYS_fork
+                    | libc::SYS_clone
+                    | libc::SYS_set_tid_address
+                    | libc::SYS_rt_sigreturn
+                    | libc::SYS_pause
+                    | libc::SYS_setuid
+                    | libc::SYS_setgid
+                    | libc::SYS_setresuid
+                    | libc::SYS_setresgid
+                    | libc::SYS_setreuid
+                    | libc::SYS_setregid
+                    | libc::SYS_setgroups
+                    | libc::SYS_setfsuid
+                    | libc::SYS_setfsgid
+            ) {
+                Ok(())
+            } else {
+                Err(refusal(
+                    "operation is outside the enrolled parent-death delivery domain",
+                ))
+            };
         }
-        let fd = args[0] as i32;
+        self.parent_death_io_preflight(
+            args[0] as i32,
+            matches!(number, libc::SYS_write | libc::SYS_writev),
+            true,
+        )
+    }
+
+    fn parent_death_io_preflight(
+        &self,
+        fd: i32,
+        captures_output: bool,
+        captures_aliases: bool,
+    ) -> crate::Result<()> {
+        let refusal = |operation| crate::Error::ParentDeathSignal {
+            operation,
+            errno: libc::ENOSYS,
+        };
         let table = self.file_table.lock().unwrap_or_else(|p| p.into_inner());
         let standard = (fd == 1 || fd == 2)
             && !table.closed_standard_fds.contains(&fd)
             && !table.files.contains_key(&fd);
-        if matches!(number, libc::SYS_write | libc::SYS_writev)
+        if captures_output
+            && (standard || captures_aliases)
             && self.output.is_some()
             && output_alias_from_sets(
                 fd,
@@ -6356,9 +6980,16 @@ impl ElfExecutor {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if guest_death {
+                // A previously committed exit_group owns the status even if a
+                // later task requests a different exit. Freeze that winner
+                // while this same lifecycle lock still holds every death-set
+                // identity; exit() below cannot choose a different winner.
+                let winning_status = lifecycle
+                    .live_task_group_exit_status(self.admitted_signal_identity())
+                    .unwrap_or(status);
                 let outcome = reverie::SignalBoundaryOutcome::Terminated {
                     group,
-                    wait_status: status.into_raw(),
+                    wait_status: winning_status.into_raw(),
                 };
                 let boundary = self
                     .owned_delivery_permit()
@@ -6481,7 +7112,15 @@ impl ElfExecutor {
         status: ExitStatus,
     ) -> crate::Result<ProcessExit> {
         self.validate_child_wait_group_exit(status)?;
-        Ok(self.retire_current_thread(status, true))
+        // The initiating group exit already froze every dying member. A
+        // follower with a real permit retains its empty completion while the
+        // owner is still live. A follower without one has no publication
+        // authority and only performs the existing physical retirement.
+        Ok(if self.owned_delivery_permit().is_some() {
+            self.retire_guest_thread(status, true)
+        } else {
+            self.retire_current_thread(status, true)
+        })
     }
 
     pub(crate) fn process_exit_status(&self) -> Option<ExitStatus> {
@@ -6898,8 +7537,8 @@ impl ElfExecutor {
             });
         }
         self.check_parent_death_failure()?;
-        self.parent_death_injection_preflight(request)?;
         self.bind_address_space(memory);
+        self.parent_death_injection_preflight(request)?;
         // A fork gets a separate arena/gate and inherits the real shared VMAs.
         // CLONE_VM still creates another owner of this arena and is refused
         // before task-ID allocation, child copyout or ProcessAction.
@@ -6983,6 +7622,15 @@ impl ElfExecutor {
             shared_files.take();
             drop(notifications.take());
             self.state.file_retirement.drain_unlocked();
+        }
+        if self.parent_death_enrolled()
+            && matches!(
+                request.number() as libc::c_long,
+                libc::SYS_execve | libc::SYS_execveat
+            )
+        {
+            let retained = self.take_parent_death_exec(request)?;
+            return Ok(self.prepare_exec(memory, request, Some(retained)));
         }
         if let Some(result) = self.execute_process_action(request, memory) {
             return Ok(result);
@@ -17583,18 +18231,30 @@ fn prctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-PENDING): https://github.com/rrnewton/reverie/issues/916.
         // prctl option is an int; its signal operand remains unsigned long.
-        option if option as i32 == libc::PR_SET_PDEATHSIG => state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .set_parent_death_signal(state.tid, args[1])
-            .map_or_else(|errno| negative_errno(errno.into_raw()), |_| 0),
+        option if option as i32 == libc::PR_SET_PDEATHSIG => {
+            // Width validation is Linux's first check, even for a stale caller.
+            if args[1] > 64 {
+                return negative_errno(libc::EINVAL);
+            }
+            let Ok(caller) = state.children.task_identity() else {
+                return negative_errno(libc::ESRCH);
+            };
+            state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .set_parent_death_signal(caller, args[1])
+                .map_or_else(|errno| negative_errno(errno.into_raw()), |_| 0)
+        }
         option if option as i32 == libc::PR_GET_PDEATHSIG => {
+            let Ok(caller) = state.children.task_identity() else {
+                return negative_errno(libc::ESRCH);
+            };
             let signal = state
                 .task_lifecycle
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .parent_death_signal(state.tid);
+                .parent_death_signal(caller);
             match signal {
                 Ok(signal) => memory
                     .user()
@@ -19676,7 +20336,7 @@ fn signal_disposition(state: &LoadedStaticElf, signal: libc::c_int) -> SignalDis
     signal_disposition_with_action(installed_signal_action(state, signal), signal)
 }
 
-fn signal_disposition_with_action(
+pub(crate) fn signal_disposition_with_action(
     action: Option<KernelSigaction>,
     signal: libc::c_int,
 ) -> SignalDisposition {
