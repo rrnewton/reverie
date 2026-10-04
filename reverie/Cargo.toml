@@ -29,6 +29,7 @@ anyhow = "1.0.103"
 async-trait = "0.1.86"
 bitflags = { version = "2.13.1", features = ["serde", "std"], default-features = false }
 byteorder = "1.5"
+goblin = { version = "0.10.7", features = ["elf32", "elf64", "endian_fd"] }
 libc = "0.2.186"
 linked-hash-map = { version = "0.5", features = ["serde_impl"] }
 memmap2 = "0.9.11"

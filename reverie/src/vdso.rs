@@ -34,6 +34,10 @@ use core::fmt;
 
 use reverie_syscalls::Sysno;
 
+mod image;
+
+pub use image::*;
+
 /// One function exported by the Linux vDSO, named as in the kernel's linker
 /// script. [`VdsoSymbol::name`] and [`Display`](fmt::Display) give that name.
 ///

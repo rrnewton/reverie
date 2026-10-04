@@ -40,6 +40,7 @@ rust_library(
         "fbsource//third-party/rust:async-trait",
         "fbsource//third-party/rust:bitflags",
         "fbsource//third-party/rust:byteorder",
+        "fbsource//third-party/rust:goblin",
         "fbsource//third-party/rust:libc",
         "fbsource//third-party/rust:linked-hash-map",
         "fbsource//third-party/rust:memmap2",
