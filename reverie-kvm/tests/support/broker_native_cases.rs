@@ -294,7 +294,7 @@ fn wait_io(fd: RawFd, events: i16, deadline: Instant) -> Result<(), String> {
         events,
         revents: 0,
     };
-    let rc = unsafe { libc::poll(&mut p, 1, left.as_millis().min(10).max(1) as i32) };
+    let rc = unsafe { libc::poll(&mut p, 1, left.as_millis().clamp(1, 10) as i32) };
     if rc >= 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
         Ok(())
     } else {
@@ -527,7 +527,7 @@ impl QueuedTcp {
 }
 
 fn queue_right(socket: RawFd, right: RawFd) -> Result<(), String> {
-    let mut payload = [b'R'];
+    let mut payload = *b"R";
     let mut iov = libc::iovec {
         iov_base: payload.as_mut_ptr().cast(),
         iov_len: 1,
@@ -556,7 +556,7 @@ fn queue_right(socket: RawFd, right: RawFd) -> Result<(), String> {
 /// failure resources alive if cleanup is unconfirmed. A before-drain miss is
 /// returned only after the same job's drain/wait/EOF, or as a distinct cleanup
 /// infrastructure failure retaining that original observation.
-pub fn run_queued_case(case: &str, client: &BrokerClient) -> Result<CaseReceipt, CaseFailure> {
+pub fn run_queued_case(case: &str, client: &BrokerClient) -> Result<CaseReceipt, Box<CaseFailure>> {
     let mut resources = Resources::default();
     let mut observation: Option<BeforeDrainRecord> = None;
     let mut cleanup_census = None;
@@ -715,14 +715,14 @@ pub fn run_queued_case(case: &str, client: &BrokerClient) -> Result<CaseReceipt,
         {
             format!("CLEANUP INFRASTRUCTURE FAILURE after retained original before-drain miss: {message}")
         } else { message };
-        CaseFailure { message, resources, observation, cleanup: cleanup_census, completed_receipt }
+        Box::new(CaseFailure { message, resources, observation, cleanup: cleanup_census, completed_receipt })
     })
 }
 
 // Chunk/fault body is deliberately distinct from queued-TCP causal cases.
 // Resource pressure is confined to the READY-bound owned worker. The broker,
 // launcher and foreign process limits are never changed.
-pub fn run_chunk_abort_case(owner: &BrokerOwner) -> Result<CaseReceipt, CaseFailure> {
+pub fn run_chunk_abort_case(owner: &BrokerOwner) -> Result<CaseReceipt, Box<CaseFailure>> {
     let mut r = Resources::default();
     let result = (|| -> Result<CaseReceipt, String> {
         let (socket, peer) = UnixStream::pair().map_err(io)?;
@@ -950,11 +950,13 @@ pub fn run_chunk_abort_case(owner: &BrokerOwner) -> Result<CaseReceipt, CaseFail
             before_drain: None,
         })
     })();
-    result.map_err(|message| CaseFailure {
-        message,
-        resources: r,
-        observation: None,
-        cleanup: None,
-        completed_receipt: None,
+    result.map_err(|message| {
+        Box::new(CaseFailure {
+            message,
+            resources: r,
+            observation: None,
+            cleanup: None,
+            completed_receipt: None,
+        })
     })
 }
