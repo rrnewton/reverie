@@ -85,7 +85,7 @@ impl Frame {
 
 const WORD: usize = size_of::<usize>();
 const HEADER: usize = size_of::<libc::cmsghdr>();
-const CONTROL_WORDS: usize = (HEADER + MAX_RIGHTS * size_of::<i32>() + WORD - 1) / WORD;
+const CONTROL_WORDS: usize = (HEADER + MAX_RIGHTS * size_of::<i32>()).div_ceil(WORD);
 const NODE_BYTES: usize = 4096;
 
 #[inline]
@@ -218,7 +218,7 @@ pub(super) unsafe fn receive_frame(
         }
         if hdr.cmsg_level != libc::SOL_SOCKET
             || hdr.cmsg_type != libc::SCM_RIGHTS
-            || (len - HEADER) % size_of::<RawFd>() != 0
+            || !(len - HEADER).is_multiple_of(size_of::<RawFd>())
         {
             bad = true;
         } else {
@@ -295,10 +295,8 @@ pub(super) unsafe fn exit(status: i32) -> ! {
     let _ = unsafe { syscall(libc::SYS_exit_group, status as usize, 0, 0, 0, 0, 0) };
     // SYS_exit_group cannot return on the supported native ABI. Avoid unwinding
     // arbitrary inherited Rust frames even under an impossible syscall failure.
-    loop {
-        unsafe {
-            core::arch::asm!("ud2", options(noreturn));
-        }
+    unsafe {
+        core::arch::asm!("ud2", options(noreturn));
     }
 }
 
