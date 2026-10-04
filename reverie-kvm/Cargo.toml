@@ -28,3 +28,11 @@ serde = { version = "1.0.219", features = ["derive"] }
 
 [build-dependencies]
 cc = "1.5.1"
+
+# Ordinary-main startup for explicitly broker-routed integration tests.
+[[bin]]
+name = "reverie-kvm-broker-test-launcher"
+path = "tests/support/broker_test_launcher.rs"
+test = false
+bench = false
+doc = false
