@@ -18415,7 +18415,7 @@ fn prctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
             .copy_to_user(args[1], &state.thread_name)
             .map_or_else(|_| negative_errno(libc::EFAULT), |_| 0),
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-PENDING): https://github.com/rrnewton/reverie/issues/916.
+        // TODO-HUMAN-REVIEW(PR-925): https://github.com/rrnewton/reverie/issues/916.
         // prctl option is an int; its signal operand remains unsigned long.
         option if option as i32 == libc::PR_SET_PDEATHSIG => {
             // Width validation is Linux's first check, even for a stale caller.
