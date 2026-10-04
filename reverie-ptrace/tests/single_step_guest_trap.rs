@@ -10,8 +10,7 @@
 //! ends in a SIGTRAP stop. An instruction that raises a SIGTRAP of its own,
 //! such as `int3`, ends in a SIGTRAP stop too. The stepping passes that stop
 //! on to the code that handles SIGTRAPs rather than take it for its step's,
-//! so that a trap that Reverie handles, such as a LiteInst hook's, reaches it;
-//! reverie-liteinst/tests/hybrid.rs tests that.
+//! so that a trap that Reverie handles reaches it.
 //!
 //! A trap that Reverie neither handles nor delivers makes no Tool callback, so
 //! it must leave the timer event as it was, and the steps toward it that it
