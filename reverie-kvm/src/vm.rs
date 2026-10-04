@@ -3077,6 +3077,10 @@ impl KvmBackend {
                 // new address space becomes visible. Leaving a sibling vCPU
                 // alive lets it execute stale instructions in the replacement
                 // image and can turn an otherwise successful exec into a fault.
+                // Freeze every sibling identity before host cancellation can
+                // retire any of them. Publication is authenticated only by the
+                // later actual ImageReplaced boundary, never by peer cleanup.
+                executor.prepare_parent_death_exec()?;
                 self.cancel_guest_threads_for_exec(stop.as_mut()).await?;
                 self.guest_worker_teardown_result()
                     .map_err(|error| Error::ExecWorkerTeardown(Box::new(error)))?;
@@ -5108,6 +5112,7 @@ impl KvmBackend {
         exit: ProcessExit,
     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
         executor.retire_current_thread(exit.status, exit.group);
+        executor.check_parent_death_failure()?;
         self.clear_registered_worker_tid_before_exit(executor);
         executor.release_files_on_exit();
         self.release_stdin_on_exit();
