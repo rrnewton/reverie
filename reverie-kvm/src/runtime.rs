@@ -3835,7 +3835,7 @@ impl KvmBackend {
             // receipt. Peers keep their copies and shared-table references until
             // their own cleanup; a process-retirement fence must cover those
             // owners through the leader's final worker join.
-            executor.release_files_on_exit();
+            executor.finish_terminal_cleanup().await?;
             self.release_stdin_on_exit();
         }
         // Consuming notification is after the actual frame/register/mask commit,
@@ -4014,8 +4014,13 @@ impl KvmBackend {
         }
         self.release_thread_slot();
         self.clear_registered_worker_tid_before_exit(executor);
-        executor.release_files_on_exit();
+        let cleanup = executor.finish_terminal_cleanup().await;
         self.release_stdin_on_exit();
+        let outcome = match (outcome, cleanup) {
+            (result, Ok(())) => result,
+            (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(cleanup)) => Err(error.with_cleanup(vec![cleanup])),
+        };
         let outcome = self
             .route_entry_outcome(outcome)
             .await
@@ -4592,6 +4597,12 @@ impl KvmBackend {
         let subscriptions = T::subscriptions(&config);
         let thread_state = tool.init_thread_state(pid, None);
         let mut root = admission.root(executor);
+        if let Some(client) = self.native_exit_broker.clone() {
+            root.configure_terminal_cleanup(
+                admission.terminal_factory(client),
+                self.stdin.clone(),
+            )?;
+        }
         let result = self
             .run_static_elf_process_with_tool(
                 &mut root,
@@ -5001,6 +5012,10 @@ impl KvmBackend {
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
         let mut _process_completed = false;
         let execution = async {
+            // Host cleanup capability must be genuinely ready before the first
+            // guest hook. Resource setup failure is a run failure, not a late
+            // guest-exit fallback to ordinary socket close.
+            executor.ready_terminal_cleanup().await?;
             // Each actual Tool consumer admits its own subscription before
             // any user instruction. New fork/thread vCPUs start unarmed; the
             // tool-less Host worker loop never inherits trapping without a hook.
