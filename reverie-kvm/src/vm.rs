@@ -1490,7 +1490,8 @@ pub struct KvmBackend {
     intercept_rdtsc: bool,
     cpuid_interception: crate::cpuid_instruction::Interception,
     pub(crate) static_elf: Option<LoadedStaticElf>,
-    stdin: Option<File>,
+    pub(crate) stdin: Arc<Mutex<Option<File>>>,
+    pub(crate) native_exit_broker: Option<crate::native_exit_broker::BrokerClient>,
     pub(crate) root_pid: i32,
     // One optional collector is shared by every fork and thread backend in the
     // guest tree. `None` is the allocation-free, update-free default.
@@ -1802,7 +1803,8 @@ impl KvmBackend {
             intercept_rdtsc: false,
             cpuid_interception: crate::cpuid_instruction::Interception::default(),
             static_elf: None,
-            stdin,
+            stdin: Arc::new(Mutex::new(stdin)),
+            native_exit_broker: None,
             root_pid: 1,
             exit_collector: None,
             abandoned_runs: Arc::default(),
@@ -2048,7 +2050,7 @@ impl KvmBackend {
             self.root_pid,
             loaded.dumpable,
         )));
-        loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
+        loaded.stdin = self.clone_reserved_stdin()?;
         configure_long_mode(
             &mut self.memory,
             &self.vcpu,
@@ -2205,7 +2207,7 @@ impl KvmBackend {
             memory,
             registers: self.vcpu.get_regs()?,
             xsave: self.vcpu.get_xsave()?,
-            stdin: self.stdin.as_ref().map(File::try_clone).transpose()?,
+            stdin: self.clone_reserved_stdin()?,
             cpuid_policy: self.cpuid_policy,
         })
     }
@@ -2309,7 +2311,7 @@ impl KvmBackend {
             .thread_group_leader_name
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = thread_name;
-        loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
+        loaded.stdin = self.clone_reserved_stdin()?;
         configure_long_mode(
             &mut self.memory,
             &self.vcpu,
@@ -2602,7 +2604,7 @@ impl KvmBackend {
         if let Some(fault) = fault {
             fault.configure_child(&mut child, child_stack)?;
         }
-        let child_executor = match prepared_executor {
+        let mut child_executor = match prepared_executor {
             Some(child) => child,
             None => {
                 let mut child_executor = executor.fork_child(child_pid, clear_sighand, false)?;
@@ -2613,6 +2615,8 @@ impl KvmBackend {
                 child_executor
             }
         };
+        child_executor.bind_terminal_stdin(child.stdin.clone());
+        child.native_exit_broker = self.native_exit_broker.clone();
         // A successfully prepared non-CLONE_VM process gets an independent
         // guest mm. The legacy vfork path also creates a backend snapshot, so
         // distinct host mappings alone cannot confer this certificate. Never
@@ -2907,7 +2911,7 @@ impl KvmBackend {
                     executor.thread_child_with_signal_observation(child_tid, false)?;
                 child_executor.set_thread_context(child_tid, child_fs, parent_gs);
                 child_executor.set_clear_child_tid(clear_child_tid);
-                let child_stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
+                let child_stdin = self.clone_reserved_stdin()?;
                 let mut child = Self::from_thread_state(
                     self.memory.clone(),
                     child_registers,
@@ -2917,6 +2921,8 @@ impl KvmBackend {
                     child_tid,
                     self.thread_group.clone(),
                 )?;
+                child_executor.bind_terminal_stdin(child.stdin.clone());
+                child.native_exit_broker = self.native_exit_broker.clone();
                 // Thread children inherit the parent's thread ownership so
                 // execution and futex classification stay consistent.
                 self.debug_assert_thread_ownership_consistent();
@@ -3679,7 +3685,7 @@ impl KvmBackend {
                 let mut child_executor = executor.thread_child(child_tid)?;
                 child_executor.set_thread_context(child_tid, child_fs, parent_gs);
                 child_executor.set_clear_child_tid(clear_child_tid);
-                let child_stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
+                let child_stdin = self.clone_reserved_stdin()?;
                 let mut child = Self::from_thread_state(
                     self.memory.clone(),
                     child_registers,
@@ -3689,6 +3695,8 @@ impl KvmBackend {
                     child_tid,
                     self.thread_group.clone(),
                 )?;
+                child_executor.bind_terminal_stdin(child.stdin.clone());
+                child.native_exit_broker = self.native_exit_broker.clone();
                 // Thread children inherit the parent's thread ownership so
                 // execution and futex classification stay consistent.
                 self.debug_assert_thread_ownership_consistent();
@@ -4877,6 +4885,7 @@ impl KvmBackend {
         &mut self,
         executor: &mut ElfExecutor,
     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+        executor.ready_terminal_cleanup().await?;
         // This loop never dispatches Tool events, including Host-owned workers.
         self.set_rdtsc_interception(false)?;
         self.set_cpuid_interception(false)?;
@@ -4897,7 +4906,7 @@ impl KvmBackend {
                 }
             }
             if let Some(exit) = executor.take_exit() {
-                return self.finish_static_elf_thread(executor, exit);
+                return self.finish_static_elf_thread(executor, exit).await;
             }
         }
         loop {
@@ -4918,22 +4927,26 @@ impl KvmBackend {
                 .admit_operation()
                 .map_err(|failure| failure.error())?;
             if let Some(status) = self.guest_thread_group_exit_status() {
-                return self.finish_static_elf_thread(
-                    executor,
-                    ProcessExit {
-                        status,
-                        group: true,
-                    },
-                );
+                return self
+                    .finish_static_elf_thread(
+                        executor,
+                        ProcessExit {
+                            status,
+                            group: true,
+                        },
+                    )
+                    .await;
             }
             if self.is_guest_thread && self.thread_group.cancelled.load(Ordering::Acquire) {
-                return self.finish_static_elf_thread(
-                    executor,
-                    ProcessExit {
-                        status: ExitStatus::SUCCESS,
-                        group: false,
-                    },
-                );
+                return self
+                    .finish_static_elf_thread(
+                        executor,
+                        ProcessExit {
+                            status: ExitStatus::SUCCESS,
+                            group: false,
+                        },
+                    )
+                    .await;
             }
             let vcpu_exit = match self.vcpu.run() {
                 Ok(Some(exit)) => exit,
@@ -5000,7 +5013,7 @@ impl KvmBackend {
                                 Ok(result) => result,
                                 Err(Error::ChildWaitGroupExit { status }) => {
                                     let exit = executor.retire_child_wait_group_exit(status)?;
-                                    return self.finish_static_elf_thread(executor, exit);
+                                    return self.finish_static_elf_thread(executor, exit).await;
                                 }
                                 Err(Error::TerminalReadCancelled) => {
                                     let exit = match self.guest_thread_group_exit_status() {
@@ -5009,7 +5022,7 @@ impl KvmBackend {
                                         }
                                         None => executor.cancel_current_thread(),
                                     };
-                                    return self.finish_static_elf_thread(executor, exit);
+                                    return self.finish_static_elf_thread(executor, exit).await;
                                 }
                                 Err(error) => return Err(error),
                             };
@@ -5081,7 +5094,7 @@ impl KvmBackend {
                             group: false,
                         },
                     };
-                    return self.finish_static_elf_thread(executor, exit);
+                    return self.finish_static_elf_thread(executor, exit).await;
                 }
                 returns_to_original_image = !outcome.image_replaced;
                 if let Some((_, result)) = signal_boundary.as_mut() {
@@ -5101,12 +5114,12 @@ impl KvmBackend {
 
             pending_exit = pending_exit.or_else(|| executor.take_exit());
             if let Some(exit) = pending_exit {
-                return self.finish_static_elf_thread(executor, exit);
+                return self.finish_static_elf_thread(executor, exit).await;
             }
         }
     }
 
-    fn finish_static_elf_thread(
+    async fn finish_static_elf_thread(
         &mut self,
         executor: &mut ElfExecutor,
         exit: ProcessExit,
@@ -5114,7 +5127,7 @@ impl KvmBackend {
         executor.retire_current_thread(exit.status, exit.group);
         executor.check_parent_death_failure()?;
         self.clear_registered_worker_tid_before_exit(executor);
-        executor.release_files_on_exit();
+        executor.finish_terminal_cleanup().await?;
         self.release_stdin_on_exit();
         if exit.group {
             self.request_guest_thread_group_exit(exit.status);
@@ -5149,7 +5162,36 @@ impl KvmBackend {
     /// Drop this backend's reserved input description at terminal ownership
     /// cleanup. Fork and thread backends retain their independent references.
     pub(crate) fn release_stdin_on_exit(&mut self) {
-        self.stdin = None;
+        let input = self.stdin.lock().unwrap_or_else(|p| p.into_inner()).take();
+        drop(input);
+    }
+
+    fn clone_reserved_stdin(&self) -> std::io::Result<Option<File>> {
+        self.stdin
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(File::try_clone)
+            .transpose()
+    }
+
+    /// Attach a client bootstrapped by the caller at a proven early launch
+    /// boundary. This method never forks or infers quiescence from a live task
+    /// census. Configure before installing an image. Ordinary callers without
+    /// this explicit capability retain their existing behavior.
+    pub fn set_native_exit_broker(
+        &mut self,
+        client: crate::native_exit_broker::BrokerClient,
+    ) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        if self.static_elf.is_some() {
+            return Err(Error::TerminalFileRetirement {
+                operation: "broker configured after image installation",
+                errno: libc::EBUSY,
+            });
+        }
+        self.native_exit_broker = Some(client);
+        Ok(())
     }
 
     pub(crate) fn tool_panic_owner(&self) -> Arc<crate::failure::tool_panics::ToolPanics> {
@@ -6415,7 +6457,15 @@ mod tests {
                     assert_eq!(backend.memory.host_address(), address);
                     assert_eq!(backend.cpuid_policy, policy);
                     assert_eq!(
-                        backend.stdin.as_ref().unwrap().metadata().unwrap().ino(),
+                        backend
+                            .stdin
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .unwrap()
+                            .metadata()
+                            .unwrap()
+                            .ino(),
                         metadata.ino()
                     );
                     assert!(backend.thread_slot.is_none());

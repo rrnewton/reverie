@@ -77,6 +77,13 @@ const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 #[path = "support/alias_failure.rs"]
 mod alias_failure;
 
+#[path = "support/broker_test_client.rs"]
+mod broker_test_client;
+use reverie_kvm::native_exit_broker;
+
+#[path = "support/broker_test_protocol.rs"]
+mod broker_test_protocol;
+
 static ALIAS_FAILURE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 static ALIAS_FAILURE_CALLBACK_RESUMED: AtomicBool = AtomicBool::new(false);
 static ALIAS_FAILURE_CALLBACK_COMPLETIONS: AtomicU64 = AtomicU64::new(0);
@@ -2345,6 +2352,9 @@ fn leader_self_exec_bounded_with_output(test: &str, forward_output: bool) -> boo
         return false;
     }
     if std::env::var("REVERIE_LEADER_EXEC_CHILD").as_deref() == Ok(test) {
+        if broker_test_protocol::selected(test) {
+            broker_test_client::attach(test);
+        }
         return true;
     }
     // Guest writes can share stdout with libtest without a trailing newline.
@@ -2353,8 +2363,12 @@ fn leader_self_exec_bounded_with_output(test: &str, forward_output: bool) -> boo
     let result_directory = TestDirectory::new();
     std::fs::set_permissions(&result_directory.0, std::fs::Permissions::from_mode(0o700)).unwrap();
     let execution_log = result_directory.0.join("libtest.log");
-    let output = std::process::Command::new("timeout")
-        .args(["--kill-after=2s", "30s"])
+    let mut command = std::process::Command::new("timeout");
+    command.args(["--kill-after=2s", "30s"]);
+    if broker_test_protocol::selected(test) {
+        command.arg(env!("CARGO_BIN_EXE_reverie-kvm-broker-test-launcher"));
+    }
+    let output = command
         .arg(std::env::current_exe().unwrap())
         .args(["--exact", test, "--nocapture", "--logfile"])
         .arg(&execution_log)
@@ -21658,6 +21672,11 @@ mod pdeathsig {
         mode: u8,
     ) -> (Global, i32, Vec<u8>, Vec<u8>) {
         let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        if mode != NO_OPT_IN {
+            backend
+                .set_native_exit_broker(broker_test_client::client())
+                .unwrap();
+        }
         backend.set_root_pid(17).unwrap();
         let mut argv = vec![program.to_str().unwrap()];
         if let Some(argument) = argument {
@@ -22209,6 +22228,9 @@ mod pdeathsig {
                 // No configured stdin: neither root nor fork snapshot can keep
                 // a hidden alias to the socket created later by the guest.
                 let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+                backend
+                    .set_native_exit_broker(broker_test_client::client())
+                    .unwrap();
                 backend.set_root_pid(17).unwrap();
                 backend
                     .install_static_elf_file_with_context(
