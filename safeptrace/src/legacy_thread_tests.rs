@@ -67,7 +67,7 @@ fn run_legacy_test_outer_with_outcome(name: &str, marker: Option<&str>) -> bool 
                 .any(|line| line == marker),
             "legacy-thread test omitted actual outcome marker {marker}: {result:?}"
         );
-        println!("{marker}");
+        emit_completion_marker(marker);
     }
     true
 }
