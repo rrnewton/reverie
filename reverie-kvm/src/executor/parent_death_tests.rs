@@ -496,7 +496,6 @@ fn pdeath_original_preflight_is_exact_uncached_and_preserves_zero_readiness() {
     memory.write(0x100, &[0; 16]).unwrap();
     for request in [
         SyscallRequest::new(libc::SYS_poll as u64, [0, 0, 0, 0, 0, 0]),
-        SyscallRequest::new(libc::SYS_pselect6 as u64, [0, 0, 0, 0, 0x100, 0]),
         SyscallRequest::new(libc::SYS_wait4 as u64, [1, 0, libc::WNOHANG as u64, 0, 0, 0]),
     ] {
         assert_eq!(executor.parent_death_original_syscall_preflight(site, &request, Some(request), false).unwrap(),
@@ -506,6 +505,9 @@ fn pdeath_original_preflight_is_exact_uncached_and_preserves_zero_readiness() {
         SyscallRequest::new(libc::SYS_openat as u64, [libc::AT_FDCWD as u64, 0x100, 0, 0, 0, 0]),
         SyscallRequest::new(libc::SYS_recvmmsg as u64, [3, 0x100, 1, 0, 0, 0]),
         SyscallRequest::new(libc::SYS_poll as u64, [0, 0, 1, 0, 0, 0]),
+        // The unlanded explicit-zero pointer acceptance is withdrawn: a
+        // sampled zero must not grant authority to a mutable timeout pointee.
+        SyscallRequest::new(libc::SYS_pselect6 as u64, [0, 0, 0, 0, 0x100, 0]),
         SyscallRequest::new(libc::SYS_pselect6 as u64, [0, 0, 0, 0, 0, 0]),
     ] {
         assert!(matches!(executor.parent_death_original_syscall_preflight(site, &request, Some(request), false),
@@ -517,6 +519,115 @@ fn pdeath_original_preflight_is_exact_uncached_and_preserves_zero_readiness() {
         reverie::ParentDeathSyscallAdmission::Admitted);
     assert!(executor.parent_death_injection_preflight(&pause).is_err(), "original admission is not injection authority");
     let mut bytes = [1; 16]; memory.read(0x100, &mut bytes).unwrap(); assert_eq!(bytes, [0; 16]);
+}
+
+fn pdeath_pointer_readiness_request(number: libc::c_long, timeout: u64, epoll: u64) -> SyscallRequest {
+    let args = match number {
+        libc::SYS_ppoll => [0x200, 0, timeout, 0, 8, 0],
+        libc::SYS_select | libc::SYS_pselect6 => [0, 0x300, 0x308, 0x310, timeout, 0],
+        libc::SYS_epoll_pwait2 => [epoll, 0x300, 1, timeout, 0, 8],
+        _ => panic!("not a pointer-timeout readiness call"),
+    };
+    SyscallRequest::new(number as u64, args)
+}
+
+#[test]
+fn pdeath_mutable_timeout_readiness_refuses_before_original_or_injected_effects() {
+    let root = TestDir::new();
+    let mut executor = ElfExecutor::new(test_state(&root.0), true);
+    let _run = pdeath_adopt(&executor);
+    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+    memory.write(0, &vec![0xa5; PAGE_SIZE as usize]).unwrap();
+    let epoll = executor.execute_checked(&SyscallRequest::new(libc::SYS_epoll_create1 as u64,
+        [0; 6]), &memory).unwrap();
+    assert!(epoll >= 0);
+    assert_eq!(pdeath_set(&mut executor, &memory, libc::SIGUSR1 as u64), 0);
+    executor.bind_address_space(&memory);
+    executor.append_output(b"stdout-sentinel".to_vec(), b"stderr-sentinel".to_vec());
+    let owned_fds = executor.state.files.len();
+    for number in [libc::SYS_ppoll, libc::SYS_select, libc::SYS_pselect6, libc::SYS_epoll_pwait2] {
+        for (case, timeout, seconds) in [
+            ("zero", 0x100, 0_i64),
+            ("nonzero", 0x100, 1_i64),
+            ("unreadable", PAGE_SIZE - 8, 0_i64),
+            ("null", 0, 0_i64),
+        ] {
+            let mut encoded = [0; 16]; encoded[..8].copy_from_slice(&seconds.to_ne_bytes());
+            memory.write(0x100, &encoded).unwrap();
+            let mut before = vec![0; PAGE_SIZE as usize]; memory.read(0, &mut before).unwrap();
+            let request = pdeath_pointer_readiness_request(number, timeout, epoll as u64);
+            let site = executor.begin_signal_callback().unwrap();
+            // This is the same authoritative original-call operation invoked
+            // by the first-handler facade; a parked flag cannot waive it.
+            for parked in [false, true] {
+                assert!(matches!(executor.parent_death_original_syscall_preflight(
+                    site, &request, Some(request), parked),
+                    Err(crate::Error::ParentDeathSignal {
+                        operation: "unsupported enrolled mutable-timeout readiness wait",
+                        errno: libc::ENOSYS,
+                    })), "number={number} case={case} parked={parked}");
+            }
+            assert!(matches!(executor.parent_death_injection_preflight(&request),
+                Err(crate::Error::ParentDeathSignal {
+                    operation: "unsupported enrolled mutable-timeout readiness wait",
+                    errno: libc::ENOSYS,
+                })), "direct preflight number={number} case={case}");
+            assert!(matches!(executor.execute_checked(&request, &memory),
+                Err(crate::Error::ParentDeathSignal {
+                    operation: "unsupported enrolled mutable-timeout readiness wait",
+                    errno: libc::ENOSYS,
+                })), "direct execution number={number} case={case}");
+            let mut after = vec![0; PAGE_SIZE as usize]; memory.read(0, &mut after).unwrap();
+            assert_eq!(after, before, "all pointees/outputs number={number} case={case}");
+            {
+                let output = executor.output.as_ref().unwrap().inner.lock().unwrap();
+                assert_eq!(output.stdout, b"stdout-sentinel");
+                assert_eq!(output.stderr, b"stderr-sentinel");
+            }
+            assert_eq!(executor.state.files.len(), owned_fds);
+            assert!(executor.process_action.is_none());
+        }
+    }
+}
+
+#[test]
+fn pdeath_unenrolled_pointer_readiness_and_enrolled_scalar_zero_remain_supported() {
+    let root = TestDir::new();
+    let mut executor = ElfExecutor::new(test_state(&root.0), true);
+    let _run = pdeath_adopt(&executor);
+    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+    memory.write(0, &vec![0xa5; PAGE_SIZE as usize]).unwrap();
+    memory.write(0x100, &[0; 16]).unwrap();
+    executor.bind_address_space(&memory);
+    let epoll = executor.execute_checked(&SyscallRequest::new(libc::SYS_epoll_create1 as u64,
+        [0; 6]), &memory).unwrap();
+    assert!(epoll >= 0);
+    let mut before = vec![0; PAGE_SIZE as usize]; memory.read(0, &mut before).unwrap();
+    for number in [libc::SYS_ppoll, libc::SYS_select, libc::SYS_pselect6, libc::SYS_epoll_pwait2] {
+        let request = pdeath_pointer_readiness_request(number, 0x100, epoll as u64);
+        let site = executor.begin_signal_callback().unwrap();
+        assert_eq!(executor.parent_death_original_syscall_preflight(site, &request, Some(request), false).unwrap(),
+            reverie::ParentDeathSyscallAdmission::Unenrolled);
+        executor.parent_death_injection_preflight(&request).unwrap();
+        assert_eq!(executor.execute_checked(&request, &memory).unwrap(), 0, "unenrolled number={number}");
+        let mut after = vec![0; PAGE_SIZE as usize]; memory.read(0, &mut after).unwrap();
+        assert_eq!(after, before, "unenrolled outputs number={number}");
+    }
+    assert_eq!(pdeath_set(&mut executor, &memory, libc::SIGUSR1 as u64), 0);
+    for request in [
+        SyscallRequest::new(libc::SYS_poll as u64, [0x200, 0, 0, 0, 0, 0]),
+        SyscallRequest::new(libc::SYS_epoll_wait as u64, [epoll as u64, 0x300, 1, 0, 0, 0]),
+        SyscallRequest::new(libc::SYS_epoll_pwait as u64, [epoll as u64, 0x300, 1, 0, 0, 8]),
+    ] {
+        let site = executor.begin_signal_callback().unwrap();
+        assert_eq!(executor.parent_death_original_syscall_preflight(site, &request, Some(request), false).unwrap(),
+            reverie::ParentDeathSyscallAdmission::Admitted);
+        executor.parent_death_injection_preflight(&request).unwrap();
+        assert_eq!(executor.execute_checked(&request, &memory).unwrap(), 0, "scalar-zero number={}", request.number());
+        let mut after = vec![0; PAGE_SIZE as usize]; memory.read(0, &mut after).unwrap();
+        assert_eq!(after, before);
+        assert_eq!(executor.take_output(), (Vec::new(), Vec::new()));
+    }
 }
 
 #[test]
