@@ -27,11 +27,6 @@ use safeptrace::ChildOp;
 use safeptrace::Event;
 use safeptrace::Wait;
 
-/// The prefix [`PtraceBackendStatsSource::mark_last_stop_internal`] puts on a
-/// recorded stop description.
-#[cfg(test)]
-pub(crate) const INTERNAL_STOP_PREFIX: &str = "internal ";
-
 /// Stable counts of lifecycle transitions observed by the ptrace run loops.
 ///
 /// Every field is supported by ptrace. A zero therefore means the named
@@ -106,23 +101,22 @@ impl PtraceBackendStatsSnapshot {
     }
 
     /// Number of validated `SIGTRAP` stops raised by a rewritten site's
-    /// syscall trap: an e9patch injected-trap marker, or the LiteInst
-    /// runtime's trap `int3`.
+    /// syscall trap: an e9patch injected-trap marker.
     ///
-    /// This counts stops, not Tool callbacks. A LiteInst restart's re-trap is
-    /// a second stop for one hook entry, and a trapped `rt_sigreturn` or
+    /// This counts stops, not Tool callbacks. A trapped `rt_sigreturn` or
     /// unsubscribed syscall is a stop that makes no Tool callback.
     pub const fn injected_trap_stops(&self) -> u64 {
         self.injected_trap_stops
     }
 
     /// Number of the seccomp stops that the tracer completed itself, without
-    /// a Tool callback: LiteInst's mapping-syscall tracking and trap-only
-    /// Allow-class entries at a patched site.
+    /// a Tool callback.
     ///
-    /// These are included in [`Self::seccomp_stops`], because each one costs
-    /// a stop like any other; this count says how many of them never reached
-    /// the Tool.
+    /// These would be included in [`Self::seccomp_stops`], because each one
+    /// costs a stop like any other; this count says how many of them never
+    /// reached the Tool. No ptrace path completes a seccomp stop on its own
+    /// since the LiteInst hybrid's mapping-syscall tracking and trap-only
+    /// entries were removed, so this is always zero.
     pub const fn internal_seccomp_stops(&self) -> u64 {
         self.internal_seccomp_stops
     }
@@ -235,10 +229,6 @@ struct PtraceBackendStatsCollector {
     injected_trap_stops: AtomicU64,
     internal_seccomp_stops: AtomicU64,
     processes: Mutex<ProcessAttribution>,
-    #[cfg(test)]
-    stop_trace: std::sync::Mutex<Vec<(reverie::Pid, String)>>,
-    #[cfg(test)]
-    signal_trace: std::sync::Mutex<Vec<(reverie::Pid, String)>>,
 }
 
 /// Live source for a ptrace backend activity snapshot.
@@ -260,8 +250,6 @@ impl PtraceBackendStatsSource {
 
     /// Counts one top-level run-loop wait of a thread in thread group `pid`.
     pub(crate) fn record_wait(&self, pid: Pid, wait: &Wait) {
-        #[cfg(test)]
-        self.record_stop_trace(wait);
         match wait {
             Wait::Exited(_, _) => {}
             Wait::Stopped(_, event) => {
@@ -309,141 +297,6 @@ impl PtraceBackendStatsSource {
         self.collector
             .injected_trap_stops
             .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Counts one already-recorded seccomp stop that the tracer completes
-    /// without a Tool callback.
-    pub(crate) fn record_internal_seccomp_stop(&self) {
-        self.collector
-            .internal_seccomp_stops
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Appends one run-loop wait to the test-only stop sequence.
-    ///
-    /// Seccomp stops carry the syscall number, vfork-done stops the parent's
-    /// rax, and new-child stops carry the child's PID, so that two runs of
-    /// the same guest can be compared stop by stop and task by task.
-    #[cfg(test)]
-    fn record_stop_trace(&self, wait: &Wait) {
-        let (pid, description) = match wait {
-            Wait::Exited(pid, status) => (*pid, format!("exited {status:?}")),
-            Wait::Stopped(stopped, event) => {
-                let description = match event {
-                    Event::NewChild(operation, child) => {
-                        format!("new-child {operation:?} {}", child.pid())
-                    }
-                    Event::Exec(_) => "exec".to_owned(),
-                    // A vfork parent is still inside the call at this stop, so
-                    // its rax is whatever the tracer left there (the kernel
-                    // writes the result only when the call returns).
-                    Event::VforkDone => match stopped.getregs() {
-                        #[cfg(target_arch = "x86_64")]
-                        Ok(regs) => format!("VforkDone rax={}", regs.rax as i64),
-                        #[cfg(not(target_arch = "x86_64"))]
-                        Ok(_) => "VforkDone".to_owned(),
-                        Err(error) => format!("VforkDone <getregs failed: {error}>"),
-                    },
-                    Event::Seccomp => match stopped.getregs() {
-                        #[cfg(target_arch = "x86_64")]
-                        Ok(regs) => format!("seccomp {}", regs.orig_rax),
-                        #[cfg(not(target_arch = "x86_64"))]
-                        Ok(_) => "seccomp".to_owned(),
-                        Err(error) => format!("seccomp <getregs failed: {error}>"),
-                    },
-                    other => format!("{other:?}"),
-                };
-                (stopped.pid(), description)
-            }
-        };
-        self.collector
-            .stop_trace
-            .lock()
-            .expect("stop trace lock poisoned")
-            .push((pid, description));
-    }
-
-    /// Appends one signal-delivery stop, as the run loop is about to handle
-    /// it, to the test-only signal sequence: the signal, its siginfo (the
-    /// sender's pid and uid only for a signal a process sent, where they are
-    /// defined, and for SIGCHLD with its status), and the registers that show
-    /// where the stop took effect.
-    #[cfg(test)]
-    pub(crate) fn record_signal_stop(
-        &self,
-        stopped: &safeptrace::Stopped,
-        signal: nix::sys::signal::Signal,
-    ) {
-        let info = match stopped.getsiginfo() {
-            Ok(info) => {
-                let mut text = format!(
-                    "signo={} code={} errno={}",
-                    info.si_signo, info.si_code, info.si_errno
-                );
-                if info.si_code <= 0 || info.si_signo == libc::SIGCHLD {
-                    // SAFETY: these union members are defined for a signal a
-                    // process sent (si_code <= 0) and for SIGCHLD.
-                    let (pid, uid) = unsafe { (info.si_pid(), info.si_uid()) };
-                    text += &format!(" pid={pid} uid={uid}");
-                }
-                if info.si_signo == libc::SIGCHLD {
-                    // SAFETY: defined for SIGCHLD.
-                    text += &format!(" status={}", unsafe { info.si_status() });
-                }
-                text
-            }
-            Err(error) => format!("<getsiginfo failed: {error}>"),
-        };
-        #[cfg(target_arch = "x86_64")]
-        let registers = match stopped.getregs() {
-            Ok(regs) => format!(
-                " rip={:#x} rax={} orig_rax={}",
-                regs.rip, regs.rax as i64, regs.orig_rax as i64
-            ),
-            Err(error) => format!(" <getregs failed: {error}>"),
-        };
-        #[cfg(not(target_arch = "x86_64"))]
-        let registers = String::new();
-        self.collector
-            .signal_trace
-            .lock()
-            .expect("signal trace lock poisoned")
-            .push((stopped.pid(), format!("{signal:?} {info}{registers}")));
-    }
-
-    /// Returns every recorded signal-delivery stop in arrival order.
-    #[cfg(test)]
-    pub(crate) fn signal_trace(&self) -> Vec<(reverie::Pid, String)> {
-        self.collector
-            .signal_trace
-            .lock()
-            .expect("signal trace lock poisoned")
-            .clone()
-    }
-
-    /// Marks `pid`'s most recent recorded wait as tracer-internal: a stop
-    /// plain ptrace never produces (a trap-only Allow-class entry), which the
-    /// P2 comparator accounts for explicitly instead of comparing.
-    #[cfg(test)]
-    pub(crate) fn mark_last_stop_internal(&self, pid: reverie::Pid) {
-        let mut trace = self
-            .collector
-            .stop_trace
-            .lock()
-            .expect("stop trace lock poisoned");
-        if let Some((_, description)) = trace.iter_mut().rev().find(|(stop, _)| *stop == pid) {
-            description.insert_str(0, INTERNAL_STOP_PREFIX);
-        }
-    }
-
-    /// Returns every recorded run-loop wait in arrival order.
-    #[cfg(test)]
-    pub(crate) fn stop_trace(&self) -> Vec<(reverie::Pid, String)> {
-        self.collector
-            .stop_trace
-            .lock()
-            .expect("stop trace lock poisoned")
-            .clone()
     }
 
     pub(crate) fn record_tracee_exit(&self) {
