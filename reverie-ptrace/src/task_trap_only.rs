@@ -24,7 +24,6 @@
 //! from an I386 stop unchanged because H0 has already normalized the
 //! registers they save and restore.
 
-use crate::tracer::WaitOnPtracer;
 use reverie::Errno;
 #[cfg(test)]
 use reverie::Pid;
@@ -52,6 +51,7 @@ use crate::liteinst_trap_only::is_reserved_site;
 use crate::liteinst_trap_only::read_site;
 use crate::liteinst_trap_only::site_mapping_is_patchable;
 use crate::liteinst_trap_only::write_site;
+use crate::tracer::WaitOnPtracer;
 
 /// How `handle_seccomp` continues after trap-only routing.
 pub(super) enum TrapOnlyRoute {
