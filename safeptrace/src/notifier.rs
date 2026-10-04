@@ -6852,6 +6852,19 @@ mod test {
     use super::*;
     use crate::Options;
 
+    /// Keep completion evidence on a separate physical line even beside
+    /// C signal-handler output or libtest's unfinished progress line. One
+    /// bounded write keeps both delimiters and the unchanged marker atomic.
+    fn emit_completion_marker(marker: &str) {
+        let line = format!("\n{marker}\n");
+        assert!(line.len() <= libc::PIPE_BUF as usize);
+        assert_eq!(
+            unsafe { libc::write(libc::STDOUT_FILENO, line.as_ptr().cast(), line.len()) },
+            line.len() as isize,
+            "could not write actual completion marker"
+        );
+    }
+
     #[derive(Default)]
     struct WakeCounter(AtomicUsize);
 

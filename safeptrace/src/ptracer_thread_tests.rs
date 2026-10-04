@@ -55,7 +55,7 @@ fn explicit_ptracer_namespace_guard_refuses_inherited_outer_proc() {
         )
         .unwrap()
         {
-            ExactReuseOutcome::Exercised => println!("{MARKER}"),
+            ExactReuseOutcome::Exercised => emit_completion_marker(MARKER),
             ExactReuseOutcome::Unavailable => println!("PROC_NAMESPACE_GUARD_UNAVAILABLE"),
         }
         return;
@@ -87,7 +87,7 @@ fn explicit_ptracer_namespace_guard_refuses_inherited_outer_proc() {
     let status = waitpid_status_bounded(child, 0, TRACEE_WAIT_TIMEOUT).unwrap();
     assert!(libc::WIFEXITED(status));
     assert_eq!(libc::WEXITSTATUS(status), 0);
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -208,7 +208,7 @@ async fn explicit_ptracer_drivers_retain_authority_after_foreign_polls() {
             "EXPLICIT_PTRACER_DRIVER_RECOVERY native={native} forced={forced} actual_exit=23 done=true root_reaped=true member_absent=true"
         );
     }
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[test]
@@ -392,7 +392,7 @@ async fn explicit_legacy_cache_admits_real_native_sibling_without_another_owner(
         )
         .unwrap();
         match classify_exact_reuse_output(Some(&output.output), MARKER, UNAVAILABLE).unwrap() {
-            ExactReuseOutcome::Exercised => println!("{MARKER}"),
+            ExactReuseOutcome::Exercised => emit_completion_marker(MARKER),
             ExactReuseOutcome::Unavailable => println!("{UNAVAILABLE}"),
         }
         assert!(!output.timed_out);
@@ -511,7 +511,7 @@ async fn explicit_legacy_cache_admits_real_native_sibling_without_another_owner(
     drop(force);
     legacy_owner_reap_root(root, &mut root_cleanup);
     assert!(!std::path::Path::new(&format!("/proc/{tid}")).exists());
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -530,7 +530,7 @@ async fn native_capture_before_legacy_open_refusal_keeps_native_wait_authority()
         )
         .unwrap();
         match classify_exact_reuse_output(Some(&output.output), MARKER, UNAVAILABLE).unwrap() {
-            ExactReuseOutcome::Exercised => println!("{MARKER}"),
+            ExactReuseOutcome::Exercised => emit_completion_marker(MARKER),
             ExactReuseOutcome::Unavailable => println!("{UNAVAILABLE}"),
         }
         assert!(!output.timed_out);
@@ -631,7 +631,7 @@ async fn native_capture_before_legacy_open_refusal_keeps_native_wait_authority()
         legacy_owner_reap_root(root, &mut root_cleanup);
         assert!(!std::path::Path::new(&format!("/proc/{tid}")).exists());
     }
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[test]
@@ -650,7 +650,7 @@ fn explicit_native_cache_admission_preserves_actual_local_sync_claim() {
         )
         .unwrap();
         match classify_exact_reuse_output(Some(&output.output), MARKER, UNAVAILABLE).unwrap() {
-            ExactReuseOutcome::Exercised => println!("{MARKER}"),
+            ExactReuseOutcome::Exercised => emit_completion_marker(MARKER),
             ExactReuseOutcome::Unavailable => println!("{UNAVAILABLE}"),
         }
         assert!(!output.timed_out);
@@ -790,7 +790,7 @@ fn explicit_native_cache_admission_preserves_actual_local_sync_claim() {
     drop(force);
     legacy_owner_reap_root(root, &mut root_cleanup);
     assert!(!std::path::Path::new(&format!("/proc/{tid}")).exists());
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -868,7 +868,7 @@ async fn explicit_child_capture_policy_follows_each_request_before_parent_commit
         )
         .unwrap();
         match classify_exact_reuse_output(Some(&output.output), MARKER, UNAVAILABLE).unwrap() {
-            ExactReuseOutcome::Exercised => println!("{MARKER}"),
+            ExactReuseOutcome::Exercised => emit_completion_marker(MARKER),
             ExactReuseOutcome::Unavailable => println!("{UNAVAILABLE}"),
         }
         assert!(!output.timed_out);
@@ -1051,7 +1051,7 @@ async fn explicit_child_capture_policy_follows_each_request_before_parent_commit
         drop(forced);
         assert!(Instant::now() <= deadline);
     }
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1070,7 +1070,7 @@ async fn explicit_native_reattach_preserves_current_owner_and_original_driver() 
         )
         .unwrap();
         match classify_exact_reuse_output(Some(&output.output), MARKER, UNAVAILABLE).unwrap() {
-            ExactReuseOutcome::Exercised => println!("{MARKER}"),
+            ExactReuseOutcome::Exercised => emit_completion_marker(MARKER),
             ExactReuseOutcome::Unavailable => println!("{UNAVAILABLE}"),
         }
         assert!(!output.timed_out);
@@ -1239,7 +1239,7 @@ async fn explicit_native_reattach_preserves_current_owner_and_original_driver() 
             drop(release);
         }
     }
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1556,7 +1556,7 @@ async fn explicit_copied_owner_namespace_refuses_before_consuming_any_report() {
             assert!(!std::path::Path::new(&format!("/proc/{tid}")).exists());
         }
     }
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1690,7 +1690,7 @@ async fn explicit_original_owner_progresses_through_retained_proc_overmount() {
             "ORIGINAL_OWNER_OVERMOUNT native={native} forced={forced} actual_exit=23 done=true root_reaped=true member_absent=true"
         );
     }
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2007,7 +2007,7 @@ async fn explicit_copied_stopped_namespace_refuses_numeric_ptrace() {
             assert!(!std::path::Path::new(&format!("/proc/{tid}")).exists());
         }
     }
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2348,7 +2348,7 @@ async fn explicit_first_binding_uses_original_native_event_mount() {
         legacy_owner_reap_root(root, &mut root_cleanup);
         assert!(!std::path::Path::new(&format!("/proc/{tid}")).exists());
     }
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2442,7 +2442,7 @@ async fn explicit_untraced_nonleader_constructor_retains_original_host() {
             "EXPLICIT_UNTRACED_NONLEADER native={native} forced={forced} original_host_retained=true original_generation_preserved=true actual_exit=23 done=true root_reaped=true member_absent=true"
         );
     }
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2656,15 +2656,12 @@ async fn explicit_untraced_wait_requires_original_parent_role() {
         assert!(!std::path::Path::new(&format!("/proc/{member}")).exists());
         native_control_exercised |= generic.is_some();
     }
-    println!(
-        "{}",
-        if native_control_exercised {
-            NATIVE_MARKER
-        } else {
-            "NATIVE_THREAD_PIDFD_UNAVAILABLE_FOR_WAIT_ROLE_CONTROL"
-        }
-    );
-    println!("{MARKER}");
+    if native_control_exercised {
+        emit_completion_marker(NATIVE_MARKER);
+    } else {
+        println!("NATIVE_THREAD_PIDFD_UNAVAILABLE_FOR_WAIT_ROLE_CONTROL");
+    }
+    emit_completion_marker(MARKER);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2834,7 +2831,7 @@ async fn explicit_untraced_nonchild_constructor_can_attach() {
             "UNTRACED_NONCHILD_ATTACH native={native} forced={forced} constructor_retained=true pre_attach_wait=EPERM same_generation=true actual_seize=true actual_exit=23 done=true natural_parent_reaped=true"
         );
     }
-    println!("{MARKER}");
+    emit_completion_marker(MARKER);
 }
 
 #[cfg(not(sanitized))]

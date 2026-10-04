@@ -117,7 +117,7 @@ mod retired_tid {
                 print!("{stdout}");
                 eprint!("{}", String::from_utf8_lossy(&output.stderr));
             }
-            println!("{MARKER}");
+            emit_completion_marker(MARKER);
             return;
         }
         let forced = env::var(FORCE).as_deref() == Ok("1");
