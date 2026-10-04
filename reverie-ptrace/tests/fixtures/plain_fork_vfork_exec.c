@@ -7,17 +7,16 @@
  */
 
 /*
- * Guest for the trap-only LiteInst parity test. It exercises the classes the
- * preload hybrid refuses or special-cases (vfork, fork, exec by the root, a
- * delivered signal) so that a stop-by-stop comparison with plain ptrace is not
- * vacuous.
+ * Guest for the plain ptrace fork/vfork/exec baseline tests
+ * (reverie-ptrace/src/plain_guest_regression_tests.rs). It exercises vfork,
+ * fork, exec by the root and a delivered signal, so that a stop-by-stop
+ * record of a run is not vacuous.
  *
- *   trap_only_parity            run the scenario, then exec itself as "exec"
- *   trap_only_parity exec       the post-exec image; exit 0
- *   trap_only_parity touch PATH create PATH and exit 0 (launch witness)
+ *   plain_fork_vfork_exec       run the scenario, then exec itself as "exec"
+ *   plain_fork_vfork_exec exec  the post-exec image; exit 0
  *
- * The two runs of a comparison are independent, so host scheduling inside the
- * guest must not reach the stop trace. SIGCHLD is therefore kept blocked from
+ * Two runs are compared exactly, so host scheduling inside the guest must
+ * not reach the stop trace. SIGCHLD is therefore kept blocked from
  * before each fork and vfork until after the matching waitpid, and is then
  * delivered when the old mask is restored. Unblocked, a child's exit could
  * overtake its parent's wait4 or not, and the parent's wait4 seccomp stop and
@@ -41,10 +40,6 @@ static void on_usr1(int signal_number) {
 }
 
 int main(int argc, char** argv) {
-  if (argc == 3 && strcmp(argv[1], "touch") == 0) {
-    int fd = open(argv[2], O_WRONLY | O_CREAT | O_EXCL, 0600);
-    return fd < 0 ? 20 : 0;
-  }
   if (argc == 2 && strcmp(argv[1], "exec") == 0) {
     return 0;
   }
@@ -60,7 +55,7 @@ int main(int argc, char** argv) {
   if (fd < 0) {
     return 3;
   }
-  static const char text[] = "trap-only parity\n";
+  static const char text[] = "plain fork vfork exec\n";
   if (write(fd, text, sizeof text - 1) != (ssize_t)(sizeof text - 1)) {
     return 4;
   }
