@@ -1,0 +1,85 @@
+{
+  "phase": "cleartid-corrected44f-regression",
+  "command": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-shared-fork-p0-20261003/target/shared-fork-001/debug/deps/static_elf-a19df1ed621f1e74",
+    "shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-shared-fork-p0-20261003",
+  "source_head": "44f55df4917c359db61dbbdf78e0191995511dde",
+  "source_diff_sha256": "612572e5be160789f99707a902ff51ad1c1036dfc0cc4bdd13055c0a4d8e76b0",
+  "index_diff_sha256": "612572e5be160789f99707a902ff51ad1c1036dfc0cc4bdd13055c0a4d8e76b0",
+  "binding_sha256": "6b65d2abede969c32320cfa9ee44a16ab6eaa326f2b589e62df5c79b8c7265be",
+  "slot_generation": 1,
+  "slot_record": {
+    "slot": "kvm-shared-fork-p0-20261003",
+    "generation": 1,
+    "agent": "native-kvm-shared-fork-01a0d5c2",
+    "owner": {
+      "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+      "cgroup_path": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1571522-i1558401.scope",
+      "host_id": "82445a5655f849bd81550a91f9cb5260",
+      "pid": 1571522,
+      "start_ticks": 730624
+    },
+    "checkout": "worktrees/slots/kvm-shared-fork-p0-20261003"
+  },
+  "authorization_sha256": "0ce653d7c8432a93e22aed0c43ab67a8848b3be422040669c62a901f388ef971",
+  "grant_reference": "Root granted one corrected-test causal check on old44f: preserve candidate vm.rs, restore only vm.rs to old44f, build and inventory static_elf then one exact regression; expected runtime failure after native four cases; restore candidate vm.rs in finally. No source/assertion/bound edits, no repaired-head runs. Expires October 3 at 8:10 PM ET.",
+  "owner": {
+    "pid": 1571522,
+    "state": "S",
+    "ppid": 1570869,
+    "pgid": 1570869,
+    "sid": 1569709,
+    "start": 730624
+  },
+  "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+  "start_free_bytes": 1500791111680,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice_minimum": 10,
+  "seconds_bound": 120.0,
+  "inherited_rlimits": {
+    "RLIMIT_FSIZE": [
+      -1,
+      -1
+    ],
+    "RLIMIT_NOFILE": [
+      524288,
+      524288
+    ],
+    "RLIMIT_NPROC": [
+      3091463,
+      3091463
+    ]
+  },
+  "started_et": "2026-10-03 07:35:10 PM ET",
+  "environment_bindings": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-shared-fork-p0-20261003/target/shared-fork-001",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "XDG_CACHE_HOME": "/tmp/kvm-shared-fork-qualification-plan-20261003-2sz8n0ec/script-cache",
+    "TMPDIR": "/tmp/kvm-shared-fork-qualification-plan-20261003-2sz8n0ec/tmp",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "child": {
+    "pid": 1457622,
+    "state": "R",
+    "ppid": 1455227,
+    "pgid": 1457622,
+    "sid": 1457622,
+    "start": 59997916
+  }
+}

@@ -1,0 +1,138 @@
+{
+  "phase": "build001",
+  "command": [
+    "with-proxy",
+    "cargo",
+    "test",
+    "--locked",
+    "-j8",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "--test",
+    "static_elf",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-shared-fork-p0-20261003",
+  "source_head": "91ca59550a208c0fe6eee2e6108222de27f53699",
+  "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "index_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "binding_sha256": "c062f4a8b16601e8b338fa10bc300b3276a07d03a8f6cd7ef22af4e18e6bfd53",
+  "slot_generation": 1,
+  "slot_record": {
+    "slot": "kvm-shared-fork-p0-20261003",
+    "generation": 1,
+    "agent": "native-kvm-shared-fork-01a0d5c2",
+    "owner": {
+      "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+      "cgroup_path": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1571522-i1558401.scope",
+      "host_id": "82445a5655f849bd81550a91f9cb5260",
+      "pid": 1571522,
+      "start_ticks": 730624
+    },
+    "checkout": "worktrees/slots/kvm-shared-fork-p0-20261003"
+  },
+  "authorization_sha256": "9d1969c5d1c127e5240c464a7b75d2af8303015e1dc4454df65522dec2755039",
+  "grant_reference": "root execution grant: PR919 candidate91ca59550a208c0fe6eee2e6108222de27f53699; sole F qualification, serial exact415+testpatch control and candidate restore, 12+9+2 focused, integration/device/full-library/Clippy/workspace-doc; no mutants or source repairs; exact415 production plus byte-identical formatted regression only (root selected actual baseline); candidate restored byte-exact after expected baseline101",
+  "owner": {
+    "pid": 1571522,
+    "state": "S",
+    "ppid": 1570869,
+    "pgid": 1570869,
+    "sid": 1569709,
+    "start": 730624
+  },
+  "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+  "start_free_bytes": 1520345669632,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice_minimum": 10,
+  "seconds_bound": 2400.0,
+  "inherited_rlimits": {
+    "RLIMIT_FSIZE": [
+      -1,
+      -1
+    ],
+    "RLIMIT_NOFILE": [
+      524288,
+      524288
+    ],
+    "RLIMIT_NPROC": [
+      3091463,
+      3091463
+    ]
+  },
+  "started_et": "2026-10-03 06:49:20 PM ET",
+  "environment_bindings": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-shared-fork-p0-20261003/target/shared-fork-001",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "XDG_CACHE_HOME": "/tmp/kvm-shared-fork-qualification-plan-20261003-2sz8n0ec/script-cache",
+    "TMPDIR": "/tmp/kvm-shared-fork-qualification-plan-20261003-2sz8n0ec/tmp",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "child": {
+    "pid": 489895,
+    "state": "R",
+    "ppid": 488538,
+    "pgid": 489895,
+    "sid": 489895,
+    "start": 59722897
+  },
+  "rc": 0,
+  "child_rc": 0,
+  "stop_reason": null,
+  "source_head_end": "91ca59550a208c0fe6eee2e6108222de27f53699",
+  "wall_seconds": 33.231645563966595,
+  "child_user_cpu_seconds": 81.8746,
+  "child_system_cpu_seconds": 14.253673,
+  "minimum_free_bytes": 1520123129856,
+  "end_free_bytes": 1520123129856,
+  "output_bytes": 130333,
+  "output_sha256": "49ac5df93b4839a3ac8a1bdba09d70771f610187af0d021882ec7a6f0c66bd18",
+  "observed_process_generations": [
+    {
+      "pid": 489895,
+      "state": "Z",
+      "ppid": 488538,
+      "pgid": 489895,
+      "sid": 489895,
+      "start": 59722897
+    },
+    {
+      "pid": 490458,
+      "state": "S",
+      "ppid": 489895,
+      "pgid": 489895,
+      "sid": 489895,
+      "start": 59722909
+    },
+    {
+      "pid": 490461,
+      "state": "S",
+      "ppid": 489895,
+      "pgid": 489895,
+      "sid": 489895,
+      "start": 59722909
+    },
+    {
+      "pid": 559340,
+      "state": "S",
+      "ppid": 489895,
+      "pgid": 489895,
+      "sid": 489895,
+      "start": 59723692
+    }
+  ],
+  "remaining_processes": []
+}

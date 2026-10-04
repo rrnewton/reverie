@@ -1,0 +1,15 @@
+
+running 1 test
+test memory::shared_file::tests::snapshot_preserves_preexisting_memfd_vma_after_future_write_seal ... 
+thread 'memory::shared_file::tests::snapshot_preserves_preexisting_memfd_vma_after_future_write_seal' (4141636) panicked at reverie-kvm/src/memory/shared_file.rs:1769:39:
+called `Result::unwrap()` on an `Err` value: SharedFailure(MemoryMapping(Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    memory::shared_file::tests::snapshot_preserves_preexisting_memfd_vma_after_future_write_seal
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1193 filtered out; finished in 0.00s
+

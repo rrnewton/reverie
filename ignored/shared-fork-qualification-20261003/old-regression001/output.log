@@ -1,0 +1,31 @@
+
+running 1 test
+test shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native ... 
+thread 'shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native' (264711) panicked at reverie-kvm/tests/static_elf.rs:2362:5:
+shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native: status=Some(101) stdout=
+running 1 test
+test shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native ... FAILED
+
+failures:
+
+failures:
+    shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 433 filtered out; finished in 0.16s
+
+ stderr=warning: `--logfile` is deprecatedshared-file-fork completed native: child=0 syncs=2
+
+thread 'shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native' (264739) panicked at reverie-kvm/tests/static_elf.rs:21039:47:
+called `Result::unwrap()` on an `Err` value: SharedFailure(SharedFailure(SharedFileCapability { operation: "fork/clone", reason: "ordinary shared-file views require one vCPU in this address space" }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 433 filtered out; finished in 0.17s
+

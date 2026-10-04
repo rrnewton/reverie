@@ -1,0 +1,6 @@
+
+running 1 test
+test vm::tests::fork_child_restores_issuing_thread_frame_from_private_snapshot ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1193 filtered out; finished in 0.64s
+

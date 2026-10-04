@@ -1,0 +1,31 @@
+
+running 1 test
+test shared_file_fork_clear_tid_single_mm_user_matches_native ... 
+thread 'shared_file_fork_clear_tid_single_mm_user_matches_native' (2021914) panicked at reverie-kvm/tests/static_elf.rs:2362:5:
+shared_file_fork_clear_tid_single_mm_user_matches_native: status=Some(101) stdout=
+running 1 test
+test shared_file_fork_clear_tid_single_mm_user_matches_native ... FAILED
+
+failures:
+
+failures:
+    shared_file_fork_clear_tid_single_mm_user_matches_native
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 434 filtered out; finished in 0.35s
+
+ stderr=warning: `--logfile` is deprecatedshared-file-clear-tid completed native: markers=4 children=0
+
+thread 'shared_file_fork_clear_tid_single_mm_user_matches_native' (2021952) panicked at reverie-kvm/tests/static_elf.rs:21110:47:
+called `Result::unwrap()` on an `Err` value: SharedFailure(SharedFailure(SharedFileCapability { operation: "atomic scalar store", reason: "truncate-capable file backing has no proven fault-contained atomic store" }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    shared_file_fork_clear_tid_single_mm_user_matches_native
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 434 filtered out; finished in 0.36s
+

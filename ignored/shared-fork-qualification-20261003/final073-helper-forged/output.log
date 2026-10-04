@@ -1,0 +1,24 @@
+
+running 1 test
+test leader_self_exec_bounded_rejects_forged_stdout_without_execution_record ... 
+thread 'leader_self_exec_bounded_rejects_forged_stdout_without_execution_record' (3508073) panicked at reverie-kvm/tests/static_elf.rs:2380:5:
+assertion `left == right` failed: 
+leader_self_exec_bounded_rejects_forged_stdout_without_execution_record: bounded child execution record mismatch; exit_code=Some(0)
+execution records: ""
+stdout:
+
+running 1 test
+
+test leader_self_exec_bounded_rejects_forged_stdout_without_execution_record ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+stderr:
+warning: `--logfile` is deprecated
+  left: ""
+ right: "ok leader_self_exec_bounded_rejects_forged_stdout_without_execution_record\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 434 filtered out; finished in 0.01s
+

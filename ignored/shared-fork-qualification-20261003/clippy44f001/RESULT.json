@@ -1,0 +1,337 @@
+{
+  "phase": "clippy44f001",
+  "command": [
+    "with-proxy",
+    "cargo",
+    "clippy",
+    "--locked",
+    "-j8",
+    "-p",
+    "reverie-kvm",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-shared-fork-p0-20261003",
+  "source_head": "44f55df4917c359db61dbbdf78e0191995511dde",
+  "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "index_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "binding_sha256": "82d6e5c66cddb02ffb798dcb839cc80dfa18840adddef8f7c707c1c70a5cd3ee",
+  "slot_generation": 1,
+  "slot_record": {
+    "slot": "kvm-shared-fork-p0-20261003",
+    "generation": 1,
+    "agent": "native-kvm-shared-fork-01a0d5c2",
+    "owner": {
+      "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+      "cgroup_path": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1571522-i1558401.scope",
+      "host_id": "82445a5655f849bd81550a91f9cb5260",
+      "pid": 1571522,
+      "start_ticks": 730624
+    },
+    "checkout": "worktrees/slots/kvm-shared-fork-p0-20261003"
+  },
+  "authorization_sha256": "345eb06a2b31510ccb77973a3bc68e80987625a33bf4d01d3254d34c032031ed",
+  "grant_reference": "root resumed exact44f55df4917c359db61dbbdf78e0191995511dde grant after lease-push/readback; same serial fmt/build002/discovery/23 focused/integration/device/full1194lib/Clippy/workspace docs bounds, lock4c20; old415 test-only proof carries; stop first unexpected result; no mutants/repairs",
+  "owner": {
+    "pid": 1571522,
+    "state": "S",
+    "ppid": 1570869,
+    "pgid": 1570869,
+    "sid": 1569709,
+    "start": 730624
+  },
+  "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+  "start_free_bytes": 1517189185536,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice_minimum": 10,
+  "seconds_bound": 2400.0,
+  "inherited_rlimits": {
+    "RLIMIT_FSIZE": [
+      -1,
+      -1
+    ],
+    "RLIMIT_NOFILE": [
+      524288,
+      524288
+    ],
+    "RLIMIT_NPROC": [
+      3091463,
+      3091463
+    ]
+  },
+  "started_et": "2026-10-03 06:56:33 PM ET",
+  "environment_bindings": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-shared-fork-p0-20261003/target/shared-fork-001",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "XDG_CACHE_HOME": "/tmp/kvm-shared-fork-qualification-plan-20261003-2sz8n0ec/script-cache",
+    "TMPDIR": "/tmp/kvm-shared-fork-qualification-plan-20261003-2sz8n0ec/tmp",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "child": {
+    "pid": 2963217,
+    "state": "R",
+    "ppid": 2959881,
+    "pgid": 2963217,
+    "sid": 2963217,
+    "start": 59766219
+  },
+  "rc": 0,
+  "child_rc": 0,
+  "stop_reason": null,
+  "source_head_end": "44f55df4917c359db61dbbdf78e0191995511dde",
+  "wall_seconds": 26.10264279891271,
+  "child_user_cpu_seconds": 56.951285,
+  "child_system_cpu_seconds": 12.808682000000001,
+  "minimum_free_bytes": 1515858075648,
+  "end_free_bytes": 1515858075648,
+  "output_bytes": 3318,
+  "output_sha256": "ba3b68ebc2638b6c55e74056026afa83f7fe7440d53ea8641cf7429bb0ca8bac",
+  "observed_process_generations": [
+    {
+      "pid": 2963217,
+      "state": "Z",
+      "ppid": 2959881,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766219
+    },
+    {
+      "pid": 2963670,
+      "state": "S",
+      "ppid": 2963217,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766225
+    },
+    {
+      "pid": 2971696,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766360
+    },
+    {
+      "pid": 2971699,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766360
+    },
+    {
+      "pid": 2972650,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766374
+    },
+    {
+      "pid": 2972871,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766377
+    },
+    {
+      "pid": 2973637,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766388
+    },
+    {
+      "pid": 2973806,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766390
+    },
+    {
+      "pid": 2973879,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766391
+    },
+    {
+      "pid": 2974003,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766393
+    },
+    {
+      "pid": 2976697,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766428
+    },
+    {
+      "pid": 2978473,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766459
+    },
+    {
+      "pid": 2980068,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766489
+    },
+    {
+      "pid": 2980334,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766491
+    },
+    {
+      "pid": 2980526,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766494
+    },
+    {
+      "pid": 2980682,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766497
+    },
+    {
+      "pid": 2981723,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766517
+    },
+    {
+      "pid": 2981748,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766517
+    },
+    {
+      "pid": 2984517,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766555
+    },
+    {
+      "pid": 2989838,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766622
+    },
+    {
+      "pid": 2990273,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766629
+    },
+    {
+      "pid": 2991179,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766647
+    },
+    {
+      "pid": 2992098,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766664
+    },
+    {
+      "pid": 2996983,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766740
+    },
+    {
+      "pid": 2997672,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59766751
+    },
+    {
+      "pid": 3013359,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59767008
+    },
+    {
+      "pid": 3022492,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59767140
+    },
+    {
+      "pid": 3022499,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59767140
+    },
+    {
+      "pid": 3044361,
+      "state": "S",
+      "ppid": 2963670,
+      "pgid": 2963217,
+      "sid": 2963217,
+      "start": 59767568
+    }
+  ],
+  "remaining_processes": []
+}

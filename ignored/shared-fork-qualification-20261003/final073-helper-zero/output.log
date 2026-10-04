@@ -1,0 +1,23 @@
+
+running 1 test
+test leader_self_exec_bounded_rejects_zero_matched_tests ... 
+thread 'leader_self_exec_bounded_rejects_zero_matched_tests' (3494082) panicked at reverie-kvm/tests/static_elf.rs:2380:5:
+assertion `left == right` failed: 
+__reverie_deliberately_nonexistent_leader_self_exec_test__: bounded child execution record mismatch; exit_code=Some(0)
+execution records: ""
+stdout:
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 435 filtered out; finished in 0.00s
+
+
+stderr:
+warning: `--logfile` is deprecated
+  left: ""
+ right: "ok __reverie_deliberately_nonexistent_leader_self_exec_test__\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 434 filtered out; finished in 0.01s
+

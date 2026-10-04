@@ -1,0 +1,200 @@
+
+running 1 test
+test shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner ... 
+running 1 test
+clear-tid mode=native registration=0 backing=0 expected=827483253 actual=827483253 waitstatus=0
+clear-tid mode=native registration=0 backing=1 expected=844326262 actual=844326262 waitstatus=0
+clear-tid mode=native registration=1 backing=0 expected=827483254 actual=827483254 waitstatus=0
+clear-tid mode=native registration=1 backing=1 expected=844326263 actual=0 waitstatus=0
+shared clear-tid clone=2 fork-set=2 ordinary=ok memfd=ok markers=4 children=0
+clear-tid mode=kvm registration=0 backing=0 expected=827483253 actual=827483253 waitstatus=0
+clear-tid mode=kvm registration=0 backing=1 expected=844326262 actual=844326262 waitstatus=0
+clear-tid mode=kvm registration=1 backing=0 expected=827483254 actual=827483254 waitstatus=0
+clear-tid mode=kvm registration=1 backing=1 expected=844326263 actual=844326263 waitstatus=0
+shared clear-tid clone=2 fork-set=2 ordinary=ok memfd=ok markers=4 children=0
+clear-tid mode=kvm registration=0 backing=0 expected=827483253 actual=827483253 waitstatus=0
+clear-tid mode=kvm registration=0 backing=1 expected=844326262 actual=844326262 waitstatus=0
+clear-tid mode=kvm registration=1 backing=0 expected=827483254 actual=827483254 waitstatus=0
+clear-tid mode=kvm registration=1 backing=1 expected=844326263 actual=844326263 waitstatus=0
+shared clear-tid clone=2 fork-set=2 ordinary=ok memfd=ok markers=4 children=0
+clear-tid mode=kvm registration=0 backing=0 expected=827483253 actual=827483253 waitstatus=0
+clear-tid mode=kvm registration=0 backing=1 expected=844326262 actual=844326262 waitstatus=0
+clear-tid mode=kvm registration=1 backing=0 expected=827483254 actual=827483254 waitstatus=0
+clear-tid mode=kvm registration=1 backing=1 expected=844326263 actual=844326263 waitstatus=0
+shared clear-tid clone=2 fork-set=2 ordinary=ok memfd=ok markers=4 children=0
+test shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 434 filtered out; finished in 2.54s
+
+warning: `--logfile` is deprecatedshared-file-clear-tid completed native: markers=4 children=0
+shared-file-clear-tid completed direct: markers=4 children=0
+[kvm-strace] brk(NULL) = 4214784
+[kvm-strace] arch_prctl(12289, 0xfffed30) = -22
+[kvm-strace] mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = 18067456
+[kvm-strace] access(0x102ee60 -> "/etc/ld.so.preload", Mode(S_IROTH)) = -2
+[kvm-strace] openat(-100, 0x102d266 -> "/etc/ld.so.cache", OFlag(O_CLOEXEC)) = 3
+[kvm-strace] fstat(3, 0xfffdf60 -> {st_mode=SFlag(S_IFREG) | 0644, st_size=28699, ...}) = 0
+[kvm-strace] mmap(NULL, 28699, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE), 3, 0) = 18075648
+[kvm-strace] close(3) = 0
+[kvm-strace] openat(-100, 0x113b700 -> "/lib64/libc.so.6", OFlag(O_CLOEXEC)) = 3
+[kvm-strace] read(3, 0xfffe0c8, 832) = 832
+[kvm-strace] pread64(3, 0xfffdcc0, 784, 64) = 784
+[kvm-strace] pread64(3, 0xfffdc80, 48, 848) = 48
+[kvm-strace] pread64(3, 0xfffdc30, 68, 896) = 68
+[kvm-strace] fstat(3, 0xfffdf60 -> {st_mode=SFlag(S_IFREG) | 0755, st_size=2553784, ...}) = 0
+[kvm-strace] pread64(3, 0xfffdbb0, 784, 64) = 784
+[kvm-strace] mmap(NULL, 2142160, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_DENYWRITE), 3, 0) = 18108416
+[kvm-strace] mmap(0x116e000, 1531904, ProtFlags(PROT_READ | PROT_EXEC), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 167936) = 18276352
+[kvm-strace] mmap(0x12e4000, 364544, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 1699840) = 19808256
+[kvm-strace] mmap(0x133d000, 24576, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 2060288) = 20172800
+[kvm-strace] mmap(0x1343000, 53200, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_ANON), -1, 0) = 20197376
+[kvm-strace] close(3) = 0
+[kvm-strace] mmap(NULL, 12288, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = 20250624
+[kvm-strace] arch_prctl(ARCH_SET_FS, 20252480) = 0
+[kvm-strace] set_tid_address(0x1350a10) = 1
+[kvm-strace] set_robust_list(0x1350a20, 24) = 0
+[kvm-strace] rseq(20254944, 32, 0, 1392848979, 0, 0) = -38
+[kvm-strace] mprotect(0x133d000, 16384, ProtFlags(PROT_READ)) = 0
+[kvm-strace] mprotect(0x403000, 4096, ProtFlags(PROT_READ)) = 0
+[kvm-strace] mprotect(0x1037000, 8192, ProtFlags(PROT_READ)) = 0
+[kvm-strace] prlimit64(0, 3, NULL, 0xfffeaa0) = 0
+[kvm-strace] munmap(0x113d000, 28699) = 0
+[kvm-strace] openat(-100, 0x402066 -> "clear-tid.bin", OFlag(O_CLOEXEC | O_CREAT | O_EXCL | O_RDWR), Mode(S_IRUSR | S_IWUSR)) = 3
+[kvm-strace] memfd_create(0x402074 -> "clear-tid", 1) = 4
+[kvm-strace] ftruncate(3, 8192) = 0
+[kvm-strace] pwrite64(3, 0xfffad00, 8192, 0) = 8192
+[kvm-strace] mmap(NULL, 4096, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_SHARED), 3, 4096) = 18075648
+[kvm-strace] ftruncate(4, 8192) = 0
+[kvm-strace] pwrite64(4, 0xfffcd00, 8192, 0) = 8192
+[kvm-strace] mmap(NULL, 4096, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_SHARED), 4, 4096) = 18079744
+[kvm-strace] pwrite64(3, 0xfff8ce0, 4, 4160) = 4
+[kvm-strace] clone(CloneFlags(0x200011), NULL, NULL, 0x113d040, 0) = 2
+[kvm-strace] exit(0) = ?
+[kvm-strace] wait4(2, 0xfff8ce4, WaitPidFlag(0x0), NULL) = 2
+[kvm-strace] fstat(1, 0xfff8530 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] getrandom(0x13484f8, 8, 1) = 8
+[kvm-strace] brk(NULL) = 4214784
+[kvm-strace] brk(0x426000) = 4349952
+[kvm-strace] write(1, 0x4052a0, 93) = 93
+[kvm-strace] pread64(3, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pread64(4, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pwrite64(4, 0xfff8ce0, 4, 4160) = 4
+[kvm-strace] clone(CloneFlags(0x200011), NULL, NULL, 0x113e040, 0) = 3
+[kvm-strace] exit(0) = ?
+[kvm-strace] wait4(3, 0xfff8ce4, WaitPidFlag(0x0), NULL) = 3
+[kvm-strace] write(1, 0x4052a0, 93) = 93
+[kvm-strace] pread64(3, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pread64(4, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pwrite64(3, 0xfff8ce0, 4, 4160) = 4
+[kvm-strace] fork() = 4
+[kvm-strace] gettid() = 4
+[kvm-strace] set_tid_address(0x113d040) = 4
+[kvm-strace] exit(0) = ?
+[kvm-strace] wait4(4, 0xfff8ce4, WaitPidFlag(0x0), NULL) = 4
+[kvm-strace] write(1, 0x4052a0, 93) = 93
+[kvm-strace] pread64(3, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pread64(4, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pwrite64(4, 0xfff8ce0, 4, 4160) = 4
+[kvm-strace] fork() = 5
+[kvm-strace] gettid() = 5
+[kvm-strace] set_tid_address(0x113e040) = 5
+[kvm-strace] exit(0) = ?
+[kvm-strace] wait4(5, 0xfff8ce4, WaitPidFlag(0x0), NULL) = 5
+[kvm-strace] write(1, 0x4052a0, 93) = 93
+[kvm-strace] pread64(3, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pread64(4, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] munmap(0x113d000, 4096) = 0
+[kvm-strace] close(3) = 0
+[kvm-strace] munmap(0x113e000, 4096) = 0
+[kvm-strace] close(4) = 0
+[kvm-strace] unlink(0x402066 -> "clear-tid.bin") = 0
+[kvm-strace] write(1, 0x4052a0, 78) = 78
+[kvm-strace] exit_group(0) = ?
+shared-file-clear-tid completed host: markers=4 children=0
+[kvm-strace] brk(NULL) = 4214784
+[kvm-strace] arch_prctl(12289, 0xfffed30) = -22
+[kvm-strace] mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = 18067456
+[kvm-strace] access(0x102ee60 -> "/etc/ld.so.preload", Mode(S_IROTH)) = -2
+[kvm-strace] openat(-100, 0x102d266 -> "/etc/ld.so.cache", OFlag(O_CLOEXEC)) = 3
+[kvm-strace] fstat(3, 0xfffdf60 -> {st_mode=SFlag(S_IFREG) | 0644, st_size=28699, ...}) = 0
+[kvm-strace] mmap(NULL, 28699, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE), 3, 0) = 18075648
+[kvm-strace] close(3) = 0
+[kvm-strace] openat(-100, 0x113b700 -> "/lib64/libc.so.6", OFlag(O_CLOEXEC)) = 3
+[kvm-strace] read(3, 0xfffe0c8, 832) = 832
+[kvm-strace] pread64(3, 0xfffdcc0, 784, 64) = 784
+[kvm-strace] pread64(3, 0xfffdc80, 48, 848) = 48
+[kvm-strace] pread64(3, 0xfffdc30, 68, 896) = 68
+[kvm-strace] fstat(3, 0xfffdf60 -> {st_mode=SFlag(S_IFREG) | 0755, st_size=2553784, ...}) = 0
+[kvm-strace] pread64(3, 0xfffdbb0, 784, 64) = 784
+[kvm-strace] mmap(NULL, 2142160, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_DENYWRITE), 3, 0) = 18108416
+[kvm-strace] mmap(0x116e000, 1531904, ProtFlags(PROT_READ | PROT_EXEC), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 167936) = 18276352
+[kvm-strace] mmap(0x12e4000, 364544, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 1699840) = 19808256
+[kvm-strace] mmap(0x133d000, 24576, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 2060288) = 20172800
+[kvm-strace] mmap(0x1343000, 53200, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_ANON), -1, 0) = 20197376
+[kvm-strace] close(3) = 0
+[kvm-strace] mmap(NULL, 12288, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = 20250624
+[kvm-strace] arch_prctl(ARCH_SET_FS, 20252480) = 0
+[kvm-strace] set_tid_address(0x1350a10) = 1
+[kvm-strace] set_robust_list(0x1350a20, 24) = 0
+[kvm-strace] rseq(20254944, 32, 0, 1392848979, 0, 0) = -38
+[kvm-strace] mprotect(0x133d000, 16384, ProtFlags(PROT_READ)) = 0
+[kvm-strace] mprotect(0x403000, 4096, ProtFlags(PROT_READ)) = 0
+[kvm-strace] mprotect(0x1037000, 8192, ProtFlags(PROT_READ)) = 0
+[kvm-strace] prlimit64(0, 3, NULL, 0xfffeaa0) = 0
+[kvm-strace] munmap(0x113d000, 28699) = 0
+[kvm-strace] openat(-100, 0x402066 -> "clear-tid.bin", OFlag(O_CLOEXEC | O_CREAT | O_EXCL | O_RDWR), Mode(S_IRUSR | S_IWUSR)) = 3
+[kvm-strace] memfd_create(0x402074 -> "clear-tid", 1) = 4
+[kvm-strace] ftruncate(3, 8192) = 0
+[kvm-strace] pwrite64(3, 0xfffad00, 8192, 0) = 8192
+[kvm-strace] mmap(NULL, 4096, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_SHARED), 3, 4096) = 18075648
+[kvm-strace] ftruncate(4, 8192) = 0
+[kvm-strace] pwrite64(4, 0xfffcd00, 8192, 0) = 8192
+[kvm-strace] mmap(NULL, 4096, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_SHARED), 4, 4096) = 18079744
+[kvm-strace] pwrite64(3, 0xfff8ce0, 4, 4160) = 4
+[kvm-strace] clone(CloneFlags(0x200011), NULL, NULL, 0x113d040, 0) = 2
+[kvm-strace] exit(0) = ?
+[kvm-strace] wait4(2, 0xfff8ce4, WaitPidFlag(0x0), NULL) = 2
+[kvm-strace] fstat(1, 0xfff8530 -> {st_mode=SFlag(S_IFIFO) | 0600, st_size=0, ...}) = 0
+[kvm-strace] getrandom(0x13484f8, 8, 1) = 8
+[kvm-strace] brk(NULL) = 4214784
+[kvm-strace] brk(0x426000) = 4349952
+[kvm-strace] write(1, 0x4052a0, 93) = 93
+[kvm-strace] pread64(3, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pread64(4, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pwrite64(4, 0xfff8ce0, 4, 4160) = 4
+[kvm-strace] clone(CloneFlags(0x200011), NULL, NULL, 0x113e040, 0) = 3
+[kvm-strace] exit(0) = ?
+[kvm-strace] wait4(3, 0xfff8ce4, WaitPidFlag(0x0), NULL) = 3
+[kvm-strace] write(1, 0x4052a0, 93) = 93
+[kvm-strace] pread64(3, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pread64(4, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pwrite64(3, 0xfff8ce0, 4, 4160) = 4
+[kvm-strace] fork() = 4
+[kvm-strace] gettid() = 4
+[kvm-strace] set_tid_address(0x113d040) = 4
+[kvm-strace] exit(0) = ?
+[kvm-strace] wait4(4, 0xfff8ce4, WaitPidFlag(0x0), NULL) = 4
+[kvm-strace] write(1, 0x4052a0, 93) = 93
+[kvm-strace] pread64(3, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pread64(4, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pwrite64(4, 0xfff8ce0, 4, 4160) = 4
+[kvm-strace] fork() = 5
+[kvm-strace] gettid() = 5
+[kvm-strace] set_tid_address(0x113e040) = 5
+[kvm-strace] exit(0) = ?
+[kvm-strace] wait4(5, 0xfff8ce4, WaitPidFlag(0x0), NULL) = 5
+[kvm-strace] write(1, 0x4052a0, 93) = 93
+[kvm-strace] pread64(3, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] pread64(4, 0xfff8d00, 8192, 0) = 8192
+[kvm-strace] munmap(0x113d000, 4096) = 0
+[kvm-strace] close(3) = 0
+[kvm-strace] munmap(0x113e000, 4096) = 0
+[kvm-strace] close(4) = 0
+[kvm-strace] unlink(0x402066 -> "clear-tid.bin") = 0
+[kvm-strace] write(1, 0x4052a0, 78) = 78
+[kvm-strace] exit_group(0) = ?
+shared-file-clear-tid completed tool: markers=4 children=0
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 434 filtered out; finished in 2.55s
+

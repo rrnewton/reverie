@@ -1,0 +1,153 @@
+{
+  "phase": "cleartid-old44f-build",
+  "command": [
+    "with-proxy",
+    "cargo",
+    "test",
+    "--locked",
+    "-j8",
+    "-p",
+    "reverie-kvm",
+    "--test",
+    "static_elf",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-shared-fork-p0-20261003",
+  "source_head": "44f55df4917c359db61dbbdf78e0191995511dde",
+  "source_diff_sha256": "c74e50bf555b18d0e91298d9f39273816ca16ec474ce5e64c04fd91dbf6bdddb",
+  "index_diff_sha256": "c74e50bf555b18d0e91298d9f39273816ca16ec474ce5e64c04fd91dbf6bdddb",
+  "binding_sha256": "fdf0978f88c6a9b3b59e247475f0c27edc27e58bec16a8fec8b6626d3d61534b",
+  "slot_generation": 1,
+  "slot_record": {
+    "slot": "kvm-shared-fork-p0-20261003",
+    "generation": 1,
+    "agent": "native-kvm-shared-fork-01a0d5c2",
+    "owner": {
+      "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+      "cgroup_path": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1571522-i1558401.scope",
+      "host_id": "82445a5655f849bd81550a91f9cb5260",
+      "pid": 1571522,
+      "start_ticks": 730624
+    },
+    "checkout": "worktrees/slots/kvm-shared-fork-p0-20261003"
+  },
+  "authorization_sha256": "54d7e97916309f76494f3cf4f5d128d16ab2e53f797a98ad95bf937328099f95",
+  "grant_reference": "Root bounded old44f clear-tid fail-before grant: compile static_elf only, inventory, ONE exact new test runtime with unchanged existing guard; no production changes, no retries or other tests, no commit. Root separately authorized staging exactly static_elf.rs and new shared_file_fork_clear_tid.c. Expires8:05 PM ET; stop after terminal detection or first unexpected result.",
+  "owner": {
+    "pid": 1571522,
+    "state": "S",
+    "ppid": 1570869,
+    "pgid": 1570869,
+    "sid": 1569709,
+    "start": 730624
+  },
+  "boot_id": "47cceadc-9970-4ca3-87b0-90121ca7e88f",
+  "start_free_bytes": 1517669683200,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "nice_minimum": 10,
+  "seconds_bound": 2400.0,
+  "inherited_rlimits": {
+    "RLIMIT_FSIZE": [
+      -1,
+      -1
+    ],
+    "RLIMIT_NOFILE": [
+      524288,
+      524288
+    ],
+    "RLIMIT_NPROC": [
+      3091463,
+      3091463
+    ]
+  },
+  "started_et": "2026-10-03 07:19:29 PM ET",
+  "environment_bindings": {
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-shared-fork-p0-20261003/target/shared-fork-001",
+    "CARGO_BUILD_JOBS": "8",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "XDG_CACHE_HOME": "/tmp/kvm-shared-fork-qualification-plan-20261003-2sz8n0ec/script-cache",
+    "TMPDIR": "/tmp/kvm-shared-fork-qualification-plan-20261003-2sz8n0ec/tmp",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "child": {
+    "pid": 903735,
+    "state": "R",
+    "ppid": 901955,
+    "pgid": 903735,
+    "sid": 903735,
+    "start": 59903820
+  },
+  "rc": 0,
+  "child_rc": 0,
+  "stop_reason": null,
+  "source_head_end": "44f55df4917c359db61dbbdf78e0191995511dde",
+  "wall_seconds": 31.123744276934303,
+  "child_user_cpu_seconds": 41.33327,
+  "child_system_cpu_seconds": 12.007468999999999,
+  "minimum_free_bytes": 1516693848064,
+  "end_free_bytes": 1516693848064,
+  "output_bytes": 127776,
+  "output_sha256": "979798dbd2cfaff63ce44755c4f0fb42d6adf52fc83b96765fa505e0100ff738",
+  "observed_process_generations": [
+    {
+      "pid": 903735,
+      "state": "Z",
+      "ppid": 901955,
+      "pgid": 903735,
+      "sid": 903735,
+      "start": 59903820
+    },
+    {
+      "pid": 904137,
+      "state": "S",
+      "ppid": 903735,
+      "pgid": 903735,
+      "sid": 903735,
+      "start": 59903832
+    },
+    {
+      "pid": 936649,
+      "state": "S",
+      "ppid": 903735,
+      "pgid": 903735,
+      "sid": 903735,
+      "start": 59904434
+    },
+    {
+      "pid": 1053761,
+      "state": "S",
+      "ppid": 936649,
+      "pgid": 903735,
+      "sid": 903735,
+      "start": 59906743
+    },
+    {
+      "pid": 1053939,
+      "state": "S",
+      "ppid": 1053761,
+      "pgid": 903735,
+      "sid": 903735,
+      "start": 59906745
+    },
+    {
+      "pid": 1053947,
+      "state": "R",
+      "ppid": 1053939,
+      "pgid": 903735,
+      "sid": 903735,
+      "start": 59906745
+    }
+  ],
+  "remaining_processes": []
+}

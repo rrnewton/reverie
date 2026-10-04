@@ -1,0 +1,57 @@
+
+running 1 test
+test shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner ... 
+running 1 test
+clear-tid mode=native registration=0 backing=0 expected=827483253 actual=827483253 waitstatus=0
+clear-tid mode=native registration=0 backing=1 expected=844326262 actual=844326262 waitstatus=0
+clear-tid mode=native registration=1 backing=0 expected=827483254 actual=827483254 waitstatus=0
+clear-tid mode=native registration=1 backing=1 expected=844326263 actual=844326263 waitstatus=0
+shared clear-tid clone=2 fork-set=2 ordinary=ok memfd=ok markers=4 children=0
+test shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner ... FAILED
+
+failures:
+
+failures:
+    shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 434 filtered out; finished in 0.30s
+
+warning: `--logfile` is deprecatedshared-file-clear-tid completed native: markers=4 children=0
+
+thread 'shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner' (1457672) panicked at reverie-kvm/tests/static_elf.rs:21141:47:
+called `Result::unwrap()` on an `Err` value: SharedFailure(SharedFailure(SharedFileCapability { operation: "atomic scalar store", reason: "truncate-capable file backing has no proven fault-contained atomic store" }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner' (1457645) panicked at reverie-kvm/tests/static_elf.rs:2370:5:
+shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner: status=Some(101) stdout=
+running 1 test
+clear-tid mode=native registration=0 backing=0 expected=827483253 actual=827483253 waitstatus=0
+clear-tid mode=native registration=0 backing=1 expected=844326262 actual=844326262 waitstatus=0
+clear-tid mode=native registration=1 backing=0 expected=827483254 actual=827483254 waitstatus=0
+clear-tid mode=native registration=1 backing=1 expected=844326263 actual=844326263 waitstatus=0
+shared clear-tid clone=2 fork-set=2 ordinary=ok memfd=ok markers=4 children=0
+test shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner ... FAILED
+
+failures:
+
+failures:
+    shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 434 filtered out; finished in 0.30s
+
+ stderr=warning: `--logfile` is deprecatedshared-file-clear-tid completed native: markers=4 children=0
+
+thread 'shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner' (1457672) panicked at reverie-kvm/tests/static_elf.rs:21141:47:
+called `Result::unwrap()` on an `Err` value: SharedFailure(SharedFailure(SharedFileCapability { operation: "atomic scalar store", reason: "truncate-capable file backing has no proven fault-contained atomic store" }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 434 filtered out; finished in 0.30s
+
