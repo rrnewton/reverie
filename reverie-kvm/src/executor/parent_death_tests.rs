@@ -632,7 +632,7 @@ fn pdeath_retained_exec_snapshot_survives_path_mutation_and_consumes_exact_conve
     assert_eq!(prepared.as_slice(), image.as_ref());
     assert!(executor.parent_death_injection_preflight(&converted).is_err());
     assert!(executor.parent_death_original_syscall_preflight(site, &original, Some(original), false).is_err());
-    let mut bytes = [0_u8; 21]; memory.read(0x100, &mut bytes).unwrap();
+    let mut bytes = [0_u8; 22]; memory.read(0x100, &mut bytes).unwrap();
     assert_eq!(&bytes, b"/path/changed/to/fifo\0");
 }
 

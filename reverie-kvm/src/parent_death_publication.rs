@@ -62,14 +62,14 @@ fn effect(
 }
 
 impl ProcessSignalRegistry {
-    pub(super) fn retain_parent_death_error(&self, errno: Errno) {
+    pub(crate) fn retain_parent_death_error(&self, errno: Errno) {
         self.parent_death_error
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get_or_insert(errno);
     }
 
-    pub(super) fn check_parent_death_failure(&self) -> crate::Result<()> {
+    pub(crate) fn check_parent_death_failure(&self) -> crate::Result<()> {
         match *self
             .parent_death_error
             .lock()
@@ -101,7 +101,7 @@ impl ProcessSignalRegistry {
             .collect())
     }
 
-    pub(super) fn parent_death_boundary_finished(
+    pub(crate) fn parent_death_boundary_finished(
         &self,
         boundary: reverie::SignalBoundaryReceipt,
     ) -> crate::Result<()> {
