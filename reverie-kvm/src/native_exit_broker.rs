@@ -13,6 +13,10 @@
 //! then exits natively, and the broker's actual wait result completes the job.
 //! Unexpected external worker destruction between ACK and parent retirement is
 //! an adverse-host failure; ACK is not an unkillable kernel reference lease.
+//! An explicit `BrokerOwner::abort_failed_invocation` is also a fatal event,
+//! never a successful cleanup: it can destroy acknowledged worker references
+//! before a surviving client retires its originals. Surviving clients and their
+//! resources are unconfirmed; the abort does not revoke all guest execution.
 //!
 //! Broker control/job channels, identity pidfds and exported client channels
 //! can outlive a single call. `reverie_process::launch_window` protects transient
@@ -146,9 +150,11 @@ pub fn is_socket_file(fd: RawFd) -> Result<bool, CoreError> {
 
 /// One bootstrap-owned native child. The original launcher must retain this
 /// handle and repeatedly try_wait after shutdown; clients cannot reap it. This
-/// deliberately has no blocking Drop. Root's owning dispatcher/launcher is
-/// responsible for retaining an unconfirmed wait owner, not discarding it.
-#[must_use = "the native broker child must be shut down and actually reaped"]
+/// deliberately has no blocking Drop. Normal completion requires actual reap.
+/// An unconfirmed owner must remain retained unless its exact creator explicitly
+/// elects fatal whole-invocation failure with `abort_failed_invocation`; that
+/// exception supplies no successful cleanup or all-descendants-stopped receipt.
+#[must_use = "retain through actual broker reap or explicit fatal invocation abort"]
 pub struct BrokerOwner {
     pid: libc::pid_t,
     client: BrokerClient,
@@ -195,6 +201,40 @@ impl BrokerOwner {
 
     pub fn native_pid(&self) -> libc::pid_t {
         self.pid
+    }
+
+    /// Abort this entire failed launcher invocation without ordinary Rust
+    /// destruction, broker SHUTDOWN, or an invented native-wait receipt.
+    ///
+    /// The exact original creator process/thread is checked before any effect.
+    /// On a mismatch the error returns this same owner, still unreleased. On
+    /// admission the native exit_group(125) syscall does not return. Native
+    /// process death may kill broker/workers before live clients retire their
+    /// originals; such clients, descendants and cleanup remain unconfirmed.
+    /// This operation does not promise bounded kernel exit or an observed 125
+    /// status: only an actual external wait can establish the latter.
+    ///
+    /// # Safety
+    /// The caller must have selected terminal failure of the whole current
+    /// launcher invocation, preserve its primary error/panic and every pending
+    /// owner through this call, and prevent its evidence from claiming success.
+    /// It must not use this as normal completion, a retry, or library cleanup.
+    /// Abort does not establish that affected clients stopped or were reaped:
+    /// the caller explicitly elects failed invocation termination with possible
+    /// unconfirmed survivors. Normal completion still requires its actual
+    /// stop/reap proofs. This exception accepts destruction of the failed broker
+    /// domain, including the post-ACK window documented above. No successful
+    /// receipt/publication predicate is relaxed.
+    pub unsafe fn abort_failed_invocation(
+        self,
+    ) -> Result<std::convert::Infallible, (CoreError, Self)> {
+        if let Err(error) = self.check_owner() {
+            return Err((error, self));
+        }
+        let _retained = std::mem::ManuallyDrop::new(self);
+        // SAFETY: the caller authorizes fatal whole-invocation termination;
+        // exact creator identity was checked and no owner is ordinarily dropped.
+        unsafe { raw::exit(125) }
     }
 
     /// Nonblocking shutdown request. The daemon reaps outstanding native jobs
