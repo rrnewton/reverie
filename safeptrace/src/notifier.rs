@@ -2481,6 +2481,19 @@ impl EventHandle {
         self.identity().ok_or(Errno::ENODATA)?.current_tracer_pid()
     }
 
+    /// A precheck for explicit numeric requests, not an atomic ptrace handle.
+    /// A retained proc entry can disappear with ENOENT; normalize that only
+    /// when this same retained descriptor separately reports actual ESRCH.
+    /// A live, denied, or unreadable descriptor leaves the read errno intact.
+    pub(super) fn check_numeric_target_lifetime(&self) -> Result<(), Errno> {
+        let identity = self.identity().ok_or(Errno::ENODATA)?;
+        match identity.current_tracer_pid() {
+            Ok(_) => Ok(()),
+            Err(Errno::ENOENT) if identity.pidfd_is_live() == Ok(false) => Err(Errno::ESRCH),
+            Err(error) => Err(error),
+        }
+    }
+
     pub(super) fn initial_capture_error(&self) -> Option<Errno> {
         self.resolved().0.initial_capture_refusal.get().copied()
     }
@@ -2547,9 +2560,12 @@ impl EventHandle {
 
     pub(super) fn capture_current_owner(&self) -> Result<Arc<LegacyWaitOwner>, Errno> {
         let identity = self.identity().ok_or(Errno::ENODATA)?;
-        identity
-            .capture_current_owner(!matches!(identity.pidfd, ThreadHandle::Procfs { .. }))
-            .map(Arc::new)
+        let owner = identity
+            .capture_current_owner(!matches!(identity.pidfd, ThreadHandle::Procfs { .. }))?;
+        if !identity.authenticates_wait_role(&owner)? {
+            return Err(Errno::EPERM);
+        }
+        Ok(Arc::new(owner))
     }
 
     pub(super) fn capture_current_constructor_owner(&self) -> Result<Arc<LegacyWaitOwner>, Errno> {
@@ -2557,6 +2573,12 @@ impl EventHandle {
             .ok_or(Errno::ENODATA)?
             .capture_current_owner(true)
             .map(Arc::new)
+    }
+
+    pub(super) fn authenticates_wait_role(&self, owner: &LegacyWaitOwner) -> Result<bool, Errno> {
+        self.identity()
+            .ok_or(Errno::ENODATA)?
+            .authenticates_wait_role(owner)
     }
 
     pub(super) fn current_or_error(pid: Pid) -> Self {
@@ -2863,6 +2885,37 @@ fn retained_proc_status(directory: RawFd) -> Result<RetainedProcStatus, Errno> {
     })
 }
 
+/// The real parent's TGID is needed only when a new explicit wait interface
+/// tries to bind an untraced task. Host selection for a later attachment and
+/// all generic/native identity reads keep their original contract.
+fn retained_proc_parent(directory: RawFd) -> Result<Pid, Errno> {
+    let _open = launch_window::TransientOpen::begin();
+    let raw = unsafe {
+        libc::openat(
+            directory,
+            c"status".as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if raw < 0 {
+        return Err(Errno::last());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let mut bytes = [0u8; 8192];
+    let count = unsafe { libc::read(fd.as_raw_fd(), bytes.as_mut_ptr().cast(), bytes.len()) };
+    if count < 0 {
+        return Err(Errno::last());
+    }
+    // PPid precedes Groups and the other variable-length fields. Decode only
+    // its complete ASCII line; arbitrary comm bytes remain irrelevant.
+    let line = bytes[..count as usize]
+        .split_inclusive(|byte| *byte == b'\n')
+        .find(|line| line.starts_with(b"PPid:") && line.ends_with(b"\n"))
+        .ok_or(Errno::EIO)?;
+    let line = std::str::from_utf8(line).map_err(|_| Errno::EIO)?;
+    worker_status_pid(line, "PPid:").map_err(io_errno)
+}
+
 impl WorkerProcSnapshot {
     fn same_process_generation(&self, other: &Self) -> bool {
         self.tgid == other.tgid && self.start_time == other.start_time
@@ -2989,6 +3042,23 @@ impl WorkerIdentity {
             return Err(Errno::ESRCH);
         }
         Ok(status.tracer_pid)
+    }
+
+    /// Proves a role for this target generation, separately from the host's
+    /// lifetime. A same-namespace nonparent can carry a copied Event/FIFO,
+    /// but cannot turn an untraced task into its own wait result.
+    fn authenticates_wait_role(&self, owner: &LegacyWaitOwner) -> Result<bool, Errno> {
+        if !owner.is_current()? {
+            return Err(Errno::EPERM);
+        }
+        let tracer = self.current_tracer_pid()?;
+        if tracer == owner.tid {
+            return Ok(true);
+        }
+        if tracer.as_raw() != 0 || matches!(self.pidfd, ThreadHandle::Procfs { .. }) {
+            return Ok(false);
+        }
+        Ok(retained_proc_parent(self.proc_dir.as_raw_fd())? == owner.tgid)
     }
 
     /// Binds a new explicit interface through this Event's original mount.
@@ -3927,6 +3997,7 @@ fn sync_decode_token(token: &TraceeToken, event: EventHandle) -> TraceeToken {
         event,
         policy: token.policy,
         ptracer_owner: token.ptracer_owner.clone(),
+        ptracer_wait_role: token.ptracer_wait_role,
     }
 }
 
@@ -5951,6 +6022,7 @@ impl WaitFuture {
         };
         let event = event_handle.event();
         let ptracer_owner = self.token.ptracer_owner.clone();
+        let ptracer_wait_role = self.token.ptracer_wait_role;
         loop {
             let assistance = if policy == WaitPolicy::PtracerThread {
                 event_handle.try_assist_legacy_wait()
@@ -5971,6 +6043,7 @@ impl WaitFuture {
                 let mut token = TraceeToken::from_event_for_policy(event_handle.clone(), policy);
                 if policy == WaitPolicy::PtracerThread {
                     token.ptracer_owner = ptracer_owner.clone();
+                    token.ptracer_wait_role = ptracer_wait_role;
                 }
                 Wait::from_raw_with_token(pid, status, token)
             }) {
@@ -6151,6 +6224,10 @@ impl Future for ExitFuture {
 /// Native detach/reattach can keep one Event while changing the ptracer.
 struct PtracerAffinity {
     owner: Option<Arc<LegacyWaitOwner>>,
+    // This proof belongs to one target generation, not to the shared host
+    // anchor. A constructor may select an untraced nonchild for attachment
+    // without being eligible to claim its existing or future wait results.
+    wait_role: bool,
 }
 
 /// A Send synchronous driver with an explicit ptracer-thread operation.
@@ -6165,7 +6242,11 @@ pub struct PtracerSyncDriver {
 
 impl PtracerSyncDriver {
     pub(super) fn new(running: Running) -> Self {
-        let affinity = PtracerAffinity::new(running.1.event(), running.1.ptracer_owner.clone());
+        let affinity = PtracerAffinity::new(
+            running.1.event(),
+            running.1.ptracer_owner.clone(),
+            running.1.ptracer_wait_role,
+        );
         Self {
             input: Some((running.0, running.1)),
             affinity,
@@ -6189,6 +6270,7 @@ impl PtracerSyncDriver {
                 .map_err(OwnedWaitError::Errno)?;
         }
         token.ptracer_owner = self.affinity.owner.clone();
+        token.ptracer_wait_role = self.affinity.wait_role;
         match wait_sync_for_policy(*pid, token.clone(), WaitPolicy::PtracerThread) {
             Ok(state) => {
                 self.input.take();
@@ -6227,8 +6309,8 @@ impl PtracerSyncWait {
 }
 
 impl PtracerAffinity {
-    fn new(handle: &EventHandle, owner: Option<Arc<LegacyWaitOwner>>) -> Self {
-        let mut affinity = Self { owner };
+    fn new(handle: &EventHandle, owner: Option<Arc<LegacyWaitOwner>>, wait_role: bool) -> Self {
+        let mut affinity = Self { owner, wait_role };
         // Construction on a foreign thread retains the original state. Its
         // first owning-thread poll can authenticate without numeric capture.
         let _ = affinity.check_host(handle);
@@ -6239,9 +6321,20 @@ impl PtracerAffinity {
         WaitPolicy::PtracerThread.check_handle(handle)?;
         if self.owner.is_none() {
             self.owner = Some(handle.capture_current_owner()?);
+            self.wait_role = true;
         }
-        if !self.owner.as_ref().unwrap().is_current()? {
+        let owner = self.owner.as_ref().unwrap();
+        if !owner.is_current()? {
             return Err(Errno::EPERM);
+        }
+        // This runs before every named operation's settled/FIFO/exit fast
+        // path. Host capture alone never authorizes transfer of a status.
+        // Once proved, keep the original role through genuine retirement.
+        if !self.wait_role {
+            if !handle.authenticates_wait_role(owner)? {
+                return Err(Errno::EPERM);
+            }
+            self.wait_role = true;
         }
         Ok(())
     }
@@ -6286,7 +6379,11 @@ pub struct PtracerWaitDriver {
 
 impl PtracerWaitDriver {
     pub(super) fn new(running: Running) -> Self {
-        let affinity = PtracerAffinity::new(running.1.event(), running.1.ptracer_owner.clone());
+        let affinity = PtracerAffinity::new(
+            running.1.event(),
+            running.1.ptracer_owner.clone(),
+            running.1.ptracer_wait_role,
+        );
         Self {
             inner: OwnedWaitFuture::new(running),
             affinity,
@@ -6295,7 +6392,11 @@ impl PtracerWaitDriver {
     }
 
     pub(super) fn from_stopped(stopped: Stopped) -> Self {
-        let affinity = PtracerAffinity::new(stopped.1.event(), stopped.1.ptracer_owner.clone());
+        let affinity = PtracerAffinity::new(
+            stopped.1.event(),
+            stopped.1.ptracer_owner.clone(),
+            stopped.1.ptracer_wait_role,
+        );
         Self {
             inner: OwnedWaitFuture::from_stopped(stopped),
             affinity,
@@ -6331,6 +6432,7 @@ impl PtracerWaitDriver {
             }
         }
         self.inner.inner.as_mut().unwrap().token.ptracer_owner = self.affinity.owner.clone();
+        self.inner.inner.as_mut().unwrap().token.ptracer_wait_role = self.affinity.wait_role;
         let result = self.inner.poll_for_policy(cx, WaitPolicy::PtracerThread);
         if matches!(result, Poll::Ready(Err(OwnedWaitError::Died))) {
             self.observed_death = true;
@@ -6433,7 +6535,11 @@ impl PtracerExitDriver {
     pub(super) fn new(pid: Pid, token: &TraceeToken) -> Self {
         Self {
             inner: ExitFuture::new(pid, token),
-            affinity: PtracerAffinity::new(token.event(), token.ptracer_owner.clone()),
+            affinity: PtracerAffinity::new(
+                token.event(),
+                token.ptracer_owner.clone(),
+                token.ptracer_wait_role,
+            ),
         }
     }
 
@@ -6462,6 +6568,7 @@ impl PtracerExitDriver {
         match self.inner.poll_for_policy(cx, WaitPolicy::PtracerThread) {
             Poll::Ready(Ok(mut stopped)) => {
                 stopped.1.ptracer_owner = self.affinity.owner.clone();
+                stopped.1.ptracer_wait_role = self.affinity.wait_role;
                 Poll::Ready(Ok(stopped))
             }
             result => result,
@@ -6509,7 +6616,7 @@ pub struct PtracerCleanupDriver {
 
 impl PtracerCleanupDriver {
     fn new(shared: TerminalCleanup) -> Self {
-        let affinity = PtracerAffinity::new(&shared.event, None);
+        let affinity = PtracerAffinity::new(&shared.event, None, false);
         Self { shared, affinity }
     }
 
@@ -6577,6 +6684,7 @@ impl PtracerCleanupDriver {
                 return Ok(Some(PtracerPendingStatusReservation {
                     inner: reservation,
                     owner: self.affinity.owner.clone(),
+                    wait_role: self.affinity.wait_role,
                     local: PhantomData,
                 }));
             }
@@ -6606,6 +6714,7 @@ impl PtracerTerminalCleanup {
         let mut cleanup = Self::from_shared(TerminalCleanup::new_unregistered(pid, token));
         if let Some(owner) = &token.ptracer_owner {
             cleanup.driver.affinity.owner = Some(Arc::clone(owner));
+            cleanup.driver.affinity.wait_role = token.ptracer_wait_role;
         }
         cleanup
     }
@@ -6652,6 +6761,7 @@ impl PtracerTerminalCleanup {
 pub struct PtracerPendingStatusReservation<'a> {
     inner: PendingStatusReservation<'a>,
     owner: Option<Arc<LegacyWaitOwner>>,
+    wait_role: bool,
     local: PhantomData<Rc<()>>,
 }
 
@@ -6675,6 +6785,7 @@ impl PtracerPendingStatusReservation<'_> {
             Err(inner) => Err(Self {
                 inner,
                 owner: self.owner,
+                wait_role: self.wait_role,
                 local: PhantomData,
             }),
         }
@@ -6685,6 +6796,7 @@ impl PtracerPendingStatusReservation<'_> {
             event: self.inner.event.clone(),
             policy: WaitPolicy::PtracerThread,
             ptracer_owner: self.owner.clone(),
+            ptracer_wait_role: self.wait_role,
         }
     }
 }
@@ -6703,6 +6815,7 @@ impl TerminalCleanup {
 
 #[cfg(test)]
 mod test {
+    include!("retired_tid_tests.rs");
     include!("legacy_thread_tests.rs");
     include!("legacy_owner_tests.rs");
     include!("ptracer_thread_tests.rs");

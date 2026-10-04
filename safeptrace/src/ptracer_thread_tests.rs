@@ -2444,3 +2444,438 @@ async fn explicit_untraced_nonleader_constructor_retains_original_host() {
     }
     println!("{MARKER}");
 }
+
+#[tokio::test(flavor = "current_thread")]
+#[cfg(not(sanitized))]
+async fn explicit_untraced_wait_requires_original_parent_role() {
+    const NAME: &str = "explicit_untraced_wait_requires_original_parent_role";
+    const MARKER: &str = "ACTUAL_EXPLICIT_UNTRACED_WAIT_ROLE_EXERCISED";
+    const NATIVE_MARKER: &str = "ACTUAL_EXPLICIT_GENERIC_NATIVE_WAIT_ROLE_REFUSAL_EXERCISED";
+    if run_explicit_wait_role_outer(NAME, MARKER, "UNTRACED_WAIT_ROLE_REFUSAL ") {
+        return;
+    }
+    let mut native_control_exercised = false;
+    for forced in [false, true] {
+        let (root, member, release, mut root_cleanup) = legacy_owner_guest();
+        let _force = forced.then(|| LegacyThreadGroup::new(root));
+        // When actually supported, the first Event comes from a genuine
+        // generic Native capture. Old kernels/forced EINVAL still run ALL
+        // portable explicit cells; only this separate Native control differs.
+        let generic = match Running::try_new(root.into()) {
+            Ok(running) => {
+                assert!(running.1.ptracer_owner.is_none());
+                assert_eq!(running.1.policy, WaitPolicy::Native);
+                assert!(running.1.event().identity().unwrap().proc_root.is_none());
+                Some(running.generation())
+            }
+            Err(Errno::EINVAL) => None,
+            Err(error) => panic!("actual generic acquisition refused unexpectedly: {error}"),
+        };
+        let running = Running::new_on_ptracer_thread(root.into()).unwrap();
+        let original = running.1.event().clone();
+        let generation = running.generation();
+        let owner = running.1.ptracer_owner.clone().unwrap();
+        assert!(owner.is_current().unwrap());
+        assert!(running.1.ptracer_wait_role);
+        assert_eq!(original.current_tracer_pid(), Ok(super::Pid::from_raw(0)));
+        assert_eq!(
+            retained_proc_parent(original.identity().unwrap().proc_dir.as_raw_fd()),
+            Ok(owner.tgid)
+        );
+        let terminal = running.terminal_cleanup();
+        let native = terminal.has_thread_pidfd().unwrap();
+        assert_eq!(generic.is_some(), native);
+        if let Some(generic) = &generic {
+            assert_eq!(generic, &generation);
+        }
+        if forced {
+            assert!(!native);
+            assert!(matches!(
+                original.identity().unwrap().pidfd,
+                ThreadHandle::LegacyLeader { .. }
+            ));
+        }
+        // A genuine job-control stop of A's untraced direct child is
+        // published by the original descriptor waiter, before B is forked.
+        pidfd_send_signal(&root_cleanup.pidfd, libc::SIGSTOP).unwrap();
+        let raw_stop = (libc::SIGSTOP << 8) | 0x7f;
+        legacy_owner_until(|| terminal.queued_raw_statuses() == vec![raw_stop]);
+        let epoch = original.event().exit_epoch.load(Ordering::Acquire);
+        let child = match unsafe { fork() }.unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                // B is in the SAME PID namespace and aligned proc mount.
+                // Its real host identity passes the namespace guard, while
+                // the retained target's real parent remains A's TGID.
+                require_aligned_proc_pid_namespace().unwrap();
+                assert!(owner.is_live().unwrap());
+                assert!(!owner.is_current().unwrap());
+                assert_eq!(original.current_tracer_pid(), Ok(super::Pid::from_raw(0)));
+                assert_eq!(
+                    retained_proc_parent(original.identity().unwrap().proc_dir.as_raw_fd()),
+                    Ok(owner.tgid)
+                );
+                assert_ne!(owner.tgid, super::Pid::from(nix::unistd::getpid()));
+                assert_eq!(original.identity().unwrap().pidfd_is_live(), Ok(true));
+                let mut info = mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+                assert_eq!(
+                    unsafe {
+                        libc::waitid(
+                            libc::P_PIDFD,
+                            root_cleanup.pidfd.as_raw_fd() as u32,
+                            info.as_mut_ptr(),
+                            libc::WSTOPPED | libc::WNOHANG | libc::WNOWAIT | libc::__WALL,
+                        )
+                    },
+                    -1
+                );
+                assert_eq!(Errno::last(), Errno::ECHILD);
+                // Selecting an untraced nonchild still succeeds and retains
+                // the SAME original generation. Host ownership alone does
+                // not authorize any of its copied cached wait results.
+                let nonchild = Running::new_on_ptracer_thread(root.into()).unwrap();
+                assert_eq!(nonchild.generation(), generation);
+                assert!(
+                    nonchild
+                        .1
+                        .ptracer_owner
+                        .as_ref()
+                        .unwrap()
+                        .is_current()
+                        .unwrap()
+                );
+                assert!(!nonchild.1.ptracer_wait_role);
+                let selected = nonchild.1.clone();
+                let mut sync = nonchild.wait_sync_on_ptracer_thread().into_driver();
+                let mut wait = Running::from_token(root.into(), selected.clone())
+                    .wait_owned_on_ptracer_thread()
+                    .into_driver();
+                let mut exit = Running::from_token(root.into(), selected.clone())
+                    .exit_event_on_ptracer_thread()
+                    .into_driver();
+                let mut selected_cleanup = Running::from_token(root.into(), selected.clone())
+                    .terminal_cleanup_on_ptracer_thread()
+                    .into_driver();
+                // This shared facade has no previous target-local role. It
+                // must also refuse before minting any first local owner.
+                let mut unbound_cleanup = terminal.on_ptracer_thread().into_driver();
+                assert!(unbound_cleanup.affinity.owner.is_none());
+                let mut generic_wait = generic.as_ref().map(|generation| {
+                    generation
+                        .assume_stopped()
+                        .wait_owned_on_ptracer_thread()
+                        .into_driver()
+                });
+                let waker = futures::task::noop_waker();
+                for _ in 0..2 {
+                    if let Some(wait) = &mut generic_wait {
+                        assert!(matches!(
+                            wait.poll_on_ptracer_thread(&mut Context::from_waker(&waker)),
+                            Poll::Ready(Err(OwnedWaitError::Errno(Errno::EPERM)))
+                        ));
+                        assert!(wait.affinity.owner.is_none());
+                        assert!(!wait.affinity.wait_role);
+                        let input = wait.inner.inner.as_ref().unwrap();
+                        assert_eq!(input.token.event(), &original);
+                        assert_eq!(input.token.policy, WaitPolicy::Native);
+                        assert!(input.token.ptracer_owner.is_none());
+                    }
+                    assert_eq!(
+                        sync.wait_on_ptracer_thread(),
+                        Err(OwnedWaitError::Errno(Errno::EPERM))
+                    );
+                    assert!(matches!(
+                        wait.poll_on_ptracer_thread(&mut Context::from_waker(&waker)),
+                        Poll::Ready(Err(OwnedWaitError::Errno(Errno::EPERM)))
+                    ));
+                    assert!(matches!(
+                        exit.poll_on_ptracer_thread(&mut Context::from_waker(&waker)),
+                        Poll::Ready(Err(Error::Errno(Errno::EPERM)))
+                    ));
+                    for cleanup in [&mut selected_cleanup, &mut unbound_cleanup] {
+                        assert_eq!(cleanup.progress_on_ptracer_thread(), Err(Errno::EPERM));
+                        assert_eq!(
+                            cleanup.wait_on_ptracer_thread(Duration::ZERO),
+                            Err(Errno::EPERM)
+                        );
+                        assert!(matches!(
+                            cleanup.reserve_pending_on_ptracer_thread(Duration::ZERO),
+                            Err(Errno::EPERM)
+                        ));
+                        assert!(!cleanup.affinity.wait_role);
+                    }
+                    assert!(unbound_cleanup.affinity.owner.is_none());
+                    assert!(!wait.affinity.wait_role);
+                    assert!(!exit.affinity.wait_role);
+                    let input = sync.input.as_ref().unwrap();
+                    assert_eq!(input.1.event(), &original);
+                    assert!(!input.1.ptracer_wait_role);
+                    assert_eq!(wait.generation(), Some(generation.clone()));
+                    assert_eq!(terminal.queued_raw_statuses(), vec![raw_stop]);
+                    assert_eq!(original.event().exit_epoch.load(Ordering::Acquire), epoch);
+                }
+                println!(
+                    "UNTRACED_WAIT_ROLE_REFUSAL native={native} forced={forced} same_namespace=true real_parent={} current_tgid={} kernel_wait=ECHILD constructor_retained=true named_waits=EPERM original_fifo_preserved=true original_epoch_preserved=true",
+                    owner.tgid,
+                    nix::unistd::getpid()
+                );
+                unsafe { libc::_exit(0) };
+            }
+        };
+        let status = waitpid_status_bounded(child, 0, TRACEE_WAIT_TIMEOUT).unwrap();
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+        assert_eq!(terminal.queued_raw_statuses(), vec![raw_stop]);
+        assert_eq!(original.event().exit_epoch.load(Ordering::Acquire), epoch);
+        // A, the genuine original parent thread, still claims THAT stop.
+        let (stopped, event) =
+            tokio::time::timeout(TRACEE_WAIT_TIMEOUT, running.wait_owned_on_ptracer_thread())
+                .await
+                .unwrap()
+                .unwrap()
+                .assume_stopped();
+        assert_eq!(event, crate::Event::Signal(Signal::SIGSTOP));
+        assert_eq!(stopped.generation(), generation);
+        assert!(stopped.1.ptracer_wait_role);
+        assert!(terminal.queued_raw_statuses().is_empty());
+        pidfd_send_signal(&root_cleanup.pidfd, libc::SIGCONT).unwrap();
+        pidfd_send_signal(&root_cleanup.pidfd, libc::SIGKILL).unwrap();
+        let (pid, status) =
+            tokio::time::timeout(TRACEE_WAIT_TIMEOUT, stopped.wait_owned_on_ptracer_thread())
+                .await
+                .unwrap()
+                .unwrap()
+                .assume_exited();
+        assert_eq!(pid, root.into());
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
+        assert_eq!(terminal.observed_exit_status(), Ok(Some(status)));
+        root_cleanup.disarm();
+        drop(release);
+        assert!(!std::path::Path::new(&format!("/proc/{root}")).exists());
+        assert!(!std::path::Path::new(&format!("/proc/{member}")).exists());
+        native_control_exercised |= generic.is_some();
+    }
+    println!(
+        "{}",
+        if native_control_exercised {
+            NATIVE_MARKER
+        } else {
+            "NATIVE_THREAD_PIDFD_UNAVAILABLE_FOR_WAIT_ROLE_CONTROL"
+        }
+    );
+    println!("{MARKER}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[cfg(not(sanitized))]
+async fn explicit_untraced_nonchild_constructor_can_attach() {
+    const NAME: &str = "explicit_untraced_nonchild_constructor_can_attach";
+    const MARKER: &str = "ACTUAL_EXPLICIT_UNTRACED_NONCHILD_ATTACH_EXERCISED";
+    if run_explicit_wait_role_outer(NAME, MARKER, "UNTRACED_NONCHILD_ATTACH ") {
+        return;
+    }
+    for forced in [false, true] {
+        let [receipt, send_receipt] = legacy_pipe();
+        let [start, release] = legacy_pipe();
+        let [natural_receipt, send_natural_receipt] = legacy_pipe();
+        let parent = match unsafe { fork() }.unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                let child = match unsafe { fork() }.unwrap() {
+                    ForkResult::Parent { child } => child,
+                    ForkResult::Child => {
+                        let pid = nix::unistd::getpid().as_raw();
+                        assert_eq!(
+                            unsafe {
+                                libc::write(
+                                    send_receipt.as_raw_fd(),
+                                    (&pid as *const i32).cast(),
+                                    4,
+                                )
+                            },
+                            4
+                        );
+                        let mut byte = 0u8;
+                        assert_eq!(
+                            unsafe {
+                                libc::read(start.as_raw_fd(), (&mut byte as *mut u8).cast(), 1)
+                            },
+                            1
+                        );
+                        unsafe { libc::_exit(23) };
+                    }
+                };
+                let status = waitpid_status_bounded(child, 0, TRACEE_WAIT_TIMEOUT).unwrap();
+                assert!(libc::WIFEXITED(status));
+                assert_eq!(libc::WEXITSTATUS(status), 23);
+                assert_eq!(
+                    unsafe {
+                        libc::write(
+                            send_natural_receipt.as_raw_fd(),
+                            (&status as *const i32).cast(),
+                            4,
+                        )
+                    },
+                    4
+                );
+                unsafe { libc::_exit(0) };
+            }
+        };
+        drop((send_receipt, start, send_natural_receipt));
+        let mut parent_cleanup = TraceeCleanupGuard::new(parent).unwrap();
+        let mut readiness = libc::pollfd {
+            fd: receipt.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(
+            unsafe { libc::poll(&mut readiness, 1, TRACEE_WAIT_TIMEOUT.as_millis() as i32) },
+            1
+        );
+        let mut bytes = [0u8; 4];
+        fs::File::from(receipt).read_exact(&mut bytes).unwrap();
+        let child = Pid::from_raw(i32::from_ne_bytes(bytes));
+        let mut child_cleanup = TraceeCleanupGuard::new(child).unwrap();
+        let _force = forced.then(|| LegacyThreadGroup::new(child));
+        let running = Running::new_on_ptracer_thread(child.into()).unwrap();
+        let generation = running.generation();
+        let owner = running.1.ptracer_owner.as_ref().unwrap();
+        assert!(owner.is_current().unwrap());
+        assert!(!running.1.ptracer_wait_role);
+        assert_eq!(
+            running.1.event().current_tracer_pid(),
+            Ok(super::Pid::from_raw(0))
+        );
+        assert_eq!(
+            retained_proc_parent(running.1.event().identity().unwrap().proc_dir.as_raw_fd()),
+            Ok(parent.into())
+        );
+        let mut refused = running.wait_sync_on_ptracer_thread().into_driver();
+        for _ in 0..2 {
+            assert_eq!(
+                refused.wait_on_ptracer_thread(),
+                Err(OwnedWaitError::Errno(Errno::EPERM))
+            );
+            assert!(!refused.input.as_ref().unwrap().1.ptracer_wait_role);
+        }
+        // Host selection of an untraced nonchild has preserved its original
+        // generation. A successful actual SEIZE now establishes wait role.
+        let running =
+            Running::seize_on_ptracer_thread(child.into(), legacy_thread_options()).unwrap();
+        assert_eq!(running.generation(), generation);
+        assert!(running.1.ptracer_wait_role);
+        running.interrupt().unwrap();
+        let (stopped, event) =
+            tokio::time::timeout(TRACEE_WAIT_TIMEOUT, running.wait_owned_on_ptracer_thread())
+                .await
+                .unwrap()
+                .unwrap()
+                .assume_stopped();
+        assert_eq!(event, crate::Event::Stop);
+        assert!(stopped.1.ptracer_wait_role);
+        let mut cleanup = stopped.terminal_cleanup_on_ptracer_thread().into_driver();
+        let native = cleanup.shared().has_thread_pidfd().unwrap();
+        if forced {
+            assert!(!native);
+        }
+        let exit = stopped.exit_event_on_ptracer_thread();
+        let running = stopped.resume(None).unwrap();
+        assert_eq!(
+            unsafe { libc::write(release.as_raw_fd(), b"x".as_ptr().cast(), 1) },
+            1
+        );
+        let stopped = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, exit)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stopped.getevent().unwrap(), 23 << 8);
+        assert!(stopped.1.ptracer_wait_role);
+        drop(running);
+        assert_eq!(
+            tokio::time::timeout(
+                TRACEE_WAIT_TIMEOUT,
+                stopped.resume(None).unwrap().wait_owned_on_ptracer_thread()
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .assume_exited(),
+            (child.into(), crate::ExitStatus::Exited(23))
+        );
+        assert!(cleanup.wait_on_ptracer_thread(TRACEE_WAIT_TIMEOUT).unwrap());
+        assert_eq!(
+            cleanup.shared().observed_exit_status(),
+            Ok(Some(crate::ExitStatus::Exited(23)))
+        );
+        let mut readiness = libc::pollfd {
+            fd: natural_receipt.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(
+            unsafe { libc::poll(&mut readiness, 1, TRACEE_WAIT_TIMEOUT.as_millis() as i32) },
+            1
+        );
+        fs::File::from(natural_receipt)
+            .read_exact(&mut bytes)
+            .unwrap();
+        let natural = i32::from_ne_bytes(bytes);
+        assert!(libc::WIFEXITED(natural));
+        assert_eq!(libc::WEXITSTATUS(natural), 23);
+        let status = waitpid_status_bounded(parent, 0, TRACEE_WAIT_TIMEOUT).unwrap();
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+        parent_cleanup.disarm();
+        child_cleanup.disarm();
+        assert!(!std::path::Path::new(&format!("/proc/{child}")).exists());
+        assert!(!std::path::Path::new(&format!("/proc/{parent}")).exists());
+        println!(
+            "UNTRACED_NONCHILD_ATTACH native={native} forced={forced} constructor_retained=true pre_attach_wait=EPERM same_generation=true actual_seize=true actual_exit=23 done=true natural_parent_reaped=true"
+        );
+    }
+    println!("{MARKER}");
+}
+
+#[cfg(not(sanitized))]
+fn run_explicit_wait_role_outer(name: &str, marker: &str, cell_prefix: &str) -> bool {
+    const INNER: &str = "SAFEPTRACE_LEGACY_THREAD_INNER";
+    if env::var(INNER).as_deref() == Ok(name) {
+        return false;
+    }
+    let result = run_exact_test_bounded(
+        &format!("notifier::test::{name}"),
+        &[(INNER, name)],
+        false,
+        Duration::from_secs(5),
+    )
+    .expect("start bounded original wait-role control");
+    assert!(!result.timed_out, "wait-role control timed out: {result:?}");
+    assert!(
+        result.output.status.success(),
+        "wait-role control failed: {result:?}"
+    );
+    let stdout = String::from_utf8_lossy(&result.output.stdout);
+    assert_eq!(stdout.lines().filter(|line| *line == marker).count(), 1);
+    let cells: Vec<_> = stdout
+        .lines()
+        .filter(|line| line.starts_with(cell_prefix))
+        .collect();
+    assert_eq!(
+        cells.len(),
+        2,
+        "missing actual normal/forced cells: {stdout}"
+    );
+    for forced in [false, true] {
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|line| line.contains(&format!("forced={forced}")))
+                .count(),
+            1
+        );
+    }
+    print!("{stdout}");
+    eprint!("{}", String::from_utf8_lossy(&result.output.stderr));
+    true
+}

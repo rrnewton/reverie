@@ -83,6 +83,23 @@ explicit interface, and to numeric ptrace requests, memory access, and stopped
 observations through an explicit state. A new host owner is authenticated
 through the Event's original proc mount before any queued status is transferred.
 
+Selecting a host thread alone does not authorize waiting for an untraced task.
+The explicit wait interfaces also authenticate the original attachment or the
+task's real parent TGID before transferring a queued status or exit capability.
+`new_on_ptracer_thread` can select an untraced nonchild for later attachment;
+its waits return `EPERM` until an actual attachment establishes that role.
+An established role stays with that same task generation through its final
+published result, including after its proc directory disappears.
+
+Ptrace requests still address numeric TIDs. The explicit interface checks the
+retained target before issuing a request and rejects an already retired target.
+A running nonleader can exec, release its TID, and be replaced by another tracee
+of the same ptracer between that check and the numeric syscall.
+`Running::interrupt` retains this existing concurrent exec/reuse limitation on
+both interfaces, including kernels with native thread pidfds. The lifetime
+precheck provides no atomic ptrace identity guarantee. See the
+[tracked limitation](https://github.com/rrnewton/reverie/issues/860).
+
 These kernel mechanisms do not by themselves establish a qualified minimum
 kernel for every SDK operation or for Hermit. Consult the execution engine's
 platform requirements for its complete support policy.
