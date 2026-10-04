@@ -5752,21 +5752,14 @@ impl ElfExecutor {
                 return Err(refusal("unsupported enrolled readiness wait"));
             }
             libc::SYS_ppoll | libc::SYS_select | libc::SYS_pselect6 | libc::SYS_epoll_pwait2 => {
-                let address = match number {
-                    libc::SYS_ppoll => args[2],
-                    libc::SYS_epoll_pwait2 => args[3],
-                    _ => args[4],
-                };
-                // timeval and timespec both encode an explicit zero as these
-                // 16 zero bytes. NULL is an unbounded wait, never an authority.
-                let mut timeout = [0_u8; 16];
-                if address == 0
-                    || !self.address_space.as_ref().is_some_and(|memory| {
-                        memory.user().read(address, &mut timeout).is_ok() && timeout == [0; 16]
-                    })
-                {
-                    return Err(refusal("unsupported enrolled readiness wait"));
-                }
+                // A zero pointee is not immutable authority: another process
+                // can change shared timeout storage after first-handler
+                // admission, or between injection's check and its second read.
+                // Refuse before copying any pointee in both admission routes.
+                // Scalar-zero poll/epoll_wait/epoll_pwait remain admitted.
+                return Err(refusal(
+                    "unsupported enrolled mutable-timeout readiness wait",
+                ));
             }
             _ => {}
         }
