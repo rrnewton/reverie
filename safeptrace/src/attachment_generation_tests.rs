@@ -567,6 +567,6 @@ mod attachment_generation {
         assert!(!std::path::Path::new(&format!("/proc/{target}")).exists());
         assert!(!std::path::Path::new(&format!("/proc/{parent}")).exists());
         assert!(!std::path::Path::new(&format!("/proc/{root}")).exists());
-        println!("{MARKER}");
+        emit_completion_marker(MARKER);
     }
 }
