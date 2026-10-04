@@ -1,4 +1,4 @@
-// Ordinary-main launcher for the seven explicitly broker-routed libtest routes.
+// Ordinary-main launcher for the explicitly broker-routed libtest selectors.
 // This private proposal depends on the API contracts listed in API-CONTRACT.md.
 // No constructor, libtest worker or lazy backend path may assert startup authority.
 use std::ffi::CString;
@@ -31,38 +31,10 @@ fn main() {
             std::process::exit(125);
         }
     };
-    if let Some(case) = std::env::args().nth(1).filter(|arg| arg == "--native-case") {
-        let _ = case;
-        let args: Vec<_> = std::env::args().skip(2).collect();
-        if args.len() != 1 {
-            eprintln!("exactly one native case required");
-            std::process::exit(125);
-        }
-        let result = match args[0].as_str() {
-            "single" | "shared-arc" | "nested-scm" => {
-                broker_native_cases::run_queued_case(&args[0], &owner.client())
-            }
-            "chunk-resource-abort" => broker_native_cases::run_chunk_abort_case(&owner),
-            _ => {
-                eprintln!("unknown native case");
-                std::process::exit(125);
-            }
-        };
-        let receipt = match result {
-            Ok(receipt) => receipt,
-            Err(failure) => {
-                eprintln!("NATIVE_BROKER_CASE_FAILURE: {}", failure.message);
-                // Until explicit failure drain/reap is implemented, this is an
-                // infrastructure failure. It cannot qualify a causal mutant.
-                retain_for_outer_guard((owner, failure));
-            }
-        };
-        if let Err(error) = settle_broker(&mut owner) {
-            eprintln!("NATIVE_BROKER_CASE_SETTLEMENT_FAILURE: {error}");
-            retain_for_outer_guard(owner);
-        }
-        println!("NATIVE_BROKER_CASE_PASS: {receipt:?}");
-        return;
+    if std::env::args().nth(1).as_deref() == Some("--native-case") {
+        // The helper owns the actual broker through every return/retention path.
+        let code = run_native_case(owner, std::env::args().skip(2).collect());
+        std::process::exit(code);
     }
     let outcome = launch_selected(&owner);
     let shutdown = settle_broker(&mut owner);
@@ -81,6 +53,167 @@ fn main() {
     };
     drop(owner); // Already actually reaped. No guest socket owners live here.
     mirror_status(status);
+}
+
+#[derive(Clone, Copy)]
+struct BrokerWaitReceipt {
+    native_pid: libc::pid_t,
+    raw_wait_status: i32,
+}
+
+fn print_broker_wait(receipt: BrokerWaitReceipt) {
+    println!(
+        "NATIVE_CASE_BROKER_WAIT native_pid={} raw_wait_status={} actual_wait=true",
+        receipt.native_pid, receipt.raw_wait_status
+    );
+}
+
+fn print_before_drain(before: &broker_native_cases::BeforeDrainRecord) {
+    println!(
+        "NATIVE_CASE_BEFORE_DRAIN bound_millis={} observed_micros={} completed_before_drain={} receipt_observed_after_bound={} stage_at_deadline={:?} parent_references_retired_at_deadline={} last_owner_case={}",
+        before.bound_millis,
+        before.observed_micros,
+        before.completed_before_drain,
+        before.receipt_observed_after_bound,
+        before.stage_at_deadline,
+        before.parent_references_retired_at_deadline,
+        before.last_owner_case
+    );
+}
+
+fn print_case_receipt(receipt: &broker_native_cases::CaseReceipt) {
+    println!(
+        "NATIVE_CASE_RECEIPT case={:?} wait_count={} sent={} outq={} notsent={} first_chunk_acknowledged={} fault_present={} before_drain_present={}",
+        receipt.case,
+        receipt.waits.len(),
+        receipt.sent,
+        receipt.outq,
+        receipt.notsent,
+        receipt.first_chunk_acknowledged,
+        receipt.fault.is_some(),
+        receipt.before_drain.is_some()
+    );
+    for (index, wait) in receipt.waits.iter().enumerate() {
+        println!(
+            "NATIVE_CASE_WORKER_WAIT index={} job={} native_pid={} raw_wait_status={} socket_references={} transferred_descriptors={} actual_wait=true",
+            index,
+            wait.job,
+            wait.native_pid,
+            wait.raw_wait_status,
+            wait.socket_references,
+            wait.transferred_descriptors
+        );
+    }
+    if let Some(fault) = &receipt.fault {
+        println!(
+            "NATIVE_CASE_RESOURCE_FAULT limited_worker_pid={} limited_worker_start_ticks={} private_fds={:?} applied_soft={} original_soft={} original_hard={}",
+            fault.limited_worker_pid,
+            fault.limited_worker_start_ticks,
+            fault.private_fds,
+            fault.applied_soft,
+            fault.original_soft,
+            fault.original_hard
+        );
+    }
+    if let Some(before) = &receipt.before_drain {
+        print_before_drain(before);
+    }
+}
+
+fn print_case_failure(failure: &broker_native_cases::CaseFailure) {
+    eprintln!(
+        "NATIVE_CASE_FAILURE_DETAIL classification={} message={:?}",
+        failure.classification(),
+        failure.message
+    );
+    if let Some(before) = &failure.observation {
+        print_before_drain(before);
+    }
+    if let Some(cleanup) = &failure.cleanup {
+        println!(
+            "NATIVE_CASE_LOCAL_CLEANUP completed_native_waits={} supplied_file_references={} foreign_file_reference={} active_worker_limit={} retained_unexpected_rights={} native_job_complete={} queued_stream_exact_and_eof={} broker_shutdown_still_required={}",
+            cleanup.completed_native_waits,
+            cleanup.supplied_file_references,
+            cleanup.foreign_file_reference,
+            cleanup.active_worker_limit,
+            cleanup.retained_unexpected_rights,
+            cleanup.native_job_complete,
+            cleanup.queued_stream_exact_and_eof,
+            cleanup.broker_shutdown_still_required
+        );
+    }
+    if let Some(receipt) = &failure.completed_receipt {
+        print_case_receipt(receipt);
+    }
+    failure.resources.print_retained_owners();
+}
+
+fn settle_native_broker(owner: &mut BrokerOwner) -> BrokerWaitReceipt {
+    match settle_broker(owner) {
+        Ok(receipt) => {
+            print_broker_wait(receipt);
+            receipt
+        }
+        Err(error) => {
+            eprintln!("NATIVE_BROKER_CASE_SETTLEMENT_FAILURE: {error}");
+            // The actual owner remains on this live stack. No empty-child claim
+            // or successful/nonzero semantic completion is emitted without wait.
+            retain_for_outer_guard(owner);
+        }
+    }
+}
+
+fn run_native_case(mut owner: BrokerOwner, args: Vec<String>) -> i32 {
+    if args.len() != 1
+        || !matches!(
+            args[0].as_str(),
+            "single" | "shared-arc" | "nested-scm" | "chunk-resource-abort"
+        )
+    {
+        eprintln!("NATIVE_BROKER_CASE_SETUP_FAILURE: exactly one known native case required");
+        settle_native_broker(&mut owner);
+        drop(owner);
+        return 125;
+    }
+    let case = &args[0];
+    let result = if case == "chunk-resource-abort" {
+        broker_native_cases::run_chunk_abort_case(&owner)
+    } else {
+        broker_native_cases::run_queued_case(case, &owner.client())
+    };
+    match result {
+        Ok(receipt) => {
+            print_case_receipt(&receipt);
+            settle_native_broker(&mut owner);
+            drop(owner);
+            println!(
+                "NATIVE_BROKER_CASE_PASS case={case:?} worker_receipts={} broker_reaped=true",
+                receipt.waits.len()
+            );
+            0
+        }
+        Err(failure) => {
+            print_case_failure(&failure);
+            if failure.cleaned_observation_miss() {
+                let causal = failure.causal_last_close_witness();
+                let classification = failure.classification();
+                // This branch checks the real empty resource state, exact stream
+                // and actual worker wait first; it does not format/drop owners.
+                drop(failure);
+                settle_native_broker(&mut owner);
+                drop(owner);
+                eprintln!(
+                    "NATIVE_BROKER_CASE_FAILED_AFTER_CLEANUP case={case:?} classification={classification} causal_last_close_witness={causal} original_observation_millis=5000 broker_reaped=true"
+                );
+                101
+            } else {
+                eprintln!(
+                    "NATIVE_BROKER_CASE_INFRASTRUCTURE_FAILURE case={case:?} cleanup_unconfirmed=true causal_mutant_detection=false"
+                );
+                retain_for_outer_guard((owner, failure));
+            }
+        }
+    }
 }
 
 fn launch_selected(owner: &BrokerOwner) -> Result<i32, String> {
@@ -160,8 +293,9 @@ fn launch_selected(owner: &BrokerOwner) -> Result<i32, String> {
     if blocked < 0 {
         return Err(format!("block clone mask: {}", -blocked));
     }
-    // flags0 means a separate native process with exit_signal0. It is not a
-    // thread, vfork, shared fd table or CLONE_PARENT child. Parent never execs.
+    // flags0 starts a separate native process with exit_signal0. It is not a
+    // thread, vfork, shared fd table or CLONE_PARENT child. The child execs below;
+    // Linux exec then resets exit_signal to SIGCHLD. Parent never execs.
     let pid = unsafe { raw(libc::SYS_clone, 0, 0, 0, 0, 0, 0) };
     if pid == 0 {
         // No allocator, Rust Drop, libc TLS errno, panic or callback in child.
@@ -230,13 +364,19 @@ fn launch_selected(owner: &BrokerOwner) -> Result<i32, String> {
     }
     drop(channel); // Child has its inherited dedicated endpoint; owner stays here.
     let mut status = 0i32;
+    // Linux exec changes the clone0 child's exit-signal class to SIGCHLD:
+    // https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/exec.c
+    // __WALL accepts both pre-exec clone0 failure and the post-exec SIGCHLD
+    // child, but the exact positive PID still forbids reaping another child.
+    // __WCLONE alone excludes the exec child; ECHILD must remain a failure.
+    // BrokerOwner never execs and retains its separate __WCLONE wait contract.
     loop {
         let waited = unsafe {
             raw(
                 libc::SYS_wait4,
                 pid as usize,
                 (&mut status as *mut i32) as usize,
-                libc::__WCLONE as usize,
+                libc::__WALL as usize,
                 0,
                 0,
                 0,
@@ -253,7 +393,8 @@ fn launch_selected(owner: &BrokerOwner) -> Result<i32, String> {
     }
 }
 
-fn settle_broker(owner: &mut BrokerOwner) -> Result<(), String> {
+fn settle_broker(owner: &mut BrokerOwner) -> Result<BrokerWaitReceipt, String> {
+    let native_pid = owner.native_pid();
     loop {
         if owner.request_shutdown().map_err(|e| e.to_string())? {
             break;
@@ -263,7 +404,10 @@ fn settle_broker(owner: &mut BrokerOwner) -> Result<(), String> {
     loop {
         if let Some(status) = owner.try_wait().map_err(|e| e.to_string())? {
             return if status == 0 {
-                Ok(())
+                Ok(BrokerWaitReceipt {
+                    native_pid,
+                    raw_wait_status: status,
+                })
             } else {
                 Err(format!("broker native status {status}"))
             };
