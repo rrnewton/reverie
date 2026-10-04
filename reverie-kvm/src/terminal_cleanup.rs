@@ -1,4 +1,4 @@
-//! Private, uncompiled integration proposal for terminal descriptor retirement.
+//! Terminal descriptor retirement through an owned native-exit service.
 //!
 //! One prestarted service belongs to one guest task. Its native worker is ready
 //! before guest admission. Submission transfers real owners, not fd numbers;
