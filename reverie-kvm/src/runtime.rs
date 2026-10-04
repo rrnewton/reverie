@@ -3713,6 +3713,7 @@ impl KvmBackend {
         global: &G,
         outcome: reverie::SignalBoundaryOutcome,
     ) -> Result<()> {
+        executor.check_parent_death_failure()?;
         let Some(permit) = executor.owned_delivery_permit() else {
             return Ok(());
         };
@@ -3759,6 +3760,7 @@ impl KvmBackend {
             },
             "signal boundary receipt",
         )?;
+        executor.check_parent_death_boundary(reverie::SignalBoundaryReceipt { permit, outcome })?;
         executor
             .backend_signal_control()
             .process
@@ -3845,6 +3847,13 @@ impl KvmBackend {
             outcome => (outcome, false),
         };
         let outcome = self.route_entry_outcome(outcome).await;
+        // A real guest exit must freeze task-death causation before its receipt.
+        // ExplicitCancellation/Retirement and failed backend cleanup do not.
+        if let Ok(exit) = &outcome
+            && exit.disposition == ToolExitDisposition::GuestExit
+        {
+            executor.retire_guest_thread(exit.exit.status, exit.exit.group);
+        }
         let settlement = self
             .finish_signal_boundary(
                 executor,
