@@ -1,5 +1,11 @@
 # Reverie LiteInst
 
+Part of [Hermit](https://hermetic-infra.org) and
+[Reverie](https://docs.rs/reverie-core). See the
+[API documentation](https://docs.rs/reverie-liteinst) for this experimental
+backend and [`hermit-run`](https://crates.io/crates/hermit-run) for the CLI.
+Hermit's `liteinst` feature is optional and off by default.
+
 `reverie-liteinst` is an experimental Linux x86-64 Reverie backend built on the
 standalone `liteinst2` patching library, the shared `reverie-preload` runtime,
 and `reverie-rpc-transport`.

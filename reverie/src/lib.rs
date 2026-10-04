@@ -10,6 +10,10 @@
 //! be used to intercept, modify, or elide a syscall before the kernel executes
 //! it.
 //!
+//! Reverie is the instrumentation layer for [Hermit](https://hermetic-infra.org).
+//! For the command-line interface, see [`hermit-run`](https://crates.io/crates/hermit-run).
+//! For background, see [Hermit: Deterministic Linux for Controlled Testing and Software Bug-finding](https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/).
+//!
 //! Reverie consists of a family of crates:
 //!  - `reverie` (this one): Primarily provides the [`Tool`] trait interface
 //!    that Reverie tools must implement to intercept syscalls. It also defines

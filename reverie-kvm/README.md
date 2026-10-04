@@ -1,5 +1,11 @@
 # reverie-kvm
 
+Part of [Hermit](https://hermetic-infra.org) and
+[Reverie](https://docs.rs/reverie-core). See the
+[API documentation](https://docs.rs/reverie-kvm) for the backend interfaces and
+[`hermit-run`](https://crates.io/crates/hermit-run) for the command-line interface
+and platform requirements.
+
 `reverie-kvm` is an x86-64 research backend for driving small KVM guests. It
 creates a VM and vCPU, provides bounded guest-physical memory access, turns a
 guest `vmcall`/`vmmcall` into a typed Reverie syscall event, and can run
