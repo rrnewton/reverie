@@ -67,6 +67,8 @@ use std::cmp::Ordering::Greater;
 use std::cmp::Ordering::Less;
 use std::sync::OnceLock;
 
+use crate::tracer::PtracerWaitOwner;
+use crate::tracer::WaitOnPtracer;
 use reverie::Errno;
 use reverie::Pid;
 use reverie::RegDisplay;
@@ -1149,9 +1151,10 @@ impl Timer {
         task: Stopped,
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+        waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         match self.inner_mut_noinit() {
-            Some(t) => t.handle_signal(task, step, observe).await,
+            Some(t) => t.handle_signal(task, step, observe, waits).await,
             None => {
                 warn!("Stray SIGSTKFLT indicates a bug!");
                 Err(HandleFailure::ImproperSignal(task))
@@ -1168,9 +1171,13 @@ impl Timer {
         unfinished: Unfinished,
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+        waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         match self.inner_mut_noinit() {
-            Some(t) => t.continue_stepping(task, unfinished, step, observe).await,
+            Some(t) => {
+                t.continue_stepping(task, unfinished, step, observe, waits)
+                    .await
+            }
             // Only an initialized timer leaves anything unfinished.
             None => Err(HandleFailure::ImproperSignal(task)),
         }
@@ -2331,14 +2338,22 @@ impl TimerImpl {
         unfinished: Unfinished,
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+        waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         match unfinished {
             Unfinished::Steps(steps) => {
                 // Steps are only interrupted, and so only continued, once the
                 // event has been decided on.
                 debug_assert_eq!(self.timer_status, EventStatus::Armed);
-                self.attempt_single_step(task, steps.steps, steps.target_instr, step, observe)
-                    .await
+                self.attempt_single_step(
+                    task,
+                    steps.steps,
+                    steps.target_instr,
+                    step,
+                    observe,
+                    waits,
+                )
+                .await
             }
             Unfinished::Notification => {
                 // The stop stands in for the notification's, which the guest
@@ -2346,7 +2361,7 @@ impl TimerImpl {
                 // instruction, so the steps start from the same clock.
                 self.tick_observed();
                 match self.timer_status {
-                    EventStatus::Armed => self.deliver(task, step, observe).await,
+                    EventStatus::Armed => self.deliver(task, step, observe, waits).await,
                     _ => {
                         self.disable_timer_before_stepping();
                         Err(HandleFailure::Cancelled(task))
@@ -2503,6 +2518,7 @@ impl TimerImpl {
         task: Stopped,
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+        waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         self.recheck_kept_programming();
         // From libc 0.2.190 `siginfo_t` is not `Send`, so it must not be
@@ -2570,7 +2586,7 @@ impl TimerImpl {
         };
 
         // At this point, we've decided that a timer event is to be delivered.
-        self.deliver(task, step, observe).await
+        self.deliver(task, step, observe, waits).await
     }
 
     /// Delivers the active event, whose notification the guest has taken or
@@ -2581,6 +2597,7 @@ impl TimerImpl {
         task: Stopped,
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+        waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         // Ensure any new timer signals don't mess with us while single-stepping
         self.disable_timer_before_stepping();
@@ -2618,7 +2635,7 @@ impl TimerImpl {
                     count_host_timed(|events| events.unstepped_at_target += 1);
                 }
                 let current = ClockCounter::new(ctr, 0, clock_target);
-                self.attempt_single_step(task, current, offset, step, observe)
+                self.attempt_single_step(task, current, offset, step, observe, waits)
                     .await
             }
             ActiveEvent::Imprecise { clock_min } => {
@@ -2642,6 +2659,7 @@ impl TimerImpl {
         target_instr: u64,
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+        waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         let target_rcb = current.target_rcb;
         // The perf interrupt can arrive *past* the target when descheduling or
@@ -2706,7 +2724,7 @@ impl TimerImpl {
                 rax: regs.rax,
                 clock: self.read_clock(),
             };
-            let wait = step(task)?.next_state().await?;
+            let wait = step(task)?.next_state_with_owner(waits).await?;
             observe(&wait)?;
             task = match wait {
                 // a successful single step results in SIGTRAP stop

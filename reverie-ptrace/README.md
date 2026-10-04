@@ -28,6 +28,41 @@ requested by the command. See the
 [`hermit-run` installation guide](https://crates.io/crates/hermit-run) for its
 kernel and Ubuntu AppArmor requirements.
 
+## Kernel compatibility and fatal cleanup
+
+The ordinary ptrace engine explicitly selects safeptrace's
+`*_on_ptracer_thread` SDK mode. This permits retained-descriptor tracing and
+process/thread lifecycle notification on Linux 6.8. Native thread pidfds are
+used from Linux 6.9. Safeptrace's generic sibling-pollable SDK interfaces retain
+their native `PIDFD_THREAD` requirement; they do not implicitly select the
+owner-thread fallback. Optional LiteInst cleanup also retains its native
+thread-pidfd requirement.
+
+On the legacy ordinary path, Reverie's fatal-tree cleanup requests SIGSTOP
+through already captured regular group pidfds, relays actual signal-delivery
+stops, and holds every owned task at a genuine stop or observes its actual
+terminal state before killing the tree. Coalesced signals and successful
+requests are never treated as stop acknowledgments. Existing exit hooks and
+terminal waits still finish through their original owners.
+
+Legacy nonleader observations wake the existing ptracer task, which consumes
+reports on the actual ptrace-owning OS thread. Retained target and host-owner
+directories authenticate that wait authority independently of signal
+permissions. Background hints never substitute for consumed stop or terminal
+reports, including when a host ptracer thread exits or reattaches.
+The local SDK wrappers are `!Send` and `!Sync`; the backend retains their
+original authority in Send, non-Future drivers and explicitly polls them on
+the owning ptracer thread. Guest trait and callback futures keep their existing
+Send contracts. A refused or cancelled adapter retains its driver in the
+enclosing task's cleanup owner.
+
+This cleanup barrier proves physical stops of the owned tasks; it does not
+claim job-control completion for unowned members. Standalone safeptrace
+`TerminalCleanup::request_sigstop` still requires a native thread pidfd for
+exact thread delivery: live legacy handles return `EOPNOTSUPP`, and dead
+retained identities return `ESRCH`. Native API errors and signal metadata
+remain unchanged.
+
 ## Function guests in tests
 
 `TracerBuilder` launches ordinary subprocesses and works on stable Rust.
