@@ -635,7 +635,9 @@ pub fn run_queued_case(case: &str, client: &BrokerClient) -> Result<CaseReceipt,
             }
         };
         require(
-            native.socket_references == expected_refs && native.transferred_descriptors == 1,
+            native.socket_references == expected_refs
+                && native.acknowledged_descriptors == 1
+                && native.parent_references_retired,
             "exact Arc owner count and distinct kernel-right count",
         )?;
         receipt.waits.push(native);
@@ -891,7 +893,10 @@ pub fn run_chunk_abort_case(owner: &BrokerOwner) -> Result<CaseReceipt, CaseFail
                     .last_native_status()
                     .ok_or("retry lacks actual previous worker wait")?;
                 require(
-                    actual.raw_wait_status == 0 && actual.native_pid == limited_pid,
+                    actual.raw_wait_status == 0
+                        && actual.native_pid == limited_pid
+                        && actual.acknowledged_descriptors == 253
+                        && !actual.parent_references_retired,
                     "actual exact old worker abort wait before new attempt",
                 )?;
                 abort = Some(actual);
@@ -907,7 +912,8 @@ pub fn run_chunk_abort_case(owner: &BrokerOwner) -> Result<CaseReceipt, CaseFail
             native.job != aborted.job
                 && native.raw_wait_status == 0
                 && native.socket_references == 254
-                && native.transferred_descriptors == 254
+                && native.acknowledged_descriptors == 254
+                && native.parent_references_retired
                 && r.files.is_empty(),
             "new job and exact complete254 receipt",
         )?;
