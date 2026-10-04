@@ -51,11 +51,11 @@ pub fn run(name: &str) -> i32 {
             return 125;
         }
     };
-    if !matches!(case, Case::Memfd | Case::Null) {
-        if let Err(error) = install_filter(fd, case) {
-            eprintln!("BROKER_BOOTSTRAP_CASE_SETUP_FAILURE: {error}");
-            return 125;
-        }
+    if !matches!(case, Case::Memfd | Case::Null)
+        && let Err(error) = install_filter(fd, case)
+    {
+        eprintln!("BROKER_BOOTSTRAP_CASE_SETUP_FAILURE: {error}");
+        return 125;
     }
     // Flush before entering the classifier. On the old ordering, a real target
     // fstat/newfstatat/statx kills this process with SIGSYS, even under its mask.
