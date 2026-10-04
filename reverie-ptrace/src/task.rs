@@ -29,8 +29,6 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::tracer::PtracerWaitOwner;
-use crate::tracer::WaitOnPtracer;
 use async_trait::async_trait;
 use futures::future;
 use futures::future::Either;
@@ -138,6 +136,8 @@ use crate::liteinst_stats::LiteinstPatchOutcome;
 use crate::liteinst_trap_only::StoredSiginfo;
 use crate::liteinst_trap_only::TrapOnlyTask;
 use crate::poll_on_wake::PollOnWake;
+use crate::tracer::PtracerWaitOwner;
+use crate::tracer::WaitOnPtracer;
 
 #[path = "task_trap_only.rs"]
 mod trap_only;
@@ -348,8 +348,13 @@ fn memory_request<T, E: Into<TraceError>>(
 }
 
 #[cfg(test)]
+type PostExecStepForTest = Box<dyn FnOnce(Running) -> Running>;
+
+#[cfg(test)]
 thread_local! {
     static FORCED_ESRCH: std::cell::Cell<Option<Pid>> = const { std::cell::Cell::new(None) };
+    static POST_EXEC_STEP_FOR_TEST: std::cell::RefCell<Option<PostExecStepForTest>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Test-only: makes the next [`memory_request`] on `pid` fail with `ESRCH`,
@@ -7321,6 +7326,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             );
             let stepped = self.step_stopped(task, None)?;
             #[cfg(test)]
+            let stepped = match POST_EXEC_STEP_FOR_TEST.with(|slot| slot.borrow_mut().take()) {
+                Some(hook) => hook(stepped),
+                None => stepped,
+            };
+            #[cfg(test)]
             at_preinit_point(
                 &preinit_point,
                 stepped.pid(),
@@ -7331,9 +7341,25 @@ impl<L: Tool + 'static> TracedTask<L> {
             // which is published to the exit notifier, not to this wait. The
             // step resumes it from there, so the wait can see it exit, as the
             // mmap wait in `tracee_preinit` can.
-            let (task, event) = match stepped.wait_for_signal(Signal::SIGTRAP).await? {
-                Wait::Stopped(task, event) => (task, event),
-                Wait::Exited(pid, exit_status) => return Ok(Wait::Exited(pid, exit_status)),
+            // Keep the task's original owner/generation while filtering, as
+            // every other ordinary wait does. Generic wait_for_signal requires
+            // a native thread pidfd, even when its input retained legacy mode.
+            let mut running = stepped;
+            let (task, event) = loop {
+                match running.next_state_with_owner(&self.ptracer_waits).await? {
+                    Wait::Stopped(task, event) if event == Event::Signal(Signal::SIGTRAP) => {
+                        break (task, event);
+                    }
+                    Wait::Stopped(task, event) => {
+                        self.arm_liteinst_root_stop(&task, &event);
+                        let signal = match event {
+                            Event::Signal(signal) => Some(signal),
+                            _ => None,
+                        };
+                        running = self.resume_stopped(task, signal)?;
+                    }
+                    Wait::Exited(pid, exit_status) => return Ok(Wait::Exited(pid, exit_status)),
+                }
             };
             assert_eq!(event, Event::Signal(Signal::SIGTRAP));
             self.arm_liteinst_root_stop(&task, &event);
@@ -12780,7 +12806,10 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     }
 
     async fn stack(&mut self) -> Self::Stack {
-        match GuestStack::new(self.tid, self.stack_checked_out.clone()) {
+        match GuestStack::new_on_ptracer_thread(
+            self.assume_stopped(),
+            self.stack_checked_out.clone(),
+        ) {
             Ok(ret) => ret,
             Err(err) => self.abort(Err(err)).await,
         }
@@ -13000,6 +13029,10 @@ mod breakpoint_word_tests {
         assert_eq!(breakpoint_removed(with_a, saved_a), code);
     }
 }
+
+#[cfg(test)]
+#[path = "task_exec_owner_tests.rs"]
+mod exec_owner_tests;
 
 #[cfg(test)]
 mod tests {
