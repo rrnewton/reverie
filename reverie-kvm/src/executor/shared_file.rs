@@ -41,7 +41,7 @@ fn classify_shared_mmap_file(
     // files and received private descriptions whose side-table identity was
     // lost. It does not adopt the authentication protocol of PR610.
     // https://github.com/rrnewton/reverie/pull/610
-    if syncfs_private_memfd_name(path.as_os_str().as_bytes()) {
+    if syncfs_private_memfd_name(path.as_os_str().as_bytes(), state.host_metadata_timestamps) {
         return Err(unsupported_mmap("reserved private memfd backing"));
     }
     if capture_output {

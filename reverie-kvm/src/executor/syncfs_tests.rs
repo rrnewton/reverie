@@ -121,6 +121,47 @@ fn syncfs_closed_and_path_only_precede_private_refusal_without_host_call() {
     }
 }
 
+// The backend creates a memfd named reverie-kvm-virtual-file only in a run that
+// reports host metadata timestamps. In any other run the name belongs to the
+// guest, and the guest's memfd is an ordinary file that Linux syncfs serves.
+#[test]
+fn syncfs_reserves_the_virtual_file_carrier_name_only_when_the_backend_creates_it() {
+    let root = TestDir::new();
+    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+    for host_metadata_timestamps in [false, true] {
+        let mut state = test_state(&root.0);
+        state.host_metadata_timestamps = host_metadata_timestamps;
+        let mut file = syncfs_memfd("reverie-kvm-virtual-file");
+        file.write_all(b"guest bytes\n").unwrap();
+        let host = file.as_raw_fd();
+        let fd = insert_file_with_flags(&mut state, file, false, None);
+        let seen = std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = seen.clone();
+        let hook = install_syncfs_test_hook(move |actual| {
+            assert_eq!(actual, host);
+            observed.set(observed.get() + 1);
+            0
+        });
+        let (expected, calls) = if host_metadata_timestamps {
+            (negative_errno(libc::ENOSYS), 0)
+        } else {
+            (0, 1)
+        };
+        assert_eq!(
+            syncfs_call(&mut memory, &mut state, fd as u64),
+            expected,
+            "host_metadata_timestamps={host_metadata_timestamps}"
+        );
+        assert_eq!(
+            seen.get(),
+            calls,
+            "host_metadata_timestamps={host_metadata_timestamps}"
+        );
+        drop(hook);
+        assert_eq!(close(&mut state, fd as u64), 0);
+    }
+}
+
 #[test]
 fn syncfs_reserved_names_deny_without_authenticating_payload_or_seals() {
     let root = TestDir::new();
@@ -130,7 +171,6 @@ fn syncfs_reserved_names_deny_without_authenticating_payload_or_seals() {
     for name in [
         "reverie-kvm-proc",
         "reverie-kvm-virtual",
-        "reverie-kvm-virtual-file",
         "reverie-kvm-guest-memory",
         "reverie-kvm.proc-carrier.v1",
         "reverie-kvm.proc-carrier.v1.forged",
