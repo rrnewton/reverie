@@ -30,9 +30,10 @@
 //!     `PTRACE_EVENT_EXIT` events out-of-band which is necessary for canceling
 //!     pending futures in the event a guest process is suddenly killed.
 //!  2. Polling `pidfd_open(2)` descriptors does not report ptrace stops, so it
-//!     cannot replace the per-tracee blocking waiter. The waiter does use
-//!     `waitid(P_PIDFD)` to bind every status consumption to one exact kernel
-//!     task lifetime rather than a reusable numeric PID.
+//!     cannot replace the per-tracee blocking waiter. On Linux 6.9 and newer,
+//!     the waiter uses `waitid(P_PIDFD)` for an exact thread PID object. Older
+//!     kernels use ordinary pidfds for leaders and retained `/proc/<tid>`
+//!     lifetime descriptors for non-leaders, with exclusive `P_PID` waits.
 //!  3. Using `tokio::task::spawn_blocking` to simply call `waitid()` on the
 //!     process we're interested in works, but is about twice as slow as (1)
 //!     because of the overhead of locking a mutex and shuffling bits of data
@@ -62,6 +63,8 @@
 //! be used instead.) The downside of this approach is that we
 //! can end up spawning a lot of guest threads.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
@@ -145,6 +148,13 @@ static SPAWN_WORKER_COUNTS: LazyLock<Mutex<HashMap<Pid, usize>>> =
 #[cfg(test)]
 static PIDFD_OPEN_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+thread_local! {
+    // Identity capture runs on the owning ptracer thread. A test-local value
+    // avoids locks inherited by another libtest thread's raw-fork children.
+    static FORCE_LEGACY_THREAD_GROUP: Cell<Option<Pid>> = const { Cell::new(None) };
+}
 
 #[cfg(test)]
 static PIDFD_LIVENESS_ERRORS: LazyLock<Mutex<HashMap<Pid, VecDeque<Errno>>>> =
@@ -276,7 +286,7 @@ enum SyncWaitTestTransition {
 #[derive(Debug)]
 struct ExactTestMember {
     pid: Pid,
-    pidfd: OwnedFd,
+    pidfd: ThreadHandle,
     phase: ExactCleanupPhase,
 }
 
@@ -2370,7 +2380,7 @@ impl WorkerProcSnapshot {
 struct WorkerIdentity {
     pid: Pid,
     snapshot: WorkerProcSnapshot,
-    pidfd: OwnedFd,
+    pidfd: ThreadHandle,
     proc_dir: OwnedFd,
     proc_inode: u64,
 }
@@ -2404,6 +2414,14 @@ impl WorkerIdentity {
     }
 
     fn capture_process(pid: Pid) -> Result<Self, Errno> {
+        // Pin procfs before reading the first snapshot. Even two tasks born
+        // in the same clock tick must not make capture cross a reused TID.
+        let proc_dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+            .open(format!("/proc/{pid}"))
+            .map_err(io_errno)?;
+        let proc_inode = proc_dir.metadata().map_err(io_errno)?.ino();
         let before = worker_proc_snapshot(pid).map_err(io_errno)?;
         #[cfg(test)]
         if let Some(pause) = CAPTURE_AFTER_FIRST_SNAPSHOT_PAUSES.lock().remove(&pid) {
@@ -2411,17 +2429,15 @@ impl WorkerIdentity {
             pause.resume.wait();
         }
         let pidfd = open_thread_pidfd(pid)?;
-        let proc_dir = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
-            .open(format!("/proc/{pid}"))
-            .map_err(io_errno)?;
-        let proc_inode = proc_dir.metadata().map_err(io_errno)?.ino();
         let after = worker_proc_snapshot(pid).map_err(io_errno)?;
         let current_inode = fs::metadata(format!("/proc/{pid}"))
             .map_err(io_errno)?
             .ino();
-        if !before.same_process_generation(&after) || current_inode != proc_inode {
+        if !before.same_process_generation(&after)
+            || current_inode != proc_inode
+            || matches!(&pidfd, ThreadHandle::Procfs { directory, .. }
+                if fd_inode(directory).map_err(io_errno)? != proc_inode)
+        {
             return Err(Errno::ESRCH);
         }
 
@@ -2504,19 +2520,178 @@ impl WorkerIdentity {
     }
 }
 
-fn open_thread_pidfd(pid: Pid) -> Result<OwnedFd, Errno> {
-    #[cfg(test)]
-    if let Some(error) = PIDFD_OPEN_ERRORS.lock().remove(&pid) {
-        return Err(error);
-    }
-
-    open_thread_pidfd_kernel(pid)
+/// A descriptor for one exact kernel PID object. Linux before 6.9 cannot
+/// create thread pidfds, but an open `/proc/<tid>` directory retains that
+/// thread's PID object and is accepted by `pidfd_send_signal` for signal 0.
+#[derive(Debug)]
+enum ThreadHandle {
+    Pidfd(OwnedFd),
+    LegacyLeader {
+        pid: Pid,
+        fd: OwnedFd,
+    },
+    Procfs {
+        pid: Pid,
+        tgid: Pid,
+        directory: OwnedFd,
+    },
 }
 
-fn open_thread_pidfd_kernel(pid: Pid) -> Result<OwnedFd, Errno> {
-    // PIDFD_THREAD has the same value as O_EXCL. It binds a pidfd to the exact
-    // TID rather than silently projecting a non-leader onto its thread group.
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), libc::O_EXCL) } as i32;
+impl AsRawFd for ThreadHandle {
+    fn as_raw_fd(&self) -> RawFd {
+        match self {
+            Self::Pidfd(fd) => fd.as_raw_fd(),
+            Self::LegacyLeader { fd, .. } => fd.as_raw_fd(),
+            Self::Procfs { directory, .. } => directory.as_raw_fd(),
+        }
+    }
+}
+
+impl ThreadHandle {
+    #[cfg(test)]
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(match self {
+            Self::Pidfd(fd) => Self::Pidfd(fd.try_clone()?),
+            Self::LegacyLeader { pid, fd } => Self::LegacyLeader {
+                pid: *pid,
+                fd: fd.try_clone()?,
+            },
+            Self::Procfs {
+                pid,
+                tgid,
+                directory,
+            } => Self::Procfs {
+                pid: *pid,
+                tgid: *tgid,
+                directory: directory.try_clone()?,
+            },
+        })
+    }
+
+    fn wait_id(&self) -> Result<waitid::IdType, Errno> {
+        match self {
+            Self::Pidfd(fd) | Self::LegacyLeader { fd, .. } => {
+                Ok(waitid::IdType::Pidfd(fd.as_raw_fd()))
+            }
+            Self::Procfs { pid, .. } => {
+                // The Event's exclusive wait owner is the only reaper.
+                // Stops and WNOWAIT terminal observations keep this TID
+                // allocated until its owner closes the TID gate and reaps.
+                // A retained descriptor that has retired must never issue
+                // another numeric wait, even if the TID is now reused.
+                if pidfd_is_live(self)? {
+                    Ok(waitid::IdType::Pid((*pid).into()))
+                } else {
+                    Err(Errno::ECHILD)
+                }
+            }
+        }
+    }
+
+    fn wait_status(&self, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
+        match self {
+            Self::Pidfd(fd) | Self::LegacyLeader { fd, .. } => {
+                waitid::waitpidfd(fd.as_raw_fd(), flags)
+            }
+            Self::Procfs { .. } => waitid::wait_raw(self.wait_id()?, flags),
+        }
+    }
+
+    fn send_cancellation_signal(&self, event: &Event, signal: i32) -> Result<(), Errno> {
+        let legacy_target = match self {
+            Self::Pidfd(_) => None,
+            Self::LegacyLeader { pid, .. } => Some((*pid, *pid)),
+            Self::Procfs { pid, tgid, .. } => Some((*pid, *tgid)),
+        };
+        if signal == libc::SIGSTOP
+            && let Some((pid, tgid)) = legacy_target
+        {
+            // Ordinary pidfds and old proc descriptors send process-directed
+            // signals. SIGSTOP must target this thread, as PIDFD_THREAD does.
+            // Use the same generation gate as numeric ptrace requests: the
+            // exclusive wait owner cannot release the TID during this hold.
+            let _held = event.hold_tid().ok_or(Errno::ESRCH)?;
+            if !pidfd_is_live(self)? {
+                return Err(Errno::ESRCH);
+            }
+            return Errno::result(unsafe {
+                libc::syscall(libc::SYS_tgkill, tgid.as_raw(), pid.as_raw(), signal)
+            })
+            .map(|_| ());
+        }
+        // SIGKILL is fatal to the whole thread group for both forms of
+        // descriptor; the retained PID object prevents signaling a reuse.
+        Errno::result(unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.as_raw_fd(),
+                signal,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        })
+        .map(|_| ())
+    }
+}
+
+fn open_thread_pidfd(pid: Pid) -> Result<ThreadHandle, Errno> {
+    #[cfg(test)]
+    let injected = PIDFD_OPEN_ERRORS.lock().remove(&pid);
+    #[cfg(test)]
+    let error = injected.or_else(|| {
+        FORCE_LEGACY_THREAD_GROUP.with(|group| {
+            let tgid = group.get()?;
+            worker_proc_snapshot(pid)
+                .ok()
+                .filter(|snapshot| snapshot.tgid == tgid)
+                .map(|_| Errno::EINVAL)
+        })
+    });
+    #[cfg(not(test))]
+    let error: Option<Errno> = None;
+
+    open_thread_handle_with_error(pid, error)
+}
+
+fn open_thread_handle_with_error(pid: Pid, error: Option<Errno>) -> Result<ThreadHandle, Errno> {
+    let opened = error.map_or_else(|| pidfd_open_with_flags(pid, libc::O_EXCL), Err);
+    match opened {
+        Ok(fd) => Ok(ThreadHandle::Pidfd(fd)),
+        Err(Errno::EINVAL) => {
+            let snapshot = worker_proc_snapshot(pid).map_err(io_errno)?;
+            if snapshot.tgid == pid {
+                // An ordinary pidfd still binds a leader's exact PID object;
+                // P_PIDFD waits distinguish it even while other threads live.
+                pidfd_open_with_flags(pid, 0).map(|fd| ThreadHandle::LegacyLeader { pid, fd })
+            } else {
+                // /proc/<tid> (not /proc/<tgid>/task/<tid>) has the proc
+                // operations accepted by pidfd_send_signal on older kernels.
+                // O_PATH descriptors are not accepted by that syscall.
+                let directory = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+                    .open(format!("/proc/{pid}"))
+                    .map_err(io_errno)?;
+                Ok(ThreadHandle::Procfs {
+                    pid,
+                    tgid: snapshot.tgid,
+                    directory: directory.into(),
+                })
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+fn open_thread_pidfd_kernel(pid: Pid) -> Result<ThreadHandle, Errno> {
+    open_thread_handle_with_error(pid, None)
+}
+
+fn pidfd_open_with_flags(pid: Pid, flags: i32) -> Result<OwnedFd, Errno> {
+    // PIDFD_THREAD has the same value as O_EXCL. With that flag, the pidfd
+    // binds the exact TID and sends thread-directed signals by default.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), flags) } as i32;
     if fd == -1 {
         Err(io_errno(io::Error::last_os_error()))
     } else {
@@ -2524,7 +2699,7 @@ fn open_thread_pidfd_kernel(pid: Pid) -> Result<OwnedFd, Errno> {
     }
 }
 
-fn pidfd_is_live(pidfd: &OwnedFd) -> Result<bool, Errno> {
+fn pidfd_is_live(pidfd: &ThreadHandle) -> Result<bool, Errno> {
     let result = unsafe {
         libc::syscall(
             libc::SYS_pidfd_send_signal,
@@ -2591,14 +2766,14 @@ fn spawn_worker(
     })
 }
 
-/// Waits for the next status of this exact pidfd and consumes it.
+/// Waits for the next status of this exact thread generation and consumes it.
 ///
 /// A terminal status is first observed with `WNOWAIT` and marked on `event`
 /// before the wait that reaps it, so a numeric ptrace request holding
 /// [`EventHandle::hold_tid`] can never reach a task that reused the TID. A stop
 /// is consumed by a wait that cannot reap: if a fatal signal ends the stop
 /// first, the next observation sees the terminal status instead.
-fn wait_pidfd_consuming(pid: Pid, raw_fd: RawFd, event: &Event) -> Result<i32, Errno> {
+fn wait_thread_consuming(pid: Pid, handle: &ThreadHandle, event: &Event) -> Result<i32, Errno> {
     let observe = WaitPidFlag::from_bits_retain(
         WaitPidFlag::WEXITED.bits()
             | WaitPidFlag::WSTOPPED.bits()
@@ -2612,7 +2787,7 @@ fn wait_pidfd_consuming(pid: Pid, raw_fd: RawFd, event: &Event) -> Result<i32, E
         WaitPidFlag::WEXITED.bits() | WaitPidFlag::WNOHANG.bits() | libc::__WALL,
     );
     loop {
-        let status = match waitid::waitpidfd(raw_fd, observe) {
+        let status = match handle.wait_status(observe) {
             Ok(status) => status.expect("blocking waitid returned no status"),
             Err(Errno::EINTR) => continue,
             Err(error) => return Err(error),
@@ -2620,7 +2795,7 @@ fn wait_pidfd_consuming(pid: Pid, raw_fd: RawFd, event: &Event) -> Result<i32, E
         if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
             event.mark_terminal_reaping();
             loop {
-                return match waitid::waitpidfd(raw_fd, reap) {
+                return match handle.wait_status(reap) {
                     Ok(Some(reaped)) => {
                         debug_assert_eq!(reaped, status, "reaped a different terminal status");
                         Ok(reaped)
@@ -2638,7 +2813,7 @@ fn wait_pidfd_consuming(pid: Pid, raw_fd: RawFd, event: &Event) -> Result<i32, E
         }
         #[cfg(not(test))]
         let _ = pid;
-        match waitid::waitpidfd(raw_fd, consume_stop) {
+        match handle.wait_status(consume_stop) {
             Ok(Some(stop)) => return Ok(stop),
             // A stop-only wait reports ECHILD for a zombie, so a fatal signal
             // that ended the observed stop reaches here as ECHILD while its
@@ -2653,14 +2828,14 @@ fn wait_pidfd_consuming(pid: Pid, raw_fd: RawFd, event: &Event) -> Result<i32, E
 /// Waits on the retained PID object and returns its lossless raw status.
 /// Exec can change the task attached to a PID object; callers must use the
 /// actual Exec edge for state handoffs, not infer them from a numeric PID.
-/// Returns `None` once the pidfd is no longer waitable, without PID fallback.
-fn wait_pidfd_status(identity: &WorkerIdentity, event: &Event) -> Option<i32> {
-    match wait_pidfd_consuming(identity.pid, identity.pidfd.as_raw_fd(), event) {
+/// Returns `None` once the retained thread generation is no longer waitable.
+fn wait_thread_status(identity: &WorkerIdentity, event: &Event) -> Option<i32> {
+    match wait_thread_consuming(identity.pid, &identity.pidfd, event) {
         Ok(status) => Some(status),
         Err(Errno::ECHILD) => None,
         Err(err) => {
             panic!(
-                "waitid(P_PIDFD, {}) failed unexpectedly: {}",
+                "exact-thread waitid({}) failed unexpectedly: {}",
                 identity.pid, err
             )
         }
@@ -2671,13 +2846,13 @@ fn wait_pidfd_status(identity: &WorkerIdentity, event: &Event) -> Option<i32> {
 fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
     let mut retrying_echild = false;
     loop {
-        // Revalidate before retrying a transient ECHILD. The pidfd keeps the
-        // wait bound to this exact task even if its numeric TID is later reused.
+        // Revalidate before retrying a transient ECHILD. The retained lifetime
+        // descriptor refuses a numeric wait after this generation retires.
         if retrying_echild && !identity.is_active_tracee() {
             event.mark_echild();
             break;
         }
-        let Some(status) = wait_pidfd_status(&identity, &event) else {
+        let Some(status) = wait_thread_status(&identity, &event) else {
             if identity.is_active_tracee() {
                 // A newborn auto-attached ptrace child can briefly exist with
                 // this exact procfs generation before its first wait status
@@ -2935,11 +3110,8 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                         NOTIFIER.remove(pid, &event);
                         return Err(Errno::ESRCH.into());
                     }
-                    let status = match wait_pidfd_consuming(
-                        identity.pid,
-                        identity.pidfd.as_raw_fd(),
-                        &event,
-                    ) {
+                    let status = match wait_thread_consuming(identity.pid, &identity.pidfd, &event)
+                    {
                         Ok(status) => status,
                         Err(error) => {
                             if error == Errno::ECHILD {
@@ -3441,7 +3613,7 @@ impl Notifier {
     fn registered_sync_handle(
         &self,
         pid: Pid,
-        exact_pidfd: &OwnedFd,
+        exact_pidfd: &ThreadHandle,
     ) -> Result<Option<EventHandle>, Errno> {
         if !pidfd_is_live(exact_pidfd)? {
             return Ok(None);
@@ -3978,7 +4150,7 @@ impl StopObservationSample {
     pub fn flags(&self) -> Option<&Result<u32, ProcStatError>> {
         self.flags.as_ref()
     }
-    /// The exact thread-pidfd signal0 result, issued after all numeric/proc reads.
+    /// The retained thread lifetime descriptor's signal0 result, issued last.
     pub fn pidfd_live(&self) -> Option<Result<bool, Errno>> {
         self.pidfd_live
     }
@@ -4035,7 +4207,7 @@ impl StoppedObservation {
 
     /// Sample one raw siginfo and, only for an EXIT signature when requested,
     /// bounded fd-relative stat flags. The final kernel observation is signal0
-    /// through the already retained PIDFD_THREAD. Every refusal stays typed.
+    /// through the retained thread lifetime descriptor. Every refusal stays typed.
     ///
     /// `flags_for_exit_siginfo` is needed for a held SIGTRAP delivery stop,
     /// where the guest can forge EXIT-like siginfo. The sample makes no policy
@@ -4204,10 +4376,10 @@ impl TerminalCleanup {
 
     /// Requests fatal cancellation of this already-bound tracee generation.
     ///
-    /// Uses the notifier's retained thread pidfd; this never captures a new
-    /// identity or signals a numeric PID. Registration failure is returned
-    /// without a fallback. Neither success nor ESRCH acknowledges an exit:
-    /// callers must still consume the actual exit and terminal wait status.
+    /// Uses the notifier's retained thread lifetime descriptor; this never
+    /// captures a new identity or signals a numeric PID. Registration failure
+    /// is returned without a fallback. Neither success nor ESRCH acknowledges
+    /// an exit: callers must consume the actual exit and terminal wait status.
     pub fn request_sigkill(&self) -> Result<(), Errno> {
         self.request_cancellation_signal(libc::SIGKILL)
     }
@@ -4227,20 +4399,9 @@ impl TerminalCleanup {
             .event
             .identity()
             .ok_or_else(|| self.registration_error().unwrap_or(Errno::ENODATA))?;
-        let result = unsafe {
-            libc::syscall(
-                libc::SYS_pidfd_send_signal,
-                identity.pidfd.as_raw_fd(),
-                signal,
-                std::ptr::null::<libc::siginfo_t>(),
-                0,
-            )
-        };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(io_errno(io::Error::last_os_error()))
-        }
+        identity
+            .pidfd
+            .send_cancellation_signal(self.event.event(), signal)
     }
 
     #[cfg(test)]
@@ -4702,6 +4863,7 @@ impl Future for ExitFuture {
 
 #[cfg(test)]
 mod test {
+    include!("legacy_thread_tests.rs");
     include!("stop_observation_tests.rs");
     include!("retirement_ack_tests.rs");
     include!("completion_wakeup_tests.rs");
@@ -4779,16 +4941,16 @@ mod test {
         }
     }
 
-    fn pidfd_open(pid: i32) -> io::Result<OwnedFd> {
+    fn pidfd_open(pid: i32) -> io::Result<ThreadHandle> {
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
         if fd == -1 {
             Err(io::Error::last_os_error())
         } else {
-            Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+            Ok(ThreadHandle::Pidfd(unsafe { OwnedFd::from_raw_fd(fd) }))
         }
     }
 
-    fn pidfd_send_signal(pidfd: &OwnedFd, signal: i32) -> io::Result<()> {
+    fn pidfd_send_signal(pidfd: &ThreadHandle, signal: i32) -> io::Result<()> {
         let result = unsafe {
             libc::syscall(
                 libc::SYS_pidfd_send_signal,
@@ -4805,7 +4967,12 @@ mod test {
         }
     }
 
-    fn pidfd_exited(pidfd: &OwnedFd) -> io::Result<bool> {
+    fn pidfd_exited(pidfd: &ThreadHandle) -> io::Result<bool> {
+        if matches!(pidfd, ThreadHandle::Procfs { .. }) {
+            return pidfd_is_live(pidfd)
+                .map(|live| !live)
+                .map_err(|error| io::Error::from_raw_os_error(error.into_raw()));
+        }
         let mut pollfd = libc::pollfd {
             fd: pidfd.as_raw_fd(),
             events: libc::POLLIN,
@@ -4891,7 +5058,7 @@ mod test {
 
     struct ChildProcessGroup {
         child: std::process::Child,
-        pidfd: OwnedFd,
+        pidfd: ThreadHandle,
         process_group: i32,
         reaped: bool,
     }
@@ -5206,7 +5373,7 @@ mod test {
         }
     }
 
-    fn reap_tracee_pidfd_bounded(pid: Pid, pidfd: &OwnedFd) -> io::Result<()> {
+    fn reap_tracee_pidfd_bounded(pid: Pid, pidfd: &ThreadHandle) -> io::Result<()> {
         let flags = WaitPidFlag::from_bits_retain(
             WaitPidFlag::WEXITED.bits()
                 | WaitPidFlag::WSTOPPED.bits()
@@ -5216,7 +5383,7 @@ mod test {
         );
         let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
         loop {
-            match waitid::waitid(waitid::IdType::Pidfd(pidfd.as_raw_fd()), flags) {
+            match pidfd.wait_id().and_then(|id| waitid::waitid(id, flags)) {
                 Ok(WaitStatus::Exited(waited, _) | WaitStatus::Signaled(waited, _, _)) => {
                     assert_eq!(waited, pid, "pidfd reaped a different tracee");
                     return Ok(());
@@ -5274,7 +5441,7 @@ mod test {
 
     struct TraceeCleanupGuard {
         pid: Pid,
-        pidfd: OwnedFd,
+        pidfd: ThreadHandle,
         ownership: TraceeCleanupOwnership,
         armed: bool,
     }
@@ -5361,7 +5528,7 @@ mod test {
             self.armed = false;
         }
 
-        fn cleanup_before_registration(pid: Pid, pidfd: &OwnedFd) -> io::Result<()> {
+        fn cleanup_before_registration(pid: Pid, pidfd: &ThreadHandle) -> io::Result<()> {
             match pidfd_send_signal(pidfd, libc::SIGKILL) {
                 Ok(()) => {
                     if let Some(pause) = PRE_REGISTRATION_REAP_PAUSES.lock().remove(&pid.into()) {
@@ -5379,7 +5546,7 @@ mod test {
 
         fn acquire_cleanup_wait_owner(
             pid: Pid,
-            pidfd: &OwnedFd,
+            pidfd: &ThreadHandle,
             terminal: &TerminalCleanup,
             signal_sent: &mut bool,
         ) -> io::Result<CleanupWaitOwner> {
@@ -5526,7 +5693,7 @@ mod test {
 
         fn cleanup_with_notifier(
             pid: Pid,
-            pidfd: &OwnedFd,
+            pidfd: &ThreadHandle,
             terminal: &TerminalCleanup,
             owns_claimed_exit: bool,
             signal_sent: &mut bool,
@@ -5582,7 +5749,7 @@ mod test {
 
         fn cleanup_with_raw_wait(
             pid: Pid,
-            pidfd: &OwnedFd,
+            pidfd: &ThreadHandle,
             terminal: &TerminalCleanup,
             finish_event: bool,
             signal_sent: &mut bool,
@@ -5609,7 +5776,7 @@ mod test {
         }
 
         fn cleanup_with_terminal_ack(
-            pidfd: &OwnedFd,
+            pidfd: &ThreadHandle,
             terminal: &TerminalCleanup,
             signal_sent: &mut bool,
         ) -> io::Result<()> {
@@ -7513,6 +7680,10 @@ mod test {
 
     #[tokio::test(flavor = "current_thread")]
     async fn actual_nonleader_exec_rearms_one_exit_and_refuses_old_and_competing_owners() {
+        actual_nonleader_exec_owned_case(false).await;
+    }
+
+    async fn actual_nonleader_exec_owned_case(force_legacy: bool) {
         let deadline = Instant::now() + Duration::from_secs(3);
         let root = match unsafe { fork() }.unwrap() {
             ForkResult::Parent { child } => child,
@@ -7532,6 +7703,7 @@ mod test {
                 }
             }
         };
+        let _legacy = force_legacy.then(|| LegacyThreadGroup::new(root));
         let mut root_cleanup = TraceeCleanupGuard::new(root).unwrap();
         let status = waitpid_status_bounded(
             root,
@@ -7568,11 +7740,13 @@ mod test {
         let former = child.pid();
         let child_terminal = child.terminal_cleanup();
         let child_identity = child_terminal.event.identity().unwrap();
-        let fd = unsafe { libc::fcntl(child_identity.pidfd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
-        assert!(fd >= 0);
+        if force_legacy {
+            assert!(matches!(child_identity.pidfd, ThreadHandle::Procfs { .. }));
+        }
+        let pidfd = child_identity.pidfd.try_clone().unwrap();
         let mut child_cleanup = TraceeCleanupGuard {
             pid: former.into(),
-            pidfd: unsafe { OwnedFd::from_raw_fd(fd) },
+            pidfd,
             ownership: TraceeCleanupOwnership::PreRegistration,
             armed: true,
         };
@@ -8273,8 +8447,8 @@ mod test {
     }
 
     #[test]
-    fn unsupported_pidfd_thread_fails_closed_before_registration() {
-        for error in [Errno::EINVAL, Errno::ENOSYS] {
+    fn unavailable_pidfd_syscall_or_resources_fail_closed_before_registration() {
+        for error in [Errno::ENOSYS, Errno::EMFILE, Errno::EACCES] {
             let (pid, cleanup) =
                 spawn_stopped_process(None).expect("spawn unsupported-pidfd child");
             let running = Running::new(pid.into());
