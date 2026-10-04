@@ -119,8 +119,13 @@ fn actual_group_wait_follower_with_and_without_permit_never_invents_death_author
 
 #[test]
 fn initial_exec_preflight_requires_original_context_and_keeps_enrollment_after_replacement() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "runtime::parent_death_tests::initial_exec_preflight_requires_original_context_and_keeps_enrollment_after_replacement",
+    ) else {
+        return;
+    };
     let mut backend = KvmBackend::new(0x10000).expect("original-call control requires /dev/kvm");
-    let mut executor = executor();
+    let mut executor = cleanup.executor(executor());
     let _run = adopt(&executor);
     executor.enable_signal_dequeues();
     let memory = GuestMemory::new(0, 4096).unwrap();
@@ -285,6 +290,11 @@ fn default_preflight_refuses_but_live_unopted_static_executor_continues() {
 
 #[test]
 fn original_exec_callback_drop_revokes_staged_image_without_injection() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "runtime::parent_death_tests::original_exec_callback_drop_revokes_staged_image_without_injection",
+    ) else {
+        return;
+    };
     use std::io::Write;
     use std::os::fd::FromRawFd;
     // A parsed static ELF header suffices for this admission/teardown test;
@@ -305,7 +315,7 @@ fn original_exec_callback_drop_revokes_staged_image_without_injection() {
     let mut state = crate::executor::native_loaded_state(std::path::Path::new("/tmp"));
     state.executable_file = Some(Arc::new(file));
     state.executable_image = Arc::from(image);
-    let mut executor = ElfExecutor::new(state, true);
+    let mut executor = cleanup.executor(ElfExecutor::new(state, true));
     let _run = adopt(&executor);
     let mut backend =
         KvmBackend::new(0x10000).expect("callback teardown control requires /dev/kvm");
