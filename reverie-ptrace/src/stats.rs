@@ -27,11 +27,6 @@ use safeptrace::ChildOp;
 use safeptrace::Event;
 use safeptrace::Wait;
 
-/// The prefix [`PtraceBackendStatsSource::mark_last_stop_internal`] puts on a
-/// recorded stop description.
-#[cfg(test)]
-pub(crate) const INTERNAL_STOP_PREFIX: &str = "internal ";
-
 /// Stable counts of lifecycle transitions observed by the ptrace run loops.
 ///
 /// Every field is supported by ptrace. A zero therefore means the named
@@ -106,19 +101,18 @@ impl PtraceBackendStatsSnapshot {
     }
 
     /// Number of validated `SIGTRAP` stops raised by a rewritten site's
-    /// syscall trap: an e9patch injected-trap marker, or the LiteInst
-    /// runtime's trap `int3`.
+    /// syscall trap: an e9patch injected-trap marker.
     ///
-    /// This counts stops, not Tool callbacks. A LiteInst restart's re-trap is
-    /// a second stop for one hook entry, and a trapped `rt_sigreturn` or
+    /// This counts stops, not Tool callbacks. A trapped `rt_sigreturn` or
     /// unsubscribed syscall is a stop that makes no Tool callback.
     pub const fn injected_trap_stops(&self) -> u64 {
         self.injected_trap_stops
     }
 
     /// Number of the seccomp stops that the tracer completed itself, without
-    /// a Tool callback: LiteInst's mapping-syscall tracking and trap-only
-    /// Allow-class entries at a patched site.
+    /// a Tool callback: memory-mapping syscalls (`mmap`, `munmap`, `mremap`,
+    /// `mprotect`, `pkey_mprotect`) that the Tool did not subscribe to and a
+    /// guest-installed seccomp filter traced.
     ///
     /// These are included in [`Self::seccomp_stops`], because each one costs
     /// a stop like any other; this count says how many of them never reached
@@ -419,21 +413,6 @@ impl PtraceBackendStatsSource {
             .lock()
             .expect("signal trace lock poisoned")
             .clone()
-    }
-
-    /// Marks `pid`'s most recent recorded wait as tracer-internal: a stop
-    /// plain ptrace never produces (a trap-only Allow-class entry), which the
-    /// P2 comparator accounts for explicitly instead of comparing.
-    #[cfg(test)]
-    pub(crate) fn mark_last_stop_internal(&self, pid: reverie::Pid) {
-        let mut trace = self
-            .collector
-            .stop_trace
-            .lock()
-            .expect("stop trace lock poisoned");
-        if let Some((_, description)) = trace.iter_mut().rev().find(|(stop, _)| *stop == pid) {
-            description.insert_str(0, INTERNAL_STOP_PREFIX);
-        }
     }
 
     /// Returns every recorded run-loop wait in arrival order.
