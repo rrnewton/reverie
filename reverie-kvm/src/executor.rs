@@ -35,6 +35,7 @@ use crate::bootstrap::SegmentBase;
 use crate::elf::GUEST_CAPABILITY_MASK;
 use crate::elf::GuestFileIdentity;
 use crate::elf::GuestFileIdentityEntry;
+use crate::elf::IdentityTimestamps;
 use crate::elf::LoadedStaticElf;
 use crate::elf::RegularCreateDirectoryPolicy;
 use crate::elf::STACK_LIMIT;
@@ -2312,22 +2313,6 @@ pub(crate) struct ProcTransfer {
     in_flight: usize,
 }
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/924):
-// Review host metadata timestamps for Tool runs.
-/// A virtual file's identity carried by SCM_RIGHTS in a run that reports host
-/// metadata timestamps. The receiver finds the identity, and with it the
-/// fixed-timestamp marking, by the host object's identity even after every
-/// sender descriptor has closed. The pin keeps the inode from being reused
-/// while a message may still carry it; `in_flight` counts rights sent and not
-/// yet received.
-#[derive(Debug)]
-pub(crate) struct SyntheticTransfer {
-    identity: Arc<GuestFileIdentity>,
-    _pin: std::fs::File,
-    in_flight: usize,
-}
-
 fn host_file_key(fd: RawFd) -> Result<(libc::dev_t, libc::ino_t), i64> {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
     // SAFETY: stat is writable and fd is live.
@@ -2339,29 +2324,11 @@ fn host_file_key(fd: RawFd) -> Result<(libc::dev_t, libc::ino_t), i64> {
     Ok((stat.st_dev, stat.st_ino))
 }
 
-/// Bounds the tracked rights in flight across the namespace: process proc
-/// descriptions and, in a run that reports host metadata timestamps, virtual
-/// files. Linux bounds a user's in-flight rights by RLIMIT_NOFILE and fails the
-/// send with ETOOMANYREFS; here each tracked right also pins a host descriptor,
-/// and a right the host discards unreceived is never released, so the bound is
-/// small.
+/// Bounds the process proc rights in flight across the namespace. Linux bounds
+/// a user's in-flight rights by RLIMIT_NOFILE and fails the send with
+/// ETOOMANYREFS; here each tracked description also pins a host descriptor, and
+/// a right the host discards unreceived is never released, so the bound is small.
 const PROC_TRANSFER_LIMIT: usize = 1024;
-
-/// Counts the tracked rights in flight, process proc descriptions and virtual
-/// files together, against [`PROC_TRANSFER_LIMIT`].
-fn tracked_rights_in_flight(table: &crate::elf::GuestFileIdentityTable) -> usize {
-    let proc: usize = table
-        .proc_transfers
-        .values()
-        .map(|transfer| transfer.in_flight)
-        .sum();
-    let synthetic: usize = table
-        .synthetic_transfers
-        .values()
-        .map(|transfer| transfer.in_flight)
-        .sum();
-    proc + synthetic
-}
 
 /// Records one in-flight right for the process proc description at `guest_fd`.
 fn register_proc_transfer(
@@ -2379,7 +2346,12 @@ fn register_proc_transfer(
         .file_identity_table
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if tracked_rights_in_flight(&table) >= PROC_TRANSFER_LIMIT {
+    let in_flight: usize = table
+        .proc_transfers
+        .values()
+        .map(|transfer| transfer.in_flight)
+        .sum();
+    if in_flight >= PROC_TRANSFER_LIMIT {
         return Err(negative_errno(libc::ETOOMANYREFS));
     }
     match table.proc_transfers.entry(key) {
@@ -2400,46 +2372,6 @@ fn register_proc_transfer(
                 description: description.clone(),
                 proc_inode,
                 nofollow: state.synthetic_proc_nofollow_fds.contains(&guest_fd),
-                // SAFETY: successful F_DUPFD_CLOEXEC transfers ownership.
-                _pin: unsafe { std::fs::File::from_raw_fd(pin) },
-                in_flight: 1,
-            });
-        }
-    }
-    Ok(key)
-}
-
-/// Records one in-flight right for the virtual file whose identity is
-/// `identity` and whose carrier is `host_fd`.
-fn register_synthetic_transfer(
-    state: &LoadedStaticElf,
-    identity: &Arc<GuestFileIdentity>,
-    host_fd: RawFd,
-) -> Result<(libc::dev_t, libc::ino_t), i64> {
-    let key = host_file_key(host_fd)?;
-    let mut table = state
-        .file_identity_table
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if tracked_rights_in_flight(&table) >= PROC_TRANSFER_LIMIT {
-        return Err(negative_errno(libc::ETOOMANYREFS));
-    }
-    match table.synthetic_transfers.entry(key) {
-        std::collections::btree_map::Entry::Occupied(mut entry) => {
-            // The pin makes a different identity at this host object impossible.
-            if !Arc::ptr_eq(&entry.get().identity, identity) {
-                return Err(negative_errno(libc::ENOSYS));
-            }
-            entry.get_mut().in_flight += 1;
-        }
-        std::collections::btree_map::Entry::Vacant(entry) => {
-            // SAFETY: host_fd is live; success returns a new owned descriptor.
-            let pin = unsafe { libc::fcntl(host_fd, libc::F_DUPFD_CLOEXEC, 0) };
-            if pin < 0 {
-                return Err(io_error(std::io::Error::last_os_error()));
-            }
-            entry.insert(SyntheticTransfer {
-                identity: identity.clone(),
                 // SAFETY: successful F_DUPFD_CLOEXEC transfers ownership.
                 _pin: unsafe { std::fs::File::from_raw_fd(pin) },
                 in_flight: 1,
@@ -2501,17 +2433,13 @@ fn release_dropped_proc_transfers<'a>(
     release_proc_transfers(state, &keys);
 }
 
-/// Consumes one in-flight right, returning its description state. A virtual
-/// file's right has no description state; consuming it only releases its
-/// identity pin, after a receiver has taken the identity or once the right can
-/// no longer be received.
+/// Consumes one in-flight right, returning its description state.
 fn take_proc_transfer(
     table: &mut crate::elf::GuestFileIdentityTable,
     key: (libc::dev_t, libc::ino_t),
 ) -> Option<(Arc<FdinfoDescription>, u64, bool)> {
     let std::collections::btree_map::Entry::Occupied(mut entry) = table.proc_transfers.entry(key)
     else {
-        take_synthetic_transfer(table, key);
         return None;
     };
     let transfer = entry.get_mut();
@@ -2525,21 +2453,6 @@ fn take_proc_transfer(
         entry.remove();
     }
     Some(received)
-}
-
-/// Consumes one in-flight virtual-file right, dropping its pin with the last.
-fn take_synthetic_transfer(
-    table: &mut crate::elf::GuestFileIdentityTable,
-    key: (libc::dev_t, libc::ino_t),
-) {
-    if let std::collections::btree_map::Entry::Occupied(mut entry) =
-        table.synthetic_transfers.entry(key)
-    {
-        entry.get_mut().in_flight -= 1;
-        if entry.get().in_flight == 0 {
-            entry.remove();
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -9623,8 +9536,22 @@ fn open_virtual_file(
     if flags as libc::c_int & libc::O_ACCMODE != libc::O_RDONLY {
         return negative_errno(libc::EACCES);
     }
-    let name = c"reverie-kvm-virtual";
-    let host_fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/933):
+    // Review the fixed-timestamp classes of backend-made carriers.
+    // A run that reports host metadata timestamps gives the carrier its own
+    // name and a full seal set, so that a receiver recognizes it from the
+    // carrier alone (see `received_carrier_timestamps`) and keeps its fixed
+    // timestamps. Every other run keeps the original unsealed carrier.
+    let (name, memfd_flags) = if state.host_metadata_timestamps {
+        (
+            VIRTUAL_FILE_CARRIER_NAME,
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        )
+    } else {
+        (c"reverie-kvm-virtual", libc::MFD_CLOEXEC)
+    };
+    let host_fd = unsafe { libc::memfd_create(name.as_ptr(), memfd_flags) };
     if host_fd < 0 {
         return io_error(std::io::Error::last_os_error());
     }
@@ -9632,6 +9559,28 @@ fn open_virtual_file(
     let mut file = unsafe { std::fs::File::from_raw_fd(host_fd) };
     if let Err(error) = file.write_all(contents) {
         return io_error(error);
+    }
+    if state.host_metadata_timestamps {
+        // Seal the populated contents before any guest-visible handle exists.
+        // SAFETY: file owns a live sealable memfd and the seal mask is valid.
+        if unsafe {
+            libc::fcntl(
+                file.as_raw_fd(),
+                libc::F_ADD_SEALS,
+                SYNTHETIC_PROC_REQUIRED_SEALS,
+            )
+        } != 0
+        {
+            return io_error(std::io::Error::last_os_error());
+        }
+        // SAFETY: file owns a live descriptor and F_GET_SEALS has no third argument.
+        let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
+        if seals < 0 {
+            return io_error(std::io::Error::last_os_error());
+        }
+        if !supported_synthetic_proc_seals(seals) {
+            return negative_errno(libc::EOPNOTSUPP);
+        }
     }
     let read_only = match std::fs::OpenOptions::new()
         .read(true)
@@ -10144,10 +10093,36 @@ fn downgrade_file_identity(state: &LoadedStaticElf, key: (libc::dev_t, libc::ino
     table.objects.retain(|_, entry| entry.is_live());
 }
 
+/// Finds or allocates the identity of a host object the backend just made or
+/// opened. `timestamps` classifies a new identity.
 fn allocate_fd_object_inode(
     state: &LoadedStaticElf,
     file: &std::fs::File,
-    synthetic_metadata: bool,
+    timestamps: IdentityTimestamps,
+) -> Result<Arc<GuestFileIdentity>, i64> {
+    allocate_fd_object_identity(state, file, timestamps, false)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/933):
+// Review the fixed-timestamp classes of backend-made carriers.
+/// Finds or allocates the identity of a host object received in an SCM_RIGHTS
+/// message. A live identity is the sender's and is shared as is, so every alias
+/// keeps reporting the same timestamps. `timestamps`, recognized from the
+/// carrier itself, classifies a new identity.
+fn allocate_received_fd_object_inode(
+    state: &LoadedStaticElf,
+    file: &std::fs::File,
+    timestamps: IdentityTimestamps,
+) -> Result<Arc<GuestFileIdentity>, i64> {
+    allocate_fd_object_identity(state, file, timestamps, true)
+}
+
+fn allocate_fd_object_identity(
+    state: &LoadedStaticElf,
+    file: &std::fs::File,
+    timestamps: IdentityTimestamps,
+    received: bool,
 ) -> Result<Arc<GuestFileIdentity>, i64> {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
     // SAFETY: stat is writable and file owns a live descriptor.
@@ -10180,10 +10155,11 @@ fn allocate_fd_object_inode(
         .get(&key)
         .and_then(GuestFileIdentityEntry::identity)
     {
-        // A virtual file's carrier is created just before its insertion, so
-        // no live identity can already name it. Refuse rather than report a
-        // carrier's host timestamps through an identity without the marking.
-        if synthetic_metadata && !identity.synthetic_metadata {
+        // A backend-made carrier is created just before its insertion, so no
+        // live identity can already name it. Refuse rather than report the
+        // carrier's timestamps through an identity of another class.
+        if !received && timestamps != IdentityTimestamps::Host && identity.timestamps != timestamps
+        {
             return Err(negative_errno(libc::EIO));
         }
         return Ok(identity);
@@ -10193,16 +10169,13 @@ fn allocate_fd_object_inode(
     table.next_inode = inode
         .checked_add(1)
         .ok_or_else(|| negative_errno(libc::EOVERFLOW))?;
-    let identity = Arc::new(GuestFileIdentity {
-        inode,
-        synthetic_metadata,
-    });
+    let identity = Arc::new(GuestFileIdentity { inode, timestamps });
     // Linked filesystem objects keep Linux inode identity across close/reopen.
     // Anonymous or deleted objects cannot be reopened by path, so retain them
     // only while a descriptor in any forked state holds a strong identity. A
-    // virtual file's marking must end with its carrier, so that a later object
-    // at a reused host inode never inherits it.
-    let entry = if persistent && !synthetic_metadata {
+    // carrier's class must end with the carrier, so that a later object at a
+    // reused host inode never inherits it.
+    let entry = if persistent && timestamps == IdentityTimestamps::Host {
         GuestFileIdentityEntry::Persistent(identity.clone())
     } else {
         GuestFileIdentityEntry::Ephemeral(Arc::downgrade(&identity))
@@ -10218,7 +10191,13 @@ fn insert_file_with_flags(
     close_on_exec: bool,
     output_alias: Option<OutputAlias>,
 ) -> i64 {
-    insert_file_with_identity(state, file, close_on_exec, output_alias, false)
+    insert_file_with_identity(
+        state,
+        file,
+        close_on_exec,
+        output_alias,
+        IdentityTimestamps::Host,
+    )
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -10231,7 +10210,13 @@ fn insert_virtual_file(
     file: std::fs::File,
     close_on_exec: bool,
 ) -> i64 {
-    insert_file_with_identity(state, file, close_on_exec, None, true)
+    insert_file_with_identity(
+        state,
+        file,
+        close_on_exec,
+        None,
+        IdentityTimestamps::VirtualFile,
+    )
 }
 
 fn insert_file_with_identity(
@@ -10239,7 +10224,7 @@ fn insert_file_with_identity(
     file: std::fs::File,
     close_on_exec: bool,
     output_alias: Option<OutputAlias>,
-    synthetic_metadata: bool,
+    timestamps: IdentityTimestamps,
 ) -> i64 {
     let Some(fd) = (0..GUEST_NOFILE_LIMIT)
         .find(|fd| !is_open_standard(state, *fd) && !state.files.contains_key(fd))
@@ -10247,7 +10232,7 @@ fn insert_file_with_identity(
         state.file_retirement.retire([file]);
         return negative_errno(libc::EMFILE);
     };
-    let object_inode = match allocate_fd_object_inode(state, &file, synthetic_metadata) {
+    let object_inode = match allocate_fd_object_inode(state, &file, timestamps) {
         Ok(inode) => inode,
         Err(error) => {
             state.file_retirement.retire([file]);
@@ -13454,15 +13439,6 @@ fn translate_outgoing_rights(
                 // cannot reconstruct private stream/signalfd metadata. Refuse
                 // before host sendmsg delivers any payload or descriptors.
                 return Err(negative_errno(libc::ENOSYS));
-            } else if state.host_metadata_timestamps
-                && let Some(identity) = state
-                    .fd_object_inodes
-                    .get(&guest_fd)
-                    .filter(|identity| identity.synthetic_metadata)
-            {
-                // The receiver keeps the fixed-timestamp marking even if every
-                // sender descriptor closes before it receives the right.
-                transfers.push(register_synthetic_transfer(state, identity, host_fd)?);
             }
             write_control_fd(control, offset, host_fd)?;
         }
@@ -13651,7 +13627,9 @@ fn install_received_rights(
 
     while let Some(((control_offset, file), guest_fd)) = pending.next() {
         let prepared = received_proc_inode(file.as_file()).and_then(|proc_inode| {
-            let object_inode = allocate_fd_object_inode(state, file.as_file(), false)?;
+            let timestamps = received_carrier_timestamps(state, file.as_file());
+            let object_inode =
+                allocate_received_fd_object_inode(state, file.as_file(), timestamps)?;
             let transfer = received_proc_transfer(state, file.as_file(), peek)?;
             Ok((proc_inode, object_inode, transfer))
         });
@@ -15098,22 +15076,32 @@ fn statx(
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 // TODO-HUMAN-REVIEW(PR-183): Review fixed host-backed metadata timestamps.
 fn sanitize_stat_timestamps(stat: &mut libc::stat) {
-    stat.st_atime = DETERMINISTIC_METADATA_SECONDS;
-    stat.st_atime_nsec = 0;
-    stat.st_mtime = DETERMINISTIC_METADATA_SECONDS;
-    stat.st_mtime_nsec = 0;
-    stat.st_ctime = DETERMINISTIC_METADATA_SECONDS;
-    stat.st_ctime_nsec = 0;
+    set_stat_timestamps(stat, DETERMINISTIC_METADATA_SECONDS);
 }
 
 fn sanitize_statx_timestamps(stat: &mut libc::statx) {
+    set_statx_timestamps(stat, DETERMINISTIC_METADATA_SECONDS);
+}
+
+/// Sets every timestamp of a `stat` result to `seconds`.
+fn set_stat_timestamps(stat: &mut libc::stat, seconds: libc::time_t) {
+    stat.st_atime = seconds;
+    stat.st_atime_nsec = 0;
+    stat.st_mtime = seconds;
+    stat.st_mtime_nsec = 0;
+    stat.st_ctime = seconds;
+    stat.st_ctime_nsec = 0;
+}
+
+/// Sets every timestamp of a `statx` result, birth time included, to `seconds`.
+fn set_statx_timestamps(stat: &mut libc::statx, seconds: libc::time_t) {
     for timestamp in [
         &mut stat.stx_atime,
         &mut stat.stx_btime,
         &mut stat.stx_ctime,
         &mut stat.stx_mtime,
     ] {
-        timestamp.tv_sec = DETERMINISTIC_METADATA_SECONDS;
+        timestamp.tv_sec = seconds;
         timestamp.tv_nsec = 0;
     }
 }
@@ -16397,7 +16385,15 @@ fn open_synthetic_proc(
     // zero without sharing the construction description.
     drop(file);
     let inode = synthetic_proc_inode(normalized_path);
-    let guest_fd = insert_file_with_flags(state, exposed, close_on_exec, None);
+    // The snapshot class lets a receiver of this descriptor, which has no
+    // `proc_files` entry, keep timestamp 0.
+    let guest_fd = insert_file_with_identity(
+        state,
+        exposed,
+        close_on_exec,
+        None,
+        IdentityTimestamps::ProcSnapshot,
+    );
     if guest_fd >= 0 {
         let guest_fd = guest_fd as libc::c_int;
         state.proc_files.insert(guest_fd, inode);
@@ -16591,7 +16587,7 @@ fn guest_fd_object_identity(
         .unwrap_or_else(|| {
             Arc::new(GuestFileIdentity {
                 inode: synthetic_guest_fd_inode(guest_fd, false),
-                synthetic_metadata: false,
+                timestamps: IdentityTimestamps::Host,
             })
         })
 }
@@ -16621,11 +16617,10 @@ fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: 
         sanitize_stat_timestamps(stat);
         return;
     }
-    if is_virtual_file(state, guest_fd) {
-        sanitize_stat_timestamps(stat);
-        return;
+    match synthetic_descriptor_seconds(state, guest_fd) {
+        Some(seconds) => set_stat_timestamps(stat, seconds),
+        None => sanitize_host_stat_timestamps(state, stat),
     }
-    sanitize_host_stat_timestamps(state, stat);
 }
 
 fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: &mut libc::statx) {
@@ -16650,23 +16645,103 @@ fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat:
         sanitize_statx_timestamps(stat);
         return;
     }
-    if is_virtual_file(state, guest_fd) {
-        sanitize_statx_timestamps(stat);
-        return;
+    match synthetic_descriptor_seconds(state, guest_fd) {
+        Some(seconds) => set_statx_timestamps(stat, seconds),
+        None => sanitize_host_statx_timestamps(state, stat),
     }
-    sanitize_host_statx_timestamps(state, stat);
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/924):
-// Review host metadata timestamps for Tool runs.
-/// Whether `guest_fd` names a virtual file the backend made, whose host
-/// timestamps are those of its carrier and so stay fixed.
-fn is_virtual_file(state: &LoadedStaticElf, guest_fd: libc::c_int) -> bool {
-    state
+// TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/933):
+// Review the fixed-timestamp classes of backend-made carriers.
+/// The fixed timestamp that `guest_fd` reports in a run that reports host
+/// metadata timestamps, because its host times are those of a carrier the
+/// backend made rather than of any guest-visible object. `None` means a real
+/// host object, or a run that reports only fixed timestamps.
+///
+/// A virtual file and a `/proc` snapshot are classified by their identity,
+/// which every alias shares. The virtual signalfd's private eventfd and the
+/// self-pidfd proxy are classified by the descriptor instead: on a kernel
+/// without pidfs, every anonymous-inode descriptor shares one host inode, so
+/// their identity is shared with native descriptors and cannot carry a class.
+fn synthetic_descriptor_seconds(
+    state: &LoadedStaticElf,
+    guest_fd: libc::c_int,
+) -> Option<libc::time_t> {
+    if !state.host_metadata_timestamps {
+        return None;
+    }
+    match state
         .fd_object_inodes
         .get(&guest_fd)
-        .is_some_and(|identity| identity.synthetic_metadata)
+        .map(|identity| identity.timestamps)
+    {
+        Some(IdentityTimestamps::VirtualFile) => return Some(DETERMINISTIC_METADATA_SECONDS),
+        Some(IdentityTimestamps::ProcSnapshot) => return Some(0),
+        Some(IdentityTimestamps::Host) | None => {}
+    }
+    if signalfd_mask(state, guest_fd).is_some() || is_pidfd(state, guest_fd) {
+        return Some(DETERMINISTIC_METADATA_SECONDS);
+    }
+    None
+}
+
+/// Whether `guest_fd` is a pidfd. Every pidfd a guest can hold is the
+/// supervisor pidfd that `pidfd_open` hands out for the guest's own process:
+/// SCM_PIDFD is closed on receipt and clone3 refuses a pidfd field. Linux names
+/// a pidfd `anon_inode:[pidfd]` with and without pidfs.
+fn is_pidfd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> bool {
+    host_fd(state, guest_fd)
+        .and_then(|host_fd| canonical_fd_path(host_fd).ok())
+        .is_some_and(|target| target.as_os_str().as_bytes() == b"anon_inode:[pidfd]")
+}
+
+/// The memfd name of a virtual-file carrier in a run that reports host
+/// metadata timestamps. It keeps the `reverie-kvm-virtual` prefix that path
+/// checks such as `truncate` match.
+const VIRTUAL_FILE_CARRIER_NAME: &std::ffi::CStr = c"reverie-kvm-virtual-file";
+
+/// Classifies a carrier received in an SCM_RIGHTS message from the carrier
+/// itself, so that the class survives every sender descriptor closing before
+/// the receive, with nothing to account for while the right is in flight. A
+/// virtual-file or `/proc` snapshot carrier is a memfd with its own name and
+/// the full synthetic seal set. A guest that makes such a memfd itself gets
+/// only fixed timestamps for it. Anything else, including a failed probe, is a
+/// real host object.
+fn received_carrier_timestamps(
+    state: &LoadedStaticElf,
+    file: &std::fs::File,
+) -> IdentityTimestamps {
+    if !state.host_metadata_timestamps {
+        return IdentityTimestamps::Host;
+    }
+    let Ok(target) = canonical_fd_path(file.as_raw_fd()) else {
+        return IdentityTimestamps::Host;
+    };
+    let timestamps = match target.as_os_str().as_bytes() {
+        b"/memfd:reverie-kvm-virtual-file (deleted)" => IdentityTimestamps::VirtualFile,
+        b"/memfd:reverie-kvm-proc (deleted)" => IdentityTimestamps::ProcSnapshot,
+        _ => return IdentityTimestamps::Host,
+    };
+    if carrier_seals(file).is_some_and(supported_synthetic_proc_seals) {
+        timestamps
+    } else {
+        IdentityTimestamps::Host
+    }
+}
+
+/// The seals of a memfd. An O_PATH description cannot query them, so a fresh
+/// read-only description of the same memfd answers for it.
+fn carrier_seals(file: &std::fs::File) -> Option<libc::c_int> {
+    // SAFETY: file owns a live descriptor and F_GET_SEALS has no third argument.
+    let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
+    if seals >= 0 {
+        return Some(seals);
+    }
+    let reopened = std::fs::File::open(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()?;
+    // SAFETY: reopened owns a live descriptor and F_GET_SEALS has no third argument.
+    let seals = unsafe { libc::fcntl(reopened.as_raw_fd(), libc::F_GET_SEALS) };
+    (seals >= 0).then_some(seals)
 }
 
 fn synthetic_guest_fd_symlink_stat(guest_fd: libc::c_int) -> libc::stat {
@@ -20095,7 +20170,6 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
             proc_transfers: std::collections::BTreeMap::new(),
-            synthetic_transfers: std::collections::BTreeMap::new(),
         })),
     }
 }
@@ -43047,8 +43121,15 @@ mod tests {
         // loginuid and the CPU frequency are the backend's virtual files;
         // uptime is a synthetic /proc file.
         for fd in [loginuid, frequency] {
-            assert!(state.fd_object_inodes[&fd].synthetic_metadata);
+            assert_eq!(
+                state.fd_object_inodes[&fd].timestamps,
+                IdentityTimestamps::VirtualFile
+            );
         }
+        assert_eq!(
+            state.fd_object_inodes[&uptime].timestamps,
+            IdentityTimestamps::ProcSnapshot
+        );
 
         // A synthetic /proc file reports the epoch; a virtual file reports the
         // backend's fixed metadata time.
@@ -43162,6 +43243,15 @@ mod tests {
             ),
             1
         );
+        assert!(
+            state
+                .file_identity_table
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .proc_transfers
+                .is_empty(),
+            "a virtual-file right in flight holds no registration"
+        );
         let (_, loginuid_duplicate, loginuid_reopened) = aliases[0];
         for fd in [loginuid, loginuid_duplicate, loginuid_reopened] {
             assert_eq!(
@@ -43201,7 +43291,10 @@ mod tests {
         memory.read(RECV_CONTROL, &mut received_control).unwrap();
         let received = control_rights(&received_control);
         assert_eq!(received.len(), 1);
-        assert!(state.fd_object_inodes[&received[0]].synthetic_metadata);
+        assert_eq!(
+            state.fd_object_inodes[&received[0]].timestamps,
+            IdentityTimestamps::VirtualFile
+        );
         assert_fixed_descriptor_timestamps(
             &mut memory,
             &mut state,
@@ -43214,8 +43307,474 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(
-            table.synthetic_transfers.is_empty(),
-            "the receive releases the in-flight pin"
+            table.proc_transfers.is_empty(),
+            "the receive leaves no registration"
+        );
+    }
+
+    const RIGHTS_PAIR: u64 = 0x1c0;
+    const RIGHTS_SEGMENT: u64 = 0x400;
+    const RIGHTS_IOV: u64 = 0x420;
+    const RIGHTS_MSG: u64 = 0x460;
+    const RIGHTS_CONTROL: u64 = 0x4c0;
+    const RIGHTS_CONTROL_CAPACITY: usize = 64;
+
+    /// Creates a guest `SOCK_DGRAM` Unix socket pair.
+    fn guest_datagram_pair(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+    ) -> [libc::c_int; 2] {
+        assert_eq!(
+            syscall_result(
+                memory,
+                state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_DGRAM as u64,
+                    0,
+                    RIGHTS_PAIR,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        read_struct(memory, RIGHTS_PAIR)
+    }
+
+    fn guest_close(memory: &mut GuestMemory, state: &mut LoadedStaticElf, fd: libc::c_int) {
+        assert_eq!(
+            syscall_result(memory, state, libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]),
+            0,
+            "close {fd}"
+        );
+    }
+
+    /// Sends one byte from `socket` with `fds` as SCM_RIGHTS and returns the
+    /// sendmsg result.
+    fn send_guest_rights(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        socket: libc::c_int,
+        fds: &[libc::c_int],
+    ) -> i64 {
+        memory.write(RIGHTS_SEGMENT, b"x").unwrap();
+        let iov = libc::iovec {
+            iov_base: RIGHTS_SEGMENT as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(memory, RIGHTS_IOV, &iov), 0);
+        let control = rights_control(fds);
+        assert!(control.len() <= RIGHTS_CONTROL_CAPACITY);
+        memory.write(RIGHTS_CONTROL, &control).unwrap();
+        // SAFETY: libc::msghdr is plain data; a zeroed value is valid.
+        let mut message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        message.msg_iov = RIGHTS_IOV as usize as *mut libc::iovec;
+        message.msg_iovlen = 1;
+        message.msg_control = RIGHTS_CONTROL as usize as *mut libc::c_void;
+        message.msg_controllen = control.len();
+        assert_eq!(write_struct(memory, RIGHTS_MSG, &message), 0);
+        syscall_result(
+            memory,
+            state,
+            libc::SYS_sendmsg,
+            [socket as u64, RIGHTS_MSG, 0, 0, 0, 0],
+        )
+    }
+
+    /// Receives one byte on `socket` with `capacity` bytes of control space.
+    /// Returns the recvmsg result, the received message header, and the guest
+    /// descriptors it installed.
+    fn receive_guest_rights(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        socket: libc::c_int,
+        capacity: usize,
+    ) -> (i64, libc::msghdr, Vec<libc::c_int>) {
+        assert!(capacity <= RIGHTS_CONTROL_CAPACITY);
+        let iov = libc::iovec {
+            iov_base: RIGHTS_SEGMENT as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(memory, RIGHTS_IOV, &iov), 0);
+        memory
+            .write(RIGHTS_CONTROL, &[0_u8; RIGHTS_CONTROL_CAPACITY])
+            .unwrap();
+        // SAFETY: libc::msghdr is plain data; a zeroed value is valid.
+        let mut message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        message.msg_iov = RIGHTS_IOV as usize as *mut libc::iovec;
+        message.msg_iovlen = 1;
+        if capacity != 0 {
+            message.msg_control = RIGHTS_CONTROL as usize as *mut libc::c_void;
+        }
+        message.msg_controllen = capacity;
+        assert_eq!(write_struct(memory, RIGHTS_MSG, &message), 0);
+        let result = syscall_result(
+            memory,
+            state,
+            libc::SYS_recvmsg,
+            [socket as u64, RIGHTS_MSG, 0, 0, 0, 0],
+        );
+        let received: libc::msghdr = read_struct(memory, RIGHTS_MSG);
+        if result < 0 {
+            return (result, received, Vec::new());
+        }
+        let mut control = vec![0; received.msg_controllen];
+        memory.read(RIGHTS_CONTROL, &mut control).unwrap();
+        let fds = control_rights(&control);
+        (result, received, fds)
+    }
+
+    /// One way Linux discards a queued SCM_RIGHTS right without a receiver
+    /// ever installing it.
+    #[derive(Clone, Copy, Debug)]
+    enum RightDiscard {
+        /// A `read` of the message, which takes no control data.
+        Read,
+        /// A `recvmsg` with no control capacity, which truncates the rights.
+        ZeroCapacityRecvmsg,
+        /// Closing the receiving endpoint with the message still queued.
+        ReceiverClose,
+    }
+
+    /// In a run that reports host metadata timestamps, sends a virtual file's
+    /// right and lets Linux discard it, more than [`PROC_TRANSFER_LIMIT`]
+    /// times. A discarded right must leave nothing counted against the limit,
+    /// so a virtual file and a process /proc description can both still be
+    /// sent and received afterwards.
+    fn assert_discarded_virtual_file_rights_hold_nothing(discard: RightDiscard) {
+        const LOGINUID_ADDRESS: u64 = 0x100;
+        const PROC_STAT_ADDRESS: u64 = 0x140;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.host_metadata_timestamps = true;
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        write_c_string(&mut memory, LOGINUID_ADDRESS, "/proc/self/loginuid");
+        write_c_string(&mut memory, PROC_STAT_ADDRESS, "/proc/self/stat");
+        let open = |memory: &mut GuestMemory, state: &mut LoadedStaticElf, path: u64| {
+            let fd = syscall_result(
+                memory,
+                state,
+                libc::SYS_openat,
+                [libc::AT_FDCWD as u64, path, libc::O_RDONLY as u64, 0, 0, 0],
+            );
+            assert!(fd >= 0, "open failed: {fd}");
+            fd as libc::c_int
+        };
+        let loginuid = open(&mut memory, &mut state, LOGINUID_ADDRESS);
+
+        for cycle in 0..PROC_TRANSFER_LIMIT + 2 {
+            let [sender, receiver] = guest_datagram_pair(&mut memory, &mut state);
+            assert_eq!(
+                send_guest_rights(&mut memory, &mut state, sender, &[loginuid]),
+                1,
+                "{discard:?} cycle {cycle}: send /proc/self/loginuid"
+            );
+            match discard {
+                RightDiscard::Read => assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_read,
+                        [receiver as u64, RIGHTS_SEGMENT, 1, 0, 0, 0],
+                    ),
+                    1,
+                    "{discard:?} cycle {cycle}: read"
+                ),
+                RightDiscard::ZeroCapacityRecvmsg => {
+                    let (result, message, fds) =
+                        receive_guest_rights(&mut memory, &mut state, receiver, 0);
+                    assert_eq!(result, 1, "{discard:?} cycle {cycle}: recvmsg");
+                    assert!(fds.is_empty(), "{discard:?} cycle {cycle}: {fds:?}");
+                    assert_ne!(
+                        message.msg_flags & libc::MSG_CTRUNC,
+                        0,
+                        "{discard:?} cycle {cycle}: the rights were truncated"
+                    );
+                }
+                RightDiscard::ReceiverClose => {}
+            }
+            guest_close(&mut memory, &mut state, receiver);
+            guest_close(&mut memory, &mut state, sender);
+        }
+
+        let proc_stat = open(&mut memory, &mut state, PROC_STAT_ADDRESS);
+        for (fd, what) in [
+            (loginuid, "/proc/self/loginuid"),
+            (proc_stat, "/proc/self/stat"),
+        ] {
+            let [sender, receiver] = guest_datagram_pair(&mut memory, &mut state);
+            assert_eq!(
+                send_guest_rights(&mut memory, &mut state, sender, &[fd]),
+                1,
+                "{discard:?}: send {what} after the discarded rights"
+            );
+            let (result, _, received) =
+                receive_guest_rights(&mut memory, &mut state, receiver, RIGHTS_CONTROL_CAPACITY);
+            assert_eq!(result, 1, "{discard:?}: receive {what}");
+            assert_eq!(received.len(), 1, "{discard:?}: receive {what}");
+            if fd == loginuid {
+                assert_fixed_descriptor_timestamps(
+                    &mut memory,
+                    &mut state,
+                    received[0],
+                    DETERMINISTIC_METADATA_SECONDS,
+                    "/proc/self/loginuid received after the discarded rights",
+                );
+            }
+            for fd in [received[0], receiver, sender] {
+                guest_close(&mut memory, &mut state, fd);
+            }
+        }
+        let table = state
+            .file_identity_table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            table.proc_transfers.is_empty(),
+            "{discard:?}: every received right released its registration"
+        );
+    }
+
+    #[test]
+    fn host_metadata_timestamps_hold_nothing_for_virtual_file_rights_discarded_by_read() {
+        assert_discarded_virtual_file_rights_hold_nothing(RightDiscard::Read);
+    }
+
+    #[test]
+    fn host_metadata_timestamps_hold_nothing_for_virtual_file_rights_truncated_by_recvmsg() {
+        assert_discarded_virtual_file_rights_hold_nothing(RightDiscard::ZeroCapacityRecvmsg);
+    }
+
+    #[test]
+    fn host_metadata_timestamps_hold_nothing_for_virtual_file_rights_dropped_by_receiver_close() {
+        assert_discarded_virtual_file_rights_hold_nothing(RightDiscard::ReceiverClose);
+    }
+
+    #[test]
+    fn host_metadata_timestamps_keep_received_proc_snapshots_at_the_epoch() {
+        const UPTIME_ADDRESS: u64 = 0x100;
+
+        for host_metadata_timestamps in [false, true] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            state.host_metadata_timestamps = host_metadata_timestamps;
+            // With the setting on, a synthetic /proc file reports the epoch
+            // through every alias, a received one included. With the setting
+            // off nothing changes: a received snapshot reports the fixed
+            // metadata time it has always reported.
+            let fixed = if host_metadata_timestamps {
+                0
+            } else {
+                DETERMINISTIC_METADATA_SECONDS
+            };
+            let setting = if host_metadata_timestamps {
+                "setting on"
+            } else {
+                "setting off"
+            };
+            let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+            write_c_string(&mut memory, UPTIME_ADDRESS, "/proc/uptime");
+            let uptime = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_openat,
+                [
+                    libc::AT_FDCWD as u64,
+                    UPTIME_ADDRESS,
+                    libc::O_RDONLY as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            );
+            assert!(uptime >= 0, "open /proc/uptime failed: {uptime}");
+            let uptime = uptime as libc::c_int;
+            let [sender, receiver] = guest_datagram_pair(&mut memory, &mut state);
+
+            // Received while the sender's descriptor is still open.
+            assert_eq!(
+                send_guest_rights(&mut memory, &mut state, sender, &[uptime]),
+                1
+            );
+            let (result, _, received) =
+                receive_guest_rights(&mut memory, &mut state, receiver, RIGHTS_CONTROL_CAPACITY);
+            assert_eq!(result, 1);
+            assert_eq!(received.len(), 1);
+            assert_fixed_descriptor_timestamps(
+                &mut memory,
+                &mut state,
+                received[0],
+                fixed,
+                &format!("{setting}: /proc/uptime received while the sender is open"),
+            );
+            let duplicate = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup,
+                [received[0] as u64, 0, 0, 0, 0, 0],
+            );
+            assert!(duplicate >= 0, "dup failed: {duplicate}");
+            assert_fixed_descriptor_timestamps(
+                &mut memory,
+                &mut state,
+                duplicate as libc::c_int,
+                fixed,
+                &format!("{setting}: a dup of the received /proc/uptime"),
+            );
+
+            // Received after every other descriptor for it has closed.
+            assert_eq!(
+                send_guest_rights(&mut memory, &mut state, sender, &[uptime]),
+                1
+            );
+            for fd in [uptime, received[0], duplicate as libc::c_int] {
+                guest_close(&mut memory, &mut state, fd);
+            }
+            let (result, _, late) =
+                receive_guest_rights(&mut memory, &mut state, receiver, RIGHTS_CONTROL_CAPACITY);
+            assert_eq!(result, 1);
+            assert_eq!(late.len(), 1);
+            assert_fixed_descriptor_timestamps(
+                &mut memory,
+                &mut state,
+                late[0],
+                fixed,
+                &format!("{setting}: /proc/uptime received after the sender closed"),
+            );
+            let mut child = state.try_clone_for_fork(2).unwrap();
+            assert_fixed_descriptor_timestamps(
+                &mut memory,
+                &mut child,
+                late[0],
+                fixed,
+                &format!("{setting}: the received /proc/uptime in a forked child"),
+            );
+
+            // An O_PATH snapshot cannot report its seals itself; received after
+            // its sender closed, it still reports the epoch.
+            let path_only = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_openat,
+                [
+                    libc::AT_FDCWD as u64,
+                    UPTIME_ADDRESS,
+                    (libc::O_PATH | libc::O_CLOEXEC) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            );
+            assert!(
+                path_only >= 0,
+                "O_PATH open /proc/uptime failed: {path_only}"
+            );
+            let path_only = path_only as libc::c_int;
+            assert_eq!(
+                send_guest_rights(&mut memory, &mut state, sender, &[path_only]),
+                1
+            );
+            guest_close(&mut memory, &mut state, path_only);
+            let (result, _, received_path) =
+                receive_guest_rights(&mut memory, &mut state, receiver, RIGHTS_CONTROL_CAPACITY);
+            assert_eq!(result, 1);
+            assert_eq!(received_path.len(), 1);
+            assert_fixed_descriptor_timestamps(
+                &mut memory,
+                &mut state,
+                received_path[0],
+                fixed,
+                &format!("{setting}: an O_PATH /proc/uptime received after the sender closed"),
+            );
+        }
+    }
+
+    /// Asserts that `fd`, a duplicate of it, and both in a forked child report
+    /// only the fixed metadata time.
+    fn assert_fixed_through_dup_and_fork(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        fd: libc::c_int,
+        name: &str,
+    ) {
+        assert_fixed_descriptor_timestamps(memory, state, fd, DETERMINISTIC_METADATA_SECONDS, name);
+        let duplicate = syscall_result(memory, state, libc::SYS_dup, [fd as u64, 0, 0, 0, 0, 0]);
+        assert!(duplicate >= 0, "{name}: dup failed: {duplicate}");
+        let duplicate = duplicate as libc::c_int;
+        assert_fixed_descriptor_timestamps(
+            memory,
+            state,
+            duplicate,
+            DETERMINISTIC_METADATA_SECONDS,
+            &format!("{name} dup"),
+        );
+        let mut child = state.try_clone_for_fork(2).unwrap();
+        for (fd, alias) in [(fd, "original"), (duplicate, "dup")] {
+            assert_fixed_descriptor_timestamps(
+                memory,
+                &mut child,
+                fd,
+                DETERMINISTIC_METADATA_SECONDS,
+                &format!("{name} {alias} in a forked child"),
+            );
+        }
+    }
+
+    #[test]
+    fn host_metadata_timestamps_keep_signalfd_fixed_through_dup_and_fork() {
+        const SIGNAL_MASK: u64 = 0x100;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.host_metadata_timestamps = true;
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let mut signal_mask = KernelSigset::default();
+        signal_mask.insert(libc::SIGUSR1);
+        memory.write(SIGNAL_MASK, &signal_mask.to_bytes()).unwrap();
+        let signal_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_signalfd4,
+            [
+                u64::MAX,
+                SIGNAL_MASK,
+                KERNEL_SIGSET_SIZE as u64,
+                libc::SFD_NONBLOCK as u64,
+                0,
+                0,
+            ],
+        );
+        assert!(signal_fd >= 0, "signalfd failed: {signal_fd}");
+        assert_fixed_through_dup_and_fork(
+            &mut memory,
+            &mut state,
+            signal_fd as libc::c_int,
+            "signalfd",
+        );
+    }
+
+    #[test]
+    fn host_metadata_timestamps_keep_self_pidfd_fixed_through_dup_and_fork() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.host_metadata_timestamps = true;
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let pid = state.pid;
+        let pidfd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_pidfd_open,
+            [pid as u64, 0, 0, 0, 0, 0],
+        );
+        assert!(pidfd >= 0, "pidfd_open failed: {pidfd}");
+        assert_fixed_through_dup_and_fork(
+            &mut memory,
+            &mut state,
+            pidfd as libc::c_int,
+            "self pidfd",
         );
     }
 

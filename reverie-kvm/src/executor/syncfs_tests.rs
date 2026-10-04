@@ -130,6 +130,7 @@ fn syncfs_reserved_names_deny_without_authenticating_payload_or_seals() {
     for name in [
         "reverie-kvm-proc",
         "reverie-kvm-virtual",
+        "reverie-kvm-virtual-file",
         "reverie-kvm-guest-memory",
         "reverie-kvm.proc-carrier.v1",
         "reverie-kvm.proc-carrier.v1.forged",

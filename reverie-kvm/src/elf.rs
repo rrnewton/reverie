@@ -206,13 +206,33 @@ const AT_SYSINFO_EHDR: u64 = 33;
 #[derive(Debug)]
 pub(crate) struct GuestFileIdentity {
     pub inode: u64,
-    /// Whether the object is a virtual file the backend made, such as the
-    /// carrier for `/proc/self/loginuid`. Its timestamps stay fixed even in a
-    /// run that reports host metadata timestamps, because its host times are
-    /// those of the carrier rather than of any guest-visible file. Every alias
-    /// shares this identity: a dup, a `/proc/self/fd` reopen, a fork, an exec,
-    /// and an SCM_RIGHTS transfer.
-    pub synthetic_metadata: bool,
+    /// Which timestamps `stat`, `fstat`, `newfstatat` and `statx` report for
+    /// the object in a run that reports host metadata timestamps. Every alias
+    /// shares this identity: a dup, a `/proc/self/fd` reopen, a fork and an
+    /// exec. A received SCM_RIGHTS carrier is recognized from the carrier
+    /// itself; see `crate::executor::received_carrier_timestamps`.
+    pub timestamps: IdentityTimestamps,
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/933):
+// Review the fixed-timestamp classes of backend-made carriers.
+/// The timestamps an object reports in a run that reports host metadata
+/// timestamps. A run that does not report them uses the fixed
+/// `DETERMINISTIC_METADATA_SECONDS` for every object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum IdentityTimestamps {
+    /// The times the kernel stored for the host object.
+    Host,
+    /// A virtual file the backend made, such as the carrier for
+    /// `/proc/self/loginuid`. It reports the fixed
+    /// `DETERMINISTIC_METADATA_SECONDS`, because its host times are those of
+    /// the carrier rather than of any guest-visible file.
+    VirtualFile,
+    /// A synthetic `/proc` snapshot carrier, such as the one for
+    /// `/proc/uptime`. It reports timestamp 0, like every synthetic `/proc`
+    /// file.
+    ProcSnapshot,
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review the identity entry lifetime API.
@@ -246,10 +266,6 @@ pub(crate) struct GuestFileIdentityTable {
     /// keyed by their pinned backing memfd.
     pub proc_transfers:
         std::collections::BTreeMap<(libc::dev_t, libc::ino_t), crate::executor::ProcTransfer>,
-    /// Virtual-file identities sent with SCM_RIGHTS and not yet received,
-    /// keyed by their pinned host object.
-    pub synthetic_transfers:
-        std::collections::BTreeMap<(libc::dev_t, libc::ino_t), crate::executor::SyntheticTransfer>,
 }
 
 /// Process-tree-wide state whose lifetime follows a guest task rather than an
@@ -1734,7 +1750,6 @@ fn load_executable(
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
             proc_transfers: std::collections::BTreeMap::new(),
-            synthetic_transfers: std::collections::BTreeMap::new(),
         })),
     })
 }
