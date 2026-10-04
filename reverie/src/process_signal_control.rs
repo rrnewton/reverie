@@ -223,6 +223,19 @@ pub enum ParentDeathPublicationResult {
     },
 }
 
+/// Immediate result of an original-callback parent-death preflight with no
+/// guest-visible effects (retained-image exec may stage private callback state).
+/// Neither result is a reusable permit for a later or rewritten syscall.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParentDeathSyscallAdmission {
+    /// This exact live task/process generation has not entered the restricted
+    /// delivery domain. This conveys no descriptor or I/O authority.
+    Unenrolled,
+    /// The enrolled original callback and raw operands are supported now.
+    /// Actual backend injection still independently checks its own boundary.
+    Admitted,
+}
+
 /// Shared run-owned facade. Implementations must not retain a Tool or Guest.
 ///
 /// Calls are synchronous. Except for the explicitly named failure forwarding
