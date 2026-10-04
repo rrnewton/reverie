@@ -276,7 +276,7 @@ pub fn run_exported_client_death(owner: &BrokerOwner) -> Result<DeathReceipt, De
         retained: Vec::with_capacity(MAX_RIGHTS),
         ..DeathOwners::default()
     };
-    let result = (|| {
+    let result: Result<DeathReceipt, String> = (|| {
         let launcher = unsafe { libc::getpid() };
         let broker_client = owner.client();
         let broker = broker_client
