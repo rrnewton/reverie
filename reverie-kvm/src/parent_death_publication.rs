@@ -23,6 +23,23 @@ pub(super) struct BatchResult {
     boundary: reverie::SignalBoundaryReceipt,
     signals: Vec<ParentDeathSignalPublication>,
     error: Option<Errno>,
+    // Exact batch authority, not a numeric task/process lookup. Kept even if
+    // the sender binding is dropped between result commit and acknowledgement.
+    unpublished: Arc<AtomicBool>,
+}
+
+/// Call only after dropping the results guard and every publication guard.
+/// Success (including duplicate success) completes all of this boundary's
+/// existence markers. A failed prefix must never complete even an earlier
+/// marker: the enclosing boundary did not finish.
+fn complete_parent_death_publication(
+    receipt: ParentDeathPublication,
+    unpublished: Vec<Arc<AtomicBool>>,
+) -> ParentDeathPublicationResult {
+    for marker in unpublished {
+        marker.store(false, Ordering::Release);
+    }
+    ParentDeathPublicationResult::Committed(receipt)
 }
 
 fn event(snapshot: ParentDeathEvent) -> Result<SignalEvent, Errno> {
@@ -180,7 +197,7 @@ impl ProcessSignalControl {
         // Completed receipts outlive the sender's process-table binding. They
         // remain exact after task cleanup; never re-open publication or retarget
         // a numeric pid merely to answer an idempotent acknowledgement.
-        {
+        let completed = {
             let results = registry
                 .parent_death_results
                 .lock()
@@ -190,12 +207,14 @@ impl ProcessSignalControl {
                 batches: Vec::new(),
                 signals: Vec::new(),
             };
+            let mut unpublished = Vec::new();
             for (&sequence, result) in results
                 .iter()
                 .filter(|(_, result)| result.boundary == boundary)
             {
                 retained.batches.push(sequence);
                 retained.signals.extend(result.signals.iter().copied());
+                unpublished.push(result.unpublished.clone());
                 if let Some(errno) = result.error {
                     return Outcome::FailedAfterCommit {
                         receipt: retained,
@@ -203,9 +222,10 @@ impl ProcessSignalControl {
                     };
                 }
             }
-            if !retained.batches.is_empty() {
-                return Outcome::Committed(retained);
-            }
+            (!retained.batches.is_empty()).then_some((retained, unpublished))
+        };
+        if let Some((receipt, unpublished)) = completed {
+            return complete_parent_death_publication(receipt, unpublished);
         }
         let batches = match registry.parent_death_batches(boundary) {
             Ok(batches) => batches,
@@ -232,6 +252,7 @@ impl ProcessSignalControl {
             batches: Vec::new(),
             signals: Vec::new(),
         };
+        let mut unpublished = Vec::new();
         for batch in batches {
             if batch.owner != boundary.permit.task || batch.outcome != boundary.outcome {
                 return Outcome::RejectedBeforeCommit(Errno::EINVAL);
@@ -241,6 +262,7 @@ impl ProcessSignalControl {
                     boundary,
                     signals: Vec::new(),
                     error: None,
+                    unpublished: batch.unpublished.clone(),
                 };
                 for snapshot in batch.events {
                     let event = match event(snapshot) {
@@ -291,6 +313,7 @@ impl ProcessSignalControl {
             });
             combined.batches.push(batch.sequence);
             combined.signals.extend(retained.signals.iter().copied());
+            unpublished.push(retained.unpublished.clone());
             if let Some(errno) = retained.error {
                 registry.retain_parent_death_error(errno);
                 return Outcome::FailedAfterCommit {
@@ -299,6 +322,7 @@ impl ProcessSignalControl {
                 };
             }
         }
-        Outcome::Committed(combined)
+        drop(results);
+        complete_parent_death_publication(combined, unpublished)
     }
 }
