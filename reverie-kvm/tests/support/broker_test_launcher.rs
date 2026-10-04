@@ -21,6 +21,9 @@ mod broker_client_death_cases;
 #[path = "broker_bootstrap_cases.rs"]
 mod broker_bootstrap_cases;
 
+#[path = "broker_fatal_abort_cases.rs"]
+mod broker_fatal_abort_cases;
+
 fn main() {
     broker_client_death_cases::dispatch_client_child();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -84,6 +87,9 @@ fn main() {
             std::process::exit(125);
         }
     };
+    if args.len() == 2 && args[0] == "--fatal-abort-case" {
+        std::process::exit(broker_fatal_abort_cases::run(owner, &args[1]));
+    }
     if std::env::args().nth(1).as_deref() == Some("--native-case") {
         // The helper owns the actual broker through every return/retention path.
         let code = run_native_case(owner, std::env::args().skip(2).collect());

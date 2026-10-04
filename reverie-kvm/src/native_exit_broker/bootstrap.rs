@@ -35,6 +35,11 @@ mod filesystem;
 /// with unchanged native credentials/user namespace/signal permission. Raw
 /// helpers make no credential transitions. !Send is a local enforcement aid,
 /// not permission to abandon the original thread while clients remain alive.
+/// The one explicit exception is BrokerOwner::abort_failed_invocation: terminal
+/// failure of the entire launcher process, with no normal cleanup receipt and
+/// no promise that all clients/descendants have stopped. It can destroy worker
+/// holdings before surviving clients retire their originals; it cannot be used
+/// to continue this invocation or to claim successful broker settlement.
 ///
 /// The ordinary Rust allocator/libc initialization must already be available.
 /// No preinit-array safety is asserted for this constructor. The host's
