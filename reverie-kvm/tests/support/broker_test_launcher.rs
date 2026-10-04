@@ -232,7 +232,7 @@ fn run_native_case(mut owner: BrokerOwner, args: Vec<String>) -> i32 {
         match broker_client_death_cases::run_exported_client_death(&owner) {
             Ok(r) => {
                 println!(
-                    "EXPORTED_CLIENT_DEATH_RECEIPT launcher_pid={} broker_pid={} client_pid={} client_wait_status={} worker_pid={} worker_job={} worker_wait_status={} complete_acknowledged={} original_references_retired={} eof_observed_while_client_alive={} broker_live_after_worker_wait={} peer_eof_after_native_wait={}",
+                    "EXPORTED_CLIENT_DEATH_RECEIPT launcher_pid={} broker_pid={} client_pid={} client_wait_status={} worker_pid={} worker_job={} worker_wait_status={} complete_acknowledged={} original_references_retired={} worker_error_errno_after_protocol_eof={} broker_live_after_worker_wait={} peer_eof_after_native_wait={}",
                     r.launcher_pid,
                     r.broker_pid,
                     r.client_pid,
@@ -242,7 +242,7 @@ fn run_native_case(mut owner: BrokerOwner, args: Vec<String>) -> i32 {
                     r.worker_wait_status,
                     r.complete_acknowledged,
                     r.original_references_retired,
-                    r.eof_observed_while_client_alive,
+                    r.worker_error_errno_after_protocol_eof,
                     r.broker_live_after_worker_wait,
                     r.peer_eof_after_native_wait
                 );
