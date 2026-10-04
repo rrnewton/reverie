@@ -191,8 +191,6 @@ fn guest_stack_owner_cell(force_legacy: bool) {
             command_bootstrap: false,
             events: &events,
             injected_syscall_trap: None,
-            liteinst_runtime: None,
-            liteinst_trap_only: None,
             backend_stats: None,
             final_resume_signal_for_test: None,
             pre_syscall_for_test: None,

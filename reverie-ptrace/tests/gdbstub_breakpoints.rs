@@ -68,7 +68,7 @@ fn build_guest(fixture: &str, args: &[&str], symbols: &[&str]) -> (PathBuf, Vec<
         .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from)
         .join(format!("tests/fixtures/{fixture}.c"));
     // One guest beside the test binary, compiled by each process and
-    // renamed into place, as for the trap-only parity guest.
+    // renamed into place.
     let directory = std::env::current_exe()
         .expect("locate the test binary")
         .parent()

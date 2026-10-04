@@ -9441,8 +9441,7 @@ fn held_trap_guest() -> ! {
 /// with the marker in RAX, and the helper's SIGTRAP reaches the guest's
 /// handler: exit 11. The Tool sees only the delivered SIGTRAP. Known gap:
 /// the held SIGUSR1 is not reported under this configuration, nor under
-/// gdb, a breakpoint, or a LiteInst runtime that is not Ready
-/// (https://github.com/rrnewton/reverie/issues/845).
+/// gdb or a breakpoint (https://github.com/rrnewton/reverie/issues/845).
 #[test]
 fn held_signal_is_not_reported_under_the_injected_syscall_trap() {
     const NAME: &str = "held_signal_is_not_reported_under_the_injected_syscall_trap";

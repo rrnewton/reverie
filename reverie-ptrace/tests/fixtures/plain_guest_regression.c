@@ -7,21 +7,19 @@
  */
 
 /*
- * Guest for the trap-only P2 site-patching tests
- * (reverie-ptrace/src/liteinst_trap_only_p2_tests.rs).
+ * Guest for the plain ptrace regression tests
+ * (reverie-ptrace/src/plain_guest_regression_tests.rs).
  *
- * Usage: trap_only_p2 <mode> <report-file>
+ * Usage: plain_guest_regression <mode> <report-file>
  *
- * Every observation is appended to the report file as text; the test runs
- * the same mode under plain ptrace and under trap-only with site patching on
- * and requires equal reports. Absolute addresses are comparable because the
- * tracer disables address randomisation. PID values are never printed.
+ * Every observation is appended to the report file as text. Absolute
+ * addresses are comparable because the tracer disables address
+ * randomisation. PID values are never printed.
  *
  * `tp_site` is a shared generic syscall site: `tp_site_fn(nr, a1..a6)` issues
- * one `syscall` there. Its first execution patches it (the test Tool
- * subscribes to every syscall), so later executions go through the trap-only
- * hop. A call whose sixth argument (r9) carries TP_MAGIC asks the test Tool
- * for a handler shape or for tracer-side signals (see the Rust side).
+ * one `syscall` there. A call whose sixth argument (r9) carries TP_MAGIC asks
+ * the test Tool for a handler shape or for tracer-side signals (see the Rust
+ * side).
  */
 
 #define _GNU_SOURCE
@@ -114,7 +112,7 @@ __asm__(
     ".size tp_site_fn, .-tp_site_fn\n"
     ".popsection\n");
 
-/* T8: a site that loads rcx/r11 sentinels immediately before `syscall` and
+/* A site that loads rcx/r11 sentinels immediately before `syscall` and
  * captures both right after it. rdi = nr, rsi = 1 to set DF, 2 to set AC. */
 long t8_rcx, t8_r11;
 long t8_fn(long nr, long flags);
@@ -152,9 +150,8 @@ __asm__(
     ".size t8_fn, .-t8_fn\n"
     ".popsection\n");
 
-/* P2d: five more generic sites, `tp_genN_fn(nr)`, one per unknown-number
- * case: a site that runs an allowed number is restored and never patched
- * again, so each case needs its own warmed site. */
+/* Five more generic sites, `tp_genN_fn(nr)`, one per unknown-number case,
+ * so that each case runs through a warmed site of its own. */
 long tp_gen_rcx, tp_gen_r11;
 #define GEN_SITE(n)                \
   ".globl tp_gen" #n               \
@@ -180,7 +177,7 @@ extern char tp_gen0[], tp_gen1[], tp_gen2[], tp_gen3[], tp_gen4[];
 __asm__(".pushsection .text\n" GEN_SITE(0) GEN_SITE(1) GEN_SITE(2) GEN_SITE(3)
             GEN_SITE(4) ".popsection\n");
 
-/* T4c: a signal restorer that runs rt_sigreturn through the shared site. */
+/* A signal restorer that runs rt_sigreturn through the shared site. */
 void tp_restorer(void);
 __asm__(
     ".pushsection .text\n"
@@ -248,7 +245,7 @@ static const char* where(long rip) {
   return "other";
 }
 
-/* Warms tp_site: the first call patches it, the next two take the hop. */
+/* Warms tp_site: runs getpid through it three times. */
 static void warm(void) {
   for (int i = 0; i < 3; i++) {
     if (SITE(SYS_getpid, 0, 0, 0, 0, 0) != getpid())
@@ -341,7 +338,7 @@ static void site_bytes(const char* tag) {
   say("%s site bytes %02x %02x\n", tag, p[0], p[1]);
 }
 
-/* T1a */
+/* A signal sent while a call at the site is parked at its stop. */
 static void mode_sig_pending(void) {
   install(SIGUSR1, 0, handler);
   warm();
@@ -353,7 +350,8 @@ static void mode_sig_pending(void) {
   dump("sig_pending_tail");
 }
 
-/* T1c (standard signals only; see the Rust side). */
+/* Queued thread- and process-directed signals (standard signals only; see
+ * the Rust side). */
 static void mode_rt_queue(void) {
   int sigs[] = {SIGUSR1, SIGUSR2, SIGHUP, SIGALRM, SIGURG, SIGTERM};
   for (unsigned i = 0; i < sizeof sigs / sizeof sigs[0]; i++)
@@ -367,7 +365,7 @@ static void mode_rt_queue(void) {
   dump("queue_tail");
 }
 
-/* T1f */
+/* Signals the call at the site raises itself. */
 static void mode_self_raise(void) {
   install(SIGUSR1, 0, handler);
   install(SIGPIPE, 0, handler);
@@ -423,7 +421,7 @@ static void sigtrap_reset(void) {
     die("block sigtrap");
 }
 
-/* T2 */
+/* The SIGTRAP disposition, mask and trap number each handler shape leaves. */
 static void mode_sigtrap_profile(void) {
   install(SIGUSR1, 0, handler);
   for (int i = 0; i < 3; i++)
@@ -489,7 +487,7 @@ static void report_ts(
   dump(tag);
 }
 
-/* T3 */
+/* Interrupted and restarted calls through the shared site. */
 static void mode_restart(void) {
   install(SIGUSR1, 0, restart_handler);
   warm();
@@ -580,7 +578,7 @@ static void thread_entry(void) {
   __builtin_unreachable();
 }
 
-/* T6a */
+/* fork, vfork, clone3 and a thread through the site. */
 static void mode_fork_family(void) {
   warm();
   long r;
@@ -594,7 +592,7 @@ static void mode_fork_family(void) {
   if (sigprocmask(SIG_BLOCK, &chld, NULL) != 0)
     die("block SIGCHLD");
 
-  /* fork through the patched site; the child forks a grandchild there. */
+  /* fork through the site; the child forks a grandchild there. */
   r = SITE(SYS_fork, 0, 0, 0, 0, 0);
   if (r == 0) {
     say("fork child rcx=%s r11=%#lx\n", where(tp_z_rcx), tp_z_r11);
@@ -674,7 +672,7 @@ static void mode_fork_family(void) {
     die("unblock SIGCHLD");
 }
 
-/* T7c */
+/* A real IA-32 `int 0x80` in a forked child. */
 static void mode_foreign_int80(void) {
   /* SIGCHLD stays blocked across the fork and the wait, so its one delivery
    * lands at the unblock below instead of wherever the child's death
@@ -715,7 +713,7 @@ static void mode_foreign_int80(void) {
     die("unblock SIGCHLD");
 }
 
-/* A signal the tracer passes on its final resume of a patched stop. */
+/* A signal the tracer passes on its final resume of a seccomp stop. */
 static void mode_resume_signal(void) {
   install(SIGUSR1, 0, handler);
   warm();
@@ -730,18 +728,7 @@ static void mode_resume_signal(void) {
   dump("resume_tail");
 }
 
-/* Guest code running the private page's traced slot outside any hop. */
-static void mode_stray_slot(void) {
-  warm();
-  long ret;
-  __asm__ volatile("call *%1"
-                   : "=a"(ret)
-                   : "r"(0x71000004L), "a"(39L)
-                   : "rcx", "r11", "memory");
-  say("stray slot returned %ld\n", ret);
-}
-
-/* T8 */
+/* rcx and r11 after `syscall`, including with DF and AC set. */
 static void mode_rcx_r11(void) {
   for (int i = 0; i < 4; i++) {
     long r = t8_fn(SYS_getpid, 0);
@@ -756,7 +743,7 @@ static void mode_rcx_r11(void) {
   r = t8_fn(SYS_getpid, 2);
   say("t8 ac pid=%d rcx=%s r11=%#lx\n", r == getpid(), where(t8_rcx), t8_r11);
 
-  /* A handler interrupting a patched blocking read sees rcx/r11 too. */
+  /* A handler interrupting a blocking read at the site sees rcx/r11 too. */
   install(SIGUSR1, 0, handler);
   warm();
   int fds[2];
@@ -787,7 +774,7 @@ static void mode_rcx_r11(void) {
     die("unblock SIGCHLD");
 }
 
-/* ---- P2c: site-table lifecycle (T6b-T6d) and guest installs (T7a-T7b) ---- */
+/* ---- Mapping changes and guest installs ---- */
 
 /* Runs this fixture again, in `mode`, with the same report file. */
 static void exec_self(const char* mode) {
@@ -815,14 +802,14 @@ static void chld_unblock(void) {
     die("unblock SIGCHLD");
 }
 
-/* The image an exec installs: its table starts empty, so warm() patches the
- * site again (under trap-only) at the same -no-pie address. */
+/* The image an exec installs: warm() runs the site at the same -no-pie
+ * address. */
 static void mode_exec_image(void) {
   warm();
   say("exec image getpid ok\n");
 }
 
-/* T6b: the leader execs. */
+/* The leader execs. */
 static void mode_exec_leader(void) {
   warm();
   exec_self("exec_image");
@@ -843,7 +830,7 @@ static void* exec_thread_entry(void* arg) {
   return NULL;
 }
 
-/* T6b: a non-leader thread execs; the kernel kills the leader first. The
+/* A non-leader thread execs; the kernel kills the leader first. The
  * leader spins in user space, without syscalls, until the exec kills it:
  * blocking in pause() instead would make its last stops depend on whether
  * the exec landed before or after the tracer let it into the call. */
@@ -887,8 +874,8 @@ static void jit_bytes(const char* tag, unsigned char* site) {
   say("%s bytes %02x %02x\n", tag, site[0], site[1]);
 }
 
-/* T6c: JIT code; its site is patched only while its page is r-xp, and every
- * mapping change restores the bytes before it runs. */
+/* JIT code, replaced, unmapped, mapped over, moved and left writable, with
+ * the guest reading its own syscall bytes after each change. */
 static void mode_jit(void) {
   const int rw = PROT_READ | PROT_WRITE, rx = PROT_READ | PROT_EXEC;
   int status;
@@ -898,8 +885,8 @@ static void mode_jit(void) {
   protect(a, rx);
   for (int i = 0; i < 3; i++)
     say("jit a %d pid=%d\n", i, run_code(a) == getpid());
-  /* A fork child changes its own copy of the page: the parent's patch, in
-   * the parent's own table, must stay live. */
+  /* A fork child changes its own copy of the page; the parent's copy runs
+   * on unchanged. */
   chld_block();
   pid_t child = fork();
   if (child == 0) {
@@ -922,7 +909,7 @@ static void mode_jit(void) {
   for (int i = 0; i < 3; i++)
     say("jit a2 %d ppid=%d\n", i, run_code(a) > 0);
 
-  /* munmap of a patched page, then new code at the same address. */
+  /* munmap of a JIT page, then new code at the same address. */
   unsigned char* b = map_at(0x50010000, rw, MAP_FIXED_NOREPLACE);
   emit(b, 0, SYS_getpid);
   protect(b, rx);
@@ -937,7 +924,7 @@ static void mode_jit(void) {
   for (int i = 0; i < 3; i++)
     say("jit b2 %d tid=%d\n", i, run_code(b) == gettid());
 
-  /* mmap(MAP_FIXED) over a patched page. */
+  /* mmap(MAP_FIXED) over a JIT page. */
   unsigned char* d = map_at(0x50050000, rw, MAP_FIXED_NOREPLACE);
   emit(d, 0, SYS_getpid);
   protect(d, rx);
@@ -946,7 +933,7 @@ static void mode_jit(void) {
   d = map_at(0x50050000, rw, MAP_FIXED);
   jit_bytes("jit d after mmap fixed", d + 5);
 
-  /* mremap moves a patched page. */
+  /* mremap moves a JIT page. */
   unsigned char* c = map_at(0x50020000, rw, MAP_FIXED_NOREPLACE);
   emit(c, 0, SYS_getpid);
   protect(c, rx);
@@ -960,14 +947,14 @@ static void mode_jit(void) {
   for (int i = 0; i < 3; i++)
     say("jit c2 %d pid=%d\n", i, run_code(moved) == getpid());
 
-  /* A writable and executable page is never patched. */
+  /* A writable and executable page. */
   unsigned char* e = map_at(0x50040000, rw | PROT_EXEC, MAP_FIXED_NOREPLACE);
   emit(e, 0, SYS_getpid);
   for (int i = 0; i < 3; i++)
     say("jit e %d pid=%d\n", i, run_code(e) == getpid());
   jit_bytes("jit e", e + 5);
 
-  /* madvise(MADV_DONTNEED) on the fixture's own patched text page. */
+  /* madvise(MADV_DONTNEED) on the fixture's own text page. */
   warm();
   if (madvise((void*)((unsigned long)tp_site & ~4095UL), 4096, MADV_DONTNEED) !=
       0)
@@ -976,11 +963,10 @@ static void mode_jit(void) {
   warm();
 }
 
-/* T6c, continued. A one-byte store through /proc/self/mem (which no
- * lifecycle stop sees) over a patched JIT site, then an mprotect that
- * restores what is left of the patch: the guest reads its own byte and the
- * original second byte. Then an mremap(MREMAP_FIXED) of another page onto a
- * patched page, which retires the patched page's site. */
+/* A one-byte store through /proc/self/mem over a JIT syscall site, then an
+ * mprotect: the guest reads its own byte and the original second byte. Then
+ * an mremap(MREMAP_FIXED) of another page onto a JIT page, whose moved code
+ * runs at its new address. */
 static void mode_jit_more(void) {
   const int rw = PROT_READ | PROT_WRITE, rx = PROT_READ | PROT_EXEC;
 
@@ -1010,17 +996,14 @@ static void mode_jit_more(void) {
   unsigned char* moved =
       mremap(g, 4096, 4096, MREMAP_MAYMOVE | MREMAP_FIXED, (void*)f);
   if (moved != f)
-    die("mremap onto a patched page");
+    die("mremap onto a JIT page");
   jit_bytes("more f after mremap", f + 5);
   for (int i = 0; i < 3; i++)
     say("more f2 %d tid=%d\n", i, run_code(f) == gettid());
 }
 
-/* T6a, undecided: a fork through the patched site whose clone flags the
- * test makes the tracer forget, as for a Tool-injected clone, or record as
- * CLONE_VM against kcmp, or as CLONE_VFORK against the kind of new-child
- * stop. Both copies of the address space read the original bytes
- * afterwards. */
+/* A fork through the site. Both copies of the address space read the
+ * original bytes afterwards. */
 static void mode_fork_undecided(void) {
   warm();
   chld_block();
@@ -1045,9 +1028,7 @@ static void mode_fork_undecided(void) {
 /* The two bytes at tp_site as the vfork_undecided child read them. */
 unsigned char tp_vfork_child_bytes[2];
 
-/* T6a, undecided: a vfork through the patched site whose recorded clone
- * flags the test makes disagree with the vfork stop (no CLONE_VFORK). The
- * child shares the parent's stack, so after the vfork it calls no function:
+/* A vfork through the site. The child shares the parent's stack, so after the vfork it calls no function:
  * in inline assembly it copies the two bytes at tp_site into a global and
  * exits, and the parent reports them. */
 static void mode_vfork_undecided(void) {
@@ -1082,12 +1063,10 @@ static void mode_vfork_undecided(void) {
   warm();
 }
 
-/* T6c: process_madvise(MADV_DONTNEED) through a pidfd for this process, on
- * the fixture's own patched text page. The tracer reads neither the iovec
- * nor which process the pidfd names, so every site is restored first,
- * including the patched site of a JIT page the call does not name. The
+/* process_madvise(MADV_DONTNEED) through a pidfd for this process, on the
+ * fixture's own text page, with a JIT page the call does not name. The
  * result depends on the host kernel: before Linux 6.13 a process may not
- * pass MADV_DONTNEED for itself (EINVAL); the restore happens either way. */
+ * pass MADV_DONTNEED for itself (EINVAL). */
 static void mode_process_madvise(void) {
   const int rw = PROT_READ | PROT_WRITE, rx = PROT_READ | PROT_EXEC;
   int pidfd = syscall(SYS_pidfd_open, getpid(), 0);
@@ -1111,13 +1090,10 @@ static void mode_process_madvise(void) {
   close(pidfd);
 }
 
-/* T6c: the first call through tp_site is process_madvise(MADV_DONTNEED),
- * through a pidfd for this process, on tp_site's own page. The tracer never
- * patches a site at a process_madvise stop (patched there, a tail-injected
- * call would run after the patch and drop the page copy that holds it), so
- * the site still reads 0f 05 after the call; warm() then patches it through
- * getpid. SITE returns the raw result, -EINVAL before Linux 6.13 (see
- * mode_process_madvise). */
+/* The first call through tp_site is process_madvise(MADV_DONTNEED), through
+ * a pidfd for this process, on tp_site's own page; the site still reads
+ * 0f 05 after the call and after warm(). SITE returns the raw result,
+ * -EINVAL before Linux 6.13 (see mode_process_madvise). */
 static void mode_process_madvise_first(void) {
   int pidfd = syscall(SYS_pidfd_open, getpid(), 0);
   if (pidfd < 0)
@@ -1131,10 +1107,7 @@ static void mode_process_madvise_first(void) {
   close(pidfd);
 }
 
-/* T6a, undecided: a thread (CLONE_VM|CLONE_THREAD) through the patched
- * site, whose recorded clone flags the test makes disagree with kcmp (no
- * CLONE_VM) or with the kind of new-child stop (CLONE_VFORK). The thread
- * returns from tp_site_fn on its own stack into thread_entry and exits; the
+/* A thread (CLONE_VM|CLONE_THREAD) through the site. The thread returns from tp_site_fn on its own stack into thread_entry and exits; the
  * parent joins it without syscalls. */
 static void mode_thread_mismatch(void) {
   warm();
@@ -1156,8 +1129,8 @@ static void mode_thread_mismatch(void) {
   warm();
 }
 
-/* T6d: posix_spawn and system() (both vfork-style) from a process with warm
- * sites; the parent's sites stay patched after the children exec. */
+/* posix_spawn and system() (both vfork-style) from a process with a warm
+ * site; the parent's site still works after the children exec. */
 static void mode_vfork_spawn(void) {
   warm();
   /* Both children's SIGCHLDs coalesce into one delivery at the unblock.
@@ -1245,9 +1218,9 @@ static void* tsync_thread_entry(void* arg) {
   return NULL;
 }
 
-/* T7a. how: "site" installs with seccomp() through the patched site (an I386
- * stop), "tsync" from a two-thread process through libc, "prctl" with
- * prctl(PR_SET_SECCOMP) through libc (x86_64 stops). */
+/* A guest seccomp filter. how: "site" installs with seccomp() through the
+ * shared site, "tsync" from a two-thread process through libc, "prctl" with
+ * prctl(PR_SET_SECCOMP) through libc. */
 static void guest_seccomp(const char* how) {
   install(SIGSYS, 0, handler);
   warm();
@@ -1298,7 +1271,7 @@ static void guest_seccomp(const char* how) {
   if (sigprocmask(SIG_BLOCK, &chld, NULL) != 0)
     die("block SIGCHLD");
   /* A fork child calls the site, then execs: the new image inherits the
-   * filter, so its table must start disabled as well. */
+   * filter. */
   pid_t child = fork();
   if (child == 0) {
     for (int i = 0; i < 3; i++)
@@ -1338,7 +1311,7 @@ static void sud_handler(int sig, siginfo_t* si, void* uc_) {
   sud_selector = SYSCALL_DISPATCH_FILTER_ALLOW;
 }
 
-/* T7b: syscall user dispatch, with the allowed region excluding the site. */
+/* Syscall user dispatch, with the allowed region excluding the site. */
 static void mode_sud(void) {
   install(SIGSYS, 0, sud_handler);
   warm();
@@ -1395,9 +1368,8 @@ static void untraced_entry(void) {
     __asm__ volatile("pause");
 }
 
-/* A CLONE_UNTRACED thread gets no new-child stop, so the site must already
- * be restored when the clone runs. `through`: "libc" clones from libc's
- * syscall() (never patched), "site" through the patched site itself. */
+/* A CLONE_UNTRACED thread gets no new-child stop. `through`: "libc" clones
+ * from libc's syscall(), "site" through the shared site itself. */
 static void untraced_thread(const char* through) {
   warm();
   size_t size = 64 * 1024;
@@ -1432,12 +1404,11 @@ struct untraced_fork_view {
   int done;
 };
 
-/* A fork-like CLONE_UNTRACED child (no CLONE_VM), cloned through the patched
- * site: it gets no new-child stop and its own copy of the parent's text, so
- * the site must already be restored when the clone runs, and the clone must
- * run at the site. The child's syscalls are refused by the inherited filter
- * (ENOSYS: no tracer), so it reports through a shared mapping and spins
- * until the parent kills it. */
+/* A fork-like CLONE_UNTRACED child (no CLONE_VM), cloned through the shared
+ * site: it gets no new-child stop and its own copy of the parent's text, and
+ * starts right after the parent's `syscall`. The child's syscalls are
+ * refused by the inherited filter (ENOSYS: no tracer), so it reports through
+ * a shared mapping and spins until the parent kills it. */
 static void untraced_fork(void) {
   warm();
   struct untraced_fork_view* view = mmap(
@@ -1485,7 +1456,7 @@ static void untraced_fork(void) {
   site_bytes("after untraced fork");
 }
 
-/* T1b: a child exits while the parent sleeps in a patched nanosleep. With
+/* A child exits while the parent sleeps in a nanosleep at the site. With
  * SIGCHLD at SIG_DFL the sleep restarts through restart_syscall; with a
  * handler it returns EINTR. */
 static void sigchld_sleep(const char* tag) {
@@ -1529,11 +1500,11 @@ static void mode_sigchld_nanosleep(void) {
 
 static volatile int tl_a = 1, tl_b = 0, tl_c = 1;
 static volatile long tl_sum;
-/* T4: the number of branch counts k = 1..TL_K a timer covers, which spans
+/* The number of branch counts k = 1..TL_K a timer covers, which spans
  * one iteration and the next iteration's arming call. */
 #define TL_K 9
 
-/* T4: a loop of 200 iterations, each with a patched getpid and three
+/* A loop of 200 iterations, each with a getpid at the site and three
  * conditional branches, preempted by a precise timer at branch count
  * k = 1..TL_K after the arming call. */
 static void mode_timer_loop(void) {
@@ -1556,9 +1527,9 @@ static void mode_timer_loop(void) {
   say("timer loop sum=%ld\n", tl_sum);
 }
 
-/* T1d: a precise timer far enough out that perf's MARKER signal (not an
+/* A precise timer far enough out that perf's MARKER signal (not an
  * artificial one) starts the single-steps, targeted at branch counts around
- * the patched site that follows a long branch loop. */
+ * the site's getpid that follows a long branch loop. */
 #define PM_BRANCHES 3000
 static void mode_perf_marker(void) {
   warm();
@@ -1575,8 +1546,8 @@ static void mode_perf_marker(void) {
   }
 }
 
-/* T4d: a timer single-step that reaches the patched site carrying an
- * allowed number (500, which no syscall table knows). */
+/* A timer single-step that reaches the site carrying an untraced number
+ * (500, which no syscall table knows). */
 static void mode_timer_allow(void) {
   warm();
   SITEM(SYS_getppid, 0, 0, 0, 0, 2, ARM_TIMER);
@@ -1588,10 +1559,9 @@ static void mode_timer_allow(void) {
   report_result("timer allow", r);
 }
 
-/* A counting-phase precise timer armed at a patched getppid, PM_BRANCHES + 1
- * branches out, with an Allow-class number (500) run through a warmed
- * generic site before the branch loop in which the timer fires. The hop's
- * internal stop must not cancel the armed timer.
+/* A counting-phase precise timer armed at the site's getppid, PM_BRANCHES +
+ * 1 branches out, with an untraced number (500) run through a warmed
+ * generic site before the branch loop in which the timer fires.
  *
  * The loop is three times the armed distance, as in mode_timer_cancel, so
  * that the timer fires in the middle of it. With a loop of exactly the armed
@@ -1619,8 +1589,7 @@ static void mode_timer_hop_unknown(void) {
       p[1]);
 }
 
-/* A syscall site executed exactly once, so its stop is always an ordinary
- * x86_64 stop (a site is patched only after it has been seen). */
+/* A syscall site of its own, executed exactly once. */
 static long __attribute__((noinline)) getpid_once(void) {
   long r;
   __asm__ volatile("syscall"
@@ -1630,13 +1599,13 @@ static long __attribute__((noinline)) getpid_once(void) {
   return r;
 }
 
-/* A precise timer armed in a forked child at the patched getppid, far beyond
+/* A precise timer armed in a forked child at the site's getppid, far beyond
  * any skid margin, whose signal the child blocks: no notification is ever
  * handled, the limiting case of a late interrupt, as in
  * reverie-ptrace/tests/precise_timer_overtaken.rs. The child then runs well
  * past the target and ends with a foreign int 0x80 (`foreign`), which plain
  * ptrace's filter kills with no stop, or with an ordinary x86_64 getpid,
- * whose stop both backends report. The child's other setup is T7c's. */
+ * whose stop the tracer reports. */
 #define LATE_TIMER_RCBS 100000
 static void mode_late_timer(int foreign) {
   warm();
@@ -1686,8 +1655,8 @@ static void mode_late_timer(int foreign) {
 }
 
 /* The same counting-phase timer, cancelled by a Tool-visible stop before
- * the branch loop: first a patched-site getpid, then an ordinary x86_64
- * getpid. A last timer with no stop before its loop fires, so the run's one
+ * the branch loop: first a getpid at the site, then one at a site of its
+ * own. A last timer with no stop before its loop fires, so the run's one
  * timer event is that one. */
 static void mode_timer_cancel(void) {
   warm();
@@ -1718,9 +1687,9 @@ static void timer_hop_handler(int sig, siginfo_t* si, void* uc_) {
   SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1, ARM_TIMER);
 }
 
-/* The same timer, armed at the patched getppid inside a signal handler
- * whose restorer runs rt_sigreturn through that same warmed site (an
- * Allow-class hop), before the branch loop in which the timer fires (three
+/* The same timer, armed at the site's getppid inside a signal handler
+ * whose restorer runs rt_sigreturn through that same warmed site, before
+ * the branch loop in which the timer fires (three
  * times the armed distance, for the reason given at mode_timer_hop_unknown). */
 static void mode_timer_hop_sigreturn(void) {
   warm();
@@ -1750,8 +1719,7 @@ static void mode_timer_hop_sigreturn(void) {
       p[1]);
 }
 
-/* T4b: under a partial subscription (the Tool does not subscribe to
- * getuid), the shared site is never patched. */
+/* Under a partial subscription (the Tool does not subscribe to getuid). */
 static void mode_partial(void) {
   warm();
   long r = SITE(SYS_getuid, 0, 0, 0, 0, 0);
@@ -1763,11 +1731,11 @@ static void mode_partial(void) {
 
 static void sigreturn_handler(int sig, siginfo_t* si, void* uc_) {
   handler(sig, si, uc_);
-  /* The frame's mask must win over the mask the hop saved. */
+  /* The frame's mask must win over the mask saved at delivery. */
   sigaddset(&((ucontext_t*)uc_)->uc_sigmask, SIGUSR2);
 }
 
-/* T4c: rt_sigreturn through the warmed shared site, from a restorer the
+/* rt_sigreturn through the warmed shared site, from a restorer the
  * guest installed with the raw rt_sigaction. */
 static void mode_sigreturn(void) {
   warm();
@@ -1821,8 +1789,8 @@ static void slot_ret_ill(int sig, siginfo_t* si, void* uc_) {
 }
 
 /* rt_sigreturn through the warmed shared site to a frame whose saved rip is
- * the slot's own return address: the frame's registers win, so the guest
- * executes the ud2 there, as under plain ptrace. */
+ * the private page's `syscall; ud2` return address: the frame's registers
+ * win, so the guest executes the ud2 there. */
 static void mode_sigreturn_slot_ret(void) {
   warm();
   install(SIGILL, 0, slot_ret_ill);
@@ -1896,11 +1864,9 @@ static void mode_sigreturn_bad_frame(void) {
 }
 
 /* rt_sigreturn through a warmed generic site at a frame on a PROT_NONE page
- * whose saved rip is the slot's return address and whose saved rsp is the
- * frame's own rsp. The kernel's user copies fail on the page, so it returns 0
- * at S+2 without loading a register and forces SIGSEGV. A tracer that reads
- * the frame with FOLL_FORCE (/proc/<tid>/mem) sees rip == SLOT_RET and rsp ==
- * rsp and would keep rip at the slot's return. */
+ * whose saved rip is the private page's return address and whose saved rsp
+ * is the frame's own rsp. The kernel's user copies fail on the page, so it
+ * returns 0 at S+2 without loading a register and forces SIGSEGV there. */
 static void mode_sigreturn_prot_none_frame(void) {
   long pid = getpid();
   for (int j = 0; j < 3; j++)
@@ -1970,10 +1936,9 @@ static void probe_nr(long nr) {
   }
 }
 
-/* A SIGSTOP the tracer sends (SI_TKILL) while a patched site's call is
- * parked. Plain ptrace suppresses every SIGSTOP at its delivery stop
- * (handle_sigstop), after the call completed; trap-only defers the one its
- * hop dequeues at the slot and raises it again before the call runs. */
+/* A SIGSTOP the tracer sends (SI_TKILL) while a call at the site is parked.
+ * Plain ptrace suppresses every SIGSTOP at its delivery stop
+ * (handle_sigstop), after the call completed. */
 static void mode_sigstop_hop(void) {
   warm();
   long r = SITEM(SYS_getpid, 0, 0, 0, 0, 0, SHAPE_TAIL | SEND_SIGSTOP);
@@ -1982,20 +1947,19 @@ static void mode_sigstop_hop(void) {
   say("sigstop inject getpid returned pid=%d\n", r == getpid());
 }
 
-/* P2d-sigstop (P2-SPEC O1.4): a traced parent signals its child while the
- * child's call at the patched shared site is parked. The Tool (at the
- * site's seccomp stop, before trap-only's hop starts) and the tracer's
- * pre-syscall hook (immediately before the call runs: plain ptrace's resume,
- * trap-only's H3) each notify the parent with SIGUSR2 and wait until the
- * signal the call's tag names has arrived, so the signal lands at the same
- * logical point under both backends. */
+/* A traced parent signals its child while the child's call at the shared
+ * site is parked. The Tool (at the site's seccomp stop) and the tracer's
+ * pre-syscall hook (immediately before the call runs: the final resume of
+ * the stop, or the exact inject's resume) each notify the parent with
+ * SIGUSR2 and wait until the signal the call's tag names has arrived, so the
+ * signal lands at a fixed logical point. */
 #define TOOL_PARK(sig) ((long)(sig) << 32)
 #define HOOK_PARK(sig) ((long)(sig) << 40)
 /* After the call's inject returned, the Tool notifies the parent, waits for
  * its SIGCONT, then sends SIGSTOP to the thread. */
 #define TOOL_AFTER_CONT (0x40L << 32)
-/* The hook parks at its late point: under trap-only after the hop read the
- * pending signals, immediately before it raises the deferred SIGSTOPs. */
+/* The hook parks at its late point, the second of its two consecutive
+ * calls. */
 #define HOOK_LATE (0x20L << 40)
 /* The hook (tracer) sends SIGSTOP to the process and to the thread. */
 #define HOOK_SEND_STOPS (0x40L << 40)
@@ -2236,7 +2200,7 @@ park_run(const char* tag, long act, int how, const int* kills, int nkills) {
     die("sigprocmask restore");
 }
 
-/* T1e: the parent stops its child at a patched write site, then continues
+/* The parent stops its child at the write's stop, then continues
  * it once the write and the child's next output arrived. */
 static void mode_sigstop_parent(void) {
   static const int kills[] = {SIGSTOP};
@@ -2265,8 +2229,8 @@ static void mode_sigstop_cont_window(void) {
       2);
 }
 
-/* SIGTSTP with a handler installed: blockable, so the hop's mask holds it;
- * handled after the call returns, never a stop. */
+/* SIGTSTP with a handler installed, at the call's stop or immediately
+ * before the call runs: handled after the call returns, never a stop. */
 static void mode_sigtstp_handler(void) {
   static const int kills[] = {SIGTSTP};
   warm();
@@ -2276,10 +2240,9 @@ static void mode_sigtstp_handler(void) {
       "hook", SHAPE_TAIL | HOOK_PARK(SIGTSTP), PARK_TSTP_HANDLER, kills, 1);
 }
 
-/* SIGKILL at the site's stop, inside the hop, and inside the hop with a
- * deferred SIGSTOP, from the parent and (stop-kill) from the tracer, which
- * kills before the hop settles the deferred SIGSTOP: the child dies without
- * the call running. */
+/* SIGKILL at the call's stop, immediately before the call runs, and there
+ * after a SIGSTOP, from the parent and (stop-kill) from the tracer: the
+ * child dies without the call running. */
 static void mode_sigkill_hop(void) {
   static const int kill_only[] = {SIGKILL}, stop_kill[] = {SIGSTOP, SIGKILL},
                    stop[] = {SIGSTOP};
@@ -2296,8 +2259,9 @@ static void mode_sigkill_hop(void) {
       "stop-kill", SHAPE_TAIL | TOOL_PARK(SIGSTOP) | HOOK_KILL, 0, stop, 1);
 }
 
-/* Several SIGSTOPs in one call, into both queues, some sent while the hop
- * already deferred others: each queue delivers one SIGSTOP, with the siginfo
+/* Several SIGSTOPs in one call, into both queues, some sent at the call's
+ * stop and some immediately before it runs: each queue delivers one
+ * SIGSTOP, with the siginfo
  * of the first sent to it. parent-kill: the tracer's tgkill and the parent's
  * kill at the site's stop, then the tracer's kill and tgkill immediately
  * before the call (the shared queue keeps the parent's siginfo).
@@ -2332,9 +2296,9 @@ static void mode_sigstop_many(void) {
       1);
 }
 
-/* A SIGCONT that arrives after the hop's last read of the pending signals
- * and before it raises the deferred SIGSTOP (plain ptrace: the same instant
- * as mode_sigstop_cont_window's). */
+/* A SIGSTOP sent at the write's seccomp stop, then a SIGCONT sent at the
+ * hook's late point, immediately before the write runs. The SIGCONT discards
+ * the pending SIGSTOP, so neither is a stop. */
 static void mode_sigstop_cont_late(void) {
   static const int kills[] = {SIGSTOP, SIGCONT};
   warm();
@@ -2352,8 +2316,8 @@ static void mode_sigstop_cont_late(void) {
       2);
 }
 
-/* After an injected write whose SIGSTOP the hop re-raised, a SIGCONT
- * discards it, and the Tool sends a new SIGSTOP (rt_tgsigqueueinfo: SI_QUEUE
+/* After an injected write with a SIGSTOP pending, a SIGCONT discards it,
+ * and the Tool sends a new SIGSTOP (rt_tgsigqueueinfo: SI_QUEUE
  * with value 7, shaped like a re-raise) before the thread returns to user
  * mode: its delivery stop keeps its own siginfo. */
 static void mode_sigstop_stale(void) {
@@ -2367,11 +2331,9 @@ static void mode_sigstop_stale(void) {
       2);
 }
 
-/* A SIGCONT inside the window, after the SIGSTOP, then the stop signal `sig`
- * (handled) before the hop reads the pending signals: `sig` discards the
- * SIGCONT, which discarded the SIGSTOP, so under plain ptrace only `sig` is
- * delivered, after the write. Trap-only cannot see the SIGCONT and refuses
- * (TrapOnlyHopDeferredStopBehindStopSignal). */
+/* A SIGSTOP sent at the write's seccomp stop, then a SIGCONT and the stop
+ * signal `sig` (handled) at the hook: `sig` discards the SIGCONT, which
+ * discarded the SIGSTOP, so only `sig` is delivered, after the write. */
 static void sigstop_cont_then(const char* tag, int sig) {
   const int kills[] = {SIGSTOP, CONT_THEN(sig)};
   warm();
@@ -2383,9 +2345,9 @@ static void sigstop_cont_then(const char* tag, int sig) {
       2);
 }
 
-/* mode_sigstop_cont_window and T1e with a second thread in the child: the
- * thread's creation retires the sites, so no call hops. The SIGSTOP is
- * thread-directed: a process-directed one could be taken by the sibling. */
+/* A SIGSTOP then a SIGCONT, with a second thread in the child, which blocks
+ * every signal. The SIGSTOP is thread-directed: a process-directed one could
+ * be taken by the sibling. */
 static void mode_sigstop_threaded(void) {
   static const int stop_cont[] = {-SIGSTOP, SIGCONT}, stop[] = {-SIGSTOP};
   warm();
@@ -2427,16 +2389,16 @@ static void mode_unknown(void) {
   static const struct {
     const char* name;
     long nr;
-    int stays_patched;
+    int prints_bytes;
   } cases[] = {
-      {"nr500", 500, 0},
-      {"nr-1", -1, 0},
+      {"nr500", 500, 1},
+      {"nr-1", -1, 1},
       /* 337, not 335 or 336: x86_64 335 (uretprobe) and 336 (uprobe) are
        * passed through by seccomp without running the filter, by upstream
-       * design, so they are no gap (see probe_nr). */
-      {"gap337", 337, 0},
-      {"high-getpid", 0x100000027L, 1},
-      {"high500", 0x1000001f4L, 0},
+       * design (see probe_nr). */
+      {"gap337", 337, 1},
+      {"high-getpid", 0x100000027L, 0},
+      {"high500", 0x1000001f4L, 1},
   };
   long (*fns[])(long) = {
       tp_gen0_fn, tp_gen1_fn, tp_gen2_fn, tp_gen3_fn, tp_gen4_fn};
@@ -2458,15 +2420,15 @@ static void mode_unknown(void) {
         tp_gen_rcx == (long)sites[i] + 2,
         tp_gen_r11);
     say("%s getpid after=%d\n", cases[i].name, fns[i](SYS_getpid) == pid);
-    if (!cases[i].stays_patched) {
+    if (cases[i].prints_bytes) {
       unsigned char* p = (unsigned char*)sites[i];
       say("%s bytes after %02x %02x\n", cases[i].name, p[0], p[1]);
     }
   }
 }
 
-/* Prints the smaps fields of the mapping holding tp_site that a patched
- * page can change. */
+/* Prints the smaps fields of the mapping holding tp_site that a changed
+ * page would change. */
 static void site_smaps(const char* tag) {
   FILE* f = fopen("/proc/self/smaps", "r");
   if (!f)
@@ -2514,8 +2476,8 @@ static void text_reads(const char* tag) {
   site_smaps(tag);
 }
 
-/* T5: the text residual of a patched site, before and after the guest makes
- * the page writable. */
+/* The site's own bytes, read directly and through /proc/self/mem, and its
+ * page's smaps, before and after the guest makes the page writable. */
 static void mode_text_residual(void) {
   warm();
   text_reads("before");
@@ -2560,8 +2522,6 @@ int main(int argc, char** argv) {
     mode_rcx_r11();
   else if (!strcmp(m, "resume_signal"))
     mode_resume_signal();
-  else if (!strcmp(m, "stray_slot"))
-    mode_stray_slot();
   else if (!strcmp(m, "exec_image"))
     mode_exec_image();
   else if (!strcmp(m, "exec_leader"))
