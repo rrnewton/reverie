@@ -12383,6 +12383,15 @@ fn pidfd_open(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     }
     // SAFETY: pidfd_open returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
+    // A run that reports host metadata timestamps recognizes this pidfd later
+    // by the recorded signature, see `is_self_pidfd`; without it, the pidfd
+    // would report host times, so the call fails instead. A run with the
+    // setting off never needs the signature.
+    if let Err(error) = record_self_pidfd_signature(file.as_raw_fd())
+        && state.host_metadata_timestamps
+    {
+        return error;
+    }
     insert_file_with_flags(state, file, true, None)
 }
 
@@ -15599,6 +15608,10 @@ fn fchmod(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
 /// prevent, and the carrier would then report its host timestamps. Linux
 /// refuses a mode change on a `/proc` file with EPERM. A received snapshot
 /// has no `proc_files` entry, so its identity answers here.
+///
+/// For a virtual sysfs file, such as a CPU-frequency file, this is a
+/// compatibility restriction rather than Linux behavior: Linux lets the
+/// owner change its mode. `set_host_metadata_timestamps` discloses it.
 fn mode_locked_carrier(state: &LoadedStaticElf, guest_fd: libc::c_int) -> bool {
     state.host_metadata_timestamps
         && state
@@ -15628,6 +15641,20 @@ fn fchmodat(
         return negative_errno(libc::EINVAL);
     }
     let allow_empty = flags & libc::AT_EMPTY_PATH != 0;
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(https://github.com/rrnewton/reverie/issues/933):
+    // Review the errno of an empty-path mode change on a live /proc file.
+    // Linux refuses a mode change on a live process /proc file with EPERM, as
+    // fchmod reports here; the empty-path check in read_path_at would report
+    // EACCES. A run with the setting off keeps the EACCES it always had.
+    if allow_empty && state.host_metadata_timestamps && state.proc_files.contains_key(&guest_dirfd)
+    {
+        match read_c_string(memory, path_address, 4096) {
+            Ok(path) if path.is_empty() => return negative_errno(libc::EPERM),
+            Ok(_) => {}
+            Err(error) => return read_c_string_errno(error),
+        }
+    }
     let (host_dirfd, path) =
         match read_path_at(memory, state, guest_dirfd, path_address, allow_empty) {
             Ok(path) => path,
@@ -16720,6 +16747,68 @@ fn synthetic_descriptor_seconds(
 /// pidfs's filesystem magic, from include/uapi/linux/magic.h.
 const PID_FS_MAGIC: libc::c_long = 0x5049_4446;
 
+/// What identifies the process a pidfd names. With pidfs, every pidfd for a
+/// process shares that process's inode, whose number is never reused. Without
+/// pidfs, every pidfd shares the single anonymous inode, so the `Pid:` line of
+/// the descriptor's fdinfo identifies the process instead, in the pid
+/// namespace of the procfs that is read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PidfdSignature {
+    Pidfs(libc::dev_t, libc::ino_t),
+    Fdinfo(libc::pid_t),
+}
+
+/// The signature of the supervisor process's own pidfd, with the process ID
+/// it was recorded in, so that a forked process never uses its parent's.
+/// `pidfd_open` records it when it first hands the guest a pidfd in this
+/// process. Every guest process of every run in this process shares it.
+static SELF_PIDFD_SIGNATURE: Mutex<Option<(libc::pid_t, PidfdSignature)>> = Mutex::new(None);
+
+/// Records the signature of `pidfd`, a pidfd for the supervisor process that
+/// `pidfd_open` just made, unless this process has already recorded it. The
+/// signature of a process never changes. Without pidfs this reads procfs,
+/// which can fail when no descriptor is left.
+fn record_self_pidfd_signature(pidfd: RawFd) -> Result<(), i64> {
+    // SAFETY: getpid has no preconditions.
+    let pid = unsafe { libc::getpid() };
+    let mut recorded = SELF_PIDFD_SIGNATURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if recorded.is_some_and(|(owner, _)| owner == pid) {
+        return Ok(());
+    }
+    *recorded = Some((pid, pidfd_signature(pidfd)?));
+    Ok(())
+}
+
+/// The supervisor process's recorded pidfd signature, if `pidfd_open` has
+/// made a pidfd in this process.
+fn recorded_self_pidfd_signature() -> Option<PidfdSignature> {
+    // SAFETY: getpid has no preconditions.
+    let pid = unsafe { libc::getpid() };
+    SELF_PIDFD_SIGNATURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .and_then(|(owner, signature)| (owner == pid).then_some(signature))
+}
+
+/// The signature of the process that `pidfd` names.
+fn pidfd_signature(pidfd: RawFd) -> Result<PidfdSignature, i64> {
+    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+    // SAFETY: filesystem is writable and pidfd is a live descriptor.
+    if unsafe { libc::fstatfs(pidfd, filesystem.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fstatfs initialized filesystem on success.
+    if unsafe { filesystem.assume_init() }.f_type == PID_FS_MAGIC {
+        return host_file_key(pidfd).map(|(dev, ino)| PidfdSignature::Pidfs(dev, ino));
+    }
+    let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{pidfd}")).map_err(io_error)?;
+    parse_pidfd_fdinfo_pid(&text)
+        .map(PidfdSignature::Fdinfo)
+        .ok_or(negative_errno(libc::EIO))
+}
+
 /// Whether `guest_fd` is a pidfd for the supervisor process. `pidfd_open`
 /// hands out only that pidfd, for the guest's own process, and every guest
 /// process of a run lives in the one supervisor process, so the class survives
@@ -16727,6 +16816,12 @@ const PID_FS_MAGIC: libc::c_long = 0x5049_4446;
 /// for any other process, such as one received over a socket from outside the
 /// run, is a real host object and keeps its host timestamps. Linux names a
 /// pidfd `anon_inode:[pidfd]` with and without pidfs.
+///
+/// Recognition allocates no descriptor with pidfs, so it holds when the
+/// supervisor has none left, as after a guest's shared mappings pin every
+/// descriptor number. Without pidfs it reads the pidfd's fdinfo, and a pidfd
+/// whose fdinfo cannot be read then counts as the supervisor's: a fixed time
+/// on a host pidfd is deterministic, a host time on the backend's is not.
 fn is_self_pidfd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> bool {
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return false;
@@ -16736,44 +16831,32 @@ fn is_self_pidfd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> bool {
     {
         return false;
     }
-    // SAFETY: pidfd_open either returns a new descriptor or a negative error.
-    let own = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as libc::c_int };
-    if own < 0 {
-        return false;
-    }
-    // SAFETY: successful pidfd_open transfers descriptor ownership to File.
-    let own = unsafe { std::fs::File::from_raw_fd(own) };
-    same_pidfd_process(host_fd, own.as_raw_fd())
+    // Before pidfd_open has made the supervisor's pidfd in this process,
+    // every pidfd came from outside the run.
+    recorded_self_pidfd_signature()
+        .is_some_and(|signature| pidfd_matches_signature(host_fd, signature))
 }
 
-/// Whether two pidfds name the same process. With pidfs, every pidfd for a
-/// process shares that process's inode, whose number is never reused. Without
-/// pidfs, every pidfd shares the single anonymous inode, so the `Pid:` line of
-/// each descriptor's fdinfo answers instead; both are read through the same
-/// procfs, and so in the same pid namespace. Any failure means "not the same".
-fn same_pidfd_process(left: RawFd, right: RawFd) -> bool {
-    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::zeroed();
-    // SAFETY: filesystem is writable and left is a live descriptor.
-    if unsafe { libc::fstatfs(left, filesystem.as_mut_ptr()) } != 0 {
-        return false;
+/// Whether `pidfd` names the process with `signature`, a pidfd signature of
+/// the supervisor process. A value that cannot be read counts as a match, see
+/// [`is_self_pidfd`].
+fn pidfd_matches_signature(pidfd: RawFd, signature: PidfdSignature) -> bool {
+    match signature {
+        PidfdSignature::Pidfs(dev, ino) => {
+            host_file_key(pidfd).map_or(true, |key| key == (dev, ino))
+        }
+        PidfdSignature::Fdinfo(pid) => pidfd_fdinfo_pid(pidfd).is_none_or(|named| named == pid),
     }
-    // SAFETY: fstatfs initialized filesystem on success.
-    if unsafe { filesystem.assume_init() }.f_type == PID_FS_MAGIC {
-        return matches!(
-            (host_file_key(left), host_file_key(right)),
-            (Ok(left), Ok(right)) if left == right
-        );
-    }
-    matches!(
-        (pidfd_fdinfo_pid(left), pidfd_fdinfo_pid(right)),
-        (Some(left), Some(right)) if left > 0 && left == right
-    )
 }
 
 /// The `Pid:` field of a pidfd's fdinfo: the process it names, in the pid
 /// namespace of the procfs that is read, or 0 or -1 when there is none there.
 fn pidfd_fdinfo_pid(fd: RawFd) -> Option<libc::pid_t> {
-    let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}")).ok()?;
+    parse_pidfd_fdinfo_pid(&std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}")).ok()?)
+}
+
+/// The `Pid:` field of a pidfd's fdinfo text.
+fn parse_pidfd_fdinfo_pid(text: &str) -> Option<libc::pid_t> {
     text.lines()
         .find_map(|line| line.strip_prefix("Pid:"))
         .and_then(|pid| pid.trim().parse().ok())
@@ -16790,7 +16873,13 @@ const VIRTUAL_FILE_CARRIER_NAME: &std::ffi::CStr = c"reverie-kvm-virtual-file";
 /// virtual-file or `/proc` snapshot carrier is a memfd with its own name and
 /// the full synthetic seal set. A guest that makes such a memfd itself gets
 /// only fixed timestamps for it. Anything else, including a failed probe, is a
-/// real host object.
+/// real host object, except a probe that fails only because no descriptor or
+/// memory was left to reopen an O_PATH right (see [`CarrierSealProbe`]): the
+/// receive needs a descriptor number but no new open file, so it can succeed
+/// when the probe cannot. Such an object already matches the carrier name, a
+/// regular file and the shared-memory filesystem, and keeps the class of its
+/// name: a fixed time on a guest memfd with that name is deterministic, a host
+/// time on the backend's carrier is not.
 fn received_carrier_timestamps(
     state: &LoadedStaticElf,
     file: &std::fs::File,
@@ -16806,11 +16895,24 @@ fn received_carrier_timestamps(
         b"/memfd:reverie-kvm-proc (deleted)" => IdentityTimestamps::ProcSnapshot,
         _ => return IdentityTimestamps::Host,
     };
-    if carrier_seals(file).is_some_and(supported_synthetic_proc_seals) {
-        timestamps
-    } else {
-        IdentityTimestamps::Host
+    match carrier_seals(file) {
+        CarrierSealProbe::Seals(seals) if supported_synthetic_proc_seals(seals) => timestamps,
+        CarrierSealProbe::OutOfResources => timestamps,
+        CarrierSealProbe::Seals(_) | CarrierSealProbe::Absent => IdentityTimestamps::Host,
     }
+}
+
+/// What the seal probe of a received object found.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CarrierSealProbe {
+    /// The object's seals.
+    Seals(libc::c_int),
+    /// A regular file on the shared-memory filesystem whose seals could not be
+    /// read because reopening it failed with EMFILE, ENFILE or ENOMEM.
+    OutOfResources,
+    /// No seals: the object is not a sealable regular shared-memory file, or
+    /// the probe failed for another reason.
+    Absent,
 }
 
 /// The seals of a memfd. An O_PATH description cannot query them, so a fresh
@@ -16818,40 +16920,55 @@ fn received_carrier_timestamps(
 /// on the shared-memory filesystem, where every memfd lives, is reopened, and
 /// without blocking: a guest object whose link text merely matches a carrier
 /// name, such as a FIFO or a device, could block that open or act on it.
-fn carrier_seals(file: &std::fs::File) -> Option<libc::c_int> {
+fn carrier_seals(file: &std::fs::File) -> CarrierSealProbe {
     use std::os::unix::fs::OpenOptionsExt;
 
     // SAFETY: file owns a live descriptor and F_GET_SEALS has no third argument.
     let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
     if seals >= 0 {
-        return Some(seals);
+        return CarrierSealProbe::Seals(seals);
     }
     let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
     // SAFETY: stat is writable and file owns a live descriptor; fstat accepts O_PATH.
     if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
-        return None;
+        return CarrierSealProbe::Absent;
     }
     // SAFETY: fstat initialized stat on success.
     if unsafe { stat.assume_init() }.st_mode & libc::S_IFMT != libc::S_IFREG {
-        return None;
+        return CarrierSealProbe::Absent;
     }
     let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::zeroed();
     // SAFETY: filesystem is writable and file owns a live descriptor; fstatfs accepts O_PATH.
     if unsafe { libc::fstatfs(file.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
-        return None;
+        return CarrierSealProbe::Absent;
     }
     // SAFETY: fstatfs initialized filesystem on success.
     if unsafe { filesystem.assume_init() }.f_type != libc::TMPFS_MAGIC {
-        return None;
+        return CarrierSealProbe::Absent;
     }
-    let reopened = std::fs::OpenOptions::new()
+    let reopened = match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
         .open(format!("/proc/self/fd/{}", file.as_raw_fd()))
-        .ok()?;
+    {
+        Ok(reopened) => reopened,
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::EMFILE | libc::ENFILE | libc::ENOMEM)
+            ) =>
+        {
+            return CarrierSealProbe::OutOfResources;
+        }
+        Err(_) => return CarrierSealProbe::Absent,
+    };
     // SAFETY: reopened owns a live descriptor and F_GET_SEALS has no third argument.
     let seals = unsafe { libc::fcntl(reopened.as_raw_fd(), libc::F_GET_SEALS) };
-    (seals >= 0).then_some(seals)
+    if seals >= 0 {
+        CarrierSealProbe::Seals(seals)
+    } else {
+        CarrierSealProbe::Absent
+    }
 }
 
 fn synthetic_guest_fd_symlink_stat(guest_fd: libc::c_int) -> libc::stat {
@@ -43868,7 +43985,10 @@ mod tests {
             .open(format!("/proc/self/fd/{}", memfd.as_raw_fd()))
             .unwrap();
         assert!(
-            carrier_seals(&memfd_path).is_some_and(supported_synthetic_proc_seals),
+            matches!(
+                carrier_seals(&memfd_path),
+                CarrierSealProbe::Seals(seals) if supported_synthetic_proc_seals(seals)
+            ),
             "an O_PATH memfd carrier must still report its seals"
         );
 
@@ -43900,7 +44020,7 @@ mod tests {
             }
         };
         probe.join().unwrap();
-        assert_eq!(seals, None);
+        assert_eq!(seals, CarrierSealProbe::Absent);
     }
 
     #[test]
@@ -43968,6 +44088,7 @@ mod tests {
     fn host_metadata_timestamps_refuse_mode_changes_that_would_hide_a_carrier() {
         const LOGINUID_ADDRESS: u64 = 0x100;
         const UPTIME_ADDRESS: u64 = 0x180;
+        const FREQUENCY_ADDRESS: u64 = 0x200;
         const EMPTY_ADDRESS: u64 = 0x2c0;
         const LINK_ADDRESS: u64 = 0x300;
 
@@ -43983,6 +44104,11 @@ mod tests {
             let mut memory = GuestMemory::new(0, 0x4000).unwrap();
             write_c_string(&mut memory, LOGINUID_ADDRESS, "/proc/self/loginuid");
             write_c_string(&mut memory, UPTIME_ADDRESS, "/proc/uptime");
+            write_c_string(
+                &mut memory,
+                FREQUENCY_ADDRESS,
+                "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+            );
             write_c_string(&mut memory, EMPTY_ADDRESS, "");
             let open = |memory: &mut GuestMemory,
                         state: &mut LoadedStaticElf,
@@ -44000,6 +44126,11 @@ mod tests {
             let [sender, receiver] = guest_datagram_pair(&mut memory, &mut state);
 
             let loginuid = open(&mut memory, &mut state, LOGINUID_ADDRESS, libc::O_RDONLY);
+            // A CPU-frequency file is a virtual sysfs file. Linux lets its
+            // owner change its mode; refusing that while the setting is on is
+            // a disclosed compatibility restriction, see
+            // `set_host_metadata_timestamps`.
+            let frequency = open(&mut memory, &mut state, FREQUENCY_ADDRESS, libc::O_RDONLY);
             // A /proc snapshot received after its sender closed has no
             // proc_files entry, only its snapshot identity.
             let uptime = open(&mut memory, &mut state, UPTIME_ADDRESS, libc::O_RDONLY);
@@ -44020,6 +44151,11 @@ mod tests {
                     loginuid,
                     DETERMINISTIC_METADATA_SECONDS,
                     "/proc/self/loginuid",
+                ),
+                (
+                    frequency,
+                    DETERMINISTIC_METADATA_SECONDS,
+                    "cpu0 scaling_cur_freq",
                 ),
                 (snapshot, 0, "a received /proc/uptime"),
             ] {
@@ -44114,6 +44250,80 @@ mod tests {
         }
     }
 
+    /// In a run that reports host metadata timestamps, empty-path fchmodat2
+    /// on a live process `/proc` descriptor, read-only or O_PATH, fails with
+    /// the EPERM that Linux returns for a mode change on such a file, as
+    /// fchmod does. With the setting off it keeps the EACCES it always had.
+    #[test]
+    fn host_metadata_timestamps_refuse_empty_path_chmod_of_live_proc_files_with_eperm() {
+        const STAT_ADDRESS: u64 = 0x100;
+        const STATUS_ADDRESS: u64 = 0x180;
+        const EMPTY_ADDRESS: u64 = 0x2c0;
+
+        for host_metadata_timestamps in [false, true] {
+            let (setting, expected) = if host_metadata_timestamps {
+                ("setting on", negative_errno(libc::EPERM))
+            } else {
+                ("setting off", negative_errno(libc::EACCES))
+            };
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            state.host_metadata_timestamps = host_metadata_timestamps;
+            let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+            write_c_string(&mut memory, STAT_ADDRESS, "/proc/self/stat");
+            write_c_string(&mut memory, STATUS_ADDRESS, "/proc/self/status");
+            write_c_string(&mut memory, EMPTY_ADDRESS, "");
+            for (path, flags, what) in [
+                (STAT_ADDRESS, libc::O_RDONLY, "/proc/self/stat"),
+                (STAT_ADDRESS, libc::O_PATH, "/proc/self/stat O_PATH"),
+                (STATUS_ADDRESS, libc::O_RDONLY, "/proc/self/status"),
+                (STATUS_ADDRESS, libc::O_PATH, "/proc/self/status O_PATH"),
+            ] {
+                let fd = syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_openat,
+                    [libc::AT_FDCWD as u64, path, flags as u64, 0, 0, 0],
+                );
+                assert!(fd >= 0, "{setting}: {what}: open failed: {fd}");
+                assert!(
+                    state.proc_files.contains_key(&(fd as libc::c_int)),
+                    "{setting}: {what} is a live process /proc file"
+                );
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_fchmodat2,
+                        [
+                            fd as u64,
+                            EMPTY_ADDRESS,
+                            0o400,
+                            libc::AT_EMPTY_PATH as u64,
+                            0,
+                            0,
+                        ],
+                    ),
+                    expected,
+                    "{setting}: {what}: empty-path fchmodat2"
+                );
+                if flags != libc::O_PATH {
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_fchmod,
+                            [fd as u64, 0o400, 0, 0, 0, 0],
+                        ),
+                        negative_errno(libc::EPERM),
+                        "{setting}: {what}: fchmod"
+                    );
+                }
+                guest_close(&mut memory, &mut state, fd as libc::c_int);
+            }
+        }
+    }
+
     /// Only the backend's own pidfd, which names the supervisor process that
     /// holds every guest process of the run, reports the fixed time. A pidfd
     /// for another host process received from outside the run is a real host
@@ -44175,8 +44385,24 @@ mod tests {
                 && native_pid != own_pid,
             "fdinfo Pid lines: native {native_pid:?}, own {own_pid:?}"
         );
-        assert!(!same_pidfd_process(native.as_raw_fd(), own_host));
-        assert!(same_pidfd_process(own_host, own_host));
+        // pidfd_open recorded the supervisor's signature. Both comparison
+        // paths tell the two processes apart, the fdinfo path included on a
+        // kernel with pidfs, and a pidfd whose value cannot be read counts as
+        // the supervisor's.
+        let own_signature = pidfd_signature(own_host).unwrap();
+        assert_eq!(recorded_self_pidfd_signature(), Some(own_signature));
+        assert_ne!(pidfd_signature(native.as_raw_fd()).unwrap(), own_signature);
+        for signature in [own_signature, PidfdSignature::Fdinfo(own_pid.unwrap())] {
+            assert!(
+                pidfd_matches_signature(own_host, signature),
+                "{signature:?}"
+            );
+            assert!(
+                !pidfd_matches_signature(native.as_raw_fd(), signature),
+                "{signature:?}"
+            );
+            assert!(pidfd_matches_signature(-1, signature), "{signature:?}");
+        }
         let (outside, inside) = std::os::unix::net::UnixDatagram::pair().unwrap();
         let inside = insert_file_with_flags(
             &mut state,
@@ -44256,6 +44482,240 @@ mod tests {
                 "an imported native pidfd keeps its host timestamps"
             );
         }
+    }
+
+    const DESCRIPTOR_EXHAUSTION_CHILD_ENV: &str = "REVERIE_KVM_DESCRIPTOR_EXHAUSTION_CHILD";
+    const DESCRIPTOR_EXHAUSTION_COMPLETE: &str = "descriptor exhaustion child completed";
+
+    /// Whether this process is the isolated child that runs the exact test
+    /// `test` with a full descriptor table. Otherwise this runs `test` again in
+    /// such a child and requires it to pass and to report completion.
+    fn in_descriptor_exhaustion_child(test: &str) -> bool {
+        if std::env::var(DESCRIPTOR_EXHAUSTION_CHILD_ENV).as_deref() == Ok(test) {
+            return true;
+        }
+        assert!(std::env::var_os(DESCRIPTOR_EXHAUSTION_CHILD_ENV).is_none());
+        let output = std::process::Command::new("/usr/bin/timeout")
+            .args(["--kill-after=2s", "30s"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--test-threads=1", "--nocapture"])
+            .env(DESCRIPTOR_EXHAUSTION_CHILD_ENV, test)
+            .output()
+            .expect("failed to exec the isolated descriptor exhaustion child");
+        assert!(
+            output.status.success(),
+            "isolated {test} failed with {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .filter(|line| *line == DESCRIPTOR_EXHAUSTION_COMPLETE)
+                .count(),
+            1,
+            "the isolated {test} must reach every assertion"
+        );
+        false
+    }
+
+    /// Runs `run` while every descriptor number this process may use is
+    /// taken, so that any descriptor it allocates fails with EMFILE. Returns
+    /// the errno that ended the filling and `run`'s result, which is absent
+    /// unless that errno is EMFILE. Only an isolated child may call this: it
+    /// lowers RLIMIT_NOFILE for the whole process. The limit and the table are
+    /// restored before this returns, so callers assert only afterwards.
+    fn with_full_descriptor_table<T>(run: impl FnOnce() -> T) -> (Option<i32>, Option<T>) {
+        const LIMIT: libc::rlim_t = 256;
+        let source = std::fs::File::open("/dev/null").unwrap();
+        let mut original = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: original is writable storage for the current process's limit.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut original) },
+            0
+        );
+        let reduced = libc::rlimit {
+            rlim_cur: original.rlim_cur.min(LIMIT),
+            rlim_max: original.rlim_max,
+        };
+        let mut fillers = Vec::with_capacity(LIMIT as usize + 1);
+        let mut exhausted = None;
+        let mut result = None;
+        // SAFETY: reduced is a valid limit no higher than the current one.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &reduced) } == 0 {
+            while fillers.len() <= LIMIT as usize {
+                // SAFETY: source owns a live descriptor.
+                let raw = unsafe { libc::fcntl(source.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+                if raw < 0 {
+                    exhausted = std::io::Error::last_os_error().raw_os_error();
+                    break;
+                }
+                // SAFETY: a successful F_DUPFD_CLOEXEC returns a new owned descriptor.
+                fillers.push(unsafe { std::fs::File::from_raw_fd(raw) });
+            }
+            if exhausted == Some(libc::EMFILE) {
+                result = Some(run());
+            }
+        }
+        // SAFETY: original is the limit read above.
+        let restored = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original) };
+        drop(fillers);
+        assert_eq!(restored, 0, "the child must restore RLIMIT_NOFILE");
+        (exhausted, result)
+    }
+
+    /// The errno of a new descriptor allocation attempted now, or `None` if it
+    /// succeeded.
+    fn descriptor_allocation_errno() -> Option<i32> {
+        // SAFETY: pidfd_open either returns a new descriptor or a negative error.
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as libc::c_int };
+        if raw < 0 {
+            return std::io::Error::last_os_error().raw_os_error();
+        }
+        // SAFETY: raw is a new descriptor owned here.
+        drop(unsafe { std::fs::File::from_raw_fd(raw) });
+        None
+    }
+
+    /// The backend's own pidfd reports the fixed time when the supervisor has
+    /// no descriptor left, as after a guest's shared mappings have pinned
+    /// every descriptor number: recognizing it allocates no descriptor.
+    #[test]
+    fn host_metadata_timestamps_keep_self_pidfd_fixed_when_descriptors_run_out() {
+        const TEST: &str = "executor::tests::host_metadata_timestamps_keep_self_pidfd_fixed_when_descriptors_run_out";
+        const EMPTY_ADDRESS: u64 = 0x2c0;
+        const STAT_ADDRESS: u64 = 0x1000;
+        const STATX_ADDRESS: u64 = 0x1200;
+        if !in_descriptor_exhaustion_child(TEST) {
+            return;
+        }
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.host_metadata_timestamps = true;
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        write_c_string(&mut memory, EMPTY_ADDRESS, "");
+        let pid = state.pid;
+        let pidfd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_pidfd_open,
+            [pid as u64, 0, 0, 0, 0, 0],
+        );
+        assert!(pidfd >= 0, "pidfd_open failed: {pidfd}");
+        let (exhausted, observed) = with_full_descriptor_table(|| {
+            let probe = descriptor_allocation_errno();
+            let fstat = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fstat,
+                [pidfd as u64, STAT_ADDRESS, 0, 0, 0, 0],
+            );
+            let stat: libc::stat = read_struct(&memory, STAT_ADDRESS);
+            let statx_result = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_statx,
+                [
+                    pidfd as u64,
+                    EMPTY_ADDRESS,
+                    libc::AT_EMPTY_PATH as u64,
+                    libc::STATX_BASIC_STATS as u64,
+                    STATX_ADDRESS,
+                    0,
+                ],
+            );
+            let statx: libc::statx = read_struct(&memory, STATX_ADDRESS);
+            (probe, fstat, stat, statx_result, statx)
+        });
+        assert_eq!(exhausted, Some(libc::EMFILE));
+        let (probe, fstat, stat, statx_result, statx) = observed.unwrap();
+        assert_eq!(probe, Some(libc::EMFILE), "the table must be full");
+        assert_eq!((fstat, statx_result), (0, 0));
+        assert_eq!(
+            [
+                (stat.st_atime, stat.st_atime_nsec),
+                (stat.st_mtime, stat.st_mtime_nsec),
+                (stat.st_ctime, stat.st_ctime_nsec),
+            ],
+            [(DETERMINISTIC_METADATA_SECONDS, 0); 3],
+            "fstat of the self pidfd with no descriptor left"
+        );
+        assert_eq!(
+            [
+                (statx.stx_atime.tv_sec, statx.stx_atime.tv_nsec),
+                (statx.stx_mtime.tv_sec, statx.stx_mtime.tv_nsec),
+                (statx.stx_ctime.tv_sec, statx.stx_ctime.tv_nsec),
+            ],
+            [(DETERMINISTIC_METADATA_SECONDS, 0); 3],
+            "statx of the self pidfd with no descriptor left"
+        );
+        eprintln!("{DESCRIPTOR_EXHAUSTION_COMPLETE}");
+    }
+
+    /// A carrier received as an O_PATH right keeps its class when the seal
+    /// probe cannot reopen it because the supervisor has no descriptor left.
+    #[test]
+    fn received_o_path_carriers_keep_their_class_when_descriptors_run_out() {
+        const TEST: &str =
+            "executor::tests::received_o_path_carriers_keep_their_class_when_descriptors_run_out";
+        const LOGINUID_ADDRESS: u64 = 0x100;
+        const UPTIME_ADDRESS: u64 = 0x180;
+        if !in_descriptor_exhaustion_child(TEST) {
+            return;
+        }
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.host_metadata_timestamps = true;
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        write_c_string(&mut memory, LOGINUID_ADDRESS, "/proc/self/loginuid");
+        write_c_string(&mut memory, UPTIME_ADDRESS, "/proc/uptime");
+        let mut carriers = Vec::new();
+        for (path, class) in [
+            (LOGINUID_ADDRESS, IdentityTimestamps::VirtualFile),
+            (UPTIME_ADDRESS, IdentityTimestamps::ProcSnapshot),
+        ] {
+            let fd = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_openat,
+                [libc::AT_FDCWD as u64, path, libc::O_RDONLY as u64, 0, 0, 0],
+            );
+            assert!(fd >= 0, "open failed: {fd}");
+            let fd = fd as libc::c_int;
+            assert_eq!(state.fd_object_inodes[&fd].timestamps, class);
+            let path_only = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH)
+                .open(format!("/proc/self/fd/{}", host_fd(&state, fd).unwrap()))
+                .unwrap();
+            // Every sender alias is gone, as for a right received late.
+            guest_close(&mut memory, &mut state, fd);
+            assert_eq!(received_carrier_timestamps(&state, &path_only), class);
+            carriers.push((path_only, class));
+        }
+        let (exhausted, observed) = with_full_descriptor_table(|| {
+            let probe = descriptor_allocation_errno();
+            let classes = carriers
+                .iter()
+                .map(|(file, _)| received_carrier_timestamps(&state, file))
+                .collect::<Vec<_>>();
+            (probe, classes)
+        });
+        assert_eq!(exhausted, Some(libc::EMFILE));
+        let (probe, classes) = observed.unwrap();
+        assert_eq!(probe, Some(libc::EMFILE), "the table must be full");
+        assert_eq!(
+            classes,
+            carriers.iter().map(|(_, class)| *class).collect::<Vec<_>>(),
+            "carrier classes with no descriptor left for the seal probe"
+        );
+        eprintln!("{DESCRIPTOR_EXHAUSTION_COMPLETE}");
     }
 
     #[test]
