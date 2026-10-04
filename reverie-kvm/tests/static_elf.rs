@@ -21891,10 +21891,23 @@ mod pdeathsig {
             return;
         }
         let directory = TestDirectory::new();
-        let program = compile_c_program(
+        // This positive exercises the admitted retained-static-image domain.
+        // Check the emitted image class rather than assuming the C helper's
+        // default compiler flags produce a static executable.
+        let program = compile_c_program_with_args(
             &directory.0,
             "pdeathsig-exec",
             include_str!("fixtures/pdeathsig_creator.c"),
+            &["-static"],
+        );
+        let emitted_image = std::fs::read(&program).unwrap();
+        let emitted_elf = goblin::elf::Elf::parse(&emitted_image).unwrap();
+        assert!(
+            emitted_elf
+                .program_headers
+                .iter()
+                .all(|header| { header.p_type != goblin::elf::program_header::PT_INTERP }),
+            "retained-static-image positive must not contain PT_INTERP"
         );
         let native = std::process::Command::new(&program)
             .arg("6")
