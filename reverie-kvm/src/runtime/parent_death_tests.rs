@@ -2,7 +2,7 @@
  * Licensed under the BSD-style license in the LICENSE file.
  */
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-PENDING): https://github.com/rrnewton/reverie/issues/916.
+// TODO-HUMAN-REVIEW(PR-925): https://github.com/rrnewton/reverie/issues/916.
 use super::*;
 
 fn executor() -> ElfExecutor {

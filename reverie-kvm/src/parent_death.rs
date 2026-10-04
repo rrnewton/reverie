@@ -11,7 +11,7 @@
 //! single ordering point for SET, task creation and real-parent replacement.
 //! Signal publication happens later, with no sender/lifecycle lock retained.
 //! AUTONOMOUS-BOT-IMPLEMENTED
-//! TODO-HUMAN-REVIEW(PR-PENDING): Review <https://github.com/rrnewton/reverie/issues/916>.
+//! TODO-HUMAN-REVIEW(PR-925): Review <https://github.com/rrnewton/reverie/issues/916>.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;

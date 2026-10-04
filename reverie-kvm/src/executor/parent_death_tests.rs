@@ -1,5 +1,5 @@
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-PENDING): https://github.com/rrnewton/reverie/issues/916.
+// TODO-HUMAN-REVIEW(PR-925): https://github.com/rrnewton/reverie/issues/916.
 
 fn pdeath_adopt(executor: &ElfExecutor) -> Arc<crate::failure::RunFailure> {
     executor.backend_signal_control().process.enable_parent_death_control().unwrap();
