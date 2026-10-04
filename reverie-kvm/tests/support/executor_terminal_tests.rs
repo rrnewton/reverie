@@ -1,4 +1,4 @@
-// Insert inside executor::tests; the shared adapter is cfg(test) in lib.rs.
+// Included inside executor::tests; the shared adapter is cfg(test) in lib.rs.
 #[test]
 fn terminal_cleanup_preserves_live_shared_table_and_does_not_wait_for_its_lock() {
     const TEST: &str = "executor::tests::terminal_cleanup_preserves_live_shared_table_and_does_not_wait_for_its_lock";

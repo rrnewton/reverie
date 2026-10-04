@@ -1,4 +1,4 @@
-// Insert inside terminal_cleanup::tests; source-only, core identity API pending.
+// Included inside terminal_cleanup::tests with the authenticated broker adapter.
 #[test]
 fn dropped_waiter_keeps_native_wait_and_owned_service_alive() {
     const TEST: &str =
@@ -11,9 +11,8 @@ fn dropped_waiter_keeps_native_wait_and_owned_service_alive() {
 
 use super::*;
 
-// Include this second body INSIDE terminal_cleanup's cfg(test) module instead:
-// it legitimately observes its private Shared state, not a fabricated success.
-// The owner PID comes from the authenticated isolated launcher's retained owner.
+// This body runs inside terminal_cleanup's cfg(test) module and observes its
+// private Shared state. Broker identity comes from the authenticated session.
 fn dropped_waiter_keeps_native_wait_and_owned_service_alive_body(
     client: crate::native_exit_broker::BrokerClient,
 ) {

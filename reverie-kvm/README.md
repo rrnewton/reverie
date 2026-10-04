@@ -217,9 +217,18 @@ Invalid flags or required-zero arguments fail without changing state. These
 are virtual guest policy values, not changes to supervisor THP policy or a
 claim that the guest RAM uses physical huge pages.
 
-`PR_SET_PDEATHSIG` accepts zero; nonzero requests return `ENOSYS` because
-deterministic parent-death signal delivery is not implemented. The getter
-returns a four-byte zero. These two getters check guest writable-page state:
+By default, `PR_SET_PDEATHSIG` accepts zero and refuses valid nonzero signals
+with `ENOSYS` before changing state. Nonzero delivery requires Tool-controlled
+signals, explicit `ProcessSignalControl::enable_parent_death_control` adoption,
+and native terminal cleanup configured through `KvmBackend::set_native_exit_broker`.
+That configuration supports standard signals except `SIGKILL`, `SIGCONT` and
+stop signals; realtime signals remain unsupported. Enrollment requires a single
+live recipient task and retains a restricted syscall/wait domain until process
+retirement, even after SET(0). This is not general blocked-I/O or direct-mode
+support. `PR_GET_PDEATHSIG` returns the task's stored signal as four bytes,
+initially zero; an out-of-range full-width SET operand returns `EINVAL`.
+
+The NAME and PDEATHSIG getters check guest writable-page state:
 NAME may copy a writable prefix before reporting `EFAULT`, whereas PDEATHSIG
 uses a scalar store and leaves the output unchanged when that store faults.
 The strict eight-byte NAME boundary control is qualified on the tested x86-64
