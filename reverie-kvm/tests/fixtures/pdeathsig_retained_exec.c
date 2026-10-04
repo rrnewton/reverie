@@ -275,4 +275,5 @@ __asm__(".text\n"
         "call start_c\n"
         "ud2\n"
         ".size _start,.-_start\n"
-        ".section .note.GNU-stack,\"\",@progbits\n");
+        ".pushsection .note.GNU-stack,\"\",@progbits\n"
+        ".popsection\n");
