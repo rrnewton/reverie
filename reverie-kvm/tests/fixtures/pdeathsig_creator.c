@@ -10,6 +10,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -19,6 +20,7 @@
 
 static int record_fd;
 static int mode;
+static int resumed;
 static pid_t parent_pid;
 static uid_t parent_uid;
 static pid_t child_pid;
@@ -44,19 +46,46 @@ static void caught(int signal, siginfo_t *info, void *context) {
       info->si_pid == parent_pid && info->si_uid == parent_uid;
 }
 static void recipient(void) {
-  struct sigaction action = {0};
-  action.sa_sigaction = caught;
-  action.sa_flags = SA_SIGINFO;
-  sigemptyset(&action.sa_mask);
-  if (sigaction(SIGUSR1, &action, 0)) fail(32);
   sigset_t one;
   sigemptyset(&one);
   sigaddset(&one, SIGUSR1);
+  /* A blocked ignored signal is retained by Linux at generation. An
+   * unblocked ignored signal is discarded (or observed and then ignored by
+   * a tracing Tool); installing a later handler must not resurrect it. */
+  if (mode == 4 && sigprocmask(SIG_BLOCK, &one, 0)) fail(33);
+  if (mode == 5 && sigprocmask(SIG_UNBLOCK, &one, 0)) fail(33);
+  if (mode == 6 && !resumed && sigprocmask(SIG_BLOCK, &one, 0)) fail(33);
+  if (resumed) {
+    sigset_t inherited;
+    struct sigaction previous;
+    if (sigprocmask(SIG_SETMASK, 0, &inherited) ||
+        sigismember(&inherited, SIGUSR1) != 1 ||
+        sigaction(SIGUSR1, 0, &previous) || previous.sa_handler != SIG_DFL) fail(47);
+  }
+  struct sigaction action = {0};
+  action.sa_sigaction = caught;
+  action.sa_flags = SA_SIGINFO;
+  if (mode == 4 || mode == 5) {
+    action.sa_handler = SIG_IGN;
+    action.sa_flags = 0;
+  }
+  sigemptyset(&action.sa_mask);
+  if (sigaction(SIGUSR1, &action, 0)) fail(32);
   if (mode <= 1 && sigprocmask(SIG_BLOCK, &one, 0)) fail(33);
-  if (prctl(PR_SET_PDEATHSIG, SIGUSR1, 0, 0, 0)) fail(34);
+  if (!resumed && prctl(PR_SET_PDEATHSIG, SIGUSR1, 0, 0, 0)) fail(34);
   int setting = -1;
   if (prctl(PR_GET_PDEATHSIG, &setting, 0, 0, 0) || setting != SIGUSR1) fail(35);
   if (mode == 1 && prctl(PR_SET_PDEATHSIG, 0, 0, 0, 0)) fail(36);
+  if (mode == 6 && !resumed) {
+    char fd_arg[32], pid_arg[32], uid_arg[32];
+    if (snprintf(fd_arg, sizeof(fd_arg), "%d", record_fd) <= 0 ||
+        snprintf(pid_arg, sizeof(pid_arg), "%d", parent_pid) <= 0 ||
+        snprintf(uid_arg, sizeof(uid_arg), "%u", parent_uid) <= 0) fail(48);
+    /* Enrolled exec admits only the authenticated retained static image,
+     * not a fresh pathname open after a Tool's metadata side effects. */
+    execl("/proc/self/exe", "/proc/self/exe", "6", "resumed", fd_arg, pid_arg, uid_arg, (char *)0);
+    fail(49);
+  }
   store(0, 1);
 
   if (mode <= 1) {
@@ -68,6 +97,29 @@ static void recipient(void) {
         sigismember(&pending, SIGUSR1) != (mode == 0)) fail(37);
     if (sigprocmask(SIG_UNBLOCK, &one, 0)) fail(38);
     if (calls != (mode == 0) || valid_info != (mode == 0)) fail(39);
+  } else if (mode == 4 || mode == 5) {
+    /* The leader releases only after joining the creator. In controlled
+     * mode the second sigaction hook additionally asserts the real ignored
+     * dequeue/NoHandler receipt already exists before replacing SIG_IGN;
+     * syscall frequency is not taken as proof of observer completion. */
+    await(1);
+    sigset_t pending;
+    if (sigpending(&pending) || calls != 0 || valid_info != 0 ||
+        sigismember(&pending, SIGUSR1) != (mode == 4)) fail(42);
+    action.sa_sigaction = caught;
+    action.sa_flags = SA_SIGINFO;
+    if (sigaction(SIGUSR1, &action, 0) || calls != 0) fail(43);
+    if (sigprocmask(SIG_UNBLOCK, &one, 0)) fail(44);
+    if (calls != (mode == 4) || valid_info != (mode == 4)) fail(45);
+    if (sigpending(&pending) || sigismember(&pending, SIGUSR1) != 0) fail(46);
+  } else if (mode == 6) {
+    if (!resumed) fail(50);
+    await(1);
+    sigset_t pending;
+    if (sigpending(&pending) || sigismember(&pending, SIGUSR1) != 1 ||
+        calls != 0 || valid_info != 0) fail(51);
+    if (sigprocmask(SIG_UNBLOCK, &one, 0)) fail(52);
+    if (calls != 1 || valid_info != 1) fail(53);
   } else {
     /* Only run these modes with the observing Tool, which keeps the creator
      * alive until this exact pause/nanosleep callback is Pending. */
@@ -95,9 +147,16 @@ static void *creator(void *unused) {
   return 0;
 }
 int main(int argc, char **argv) {
+  if (argc == 6 && !strcmp(argv[1], "6") && !strcmp(argv[2], "resumed")) {
+    mode = 6; resumed = 1;
+    record_fd = atoi(argv[3]); parent_pid = (pid_t)atoi(argv[4]);
+    parent_uid = (uid_t)strtoul(argv[5], 0, 10);
+    recipient();
+    fail(54);
+  }
   if (argc != 2) return 10;
   mode = atoi(argv[1]);
-  if (mode < 0 || mode > 3) return 11;
+  if (mode < 0 || mode > 6) return 11;
   parent_pid = getpid(); parent_uid = getuid();
   record_fd = open("creator.record", O_CREAT | O_TRUNC | O_RDWR, 0600);
   if (record_fd < 0 || ftruncate(record_fd, 3)) return 12;

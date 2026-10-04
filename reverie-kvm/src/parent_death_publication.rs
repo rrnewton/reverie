@@ -137,14 +137,21 @@ impl ProcessSignalRegistry {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let mut expected = Vec::new();
-        for sequence in &receipt.batches {
-            let result = results.get(sequence).ok_or(Errno::EINVAL)?;
-            if result.boundary != receipt.boundary {
-                return Err(Errno::EINVAL);
-            }
+        let mut expected_batches = Vec::new();
+        for (&sequence, result) in results
+            .iter()
+            .filter(|(_, result)| result.boundary == receipt.boundary)
+        {
+            expected_batches.push(sequence);
             expected.extend(result.signals.iter().copied());
+            if result.error.is_some() {
+                break;
+            }
         }
-        if expected != receipt.signals || receipt.batches.is_empty() {
+        if expected != receipt.signals
+            || receipt.batches.is_empty()
+            || expected_batches != receipt.batches
+        {
             return Err(Errno::EINVAL);
         }
         Ok(())
@@ -169,6 +176,36 @@ impl ProcessSignalControl {
                 | reverie::SignalBoundaryOutcome::ImageReplaced
         ) {
             return Outcome::RejectedBeforeCommit(Errno::EINVAL);
+        }
+        // Completed receipts outlive the sender's process-table binding. They
+        // remain exact after task cleanup; never re-open publication or retarget
+        // a numeric pid merely to answer an idempotent acknowledgement.
+        {
+            let results = registry
+                .parent_death_results
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let mut retained = ParentDeathPublication {
+                boundary,
+                batches: Vec::new(),
+                signals: Vec::new(),
+            };
+            for (&sequence, result) in results
+                .iter()
+                .filter(|(_, result)| result.boundary == boundary)
+            {
+                retained.batches.push(sequence);
+                retained.signals.extend(result.signals.iter().copied());
+                if let Some(errno) = result.error {
+                    return Outcome::FailedAfterCommit {
+                        receipt: retained,
+                        errno,
+                    };
+                }
+            }
+            if !retained.batches.is_empty() {
+                return Outcome::Committed(retained);
+            }
         }
         let batches = match registry.parent_death_batches(boundary) {
             Ok(batches) => batches,
