@@ -353,7 +353,7 @@ pub(super) unsafe fn run(control: RawFd) -> ! {
         }
         let mut timeout = if retry_completion { 50isize } else { -1 };
         if blocked {
-            let remaining = ((blocked_until - now + 999_999) / 1_000_000).min(1000) as isize;
+            let remaining = (blocked_until - now).div_ceil(1_000_000).min(1000) as isize;
             timeout = if timeout < 0 {
                 remaining
             } else {
@@ -414,7 +414,7 @@ pub(super) unsafe fn run(control: RawFd) -> ! {
             {
                 shutting_down = true;
             } else if frame.kind == EXPORT_CLIENT && received == 2 {
-                let next_count = session_count.checked_add(1).unwrap_or(usize::MAX);
+                let next_count = session_count.saturating_add(1);
                 let needed = next_count
                     .checked_add(2)
                     .and_then(|n| n.checked_mul(size_of::<libc::pollfd>()))
