@@ -8,10 +8,9 @@ fn terminal_cleanup_preserves_live_shared_table_and_does_not_wait_for_its_lock()
     terminal_cleanup_preserves_live_shared_table_and_does_not_wait_for_its_lock_body(client);
 }
 
-// PRIVATE source-body proposal, to be included inside executor::tests.
-// The early-launcher/authenticated test-client bridge is the only wiring left;
-// these functions take its actual client/owned broker PID, not a fake broker.
-// No #[test] declaration or executed inventory is claimed before that wiring.
+// Compiled inside executor::tests. The ordinary-main launcher supplies the
+// authenticated client; these tests exercise actual native workers and their
+// service/reaper cleanup without fabricating broker readiness or completion.
 
 fn terminal_cleanup_preserves_live_shared_table_and_does_not_wait_for_its_lock_body(
     client: crate::native_exit_broker::BrokerClient,
