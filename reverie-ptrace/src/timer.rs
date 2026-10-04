@@ -463,8 +463,8 @@ impl PmuConfig {
 
     /// How many RCBs short of a precise event's target a stop that nothing
     /// continues must come to keep the event: a stop without a Tool callback
-    /// across which the event cannot be continued (an rt_sigreturn LiteInst
-    /// hook trap, or any such stop without overflow records) keeps the event
+    /// across which the event cannot be continued (an injected rt_sigreturn
+    /// trap, or any such stop without overflow records) keeps the event
     /// only while the guest's clock is more than this short of the target,
     /// and cancels it otherwise.
     ///
@@ -678,9 +678,8 @@ pub enum HandleFailure {
     Event(Wait),
 
     /// A single step ended at a seccomp stop: the stepped instruction entered
-    /// a traced syscall. The caller classifies it (trap-only refuses a patched
-    /// site carrying an allowed number, P2 spec O4 rule 4) and otherwise
-    /// dispatches it like [`HandleFailure::Event`].
+    /// a traced syscall. The caller dispatches it like
+    /// [`HandleFailure::Event`].
     #[error("Single step ended at a seccomp stop")]
     SeccompStop(Stopped),
 
@@ -1141,9 +1140,9 @@ impl Timer {
     /// counter.
     /// Drives a timer signal using caller-owned stopped-state transitions.
     ///
-    /// LiteInst uses this hook to keep its exact-generation root-stop lease
-    /// synchronized across the precise timer's internal single steps. The
-    /// non-LiteInst caller supplies the historical raw transition.
+    /// The caller uses this hook to keep its exact-generation root-stop lease
+    /// synchronized across the precise timer's internal single steps, and to
+    /// observe each step's wait, for example to retain a decoded new child.
     pub(crate) async fn handle_signal(
         &mut self,
         task: Stopped,
@@ -1193,60 +1192,6 @@ thread_local! {
     pub(crate) static CONTROLLER_NAMESPACE_PATH: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
     pub(crate) static CONTROLLER_QUERY_EDGE: std::cell::RefCell<Option<ControllerQueryHook>> = const { std::cell::RefCell::new(None) };
     pub(crate) static CONTROLLER_QUERY_LOG: std::cell::RefCell<Option<ControllerQueryLog>> = const { std::cell::RefCell::new(None) };
-    static HOST_TIMED_TIMER_EVENTS: std::cell::Cell<HostTimedTimerEvents> = const {
-        std::cell::Cell::new(HostTimedTimerEvents {
-            overshoot: 0,
-            unstepped_at_target: 0,
-            preempted_overflow: 0,
-        })
-    };
-}
-
-/// Precise-timer outcomes whose place in the guest depends on when the host
-/// delivered the perf overflow signal, not on the guest, counted on the
-/// thread that runs the tracer. A test that compares independent runs can
-/// tell such a run from a divergence the guest or a backend caused.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct HostTimedTimerEvents {
-    /// The signal was handled past the target, which also prints
-    /// [`SKID_OVERSHOOT_MARKER`]: the event fires at the observed counter.
-    pub overshoot: u64,
-    /// The signal was handled exactly at the target count with no
-    /// instruction offset, so no single-step placed the event: it fires
-    /// wherever the guest was stopped between the target branch and the next
-    /// one.
-    pub unstepped_at_target: u64,
-    /// A stop other than the timer's own signal stop ended the timer's one
-    /// allowed stop after the counter had passed the programmed overflow, and
-    /// that overflow's signal was not handled first. The stop cancels a timer
-    /// that an earlier delivery would have fired, or that would have been
-    /// stepped onto the stop.
-    pub preempted_overflow: u64,
-}
-
-#[cfg(test)]
-impl HostTimedTimerEvents {
-    /// The number of host-timed outcomes of every kind.
-    pub fn total(&self) -> u64 {
-        self.overshoot + self.unstepped_at_target + self.preempted_overflow
-    }
-}
-
-/// Takes, and resets to zero, the host-timed timer outcomes counted on this
-/// thread.
-#[cfg(test)]
-pub(crate) fn take_host_timed_timer_events() -> HostTimedTimerEvents {
-    HOST_TIMED_TIMER_EVENTS.with(|events| events.take())
-}
-
-#[cfg(test)]
-fn count_host_timed(update: impl FnOnce(&mut HostTimedTimerEvents)) {
-    HOST_TIMED_TIMER_EVENTS.with(|cell| {
-        let mut events = cell.get();
-        update(&mut events);
-        cell.set(events);
-    });
 }
 
 /// The lazy-initialized part of a `Timer` that holds the functionality.
@@ -1334,13 +1279,6 @@ struct TimerImpl {
     #[cfg(test)]
     fail_next_notification: Option<Errno>,
 
-    /// This request's one allowed stop was counted as a
-    /// [`HostTimedTimerEvents::preempted_overflow`] before its signal
-    /// stop could be told apart from another stop; handling the signal takes
-    /// the count back.
-    #[cfg(test)]
-    preempted_overflow_counted: bool,
-
     /// Pid (tgid) of the monitored thread
     guest_pid: Pid,
 
@@ -1388,9 +1326,6 @@ struct ObservedStop {
     /// already reached, recorded as a skid overshoot unless the stop is
     /// disregarded.
     missed: Option<MissedTarget>,
-    /// The stop counted a [`HostTimedTimerEvents::preempted_overflow`].
-    #[cfg(test)]
-    preempted_overflow_counted: bool,
 }
 
 /// A precise event whose delivery point a stop found already reached.
@@ -1631,7 +1566,7 @@ impl TimerImpl {
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| {
                 warn!(
-                    "PREEMPT_RT kernel; timer signals at injected syscalls, late or not, will be delivered to the guest, a timer signal in the LiteInst patch helper fails the run, and a stop without a Tool callback within the keep margin of a precise timer event's target cancels the event (https://github.com/rrnewton/reverie/issues/747)"
+                    "PREEMPT_RT kernel; timer signals at injected syscalls, late or not, will be delivered to the guest, and a stop without a Tool callback within the keep margin of a precise timer event's target cancels the event (https://github.com/rrnewton/reverie/issues/747)"
                 )
             });
         } else if let Err(errno) = timer.map_sample_records() {
@@ -1639,7 +1574,7 @@ impl TimerImpl {
             WARNED.call_once(|| {
                 warn!(
                     %errno,
-                    "Could not map timer overflow records; timer signals at injected syscalls, late or not, will be delivered to the guest, a timer signal in the LiteInst patch helper fails the run, and a stop without a Tool callback within the keep margin of a precise timer event's target cancels the event (https://github.com/rrnewton/reverie/issues/747)"
+                    "Could not map timer overflow records; timer signals at injected syscalls, late or not, will be delivered to the guest, and a stop without a Tool callback within the keep margin of a precise timer event's target cancels the event (https://github.com/rrnewton/reverie/issues/747)"
                 )
             });
         }
@@ -1678,8 +1613,6 @@ impl TimerImpl {
             kept_programming_log: Vec::new(),
             #[cfg(test)]
             fail_next_notification: None,
-            #[cfg(test)]
-            preempted_overflow_counted: false,
             guest_pid,
             guest_tid,
         })
@@ -1694,10 +1627,6 @@ impl TimerImpl {
         };
         if delivery == 0 {
             return Err(Errno::EINVAL); // bail before setting timer
-        }
-        #[cfg(test)]
-        {
-            self.preempted_overflow_counted = false;
         }
         self.recheck_kept_programming();
         self.armed_programming = None;
@@ -1920,27 +1849,9 @@ impl TimerImpl {
             }
             _ => None,
         };
-        // This stop is the request's one allowed stop, unless it is
-        // disregarded, which takes this count back. If the counter has
-        // already passed the programmed overflow, either this is the timer's
-        // own signal stop, and `handle_signal` takes the count back, or
-        // another stop came first although the overflow was due.
-        #[cfg(test)]
-        let preempted = self.timer_status == EventStatus::Scheduled
-            && self.initial_command == InitialCommand::Ordinary
-            && self.current_overflow().unwrap_or(false);
-        #[cfg(test)]
-        if preempted {
-            count_host_timed(|events| events.preempted_overflow += 1);
-            self.preempted_overflow_counted = true;
-        }
         self.tick_observed();
         if let Some(observed) = self.observed.as_mut() {
             observed.missed = missed;
-            #[cfg(test)]
-            {
-                observed.preempted_overflow_counted = preempted;
-            }
         }
     }
 
@@ -1960,8 +1871,6 @@ impl TimerImpl {
             before: self.timer_status,
             interrupted: self.interrupted.take(),
             missed: None,
-            #[cfg(test)]
-            preempted_overflow_counted: false,
         });
         self.timer_status.tick()
     }
@@ -2111,13 +2020,6 @@ impl TimerImpl {
     /// it.
     fn restore_before(&mut self, observed: &ObservedStop) {
         self.timer_status = observed.before;
-        #[cfg(test)]
-        if observed.preempted_overflow_counted {
-            self.preempted_overflow_counted = false;
-            count_host_timed(|events| {
-                events.preempted_overflow = events.preempted_overflow.saturating_sub(1)
-            });
-        }
     }
 
     /// Cancels the event at a disregarded stop that cannot hand it back, as
@@ -2551,15 +2453,7 @@ impl TimerImpl {
                 "Timer event status should tick at least once before the signal \
                 is handled. This is a bug!"
             ),
-            EventStatus::Armed => {
-                // This signal stop was the request's one allowed stop.
-                #[cfg(test)]
-                if std::mem::take(&mut self.preempted_overflow_counted) {
-                    count_host_timed(|events| {
-                        events.preempted_overflow = events.preempted_overflow.saturating_sub(1)
-                    });
-                }
-            }
+            EventStatus::Armed => {}
             EventStatus::Cancelled => {
                 debug!("Delivered timer signal cancelled due to status");
                 CANCELLED_TIMER_SIGNALS_DISCARDED
@@ -2611,12 +2505,6 @@ impl TimerImpl {
                 clock_target,
                 offset,
             } => {
-                // No single step places an event that the notification finds
-                // exactly at its target count with no instruction offset.
-                #[cfg(test)]
-                if ctr == clock_target && offset == 0 {
-                    count_host_timed(|events| events.unstepped_at_target += 1);
-                }
                 let current = ClockCounter::new(ctr, 0, clock_target);
                 self.attempt_single_step(task, current, offset, step, observe)
                     .await
@@ -2657,8 +2545,6 @@ impl TimerImpl {
                 current.rcbs(),
                 target_rcb
             );
-            #[cfg(test)]
-            count_host_timed(|events| events.overshoot += 1);
             return Ok(task);
         }
         let max_single_step_count = get_pmu_config().max_single_step_count();
@@ -2725,8 +2611,8 @@ impl TimerImpl {
                 // loading r11, for example. The stop is passed on even if the
                 // cleanup fails, because it can be an event, such as a new
                 // child or a trap that Reverie handles, that must be handled.
-                // A seccomp stop is passed on separately, for the caller to
-                // classify.
+                // A seccomp stop is passed on separately, as
+                // `HandleFailure::SeccompStop`.
                 //
                 // How far the steps have come is kept for the stop's handler,
                 // which continues them if the Tool does not observe the stop
@@ -3323,7 +3209,6 @@ mod tests {
                 resumed_programming: None,
                 kept_programming_log: Vec::new(),
                 fail_next_notification: None,
-                preempted_overflow_counted: false,
                 // A terminal close must not try to finalize the pending kick.
                 guest_pid: Pid::from_raw(0),
                 guest_tid: Tid::from_raw(0),
