@@ -13,6 +13,15 @@
 //! then exits natively, and the broker's actual wait result completes the job.
 //! Unexpected external worker destruction between ACK and parent retirement is
 //! an adverse-host failure; ACK is not an unkillable kernel reference lease.
+//!
+//! Broker control/job channels, identity pidfds and exported client channels
+//! can outlive a single call. `reverie_process::launch_window` protects transient
+//! opens, not these long-lived owners. CLOEXEC does not isolate a forked tracee
+//! that never execs, such as `reverie_ptrace::spawn_fn_with_config`; this module
+//! does not arrange their exclusion from that child. Embedders must keep live
+//! broker use separate from such in-process no-exec launches unless they provide
+//! that exclusion for every broker descriptor throughout the launch. Neither
+//! the launch-window guard nor descriptor numbering establishes that isolation.
 
 #[path = "native_exit_broker/bootstrap.rs"]
 mod bootstrap;

@@ -1,5 +1,5 @@
 //! Exported-client death control for the ordinary-main broker test launcher.
-//! This source is uncompiled and unexecuted. It does not bootstrap a broker.
+//! The launcher supplies the broker; this module does not bootstrap one.
 //! The caller owns BrokerOwner through shutdown and actual __WCLONE wait.
 use std::ffi::CString;
 use std::ffi::OsString;
@@ -77,7 +77,7 @@ pub struct DeathReceipt {
     pub worker_wait_status: i32,
     pub complete_acknowledged: usize,
     pub original_references_retired: bool,
-    pub eof_observed_while_client_alive: i32,
+    pub worker_error_errno_after_protocol_eof: i32,
     pub broker_live_after_worker_wait: bool,
     pub peer_eof_after_native_wait: bool,
 }
@@ -383,7 +383,7 @@ pub fn run_exported_client_death(owner: &BrokerOwner) -> Result<DeathReceipt, De
             worker_wait_status: done.status as i32,
             complete_acknowledged: 1,
             original_references_retired: true,
-            eof_observed_while_client_alive: report.eof_errno as i32,
+            worker_error_errno_after_protocol_eof: report.eof_errno as i32,
             broker_live_after_worker_wait: true,
             peer_eof_after_native_wait: true,
         })
