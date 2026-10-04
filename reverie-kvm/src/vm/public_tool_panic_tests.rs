@@ -308,7 +308,18 @@ mod public_tool_panic_tests {
             };
             let mut caught = Box::pin(AssertUnwindSafe(public_run).catch_unwind());
             let mut context = Context::from_waker(Waker::noop());
-            assert!(matches!(caught.as_mut().poll(&mut context), Poll::Pending));
+            let early = match caught.as_mut().poll(&mut context) {
+                Poll::Pending => None,
+                Poll::Ready(Ok(Ok(()))) => Some("success"),
+                Poll::Ready(Ok(Err(_))) => Some("error"),
+                Poll::Ready(Err(_)) => Some("panic"),
+            };
+            assert_eq!(
+                early,
+                None,
+                "elf={elf} public owner completed before consumer release; events={:?}",
+                *observed.events.lock().unwrap()
+            );
             assert!(observed.pending.load(Ordering::SeqCst));
             assert_eq!(
                 *observed.events.lock().unwrap(),
