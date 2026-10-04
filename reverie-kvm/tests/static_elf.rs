@@ -21243,10 +21243,17 @@ mod pdeathsig {
                 .expect("installed control")
         }
         fn reserve(&self, task: SignalTaskIdentity) -> SignalDeliveryPermit {
+            self.reserve_at(task, None)
+        }
+        fn reserve_at(
+            &self,
+            task: SignalTaskIdentity,
+            site: Option<CallbackSignalSite>,
+        ) -> SignalDeliveryPermit {
             let permit = SignalDeliveryPermit {
                 task,
                 sequence: self.sequence.fetch_add(1, Ordering::SeqCst) + 1,
-                site: None,
+                site,
             };
             let mut permits = self.permits.lock().unwrap();
             assert!(!permits.contains_key(&task.tid.as_raw()));
@@ -21258,7 +21265,7 @@ mod pdeathsig {
     #[reverie::global_tool]
     impl GlobalTool for Global {
         type Request = Request;
-        type Response = ();
+        type Response = Option<reverie::ParkedObservationLease>;
         type Config = u8;
 
         async fn init_global_state(mode: &u8) -> Self {
@@ -21278,7 +21285,7 @@ mod pdeathsig {
             *self.control.lock().unwrap() = Some(control);
             Ok(BackendSignalControlMode::ToolControlled)
         }
-        async fn receive_rpc(&self, _: Pid, request: Request) {
+        async fn receive_rpc(&self, _: Pid, request: Request) -> Self::Response {
             match request {
                 Request::Prctl => {
                     self.prctl_calls.fetch_add(1, Ordering::SeqCst);
@@ -21359,6 +21366,16 @@ mod pdeathsig {
                     self.reserve(task);
                 }
                 Request::Park(site) => {
+                    // Reserve the actual callback before exposing its parked
+                    // site to the creator. A nonce alone is not authority.
+                    let permit = self.reserve_at(
+                        SignalTaskIdentity {
+                            process: site.process,
+                            tid: site.tid,
+                            task_generation: site.task_generation,
+                        },
+                        Some(site),
+                    );
                     poll_fn(|cx| {
                         assert!(
                             !self.failed.load(Ordering::Acquire),
@@ -21384,8 +21401,12 @@ mod pdeathsig {
                         Poll::Pending
                     })
                     .await;
+                    return Some(reverie::ParkedObservationLease {
+                        nonce: permit.sequence,
+                    });
                 }
             }
+            None
         }
         fn authorize_backend_signal_boundary(
             &self,
@@ -21549,7 +21570,7 @@ mod pdeathsig {
                 )
                 .unwrap()
             );
-            guest.send_rpc(Request::Dequeue(effect)).await;
+            let _ = guest.send_rpc(Request::Dequeue(effect)).await;
             Ok(())
         }
         async fn handle_syscall_event<G: Guest<Self>>(
@@ -21559,7 +21580,7 @@ mod pdeathsig {
         ) -> Result<i64, reverie::Error> {
             let admission = guest.parent_death_syscall_preflight(call)?;
             if self.mode == EXEC && matches!(call.number(), Sysno::execve | Sysno::execveat) {
-                guest
+                let _ = guest
                     .send_rpc(Request::ExecAdmission {
                         task: guest.signal_task_identity().unwrap(),
                         enrolled: matches!(
@@ -21574,7 +21595,7 @@ mod pdeathsig {
             {
                 let (_, args) = call.into_parts();
                 if args.arg0 as i32 == libc::SIGUSR1 && args.arg1 != 0 {
-                    guest
+                    let _ = guest
                         .send_rpc(Request::IgnoredAction(
                             guest.signal_task_identity().unwrap(),
                         ))
@@ -21582,10 +21603,10 @@ mod pdeathsig {
                 }
             }
             if call.number() == Sysno::prctl {
-                guest.send_rpc(Request::Prctl).await;
+                let _ = guest.send_rpc(Request::Prctl).await;
             }
             if self.mode != NO_OPT_IN && matches!(call.number(), Sysno::exit | Sysno::exit_group) {
-                guest
+                let _ = guest
                     .send_rpc(Request::Exit(guest.signal_task_identity().unwrap()))
                     .await;
             }
@@ -21596,16 +21617,16 @@ mod pdeathsig {
                 let site = guest
                     .parked_signal_site()
                     .expect("actual original wait callback");
-                guest.send_rpc(Request::Park(site)).await;
+                let lease = guest
+                    .send_rpc(Request::Park(site))
+                    .await
+                    .expect("parked callback reserved its exact observation lease");
                 assert_eq!(
                     guest.parked_signal_site(),
                     Some(site),
                     "RPC must preserve exact original callback"
                 );
-                let observation = guest
-                    .observe_parked_signal(site, reverie::ParkedObservationLease { nonce: 1 })
-                    .await
-                    .unwrap();
+                let observation = guest.observe_parked_signal(site, lease).await.unwrap();
                 assert!(
                     matches!(observation.stop, SignalObservationStop::Caught(_)),
                     "{observation:?}"
