@@ -1,0 +1,16 @@
+{
+  "status": "PUBLIC_ARCHIVE_PREPARED_AND_VERIFIED_NOT_PUBLISHED",
+  "head": "1e1273ac160464be8cc03cf6bbc61af3799f8df3",
+  "tree": "0af8b89d53ad8985fe2ae96c354a1fa54ea184fb",
+  "archive_sha256": "d7c9e9d20bf8041c104a2451434c7d9766de5b3abd5fe2530eaeda1ddba19765",
+  "archive_bytes": 2051153,
+  "parts": 46,
+  "archive_reassembled_byte_identically": true,
+  "every_tar_member_verified": true,
+  "manifest_sha256": "1fa92d2a4df5499b293fa7537c2d47c0b35e32d35e916ef69949503d15d8aab8",
+  "publication_report_sha256": "78003e742e92857ad9795024a2795cd4f75fb7c7b27eb7047beb8b1c171fd290",
+  "public_report_sha256": "8f4055292b495859b8fd0e61a8bd94dbb0f9cec4a521234f680375f27daf253d",
+  "no_network": true,
+  "no_product_approval": true,
+  "sealed_at_et": "2026-10-03 11:09 PM EDT"
+}

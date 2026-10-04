@@ -1,0 +1,11 @@
+# Background
+
+This branch preserves the reversible qualification evidence for https://github.com/rrnewton/reverie/pull/925 at producer commit `1e1273ac160464be8cc03cf6bbc61af3799f8df3`, tree `0af8b89d53ad8985fe2ae96c354a1fa54ea184fb`. It contains no product change and is not a landing, source approval, canonical validation, or Hermit consumer result. The socket-linger blocker https://github.com/rrnewton/reverie/issues/923 remains unresolved.
+
+[archive.tar.gz](archive.tar.gz) is the complete public evidence archive (2,051,153 bytes; SHA256 `d7c9e9d20bf8041c104a2451434c7d9766de5b3abd5fe2530eaeda1ddba19765`). It preserves 109 guarded phases, the historical failures, four causal mutants and their four restored controls, and the three observer stops. There were no repeated negative executions.
+
+[PUBLICATION-REPORT.md](PUBLICATION-REPORT.md) describes the exact historical and carried populations and the explicit exclusions. Its statement that no network publication occurred refers to archive preparation; this evidence branch is the later publication. [public-manifest.json](public-manifest.json) lists every archived payload file except the manifest itself. [seal.json](seal.json) is the byte-identical original archive-preparation seal; its outer private packet manifest is separately retained, while the public archive and its public manifest are fully present here.
+
+To verify without executing archived code: hash archive.tar.gz, decompress the tar safely, then compare every payload file's byte length and SHA256 with public-manifest.json. The archive's internal PUBLIC-MANIFEST.json must be byte-identical to this branch's public-manifest.json. The public archive was already checked member-by-member and reconstructed from its base64 parts byte-identically before upload.
+
+All selected original evidence bytes are preserved. Private grant text, coordination/review prompts, external paper bodies and redundant product-source copies are excluded with path/hash/reason records. No missing private preimage is fabricated. Product source is identified through exact published Git commit/blob references. The raw index history explicitly records two cached-stat transitions; staged contents stayed equal, but raw index bytes were not globally unchanged.
