@@ -53,7 +53,6 @@ that the latter paths are simulations.
 | **e9patch, generic `Backend`** | `e9tool` rewrites every recovered syscall in the root ELF ahead of time. Preparation rejects partial coverage and signal-based B0 sites ([rewrite invocation][e9-rewrite]). The replacement frame emits a validated `SIGTRAP` to the ptracer ([hybrid setup][e9-hybrid]). | The ptracer remains attached for loader/shared-library syscalls, lifecycle, signals, timers, and full `Guest` semantics. Thus real e9patch sites still pay a ptrace stop, and residual sites remain ptrace-controlled ([hybrid contract][e9-hybrid]). | The arbitrary tool remains ptrace-hosted, so state and RPC follow the ptrace model ([generic run][e9-generic-run]). |
 | **e9patch, direct opt-in** | The same AOT frame calls the shared dispatcher directly in ordinary guest context ([AOT bridge][e9-aot]). | The shared preload seccomp/SIGSYS runtime traps residual post-constructor syscalls and enforces its documented fail-closed guards. Its stated boundary excludes static/`AT_SECURE` guests, early loader calls, and exec ([preload boundary][preload-lib], [trap flow][preload-trap]). | A tool-specific preload hosts `T`; a UDS `RpcServer` owns the singleton and the guest uses the preload coordinator client ([direct launch][e9-direct], [e9 RPC][e9-rpc]). Direct lifecycle coverage is currently single-process and single-thread, so this path does not replace the generic backend yet ([direct boundary][e9-direct-boundary]). |
 | **LiteInst, direct `Backend`** (a.k.a. "Mode A": in-guest, no per-syscall ptrace round-trip) | The first execution of a syscall site reaches seccomp/SIGSYS. The dispatcher installs a replace-first LiteInst hook, then changes the saved signal-context RIP to its trampoline. The first and subsequent calls therefore enter the same normal-context tool callback ([dispatcher][lite-dispatch], [patch install][lite-patch]). | The shared trap catches first use and residual sites. An unpatchable generic-tool site fails with `EOPNOTSUPP` instead of running arbitrary Rust in signal context ([LiteInst fallback][lite-fallback], [shared trap][preload-trap]). | A tool DSO hosts process/thread state. `CoordinatorRpc` sends typed requests to the launcher's shared `RpcServer` ([tool host][lite-tool-host], [LiteInst RPC][lite-rpc], [launcher][lite-launcher]). The current generic backend supports one process and one thread ([LiteInst boundaries][lite-readme]). |
-| **LiteInst, ptrace-owned hybrid** (a.k.a. "Mode B": ptrace tracer owns the tool; every installed hook returns through the ptrace-host SIGTRAP path) | On a first seccomp stop, ptrace skips the original call, rewrites the tracee RIP/stack to call the in-guest installer, validates the resulting hook footprint, and later accepts injected hot-site traps ([site install][lite-ptrace-site], [helper call][lite-ptrace-helper], [hot-site trap][lite-ptrace-trap]). | If installation cannot produce a validated hook, ptrace remains the slow path. This mode fails closed on fork/thread expansion today ([hybrid API][lite-hybrid-api], [hybrid provenance][lite-hybrid-provenance]). | Ptrace owns the sole tool and singleton; the preload contributes patch installation and the injected event frame ([hybrid API][lite-hybrid-api]). |
 
 ## Shared components
 
@@ -94,19 +93,18 @@ the UDS transport.
 `reverie-ptrace` is the one ptracer implementation. Its reusable surface is
 `TracerBuilder<T>`/`Tracer<T::GlobalState>`, with `PtraceBackend` as the thin
 generic adapter ([ptrace backend][ptrace-backend]). It currently appears in
-three distinct roles:
+two distinct roles:
 
 - the reference backend, where seccomp stops run the tool in the ptracer
-  ([dispatch][ptrace-dispatch]);
+  ([dispatch][ptrace-dispatch]); and
 - e9patch's generic lifecycle and event host, where every rewritten root-ELF
-  event still becomes a validated ptrace `SIGTRAP` ([e9patch][e9-hybrid]); and
-- LiteInst's optional hybrid owner, where ptrace temporarily runs the patch
-  helper inside the stopped guest and retains the unpatchable slow path
-  ([LiteInst helper][lite-ptrace-helper]).
+  event still becomes a validated ptrace `SIGTRAP` ([e9patch][e9-hybrid]).
 
-Consequently, "ptrace as a last resort" is accurate only for the LiteInst
-hybrid's successfully patched sites. It is not accurate for the reference
-backend or e9patch's generic `Backend`, where ptrace is the normal event host.
+LiteInst's ptrace-owned hybrid ("Mode B"), where ptrace ran the patch helper
+inside the stopped guest and kept the unpatchable slow path, was removed for
+https://github.com/rrnewton/hermit/issues/3520. Consequently, "ptrace as a last
+resort" describes no current backend: in the reference backend and e9patch's
+generic `Backend`, ptrace is the normal event host.
 
 ### [COMPONENT:TRAPPING]
 
@@ -225,11 +223,6 @@ not as a prerequisite for sharing code ([direct boundary][e9-direct-boundary]).
 [lite-rpc]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-liteinst/src/rpc.rs#L67-L114
 [lite-launcher]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-liteinst/src/backend.rs#L550-L595
 [lite-readme]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-liteinst/README.md#L86-L109
-[lite-hybrid-api]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-liteinst/src/backend.rs#L191-L229
-[lite-hybrid-provenance]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-ptrace/src/tracer.rs#L1868-L1893
-[lite-ptrace-site]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-ptrace/src/task.rs#L3538-L3578
-[lite-ptrace-helper]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-ptrace/src/task.rs#L3328-L3507
-[lite-ptrace-trap]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-ptrace/src/task.rs#L2330-L2378
 [preload-lib]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-preload/src/lib.rs#L9-L43
 [preload-dispatch]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-preload/src/dispatch.rs#L9-L30
 [preload-trap]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-preload/src/trap.rs#L9-L20
