@@ -52,7 +52,8 @@
 //!   (below), and for at most [`OPEN_WAIT_LIMIT`].
 //!
 //! Only system calls run under [`Launch`]: the ones that make the child's
-//! descriptors, and the `clone`. Nothing under it allocates or frees memory,
+//! descriptors, and the `clone`; [`Launch::allocate`] (below) may also spin
+//! for a bounded number of checks. Nothing under it allocates or frees memory,
 //! takes a lock, or calls code from outside Reverie. What a launch needs that
 //! allocates is built before the guard begins. A launch that waits holds
 //! nothing: other threads' opens keep beginning until it takes the lock,
@@ -69,6 +70,20 @@
 //! well within the limit, though scheduling delay can stretch it. The limit
 //! is checked between bounded futex waits of 10 ms, so an open can wait
 //! somewhat longer than the limit before it gives up.
+//!
+//! An open that proceeds that way can hold a descriptor the launch needs. If
+//! a descriptor allocation made through [`Launch::allocate`] then fails with
+//! EMFILE or ENFILE while such an open is still held, the launch waits for
+//! those opens to close, for a bounded number of checks, and allocates once
+//! more (<https://github.com/rrnewton/reverie/issues/930>). That wait is the
+//! one place a launch waits for another thread. It is bounded for the same
+//! reason as the open's: the open's close may itself wait on a supervisor
+//! that waits for the launch. It makes no system call: a supervisor could
+//! hold any call made while the launch is held until the launch ends, and
+//! neither could then end. So it spins instead of sleeping in `futex`, an
+//! open's release does not wake it (a release's wake while a launch is held
+//! would likewise wait for the launch), and it counts checks instead of
+//! reading a clock, which falls back to a system call on some clock sources.
 //!
 //! A launch through libc's `fork` (`spawn_fn_with_config`) ends its guard
 //! once its pipes exist, before it calls `fork`: `fork` runs the process's
@@ -311,6 +326,29 @@ impl Launch {
             _not_send: PhantomData,
         }
     }
+
+    /// Runs `allocate`, which makes descriptors for this launch. If it fails
+    /// with EMFILE or ENFILE (`errno` reads the error's number) while another
+    /// thread still holds an open that began during the launch, spins until
+    /// those opens close, for at most [`LATE_OPEN_CHECKS`] checks, and runs
+    /// `allocate` once more. Allocates nothing, takes no lock, reads no
+    /// clock, and makes no system call besides `allocate`'s.
+    pub fn allocate<T, E: Copy>(
+        &self,
+        mut allocate: impl FnMut() -> Result<T, E>,
+        errno: fn(E) -> i32,
+    ) -> Result<T, E> {
+        match allocate() {
+            Err(err) if matches!(errno(err), libc::EMFILE | libc::ENFILE) => {
+                if wait_for_late_opens() {
+                    allocate()
+                } else {
+                    Err(err)
+                }
+            }
+            result => result,
+        }
+    }
 }
 
 impl Drop for Launch {
@@ -334,6 +372,46 @@ impl Drop for Launch {
         run_deferred_work();
     }
 }
+
+/// The transient opens `state` counts. While a thread holds the launch, these
+/// are only other threads' opens that began during it.
+fn counted_opens(state: u32) -> u32 {
+    state & !LAUNCHING
+}
+
+/// How many times [`Launch::allocate`] checks for late opens before it
+/// allocates again anyway. Each check is one atomic load and one spin-wait
+/// hint ([`std::hint::spin_loop`]), whose cost depends on the processor: on
+/// an AMD EPYC 9D85 a check took 23 ns, so the bound is about 100 ms there;
+/// on processors with a cheaper hint it is shorter.
+const LATE_OPEN_CHECKS: u32 = 1 << 22;
+
+/// Spins, for at most [`LATE_OPEN_CHECKS`] checks, until no other thread holds
+/// an open that began during this thread's launch. Returns whether one was
+/// held when it was called.
+///
+/// It makes no system call and reads no clock, so a seccomp supervisor cannot
+/// hold or deny anything it does while the launch is held (see the module
+/// documentation).
+fn wait_for_late_opens() -> bool {
+    if counted_opens(STATE.load(Ordering::Acquire)) == 0 {
+        return false;
+    }
+    for _ in 0..LATE_OPEN_CHECKS {
+        if counted_opens(STATE.load(Ordering::Acquire)) == 0 {
+            break;
+        }
+        #[cfg(test)]
+        SPINS_WHILE_HELD.fetch_add(1, Ordering::Relaxed);
+        std::hint::spin_loop();
+    }
+    true
+}
+
+/// Checks that [`wait_for_late_opens`] found a late open still held, so a test
+/// can tell that the wait ran without a system call or a clock.
+#[cfg(test)]
+static SPINS_WHILE_HELD: AtomicU32 = AtomicU32::new(0);
 
 /// Shared hold for one transient descriptor, from its open to its close.
 #[must_use]
@@ -389,6 +467,9 @@ impl Drop for TransientOpen {
             return;
         }
         OPENS_HELD.with(|held| held.set(held.get() - 1));
+        // The last open wakes a launch waiting to begin. While a launch is
+        // held it wakes nobody: `Launch::allocate` spins rather than waits,
+        // and a supervisor could hold the wake until the launch ends.
         if STATE.fetch_sub(1, Ordering::Release) == 1 {
             wake_all();
         }
@@ -719,6 +800,127 @@ mod tests {
             "the launch was still waiting 5 s after a release whose wake was denied"
         );
         launcher.join().unwrap();
+    }
+
+    #[test]
+    fn a_failed_allocation_waits_for_an_open_that_began_during_the_launch_and_retries() {
+        if !running_alone(
+            "a_failed_allocation_waits_for_an_open_that_began_during_the_launch_and_retries",
+        ) {
+            return;
+        }
+        // The open closes only once the launch has begun to wait for it, as
+        // one whose close a supervisor holds would. The retry succeeds only
+        // if no open is held when it runs, so a retry that did not wait
+        // fails. A reader starved past the wait's bound makes one attempt
+        // fail, so a few are allowed; an allocation that does not wait fails
+        // every one.
+        let mut outcomes = Vec::new();
+        for _ in 0..5 {
+            SPINS_WHILE_HELD.store(0, Ordering::SeqCst);
+            let launch = Launch::begin();
+            let done = Arc::new(AtomicBool::new(false));
+            let (opened_tx, opened_rx) = mpsc::channel();
+            let reader = std::thread::spawn({
+                let done = done.clone();
+                move || {
+                    let open = TransientOpen::begin();
+                    opened_tx.send(launching()).unwrap();
+                    while SPINS_WHILE_HELD.load(Ordering::SeqCst) == 0
+                        && !done.load(Ordering::SeqCst)
+                    {
+                        std::thread::yield_now();
+                    }
+                    drop(open);
+                }
+            });
+            assert!(
+                opened_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("a transient open still waited for a launch 10 s later"),
+                "the open did not begin during the launch"
+            );
+            let mut calls = 0;
+            let mut at_retry = None;
+            let allocated = launch.allocate(
+                || {
+                    calls += 1;
+                    if calls == 1 {
+                        return Err(libc::EMFILE);
+                    }
+                    let held = counted_opens(STATE.load(Ordering::SeqCst));
+                    at_retry = Some((SPINS_WHILE_HELD.load(Ordering::SeqCst), held));
+                    if held == 0 {
+                        Ok(calls)
+                    } else {
+                        Err(libc::EMFILE)
+                    }
+                },
+                |errno| errno,
+            );
+            drop(launch);
+            done.store(true, Ordering::SeqCst);
+            reader.join().unwrap();
+            if allocated == Ok(2) {
+                return;
+            }
+            outcomes.push((allocated, calls, at_retry));
+            // A retry that ran without a single check while the open was held
+            // did not wait at all: no scheduling explains that away.
+            if matches!(at_retry, None | Some((0, _))) {
+                break;
+            }
+        }
+        panic!(
+            "the allocation was not retried once after the open closed; per attempt \
+             (result, calls, (checks while the open was held, opens held) at the \
+             retry): {outcomes:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_allocation_is_not_retried_without_an_open_that_began_during_the_launch() {
+        if !running_alone(
+            "a_failed_allocation_is_not_retried_without_an_open_that_began_during_the_launch",
+        ) {
+            return;
+        }
+        let launch = Launch::begin();
+        for errno in [libc::EMFILE, libc::ENFILE, libc::EINVAL] {
+            let mut calls = 0;
+            let allocated: Result<(), i32> = launch.allocate(
+                || {
+                    calls += 1;
+                    Err(errno)
+                },
+                |errno| errno,
+            );
+            assert_eq!((allocated, calls), (Err(errno), 1), "errno {errno}");
+        }
+
+        // An open that began during the launch does not make other failures
+        // retried.
+        let (opened_tx, opened_rx) = mpsc::channel();
+        let (close_tx, close_rx) = mpsc::channel::<()>();
+        let reader = std::thread::spawn(move || {
+            let open = TransientOpen::begin();
+            opened_tx.send(()).unwrap();
+            close_rx.recv().unwrap();
+            drop(open);
+        });
+        opened_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let mut calls = 0;
+        let allocated: Result<(), i32> = launch.allocate(
+            || {
+                calls += 1;
+                Err(libc::EINVAL)
+            },
+            |errno| errno,
+        );
+        assert_eq!((allocated, calls), (Err(libc::EINVAL), 1));
+        close_tx.send(()).unwrap();
+        reader.join().unwrap();
+        drop(launch);
     }
 
     #[test]
