@@ -5362,7 +5362,10 @@ where
     // `pthread_atfork` handlers (`launch_window`). Any error is built after
     // the guard ends.
     let launch = crate::launch_window::Launch::begin();
-    let pipes = unistd::pipe().and_then(|output| Ok((output, unistd::pipe()?)));
+    let errno = |err: nix::Error| err as i32;
+    let pipes = launch
+        .allocate(unistd::pipe, errno)
+        .and_then(|output| Ok((output, launch.allocate(unistd::pipe, errno)?)));
     drop(launch);
     let ((read1, write1), (read2, write2)) = pipes.map_err(from_nix_error)?;
 
