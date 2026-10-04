@@ -176,6 +176,11 @@ impl BrokerOwner {
     /// `authority` asserts the complete startup contract; a task-count sample is
     /// not a substitute. Bootstrap blocks signals temporarily and may wait for
     /// child setup. It is never called from a Tool callback or a lazy constructor.
+    /// Ambient inode queries are restricted to kernel-identified local
+    /// filesystems (ext2/3/4, btrfs, tmpfs, devtmpfs and devpts). Character
+    /// nodes on other filesystems and mounts absent from mountinfo are refused;
+    /// internal shmem remains supported through the kernel F_GET_SEALS query.
+    /// O_PATH, sockets and pipes retain their separate classification paths.
     pub fn bootstrap(authority: StartupAuthority) -> Result<Self, BootstrapFailure> {
         bootstrap::start(authority)
     }
