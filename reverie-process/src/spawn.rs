@@ -9,6 +9,8 @@
 use std::io;
 use std::io::Write;
 
+use syscalls::Errno;
+
 use super::Child;
 use super::Command;
 use super::clone::clone;
@@ -49,7 +51,7 @@ impl Command {
 
         // Create a pipe to send back errors to the parent process if `execve`
         // fails.
-        let (reader, mut writer) = pipe()?;
+        let (reader, mut writer) = launch.allocate(pipe, Errno::into_raw)?;
 
         let child = self.spawn_launched(prepared, launch, |err| {
             send_error(&mut writer, err);
@@ -111,9 +113,12 @@ impl Command {
         // are released, which frees no memory, and the error is plain data.
         let launched = (|| {
             // Set up IO pipes
-            let (stdin, child_stdin) = self.container.stdin.pipes(true)?;
-            let (stdout, child_stdout) = self.container.stdout.pipes(false)?;
-            let (stderr, child_stderr) = self.container.stdout.pipes(false)?;
+            let (stdin, child_stdin) =
+                launch.allocate(|| self.container.stdin.pipes(true), Errno::into_raw)?;
+            let (stdout, child_stdout) =
+                launch.allocate(|| self.container.stdout.pipes(false), Errno::into_raw)?;
+            let (stderr, child_stderr) =
+                launch.allocate(|| self.container.stdout.pipes(false), Errno::into_raw)?;
 
             let seccomp_fd = if self.container.seccomp_notify {
                 Some(SharedValue::new(core::sync::atomic::AtomicI32::new(0))?)
