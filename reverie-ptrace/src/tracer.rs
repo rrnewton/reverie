@@ -4997,6 +4997,8 @@ async fn postspawn<L: Tool + 'static>(
     tracer.ptracer_waits.inherit(waits);
     tracer.ptracer_waits.bind_stopped(&child);
     let ordinary_session = tracer.fatal_session();
+    #[cfg(test)]
+    tests::retain_fatal_root_observer_for_test(&child);
     tracer.arm_liteinst_root_stop(&child, &Event::Signal(Signal::SIGSTOP));
     if ordinary_owned {
         ordinary_session.capture_root(&child);
@@ -6441,6 +6443,24 @@ mod tests {
 
     thread_local! {
         static FATAL_REAP_IDENTITIES: std::cell::RefCell<Option<Vec<TraceeIdentity>>> = const { std::cell::RefCell::new(None) };
+        static FATAL_ROOT_OBSERVER: std::cell::RefCell<Option<Vec<FatalRootObserver>>> = const { std::cell::RefCell::new(None) };
+    }
+    struct FatalRootObserver {
+        pid: Pid,
+        emergency: TerminalCleanup,
+        original: TerminalCleanup,
+    }
+    pub(super) fn retain_fatal_root_observer_for_test(child: &Stopped) {
+        FATAL_ROOT_OBSERVER.with(|slot| {
+            if let Some(roots) = slot.borrow_mut().as_mut() {
+                assert!(roots.is_empty(), "fixture captured its root more than once");
+                roots.push(FatalRootObserver {
+                    pid: child.pid(),
+                    emergency: child.terminal_cleanup(),
+                    original: child.terminal_cleanup(),
+                });
+            }
+        });
     }
     struct FatalReapObservationScope;
     impl FatalReapObservationScope {
@@ -6454,6 +6474,10 @@ mod tests {
                 assert!(slot.borrow().is_none());
                 *slot.borrow_mut() = Some(Vec::new());
             });
+            FATAL_ROOT_OBSERVER.with(|slot| {
+                assert!(slot.borrow().is_none());
+                *slot.borrow_mut() = Some(Vec::new());
+            });
             Self
         }
     }
@@ -6462,6 +6486,7 @@ mod tests {
             FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = None);
             FATAL_REAP_OBSERVATIONS.with(|slot| *slot.borrow_mut() = None);
             FATAL_REAP_IDENTITIES.with(|slot| *slot.borrow_mut() = None);
+            FATAL_ROOT_OBSERVER.with(|slot| *slot.borrow_mut() = None);
         }
     }
 
@@ -6796,6 +6821,27 @@ mod tests {
         assert!(tracer.liteinst_cleanup.is_none());
         let root = tracer.guest_pid;
         let log = fail.then(|| Arc::clone(&tracer.gref.0));
+        let original_root = FATAL_ROOT_OBSERVER.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let roots = slot.as_mut().unwrap();
+            assert_eq!(
+                roots.len(),
+                1,
+                "fixture must retain exactly its original root"
+            );
+            roots.pop().unwrap()
+        });
+        assert_eq!(original_root.pid, root);
+        assert!(
+            original_root
+                .original
+                .same_generation(&original_root.emergency)
+        );
+        assert_eq!(original_root.original.ensure_registered(), Ok(()));
+        assert_eq!(original_root.emergency.ensure_registered(), Ok(()));
+        assert_eq!(original_root.original.registration_error(), None);
+        assert!(!original_root.original.wait(Duration::ZERO));
+        assert_eq!(tracer.ptracer_thread, std::thread::current().id());
         if let Some(channel) = natural_reaper.as_mut() {
             let identity = untraced_process_identity(root);
             fatal_control_write(
@@ -6816,7 +6862,16 @@ mod tests {
             Arc::new(StdMutex::new(None)),
         )
         .unwrap();
-        emergency.register_notifier(&Running::new(root));
+        emergency.notifier_owner = Some(tracer.ptracer_thread);
+        emergency.terminal = Some(original_root.emergency);
+        let emergency_registration = emergency.terminal.as_ref().unwrap().ensure_registered();
+        let emergency_same_generation = original_root
+            .original
+            .same_generation(emergency.terminal.as_ref().unwrap());
+        eprintln!(
+            "emergency root observer: root={root}, same_generation={emergency_same_generation}, registration={emergency_registration:?}, original_native={:?}",
+            original_root.original.has_thread_pidfd()
+        );
         let result = tokio::time::timeout(
             deadline.saturating_duration_since(Instant::now()),
             tracer.wait(),
@@ -6831,6 +6886,38 @@ mod tests {
             && unsafe { libc::waitpid(sentinel.as_raw(), std::ptr::null_mut(), libc::WNOHANG) }
                 == 0;
         let physical_readback = fatal_reap_readback();
+        let production_root = FATAL_REAP_OBSERVATIONS.with(|slot| {
+            let slot = slot.borrow();
+            let roots: Vec<_> = slot
+                .as_ref()
+                .unwrap()
+                .iter()
+                .filter(|task| task.tid == root)
+                .collect();
+            assert_eq!(
+                roots.len(),
+                1,
+                "production must register the original root once"
+            );
+            Arc::clone(roots[0])
+        });
+        assert!(
+            original_root
+                .original
+                .same_generation(&production_root.terminal)
+        );
+        assert!(
+            original_root.original.same_generation(
+                production_root
+                    .waits
+                    .cleanup
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .shared()
+            )
+        );
         let legacy_result = match &result {
             Ok(Ok((status, _))) => format!("success({status:?})"),
             Ok(Err(error)) => format!(
@@ -7018,6 +7105,28 @@ mod tests {
                 2
             );
             assert_reaped("normal root", root);
+        }
+        assert!(
+            emergency_same_generation,
+            "emergency changed the root generation"
+        );
+        assert_eq!(emergency_registration, Ok(()));
+        assert!(original_root.original.wait(Duration::ZERO));
+        assert!(emergency.terminal.as_ref().unwrap().wait(Duration::ZERO));
+        assert!(emergency.terminal.as_ref().unwrap().pending_is_empty());
+        assert_eq!(
+            original_root.original.observed_exit_status().unwrap(),
+            Some(if fail {
+                ExitStatus::Signaled(Signal::SIGKILL, false)
+            } else {
+                ExitStatus::Exited(0)
+            })
+        );
+        if blocked_newborn {
+            if std::env::var("REVERIE_PENDING_NEWBORN_OWNER_CELL").as_deref() == Ok("forced") {
+                assert_eq!(original_root.original.has_thread_pidfd(), Ok(false));
+            }
+            println!("ACTUAL_PENDING_NEWBORN_EMERGENCY_ORIGINAL_GENERATION_EXERCISED");
         }
     }
 
