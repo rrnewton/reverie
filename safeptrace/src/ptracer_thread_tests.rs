@@ -1643,6 +1643,10 @@ async fn explicit_original_owner_progresses_through_retained_proc_overmount() {
         assert_eq!(event, crate::Event::Stop);
         assert_eq!(stopped.generation(), generation);
         assert_eq!(stopped.1.event(), &event_before);
+        let observed = stopped.observation().sample(false);
+        assert_eq!(observed.refusal(), None);
+        assert_eq!(observed.siginfo().unwrap().unwrap().signo, libc::SIGTRAP);
+        assert_eq!(observed.pidfd_live(), Some(Ok(true)));
         let exit = stopped.exit_event_on_ptracer_thread();
         let running = stopped.resume(None).unwrap();
         assert_eq!(
@@ -1684,6 +1688,758 @@ async fn explicit_original_owner_progresses_through_retained_proc_overmount() {
         assert!(!std::path::Path::new(&format!("/proc/{tid}")).exists());
         println!(
             "ORIGINAL_OWNER_OVERMOUNT native={native} forced={forced} actual_exit=23 done=true root_reaped=true member_absent=true"
+        );
+    }
+    println!("{MARKER}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[cfg(not(sanitized))]
+async fn explicit_copied_stopped_namespace_refuses_numeric_ptrace() {
+    const NAME: &str = "explicit_copied_stopped_namespace_refuses_numeric_ptrace";
+    const INNER: &str = "SAFEPTRACE_COPIED_STOPPED_NAMESPACE_INNER";
+    const MARKER: &str = "ACTUAL_EXPLICIT_COPIED_PTRACE_NAMESPACE_REFUSAL_EXERCISED";
+    if env::var_os(INNER).is_none() {
+        let output =
+            run_exact_in_pid_namespace_bounded(&format!("notifier::test::{NAME}"), &[(INNER, "1")])
+                .expect("start copied stopped-state control");
+        assert!(
+            output.status.success(),
+            "copied stopped-state control: {output:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line == MARKER)
+        );
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    assert_eq!(nix::unistd::getpid().as_raw(), 1);
+    assert_eq!(nix::unistd::gettid().as_raw(), 2);
+    for forced in [false, true] {
+        for realign_proc in [false, true] {
+            let (root, tid, release, mut root_cleanup) = legacy_owner_guest();
+            let _force = forced.then(|| LegacyThreadGroup::new(root));
+            let running =
+                Running::seize_on_ptracer_thread(tid.into(), legacy_thread_options()).unwrap();
+            running.interrupt().unwrap();
+            // A actually consumes the kernel's original stop through the
+            // named synchronous API before copying its stopped generation.
+            let (stopped, event) = running
+                .wait_sync_on_ptracer_thread()
+                .wait()
+                .unwrap()
+                .assume_stopped();
+            assert_eq!(event, crate::Event::Stop);
+            let generation = stopped.generation();
+            let terminal = stopped.terminal_cleanup_on_ptracer_thread().into_driver();
+            let native = terminal.shared().has_thread_pidfd().unwrap();
+            if forced {
+                assert!(
+                    !native,
+                    "forced copied ptrace cell did not select legacy mode"
+                );
+            }
+            let original = stopped.1.event().clone();
+            assert_eq!(
+                original.event().worker_state.load(Ordering::Acquire),
+                WORKER_NOT_STARTED
+            );
+            assert_eq!(
+                original.event().wait_owner.load(Ordering::Acquire),
+                WAIT_OWNER_NONE
+            );
+            let owner = stopped.1.ptracer_owner.as_ref().unwrap().clone();
+            assert!(owner.is_current().unwrap());
+            assert_eq!(original.identity().unwrap().pidfd_is_live(), Ok(true));
+            let original_siginfo = stopped.getsiginfo().unwrap();
+            assert_eq!(original_siginfo.si_signo, libc::SIGTRAP);
+            assert_eq!(
+                original_siginfo.si_code,
+                libc::SIGTRAP | (libc::PTRACE_EVENT_STOP << 8)
+            );
+            let original_regs = stopped.getregs().unwrap();
+            let original_observation = stopped.observation().sample(false);
+            assert_eq!(original_observation.refusal(), None);
+            assert_eq!(
+                original_observation.siginfo().unwrap().unwrap().signo,
+                libc::SIGTRAP
+            );
+            assert_eq!(original_observation.pidfd_live(), Some(Ok(true)));
+            let copied_generation = generation.clone();
+            let intermediate = match unsafe { fork() }.unwrap() {
+                ForkResult::Parent { child } => child,
+                ForkResult::Child => {
+                    assert_eq!(
+                        unsafe { libc::unshare(libc::CLONE_NEWPID | libc::CLONE_NEWNS) },
+                        0
+                    );
+                    assert_eq!(
+                        unsafe {
+                            libc::mount(
+                                std::ptr::null(),
+                                c"/".as_ptr(),
+                                std::ptr::null(),
+                                libc::MS_REC | libc::MS_PRIVATE,
+                                std::ptr::null(),
+                            )
+                        },
+                        0
+                    );
+                    let inner = match unsafe { fork() }.unwrap() {
+                        ForkResult::Parent { child } => child,
+                        ForkResult::Child => {
+                            if realign_proc {
+                                assert_eq!(
+                                    unsafe {
+                                        libc::mount(
+                                            c"proc".as_ptr(),
+                                            c"/proc".as_ptr(),
+                                            c"proc".as_ptr(),
+                                            0,
+                                            std::ptr::null(),
+                                        )
+                                    },
+                                    0
+                                );
+                            }
+                            let proof = thread::spawn(move || {
+                                assert_eq!(nix::unistd::gettid().as_raw(), owner.tid.as_raw());
+                                assert_eq!(nix::unistd::getpid().as_raw(), owner.tgid.as_raw());
+                                assert!(owner.is_live().unwrap());
+                                assert!(!owner.is_current().unwrap());
+                                let target = retained_proc_status(
+                                    original.identity().unwrap().proc_dir.as_raw_fd(),
+                                )
+                                .unwrap();
+                                assert_eq!(target.pid, tid.into());
+                                assert_eq!(target.tgid, root.into());
+                                assert_eq!(target.tracer_pid, owner.tid);
+                                assert_eq!(
+                                    original.identity().unwrap().pidfd_is_live(),
+                                    Err(Errno::EINVAL)
+                                );
+                                assert_eq!(
+                                    require_aligned_proc_pid_namespace(),
+                                    if realign_proc {
+                                        Ok(())
+                                    } else {
+                                        Err(Errno::EXDEV)
+                                    }
+                                );
+                                let (receipt, emit) = nix::unistd::pipe().unwrap();
+                                let emit_fd = emit.as_raw_fd();
+                                let (replacement, replacement_cleanup, original_stop) = legacy_owner_replacement_after_stop(Some(tid), move || {
+                                    assert_eq!(unsafe { libc::write(emit_fd, b"Q".as_ptr().cast(), 1) }, 1);
+                                    assert_eq!(unsafe { libc::raise(libc::SIGSTOP) }, 0);
+                                }).expect("actual same-number replacement with IPC and two real stops");
+                                assert_eq!(replacement, tid);
+                                let flags = WaitPidFlag::from_bits_retain(
+                                    WaitPidFlag::WSTOPPED.bits()
+                                        | WaitPidFlag::WNOHANG.bits()
+                                        | libc::__WALL
+                                        | libc::__WNOTHREAD,
+                                );
+                                assert_eq!(
+                                    waitid::wait_raw(waitid::IdType::Pid(replacement), flags)
+                                        .unwrap(),
+                                    Some(original_stop)
+                                );
+                                let own_info = nix::sys::ptrace::getsiginfo(replacement).unwrap();
+                                assert_eq!(own_info.si_signo, libc::SIGSTOP);
+                                let mut copied = copied_generation.assume_stopped();
+                                for _ in 0..2 {
+                                    assert!(matches!(
+                                        copied.getsiginfo(),
+                                        Err(Error::Errno(Errno::EPERM))
+                                    ));
+                                    // A new observer constructed by B must
+                                    // keep the copied explicit token's actual
+                                    // owner instead of querying B's child.
+                                    let observed = copied.observation().sample(false);
+                                    assert_eq!(observed.refusal(), None);
+                                    assert_eq!(observed.siginfo(), Some(Err(Errno::EPERM)));
+                                    assert_eq!(observed.flags(), None);
+                                    assert_eq!(observed.pidfd_live(), Some(Err(Errno::EINVAL)));
+                                    let (retained, refusal) =
+                                        copied.resume_retaining(None).unwrap_err();
+                                    assert_eq!(refusal, Errno::EPERM);
+                                    assert_eq!(retained.generation(), copied_generation);
+                                    assert_eq!(retained.1.event(), &original);
+                                    assert!(Arc::ptr_eq(
+                                        retained.1.ptracer_owner.as_ref().unwrap(),
+                                        &owner
+                                    ));
+                                    copied = retained;
+                                    let still_held =
+                                        nix::sys::ptrace::getsiginfo(replacement).unwrap();
+                                    assert_eq!(still_held.si_signo, own_info.si_signo);
+                                    assert_eq!(still_held.si_code, own_info.si_code);
+                                    assert_eq!(unsafe { still_held.si_pid() }, unsafe {
+                                        own_info.si_pid()
+                                    });
+                                    assert_eq!(
+                                        waitid::wait_raw(
+                                            waitid::IdType::Pid(replacement),
+                                            flags | WaitPidFlag::WNOWAIT
+                                        )
+                                        .unwrap(),
+                                        None
+                                    );
+                                }
+                                // B's own actual authority still resumes its
+                                // child, observes real Q IPC and a new STOP,
+                                // then consumes/reaps the actual exit42.
+                                nix::sys::ptrace::cont(replacement, None).unwrap();
+                                let mut readiness = libc::pollfd {
+                                    fd: receipt.as_raw_fd(),
+                                    events: libc::POLLIN,
+                                    revents: 0,
+                                };
+                                assert_eq!(
+                                    unsafe {
+                                        libc::poll(
+                                            &mut readiness,
+                                            1,
+                                            TRACEE_WAIT_TIMEOUT.as_millis() as i32,
+                                        )
+                                    },
+                                    1
+                                );
+                                let mut byte = [0u8; 1];
+                                fs::File::from(receipt).read_exact(&mut byte).unwrap();
+                                assert_eq!(byte, [b'Q']);
+                                let fresh =
+                                    legacy_owner_observe(replacement, WaitPidFlag::WSTOPPED);
+                                assert!(libc::WIFSTOPPED(fresh));
+                                assert_eq!(libc::WSTOPSIG(fresh), libc::SIGSTOP);
+                                if !realign_proc {
+                                    assert_eq!(
+                                        unsafe {
+                                            libc::mount(
+                                                c"proc".as_ptr(),
+                                                c"/proc".as_ptr(),
+                                                c"proc".as_ptr(),
+                                                0,
+                                                std::ptr::null(),
+                                            )
+                                        },
+                                        0
+                                    );
+                                }
+                                legacy_owner_finish_replacement(
+                                    replacement,
+                                    replacement_cleanup,
+                                    fresh,
+                                );
+                                assert!(owner.is_live().unwrap());
+                                assert_eq!(
+                                    original.identity().unwrap().current_tracer_pid(),
+                                    Ok(owner.tid)
+                                );
+                                println!(
+                                    "COPIED_EXPLICIT_PTRACE_REFUSAL native={native} forced={forced} realigned={realign_proc} original_sync_stop_consumed=true copied_getsiginfo=EPERM copied_observation=EPERM copied_resume=EPERM same_original_stopped_retained=true own_ipc=Q fresh_stop=SIGSTOP actual_replacement_exit=42"
+                                );
+                            });
+                            proof.join().unwrap();
+                            unsafe { libc::_exit(0) };
+                        }
+                    };
+                    let status = waitpid_status_bounded(inner, 0, TRACEE_WAIT_TIMEOUT).unwrap();
+                    assert!(libc::WIFEXITED(status));
+                    assert_eq!(libc::WEXITSTATUS(status), 0);
+                    unsafe { libc::_exit(0) };
+                }
+            };
+            let status = waitpid_status_bounded(intermediate, 0, TRACEE_WAIT_TIMEOUT).unwrap();
+            assert!(libc::WIFEXITED(status));
+            assert_eq!(libc::WEXITSTATUS(status), 0);
+            assert!(owner.is_current().unwrap());
+            assert_eq!(original.identity().unwrap().pidfd_is_live(), Ok(true));
+            let still_held = stopped.getsiginfo().unwrap();
+            assert_eq!(still_held.si_signo, original_siginfo.si_signo);
+            assert_eq!(still_held.si_code, original_siginfo.si_code);
+            assert_eq!(unsafe { still_held.si_pid() }, unsafe {
+                original_siginfo.si_pid()
+            });
+            assert_eq!(stopped.getregs().unwrap(), original_regs);
+            let observed = stopped.observation().sample(false);
+            assert_eq!(observed.refusal(), None);
+            assert_eq!(observed.siginfo(), original_observation.siginfo());
+            assert_eq!(observed.pidfd_live(), Some(Ok(true)));
+            assert_eq!(stopped.generation(), generation);
+            let exit = stopped.exit_event_on_ptracer_thread();
+            let running = stopped.resume(None).unwrap();
+            assert_eq!(
+                unsafe { libc::write(release.as_raw_fd(), b"x".as_ptr().cast(), 1) },
+                1
+            );
+            let stopped = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, exit)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(stopped.getevent().unwrap(), 23 << 8);
+            drop(running);
+            assert_eq!(
+                tokio::time::timeout(
+                    TRACEE_WAIT_TIMEOUT,
+                    stopped.resume(None).unwrap().wait_owned_on_ptracer_thread()
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .assume_exited(),
+                (tid.into(), crate::ExitStatus::Exited(23))
+            );
+            let mut terminal = terminal;
+            assert!(
+                terminal
+                    .wait_on_ptracer_thread(TRACEE_WAIT_TIMEOUT)
+                    .unwrap()
+            );
+            assert_eq!(
+                terminal.shared().observed_exit_status(),
+                Ok(Some(crate::ExitStatus::Exited(23)))
+            );
+            legacy_owner_reap_root(root, &mut root_cleanup);
+            assert!(!std::path::Path::new(&format!("/proc/{tid}")).exists());
+        }
+    }
+    println!("{MARKER}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[cfg(not(sanitized))]
+async fn explicit_first_binding_uses_original_native_event_mount() {
+    const NAME: &str = "explicit_first_binding_uses_original_native_event_mount";
+    const INNER: &str = "SAFEPTRACE_FIRST_OWNER_NAMESPACE_INNER";
+    const MARKER: &str = "ACTUAL_EXPLICIT_NATIVE_FIRST_BINDING_REFUSAL_EXERCISED";
+    const UNAVAILABLE: &str = "NATIVE_THREAD_PIDFD_UNAVAILABLE_FOR_FIRST_BINDING_CONTROL";
+    if env::var_os(INNER).is_none() {
+        let output =
+            run_exact_in_pid_namespace_bounded(&format!("notifier::test::{NAME}"), &[(INNER, "1")])
+                .expect("start original native Event first-binding control");
+        assert!(output.status.success(), "first-binding control: {output:?}");
+        match classify_exact_reuse_output(Some(&output), MARKER, UNAVAILABLE).unwrap() {
+            ExactReuseOutcome::Exercised => {}
+            ExactReuseOutcome::Unavailable => {}
+        }
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    assert_eq!(nix::unistd::getpid().as_raw(), 1);
+    assert_eq!(nix::unistd::gettid().as_raw(), 2);
+    for realign_proc in [false, true] {
+        let (root, tid, release, mut root_cleanup) = legacy_owner_guest();
+        match pidfd_open_with_flags(tid.into(), libc::O_EXCL) {
+            Ok(reference) => drop(reference),
+            Err(Errno::EINVAL) => {
+                legacy_owner_reap_root(root, &mut root_cleanup);
+                println!("{UNAVAILABLE}");
+                return;
+            }
+            Err(error) => panic!("native first-binding reference refused: {error}"),
+        }
+        // This generic root is an untraced direct child. Keep its original
+        // Event passive so the fixture's real parent remains its sole reaper.
+        let untraced = Running::try_new(root.into()).unwrap();
+        assert!(untraced.1.ptracer_owner.is_none());
+        assert_eq!(
+            untraced.1.event().current_tracer_pid(),
+            Ok(super::Pid::from_raw(0))
+        );
+        assert!(untraced.1.event().identity().unwrap().proc_root.is_none());
+        let untraced_generation = untraced.generation();
+        let untraced_token = untraced.1.clone();
+        let running = Running::seize(tid.into(), legacy_thread_options()).unwrap();
+        assert!(running.1.ptracer_owner.is_none());
+        let generation = running.generation();
+        let original = running.1.event().clone();
+        assert!(original.identity().unwrap().proc_root.is_none());
+        let host = LegacyWaitOwner::capture_current().unwrap();
+        assert!(host.is_current().unwrap());
+        let terminal = running.terminal_cleanup();
+        assert_eq!(terminal.has_thread_pidfd(), Ok(true));
+        running.interrupt().unwrap();
+        legacy_owner_until(|| !terminal.queued_raw_statuses().is_empty());
+        let queued = terminal.queued_raw_statuses();
+        assert_eq!(queued.len(), 1);
+        assert_eq!((queued[0] >> 16) & 0xffff, libc::PTRACE_EVENT_STOP);
+        // The genuine generic Native interface retains its original kernel
+        // refusal from a sibling. Its token has no explicit-mode owner, and
+        // this known physical stop/FIFO stays with A through that refusal.
+        let foreign = Stopped::from_token(tid.into(), running.1.clone());
+        let expected_siginfo = nix::sys::ptrace::getsiginfo(tid).unwrap();
+        let expected_regs = foreign.getregs().unwrap();
+        let refusal = thread::spawn(move || foreign.detach(None))
+            .join()
+            .unwrap()
+            .unwrap_err();
+        let Error::Died(refused) = refusal else {
+            panic!("generic Native foreign detach changed its original refusal");
+        };
+        assert_eq!(refused.pid(), tid.into());
+        assert_eq!(refused.0.1.policy, WaitPolicy::Native);
+        assert_eq!(refused.0.1.event(), &original);
+        assert!(refused.0.1.ptracer_owner.is_none());
+        assert_eq!(refused.0.generation(), generation);
+        drop(refused);
+        assert_eq!(terminal.queued_raw_statuses(), queued);
+        assert_eq!(original.identity().unwrap().pidfd_is_live(), Ok(true));
+        let after = nix::sys::ptrace::getsiginfo(tid).unwrap();
+        assert_eq!(after.si_signo, expected_siginfo.si_signo);
+        assert_eq!(after.si_code, expected_siginfo.si_code);
+        assert_eq!(unsafe { after.si_pid() }, unsafe {
+            expected_siginfo.si_pid()
+        });
+        assert_eq!(
+            Stopped::from_token(tid.into(), running.1.clone())
+                .getregs()
+                .unwrap(),
+            expected_regs
+        );
+        let copied = running.1.clone();
+        let intermediate = match unsafe { fork() }.unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                assert_eq!(
+                    unsafe { libc::unshare(libc::CLONE_NEWPID | libc::CLONE_NEWNS) },
+                    0
+                );
+                assert_eq!(
+                    unsafe {
+                        libc::mount(
+                            std::ptr::null(),
+                            c"/".as_ptr(),
+                            std::ptr::null(),
+                            libc::MS_REC | libc::MS_PRIVATE,
+                            std::ptr::null(),
+                        )
+                    },
+                    0
+                );
+                let inner = match unsafe { fork() }.unwrap() {
+                    ForkResult::Parent { child } => child,
+                    ForkResult::Child => {
+                        if realign_proc {
+                            assert_eq!(
+                                unsafe {
+                                    libc::mount(
+                                        c"proc".as_ptr(),
+                                        c"/proc".as_ptr(),
+                                        c"proc".as_ptr(),
+                                        0,
+                                        std::ptr::null(),
+                                    )
+                                },
+                                0
+                            );
+                        }
+                        let proof = thread::spawn(move || {
+                            assert_eq!(nix::unistd::gettid().as_raw(), host.tid.as_raw());
+                            assert_eq!(nix::unistd::getpid().as_raw(), host.tgid.as_raw());
+                            assert!(host.is_live().unwrap());
+                            assert!(!host.is_current().unwrap());
+                            assert_eq!(original.current_tracer_pid(), Ok(host.tid));
+                            assert_eq!(
+                                original.identity().unwrap().pidfd_is_live(),
+                                Err(Errno::EINVAL)
+                            );
+                            assert_eq!(
+                                require_aligned_proc_pid_namespace(),
+                                if realign_proc {
+                                    Ok(())
+                                } else {
+                                    Err(Errno::EXDEV)
+                                }
+                            );
+                            let (replacement, replacement_cleanup, stop) =
+                                legacy_owner_replacement(Some(tid))
+                                    .expect("actual first-binding same-number child");
+                            assert_eq!(replacement, tid);
+                            let before = terminal.queued_raw_statuses();
+                            let epoch = original.event().exit_epoch.load(Ordering::Acquire);
+                            assert!(copied.ptracer_owner.is_none());
+                            let mut driver = Running::from_token(tid.into(), copied)
+                                .wait_owned_on_ptracer_thread()
+                                .into_driver();
+                            let mut cleanup = terminal.on_ptracer_thread().into_driver();
+                            let mut zero_tracer = Running::from_token(root.into(), untraced_token)
+                                .wait_owned_on_ptracer_thread()
+                                .into_driver();
+                            let waker = futures::task::noop_waker();
+                            for _ in 0..2 {
+                                assert_eq!(
+                                    original.capture_current_ptracer_owner().unwrap_err(),
+                                    Errno::EXDEV
+                                );
+                                assert_eq!(
+                                    zero_tracer
+                                        .inner
+                                        .inner
+                                        .as_ref()
+                                        .unwrap()
+                                        .token
+                                        .event()
+                                        .capture_current_constructor_owner()
+                                        .unwrap_err(),
+                                    Errno::EXDEV
+                                );
+                                assert!(matches!(
+                                    driver.poll_on_ptracer_thread(&mut Context::from_waker(&waker)),
+                                    Poll::Ready(Err(OwnedWaitError::Errno(Errno::EXDEV)))
+                                ));
+                                assert!(matches!(
+                                    zero_tracer
+                                        .poll_on_ptracer_thread(&mut Context::from_waker(&waker)),
+                                    Poll::Ready(Err(OwnedWaitError::Errno(Errno::EXDEV)))
+                                ));
+                                assert_eq!(cleanup.progress_on_ptracer_thread(), Err(Errno::EXDEV));
+                                assert!(driver.affinity.owner.is_none());
+                                assert!(zero_tracer.affinity.owner.is_none());
+                                assert!(cleanup.affinity.owner.is_none());
+                                let input = driver.inner.inner.as_ref().unwrap();
+                                assert_eq!(input.token.event(), &original);
+                                assert_eq!(input.token.policy, WaitPolicy::Native);
+                                assert!(input.token.ptracer_owner.is_none());
+                                assert_eq!(terminal.queued_raw_statuses(), before);
+                                assert_eq!(
+                                    original.event().exit_epoch.load(Ordering::Acquire),
+                                    epoch
+                                );
+                                assert_eq!(
+                                    legacy_owner_observe(replacement, WaitPidFlag::WSTOPPED),
+                                    stop,
+                                    "first conversion consumed B's actual report"
+                                );
+                            }
+                            if !realign_proc {
+                                assert_eq!(
+                                    unsafe {
+                                        libc::mount(
+                                            c"proc".as_ptr(),
+                                            c"/proc".as_ptr(),
+                                            c"proc".as_ptr(),
+                                            0,
+                                            std::ptr::null(),
+                                        )
+                                    },
+                                    0
+                                );
+                            }
+                            legacy_owner_finish_replacement(replacement, replacement_cleanup, stop);
+                            assert!(host.is_live().unwrap());
+                            assert_eq!(original.current_tracer_pid(), Ok(host.tid));
+                            assert_eq!(terminal.queued_raw_statuses(), before);
+                            println!(
+                                "EXPLICIT_NATIVE_FIRST_BINDING_REFUSAL realigned={realign_proc} original_tracer_live=true original_generic_stop_queued=true first_owner=EXDEV zero_tracer_owner=EXDEV original_fifo_preserved=true replacement_stop_preserved=true actual_replacement_exit=42"
+                            );
+                        });
+                        proof.join().unwrap();
+                        unsafe { libc::_exit(0) };
+                    }
+                };
+                let status = waitpid_status_bounded(inner, 0, TRACEE_WAIT_TIMEOUT).unwrap();
+                assert!(libc::WIFEXITED(status));
+                assert_eq!(libc::WEXITSTATUS(status), 0);
+                unsafe { libc::_exit(0) };
+            }
+        };
+        let status = waitpid_status_bounded(intermediate, 0, TRACEE_WAIT_TIMEOUT).unwrap();
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+        assert_eq!(terminal.queued_raw_statuses(), queued);
+        assert_eq!(original.identity().unwrap().pidfd_is_live(), Ok(true));
+        // A foreign same-namespace constructor also retains owner=None and
+        // the same input through its refusal. Return THAT driver to A and
+        // finish the already-published original status without recapture.
+        let foreign_generation = generation.clone();
+        let mut driver = thread::spawn(move || {
+            let mut driver = running.wait_owned_on_ptracer_thread().into_driver();
+            assert!(driver.affinity.owner.is_none());
+            let waker = futures::task::noop_waker();
+            for _ in 0..2 {
+                assert!(matches!(
+                    driver.poll_on_ptracer_thread(&mut Context::from_waker(&waker)),
+                    Poll::Ready(Err(OwnedWaitError::Errno(Errno::EPERM)))
+                ));
+                assert!(driver.affinity.owner.is_none());
+                assert_eq!(driver.generation(), Some(foreign_generation.clone()));
+            }
+            driver
+        })
+        .join()
+        .unwrap();
+        assert!(driver.affinity.owner.is_none());
+        let (stopped, event) = tokio::time::timeout(
+            TRACEE_WAIT_TIMEOUT,
+            futures::future::poll_fn(|cx| driver.poll_on_ptracer_thread(cx)),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .assume_stopped();
+        assert_eq!(event, crate::Event::Stop);
+        assert_eq!(stopped.1.event(), &original);
+        assert!(
+            stopped
+                .1
+                .ptracer_owner
+                .as_ref()
+                .unwrap()
+                .is_current()
+                .unwrap()
+        );
+        assert_eq!(stopped.generation(), generation);
+        assert!(terminal.queued_raw_statuses().is_empty());
+        let local_untraced = Running::new_on_ptracer_thread(root.into()).unwrap();
+        assert_eq!(local_untraced.generation(), untraced_generation);
+        assert!(
+            local_untraced
+                .1
+                .ptracer_owner
+                .as_ref()
+                .unwrap()
+                .is_current()
+                .unwrap()
+        );
+        assert_eq!(
+            local_untraced
+                .1
+                .event()
+                .event()
+                .worker_state
+                .load(Ordering::Acquire),
+            WORKER_NOT_STARTED
+        );
+        drop(local_untraced);
+        drop(untraced);
+        let exit = stopped.exit_event_on_ptracer_thread();
+        let running = stopped.resume(None).unwrap();
+        assert_eq!(
+            unsafe { libc::write(release.as_raw_fd(), b"x".as_ptr().cast(), 1) },
+            1
+        );
+        let stopped = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, exit)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stopped.getevent().unwrap(), 23 << 8);
+        drop(running);
+        assert_eq!(
+            tokio::time::timeout(
+                TRACEE_WAIT_TIMEOUT,
+                stopped.resume(None).unwrap().wait_owned_on_ptracer_thread()
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .assume_exited(),
+            (tid.into(), crate::ExitStatus::Exited(23))
+        );
+        assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
+        assert_eq!(
+            terminal.observed_exit_status(),
+            Ok(Some(crate::ExitStatus::Exited(23)))
+        );
+        legacy_owner_reap_root(root, &mut root_cleanup);
+        assert!(!std::path::Path::new(&format!("/proc/{tid}")).exists());
+    }
+    println!("{MARKER}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[cfg(not(sanitized))]
+async fn explicit_untraced_nonleader_constructor_retains_original_host() {
+    const NAME: &str = "explicit_untraced_nonleader_constructor_retains_original_host";
+    const MARKER: &str = "ACTUAL_EXPLICIT_UNTRACED_NONLEADER_CONSTRUCTOR_EXERCISED";
+    if run_legacy_test_outer_with_outcome(NAME, Some(MARKER)) {
+        return;
+    }
+    for forced in [false, true] {
+        let (root, tid, release, mut root_cleanup) = legacy_owner_guest();
+        let _force = forced.then(|| LegacyThreadGroup::new(root));
+        let running = Running::new_on_ptracer_thread(tid.into()).unwrap();
+        let generation = running.generation();
+        let identity = running.1.event().identity().unwrap();
+        assert_eq!(identity.current_tracer_pid(), Ok(super::Pid::from_raw(0)));
+        assert!(
+            running
+                .1
+                .ptracer_owner
+                .as_ref()
+                .unwrap()
+                .is_current()
+                .unwrap()
+        );
+        assert_eq!(
+            running
+                .1
+                .event()
+                .event()
+                .worker_state
+                .load(Ordering::Acquire),
+            WORKER_NOT_STARTED
+        );
+        if forced {
+            assert!(matches!(identity.pidfd, ThreadHandle::Procfs { .. }));
+        }
+        let running =
+            Running::seize_on_ptracer_thread(tid.into(), legacy_thread_options()).unwrap();
+        assert_eq!(running.generation(), generation);
+        running.interrupt().unwrap();
+        let (stopped, event) =
+            tokio::time::timeout(TRACEE_WAIT_TIMEOUT, running.wait_owned_on_ptracer_thread())
+                .await
+                .unwrap()
+                .unwrap()
+                .assume_stopped();
+        assert_eq!(event, crate::Event::Stop);
+        assert_eq!(stopped.generation(), generation);
+        let mut terminal = stopped.terminal_cleanup_on_ptracer_thread().into_driver();
+        let native = terminal.shared().has_thread_pidfd().unwrap();
+        if forced {
+            assert!(!native);
+        }
+        let exit = stopped.exit_event_on_ptracer_thread();
+        let running = stopped.resume(None).unwrap();
+        assert_eq!(
+            unsafe { libc::write(release.as_raw_fd(), b"x".as_ptr().cast(), 1) },
+            1
+        );
+        let stopped = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, exit)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stopped.getevent().unwrap(), 23 << 8);
+        drop(running);
+        assert_eq!(
+            tokio::time::timeout(
+                TRACEE_WAIT_TIMEOUT,
+                stopped.resume(None).unwrap().wait_owned_on_ptracer_thread()
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .assume_exited(),
+            (tid.into(), crate::ExitStatus::Exited(23))
+        );
+        assert!(
+            terminal
+                .wait_on_ptracer_thread(TRACEE_WAIT_TIMEOUT)
+                .unwrap()
+        );
+        assert_eq!(
+            terminal.shared().observed_exit_status(),
+            Ok(Some(crate::ExitStatus::Exited(23)))
+        );
+        legacy_owner_reap_root(root, &mut root_cleanup);
+        assert!(!std::path::Path::new(&format!("/proc/{tid}")).exists());
+        println!(
+            "EXPLICIT_UNTRACED_NONLEADER native={native} forced={forced} original_host_retained=true original_generation_preserved=true actual_exit=23 done=true root_reaped=true member_absent=true"
         );
     }
     println!("{MARKER}");
