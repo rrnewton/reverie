@@ -1,4 +1,4 @@
-//! PRIVATE UNARMED test-body proposal. Included by the existing early launcher,
+//! Native broker controls included by the ordinary-main test launcher,
 //! before libtest or any guest resources. This file does not bootstrap a broker.
 //! The caller retains BrokerOwner and uses its existing shutdown/actual-wait path.
 //! Failure returns all pending native/file owners; do not format-and-drop it.
