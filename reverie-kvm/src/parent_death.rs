@@ -15,8 +15,11 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use reverie::SignalBoundaryOutcome;
 use reverie::SignalBoundaryReceipt;
@@ -48,6 +51,13 @@ pub(crate) struct ParentDeathBatch {
     pub(crate) outcome: SignalBoundaryOutcome,
     pub(crate) boundary: Option<SignalBoundaryReceipt>,
     pub(crate) events: Vec<ParentDeathEvent>,
+    /// Full incarnations selected at this logical death, including members
+    /// whose death generates no signal. Never used for admission or delivery.
+    pub(crate) dying: Vec<SignalTaskIdentity>,
+    /// Only outward signal-zero existence waits for complete publication.
+    /// The result ledger retains this same private marker so acknowledgements
+    /// can finish it even after the sender's process binding has disappeared.
+    pub(crate) unpublished: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Default)]
@@ -195,6 +205,23 @@ impl TaskLifecycleTable {
             .contains(&(process.tgid.as_raw(), process.generation))
     }
 
+    /// Signal zero must not report a selected task gone before its exact
+    /// authenticated parent-death batch is fully published. This does not
+    /// restore a lifecycle row, allocate a TID, or authorize signal delivery.
+    /// A live numeric row always wins, including a different TGID/incarnation.
+    pub(crate) fn signal_zero_task_exists(&self, tid: i32, tgid: Option<i32>) -> bool {
+        if let Some(task) = self.tasks.get(&tid) {
+            return tgid.is_none_or(|tgid| tgid == task.tgid);
+        }
+        self.parent_death.batches.values().any(|batch| {
+            batch.unpublished.load(Ordering::Acquire)
+                && batch.dying.iter().any(|task| {
+                    task.tid.as_raw() == tid
+                        && tgid.is_none_or(|tgid| tgid == task.process.tgid.as_raw())
+                })
+        })
+    }
+
     pub(crate) fn reset_parent_death_after_exec(&mut self, tid: i32, gains_permitted: bool) {
         if gains_permitted && let Some(task) = self.tasks.get_mut(&tid) {
             // kernel/cred.c commit_creds: clearing follows a gain, not merely
@@ -326,6 +353,10 @@ impl TaskLifecycleTable {
                     .ok_or(Errno::EOVERFLOW)?,
             )
         };
+        let dying_identities = dying
+            .iter()
+            .map(|&(tid, _)| identity(tid, self.tasks[&tid]))
+            .collect();
         // All fallible snapshot work precedes ancestry/dead-set mutation.
         for (tid, reaper) in changes {
             self.tasks
@@ -344,6 +375,8 @@ impl TaskLifecycleTable {
                     outcome,
                     boundary,
                     events,
+                    dying: dying_identities,
+                    unpublished: Arc::new(AtomicBool::new(retain_boundary)),
                 },
             );
         }
