@@ -465,8 +465,8 @@ impl PmuConfig {
 
     /// How many RCBs short of a precise event's target a stop that nothing
     /// continues must come to keep the event: a stop without a Tool callback
-    /// across which the event cannot be continued (an rt_sigreturn LiteInst
-    /// hook trap, or any such stop without overflow records) keeps the event
+    /// across which the event cannot be continued (an injected rt_sigreturn
+    /// trap, or any such stop without overflow records) keeps the event
     /// only while the guest's clock is more than this short of the target,
     /// and cancels it otherwise.
     ///
@@ -680,9 +680,8 @@ pub enum HandleFailure {
     Event(Wait),
 
     /// A single step ended at a seccomp stop: the stepped instruction entered
-    /// a traced syscall. The caller classifies it (trap-only refuses a patched
-    /// site carrying an allowed number, P2 spec O4 rule 4) and otherwise
-    /// dispatches it like [`HandleFailure::Event`].
+    /// a traced syscall. The caller dispatches it like
+    /// [`HandleFailure::Event`].
     #[error("Single step ended at a seccomp stop")]
     SeccompStop(Stopped),
 
@@ -1143,9 +1142,9 @@ impl Timer {
     /// counter.
     /// Drives a timer signal using caller-owned stopped-state transitions.
     ///
-    /// LiteInst uses this hook to keep its exact-generation root-stop lease
-    /// synchronized across the precise timer's internal single steps. The
-    /// non-LiteInst caller supplies the historical raw transition.
+    /// The caller uses this hook to keep its exact-generation root-stop lease
+    /// synchronized across the precise timer's internal single steps, and to
+    /// observe each step's wait, for example to retain a decoded new child.
     pub(crate) async fn handle_signal(
         &mut self,
         task: Stopped,
@@ -1638,7 +1637,7 @@ impl TimerImpl {
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| {
                 warn!(
-                    "PREEMPT_RT kernel; timer signals at injected syscalls, late or not, will be delivered to the guest, a timer signal in the LiteInst patch helper fails the run, and a stop without a Tool callback within the keep margin of a precise timer event's target cancels the event (https://github.com/rrnewton/reverie/issues/747)"
+                    "PREEMPT_RT kernel; timer signals at injected syscalls, late or not, will be delivered to the guest, and a stop without a Tool callback within the keep margin of a precise timer event's target cancels the event (https://github.com/rrnewton/reverie/issues/747)"
                 )
             });
         } else if let Err(errno) = timer.map_sample_records() {
@@ -1646,7 +1645,7 @@ impl TimerImpl {
             WARNED.call_once(|| {
                 warn!(
                     %errno,
-                    "Could not map timer overflow records; timer signals at injected syscalls, late or not, will be delivered to the guest, a timer signal in the LiteInst patch helper fails the run, and a stop without a Tool callback within the keep margin of a precise timer event's target cancels the event (https://github.com/rrnewton/reverie/issues/747)"
+                    "Could not map timer overflow records; timer signals at injected syscalls, late or not, will be delivered to the guest, and a stop without a Tool callback within the keep margin of a precise timer event's target cancels the event (https://github.com/rrnewton/reverie/issues/747)"
                 )
             });
         }
@@ -2743,8 +2742,8 @@ impl TimerImpl {
                 // loading r11, for example. The stop is passed on even if the
                 // cleanup fails, because it can be an event, such as a new
                 // child or a trap that Reverie handles, that must be handled.
-                // A seccomp stop is passed on separately, for the caller to
-                // classify.
+                // A seccomp stop is passed on separately, as
+                // `HandleFailure::SeccompStop`.
                 //
                 // How far the steps have come is kept for the stop's handler,
                 // which continues them if the Tool does not observe the stop
