@@ -13,6 +13,15 @@ use thiserror::Error;
 /// Errors produced by the KVM backend prototype.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Native retirement failed without proving guest terminal completion.
+    #[error("KVM terminal file retirement {operation} failed (errno {errno})")]
+    TerminalFileRetirement {
+        /// Failed host/protocol operation.
+        operation: &'static str,
+        /// Original errno, or EPROTO for a malformed private frame.
+        errno: i32,
+    },
+
     /// A parent-thread-death operation cannot be represented or published.
     /// This is terminal backend capability/failure, never a guest errno.
     #[error("KVM parent-thread-death {operation} failed (errno {errno})")]
