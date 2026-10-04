@@ -1514,6 +1514,9 @@ pub(crate) struct ElfExecutor {
     clear_child_tid: Option<u64>,
     signal_callback_nonce: u64,
     parent_death_exec: Mutex<Option<ParentDeathExecSnapshot>>,
+    terminal_factory: Option<crate::terminal_cleanup::CleanupFactory>,
+    terminal_cleanup: Option<crate::terminal_cleanup::TaskCleanup>,
+    terminal_backend_stdin: Option<Arc<Mutex<Option<std::fs::File>>>>,
     parked_signals: Option<ParkedSignalState>,
     completed_signal_effects: Vec<reverie::SignalDequeue>,
     signal_effect_raw_result: Option<i64>,
@@ -1827,7 +1830,7 @@ impl ChildThread {
 
     /// Waits for full thread termination. Only owners that no embedder
     /// scheduler depends on may block here.
-    fn join_blocking(&mut self) -> std::thread::Result<crate::Result<()>> {
+    pub(crate) fn join_blocking(&mut self) -> std::thread::Result<crate::Result<()>> {
         let pthread = self.pthread.expect("KVM child process thread joined twice");
         self.observe_join(false);
         #[cfg(test)]
@@ -1845,7 +1848,7 @@ impl ChildThread {
     /// wake covers the wait for its return; teardown after that is polled,
     /// yielding to the executor between attempts, because a thread-local
     /// destructor may itself need a turn from a scheduler this executor runs.
-    fn poll_reap(
+    pub(crate) fn poll_reap(
         &mut self,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::thread::Result<crate::Result<()>>> {
@@ -3386,6 +3389,9 @@ impl ElfExecutor {
             signal_binding,
             signal_callback_nonce: 0,
             parent_death_exec: Mutex::new(None),
+            terminal_factory: None,
+            terminal_cleanup: None,
+            terminal_backend_stdin: None,
             parked_signals: None,
             completed_signal_effects: Vec::new(),
             signal_effect_raw_result: None,
@@ -3790,6 +3796,11 @@ impl ElfExecutor {
         clear_sighand: bool,
         share_address_space: bool,
     ) -> crate::Result<Self> {
+        let terminal_cleanup = self
+            .terminal_factory
+            .as_ref()
+            .map(crate::terminal_cleanup::CleanupFactory::spawn)
+            .transpose()?;
         // Declare owned child state and its cleanup scope before either guard.
         let mut state;
         let file_table;
@@ -3900,6 +3911,9 @@ impl ElfExecutor {
             signal_binding,
             signal_callback_nonce: 0,
             parent_death_exec: Mutex::new(None),
+            terminal_factory: self.terminal_factory.clone(),
+            terminal_cleanup,
+            terminal_backend_stdin: None,
             parked_signals: None,
             completed_signal_effects: Vec::new(),
             signal_effect_raw_result: None,
@@ -3935,6 +3949,11 @@ impl ElfExecutor {
         child_tid: i32,
         observe_ignored: bool,
     ) -> crate::Result<Self> {
+        let terminal_cleanup = self
+            .terminal_factory
+            .as_ref()
+            .map(crate::terminal_cleanup::CleanupFactory::spawn)
+            .transpose()?;
         // Declare owned child state and its cleanup scope before either guard.
         let mut state;
         let _child_retirement;
@@ -4029,6 +4048,9 @@ impl ElfExecutor {
             signal_binding: self.signal_binding.clone(),
             signal_callback_nonce: 0,
             parent_death_exec: Mutex::new(None),
+            terminal_factory: self.terminal_factory.clone(),
+            terminal_cleanup,
+            terminal_backend_stdin: None,
             parked_signals: None,
             completed_signal_effects: Vec::new(),
             signal_effect_raw_result: None,
@@ -4284,10 +4306,111 @@ impl ElfExecutor {
         Ok(true)
     }
 
+    pub(crate) fn configure_terminal_cleanup(
+        &mut self,
+        factory: crate::terminal_cleanup::CleanupFactory,
+        stdin: Arc<Mutex<Option<std::fs::File>>>,
+    ) -> crate::Result<()> {
+        let cleanup = factory.spawn()?;
+        self.terminal_factory = Some(factory);
+        self.terminal_cleanup = Some(cleanup);
+        self.terminal_backend_stdin = Some(stdin);
+        Ok(())
+    }
+
+    pub(crate) fn bind_terminal_stdin(&mut self, stdin: Arc<Mutex<Option<std::fs::File>>>) {
+        if self.terminal_cleanup.is_some() {
+            assert!(
+                self.terminal_backend_stdin.is_none(),
+                "task stdin bound twice"
+            );
+            self.terminal_backend_stdin = Some(stdin);
+        }
+    }
+
+    pub(crate) async fn ready_terminal_cleanup(&mut self) -> crate::Result<()> {
+        if let Some(cleanup) = self.terminal_cleanup.as_mut() {
+            cleanup.ready().await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn finish_terminal_cleanup(&mut self) -> crate::Result<()> {
+        self.release_files_on_exit();
+        if let Some(cleanup) = self.terminal_cleanup.as_mut() {
+            cleanup.finish().await?;
+        }
+        Ok(())
+    }
+
+    /// The task owns a prestarted service before its first guest callback.
+    /// This begins cleanup immediately, including on a dropped run, and never
+    /// blocks the caller or destroys its terminal sockets on this host thread.
+    pub(crate) fn release_files_on_exit(&mut self) {
+        let Some(cleanup) = self.terminal_cleanup.as_ref() else {
+            return self.release_files_on_exit_ordinary();
+        };
+        if cleanup.is_submitted() {
+            return;
+        }
+        use crate::native_exit_broker::SocketReference::Owned;
+        use crate::native_exit_broker::SocketReference::Shared;
+        // Prior explicit closes are ordinary operations. They must settle with
+        // their original semantics, never be reclassified as task-exit closes.
+        self.state.file_retirement.drain_unlocked();
+        let stdin = self.state.take_stdin();
+        let retired = std::mem::take(&mut self.state.files);
+        self.state.fd_entry_ids.clear();
+        self.state.native_poll_fds.clear();
+        self.state.pipe_owners.clear();
+        self.state.poll_table_id = Default::default();
+        self.state.epoll_domain = Default::default();
+        let table = std::mem::replace(
+            &mut self.file_table,
+            Arc::new(Mutex::new(FileTableState::default())),
+        );
+        let mut files = Vec::new();
+        // Do not lock or empty a table that another guest task/observer owns.
+        // Only the final actual Arc owner extracts it. Foreign owners retain
+        // their descriptions and close them in their own lifecycle.
+        if let Some(table) = Arc::into_inner(table) {
+            let mut table = table.into_inner().unwrap_or_else(|p| p.into_inner());
+            files.extend(table.stdin.take().map(Owned));
+            files.extend(std::mem::take(&mut table.files).into_values().map(Owned));
+        }
+        files.extend(retired.into_values().map(Owned));
+        files.extend(stdin.map(Owned));
+        if let Some(ProcessAction::Exec {
+            executable_file, ..
+        }) = self.process_action.take()
+        {
+            files.extend(executable_file.map(Shared));
+        }
+        files.extend(self.state.executable_file.take().map(Shared));
+        if let Some(snapshot) = self
+            .parent_death_exec
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            files.push(Shared(snapshot.file));
+        }
+        if let Some(input) = self.terminal_backend_stdin.take() {
+            files.extend(
+                input
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take()
+                    .map(Owned),
+            );
+        }
+        self.terminal_cleanup.as_mut().unwrap().submit(files);
+    }
+
     /// Release only this executor's descriptor references. A live CLONE_FILES
     /// sibling retains the old shared table; clearing its contents would close
     /// that sibling's descriptors too.
-    pub(crate) fn release_files_on_exit(&mut self) {
+    fn release_files_on_exit_ordinary(&mut self) {
         let _retirement = self.state.file_retirement.hold();
         // Only task-private fields and our Arc owner change. A surviving shared
         // table is untouched, so waiting on its locks would add a dependency on
@@ -7161,6 +7284,19 @@ impl AbandonedRuns {
         Ok(())
     }
 
+    pub(crate) fn retain_terminal_service(
+        runs: &Mutex<Self>,
+        reaper: &DroppedRunReaper,
+        thread: ChildThread,
+    ) {
+        Self::lock(runs).abandon(reaper);
+        reaper.adopt(Retirement {
+            workers: None,
+            roots: Vec::new(),
+            terminal: vec![thread],
+        });
+    }
+
     fn abandon(&mut self, reaper: &DroppedRunReaper) {
         self.abandoned = true;
         // A backend runs one run at a time, so after its first abandoned run
@@ -7187,6 +7323,7 @@ impl AbandonedRuns {
         reaper.adopt(Retirement {
             workers: Some(workers.clone()),
             roots,
+            terminal: Vec::new(),
         });
         true
     }
@@ -7212,6 +7349,17 @@ impl RunAdmission {
             reaper: Some(reaper),
             reaping: Some(reaping),
         })
+    }
+
+    pub(crate) fn terminal_factory(
+        &self,
+        client: crate::native_exit_broker::BrokerClient,
+    ) -> crate::terminal_cleanup::CleanupFactory {
+        crate::terminal_cleanup::CleanupFactory::new(
+            client,
+            self.runs.clone(),
+            self.reaper.clone().expect("KVM run admission finished"),
+        )
     }
 
     pub(crate) fn root(&self, executor: ElfExecutor) -> RunningRoot {
@@ -7307,11 +7455,21 @@ impl Drop for RunningRoot {
 pub(crate) struct Retirement {
     workers: Option<Arc<crate::vm::GuestThreadGroup>>,
     roots: Vec<ElfExecutor>,
+    terminal: Vec<ChildThread>,
 }
 
 impl Retirement {
     #[cfg_attr(not(test), allow(unused_variables))]
     fn advance(&mut self, reaper: &ReaperShared) {
+        // Services already run independently; join them before waiting for a
+        // guest that may need their descriptor retirement to observe EOF.
+        while let Some(thread) = self.terminal.first_mut() {
+            let joined = thread.join_blocking();
+            self.terminal.remove(0);
+            if let Err(payload) = joined {
+                reaper.lock().retained_panics.push(payload);
+            }
+        }
         if let Some(workers) = &self.workers {
             workers.join_workers();
             self.workers = None;
@@ -7333,6 +7491,7 @@ struct ReaperState {
     /// Live `DroppedRunReaper`s. Only they can adopt, so with none left and
     /// nothing adopted, the reaper stops.
     handles: usize,
+    retained_panics: Vec<Box<dyn std::any::Any + Send>>,
     #[cfg(test)]
     inject_panics: usize,
     #[cfg(test)]
@@ -7376,6 +7535,10 @@ pub(crate) struct DroppedRunReaper {
 }
 
 impl DroppedRunReaper {
+    pub(crate) fn retain_panic(&self, payload: Box<dyn std::any::Any + Send>) {
+        self.shared.lock().retained_panics.push(payload);
+    }
+
     fn spawn() -> crate::Result<(Self, std::thread::JoinHandle<()>)> {
         let shared = Arc::new(ReaperShared::default());
         shared.lock().handles = 1;
@@ -7463,6 +7626,9 @@ impl Drop for DroppedRunReaper {
 
 impl Drop for ElfExecutor {
     fn drop(&mut self) {
+        if self.terminal_cleanup.is_some() {
+            self.release_files_on_exit();
+        }
         self.signal_registry
             .retire_task(self.admitted_signal_identity());
         let transaction = self.state.signal_transaction.clone();
@@ -7578,6 +7744,13 @@ impl ElfExecutor {
                     false,
                 ));
             }
+        }
+        if request.number() == libc::SYS_prctl as u64
+            && request.args()[0] as i32 == libc::PR_SET_PDEATHSIG
+            && (1..=64).contains(&request.args()[1])
+            && self.terminal_cleanup.is_none()
+        {
+            return Ok(negative_errno(libc::ENOSYS));
         }
         let _retirement = self.state.file_retirement.hold();
         if let Some(result) = self.execute_child_wait(request, memory) {
@@ -21289,6 +21462,7 @@ pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf
 
 #[cfg(test)]
 mod tests {
+    include!("../tests/support/executor_terminal_tests.rs");
     include!("executor/parent_death_tests.rs");
     include!("executor/pipe_owner_tests.rs");
     include!("executor/syncfs_tests.rs");
