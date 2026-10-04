@@ -839,8 +839,15 @@ impl AttachmentAnchor {
 
 impl LegacyWaitOwner {
     fn capture_current() -> Result<Self, Errno> {
-        let root = AlignedProcfs::open()?;
+        Self::capture_at(AlignedProcfs::open()?)
+    }
+
+    fn capture_at(root: AlignedProcfs) -> Result<Self, Errno> {
         let tid = Pid::from(nix::unistd::gettid());
+        let current = root.current_thread_status()?;
+        if current.pid != tid || current.tgid != Pid::from(nix::unistd::getpid()) {
+            return Err(Errno::EXDEV);
+        }
         let lifetime = root.open_pid(tid, libc::O_RDONLY)?;
         Ok(Self {
             tid,
@@ -858,7 +865,7 @@ impl LegacyWaitOwner {
         }
     }
 
-    fn is_current(&self) -> Result<bool, Errno> {
+    pub(super) fn is_current(&self) -> Result<bool, Errno> {
         if self.tid != Pid::from(nix::unistd::gettid()) || !self.is_live()? {
             return Ok(false);
         }
@@ -2589,10 +2596,21 @@ impl EventHandle {
 
     pub(super) fn capture_current_ptracer_owner(&self) -> Result<Arc<LegacyWaitOwner>, Errno> {
         let identity = self.identity().ok_or(Errno::ENODATA)?;
-        if identity.current_tracer_pid()? != Pid::from(nix::unistd::gettid()) {
-            return Err(Errno::EPERM);
-        }
-        LegacyWaitOwner::capture_current().map(Arc::new)
+        identity.capture_current_owner(false).map(Arc::new)
+    }
+
+    pub(super) fn capture_current_owner(&self) -> Result<Arc<LegacyWaitOwner>, Errno> {
+        let identity = self.identity().ok_or(Errno::ENODATA)?;
+        identity
+            .capture_current_owner(!matches!(identity.pidfd, ThreadHandle::Procfs { .. }))
+            .map(Arc::new)
+    }
+
+    pub(super) fn capture_current_constructor_owner(&self) -> Result<Arc<LegacyWaitOwner>, Errno> {
+        self.identity()
+            .ok_or(Errno::ENODATA)?
+            .capture_current_owner(true)
+            .map(Arc::new)
     }
 
     pub(super) fn current_or_error(pid: Pid) -> Self {
@@ -3027,6 +3045,37 @@ impl WorkerIdentity {
         Ok(status.tracer_pid)
     }
 
+    /// Binds a new explicit interface through this Event's original mount.
+    /// Namespace-relative TracerPid/gettid equality alone cannot identify a
+    /// caller carrying a copied native token into a descendant namespace.
+    /// Derive the root from the retained target directory for native Events
+    /// that predate any local interface; never join it to a fresh /proc.
+    fn capture_current_owner(&self, allow_untraced: bool) -> Result<LegacyWaitOwner, Errno> {
+        let _open = launch_window::TransientOpen::begin();
+        let root = match &self.proc_root {
+            Some(root) => root.root.try_clone().map_err(io_errno)?,
+            None => {
+                let raw = unsafe {
+                    libc::openat(
+                        self.proc_dir.as_raw_fd(),
+                        c"..".as_ptr(),
+                        libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                    )
+                };
+                if raw < 0 {
+                    return Err(Errno::last());
+                }
+                unsafe { OwnedFd::from_raw_fd(raw) }
+            }
+        };
+        let root = AlignedProcfs::from_root(root)?;
+        let tracer = self.current_tracer_pid()?;
+        if tracer != Pid::from(nix::unistd::gettid()) && !(allow_untraced && tracer.as_raw() == 0) {
+            return Err(Errno::EPERM);
+        }
+        LegacyWaitOwner::capture_at(root)
+    }
+
     fn is_same_process_generation(&self) -> bool {
         self.procfs_generation() == Some(true)
     }
@@ -3335,6 +3384,11 @@ impl AlignedProcfs {
             return Err(Errno::last());
         }
         let root = unsafe { OwnedFd::from_raw_fd(raw) };
+        Self::from_root(root)
+    }
+
+    fn from_root(root: OwnedFd) -> Result<Self, Errno> {
+        let _open = launch_window::TransientOpen::begin();
         let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
         if unsafe { libc::fstatfs(root.as_raw_fd(), filesystem.as_mut_ptr()) } < 0 {
             return Err(Errno::last());
@@ -3533,7 +3587,7 @@ fn authenticate_legacy_wait_owner(identity: &WorkerIdentity, event: &Event) -> R
         // This thread is executing now and cannot concurrently exit while
         // capturing its own descriptor. Its immutable PID object guards
         // against a later host-TID reuse after ptracer pthread exit.
-        let owner = LegacyWaitOwner::capture_current()?;
+        let owner = identity.capture_current_owner(false)?;
         let _ = event.legacy_wait_owner.set(owner);
     }
     if !event.legacy_wait_owner.get().unwrap().is_current()? {
@@ -5462,6 +5516,9 @@ pub struct StoppedObservation {
     generation: Arc<Event>,
     epoch: usize,
     thread: thread::ThreadId,
+    // Only the named interface carries this extra numeric-request boundary.
+    // Generic observers retain their existing binding and errno behavior.
+    ptracer_token: Option<TraceeToken>,
 }
 impl StoppedObservation {
     pub(super) fn new(pid: Pid, token: &TraceeToken) -> Self {
@@ -5474,6 +5531,7 @@ impl StoppedObservation {
             generation,
             epoch,
             thread: thread::current().id(),
+            ptracer_token: (token.policy == WaitPolicy::PtracerThread).then(|| token.clone()),
         }
     }
 
@@ -5520,16 +5578,22 @@ impl StoppedObservation {
             result.refusal = Some(StopObservationError::PidMismatch);
             return result;
         }
-        result.siginfo = Some(match self.generation.hold_tid() {
-            Some(_held) => nix::sys::ptrace::getsiginfo(self.pid.into())
+        let query = || {
+            nix::sys::ptrace::getsiginfo(self.pid.into())
                 .map(|info| StopSiginfo {
                     signo: info.si_signo,
                     code: info.si_code,
                     sender_pid: unsafe { info.si_pid() },
                     sender_uid: unsafe { info.si_uid() },
                 })
-                .map_err(|error| Errno::new(error as i32)),
-            None => Err(Errno::ESRCH),
+                .map_err(|error| Errno::new(error as i32))
+        };
+        result.siginfo = Some(match &self.ptracer_token {
+            Some(token) => token.on_held_tid(query),
+            None => match self.generation.hold_tid() {
+                Some(_held) => query(),
+                None => Err(Errno::ESRCH),
+            },
         });
         if flags_for_exit_siginfo
             && result
@@ -6348,14 +6412,7 @@ impl PtracerAffinity {
     fn check_host(&mut self, handle: &EventHandle) -> Result<(), Errno> {
         WaitPolicy::PtracerThread.check_handle(handle)?;
         if self.owner.is_none() {
-            let identity = handle.identity().ok_or(Errno::ENODATA)?;
-            let tracer = identity.current_tracer_pid()?;
-            if tracer != Pid::from(nix::unistd::gettid())
-                && !(tracer.as_raw() == 0 && !matches!(identity.pidfd, ThreadHandle::Procfs { .. }))
-            {
-                return Err(Errno::EPERM);
-            }
-            self.owner = Some(Arc::new(LegacyWaitOwner::capture_current()?));
+            self.owner = Some(handle.capture_current_owner()?);
         }
         if !self.owner.as_ref().unwrap().is_current()? {
             return Err(Errno::EPERM);
