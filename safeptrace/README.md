@@ -74,6 +74,11 @@ with the caller's PID namespace; an inherited mount from an outer PID
 namespace is refused with `EXDEV`. Mount procfs for the active PID namespace
 before selecting this interface.
 
+The explicit operations also authenticate the executing host thread through
+the original retained proc mount. Copying a driver into a process with the
+same numeric thread ID in another PID namespace does not transfer authority.
+A later overmount of `/proc` does not redirect this retained identity check.
+
 These kernel mechanisms do not by themselves establish a qualified minimum
 kernel for every SDK operation or for Hermit. Consult the execution engine's
 platform requirements for its complete support policy.
