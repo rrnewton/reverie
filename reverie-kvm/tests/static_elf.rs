@@ -21897,8 +21897,21 @@ mod pdeathsig {
         let program = compile_c_program_with_args(
             &directory.0,
             "pdeathsig-exec",
-            include_str!("fixtures/pdeathsig_creator.c"),
-            &["-static"],
+            include_str!("fixtures/pdeathsig_retained_exec.c"),
+            &[
+                "-nostdlib",
+                "-static",
+                "-ffreestanding",
+                "-fno-builtin",
+                "-fno-stack-protector",
+                "-fno-pie",
+                "-no-pie",
+                "-mno-red-zone",
+                "-fno-asynchronous-unwind-tables",
+                "-fno-unwind-tables",
+                "-Wl,--build-id=none",
+                "-Wl,-e,_start",
+            ],
         );
         let emitted_image = std::fs::read(&program).unwrap();
         let emitted_elf = goblin::elf::Elf::parse(&emitted_image).unwrap();
