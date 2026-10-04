@@ -30,7 +30,7 @@ path = "src/bin/lifecycle_guest.rs"
 bincode = { version = "2", features = ["serde"] }
 iced-x86 = { version = "1.21.0", default-features = false, features = ["std", "decoder"] }
 libc = "0.2.186"
-liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "2032b49d983f74ec8472761d7704c64c00085a55" }
+liteinst2 = "=0.1.1"
 reverie = { version = "0.4.0", path = "../reverie", package = "reverie-core" }
 reverie-preload = { version = "0.4.0", path = "../reverie-preload", default-features = false, features = ["coordinator-rpc"] }
 reverie-ptrace = { version = "0.4.0", path = "../reverie-ptrace" }
@@ -41,7 +41,7 @@ tempfile = "3.27.0"
 tracing = "0.1.41"
 
 [dev-dependencies]
-safeptrace = { version = "0.4.0", path = "../safeptrace" }
+safeptrace = { path = "../safeptrace" }
 sha2 = "0.10.9"
 tokio = { version = "1.52.4", features = ["test-util"] }
 tracing-subscriber = "0.3.23"
