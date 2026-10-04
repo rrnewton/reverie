@@ -10499,8 +10499,8 @@ mod test {
     }
 
     #[test]
-    fn unavailable_pidfd_syscall_or_resources_fail_closed_before_registration() {
-        for error in [Errno::ENOSYS, Errno::EMFILE, Errno::EACCES] {
+    fn unsupported_pidfd_thread_fails_closed_before_registration() {
+        for error in [Errno::EINVAL, Errno::ENOSYS, Errno::EMFILE, Errno::EACCES] {
             let (pid, cleanup) =
                 spawn_stopped_process(None).expect("spawn unsupported-pidfd child");
             let running = Running::new(pid.into());
