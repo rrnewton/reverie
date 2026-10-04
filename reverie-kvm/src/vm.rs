@@ -2135,14 +2135,21 @@ impl KvmBackend {
     /// compatibility restriction. The backend recognizes such a file received
     /// over a socket by reopening it, which a mode without read permission
     /// would prevent.
+    ///
+    /// Enabling also examines the stdin given to [`Self::new_with_stdin`].
+    /// When stdin is such a file from another run, it keeps that file's fixed
+    /// timestamps and its mode cannot be changed. A memfd whose name is one the
+    /// backend uses for these files counts as one, which only fixes its
+    /// timestamps. Enabling fails with the host error, and leaves the setting
+    /// unchanged, when stdin cannot be examined.
     pub fn set_host_metadata_timestamps(&mut self, enabled: bool) -> Result<()> {
         AbandonedRuns::admit(&self.abandoned_runs)?;
         let loaded = self
             .static_elf
             .as_mut()
             .ok_or(Error::StaticElfNotInstalled)?;
-        loaded.host_metadata_timestamps = enabled;
-        Ok(())
+        crate::executor::apply_host_metadata_timestamps(loaded, enabled)
+            .map_err(|errno| Error::HostIo(std::io::Error::from_raw_os_error(-errno as i32)))
     }
 
     /// Whether the installed image reports host metadata timestamps.

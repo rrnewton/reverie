@@ -1243,10 +1243,17 @@ impl LoadedStaticElf {
             .into_iter()
             .filter(|(fd, _)| files.contains_key(fd))
             .collect();
+        // An inherited stdin is not in `files`. It keeps the class that
+        // `apply_host_metadata_timestamps` gave it for as long as it stays open.
+        let stdin_stays_open = stdin.is_some()
+            && !cloexec_fds.contains(&libc::STDIN_FILENO)
+            && !previous.closed_standard_fds.contains(&libc::STDIN_FILENO);
         let fd_object_inodes: std::collections::BTreeMap<_, _> = previous
             .fd_object_inodes
             .into_iter()
-            .filter(|(fd, _)| files.contains_key(fd))
+            .filter(|(fd, _)| {
+                files.contains_key(fd) || (*fd == libc::STDIN_FILENO && stdin_stays_open)
+            })
             .collect();
         let task_lifecycle = previous.task_lifecycle.clone();
         let file_identity_table = previous.file_identity_table.clone();
