@@ -213,18 +213,22 @@ reads and the separate CPUID/RDTSC SIGSEGV entry also remains unqualified.
 
 ## Patch publication modes
 
-The stopped ptrace install helper uses LiteInst2's quiescent entrypoint. The
-backend must have every other tracee thread stopped for the complete helper
-call; the current single-process, single-thread hybrid satisfies that contract.
-Planning and relocation remain unchanged, so this route can patch a cache-line
-straddler without registering WordPatch++ traps.
+`install_tool_quiescent` uses LiteInst2's quiescent entrypoint. Its caller
+asserts that no other application thread can execute while a site is
+installed; Hermit, which runs one guest thread at a time, satisfies that
+contract. Planning and relocation remain unchanged, so this route can patch a
+cache-line straddler without registering WordPatch++ traps.
 
-The in-process SIGSYS dispatcher always uses concurrent publication because
-other application threads may fetch the site. Single-line patches publish
+By default the in-process SIGSYS dispatcher uses concurrent publication,
+because other application threads may fetch the site; `install_tool` and
+`install_tool_from_bootstrap` select it. Single-line patches publish
 atomically. Split patches retain the full guarded WordPatch++ protocol and
 require `REVERIE_LITEINST_STRADDLER_STALENESS_TICKS` to be set above the
 machine's measured `Tmax`; without that calibration they fail closed to the
-trap path. Quiescent publication is never selected from this route.
+trap path. The dispatcher publishes quiescently only when the tool was
+installed with `install_tool_quiescent`, under the caller assertion above.
+vDSO sites are also published quiescently, during initialization and before
+any application thread starts.
 
 ## Current boundaries
 

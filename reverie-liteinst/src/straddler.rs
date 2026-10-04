@@ -64,10 +64,6 @@ pub(crate) fn initialize(staleness: Option<StalenessBudget>) -> io::Result<()> {
         .map_err(|_| io::Error::other("LiteInst straddler policy initialized twice"))
 }
 
-pub(crate) fn is_initialized() -> bool {
-    CALIBRATED_STALENESS.get().is_some()
-}
-
 pub(crate) fn budget_for_patch(
     address: usize,
     cache_line: CacheLineSize,

@@ -278,7 +278,6 @@ fn run_pc_relative_guest(hooked: bool) -> Output {
     };
     command
         .env_remove("LD_PRELOAD")
-        .env_remove("REVERIE_LITEINST_HOST_RUNTIME")
         .env_remove("REVERIE_LITEINST_TOOL")
         .env_remove("REVERIE_PRELOAD_TOOL")
         .process_group(0)
@@ -625,17 +624,6 @@ fn other_runtimes_refuse_site_patching_selector() {
         let mut command = Command::new("/bin/true");
         configure_command_builtin(&mut command, BuiltinTool::Passthrough).unwrap();
         check(command, "built-in Tool", value);
-        // Past the guard, the ptrace-hosted runtime stops at its tracer
-        // handshake trap, which needs the LiteInst tracer, so only the refused
-        // values run here. The accepted `1` takes the same guard as the three
-        // runtimes above.
-        if value != "1" {
-            let mut command = Command::new("/bin/true");
-            command
-                .env("LD_PRELOAD", preload_path())
-                .env("REVERIE_LITEINST_HOST_RUNTIME", "1");
-            check(command, "ptrace-hosted", value);
-        }
     }
 }
 

@@ -13,7 +13,6 @@ use liteinst2::patcher::NEAR_JUMP_BYTES;
 use liteinst2::scanner::ScannedInstruction;
 pub(crate) use reverie_ptrace::liteinst_census::Census;
 pub(crate) use reverie_ptrace::liteinst_census::CensusError;
-pub(crate) use reverie_ptrace::liteinst_census::REFUSED_ENTRY_LIMIT;
 pub(crate) use reverie_ptrace::liteinst_census::Refusal;
 use reverie_ptrace::liteinst_census::Segment;
 pub(crate) use reverie_ptrace::liteinst_census::SiteEntries;
