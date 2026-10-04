@@ -5380,6 +5380,7 @@ mod tests {
         reaper.adopt(super::super::Retirement {
             workers: None,
             roots,
+            terminal: Vec::new(),
         });
         drop(reaper);
         (shared, reaping)
