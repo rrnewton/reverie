@@ -91,6 +91,10 @@ struct TraceeToken {
     policy: notifier::WaitPolicy,
     #[cfg(feature = "notifier")]
     ptracer_owner: Option<std::sync::Arc<notifier::LegacyWaitOwner>>,
+    #[cfg(feature = "notifier")]
+    // Host selection alone does not authorize a wait for this generation.
+    // Retain an actual attachment/real-parent proof through later retirement.
+    ptracer_wait_role: bool,
 }
 
 impl PartialEq for TraceeToken {
@@ -125,6 +129,8 @@ impl TraceeToken {
             policy: notifier::WaitPolicy::Native,
             #[cfg(feature = "notifier")]
             ptracer_owner: None,
+            #[cfg(feature = "notifier")]
+            ptracer_wait_role: false,
         }
     }
 
@@ -138,6 +144,8 @@ impl TraceeToken {
             policy: notifier::WaitPolicy::Native,
             #[cfg(feature = "notifier")]
             ptracer_owner: None,
+            #[cfg(feature = "notifier")]
+            ptracer_wait_role: false,
         })
     }
 
@@ -160,6 +168,8 @@ impl TraceeToken {
             policy: notifier::WaitPolicy::Native,
             #[cfg(feature = "notifier")]
             ptracer_owner: None,
+            #[cfg(feature = "notifier")]
+            ptracer_wait_role: false,
         }
     }
 
@@ -173,10 +183,12 @@ impl TraceeToken {
         let ptracer_owner = (policy == notifier::WaitPolicy::PtracerThread)
             .then(|| event.capture_current_ptracer_owner().ok())
             .flatten();
+        let ptracer_wait_role = ptracer_owner.is_some();
         Self {
             event,
             policy,
             ptracer_owner,
+            ptracer_wait_role,
         }
     }
 
@@ -188,6 +200,14 @@ impl TraceeToken {
         );
         if token.ptracer_owner.is_none() && token.event().current_tracer_pid()?.as_raw() == 0 {
             token.ptracer_owner = Some(token.event().capture_current_constructor_owner()?);
+            // Selecting an untraced nonchild remains available for a later
+            // attachment. It grants no wait role. A positive direct-parent
+            // proof can be retained now, before the target later disappears;
+            // any refusal is rechecked by the first named wait operation.
+            token.ptracer_wait_role = token
+                .event()
+                .authenticates_wait_role(token.ptracer_owner.as_ref().unwrap())
+                .unwrap_or(false);
         }
         Ok(token)
     }
@@ -234,6 +254,12 @@ impl TraceeToken {
             if !owner.is_current()? {
                 return Err(Errno::EPERM);
             }
+            // Nonleader exec can release its former TID before an
+            // unregistered Event has any reaper to close the gate. Refuse
+            // an already-retired retained target before a numeric request
+            // can address its replacement. This is a lifetime precheck,
+            // not an atomic descriptor-valued ptrace operation.
+            self.event.check_numeric_target_lifetime()?;
         }
         request()
     }
@@ -1599,6 +1625,10 @@ impl Running {
             notifier::WaitPolicy::PtracerThread,
         );
         token.ptracer_owner = Some(owner);
+        // attachment_on_ptracer_thread validated the same retained original
+        // generation after the successful atomic request. A later transient
+        // host lookup cannot erase that established attachment role.
+        token.ptracer_wait_role = token.event().initial_capture_error().is_none();
         Ok(Self::from_token(pid, token))
     }
 
@@ -1617,6 +1647,7 @@ impl Running {
             notifier::WaitPolicy::PtracerThread,
         );
         token.ptracer_owner = Some(owner);
+        token.ptracer_wait_role = token.event().initial_capture_error().is_none();
         Ok(Self::from_token(pid, token))
     }
 
@@ -1627,6 +1658,11 @@ impl Running {
     /// # Limitations
     ///
     /// This only works for processes being traced via `Running::seize`.
+    /// The request addresses a numeric TID. A concurrent nonleader exec can
+    /// release that TID and allow a same-ptracer replacement to receive the
+    /// request, including after an explicit interface's lifetime precheck.
+    /// Native thread pidfds do not make this ptrace request atomic. See
+    /// <https://github.com/rrnewton/reverie/issues/860>.
     pub fn interrupt(&self) -> Result<(), Errno> {
         // nix doesn't provide `ptrace::interrupt` yet, so we need to roll our
         // own.
