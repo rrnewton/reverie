@@ -839,8 +839,8 @@ impl NativeExitJob {
                 // refusal's exact cause rather than repeatedly replacing an
                 // unsupported/dead worker. There is at most one pre-READY
                 // report, and actual wait is already retained above.
-                if self.stage == JobStage::AwaitReady {
-                    if let Some(error_frame) = receive(
+                if self.stage == JobStage::AwaitReady
+                    && let Some(error_frame) = receive(
                         channels
                             .data
                             .as_ref()
@@ -849,17 +849,16 @@ impl NativeExitJob {
                         "reaped worker setup report",
                         &mut self.unexpected_rights,
                         Some(&mut self.worker_channel_closed),
-                    )? {
-                        if error_frame.kind == raw::ERROR {
-                            let cause = remote_error(
-                                &error_frame,
-                                "native worker supervision/setup",
-                                frame.job,
-                                0,
-                            )?;
-                            return self.fatal(cause);
-                        }
-                    }
+                    )?
+                    && error_frame.kind == raw::ERROR
+                {
+                    let cause = remote_error(
+                        &error_frame,
+                        "native worker supervision/setup",
+                        frame.job,
+                        0,
+                    )?;
+                    return self.fatal(cause);
                 }
                 let aborted_resource = matches!(self.stage, JobStage::Abort | JobStage::AbortWait)
                     && status == 0
@@ -1196,13 +1195,13 @@ fn receive(
             "unexpected rights in parent reply (owned and retained)",
         ));
     }
-    if rc == -libc::ECONNRESET {
-        if let Some(closed) = closed {
-            // EOF is only readiness after GO. Native completion still requires
-            // the broker's actual wait; neither EOF nor pidfd wake is proof.
-            *closed = true;
-            return Ok(None);
-        }
+    if rc == -libc::ECONNRESET
+        && let Some(closed) = closed
+    {
+        // EOF is only readiness after GO. Native completion still requires
+        // the broker's actual wait; neither EOF nor pidfd wake is proof.
+        *closed = true;
+        return Ok(None);
     }
     match rc {
         x if x == -libc::EAGAIN || x == -libc::EINTR => Ok(None),
