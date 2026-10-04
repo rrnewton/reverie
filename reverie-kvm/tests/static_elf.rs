@@ -11236,6 +11236,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "pdeathsig::ignored_parent_death_retains_blocked_and_does_not_resurrect_unblocked",
         "pdeathsig::enrolled_retained_image_exec_preserves_setting_and_actual_creator_delivery",
         "pdeathsig::actual_creator_death_wakes_controlled_pause_and_nanosleep",
+        "pdeathsig::linger_process::creator_process_queued_tcp_exit_publishes_before_peer_drain",
         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
         "fchdir_consumes_low_descriptor_words_on_kvm",
         "getdents64_consumes_low_descriptor_words_on_kvm",
@@ -21182,6 +21183,7 @@ mod pdeathsig {
     const IGNORED_BLOCKED: u8 = 6;
     const IGNORED_UNBLOCKED: u8 = 7;
     const EXEC: u8 = 8;
+    const LINGER_PROCESS: u8 = 9;
 
     #[derive(serde::Serialize, serde::Deserialize)]
     enum Request {
@@ -21346,7 +21348,11 @@ mod pdeathsig {
                     }
                 }
                 Request::Exit(task) => {
-                    if matches!(self.mode, PAUSE | NANOSLEEP) && task.tid != task.process.tgid {
+                    if (matches!(self.mode, PAUSE | NANOSLEEP) && task.tid != task.process.tgid)
+                        || (self.mode == LINGER_PROCESS
+                            && task.tid == Pid::from_raw(17)
+                            && task.process.tgid == Pid::from_raw(17))
+                    {
                         poll_fn(|cx| {
                             assert!(
                                 !self.failed.load(Ordering::Acquire),
@@ -21461,7 +21467,11 @@ mod pdeathsig {
                 "even an empty death effect has an authenticated batch"
             );
             let creator = boundary.permit.task.tid != boundary.permit.task.process.tgid;
-            if creator && matches!(self.mode, PAUSE | NANOSLEEP) {
+            if (creator && matches!(self.mode, PAUSE | NANOSLEEP))
+                || (self.mode == LINGER_PROCESS
+                    && boundary.permit.task.tid == Pid::from_raw(17)
+                    && boundary.permit.task.process.tgid == Pid::from_raw(17))
+            {
                 assert_eq!(
                     publication.signals.len(),
                     1,
@@ -21612,7 +21622,9 @@ mod pdeathsig {
             }
             if matches!(
                 (self.mode, call.number()),
-                (PAUSE, Sysno::pause) | (NANOSLEEP, Sysno::nanosleep)
+                (PAUSE, Sysno::pause)
+                    | (NANOSLEEP, Sysno::nanosleep)
+                    | (LINGER_PROCESS, Sysno::pause)
             ) {
                 let site = guest
                     .parked_signal_site()
@@ -21662,6 +21674,647 @@ mod pdeathsig {
         backend.set_thread_ownership(ThreadOwnership::Tool);
         futures::executor::block_on(backend.run_static_elf_with_tool::<ControlledTool>(mode, true))
             .unwrap()
+    }
+
+    mod linger_process {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::FileExt;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        use super::*;
+        const BOUND: Duration = Duration::from_secs(5);
+        const LIMIT: usize = 8 * 1024 * 1024;
+        const EXPECTED: &[u8] = b"pdeathsig process-linger child-completed=1\n";
+        type Record = [u8; 48];
+        fn record(path: &std::path::Path) -> Result<Record, String> {
+            std::fs::read(path)
+                .map_err(|e| e.to_string())?
+                .try_into()
+                .map_err(|_| "fixture record has wrong length".to_owned())
+        }
+        fn word(bytes: &Record, offset: usize) -> i32 {
+            i32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        }
+        fn wide(bytes: &Record, offset: usize) -> u64 {
+            u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap())
+        }
+        fn release(path: &std::path::Path, offset: u64) -> Result<(), String> {
+            let fd = std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .map_err(|e| e.to_string())?;
+            if fd.write_at(&[1], offset).map_err(|e| e.to_string())? != 1 {
+                return Err("short setup gate write".to_owned());
+            }
+            Ok(())
+        }
+        fn listener() -> std::net::TcpListener {
+            let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let buffer = 4096_i32;
+            // SAFETY: the live listener and scalar option have the stated sizes.
+            assert_eq!(
+                unsafe {
+                    libc::setsockopt(
+                        listener.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_RCVBUF,
+                        (&buffer as *const i32).cast(),
+                        4,
+                    )
+                },
+                0
+            );
+            listener.set_nonblocking(true).unwrap();
+            listener
+        }
+        fn start_time(stat: &str) -> Option<(&str, &str)> {
+            let fields = stat
+                .rsplit_once(')')?
+                .1
+                .split_whitespace()
+                .collect::<Vec<_>>();
+            Some((*fields.first()?, *fields.get(19)?))
+        }
+        fn close_witness(pid: u32, generation: &str, fd: i32) -> Option<String> {
+            let a = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let call = std::fs::read_to_string(format!("/proc/{pid}/syscall")).ok()?;
+            let b = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            if start_time(&a)? != ("S", generation) || start_time(&b)? != ("S", generation) {
+                return None;
+            }
+            let fields = call.split_whitespace().collect::<Vec<_>>();
+            if fields.first()?.parse::<i64>().ok()? != libc::SYS_close
+                || u64::from_str_radix(fields.get(1)?.strip_prefix("0x")?, 16).ok()? != fd as u64
+            {
+                return None;
+            }
+            Some(format!("stat-before={a}syscall={call}stat-after={b}"))
+        }
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        struct Endpoint {
+            local: [u8; 4],
+            local_port: u16,
+            remote: [u8; 4],
+            remote_port: u16,
+        }
+        fn endpoint(fd: i32) -> Option<Endpoint> {
+            let mut local: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+            let mut remote: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+            let mut llen = std::mem::size_of_val(&local) as libc::socklen_t;
+            let mut rlen = std::mem::size_of_val(&remote) as libc::socklen_t;
+            // Borrow numeric handles only; no dup, File, or lasting reference.
+            if unsafe {
+                libc::getsockname(fd, (&mut local as *mut libc::sockaddr_in).cast(), &mut llen)
+            } != 0
+                || unsafe {
+                    libc::getpeername(
+                        fd,
+                        (&mut remote as *mut libc::sockaddr_in).cast(),
+                        &mut rlen,
+                    )
+                } != 0
+                || llen as usize != std::mem::size_of_val(&local)
+                || rlen as usize != std::mem::size_of_val(&remote)
+                || local.sin_family as i32 != libc::AF_INET
+                || remote.sin_family as i32 != libc::AF_INET
+            {
+                return None;
+            }
+            Some(Endpoint {
+                local: local.sin_addr.s_addr.to_ne_bytes(),
+                local_port: u16::from_be(local.sin_port),
+                remote: remote.sin_addr.s_addr.to_ne_bytes(),
+                remote_port: u16::from_be(remote.sin_port),
+            })
+        }
+        fn cookie(fd: i32) -> Result<u64, String> {
+            let mut value = 0_u64;
+            let mut len = 8;
+            if unsafe {
+                libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_COOKIE,
+                    (&mut value as *mut u64).cast(),
+                    &mut len,
+                )
+            } != 0
+                || len != 8
+                || value == 0
+            {
+                return Err(format!(
+                    "SO_COOKIE fd={fd} len={len}: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            Ok(value)
+        }
+        #[derive(Debug)]
+        struct Alias {
+            fd: i32,
+            endpoint: Endpoint,
+            cookie: u64,
+            outq: i32,
+            unsent: i32,
+            linger: [i32; 2],
+        }
+        fn aliases(wanted: Endpoint) -> Result<Vec<i32>, String> {
+            let mut found = Vec::new();
+            for item in std::fs::read_dir("/proc/self/fd").map_err(|e| e.to_string())? {
+                let item = item.map_err(|e| e.to_string())?;
+                let Some(fd) = item
+                    .file_name()
+                    .to_str()
+                    .and_then(|s| s.parse::<i32>().ok())
+                else {
+                    continue;
+                };
+                if endpoint(fd) == Some(wanted) {
+                    found.push(fd);
+                }
+            }
+            found.sort_unstable();
+            Ok(found)
+        }
+        fn observe_sender(peer: &std::net::TcpStream, sent: u64) -> Result<Vec<Alias>, String> {
+            let receiver = endpoint(peer.as_raw_fd()).ok_or("cannot identify the accepted peer")?;
+            let wanted = Endpoint {
+                local: receiver.remote,
+                local_port: receiver.remote_port,
+                remote: receiver.local,
+                remote_port: receiver.local_port,
+            };
+            let fds = aliases(wanted)?;
+            if fds.is_empty() {
+                return Err("no sender alias for exact connected four-tuple".to_owned());
+            }
+            let mut observed = Vec::new();
+            for &fd in &fds {
+                let identity = cookie(fd)?;
+                let mut outq = 0_i32;
+                let mut unsent = 0_i32;
+                let mut linger = libc::linger {
+                    l_onoff: 0,
+                    l_linger: 0,
+                };
+                let mut len = std::mem::size_of_val(&linger) as libc::socklen_t;
+                if unsafe { libc::ioctl(fd, 0x5411, &mut outq) } != 0
+                    || unsafe { libc::ioctl(fd, 0x894b, &mut unsent) } != 0
+                    || unsafe {
+                        libc::getsockopt(
+                            fd,
+                            libc::SOL_SOCKET,
+                            libc::SO_LINGER,
+                            (&mut linger as *mut libc::linger).cast(),
+                            &mut len,
+                        )
+                    } != 0
+                {
+                    return Err(format!(
+                        "sender fd={fd} query: {}",
+                        std::io::Error::last_os_error()
+                    ));
+                }
+                if outq <= 0
+                    || unsent <= 0
+                    || outq as u64 > sent
+                    || unsent as u64 > sent
+                    || len as usize != std::mem::size_of_val(&linger)
+                    || linger.l_onoff != 1
+                    || linger.l_linger != 600
+                    || endpoint(fd) != Some(wanted)
+                    || cookie(fd)? != identity
+                {
+                    return Err(format!(
+                        "sender fd={fd} changed or wrong queue/linger: outq={outq} unsent={unsent} linger=({}, {})",
+                        linger.l_onoff, linger.l_linger
+                    ));
+                }
+                observed.push(Alias {
+                    fd,
+                    endpoint: wanted,
+                    cookie: identity,
+                    outq,
+                    unsent,
+                    linger: [linger.l_onoff, linger.l_linger],
+                });
+            }
+            if observed.iter().any(|a| a.cookie != observed[0].cookie) || aliases(wanted)? != fds {
+                return Err("sender alias set/cookie changed during setup gate".to_owned());
+            }
+            // Last identity check finishes before releasing the regular-file
+            // gate. The gate runs only pread/yield, never a table mutation.
+            for item in &observed {
+                if endpoint(item.fd) != Some(item.endpoint) || cookie(item.fd)? != item.cookie {
+                    return Err("sender identity changed on final revalidation".to_owned());
+                }
+            }
+            Ok(observed)
+        }
+        #[derive(Clone)]
+        enum Mode {
+            NativeClose { pid: u32, generation: String },
+            NativeExit,
+            Controlled,
+        }
+        impl Mode {
+            fn close(&self) -> bool {
+                matches!(self, Self::NativeClose { .. })
+            }
+            fn controlled(&self) -> bool {
+                matches!(self, Self::Controlled)
+            }
+        }
+        #[derive(Debug)]
+        struct Drain {
+            ready: bool,
+            before_gate: bool,
+            witness: Option<String>,
+            observation_seconds: f64,
+            setup_record: Option<Record>,
+            aliases: Vec<Alias>,
+            bytes: Vec<u8>,
+            error: Option<String>,
+        }
+        fn actor(
+            listener: std::net::TcpListener,
+            path: std::path::PathBuf,
+            mode: Mode,
+        ) -> std::thread::JoinHandle<Drain> {
+            std::thread::spawn(move || {
+                let start = Instant::now();
+                let mut peer = None;
+                let mut setup_record = None;
+                let mut probes = Vec::new();
+                let setup = (|| -> Result<(), String> {
+                    while start.elapsed() < BOUND {
+                        match listener.accept() {
+                            Ok((stream, _)) => {
+                                peer = Some(stream);
+                                break;
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                std::thread::sleep(Duration::from_millis(1))
+                            }
+                            Err(e) => return Err(e.to_string()),
+                        }
+                    }
+                    if peer.is_none() {
+                        return Err("no TCP connection within fixed setup bound".to_owned());
+                    }
+                    while start.elapsed() < BOUND {
+                        let bytes = record(&path)?;
+                        if bytes[4] != 0 {
+                            return Err(format!("fixture setup failure {}", bytes[4]));
+                        }
+                        if bytes[6] == 1 && (mode.close() || bytes[0] == 1) {
+                            setup_record = Some(bytes);
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    let bytes = setup_record
+                        .ok_or("queue/enrollment readiness missing at fixed setup bound")?;
+                    let sent = wide(&bytes, 16);
+                    if sent == 0 || sent > LIMIT as u64 || word(&bytes, 12) < 3 {
+                        return Err("invalid sent count/socket descriptor".to_owned());
+                    }
+                    if mode.controlled() {
+                        if bytes[24..].iter().any(|&b| b != 0) {
+                            return Err(
+                                "controlled guest fabricated unsupported queue query output"
+                                    .to_owned(),
+                            );
+                        }
+                        probes = observe_sender(peer.as_ref().unwrap(), sent)?;
+                    } else if word(&bytes, 24) <= 0
+                        || word(&bytes, 28) <= 0
+                        || word(&bytes, 24) as u64 > sent
+                        || word(&bytes, 28) as u64 > sent
+                        || word(&bytes, 32) != 1
+                        || word(&bytes, 36) != 600
+                        || wide(&bytes, 40) == 0
+                    {
+                        return Err("native socket query precondition failed".to_owned());
+                    }
+                    Ok(())
+                })();
+                let ready = setup.is_ok();
+                let mut error = setup.err();
+                // These gates are always released, including a setup refusal;
+                // no observer keeps the creator alive merely to force a red.
+                for offset in [5, 7] {
+                    if let Err(e) = release(&path, offset) {
+                        error.get_or_insert(e);
+                    }
+                }
+                let begin = Instant::now();
+                let mut before_gate = false;
+                let mut witness = None;
+                while ready && error.is_none() && begin.elapsed() < BOUND {
+                    if let Mode::NativeClose { pid, generation } = &mode {
+                        if let Some(raw) =
+                            close_witness(*pid, generation, word(&setup_record.unwrap(), 12))
+                        {
+                            witness = Some(raw);
+                            break;
+                        }
+                    } else {
+                        match record(&path) {
+                            Ok(bytes) if bytes[1] == 1 => {
+                                before_gate = true;
+                                break;
+                            }
+                            Ok(bytes) if bytes[4] != 0 => {
+                                error = Some(format!("fixture failure {}", bytes[4]));
+                                break;
+                            }
+                            Ok(_) => (),
+                            Err(e) => {
+                                error = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let observation_seconds = begin.elapsed().as_secs_f64();
+                let mut bytes = Vec::new();
+                if let Some(mut peer) = peer {
+                    if let Err(e) = peer.set_read_timeout(Some(BOUND)) {
+                        error.get_or_insert(e.to_string());
+                    }
+                    if let Err(e) = (&mut peer).take((LIMIT + 1) as u64).read_to_end(&mut bytes) {
+                        error.get_or_insert(e.to_string());
+                    }
+                    let _ = peer.shutdown(std::net::Shutdown::Both);
+                }
+                Drain {
+                    ready,
+                    before_gate,
+                    witness,
+                    observation_seconds,
+                    setup_record,
+                    aliases: probes,
+                    bytes,
+                    error,
+                }
+            })
+        }
+        fn assert_drain(drain: &Drain) {
+            eprintln!(
+                "drain ready={} completion_before_gate={} close_witness={} elapsed={:.6} setup={:?} aliases={:?} error={:?}",
+                drain.ready,
+                drain.before_gate,
+                drain.witness.is_some(),
+                drain.observation_seconds,
+                drain.setup_record,
+                drain.aliases,
+                drain.error
+            );
+            assert!(
+                drain.error.is_none(),
+                "drain/setup/reset failure: {drain:?}"
+            );
+            let count = wide(&drain.setup_record.unwrap(), 16) as usize;
+            let expected: Vec<_> = (0..count)
+                .map(|n| (n.wrapping_mul(131) + 17) as u8)
+                .collect();
+            assert_eq!(drain.bytes, expected, "complete byte stream through EOF");
+            for alias in &drain.aliases {
+                assert!(alias.outq > 0 && alias.unsent > 0);
+                assert_eq!(alias.linger, [1, 600]);
+            }
+        }
+        fn assert_record(bytes: Record, child: i32, close: bool, setup: Record) {
+            let mut expected = setup;
+            expected[..8].copy_from_slice(if close {
+                &[0, 0, 0, 1, 0, 1, 1, 1]
+            } else {
+                &[1, 1, 1, 0, 0, 1, 1, 1]
+            });
+            expected[8..12].copy_from_slice(&child.to_ne_bytes());
+            assert_eq!(
+                bytes, expected,
+                "all fixture bytes and exact completed status markers"
+            );
+        }
+        fn native(program: &std::path::Path, directory: &std::path::Path, close: bool) {
+            let path = directory.join("record");
+            std::fs::write(&path, [0; 48]).unwrap();
+            let listener = listener();
+            let port = listener.local_addr().unwrap().port().to_string();
+            let mut command = std::process::Command::new(program);
+            command
+                .arg(if close { "close" } else { "native" })
+                .arg(&path)
+                .arg(&port)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let child = command.spawn().unwrap();
+            drop(command);
+            let pid = child.id();
+            let generation = std::fs::read_to_string(format!("/proc/{pid}/stat")).and_then(|s| {
+                start_time(&s)
+                    .map(|(_, g)| g.to_owned())
+                    .ok_or_else(|| std::io::Error::other("invalid owned stat"))
+            });
+            let generation_error = generation.as_ref().err().map(ToString::to_string);
+            let mode = if close {
+                Mode::NativeClose {
+                    pid,
+                    generation: generation.unwrap_or_default(),
+                }
+            } else {
+                Mode::NativeExit
+            };
+            let actor = actor(listener, path.clone(), mode);
+            let gate = release(&path, 5);
+            let output = child.wait_with_output();
+            let drain = actor.join().unwrap();
+            let output = output.unwrap();
+            let bytes = record(&path).unwrap();
+            let recipient = word(&bytes, 8);
+            let status = if !close {
+                assert!(recipient > 0 && recipient != pid as i32);
+                let mut status = -1;
+                assert_eq!(
+                    unsafe { libc::waitpid(recipient, &mut status, 0) },
+                    recipient
+                );
+                Some(status)
+            } else {
+                None
+            };
+            eprintln!(
+                "native close={close} creator={pid} recipient={recipient} recipient_status={status:?} record={bytes:?}"
+            );
+            assert!(generation_error.is_none(), "{generation_error:?}");
+            gate.unwrap();
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            assert!(output.stderr.is_empty());
+            assert_drain(&drain);
+            assert_record(bytes, recipient, close, drain.setup_record.unwrap());
+            if close {
+                assert_eq!(recipient, 0);
+                assert!(output.stdout.is_empty());
+                assert!(
+                    drain.witness.is_some(),
+                    "native explicit close never affirmatively witnessed"
+                );
+                eprintln!("native close raw witness: {}", drain.witness.unwrap());
+            } else {
+                assert_eq!(status, Some(0));
+                assert_eq!(output.stdout, EXPECTED);
+                assert!(drain.before_gate, "native delivery required peer drainage");
+            }
+        }
+        #[test]
+        fn creator_process_queued_tcp_exit_publishes_before_peer_drain() {
+            const TEST: &str = "pdeathsig::linger_process::creator_process_queued_tcp_exit_publishes_before_peer_drain";
+            if !leader_self_exec_bounded_with_output(TEST, true) {
+                return;
+            }
+            let mut old = 0;
+            assert_eq!(
+                unsafe { libc::prctl(libc::PR_GET_CHILD_SUBREAPER, &mut old) },
+                0
+            );
+            assert_eq!(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) }, 0);
+            let directory = TestDirectory::new();
+            let program = compile_c_program(
+                &directory.0,
+                "pdeathsig-linger-process",
+                include_str!("fixtures/pdeathsig_linger_process.c"),
+            );
+            for close in [true, false] {
+                let dir = directory
+                    .0
+                    .join(if close { "native-close" } else { "native-exit" });
+                std::fs::create_dir(&dir).unwrap();
+                native(&program, &dir, close);
+            }
+            assert_eq!(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, old) }, 0);
+            let dir = directory.0.join("controlled");
+            std::fs::create_dir(&dir).unwrap();
+            let path = dir.join("record");
+            std::fs::write(&path, [0; 48]).unwrap();
+            let listener = listener();
+            let port = listener.local_addr().unwrap().port().to_string();
+            let actor = actor(listener, path.clone(), Mode::Controlled);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // No configured stdin: neither root nor fork snapshot can keep
+                // a hidden alias to the socket created later by the guest.
+                let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+                backend.set_root_pid(17).unwrap();
+                backend
+                    .install_static_elf_file_with_context(
+                        std::fs::File::open(&program).unwrap(),
+                        &[
+                            program.to_str().unwrap(),
+                            "controlled",
+                            path.to_str().unwrap(),
+                            &port,
+                        ],
+                        &[],
+                        &dir,
+                    )
+                    .unwrap();
+                backend.set_thread_ownership(ThreadOwnership::Tool);
+                release(&path, 5).unwrap();
+                futures::executor::block_on(
+                    backend.run_static_elf_with_tool::<ControlledTool>(LINGER_PROCESS, true),
+                )
+            }));
+            let drain = actor.join().unwrap();
+            let (global, status, stdout, stderr) = match outcome {
+                Ok(result) => result.unwrap(),
+                Err(panic) => std::panic::resume_unwind(panic),
+            };
+            assert_eq!(status, 0, "{stderr:?}");
+            assert_eq!(stdout, EXPECTED);
+            assert!(stderr.is_empty());
+            assert_drain(&drain);
+            assert_record(
+                record(&path).unwrap(),
+                18,
+                false,
+                drain.setup_record.unwrap(),
+            );
+            let publications = global.publications.lock().unwrap();
+            let creator: Vec<_> = publications
+                .iter()
+                .filter(|p| p.boundary.permit.task.tid == Pid::from_raw(17))
+                .collect();
+            assert_eq!(creator.len(), 1);
+            assert_eq!(
+                creator[0].boundary.permit.task.process.tgid,
+                Pid::from_raw(17)
+            );
+            assert_eq!(
+                creator[0].boundary.outcome,
+                SignalBoundaryOutcome::Terminated {
+                    group: true,
+                    wait_status: 0
+                }
+            );
+            assert_eq!(creator[0].signals.len(), 1);
+            let effect = creator[0].signals[0];
+            assert_eq!(effect.process.tgid, Pid::from_raw(18));
+            assert_eq!(effect.signal, libc::SIGUSR1);
+            assert!(!effect.discarded && !effect.coalesced);
+            assert_eq!(
+                publications.iter().map(|p| p.signals.len()).sum::<usize>(),
+                1
+            );
+            let dequeues = global.dequeues.lock().unwrap();
+            assert_eq!(dequeues.len(), 1);
+            assert_eq!(dequeues[0].process, effect.process);
+            assert_eq!(dequeues[0].sequence, 1);
+            drop(dequeues);
+            let exits: Vec<_> = global
+                .boundaries
+                .lock()
+                .unwrap()
+                .iter()
+                .copied()
+                .filter(|r| matches!(r.outcome, SignalBoundaryOutcome::Terminated { .. }))
+                .collect();
+            assert_eq!(exits.len(), 2);
+            assert_eq!(
+                exits
+                    .iter()
+                    .filter(|r| r.permit.task.tid == Pid::from_raw(18)
+                        && r.outcome
+                            == SignalBoundaryOutcome::Terminated {
+                                group: true,
+                                wait_status: 0
+                            })
+                    .count(),
+                1
+            );
+            assert!(global.parks.lock().unwrap().published);
+            assert_eq!(
+                global
+                    .parks
+                    .lock()
+                    .unwrap()
+                    .wake_calls
+                    .load(Ordering::SeqCst),
+                1
+            );
+            assert_eq!(global.prctl_calls.load(Ordering::SeqCst), 4);
+            eprintln!(
+                "controlled creator=17 recipient=18 terminal_statuses=[0,0] publications=1 shared_dequeues=1 callback_wakes=1 sender_uid=0"
+            );
+            assert!(
+                drain.before_gate,
+                "creator publication/handler waited for peer drain; backend and peer are now finished"
+            );
+        }
     }
 
     #[test]
