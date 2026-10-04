@@ -203,6 +203,70 @@ const CLOCK_TICKS_PER_SECOND: u64 = 100;
 // syscall, which diverges the guest's startup syscall stream from the native
 // (ptrace) path and breaks cross-backend syscall-count parity.
 const AT_SYSINFO_EHDR: u64 = 33;
+const AT_FLAGS: u64 = 8;
+const AT_PLATFORM: u64 = 15;
+const AT_HWCAP: u64 = 16;
+const AT_HWCAP2: u64 = 26;
+/// The string `AT_PLATFORM` names: `ELF_PLATFORM` of every x86_64 kernel.
+const GUEST_PLATFORM: &[u8] = b"x86_64";
+
+/// The guest-side values of a guest's auxiliary vector.
+struct GuestAuxvValues {
+    program_headers: u64,
+    program_header_size: u64,
+    program_header_count: u64,
+    base: u64,
+    entry: u64,
+    random: u64,
+    execfn: u64,
+    platform: u64,
+}
+
+/// A guest's auxiliary vector: the entries Linux 6.3 and later give a
+/// process, in the order Linux writes them (`create_elf_tables` in
+/// fs/binfmt_elf.c, with x86_64's `ARCH_DLINFO` first). glibc's loader spends
+/// branches on every entry and reads several, so the same vector gives a KVM
+/// guest the start-up, and the virtual time, a traced guest has
+/// (<https://github.com/rrnewton/reverie/issues/947>).
+///
+/// The entries that describe the CPU or the kernel carry
+/// `reverie::canonical_auxv_value`, which reverie-ptrace also writes into a
+/// traced guest's vector, so neither depends on the host. Identity entries
+/// are the guest's own: root, not secure. `AT_FLAGS` is 0, as on every Linux
+/// kernel.
+fn guest_auxv(guest: &GuestAuxvValues) -> Vec<(u64, u64)> {
+    let canonical = |key| {
+        reverie::canonical_auxv_value(key)
+            .unwrap_or_else(|| panic!("auxv entry {key} has no canonical value"))
+    };
+    vec![
+        (AT_SYSINFO_EHDR, VDSO_ADDRESS),
+        (reverie::AT_MINSIGSTKSZ, canonical(reverie::AT_MINSIGSTKSZ)),
+        (AT_HWCAP, canonical(AT_HWCAP)),
+        (AT_PAGESZ, PAGE_SIZE),
+        (AT_CLKTCK, CLOCK_TICKS_PER_SECOND),
+        (AT_PHDR, guest.program_headers),
+        (AT_PHENT, guest.program_header_size),
+        (AT_PHNUM, guest.program_header_count),
+        (AT_BASE, guest.base),
+        (AT_FLAGS, 0),
+        (AT_ENTRY, guest.entry),
+        (AT_UID, 0),
+        (AT_EUID, 0),
+        (AT_GID, 0),
+        (AT_EGID, 0),
+        (AT_SECURE, 0),
+        (AT_RANDOM, guest.random),
+        (AT_HWCAP2, canonical(AT_HWCAP2)),
+        (AT_EXECFN, guest.execfn),
+        (AT_PLATFORM, guest.platform),
+        (
+            reverie::AT_RSEQ_FEATURE_SIZE,
+            canonical(reverie::AT_RSEQ_FEATURE_SIZE),
+        ),
+        (reverie::AT_RSEQ_ALIGN, canonical(reverie::AT_RSEQ_ALIGN)),
+    ]
+}
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Share deterministic file identities across fork.
 // TODO-HUMAN-REVIEW(PR-136): Review linked and anonymous object identity lifetimes.
@@ -2078,6 +2142,11 @@ fn build_initial_stack(
     }
     let argv0_address = arg_addresses[0];
 
+    // Linux writes the platform string below the argument and environment
+    // strings, and the AT_RANDOM bytes below it.
+    cursor = push_c_string(memory, cursor, GUEST_PLATFORM)?;
+    let platform_address = cursor;
+
     let random = [
         0x52, 0x65, 0x76, 0x65, 0x72, 0x69, 0x65, 0x2d, 0x4b, 0x56, 0x4d, 0x2d, 0x45, 0x4c, 0x46,
         0x21,
@@ -2090,23 +2159,20 @@ fn build_initial_stack(
 
     // Build the SysV initial stack image, low to high:
     //   argc, argv[0..], NULL, envp[0..], NULL, auxv pairs.., AT_NULL/0
-    let auxv = vec![
-        (AT_SYSINFO_EHDR, VDSO_ADDRESS),
-        (AT_PHDR, program_headers_address),
-        (AT_PHENT, u64::from(elf.header.e_phentsize)),
-        (AT_PHNUM, u64::from(elf.header.e_phnum)),
-        (AT_PAGESZ, PAGE_SIZE),
-        (AT_BASE, at_base),
-        (AT_ENTRY, at_entry),
-        (AT_UID, 0),
-        (AT_EUID, 0),
-        (AT_GID, 0),
-        (AT_EGID, 0),
-        (AT_CLKTCK, CLOCK_TICKS_PER_SECOND),
-        (AT_SECURE, 0),
-        (AT_RANDOM, random_address),
-        (AT_EXECFN, argv0_address),
-    ];
+    // The canonical AT_MINSIGSTKSZ must also bound this host, as it must for a
+    // traced guest on it.
+    reverie::check_host_minsigstksz(unsafe { libc::getauxval(reverie::AT_MINSIGSTKSZ) })
+        .map_err(Error::UnsupportedHost)?;
+    let auxv = guest_auxv(&GuestAuxvValues {
+        program_headers: program_headers_address,
+        program_header_size: u64::from(elf.header.e_phentsize),
+        program_header_count: u64::from(elf.header.e_phnum),
+        base: at_base,
+        entry: at_entry,
+        random: random_address,
+        execfn: argv0_address,
+        platform: platform_address,
+    });
 
     let mut words: Vec<u64> = Vec::new();
     words.push(argv.len() as u64);
@@ -2362,6 +2428,64 @@ mod tests {
         assert_ne!(first_execfn, second_execfn);
         assert_eq!(clock_tick_entries(&first.auxv), vec![(17, 100)]);
         assert_eq!(clock_tick_entries(&second.auxv), vec![(17, 100)]);
+    }
+
+    /// The keys and order of the vector Linux 7.1 gives a process on this
+    /// repository's x86_64 hosts (`LD_SHOW_AUXV=1 /bin/true`), and the
+    /// canonical CPU and kernel values in place of the host's.
+    #[test]
+    fn auxiliary_vector_has_linuxs_entries_in_linuxs_order() {
+        let auxv = guest_auxv(&GuestAuxvValues {
+            program_headers: 0x200040,
+            program_header_size: 56,
+            program_header_count: 13,
+            base: 0x1000000,
+            entry: 0x201000,
+            random: 0x3fffef00,
+            execfn: 0x3fffefe0,
+            platform: 0x3fffef10,
+        });
+        let keys: Vec<u64> = auxv.iter().map(|(key, _)| *key).collect();
+        assert_eq!(
+            keys,
+            [
+                33, 51, 16, 6, 17, 3, 4, 5, 7, 8, 9, 11, 12, 13, 14, 23, 25, 26, 31, 15, 27, 28
+            ]
+        );
+        let value = |key| auxv.iter().find(|(k, _)| *k == key).unwrap().1;
+        assert_eq!(value(33), VDSO_ADDRESS);
+        assert_eq!(value(16), 0x078b_fbfd);
+        assert_eq!(value(26), 0);
+        assert_eq!(value(51), 16384);
+        assert_eq!(value(27), 28);
+        assert_eq!(value(28), 32);
+        assert_eq!(value(8), 0);
+        assert_eq!(value(15), 0x3fffef10);
+        assert_eq!(value(11), 0);
+    }
+
+    /// `AT_PLATFORM` points at the platform string on the guest stack.
+    #[test]
+    fn loaded_auxiliary_vector_names_the_platform() {
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let image = test_static_elf(&[0x0f, 0x0b]);
+        let loaded = load_static_elf(
+            &mut memory,
+            &image,
+            &["initial"],
+            &[],
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+        let platform = loaded
+            .auxv
+            .iter()
+            .find(|(key, _)| *key == AT_PLATFORM)
+            .unwrap()
+            .1;
+        let mut bytes = [0; 7];
+        memory.read_raw(platform, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"x86_64\0");
     }
 
     #[test]

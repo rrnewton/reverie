@@ -461,6 +461,108 @@ where
     Ok(())
 }
 
+/// Gives a stopped guest, before its first instruction, the vDSO and auxiliary
+/// values every backend gives its guests, so that its start-up does not
+/// depend on the host (<https://github.com/rrnewton/reverie/issues/947>):
+///
+/// - Each auxv entry that describes the CPU or the kernel gets its
+///   `reverie::canonical_auxv_value`. The kernel decides which entries exist,
+///   so only their values change.
+/// - The canonical vDSO (`reverie::vdso::canonical_vdso_image`) is mapped at
+///   its address and `AT_SYSINFO_EHDR` points at it, so that ld.so loads it in
+///   place of the host kernel's. The host vDSO stays mapped, and patched by
+///   [`vdso_patch`], but nothing the loader sets up refers to it. A guest whose
+///   kernel supplied no `AT_SYSINFO_EHDR` is left without a vDSO.
+///
+/// `stack` is the guest's stack pointer at its exec stop, where `argc` is. The
+/// auxiliary vector the kernel wrote follows `argv` and `envp`, and ld.so has
+/// not read it yet. `/proc/<pid>/auxv` keeps the kernel's values.
+#[cfg(target_arch = "x86_64")]
+pub async fn canonicalize_new_image<G, T>(guest: &mut G, stack: u64) -> Result<(), Error>
+where
+    G: Guest<T>,
+    T: Tool,
+{
+    use reverie::canonical_auxv_value;
+    use reverie::syscalls::Addr;
+    use reverie::syscalls::MapFlags;
+    use reverie::syscalls::Mmap;
+    use reverie::vdso::CANONICAL_VDSO_ADDRESS;
+    use reverie::vdso::CANONICAL_VDSO_SIZE;
+    use reverie::vdso::canonical_vdso_image;
+
+    let mut memory = guest.memory();
+    let read = |memory: &G::Memory, at: u64| -> Result<u64, Error> {
+        let address: Addr<u64> = Addr::from_raw(at as usize).ok_or(Errno::EFAULT)?;
+        Ok(memory.read_value(address)?)
+    };
+    // argc, argv[0..argc], NULL, envp.., NULL, then the auxv pairs.
+    let argc = read(&memory, stack)?;
+    let mut at = stack + 8 * (argc + 2);
+    while read(&memory, at)? != 0 {
+        at += 8;
+    }
+    at += 8;
+    let mut sysinfo_ehdr = None;
+    loop {
+        let key = read(&memory, at)?;
+        if key == libc::AT_NULL {
+            break;
+        }
+        if key == reverie::AT_MINSIGSTKSZ {
+            reverie::check_host_minsigstksz(read(&memory, at + 8)?)
+                .map_err(|reason| Error::from(std::io::Error::other(reason)))?;
+        }
+        if key == libc::AT_SYSINFO_EHDR {
+            sysinfo_ehdr = Some(at + 8);
+        } else if let Some(value) = canonical_auxv_value(key) {
+            let entry: AddrMut<u64> = AddrMut::from_raw(at as usize + 8).ok_or(Errno::EFAULT)?;
+            memory.write_value(entry, &value)?;
+        }
+        at += 16;
+    }
+    let Some(sysinfo_ehdr) = sysinfo_ehdr else {
+        return Ok(());
+    };
+
+    let mapped = guest
+        .inject_with_retry(
+            Mmap::new()
+                .with_addr(Addr::from_raw(CANONICAL_VDSO_ADDRESS as usize))
+                .with_len(CANONICAL_VDSO_SIZE as usize)
+                .with_prot(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
+                .with_flags(
+                    MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS | MapFlags::MAP_FIXED_NOREPLACE,
+                )
+                .with_fd(-1)
+                .with_offset(0),
+        )
+        .await?;
+    if mapped as u64 != CANONICAL_VDSO_ADDRESS {
+        return Err(Error::from(std::io::Error::other(format!(
+            "guest {} got the canonical vDSO at {mapped:#x}, not {CANONICAL_VDSO_ADDRESS:#x}",
+            guest.pid()
+        ))));
+    }
+    let image = AddrMut::from_raw(CANONICAL_VDSO_ADDRESS as usize).ok_or(Errno::EFAULT)?;
+    memory.write_exact(image, canonical_vdso_image())?;
+    guest
+        .inject_with_retry(
+            Mprotect::new()
+                .with_addr(AddrMut::from_raw(CANONICAL_VDSO_ADDRESS as usize))
+                .with_len(CANONICAL_VDSO_SIZE as usize)
+                .with_protection(ProtFlags::PROT_READ | ProtFlags::PROT_EXEC),
+        )
+        .await?;
+    let entry: AddrMut<u64> = AddrMut::from_raw(sysinfo_ehdr as usize).ok_or(Errno::EFAULT)?;
+    memory.write_value(entry, &CANONICAL_VDSO_ADDRESS)?;
+    debug!(
+        "{} mapped the canonical vDSO at {CANONICAL_VDSO_ADDRESS:#x}",
+        guest.pid()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use goblin::elf::Elf;

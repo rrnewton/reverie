@@ -4449,6 +4449,30 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Err(error) => panic!("unable to patch vdso: {error:?}"),
             }
         }
+        // Give the guest the vDSO and auxiliary values every backend gives its
+        // guests, in place of the host's.
+        #[cfg(target_arch = "x86_64")]
+        if self
+            .global_state
+            .subscriptions
+            .iter_syscalls()
+            .next()
+            .is_some()
+        {
+            match vdso::canonicalize_new_image(self, regs.rsp).await {
+                Ok(()) => {}
+                // A tracee that died meanwhile reports a bare errno.
+                Err(reverie::Error::Errno(errno)) => match dead_or(&task, errno.into()) {
+                    died @ TraceError::Died(_) => return Err(died),
+                    error => {
+                        panic!("unable to give the guest its canonical vdso and auxv: {error:?}")
+                    }
+                },
+                Err(error) => {
+                    panic!("unable to give the guest its canonical vdso and auxv: {error:?}")
+                }
+            }
+        }
         #[cfg(test)]
         pause_preinit(&pause_preinit_step, 2, &task).await;
         #[cfg(test)]

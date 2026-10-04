@@ -348,6 +348,10 @@ pub enum Error {
     #[error("failed to parse ELF image: {0}")]
     ElfParse(#[from] goblin::error::Error),
 
+    /// This host cannot run guests with Reverie's canonical process image.
+    #[error("unsupported host: {0}")]
+    UnsupportedHost(String),
+
     /// The ELF image cannot run in the minimal KVM process personality.
     #[error("unsupported ELF image: {0}")]
     UnsupportedElf(String),

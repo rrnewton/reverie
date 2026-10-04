@@ -34,8 +34,12 @@ use core::fmt;
 
 use reverie_syscalls::Sysno;
 
+#[cfg(target_arch = "x86_64")]
+mod canonical;
 mod image;
 
+#[cfg(target_arch = "x86_64")]
+pub use canonical::*;
 pub use image::*;
 
 /// One function exported by the Linux vDSO, named as in the kernel's linker
