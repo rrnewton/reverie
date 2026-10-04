@@ -5,6 +5,21 @@ load("@fbsource//tools/build_defs:selects.bzl", "selects")
 
 oncall("hermit")
 
+# Keep registry metadata in the source of the autocargo manifests as well.
+# Public package names differ from two internal target names.
+def public_crate_metadata(name, build = None):
+    metadata = {
+        "version": "0.4.1",
+        "readme": "README.md",
+        "homepage": "https://hermetic-infra.org",
+        "documentation": "https://docs.rs/" + name,
+        "keywords": ["linux", "instrumentation", "hermit"],
+        "categories": ["development-tools::debugging", "os::linux-apis"],
+    }
+    if build != None:
+        metadata["build"] = build
+    return metadata
+
 # Some tests don't work when a sanitizer is in use (i.e., with @mode/dev). This
 # makes it easy to conditionally compile them with `#[cfg(not(sanitized))]`.
 sanitized_feature = selects.apply(
@@ -15,7 +30,12 @@ sanitized_feature = selects.apply(
 rust_library(
     name = "reverie",
     srcs = glob(["reverie/src/**/*.rs"]),
-    autocargo = {"cargo_toml_dir": "reverie"},
+    autocargo = {
+        "cargo_toml_config": {
+            "package": public_crate_metadata("reverie-core"),
+        },
+        "cargo_toml_dir": "reverie",
+    },
     test_rustc_flags = sanitized_feature,
     deps = [
         "fbsource//third-party/rust:addr2line",
@@ -47,6 +67,7 @@ rust_library(
     srcs = glob(["reverie-process/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
+            "package": public_crate_metadata("reverie-process"),
             "dependencies_override": {
                 "dependencies": {
                     "bitflags": {
@@ -96,7 +117,12 @@ rust_library(
 rust_library(
     name = "reverie-util",
     srcs = glob(["reverie-util/src/**/*.rs"]),
-    autocargo = {"cargo_toml_dir": "reverie-util"},
+    autocargo = {
+        "cargo_toml_config": {
+            "package": public_crate_metadata("reverie-utils"),
+        },
+        "cargo_toml_dir": "reverie-util",
+    },
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:chrono",
@@ -113,7 +139,9 @@ rust_library(
     srcs = glob(["reverie-ptrace/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
+            "package": public_crate_metadata("reverie-ptrace", build = "build.rs"),
             "dependencies_override": {
+                "build-dependencies": {"pkg-config": {"version": "0.3"}},
                 "dependencies": {
                     "safeptrace": {
                         "features": [
@@ -123,9 +151,12 @@ rust_library(
                     },
                 },
             },
+            "features": {"default": [], "nightly": []},
         },
         "cargo_toml_dir": "reverie-ptrace",
+        "edge_features": [],
     },
+    features = ["nightly"],
     test_deps = [
         "fbsource//third-party/rust:test-case",
     ],
@@ -172,6 +203,7 @@ rust_library(
     srcs = glob(["reverie-syscalls/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
+            "package": public_crate_metadata("reverie-syscalls"),
             "dependencies_override": {
                 "dependencies": {
                     "bitflags": {
@@ -199,7 +231,12 @@ rust_library(
 rust_library(
     name = "reverie-memory",
     srcs = glob(["reverie-memory/src/**/*.rs"]),
-    autocargo = {"cargo_toml_dir": "reverie-memory"},
+    autocargo = {
+        "cargo_toml_config": {
+            "package": public_crate_metadata("reverie-memory"),
+        },
+        "cargo_toml_dir": "reverie-memory",
+    },
     deps = [
         "fbsource//third-party/rust:libc",
         "fbsource//third-party/rust:syscalls",
@@ -209,7 +246,12 @@ rust_library(
 rust_library(
     name = "reverie-rpc-transport",
     srcs = glob(["reverie-rpc-transport/src/**/*.rs"]),
-    autocargo = {"cargo_toml_dir": "reverie-rpc-transport"},
+    autocargo = {
+        "cargo_toml_config": {
+            "package": public_crate_metadata("reverie-rpc-transport"),
+        },
+        "cargo_toml_dir": "reverie-rpc-transport",
+    },
     test_deps = [
         "fbsource//third-party/rust:tokio",
     ],
@@ -228,7 +270,12 @@ rust_library(
 rust_library(
     name = "reverie-sabre-stats",
     srcs = glob(["experimental/reverie-sabre-stats/src/**/*.rs"]),
-    autocargo = {"cargo_toml_dir": "experimental/reverie-sabre-stats"},
+    autocargo = {
+        "cargo_toml_config": {
+            "package": public_crate_metadata("reverie-sabre-stats"),
+        },
+        "cargo_toml_dir": "experimental/reverie-sabre-stats",
+    },
     deps = [
         "fbsource//third-party/rust:libc",
         ":reverie",
@@ -240,6 +287,7 @@ rust_library(
     srcs = glob(["reverie-preload/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
+            "package": public_crate_metadata("reverie-preload"),
             "features": {
                 "coordinator-rpc": [
                     "serde",
@@ -266,6 +314,7 @@ rust_library(
     srcs = glob(["reverie-liteinst/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
+            "package": public_crate_metadata("reverie-liteinst"),
             "features": {
                 "default": ["preload-constructor"],
                 "preload-constructor": [],
@@ -305,7 +354,7 @@ rust_library(
     srcs = glob(["reverie-kvm/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": {"build": "build.rs"},
+            "package": public_crate_metadata("reverie-kvm", build = "build.rs"),
             "dependencies_override": {
                 "build-dependencies": {"cc": {"version": "1.5.1"}},
             },
@@ -334,6 +383,7 @@ rust_library(
     srcs = glob(["safeptrace/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
+            "package": public_crate_metadata("safeptrace"),
             "features": {
                 "default": [],
                 "memory": ["reverie-memory"],

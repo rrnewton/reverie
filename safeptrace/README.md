@@ -1,45 +1,31 @@
-# A safe ptrace interface
+# safeptrace
 
-This crate provides a safe and Rustic alternative to the infamous `ptrace` API.
-There are many extremely subtle aspects of the raw ptrace API and this crate
-helps avoid common pitfalls.
+Safe Rust wrappers around the Linux `ptrace` API, used by
+[Reverie](https://docs.rs/reverie-core), the instrumentation framework beneath
+[Hermit](https://hermetic-infra.org).
 
-Note that this library is still rather low-level and does not claim to solve all
-your ptrace problems. You have been warned!
+The state types distinguish a running tracee from a stopped tracee, helping
+callers use ptrace operations only when they are valid. This is a low-level
+interface; callers still own process lifetime and tracing policy.
 
-## Features
-
- * Ergonomic interface that provides a state machine for ptrace states. This
-   avoids the infamous `ESRCH` errors that can happen when you use the ptrace
-   API incorrectly.
- * Provides an interface to read/write guest's memory (see "memory" feature
-   flag).
- * Provides an optional and semi-experimental async interface, which can be used
-   with `tokio` (see "notifier" feature).
-
-## Usage
-
-Add this to your `Cargo.toml` file:
-```
-safeptrace = "0.1"
+```toml
+[dependencies]
+safeptrace = "0.4"
 ```
 
-## Feature Flags
+## Optional features
 
-### `"memory"` (off by default)
+- `memory`: guest-memory access through `reverie-memory`. Memory access requires
+  a stopped tracee.
+- `notifier`: asynchronous ptrace event notification for runtimes such as Tokio.
 
-Provides access to the guest's memory. Memory can only be safely accessed when
-the guest is in a stopped state, thus the `MemoryAccess` trait is only
-implemented for the `Stopped` type.
+Both features are off by default. For asynchronous tracing with memory access:
 
-### `"notifier"` (off by default)
-
-Provides an async interface for ptrace using notifier threads. This is
-semi-experimental, but testing shows that it has very good performance. It works
-by spawning a separate thread for each thread being traced, waiting for ptrace
-events in a loop. Thus, there will be 1 thread per guest thread.
-
-Use with:
+```toml
+[dependencies]
+safeptrace = { version = "0.4", features = ["memory", "notifier"] }
 ```
-safeptrace = { version = "0.1", features = ["async"] }
-```
+
+See the [API documentation](https://docs.rs/safeptrace) for the state machine
+and wait contracts. For a complete execution engine and its platform setup,
+use [`hermit-run`](https://crates.io/crates/hermit-run).

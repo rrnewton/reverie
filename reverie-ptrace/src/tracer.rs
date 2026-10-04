@@ -5278,12 +5278,14 @@ fn resolve_program(command: &mut Command) -> Result<(), Error> {
     Ok(())
 }
 
-/// Spawn a *function* to be executed under instrumentation instrumentation
+/// Spawn a *function* to be executed under instrumentation
 /// (rather than a subprocess indicated with a Command).
 ///
 /// This still creates a fresh child process and runs it under ptrace. However,
 /// the child process is a fork of the current process, and is used to run the
 /// indicated function.
+///
+/// See [`spawn_fn_with_config`] for output capture when calling from libtest.
 pub async fn spawn_fn<L, F>(fun: F) -> Result<Tracer<L::GlobalState>, Error>
 where
     L: Tool + 'static,
@@ -5329,6 +5331,15 @@ fn exit_forked_guest(code: i32) -> ! {
 ///
 /// The main use case for this entrypoint into the library is testing.
 ///
+/// With `capture_output`, writes to stdout and stderr descriptors are captured
+/// on stable Rust. When running inside libtest, its thread-local capture can
+/// intercept `print!`, `println!`, `eprint!`, and `eprintln!` before they reach
+/// those descriptors. To capture these macros in a guest function, either run
+/// tests with `--nocapture` or use nightly Rust with this crate's off-by-default
+/// `nightly` feature. Direct writes through [`std::io::Write`] to
+/// [`std::io::stdout`] or [`std::io::stderr`] work under libtest on stable Rust.
+/// This restriction does not apply to guests launched with [`TracerBuilder`].
+///
 /// The child ends with `_exit` once the function returns (status 0) or panics
 /// (status 1), after flushing Rust's stdout and every C stdio stream; a
 /// failed flush turns status 0 into 1. Because it never runs the process's
@@ -5370,6 +5381,7 @@ where
     // be able to call `println!()` and have that output go to stdout.
     //
     // See: https://github.com/rust-lang/rust/issues/35136
+    #[cfg(feature = "nightly")]
     let output_capture = std::io::set_output_capture(None);
 
     // Warning: fork is wildely unsafe in Rust because of runtime issues (printing,
@@ -5402,6 +5414,7 @@ where
             };
         }
         ForkResult::Parent { child } => {
+            #[cfg(feature = "nightly")]
             std::io::set_output_capture(output_capture);
 
             let guest_pid = Pid::from(child);
