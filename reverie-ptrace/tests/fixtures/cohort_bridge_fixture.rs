@@ -69,6 +69,8 @@ fn main() {
         Some("peer-sendto-blocked-root") => followed_peer_sendto(false, true),
         Some("peer-sendto-blocked-child") => followed_peer_sendto(true, true),
         Some("source-retirement-703") => retirement_source(),
+        Some("source-madvise-926") => madvise_source(),
+        Some("source-madvise-controls-926") => madvise_source_controls(),
         Some("store-read-root") => followed_destination_store(false, false),
         Some("store-read-child") => followed_destination_store(true, false),
         Some("store-recv-root") => followed_destination_store(false, true),
@@ -773,4 +775,198 @@ fn executable_source() {
             libc::syscall(libc::SYS_futex, tid.as_ptr(), libc::FUTEX_WAIT, current, 0);
         }
     }
+}
+
+// A separate mode for https://github.com/rrnewton/reverie/issues/926.
+// The original child advises its own private anonymous page while both original
+// task owners remain alive. The Tool releases the child only after the parent
+// has attempted a fresh source; no exit/retirement timing is needed for that cut.
+fn madvise_source() {
+    use std::sync::atomic::AtomicI32;
+    use std::sync::atomic::Ordering;
+    extern "C" fn child(page: *mut libc::c_void) -> libc::c_int {
+        unsafe {
+            if libc::syscall(libc::SYS_write, 926, page, 4096) != 4096 {
+                libc::syscall(libc::SYS_exit, 91);
+            }
+            if libc::syscall(libc::SYS_madvise, page, 4096, libc::MADV_DONTNEED) != 0 {
+                libc::syscall(libc::SYS_exit, 92);
+            }
+            for offset in 0..4096 {
+                if page.cast::<u8>().add(offset).read_volatile() != 0 {
+                    libc::syscall(libc::SYS_exit, 93);
+                }
+            }
+            let result = libc::syscall(libc::SYS_write, 927, page, 4096);
+            libc::syscall(libc::SYS_exit, if result == 4096 { 0 } else { 94 });
+        }
+        unreachable!("SYS_exit returned");
+    }
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(page, libc::MAP_FAILED);
+    unsafe { page.cast::<u8>().write_bytes(0x5a, 4096) };
+    let mut stack = vec![0u128; 16384];
+    let tid = AtomicI32::new(0);
+    let top = unsafe { stack.as_mut_ptr().add(stack.len()) }.cast();
+    let flags = libc::CLONE_VM
+        | libc::CLONE_FS
+        | libc::CLONE_FILES
+        | libc::CLONE_SIGHAND
+        | libc::CLONE_THREAD
+        | libc::CLONE_SYSVSEM
+        | libc::CLONE_PARENT_SETTID
+        | libc::CLONE_CHILD_CLEARTID;
+    assert!(
+        unsafe {
+            libc::clone(
+                child,
+                top,
+                flags,
+                page,
+                tid.as_ptr(),
+                std::ptr::null_mut::<libc::c_void>(),
+                tid.as_ptr(),
+            )
+        } > 0
+    );
+    let root = *b"root-926";
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_write, 926, root.as_ptr(), root.len()) },
+        8
+    );
+    loop {
+        let current = tid.load(Ordering::Acquire);
+        if current == 0 {
+            break;
+        }
+        unsafe {
+            libc::syscall(libc::SYS_futex, tid.as_ptr(), libc::FUTEX_WAIT, current, 0);
+        }
+    }
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_write, 928, page, 4096) },
+        4096
+    );
+    assert_eq!(unsafe { libc::munmap(page, 4096) }, 0);
+}
+
+fn madvise_source_controls() {
+    use std::sync::atomic::AtomicI32;
+    use std::sync::atomic::Ordering;
+    struct Input {
+        page: *mut libc::c_void,
+        mode: u8,
+    }
+    extern "C" fn child(input: *mut libc::c_void) -> libc::c_int {
+        let input = unsafe { &*input.cast::<Input>() };
+        let page = input.page;
+        let length = if input.mode == 7 { 12288 } else { 4096 };
+        unsafe {
+            if libc::syscall(libc::SYS_write, 926, page, 4096) != 4096 {
+                libc::syscall(libc::SYS_exit, 91);
+            }
+            let result = libc::syscall(
+                libc::SYS_madvise,
+                page,
+                length,
+                libc::MADV_DONTNEED,
+                0,
+                0,
+                0,
+            );
+            let error = *libc::__errno_location();
+            if if input.mode == 7 {
+                result != -1 || error != libc::ENOMEM
+            } else {
+                result != 0
+            } {
+                libc::syscall(libc::SYS_exit, 92);
+            }
+            let expected = if matches!(input.mode, 3 | 4) { 0x5a } else { 0 };
+            for offset in 0..4096 {
+                if page.cast::<u8>().add(offset).read_volatile() != expected {
+                    libc::syscall(libc::SYS_exit, 93);
+                }
+                if input.mode == 7 && page.cast::<u8>().add(8192 + offset).read_volatile() != 0 {
+                    libc::syscall(libc::SYS_exit, 95);
+                }
+            }
+            let result = libc::syscall(libc::SYS_write, 927, page, 4096);
+            libc::syscall(libc::SYS_exit, if result == 4096 { 0 } else { 94 });
+        }
+        unreachable!("SYS_exit returned");
+    }
+    let mode = std::env::args().nth(2).unwrap().parse::<u8>().unwrap();
+    assert!((1..=8).contains(&mode));
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            12288,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(page, libc::MAP_FAILED);
+    unsafe { page.cast::<u8>().write_bytes(0x5a, 12288) };
+    if mode == 7 {
+        assert_eq!(
+            unsafe { libc::munmap(page.cast::<u8>().add(4096).cast(), 4096) },
+            0
+        );
+    }
+    let input = Input { page, mode };
+    let mut stack = vec![0u128; 16384];
+    let tid = AtomicI32::new(0);
+    let top = unsafe { stack.as_mut_ptr().add(stack.len()) }.cast();
+    let flags = libc::CLONE_VM
+        | libc::CLONE_FS
+        | libc::CLONE_FILES
+        | libc::CLONE_SIGHAND
+        | libc::CLONE_THREAD
+        | libc::CLONE_SYSVSEM
+        | libc::CLONE_PARENT_SETTID
+        | libc::CLONE_CHILD_CLEARTID;
+    assert!(
+        unsafe {
+            libc::clone(
+                child,
+                top,
+                flags,
+                (&input as *const Input).cast_mut().cast(),
+                tid.as_ptr(),
+                std::ptr::null_mut::<libc::c_void>(),
+                tid.as_ptr(),
+            )
+        } > 0
+    );
+    let root = *b"root-926";
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_write, 926, root.as_ptr(), root.len()) },
+        8
+    );
+    loop {
+        let current = tid.load(Ordering::Acquire);
+        if current == 0 {
+            break;
+        }
+        unsafe {
+            libc::syscall(libc::SYS_futex, tid.as_ptr(), libc::FUTEX_WAIT, current, 0);
+        }
+    }
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_write, 928, page, 4096) },
+        4096
+    );
+    assert_eq!(unsafe { libc::munmap(page, 12288) }, 0);
 }

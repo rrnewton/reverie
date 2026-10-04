@@ -99,7 +99,41 @@ enum Effect {
     Terminal,
     Unknown,
 }
+#[derive(Clone, Default)]
+enum OriginalSource {
+    #[default]
+    Unclassified,
+    #[cfg(target_arch = "x86_64")]
+    Dontneed(Arc<super::source_observation::OriginalDontneed>),
+}
+impl OriginalSource {
+    fn matches_entry(&self, _entry: safeptrace::SyscallEntry) -> bool {
+        match self {
+            Self::Unclassified => false,
+            #[cfg(target_arch = "x86_64")]
+            Self::Dontneed(proof) => proof.matches_entry(_entry),
+        }
+    }
+    fn matches(&self, _task: &Stopped, _entry: safeptrace::SyscallEntry) -> bool {
+        match self {
+            Self::Unclassified => false,
+            #[cfg(target_arch = "x86_64")]
+            Self::Dontneed(proof) => proof.matches(_task, _entry),
+        }
+    }
+    fn matches_args(&self, _nr: Sysno, _args: SyscallArgs) -> bool {
+        match self {
+            Self::Unclassified => false,
+            #[cfg(target_arch = "x86_64")]
+            Self::Dontneed(proof) => proof.matches_args(_nr, _args),
+        }
+    }
+    fn is_classified(&self) -> bool {
+        !matches!(self, Self::Unclassified)
+    }
+}
 struct Operation {
+    original_source: OriginalSource,
     effect: Effect,
     outcome: Outcome,
     // Only the actual native clone3 ENTRY installs this debt. No userspace
@@ -306,6 +340,7 @@ impl History {
         task.operations.insert(
             n,
             Operation {
+                original_source: OriginalSource::Unclassified,
                 effect,
                 outcome: Outcome::Waiting,
                 indirect_birth: None,
@@ -1035,6 +1070,34 @@ impl Member {
         args: SyscallArgs,
         source_ioctl: Option<super::source_epoch::NativeIoctl>,
     ) -> Option<NativeOperation> {
+        self.native_with_source(syscall, args, source_ioctl, OriginalSource::Unclassified)
+    }
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn native_original_dontneed(
+        &self,
+        task: &Stopped,
+        syscall: Sysno,
+        args: SyscallArgs,
+        proof: Arc<super::source_observation::OriginalDontneed>,
+    ) -> Option<NativeOperation> {
+        if !task
+            .pending_syscall_entry()
+            .ok()
+            .flatten()
+            .is_some_and(|entry| proof.matches(task, entry) && proof.matches_args(syscall, args))
+        {
+            self.history.fail();
+            return None;
+        }
+        self.native_with_source(syscall, args, None, OriginalSource::Dontneed(proof))
+    }
+    fn native_with_source(
+        &self,
+        syscall: Sysno,
+        args: SyscallArgs,
+        source_ioctl: Option<super::source_epoch::NativeIoctl>,
+        original_source: OriginalSource,
+    ) -> Option<NativeOperation> {
         let _change = self.history.changing();
         let mut h = self.history.0.lock().unwrap();
         if h.failed {
@@ -1043,7 +1106,10 @@ impl Member {
         // Synchronous return is not retirement of asynchronous/exposed writers.
         // Keep the old exposure family closed; controlled birth has its own
         // original parent and child owners. No SourceEpoch rule is changed.
-        if exposed(syscall, args) && !(syscall == Sysno::ioctl && source_ioctl.is_some()) {
+        if exposed(syscall, args)
+            && !(syscall == Sysno::ioctl && source_ioctl.is_some())
+            && !original_source.matches_args(syscall, args)
+        {
             h.fail();
             return None;
         }
@@ -1057,6 +1123,7 @@ impl Member {
         h.advance();
         let number = h.operation(self.index, syscall_effect(syscall as u64))?;
         let task = h.tasks.get_mut(&self.index)?;
+        task.operations.get_mut(&number)?.original_source = original_source;
         if syscall == Sysno::clone3 {
             task.operations.get_mut(&number)?.indirect_birth = Some(IndirectBirth::AwaitingChild);
         }
@@ -1066,6 +1133,8 @@ impl Member {
         tests::before_resume(self, syscall_effect(syscall as u64));
         #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
         clone3_tests::native(self, number, syscall);
+        #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+        madvise_tests::native_registered(self, number, syscall);
         Some(NativeOperation {
             member: self.clone(),
             number,
@@ -1088,6 +1157,27 @@ impl Member {
         entry: safeptrace::SyscallEntry,
         original_ioctl: bool,
     ) {
+        self.observe_entry_inner(entry, original_ioctl, OriginalSource::Unclassified);
+    }
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn observe_original_dontneed_entry(
+        &self,
+        task: &Stopped,
+        entry: safeptrace::SyscallEntry,
+        proof: Arc<super::source_observation::OriginalDontneed>,
+    ) {
+        if !proof.matches(task, entry) {
+            self.history.fail();
+            return;
+        }
+        self.observe_entry_inner(entry, false, OriginalSource::Dontneed(proof));
+    }
+    fn observe_entry_inner(
+        &self,
+        entry: safeptrace::SyscallEntry,
+        original_ioctl: bool,
+        original_source: OriginalSource,
+    ) {
         // SourceEpoch still permanently revokes clone3. The followed cohort
         // instead retains the real native invocation until its typed outcome;
         // a pre-effect Tool observation alone does not authorize execution.
@@ -1106,6 +1196,7 @@ impl Member {
                     a[5] as usize,
                 ),
             ) && !(nr == Sysno::ioctl && original_ioctl)
+                && !original_source.matches_entry(entry)
             {
                 self.history.fail();
             }
@@ -1114,10 +1205,10 @@ impl Member {
         }
     }
     pub(super) fn before_entry_observation(&self, stopped: &Stopped) -> Option<ResumeOperation> {
-        self.before_resume_inner(stopped, true, false)
+        self.before_resume_inner(stopped, true, false, OriginalSource::Unclassified)
     }
     pub(super) fn before_resume(&self, stopped: &Stopped) -> Option<ResumeOperation> {
-        self.before_resume_inner(stopped, false, false)
+        self.before_resume_inner(stopped, false, false, OriginalSource::Unclassified)
     }
     pub(super) fn before_resume_classified(
         &self,
@@ -1125,13 +1216,27 @@ impl Member {
         administrative: bool,
         original_ioctl: bool,
     ) -> Option<ResumeOperation> {
-        self.before_resume_inner(stopped, administrative, original_ioctl)
+        self.before_resume_inner(
+            stopped,
+            administrative,
+            original_ioctl,
+            OriginalSource::Unclassified,
+        )
+    }
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn before_original_dontneed_entry(
+        &self,
+        stopped: &Stopped,
+        proof: Arc<super::source_observation::OriginalDontneed>,
+    ) -> Option<ResumeOperation> {
+        self.before_resume_inner(stopped, true, false, OriginalSource::Dontneed(proof))
     }
     fn before_resume_inner(
         &self,
         stopped: &Stopped,
         administrative: bool,
         original_ioctl: bool,
+        original_source: OriginalSource,
     ) -> Option<ResumeOperation> {
         if self.history.0.lock().unwrap().failed {
             return None;
@@ -1174,7 +1279,24 @@ impl Member {
         if h.failed {
             return None;
         }
-        if exposure || effect == Effect::Unknown {
+        // Original classification follows this exact existing invocation.
+        // Task's direct raw-resume path cannot substitute an advice-only flag.
+        let retained_source = h
+            .tasks
+            .get(&self.index)
+            .and_then(|task| {
+                task.invocation
+                    .and_then(|number| task.operations.get(&number))
+            })
+            .map(|operation| &operation.original_source);
+        let source = retained_source
+            .filter(|source| source.is_classified())
+            .unwrap_or(&original_source);
+        let matched = peer_entry.is_some_and(|entry| source.matches(stopped, entry));
+        if (source.is_classified() && peer_entry.is_some() && !matched)
+            || (exposure && !matched)
+            || effect == Effect::Unknown
+        {
             h.fail();
             return None;
         }
@@ -1779,6 +1901,10 @@ impl NativeReturn {
     }
 
     pub(super) fn restored(mut self) {
+        #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+        if madvise_tests::abandon_restoration(&self.owner, self.raw) {
+            return;
+        }
         #[cfg(target_arch = "x86_64")]
         if self.owner.receive_timer.is_some() {
             return;
@@ -2018,6 +2144,10 @@ pub(super) mod hold_tests;
 #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
 #[path = "source_retirement_tests.rs"]
 pub(super) mod retirement_tests;
+
+#[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
+#[path = "source_madvise_tests.rs"]
+pub(super) mod madvise_tests;
 
 #[cfg(all(test, cohort_final_test, target_arch = "x86_64"))]
 #[path = "source_clone3_tests.rs"]

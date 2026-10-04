@@ -39,6 +39,7 @@ pub(super) struct State {
     // startup return, never a completion or a source/native-operation receipt.
     startup: bool,
     original_ioctl: Option<OriginalIoctl>,
+    original_dontneed: Option<Arc<OriginalDontneed>>,
 }
 impl State {
     pub(super) fn startup() -> Self {
@@ -49,6 +50,7 @@ impl State {
             raw_birth: None,
             startup: true,
             original_ioctl: None,
+            original_dontneed: None,
         }
     }
     pub(super) fn birth(&self) -> Option<(Sysno, SyscallArgs)> {
@@ -98,6 +100,7 @@ impl State {
     pub(super) fn abandon(&mut self) {
         self.pending = None;
         self.original_ioctl = None;
+        self.original_dontneed = None;
         self.startup = false;
         // Exec/death cancels this logical instruction; it is not an EXIT or
         // completion of a private instruction subsequently executed by a Tool.
@@ -200,6 +203,64 @@ impl OriginalIoctl {
             && self.entry.stack_pointer == entry.stack_pointer
     }
 }
+// Only the administrative original ENTRY below constructs this proof. It
+// observes identity; the existing NativeOperation remains the effect owner.
+// https://github.com/rrnewton/reverie/issues/926
+pub(super) struct OriginalDontneed {
+    entry: SyscallEntry,
+    task: TerminalCleanup,
+    entered: std::sync::atomic::AtomicBool,
+}
+impl OriginalDontneed {
+    fn from_original_entry(task: &Stopped, entry: SyscallEntry) -> Option<Self> {
+        let (nr, args) = parts(entry)?;
+        if nr != Sysno::madvise
+            || args.arg2 != libc::MADV_DONTNEED as usize
+            || (cp::TRAMPOLINE_BASE + cp::SYSCALL_INSTR_SIZE
+                ..cp::TRAMPOLINE_BASE + cp::SYSCALL_INSTR_SIZE + cp::UD_INSTR_SIZE)
+                .contains(&(entry.instruction_pointer as usize))
+        {
+            return None;
+        }
+        Some(Self {
+            entry,
+            task: task.terminal_cleanup(),
+            entered: false.into(),
+        })
+    }
+    pub(super) fn matches_entry(&self, entry: SyscallEntry) -> bool {
+        self.entry.arch == entry.arch
+            && self.entry.number == entry.number
+            && self.entry.arguments == entry.arguments
+            && self.entry.instruction_pointer == entry.instruction_pointer
+            && self.entry.stack_pointer == entry.stack_pointer
+    }
+    pub(super) fn matches(&self, task: &Stopped, entry: SyscallEntry) -> bool {
+        self.task.same_generation(&task.terminal_cleanup()) && self.matches_entry(entry)
+    }
+    pub(super) fn matches_args(&self, nr: Sysno, args: SyscallArgs) -> bool {
+        parts(self.entry) == Some((nr, args))
+    }
+    fn enter(&self, task: &Stopped, nr: Sysno, args: SyscallArgs) -> bool {
+        #[cfg(all(test, cohort_final_test))]
+        if let Ok(Some(entry)) = task.pending_syscall_entry() {
+            source_cohort::madvise_tests::original_proof(self, task, entry);
+        }
+        task.pending_syscall_entry()
+            .ok()
+            .flatten()
+            .is_some_and(|entry| self.matches(task, entry) && self.matches_args(nr, args))
+            && self
+                .entered
+                .compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+    }
+}
 type IoctlClassifier =
     dyn Fn(&reverie::OriginalIoctlEntry) -> Option<reverie::OriginalIoctlEffect> + Send + Sync;
 
@@ -264,9 +325,16 @@ impl Context {
         if classified {
             self.epoch
                 .observe_raw_classified(entry.number, entry.arguments, true);
-            self.member.observe_entry_classified(entry, true);
         } else {
             self.epoch.observe_raw(entry.number, entry.arguments);
+        }
+        let proof = self.state.lock().unwrap().original_dontneed.clone();
+        if let Some(proof) = proof.filter(|proof| proof.matches(task, entry)) {
+            self.member
+                .observe_original_dontneed_entry(task, entry, proof);
+        } else if classified {
+            self.member.observe_entry_classified(entry, true);
+        } else {
             self.member.observe_entry(entry);
         }
     }
@@ -328,7 +396,12 @@ impl Context {
             }
         };
         let guard = classified.then(|| self.epoch.begin_ioctl()).flatten();
-        self.member.native_classified(nr, args, guard)
+        let proof = self.state.lock().unwrap().original_dontneed.clone();
+        if let Some(proof) = proof.filter(|proof| proof.enter(task, nr, args)) {
+            self.member.native_original_dontneed(task, nr, args, proof)
+        } else {
+            self.member.native_classified(nr, args, guard)
+        }
     }
     pub(super) fn begin_step(&self, task: &Stopped) -> Result<Option<Step>, TraceError> {
         if !native_step_abi(task.getregs()?.cs) {
@@ -416,11 +489,16 @@ impl Context {
             && tool_entry(entry, &self.subscriptions)
         {
             // Kernel seccomp/Tool opportunity still precedes actual effect.
-            return Ok(if classified {
-                self.member.before_resume_classified(task, true, true)
-            } else {
-                self.member.before_entry_observation(task)
-            });
+            let proof = self.state.lock().unwrap().original_dontneed.clone();
+            return Ok(
+                if let Some(proof) = proof.filter(|proof| proof.matches(task, entry)) {
+                    self.member.before_original_dontneed_entry(task, proof)
+                } else if classified {
+                    self.member.before_resume_classified(task, true, true)
+                } else {
+                    self.member.before_entry_observation(task)
+                },
+            );
         }
         let mut state = self.state.lock().unwrap();
         match info {
@@ -505,7 +583,10 @@ impl Context {
         if let SyscallStopInfo::Entry(entry) = info {
             if administrative {
                 let proof = self.classify_original_ioctl(task, entry);
-                self.state.lock().unwrap().original_ioctl = proof;
+                let dontneed = OriginalDontneed::from_original_entry(task, entry).map(Arc::new);
+                let mut state = self.state.lock().unwrap();
+                state.original_ioctl = proof;
+                state.original_dontneed = dontneed;
             }
             self.observe_entry(task, entry);
         }
@@ -536,6 +617,7 @@ impl Context {
             }
             SyscallStopInfo::Exit { context, result } => {
                 state.original_ioctl = None;
+                state.original_dontneed = None;
                 if !administrative
                     && let Some((owner, _)) = state.raw_birth.take()
                     && !owner.same_generation(&task.terminal_cleanup())
