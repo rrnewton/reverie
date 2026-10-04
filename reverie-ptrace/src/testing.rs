@@ -27,13 +27,6 @@ pub fn late_timer_signals_discarded() -> u64 {
     crate::task::LATE_TIMER_SIGNALS_DISCARDED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The number of timer overflow signals this process has discarded while the
-/// LiteInst patch helper ran. Concurrent tests in one process share the
-/// count.
-pub fn liteinst_helper_timer_signals_discarded() -> u64 {
-    crate::task::LITEINST_HELPER_TIMER_SIGNALS_DISCARDED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// The number of timer overflow signals this process has taken at injected
 /// syscalls as the notification of a timer event that no stop had decided, to
 /// deliver the event. Concurrent tests in one process share the count.
@@ -92,14 +85,14 @@ pub fn cancelled_timer_signals_discarded() -> u64 {
 pub use crate::timer::KeptProgramming;
 
 /// Makes the timers of this process check, from now on, at every disregarded
-/// stop (a stop without a Tool callback, such as a LiteInst hook trap) that
-/// keeps a scheduled timer event whose request programmed a PMU notification,
-/// that the stop left that programming as the request made it: that no call
-/// that changes the counter's programming (enable, disable, refresh, reset,
-/// period or signal delivery) was made on it since the request, and that the
-/// counter still overflows at the clock at which the request programmed it
-/// to, the target less the skid margin for a precise event. The check reads
-/// both counters once per such stop.
+/// stop (a stop without a Tool callback, such as an unsubscribed syscall's
+/// injected-syscall trap) that keeps a scheduled timer event whose request
+/// programmed a PMU notification, that the stop left that programming as the
+/// request made it: that no call that changes the counter's programming
+/// (enable, disable, refresh, reset, period or signal delivery) was made on it
+/// since the request, and that the counter still overflows at the clock at
+/// which the request programmed it to, the target less the skid margin for a
+/// precise event. The check reads both counters once per such stop.
 ///
 /// A stop whose check passes and that hands nothing on is checked again at
 /// the thread's next stop, or at the event's next request, cancellation or
@@ -370,17 +363,9 @@ pub fn rerun_at_skid_margin(
     text
 }
 
-/// The number of LiteInst host-hybrid restart landings in this process that
-/// interrupted a precise timer's single steps, after which the run loop
-/// resolved the landing and the steps continued. Concurrent tests in one
-/// process share the count.
-pub fn liteinst_timer_step_landings_resolved() -> u64 {
-    crate::task::LITEINST_TIMER_STEP_LANDINGS_RESOLVED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// The number of SIGTRAP stops this process has resumed without delivering
-/// the signal because no breakpoint, LiteInst trap, injected-syscall trap or
-/// debugger step claimed them. A single-step trap flag left set in the guest
+/// the signal because no breakpoint, injected-syscall trap or debugger step
+/// claimed them. A single-step trap flag left set in the guest
 /// produces one per instruction. Concurrent tests in one process share the
 /// count.
 pub fn unclaimed_sigtraps_suppressed() -> u64 {
