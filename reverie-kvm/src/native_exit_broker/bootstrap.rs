@@ -76,7 +76,7 @@ pub struct AmbientDescriptor {
 pub struct BootstrapFailure {
     pub cause: CoreError,
     pub descriptor: Option<RawFd>,
-    pub child: Option<BrokerOwner>,
+    pub child: Option<Box<BrokerOwner>>,
     pub unexpected_rights: Vec<OwnedFd>,
     pub mask_restore_error: Option<CoreError>,
 }
@@ -169,7 +169,7 @@ pub(super) fn start(_authority: StartupAuthority) -> Result<BrokerOwner, Bootstr
             Ok(child) => BootstrapFailure {
                 cause: cause.clone(),
                 descriptor: None,
-                child: Some(child),
+                child: Some(Box::new(child)),
                 unexpected_rights: Vec::new(),
                 mask_restore_error: Some(cause),
             },
@@ -239,7 +239,7 @@ fn start_masked() -> Result<BrokerOwner, BootstrapFailure> {
                 errno: -pidfd as i32,
             },
             descriptor: None,
-            child: Some(owner),
+            child: Some(Box::new(owner)),
             unexpected_rights,
             mask_restore_error: None,
         });
@@ -301,7 +301,7 @@ fn start_masked() -> Result<BrokerOwner, BootstrapFailure> {
         Err(BootstrapFailure {
             cause,
             descriptor: None,
-            child: Some(owner),
+            child: Some(Box::new(owner)),
             unexpected_rights,
             mask_restore_error: None,
         })
