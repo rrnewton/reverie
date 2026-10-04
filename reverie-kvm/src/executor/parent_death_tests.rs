@@ -44,8 +44,11 @@ fn pdeath_publish_exit(executor: &mut ElfExecutor, group: bool, sequence: u64)
 
 #[test]
 fn pdeath_abi_adoption_full_width_and_scalar_copyout_are_exact() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_abi_adoption_full_width_and_scalar_copyout_are_exact",
+    ) else { return; };
     let root = TestDir::new();
-    let mut executor = ElfExecutor::new(test_state(&root.0), true);
+    let mut executor = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
     assert_eq!(pdeath_set(&mut executor, &memory, libc::SIGUSR1 as u64), -i64::from(libc::ENOSYS));
     let _run = pdeath_adopt(&executor);
@@ -91,8 +94,11 @@ fn pdeath_old_controlled_consumer_and_uncontrolled_mode_refuse_before_enrollment
 
 #[test]
 fn pdeath_creator_thread_exit_publishes_process_si_user_once() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_creator_thread_exit_publishes_process_si_user_once",
+    ) else { return; };
     let root = TestDir::new();
-    let leader = ElfExecutor::new(test_state(&root.0), true);
+    let leader = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let _run = pdeath_adopt(&leader);
     let mut creator = leader.thread_child(2).unwrap();
     let mut child = creator.fork_child(3, false, false).unwrap();
@@ -140,8 +146,11 @@ fn pdeath_existence_marker(executor: &ElfExecutor, boundary: reverie::SignalBoun
 
 #[test]
 fn pdeath_signal_zero_waits_for_publication_without_reviving_delivery() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_signal_zero_waits_for_publication_without_reviving_delivery",
+    ) else { return; };
     let root = TestDir::new();
-    let leader = ElfExecutor::new(test_state(&root.0), true);
+    let leader = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let _run = pdeath_adopt(&leader);
     let mut creator = leader.thread_child(2).unwrap();
     let mut child = creator.fork_child(3, false, false).unwrap();
@@ -189,10 +198,13 @@ fn pdeath_signal_zero_waits_for_publication_without_reviving_delivery() {
 
 #[test]
 fn pdeath_signal_zero_covers_group_exec_empty_and_ignored_batches() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_signal_zero_covers_group_exec_empty_and_ignored_batches",
+    ) else { return; };
     for image_replaced in [false, true] {
         for ignored in [false, true] {
             let root = TestDir::new();
-            let mut leader = ElfExecutor::new(test_state(&root.0), true);
+            let mut leader = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
             let _run = pdeath_adopt(&leader);
             let mut creator = leader.thread_child(2).unwrap();
             let mut sibling = leader.thread_child(4).unwrap();
@@ -290,8 +302,11 @@ fn pdeath_signal_zero_duplicate_completion_survives_binding_loss_and_reuse() {
 
 #[test]
 fn pdeath_registration_reset_sticky_domain_and_exec_capability_gain() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_registration_reset_sticky_domain_and_exec_capability_gain",
+    ) else { return; };
     let root = TestDir::new();
-    let mut leader = ElfExecutor::new(test_state(&root.0), true);
+    let mut leader = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let _run = pdeath_adopt(&leader);
     let sibling = leader.thread_child(2).unwrap();
     let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
@@ -318,9 +333,12 @@ fn pdeath_registration_reset_sticky_domain_and_exec_capability_gain() {
 
 #[test]
 fn pdeath_late_clear_preserves_frozen_event_and_disposition_generation_discards_it() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_late_clear_preserves_frozen_event_and_disposition_generation_discards_it",
+    ) else { return; };
     for discard_generation in [false, true] {
         let root = TestDir::new();
-        let leader = ElfExecutor::new(test_state(&root.0), true);
+        let leader = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
         let _run = pdeath_adopt(&leader);
         let mut creator = leader.thread_child(2).unwrap();
         let mut child = creator.fork_child(3, false, false).unwrap();
@@ -345,10 +363,13 @@ fn pdeath_late_clear_preserves_frozen_event_and_disposition_generation_discards_
 
 #[test]
 fn pdeath_pipe_chld_ignore_and_standard_coalescing_preserve_first_siginfo() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_pipe_chld_ignore_and_standard_coalescing_preserve_first_siginfo",
+    ) else { return; };
     for signal in [libc::SIGPIPE, libc::SIGCHLD, libc::SIGWINCH, libc::SIGUSR1] {
         for ignored in [false, true] {
             let root = TestDir::new();
-            let leader = ElfExecutor::new(test_state(&root.0), true);
+            let leader = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
             let _run = pdeath_adopt(&leader);
             let mut creator = leader.thread_child(2).unwrap();
             let mut child = creator.fork_child(3, false, false).unwrap();
@@ -382,8 +403,11 @@ fn pdeath_pipe_chld_ignore_and_standard_coalescing_preserve_first_siginfo() {
 
 #[test]
 fn pdeath_exec_uses_image_boundary_and_cleanup_never_impersonates_it() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_exec_uses_image_boundary_and_cleanup_never_impersonates_it",
+    ) else { return; };
     let root = TestDir::new();
-    let mut leader = ElfExecutor::new(test_state(&root.0), true);
+    let mut leader = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let _run = pdeath_adopt(&leader);
     let mut creator = leader.thread_child(2).unwrap();
     let mut child = creator.fork_child(3, false, false).unwrap();
@@ -410,8 +434,11 @@ fn pdeath_exec_uses_image_boundary_and_cleanup_never_impersonates_it() {
 
 #[test]
 fn pdeath_enrolled_raw_waits_refuse_before_effect_and_capture_remains_supported() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_enrolled_raw_waits_refuse_before_effect_and_capture_remains_supported",
+    ) else { return; };
     let root = TestDir::new();
-    let mut executor = ElfExecutor::new(test_state(&root.0), true);
+    let mut executor = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let _run = pdeath_adopt(&executor);
     let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
     assert_eq!(pdeath_set(&mut executor, &memory, libc::SIGUSR1 as u64), 0);
@@ -453,6 +480,9 @@ fn pdeath_mask(executor: &mut ElfExecutor, memory: &mut GuestMemory, signal: i32
 
 #[test]
 fn pdeath_ignored_generation_obeys_mask_observer_and_real_disposition_transitions() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_ignored_generation_obeys_mask_observer_and_real_disposition_transitions",
+    ) else { return; };
     // kernel/signal.c sig_ignored: blocked or observed signals are retained;
     // both SIG_IGN and an unobserved default-ignore action discard otherwise.
     for explicit in [false, true] {
@@ -460,7 +490,7 @@ fn pdeath_ignored_generation_obeys_mask_observer_and_real_disposition_transition
             for observed in [false, true] {
                 for handler_before_publication in [false, true] {
                     let root = TestDir::new();
-                    let leader = ElfExecutor::new(test_state(&root.0), true);
+                    let leader = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
                     let _run = pdeath_adopt(&leader);
                     let mut creator = leader.thread_child(2).unwrap();
                     let mut child = creator.fork_child(3, false, false).unwrap();
@@ -503,8 +533,11 @@ fn pdeath_ignored_generation_obeys_mask_observer_and_real_disposition_transition
 
 #[test]
 fn pdeath_real_ignore_transition_invalidates_only_the_frozen_generation() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_real_ignore_transition_invalidates_only_the_frozen_generation",
+    ) else { return; };
     let root = TestDir::new();
-    let leader = ElfExecutor::new(test_state(&root.0), true);
+    let leader = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let _run = pdeath_adopt(&leader);
     let mut creator = leader.thread_child(2).unwrap();
     let mut child = creator.fork_child(3, false, false).unwrap();
@@ -527,8 +560,11 @@ fn pdeath_real_ignore_transition_invalidates_only_the_frozen_generation() {
 
 #[test]
 fn pdeath_reparented_sibling_death_repeats_but_reused_creator_tid_does_not() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_reparented_sibling_death_repeats_but_reused_creator_tid_does_not",
+    ) else { return; };
     let root = TestDir::new();
-    let mut leader = ElfExecutor::new(test_state(&root.0), true);
+    let mut leader = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let _run = pdeath_adopt(&leader);
     let mut creator = leader.thread_child(2).unwrap();
     let survivor = leader.thread_child(4).unwrap();
@@ -556,8 +592,11 @@ fn pdeath_reparented_sibling_death_repeats_but_reused_creator_tid_does_not() {
 
 #[test]
 fn pdeath_stale_registration_get_and_frozen_receiver_do_not_target_reused_pid() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_stale_registration_get_and_frozen_receiver_do_not_target_reused_pid",
+    ) else { return; };
     let root = TestDir::new();
-    let leader = ElfExecutor::new(test_state(&root.0), true);
+    let leader = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let _run = pdeath_adopt(&leader);
     let mut creator = leader.thread_child(2).unwrap();
     let mut child = creator.fork_child(3, false, false).unwrap();
@@ -588,8 +627,11 @@ fn pdeath_stale_registration_get_and_frozen_receiver_do_not_target_reused_pid() 
 
 #[test]
 fn pdeath_publication_failure_retains_exact_prefix_and_survives_sender_cleanup() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_publication_failure_retains_exact_prefix_and_survives_sender_cleanup",
+    ) else { return; };
     let root = TestDir::new();
-    let leader = ElfExecutor::new(test_state(&root.0), true);
+    let leader = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let _run = pdeath_adopt(&leader);
     let mut creator = leader.thread_child(2).unwrap();
     let mut first = creator.fork_child(3, false, false).unwrap();
@@ -641,8 +683,11 @@ fn pdeath_publication_failure_retains_exact_prefix_and_survives_sender_cleanup()
 
 #[test]
 fn pdeath_original_preflight_is_exact_uncached_and_preserves_zero_readiness() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_original_preflight_is_exact_uncached_and_preserves_zero_readiness",
+    ) else { return; };
     let root = TestDir::new();
-    let mut executor = ElfExecutor::new(test_state(&root.0), true);
+    let mut executor = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let _run = pdeath_adopt(&executor);
     let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
     executor.bind_address_space(&memory);
@@ -701,8 +746,11 @@ fn pdeath_pointer_readiness_request(number: libc::c_long, timeout: u64, epoll: u
 
 #[test]
 fn pdeath_mutable_timeout_readiness_refuses_before_original_or_injected_effects() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_mutable_timeout_readiness_refuses_before_original_or_injected_effects",
+    ) else { return; };
     let root = TestDir::new();
-    let mut executor = ElfExecutor::new(test_state(&root.0), true);
+    let mut executor = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let _run = pdeath_adopt(&executor);
     let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
     memory.write(0, &vec![0xa5; PAGE_SIZE as usize]).unwrap();
@@ -760,8 +808,11 @@ fn pdeath_mutable_timeout_readiness_refuses_before_original_or_injected_effects(
 
 #[test]
 fn pdeath_unenrolled_pointer_readiness_and_enrolled_scalar_zero_remain_supported() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_unenrolled_pointer_readiness_and_enrolled_scalar_zero_remain_supported",
+    ) else { return; };
     let root = TestDir::new();
-    let mut executor = ElfExecutor::new(test_state(&root.0), true);
+    let mut executor = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let _run = pdeath_adopt(&executor);
     let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
     memory.write(0, &vec![0xa5; PAGE_SIZE as usize]).unwrap();
@@ -800,6 +851,9 @@ fn pdeath_unenrolled_pointer_readiness_and_enrolled_scalar_zero_remain_supported
 
 #[test]
 fn pdeath_sendfile_checks_both_owned_endpoints_before_offset_or_output_changes() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_sendfile_checks_both_owned_endpoints_before_offset_or_output_changes",
+    ) else { return; };
     use std::os::fd::{FromRawFd, IntoRawFd};
     let root = TestDir::new();
     let input_path = root.0.join("pdeath-sendfile-in");
@@ -814,7 +868,7 @@ fn pdeath_sendfile_checks_both_owned_endpoints_before_offset_or_output_changes()
     state.files.insert(5, unsafe { std::fs::File::from_raw_fd(reader.into_raw_fd()) });
     state.files.insert(6, unsafe { std::fs::File::from_raw_fd(writer.into_raw_fd()) });
     state.stdout_alias_fds.insert(6);
-    let mut executor = ElfExecutor::new(state, true);
+    let mut executor = cleanup.executor(ElfExecutor::new(state, true));
     let _run = pdeath_adopt(&executor);
     let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
     assert_eq!(pdeath_set(&mut executor, &memory, libc::SIGUSR1 as u64), 0);
@@ -861,7 +915,7 @@ fn pdeath_static_image() -> Vec<u8> {
     image
 }
 
-fn pdeath_exec_executor(root: &TestDir) -> (ElfExecutor, GuestMemory, Arc<crate::failure::RunFailure>) {
+fn pdeath_exec_executor(cleanup: &crate::broker_library_tests::CleanupFixture, root: &TestDir) -> (crate::broker_library_tests::CleanupExecutor, GuestMemory, Arc<crate::failure::RunFailure>) {
     use std::os::unix::fs::PermissionsExt;
     let image = pdeath_static_image();
     let path = root.0.join("retained-static");
@@ -870,7 +924,7 @@ fn pdeath_exec_executor(root: &TestDir) -> (ElfExecutor, GuestMemory, Arc<crate:
     let mut state = test_state(&root.0);
     state.executable_file = Some(Arc::new(std::fs::File::open(path).unwrap()));
     state.executable_image = Arc::from(image);
-    let mut executor = ElfExecutor::new(state, true);
+    let mut executor = cleanup.executor(ElfExecutor::new(state, true));
     let mut memory = GuestMemory::new(0, 16 * 1024 * 1024).unwrap();
     memory.write(0x100, b"/proc/self/exe\0").unwrap();
     let run = pdeath_adopt(&executor);
@@ -881,8 +935,11 @@ fn pdeath_exec_executor(root: &TestDir) -> (ElfExecutor, GuestMemory, Arc<crate:
 
 #[test]
 fn pdeath_retained_exec_snapshot_survives_path_mutation_and_consumes_exact_conversion_once() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_retained_exec_snapshot_survives_path_mutation_and_consumes_exact_conversion_once",
+    ) else { return; };
     let root = TestDir::new();
-    let (mut executor, mut memory, _run) = pdeath_exec_executor(&root);
+    let (mut executor, mut memory, _run) = pdeath_exec_executor(&cleanup, &root);
     let original = SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0, 0, 17, 29, 0x55]);
     let site = executor.begin_signal_callback().unwrap();
     assert_eq!(executor.parent_death_original_syscall_preflight(site, &original, Some(original), false).unwrap(),
@@ -917,8 +974,11 @@ fn pdeath_retained_exec_snapshot_survives_path_mutation_and_consumes_exact_conve
 
 #[test]
 fn pdeath_retained_exec_rejects_missing_or_dynamic_authority_and_stale_callback_identity() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_retained_exec_rejects_missing_or_dynamic_authority_and_stale_callback_identity",
+    ) else { return; };
     let root = TestDir::new();
-    let (mut executor, mut memory, _run) = pdeath_exec_executor(&root);
+    let (mut executor, mut memory, _run) = pdeath_exec_executor(&cleanup, &root);
     let original = SyscallRequest::new(libc::SYS_execveat as u64,
         [libc::AT_FDCWD as u64, 0x100, 0, 0, 0, 0x77]);
     let first = executor.begin_signal_callback().unwrap();
@@ -955,8 +1015,11 @@ fn pdeath_retained_exec_rejects_missing_or_dynamic_authority_and_stale_callback_
 
 #[test]
 fn pdeath_finite_domain_rejects_unmodeled_io_and_shared_task_creation_before_effects() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_finite_domain_rejects_unmodeled_io_and_shared_task_creation_before_effects",
+    ) else { return; };
     let root = TestDir::new();
-    let mut executor = ElfExecutor::new(test_state(&root.0), true);
+    let mut executor = cleanup.executor(ElfExecutor::new(test_state(&root.0), true));
     let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
     let _run = pdeath_adopt(&executor);
     assert_eq!(pdeath_set(&mut executor, &memory, libc::SIGUSR1 as u64), 0);
@@ -985,9 +1048,12 @@ fn pdeath_finite_domain_rejects_unmodeled_io_and_shared_task_creation_before_eff
 
 #[test]
 fn pdeath_close_replacement_and_exec_cloexec_require_owned_completion_authority() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_close_replacement_and_exec_cloexec_require_owned_completion_authority",
+    ) else { return; };
     use std::os::fd::{FromRawFd, IntoRawFd};
     let root = TestDir::new();
-    let (mut executor, memory, _run) = pdeath_exec_executor(&root);
+    let (mut executor, memory, _run) = pdeath_exec_executor(&cleanup, &root);
     let (socket, peer) = std::os::unix::net::UnixStream::pair().unwrap();
     let path = root.0.join("ordinary-close");
     std::fs::write(&path, b"unchanged").unwrap();
@@ -1040,9 +1106,12 @@ fn pdeath_close_replacement_and_exec_cloexec_require_owned_completion_authority(
 
 #[test]
 fn pdeath_retained_exec_preserves_permission_and_copyin_errors_after_admission() {
+    let Some(cleanup) = crate::broker_library_tests::CleanupFixture::selected(
+        "executor::tests::pdeath_retained_exec_preserves_permission_and_copyin_errors_after_admission",
+    ) else { return; };
     use std::os::unix::fs::PermissionsExt;
     let root = TestDir::new();
-    let (mut executor, memory, _run) = pdeath_exec_executor(&root);
+    let (mut executor, memory, _run) = pdeath_exec_executor(&cleanup, &root);
     let file = executor.state.executable_file.as_ref().unwrap().clone();
     file.set_permissions(std::fs::Permissions::from_mode(0o600)).unwrap();
     let original = SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0, 0, 0, 0, 0]);
@@ -1059,4 +1128,29 @@ fn pdeath_retained_exec_preserves_permission_and_copyin_errors_after_admission()
         reverie::ParentDeathSyscallAdmission::Admitted);
     assert_eq!(executor.execute_checked(&original, &memory).unwrap(), -i64::from(libc::EFAULT));
     assert!(executor.process_action.is_none());
+}
+
+#[test]
+fn pdeath_adopted_control_without_terminal_cleanup_refuses_before_enrollment() {
+    let root = TestDir::new();
+    let mut executor = ElfExecutor::new(test_state(&root.0), true);
+    let _run = pdeath_adopt(&executor);
+    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+    memory.write(0x100, &[0xa5; 8]).unwrap();
+    assert_eq!(pdeath_set(&mut executor, &memory, libc::SIGUSR1 as u64),
+        -i64::from(libc::ENOSYS));
+    assert!(!executor.parent_death_enrolled());
+    assert_eq!(executor.state.task_lifecycle.lock().unwrap()
+        .parent_death_signal(executor.admitted_signal_identity()), Ok(0));
+    let mut unchanged = [0; 8];
+    memory.read(0x100, &mut unchanged).unwrap();
+    assert_eq!(unchanged, [0xa5; 8]);
+    assert_eq!(pdeath_set(&mut executor, &memory, u64::MAX), -i64::from(libc::EINVAL));
+    assert_eq!(pdeath_set(&mut executor, &memory, 0), 0);
+    assert_eq!(executor.execute(&SyscallRequest::new(libc::SYS_prctl as u64,
+        [libc::PR_GET_PDEATHSIG as u64, 0x100, 0, 0, 0, 0]), &memory), 0);
+    memory.read(0x100, &mut unchanged).unwrap();
+    assert_eq!(&unchanged[..4], &0_i32.to_ne_bytes());
+    assert_eq!(&unchanged[4..], &[0xa5; 4]);
+    assert!(executor.terminal_cleanup.is_none());
 }
