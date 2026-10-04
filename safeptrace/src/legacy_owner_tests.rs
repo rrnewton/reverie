@@ -404,7 +404,7 @@ async fn forced_legacy_owner_exit_preserves_replacement_stop_and_terminal() {
         .unwrap()
             == ExactReuseOutcome::Exercised
         {
-            println!("ACTUAL_LEGACY_OWNER_REUSE_EXERCISED");
+            emit_completion_marker("ACTUAL_LEGACY_OWNER_REUSE_EXERCISED");
             return;
         }
         if run_legacy_test_outer(NAME) {
@@ -759,7 +759,7 @@ async fn forced_legacy_wait_preserves_authority_when_signal0_is_denied() {
         .unwrap()
             == ExactReuseOutcome::Exercised
         {
-            println!("ACTUAL_LEGACY_DENIED_SIGNAL0_REUSE_EXERCISED");
+            emit_completion_marker("ACTUAL_LEGACY_DENIED_SIGNAL0_REUSE_EXERCISED");
             return;
         }
         if run_legacy_test_outer(NAME) {
@@ -861,5 +861,5 @@ async fn forced_legacy_wait_preserves_authority_after_non_utf8_name_change() {
         WORKER_DONE
     );
     drop(running);
-    println!("ACTUAL_LEGACY_NON_UTF8_WAIT_EXERCISED");
+    emit_completion_marker("ACTUAL_LEGACY_NON_UTF8_WAIT_EXERCISED");
 }
