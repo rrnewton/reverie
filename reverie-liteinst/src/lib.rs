@@ -22,7 +22,6 @@ pub use backend::PreloadBootstrap;
 pub use backend::STATS_COORDINATOR_ENV;
 pub use backend::TOOL_PRELOAD_ENV;
 pub use backend::take_preload_bootstrap;
-pub use reverie_ptrace::LiteinstInstrumentationStats;
 pub use stats::InheritedEntries;
 pub use stats::LiteinstBackendStatsSnapshot;
 pub use stats::LiteinstBackendStatsSource;
@@ -226,88 +225,6 @@ pub unsafe extern "C" fn reverie_liteinst_initialize() {
             libc::_exit(127);
         }
     }
-}
-
-/// Version of the explicit host-runtime configuration layout.
-pub const HOST_RUNTIME_CONFIG_VERSION: u64 = 1;
-
-/// Configuration for controller-owned host-runtime initialization.
-///
-/// This selects the existing ptrace host runtime, not an in-process Tool. The
-/// initializer does not inspect or mutate guest environment selectors.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-pub struct HostRuntimeConfig {
-    /// Must equal [`HOST_RUNTIME_CONFIG_VERSION`].
-    pub version: u64,
-    /// Calibrated WordPatch++ delay in TSC ticks; zero disables concurrent
-    /// cross-cache-line publication, just as an absent environment setting does.
-    /// Concurrent publication would require a delay above this machine's
-    /// measured staleness bound. The ptrace helper retains caller-verified
-    /// quiescent publication; this configuration does not authorize concurrency.
-    pub straddler_staleness_ticks: u64,
-}
-
-impl Default for HostRuntimeConfig {
-    fn default() -> Self {
-        Self {
-            version: HOST_RUNTIME_CONFIG_VERSION,
-            straddler_staleness_ticks: 0,
-        }
-    }
-}
-
-/// Initializes the host runtime from explicit controller configuration.
-///
-/// Returns zero after the existing Begin/Ready handshake and instrumentation
-/// preparation, or a negative errno on failure. A preparation failure after
-/// Begin is first reported at the Ready trap site with the distinct failed
-/// marker in RAX, closing the handshake without activating the runtime. Null
-/// or unsupported-version configuration is rejected before initialization
-/// starts. A repeated or reentrant valid host attempt returns `-EALREADY`,
-/// including after a preparation failure: partially published runtime state
-/// cannot be rolled back here.
-/// The existing constructor continues to select behavior from the environment.
-///
-/// # Safety
-///
-/// A non-null `config` must point to a readable, aligned [`HostRuntimeConfig`]
-/// for this call. The runtime must already be loaded and its TLS usable. The
-/// caller must keep other application threads stopped or absent, have no other
-/// runtime mode installed, and service the exact existing host handshake traps.
-/// This neither loads the runtime nor transfers an in-process Tool or scheduler.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn reverie_liteinst_initialize_host(
-    config: *const HostRuntimeConfig,
-) -> libc::c_int {
-    if config.is_null() {
-        return -libc::EINVAL;
-    }
-    // SAFETY: required by the caller contract above; copy before initialization.
-    let config = unsafe { *config };
-    host_initialize_status(runtime::initialize_host_runtime_explicit(config))
-}
-
-/// Zero, or the negative errno that [`reverie_liteinst_initialize_host`] returns.
-fn host_initialize_status(result: std::io::Result<()>) -> libc::c_int {
-    match result {
-        Ok(()) => 0,
-        Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => {
-            // A constructor-heap miss carries a message, not an errno.
-            -error.raw_os_error().unwrap_or(libc::ENOMEM)
-        }
-        Err(error) => -error.raw_os_error().unwrap_or(libc::EIO),
-    }
-}
-
-/// Bytes ever carved from the host-runtime constructor heap.
-///
-/// The Begin..Ready window allocates from a dedicated reclaiming heap so the
-/// guest's allocator is untouched at `main`. This is its peak footprint, for
-/// tests and diagnostics; it does not change after Ready.
-#[unsafe(no_mangle)]
-pub extern "C" fn reverie_liteinst_host_init_heap_high_water() -> u64 {
-    patch_alloc::init_heap_high_water() as u64
 }
 
 // TODO-HUMAN-REVIEW(PR-127): Review public per-site instrumentation counters.
