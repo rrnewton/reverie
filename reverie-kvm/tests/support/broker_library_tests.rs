@@ -255,3 +255,63 @@ impl Drop for CleanupExecutor {
         }
     }
 }
+
+/// These cases enter the existing helper before its ordinary bootstrap. They
+/// exercise actual host calls; no libtest thread asserts StartupAuthority.
+fn bootstrap_case(case: &str, expected: &str, accepted: bool) {
+    let executable = std::env::current_exe().expect("library test executable");
+    let output = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "30s"])
+        .arg(launcher_path(&executable))
+        .args(["--bootstrap-case", case])
+        .output()
+        .expect("start existing ordinary-main bootstrap helper");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "{case}: status={:?} stdout={stdout} stderr={stderr}",
+        output.status
+    );
+    assert!(stderr.is_empty(), "{case}: unexpected stderr={stderr}");
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some(format!("BROKER_BOOTSTRAP_QUERY_READY case={case}").as_str())
+    );
+    assert_eq!(lines.last().copied(), Some(format!("BROKER_BOOTSTRAP_CASE_PASS case={case} expected={expected} mask_restored=true original_live=true").as_str()));
+    assert_eq!(
+        lines.len(),
+        if accepted { 3 } else { 2 },
+        "exact executed case receipts"
+    );
+    if accepted {
+        let fields: Vec<_> = lines[1].split_whitespace().collect();
+        assert_eq!(fields.len(), 4);
+        assert_eq!(fields[0], "NATIVE_CASE_BROKER_WAIT");
+        let pid = fields[1]
+            .strip_prefix("native_pid=")
+            .expect("actual broker PID")
+            .parse::<i32>()
+            .unwrap();
+        assert!(pid > 0);
+        assert_eq!(fields[2], "raw_wait_status=0");
+        assert_eq!(fields[3], "actual_wait=true");
+    }
+}
+
+#[test]
+fn bootstrap_unknown_filesystem_rejects_before_getattr() {
+    bootstrap_case("procfs-reject", "rejected-eopnotsupp", false);
+}
+
+#[test]
+fn bootstrap_audited_regular_and_null_classes_preserve_originals() {
+    bootstrap_case("memfd-accept", "accepted-tmpfs", true);
+    bootstrap_case("null-accept", "accepted-null", true);
+}
+
+#[test]
+fn bootstrap_path_only_does_not_query_inode_attributes() {
+    bootstrap_case("opath-procfs-accept", "accepted-path-only", true);
+}
