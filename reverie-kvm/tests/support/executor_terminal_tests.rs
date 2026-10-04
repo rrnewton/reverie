@@ -152,3 +152,22 @@ fn terminal_cleanup_preserves_live_shared_table_and_does_not_wait_for_its_lock_b
         "terminal extraction waited on a surviving CLONE_FILES owner"
     );
 }
+
+
+// Test-only join, compiled inside executor::tests where it can inspect the real
+// admission/reaper owner. No production readiness or cleanup rule is bypassed.
+impl RunAdmission {
+    pub(crate) fn finish_fixture_cleanup(mut self) {
+        let workers = Arc::new(crate::vm::GuestThreadGroup::default());
+        AbandonedRuns::retire(&self.runs, &workers);
+        let reaper = self.reaper.take().expect("fixture admission already finished");
+        let observed = reaper.shared.clone();
+        drop(reaper);
+        self.reaping.take().expect("fixture lost its real reaper join")
+            .join().expect("fixture cleanup reaper panicked");
+        let state = observed.lock();
+        assert_eq!(state.handles, 0, "fixture leaked a cleanup owner");
+        assert!(state.adopted.is_empty(), "fixture left retirement work pending");
+        assert!(state.retained_panics.is_empty(), "fixture cleanup retained a panic");
+    }
+}
