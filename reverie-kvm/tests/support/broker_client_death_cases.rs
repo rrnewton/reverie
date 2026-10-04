@@ -806,7 +806,7 @@ fn receive<T: Copy + Default>(
             }
             if h.cmsg_level == libc::SOL_SOCKET && h.cmsg_type == libc::SCM_RIGHTS {
                 let bytes = h.cmsg_len - base;
-                if bytes % std::mem::size_of::<RawFd>() != 0 {
+                if !bytes.is_multiple_of(std::mem::size_of::<RawFd>()) {
                     bad = true;
                 } else {
                     let count = bytes / std::mem::size_of::<RawFd>();
@@ -890,16 +890,16 @@ pub struct SigchldFailure {
 pub fn run_unexeced_sigchld_case(
     authority: reverie_kvm::native_exit_broker::StartupAuthority,
     mode: ParentSigchldMode,
-) -> Result<SigchldReceipt, SigchldFailure> {
+) -> Result<SigchldReceipt, Box<SigchldFailure>> {
     let mut owners = SigchldOwners::default();
     let old = match current_sigchld() {
         Ok(action) => action,
         Err(message) => {
-            return Err(SigchldFailure {
+            return Err(Box::new(SigchldFailure {
                 message,
                 owners,
                 action_restore_error: None,
-            });
+            }));
         }
     };
     let mut temporary = old;
@@ -1000,13 +1000,13 @@ pub fn run_unexeced_sigchld_case(
             receipt.original_action_restored = true;
             Ok(receipt)
         }
-        (result, restoration) => Err(SigchldFailure {
+        (result, restoration) => Err(Box::new(SigchldFailure {
             message: result
                 .err()
                 .unwrap_or_else(|| "SIGCHLD restoration failed".into()),
             owners,
             action_restore_error: restoration.err(),
-        }),
+        })),
     }
 }
 // Exact x86-64 kernel rt_sigaction ABI, avoiding libc normalization that can
