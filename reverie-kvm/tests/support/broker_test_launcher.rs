@@ -18,9 +18,15 @@ mod broker_native_cases;
 #[path = "broker_client_death_cases.rs"]
 mod broker_client_death_cases;
 
+#[path = "broker_bootstrap_cases.rs"]
+mod broker_bootstrap_cases;
+
 fn main() {
     broker_client_death_cases::dispatch_client_child();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.len() == 2 && args[0] == "--bootstrap-case" {
+        std::process::exit(broker_bootstrap_cases::run(&args[1]));
+    }
     if args.len() == 2 && args[0] == "--native-case" {
         let mode = match args[1].as_str() {
             "broker-sigchld-ignore" => Some(broker_client_death_cases::ParentSigchldMode::Ignore),
