@@ -750,6 +750,156 @@ async fn legacy_group_backend_preserves_pending_newborn_owner() {
     ordinary_nonleader_control(true, false, true).await;
 }
 
+// Re-execute the unchanged pending-newborn control in isolated libtest
+// processes. Only the forced cell installs seccomp; the shared runner keeps
+// its original syscall policy and generic Native API behavior.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn pending_newborn_emergency_observer_retains_original_generation() {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::os::fd::FromRawFd;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+    use std::process::Stdio;
+
+    const CELL_ENV: &str = "REVERIE_PENDING_NEWBORN_OWNER_CELL";
+    if let Ok(cell) = std::env::var(CELL_ENV) {
+        assert!(cell == "normal" || cell == "forced");
+        // This alarm is confined to the re-executed owned cell.
+        unsafe { libc::alarm(10) };
+        if cell == "forced" {
+            let insn = |code, jt, jf, k| libc::sock_filter { code, jt, jf, k };
+            let filter = [
+                insn(0x20, 0, 0, 4),
+                insn(0x15, 1, 0, 0xc000_003e),
+                insn(0x06, 0, 0, 0x8000_0000),
+                insn(0x20, 0, 0, 0),
+                insn(0x15, 0, 3, libc::SYS_pidfd_open as u32),
+                insn(0x20, 0, 0, 24),
+                insn(0x15, 0, 1, libc::O_EXCL as u32),
+                insn(0x06, 0, 0, 0x0005_0000 | libc::EINVAL as u32),
+                insn(0x06, 0, 0, 0x7fff_0000),
+            ];
+            let program = libc::sock_fprog {
+                len: filter.len() as u16,
+                filter: filter.as_ptr().cast_mut(),
+            };
+            assert_eq!(
+                unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+                0
+            );
+            assert_eq!(unsafe { libc::prctl(libc::PR_SET_SECCOMP, 2, &program) }, 0);
+        }
+        let native = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), libc::O_EXCL) };
+        let native_available = native >= 0;
+        if native_available {
+            assert_ne!(cell, "forced", "flags128 seccomp was not exercised");
+            assert_eq!(unsafe { libc::close(native as i32) }, 0);
+        } else {
+            assert_eq!(unsafe { *libc::__errno_location() }, libc::EINVAL);
+        }
+        let ordinary = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) };
+        assert!(ordinary >= 0, "ordinary process pidfd must remain allowed");
+        assert_eq!(unsafe { libc::close(ordinary as i32) }, 0);
+        println!(
+            "PENDING_NEWBORN_DESCRIPTOR_CONTROL cell={cell} native={native_available} ordinary=true"
+        );
+        legacy_group_backend_preserves_pending_newborn_owner();
+        println!("PENDING_NEWBORN_OWNER_CELL_PASSED {cell}");
+        return;
+    }
+    let mut all_passed = true;
+    for cell in ["normal", "forced"] {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "tracer::tests::pending_newborn_emergency_observer_retains_original_generation",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(CELL_ENV, cell)
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let child_pid = i32::try_from(child.id()).unwrap();
+        // This unreaped child anchors its exact process-group number during
+        // cleanup, including if a failing fixture leaves its owned sentinel.
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, child_pid, 0) };
+        assert!(raw >= 0);
+        let pidfd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let read = |pipe: Box<dyn Read + Send>| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                pipe.take(65537).read_to_end(&mut bytes).unwrap();
+                bytes
+            })
+        };
+        let stdout = read(Box::new(stdout));
+        let stderr = read(Box::new(stderr));
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let timed_out = loop {
+            let mut pollfd = libc::pollfd {
+                fd: pidfd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let result = unsafe { libc::poll(&mut pollfd, 1, 10) };
+            assert!(result >= 0 || Errno::last() == Errno::EINTR);
+            if result == 1 {
+                assert_ne!(pollfd.revents & libc::POLLIN, 0);
+                break false;
+            }
+            if Instant::now() >= deadline {
+                break true;
+            }
+        };
+        // The child is still unreaped, so no reused numeric process group can
+        // be selected. Every member was spawned by this controlled cell.
+        let killed = unsafe { libc::kill(-child_pid, libc::SIGKILL) };
+        assert!(killed == 0 || Errno::last() == Errno::ESRCH);
+        let status = child.wait().unwrap();
+        let stdout = stdout.join().unwrap();
+        let stderr = stderr.join().unwrap();
+        assert!(stdout.len() <= 65536 && stderr.len() <= 65536);
+        let stdout = String::from_utf8(stdout).unwrap();
+        let stderr = String::from_utf8(stderr).unwrap();
+        println!(
+            "pending newborn owner cell {cell}, actual status {status}, timed_out={timed_out}:\n{stdout}"
+        );
+        eprintln!("{stderr}");
+        let passed = !timed_out
+            && status.success()
+            && stdout
+                .lines()
+                .filter(|line| *line == format!("PENDING_NEWBORN_OWNER_CELL_PASSED {cell}"))
+                .count()
+                == 1
+            && stdout
+                .lines()
+                .filter(|line| {
+                    *line == "ACTUAL_PENDING_NEWBORN_EMERGENCY_ORIGINAL_GENERATION_EXERCISED"
+                })
+                .count()
+                == 1
+            && stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;")
+            && !stdout.contains("SKIP:")
+            && !stdout.contains("SKIPPED:")
+            && !stderr.contains("SKIP:")
+            && !stderr.contains("SKIPPED:");
+        all_passed &= passed;
+    }
+    assert!(
+        all_passed,
+        "both actual normal and PIDFD_THREAD-EINVAL pending-newborn cells must pass"
+    );
+    println!("ACTUAL_PENDING_NEWBORN_EMERGENCY_NORMAL_AND_FORCED_EXERCISED");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn legacy_group_backend_reaps_unhanded_fork_child() {
     let _scope = GroupStopScope::new(true, Arc::new(GroupStopControl::default()));
