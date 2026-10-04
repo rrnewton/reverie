@@ -887,10 +887,13 @@ where
         call: reverie::syscalls::Syscall,
     ) -> std::result::Result<reverie::ParentDeathSyscallAdmission, reverie::Error> {
         let refuse = || {
-            reverie::Error::Tool(anyhow::Error::new(Error::ParentDeathSignal {
-                operation: "original-call preflight outside active callback",
-                errno: libc::ENOSYS,
-            }))
+            reverie::Error::Tool(
+                Error::ParentDeathSignal {
+                    operation: "original-call preflight outside active callback",
+                    errno: libc::ENOSYS,
+                }
+                .into(),
+            )
         };
         if self.signal_guard != SignalGuard::Ordinary
             || self.last_result.is_some()
@@ -913,7 +916,7 @@ where
                 original,
                 self.current_parked_site() == Some(site),
             )
-            .map_err(|error| reverie::Error::Tool(anyhow::Error::new(error)))
+            .map_err(|error| reverie::Error::Tool(error.into()))
     }
     fn set_signal_guard(&mut self, guard: SignalGuard) -> SignalGuard {
         std::mem::replace(&mut self.signal_guard, guard)
@@ -1462,12 +1465,13 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
             || self.observation_lease.is_some()
             || self.stack_checked_out.load(Ordering::Acquire)
         {
-            return Err(reverie::Error::Tool(anyhow::Error::new(
+            return Err(reverie::Error::Tool(
                 Error::ParentDeathSignal {
                     operation: "original-call preflight during foreign observation",
                     errno: libc::ENOSYS,
-                },
-            )));
+                }
+                .into(),
+            ));
         }
         self.executor.parent_death_syscall_preflight(call)
     }
