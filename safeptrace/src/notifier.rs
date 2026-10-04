@@ -54,14 +54,19 @@
 //!
 //! ## Current implementation
 //!
-//! Currently, we spawn one thread per guest thread who each call `waitid` in a
-//! loop on an individual thread/process ID. The nice thing about this is that we
-//! can receive `PTRACE_EVENT_EXIT` events "out-of-band" and use that to cancel
-//! any futures that may be pending in a tool's `handle_syscall_event`. This
-//! approach also avoids the overhead of shuffling events through Tokio's
-//! blocking thread pool. (An `AtomicI32` plus a small persistent waker slot can
-//! be used instead.) The downside of this approach is that we
-//! can end up spawning a lot of guest threads.
+//! We spawn one observation thread per guest thread. Native thread pidfds and
+//! ordinary legacy leader pidfds support descriptor-bound consuming waits on
+//! that worker. For legacy nonleaders, the worker uses bounded numeric
+//! `WNOWAIT` observations only. The actual ptrace-owning OS thread consumes
+//! each report while polling a waiter or cleanup handle, with retained target
+//! and host-owner authentication and the kernel's `__WNOTHREAD` check. Only
+//! actually consumed reports enter the Event FIFO; an observation is a wakeup
+//! hint, not a stop or terminal acknowledgment. This also retires an obsolete
+//! attachment when its host ptracer exits without polling again.
+//!
+//! Observations wake `PTRACE_EVENT_EXIT` futures that can cancel work pending
+//! in a tool's `handle_syscall_event`, without shuffling each report through
+//! Tokio's blocking thread pool. The cost is one worker per guest thread.
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -74,6 +79,7 @@ use std::future::Future;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io;
+use std::marker::PhantomData;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
@@ -81,6 +87,7 @@ use std::os::fd::RawFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Barrier;
@@ -124,6 +131,42 @@ use super::Wait;
 use super::waitid;
 
 static NOTIFIER: LazyLock<Notifier> = LazyLock::new(Notifier::new);
+
+/// An explicit request policy, independent of an Event's cached descriptor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(super) enum WaitPolicy {
+    Native,
+    PtracerThread,
+}
+
+impl WaitPolicy {
+    fn check_identity(self, identity: &WorkerIdentity) -> Result<(), Errno> {
+        if self == Self::Native && !matches!(identity.pidfd, ThreadHandle::Pidfd(_)) {
+            return Err(Errno::EINVAL);
+        }
+        Ok(())
+    }
+
+    fn check_handle(self, handle: &EventHandle) -> Result<(), Errno> {
+        if let Some(error) = handle.initial_capture_error() {
+            return Err(error);
+        }
+        match handle.identity() {
+            Some(identity) => self.check_identity(identity),
+            // A local driver cannot acquire a new numeric generation for an
+            // unbound token whose original constructor failed to capture it.
+            None if self == Self::PtracerThread => Err(handle
+                .resolved()
+                .0
+                .initial_capture_refusal
+                .get()
+                .copied()
+                .or_else(|| *handle.event().registration_error.lock())
+                .unwrap_or(Errno::ENODATA)),
+            None => Ok(()),
+        }
+    }
+}
 
 #[cfg(test)]
 static CAPTURE_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
@@ -614,6 +657,19 @@ struct Event {
     #[cfg(test)]
     notifier_registration_pause: Mutex<Option<(i32, BoundedTestPause)>>,
 
+    /// On kernels without thread pidfds, the background worker observes only
+    /// WNOWAIT hints. The actual ptracer thread consumes numeric waits and
+    /// hands their raw statuses to this generation's one publisher. A hint
+    /// never enters `status` or creates an exit-stop capability.
+    legacy_wait: Mutex<LegacyWaitProgress>,
+    /// The actual host ptracer's immutable lifetime, bound only by that live
+    /// thread after retained-generation attachment authentication.
+    legacy_wait_owner: OnceLock<LegacyWaitOwner>,
+    /// A separately acquired native descriptor may join a legacy Event. The
+    /// one worker drains consumed legacy statuses before using this anchor;
+    /// existing legacy facades keep their immutable descriptor/error mode.
+    native_wait_identity: OnceLock<Arc<WorkerIdentity>>,
+
     /// Independently retained `PTRACE_EVENT_EXIT` publication. Keeping this
     /// separate prevents a following final wait status from stealing the exit
     /// event from a held [`ExitFuture`].
@@ -689,11 +745,115 @@ struct Event {
     terminal_echild_pause: Mutex<Option<BoundedTestPause>>,
     #[cfg(test)]
     exit_report_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    legacy_observation_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    legacy_worker_cycle_pause: Mutex<Option<BoundedTestPause>>,
 }
 
 /// Keeps a generation's TID from being reaped. See [`EventHandle::hold_tid`].
 pub(super) struct TidHold<'a> {
     _guard: RwLockReadGuard<'a, bool>,
+}
+
+#[derive(Debug, Default)]
+struct LegacyWaitProgress {
+    observed: Option<i32>,
+    consumed: VecDeque<i32>,
+    error: Option<Errno>,
+    retiring: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct LegacyWaitOwner {
+    tid: Pid,
+    tgid: Pid,
+    // Opening status through this retained directory resolves the original
+    // PID object. It cannot authenticate a later reused numeric host TID.
+    lifetime: OwnedFd,
+}
+
+/// The task selected before an initial numeric attachment. The raw ptrace
+/// request is still the attachment point; its successful receipt is bound
+/// only if this original retained PID object survives the later capture.
+pub(super) struct AttachmentAnchor {
+    pid: Pid,
+    directory: OwnedFd,
+    snapshot: WorkerProcSnapshot,
+    inode: u64,
+    _root: AlignedProcfs,
+}
+
+#[cfg(test)]
+type AttachmentCaptureHook = Box<dyn FnOnce(Pid, &AttachmentAnchor)>;
+
+#[cfg(test)]
+thread_local! {
+    static ATTACHMENT_CAPTURE_HOOK: std::cell::RefCell<Option<AttachmentCaptureHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn after_initial_attachment_for_test(pid: Pid, original: &AttachmentAnchor) {
+    let hook = ATTACHMENT_CAPTURE_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(pid, original);
+    }
+}
+
+impl AttachmentAnchor {
+    pub(super) fn capture(pid: Pid) -> Result<Self, Errno> {
+        let root = AlignedProcfs::open()?;
+        let directory = root.open_pid(pid, libc::O_PATH)?;
+        let snapshot = retained_proc_snapshot(directory.as_raw_fd()).map_err(io_errno)?;
+        let inode = fd_inode(&directory).map_err(io_errno)?;
+        Ok(Self {
+            pid,
+            directory,
+            snapshot,
+            inode,
+            _root: root,
+        })
+    }
+
+    fn validate_attached(&self, identity: &WorkerIdentity) -> Result<(), Errno> {
+        let status = retained_proc_status(self.directory.as_raw_fd())?;
+        let current = retained_proc_snapshot(self.directory.as_raw_fd()).map_err(io_errno)?;
+        if status.pid != self.pid
+            || status.tracer_pid != Pid::from(nix::unistd::gettid())
+            || identity.pid != self.pid
+            || !self.snapshot.same_process_generation(&current)
+            || !current.same_process_generation(&identity.snapshot)
+            || self.inode != identity.proc_inode
+        {
+            return Err(Errno::ESRCH);
+        }
+        Ok(())
+    }
+}
+
+impl LegacyWaitOwner {
+    fn capture_current() -> Result<Self, Errno> {
+        let root = AlignedProcfs::open()?;
+        let tid = Pid::from(nix::unistd::gettid());
+        let lifetime = root.open_pid(tid, libc::O_RDONLY)?;
+        Ok(Self {
+            tid,
+            tgid: Pid::from(nix::unistd::getpid()),
+            lifetime,
+        })
+    }
+
+    fn is_live(&self) -> Result<bool, Errno> {
+        match retained_proc_status(self.lifetime.as_raw_fd()) {
+            Ok(status) => Ok(status.pid == self.tid && status.tgid == self.tgid),
+            Err(Errno::ENOENT | Errno::ESRCH) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn is_current(&self) -> Result<bool, Errno> {
+        Ok(self.tid == Pid::from(nix::unistd::gettid()) && self.is_live()?)
+    }
 }
 
 #[derive(Debug)]
@@ -1087,6 +1247,9 @@ impl Event {
             sync_wait_owner_entered: Mutex::new(None),
             #[cfg(test)]
             notifier_registration_pause: Mutex::new(None),
+            legacy_wait: Mutex::new(LegacyWaitProgress::default()),
+            legacy_wait_owner: OnceLock::new(),
+            native_wait_identity: OnceLock::new(),
             exit_status: AtomicI32::new(EXIT_PENDING),
             exit_capability: AtomicU8::new(EXIT_CAP_PENDING),
             exit_epoch: AtomicUsize::new(0),
@@ -1118,6 +1281,10 @@ impl Event {
             terminal_echild_pause: Mutex::new(None),
             #[cfg(test)]
             exit_report_pause: Mutex::new(None),
+            #[cfg(test)]
+            legacy_observation_pause: Mutex::new(None),
+            #[cfg(test)]
+            legacy_worker_cycle_pause: Mutex::new(None),
         }
     }
 
@@ -1556,6 +1723,39 @@ impl Event {
         self.exit_waiters.wake_all();
     }
 
+    /// Commit loss of wait ownership against a concurrent Safe API attach.
+    /// Once the gate is closed, attachment must wait for this owner to retire
+    /// and use a new Event; a successful attachment while it is open instead
+    /// makes ECHILD transient. No publication lock is taken under the gate.
+    fn mark_echild_if_unowned(&self, identity: &WorkerIdentity) -> bool {
+        if matches!(identity.pidfd, ThreadHandle::Procfs { .. }) {
+            return self
+                .mark_legacy_echild_if_unowned(identity)
+                .unwrap_or(false);
+        }
+        if identity.is_active_tracee() {
+            return false;
+        }
+        self.mark_echild();
+        true
+    }
+
+    fn mark_legacy_echild_if_unowned(&self, identity: &WorkerIdentity) -> Result<bool, Errno> {
+        let progress = self.legacy_wait.lock();
+        if !progress.consumed.is_empty() {
+            return Ok(false);
+        }
+        // Attachment/lifetime proof comes from the retained target and host
+        // directories on their original mount. A later absolute /proc mount
+        // change cannot retire a still-owned legacy session.
+        let closed = close_unowned_legacy_wait(identity, self)?;
+        drop(progress);
+        if closed {
+            self.mark_echild();
+        }
+        Ok(closed)
+    }
+
     fn is_terminal(&self) -> bool {
         self.status.lock().terminal != INVALID_STATUS
     }
@@ -1871,7 +2071,38 @@ impl Event {
         Ok(StatusReturn::Returned(decoded))
     }
 
-    fn wait_status_reservation_sync(&self) -> Result<StatusReservation<'_>, Errno> {
+    fn wait_status_reservation_sync(
+        &self,
+        handle: &EventHandle,
+    ) -> Result<StatusReservation<'_>, Errno> {
+        if handle.uses_procfs_wait() {
+            loop {
+                let assistance = handle.try_assist_legacy_wait();
+                let mut state = self.status.lock();
+                if let Some(status) = state.pending.front().copied() {
+                    return Ok(StatusReservation {
+                        status,
+                        state: Some(state),
+                    });
+                }
+                match state.terminal {
+                    ECHILD_STATUS => return Err(Errno::ECHILD),
+                    INVALID_STATUS => {
+                        // A foreign thread may read published results, but
+                        // cannot perform this attachment's numeric wait.
+                        assistance?;
+                        self.status_changed
+                            .wait_for(&mut state, Duration::from_millis(1));
+                    }
+                    status => {
+                        return Ok(StatusReservation {
+                            status,
+                            state: None,
+                        });
+                    }
+                }
+            }
+        }
         let mut state = self.status.lock();
         loop {
             if let Some(status) = state.pending.front().copied() {
@@ -2119,6 +2350,15 @@ impl Event {
         }
     }
 
+    /// A retired attachment's kernel wait owner must finish before another
+    /// Event can own waits for the same still-live PID object.
+    fn join_retired_wait_owner(&self) {
+        let mut guard = self.worker_done_lock.lock();
+        while self.worker_state.load(Ordering::Acquire) != WORKER_DONE {
+            self.worker_done_changed.wait(&mut guard);
+        }
+    }
+
     /// Polls the event to check if there is a new status ready to be consumed.
     pub fn poll_exit(&self, waiter: &Arc<ExitWaiter>, waker: &Waker) -> Poll<Result<(), Errno>> {
         // Register before checking publication to avoid a lost wake. The weak
@@ -2205,18 +2445,23 @@ struct EventGeneration {
     event: Arc<Event>,
     identity: OnceLock<Arc<WorkerIdentity>>,
     authoritative: OnceLock<EventHandle>,
+    initial_capture_refusal: OnceLock<Errno>,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct EventHandle(Arc<EventGeneration>);
+pub(super) struct EventHandle(Arc<EventGeneration>, Option<Arc<WorkerIdentity>>);
 
 impl EventHandle {
     pub(super) fn new() -> Self {
-        Self(Arc::new(EventGeneration {
-            event: Arc::new(Event::new()),
-            identity: OnceLock::new(),
-            authoritative: OnceLock::new(),
-        }))
+        Self(
+            Arc::new(EventGeneration {
+                event: Arc::new(Event::new()),
+                identity: OnceLock::new(),
+                authoritative: OnceLock::new(),
+                initial_capture_refusal: OnceLock::new(),
+            }),
+            None,
+        )
     }
 
     fn with_identity(identity: Arc<WorkerIdentity>) -> Self {
@@ -2226,11 +2471,117 @@ impl EventHandle {
             .identity
             .set(identity)
             .expect("fresh event generation identity is unset");
+        if let Some(identity) = handle.identity()
+            && matches!(identity.pidfd, ThreadHandle::Procfs { .. })
+        {
+            // Constructors on the real ptracer capture its immutable owner
+            // before any foreign-thread registration or observation. A
+            // pre-attachment constructor may legitimately have TracerPid0;
+            // successful attach or first owner assistance binds it later.
+            let _ = authenticate_legacy_wait_owner(identity, handle.event());
+        }
         handle
     }
 
     pub(super) fn current_or_new(pid: Pid) -> Result<Self, Errno> {
-        NOTIFIER.current_or_new(pid)
+        NOTIFIER.current_or_new_for_policy(pid, WaitPolicy::Native)
+    }
+
+    pub(super) fn current_or_new_on_ptracer_thread(pid: Pid) -> Result<Self, Errno> {
+        NOTIFIER.current_or_new_for_policy(pid, WaitPolicy::PtracerThread)
+    }
+
+    /// Retains a successful numeric attachment even when its first exact
+    /// capture is refused. Such an unbound receipt never retries numerically.
+    pub(super) fn attachment_on_ptracer_thread(pid: Pid, original: &AttachmentAnchor) -> Self {
+        let captured = Self::current_or_new_on_ptracer_thread(pid).and_then(|handle| {
+            let identity = handle.identity().ok_or(Errno::ENODATA)?;
+            original.validate_attached(identity)?;
+            let connected = handle.reconnect_attachment(pid);
+            original.validate_attached(connected.identity().ok_or(Errno::ENODATA)?)?;
+            Ok(connected)
+        });
+        captured.unwrap_or_else(|error| {
+            let handle = Self::new();
+            let _ = handle.0.initial_capture_refusal.set(error);
+            *handle.event().registration_error.lock() = Some(error);
+            handle
+        })
+    }
+
+    pub(super) fn capture_current_host_owner() -> Result<Arc<LegacyWaitOwner>, Errno> {
+        LegacyWaitOwner::capture_current().map(Arc::new)
+    }
+
+    pub(super) fn current_tracer_pid(&self) -> Result<Pid, Errno> {
+        self.identity().ok_or(Errno::ENODATA)?.current_tracer_pid()
+    }
+
+    pub(super) fn initial_capture_error(&self) -> Option<Errno> {
+        self.resolved().0.initial_capture_refusal.get().copied()
+    }
+
+    /// Numeric Procfs waits can retire a detached, still-live thread with
+    /// ECHILD. A successful reattachment must obtain a fresh wait authority
+    /// after that retired owner reaches DONE; native descriptor waiters keep
+    /// their original facade and lifetime behavior.
+    pub(super) fn reconnect_attachment(&self, pid: Pid) -> Self {
+        loop {
+            let handle = self.resolved_handle();
+            let Some(identity) = handle.identity() else {
+                return handle;
+            };
+            if !matches!(identity.pidfd, ThreadHandle::Procfs { .. })
+                || handle.event().native_wait_identity.get().is_some()
+            {
+                return handle;
+            }
+            let event = Arc::clone(handle.event());
+            let mut progress = event.legacy_wait.lock();
+            let mut gate = event.terminal_reaping.write();
+            if !Arc::ptr_eq(self.event(), &event) {
+                continue;
+            }
+            if !handle.is_current_ptracer() {
+                return handle;
+            }
+            let same_owner = event
+                .legacy_wait_owner
+                .get()
+                .is_none_or(|owner| owner.is_current() == Ok(true));
+            if !*gate && !progress.retiring && same_owner {
+                // Capture-time TracerPid may be0. Bind actual attachment only
+                // after this successful attach/seize has authenticated it.
+                let _ = authenticate_legacy_wait_owner(identity, &event);
+                return handle;
+            }
+            // A changed host owner or a retired session cannot revive the
+            // old gate. Drain its actually consumed FIFO before DONE; the
+            // new attachment then gets its own Event and immutable owner.
+            *gate = true;
+            progress.retiring = true;
+            drop(gate);
+            drop(progress);
+            if event.worker_state.load(Ordering::Acquire) == WORKER_NOT_STARTED {
+                NOTIFIER.resolve_echild(pid, &handle);
+            }
+            event.join_retired_wait_owner();
+            return NOTIFIER.reconnect(pid, &handle);
+        }
+    }
+
+    fn is_current_ptracer(&self) -> bool {
+        self.identity().is_some_and(|identity| {
+            identity.current_tracer_pid().ok() == Some(Pid::from(nix::unistd::gettid()))
+        })
+    }
+
+    pub(super) fn capture_current_ptracer_owner(&self) -> Result<Arc<LegacyWaitOwner>, Errno> {
+        let identity = self.identity().ok_or(Errno::ENODATA)?;
+        if identity.current_tracer_pid()? != Pid::from(nix::unistd::gettid()) {
+            return Err(Errno::EPERM);
+        }
+        LegacyWaitOwner::capture_current().map(Arc::new)
     }
 
     pub(super) fn current_or_error(pid: Pid) -> Self {
@@ -2246,6 +2597,57 @@ impl EventHandle {
 
     fn event(&self) -> &Arc<Event> {
         &self.resolved().0.event
+    }
+
+    /// Performs at most one bounded consuming query for a Procfs notifier.
+    /// This runs only on the authenticated actual ptracer OS thread. The
+    /// observation worker publishes the resulting FIFO; future polls never
+    /// wait for publication/status locks or for a physical state transition.
+    fn try_assist_legacy_wait(&self) -> Result<(), Errno> {
+        let handle = self.resolved();
+        let Some(identity) = handle.identity() else {
+            return Ok(());
+        };
+        if !matches!(identity.pidfd, ThreadHandle::Procfs { .. }) {
+            return Ok(());
+        }
+        let event = handle.event();
+        let Some(mut progress) = event.legacy_wait.try_lock() else {
+            return Ok(());
+        };
+        if event.native_wait_identity.get().is_some()
+            || progress.retiring
+            || !event.worker_is_running()
+            || !matches!(
+                event.wait_owner.load(Ordering::Acquire),
+                WAIT_OWNER_NOTIFIER | WAIT_OWNER_NOTIFIER_RETURNING
+            )
+        {
+            return Ok(());
+        }
+        if let Some(error) = progress.error {
+            return Err(error);
+        }
+        let status = match try_consume_legacy_status(identity, event, Some(handle)) {
+            Ok(status) => status,
+            // The observation owner decides transient newborn ECHILD versus
+            // exact retirement and publishes it after draining its FIFO.
+            Err(Errno::ECHILD | Errno::EINTR) => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(status) = status {
+            // Retirement takes this same mutex and drains this FIFO first.
+            // It cannot publish ECHILD between our real reap and this push.
+            progress.consumed.push_back(status);
+            progress.observed = None;
+            progress.error = None;
+        }
+        Ok(())
+    }
+
+    fn uses_procfs_wait(&self) -> bool {
+        self.identity()
+            .is_some_and(|identity| matches!(identity.pidfd, ThreadHandle::Procfs { .. }))
     }
 
     /// Holds this generation's TID for one numeric ptrace request. Returns
@@ -2281,7 +2683,71 @@ impl EventHandle {
     }
 
     fn identity(&self) -> Option<&Arc<WorkerIdentity>> {
-        self.resolved().0.identity.get()
+        // Metadata is a facade property. Redirecting an Event's wait owner
+        // does not turn an already retained legacy cancellation FD native.
+        self.1
+            .as_ref()
+            .or_else(|| self.0.identity.get())
+            .or_else(|| self.resolved().0.identity.get())
+    }
+
+    /// Admits an actually acquired native FD to the same immutable Event.
+    /// No second worker or wait claim is created. Original-directory reads,
+    /// rather than signal0 permission, prove that the old anchor is still
+    /// the exact task that this fresh native descriptor captured.
+    fn native_view(&self, current: Arc<WorkerIdentity>) -> Result<Self, Errno> {
+        WaitPolicy::Native.check_identity(&current)?;
+        let bound = self.identity().ok_or(Errno::ENODATA)?;
+        if matches!(bound.pidfd, ThreadHandle::Pidfd(_)) {
+            return Ok(self.resolved_handle());
+        }
+        if !bound.same_generation(&current) {
+            return Err(Errno::ECHILD);
+        }
+        let event = self.event();
+        let progress = event.legacy_wait.lock();
+        let gate = event.terminal_reaping.read();
+        if *gate
+            || progress.retiring
+            || matches!(
+                event.worker_state.load(Ordering::Acquire),
+                WORKER_FINISHING | WORKER_DONE
+            )
+        {
+            return Err(Errno::ECHILD);
+        }
+        let status = retained_proc_status(bound.proc_dir.as_raw_fd())?;
+        if status.pid != bound.pid || status.tgid != bound.snapshot.tgid {
+            return Err(Errno::ECHILD);
+        }
+        let _ = event.native_wait_identity.set(current);
+        let native = event.native_wait_identity.get().unwrap().clone();
+        let selected = Self(self.resolved().0.clone(), Some(native));
+        drop(gate);
+        drop(progress);
+        event.status_changed.notify_all();
+        event.status_waker.wake();
+        Ok(selected)
+    }
+
+    fn worker_identity(&self, current: &Arc<WorkerIdentity>) -> Arc<WorkerIdentity> {
+        self.event()
+            .native_wait_identity
+            .get()
+            .cloned()
+            .or_else(|| {
+                self.identity()
+                    .filter(|identity| matches!(identity.pidfd, ThreadHandle::Pidfd(_)))
+                    .cloned()
+            })
+            .unwrap_or_else(|| current.clone())
+    }
+
+    fn preferred_native_view(&self) -> Option<Self> {
+        self.event()
+            .native_wait_identity
+            .get()
+            .map(|identity| Self(self.resolved().0.clone(), Some(identity.clone())))
     }
 
     fn bind_identity(&self, identity: Arc<WorkerIdentity>) -> Result<(), Arc<WorkerIdentity>> {
@@ -2297,7 +2763,11 @@ impl EventHandle {
     }
 
     fn resolved_handle(&self) -> Self {
-        self.resolved().clone()
+        let selected = self.resolved();
+        if Arc::ptr_eq(&self.0, &selected.0) {
+            return self.clone();
+        }
+        Self(selected.0.clone(), self.identity().cloned())
     }
 
     fn chain_contains(&self, generation: &Arc<EventGeneration>) -> bool {
@@ -2369,6 +2839,55 @@ struct WorkerProcSnapshot {
     start_time: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct RetainedProcStatus {
+    pid: Pid,
+    tgid: Pid,
+    tracer_pid: Pid,
+}
+
+/// Reads a task through the inode's retained PID object, not a numeric proc
+/// pathname. Successful signal0 is not required for parent-owned waits:
+/// signal permission and wait authority have different kernel checks. A
+/// denied signal, including a seccomp-synthesized EPERM, proves no lifetime.
+fn retained_proc_status(directory: RawFd) -> Result<RetainedProcStatus, Errno> {
+    let _open = launch_window::TransientOpen::begin();
+    let raw = unsafe {
+        libc::openat(
+            directory,
+            c"status".as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if raw < 0 {
+        return Err(Errno::last());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    // These identity fields precede the variable-length status fields. Keep
+    // every owner/lifetime authentication bounded even when those grow.
+    let mut bytes = [0u8; 8192];
+    let count = unsafe { libc::read(fd.as_raw_fd(), bytes.as_mut_ptr().cast(), bytes.len()) };
+    if count < 0 {
+        return Err(Errno::last());
+    }
+    // Name can contain arbitrary comm bytes. Decode only the kernel's ASCII
+    // identity lines, so a later PR_SET_NAME cannot revoke an established
+    // wait authority. proc_task_name escapes embedded newlines in Name.
+    let field = |name: &str| {
+        let line = bytes[..count as usize]
+            .split(|byte| *byte == b'\n')
+            .find(|line| line.starts_with(name.as_bytes()))
+            .ok_or(Errno::EIO)?;
+        let line = std::str::from_utf8(line).map_err(|_| Errno::EIO)?;
+        worker_status_pid(line, name).map_err(io_errno)
+    };
+    Ok(RetainedProcStatus {
+        pid: field("Pid:")?,
+        tgid: field("Tgid:")?,
+        tracer_pid: field("TracerPid:")?,
+    })
+}
+
 impl WorkerProcSnapshot {
     fn same_process_generation(&self, other: &Self) -> bool {
         self.tgid == other.tgid && self.start_time == other.start_time
@@ -2383,10 +2902,16 @@ struct WorkerIdentity {
     pidfd: ThreadHandle,
     proc_dir: OwnedFd,
     proc_inode: u64,
+    proc_root: Option<Arc<AlignedProcfs>>,
 }
 
 impl WorkerIdentity {
+    #[cfg(test)]
     fn capture(pid: Pid) -> Result<Self, Errno> {
+        Self::capture_for_policy(pid, WaitPolicy::Native)
+    }
+
+    fn capture_for_policy(pid: Pid, policy: WaitPolicy) -> Result<Self, Errno> {
         #[cfg(test)]
         if let Some(error) = CAPTURE_PERSISTENT_ERRORS.lock().get(&pid).copied() {
             return Err(error);
@@ -2410,29 +2935,49 @@ impl WorkerIdentity {
         // waitpid targets. TracerPid is mutable attachment state within the
         // exact pidfd/procfs generation; only a currently tracer-owned task may
         // turn ECHILD into a transient retry below.
-        Self::capture_process(pid)
+        Self::capture_process_for_policy(pid, policy)
     }
 
+    #[cfg(test)]
     fn capture_process(pid: Pid) -> Result<Self, Errno> {
+        Self::capture_process_for_policy(pid, WaitPolicy::Native)
+    }
+
+    fn capture_process_for_policy(pid: Pid, policy: WaitPolicy) -> Result<Self, Errno> {
+        let proc_root = (policy == WaitPolicy::PtracerThread)
+            .then(AlignedProcfs::open)
+            .transpose()?
+            .map(Arc::new);
         // Pin procfs before reading the first snapshot. Even two tasks born
         // in the same clock tick must not make capture cross a reused TID.
-        let proc_dir = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
-            .open(format!("/proc/{pid}"))
-            .map_err(io_errno)?;
-        let proc_inode = proc_dir.metadata().map_err(io_errno)?.ino();
-        let before = worker_proc_snapshot(pid).map_err(io_errno)?;
+        let proc_dir: OwnedFd = match &proc_root {
+            Some(root) => root.open_pid(pid, libc::O_PATH)?,
+            None => OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+                .open(format!("/proc/{pid}"))
+                .map_err(io_errno)?
+                .into(),
+        };
+        let proc_inode = fd_inode(&proc_dir).map_err(io_errno)?;
+        let read_snapshot = || match &proc_root {
+            Some(_) => retained_proc_snapshot(proc_dir.as_raw_fd()),
+            None => worker_proc_snapshot(pid),
+        };
+        let before = read_snapshot().map_err(io_errno)?;
         #[cfg(test)]
         if let Some(pause) = CAPTURE_AFTER_FIRST_SNAPSHOT_PAUSES.lock().remove(&pid) {
             pause.captured.wait();
             pause.resume.wait();
         }
-        let pidfd = open_thread_pidfd(pid)?;
-        let after = worker_proc_snapshot(pid).map_err(io_errno)?;
-        let current_inode = fs::metadata(format!("/proc/{pid}"))
-            .map_err(io_errno)?
-            .ino();
+        let pidfd = open_thread_pidfd_for_policy_at(pid, policy, proc_root.as_deref())?;
+        let after = read_snapshot().map_err(io_errno)?;
+        let current_inode = match &proc_root {
+            Some(root) => fd_inode(&root.open_pid(pid, libc::O_PATH)?).map_err(io_errno)?,
+            None => fs::metadata(format!("/proc/{pid}"))
+                .map_err(io_errno)?
+                .ino(),
+        };
         if !before.same_process_generation(&after)
             || current_inode != proc_inode
             || matches!(&pidfd, ThreadHandle::Procfs { directory, .. }
@@ -2445,8 +2990,9 @@ impl WorkerIdentity {
             pid,
             snapshot: after,
             pidfd,
-            proc_dir: proc_dir.into(),
+            proc_dir,
             proc_inode,
+            proc_root,
         })
     }
 
@@ -2454,10 +3000,20 @@ impl WorkerIdentity {
     /// to a live thread in this tracer process.
     fn is_active_tracee(&self) -> bool {
         self.is_same_process_generation()
-            && worker_proc_snapshot(self.pid).ok().is_some_and(|current| {
+            && self.read_snapshot().ok().is_some_and(|current| {
                 current.same_process_generation(&self.snapshot)
                     && tracer_is_current(current.tracer_pid)
             })
+    }
+
+    /// Reads current attachment state through the retained proc directory,
+    /// rather than through a routing number or the capture-time snapshot.
+    fn current_tracer_pid(&self) -> Result<Pid, Errno> {
+        let status = retained_proc_status(self.proc_dir.as_raw_fd())?;
+        if status.pid != self.pid || status.tgid != self.snapshot.tgid {
+            return Err(Errno::ESRCH);
+        }
+        Ok(status.tracer_pid)
     }
 
     fn is_same_process_generation(&self) -> bool {
@@ -2477,7 +3033,7 @@ impl WorkerIdentity {
     }
 
     fn procfs_generation(&self) -> Option<bool> {
-        let current = match worker_proc_snapshot(self.pid) {
+        let current = match self.read_snapshot() {
             Ok(current) => current,
             Err(error) => return procfs_error_shows_exit(&error).then_some(false),
         };
@@ -2486,9 +3042,25 @@ impl WorkerIdentity {
         {
             return Some(false);
         }
+        if let Some(root) = &self.proc_root {
+            return match root.open_pid(self.pid, libc::O_PATH) {
+                Ok(directory) => fd_inode(&directory)
+                    .ok()
+                    .map(|inode| inode == self.proc_inode),
+                Err(Errno::ENOENT | Errno::ESRCH) => Some(false),
+                Err(_) => None,
+            };
+        }
         match fs::metadata(format!("/proc/{}", self.pid)) {
             Ok(metadata) => Some(metadata.ino() == self.proc_inode),
             Err(error) => procfs_error_shows_exit(&error).then_some(false),
+        }
+    }
+
+    fn read_snapshot(&self) -> io::Result<WorkerProcSnapshot> {
+        match self.proc_root {
+            Some(_) => retained_proc_snapshot(self.proc_dir.as_raw_fd()),
+            None => worker_proc_snapshot(self.pid),
         }
     }
 
@@ -2526,15 +3098,8 @@ impl WorkerIdentity {
 #[derive(Debug)]
 enum ThreadHandle {
     Pidfd(OwnedFd),
-    LegacyLeader {
-        pid: Pid,
-        fd: OwnedFd,
-    },
-    Procfs {
-        pid: Pid,
-        tgid: Pid,
-        directory: OwnedFd,
-    },
+    LegacyLeader { fd: OwnedFd },
+    Procfs { pid: Pid, directory: OwnedFd },
 }
 
 impl AsRawFd for ThreadHandle {
@@ -2552,17 +3117,11 @@ impl ThreadHandle {
     fn try_clone(&self) -> io::Result<Self> {
         Ok(match self {
             Self::Pidfd(fd) => Self::Pidfd(fd.try_clone()?),
-            Self::LegacyLeader { pid, fd } => Self::LegacyLeader {
-                pid: *pid,
+            Self::LegacyLeader { fd } => Self::LegacyLeader {
                 fd: fd.try_clone()?,
             },
-            Self::Procfs {
-                pid,
-                tgid,
-                directory,
-            } => Self::Procfs {
+            Self::Procfs { pid, directory } => Self::Procfs {
                 pid: *pid,
-                tgid: *tgid,
                 directory: directory.try_clone()?,
             },
         })
@@ -2573,16 +3132,16 @@ impl ThreadHandle {
             Self::Pidfd(fd) | Self::LegacyLeader { fd, .. } => {
                 Ok(waitid::IdType::Pidfd(fd.as_raw_fd()))
             }
-            Self::Procfs { pid, .. } => {
-                // The Event's exclusive wait owner is the only reaper.
-                // Stops and WNOWAIT terminal observations keep this TID
-                // allocated until its owner closes the TID gate and reaps.
-                // A retained descriptor that has retired must never issue
-                // another numeric wait, even if the TID is now reused.
-                if pidfd_is_live(self)? {
-                    Ok(waitid::IdType::Pid((*pid).into()))
-                } else {
-                    Err(Errno::ECHILD)
+            Self::Procfs { pid, directory } => {
+                // This is a bounded observation precheck, not a guarantee
+                // that a host ptracer's exit cannot release the task. Every
+                // numeric WNOWAIT observation must recheck the retained
+                // directory afterward. Only the actual owner's consuming
+                // helper may turn an original observation into a report.
+                match retained_proc_status(directory.as_raw_fd()) {
+                    Ok(status) if status.pid == *pid => Ok(waitid::IdType::Pid((*pid).into())),
+                    Ok(_) | Err(Errno::ENOENT | Errno::ESRCH) => Err(Errno::ECHILD),
+                    Err(error) => Err(error),
                 }
             }
         }
@@ -2593,34 +3152,53 @@ impl ThreadHandle {
             Self::Pidfd(fd) | Self::LegacyLeader { fd, .. } => {
                 waitid::waitpidfd(fd.as_raw_fd(), flags)
             }
-            Self::Procfs { .. } => waitid::wait_raw(self.wait_id()?, flags),
+            Self::Procfs { .. } => loop {
+                let status = self.legacy_wait_once(self.wait_id()?, flags)?;
+                if status.is_some() || flags.contains(WaitPidFlag::WNOHANG) {
+                    return Ok(status);
+                }
+                // Non-leader exec releases its former TID in de_thread,
+                // independently of this Event's reaper. Never block in a
+                // numeric wait after the lifetime check: it could bind a
+                // replacement child. Recheck the retained descriptor on
+                // every bounded observation instead.
+                thread::sleep(Duration::from_millis(1));
+            },
         }
     }
 
-    fn send_cancellation_signal(&self, event: &Event, signal: i32) -> Result<(), Errno> {
-        let legacy_target = match self {
-            Self::Pidfd(_) => None,
-            Self::LegacyLeader { pid, .. } => Some((*pid, *pid)),
-            Self::Procfs { pid, tgid, .. } => Some((*pid, *tgid)),
-        };
-        if signal == libc::SIGSTOP
-            && let Some((pid, tgid)) = legacy_target
-        {
-            // Ordinary pidfds and old proc descriptors send process-directed
-            // signals. SIGSTOP must target this thread, as PIDFD_THREAD does.
-            // Use the same generation gate as numeric ptrace requests: the
-            // exclusive wait owner cannot release the TID during this hold.
-            let _held = event.hold_tid().ok_or(Errno::ESRCH)?;
-            if !pidfd_is_live(self)? {
-                return Err(Errno::ESRCH);
-            }
-            return Errno::result(unsafe {
-                libc::syscall(libc::SYS_tgkill, tgid.as_raw(), pid.as_raw(), signal)
-            })
-            .map(|_| ());
+    fn legacy_wait_once(
+        &self,
+        checked_id: waitid::IdType,
+        flags: WaitPidFlag,
+    ) -> Result<Option<i32>, Errno> {
+        // Background and generic descriptor helpers are observation-only.
+        // Irreversible numeric waits require the actual owner helper below.
+        if !flags.contains(WaitPidFlag::WNOWAIT) {
+            return Err(Errno::EPERM);
         }
-        // SIGKILL is fatal to the whole thread group for both forms of
-        // descriptor; the retained PID object prevents signaling a reuse.
+        let status = waitid::wait_raw(checked_id, flags | WaitPidFlag::WNOHANG)?;
+        // A host ptracer thread can exit and release this stopped task
+        // independently of the Event gate. An observation cannot steal a
+        // replacement report; the retained postcheck rejects that hint.
+        self.wait_id()?;
+        Ok(status)
+    }
+
+    fn send_cancellation_signal(&self, signal: i32) -> Result<(), Errno> {
+        if signal == libc::SIGSTOP && !matches!(self, Self::Pidfd(_)) {
+            // Old pidfds/proc descriptors send process-directed signals.
+            // A numeric tgkill cannot preserve exact thread identity across
+            // de_thread or independent wait-owner handoffs. Refuse rather
+            // than signal a replacement or silently change delivery scope.
+            return if pidfd_is_live(self)? {
+                Err(Errno::EOPNOTSUPP)
+            } else {
+                Err(Errno::ESRCH)
+            };
+        }
+        // SIGKILL is fatal to the whole group for both descriptor forms.
+        // Native PIDFD_THREAD keeps its original exact-thread SIGSTOP.
         Errno::result(unsafe {
             libc::syscall(
                 libc::SYS_pidfd_send_signal,
@@ -2634,7 +3212,21 @@ impl ThreadHandle {
     }
 }
 
+#[cfg(test)]
 fn open_thread_pidfd(pid: Pid) -> Result<ThreadHandle, Errno> {
+    open_thread_pidfd_for_policy(pid, WaitPolicy::Native)
+}
+
+#[cfg(test)]
+fn open_thread_pidfd_for_policy(pid: Pid, policy: WaitPolicy) -> Result<ThreadHandle, Errno> {
+    open_thread_pidfd_for_policy_at(pid, policy, None)
+}
+
+fn open_thread_pidfd_for_policy_at(
+    pid: Pid,
+    policy: WaitPolicy,
+    proc_root: Option<&AlignedProcfs>,
+) -> Result<ThreadHandle, Errno> {
     #[cfg(test)]
     let injected = PIDFD_OPEN_ERRORS.lock().remove(&pid);
     #[cfg(test)]
@@ -2650,37 +3242,158 @@ fn open_thread_pidfd(pid: Pid) -> Result<ThreadHandle, Errno> {
     #[cfg(not(test))]
     let error: Option<Errno> = None;
 
-    open_thread_handle_with_error(pid, error)
+    open_thread_handle_for_policy_at(pid, error, policy, proc_root)
 }
 
+#[cfg(test)]
 fn open_thread_handle_with_error(pid: Pid, error: Option<Errno>) -> Result<ThreadHandle, Errno> {
+    open_thread_handle_for_policy(pid, error, WaitPolicy::PtracerThread)
+}
+
+#[cfg(test)]
+fn open_thread_handle_for_policy(
+    pid: Pid,
+    error: Option<Errno>,
+    policy: WaitPolicy,
+) -> Result<ThreadHandle, Errno> {
+    open_thread_handle_for_policy_at(pid, error, policy, None)
+}
+
+fn open_thread_handle_for_policy_at(
+    pid: Pid,
+    error: Option<Errno>,
+    policy: WaitPolicy,
+    proc_root: Option<&AlignedProcfs>,
+) -> Result<ThreadHandle, Errno> {
     let opened = error.map_or_else(|| pidfd_open_with_flags(pid, libc::O_EXCL), Err);
     match opened {
         Ok(fd) => Ok(ThreadHandle::Pidfd(fd)),
-        Err(Errno::EINVAL) => {
-            let snapshot = worker_proc_snapshot(pid).map_err(io_errno)?;
+        Err(Errno::EINVAL) if policy == WaitPolicy::PtracerThread => {
+            // pidfd_open resolves in the caller's active PID namespace;
+            // procfs resolves in its mount's namespace. An inherited outer
+            // proc mount must never turn the same routing number into a
+            // handle for a different task. thread-self resolves this actual
+            // calling task, and one NSpid level proves namespace alignment.
+            let captured_root;
+            let root = match proc_root {
+                Some(root) => root,
+                None => {
+                    captured_root = AlignedProcfs::open()?;
+                    &captured_root
+                }
+            };
+            let original = root.open_pid(pid, libc::O_PATH)?;
+            let snapshot = retained_proc_snapshot(original.as_raw_fd()).map_err(io_errno)?;
             if snapshot.tgid == pid {
                 // An ordinary pidfd still binds a leader's exact PID object;
                 // P_PIDFD waits distinguish it even while other threads live.
-                pidfd_open_with_flags(pid, 0).map(|fd| ThreadHandle::LegacyLeader { pid, fd })
+                pidfd_open_with_flags(pid, 0).map(|fd| ThreadHandle::LegacyLeader { fd })
             } else {
                 // /proc/<tid> (not /proc/<tgid>/task/<tid>) has the proc
                 // operations accepted by pidfd_send_signal on older kernels.
                 // O_PATH descriptors are not accepted by that syscall.
-                let directory = OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
-                    .open(format!("/proc/{pid}"))
-                    .map_err(io_errno)?;
-                Ok(ThreadHandle::Procfs {
-                    pid,
-                    tgid: snapshot.tgid,
-                    directory: directory.into(),
-                })
+                let directory = root.open_pid(pid, libc::O_RDONLY)?;
+                let original_status = retained_proc_status(original.as_raw_fd())?;
+                if original_status.pid != pid || original_status.tgid != snapshot.tgid {
+                    return Err(Errno::ESRCH);
+                }
+                Ok(ThreadHandle::Procfs { pid, directory })
             }
         }
         Err(error) => Err(error),
     }
+}
+
+/// Pins the same proc mount used for both namespace validation and task
+/// lookup. A later overmount of /proc cannot redirect a validated lookup.
+#[derive(Debug)]
+struct AlignedProcfs {
+    root: OwnedFd,
+}
+
+impl AlignedProcfs {
+    fn open() -> Result<Self, Errno> {
+        let _open = launch_window::TransientOpen::begin();
+        let raw = unsafe {
+            libc::open(
+                c"/proc".as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if raw < 0 {
+            return Err(Errno::last());
+        }
+        let root = unsafe { OwnedFd::from_raw_fd(raw) };
+        let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        if unsafe { libc::fstatfs(root.as_raw_fd(), filesystem.as_mut_ptr()) } < 0 {
+            return Err(Errno::last());
+        }
+        if unsafe { filesystem.assume_init() }.f_type != libc::PROC_SUPER_MAGIC {
+            return Err(Errno::EXDEV);
+        }
+        let root = Self { root };
+        let raw = unsafe {
+            libc::openat(
+                root.root.as_raw_fd(),
+                c"thread-self/status".as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC,
+            )
+        };
+        if raw < 0 {
+            return Err(Errno::last());
+        }
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        // NSpid follows Groups. Linux permits 65536 supplementary groups,
+        // each at most ten decimal digits plus a separator. One MiB bounds
+        // the read while covering those and the bounded preceding fields.
+        let mut bounded = io::Read::take(fs::File::from(fd), 1024 * 1024);
+        let mut bytes = Vec::new();
+        io::Read::read_to_end(&mut bounded, &mut bytes).map_err(io_errno)?;
+        aligned_proc_pid_namespace(&bytes, Pid::from(nix::unistd::gettid()))?;
+        Ok(root)
+    }
+
+    fn open_pid(&self, pid: Pid, flags: i32) -> Result<OwnedFd, Errno> {
+        let _open = launch_window::TransientOpen::begin();
+        let name = std::ffi::CString::new(pid.as_raw().to_string()).expect("decimal pid");
+        let raw = unsafe {
+            libc::openat(
+                self.root.as_raw_fd(),
+                name.as_ptr(),
+                flags | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if raw < 0 {
+            Err(Errno::last())
+        } else {
+            Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+        }
+    }
+}
+
+#[cfg(test)]
+fn require_aligned_proc_pid_namespace() -> Result<(), Errno> {
+    AlignedProcfs::open().map(|_| ())
+}
+
+fn aligned_proc_pid_namespace(status: &[u8], caller: Pid) -> Result<(), Errno> {
+    // Decode only the genuine kernel ASCII field. comm need not be UTF-8;
+    // proc_task_name escapes its embedded newlines before this field.
+    let line = status
+        .split_inclusive(|byte| *byte == b'\n')
+        .find(|line| line.starts_with(b"NSpid:") && line.last() == Some(&b'\n'))
+        .ok_or(Errno::EOPNOTSUPP)?;
+    let line = std::str::from_utf8(&line[b"NSpid:".len()..]).map_err(|_| Errno::EIO)?;
+    let mut levels = line.split_ascii_whitespace();
+    let mounted_tid = levels
+        .next()
+        .ok_or(Errno::EIO)?
+        .parse::<i32>()
+        .map_err(|_| Errno::EIO)?;
+    if mounted_tid != caller.as_raw() || levels.next().is_some() {
+        return Err(Errno::EXDEV);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2700,10 +3413,14 @@ fn pidfd_open_with_flags(pid: Pid, flags: i32) -> Result<OwnedFd, Errno> {
 }
 
 fn pidfd_is_live(pidfd: &ThreadHandle) -> Result<bool, Errno> {
+    descriptor_is_live(pidfd.as_raw_fd())
+}
+
+fn descriptor_is_live(raw_fd: RawFd) -> Result<bool, Errno> {
     let result = unsafe {
         libc::syscall(
             libc::SYS_pidfd_send_signal,
-            pidfd.as_raw_fd(),
+            raw_fd,
             0,
             std::ptr::null::<libc::siginfo_t>(),
             0,
@@ -2766,7 +3483,106 @@ fn spawn_worker(
     })
 }
 
-/// Waits for the next status of this exact thread generation and consumes it.
+/// Authenticates the currently executing OS thread, including the immutable
+/// host owner lifetime, against the target's retained current attachment.
+fn authenticate_legacy_wait_owner(identity: &WorkerIdentity, event: &Event) -> Result<(), Errno> {
+    let current = identity.current_tracer_pid().map_err(|error| {
+        if matches!(error, Errno::ENOENT | Errno::ESRCH) {
+            Errno::ECHILD
+        } else {
+            error
+        }
+    })?;
+    if current.as_raw() == 0 {
+        return Err(Errno::ECHILD);
+    }
+    if current != Pid::from(nix::unistd::gettid()) {
+        return Err(Errno::EPERM);
+    }
+    if event.legacy_wait_owner.get().is_none() {
+        // This thread is executing now and cannot concurrently exit while
+        // capturing its own descriptor. Its immutable PID object guards
+        // against a later host-TID reuse after ptracer pthread exit.
+        let owner = LegacyWaitOwner::capture_current()?;
+        let _ = event.legacy_wait_owner.set(owner);
+    }
+    if !event.legacy_wait_owner.get().unwrap().is_current()? {
+        return Err(Errno::EPERM);
+    }
+    Ok(())
+}
+
+/// Consumes at most one actual status on the live actual ptracer thread.
+/// The caller holds `legacy_wait`, excluding the observation worker's
+/// retirement. The exclusive gate drains every Safe execution-control
+/// operation before revalidating an original stop or zombie. __WNOTHREAD
+/// also makes the kernel verify current's parent authority for each query.
+fn try_consume_legacy_status(
+    identity: &WorkerIdentity,
+    event: &Event,
+    handle: Option<&EventHandle>,
+) -> Result<Option<i32>, Errno> {
+    let Some(mut gate) = event.terminal_reaping.try_write() else {
+        return Ok(None);
+    };
+    if *gate || handle.is_some_and(|handle| !std::ptr::eq(handle.event().as_ref(), event)) {
+        return Ok(None);
+    }
+    authenticate_legacy_wait_owner(identity, event)?;
+    let observe = WaitPidFlag::from_bits_retain(
+        WaitPidFlag::WEXITED.bits()
+            | WaitPidFlag::WSTOPPED.bits()
+            | WaitPidFlag::WNOWAIT.bits()
+            | WaitPidFlag::WNOHANG.bits()
+            | libc::__WALL
+            | libc::__WNOTHREAD,
+    );
+    let Some(observed) = identity.pidfd.wait_status(observe)? else {
+        return Ok(None);
+    };
+    // The WNOWAIT helper has checked the retained descriptor after its
+    // numeric observation. Reauthenticate current attachment before any
+    // irreversible query; capture-time TracerPid is never authority.
+    authenticate_legacy_wait_owner(identity, event)?;
+    let terminal = libc::WIFEXITED(observed) || libc::WIFSIGNALED(observed);
+    let flags = WaitPidFlag::from_bits_retain(
+        if terminal {
+            WaitPidFlag::WEXITED.bits()
+        } else {
+            WaitPidFlag::WSTOPPED.bits()
+        } | WaitPidFlag::WNOHANG.bits()
+            | libc::__WALL
+            | libc::__WNOTHREAD,
+    );
+    if terminal {
+        *gate = true;
+    }
+    let result = waitid::wait_raw(waitid::IdType::Pid(identity.pid.into()), flags);
+    match result {
+        Ok(Some(status)) => {
+            if terminal {
+                debug_assert_eq!(status, observed, "reaped a different terminal status");
+            } else {
+                debug_assert!(libc::WIFSTOPPED(status), "stop-only wait reaped a task");
+            }
+            Ok(Some(status))
+        }
+        Ok(None) | Err(Errno::EINTR) => {
+            // No irreversible query completed. The authenticated live owner
+            // still pins this original task; leave the attempt retryable.
+            if terminal {
+                *gate = false;
+            }
+            Ok(None)
+        }
+        // A fatal signal can replace a stop by a zombie. A stop-only query
+        // must not reap it; the next full observation sees the real exit.
+        Err(Errno::ECHILD) if !terminal => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Waits for the next descriptor-bound status and consumes it.
 ///
 /// A terminal status is first observed with `WNOWAIT` and marked on `event`
 /// before the wait that reaps it, so a numeric ptrace request holding
@@ -2774,6 +3590,7 @@ fn spawn_worker(
 /// is consumed by a wait that cannot reap: if a fatal signal ends the stop
 /// first, the next observation sees the terminal status instead.
 fn wait_thread_consuming(pid: Pid, handle: &ThreadHandle, event: &Event) -> Result<i32, Errno> {
+    debug_assert!(!matches!(handle, ThreadHandle::Procfs { .. }));
     let observe = WaitPidFlag::from_bits_retain(
         WaitPidFlag::WEXITED.bits()
             | WaitPidFlag::WSTOPPED.bits()
@@ -2842,46 +3659,208 @@ fn wait_thread_status(identity: &WorkerIdentity, event: &Event) -> Option<i32> {
     }
 }
 
-/// A worker thread that simply wakes a future when a process changes state.
-fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
-    let mut retrying_echild = false;
-    loop {
-        // Revalidate before retrying a transient ECHILD. The retained lifetime
-        // descriptor refuses a numeric wait after this generation retires.
-        if retrying_echild && !identity.is_active_tracee() {
-            event.mark_echild();
-            break;
+/// Closes legacy authority only after a bounded retained check proves there
+/// is no current attachment to the same live owner. The caller holds the
+/// progress mutex, so it cannot race an actual consuming producer. Publication
+/// happens only after this returns and that mutex has been dropped.
+fn close_unowned_legacy_wait(identity: &WorkerIdentity, event: &Event) -> Result<bool, Errno> {
+    let Some(mut gate) = event.terminal_reaping.try_write() else {
+        return Ok(false);
+    };
+    if *gate {
+        return Ok(true);
+    }
+    match identity.current_tracer_pid() {
+        Ok(tracer) => {
+            if let Some(owner) = event.legacy_wait_owner.get() {
+                if owner.tid == tracer && owner.is_live()? {
+                    return Ok(false);
+                }
+            } else if tracer.as_raw() != 0 {
+                // Observation before the actual owner's first poll still
+                // uses the same retained aligned mount, not /proc/self/task
+                // looked up through a possibly replaced absolute mount.
+                let root = identity.proc_root.as_ref().ok_or(Errno::EXDEV)?;
+                match root
+                    .open_pid(tracer, libc::O_PATH)
+                    .and_then(|directory| retained_proc_status(directory.as_raw_fd()))
+                {
+                    Ok(host)
+                        if host.pid == tracer && host.tgid == Pid::from(nix::unistd::getpid()) =>
+                    {
+                        return Ok(false);
+                    }
+                    Ok(_) | Err(Errno::ENOENT | Errno::ESRCH) => {}
+                    Err(error) => return Err(error),
+                }
+            }
         }
-        let Some(status) = wait_thread_status(&identity, &event) else {
-            if identity.is_active_tracee() {
-                // A newborn auto-attached ptrace child can briefly exist with
-                // this exact procfs generation before its first wait status
-                // becomes visible. ECHILD is transient only in that window.
-                retrying_echild = true;
+        Err(Errno::ENOENT | Errno::ESRCH) => {}
+        Err(error) => return Err(error),
+    }
+    *gate = true;
+    Ok(true)
+}
+
+/// A Procfs worker never consumes a numeric wait. It supplies bounded hints
+/// until the live actual ptracer assists, and publishes only that caller's
+/// consumed FIFO. In particular, host ptracer exit cannot make it steal a
+/// replacement's stop or terminal report.
+fn legacy_worker_thread(
+    _pid: Pid,
+    event: &Arc<Event>,
+    identity: &WorkerIdentity,
+) -> Option<Arc<WorkerIdentity>> {
+    let observe = WaitPidFlag::from_bits_retain(
+        WaitPidFlag::WEXITED.bits()
+            | WaitPidFlag::WSTOPPED.bits()
+            | WaitPidFlag::WNOWAIT.bits()
+            | WaitPidFlag::WNOHANG.bits()
+            | libc::__WALL,
+    );
+    loop {
+        #[cfg(test)]
+        pause_retirement_for_test(&event.legacy_worker_cycle_pause);
+        let mut progress = event.legacy_wait.lock();
+        if let Some(status) = progress.consumed.pop_front() {
+            drop(progress);
+            #[cfg(test)]
+            if (libc::WIFEXITED(status) || libc::WIFSIGNALED(status))
+                && let Some(pause) = event.terminal_publish_pause.lock().take()
+            {
+                let _ = pause.captured.send(());
+                let _ = pause.resume.recv_timeout(Duration::from_secs(2));
+            }
+            // Never acquire status/publication locks while holding progress.
+            event.update(status);
+            if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                let mut progress = event.legacy_wait.lock();
+                debug_assert!(progress.consumed.is_empty());
+                progress.retiring = true;
+                progress.observed = None;
+                break;
+            }
+            continue;
+        }
+        // Promotion is installed under this same progress lock. Every
+        // actual consumed legacy status above is published first, and no
+        // caller can enqueue another once the native anchor is installed.
+        if !progress.retiring
+            && let Some(native) = event.native_wait_identity.get()
+        {
+            return Some(native.clone());
+        }
+        // Attachment and host-owner lifetime are checked even while the
+        // same WNOWAIT hint remains parked. A former host owner can exit,
+        // or a different host thread can immediately reattach, without an
+        // intervening ECHILD observation by this worker.
+        match close_unowned_legacy_wait(identity, event) {
+            Ok(true) => {
+                progress.retiring = true;
+                progress.observed = None;
+                drop(progress);
+                event.mark_echild();
+                break;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                progress.error = Some(error);
+                drop(progress);
+                event.status_changed.notify_all();
+                event.status_waker.wake();
+                event.exit_waiters.wake_all();
                 thread::sleep(Duration::from_millis(1));
                 continue;
             }
-            // Publish before unregistering so held and newly registered late
-            // waiters both receive a typed terminal result instead of hanging.
-            event.mark_echild();
-            break;
-        };
-        retrying_echild = false;
-        #[cfg(test)]
-        if (libc::WIFEXITED(status) || libc::WIFSIGNALED(status))
-            && let Some(pause) = event.terminal_publish_pause.lock().take()
-        {
-            // Test-only interval after the sole real wait reaped the child,
-            // before publication. Disconnection also releases the worker.
-            let _ = pause.captured.send(());
-            let _ = pause.resume.recv_timeout(Duration::from_secs(2));
         }
-        event.update(status);
+        let observed = if progress.retiring {
+            Err(Errno::ECHILD)
+        } else {
+            identity.pidfd.wait_status(observe)
+        };
+        match observed {
+            Ok(status) => {
+                progress.observed = status;
+                progress.error = None;
+            }
+            Err(Errno::ECHILD) => match close_unowned_legacy_wait(identity, event) {
+                Ok(true) => {
+                    debug_assert!(progress.consumed.is_empty());
+                    progress.retiring = true;
+                    progress.observed = None;
+                    drop(progress);
+                    event.mark_echild();
+                    break;
+                }
+                Ok(false) => {}
+                Err(error) => progress.error = Some(error),
+            },
+            Err(Errno::EINTR) => {}
+            Err(error) => progress.error = Some(error),
+        }
+        // A hint is only a wakeup. Keep checking retained lifetime even when
+        // the caller never polls: its OS thread can exit outside any gate.
+        let wake = progress.observed.is_some() || progress.error.is_some();
+        #[cfg(test)]
+        if progress.observed.is_some() {
+            pause_retirement_for_test(&event.legacy_observation_pause);
+        }
+        drop(progress);
+        if wake {
+            event.status_changed.notify_all();
+            event.status_waker.wake();
+            event.exit_waiters.wake_all();
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    None
+}
 
-        // Try to avoid reaching an ECHILD error by terminating the loop on the
-        // last event.
-        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
-            break;
+/// A worker thread that simply wakes a future when a process changes state.
+fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
+    let native = if matches!(identity.pidfd, ThreadHandle::Procfs { .. }) {
+        legacy_worker_thread(pid, &event, &identity)
+    } else {
+        Some(identity.clone())
+    };
+    if let Some(identity) = native {
+        let mut retrying_echild = false;
+        loop {
+            // Revalidate before retrying a transient ECHILD. The retained lifetime
+            // descriptor refuses a numeric wait after this generation retires.
+            if retrying_echild && event.mark_echild_if_unowned(&identity) {
+                break;
+            }
+            let Some(status) = wait_thread_status(&identity, &event) else {
+                if !event.mark_echild_if_unowned(&identity) {
+                    // A newborn auto-attached ptrace child can briefly exist with
+                    // this exact procfs generation before its first wait status
+                    // becomes visible. ECHILD is transient only in that window.
+                    retrying_echild = true;
+                    thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                // Publish before unregistering so held and newly registered late
+                // waiters both receive a typed terminal result instead of hanging.
+                break;
+            };
+            retrying_echild = false;
+            #[cfg(test)]
+            if (libc::WIFEXITED(status) || libc::WIFSIGNALED(status))
+                && let Some(pause) = event.terminal_publish_pause.lock().take()
+            {
+                // Test-only interval after the sole real wait reaped the child,
+                // before publication. Disconnection also releases the worker.
+                let _ = pause.captured.send(());
+                let _ = pause.resume.recv_timeout(Duration::from_secs(2));
+            }
+            event.update(status);
+
+            // Try to avoid reaching an ECHILD error by terminating the loop on the
+            // last event.
+            if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                break;
+            }
         }
     }
     // The worker owns terminal registry cleanup. A WaitFuture may be dropped
@@ -2890,13 +3869,18 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
     NOTIFIER.remove(pid, &event);
     #[cfg(test)]
     pause_retirement_for_test(&event.worker_identity_retirement_pause);
-    // DONE acknowledges release of notifier-owned identity references, not
-    // merely receipt of terminal status. Event itself owns no descriptors.
+    // DONE acknowledges release of the worker's identity reference, not
+    // merely receipt of terminal status. Caller-retained Events/handles may
+    // keep identity descriptors and the legacy host-owner directory alive.
     drop(identity);
     event.mark_worker_done();
 }
 
-fn try_replay_sync_terminal(pid: Pid, handle: &EventHandle) -> Option<Result<Wait, Error>> {
+fn try_replay_sync_terminal(
+    pid: Pid,
+    handle: &EventHandle,
+    token: &TraceeToken,
+) -> Option<Result<Wait, Error>> {
     let handle = handle.resolved_handle();
     let event = handle.event();
     let reservation = event.try_terminal_reservation_sync()?;
@@ -2905,7 +3889,7 @@ fn try_replay_sync_terminal(pid: Pid, handle: &EventHandle) -> Option<Result<Wai
         Ok(reservation) => Wait::from_raw_with_token(
             pid,
             reservation.status,
-            TraceeToken::from_event(handle.clone()),
+            sync_decode_token(token, handle.clone()),
         ),
     })
 }
@@ -2917,10 +3901,14 @@ fn try_replay_sync_terminal(pid: Pid, handle: &EventHandle) -> Option<Result<Wai
 fn try_wait_retained_notifier_terminal(
     pid: Pid,
     handle: &EventHandle,
+    token: &TraceeToken,
 ) -> Option<Result<Wait, Error>> {
+    if let Err(error) = token.policy.check_handle(handle) {
+        return Some(Err(error.into()));
+    }
     let identity = handle.identity()?;
     let event = handle.event();
-    if identity.pid != pid || !event.worker_is_running() {
+    if identity.pid != pid || handle.uses_procfs_wait() || !event.worker_is_running() {
         #[cfg(test)]
         {
             // Observe the actual negative eligibility decision before numeric
@@ -2941,7 +3929,7 @@ fn try_wait_retained_notifier_terminal(
         Ok(SyncWaitOwnership::Claimed(_)) => return None,
         Err(error) => return Some(Err(error.into())),
     }
-    wait_retained_notifier_terminal_status(pid, handle)
+    wait_retained_notifier_terminal_status(pid, handle, token)
 }
 
 /// The caller has selected this original Event's committed notifier through
@@ -2949,9 +3937,13 @@ fn try_wait_retained_notifier_terminal(
 fn wait_retained_notifier_terminal_status(
     pid: Pid,
     handle: &EventHandle,
+    token: &TraceeToken,
 ) -> Option<Result<Wait, Error>> {
+    if let Err(error) = token.policy.check_handle(handle) {
+        return Some(Err(error.into()));
+    }
     let event = handle.event();
-    let reservation = match event.wait_status_reservation_sync() {
+    let reservation = match event.wait_status_reservation_sync(handle) {
         Ok(reservation) => reservation,
         Err(error) => return Some(Err(error.into())),
     };
@@ -2959,7 +3951,7 @@ fn wait_retained_notifier_terminal_status(
         return None;
     }
     match event.decode_status_return(reservation, |status| {
-        Wait::from_raw_with_token(pid, status, TraceeToken::from_event(handle.clone()))
+        Wait::from_raw_with_token(pid, status, sync_decode_token(token, handle.clone()))
     }) {
         Ok(StatusReturn::Returned(wait)) => Some(Ok(wait)),
         Ok(StatusReturn::Cancelled(_)) => Some(Err(Errno::ECANCELED.into())),
@@ -2980,10 +3972,12 @@ fn wait_retained_notifier_terminal_status(
 fn reconcile_failed_sync_capture(
     pid: Pid,
     requested: &EventHandle,
+    token: &TraceeToken,
     capture_error: Errno,
 ) -> Result<Wait, Error> {
     loop {
         let handle = requested.resolved_handle();
+        token.policy.check_handle(&handle)?;
         let event = Arc::clone(handle.event());
         let ownership = event.claim_sync_wait()?;
         if !Arc::ptr_eq(handle.event(), &event) {
@@ -3000,15 +3994,24 @@ fn reconcile_failed_sync_capture(
             return Err(capture_error.into());
         }
         return match ownership {
-            SyncWaitOwnership::Notifier => wait_retained_notifier_terminal_status(pid, &handle)
+            SyncWaitOwnership::Notifier => wait_retained_notifier_terminal_status(pid, &handle, token)
                 .unwrap_or_else(|| Err(capture_error.into())),
             SyncWaitOwnership::Claimed(_owner) => {
                 // Rollback/no owner supplies no wait authority. A terminal
                 // publication during arbitration can still be replayed; in
                 // its absence preserve the failed capture, then release SYNC.
-                try_replay_sync_terminal(pid, &handle).unwrap_or_else(|| Err(capture_error.into()))
+                try_replay_sync_terminal(pid, &handle, token)
+                    .unwrap_or_else(|| Err(capture_error.into()))
             }
         };
+    }
+}
+
+fn sync_decode_token(token: &TraceeToken, event: EventHandle) -> TraceeToken {
+    TraceeToken {
+        event,
+        policy: token.policy,
+        ptracer_owner: token.ptracer_owner.clone(),
     }
 }
 
@@ -3032,25 +4035,35 @@ fn resume_cancelled_sync_status(pid: Pid, status: i32) -> Result<(), Error> {
 /// authority and atomic Event wait-owner claim. A losing synchronous caller
 /// consumes the notifier FIFO instead of issuing a second kernel wait.
 pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
+    wait_sync_for_policy(pid, token, WaitPolicy::Native)
+}
+
+fn wait_sync_for_policy(
+    pid: Pid,
+    mut token: TraceeToken,
+    policy: WaitPolicy,
+) -> Result<Wait, Error> {
+    token.policy = policy;
     let requested = token.event().resolved_handle();
+    policy.check_handle(&requested)?;
     // A retained same-generation result remains authoritative even after the
     // procfs task and registry entry have disappeared.
-    if let Some(replayed) = try_replay_sync_terminal(pid, &requested) {
+    if let Some(replayed) = try_replay_sync_terminal(pid, &requested, &token) {
         return replayed;
     }
-    if let Some(terminal) = try_wait_retained_notifier_terminal(pid, &requested) {
+    if let Some(terminal) = try_wait_retained_notifier_terminal(pid, &requested, &token) {
         return terminal;
     }
-    let handle = match NOTIFIER.sync_handle(pid, &requested) {
+    let handle = match NOTIFIER.sync_handle_for_policy(pid, &requested, policy) {
         Ok(handle) => handle,
         Err(error) => {
-            if let Some(replayed) = try_replay_sync_terminal(pid, &requested) {
+            if let Some(replayed) = try_replay_sync_terminal(pid, &requested, &token) {
                 return replayed;
             }
-            return reconcile_failed_sync_capture(pid, &requested, error);
+            return reconcile_failed_sync_capture(pid, &requested, &token, error);
         }
     };
-    let token = TraceeToken::from_event(handle);
+    token.event = handle;
     #[cfg(test)]
     if let Some(pause) = SYNC_HANDLE_PAUSES.lock().remove(&pid) {
         pause.captured.wait();
@@ -3062,9 +4075,9 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
         let event = Arc::clone(handle.event());
         match event.claim_sync_wait()? {
             SyncWaitOwnership::Notifier => {
-                let reservation = event.wait_status_reservation_sync()?;
+                let reservation = event.wait_status_reservation_sync(&handle)?;
                 match event.decode_status_return(reservation, |status| {
-                    Wait::from_raw_with_token(pid, status, TraceeToken::from_event(handle))
+                    Wait::from_raw_with_token(pid, status, sync_decode_token(&token, handle))
                 })? {
                     StatusReturn::Returned(decoded) => return Ok(decoded),
                     StatusReturn::Cancelled(_) => return Err(Errno::ECANCELED.into()),
@@ -3078,7 +4091,9 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                     continue;
                 }
                 #[cfg(test)]
-                if let Some(pause) = SYNC_WAIT_CLAIM_PAUSES.lock().remove(&pid) {
+                let pause = SYNC_WAIT_CLAIM_PAUSES.lock().remove(&pid);
+                #[cfg(test)]
+                if let Some(pause) = pause {
                     pause.captured.wait();
                     pause.resume.wait();
                 }
@@ -3089,7 +4104,7 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                         Wait::from_raw_with_token(
                             pid,
                             status,
-                            TraceeToken::from_event(handle.clone()),
+                            sync_decode_token(&token, handle.clone()),
                         )
                     })? {
                         StatusReturn::Returned(decoded) => return Ok(decoded),
@@ -3110,12 +4125,40 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                         NOTIFIER.remove(pid, &event);
                         return Err(Errno::ESRCH.into());
                     }
-                    let status = match wait_thread_consuming(identity.pid, &identity.pidfd, &event)
-                    {
+                    let result = if matches!(identity.pidfd, ThreadHandle::Procfs { .. }) {
+                        if !Arc::ptr_eq(handle.event(), &event) {
+                            drop(owner);
+                            continue 'claim;
+                        }
+                        let progress = event.legacy_wait.lock();
+                        if progress.retiring {
+                            Err(Errno::ECHILD)
+                        } else {
+                            match try_consume_legacy_status(identity, &event, Some(&handle)) {
+                                Ok(Some(status)) => Ok(status),
+                                Ok(None) | Err(Errno::EINTR) => {
+                                    drop(progress);
+                                    thread::sleep(Duration::from_millis(1));
+                                    continue;
+                                }
+                                Err(error) => Err(error),
+                            }
+                        }
+                    } else {
+                        wait_thread_consuming(identity.pid, &identity.pidfd, &event)
+                    };
+                    let status = match result {
                         Ok(status) => status,
                         Err(error) => {
                             if error == Errno::ECHILD {
-                                event.mark_echild();
+                                if matches!(identity.pidfd, ThreadHandle::Procfs { .. }) {
+                                    if !event.mark_legacy_echild_if_unowned(identity)? {
+                                        thread::sleep(Duration::from_millis(1));
+                                        continue;
+                                    }
+                                } else {
+                                    event.mark_echild();
+                                }
                                 event.finish_sync_terminal(pid);
                             } else {
                                 NOTIFIER.remove(pid, &event);
@@ -3125,7 +4168,9 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                     };
                     event.update_sync_status(status);
                     #[cfg(test)]
-                    if let Some(pause) = SYNC_STATUS_PUBLICATION_PAUSES.lock().remove(&pid) {
+                    let pause = SYNC_STATUS_PUBLICATION_PAUSES.lock().remove(&pid);
+                    #[cfg(test)]
+                    if let Some(pause) = pause {
                         pause.captured.wait();
                         pause.resume.wait();
                     }
@@ -3136,7 +4181,7 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                             return Wait::from_raw_with_token(
                                 pid,
                                 status,
-                                TraceeToken::from_event(handle),
+                                sync_decode_token(&token, handle),
                             );
                         }
                     }
@@ -3151,7 +4196,7 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                         Wait::from_raw_with_token(
                             pid,
                             reserved_status,
-                            TraceeToken::from_event(handle.clone()),
+                            sync_decode_token(&token, handle.clone()),
                         )
                     })? {
                         StatusReturn::Returned(decoded) => return Ok(decoded),
@@ -3170,6 +4215,10 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
 
 fn worker_process_start_time(pid: Pid) -> std::io::Result<u64> {
     let stat = launch_window::read_to_string(format!("/proc/{pid}/stat"))?;
+    worker_stat_start_time(&stat)
+}
+
+fn worker_stat_start_time(stat: &str) -> std::io::Result<u64> {
     let fields = stat
         .rsplit_once(") ")
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed stat"))?
@@ -3180,6 +4229,44 @@ fn worker_process_start_time(pid: Pid) -> std::io::Result<u64> {
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing starttime"))?
         .parse()
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+/// Capture through the retained task directory on the validated proc mount.
+/// Both stat reads resolve that original inode's PID object, even if a
+/// numeric name is reused or the caller's /proc path is overmounted.
+fn retained_proc_snapshot(directory: RawFd) -> io::Result<WorkerProcSnapshot> {
+    fn read(directory: RawFd, name: &std::ffi::CStr) -> io::Result<String> {
+        let _open = launch_window::TransientOpen::begin();
+        let raw = unsafe {
+            libc::openat(
+                directory,
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if raw < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        let mut bounded = io::Read::take(fs::File::from(fd), 1024 * 1024);
+        let mut text = String::new();
+        io::Read::read_to_string(&mut bounded, &mut text)?;
+        Ok(text)
+    }
+    let start_time = worker_stat_start_time(&read(directory, c"stat")?)?;
+    let status = read(directory, c"status")?;
+    let snapshot = WorkerProcSnapshot {
+        tgid: worker_status_pid(&status, "Tgid:")?,
+        tracer_pid: worker_status_pid(&status, "TracerPid:")?,
+        start_time,
+    };
+    if worker_stat_start_time(&read(directory, c"stat")?)? != start_time {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "tracee identity changed while reading retained procfs",
+        ));
+    }
+    Ok(snapshot)
 }
 
 fn worker_status_pid(status: &str, name: &str) -> std::io::Result<Pid> {
@@ -3228,7 +4315,12 @@ fn procfs_error_shows_exit(error: &std::io::Error) -> bool {
 }
 
 fn fd_inode(fd: &OwnedFd) -> std::io::Result<u64> {
-    fs::metadata(format!("/proc/self/fd/{}", fd.as_raw_fd())).map(|metadata| metadata.ino())
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(fd.as_raw_fd(), metadata.as_mut_ptr()) } < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(unsafe { metadata.assume_init() }.st_ino)
+    }
 }
 
 fn io_errno(error: std::io::Error) -> Errno {
@@ -3282,8 +4374,64 @@ impl Notifier {
         Notifier { pids, unregistered }
     }
 
+    #[cfg(test)]
     fn capture_identity(&self, pid: Pid) -> Result<Arc<WorkerIdentity>, Errno> {
         WorkerIdentity::capture(pid).map(Arc::new)
+    }
+
+    fn capture_identity_for_policy(
+        &self,
+        pid: Pid,
+        policy: WaitPolicy,
+    ) -> Result<Arc<WorkerIdentity>, Errno> {
+        WorkerIdentity::capture_for_policy(pid, policy).map(Arc::new)
+    }
+
+    /// Starts a new attachment session only after the preceding wait owner
+    /// reached DONE. Old capabilities keep their closed gate and ECHILD
+    /// history instead of following this new wait authority.
+    fn reconnect(&self, pid: Pid, prior: &EventHandle) -> EventHandle {
+        let Some(identity) = prior.identity() else {
+            return prior.clone();
+        };
+        debug_assert_eq!(
+            prior.event().worker_state.load(Ordering::Acquire),
+            WORKER_DONE
+        );
+        let pids = self.pids.lock();
+        if !prior.is_current_ptracer() {
+            return prior.clone();
+        }
+        if let Some(occupied) = pids.get(&pid)
+            && occupied.identity.same_live_generation(identity) == Ok(true)
+            && !*occupied.handle.event().terminal_reaping.read()
+        {
+            return occupied.handle.clone();
+        }
+        let mut unregistered = self.unregistered.lock();
+        let generations = unregistered.entry(pid).or_default();
+        // Remove retired sessions from constructor lookup without changing
+        // their still-held states, descriptors, or terminal publications.
+        generations.retain(|generation| {
+            generation.upgrade().is_some_and(|generation| {
+                !*EventHandle(generation, None)
+                    .event()
+                    .terminal_reaping
+                    .read()
+            })
+        });
+        for generation in generations.iter().filter_map(Weak::upgrade) {
+            let handle = EventHandle(generation, None);
+            if handle
+                .identity()
+                .is_some_and(|bound| bound.same_live_generation(identity) == Ok(true))
+            {
+                return handle.resolved_handle();
+            }
+        }
+        let handle = EventHandle::with_identity(Arc::clone(identity));
+        generations.push(Arc::downgrade(&handle.0));
+        handle
     }
 
     /// Redirects the generations handed out for `pid` before any registration
@@ -3308,7 +4456,7 @@ impl Notifier {
                 generations
                     .iter()
                     .filter_map(Weak::upgrade)
-                    .map(EventHandle)
+                    .map(|generation| EventHandle(generation, None))
                     .collect()
             })
             .unwrap_or_default();
@@ -3428,7 +4576,43 @@ impl Notifier {
         }
     }
 
-    fn current_or_new(&self, pid: Pid) -> Result<EventHandle, Errno> {
+    fn matches_current_for_policy(
+        bound: &WorkerIdentity,
+        current: &WorkerIdentity,
+        policy: WaitPolicy,
+    ) -> Result<bool, Errno> {
+        if policy == WaitPolicy::Native && !matches!(bound.pidfd, ThreadHandle::Pidfd(_)) {
+            if !bound.same_generation(current) {
+                return Ok(false);
+            }
+            return match retained_proc_status(bound.proc_dir.as_raw_fd()) {
+                Ok(status) => Ok(status.pid == bound.pid && status.tgid == bound.snapshot.tgid),
+                Err(Errno::ENOENT | Errno::ESRCH) => Ok(false),
+                Err(error) => Err(error),
+            };
+        }
+        bound.same_live_generation(current)
+    }
+
+    fn view_for_policy(
+        handle: &EventHandle,
+        current: &Arc<WorkerIdentity>,
+        policy: WaitPolicy,
+    ) -> Result<EventHandle, Errno> {
+        if policy == WaitPolicy::Native
+            && !matches!(handle.identity().unwrap().pidfd, ThreadHandle::Pidfd(_))
+        {
+            return handle.native_view(current.clone());
+        }
+        policy.check_handle(handle)?;
+        Ok(handle.resolved_handle())
+    }
+
+    fn current_or_new_for_policy(
+        &self,
+        pid: Pid,
+        policy: WaitPolicy,
+    ) -> Result<EventHandle, Errno> {
         // Steady-state fast path: adopt a still-live registered generation
         // without a full procfs identity re-capture. This path is reached once
         // per `Stopped::new_unchecked` / ptrace-op reconstruction in
@@ -3452,10 +4636,21 @@ impl Notifier {
         if let Some((handle, identity)) = cached
             && matches!(identity.pidfd_is_live(), Ok(true))
         {
-            return Ok(handle);
+            if policy == WaitPolicy::PtracerThread
+                || handle
+                    .identity()
+                    .is_some_and(|identity| matches!(identity.pidfd, ThreadHandle::Pidfd(_)))
+            {
+                return Ok(handle);
+            }
+            if let Some(native) = handle.preferred_native_view() {
+                return Ok(native);
+            }
+            // This caller must obtain its own actual native result. A live
+            // legacy cache entry is not this caller's pidfd_open refusal.
         }
         loop {
-            let current = self.capture_identity(pid)?;
+            let current = self.capture_identity_for_policy(pid, policy)?;
             if !current.is_same_process_generation() {
                 continue;
             }
@@ -3475,9 +4670,9 @@ impl Notifier {
                 continue;
             }
             if let Some(occupied) = pids.get(&pid)
-                && occupied.identity.same_live_generation(&current)?
+                && Self::matches_current_for_policy(&occupied.identity, &current, policy)?
             {
-                return Ok(occupied.handle.clone());
+                return Self::view_for_policy(&occupied.handle, &current, policy);
             }
             // An entry left for a reaped generation of this PID would be
             // replaced by an Event for this one that the generations cached
@@ -3493,11 +4688,11 @@ impl Notifier {
             let mut unregistered = self.unregistered.lock();
             let cached = unregistered.get(&pid).into_iter().flatten();
             for generation in cached.filter_map(Weak::upgrade) {
-                let handle = EventHandle(generation);
+                let handle = EventHandle(generation, None);
                 if let Some(bound) = handle.identity()
-                    && bound.same_live_generation(&current)?
+                    && Self::matches_current_for_policy(bound, &current, policy)?
                 {
-                    return Ok(handle.resolved_handle());
+                    return Self::view_for_policy(&handle, &current, policy);
                 }
             }
             unregistered.retain(|_, generations| {
@@ -3516,8 +4711,19 @@ impl Notifier {
     /// Resolves one PID generation to its process-global wait authority before
     /// a synchronous caller can claim or enter the kernel wait. A failure
     /// leaves `requested` reachable for its task (`retain_failed_registrant`).
+    #[cfg(test)]
     fn sync_handle(&self, pid: Pid, requested: &EventHandle) -> Result<EventHandle, Errno> {
-        let result = self.resolve_sync_handle(pid, requested);
+        self.sync_handle_for_policy(pid, requested, WaitPolicy::Native)
+    }
+
+    fn sync_handle_for_policy(
+        &self,
+        pid: Pid,
+        requested: &EventHandle,
+        policy: WaitPolicy,
+    ) -> Result<EventHandle, Errno> {
+        policy.check_handle(requested)?;
+        let result = self.resolve_sync_handle_for_policy(pid, requested, policy);
         if result.is_err() {
             #[cfg(test)]
             if let Some(pause) = RETENTION_PAUSES.lock().remove(&pid) {
@@ -3529,10 +4735,15 @@ impl Notifier {
         result
     }
 
-    fn resolve_sync_handle(&self, pid: Pid, requested: &EventHandle) -> Result<EventHandle, Errno> {
+    fn resolve_sync_handle_for_policy(
+        &self,
+        pid: Pid,
+        requested: &EventHandle,
+        policy: WaitPolicy,
+    ) -> Result<EventHandle, Errno> {
         let mut capture_retries = 0;
         loop {
-            let current = match self.capture_identity(pid) {
+            let current = match self.capture_identity_for_policy(pid, policy) {
                 Err(Errno::ENOENT | Errno::ESRCH)
                     if capture_retries < SYNC_IDENTITY_CAPTURE_RETRIES =>
                 {
@@ -3565,9 +4776,10 @@ impl Notifier {
                 continue;
             }
             if let Some(occupied) = pids.get(&pid)
-                && occupied.identity.same_live_generation(&current)?
+                && Self::matches_current_for_policy(&occupied.identity, &current, policy)?
             {
-                return requested.adopt_authoritative(&occupied.handle);
+                let authoritative = Self::view_for_policy(&occupied.handle, &current, policy)?;
+                return requested.adopt_authoritative(&authoritative);
             }
             if let Err(error) = self.absorb_unregistered(pid, &current, requested) {
                 self.keep_unregistered(pid, requested);
@@ -3649,6 +4861,12 @@ impl Notifier {
         }
         if event.try_begin_unstarted_completion() {
             // Publish the terminal result before completion becomes visible.
+            if handle
+                .identity()
+                .is_some_and(|identity| matches!(identity.pidfd, ThreadHandle::Procfs { .. }))
+            {
+                event.mark_terminal_reaping();
+            }
             event.mark_echild();
             // This cfg(test) pause runs while `pids`, the process-wide
             // NOTIFIER registry lock, is held. While an armed pause waits,
@@ -3684,8 +4902,21 @@ impl Notifier {
     }
 
     /// Registers the exact event generation carried by a typed state.
+    #[cfg(test)]
     fn event(&self, pid: Pid, handle: &EventHandle) -> Result<EventHandle, Errno> {
+        self.event_for_policy(pid, handle, WaitPolicy::Native)
+    }
+
+    fn event_for_policy(
+        &self,
+        pid: Pid,
+        handle: &EventHandle,
+        policy: WaitPolicy,
+    ) -> Result<EventHandle, Errno> {
         loop {
+            // A policy refusal belongs to this request, not to the healthy
+            // cached Event's registration or descriptor cancellation state.
+            policy.check_handle(handle)?;
             let requested = Arc::clone(handle.event());
             let owner = match requested.claim_notifier_wait() {
                 NotifierWaitOwnership::Existing => return Ok(handle.resolved_handle()),
@@ -3697,7 +4928,7 @@ impl Notifier {
             }
             #[cfg(test)]
             requested.pause_notifier_registration_for_test(WORKER_NOT_STARTED);
-            match self.event_with_owner(pid, handle, &requested, owner)? {
+            match self.event_with_owner_for_policy(pid, handle, &requested, owner, policy)? {
                 EventRegistration::Registered(handle) => return Ok(handle),
                 EventRegistration::Adopted => {}
             }
@@ -3765,6 +4996,7 @@ impl Notifier {
 
     /// Registers `handle` for `pid`. A failure leaves it reachable for its
     /// task (`retain_failed_registrant`).
+    #[cfg(test)]
     fn event_with_owner(
         &self,
         pid: Pid,
@@ -3772,7 +5004,19 @@ impl Notifier {
         requested: &Arc<Event>,
         owner: NotifierWaitOwner<'_>,
     ) -> Result<EventRegistration, Errno> {
-        let result = self.register_with_owner(pid, handle, requested, owner);
+        self.event_with_owner_for_policy(pid, handle, requested, owner, WaitPolicy::Native)
+    }
+
+    fn event_with_owner_for_policy(
+        &self,
+        pid: Pid,
+        handle: &EventHandle,
+        requested: &Arc<Event>,
+        owner: NotifierWaitOwner<'_>,
+        policy: WaitPolicy,
+    ) -> Result<EventRegistration, Errno> {
+        policy.check_handle(handle)?;
+        let result = self.register_with_owner(pid, handle, requested, owner, policy);
         if result.is_err() {
             #[cfg(test)]
             if let Some(pause) = RETENTION_PAUSES.lock().remove(&pid) {
@@ -3790,6 +5034,7 @@ impl Notifier {
         handle: &EventHandle,
         requested: &Arc<Event>,
         owner: NotifierWaitOwner<'_>,
+        policy: WaitPolicy,
     ) -> Result<EventRegistration, Errno> {
         if requested.is_terminal() {
             owner.commit();
@@ -3806,7 +5051,7 @@ impl Notifier {
         }
 
         loop {
-            let current = match self.capture_identity(pid) {
+            let current = match self.capture_identity_for_policy(pid, policy) {
                 Ok(identity) => identity,
                 Err(Errno::ENOENT | Errno::ESRCH) => {
                     let resolved = self.resolve_echild(pid, handle);
@@ -3887,10 +5132,23 @@ impl Notifier {
                 WORKER_NOT_STARTED => {}
                 state => unreachable!("invalid worker state {state}"),
             }
+            if matches!(current.pidfd, ThreadHandle::Pidfd(_))
+                && handle
+                    .identity()
+                    .is_some_and(|identity| !matches!(identity.pidfd, ThreadHandle::Pidfd(_)))
+            {
+                let _native_view = handle.native_view(current.clone())?;
+            }
+            let admitted_worker = handle.worker_identity(&current);
             let mut worker_identity = None;
             let event_handle = match pids.entry(pid) {
                 Entry::Occupied(occupied) if occupied.get().handle == *handle => {
-                    match occupied.get().identity.same_live_generation(&current) {
+                    policy.check_handle(handle)?;
+                    match Self::matches_current_for_policy(
+                        &occupied.get().identity,
+                        &current,
+                        policy,
+                    ) {
                         Ok(true) => {}
                         Ok(false) => {
                             drop(pids);
@@ -3904,14 +5162,15 @@ impl Notifier {
                         }
                     }
                     if requested.try_begin_worker_start() {
-                        worker_identity = Some(Arc::clone(&occupied.get().identity));
+                        worker_identity = Some(handle.worker_identity(&occupied.get().identity));
                     }
                     handle.clone()
                 }
                 Entry::Occupied(mut occupied) => {
                     match occupied.get().identity.same_live_generation(&current) {
                         Ok(true) => {
-                            let authoritative = occupied.get().handle.clone();
+                            let authoritative =
+                                Self::view_for_policy(&occupied.get().handle, &current, policy)?;
                             drop(pids);
                             handle.adopt_authoritative(&authoritative)?;
                             drop(owner);
@@ -3933,10 +5192,10 @@ impl Notifier {
                     }
                     occupied.insert(NotifierEntry {
                         handle: handle.clone(),
-                        identity: Arc::clone(&current),
+                        identity: admitted_worker.clone(),
                     });
                     if requested.try_begin_worker_start() {
-                        worker_identity = Some(current);
+                        worker_identity = Some(admitted_worker.clone());
                     }
                     handle.clone()
                 }
@@ -3948,10 +5207,10 @@ impl Notifier {
                     }
                     vacant.insert(NotifierEntry {
                         handle: handle.clone(),
-                        identity: Arc::clone(&current),
+                        identity: admitted_worker.clone(),
                     });
                     if requested.try_begin_worker_start() {
-                        worker_identity = Some(current);
+                        worker_identity = Some(admitted_worker.clone());
                     }
                     handle.clone()
                 }
@@ -4358,7 +5617,23 @@ impl TerminalCleanup {
 
     /// Retries notifier registration and returns the exact capture/open error.
     pub fn ensure_registered(&self) -> Result<(), Errno> {
-        NOTIFIER.event(self.pid, &self.event).map(drop)
+        if let Some(error) = self.event.resolved().0.initial_capture_refusal.get() {
+            return Err(*error);
+        }
+        // A shared observer may register an already captured local identity,
+        // but it cannot capture a new legacy generation or consume its waits.
+        let policy = if self
+            .event
+            .identity()
+            .is_some_and(|identity| !matches!(identity.pidfd, ThreadHandle::Pidfd(_)))
+        {
+            WaitPolicy::PtracerThread
+        } else {
+            WaitPolicy::Native
+        };
+        NOTIFIER
+            .event_for_policy(self.pid, &self.event, policy)
+            .map(drop)
     }
 
     #[cfg(test)]
@@ -4387,8 +5662,27 @@ impl TerminalCleanup {
     /// Stops this already-bound generation for fatal tree cancellation.
     /// Like `request_sigkill`, delivery is not a stopped-state acknowledgment.
     /// The caller must consume an actual owned ptrace stop before discovery.
+    ///
+    /// On Linux before 6.9, the retained descriptor does not support an
+    /// exact thread-directed SIGSTOP. A live legacy handle returns
+    /// `EOPNOTSUPP` without signaling; a retired descriptor returns `ESRCH`.
+    /// Native thread pidfds keep their original behavior. Descriptor-directed
+    /// [`Self::request_sigkill`] remains available on either kernel path.
     pub fn request_sigstop(&self) -> Result<(), Errno> {
         self.request_cancellation_signal(libc::SIGSTOP)
+    }
+
+    /// Whether this generation was bound to a native thread pidfd.
+    ///
+    /// This immutable descriptor classification performs no signal request.
+    /// In particular, a native signal request's error does not change the
+    /// answer. Legacy handles retain process-directed signaling and cannot
+    /// implement [`Self::request_sigstop`]'s exact thread delivery.
+    pub fn has_thread_pidfd(&self) -> Result<bool, Errno> {
+        self.event
+            .identity()
+            .map(|identity| matches!(identity.pidfd, ThreadHandle::Pidfd(_)))
+            .ok_or_else(|| self.registration_error().unwrap_or(Errno::ENODATA))
     }
 
     fn request_cancellation_signal(&self, signal: i32) -> Result<(), Errno> {
@@ -4399,9 +5693,7 @@ impl TerminalCleanup {
             .event
             .identity()
             .ok_or_else(|| self.registration_error().unwrap_or(Errno::ENODATA))?;
-        identity
-            .pidfd
-            .send_cancellation_signal(self.event.event(), signal)
+        identity.pidfd.send_cancellation_signal(signal)
     }
 
     #[cfg(test)]
@@ -4412,6 +5704,13 @@ impl TerminalCleanup {
     #[cfg(test)]
     fn finish_unstarted_raw_cleanup(&self) {
         let event = self.event.event();
+        if self
+            .event
+            .identity()
+            .is_some_and(|identity| matches!(identity.pidfd, ThreadHandle::Procfs { .. }))
+        {
+            event.mark_terminal_reaping();
+        }
         event.mark_echild();
         NOTIFIER.remove(self.pid, event);
         event.mark_worker_done();
@@ -4440,8 +5739,8 @@ impl TerminalCleanup {
     /// Acknowledgment follows removal of this generation's registry entry and
     /// release of the worker's identity reference. It does not release caller
     /// handles or wait for the OS worker thread itself to finish returning.
-    /// This does not call `waitpid`: after notifier registration, the worker
-    /// thread remains the sole owner of wait statuses for the PID.
+    /// This shared handle observes completion only. Legacy nonleader
+    /// progress requires a separate explicit ptracer-thread driver.
     pub fn wait(&self, timeout: Duration) -> bool {
         self.event.event().wait_worker_done(timeout)
     }
@@ -4472,6 +5771,15 @@ impl TerminalCleanup {
         &self,
         timeout: Duration,
     ) -> Option<PendingStatusReservation<'_>> {
+        WaitPolicy::Native.check_handle(&self.event).ok()?;
+        self.reserve_pending_for_policy(timeout, WaitPolicy::Native)
+    }
+
+    fn reserve_pending_for_policy(
+        &self,
+        timeout: Duration,
+        policy: WaitPolicy,
+    ) -> Option<PendingStatusReservation<'_>> {
         let state = self.event.event().wait_pending_status(timeout)?;
         let status = *state
             .pending
@@ -4481,6 +5789,7 @@ impl TerminalCleanup {
             pid: self.pid,
             status,
             event: self.event.resolved(),
+            policy,
             state,
         })
     }
@@ -4505,8 +5814,10 @@ impl TerminalCleanup {
     ///
     /// Returns `ETIMEDOUT` when the deadline passes first. Other decode errors
     /// and other resume errors are returned unchanged. This sends no signal
-    /// and does not call `waitpid`.
+    /// Native waits remain background-owned. Legacy nonleader waits are
+    /// assisted only by their authenticated actual ptracer thread.
     pub fn wait_after_sigkill(&self) -> Result<(), Error> {
+        WaitPolicy::Native.check_handle(&self.event)?;
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if self.wait(Duration::ZERO) {
@@ -4562,8 +5873,8 @@ impl TerminalCleanup {
     }
 
     /// Diagnostic: the raw wait statuses currently queued for this exact
-    /// event generation, oldest first. Observational only; it consumes and
-    /// reserves nothing.
+    /// event generation, oldest first. This reserves or removes no FIFO
+    /// entry, and performs no kernel wait.
     pub fn queued_raw_statuses(&self) -> Vec<i32> {
         self.event
             .event()
@@ -4632,6 +5943,7 @@ pub struct PendingStatusReservation<'a> {
     pid: Pid,
     status: i32,
     event: &'a EventHandle,
+    policy: WaitPolicy,
     state: MutexGuard<'a, StatusState>,
 }
 
@@ -4641,7 +5953,7 @@ impl PendingStatusReservation<'_> {
         Wait::from_raw_with_token(
             self.pid,
             self.status,
-            TraceeToken::from_event(self.event.clone()),
+            TraceeToken::from_event_for_policy(self.event.clone(), self.policy),
         )
     }
 
@@ -4662,8 +5974,18 @@ impl PendingStatusReservation<'_> {
     /// consumes the status. As on a status wait, the Exec whose report
     /// advanced the exit epoch is counted as retired and its exit stop is
     /// forwarded to the FIFO; see [`Event::forward_exit_stop_after_dead_exec`].
-    pub fn consume_dead_exec(mut self) -> Result<(), Self> {
-        if self.status != PTRACE_EVENT_EXEC_STOP || !matches!(self.decode(), Err(Error::Died(_))) {
+    pub fn consume_dead_exec(self) -> Result<(), Self> {
+        let token = TraceeToken::from_event_for_policy(self.event.clone(), self.policy);
+        self.consume_dead_exec_with_token(token)
+    }
+
+    fn consume_dead_exec_with_token(mut self, token: TraceeToken) -> Result<(), Self> {
+        if self.status != PTRACE_EVENT_EXEC_STOP
+            || !matches!(
+                Wait::from_raw_with_token(self.pid, self.status, token),
+                Err(Error::Died(_))
+            )
+        {
             return Err(self);
         }
         let epoch_exec = self.state.epoch_exec == Some(0);
@@ -4696,30 +6018,41 @@ impl WaitFuture {
     fn from_stopped(Stopped(pid, token, _): Stopped) -> Self {
         Self { pid, token }
     }
-}
 
-impl Future for WaitFuture {
-    type Output = Result<Wait, Error>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        let pid = this.pid;
-        let event_handle = match NOTIFIER.event(pid, this.token.event()) {
+    fn poll_for_policy(
+        &mut self,
+        cx: &mut Context<'_>,
+        policy: WaitPolicy,
+    ) -> Poll<Result<Wait, Error>> {
+        let pid = self.pid;
+        let event_handle = match NOTIFIER.event_for_policy(pid, self.token.event(), policy) {
             Ok(event) => event,
             Err(error) => return Poll::Ready(Err(error.into())),
         };
         let event = event_handle.event();
+        let ptracer_owner = self.token.ptracer_owner.clone();
         loop {
-            let reservation = match futures::ready!(event.poll_status_reservation(cx.waker())) {
-                Ok(reservation) => reservation,
-                Err(errno) => return Poll::Ready(Err(errno.into())),
+            let assistance = if policy == WaitPolicy::PtracerThread {
+                event_handle.try_assist_legacy_wait()
+            } else {
+                Ok(())
+            };
+            let reservation = match event.poll_status_reservation(cx.waker()) {
+                Poll::Ready(Ok(reservation)) => reservation,
+                Poll::Ready(Err(errno)) => return Poll::Ready(Err(errno.into())),
+                Poll::Pending => {
+                    return match assistance {
+                        Ok(()) => Poll::Pending,
+                        Err(error) => Poll::Ready(Err(error.into())),
+                    };
+                }
             };
             return match event.decode_status_return(reservation, |status| {
-                Wait::from_raw_with_token(
-                    pid,
-                    status,
-                    TraceeToken::from_event(event_handle.clone()),
-                )
+                let mut token = TraceeToken::from_event_for_policy(event_handle.clone(), policy);
+                if policy == WaitPolicy::PtracerThread {
+                    token.ptracer_owner = ptracer_owner.clone();
+                }
+                Wait::from_raw_with_token(pid, status, token)
             }) {
                 Ok(StatusReturn::Returned(decoded)) => Poll::Ready(Ok(decoded)),
                 Ok(StatusReturn::Cancelled(_)) => Poll::Ready(Err(Errno::ECANCELED.into())),
@@ -4729,6 +6062,14 @@ impl Future for WaitFuture {
                 Err(error) => Poll::Ready(Err(error)),
             };
         }
+    }
+}
+
+impl Future for WaitFuture {
+    type Output = Result<Wait, Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().poll_for_policy(cx, WaitPolicy::Native)
     }
 }
 
@@ -4780,18 +6121,19 @@ impl OwnedWaitFuture {
             inner: Some(WaitFuture::from_stopped(stopped)),
         }
     }
-}
-impl Future for OwnedWaitFuture {
-    type Output = Result<Wait, OwnedWaitError>;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        let Some(inner) = this.inner.as_mut() else {
+
+    fn poll_for_policy(
+        &mut self,
+        cx: &mut Context<'_>,
+        policy: WaitPolicy,
+    ) -> Poll<Result<Wait, OwnedWaitError>> {
+        let Some(inner) = self.inner.as_mut() else {
             return Poll::Ready(Err(OwnedWaitError::Completed));
         };
-        match Pin::new(inner).poll(cx) {
+        match inner.poll_for_policy(cx, policy) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Ok(wait)) => {
-                this.inner.take();
+                self.inner.take();
                 Poll::Ready(Ok(wait))
             }
             Poll::Ready(Err(Error::Errno(errno))) => Poll::Ready(Err(OwnedWaitError::Errno(errno))),
@@ -4802,6 +6144,14 @@ impl Future for OwnedWaitFuture {
                 Poll::Ready(Err(OwnedWaitError::Died))
             }
         }
+    }
+}
+
+impl Future for OwnedWaitFuture {
+    type Output = Result<Wait, OwnedWaitError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().poll_for_policy(cx, WaitPolicy::Native)
     }
 }
 
@@ -4838,32 +6188,612 @@ impl ExitFuture {
             }),
         }
     }
+
+    fn poll_for_policy(
+        &mut self,
+        cx: &mut Context<'_>,
+        policy: WaitPolicy,
+    ) -> Poll<Result<Stopped, Error>> {
+        let event_handle = match NOTIFIER.event_for_policy(self.pid, &self.event, policy) {
+            Ok(event) => event,
+            Err(error) => return Poll::Ready(Err(error.into())),
+        };
+        let event = event_handle.event();
+        let assistance = if policy == WaitPolicy::PtracerThread {
+            event_handle.try_assist_legacy_wait()
+        } else {
+            Ok(())
+        };
+        match event.poll_exit(&self.waiter, cx.waker()) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(Stopped::from_exit_token(
+                self.pid,
+                TraceeToken::from_event_for_policy(event_handle, policy),
+                self.waiter.epoch,
+            ))),
+            Poll::Ready(Err(errno)) => Poll::Ready(Err(errno.into())),
+            Poll::Pending => match assistance {
+                Ok(()) => Poll::Pending,
+                Err(error) => Poll::Ready(Err(error.into())),
+            },
+        }
+    }
 }
 
 impl Future for ExitFuture {
     type Output = Result<Stopped, Error>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        let event_handle = match NOTIFIER.event(this.pid, &this.event) {
-            Ok(event) => event,
-            Err(error) => return Poll::Ready(Err(error.into())),
-        };
-        let event = event_handle.event();
-        match futures::ready!(event.poll_exit(&this.waiter, cx.waker())) {
-            Ok(()) => Poll::Ready(Ok(Stopped::from_exit_token(
-                this.pid,
-                TraceeToken::from_event(event_handle),
-                this.waiter.epoch,
-            ))),
-            Err(errno) => Poll::Ready(Err(errno.into())),
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().poll_for_policy(cx, WaitPolicy::Native)
+    }
+}
+
+/// Per-interface host authority, separate from the Procfs Event's wait owner.
+/// Native detach/reattach can keep one Event while changing the ptracer.
+struct PtracerAffinity {
+    owner: Option<Arc<LegacyWaitOwner>>,
+}
+
+/// A Send synchronous driver with an explicit ptracer-thread operation.
+///
+/// Refusals keep the original input in this driver. Return the same driver
+/// to its owner instead of recreating a Running state from a numeric PID.
+#[must_use = "retain this original synchronous wait across refusals"]
+pub struct PtracerSyncDriver {
+    input: Option<(Pid, TraceeToken)>,
+    affinity: PtracerAffinity,
+}
+
+impl PtracerSyncDriver {
+    pub(super) fn new(running: Running) -> Self {
+        let affinity = PtracerAffinity::new(running.1.event(), running.1.ptracer_owner.clone());
+        Self {
+            input: Some((running.0, running.1)),
+            affinity,
         }
+    }
+
+    /// Blocks on the original ptracer, retaining this state on any refusal.
+    /// This uses the same synchronous Event claim and FIFO arbitration as
+    /// the generic synchronous wait, with explicit legacy authentication.
+    pub fn wait_on_ptracer_thread(&mut self) -> Result<Wait, OwnedWaitError> {
+        let Some((pid, token)) = self.input.as_mut() else {
+            return Err(OwnedWaitError::Completed);
+        };
+        let handle = token.event();
+        self.affinity
+            .check_host(handle)
+            .map_err(OwnedWaitError::Errno)?;
+        if !handle.event().is_terminal() && !*handle.event().terminal_reaping.read() {
+            self.affinity
+                .check_attachment(handle)
+                .map_err(OwnedWaitError::Errno)?;
+        }
+        token.ptracer_owner = self.affinity.owner.clone();
+        match wait_sync_for_policy(*pid, token.clone(), WaitPolicy::PtracerThread) {
+            Ok(state) => {
+                self.input.take();
+                Ok(state)
+            }
+            Err(Error::Errno(error)) => Err(OwnedWaitError::Errno(error)),
+            Err(Error::Died(_)) => Err(OwnedWaitError::Died),
+        }
+    }
+}
+
+/// A !Send and !Sync retaining synchronous wait on the actual ptracer.
+#[must_use = "this interface owns its unfinished synchronous wait"]
+pub struct PtracerSyncWait {
+    driver: PtracerSyncDriver,
+    local: PhantomData<Rc<()>>,
+}
+
+impl PtracerSyncWait {
+    pub(super) fn new(running: Running) -> Self {
+        Self {
+            driver: PtracerSyncDriver::new(running),
+            local: PhantomData,
+        }
+    }
+
+    /// Waits on this original ptracer without losing the input on refusal.
+    pub fn wait(&mut self) -> Result<Wait, OwnedWaitError> {
+        self.driver.wait_on_ptracer_thread()
+    }
+
+    /// Transfers the same input into a Send driver without recapturing it.
+    pub fn into_driver(self) -> PtracerSyncDriver {
+        self.driver
+    }
+}
+
+impl PtracerAffinity {
+    fn new(handle: &EventHandle, owner: Option<Arc<LegacyWaitOwner>>) -> Self {
+        let mut affinity = Self { owner };
+        // Construction on a foreign thread retains the original state. Its
+        // first owning-thread poll can authenticate without numeric capture.
+        let _ = affinity.check_host(handle);
+        affinity
+    }
+
+    fn check_host(&mut self, handle: &EventHandle) -> Result<(), Errno> {
+        WaitPolicy::PtracerThread.check_handle(handle)?;
+        if self.owner.is_none() {
+            let identity = handle.identity().ok_or(Errno::ENODATA)?;
+            let tracer = identity.current_tracer_pid()?;
+            if tracer != Pid::from(nix::unistd::gettid())
+                && !(tracer.as_raw() == 0 && !matches!(identity.pidfd, ThreadHandle::Procfs { .. }))
+            {
+                return Err(Errno::EPERM);
+            }
+            self.owner = Some(Arc::new(LegacyWaitOwner::capture_current()?));
+        }
+        if !self.owner.as_ref().unwrap().is_current()? {
+            return Err(Errno::EPERM);
+        }
+        Ok(())
+    }
+
+    fn check_attachment(&self, handle: &EventHandle) -> Result<(), Errno> {
+        let identity = handle.identity().ok_or(Errno::ENODATA)?;
+        let owner = self.owner.as_ref().ok_or(Errno::EPERM)?;
+        let tracer = match identity.current_tracer_pid() {
+            Ok(tracer) => tracer,
+            // de_thread may retire the original proc inode before the sole
+            // worker publishes its genuine ECHILD/terminal result. This is
+            // no acknowledgment: continue only through that original Event.
+            // Procfs assistance independently refuses an irreversible query
+            // when its retained original attachment has disappeared.
+            Err(Errno::ENOENT | Errno::ESRCH) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        // Descriptor waits remain exact for a detached/direct-child leader.
+        // Only numeric nonleader consumption requires a current attachment;
+        // its helper authenticates that owner again under the Event gate.
+        if tracer != owner.tid
+            && !(tracer.as_raw() == 0 && !matches!(identity.pidfd, ThreadHandle::Procfs { .. }))
+        {
+            return Err(Errno::EPERM);
+        }
+        Ok(())
+    }
+}
+
+/// A retained wait driver whose explicit poll operation requires the ptracer.
+///
+/// This type is Send but deliberately does not implement Future. A foreign
+/// poll returns a non-owning refusal, preserving the same original state for
+/// return to its ptracer. Borrow this driver in an adapter; keep it through
+/// adapter errors and cancellation rather than rebuilding a numeric state.
+#[must_use = "retain this original wait driver until it returns its state"]
+pub struct PtracerWaitDriver {
+    inner: OwnedWaitFuture,
+    affinity: PtracerAffinity,
+    observed_death: bool,
+}
+
+impl PtracerWaitDriver {
+    pub(super) fn new(running: Running) -> Self {
+        let affinity = PtracerAffinity::new(running.1.event(), running.1.ptracer_owner.clone());
+        Self {
+            inner: OwnedWaitFuture::new(running),
+            affinity,
+            observed_death: false,
+        }
+    }
+
+    pub(super) fn from_stopped(stopped: Stopped) -> Self {
+        let affinity = PtracerAffinity::new(stopped.1.event(), stopped.1.ptracer_owner.clone());
+        Self {
+            inner: OwnedWaitFuture::from_stopped(stopped),
+            affinity,
+            observed_death: false,
+        }
+    }
+
+    /// Polls on the original, still-live host ptracer OS thread.
+    ///
+    /// Every refusal retains the original generation; successful transfer
+    /// completes this driver. Published terminal results remain available to
+    /// its original owner after the target's retained directory disappears.
+    pub fn poll_on_ptracer_thread(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Wait, OwnedWaitError>> {
+        let Some(inner) = self.inner.inner.as_ref() else {
+            return Poll::Ready(Err(OwnedWaitError::Completed));
+        };
+        let handle = inner.token.event();
+        if let Err(error) = self.affinity.check_host(handle) {
+            return Poll::Ready(Err(OwnedWaitError::Errno(error)));
+        }
+        if !handle.event().is_terminal()
+            && !*handle.event().terminal_reaping.read()
+            && let Err(error) = self.affinity.check_attachment(handle)
+        {
+            // The sole worker may have reaped between the first flag read
+            // and the retained attachment read. Its real pending terminal
+            // publication still settles this same original driver.
+            if !handle.event().is_terminal() && !*handle.event().terminal_reaping.read() {
+                return Poll::Ready(Err(OwnedWaitError::Errno(error)));
+            }
+        }
+        self.inner.inner.as_mut().unwrap().token.ptracer_owner = self.affinity.owner.clone();
+        let result = self.inner.poll_for_policy(cx, WaitPolicy::PtracerThread);
+        if matches!(result, Poll::Ready(Err(OwnedWaitError::Died))) {
+            self.observed_death = true;
+        }
+        result
+    }
+
+    /// Retains a shared descriptor/observation facade for this same state.
+    /// It performs no new capture and cannot pump a local numeric wait.
+    pub fn terminal_cleanup(&self) -> Option<TerminalCleanup> {
+        self.inner
+            .inner
+            .as_ref()
+            .map(|inner| TerminalCleanup::new(inner.pid, &inner.token))
+    }
+
+    /// Retains this unfinished input's exact generation without a lookup.
+    pub fn generation(&self) -> Option<super::TraceeGeneration> {
+        self.inner
+            .inner
+            .as_ref()
+            .map(|inner| super::TraceeGeneration(inner.pid, inner.token.clone()))
+    }
+
+    /// Retains the same original local cleanup and host-generation anchor.
+    /// This remains available after target retirement and performs no lookup.
+    pub fn cleanup_on_ptracer_thread(&self) -> Option<PtracerCleanupDriver> {
+        self.inner
+            .inner
+            .as_ref()
+            .map(|inner| PtracerTerminalCleanup::new(inner.pid, &inner.token).into_driver())
+    }
+
+    /// Transfers the same original owner after an actual decoder death.
+    /// A refusal returns the unchanged driver; this never captures a task by
+    /// number or infers a final exit status from a failed backend operation.
+    pub fn into_zombie_after_observed_death(mut self) -> Result<super::Zombie, Self> {
+        if !self.observed_death || self.inner.inner.is_none() {
+            return Err(self);
+        }
+        let inner = self.inner.inner.take().unwrap();
+        Ok(super::Zombie(Running::from_token(inner.pid, inner.token)))
+    }
+}
+
+/// A portable ptracer-thread future retaining the same wait on errors.
+///
+/// Its Rc marker makes this interface !Send and !Sync on every kernel. Use
+/// [`Self::into_driver`] to transfer the same core back to its owner after a
+/// foreign-thread construction; no numeric identity is recaptured.
+#[must_use = "this future owns an unfinished generation-bound wait"]
+pub struct PtracerOwnedWaitFuture {
+    driver: PtracerWaitDriver,
+    local: PhantomData<Rc<()>>,
+}
+
+impl PtracerOwnedWaitFuture {
+    pub(super) fn new(running: Running) -> Self {
+        Self {
+            driver: PtracerWaitDriver::new(running),
+            local: PhantomData,
+        }
+    }
+
+    pub(super) fn from_stopped(stopped: Stopped) -> Self {
+        Self {
+            driver: PtracerWaitDriver::from_stopped(stopped),
+            local: PhantomData,
+        }
+    }
+
+    /// Transfers the exact original core into its explicitly polled driver.
+    pub fn into_driver(self) -> PtracerWaitDriver {
+        self.driver
+    }
+}
+
+impl Future for PtracerOwnedWaitFuture {
+    type Output = Result<Wait, OwnedWaitError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().driver.poll_on_ptracer_thread(cx)
+    }
+}
+
+/// An explicit ptracer-thread wait with the retained owned-wait contract.
+pub type PtracerWaitFuture = PtracerOwnedWaitFuture;
+
+/// A Send exit driver without a Future implementation.
+///
+/// Its explicit poll authenticates the original host owner before claiming
+/// an exit epoch. A refusal retains that same epoch and driver for retry.
+#[must_use = "retain this original exit driver through non-owning refusals"]
+pub struct PtracerExitDriver {
+    inner: ExitFuture,
+    affinity: PtracerAffinity,
+}
+
+impl PtracerExitDriver {
+    pub(super) fn new(pid: Pid, token: &TraceeToken) -> Self {
+        Self {
+            inner: ExitFuture::new(pid, token),
+            affinity: PtracerAffinity::new(token.event(), token.ptracer_owner.clone()),
+        }
+    }
+
+    /// Polls the same exit epoch only on its original ptracer OS thread.
+    /// Genuine terminal and already-spent epoch results do not require a
+    /// fresh lookup of a target that has already retired.
+    pub fn poll_on_ptracer_thread(&mut self, cx: &mut Context<'_>) -> Poll<Result<Stopped, Error>> {
+        let handle = &self.inner.event;
+        if let Err(error) = self.affinity.check_host(handle) {
+            return Poll::Ready(Err(error.into()));
+        }
+        let event = handle.event();
+        let settled = event.is_terminal()
+            || self.inner.waiter.epoch != event.exit_epoch.load(Ordering::Acquire)
+            || matches!(
+                event.exit_capability.load(Ordering::Acquire),
+                EXIT_CAP_CLAIMED | EXIT_CAP_EXPIRED
+            );
+        if !settled
+            && let Err(error) = self.affinity.check_attachment(handle)
+            && !event.is_terminal()
+            && !*event.terminal_reaping.read()
+        {
+            return Poll::Ready(Err(error.into()));
+        }
+        match self.inner.poll_for_policy(cx, WaitPolicy::PtracerThread) {
+            Poll::Ready(Ok(mut stopped)) => {
+                stopped.1.ptracer_owner = self.affinity.owner.clone();
+                Poll::Ready(Ok(stopped))
+            }
+            result => result,
+        }
+    }
+}
+
+/// A !Send and !Sync future for an explicitly ptracer-owned exit epoch.
+#[must_use = "this future retains its original exit epoch"]
+pub struct PtracerExitFuture {
+    driver: PtracerExitDriver,
+    local: PhantomData<Rc<()>>,
+}
+
+impl PtracerExitFuture {
+    pub(super) fn new(pid: Pid, token: &TraceeToken) -> Self {
+        Self {
+            driver: PtracerExitDriver::new(pid, token),
+            local: PhantomData,
+        }
+    }
+
+    /// Transfers this exact exit epoch into its explicitly polled driver.
+    pub fn into_driver(self) -> PtracerExitDriver {
+        self.driver
+    }
+}
+
+impl Future for PtracerExitFuture {
+    type Output = Result<Stopped, Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().driver.poll_on_ptracer_thread(cx)
+    }
+}
+
+/// A Send cleanup driver with explicitly ptracer-owned progress operations.
+///
+/// Its shared facade remains descriptor/observation only. This type has no
+/// Future implementation and does not grant a sibling numeric wait authority.
+pub struct PtracerCleanupDriver {
+    shared: TerminalCleanup,
+    affinity: PtracerAffinity,
+}
+
+impl PtracerCleanupDriver {
+    fn new(shared: TerminalCleanup) -> Self {
+        let affinity = PtracerAffinity::new(&shared.event, None);
+        Self { shared, affinity }
+    }
+
+    /// Borrows the same original descriptor/observation facade.
+    pub fn shared(&self) -> &TerminalCleanup {
+        &self.shared
+    }
+
+    /// Performs at most one bounded authenticated legacy consume.
+    /// A refusal changes no FIFO or exit epoch and retains this driver.
+    pub fn progress_on_ptracer_thread(&mut self) -> Result<(), Errno> {
+        self.affinity.check_host(&self.shared.event)?;
+        self.progress_after_host_check()
+    }
+
+    fn progress_after_host_check(&self) -> Result<(), Errno> {
+        self.shared.ensure_registered()?;
+        let unsettled = !self.shared.event.event().is_terminal()
+            && !*self.shared.event.event().terminal_reaping.read();
+        if unsettled
+            && let Err(error) = self.affinity.check_attachment(&self.shared.event)
+            && !self.shared.event.event().is_terminal()
+            && !*self.shared.event.event().terminal_reaping.read()
+        {
+            return Err(error);
+        }
+        self.shared.event.try_assist_legacy_wait()
+    }
+
+    /// Waits for actual worker retirement while assisting on its ptracer.
+    /// The original monotonic timeout is never restarted after a hint.
+    pub fn wait_on_ptracer_thread(&mut self, timeout: Duration) -> Result<bool, Errno> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        loop {
+            self.progress_on_ptracer_thread()?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if self.shared.wait(remaining.min(Duration::from_millis(1))) {
+                return Ok(true);
+            }
+            if remaining.is_zero() || Instant::now() >= deadline {
+                return Ok(false);
+            }
+        }
+    }
+
+    /// Reserves an actual published FIFO front under the explicit policy.
+    /// This does not acknowledge an observation hint or discard a refusal.
+    pub fn reserve_pending_on_ptracer_thread(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<PtracerPendingStatusReservation<'_>>, Errno> {
+        self.affinity.check_host(&self.shared.event)?;
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        loop {
+            self.progress_after_host_check()?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if let Some(reservation) = self.shared.reserve_pending_for_policy(
+                remaining.min(Duration::from_millis(1)),
+                WaitPolicy::PtracerThread,
+            ) {
+                return Ok(Some(PtracerPendingStatusReservation {
+                    inner: reservation,
+                    owner: self.affinity.owner.clone(),
+                    local: PhantomData,
+                }));
+            }
+            if self.shared.event.event().is_terminal()
+                || remaining.is_zero()
+                || Instant::now() >= deadline
+            {
+                return Ok(None);
+            }
+        }
+    }
+}
+
+/// A !Send and !Sync facade for explicit ptracer-thread cleanup progress.
+/// Signal requests and observation use its separate shared facade.
+pub struct PtracerTerminalCleanup {
+    driver: PtracerCleanupDriver,
+    local: PhantomData<Rc<()>>,
+}
+
+impl PtracerTerminalCleanup {
+    pub(super) fn new(pid: Pid, token: &TraceeToken) -> Self {
+        // Retaining the original generation/host anchor does not transfer its
+        // kernel wait owner. Startup may still have an unregistered cleanup
+        // guard to install; registration begins only when this facade requests
+        // progress, a wait, or a reservation.
+        let mut cleanup = Self::from_shared(TerminalCleanup::new_unregistered(pid, token));
+        if let Some(owner) = &token.ptracer_owner {
+            cleanup.driver.affinity.owner = Some(Arc::clone(owner));
+        }
+        cleanup
+    }
+
+    fn from_shared(shared: TerminalCleanup) -> Self {
+        Self {
+            driver: PtracerCleanupDriver::new(shared),
+            local: PhantomData,
+        }
+    }
+
+    /// Borrows the original shared descriptor/observation facade.
+    pub fn shared(&self) -> &TerminalCleanup {
+        self.driver.shared()
+    }
+
+    /// Transfers the same cleanup authority into its explicit Send driver.
+    pub fn into_driver(self) -> PtracerCleanupDriver {
+        self.driver
+    }
+
+    /// Performs one bounded actual-owner progress operation.
+    pub fn progress(&mut self) -> Result<(), Errno> {
+        self.driver.progress_on_ptracer_thread()
+    }
+
+    /// Waits for actual retirement on this driver's ptracer OS thread.
+    pub fn wait(&mut self, timeout: Duration) -> Result<bool, Errno> {
+        self.driver.wait_on_ptracer_thread(timeout)
+    }
+
+    /// Reserves one actual status after bounded actual-owner assistance.
+    pub fn reserve_pending_for_cleanup(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<PtracerPendingStatusReservation<'_>>, Errno> {
+        self.driver.reserve_pending_on_ptracer_thread(timeout)
+    }
+}
+
+/// A !Send and !Sync reservation of one actual local-policy FIFO front.
+/// Its local marker remains effective even with parking_lot/send_guard.
+#[must_use = "drop rolls back; commit after original ownership is stored"]
+pub struct PtracerPendingStatusReservation<'a> {
+    inner: PendingStatusReservation<'a>,
+    owner: Option<Arc<LegacyWaitOwner>>,
+    local: PhantomData<Rc<()>>,
+}
+
+impl PtracerPendingStatusReservation<'_> {
+    /// Decodes this actual front on its explicit ptracer-thread interface.
+    pub fn decode(&self) -> Result<Wait, Error> {
+        Wait::from_raw_with_token(self.inner.pid, self.inner.status, self.token())
+    }
+
+    /// Commits the same original front after its ownership has been stored.
+    pub fn commit(self) {
+        self.inner.commit();
+    }
+
+    /// Consumes only an actual Exec front whose decode observes death.
+    /// A refusal returns this same local reservation, preserving rollback.
+    pub fn consume_dead_exec(self) -> Result<(), Self> {
+        let token = self.token();
+        match self.inner.consume_dead_exec_with_token(token) {
+            Ok(()) => Ok(()),
+            Err(inner) => Err(Self {
+                inner,
+                owner: self.owner,
+                local: PhantomData,
+            }),
+        }
+    }
+
+    fn token(&self) -> TraceeToken {
+        TraceeToken {
+            event: self.inner.event.clone(),
+            policy: WaitPolicy::PtracerThread,
+            ptracer_owner: self.owner.clone(),
+        }
+    }
+}
+
+impl TerminalCleanup {
+    /// Creates an explicitly local progress facade for this retained Event.
+    /// This captures no numeric identity. An unbound generic token cannot be
+    /// repaired by this conversion; its progress operations return ENODATA.
+    pub fn on_ptracer_thread(&self) -> PtracerTerminalCleanup {
+        PtracerTerminalCleanup::from_shared(Self {
+            pid: self.pid,
+            event: self.event.clone(),
+        })
     }
 }
 
 #[cfg(test)]
 mod test {
     include!("legacy_thread_tests.rs");
+    include!("legacy_owner_tests.rs");
+    include!("ptracer_thread_tests.rs");
+    include!("attachment_generation_tests.rs");
     include!("stop_observation_tests.rs");
     include!("retirement_ack_tests.rs");
     include!("completion_wakeup_tests.rs");
@@ -5512,6 +7442,14 @@ mod test {
             Ok(stopped.exit_event())
         }
 
+        fn exit_event_on_ptracer_thread(
+            &mut self,
+            stopped: &Stopped,
+        ) -> io::Result<PtracerExitFuture> {
+            self.bind_notifier(stopped)?;
+            Ok(stopped.exit_event_on_ptracer_thread())
+        }
+
         /// Records transfer of the exact exit-stop capability immediately
         /// after ExitFuture returns it.
         fn mark_claimed_exit(&mut self) {
@@ -5569,7 +7507,8 @@ mod test {
                         io::Error::other(format!("adopt cleanup wait authority: {error}"))
                     })?;
             }
-            if let Some(pause) = CLEANUP_OWNER_CLAIM_PAUSES.lock().remove(&pid.into()) {
+            let pause = CLEANUP_OWNER_CLAIM_PAUSES.lock().remove(&pid.into());
+            if let Some(pause) = pause {
                 pause.captured.wait();
                 pause.resume.wait();
             }
@@ -7713,7 +9652,11 @@ mod test {
         .unwrap();
         assert!(libc::WIFSTOPPED(status));
         assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
-        let stopped = Stopped::new_unchecked(root.into());
+        let stopped = if force_legacy {
+            Stopped::new_unchecked_on_ptracer_thread(root.into()).unwrap()
+        } else {
+            Stopped::new_unchecked(root.into())
+        };
         stopped
             .setoptions(
                 Options::PTRACE_O_TRACECLONE
@@ -7724,11 +9667,25 @@ mod test {
             .unwrap();
         root_cleanup.bind_notifier(&stopped).unwrap();
         let terminal = stopped.terminal_cleanup();
-        let mut old_exit = Box::pin(stopped.exit_event());
-        let mut old_duplicate = Box::pin(stopped.exit_event());
+        let mut old_exit = Box::pin(if force_legacy {
+            futures::future::Either::Left(stopped.exit_event_on_ptracer_thread())
+        } else {
+            futures::future::Either::Right(stopped.exit_event())
+        });
+        let mut old_duplicate = Box::pin(if force_legacy {
+            futures::future::Either::Left(stopped.exit_event_on_ptracer_thread())
+        } else {
+            futures::future::Either::Right(stopped.exit_event())
+        });
         let wait = tokio::time::timeout(
             deadline.saturating_duration_since(Instant::now()),
-            stopped.resume(None).unwrap().wait_owned(),
+            if force_legacy {
+                futures::future::Either::Left(
+                    stopped.resume(None).unwrap().wait_owned_on_ptracer_thread(),
+                )
+            } else {
+                futures::future::Either::Right(stopped.resume(None).unwrap().wait_owned())
+            },
         )
         .await
         .unwrap()
@@ -7743,6 +9700,7 @@ mod test {
         if force_legacy {
             assert!(matches!(child_identity.pidfd, ThreadHandle::Procfs { .. }));
         }
+        let pre_exec_wait_id = force_legacy.then(|| child_identity.pidfd.wait_id().unwrap());
         let pidfd = child_identity.pidfd.try_clone().unwrap();
         let mut child_cleanup = TraceeCleanupGuard {
             pid: former.into(),
@@ -7753,15 +9711,29 @@ mod test {
         child_cleanup.bind_running_notifier(&child).unwrap();
         let initial = tokio::time::timeout(
             deadline.saturating_duration_since(Instant::now()),
-            child.wait_owned(),
+            if force_legacy {
+                futures::future::Either::Left(child.wait_owned_on_ptracer_thread())
+            } else {
+                futures::future::Either::Right(child.wait_owned())
+            },
         )
         .await
         .unwrap()
         .unwrap();
         let (child, event) = initial.assume_stopped();
         assert_eq!(event, crate::Event::Signal(Signal::SIGSTOP));
-        let mut former_wait = Box::pin(child.resume(None).unwrap().wait_owned());
         let old_running = parent.resume(None).unwrap();
+        // Resume the known Clone stop while the newborn is still held. If
+        // the newborn execs first, its SIGKILL can supersede that Clone stop
+        // with EXIT, and the old parent capability would resume the EXIT
+        // before the test's ExitFuture claims it.
+        let mut former_wait = Box::pin(if force_legacy {
+            futures::future::Either::Left(
+                child.resume(None).unwrap().wait_owned_on_ptracer_thread(),
+            )
+        } else {
+            futures::future::Either::Right(child.resume(None).unwrap().wait_owned())
+        });
         let first = tokio::time::timeout(
             deadline.saturating_duration_since(Instant::now()),
             old_exit.as_mut(),
@@ -7774,7 +9746,16 @@ mod test {
         let old_status = first.getevent().unwrap();
         let next = tokio::time::timeout(
             deadline.saturating_duration_since(Instant::now()),
-            first.resume_retaining(None).unwrap().wait_owned(),
+            if force_legacy {
+                futures::future::Either::Left(
+                    first
+                        .resume_retaining(None)
+                        .unwrap()
+                        .wait_owned_on_ptracer_thread(),
+                )
+            } else {
+                futures::future::Either::Right(first.resume_retaining(None).unwrap().wait_owned())
+            },
         )
         .await
         .unwrap()
@@ -7785,8 +9766,40 @@ mod test {
         assert_eq!(actual_former, former);
         assert_eq!(replacement.pid(), root.into());
         assert!(replacement.terminal_cleanup().same_generation(&terminal));
-        let mut next_exit = Box::pin(replacement.exit_event());
-        let mut next_duplicate = Box::pin(replacement.exit_event());
+        if let Some(checked_id) = pre_exec_wait_id {
+            assert!(matches!(checked_id, waitid::IdType::Pid(pid) if pid == former.into()));
+            assert!(!pidfd_is_live(&child_identity.pidfd).unwrap());
+            let (projected_pid, mut projected_cleanup) = spawn_stopped_process(None).unwrap();
+            // Project the cached numeric lookup onto a real untraced child,
+            // modeling reuse after the actual non-leader exec releases its
+            // former TID. This does not claim the kernel reused that number.
+            // Its initial stop was already consumed, so a blocking P_PID
+            // observation would park on it indefinitely.
+            let observation = WaitPidFlag::from_bits_retain(
+                WaitPidFlag::WEXITED.bits()
+                    | WaitPidFlag::WSTOPPED.bits()
+                    | WaitPidFlag::WNOWAIT.bits()
+                    | libc::__WALL,
+            );
+            assert_eq!(
+                child_identity
+                    .pidfd
+                    .legacy_wait_once(waitid::IdType::Pid(projected_pid), observation,),
+                Err(Errno::ECHILD),
+            );
+            assert!(!pidfd_exited(&projected_cleanup.pidfd).unwrap());
+            projected_cleanup.cleanup().unwrap();
+        }
+        let mut next_exit = Box::pin(if force_legacy {
+            futures::future::Either::Left(replacement.exit_event_on_ptracer_thread())
+        } else {
+            futures::future::Either::Right(replacement.exit_event())
+        });
+        let mut next_duplicate = Box::pin(if force_legacy {
+            futures::future::Either::Left(replacement.exit_event_on_ptracer_thread())
+        } else {
+            futures::future::Either::Right(replacement.exit_event())
+        });
         for old in [&mut old_exit, &mut old_duplicate] {
             assert!(matches!(
                 old.as_mut().await,
@@ -7813,7 +9826,16 @@ mod test {
         let second_status = second.getevent().unwrap();
         let final_wait = tokio::time::timeout(
             deadline.saturating_duration_since(Instant::now()),
-            second.resume_retaining(None).unwrap().wait_owned(),
+            if force_legacy {
+                futures::future::Either::Left(
+                    second
+                        .resume_retaining(None)
+                        .unwrap()
+                        .wait_owned_on_ptracer_thread(),
+                )
+            } else {
+                futures::future::Either::Right(second.resume_retaining(None).unwrap().wait_owned())
+            },
         )
         .await
         .unwrap()

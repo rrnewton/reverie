@@ -24,6 +24,7 @@
 //! from an I386 stop unchanged because H0 has already normalized the
 //! registers they save and restore.
 
+use crate::tracer::WaitOnPtracer;
 use reverie::Errno;
 #[cfg(test)]
 use reverie::Pid;
@@ -742,7 +743,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                         "allow-class site={site:#x} nr={}",
                         view.orig_rax as i64
                     ));
-                self.resume_stopped(task, None)?.next_state().await
+                self.resume_stopped(task, None)?
+                    .next_state_with_owner(&self.ptracer_waits)
+                    .await
             }
             HopOutcome::Other(wait) => Ok(wait),
         }
@@ -928,7 +931,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         hop_regs.rax = nr;
         hop_regs.rip = target;
         task.setregs(&hop_regs)?;
-        let wait = self.resume_stopped(task, None)?.next_state().await?;
+        let wait = self
+            .resume_stopped(task, None)?
+            .next_state_with_owner(&self.ptracer_waits)
+            .await?;
         self.arm_liteinst_wait(&wait);
 
         // H2: the slot's (or the restored site's) own seccomp stop.
@@ -1011,7 +1017,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                                     .to_owned(),
                             );
                             task.setregs(&hop_regs)?;
-                            wait = self.resume_stopped(task, None)?.next_state().await?;
+                            wait = self
+                                .resume_stopped(task, None)?
+                                .next_state_with_owner(&self.ptracer_waits)
+                                .await?;
                             self.arm_liteinst_wait(&wait);
                         }
                         DeferredStopsNext::Reraise {
@@ -1075,7 +1084,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                         "slot SIGSTOP deferred code={code} queue={queue}{}",
                         if kept { "" } else { " (coalesced)" }
                     ));
-                    wait = self.resume_stopped(task, None)?.next_state().await?;
+                    wait = self
+                        .resume_stopped(task, None)?
+                        .next_state_with_owner(&self.ptracer_waits)
+                        .await?;
                     self.arm_liteinst_wait(&wait);
                 }
                 Wait::Stopped(task, event) => {
@@ -1105,7 +1117,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         if let Some(deferred) = reraise {
             self.trap_only_reraise_stops(site, deferred)?;
         }
-        let wait = self.syscall_stopped(task, None)?.next_state().await?;
+        let wait = self
+            .syscall_stopped(task, None)?
+            .next_state_with_owner(&self.ptracer_waits)
+            .await?;
         self.arm_liteinst_wait(&wait);
 
         // H4.
@@ -1393,7 +1408,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         view: libc::user_regs_struct,
     ) -> Result<Wait, TraceError> {
         match self.trap_only_hop(task, view).await? {
-            HopOutcome::ExitStop(task) => self.resume_stopped(task, None)?.next_state().await,
+            HopOutcome::ExitStop(task) => {
+                self.resume_stopped(task, None)?
+                    .next_state_with_owner(&self.ptracer_waits)
+                    .await
+            }
             HopOutcome::Other(wait @ Wait::Stopped(_, Event::NewChild(..))) => {
                 // The run loop dispatches this stop; its handler restores both
                 // tasks from the view, as the inject path does directly.
@@ -1695,7 +1714,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 )),
             ));
         }
-        let mut wait = self.resume_stopped(task, None)?.next_state().await?;
+        let mut wait = self
+            .resume_stopped(task, None)?
+            .next_state_with_owner(&self.ptracer_waits)
+            .await?;
         self.arm_liteinst_wait(&wait);
         let mut delivered = false;
         loop {
@@ -1706,7 +1728,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     delivered = true;
                     wait = self
                         .resume_stopped(task, nix::sys::signal::Signal::SIGSYS)?
-                        .next_state()
+                        .next_state_with_owner(&self.ptracer_waits)
                         .await?;
                     self.arm_liteinst_wait(&wait);
                 }
