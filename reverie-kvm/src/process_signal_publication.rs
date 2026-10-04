@@ -6573,11 +6573,11 @@ mod tests {
 
         let control = parent.signal_registry.control();
         assert_eq!(
-            receipt(control.publish(parent_id, first_event, None, true)).change,
+            receipt(control.publish(parent_id, first_event, None, true, None)).change,
             PendingChange::Queued
         );
         assert_eq!(
-            receipt(control.publish(parent_id, second_event, None, true)).change,
+            receipt(control.publish(parent_id, second_event, None, true, None)).change,
             PendingChange::Coalesced
         );
         assert_eq!(
