@@ -1,4 +1,4 @@
-// Source-only library-test adapter. Bootstrap occurs only in the separately
+// Authenticated library-test adapter. Bootstrap occurs only in the separately
 // built ordinary-main launcher, never in a libtest worker or constructor.
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::PermissionsExt;

@@ -1484,6 +1484,10 @@ pub(crate) struct ElfExecutor {
     // Retained view only; allocation/policy authority lives in its one owner.
     address_space: Option<GuestMemory>,
     file_table: Arc<std::sync::Mutex<FileTableState>>,
+    // Only actual task executors own this token. Table observers may hold a
+    // strong file_table Arc, but cannot defer last-task descriptor retirement.
+    // A released executor takes its token exactly once; CLONE_FILES shares it.
+    file_table_task_owner: Option<Arc<()>>,
     output: Option<CapturedOutput>,
     owns_output: bool,
     // Run-wide and never wrapped (see `allocate_task_id`), so a numeric PID
@@ -3397,6 +3401,7 @@ impl ElfExecutor {
             signal_effect_raw_result: None,
             address_space,
             file_table,
+            file_table_task_owner: Some(Arc::new(())),
             output,
             owns_output: true,
             next_pid: Arc::new(AtomicI32::new(next_pid)),
@@ -3919,6 +3924,7 @@ impl ElfExecutor {
             signal_effect_raw_result: None,
             address_space,
             file_table,
+            file_table_task_owner: Some(Arc::new(())),
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
@@ -4056,6 +4062,7 @@ impl ElfExecutor {
             signal_effect_raw_result: None,
             address_space: self.address_space.clone(),
             file_table: self.file_table.clone(),
+            file_table_task_owner: self.file_table_task_owner.clone(),
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
@@ -4370,14 +4377,22 @@ impl ElfExecutor {
             Arc::new(Mutex::new(FileTableState::default())),
         );
         let mut files = Vec::new();
-        // Do not lock or empty a table that another guest task/observer owns.
-        // Only the final actual Arc owner extracts it. Foreign owners retain
-        // their descriptions and close them in their own lifecycle.
-        if let Some(table) = Arc::into_inner(table) {
-            let mut table = table.into_inner().unwrap_or_else(|p| p.into_inner());
+        // Elect the last task independently of transient observer Arcs. A
+        // genuine CLONE_FILES sibling still owns the table, so its exit must
+        // neither acquire this lock nor remove any of its descriptors.
+        let last_task = self
+            .file_table_task_owner
+            .take()
+            .is_some_and(|owner| Arc::into_inner(owner).is_some());
+        if last_task {
+            let mut table = table.lock().unwrap_or_else(|p| p.into_inner());
             files.extend(table.stdin.take().map(Owned));
             files.extend(std::mem::take(&mut table.files).into_values().map(Owned));
         }
+        // No table guard crosses service submission or descriptor destruction.
+        // A separately selected/duplicated File remains a genuine foreign OFD
+        // owner; an observer's table Arc alone no longer owns these files.
+        drop(table);
         files.extend(retired.into_values().map(Owned));
         files.extend(stdin.map(Owned));
         if let Some(ProcessAction::Exec {
@@ -4424,6 +4439,7 @@ impl ElfExecutor {
         self.state.poll_table_id = Default::default();
         self.state.epoll_domain = Default::default();
         self.file_table = Arc::new(Mutex::new(FileTableState::default()));
+        drop(self.file_table_task_owner.take());
         let action = self.process_action.take();
         self.state
             .file_retirement
@@ -7629,6 +7645,10 @@ impl Drop for ElfExecutor {
         if self.terminal_cleanup.is_some() {
             self.release_files_on_exit();
         }
+        // Native release already consumed this token before handing off files.
+        // Ordinary destruction also relinquishes task ownership before any
+        // lifecycle guard or the later implicit file-table field destruction.
+        drop(self.file_table_task_owner.take());
         self.signal_registry
             .retire_task(self.admitted_signal_identity());
         let transaction = self.state.signal_transaction.clone();
