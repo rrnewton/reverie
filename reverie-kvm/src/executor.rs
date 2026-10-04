@@ -3577,7 +3577,8 @@ impl ElfExecutor {
         // timing choose which thread dequeues it. Refuse before allocating a
         // tid or publishing any child state; Hermit's later scheduler
         // integration will own deterministic process-signal target selection.
-        if self.has_shared_pending_signal()
+        if self.parent_death_enrolled()
+            || self.has_shared_pending_signal()
             || !self
                 .state
                 .process_signals
@@ -3779,17 +3780,29 @@ impl ElfExecutor {
         let address_space = None;
         file_table = Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?));
         state.fdinfo_table = Arc::downgrade(&file_table);
-        let task_generation = state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .register_with_signals(
+        let task_generation = {
+            let mut lifecycle = state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let generation = lifecycle.register_with_signals(
                 state.tid,
                 state.pid,
                 state.pgid,
                 state.dumpable,
                 &state.thread_signals,
             );
+            if let Err(errno) = lifecycle.inherit_real_parent(
+                state.tid,
+                generation,
+                self.admitted_signal_identity(),
+                false,
+            ) {
+                lifecycle.remove(state.tid, generation);
+                return Err(crate::Error::Reverie(errno.into()));
+            }
+            generation
+        };
         let process_generation = state
             .task_lifecycle
             .lock()
@@ -3885,7 +3898,8 @@ impl ElfExecutor {
         // any delivery permit. A pending process signal no longer makes physical
         // thread creation race a backend-selected recipient. Signalfd sharing
         // keeps its separate existing unsupported boundary.
-        if (!self.signal_controlled() && self.has_shared_pending_signal())
+        if self.parent_death_enrolled()
+            || (!self.signal_controlled() && self.has_shared_pending_signal())
             || !self
                 .state
                 .process_signals
@@ -3919,17 +3933,29 @@ impl ElfExecutor {
         state.signal_transaction = self.state.signal_transaction.clone();
         state.thread_signals = self.state.thread_signals.for_clone_thread();
         state.thread_signals.lock().observe_ignored = observe_ignored;
-        let task_generation = state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .register_with_signals(
+        let task_generation = {
+            let mut lifecycle = state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let generation = lifecycle.register_with_signals(
                 state.tid,
                 state.pid,
                 state.pgid,
                 state.dumpable,
                 &state.thread_signals,
             );
+            if let Err(errno) = lifecycle.inherit_real_parent(
+                state.tid,
+                generation,
+                self.admitted_signal_identity(),
+                true,
+            ) {
+                lifecycle.remove(state.tid, generation);
+                return Err(crate::Error::Reverie(errno.into()));
+            }
+            generation
+        };
         let process_generation = state
             .task_lifecycle
             .lock()
@@ -5289,6 +5315,134 @@ impl ElfExecutor {
         self.signal_registry.install(mode, failure);
     }
 
+    /// Defense for direct Tool injection. Scheduler-side admission must also
+    /// reject unsupported waits BEFORE parking (injection might never occur).
+    /// Enrollment is sticky and recipient creation is refused, so this check
+    /// cannot race another task's SET or mask change in the recipient process.
+    fn parent_death_injection_preflight(&self, request: &SyscallRequest) -> crate::Result<()> {
+        if !self.parent_death_enrolled() {
+            return Ok(());
+        }
+        let number = request.number() as libc::c_long;
+        let args = request.args();
+        let refusal = |operation| crate::Error::ParentDeathSignal {
+            operation,
+            errno: libc::ENOSYS,
+        };
+        match number {
+            libc::SYS_futex
+                if matches!(
+                    args[1] as i32 & libc::FUTEX_CMD_MASK,
+                    libc::FUTEX_WAIT
+                        | libc::FUTEX_WAIT_BITSET
+                        | libc::FUTEX_WAIT_REQUEUE_PI
+                        | libc::FUTEX_LOCK_PI
+                ) =>
+            {
+                return Err(refusal("unsupported enrolled futex wait"));
+            }
+            libc::SYS_wait4 if args[2] as i32 & libc::WNOHANG == 0 => {
+                return Err(refusal("unsupported enrolled blocking child wait"));
+            }
+            libc::SYS_waitid if args[3] as i32 & libc::WNOHANG == 0 => {
+                return Err(refusal("unsupported enrolled blocking child wait"));
+            }
+            libc::SYS_fcntl if matches!(args[1] as i32, libc::F_SETLKW | libc::F_OFD_SETLKW) => {
+                return Err(refusal("unsupported enrolled blocking record lock"));
+            }
+            libc::SYS_flock
+                if args[1] as i32 & libc::LOCK_NB == 0 && args[1] as i32 & libc::LOCK_UN == 0 =>
+            {
+                return Err(refusal("unsupported enrolled blocking flock"));
+            }
+            libc::SYS_open | libc::SYS_openat | libc::SYS_creat => {
+                return Err(refusal(
+                    "unsupported enrolled open without a nonblocking per-call capability",
+                ));
+            }
+            // These waits are completed by the opted-in Tool's authenticated
+            // pause/nanosleep protocol, never injected as a host wait.
+            libc::SYS_nanosleep | libc::SYS_clock_nanosleep | libc::SYS_pause => {
+                return Err(refusal(
+                    "enrolled sleep requires the authenticated parked protocol",
+                ));
+            }
+            libc::SYS_connect
+            | libc::SYS_accept
+            | libc::SYS_accept4
+            | libc::SYS_sendto
+            | libc::SYS_sendmsg
+            | libc::SYS_recvfrom
+            | libc::SYS_recvmsg => return Err(refusal("unsupported enrolled socket I/O")),
+            _ => {}
+        }
+        let io = matches!(
+            number,
+            libc::SYS_read
+                | libc::SYS_readv
+                | libc::SYS_pread64
+                | libc::SYS_preadv
+                | libc::SYS_preadv2
+                | libc::SYS_write
+                | libc::SYS_writev
+                | libc::SYS_pwrite64
+                | libc::SYS_pwritev
+                | libc::SYS_pwritev2
+        );
+        if !io {
+            return Ok(());
+        }
+        let fd = args[0] as i32;
+        let table = self.file_table.lock().unwrap_or_else(|p| p.into_inner());
+        let standard = (fd == 1 || fd == 2)
+            && !table.closed_standard_fds.contains(&fd)
+            && !table.files.contains_key(&fd);
+        if matches!(number, libc::SYS_write | libc::SYS_writev)
+            && self.output.is_some()
+            && output_alias_from_sets(
+                fd,
+                &table.stdout_alias_fds,
+                &table.stderr_alias_fds,
+                standard,
+            )
+            .is_some()
+        {
+            return Ok(());
+        }
+        let file = table.files.get(&fd).or_else(|| {
+            (fd == 0 && !table.closed_standard_fds.contains(&fd))
+                .then_some(table.stdin.as_ref())
+                .flatten()
+        });
+        let Some(file) = file else {
+            if standard {
+                return Err(refusal("unsupported enrolled ambient output I/O"));
+            }
+            // Preserve the real EBADF for an absent descriptor.
+            return Ok(());
+        };
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        // SAFETY: the owned table pins this file; stat points to writable storage.
+        if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+            return Err(refusal("cannot establish enrolled I/O backing"));
+        }
+        // SAFETY: successful fstat initialized every field read here.
+        if unsafe { stat.assume_init() }.st_mode & libc::S_IFMT != libc::S_IFREG {
+            return Err(refusal(
+                "unsupported enrolled nonregular I/O; no pre-attempt nonblocking authority",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn parent_death_enrolled(&self) -> bool {
+        self.state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .parent_death_enrolled(self.admitted_signal_identity().process)
+    }
+
     pub(crate) fn signal_controlled(&self) -> bool {
         self.signal_registry.controlled()
     }
@@ -6187,6 +6341,10 @@ impl ElfExecutor {
 
     /// Returns and clears a pending thread-local or group-wide exit.
     pub(crate) fn take_exit(&mut self) -> Option<ProcessExit> {
+        self.take_exit_with_parent_death(true)
+    }
+
+    fn take_exit_with_parent_death(&mut self, guest_death: bool) -> Option<ProcessExit> {
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let status = self.exit_status.take()?;
@@ -6197,6 +6355,22 @@ impl ElfExecutor {
                 .task_lifecycle
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if guest_death {
+                let outcome = reverie::SignalBoundaryOutcome::Terminated {
+                    group,
+                    wait_status: status.into_raw(),
+                };
+                let boundary = self
+                    .owned_delivery_permit()
+                    .map(|permit| reverie::SignalBoundaryReceipt { permit, outcome });
+                if let Err(errno) = lifecycle.freeze_parent_death(
+                    self.admitted_signal_identity(),
+                    outcome,
+                    boundary,
+                ) {
+                    self.signal_registry.retain_parent_death_error(errno);
+                }
+            }
             let (status, group_started) =
                 lifecycle.exit(self.state.tid, self.task_generation, status, group);
             let process_status =
@@ -6231,8 +6405,47 @@ impl ElfExecutor {
     pub(crate) fn retire_current_thread(&mut self, status: ExitStatus, group: bool) -> ProcessExit {
         self.exit_status.get_or_insert(status);
         self.exit_group |= group;
-        self.take_exit()
+        // Cleanup/cancellation is not a new guest death. Genuine group and
+        // exec sibling deaths were frozen by their logical initiating task.
+        self.take_exit_with_parent_death(false)
             .expect("terminal thread has an exit status")
+    }
+
+    pub(crate) fn retire_guest_thread(&mut self, status: ExitStatus, group: bool) -> ProcessExit {
+        self.exit_status.get_or_insert(status);
+        self.exit_group |= group;
+        self.take_exit().expect("guest exit has a status")
+    }
+
+    pub(crate) fn prepare_parent_death_exec(&self) -> crate::Result<()> {
+        let outcome = reverie::SignalBoundaryOutcome::ImageReplaced;
+        let boundary = self
+            .owned_delivery_permit()
+            .map(|permit| reverie::SignalBoundaryReceipt { permit, outcome });
+        let result = self
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .freeze_parent_death(self.admitted_signal_identity(), outcome, boundary);
+        result
+            .map(|_| ())
+            .map_err(|errno| crate::Error::ParentDeathSignal {
+                operation: "exec sibling death admission",
+                errno: errno.into_raw(),
+            })
+    }
+
+    pub(crate) fn check_parent_death_failure(&self) -> crate::Result<()> {
+        self.signal_registry.check_parent_death_failure()
+    }
+
+    pub(crate) fn check_parent_death_boundary(
+        &self,
+        boundary: reverie::SignalBoundaryReceipt,
+    ) -> crate::Result<()> {
+        self.signal_registry
+            .parent_death_boundary_finished(boundary)
     }
 
     pub(crate) fn retire_failed_thread(&mut self) {
@@ -6684,6 +6897,8 @@ impl ElfExecutor {
                 child_pid: receipt.child_pid(),
             });
         }
+        self.check_parent_death_failure()?;
+        self.parent_death_injection_preflight(request)?;
         self.bind_address_space(memory);
         // A fork gets a separate arena/gate and inherits the real shared VMAs.
         // CLONE_VM still creates another owner of this arena and is refused
@@ -17365,20 +17580,29 @@ fn prctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
             .user()
             .copy_to_user(args[1], &state.thread_name)
             .map_or_else(|_| negative_errno(libc::EFAULT), |_| 0),
-        // TODO-HUMAN-REVIEW(PR-537): Review virtual parent-death signal state and copyout.
-        option if option == libc::PR_SET_PDEATHSIG as u64 => {
-            // Nonzero values require deterministic delivery when the modeled
-            // parent exits. Refuse them until that behavior is implemented.
-            if args[1] == 0 {
-                0
-            } else {
-                negative_errno(libc::ENOSYS)
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-PENDING): https://github.com/rrnewton/reverie/issues/916.
+        // prctl option is an int; its signal operand remains unsigned long.
+        option if option as i32 == libc::PR_SET_PDEATHSIG => state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .set_parent_death_signal(state.tid, args[1])
+            .map_or_else(|errno| negative_errno(errno.into_raw()), |_| 0),
+        option if option as i32 == libc::PR_GET_PDEATHSIG => {
+            let signal = state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .parent_death_signal(state.tid);
+            match signal {
+                Ok(signal) => memory
+                    .user()
+                    .put_user_i32(args[1], signal)
+                    .map_or_else(|_| negative_errno(libc::EFAULT), |_| 0),
+                Err(errno) => negative_errno(errno.into_raw()),
             }
         }
-        option if option == libc::PR_GET_PDEATHSIG as u64 => memory
-            .user()
-            .put_user_i32(args[1], 0)
-            .map_or_else(|_| negative_errno(libc::EFAULT), |_| 0),
         // TODO-HUMAN-REVIEW(PR-537): Review deterministic transparent-hugepage state and lifecycle.
         option if option == libc::PR_SET_THP_DISABLE as u64 => {
             if args[3..5].iter().any(|argument| *argument != 0)
@@ -20291,6 +20515,7 @@ pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf
 
 #[cfg(test)]
 mod tests {
+    include!("executor/parent_death_tests.rs");
     include!("executor/pipe_owner_tests.rs");
     include!("executor/syncfs_tests.rs");
     include!("executor/shared_file_tests.rs");

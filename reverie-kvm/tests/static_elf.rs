@@ -11230,6 +11230,10 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "msync_lifecycle::shared_coherence_and_mapping_lifetime_match_native",
         "shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native",
         "shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner",
+        "pdeathsig::unchanged_six_check_state_matches_native_controlled",
+        "pdeathsig::direct_host_and_unopted_control_preserve_nonzero_refusal",
+        "pdeathsig::creator_thread_death_and_clear_match_native_shared_pending",
+        "pdeathsig::actual_creator_death_wakes_controlled_pause_and_nanosleep",
         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
         "fchdir_consumes_low_descriptor_words_on_kvm",
         "getdents64_consumes_low_descriptor_words_on_kvm",
@@ -21149,5 +21153,597 @@ fn shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner() {
         assert_eq!(stdout, expected_kvm.as_bytes(), "mode={name}");
         std::io::Write::write_all(&mut std::io::stdout().lock(), &stdout).unwrap();
         eprintln!("shared-file-clear-tid completed {name}: markers=4 children=0");
+    }
+}
+
+// Actual parent-thread death and pending/frame integration. This small Tool
+// consumes authentic backend receipts; it is not a Hermit scheduler model.
+mod pdeathsig {
+    use reverie::CallbackSignalSite;
+    use reverie::ParentDeathPublication;
+    use reverie::ParentDeathPublicationResult;
+    use reverie::PendingDomain;
+    use reverie::SignalBoundaryOutcome;
+    use reverie::SignalBoundaryReceipt;
+    use reverie::SignalDequeue;
+    use reverie::SignalObservationStop;
+    use reverie::SignalTaskIdentity;
+
+    use super::*;
+
+    const STATE: u8 = 0;
+    const MASKED: u8 = 1;
+    const CLEAR: u8 = 2;
+    const PAUSE: u8 = 3;
+    const NANOSLEEP: u8 = 4;
+    const NO_OPT_IN: u8 = 5;
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    enum Request {
+        Exit(SignalTaskIdentity),
+        Park(CallbackSignalSite),
+        Dequeue(SignalDequeue),
+        Prctl,
+    }
+
+    #[derive(Default)]
+    struct ParkState {
+        site: Option<CallbackSignalSite>,
+        creator: Option<SignalTaskIdentity>,
+        child_waiter: Option<Waker>,
+        creator_waiter: Option<Waker>,
+        published: bool,
+        wake_calls: Arc<AtomicU64>,
+    }
+
+    struct WitnessWake {
+        inner: Waker,
+        calls: Arc<AtomicU64>,
+    }
+    impl futures::task::ArcWake for WitnessWake {
+        fn wake_by_ref(this: &Arc<Self>) {
+            this.calls.fetch_add(1, Ordering::SeqCst);
+            this.inner.wake_by_ref();
+        }
+    }
+
+    #[derive(Default)]
+    struct Global {
+        mode: u8,
+        control: Mutex<Option<BackendSignalControl>>,
+        permits: Mutex<BTreeMap<i32, SignalDeliveryPermit>>,
+        sequence: AtomicU64,
+        publications: Mutex<Vec<ParentDeathPublication>>,
+        dequeues: Mutex<Vec<SignalDequeue>>,
+        prctl_calls: AtomicU64,
+        parks: Mutex<ParkState>,
+        failed: AtomicBool,
+        failure_waiters: Mutex<Vec<Waker>>,
+    }
+    impl Global {
+        fn control(&self) -> BackendSignalControl {
+            self.control
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("installed control")
+        }
+        fn reserve(&self, task: SignalTaskIdentity) -> SignalDeliveryPermit {
+            let permit = SignalDeliveryPermit {
+                task,
+                sequence: self.sequence.fetch_add(1, Ordering::SeqCst) + 1,
+                site: None,
+            };
+            let mut permits = self.permits.lock().unwrap();
+            assert!(!permits.contains_key(&task.tid.as_raw()));
+            self.control().process.reserve_delivery(permit).unwrap();
+            permits.insert(task.tid.as_raw(), permit);
+            permit
+        }
+    }
+    #[reverie::global_tool]
+    impl GlobalTool for Global {
+        type Request = Request;
+        type Response = ();
+        type Config = u8;
+
+        async fn init_global_state(mode: &u8) -> Self {
+            Self {
+                mode: *mode,
+                ..Self::default()
+            }
+        }
+        fn install_backend_signal_control(
+            &self,
+            control: Option<BackendSignalControl>,
+        ) -> Result<BackendSignalControlMode, reverie::Error> {
+            let control = control.ok_or(Errno::ENOSYS)?;
+            if self.mode != NO_OPT_IN {
+                control.process.enable_parent_death_control()?;
+            }
+            *self.control.lock().unwrap() = Some(control);
+            Ok(BackendSignalControlMode::ToolControlled)
+        }
+        async fn receive_rpc(&self, _: Pid, request: Request) {
+            match request {
+                Request::Prctl => {
+                    self.prctl_calls.fetch_add(1, Ordering::SeqCst);
+                }
+                Request::Dequeue(effect) => self.dequeues.lock().unwrap().push(effect),
+                Request::Exit(task) => {
+                    if matches!(self.mode, PAUSE | NANOSLEEP) && task.tid != task.process.tgid {
+                        poll_fn(|cx| {
+                            assert!(
+                                !self.failed.load(Ordering::Acquire),
+                                "backend failed before creator exit"
+                            );
+                            let mut parks = self.parks.lock().unwrap();
+                            parks.creator = Some(task);
+                            if parks.site.is_some() {
+                                Poll::Ready(())
+                            } else {
+                                parks.creator_waiter = Some(cx.waker().clone());
+                                Poll::Pending
+                            }
+                        })
+                        .await;
+                    }
+                    self.reserve(task);
+                }
+                Request::Park(site) => {
+                    poll_fn(|cx| {
+                        assert!(
+                            !self.failed.load(Ordering::Acquire),
+                            "backend failed during parked callback"
+                        );
+                        let mut parks = self.parks.lock().unwrap();
+                        if let Some(previous) = parks.site {
+                            assert_eq!(previous, site);
+                        }
+                        parks.site = Some(site);
+                        if parks.published {
+                            return Poll::Ready(());
+                        }
+                        parks.child_waiter = Some(futures::task::waker(Arc::new(WitnessWake {
+                            inner: cx.waker().clone(),
+                            calls: parks.wake_calls.clone(),
+                        })));
+                        let creator = parks.creator_waiter.take();
+                        drop(parks);
+                        if let Some(creator) = creator {
+                            creator.wake();
+                        }
+                        Poll::Pending
+                    })
+                    .await;
+                }
+            }
+        }
+        fn authorize_backend_signal_boundary(
+            &self,
+            task: SignalTaskIdentity,
+        ) -> Result<Option<SignalDeliveryPermit>, reverie::Error> {
+            if let Some(permit) = self
+                .permits
+                .lock()
+                .unwrap()
+                .get(&task.tid.as_raw())
+                .copied()
+            {
+                assert_eq!(permit.task, task);
+                return Ok(Some(permit));
+            }
+            if self
+                .control()
+                .process
+                .signal_recipients(task.process, libc::SIGUSR1)?
+                .into_iter()
+                .any(|recipient| recipient.task == task)
+            {
+                return Ok(Some(self.reserve(task)));
+            }
+            Ok(None)
+        }
+        async fn on_backend_signal_boundary(
+            &self,
+            boundary: SignalBoundaryReceipt,
+        ) -> Result<(), reverie::Error> {
+            assert_eq!(
+                self.permits
+                    .lock()
+                    .unwrap()
+                    .remove(&boundary.permit.task.tid.as_raw()),
+                Some(boundary.permit)
+            );
+            if !matches!(
+                boundary.outcome,
+                SignalBoundaryOutcome::Terminated { .. } | SignalBoundaryOutcome::ImageReplaced
+            ) {
+                return Ok(());
+            }
+            let publication = match self.control().process.publish_parent_death(boundary) {
+                ParentDeathPublicationResult::Committed(publication) => publication,
+                other => panic!("authentic boundary must publish exactly once: {other:?}"),
+            };
+            assert_eq!(publication.boundary, boundary);
+            assert!(
+                !publication.batches.is_empty(),
+                "even an empty death effect has an authenticated batch"
+            );
+            let creator = boundary.permit.task.tid != boundary.permit.task.process.tgid;
+            if creator && matches!(self.mode, PAUSE | NANOSLEEP) {
+                assert_eq!(
+                    publication.signals.len(),
+                    1,
+                    "creator death must publish the real signal before wake"
+                );
+                let effect = publication.signals[0];
+                assert_eq!(effect.signal, libc::SIGUSR1);
+                assert!(!effect.coalesced && !effect.discarded);
+                assert!(
+                    self.control()
+                        .process
+                        .parent_death_enrolled(effect.process)?
+                );
+                let mut parks = self.parks.lock().unwrap();
+                let site = parks
+                    .site
+                    .expect("original callback parked before creator exit");
+                assert_eq!(parks.creator, Some(boundary.permit.task));
+                assert_eq!(site.process, effect.process);
+                assert_eq!(site.tid, effect.process.tgid);
+                assert!(!parks.published);
+                parks.published = true;
+                let wake = parks
+                    .child_waiter
+                    .take()
+                    .expect("real pending callback waker");
+                let calls = parks.wake_calls.clone();
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+                drop(parks);
+                wake.wake();
+                // Removing the actual wake call fails this runtime assertion;
+                // it is not qualified by waiting for the outer timeout.
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+            }
+            self.publications.lock().unwrap().push(publication);
+            Ok(())
+        }
+        fn report_backend_failure(&self, _: reverie::BackendFailure) {
+            self.failed.store(true, Ordering::Release);
+            let mut wakes = std::mem::take(&mut *self.failure_waiters.lock().unwrap());
+            let mut parks = self.parks.lock().unwrap();
+            wakes.extend(parks.child_waiter.take());
+            wakes.extend(parks.creator_waiter.take());
+            drop(parks);
+            for wake in wakes {
+                wake.wake();
+            }
+        }
+        async fn wait_for_backend_failure(&self) {
+            poll_fn(|cx| {
+                if self.failed.load(Ordering::Acquire) {
+                    return Poll::Ready(());
+                }
+                self.failure_waiters
+                    .lock()
+                    .unwrap()
+                    .push(cx.waker().clone());
+                if self.failed.load(Ordering::Acquire) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+        }
+    }
+
+    #[derive(Default)]
+    struct ControlledTool {
+        mode: u8,
+    }
+    #[reverie::tool]
+    impl Tool for ControlledTool {
+        type GlobalState = Global;
+        type ThreadState = ();
+        fn new(_: Pid, mode: &u8) -> Self {
+            Self { mode: *mode }
+        }
+        fn observe_signal_dequeues(_: &u8) -> bool {
+            true
+        }
+        async fn handle_signal_dequeue<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            effect: SignalDequeue,
+        ) -> Result<(), Errno> {
+            assert_eq!(
+                effect.domain,
+                PendingDomain::Process,
+                "parent death is shared pending"
+            );
+            assert_eq!(
+                effect.process,
+                guest.signal_task_identity().unwrap().process
+            );
+            let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+            info[..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
+            info[8..12].copy_from_slice(&libc::SI_USER.to_ne_bytes());
+            info[16..20].copy_from_slice(&17_i32.to_ne_bytes());
+            assert_eq!(
+                effect.event,
+                SignalEvent::new(
+                    libc::SIGUSR1,
+                    info,
+                    SignalTarget::Process { pid: guest.pid() }
+                )
+                .unwrap()
+            );
+            guest.send_rpc(Request::Dequeue(effect)).await;
+            Ok(())
+        }
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            call: Syscall,
+        ) -> Result<i64, reverie::Error> {
+            if call.number() == Sysno::prctl {
+                guest.send_rpc(Request::Prctl).await;
+            }
+            if self.mode != NO_OPT_IN && matches!(call.number(), Sysno::exit | Sysno::exit_group) {
+                guest
+                    .send_rpc(Request::Exit(guest.signal_task_identity().unwrap()))
+                    .await;
+            }
+            if matches!(
+                (self.mode, call.number()),
+                (PAUSE, Sysno::pause) | (NANOSLEEP, Sysno::nanosleep)
+            ) {
+                let site = guest
+                    .parked_signal_site()
+                    .expect("actual original wait callback");
+                guest.send_rpc(Request::Park(site)).await;
+                assert_eq!(
+                    guest.parked_signal_site(),
+                    Some(site),
+                    "RPC must preserve exact original callback"
+                );
+                let observation = guest
+                    .observe_parked_signal(site, reverie::ParkedObservationLease { nonce: 1 })
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(observation.stop, SignalObservationStop::Caught(_)),
+                    "{observation:?}"
+                );
+                assert_eq!(observation.steps.len(), 1);
+                assert_eq!(guest.parked_signal_failure_context().unwrap().site, site);
+                return Err(Errno::EINTR.into());
+            }
+            guest.tail_inject(call).await
+        }
+    }
+
+    fn controlled(
+        program: &std::path::Path,
+        directory: &std::path::Path,
+        argument: Option<&str>,
+        mode: u8,
+    ) -> (Global, i32, Vec<u8>, Vec<u8>) {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend.set_root_pid(17).unwrap();
+        let mut argv = vec![program.to_str().unwrap()];
+        if let Some(argument) = argument {
+            argv.push(argument);
+        }
+        backend
+            .install_static_elf_file_with_context(
+                std::fs::File::open(program).unwrap(),
+                &argv,
+                &[],
+                directory,
+            )
+            .unwrap();
+        backend.set_thread_ownership(ThreadOwnership::Tool);
+        futures::executor::block_on(backend.run_static_elf_with_tool::<ControlledTool>(mode, true))
+            .unwrap()
+    }
+
+    #[test]
+    fn unchanged_six_check_state_matches_native_controlled() {
+        const TEST: &str = "pdeathsig::unchanged_six_check_state_matches_native_controlled";
+        if !leader_self_exec_bounded(TEST) {
+            return;
+        }
+        let directory = TestDirectory::new();
+        let program = compile_c_program(
+            &directory.0,
+            "pdeathsig-state",
+            include_str!("fixtures/pdeathsig_state.c"),
+        );
+        let native = std::process::Command::new(&program)
+            .current_dir(&directory.0)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{native:?}");
+        assert_eq!(
+            native.stdout,
+            b"pdeathsig ok=6 set_usr1_readback=10 set_usr2_readback=12 cleared_readback=0\n"
+        );
+        assert!(native.stderr.is_empty());
+        let (global, status, stdout, stderr) = controlled(&program, &directory.0, None, STATE);
+        assert_eq!(status, 0, "{stderr:?}");
+        assert_eq!(stdout, native.stdout);
+        assert_eq!(stderr, native.stderr);
+        assert_eq!(global.prctl_calls.load(Ordering::SeqCst), 6);
+        assert!(global.dequeues.lock().unwrap().is_empty());
+        assert!(
+            global
+                .publications
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|p| p.signals.is_empty())
+        );
+    }
+
+    #[test]
+    fn direct_host_and_unopted_control_preserve_nonzero_refusal() {
+        const TEST: &str = "pdeathsig::direct_host_and_unopted_control_preserve_nonzero_refusal";
+        if !leader_self_exec_bounded(TEST) {
+            return;
+        }
+        let directory = TestDirectory::new();
+        let program = compile_c_program(
+            &directory.0,
+            "pdeathsig-refusal",
+            include_str!("fixtures/pdeathsig_refusal.c"),
+        );
+        let expected = b"pdeathsig nonzero-refused clear-and-query-zero width-invalid\n";
+        for host in [false, true] {
+            let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+            backend
+                .install_static_elf_file_with_context(
+                    std::fs::File::open(&program).unwrap(),
+                    &[program.to_str().unwrap()],
+                    &[],
+                    &directory.0,
+                )
+                .unwrap();
+            let (status, stdout, stderr) = if host {
+                backend.set_thread_ownership(ThreadOwnership::Host);
+                let (trace, status, stdout, stderr) = futures::executor::block_on(
+                    backend.run_static_elf_with_tool::<StraceTool>((), true),
+                )
+                .unwrap();
+                assert_eq!(
+                    trace
+                        .syscalls()
+                        .iter()
+                        .filter(|name| name.as_str() == "prctl")
+                        .count(),
+                    7
+                );
+                (status, stdout, stderr)
+            } else {
+                backend.run_static_elf_captured().unwrap()
+            };
+            assert_eq!(status, 0, "host={host} stderr={stderr:?}");
+            assert_eq!(stdout, expected);
+            assert!(stderr.is_empty());
+        }
+        let (global, status, stdout, stderr) = controlled(&program, &directory.0, None, NO_OPT_IN);
+        assert_eq!(status, 0, "{stderr:?}");
+        assert_eq!(stdout, expected);
+        assert!(stderr.is_empty());
+        assert_eq!(global.prctl_calls.load(Ordering::SeqCst), 7);
+        assert!(global.publications.lock().unwrap().is_empty());
+    }
+
+    fn assert_creator(global: &Global, delivered: bool, parked: bool) {
+        let publications = global.publications.lock().unwrap();
+        let creators: Vec<_> = publications
+            .iter()
+            .filter(|p| p.boundary.permit.task.tid != p.boundary.permit.task.process.tgid)
+            .collect();
+        assert_eq!(creators.len(), 1, "one actual nonleader creator exit");
+        let creator = creators[0];
+        assert_eq!(creator.boundary.permit.task.process.tgid, Pid::from_raw(17));
+        assert_eq!(
+            creator.boundary.outcome,
+            SignalBoundaryOutcome::Terminated {
+                group: false,
+                wait_status: 0
+            }
+        );
+        assert_eq!(creator.signals.len(), usize::from(delivered));
+        assert_eq!(
+            publications.iter().map(|p| p.signals.len()).sum::<usize>(),
+            usize::from(delivered)
+        );
+        let dequeues = global.dequeues.lock().unwrap();
+        assert_eq!(dequeues.len(), usize::from(delivered));
+        if delivered {
+            assert_eq!(dequeues[0].process, creator.signals[0].process);
+            assert_eq!(dequeues[0].sequence, 1);
+            assert!(!creator.signals[0].coalesced && !creator.signals[0].discarded);
+        }
+        let parks = global.parks.lock().unwrap();
+        assert_eq!(parks.site.is_some(), parked);
+        assert_eq!(parks.published, parked);
+        assert_eq!(parks.wake_calls.load(Ordering::SeqCst), u64::from(parked));
+        assert!(global.permits.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn creator_thread_death_and_clear_match_native_shared_pending() {
+        const TEST: &str = "pdeathsig::creator_thread_death_and_clear_match_native_shared_pending";
+        if !leader_self_exec_bounded(TEST) {
+            return;
+        }
+        let directory = TestDirectory::new();
+        let program = compile_c_program(
+            &directory.0,
+            "pdeathsig-creator",
+            include_str!("fixtures/pdeathsig_creator.c"),
+        );
+        for (argument, mode, delivered) in [("0", MASKED, true), ("1", CLEAR, false)] {
+            let native = std::process::Command::new(&program)
+                .arg(argument)
+                .current_dir(&directory.0)
+                .output()
+                .unwrap();
+            assert_eq!(
+                native.status.code(),
+                Some(0),
+                "mode={mode} native={native:?}"
+            );
+            assert!(native.stderr.is_empty());
+            assert_eq!(
+                native.stdout,
+                format!(
+                    "pdeathsig creator-thread mode={argument} parent-alive=1 child-completed=1\n"
+                )
+                .as_bytes()
+            );
+            let (global, status, stdout, stderr) =
+                controlled(&program, &directory.0, Some(argument), mode);
+            assert_eq!(status, 0, "mode={mode} stderr={stderr:?}");
+            assert_eq!(stdout, native.stdout);
+            assert_eq!(stderr, native.stderr);
+            assert_creator(&global, delivered, false);
+        }
+    }
+
+    #[test]
+    fn actual_creator_death_wakes_controlled_pause_and_nanosleep() {
+        const TEST: &str = "pdeathsig::actual_creator_death_wakes_controlled_pause_and_nanosleep";
+        if !leader_self_exec_bounded(TEST) {
+            return;
+        }
+        let directory = TestDirectory::new();
+        let program = compile_c_program(
+            &directory.0,
+            "pdeathsig-parked",
+            include_str!("fixtures/pdeathsig_creator.c"),
+        );
+        // No native blocked-wait claim: only the Tool observes the actual
+        // original callback before releasing creator exit. Hermit's resource
+        // selection/wake bridge must be qualified separately by its consumer.
+        for (argument, mode) in [("2", PAUSE), ("3", NANOSLEEP)] {
+            let (global, status, stdout, stderr) =
+                controlled(&program, &directory.0, Some(argument), mode);
+            assert_eq!(status, 0, "mode={mode} stderr={stderr:?}");
+            assert_eq!(
+                stdout,
+                format!(
+                    "pdeathsig creator-thread mode={argument} parent-alive=1 child-completed=1\n"
+                )
+                .as_bytes()
+            );
+            assert!(stderr.is_empty());
+            assert_creator(&global, true, true);
+        }
     }
 }
