@@ -124,14 +124,28 @@ impl TaskLifecycleTable {
         Ok(())
     }
 
-    pub(crate) fn parent_death_signal(&self, tid: i32) -> Result<i32, Errno> {
-        self.tasks
-            .get(&tid)
-            .map(|task| task.parent_death_signal)
-            .ok_or(Errno::ESRCH)
+    pub(crate) fn parent_death_signal(&self, caller: SignalTaskIdentity) -> Result<i32, Errno> {
+        let task = self
+            .tasks
+            .get(&caller.tid.as_raw())
+            .copied()
+            .ok_or(Errno::ESRCH)?;
+        if identity(caller.tid.as_raw(), task) != caller
+            || self
+                .parent_death
+                .dead
+                .contains(&(caller.tid.as_raw(), caller.task_generation))
+        {
+            return Err(Errno::ESRCH);
+        }
+        Ok(task.parent_death_signal)
     }
 
-    pub(crate) fn set_parent_death_signal(&mut self, tid: i32, raw: u64) -> Result<(), Errno> {
+    pub(crate) fn set_parent_death_signal(
+        &mut self,
+        caller: SignalTaskIdentity,
+        raw: u64,
+    ) -> Result<(), Errno> {
         // kernel/sys.c passes unsigned long to valid_signal, not an int cast.
         if raw > 64 {
             return Err(Errno::EINVAL);
@@ -144,6 +158,8 @@ impl TaskLifecycleTable {
         {
             return Err(Errno::ENOSYS);
         }
+        let tid = caller.tid.as_raw();
+        self.parent_death_signal(caller)?;
         let current = self.tasks.get(&tid).copied().ok_or(Errno::ESRCH)?;
         if signal != 0
             && self
@@ -278,16 +294,25 @@ impl TaskLifecycleTable {
                     .and_then(Weak::upgrade)
                     .ok_or(Errno::ESRCH)?;
                 let signals = signals.lock().unwrap_or_else(|p| p.into_inner());
+                // Lifecycle ownership fixes the receiver incarnation. Signal
+                // generation follows the existing process -> thread lock order;
+                // do not acquire its transaction beneath the sender's locks.
+                let target = self.signal_target(tid).ok_or(Errno::ESRCH)?;
+                let target = target.lock();
                 let signal = child.parent_death_signal;
+                let disposition = crate::executor::signal_disposition_with_action(
+                    signals.dispositions.get(&signal).copied(),
+                    signal,
+                );
+                let ignored = disposition == crate::executor::SignalDisposition::Ignore
+                    && !target.blocked.contains(signal)
+                    && !target.observe_ignored;
                 events.push(ParentDeathEvent {
                     registered_task: identity(tid, child),
                     sender: parent,
                     signal,
                     pending_generation: signals.pending_generation(signal),
-                    ignored: signals
-                        .dispositions
-                        .get(&signal)
-                        .is_some_and(|action| action.is_ignored()),
+                    ignored,
                 });
             }
         }
