@@ -11233,6 +11233,8 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "pdeathsig::unchanged_six_check_state_matches_native_controlled",
         "pdeathsig::direct_host_and_unopted_control_preserve_nonzero_refusal",
         "pdeathsig::creator_thread_death_and_clear_match_native_shared_pending",
+        "pdeathsig::ignored_parent_death_retains_blocked_and_does_not_resurrect_unblocked",
+        "pdeathsig::enrolled_retained_image_exec_preserves_setting_and_actual_creator_delivery",
         "pdeathsig::actual_creator_death_wakes_controlled_pause_and_nanosleep",
         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
         "fchdir_consumes_low_descriptor_words_on_kvm",
@@ -21177,6 +21179,9 @@ mod pdeathsig {
     const PAUSE: u8 = 3;
     const NANOSLEEP: u8 = 4;
     const NO_OPT_IN: u8 = 5;
+    const IGNORED_BLOCKED: u8 = 6;
+    const IGNORED_UNBLOCKED: u8 = 7;
+    const EXEC: u8 = 8;
 
     #[derive(serde::Serialize, serde::Deserialize)]
     enum Request {
@@ -21184,6 +21189,11 @@ mod pdeathsig {
         Park(CallbackSignalSite),
         Dequeue(SignalDequeue),
         Prctl,
+        IgnoredAction(SignalTaskIdentity),
+        ExecAdmission {
+            task: SignalTaskIdentity,
+            enrolled: bool,
+        },
     }
 
     #[derive(Default)]
@@ -21214,8 +21224,12 @@ mod pdeathsig {
         permits: Mutex<BTreeMap<i32, SignalDeliveryPermit>>,
         sequence: AtomicU64,
         publications: Mutex<Vec<ParentDeathPublication>>,
+        boundaries: Mutex<Vec<SignalBoundaryReceipt>>,
         dequeues: Mutex<Vec<SignalDequeue>>,
         prctl_calls: AtomicU64,
+        ignored_action_calls: Mutex<BTreeMap<(i32, u64), usize>>,
+        initial_exec_calls: AtomicU64,
+        enrolled_exec: Mutex<Option<SignalTaskIdentity>>,
         parks: Mutex<ParkState>,
         failed: AtomicBool,
         failure_waiters: Mutex<Vec<Waker>>,
@@ -21270,6 +21284,60 @@ mod pdeathsig {
                     self.prctl_calls.fetch_add(1, Ordering::SeqCst);
                 }
                 Request::Dequeue(effect) => self.dequeues.lock().unwrap().push(effect),
+                Request::ExecAdmission { task, enrolled } => {
+                    if enrolled {
+                        assert!(self.enrolled_exec.lock().unwrap().replace(task).is_none());
+                        self.reserve(task);
+                    } else {
+                        assert_eq!(task.process.tgid, Pid::from_raw(17));
+                        assert_eq!(task.tid, task.process.tgid);
+                        self.initial_exec_calls.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                Request::IgnoredAction(task) => {
+                    let key = (task.process.tgid.as_raw(), task.process.generation);
+                    let mut calls = self.ignored_action_calls.lock().unwrap();
+                    let count = calls.entry(key).or_default();
+                    *count += 1;
+                    assert!(
+                        *count <= 2,
+                        "only initial ignore and later handler installation"
+                    );
+                    if *count == 2 {
+                        // This RPC is at the actual second rt_sigaction hook,
+                        // BEFORE it replaces SIG_IGN. Observe the real retained
+                        // publication/dequeue; do not force delivery or invent
+                        // a return boundary from a syscall-count assumption.
+                        let publications = self.publications.lock().unwrap();
+                        let effects: Vec<_> = publications
+                            .iter()
+                            .flat_map(|publication| &publication.signals)
+                            .filter(|effect| effect.process == task.process)
+                            .collect();
+                        assert_eq!(effects.len(), 1, "creator death preceded replacement");
+                        assert!(!effects[0].discarded && !effects[0].coalesced);
+                        let expected = usize::from(self.mode == IGNORED_UNBLOCKED);
+                        assert_eq!(
+                            self.dequeues
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .filter(|event| event.process == task.process)
+                                .count(),
+                            expected
+                        );
+                        assert_eq!(
+                            self.boundaries
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .filter(|receipt| receipt.permit.task.process == task.process
+                                    && receipt.outcome == SignalBoundaryOutcome::NoHandler)
+                                .count(),
+                            expected
+                        );
+                    }
+                }
                 Request::Exit(task) => {
                     if matches!(self.mode, PAUSE | NANOSLEEP) && task.tid != task.process.tgid {
                         poll_fn(|cx| {
@@ -21355,6 +21423,7 @@ mod pdeathsig {
                     .remove(&boundary.permit.task.tid.as_raw()),
                 Some(boundary.permit)
             );
+            self.boundaries.lock().unwrap().push(boundary);
             if !matches!(
                 boundary.outcome,
                 SignalBoundaryOutcome::Terminated { .. } | SignalBoundaryOutcome::ImageReplaced
@@ -21488,6 +21557,30 @@ mod pdeathsig {
             guest: &mut G,
             call: Syscall,
         ) -> Result<i64, reverie::Error> {
+            let admission = guest.parent_death_syscall_preflight(call)?;
+            if self.mode == EXEC && matches!(call.number(), Sysno::execve | Sysno::execveat) {
+                guest
+                    .send_rpc(Request::ExecAdmission {
+                        task: guest.signal_task_identity().unwrap(),
+                        enrolled: matches!(
+                            admission,
+                            reverie::ParentDeathSyscallAdmission::Admitted
+                        ),
+                    })
+                    .await;
+            }
+            if matches!(self.mode, IGNORED_BLOCKED | IGNORED_UNBLOCKED)
+                && call.number() == Sysno::rt_sigaction
+            {
+                let (_, args) = call.into_parts();
+                if args.arg0 as i32 == libc::SIGUSR1 && args.arg1 != 0 {
+                    guest
+                        .send_rpc(Request::IgnoredAction(
+                            guest.signal_task_identity().unwrap(),
+                        ))
+                        .await;
+                }
+            }
             if call.number() == Sysno::prctl {
                 guest.send_rpc(Request::Prctl).await;
             }
@@ -21714,6 +21807,131 @@ mod pdeathsig {
             assert_eq!(stderr, native.stderr);
             assert_creator(&global, delivered, false);
         }
+    }
+
+    #[test]
+    fn ignored_parent_death_retains_blocked_and_does_not_resurrect_unblocked() {
+        const TEST: &str =
+            "pdeathsig::ignored_parent_death_retains_blocked_and_does_not_resurrect_unblocked";
+        if !leader_self_exec_bounded(TEST) {
+            return;
+        }
+        let directory = TestDirectory::new();
+        let program = compile_c_program(
+            &directory.0,
+            "pdeathsig-ignored",
+            include_str!("fixtures/pdeathsig_creator.c"),
+        );
+        for (argument, mode, outcome) in [
+            ("4", IGNORED_BLOCKED, SignalBoundaryOutcome::Caught),
+            ("5", IGNORED_UNBLOCKED, SignalBoundaryOutcome::NoHandler),
+        ] {
+            let native = std::process::Command::new(&program)
+                .arg(argument)
+                .current_dir(&directory.0)
+                .output()
+                .unwrap();
+            assert_eq!(
+                native.status.code(),
+                Some(0),
+                "mode={mode} native={native:?}"
+            );
+            assert!(native.stderr.is_empty());
+            assert_eq!(
+                native.stdout,
+                format!(
+                    "pdeathsig creator-thread mode={argument} parent-alive=1 child-completed=1\n"
+                )
+                .as_bytes()
+            );
+            let (global, status, stdout, stderr) =
+                controlled(&program, &directory.0, Some(argument), mode);
+            assert_eq!(status, 0, "mode={mode} stderr={stderr:?}");
+            assert_eq!(stdout, native.stdout);
+            assert_eq!(stderr, native.stderr);
+            assert_eq!(global.prctl_calls.load(Ordering::SeqCst), 2);
+            // This Tool observes ignored signals: both modes queue and dequeue
+            // one real process event. Only mode4 invokes a guest handler. The
+            // C fixture separately proves Linux's exact pending/handler result;
+            // no native internal-dequeue equivalence is claimed for mode5.
+            assert_creator(&global, true, false);
+            let process = global.dequeues.lock().unwrap()[0].process;
+            assert_eq!(
+                global
+                    .ignored_action_calls
+                    .lock()
+                    .unwrap()
+                    .get(&(process.tgid.as_raw(), process.generation)),
+                Some(&2)
+            );
+            let completed: Vec<_> = global
+                .boundaries
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|receipt| receipt.permit.task.process == process)
+                .filter(|receipt| {
+                    matches!(
+                        receipt.outcome,
+                        SignalBoundaryOutcome::Caught | SignalBoundaryOutcome::NoHandler
+                    )
+                })
+                .copied()
+                .collect();
+            assert_eq!(completed.len(), 1, "one actual observed event");
+            assert_eq!(completed[0].outcome, outcome);
+        }
+    }
+
+    #[test]
+    fn enrolled_retained_image_exec_preserves_setting_and_actual_creator_delivery() {
+        const TEST: &str =
+            "pdeathsig::enrolled_retained_image_exec_preserves_setting_and_actual_creator_delivery";
+        if !leader_self_exec_bounded(TEST) {
+            return;
+        }
+        let directory = TestDirectory::new();
+        let program = compile_c_program(
+            &directory.0,
+            "pdeathsig-exec",
+            include_str!("fixtures/pdeathsig_creator.c"),
+        );
+        let native = std::process::Command::new(&program)
+            .arg("6")
+            .current_dir(&directory.0)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{native:?}");
+        assert!(native.stderr.is_empty());
+        assert_eq!(
+            native.stdout,
+            b"pdeathsig creator-thread mode=6 parent-alive=1 child-completed=1\n"
+        );
+        let (global, status, stdout, stderr) = controlled(&program, &directory.0, Some("6"), EXEC);
+        assert_eq!(status, 0, "{stderr:?}");
+        assert_eq!(stdout, native.stdout);
+        assert_eq!(stderr, native.stderr);
+        // Real /proc/self/exe retained-static-image exec, not generic path
+        // admission. Initial SET+GET, then GET only: no compensating re-arm.
+        assert_eq!(global.prctl_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(global.initial_exec_calls.load(Ordering::SeqCst), 1);
+        let exec = global
+            .enrolled_exec
+            .lock()
+            .unwrap()
+            .expect("actual enrolled exec admission");
+        let replacements: Vec<_> = global
+            .boundaries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|receipt| receipt.outcome == SignalBoundaryOutcome::ImageReplaced)
+            .copied()
+            .collect();
+        assert_eq!(replacements.len(), 1);
+        assert_eq!(replacements[0].permit.task, exec);
+        assert_creator(&global, true, false);
+        assert_eq!(global.dequeues.lock().unwrap()[0].process, exec.process);
     }
 
     #[test]

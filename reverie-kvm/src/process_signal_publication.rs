@@ -1099,9 +1099,16 @@ impl ProcessSignalControl {
             disposition,
             child_completion: completion.copied(),
         };
-        if (signal == libc::SIGCHLD || parent_death.is_some())
-            && disposition == PublicationDisposition::Ignored
-        {
+        // Parent-death causation already captured Linux generation-time
+        // suppression, including the recipient's mask and observation mode.
+        // A blocked SIG_IGN event must remain queued; the current disposition
+        // alone cannot erase it. A later ignore transition is handled by the
+        // pending-generation comparison below, not by resampling SIG_IGN.
+        let discard_at_generation = parent_death.map_or(
+            signal == libc::SIGCHLD && disposition == PublicationDisposition::Ignored,
+            |snapshot| snapshot.ignored,
+        );
+        if discard_at_generation {
             if let (Some(completion), Some(publications)) =
                 (completion, child_publications.as_mut())
             {
