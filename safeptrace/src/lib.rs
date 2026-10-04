@@ -187,7 +187,7 @@ impl TraceeToken {
             notifier::WaitPolicy::PtracerThread,
         );
         if token.ptracer_owner.is_none() && token.event().current_tracer_pid()?.as_raw() == 0 {
-            token.ptracer_owner = Some(notifier::EventHandle::capture_current_host_owner()?);
+            token.ptracer_owner = Some(token.event().capture_current_constructor_owner()?);
         }
         Ok(token)
     }
@@ -225,6 +225,16 @@ impl TraceeToken {
         let Some(_held) = self.event.hold_tid() else {
             return Err(Errno::ESRCH);
         };
+        #[cfg(feature = "notifier")]
+        if self.policy == notifier::WaitPolicy::PtracerThread {
+            // A retained task generation cannot make a copied numeric PID
+            // meaningful in another host task or PID namespace. Use this
+            // token's original owner; never recapture one from the number.
+            let owner = self.ptracer_owner.as_ref().ok_or(Errno::EPERM)?;
+            if !owner.is_current()? {
+                return Err(Errno::EPERM);
+            }
+        }
         request()
     }
 }

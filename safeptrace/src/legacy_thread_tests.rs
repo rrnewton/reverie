@@ -836,7 +836,7 @@ async fn forced_legacy_detach_preserves_cancellation_and_failed_owner() {
     let foreign = Stopped::new_unchecked_on_ptracer_thread(root.into()).unwrap();
     assert!(matches!(
         thread::spawn(move || foreign.detach(None)).join().unwrap(),
-        Err(Error::Died(_))
+        Err(Error::Errno(Errno::EPERM))
     ));
     assert!(terminal.event.hold_tid().is_some());
     stopped.getregs().unwrap();
