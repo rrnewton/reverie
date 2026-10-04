@@ -15,8 +15,55 @@ mod broker_test_protocol;
 #[path = "broker_native_cases.rs"]
 mod broker_native_cases;
 
+#[path = "broker_client_death_cases.rs"]
+mod broker_client_death_cases;
+
 fn main() {
-    // SAFETY: this standalone executable's first main-body action precedes all
+    broker_client_death_cases::dispatch_client_child();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.len() == 2 && args[0] == "--native-case" {
+        let mode = match args[1].as_str() {
+            "broker-sigchld-ignore" => Some(broker_client_death_cases::ParentSigchldMode::Ignore),
+            "broker-sigchld-nocldwait" => {
+                Some(broker_client_death_cases::ParentSigchldMode::NoChildWait)
+            }
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            // SAFETY: only argv parsing ran; no thread, guest descriptor or
+            // independent fd/reaper owner exists in this ordinary launcher.
+            let authority = unsafe { StartupAuthority::assert_exclusive_early_launch() };
+            match broker_client_death_cases::run_unexeced_sigchld_case(authority, mode) {
+                Ok(r) => {
+                    println!(
+                        "SIGCHLD_CASE_RECEIPT mode={:?} broker_pid={} broker_actual_wait_status={} worker_pid={} worker_job={} worker_status={} socket_references={} acknowledged_descriptors={} parent_references_retired={} parent_action_unchanged={} original_action_restored={}",
+                        r.mode,
+                        r.broker_pid,
+                        r.broker_actual_wait_status,
+                        r.worker_actual_wait.native_pid,
+                        r.worker_actual_wait.job,
+                        r.worker_actual_wait.raw_wait_status,
+                        r.worker_actual_wait.socket_references,
+                        r.worker_actual_wait.acknowledged_descriptors,
+                        r.worker_actual_wait.parent_references_retired,
+                        r.parent_action_unchanged_during_case,
+                        r.original_action_restored
+                    );
+                    println!(
+                        "NATIVE_BROKER_CASE_PASS case={:?} broker_reaped=true",
+                        args[1]
+                    );
+                    return;
+                }
+                Err(failure) => {
+                    eprintln!("SIGCHLD_CASE_FAILURE: {}", failure.message);
+                    failure.print_retained_owners();
+                    retain_for_outer_guard(failure);
+                }
+            }
+        }
+    }
+    // SAFETY: this standalone executable's bootstrap precedes all
     // threads, logging, test/native children and guest resources. Its controlled
     // startup must satisfy StartupAuthority's full inherited-fd/reaper contract;
     // it is not a general embedding or injected-constructor entry point.
@@ -95,13 +142,14 @@ fn print_case_receipt(receipt: &broker_native_cases::CaseReceipt) {
     );
     for (index, wait) in receipt.waits.iter().enumerate() {
         println!(
-            "NATIVE_CASE_WORKER_WAIT index={} job={} native_pid={} raw_wait_status={} socket_references={} transferred_descriptors={} actual_wait=true",
+            "NATIVE_CASE_WORKER_WAIT index={} job={} native_pid={} raw_wait_status={} socket_references={} acknowledged_descriptors={} parent_references_retired={} actual_wait=true",
             index,
             wait.job,
             wait.native_pid,
             wait.raw_wait_status,
             wait.socket_references,
-            wait.transferred_descriptors
+            wait.acknowledged_descriptors,
+            wait.parent_references_retired
         );
     }
     if let Some(fault) = &receipt.fault {
@@ -167,7 +215,11 @@ fn run_native_case(mut owner: BrokerOwner, args: Vec<String>) -> i32 {
     if args.len() != 1
         || !matches!(
             args[0].as_str(),
-            "single" | "shared-arc" | "nested-scm" | "chunk-resource-abort"
+            "single"
+                | "shared-arc"
+                | "nested-scm"
+                | "chunk-resource-abort"
+                | "exported-client-death"
         )
     {
         eprintln!("NATIVE_BROKER_CASE_SETUP_FAILURE: exactly one known native case required");
@@ -176,6 +228,36 @@ fn run_native_case(mut owner: BrokerOwner, args: Vec<String>) -> i32 {
         return 125;
     }
     let case = &args[0];
+    if case == "exported-client-death" {
+        match broker_client_death_cases::run_exported_client_death(&owner) {
+            Ok(r) => {
+                println!(
+                    "EXPORTED_CLIENT_DEATH_RECEIPT launcher_pid={} broker_pid={} client_pid={} client_wait_status={} worker_pid={} worker_job={} worker_wait_status={} complete_acknowledged={} original_references_retired={} eof_observed_while_client_alive={} broker_live_after_worker_wait={} peer_eof_after_native_wait={}",
+                    r.launcher_pid,
+                    r.broker_pid,
+                    r.client_pid,
+                    r.client_wait_status,
+                    r.worker_pid,
+                    r.worker_job,
+                    r.worker_wait_status,
+                    r.complete_acknowledged,
+                    r.original_references_retired,
+                    r.eof_observed_while_client_alive,
+                    r.broker_live_after_worker_wait,
+                    r.peer_eof_after_native_wait
+                );
+                settle_native_broker(&mut owner);
+                drop(owner);
+                println!("NATIVE_BROKER_CASE_PASS case={case:?} broker_reaped=true");
+                return 0;
+            }
+            Err(failure) => {
+                eprintln!("EXPORTED_CLIENT_DEATH_FAILURE: {}", failure.message);
+                failure.print_retained_owners();
+                retain_for_outer_guard((owner, failure));
+            }
+        }
+    }
     let result = if case == "chunk-resource-abort" {
         broker_native_cases::run_chunk_abort_case(&owner)
     } else {

@@ -366,8 +366,14 @@ pub struct NativeExitReceipt {
     pub native_pid: libc::pid_t,
     /// Actual wait status, never EOF, pidfd readiness or an about-to-exit marker.
     pub raw_wait_status: i32,
+    /// Number of references supplied for this batch, not a claim of retirement.
     pub socket_references: usize,
-    pub transferred_descriptors: usize,
+    /// Distinct descriptor prefix authenticated by complete chunk ACKs in this
+    /// attempt. Unacknowledged SCM_RIGHTS prefixes are deliberately not counted.
+    pub acknowledged_descriptors: usize,
+    /// True only after the complete final ACK allowed the original vector to
+    /// be retired. An aborted attempt retains those originals for its retry.
+    pub parent_references_retired: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -603,7 +609,8 @@ impl NativeExitJob {
                 native_pid: pid,
                 raw_wait_status: status,
                 socket_references: 0,
-                transferred_descriptors: 0,
+                acknowledged_descriptors: 0,
+                parent_references_retired: false,
             });
         }
         self.stage = JobStage::Cancelled;
@@ -824,7 +831,8 @@ impl NativeExitJob {
                 native_pid: pid,
                 raw_wait_status: status,
                 socket_references: self.expected_owners.unwrap_or(0),
-                transferred_descriptors: self.transfer.len(),
+                acknowledged_descriptors: self.sent,
+                parent_references_retired: self.parent_references_retired,
             });
             if !self.parent_references_retired {
                 // Wait may beat the data-channel ERROR. Preserve a setup
