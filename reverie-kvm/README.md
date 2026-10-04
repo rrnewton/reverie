@@ -228,6 +228,17 @@ retirement, even after SET(0). This is not general blocked-I/O or direct-mode
 support. `PR_GET_PDEATHSIG` returns the task's stored signal as four bytes,
 initially zero; an out-of-range full-width SET operand returns `EINVAL`.
 
+The early native broker refuses unproved ambient filesystem classes before
+querying inode attributes: Linux can flush NFS or 9p data during `fstat`, and
+9p can do so even for a type-only `statx` with `DONT_SYNC`. Mount identity comes
+from the kernel's procfs records, not a server-reported `statfs` magic. Local
+ext2/3/4, btrfs, tmpfs, devtmpfs and devpts retain the audited descriptor classes;
+`O_PATH`, sockets and pipes use separate paths, and kernel-identified shmem
+(including internal memfd mounts) remains supported. Character-device nodes on
+other filesystems and detached or hidden mounts absent from mountinfo are
+explicitly refused. This does not promise nonblocking arbitrary device metadata
+hooks or unconditional bootstrap progress.
+
 The NAME and PDEATHSIG getters check guest writable-page state:
 NAME may copy a writable prefix before reporting `EFAULT`, whereas PDEATHSIG
 uses a scalar store and leaves the output unchanged when that store faults.

@@ -18,6 +18,9 @@ use super::BrokerOwner;
 use super::CoreError;
 use super::raw;
 
+#[path = "bootstrap_filesystem.rs"]
+mod filesystem;
+
 /// Exclusive launch authority, deliberately neither Send nor Sync.
 ///
 /// The caller must establish this contract, not infer it from /proc task count:
@@ -34,7 +37,9 @@ use super::raw;
 /// not permission to abandon the original thread while clients remain alive.
 ///
 /// The ordinary Rust allocator/libc initialization must already be available.
-/// No preinit-array safety is asserted for this constructor.
+/// No preinit-array safety is asserted for this constructor. The host's
+/// /proc/self/{fd,fdinfo,mountinfo} must remain genuine procfs views, without
+/// overmounts or replacement during bootstrap; supplied text is not authority.
 pub struct StartupAuthority {
     _same_thread: PhantomData<Rc<()>>,
 }
@@ -437,6 +442,32 @@ fn classify(fd: RawFd) -> Result<AmbientClass, CoreError> {
     if pipe_error.errno != libc::EBADF {
         return Err(pipe_error);
     }
+    // F_GET_SEALS identifies the kernel's shmem/hugetlb mapping, not a name or
+    // server-reported filesystem magic. This also covers memfd's internal mount,
+    // which need not occur in /proc/self/mountinfo. Querying seals changes none.
+    if unsafe { libc::fcntl(fd, libc::F_GET_SEALS) } >= 0 {
+        let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstatfs(fd, &mut fs) } != 0 {
+            return Err(CoreError::last("bootstrap sealed-file statfs"));
+        }
+        return if fs.f_type as u64 == 0x01021994 {
+            Ok(AmbientClass::TmpfsRegular)
+        } else {
+            Err(CoreError {
+                operation: "unproved ambient sealed-file flush class",
+                errno: libc::EOPNOTSUPP,
+            })
+        };
+    }
+    let seals_error = CoreError::last("bootstrap F_GET_SEALS");
+    if seals_error.errno != libc::EINVAL {
+        return Err(seals_error);
+    }
+    // Inode getattr is not a harmless type query: NFS fstat flushes writes,
+    // and 9p can do so even for TYPE-only statx with DONT_SYNC. 9p statfs can
+    // also return the server's local-filesystem magic. Establish the actual
+    // kernel filesystem through the continuously held descriptor first.
+    let filesystem = filesystem::mounted(fd)?;
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(fd, &mut stat) } != 0 {
         return Err(CoreError::last("bootstrap fstat"));
@@ -451,27 +482,14 @@ fn classify(fd: RawFd) -> Result<AmbientClass, CoreError> {
         if major == 5 && minor <= 2 {
             return Ok(AmbientClass::ConventionalTtyAux);
         }
-        let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstatfs(fd, &mut fs) } != 0 {
-            return Err(CoreError::last("bootstrap character statfs"));
-        }
-        if fs.f_type as u64 == 0x1cd1 && major == 136 {
+        if filesystem == filesystem::LocalFilesystem::Devpts && major == 136 {
             return Ok(AmbientClass::DevptsSlave);
         }
     } else if mode == libc::S_IFREG {
-        let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstatfs(fd, &mut fs) } != 0 {
-            return Err(CoreError::last("bootstrap regular statfs"));
-        }
-        return match fs.f_type as u64 {
-            0xef53 => Ok(AmbientClass::Ext2OrExt4Regular),
-            0x9123683e => Ok(AmbientClass::BtrfsRegular),
-            0x01021994 => Ok(AmbientClass::TmpfsRegular),
-            _ => Err(CoreError {
-                operation: "unproved ambient regular-file flush class",
-                errno: libc::EOPNOTSUPP,
-            }),
-        };
+        return filesystem.regular_class().ok_or(CoreError {
+            operation: "unproved ambient regular-file flush class",
+            errno: libc::EOPNOTSUPP,
+        });
     }
     Err(CoreError {
         operation: "unproved ambient duplicate-close class",
