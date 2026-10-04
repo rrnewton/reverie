@@ -7032,7 +7032,7 @@ mod test {
     /// bounded write keeps both delimiters and the unchanged marker atomic.
     fn emit_completion_marker(marker: &str) {
         let line = format!("\n{marker}\n");
-        assert!(line.len() <= libc::PIPE_BUF as usize);
+        assert!(line.len() <= libc::PIPE_BUF);
         assert_eq!(
             unsafe { libc::write(libc::STDOUT_FILENO, line.as_ptr().cast(), line.len()) },
             line.len() as isize,
