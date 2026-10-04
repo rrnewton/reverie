@@ -6,19 +6,16 @@ load("@fbsource//tools/build_defs:selects.bzl", "selects")
 oncall("hermit")
 
 # Keep registry metadata in the source of the autocargo manifests as well.
-# Public package names differ from two internal target names.
-def public_crate_metadata(name, build = None):
-    metadata = {
-        "version": "0.4.1",
-        "readme": "README.md",
-        "homepage": "https://hermetic-infra.org",
-        "documentation": "https://docs.rs/" + name,
-        "keywords": ["linux", "instrumentation", "hermit"],
-        "categories": ["development-tools::debugging", "os::linux-apis"],
-    }
-    if build != None:
-        metadata["build"] = build
-    return metadata
+# Public package names differ from two internal target names. A BUCK file may
+# not define functions (Buck2 rejects `def` outside .bzl files), so each target
+# extends this shared table with its own documentation URL through dict().
+_PUBLIC_CRATE_METADATA = {
+    "version": "0.4.1",
+    "readme": "README.md",
+    "homepage": "https://hermetic-infra.org",
+    "keywords": ["linux", "instrumentation", "hermit"],
+    "categories": ["development-tools::debugging", "os::linux-apis"],
+}
 
 # Some tests don't work when a sanitizer is in use (i.e., with @mode/dev). This
 # makes it easy to conditionally compile them with `#[cfg(not(sanitized))]`.
@@ -32,7 +29,7 @@ rust_library(
     srcs = glob(["reverie/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": public_crate_metadata("reverie-core"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-core"),
         },
         "cargo_toml_dir": "reverie",
     },
@@ -67,7 +64,7 @@ rust_library(
     srcs = glob(["reverie-process/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": public_crate_metadata("reverie-process"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-process"),
             "dependencies_override": {
                 "dependencies": {
                     "bitflags": {
@@ -119,7 +116,7 @@ rust_library(
     srcs = glob(["reverie-util/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": public_crate_metadata("reverie-utils"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-utils"),
         },
         "cargo_toml_dir": "reverie-util",
     },
@@ -139,7 +136,7 @@ rust_library(
     srcs = glob(["reverie-ptrace/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": public_crate_metadata("reverie-ptrace", build = "build.rs"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-ptrace", build = "build.rs"),
             "dependencies_override": {
                 "build-dependencies": {"pkg-config": {"version": "0.3"}},
                 "dependencies": {
@@ -203,7 +200,7 @@ rust_library(
     srcs = glob(["reverie-syscalls/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": public_crate_metadata("reverie-syscalls"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-syscalls"),
             "dependencies_override": {
                 "dependencies": {
                     "bitflags": {
@@ -233,7 +230,7 @@ rust_library(
     srcs = glob(["reverie-memory/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": public_crate_metadata("reverie-memory"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-memory"),
         },
         "cargo_toml_dir": "reverie-memory",
     },
@@ -248,7 +245,7 @@ rust_library(
     srcs = glob(["reverie-rpc-transport/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": public_crate_metadata("reverie-rpc-transport"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-rpc-transport"),
         },
         "cargo_toml_dir": "reverie-rpc-transport",
     },
@@ -272,7 +269,7 @@ rust_library(
     srcs = glob(["experimental/reverie-sabre-stats/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": public_crate_metadata("reverie-sabre-stats"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-sabre-stats"),
         },
         "cargo_toml_dir": "experimental/reverie-sabre-stats",
     },
@@ -287,7 +284,7 @@ rust_library(
     srcs = glob(["reverie-preload/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": public_crate_metadata("reverie-preload"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-preload"),
             "features": {
                 "coordinator-rpc": [
                     "serde",
@@ -314,7 +311,7 @@ rust_library(
     srcs = glob(["reverie-liteinst/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": public_crate_metadata("reverie-liteinst"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-liteinst"),
             "features": {
                 "default": ["preload-constructor"],
                 "preload-constructor": [],
@@ -354,7 +351,7 @@ rust_library(
     srcs = glob(["reverie-kvm/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": public_crate_metadata("reverie-kvm", build = "build.rs"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-kvm", build = "build.rs"),
             "dependencies_override": {
                 "build-dependencies": {"cc": {"version": "1.5.1"}},
             },
@@ -383,7 +380,7 @@ rust_library(
     srcs = glob(["safeptrace/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": public_crate_metadata("safeptrace"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/safeptrace"),
             "features": {
                 "default": [],
                 "memory": ["reverie-memory"],
