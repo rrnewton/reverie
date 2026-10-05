@@ -274,6 +274,21 @@ enum OrdinaryStart {
     Newborn(Running, Option<Box<libc::user_regs_struct>>),
 }
 
+/// Where in a process's life [`TracedTask::tracee_preinit`] runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreinitPlace {
+    /// At the root's first stop, before it calls execve. Its stack is the
+    /// launcher's own, or the spawned function's.
+    BeforeExec,
+    /// At the stop that follows a successful execve, before the new image's
+    /// first instruction. Its stack holds argc, argv, envp and the auxv.
+    AtExec,
+}
+
+/// The tids whose new image was given the canonical vDSO and auxv, in order.
+#[cfg(test)]
+pub(crate) static CANONICALIZED_FOR_TEST: StdMutex<Vec<i32>> = StdMutex::new(Vec::new());
+
 /// How [`TracedTask::tracee_preinit`] ended.
 pub enum PreinitOutcome {
     /// The tracee is initialized and still stopped.
@@ -4088,17 +4103,25 @@ impl<L: Tool + 'static> TracedTask<L> {
         skip_all,
         fields(pid = %task.pid())
     )]
-    pub async fn tracee_preinit(&mut self, task: Stopped) -> Result<PreinitOutcome, TraceError> {
+    pub async fn tracee_preinit(
+        &mut self,
+        task: Stopped,
+        place: PreinitPlace,
+    ) -> Result<PreinitOutcome, TraceError> {
         // Injections rebuild their capability through `assume_stopped`. Bind
         // it to this generation, so that once the tracee dies and is reaped,
         // a request refuses instead of reaching a task that reused the TID.
         self.preinit_generation = Some(task.generation());
-        let outcome = self.tracee_preinit_bound(task).await;
+        let outcome = self.tracee_preinit_bound(task, place).await;
         self.preinit_generation = None;
         outcome
     }
 
-    async fn tracee_preinit_bound(&mut self, task: Stopped) -> Result<PreinitOutcome, TraceError> {
+    async fn tracee_preinit_bound(
+        &mut self,
+        task: Stopped,
+        place: PreinitPlace,
+    ) -> Result<PreinitOutcome, TraceError> {
         // A forked child can initialize a replacement image too. It must not
         // consume or overwrite the session root's held-stop cleanup lease.
         let held_root_stop = self.liteinst_root_stop_slot(&task);
@@ -4474,15 +4497,25 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         }
         // Give the guest the vDSO and auxiliary values every backend gives its
-        // guests, in place of the host's.
+        // guests, in place of the host's. Only a freshly exec'd image has
+        // argc, argv, envp and the auxv at its stack pointer; before the exec
+        // the stack is the launcher's (or a spawned function's) own, and
+        // reading it as an initial process stack would scan and overwrite
+        // unrelated memory.
         #[cfg(target_arch = "x86_64")]
-        if self
-            .global_state
-            .subscriptions
-            .iter_syscalls()
-            .next()
-            .is_some()
+        if place == PreinitPlace::AtExec
+            && self
+                .global_state
+                .subscriptions
+                .iter_syscalls()
+                .next()
+                .is_some()
         {
+            #[cfg(test)]
+            CANONICALIZED_FOR_TEST
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(task.pid().as_raw());
             match vdso::canonicalize_new_image(self, regs.rsp).await {
                 Ok(()) => {}
                 // A tracee that died meanwhile reports a bare errno.
@@ -4629,7 +4662,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // ptrace: after the exit its numeric PID may name another tracee.
         let generation = Stopped::try_new_current_unchecked(task.pid())?;
         let raced = {
-            let preinit = self.tracee_preinit(task).fuse();
+            let preinit = self.tracee_preinit(task, PreinitPlace::BeforeExec).fuse();
             let abort = aborted.recv().fuse();
             let exit = async {
                 match (&mut exit_stop).await {
@@ -7172,7 +7205,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.arm_liteinst_root_stop(&task, &event);
             task
         };
-        let mut task = match self.tracee_preinit(task).await? {
+        let mut task = match self.tracee_preinit(task, PreinitPlace::AtExec).await? {
             PreinitOutcome::Ready(task) => task,
             PreinitOutcome::Exited(pid, exit_status) => {
                 return Ok(Wait::Exited(pid, exit_status));
