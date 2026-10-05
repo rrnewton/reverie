@@ -3619,7 +3619,10 @@ fn clone_is_fork_like(flags: u64, child_stack: u64) -> bool {
 /// the coordinator connection and, for a guest syscall, the Tool's reserved
 /// output descriptor. A syscall the Tool itself makes (`guest_syscall` false)
 /// may use the output descriptor, which is the Tool's.
-unsafe fn protect_runtime_descriptors(event: &mut SyscallEvent, guest_syscall: bool) -> bool {
+/// The runtime-owned descriptors a syscall is kept from, sorted: the
+/// coordinator connection, and for guest syscalls also the Tool output socket.
+/// Returns the array and how many of its leading entries are in use.
+fn protected_descriptors(guest_syscall: bool) -> ([u64; 2], usize) {
     let mut protected = [u64::MAX; 2];
     let mut count = 0;
     let slots: &[&AtomicI32] = if guest_syscall {
@@ -3634,8 +3637,13 @@ unsafe fn protect_runtime_descriptors(event: &mut SyscallEvent, guest_syscall: b
             count += 1;
         }
     }
+    protected[..count].sort_unstable();
+    (protected, count)
+}
+
+unsafe fn protect_runtime_descriptors(event: &mut SyscallEvent, guest_syscall: bool) -> bool {
+    let (mut protected, count) = protected_descriptors(guest_syscall);
     let protected = &mut protected[..count];
-    protected.sort_unstable();
     if protected.is_empty() {
         return false;
     }
@@ -3657,6 +3665,11 @@ unsafe fn protect_runtime_descriptors(event: &mut SyscallEvent, guest_syscall: b
             .any(|&fd| fd_arg(event, 0) <= fd && fd <= fd_arg(event, 1))
     {
         event.result = unsafe { close_range_preserving_fds(event, protected) };
+    } else if let Some(result) = protected
+        .iter()
+        .find_map(|&fd| readiness_refusal(event, fd))
+    {
+        event.result = result;
     } else if protected.iter().any(|&fd| {
         syscall_targets_event_fd(event, fd) || (guest_syscall && syscall_uses_socket(event, fd))
     }) {
@@ -3910,7 +3923,6 @@ fn syscall_targets_event_fd(event: &SyscallEvent, event_fd: u64) -> bool {
         | libc::SYS_pwritev
         | libc::SYS_pwritev2
         | libc::SYS_vmsplice
-        | libc::SYS_sendfile
         | libc::SYS_fcntl
         | libc::SYS_ioctl
         | libc::SYS_dup
@@ -3933,7 +3945,32 @@ fn syscall_targets_event_fd(event: &SyscallEvent, event_fd: u64) -> bool {
         | libc::SYS_fadvise64
         | libc::SYS_readahead
         | libc::SYS_getdents64
-        | libc::SYS_fchdir => fd(0),
+        | libc::SYS_getdents
+        | libc::SYS_syncfs
+        | libc::SYS_fchdir
+        // Descriptors of special kinds: a runtime-owned number is not one,
+        // and to the guest it is not open at all.
+        | libc::SYS_signalfd
+        | libc::SYS_signalfd4
+        | libc::SYS_timerfd_settime
+        | libc::SYS_timerfd_gettime
+        | libc::SYS_inotify_add_watch
+        | libc::SYS_inotify_rm_watch
+        | libc::SYS_fanotify_mark
+        | libc::SYS_setns
+        | libc::SYS_pidfd_send_signal
+        | libc::SYS_pidfd_getfd
+        | libc::SYS_process_madvise
+        | libc::SYS_process_mrelease
+        | libc::SYS_finit_module
+        | libc::SYS_fsmount
+        | libc::SYS_quotactl_fd
+        | libc::SYS_landlock_add_rule
+        | libc::SYS_landlock_restrict_self => fd(0),
+        libc::SYS_sendfile => fd(0) || fd(1),
+        libc::SYS_epoll_ctl => fd(0) || fd(2),
+        // waitid(P_PIDFD, fd, ...).
+        libc::SYS_waitid => event.args[0] as u32 == 3 && fd(1),
         // A file mapping of the descriptor.
         libc::SYS_mmap => event.args[3] & libc::MAP_ANONYMOUS as u64 == 0 && fd(4),
         libc::SYS_dup2 | libc::SYS_dup3 => fd(0) || fd(1),
@@ -3966,6 +4003,30 @@ fn syscall_uses_socket(event: &SyscallEvent, event_fd: u64) -> bool {
         | libc::SYS_getsockname
         | libc::SYS_getpeername => fd(0),
         _ => false,
+    }
+}
+
+/// The result Linux gives a guest `epoll_wait`, `epoll_pwait` or
+/// `epoll_pwait2` on `event_fd`, a number the guest does not have open: `EBADF`,
+/// after Linux's own `EINVAL` check of the event count. `None` for any other
+/// call. (`poll`, `ppoll`, `select` and `pselect6` name descriptors inside guest
+/// memory, and `*at` calls use their directory argument only for some paths;
+/// checking them would cost correct programs' calls a guest-memory read, so a
+/// buggy program that passes a runtime-owned number there is a known limit.)
+fn readiness_refusal(event: &SyscallEvent, event_fd: u64) -> Option<i64> {
+    match event.number {
+        libc::SYS_epoll_wait | libc::SYS_epoll_pwait | libc::SYS_epoll_pwait2
+            if fd_arg(event, 0) == event_fd =>
+        {
+            let events = event.args[2] as i32;
+            let most = i32::MAX / core::mem::size_of::<libc::epoll_event>() as i32;
+            Some(-i64::from(if events <= 0 || events > most {
+                libc::EINVAL
+            } else {
+                libc::EBADF
+            }))
+        }
+        _ => None,
     }
 }
 

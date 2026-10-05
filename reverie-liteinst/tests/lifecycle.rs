@@ -311,7 +311,9 @@ async fn in_guest_runs_disable_address_space_randomization() {
 /// Tool's message). With the descriptor table full, a dup onto it still
 /// succeeds and the runtime retires the socket; its retirement message reaches
 /// the reader even through a full queue and with a forked child holding the
-/// socket. A regular file is refused.
+/// socket. Other calls that name it in a register argument (epoll, sendfile's
+/// input, timerfd, inotify, ...) fail with EBADF as for a closed number. A
+/// regular file is refused.
 #[tokio::test(flavor = "current_thread")]
 async fn a_reserved_tool_output_fd_is_protected_from_the_guest() {
     let (_preload_directory, preload) = compile_noop_preload();
