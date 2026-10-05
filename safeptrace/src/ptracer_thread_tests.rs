@@ -2740,6 +2740,17 @@ async fn explicit_untraced_nonchild_constructor_can_attach() {
         let owner = running.1.ptracer_owner.as_ref().unwrap();
         assert!(owner.is_current().unwrap());
         assert!(!running.1.ptracer_wait_role);
+        assert!(
+            generation
+                .retained_ptracer_thread_guard()
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            generation.ptracer_thread_guard_for_wait(),
+            Err(Errno::EPERM)
+        ));
+        assert!(!running.1.ptracer_wait_role);
         assert_eq!(
             running.1.event().current_tracer_pid(),
             Ok(super::Pid::from_raw(0))
@@ -2762,6 +2773,16 @@ async fn explicit_untraced_nonchild_constructor_can_attach() {
             Running::seize_on_ptracer_thread(child.into(), legacy_thread_options()).unwrap();
         assert_eq!(running.generation(), generation);
         assert!(running.1.ptracer_wait_role);
+        let controller = running
+            .generation()
+            .retained_ptracer_thread_guard()
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            &controller.owner,
+            running.1.ptracer_owner.as_ref().unwrap()
+        ));
+        assert_eq!(controller.check_current(), Ok(()));
         running.interrupt().unwrap();
         let (stopped, event) =
             tokio::time::timeout(TRACEE_WAIT_TIMEOUT, running.wait_owned_on_ptracer_thread())

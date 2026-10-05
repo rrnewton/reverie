@@ -48,6 +48,12 @@ use syscalls::Sysno;
 use thiserror::Error;
 
 #[cfg(feature = "notifier")]
+pub use crate::notifier::ExitFuture;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::GuardedPendingStatusReservation;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::PendingStatusReservation;
+#[cfg(feature = "notifier")]
 pub use crate::notifier::ProcStatError;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::PtracerCleanupDriver;
@@ -65,6 +71,8 @@ pub use crate::notifier::PtracerSyncDriver;
 pub use crate::notifier::PtracerSyncWait;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::PtracerTerminalCleanup;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::PtracerThreadGuard;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::PtracerWaitDriver;
 #[cfg(feature = "notifier")]
@@ -262,7 +270,7 @@ impl TraceeToken {
             // an already-retired retained target before a numeric request
             // can address its replacement. This is a lifetime precheck,
             // not an atomic descriptor-valued ptrace operation.
-            self.event.check_numeric_target_lifetime()?;
+            self.event.check_numeric_target_lifetime(owner)?;
         }
         request()
     }
@@ -609,6 +617,8 @@ impl Wait {
     }
 
     fn from_raw_with_token(pid: Pid, status: i32, token: TraceeToken) -> Result<Self, Error> {
+        #[cfg(feature = "notifier")]
+        token.event().invalidate_numeric_auth();
         Ok(if libc::WIFEXITED(status) {
             Wait::Exited(pid, ExitStatus::Exited(libc::WEXITSTATUS(status)))
         } else if libc::WIFSIGNALED(status) {
@@ -745,6 +755,66 @@ impl TraceeGeneration {
     /// Returns the process ID of the tracee.
     pub fn pid(&self) -> Pid {
         self.0
+    }
+
+    /// Retains a passive descriptor/observation facade for this generation.
+    /// This does not register a worker, recapture the numeric PID, or grant a
+    /// stopped capability. Registration starts on a later explicit request.
+    #[cfg(feature = "notifier")]
+    pub fn terminal_cleanup(&self) -> TerminalCleanup {
+        TerminalCleanup::new_unregistered(self.0, &self.1)
+    }
+
+    /// Retains this token's host anchor, or binds the current controller host
+    /// through the generation's original proc mount when none was captured.
+    /// This selects only a host thread; it grants no attachment or wait role.
+    /// Bind before callbacks or suspension, then keep that same guard rather
+    /// than capturing another after a foreign poll, error or cancellation.
+    #[cfg(feature = "notifier")]
+    pub fn ptracer_thread_guard(&self) -> Result<PtracerThreadGuard, Errno> {
+        if let Some(error) = self.1.event().initial_capture_error() {
+            return Err(error);
+        }
+        match &self.1.ptracer_owner {
+            Some(owner) => Ok(PtracerThreadGuard::from_owner(owner.clone())),
+            None => self.1.event().capture_host_thread_guard(),
+        }
+    }
+
+    /// Returns an existing host anchor only when this token already retains
+    /// a positive wait-role witness for its original generation.
+    ///
+    /// This passive accessor captures nothing and does not check the current
+    /// attachment or upgrade a constructor-only role. Authenticate a returned
+    /// guard with [`PtracerThreadGuard::check_current`] before controller use.
+    /// It remains the same host anchor after genuine target retirement.
+    #[cfg(feature = "notifier")]
+    pub fn retained_ptracer_thread_guard(&self) -> Result<Option<PtracerThreadGuard>, Errno> {
+        if let Some(error) = self.1.event().initial_capture_error() {
+            return Err(error);
+        }
+        Ok(self
+            .1
+            .ptracer_wait_role
+            .then(|| self.1.ptracer_owner.clone())
+            .flatten()
+            .map(PtracerThreadGuard::from_owner))
+    }
+
+    /// Binds a controller host only after proving its current wait role for
+    /// this original live generation. The proof requires the actual ptracer
+    /// TID, or the real parent TGID for an untraced descriptor waiter.
+    ///
+    /// Use this fallible cold binder before callbacks or suspension when no
+    /// previously bound controller guard is available. Retain the same guard
+    /// thereafter, including for children and terminal results. A refusal
+    /// registers no worker and leaves this generation available for its real
+    /// owner; a retired task cannot supply a missing controller anchor.
+    #[cfg(feature = "notifier")]
+    pub fn ptracer_thread_guard_for_wait(&self) -> Result<PtracerThreadGuard, Errno> {
+        let guard = self.ptracer_thread_guard()?;
+        guard.check_wait_role(self.1.event())?;
+        Ok(guard)
     }
 
     /// Creates a stopped state for this generation. Like
@@ -972,6 +1042,8 @@ impl Stopped {
     /// Converts this capability into the running state after a successful
     /// ptrace request moved the tracee out of its stop.
     fn into_running(self) -> Running {
+        #[cfg(feature = "notifier")]
+        self.1.event().invalidate_numeric_auth();
         self.retire_statuses_before_exit_stop();
         Running::from_token(self.0, self.1)
     }
@@ -1846,6 +1918,12 @@ impl Zombie {
     /// Returns the PID of the zombie.
     pub fn pid(&self) -> Pid {
         self.0.pid()
+    }
+
+    /// Retains this zombie's original generation without capturing a target
+    /// or registering another wait owner.
+    pub fn generation(&self) -> TraceeGeneration {
+        self.0.generation()
     }
 
     /// Transfers the original generation into a retained notifier wait.

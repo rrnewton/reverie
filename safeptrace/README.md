@@ -65,10 +65,75 @@ thread. A foreign-thread refusal retains the original state and wait
 authority. Keep that same driver and return it to its owner; an adapter must
 not drop it on error or rebuild a state from the numeric PID.
 
+Local cleanup construction from an owned state retains that state's original
+host anchor and role witness. It does not capture a replacement owner or
+upgrade a constructor-only role. Shared handles without such an anchor keep
+their cold binding behavior; named operations authenticate before progress.
+
 A successful explicit attach or seize can still carry a notifier-capture
 error. The returned state retains that refusal, available through its cleanup
 handle, and local waits do not retry capture against a possibly reused PID.
 Retain the returned state when handling the error.
+
+## Integrating an execution controller
+
+A controller can choose the native wait contract when the **original retained
+descriptor** supports `PIDFD_THREAD`. `TraceeGeneration::terminal_cleanup` and
+`OwnedWaitFuture::terminal_cleanup` return passive handles for that same
+generation; `has_thread_pidfd` reports its actual descriptor class. These
+accessors do not register a worker or capture the numeric target again.
+Use the Native wait, exit and reservation methods consistently for a native
+generation, and the explicit methods consistently for a fallback generation.
+An acquisition error is not evidence that another mode is available.
+
+`TraceeGeneration::ptracer_thread_guard_for_wait` provides a separate cold
+controller binding. It authenticates the current host and the original task's
+actual ptracer or real-parent wait role before returning a `PtracerThreadGuard`.
+Bind it before callbacks or suspension, then retain that same guard through
+child capture, errors, cancellation and final results. For managed Native
+polling, use `OwnedWaitFuture::poll_with_ptracer_guard` and
+`ExitFuture::poll_with_ptracer_guard`. These check that same original host
+after waker callbacks and before decoding, removing a FIFO front or claiming
+an exit stop. A foreign refusal keeps the original unfinished wait available
+for its controller to recover. The ordinary Native `Future` implementations
+retain their sibling polling contract.
+
+An exit notification can run a callback after a legitimate claim. The managed
+exit future stores that exact stopped capability before notification and
+keeps it on refusal. Retain the same future until its original controller
+recovers the result; cleanup must account for that claimed capability rather
+than resetting its epoch or revoking it as an unclaimed stop.
+
+`TerminalCleanup::reserve_pending_for_cleanup_with_guard` returns a local
+`GuardedPendingStatusReservation`. Its decode and fallible commit operations
+check the same guard, and refusal before commit preserves the FIFO front.
+Dead-Exec retirement is durable in the original Event before notifications;
+retry through that retained cleanup owner observes the genuine remaining
+statuses. This retirement is not an exit or freeze acknowledgment. A local
+completed-result flag survives only while its reservation wrapper is retained.
+
+`retained_ptracer_thread_guard` passively returns an existing anchor when the
+token already carries a positive role witness. It captures nothing and keeps
+that same anchor after target retirement. Check the returned guard's host
+before use; the saved witness is not a fresh attachment check. A missing or
+constructor-only witness still needs the cold binder while the target is live.
+
+The separate `ptracer_thread_guard` method selects only a host identity; it
+does not prove a target attachment or wait role. A missing host anchor cannot
+be recovered from a native target directory after that task has retired.
+Keep the early guard rather than recapturing one during terminal cleanup.
+Sharing a controller guard with a child does not share the parent's target
+generation or its FIFO. Child capture still follows the chosen wait interface;
+a generic native child-acquisition refusal remains an error.
+
+`OwnedWaitFuture::generation` and `Zombie::generation` retain their original
+generation without a lookup. `into_zombie_after_observed_death` transfers the
+same unfinished native wait only after its decoder has reported `Died`; every
+other refusal returns that future unchanged. These additions preserve the
+generic futures' `Send` and sibling-polling contract. A controller's host guard
+does not add the explicit state's target checks to a native numeric ptrace or
+memory request. Those requests retain the native SDK's existing lifetime
+contract and concurrent exec/reuse limitation described below.
 
 ## Kernel and namespace requirements
 
@@ -88,6 +153,20 @@ explicit interface, and to numeric ptrace requests, memory access, and stopped
 observations through an explicit state. A new host owner is authenticated
 through the Event's original proc mount before any queued status is transferred.
 
+Numeric requests first use retained descriptors for positive kernel proofs:
+a self-only signal0 query authenticates the original executing host task, and
+a target signal0 query proves the original target PID object is still live.
+These queries deliver no signal. Any refusal, denial or unsupported descriptor
+takes the original proc identity checks instead; a refused query alone never
+proves identity or retirement. This fallback compares fresh directory metadata
+with the pinned original directories. Its successful full target status check
+is reused until a wait event is published or decoded, a resume or detach
+succeeds, or the attachment reconnects. Proc lookup and status-read permission
+errors are checked when this fallback runs, rather than during a successful
+descriptor proof. Within one validated stop, repeated fallback requests reuse
+the successful status check. Failed validation and raw ptrace errors are never
+cached, so a later request can retry through the same original capability.
+
 Selecting a host thread alone does not authorize waiting for an untraced task.
 The explicit wait interfaces also authenticate the original attachment or the
 task's real parent TGID before transferring a queued status or exit capability.
@@ -95,6 +174,26 @@ task's real parent TGID before transferring a queued status or exit capability.
 its waits return `EPERM` until an actual attachment establishes that role.
 An established role stays with that same task generation through its final
 published result, including after its proc directory disappears.
+
+For a held ptrace stop, named operations can authenticate the current
+attachment with a read-only `PTRACE_GETEVENTMSG` scratch query followed by a
+positive lifetime query through the original target descriptor. The scratch
+message is discarded. This proof is fresh on every operation and changes no
+role or queued status. Every nonpositive result takes the existing fresh
+retained-directory attachment check, including while the target is running.
+Status-read permission checks run on that fallback; a positive kernel proof
+does not repeat a procfs open. An existing host anchor and established role
+also need no discarded constructor check: the first operation authenticates
+them normally. Constructor-only and unbound roles keep their original binding.
+
+The current attachment check can retain an optional status file opened from
+the original task directory. Each check reads it again at offset zero, which
+regenerates proc status even after a partial read; no attachment value is
+cached between polls. Any missing file, read failure or malformed result uses
+the existing fresh directory reader and its errors. Acquiring this optional
+file cannot refuse an otherwise valid capture. While the retained file works,
+its open permission is checked at capture rather than repeated on every poll;
+read permission and current kernel attachment still apply to every check.
 
 Ptrace requests still address numeric TIDs. The explicit interface checks the
 retained target before issuing a request and rejects an already retired target.

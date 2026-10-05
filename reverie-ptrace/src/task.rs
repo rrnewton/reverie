@@ -136,6 +136,7 @@ use crate::liteinst_stats::LiteinstPatchOutcome;
 use crate::liteinst_trap_only::StoredSiginfo;
 use crate::liteinst_trap_only::TrapOnlyTask;
 use crate::poll_on_wake::PollOnWake;
+use crate::tracer::PtracerController;
 use crate::tracer::PtracerWaitOwner;
 use crate::tracer::WaitOnPtracer;
 
@@ -2028,6 +2029,7 @@ enum LiteinstTrap {
 #[derive(Default)]
 pub(crate) struct FatalSession {
     ptracer_thread: Option<std::thread::ThreadId>,
+    ptracer_controller: StdMutex<Option<PtracerController>>,
     callback_diagnostics: StdMutex<Vec<crate::PtraceCallbackDiagnostic>>,
     backend_signalling: AtomicBool,
     failure: StdMutex<Option<PtraceRunFailure>>,
@@ -2309,9 +2311,17 @@ thread_local! {
 }
 
 impl FatalSession {
+    pub(crate) fn bind_controller(&self, waits: &PtracerWaitOwner) {
+        let mut controller = self.ptracer_controller.lock().unwrap();
+        match controller.as_ref() {
+            Some(controller) => controller.retain_from(&waits.controller()),
+            None => *controller = Some(waits.controller()),
+        }
+    }
+
     pub(crate) fn capture(&self, parent: Pid, op: ChildOp, child: &Running) {
         let mut tree = self.tree.lock().unwrap();
-        let terminal = child.terminal_cleanup();
+        let terminal = child.generation().terminal_cleanup();
         if tree
             .newborns
             .iter()
@@ -2324,7 +2334,8 @@ impl FatalSession {
             return;
         }
         if op == ChildOp::Vfork {
-            tree.vfork_children.push(Arc::new(child.terminal_cleanup()));
+            tree.vfork_children
+                .push(Arc::new(child.generation().terminal_cleanup()));
         }
         #[cfg(test)]
         self.observed_child_ops
@@ -2332,7 +2343,17 @@ impl FatalSession {
             .unwrap()
             .push((parent, op, child.pid()));
         // Store the original receiver before any fallible group capture.
-        tree.newborns.push(FatalNewborn::new(parent, child));
+        // Keep the session's original host anchor. The child still owns its
+        // own generation, mode, FIFO and exit epoch. An unset inherited cell
+        // refuses progress; it cannot mint whichever sibling called capture.
+        let controller = self
+            .ptracer_controller
+            .lock()
+            .unwrap()
+            .get_or_insert_with(PtracerController::default)
+            .clone();
+        tree.newborns
+            .push(FatalNewborn::with_controller(parent, child, controller));
         drop(tree);
         match crate::tracer::TraceeIdentity::capture_event_child(child.pid(), parent, op) {
             Ok(identity) => self
@@ -2353,9 +2374,25 @@ impl FatalSession {
 
     pub(crate) fn capture_root(&self, stopped: &Stopped) {
         let root = stopped.pid();
+        if self.ptracer_controller.lock().unwrap().is_none() {
+            let waits = PtracerWaitOwner::default();
+            waits.bind_stopped(stopped);
+            if let Err(error) = waits.prime_controller() {
+                self.fail_at(
+                    BackendFailure {
+                        pid: root,
+                        tid: root,
+                        phase: "ptrace root controller capture",
+                    },
+                    error.into(),
+                );
+                return;
+            }
+            self.bind_controller(&waits);
+        }
         match crate::tracer::TraceeIdentity::open_root(root) {
             Ok(identity) => self.groups.lock().unwrap().push(Arc::new(FatalGroup {
-                terminal: stopped.terminal_cleanup(),
+                terminal: stopped.generation().terminal_cleanup(),
                 identity,
             })),
             Err(error) => self.fail_at(
@@ -2504,6 +2541,7 @@ impl FatalSession {
     }
 
     fn register(&self, task: Arc<FatalTaskStop>) -> Option<FatalNewborn> {
+        self.bind_controller(&task.waits);
         #[cfg(test)]
         crate::tracer::record_fatal_task_for_test(&task);
         let mut tree = self.tree.lock().unwrap();
@@ -3618,6 +3656,7 @@ impl<L: Tool> TracedTask<L> {
 
     /// Create a child TracedTask corresponding to a clone()
     fn cloned(&self, child: Pid) -> Self {
+        let ptracer_waits = Arc::new(self.ptracer_waits.child_owner());
         let global_state = self.global_state.clone();
         let process_state = self.process_state.clone();
         let thread_state =
@@ -3657,7 +3696,7 @@ impl<L: Tool> TracedTask<L> {
             pending_signal: None,
             pending_signal_taken: None,
             stale_private_step_trap: false,
-            ptracer_waits: Arc::new(PtracerWaitOwner::default()),
+            ptracer_waits,
             preinit_generation: None,
             latest_injection_stop: None,
             in_signal_callback: false,
@@ -3696,6 +3735,7 @@ impl<L: Tool> TracedTask<L> {
 
     /// Create a child TracedTask corresponding to a fork()
     fn forked(&self, child: Pid) -> Self {
+        let ptracer_waits = Arc::new(self.ptracer_waits.child_owner());
         let process_state = Arc::new(L::new(child, &self.global_state.cfg));
         let thread_state =
             process_state.init_thread_state(child, Some((self.tid, &self.thread_state)));
@@ -3736,7 +3776,7 @@ impl<L: Tool> TracedTask<L> {
             pending_signal: None,
             pending_signal_taken: None,
             stale_private_step_trap: false,
-            ptracer_waits: Arc::new(PtracerWaitOwner::default()),
+            ptracer_waits,
             preinit_generation: None,
             latest_injection_stop: None,
             in_signal_callback: false,
@@ -10182,9 +10222,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         let terminal = match &start {
             OrdinaryStart::Stopped(child) | OrdinaryStart::Exec(child, _) => {
-                child.terminal_cleanup()
+                child.generation().terminal_cleanup()
             }
-            OrdinaryStart::Newborn(child, _) => child.terminal_cleanup(),
+            OrdinaryStart::Newborn(child, _) => child.generation().terminal_cleanup(),
         };
         let stop = Arc::new(FatalTaskStop {
             tid: self.tid(),

@@ -166,11 +166,12 @@ mod fatal_dead_exec_tests {
         let session = FatalSession::for_test(pid);
         let terminal = running.terminal_cleanup();
         let held = Arc::new(StdMutex::new(None));
-        let exit_stop =
-            tokio::time::timeout_at(deadline.into(), running.exit_event_on_ptracer_thread())
-                .await
-                .expect("exit stop claim is bounded")
-                .expect("claim the exit stop");
+        let waits = Arc::new(PtracerWaitOwner::default());
+        waits.bind_running(&running);
+        let exit_stop = tokio::time::timeout_at(deadline.into(), waits.exit_running(&running))
+            .await
+            .expect("exit stop claim is bounded")
+            .expect("claim the exit stop");
         drop(running);
         let status = {
             let mut retried = false;
@@ -178,6 +179,7 @@ mod fatal_dead_exec_tests {
                 Ok(exit_stop),
                 &terminal,
                 &held,
+                &waits,
                 &session
             ));
             loop {
