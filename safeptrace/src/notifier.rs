@@ -3398,6 +3398,10 @@ fn open_thread_handle_for_policy_at(
     let opened = error.map_or_else(|| pidfd_open_with_flags(pid, libc::O_EXCL), Err);
     match opened {
         Ok(fd) => Ok(ThreadHandle::Pidfd(fd)),
+        Err(error @ Errno::EINVAL) if policy == WaitPolicy::Native => {
+            report_native_thread_pidfd_requirement();
+            Err(error)
+        }
         Err(Errno::EINVAL) if policy == WaitPolicy::PtracerThread => {
             // pidfd_open resolves in the caller's active PID namespace;
             // procfs resolves in its mount's namespace. An inherited outer
@@ -3431,6 +3435,74 @@ fn open_thread_handle_for_policy_at(
             }
         }
         Err(error) => Err(error),
+    }
+}
+
+const NATIVE_THREAD_PIDFD_REQUIREMENT: &[u8] = b"safeptrace: native thread-pidfd waits require Linux 6.9 or newer with PIDFD_THREAD support; pidfd_open(PIDFD_THREAD) returned EINVAL. Use the explicit _on_ptracer_thread interface on older kernels.\n";
+
+/// Report a native acquisition refusal without stdio locks, blocking pipes,
+/// changing the caller's descriptor flags, or generating SIGPIPE.
+fn report_native_thread_pidfd_requirement() {
+    unsafe {
+        let fd = libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 3);
+        if fd < 0 {
+            return;
+        }
+        let stderr = OwnedFd::from_raw_fd(fd);
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if libc::fstat(stderr.as_raw_fd(), metadata.as_mut_ptr()) != 0 {
+            return;
+        }
+        let metadata = metadata.assume_init();
+        let kind = metadata.st_mode & libc::S_IFMT;
+        if kind == libc::S_IFREG {
+            // The dup shares stderr's offset. A proc-fd reopen would leave
+            // later writes able to overwrite this diagnostic.
+            libc::write(
+                stderr.as_raw_fd(),
+                NATIVE_THREAD_PIDFD_REQUIREMENT.as_ptr().cast(),
+                NATIVE_THREAD_PIDFD_REQUIREMENT.len(),
+            );
+            return;
+        }
+        if kind == libc::S_IFSOCK {
+            libc::send(
+                stderr.as_raw_fd(),
+                NATIVE_THREAD_PIDFD_REQUIREMENT.as_ptr().cast(),
+                NATIVE_THREAD_PIDFD_REQUIREMENT.len(),
+                libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+            );
+            return;
+        }
+
+        // Reopening creates a separate file description, leaving stderr's
+        // flags unchanged. For a pipe, the temporary read endpoint prevents
+        // SIGPIPE even if its external reader has already closed.
+        let access = match kind {
+            libc::S_IFIFO => libc::O_RDWR,
+            libc::S_IFCHR => libc::O_WRONLY,
+            _ => return,
+        };
+        let flags = access | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY;
+        let fd = libc::open(c"/proc/self/fd/2".as_ptr(), flags);
+        if fd < 0 {
+            return;
+        }
+        let output = OwnedFd::from_raw_fd(fd);
+        let mut reopened = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if libc::fstat(output.as_raw_fd(), reopened.as_mut_ptr()) == 0 {
+            let reopened = reopened.assume_init();
+            if reopened.st_dev == metadata.st_dev
+                && reopened.st_ino == metadata.st_ino
+                && reopened.st_mode & libc::S_IFMT == kind
+            {
+                libc::write(
+                    output.as_raw_fd(),
+                    NATIVE_THREAD_PIDFD_REQUIREMENT.as_ptr().cast(),
+                    NATIVE_THREAD_PIDFD_REQUIREMENT.len(),
+                );
+            }
+        }
     }
 }
 
@@ -10733,6 +10805,186 @@ mod test {
 
             reap_stopped_process(cleanup);
         }
+    }
+
+    #[test]
+    fn native_thread_pidfd_refusal_reports_kernel_requirement() {
+        const INNER: &str = "SAFEPTRACE_NATIVE_PIDFD_DIAGNOSTIC_INNER";
+        let Some(mode) = env::var_os(INNER) else {
+            for mode in ["pipe", "full", "closed", "file"] {
+                let result = run_exact_test_bounded(
+                    "notifier::test::native_thread_pidfd_refusal_reports_kernel_requirement",
+                    &[(INNER, mode)],
+                    false,
+                    Duration::from_secs(5),
+                )
+                .unwrap();
+                assert!(!result.timed_out, "{mode}: {result:?}");
+                assert!(result.output.status.success(), "{mode}: {result:?}");
+                if mode == "pipe" {
+                    assert_eq!(result.output.stderr, NATIVE_THREAD_PIDFD_REQUIREMENT);
+                    io::stderr().write_all(&result.output.stderr).unwrap();
+                } else {
+                    assert!(result.output.stderr.is_empty(), "{mode}: {result:?}");
+                }
+            }
+            return;
+        };
+        let mode = mode.to_str().unwrap();
+        let (pid, cleanup) = spawn_stopped_process(None).unwrap();
+
+        // Refuse only the actual PIDFD_THREAD syscall in this isolated test
+        // thread. Ordinary pidfds and the test-owned cleanup remain usable.
+        let instruction = |code, jt, jf, k| libc::sock_filter { code, jt, jf, k };
+        let filter = [
+            instruction(0x20, 0, 0, 0),
+            instruction(0x15, 0, 3, libc::SYS_pidfd_open as u32),
+            instruction(0x20, 0, 0, 24),
+            instruction(0x15, 0, 1, libc::O_EXCL as u32),
+            instruction(0x06, 0, 0, libc::SECCOMP_RET_ERRNO | libc::EINVAL as u32),
+            instruction(0x06, 0, 0, libc::SECCOMP_RET_ALLOW),
+        ];
+        let program = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_ptr().cast_mut(),
+        };
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+            0
+        );
+        assert_eq!(
+            unsafe {
+                libc::syscall(
+                    libc::SYS_seccomp,
+                    libc::SECCOMP_SET_MODE_FILTER,
+                    0,
+                    &program,
+                )
+            },
+            0
+        );
+        assert_eq!(
+            pidfd_open_with_flags(pid.into(), libc::O_EXCL).unwrap_err(),
+            Errno::EINVAL
+        );
+        let ordinary = pidfd_open_with_flags(pid.into(), 0).unwrap();
+        assert_eq!(descriptor_is_live(ordinary.as_raw_fd()), Ok(true));
+
+        let saved = unsafe { libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 3) };
+        assert!(saved >= 0);
+        let saved = unsafe { OwnedFd::from_raw_fd(saved) };
+        let mut full_reader = None;
+        let mut regular_output = None;
+        let mut previous_sigpipe = None;
+        if mode == "file" {
+            let fd = unsafe {
+                libc::memfd_create(c"native-pidfd-diagnostic".as_ptr(), libc::MFD_CLOEXEC)
+            };
+            assert!(fd >= 0);
+            let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+            assert_eq!(
+                unsafe { libc::write(fd.as_raw_fd(), b"before\n".as_ptr().cast(), 7) },
+                7
+            );
+            assert_eq!(
+                unsafe { libc::dup2(fd.as_raw_fd(), libc::STDERR_FILENO) },
+                libc::STDERR_FILENO
+            );
+            regular_output = Some(fd);
+        } else if mode != "pipe" {
+            let mut descriptors = [-1; 2];
+            assert_eq!(
+                unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) },
+                0
+            );
+            let reader = unsafe { OwnedFd::from_raw_fd(descriptors[0]) };
+            let writer = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
+            if mode == "full" {
+                assert_eq!(
+                    unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_SETPIPE_SZ, 4096) },
+                    4096
+                );
+                assert_eq!(
+                    unsafe { libc::write(writer.as_raw_fd(), [b'x'; 4096].as_ptr().cast(), 4096) },
+                    4096
+                );
+                full_reader = Some(reader);
+            } else {
+                assert_eq!(mode, "closed");
+                drop(reader);
+                previous_sigpipe = Some(unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) });
+                assert_ne!(previous_sigpipe.unwrap(), libc::SIG_ERR);
+            }
+            assert_eq!(
+                unsafe { libc::dup2(writer.as_raw_fd(), libc::STDERR_FILENO) },
+                libc::STDERR_FILENO
+            );
+        }
+        let flags = unsafe { libc::fcntl(libc::STDERR_FILENO, libc::F_GETFL) };
+        assert!(flags >= 0);
+        assert_eq!(flags & libc::O_NONBLOCK, 0);
+
+        assert_eq!(Running::try_new(pid.into()).unwrap_err(), Errno::EINVAL);
+        assert!(!NOTIFIER.pids.lock().contains_key(&pid.into()));
+        let explicit = Running::new_on_ptracer_thread(pid.into()).unwrap();
+        assert!(matches!(
+            explicit.1.event().identity().unwrap().pidfd,
+            ThreadHandle::LegacyLeader { .. }
+        ));
+        assert_eq!(
+            unsafe { libc::fcntl(libc::STDERR_FILENO, libc::F_GETFL) },
+            flags,
+            "the diagnostic changed the caller's stderr flags"
+        );
+        if mode == "file" {
+            assert_eq!(
+                unsafe { libc::write(libc::STDERR_FILENO, b"after\n".as_ptr().cast(), 6) },
+                6
+            );
+        }
+        assert_eq!(
+            unsafe { libc::dup2(saved.as_raw_fd(), libc::STDERR_FILENO) },
+            libc::STDERR_FILENO
+        );
+        if let Some(previous) = previous_sigpipe {
+            assert_ne!(
+                unsafe { libc::signal(libc::SIGPIPE, previous) },
+                libc::SIG_ERR
+            );
+        }
+        if mode == "full" {
+            let mut bytes = [0; 4096];
+            assert_eq!(
+                unsafe {
+                    libc::read(
+                        full_reader.as_ref().unwrap().as_raw_fd(),
+                        bytes.as_mut_ptr().cast(),
+                        bytes.len(),
+                    )
+                },
+                bytes.len() as isize
+            );
+            assert_eq!(bytes, [b'x'; 4096]);
+        } else if let Some(fd) = regular_output {
+            let expected = [
+                b"before\n".as_slice(),
+                NATIVE_THREAD_PIDFD_REQUIREMENT,
+                b"after\n".as_slice(),
+            ]
+            .concat();
+            assert_eq!(unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_SET) }, 0);
+            let mut actual = vec![0; expected.len() + 1];
+            let read =
+                unsafe { libc::read(fd.as_raw_fd(), actual.as_mut_ptr().cast(), actual.len()) };
+            assert_eq!(read, expected.len() as isize);
+            actual.truncate(read as usize);
+            assert_eq!(
+                actual, expected,
+                "stderr logs or their shared file offset were overwritten"
+            );
+        }
+        drop(explicit);
+        reap_stopped_process(cleanup);
     }
 
     #[test]

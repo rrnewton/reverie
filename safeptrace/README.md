@@ -39,8 +39,10 @@ from a sibling OS thread. `Running::try_new` reports acquisition errors
 directly. They require kernel support for `PIDFD_THREAD`;
 an unsupported kernel returns the native `pidfd_open` refusal (`EINVAL` for
 `PIDFD_THREAD` on Linux before 6.9) without changing
-the threading contract. Linux still requires the actual ptracer thread for
-ptrace operations such as resuming a stop.
+the threading contract. Native acquisition also reports the Linux 6.9
+requirement to stderr on a best-effort basis when it returns `EINVAL`;
+the explicit fallback does not emit that diagnostic. Linux still requires the
+actual ptracer thread for ptrace operations such as resuming a stop.
 
 For older kernels, select the explicit ptracer-thread interface when creating
 the state: `Running::new_on_ptracer_thread`,

@@ -14,7 +14,10 @@
 //! not possible to call ptrace on a process not in a stopped state.
 //!
 //! With `notifier`, generic wait and exit futures retain their Send contract
-//! and require native thread pidfds. Select the named `_on_ptracer_thread`
+//! and require native thread pidfds (Linux 6.9 or newer). A native
+//! `PIDFD_THREAD` acquisition refusal with `EINVAL` reports this requirement
+//! to stderr on a best-effort basis and returns the same typed errno.
+//! Select the named `_on_ptracer_thread`
 //! constructors and waits to permit a retained legacy fallback. Their local
 //! wrappers are !Send and !Sync on every kernel; their Send manual drivers
 //! do not implement Future. Borrow and retain the same driver through refusal
