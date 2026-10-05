@@ -566,15 +566,15 @@ mod tests {
 
     use super::*;
 
+    type RangeObservation = (
+        Result<OriginalReadRangeVerdict, String>,
+        bool,
+        Result<i64, Errno>,
+    );
+
     #[derive(Default)]
     struct RangeLog {
-        observations: StdMutex<
-            Vec<(
-                Result<OriginalReadRangeVerdict, String>,
-                bool,
-                Result<i64, Errno>,
-            )>,
-        >,
+        observations: StdMutex<Vec<RangeObservation>>,
         entry_refusals: AtomicUsize,
         after_completion_refusals: AtomicUsize,
         foreign_fd_refusals: AtomicUsize,
@@ -916,170 +916,170 @@ mod tests {
             guest: &mut G,
             call: Syscall,
         ) -> Result<i64, reverie::Error> {
-            if let Syscall::Read(read) = call {
-                if [900, 901, 902].contains(&read.fd()) {
-                    let original = guest.regs().await;
-                    let before = registers(original);
-                    let (_, original_args) = read.into_parts();
-                    let verdict = if read.fd() == 901 {
-                        assert_eq!(
-                            guest.inspect_original_read_range(read).unwrap(),
-                            OriginalReadRangeVerdict::Allowed
-                        );
-                        guest
-                            .local_global_state()
-                            .unwrap()
-                            .entry_initial_allowed
-                            .fetch_add(1, Ordering::SeqCst);
-                        let queries = range_queries();
-                        let variant = guest
-                            .local_global_state()
-                            .unwrap()
-                            .entry_refusals
-                            .fetch_add(1, Ordering::SeqCst);
-                        assert!(variant < 13);
-                        let requested = match variant {
-                            0 => read.with_fd(900),
-                            1 => read.with_len(9),
-                            2 => read.with_buf(None),
-                            _ => {
-                                let mut changed = original;
-                                match variant {
-                                    3 => changed.orig_rax = Sysno::write as u64,
-                                    4 => changed.rdi ^= 1,
-                                    5 => changed.rsi ^= 1,
-                                    6 => changed.rdx ^= 1,
-                                    7 => changed.r10 ^= 1,
-                                    8 => changed.rip += 1,
-                                    9 => changed.rsp += 8,
-                                    10 => changed.cs = 0x23,
-                                    11 => changed.r8 ^= 1,
-                                    12 => changed.r9 ^= 1,
-                                    _ => unreachable!(),
-                                }
-                                guest.set_regs(changed).await?;
-                                let applied = if variant == 10 {
-                                    // CS controls the register view, not syscall_info.arch.
-                                    let stop = Stopped::new_unchecked(guest.tid());
-                                    let entry = stop.syscall_entry().unwrap();
-                                    assert_eq!(entry.arch, 0xc000003e);
-                                    assert_eq!(entry.number, Sysno::read as u64);
-                                    assert_eq!(entry.arguments, raw_arguments(original_args));
-                                    assert!(entry.seccomp);
-                                    native_view_registers(guest.tid().as_raw())
-                                } else {
-                                    guest.regs().await
-                                };
-                                assert_eq!(
-                                    registers(applied),
-                                    registers(changed),
-                                    "controlled variant {variant} must actually be applied"
-                                );
-                                read
-                            }
-                        };
-                        let primary = tool_refusal(guest.inspect_original_read_range(requested));
-                        assert_eq!(range_queries(), queries);
-                        if variant == 10 {
-                            assert_eq!(
-                                primary,
-                                "original native Read register view has 68 bytes, expected 216"
-                            );
-                            restore_native_view_registers(guest.tid().as_raw(), &original);
-                        } else {
-                            guest.set_regs(original).await?;
-                        }
-                        assert_eq!(registers(guest.regs().await), before);
-                        assert_eq!(
-                            tool_refusal(guest.inspect_original_read_range(read)),
-                            primary
-                        );
-                        assert_eq!(
-                            tool_refusal(guest.inspect_original_read_range(read.with_len(9))),
-                            primary
-                        );
-                        assert_eq!(
-                            range_queries(),
-                            queries,
-                            "restored entry must not submit another query"
-                        );
-                        eprintln!(
-                            "entry variant={variant} primary={primary:?} queries_retained={queries}"
-                        );
-                        Err(primary)
-                    } else if read.fd() == 902 {
-                        let queries = range_queries();
-                        let primary =
-                            tool_refusal(guest.inspect_original_read_range(read.with_fd(900)));
-                        assert_eq!(primary, "no matching unconsumed original native Read entry");
-                        assert_eq!(
-                            tool_refusal(guest.inspect_original_read_range(read)),
-                            primary
-                        );
-                        assert_eq!(
-                            range_queries(),
-                            queries,
-                            "foreign descriptor must fail before metadata query"
-                        );
-                        guest
-                            .local_global_state()
-                            .unwrap()
-                            .foreign_fd_refusals
-                            .fetch_add(1, Ordering::SeqCst);
-                        Err(primary)
-                    } else {
-                        guest
-                            .inspect_original_read_range(read)
-                            .map_err(|error| error.to_string())
-                    };
-                    let queries_before_forward = range_queries();
-                    let forwarded = {
-                        let wrapped = guest.into_guest();
-                        Guest::<RangeTool>::inspect_original_read_range(&wrapped, read)
-                            .map_err(|error| error.to_string())
-                    };
-                    assert_eq!(forwarded, verdict);
-                    if verdict.is_err() {
-                        assert_eq!(range_queries(), queries_before_forward);
-                    }
-                    let query = READ_RANGE_ORACLE
-                        .get()
-                        .and_then(|oracle| oracle.lock().unwrap().last_query);
-                    if read.fd() != 902 {
-                        assert_eq!(
-                            query,
-                            Some((
-                                original_args.arg1,
-                                original_args.arg2,
-                                original_args.arg2.min(isize::MAX as usize)
-                            ))
-                        );
-                    }
-                    let unchanged = before == registers(guest.regs().await);
-                    // Continue the actual original Read even on a refusal.
-                    let native = guest.inject(read).await;
-                    eprintln!(
-                        "native range actual pointer={:#x} original_count={} query={query:?} verdict={verdict:?} original_read={native:?}",
-                        original_args.arg1, original_args.arg2
+            if let Syscall::Read(read) = call
+                && [900, 901, 902].contains(&read.fd())
+            {
+                let original = guest.regs().await;
+                let before = registers(original);
+                let (_, original_args) = read.into_parts();
+                let verdict = if read.fd() == 901 {
+                    assert_eq!(
+                        guest.inspect_original_read_range(read).unwrap(),
+                        OriginalReadRangeVerdict::Allowed
                     );
-                    if read.fd() == 901 {
-                        let missing = tool_refusal(guest.inspect_original_read_range(read));
-                        assert_eq!(missing, "no retained original native Read context");
-                        guest
-                            .local_global_state()
-                            .unwrap()
-                            .after_completion_refusals
-                            .fetch_add(1, Ordering::SeqCst);
-                    }
                     guest
                         .local_global_state()
                         .unwrap()
-                        .observations
-                        .lock()
+                        .entry_initial_allowed
+                        .fetch_add(1, Ordering::SeqCst);
+                    let queries = range_queries();
+                    let variant = guest
+                        .local_global_state()
                         .unwrap()
-                        .push((verdict, unchanged, native));
-                    return Ok(native?);
+                        .entry_refusals
+                        .fetch_add(1, Ordering::SeqCst);
+                    assert!(variant < 13);
+                    let requested = match variant {
+                        0 => read.with_fd(900),
+                        1 => read.with_len(9),
+                        2 => read.with_buf(None),
+                        _ => {
+                            let mut changed = original;
+                            match variant {
+                                3 => changed.orig_rax = Sysno::write as u64,
+                                4 => changed.rdi ^= 1,
+                                5 => changed.rsi ^= 1,
+                                6 => changed.rdx ^= 1,
+                                7 => changed.r10 ^= 1,
+                                8 => changed.rip += 1,
+                                9 => changed.rsp += 8,
+                                10 => changed.cs = 0x23,
+                                11 => changed.r8 ^= 1,
+                                12 => changed.r9 ^= 1,
+                                _ => unreachable!(),
+                            }
+                            guest.set_regs(changed).await?;
+                            let applied = if variant == 10 {
+                                // CS controls the register view, not syscall_info.arch.
+                                let stop = Stopped::new_unchecked(guest.tid());
+                                let entry = stop.syscall_entry().unwrap();
+                                assert_eq!(entry.arch, 0xc000003e);
+                                assert_eq!(entry.number, Sysno::read as u64);
+                                assert_eq!(entry.arguments, raw_arguments(original_args));
+                                assert!(entry.seccomp);
+                                native_view_registers(guest.tid().as_raw())
+                            } else {
+                                guest.regs().await
+                            };
+                            assert_eq!(
+                                registers(applied),
+                                registers(changed),
+                                "controlled variant {variant} must actually be applied"
+                            );
+                            read
+                        }
+                    };
+                    let primary = tool_refusal(guest.inspect_original_read_range(requested));
+                    assert_eq!(range_queries(), queries);
+                    if variant == 10 {
+                        assert_eq!(
+                            primary,
+                            "original native Read register view has 68 bytes, expected 216"
+                        );
+                        restore_native_view_registers(guest.tid().as_raw(), &original);
+                    } else {
+                        guest.set_regs(original).await?;
+                    }
+                    assert_eq!(registers(guest.regs().await), before);
+                    assert_eq!(
+                        tool_refusal(guest.inspect_original_read_range(read)),
+                        primary
+                    );
+                    assert_eq!(
+                        tool_refusal(guest.inspect_original_read_range(read.with_len(9))),
+                        primary
+                    );
+                    assert_eq!(
+                        range_queries(),
+                        queries,
+                        "restored entry must not submit another query"
+                    );
+                    eprintln!(
+                        "entry variant={variant} primary={primary:?} queries_retained={queries}"
+                    );
+                    Err(primary)
+                } else if read.fd() == 902 {
+                    let queries = range_queries();
+                    let primary =
+                        tool_refusal(guest.inspect_original_read_range(read.with_fd(900)));
+                    assert_eq!(primary, "no matching unconsumed original native Read entry");
+                    assert_eq!(
+                        tool_refusal(guest.inspect_original_read_range(read)),
+                        primary
+                    );
+                    assert_eq!(
+                        range_queries(),
+                        queries,
+                        "foreign descriptor must fail before metadata query"
+                    );
+                    guest
+                        .local_global_state()
+                        .unwrap()
+                        .foreign_fd_refusals
+                        .fetch_add(1, Ordering::SeqCst);
+                    Err(primary)
+                } else {
+                    guest
+                        .inspect_original_read_range(read)
+                        .map_err(|error| error.to_string())
+                };
+                let queries_before_forward = range_queries();
+                let forwarded = {
+                    let wrapped = guest.into_guest();
+                    Guest::<RangeTool>::inspect_original_read_range(&wrapped, read)
+                        .map_err(|error| error.to_string())
+                };
+                assert_eq!(forwarded, verdict);
+                if verdict.is_err() {
+                    assert_eq!(range_queries(), queries_before_forward);
                 }
+                let query = READ_RANGE_ORACLE
+                    .get()
+                    .and_then(|oracle| oracle.lock().unwrap().last_query);
+                if read.fd() != 902 {
+                    assert_eq!(
+                        query,
+                        Some((
+                            original_args.arg1,
+                            original_args.arg2,
+                            original_args.arg2.min(isize::MAX as usize)
+                        ))
+                    );
+                }
+                let unchanged = before == registers(guest.regs().await);
+                // Continue the actual original Read even on a refusal.
+                let native = guest.inject(read).await;
+                eprintln!(
+                    "native range actual pointer={:#x} original_count={} query={query:?} verdict={verdict:?} original_read={native:?}",
+                    original_args.arg1, original_args.arg2
+                );
+                if read.fd() == 901 {
+                    let missing = tool_refusal(guest.inspect_original_read_range(read));
+                    assert_eq!(missing, "no retained original native Read context");
+                    guest
+                        .local_global_state()
+                        .unwrap()
+                        .after_completion_refusals
+                        .fetch_add(1, Ordering::SeqCst);
+                }
+                guest
+                    .local_global_state()
+                    .unwrap()
+                    .observations
+                    .lock()
+                    .unwrap()
+                    .push((verdict, unchanged, native));
+                return Ok(native?);
             }
             if let Syscall::Recvfrom(receive) = call
                 && receive.fd() == 903

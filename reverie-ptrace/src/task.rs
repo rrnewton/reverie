@@ -525,7 +525,7 @@ enum ChildTaskKind {
 
 // One ownership slot, from native event custody through the ordinary list.
 enum PendingChild {
-    Native(NativeChild),
+    Native(Box<NativeChild>),
     Spawned(ChildTaskKind, Child),
 }
 
@@ -551,7 +551,7 @@ struct NativeChild {
 /// Only a real final wait admits the terminal variant. It owns no perf
 /// resource and cannot be used as an unsupported-perf or zero-clock timer.
 enum TaskTimer {
-    Live(Timer),
+    Live(Box<Timer>),
     Terminal(ExitStatus),
 }
 
@@ -583,7 +583,7 @@ enum PreparedNewborn {
     Live {
         child: Stopped,
         event: Event,
-        timer: Timer,
+        timer: Box<Timer>,
     },
     Terminal {
         id: Pid,
@@ -2947,7 +2947,7 @@ impl FatalSession {
         self.backend_signalling.store(true, Ordering::Release);
         // A vfork parent can be kernel-blocked behind a captured child. Signal
         // these exact child generations before waiting for the parent stop.
-        loop {
+        {
             let error = {
                 let tree = self.tree.lock().unwrap();
                 tree.vfork_children
@@ -2969,8 +2969,6 @@ impl FatalSession {
                     self.root.expect("fatal session has a root owner"),
                     error,
                 );
-            } else {
-                break;
             }
         }
         // Retain the original owning Stopped in this suspended session future
@@ -3049,30 +3047,25 @@ impl FatalSession {
                 // This future, retained by the run driver on refusal, is the
                 // sole owner of these unhanded child receivers until reaping.
                 for newborn in &mut newborns {
-                    loop {
-                        let signal = newborn.signal();
-                        match signal {
-                            Ok(()) | Err(Errno::ESRCH) => break,
-                            Err(error) => failed_task_termination_is_fatal(newborn.tid, error),
-                        }
+                    let signal = newborn.signal();
+                    match signal {
+                        Ok(()) | Err(Errno::ESRCH) => {}
+                        Err(error) => failed_task_termination_is_fatal(newborn.tid, error),
                     }
                 }
-                loop {
+                {
                     let errors = self.signal_groups();
-                    if errors.is_empty() {
-                        break;
+                    if !errors.is_empty() {
+                        failed_task_termination_is_fatal(
+                            self.root.expect("fatal session has a root owner"),
+                            errors[0],
+                        );
                     }
-                    failed_task_termination_is_fatal(
-                        self.root.expect("fatal session has a root owner"),
-                        errors[0],
-                    );
                 }
                 for task in &tasks {
-                    loop {
-                        match task.terminal.request_sigkill() {
-                            Ok(()) | Err(Errno::ESRCH) => break,
-                            Err(error) => failed_task_termination_is_fatal(task.tid, error),
-                        }
+                    match task.terminal.request_sigkill() {
+                        Ok(()) | Err(Errno::ESRCH) => {}
+                        Err(error) => failed_task_termination_is_fatal(task.tid, error),
                     }
                 }
                 self.changed.notify_waiters();
@@ -4053,11 +4046,11 @@ impl<L: Tool> TracedTask<L> {
             trap_only: options.liteinst_trap_only,
             next_state,
             next_state_rx: Some(next_state_rx),
-            timer: TaskTimer::Live(if options.command_bootstrap {
+            timer: TaskTimer::Live(Box::new(if options.command_bootstrap {
                 Timer::for_initial_command(tid, tid)
             } else {
                 Timer::new(tid, tid)
-            }),
+            })),
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
             pending_signal_taken: None,
@@ -6876,7 +6869,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             error.to_string(),
                         ),
                     );
-                    return Err(error.into());
+                    return Err(error);
                 }
                 {
                     let maps = self.read_ready_guest_maps(&task, "LiteInst Ready")?;
@@ -7661,20 +7654,18 @@ impl<L: Tool + 'static> TracedTask<L> {
                                 sig,
                                 LiteinstActivationFailureReason::UnexpectedActivationSignal,
                                 "the fault was not a subscribed, controller-intercepted CPUID or RDTSC instruction",
-                            ).into())
+                            ))
                         }
                     };
                 }
                 sig if sig == Timer::signal_type() => {
                     let (was_timer, task) = self.handle_timer(task).await?;
                     if !was_timer {
-                        return Err(self
-                            .reject_liteinst_activation_signal(
-                                sig,
-                                LiteinstActivationFailureReason::UnexpectedActivationSignal,
-                                "the signal was not generated by this tracee's controller timer",
-                            )
-                            .into());
+                        return Err(self.reject_liteinst_activation_signal(
+                            sig,
+                            LiteinstActivationFailureReason::UnexpectedActivationSignal,
+                            "the signal was not generated by this tracee's controller timer",
+                        ));
                     }
                     return self
                         .resume_stopped(task, None)?
@@ -7682,13 +7673,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                         .await;
                 }
                 sig => {
-                    return Err(self
-                        .reject_liteinst_activation_signal(
-                            sig,
-                            LiteinstActivationFailureReason::UnexpectedActivationSignal,
-                            "the signal is outside the activation allowlist",
-                        )
-                        .into());
+                    return Err(self.reject_liteinst_activation_signal(
+                        sig,
+                        LiteinstActivationFailureReason::UnexpectedActivationSignal,
+                        "the signal is outside the activation allowlist",
+                    ));
                 }
             }
         }
@@ -9976,7 +9965,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // before any wait is created; the child task adopts this owner.
         let child_waits = Arc::new(PtracerWaitOwner::default());
         child_waits.bind_running(&child);
-        self.pending_child = Some(PendingChild::Native(NativeChild {
+        self.pending_child = Some(PendingChild::Native(Box::new(NativeChild {
             id,
             creator,
             creator_cleanup: parent_cleanup,
@@ -9999,7 +9988,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             child_restore_context: child_context.or(context),
             trap_only: child_trap_only,
             waits: child_waits,
-        }));
+        })));
         #[cfg(test)]
         if let Some(PendingChild::Native(native)) = &self.pending_child {
             newborn_startup_tests::retained(
@@ -10295,7 +10284,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     #[cfg(test)]
                     let child = match newborn_startup_tests::startup_error_case(child).await {
                         Ok(child) => child,
-                        Err(prepared) => return Ok(prepared),
+                        Err(prepared) => return Ok(*prepared),
                     };
                     #[cfg(test)]
                     newborn_startup_tests::before_timer(&child).await;
@@ -10306,7 +10295,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         Ok(timer) => Ok(PreparedNewborn::Live {
                             child,
                             event,
-                            timer,
+                            timer: Box::new(timer),
                         }),
                         Err(Errno::ESRCH) => {
                             let status = Self::finish_newborn_startup_exit(
@@ -10603,7 +10592,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             child_restore_context,
             trap_only: child_trap_only,
             waits: newborn_waits,
-        } = native;
+        } = *native;
         let (initial, timer) = match initial.into_observed() {
             Ok(prepared) => prepared.into_parts(),
             Err(error) => self.fail_newborn_custody_detail(
@@ -12419,10 +12408,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> crate::tracer::OrdinaryTerminal {
         let pending_thread = matches!(
             &self.pending_child,
-            Some(PendingChild::Native(NativeChild {
-                kind: ChildTaskKind::Thread,
-                ..
-            }))
+            Some(PendingChild::Native(native)) if native.kind == ChildTaskKind::Thread
         );
         #[cfg(test)]
         if pending_thread && let Ok(stopped) = &stopped {
@@ -12599,10 +12585,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let final_wait = Self::wait_after_exit_event(task, &waits, held_root_stop).fuse();
         if !matches!(
             &self.pending_child,
-            Some(PendingChild::Native(NativeChild {
-                kind: ChildTaskKind::Thread,
-                ..
-            }))
+            Some(PendingChild::Native(native)) if native.kind == ChildTaskKind::Thread
         ) {
             return final_wait.await;
         }

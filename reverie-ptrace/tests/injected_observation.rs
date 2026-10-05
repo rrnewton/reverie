@@ -479,29 +479,29 @@ impl Tool for Observer {
         }
         if matches!(self.case, Case::SurvivingChild | Case::KilledAtChildEvent)
             && nr == Sysno::getpid
+            && let Some(parent) = guest.thread_state().parent
         {
-            if let Some(parent) = guest.thread_state().parent {
-                assert!(guest.send_rpc(Request::WaitTerminal(parent)).await);
-            }
+            assert!(guest.send_rpc(Request::WaitTerminal(parent)).await);
         }
-        if self.case == Case::LateParentRejection && nr == Sysno::fork {
-            if let Some(root) = guest.thread_state().parent {
-                loop {
-                    let notified = REJECTION_CHANGED.notified();
-                    tokio::pin!(notified);
-                    notified.as_mut().enable();
-                    if REJECTION_EVIDENCE
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .process_consumed
-                        .contains(&root)
-                    {
-                        break;
-                    }
-                    notified.await;
+        if self.case == Case::LateParentRejection
+            && nr == Sysno::fork
+            && let Some(root) = guest.thread_state().parent
+        {
+            loop {
+                let notified = REJECTION_CHANGED.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if REJECTION_EVIDENCE
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .process_consumed
+                    .contains(&root)
+                {
+                    break;
                 }
+                notified.await;
             }
         }
         if matches!(
@@ -1082,7 +1082,10 @@ fn queued_parent_signal_preserves_authentic_child_return_and_delivery() {
             libc::alarm(5);
             PARENT_SIGNAL_COUNT.store(0, Ordering::SeqCst);
             assert_ne!(
-                libc::signal(libc::SIGUSR1, parent_signal_handler as libc::sighandler_t),
+                libc::signal(
+                    libc::SIGUSR1,
+                    parent_signal_handler as *const () as libc::sighandler_t
+                ),
                 libc::SIG_ERR
             );
             let child = libc::syscall(libc::SYS_fork);

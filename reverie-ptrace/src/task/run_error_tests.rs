@@ -342,13 +342,12 @@ pub(super) mod additional {
         CleanupError,
         ConsumedFinal,
     }
+    type ExitWaiter = std::pin::Pin<Box<dyn Future<Output = Result<Stopped, TraceError>> + Send>>;
+
     struct Scenario {
         case: Case,
         owners: BTreeMap<Pid, TerminalCleanup>,
-        exit_waiters: BTreeMap<
-            Pid,
-            std::pin::Pin<Box<dyn Future<Output = Result<Stopped, TraceError>> + Send>>,
-        >,
+        exit_waiters: BTreeMap<Pid, ExitWaiter>,
         counts: Option<(Arc<AtomicUsize>, Arc<AtomicUsize>)>,
         root: Option<Pid>,
         roles: BTreeMap<usize, Pid>,
@@ -1013,10 +1012,10 @@ mod parent_join_tests {
                 matches!(log.owners[&tid].observed_terminal(), Some(Ok(actual)) if actual == status)
             );
             assert!(log.terminal.insert(tid, status).is_none());
-            if log.root != Some(tid) {
-                if let Some(done) = log.child_done_tx.take() {
-                    done.send(()).unwrap();
-                }
+            if log.root != Some(tid)
+                && let Some(done) = log.child_done_tx.take()
+            {
+                done.send(()).unwrap();
             }
         }
     }

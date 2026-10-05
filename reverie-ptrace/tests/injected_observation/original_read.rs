@@ -6,7 +6,6 @@ use reverie::InjectedReadResult;
 use reverie::syscalls::AddrMut;
 use reverie::syscalls::Getpid;
 use reverie::syscalls::MemoryAccess;
-use reverie::syscalls::Read;
 
 use super::*;
 
@@ -297,7 +296,7 @@ fn install_handler() {
     READ_SLOT.store(-1, Ordering::SeqCst);
     REPLACEMENT.store(-1, Ordering::SeqCst);
     let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-    action.sa_sigaction = read_signal as libc::sighandler_t;
+    action.sa_sigaction = read_signal as *const () as libc::sighandler_t;
     action.sa_flags = 0; // Restart test requires Linux's real EINTR conversion.
     assert_eq!(unsafe { libc::sigemptyset(&mut action.sa_mask) }, 0);
     assert_eq!(
@@ -759,7 +758,7 @@ fn private_retry_logical_restart_case(restart: bool) {
             install_handler();
             if restart {
                 let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-                action.sa_sigaction = read_signal as libc::sighandler_t;
+                action.sa_sigaction = read_signal as *const () as libc::sighandler_t;
                 action.sa_flags = libc::SA_RESTART;
                 assert_eq!(unsafe { libc::sigemptyset(&mut action.sa_mask) }, 0);
                 assert_eq!(

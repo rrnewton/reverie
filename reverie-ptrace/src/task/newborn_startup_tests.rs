@@ -554,7 +554,7 @@ async fn die_after_stop(stopped: &Stopped) {
         .unwrap()
         .test_final_waits += 1;
 }
-pub(super) async fn startup_error_case(stopped: Stopped) -> Result<Stopped, PreparedNewborn> {
+pub(super) async fn startup_error_case(stopped: Stopped) -> Result<Stopped, Box<PreparedNewborn>> {
     let Some((log, case)) = selected(stopped.pid()) else {
         return Ok(stopped);
     };
@@ -592,7 +592,7 @@ pub(super) async fn startup_error_case(stopped: Stopped) -> Result<Stopped, Prep
     assert!(log.lock().unwrap().refusal.replace(Errno::ESRCH).is_none());
     let status = actual_final(claim).await;
     log.lock().unwrap().test_final_waits += 1;
-    Err(PreparedNewborn::Terminal { id, status })
+    Err(Box::new(PreparedNewborn::Terminal { id, status }))
 }
 
 pub(super) async fn before_timer(stopped: &Stopped) {
