@@ -15,9 +15,7 @@ use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 use std::cell::Cell;
 
-pub(crate) use reverie_inguest::guest::alloc::DispatchAllocationScope;
 use reverie_inguest::guest::alloc::GuestAllocator;
-pub(crate) use reverie_inguest::guest::alloc::enter_dispatch;
 
 const PATCH_HEAP_BYTES: usize = 32 * 1024 * 1024;
 

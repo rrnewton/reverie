@@ -213,22 +213,7 @@ static PATCH_PUBLICATION: AtomicU8 = AtomicU8::new(PatchPublication::Concurrent 
 static PROCESS_FORKS_ALLOWED: AtomicBool = AtomicBool::new(true);
 static SITE_PATCHING_ENABLED: AtomicBool = AtomicBool::new(true);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum InstructionEventKind {
-    Cpuid,
-    Rdtsc,
-    Rdtscp,
-}
-
-impl InstructionEventKind {
-    /// Length of the only encoding the runtime recognizes for this kind.
-    pub(crate) const fn encoded_len(self) -> u64 {
-        match self {
-            Self::Cpuid | Self::Rdtsc => 2,
-            Self::Rdtscp => 3,
-        }
-    }
-}
+pub(crate) use reverie_inguest::guest::event::InstructionEventKind;
 
 #[derive(Default)]
 #[repr(C)]
@@ -3562,7 +3547,8 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
 /// clone3, and its `vfork` issues the raw syscall with no fallback. Other glibc
 /// versions and other libcs were not checked. The cost is that a fork-shaped
 /// clone3 caller that falls back only on `ENOSYS` fails here; Tool mode admits
-/// that shape through `tool_host::clone3_is_plain_fork`.
+/// that shape through the Tool host's plain-fork check
+/// (`reverie_inguest::guest::host`).
 fn refused_process_creation(number: i64, args: [u64; 6], tool_mode: u8) -> Option<i32> {
     match number {
         libc::SYS_clone if !clone_is_fork_like(args[0], args[1]) => {

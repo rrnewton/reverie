@@ -70,3 +70,24 @@ impl SyscallEvent {
         result.result
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The instruction an instruction event is for.
+pub enum InstructionEventKind {
+    /// `cpuid`.
+    Cpuid,
+    /// `rdtsc`.
+    Rdtsc,
+    /// `rdtscp`.
+    Rdtscp,
+}
+
+impl InstructionEventKind {
+    /// Length of the only encoding the runtime recognizes for this kind.
+    pub const fn encoded_len(self) -> u64 {
+        match self {
+            Self::Cpuid | Self::Rdtsc => 2,
+            Self::Rdtscp => 3,
+        }
+    }
+}
