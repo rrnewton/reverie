@@ -639,11 +639,13 @@ struct Event {
     /// so it can never reach a replacement task that reused the TID.
     terminal_reaping: RwLock<bool>,
     /// Full retained-status validation is shared by accessors in one stop.
-    /// Fresh owner/target directory identities are still checked per request.
+    /// Exact descriptor proofs or fresh directory identities run per request.
     numeric_auth_epoch: AtomicUsize,
     numeric_auth_checked_epoch: AtomicUsize,
     #[cfg(test)]
     numeric_auth_status_reads: AtomicUsize,
+    #[cfg(test)]
+    numeric_auth_force_directory: AtomicBool,
 
     /// Waker for regular status events.
     status_waker: WakerSlot,
@@ -777,9 +779,16 @@ pub(super) struct LegacyWaitOwner {
     // Opening status through this retained directory resolves the original
     // PID object. It cannot authenticate a later reused numeric host TID.
     lifetime: OwnedFd,
+    // Optional cold proof descriptor. A non-NULL SI_USER signal0 succeeds
+    // only for the exact executing kernel PID object; every refusal falls
+    // back to the genuine task-directory identity below. Never recapture it
+    // from a copied token or let its acquisition add a constructor failure.
+    self_signal_fd: Option<OwnedFd>,
+    #[cfg(test)]
+    force_directory_proof: AtomicBool,
     // This is the genuine thread-self directory, whose path differs from
     // the top-level /proc/<tid> inode. Keep that same inode pinned and compare
-    // a fresh same-root thread-self lookup on every request, even cache hits.
+    // a fresh same-root thread-self lookup when the exact-self proof refuses.
     directory_key: ProcDirectoryKey,
     // Current gettid is relative to the caller's active PID namespace. A
     // copied driver can have the same numeric ID after a fork into another
@@ -860,10 +869,19 @@ impl LegacyWaitOwner {
             return Err(Errno::EXDEV);
         }
         let directory_key = fd_directory_key(&lifetime).map_err(io_errno)?;
+        let self_signal_fd = {
+            let _open = launch_window::TransientOpen::begin();
+            pidfd_open_with_flags(tid, libc::O_EXCL)
+                .or_else(|_| root.open_pid(tid, libc::O_RDONLY))
+                .ok()
+        };
         Ok(Self {
             tid,
             tgid: Pid::from(nix::unistd::getpid()),
             lifetime,
+            self_signal_fd,
+            #[cfg(test)]
+            force_directory_proof: AtomicBool::new(false),
             directory_key,
             proc_root: root,
         })
@@ -878,6 +896,18 @@ impl LegacyWaitOwner {
     }
 
     pub(super) fn is_current(&self) -> Result<bool, Errno> {
+        #[cfg(test)]
+        let use_descriptor = !self.force_directory_proof.load(Ordering::Relaxed);
+        #[cfg(not(test))]
+        let use_descriptor = true;
+        if use_descriptor
+            && self
+                .self_signal_fd
+                .as_ref()
+                .is_some_and(|fd| descriptor_is_current_task(fd.as_raw_fd()))
+        {
+            return Ok(true);
+        }
         if self.tid != Pid::from(nix::unistd::gettid()) {
             return Ok(false);
         }
@@ -1264,6 +1294,8 @@ impl Event {
             numeric_auth_checked_epoch: AtomicUsize::new(0),
             #[cfg(test)]
             numeric_auth_status_reads: AtomicUsize::new(0),
+            #[cfg(test)]
+            numeric_auth_force_directory: AtomicBool::new(false),
             status_waker: WakerSlot::default(),
             status: Mutex::new(StatusState {
                 pending: VecDeque::new(),
@@ -2568,9 +2600,20 @@ impl EventHandle {
         owner: &LegacyWaitOwner,
     ) -> Result<(), Errno> {
         let identity = self.identity().ok_or(Errno::ENODATA)?;
-        // A cached status does not pin a stopped task against fatal signals
-        // or nonleader exec. Revalidate the original same-path proc inode
-        // before every numeric request, including an unregistered Event.
+        // Signal0 success resolves a live task through the retained PID
+        // object, including nonleaders. A denial, unsupported descriptor or
+        // disappearance is not this positive proof: use the original same-
+        // path inode and retained-status checks in all those cases.
+        #[cfg(test)]
+        let use_descriptor = !self
+            .event()
+            .numeric_auth_force_directory
+            .load(Ordering::Relaxed);
+        #[cfg(not(test))]
+        let use_descriptor = true;
+        if use_descriptor && identity.pidfd_is_live() == Ok(true) {
+            return Ok(());
+        }
         match owner.proc_root.directory_key(&identity.numeric_name) {
             Ok(key) if key == identity.proc_key => {}
             Ok(_) => return Err(Errno::ESRCH),
@@ -3780,6 +3823,25 @@ fn descriptor_is_live(raw_fd: RawFd) -> Result<bool, Errno> {
         Ok(false)
     } else {
         Err(error)
+    }
+}
+
+/// A nonnegative user signal code is permitted only for task_pid(current)
+/// equal to the descriptor's retained PID object. Use signal zero so this
+/// proof delivers no signal. A denial or unsupported descriptor proves
+/// nothing and must use the caller's original directory proof instead.
+fn descriptor_is_current_task(raw_fd: RawFd) -> bool {
+    let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+    info.si_signo = 0;
+    info.si_code = libc::SI_USER;
+    unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            raw_fd,
+            0,
+            &info as *const libc::siginfo_t,
+            0,
+        ) == 0
     }
 }
 
