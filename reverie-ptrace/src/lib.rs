@@ -81,6 +81,7 @@ pub use failure::ToolRunCompletion;
 pub use in_guest::InGuestRcbCounter;
 pub use injected_syscall::InjectedSyscallFrame;
 pub use perf::is_perf_supported;
+pub use perf::pmu_validation;
 use reverie::process::launch_window;
 pub use stats::PtraceBackendStatsSnapshot;
 pub use stats::PtraceBackendStatsSource;
@@ -101,6 +102,7 @@ pub use tracer::TracerBuilder;
 pub use tracer::quarantine_cleanup_resource;
 pub use tracer::spawn_fn;
 pub use tracer::spawn_fn_with_config;
+pub use validation::PmuValidationError;
 pub use vdso::VdsoSyscallSite;
 #[cfg(target_arch = "x86_64")]
 pub use vdso::patch_current_vdso;

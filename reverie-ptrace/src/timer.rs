@@ -327,6 +327,15 @@ pub(crate) fn get_pmu_config() -> &'static PmuConfig {
     PMU_CONFIG.get_or_init(PmuConfig::new)
 }
 
+/// [`get_pmu_config`], or `None` where it would panic: no configuration was
+/// set and this CPU has no profile.
+pub(crate) fn try_get_pmu_config() -> Option<&'static PmuConfig> {
+    match PMU_CONFIG.get() {
+        Some(config) => Some(config),
+        None => PmuConfig::try_new().map(|config| PMU_CONFIG.get_or_init(|| config)),
+    }
+}
+
 /// Processor-specific PMU event settings used by precise ptrace timers.
 // TODO-HUMAN-REVIEW(PR-186): Review the programmatic PMU skid-margin override API.
 #[derive(Clone, Debug, Eq, PartialEq)]
