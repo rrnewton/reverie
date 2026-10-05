@@ -2833,6 +2833,63 @@ forbidden:
   return true;
 }
 
+// DynamoRIO cannot intercept SIGKILL; its self-signal handling covers only
+// SIGABRT. A process that sends itself SIGKILL therefore never reaches the
+// thread-exit and process-exit callbacks that end its protected evidence
+// stream, and publication refuses the whole run for a missing FINAL frame. The
+// helpers below end the stream at the kill instead, through the same
+// finalization the last thread's exit performs, and then let the kernel
+// deliver the signal.
+//
+// `host_args` are the translated arguments that reach the kernel. Only kill,
+// tgkill and tkill naming exactly this process or thread qualify. A zero or
+// negative target (a process group or every process) never does, which matches
+// the spellings Detcore commits as an immediate exit. Under Hermit, Detcore has
+// already retired the calling thread and logically killed its siblings at this
+// syscall's scheduler turn, so nothing in this process should emit evidence
+// afterwards. A later emission still fails closed: the collector rejects a
+// frame after FINAL and the run exits with status 101.
+static bool
+is_self_sigkill(void* drcontext, int sysnum, const uint64_t* host_args) {
+  switch (sysnum) {
+    case SYS_kill:
+      return (int32_t)host_args[1] == SIGKILL &&
+          (int32_t)host_args[0] == (int32_t)dr_get_process_id();
+    case SYS_tgkill:
+      return (int32_t)host_args[2] == SIGKILL &&
+          (int32_t)host_args[0] == (int32_t)dr_get_process_id() &&
+          (int32_t)host_args[1] == (int32_t)dr_get_thread_id(drcontext);
+    case SYS_tkill:
+      return (int32_t)host_args[1] == SIGKILL &&
+          (int32_t)host_args[0] == (int32_t)dr_get_thread_id(drcontext);
+    default:
+      return false;
+  }
+}
+
+// Returns true when it ended this process's evidence stream.
+static bool finish_evidence_before_self_sigkill(
+    void* drcontext,
+    int sysnum,
+    const uint64_t* host_args) {
+  if (!evidence_is_enabled() || !is_self_sigkill(drcontext, sysnum, host_args))
+    return false;
+  finalize_runtime_process();
+  return true;
+}
+
+// A self-directed SIGKILL cannot return. One that does (for example, refused
+// by a seccomp filter) would let the process run on after its FINAL frame,
+// where nothing more can be published, so end the run as a backend failure.
+static void refuse_returned_self_sigkill(int64_t result) {
+  dr_fprintf(
+      diagnostic_file,
+      "reverie-dbt: self-directed SIGKILL returned %lld after protected "
+      "evidence was finalized\n",
+      (long long)result);
+  exit_runtime_tree(101);
+}
+
 static int64_t
 invoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {
   prototype_counters_t* counters = (prototype_counters_t*)drmgr_get_tls_field(
@@ -2840,6 +2897,7 @@ invoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {
   uint64_t translated[6];
   int64_t result;
   bool is_clone;
+  bool evidence_finished;
   DR_ASSERT(counters != NULL);
   if (protect_evidence_socket_syscall(context, (int)sysnum, args, &result))
     return result;
@@ -2866,7 +2924,11 @@ invoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {
     require_evidence_flush(EVIDENCE_FRAME_EXEC);
   if (sysnum == SYS_exit || sysnum == SYS_exit_group)
     complete_runtime_thread_exit(counters, (void*)context, sysnum == SYS_exit);
+  evidence_finished = finish_evidence_before_self_sigkill(
+      (void*)context, (int)sysnum, translated);
   result = invoke_raw_syscall(context, sysnum, translated);
+  if (evidence_finished)
+    refuse_returned_self_sigkill(result);
   if (is_exec_syscall((int)sysnum) && result < 0)
     require_evidence_flush(EVIDENCE_FRAME_EXEC_CANCEL);
   if (reject_opened_proc_mem(context, (int)sysnum, result))
@@ -3887,6 +3949,16 @@ static bool prepare_original_identity_syscall(
   }
   (void)prepare_clone_identity(
       counters, sysnum, translated, CLONE_SYSCALL_ORIGINAL);
+  // Execute a self-directed SIGKILL here rather than returning it to
+  // DynamoRIO, so the impossible return can be refused before the application
+  // runs on after its FINAL frame.
+  if (finish_evidence_before_self_sigkill(drcontext, sysnum, translated)) {
+    int64_t result =
+        invoke_raw_syscall((uintptr_t)drcontext, sysnum, translated);
+    refuse_returned_self_sigkill(result);
+    dr_syscall_set_result(drcontext, (reg_t)result);
+    return false;
+  }
   return true;
 }
 

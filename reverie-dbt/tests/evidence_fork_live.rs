@@ -17,8 +17,10 @@
 
 use std::io::Read as _;
 use std::io::Seek as _;
+use std::os::unix::process::ExitStatusExt as _;
 use std::path::Path;
 use std::process::Command;
+use std::process::Output;
 
 use reverie_dbt::Counter2Global;
 use reverie_dbt::DbtRunner;
@@ -155,5 +157,86 @@ fn protected_evidence_follows_last_thread_explicit_exit() {
                 .any(|window| window == b"explicit SYS_exit thread callback completed")
         }),
         "last-thread SYS_exit must publish thread-exit evidence before FINAL"
+    );
+}
+
+fn compile_self_sigkill_fixture(directory: &Path) -> std::path::PathBuf {
+    let fixture = directory.join("self-sigkill");
+    compile_fixture("evidence_self_sigkill.c", &fixture, &[]);
+    fixture
+}
+
+/// Runs one mode of the self-SIGKILL fixture under protected evidence.
+///
+/// DynamoRIO runs no exit callback for SIGKILL. An image that kills itself
+/// without first ending its evidence stream leaves the collector without that
+/// image's FINAL frame, so the collector refuses the whole artifact and
+/// `output` returns the refusal as an error.
+fn run_self_sigkill_fixture(mode: &str) -> (Output, reverie_dbt::DbtEvidence) {
+    let directory = tempfile::tempdir().expect("fixture tempdir");
+    let fixture = compile_self_sigkill_fixture(directory.path());
+
+    let mut evidence_file = tempfile::tempfile().expect("evidence tempfile");
+    let runner = DbtRunner::from_env()
+        .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+        .evidence_file(&evidence_file)
+        .expect("configure protected evidence")
+        .client_argument("-test-wait-for-background");
+    let mut guest = Command::new(fixture);
+    guest.arg(mode);
+    let output = runner
+        .output(&guest)
+        .unwrap_or_else(|error| panic!("self-SIGKILL {mode} evidence run failed: {error}"));
+
+    evidence_file
+        .seek(std::io::SeekFrom::Start(0))
+        .expect("rewind evidence artifact");
+    let mut evidence_bytes = Vec::new();
+    evidence_file
+        .read_to_end(&mut evidence_bytes)
+        .expect("read evidence artifact");
+    let evidence = reverie_dbt::decode_evidence(&evidence_bytes).unwrap_or_else(|error| {
+        panic!("self-SIGKILL {mode} evidence artifact must decode: {error}")
+    });
+    (output, evidence)
+}
+
+fn assert_child_self_sigkill_evidence(mode: &str) {
+    let (output, _evidence) = run_self_sigkill_fixture(mode);
+    assert!(
+        output.status.success(),
+        "self-SIGKILL {mode} guest exited unsuccessfully: {output:?}"
+    );
+    assert_eq!(
+        output.stdout,
+        format!("self-sigkill-{mode}-ok\n").into_bytes(),
+        "the parent must observe its {mode} child killed by SIGKILL"
+    );
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn protected_evidence_finishes_a_forked_child_that_sigkills_itself() {
+    assert_child_self_sigkill_evidence("fork");
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn protected_evidence_finishes_a_vfork_child_that_sigkills_itself() {
+    assert_child_self_sigkill_evidence("vfork");
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn protected_evidence_finishes_a_root_that_sigkills_itself() {
+    let (output, _evidence) = run_self_sigkill_fixture("root");
+    assert_eq!(
+        output.status.signal(),
+        Some(libc::SIGKILL),
+        "the root must die from its own SIGKILL: {output:?}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "the root wrote output after its own SIGKILL: {output:?}"
     );
 }
