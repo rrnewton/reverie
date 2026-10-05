@@ -303,6 +303,32 @@ async fn in_guest_runs_disable_address_space_randomization() {
     );
 }
 
+/// A socket the in-guest Tool reserves for its own output is kept from the guest
+/// exactly as the coordinator connection is: the guest cannot close, write,
+/// shut down, configure, query, truncate, map or reopen it; a guest dup2 or
+/// dup3 onto its number succeeds and moves the socket instead; and the Tool's
+/// own write reaches it (the fixture checks its peer end receives exactly the
+/// Tool's message). With the descriptor table full, a dup onto it still
+/// succeeds and the runtime retires the socket; its retirement message reaches
+/// the reader even through a full queue and with a forked child holding the
+/// socket. A regular file is refused.
+#[tokio::test(flavor = "current_thread")]
+async fn a_reserved_tool_output_fd_is_protected_from_the_guest() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let directory = tempfile::tempdir().unwrap();
+    let mut command = guest_command("tool-output-fd");
+    command.arg(directory.path().join("regular-file"));
+    let (result, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(command, (), preload),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert_eq!(result.stdout, b"tool output fd: protected\n", "{result:?}");
+}
+
 /// Asserts the statistics of one `fast-path` guest run.
 fn assert_fast_path_stats(
     global: &LifecycleGlobal,

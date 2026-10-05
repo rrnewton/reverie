@@ -191,6 +191,26 @@ impl Tool for LifecycleTool {
             let outcome = timer_outcome(guest.set_timer_precise(TimerSchedule::Rcbs(1)));
             SET_TIMER_PRECISE_OUTCOME.store(outcome, Ordering::Relaxed);
         }
+        let output = TOOL_OUTPUT.load(Ordering::Relaxed);
+        if syscall.number() == Sysno::getppid && output >= 0 {
+            // Tool code writes to its reserved descriptor through its own syscall.
+            let socket = reverie_liteinst::tool_output_fd().expect("a reserved Tool output socket");
+            if FILL_TOOL_OUTPUT.load(Ordering::Relaxed) {
+                // Queue a message without waiting, until the socket is full.
+                let sent =
+                    unsafe { libc::send(socket, b"fill\n".as_ptr().cast(), 5, libc::MSG_DONTWAIT) };
+                if sent == 5 {
+                    TOOL_OUTPUT_FILLED.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    let error = std::io::Error::last_os_error();
+                    assert_eq!(error.raw_os_error(), Some(libc::EAGAIN), "{error}");
+                    FILL_TOOL_OUTPUT.store(false, Ordering::Relaxed);
+                }
+            } else {
+                let written = unsafe { libc::write(socket, b"tool\n".as_ptr().cast(), 5) };
+                assert_eq!(written, 5, "{}", std::io::Error::last_os_error());
+            }
+        }
         if syscall.number() == Sysno::read {
             if READ_CALLS.fetch_add(1, Ordering::Relaxed) < 2 {
                 return Err(restart_same_entry());
@@ -570,6 +590,272 @@ fn hooked_fork_stats() {
     println!("hooked fork stats: child=finished");
 }
 
+/// The fixture Tool's reserved output descriptor, in mode `tool-output-fd`.
+static TOOL_OUTPUT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+/// While set, the fixture Tool's `getppid` callback queues `fill` on its output
+/// socket without waiting, and clears this once the socket is full.
+static FILL_TOOL_OUTPUT: AtomicBool = AtomicBool::new(false);
+/// How many `fill` messages the fixture Tool queued.
+static TOOL_OUTPUT_FILLED: AtomicU64 = AtomicU64::new(0);
+
+/// Reserves one end of a `SOCK_SEQPACKET` pair as the Tool's output descriptor,
+/// before the Tool is installed, as a Tool's constructor would, and returns the
+/// reserved number and the guest's own other end. A regular file (`path`) is
+/// refused first.
+fn reserve_tool_output_fd(path: &std::ffi::OsStr) -> (libc::c_int, libc::c_int) {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::File::create(path).unwrap();
+    // SAFETY: main runs before any application thread, and before install_tool.
+    let refused =
+        unsafe { reverie_liteinst::reserve_tool_output_fd(file.as_raw_fd(), b"retired\n") };
+    assert_eq!(
+        refused.unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput,
+        "a regular file must be refused"
+    );
+    // The refused descriptor is still the caller's.
+    assert_ne!(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) }, -1);
+    drop(file);
+
+    let mut pair = [-1; 2];
+    let created = unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+            0,
+            pair.as_mut_ptr(),
+        )
+    };
+    assert_eq!(created, 0, "{}", std::io::Error::last_os_error());
+    let [original, peer] = pair;
+    // SAFETY: as above.
+    let reserved =
+        unsafe { reverie_liteinst::reserve_tool_output_fd(original, b"retired\n") }.unwrap();
+    assert!(reserved >= 1025, "reserved {reserved}");
+    TOOL_OUTPUT.store(reserved, Ordering::Relaxed);
+    // The original number is closed, so the guest's descriptors are unchanged.
+    assert_eq!(unsafe { libc::fcntl(original, libc::F_GETFD) }, -1);
+    (reserved, peer)
+}
+
+/// The guest tries to close, replace, write, query, truncate, extend and map the
+/// Tool's reserved output descriptor, to reach it with high bits set in a
+/// descriptor argument, to open, create over or truncate it through procfs, and
+/// to close it with `close_range`; every attempt fails or is a no-op. Then the
+/// Tool's own write (its `getppid` callback sends `tool`) reaches the guest's
+/// end of the pair as the only message.
+fn tool_output_fd(reserved: libc::c_int, peer: libc::c_int) {
+    let link = || std::fs::read_link(format!("/proc/self/fd/{reserved}")).unwrap();
+    let before = link();
+    let errno = || std::io::Error::last_os_error().raw_os_error();
+    unsafe {
+        assert_eq!(libc::close(reserved), 0);
+        assert_eq!(libc::write(reserved, b"guest".as_ptr().cast(), 5), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::fcntl(reserved, libc::F_GETFD), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        // Socket operations: a daemon shutting down every inherited socket
+        // must not silence the Tool.
+        assert_eq!(libc::shutdown(reserved, libc::SHUT_RDWR), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::send(reserved, b"guest".as_ptr().cast(), 5, 0), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        let mut kind: libc::c_int = 0;
+        let mut kind_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        assert_eq!(
+            libc::getsockopt(
+                reserved,
+                libc::SOL_SOCKET,
+                libc::SO_TYPE,
+                (&raw mut kind).cast(),
+                &mut kind_len,
+            ),
+            -1
+        );
+        assert_eq!(errno(), Some(libc::EBADF));
+        // The kernel reads descriptor arguments as 32 bits; high bits must not
+        // carry an operation past the protection.
+        let aliased = i64::from(reserved) | (1 << 32);
+        assert_eq!(
+            libc::syscall(libc::SYS_write, aliased, b"guest".as_ptr(), 5),
+            -1
+        );
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::syscall(libc::SYS_close, aliased), 0);
+        // Operations on the file itself.
+        assert_eq!(libc::ftruncate(reserved, 0), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::fallocate(reserved, 0, 0, 4096), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        let mapping = libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            reserved,
+            0,
+        );
+        assert_eq!(mapping, libc::MAP_FAILED);
+        assert_eq!(errno(), Some(libc::EBADF));
+        // A socket cannot be reopened, created over or truncated by name.
+        for alias in [
+            format!("/proc/self/fd/{reserved}"),
+            format!("/dev/fd/{reserved}"),
+        ] {
+            let path = std::ffi::CString::new(alias).unwrap();
+            assert_eq!(
+                libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_TRUNC),
+                -1
+            );
+            assert_eq!(libc::creat(path.as_ptr(), 0o600), -1);
+            assert_eq!(libc::truncate(path.as_ptr(), 0), -1);
+        }
+    }
+    // A dup2 or dup3 onto the number succeeds, as if it were free; the socket
+    // moves to another number, which the Tool keeps using.
+    let relocated = unsafe {
+        assert_eq!(libc::dup2(libc::STDOUT_FILENO, reserved), reserved);
+        let moved = reverie_liteinst::tool_output_fd().unwrap();
+        assert!(moved != reserved && moved >= 1025, "moved to {moved}");
+        assert_eq!(libc::dup3(libc::STDOUT_FILENO, moved, 0), moved);
+        let again = reverie_liteinst::tool_output_fd().unwrap();
+        assert!(
+            again != moved && again != reserved && again >= 1025,
+            "moved to {again}"
+        );
+        // A dup that Linux refuses (a source that is not open, including a
+        // closed number right above the socket, or bad flags) fails the same
+        // way, and nothing moves.
+        let closed = again + 1;
+        assert_eq!(libc::fcntl(closed, libc::F_GETFD), -1);
+        for source in [-1, closed] {
+            assert_eq!(libc::dup2(source, again), -1);
+            assert_eq!(errno(), Some(libc::EBADF));
+            assert_eq!(reverie_liteinst::tool_output_fd(), Some(again));
+            assert_eq!(libc::fcntl(closed, libc::F_GETFD), -1);
+        }
+        assert_eq!(libc::dup3(libc::STDOUT_FILENO, again, libc::O_NONBLOCK), -1);
+        assert_eq!(errno(), Some(libc::EINVAL));
+        assert_eq!(reverie_liteinst::tool_output_fd(), Some(again));
+        again
+    };
+    let socket_link = || std::fs::read_link(format!("/proc/self/fd/{relocated}")).unwrap();
+    assert_eq!(socket_link(), before);
+    unsafe { libc::getppid() };
+    // The Tool's message is the only one the guest's end receives.
+    let mut message = [0u8; 64];
+    let mut receive = || unsafe {
+        let received = libc::recv(
+            peer,
+            message.as_mut_ptr().cast(),
+            message.len(),
+            libc::MSG_DONTWAIT,
+        );
+        (received > 0).then(|| message[..received as usize].to_vec())
+    };
+    assert_eq!(receive().as_deref(), Some(&b"tool\n"[..]));
+    assert_eq!(receive(), None);
+    // The guest's own end of the pair is the one descriptor above stderr it
+    // keeps; every other one, the socket's number included, is closed.
+    let peer_u = peer as u64;
+    unsafe {
+        assert_eq!(
+            libc::syscall(libc::SYS_close_range, 3u64, peer_u - 1, 0u32),
+            0
+        );
+        assert_eq!(
+            libc::syscall(libc::SYS_close_range, peer_u + 1, u32::MAX, 0u32),
+            0
+        );
+        let aliased_first = (peer_u + 1) | (1 << 32);
+        assert_eq!(
+            libc::syscall(libc::SYS_close_range, aliased_first, u32::MAX, 0u32),
+            0
+        );
+    }
+    assert_eq!(socket_link(), before);
+    // With the descriptor table full, a dup onto the socket's number still
+    // succeeds: the runtime has nowhere to move the socket, so it sends the
+    // retirement message and gives the socket up. The socket's queue is full
+    // first, and a forked child holding the socket too reads the guest's end
+    // only once the dup has had time to begin, so the message has to wait for
+    // room and no end-of-file can stand in for it.
+    FILL_TOOL_OUTPUT.store(true, Ordering::Relaxed);
+    while FILL_TOOL_OUTPUT.load(Ordering::Relaxed) {
+        unsafe { libc::getppid() };
+    }
+    let filled = TOOL_OUTPUT_FILLED.load(Ordering::Relaxed);
+    assert!(filled > 0);
+    let reader = fork_or_panic();
+    if reader == 0 {
+        std::thread::sleep(Duration::from_millis(300));
+        let wait = libc::timeval {
+            tv_sec: 3,
+            tv_usec: 0,
+        };
+        let mut message = [0u8; 64];
+        let received = |message: &mut [u8; 64]| unsafe {
+            let received = libc::recv(peer, message.as_mut_ptr().cast(), message.len(), 0);
+            (received > 0).then(|| message[..received as usize].to_vec())
+        };
+        let complete = unsafe {
+            libc::setsockopt(
+                peer,
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                (&raw const wait).cast(),
+                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+            ) == 0
+        } && (0..filled)
+            .all(|_| received(&mut message).as_deref() == Some(&b"fill\n"[..]))
+            && received(&mut message).as_deref() == Some(&b"retired\n"[..]);
+        unsafe { libc::_exit(if complete { 0 } else { 1 }) };
+    }
+    unsafe {
+        let limit = libc::rlimit {
+            rlim_cur: relocated as libc::rlim_t + 1,
+            rlim_max: libc::RLIM_INFINITY,
+        };
+        let mut previous = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut previous), 0);
+        let lowered = libc::rlimit {
+            rlim_max: previous.rlim_max,
+            ..limit
+        };
+        assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &lowered), 0);
+        while libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) >= 0 {}
+        assert_eq!(errno(), Some(libc::EMFILE));
+        assert_eq!(libc::dup2(libc::STDOUT_FILENO, relocated), relocated);
+        assert_eq!(reverie_liteinst::tool_output_fd(), None);
+        assert_eq!(
+            libc::syscall(libc::SYS_close_range, peer_u + 1, u32::MAX, 0u32),
+            0
+        );
+        assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &previous), 0);
+        let mut status = -1i32;
+        loop {
+            let waited = reverie_preload::trap::raw_syscall6(
+                libc::SYS_wait4,
+                [reader as u64, (&raw mut status) as u64, 0, 0, 0, 0],
+            );
+            if waited == -i64::from(libc::EINTR) {
+                continue;
+            }
+            assert_eq!(waited, i64::from(reader));
+            break;
+        }
+        assert_eq!(
+            status, 0,
+            "the reader must receive every fill, then the retirement"
+        );
+    }
+    assert_eq!(receive(), None);
+    println!("tool output fd: protected");
+}
+
 /// Reports whether the kernel randomizes this process's address space.
 fn address_randomization() {
     let personality = unsafe { libc::personality(0xffff_ffff) };
@@ -587,6 +873,13 @@ fn main() {
     let mode = arguments.next().expect("missing lifecycle fixture mode");
     if mode == "fallback-fork-stats" {
         fallback_fork_stats();
+        return;
+    }
+    if mode == "tool-output-fd" {
+        let (reserved, peer) =
+            reserve_tool_output_fd(&arguments.next().expect("missing scratch path"));
+        install_tool();
+        tool_output_fd(reserved, peer);
         return;
     }
     install_tool();
