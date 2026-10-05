@@ -2732,6 +2732,30 @@ static bool syscall_targets_protected_evidence_state(
   }
 }
 
+// The io_uring family is refused as unavailable, with the ENOSYS that Detcore's
+// policy returns for it, so enabling evidence does not change what a program
+// that probes io_uring and falls back observes. Every other guarded operation
+// is refused as forbidden.
+static int64_t protected_evidence_refusal(int sysnum) {
+  switch (sysnum) {
+#if defined(SYS_io_uring_setup) || defined(SYS_io_uring_enter) || \
+    defined(SYS_io_uring_register)
+#ifdef SYS_io_uring_setup
+    case SYS_io_uring_setup:
+#endif
+#ifdef SYS_io_uring_enter
+    case SYS_io_uring_enter:
+#endif
+#ifdef SYS_io_uring_register
+    case SYS_io_uring_register:
+#endif
+      return -ENOSYS;
+#endif
+    default:
+      return -EPERM;
+  }
+}
+
 // Reject app-originated traffic to the evidence endpoint even if the guest has
 // recovered the client arguments or token from shared address-space state. The
 // native sender uses client-private libc syscalls while the guest is stopped,
@@ -2805,7 +2829,7 @@ static bool protect_evidence_socket_syscall(
   }
 
 forbidden:
-  *result = -EPERM;
+  *result = protected_evidence_refusal(sysnum);
   return true;
 }
 
