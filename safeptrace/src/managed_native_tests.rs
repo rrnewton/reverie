@@ -343,6 +343,36 @@ fn managed_native_wait_rechecks_after_waker_callbacks() {
         assert_eq!(stopped.generation(), generation);
         assert!(owned.generation().is_none());
         assert!(guest.terminal.pending_is_empty());
+        let guard = guest.guard.clone();
+        let mut owned = std::thread::spawn(move || {
+            let noop = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&noop);
+            // Generic Native completion remains sibling-pollable. Managed
+            // calls still authenticate the same controller after completion.
+            assert!(matches!(
+                std::future::Future::poll(std::pin::Pin::new(&mut owned), &mut cx),
+                Poll::Ready(Err(OwnedWaitError::Completed))
+            ));
+            assert!(matches!(
+                owned.poll_with_ptracer_guard(&mut cx, &guard),
+                Poll::Ready(Err(OwnedWaitError::Errno(Errno::EPERM)))
+            ));
+            assert!(owned.generation().is_none());
+            assert!(Arc::ptr_eq(
+                &owned.managed_guard.as_ref().unwrap().owner,
+                &guard.owner
+            ));
+            owned
+        })
+        .join()
+        .unwrap();
+        assert!(matches!(
+            owned.poll_with_ptracer_guard(&mut Context::from_waker(&noop), &guest.guard),
+            Poll::Ready(Err(OwnedWaitError::Completed))
+        ));
+        assert!(owned.generation().is_none());
+        assert!(guest.terminal.pending_is_empty());
+        assert_eq!(stopped.generation(), generation);
         finish_managed_native_guest(guest, Some(stopped));
     }
     emit_completion_marker(MARKER);

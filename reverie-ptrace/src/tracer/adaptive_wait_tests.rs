@@ -81,6 +81,46 @@ mod adaptive_wait_tests {
             std::future::Future::poll(std::pin::Pin::new(&mut adapter), &mut cx),
             std::task::Poll::Pending
         ));
+        assert!(matches!(
+            std::future::Future::poll(exit.as_mut(), &mut cx),
+            std::task::Poll::Pending
+        ));
+        let before_warm_refusal = terminal.queued_raw_statuses();
+        let sibling = owner.clone();
+        (exit, adapter) = std::thread::spawn(move || {
+            assert!(sibling.controller().guard.lock().unwrap().is_some());
+            let waker = futures::task::noop_waker();
+            let mut cx = std::task::Context::from_waker(&waker);
+            assert!(matches!(
+                std::future::Future::poll(std::pin::Pin::new(&mut adapter), &mut cx),
+                std::task::Poll::Ready(Err(OwnedWaitError::Errno(Errno::EPERM)))
+            ));
+            assert!(matches!(
+                std::future::Future::poll(exit.as_mut(), &mut cx),
+                std::task::Poll::Ready(Err(TraceError::Errno(Errno::EPERM)))
+            ));
+            assert_eq!(sibling.progress(), Err(Errno::EPERM));
+            assert!(matches!(
+                sibling.with_pending::<()>(Duration::ZERO, |_| panic!(
+                    "warm foreign reservation consumed"
+                )),
+                Err(Error::Errno(Errno::EPERM))
+            ));
+            (exit, adapter)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(terminal.queued_raw_statuses(), before_warm_refusal);
+        assert_eq!(*owner.generation.lock().unwrap(), Some(generation.clone()));
+        assert_eq!(guard.check_current(), Ok(()));
+        assert!(matches!(
+            std::future::Future::poll(std::pin::Pin::new(&mut adapter), &mut cx),
+            std::task::Poll::Pending
+        ));
+        assert!(matches!(
+            std::future::Future::poll(exit.as_mut(), &mut cx),
+            std::task::Poll::Pending
+        ));
         let slot = {
             let retained = owner.waits.lock().unwrap();
             assert_eq!(retained.len(), 1);
@@ -133,6 +173,40 @@ mod adaptive_wait_tests {
                 .poll_on_ptracer_thread(&mut cx),
             std::task::Poll::Ready(Err(OwnedWaitError::Completed))
         ));
+        let sibling = retained.clone();
+        std::thread::spawn(move || {
+            let waker = futures::task::noop_waker();
+            let mut cx = std::task::Context::from_waker(&waker);
+            let mut retained = sibling.lock().unwrap();
+            let driver = retained.as_mut().unwrap();
+            assert!(driver.generation().is_none());
+            let actual = driver.poll_on_ptracer_thread(&mut cx);
+            if native {
+                assert!(matches!(
+                    actual,
+                    std::task::Poll::Ready(Err(OwnedWaitError::Errno(Errno::EPERM)))
+                ));
+            } else {
+                // The unchanged Explicit driver reports Completed before
+                // admission once its sole input has already transferred.
+                assert!(matches!(
+                    actual,
+                    std::task::Poll::Ready(Err(OwnedWaitError::Completed))
+                ));
+            }
+            assert!(driver.generation().is_none());
+        })
+        .join()
+        .unwrap();
+        assert!(matches!(
+            retained
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .poll_on_ptracer_thread(&mut cx),
+            std::task::Poll::Ready(Err(OwnedWaitError::Completed))
+        ));
         assert!(terminal.wait(deadline.saturating_duration_since(Instant::now())));
         assert_eq!(
             terminal.observed_exit_status(),
@@ -156,6 +230,7 @@ mod adaptive_wait_tests {
         );
         assert!(Instant::now() < deadline);
         println!("ADAPTIVE_COLD_OWNER_AND_CANCELLATION_PASSED native={native}");
+        println!("ADAPTIVE_WARM_OWNER_REFUSAL_AND_RECOVERY_PASSED native={native}");
     }
 
     async fn newborn_inherits_original_controller() {
@@ -394,6 +469,13 @@ mod adaptive_wait_tests {
                     .lines()
                     .filter(|line| {
                         line.starts_with("ADAPTIVE_COLD_OWNER_AND_CANCELLATION_PASSED native=")
+                    })
+                    .count()
+                    == 1
+                && stdout
+                    .lines()
+                    .filter(|line| {
+                        line.starts_with("ADAPTIVE_WARM_OWNER_REFUSAL_AND_RECOVERY_PASSED native=")
                     })
                     .count()
                     == 1

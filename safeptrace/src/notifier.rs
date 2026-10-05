@@ -6833,17 +6833,19 @@ impl OwnedWaitFuture {
     /// The first admitted call retains this same guard. Waker callbacks are
     /// followed by a new host check before reserving or decoding a FIFO front,
     /// and decoding is checked before removal. A refusal leaves the original
-    /// input and FIFO front available to that host. The ordinary [`Future`]
-    /// implementation keeps its generic Native polling contract.
+    /// input and FIFO front available to that host. Completed results also
+    /// require that same controller. The ordinary [`Future`] implementation
+    /// keeps its generic Native polling contract.
     pub fn poll_with_ptracer_guard(
         &mut self,
         cx: &mut Context<'_>,
         guard: &PtracerThreadGuard,
     ) -> Poll<Result<Wait, OwnedWaitError>> {
-        let Some(inner) = self.inner.as_ref() else {
-            return Poll::Ready(Err(OwnedWaitError::Completed));
-        };
-        if let Err(error) = WaitPolicy::Native.check_handle(inner.token.event()) {
+        if let Some(error) = self
+            .inner
+            .as_ref()
+            .and_then(|inner| WaitPolicy::Native.check_handle(inner.token.event()).err())
+        {
             return Poll::Ready(Err(OwnedWaitError::Errno(error)));
         }
         let guard = match PtracerThreadGuard::retain_for_poll(&mut self.managed_guard, guard) {
