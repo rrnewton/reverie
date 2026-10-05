@@ -528,9 +528,16 @@ pub(super) fn exit_resuming(stopped: &Stopped) {
 async fn actual_final(stopped: Stopped) -> ExitStatus {
     let id = stopped.pid();
     let cleanup = stopped.terminal_cleanup();
-    let waits = Arc::new(PtracerWaitOwner::default());
-    waits.bind_stopped(&stopped);
-    let final_wait = TracedTask::<Observer>::wait_after_exit_event(stopped, &waits, None).await;
+    // Every caller claims this stop through the Send `exit_event()` future,
+    // which grants no explicit ptracer-thread wait role, so a fresh
+    // `PtracerWaitOwner` refuses its final wait with EPERM. Resume and wait
+    // through the same API that minted the claim, exactly as the pre-owner
+    // `wait_after_exit_event(stopped, None)` did, keeping its resume hook.
+    exit_resuming(&stopped);
+    let final_wait = match crate::tracer::RootStopLease::new(stopped, None).resume(None) {
+        Ok(running) => running.next_state().await,
+        Err(error) => Err(error),
+    };
     let (exited, status) = match final_wait {
         Ok(wait) => wait.assume_exited(),
         Err(TraceError::Died(zombie)) => (zombie.pid(), zombie.reap().await.unwrap()),
