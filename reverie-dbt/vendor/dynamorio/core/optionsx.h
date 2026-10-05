@@ -1852,6 +1852,11 @@ OPTION_DEFAULT(bool, disable_rseq, false,
 #ifdef UNIX
 OPTION_DEFAULT(bool, restart_syscalls, true,
                "restart appropriate syscalls when interrupted by a signal")
+OPTION_DEFAULT(bool, test_vfork_tid_reuse, false,
+               "for testing only: when a vfork parent cleans up a child that died "
+               "without cleaning up, first add a record for a later thread that "
+               "reuses the child's thread id, then report on stderr whether the "
+               "cleanup removed the child's record and kept the newer one")
 #endif
 
 /* These should be made internal when sufficiently tested */

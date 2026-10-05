@@ -2677,6 +2677,14 @@ os_thread_init(dcontext_t *dcontext, void *os_data)
 
     ASSIGN_INIT_LOCK_FREE(ostd->suspend_lock, suspend_lock);
 
+    /* Lets a vfork parent find this thread's record even after a later thread
+     * reuses this thread's id (see cleanup_after_vfork_child_death()).  We still
+     * hold the thread_initexit_lock that add_thread() ran under, so no other
+     * thread can see the record without its instance.
+     */
+    if (os_data != NULL)
+        dcontext->thread_record->clone_instance = get_clone_record_instance(os_data);
+
     signal_thread_init(dcontext, os_data);
 
     /* i#107, initialize thread area information,
@@ -6676,6 +6684,63 @@ cleanup_after_vfork_execve(dcontext_t *dcontext)
                      num_threads * sizeof(thread_record_t *) HEAPACCT(ACCT_THREAD_MGT));
 }
 
+/* A vfork child that dies without running any of our exit code, as it does
+ * when it is killed by SIGKILL (whether it sent the signal to itself or another
+ * process sent it), leaves its thread record in the list it shares with its
+ * parent.  The parent's later SYS_exit_group then finds a thread from another
+ * thread group, concludes that its own group is not the final one, and skips
+ * process exit along with the client's process exit event.  The parent calls
+ * this routine after its vfork returns the child's id, to clean up such a record
+ * as cleanup_after_vfork_execve does for a child that exec'd.
+ *
+ * The record cleaned up must be the record of the child this vfork created, and
+ * that child must have ended.  instance numbers the clone record this vfork
+ * created, and only the thread that clone record started carries that number in
+ * its thread record (see os_thread_init()).  So the lookup cannot return the
+ * record of a later thread that reused the child's thread id, even one created
+ * before the parent got here.  The kernel returns from vfork only after the child
+ * has released the address space it shares with the parent, by a successful
+ * execve or by exiting; the parent's wait ends early only for a fatal signal,
+ * which ends the parent before it returns to us.  A child that exec'd is marked
+ * execve and is left to cleanup_after_vfork_execve.  A child that exited through
+ * our exit code removed its own record.  So a record found here belongs to a
+ * child that ended without cleaning up, and that thread can never run again.
+ */
+static void
+cleanup_after_vfork_child_death(dcontext_t *dcontext, thread_id_t child, uint64 instance)
+{
+    thread_record_t *tr, *reused = NULL;
+    d_r_mutex_lock(&thread_initexit_lock);
+    if (DYNAMO_OPTION(test_vfork_tid_reuse)) {
+        /* Stands in for a later thread that reused the child's thread id before
+         * we got here.  Its record is newer than the child's, so thread_lookup()
+         * and remove_thread() would find it first.  It has no dcontext, so it
+         * must not outlive this hold of thread_initexit_lock.
+         */
+        add_thread((process_id_t)child, child, false, NULL);
+        reused = thread_lookup(child);
+    }
+    tr = thread_lookup_clone_instance(child, instance);
+    /* The child leads its own thread group, so its record carries its own pid. */
+    if (tr != NULL && !tr->execve && tr->pid == (process_id_t)child &&
+        tr->dcontext != NULL && tr->dcontext != dcontext) {
+        LOG(THREAD, LOG_SYSCALLS, 2,
+            "cleaning up vfork child " TIDFMT " that died without cleanup\n", child);
+        dynamo_other_thread_exit(tr);
+    }
+    if (reused != NULL) {
+        bool child_removed = thread_lookup_clone_instance(child, instance) == NULL;
+        bool reused_kept = thread_lookup(child) == reused;
+        print_file(STDERR,
+                   "vfork child cleanup with reused thread id: child record %s, "
+                   "newer record %s\n",
+                   child_removed ? "removed" : "kept", reused_kept ? "kept" : "removed");
+        if (reused_kept)
+            remove_thread_record(reused);
+    }
+    d_r_mutex_unlock(&thread_initexit_lock);
+}
+
 /* XXX: Discover libc type at runtime and use appropriate stdfile_t variant
  * instead of depending on build-time preprocessor defines. */
 static void
@@ -7228,6 +7293,9 @@ handle_clone_pre(dcontext_t *dcontext)
      */
     clone3_syscall_args_t *dr_clone_args = NULL, *app_clone_args = NULL;
     uint app_clone_args_size = 0;
+    os_thread_data_t *ostd = (os_thread_data_t *)dcontext->os_field;
+    void *crec;
+    ostd->vfork_child_instance = 0;
     if (dcontext->sys_num == SYS_clone3) {
         if (is_clone3_enosys) {
             /* We know that clone3 will return ENOSYS, so we skip the pre-syscall
@@ -7340,7 +7408,7 @@ handle_clone_pre(dcontext_t *dcontext)
             *sys_param_addr(dcontext, SYSCALL_PARAM_CLONE3_CLONE_ARGS) =
                 (reg_t)dr_clone_args;
             /* The pointer to the app's clone_args was saved in sys_param0 above. */
-            create_clone_record(dcontext, NULL, dr_clone_args, app_clone_args);
+            crec = create_clone_record(dcontext, NULL, dr_clone_args, app_clone_args);
         } else {
             /* We replace the app-provided stack pointer with our own stack
              * pointer in create_clone_record. Save the original pointer so
@@ -7348,10 +7416,13 @@ handle_clone_pre(dcontext_t *dcontext)
              * restored in the child in restore_clone_param_from_clone_record.
              */
             dcontext->sys_param1 = sys_param(dcontext, SYSCALL_PARAM_CLONE_STACK);
-            create_clone_record(dcontext,
-                                sys_param_addr(dcontext, SYSCALL_PARAM_CLONE_STACK), NULL,
-                                NULL);
+            crec = create_clone_record(
+                dcontext, sys_param_addr(dcontext, SYSCALL_PARAM_CLONE_STACK), NULL,
+                NULL);
         }
+        /* For post_system_call: see cleanup_after_vfork_child_death(). */
+        if (TEST(CLONE_VFORK, flags))
+            ostd->vfork_child_instance = get_clone_record_instance(crec);
         os_clone_pre(dcontext);
         os_new_thread_pre();
     } else {
@@ -7798,8 +7869,10 @@ pre_system_call(dcontext_t *dcontext)
 #    ifdef MACOS
         create_clone_record(dcontext, (reg_t *)&mc->xsp, NULL, NULL);
 #    else
-        create_clone_record(dcontext, (reg_t *)&mc->xsp /*child uses parent sp*/, NULL,
-                            NULL);
+        /* For post_system_call: see cleanup_after_vfork_child_death(). */
+        ((os_thread_data_t *)dcontext->os_field)->vfork_child_instance =
+            get_clone_record_instance(create_clone_record(
+                dcontext, (reg_t *)&mc->xsp /*child uses parent sp*/, NULL, NULL));
 #    endif
         os_clone_pre(dcontext);
         os_new_thread_pre();
@@ -9451,6 +9524,14 @@ post_system_call(dcontext_t *dcontext)
                 set_syscall_param(dcontext, SYSCALL_PARAM_CLONE_STACK,
                                   dcontext->sys_param1);
             }
+            /* See cleanup_after_vfork_child_death(). */
+            os_thread_data_t *ostd = (os_thread_data_t *)dcontext->os_field;
+            uint64 vfork_child_instance = ostd->vfork_child_instance;
+            ostd->vfork_child_instance = 0;
+            if (result > 0 && vfork_child_instance != 0) {
+                cleanup_after_vfork_child_death(dcontext, (thread_id_t)result,
+                                                vfork_child_instance);
+            }
         }
         break;
     }
@@ -9474,6 +9555,10 @@ post_system_call(dcontext_t *dcontext)
 
 #ifdef SYS_vfork
     case SYS_vfork: {
+        /* See cleanup_after_vfork_child_death(). */
+        os_thread_data_t *ostd = (os_thread_data_t *)dcontext->os_field;
+        uint64 vfork_child_instance = ostd->vfork_child_instance;
+        ostd->vfork_child_instance = 0;
         LOG(THREAD, LOG_SYSCALLS, 2, "syscall: vfork returned " PFX "\n",
             MCXT_SYSCALL_RES(mc));
         IF_LINUX(ASSERT(was_thread_create_syscall(dcontext)));
@@ -9492,6 +9577,10 @@ post_system_call(dcontext_t *dcontext)
                 os_switch_lib_tls(dcontext, false /*to dr*/);
             }
             /* i#2089: we already restored the DR tls in os_clone_post() */
+            if (result > 0 && vfork_child_instance != 0) {
+                cleanup_after_vfork_child_death(dcontext, (thread_id_t)result,
+                                                vfork_child_instance);
+            }
         }
         break;
     }

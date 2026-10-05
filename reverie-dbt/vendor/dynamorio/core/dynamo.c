@@ -2122,6 +2122,34 @@ thread_lookup(thread_id_t tid)
     return NULL;
 }
 
+#ifdef UNIX
+/* Returns the record of thread tid that the clone record numbered instance
+ * started, or NULL.  Unlike thread_lookup(), which returns the newest record of
+ * tid, this never returns the record of a later thread that reused tid.  The
+ * caller must hold thread_initexit_lock, so that the record is not freed while
+ * the caller uses it.
+ */
+thread_record_t *
+thread_lookup_clone_instance(thread_id_t tid, uint64 instance)
+{
+    thread_record_t *tr;
+    uint hindex;
+
+    ASSERT_OWN_MUTEX(true, &thread_initexit_lock);
+    if (instance == 0)
+        return NULL;
+    hindex = HASH_FUNC_BITS(tid, ALL_THREADS_HASH_BITS);
+    d_r_mutex_lock(&all_threads_lock);
+    for (tr = all_threads == NULL ? NULL : all_threads[hindex]; tr != NULL;
+         tr = tr->next) {
+        if (tr->id == tid && tr->clone_instance == instance)
+            break;
+    }
+    d_r_mutex_unlock(&all_threads_lock);
+    return tr;
+}
+#endif
+
 /* assumes caller can ensure that thread is either suspended or self to
  * avoid races
  */
@@ -2173,6 +2201,7 @@ add_thread(IF_WINDOWS_ELSE_NP(HANDLE hthread, process_id_t pid), thread_id_t tid
 #else
     tr->pid = pid;
     tr->execve = false;
+    tr->clone_instance = 0;
 #endif
     tr->id = tid;
     ASSERT(tid != INVALID_THREAD_ID); /* ensure os never assigns invalid id to a thread */
@@ -2193,9 +2222,11 @@ add_thread(IF_WINDOWS_ELSE_NP(HANDLE hthread, process_id_t pid), thread_id_t tid
     d_r_mutex_unlock(&all_threads_lock);
 }
 
-/* return false if couldn't find the thread */
-bool
-remove_thread(IF_WINDOWS_(HANDLE hthread) thread_id_t tid)
+/* Removes and frees expected, or if expected is NULL the newest record of tid.
+ * Returns false if there is no such record.
+ */
+static bool
+remove_thread_common(thread_id_t tid, thread_record_t *expected)
 {
     thread_record_t *tr = NULL, *prevtr;
     uint hindex = HASH_FUNC_BITS(tid, ALL_THREADS_HASH_BITS);
@@ -2204,7 +2235,7 @@ remove_thread(IF_WINDOWS_(HANDLE hthread) thread_id_t tid)
 
     d_r_mutex_lock(&all_threads_lock);
     for (tr = all_threads[hindex], prevtr = NULL; tr; prevtr = tr, tr = tr->next) {
-        if (tr->id == tid) {
+        if (tr->id == tid && (expected == NULL || tr == expected)) {
             if (prevtr)
                 prevtr->next = tr->next;
             else
@@ -2227,6 +2258,22 @@ remove_thread(IF_WINDOWS_(HANDLE hthread) thread_id_t tid)
     }
     d_r_mutex_unlock(&all_threads_lock);
     return (tr != NULL);
+}
+
+/* return false if couldn't find the thread */
+bool
+remove_thread(IF_WINDOWS_(HANDLE hthread) thread_id_t tid)
+{
+    return remove_thread_common(tid, NULL);
+}
+
+/* Unlike remove_thread(), removes exactly tr even when a later thread has
+ * reused its thread id.  Returns false if tr is not in the table.
+ */
+bool
+remove_thread_record(thread_record_t *tr)
+{
+    return remove_thread_common(tr->id, tr);
 }
 
 /* this bool is protected by reset_pending_lock */
@@ -2669,7 +2716,16 @@ dynamo_thread_exit_common(dcontext_t *dcontext, thread_id_t id,
 #endif
 
     /* remove thread from threads hashtable */
-    remove_thread(IF_WINDOWS_(NT_CURRENT_THREAD) id);
+    /* A vfork parent can clean up a child that died without running this
+     * routine after a later thread reused the child's id (see
+     * cleanup_after_vfork_child_death()).  remove_thread() would then free the
+     * later thread's record, which it finds first, so we remove exactly this
+     * thread's record.
+     */
+    if (dcontext->thread_record != NULL && dcontext->thread_record->id == id)
+        remove_thread_record(dcontext->thread_record);
+    else
+        remove_thread(IF_WINDOWS_(NT_CURRENT_THREAD) id);
 
     dcontext_tmp = dcontext;
 #ifdef WINDOWS

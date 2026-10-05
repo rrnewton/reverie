@@ -194,6 +194,43 @@ fn read_from_start(file: &mut std::fs::File, what: &str) -> Vec<u8> {
     bytes
 }
 
+/// Counts the root's process-exit summary lines in the client's diagnostics.
+///
+/// A forked or vfork child never prints one, so a run whose root reaches
+/// process exit prints exactly one.
+fn process_exit_summaries(diagnostics: &str) -> usize {
+    diagnostics
+        .lines()
+        .filter(|line| line.starts_with("reverie-dbt: tool="))
+        .count()
+}
+
+/// Asserts that the root observed its child killed by SIGKILL and then ran its
+/// own process exit.
+///
+/// A vfork child that dies by SIGKILL runs no DynamoRIO exit code, so its
+/// thread record stays in the address space it shared with the root. Unless
+/// DynamoRIO removes that record, the root's exit_group sees a thread from
+/// another thread group, skips process exit, and the client's process-exit
+/// summary is missing.
+fn assert_root_survived_child_sigkill(mode: &str, output: &Output, diagnostics: &str) {
+    assert!(
+        output.status.success(),
+        "self-SIGKILL {mode} guest exited unsuccessfully: {output:?}"
+    );
+    assert_eq!(
+        output.stdout,
+        format!("self-sigkill-{mode}-ok\n").into_bytes(),
+        "the parent must observe its {mode} child killed by SIGKILL"
+    );
+    assert_eq!(
+        process_exit_summaries(diagnostics),
+        1,
+        "the root must reach process exit after its {mode} child died by SIGKILL: {output:?}\n\
+         client diagnostics:\n{diagnostics}"
+    );
+}
+
 /// Runs the self-SIGKILL fixture with `guest_arguments` under protected
 /// evidence, passing `client_arguments` to the native client as well.
 fn try_run_self_sigkill_fixture(
@@ -211,7 +248,8 @@ fn try_run_self_sigkill_fixture(
         .expect("configure protected evidence")
         .diagnostic_file(&diagnostic_file)
         .expect("configure client diagnostics")
-        .client_argument("-test-wait-for-background");
+        .client_argument("-test-wait-for-background")
+        .summary(true);
     for argument in client_arguments {
         runner = runner.client_argument(argument);
     }
@@ -237,10 +275,12 @@ fn try_run_self_sigkill_fixture(
 /// without first ending its evidence stream leaves the collector without that
 /// image's FINAL frame, so the collector refuses the whole artifact and
 /// `output` returns the refusal as an error.
+///
+/// Returns the client's diagnostics along with the output and the evidence.
 fn run_self_sigkill_fixture_with(
     guest_arguments: &[&str],
     client_arguments: &[&str],
-) -> (Output, reverie_dbt::DbtEvidence) {
+) -> (Output, reverie_dbt::DbtEvidence, String) {
     let run = try_run_self_sigkill_fixture(guest_arguments, client_arguments);
     let output = run.result.unwrap_or_else(|error| {
         panic!(
@@ -252,10 +292,10 @@ fn run_self_sigkill_fixture_with(
     let evidence = reverie_dbt::decode_evidence(&run.evidence_bytes).unwrap_or_else(|error| {
         panic!("self-SIGKILL {guest_arguments:?} evidence artifact must decode: {error}")
     });
-    (output, evidence)
+    (output, evidence, run.diagnostics)
 }
 
-fn run_self_sigkill_fixture(mode: &str) -> (Output, reverie_dbt::DbtEvidence) {
+fn run_self_sigkill_fixture(mode: &str) -> (Output, reverie_dbt::DbtEvidence, String) {
     run_self_sigkill_fixture_with(&[mode], &[])
 }
 
@@ -278,21 +318,34 @@ fn refusal_message(run: &SelfSigkillRun) -> String {
 }
 
 fn assert_child_self_sigkill_evidence(mode: &str) {
-    let (output, evidence) = run_self_sigkill_fixture(mode);
-    assert!(
-        output.status.success(),
-        "self-SIGKILL {mode} guest exited unsuccessfully: {output:?}"
-    );
-    assert_eq!(
-        output.stdout,
-        format!("self-sigkill-{mode}-ok\n").into_bytes(),
-        "the parent must observe its {mode} child killed by SIGKILL"
-    );
+    let (output, evidence, diagnostics) = run_self_sigkill_fixture(mode);
+    assert_root_survived_child_sigkill(mode, &output, &diagnostics);
     assert_eq!(
         evidence.initialization_records(),
         CLIENT_BACKGROUND_IMAGES + 2,
         "the root and its {mode} child must each publish one image initialization"
     );
+}
+
+/// Runs one mode of the self-SIGKILL fixture without protected evidence, so
+/// DynamoRIO rather than the client executes a self-directed kill, and so a
+/// child killed by another thread, which cannot end its own evidence stream,
+/// does not make the collector refuse the run. `dynamorio_arguments` go to
+/// DynamoRIO. The client's diagnostics stay in the output's standard error.
+fn run_self_sigkill_fixture_without_evidence(mode: &str, dynamorio_arguments: &[&str]) -> Output {
+    let directory = tempfile::tempdir().expect("fixture tempdir");
+    let fixture = compile_self_sigkill_fixture(directory.path());
+    let mut runner = DbtRunner::from_env()
+        .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+        .summary(true);
+    for argument in dynamorio_arguments {
+        runner = runner.dynamorio_argument(argument);
+    }
+    let mut guest = Command::new(fixture);
+    guest.arg(mode);
+    runner
+        .output(&guest)
+        .unwrap_or_else(|error| panic!("self-SIGKILL {mode} run failed: {error}"))
 }
 
 #[test]
@@ -309,8 +362,87 @@ fn protected_evidence_finishes_a_vfork_child_that_sigkills_itself() {
 
 #[test]
 #[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn protected_evidence_finishes_a_clone_vfork_child_that_sigkills_itself() {
+    assert_child_self_sigkill_evidence("clone-vfork");
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn protected_evidence_finishes_a_clone3_vfork_child_that_sigkills_itself() {
+    assert_child_self_sigkill_evidence("clone3-vfork");
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn process_exit_runs_after_a_vfork_child_sigkills_itself() {
+    let output = run_self_sigkill_fixture_without_evidence("vfork", &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_root_survived_child_sigkill("vfork", &output, &stderr);
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn process_exit_runs_after_a_thread_sigkills_a_vfork_child() {
+    let output = run_self_sigkill_fixture_without_evidence("vfork-external", &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_root_survived_child_sigkill("vfork-external", &output, &stderr);
+}
+
+/// The start of the line that DynamoRIO's `-test_vfork_tid_reuse` prints after
+/// the vfork parent's cleanup.
+const VFORK_TID_REUSE_REPORT: &str = "vfork child cleanup with reused thread id: ";
+
+/// With `-test_vfork_tid_reuse`, DynamoRIO adds a record for a later thread
+/// that reuses the dead child's thread id inside the vfork parent's
+/// post-syscall handling, just before the parent looks up the child's record.
+/// That newer record is the one a lookup by thread id finds first. The cleanup
+/// must still remove the child's own record and keep the newer one, after which
+/// the root must reach process exit.
+fn assert_vfork_cleanup_survives_thread_id_reuse(mode: &str) {
+    let output = run_self_sigkill_fixture_without_evidence(mode, &["-test_vfork_tid_reuse"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reports: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with(VFORK_TID_REUSE_REPORT))
+        .collect();
+    assert_eq!(
+        reports,
+        [format!(
+            "{VFORK_TID_REUSE_REPORT}child record removed, newer record kept"
+        )],
+        "the {mode} parent must clean up exactly its own child's record: {output:?}"
+    );
+    assert_root_survived_child_sigkill(mode, &output, &stderr);
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn vfork_cleanup_removes_only_the_dead_vfork_childs_record() {
+    assert_vfork_cleanup_survives_thread_id_reuse("vfork");
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn vfork_cleanup_removes_only_the_dead_clone_vfork_childs_record() {
+    assert_vfork_cleanup_survives_thread_id_reuse("clone-vfork");
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn vfork_cleanup_removes_only_the_dead_clone3_vfork_childs_record() {
+    assert_vfork_cleanup_survives_thread_id_reuse("clone3-vfork");
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn vfork_cleanup_removes_only_the_killed_vfork_childs_record() {
+    assert_vfork_cleanup_survives_thread_id_reuse("vfork-external");
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
 fn protected_evidence_finishes_a_root_that_sigkills_itself() {
-    let (output, evidence) = run_self_sigkill_fixture("root");
+    let (output, evidence, _) = run_self_sigkill_fixture("root");
     assert_eq!(
         output.status.signal(),
         Some(libc::SIGKILL),
@@ -332,7 +464,7 @@ fn protected_evidence_finishes_a_root_that_sigkills_itself() {
 #[test]
 #[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
 fn protected_evidence_finishes_a_root_that_sigkills_itself_after_joining_a_thread() {
-    let (output, evidence) =
+    let (output, evidence, _) =
         run_self_sigkill_fixture_with(&["root-after-thread"], &["-test-thread-exit-evidence"]);
     assert_eq!(
         output.status.signal(),
@@ -357,7 +489,7 @@ fn protected_evidence_finishes_a_root_that_sigkills_itself_after_joining_a_threa
 #[test]
 #[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
 fn protected_evidence_continues_after_a_sigkill_to_a_zombie_child() {
-    let (output, evidence) = run_self_sigkill_fixture("zombie-child");
+    let (output, evidence, _) = run_self_sigkill_fixture("zombie-child");
     assert!(
         output.status.success(),
         "zombie-child guest exited unsuccessfully: {output:?}"

@@ -281,6 +281,10 @@ typedef struct _thread_record_t {
 #else
     process_id_t pid; /* thread group id */
     bool execve;      /* exiting due to execve (i#237/PR 498284) */
+    /* The instance of the clone record that started this thread, or 0 (see
+     * cleanup_after_vfork_child_death()).
+     */
+    uint64 clone_instance;
 #endif
     uint num;                  /* creation ordinal */
     bool under_dynamo_control; /* used for deciding whether to intercept events */
@@ -549,6 +553,12 @@ add_thread(IF_WINDOWS_ELSE_NP(HANDLE hthread, process_id_t pid), thread_id_t tid
            bool under_dynamo_control, dcontext_t *dcontext);
 bool
 remove_thread(IF_WINDOWS_(HANDLE hthread) thread_id_t tid);
+bool
+remove_thread_record(thread_record_t *tr);
+#ifdef UNIX
+thread_record_t *
+thread_lookup_clone_instance(thread_id_t tid, uint64 instance);
+#endif
 uint
 get_thread_num(thread_id_t tid);
 int

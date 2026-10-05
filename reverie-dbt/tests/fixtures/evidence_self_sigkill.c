@@ -6,20 +6,26 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-// The modes "root", "fork" and "vfork" each end one process image with a
-// SIGKILL that it sends to itself. DynamoRIO runs no exit callback for SIGKILL,
-// so the client must end that image's protected evidence stream before the
-// kill is delivered. In "root-returned", a seccomp filter makes the root's
-// self-directed SIGKILL return an error, which leaves the root running after
-// its stream has ended. "root-returned-error-denied" adds a second filter that
-// fails every write of argv[2] bytes, the length of the ERROR frame payload
-// that reports the returned kill, so that report never reaches the collector.
-// In "root-after-thread", the root creates and joins one short-lived thread
-// before it kills itself. In "threaded", a sibling thread keeps creating and
-// joining short-lived threads, whose exits run client callbacks, while the main
-// thread sends the process SIGKILL. In "zombie-child", the root sends SIGKILL
-// to a child that has exited but is not yet reaped; that kill succeeds without
-// being self-directed, and the root must run on normally.
+// The modes "root", "fork", "vfork", "clone-vfork" and "clone3-vfork" each end
+// one process image with a SIGKILL that it sends to itself. DynamoRIO runs no
+// exit callback for SIGKILL, so the client must end that image's protected
+// evidence stream before the kill is delivered. In "root-returned", a seccomp
+// filter makes the root's self-directed SIGKILL return an error, which leaves
+// the root running after its stream has ended. "root-returned-error-denied"
+// adds a second filter that fails every write of argv[2] bytes, the length of
+// the ERROR frame payload that reports the returned kill, so that report never
+// reaches the collector. In "root-after-thread", the root creates and joins one
+// short-lived thread before it kills itself. In "threaded", a sibling thread
+// keeps creating and joining short-lived threads, whose exits run client
+// callbacks, while the main thread sends the process SIGKILL. In
+// "zombie-child", the root sends SIGKILL to a child that has exited but is not
+// yet reaped; that kill succeeds without being self-directed, and the root must
+// run on normally. In "vfork-external", a thread of the parent kills the vfork
+// child instead. A vfork or CLONE_VFORK child that dies by SIGKILL also leaves
+// its DynamoRIO thread record behind in the address space it shared with the
+// parent, which must not stop the parent's own process exit from running.
+// "clone-vfork" creates its child with clone, and "clone3-vfork" with the
+// clone3 call that glibc's posix_spawn makes.
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -31,6 +37,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,8 +46,78 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+static _Alignas(16) char clone_stack[64 * 1024];
+static _Atomic pid_t vfork_child;
+
 static void kill_current_thread(void) {
   (void)syscall(SYS_tgkill, syscall(SYS_getpid), syscall(SYS_gettid), SIGKILL);
+}
+
+static int clone_vfork_child(void* argument) {
+  (void)argument;
+  kill_current_thread();
+  return 9;
+}
+
+// The leading fields of the kernel's struct clone_args, a size that clone3
+// accepts.
+struct clone3_arguments {
+  uint64_t flags;
+  uint64_t pidfd;
+  uint64_t child_tid;
+  uint64_t parent_tid;
+  uint64_t exit_signal;
+  uint64_t stack;
+  uint64_t stack_size;
+  uint64_t tls;
+};
+
+// Creates a child with clone3, CLONE_VM and CLONE_VFORK, as glibc's posix_spawn
+// does, and returns the child's pid to the parent. The child runs on
+// clone_stack, so it cannot return into this function's frame. It sends itself
+// SIGKILL with raw syscalls instead, and exits with status 9 if that returns.
+static pid_t clone3_vfork_self_sigkill(void) {
+  struct clone3_arguments arguments;
+  memset(&arguments, 0, sizeof(arguments));
+  arguments.flags = CLONE_VM | CLONE_VFORK;
+  arguments.exit_signal = SIGCHLD;
+  arguments.stack = (uint64_t)(uintptr_t)clone_stack;
+  arguments.stack_size = sizeof(clone_stack);
+  long result;
+  __asm__ volatile(
+      "syscall\n\t"
+      "test %%rax, %%rax\n\t"
+      "jnz 1f\n\t"
+      "mov %[getpid], %%eax\n\t"
+      "syscall\n\t"
+      "mov %%rax, %%rdi\n\t"
+      "mov %%rax, %%rsi\n\t"
+      "mov %[sigkill], %%edx\n\t"
+      "mov %[tgkill], %%eax\n\t"
+      "syscall\n\t"
+      "mov $9, %%edi\n\t"
+      "mov %[exit], %%eax\n\t"
+      "syscall\n\t"
+      "1:\n\t"
+      : "=a"(result)
+      : "0"((long)SYS_clone3), "D"(&arguments),
+        "S"(sizeof(arguments)), [getpid] "i"(SYS_getpid),
+        [tgkill] "i"(SYS_tgkill), [sigkill] "i"(SIGKILL), [exit] "i"(SYS_exit)
+      : "rcx", "r11", "rdx", "memory");
+  if (result < 0) {
+    errno = (int)-result;
+    return -1;
+  }
+  return (pid_t)result;
+}
+
+static void* kill_vfork_child(void* argument) {
+  (void)argument;
+  pid_t child;
+  while ((child = atomic_load(&vfork_child)) == 0)
+    sched_yield();
+  (void)kill(child, SIGKILL);
+  return NULL;
 }
 
 static int killed_by_sigkill(pid_t child) {
@@ -197,6 +274,10 @@ int main(int argc, char** argv) {
     return result;
   }
 
+  pthread_t killer;
+  int external = strcmp(mode, "vfork-external") == 0;
+  if (external && pthread_create(&killer, NULL, kill_vfork_child, NULL) != 0)
+    return 10;
   pid_t child;
   if (strcmp(mode, "fork") == 0) {
     child = fork();
@@ -210,6 +291,18 @@ int main(int argc, char** argv) {
       kill_current_thread();
       _exit(5);
     }
+  } else if (strcmp(mode, "clone-vfork") == 0) {
+    child = clone(clone_vfork_child, clone_stack + sizeof(clone_stack),
+                  CLONE_VM | CLONE_VFORK | SIGCHLD, NULL);
+  } else if (strcmp(mode, "clone3-vfork") == 0) {
+    child = clone3_vfork_self_sigkill();
+  } else if (external) {
+    child = vfork();
+    if (child == 0) {
+      atomic_store(&vfork_child, (pid_t)syscall(SYS_getpid));
+      for (;;)
+        (void)syscall(SYS_ppoll, NULL, 0, NULL, NULL);
+    }
   } else {
     return 6;
   }
@@ -217,6 +310,8 @@ int main(int argc, char** argv) {
     perror("self-SIGKILL child");
     return 7;
   }
+  if (external && pthread_join(killer, NULL) != 0)
+    return 11;
   if (!killed_by_sigkill(child))
     return 8;
   printf("self-sigkill-%s-ok\n", mode);

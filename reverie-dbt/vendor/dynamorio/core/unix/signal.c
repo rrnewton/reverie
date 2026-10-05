@@ -209,6 +209,11 @@ typedef struct _clone_record_t {
     app_pc continuation_pc;
     thread_id_t caller_id;
     int clone_sysnum;
+    /* Numbers this record among the process's clone records, from 1, so that
+     * the thread it starts can be told apart from a later thread that reuses
+     * its thread id (see cleanup_after_vfork_child_death()).
+     */
+    uint64 instance;
 #ifdef LINUX
     /* Flags in the args to SYS_clone3 are 64-bit. */
     uint64 clone_flags;
@@ -249,6 +254,15 @@ static kernel_sigset_t init_sigmask;
 
 #ifdef DEBUG
 static bool removed_sig_handler;
+#endif
+
+/* The number of clone records created so far (see clone_record_t.instance).
+ * Accessed using atomics.
+ */
+#ifdef X64
+static volatile int64 clone_record_count;
+#else
+static volatile int clone_record_count;
 #endif
 
 os_cxt_ptr_t osc_empty;
@@ -763,6 +777,23 @@ is_thread_signal_info_initialized(dcontext_t *dcontext)
     return info->fully_initialized;
 }
 
+static uint64
+next_clone_record_instance(void)
+{
+#ifdef X64
+    return (uint64)atomic_add_exchange_int64(&clone_record_count, 1);
+#else
+    /* The count wraps after 2^32 records, after which numbers repeat; 0 is
+     * skipped because it means no clone record.
+     */
+    uint instance;
+    do {
+        instance = (uint)atomic_add_exchange_int(&clone_record_count, 1);
+    } while (instance == 0);
+    return instance;
+#endif
+}
+
 /* i#27: create custom data to pass to the child of a clone
  * since we can't rely on being able to find the caller, or that
  * its syscall data is still valid, once in the child.
@@ -852,6 +883,7 @@ create_clone_record(dcontext_t *dcontext, reg_t *app_thread_xsp)
     record->dstack = dstack;
     record->caller_id = dcontext->owning_thread;
     record->clone_sysnum = dcontext->sys_num;
+    record->instance = next_clone_record_instance();
     record->info = *((thread_sig_info_t *)dcontext->signal_field);
     /* Sigstack is not inherited so clear it now to avoid having to figure out
      * where it got its value in signal_thread_inherit (i#3116).
@@ -1001,6 +1033,13 @@ get_clone_record_dstack(void *record)
 {
     ASSERT(record != NULL);
     return ((clone_record_t *)record)->dstack;
+}
+
+uint64
+get_clone_record_instance(void *record)
+{
+    ASSERT(record != NULL);
+    return ((clone_record_t *)record)->instance;
 }
 
 #if defined(AARCHXX) || defined(RISCV64)

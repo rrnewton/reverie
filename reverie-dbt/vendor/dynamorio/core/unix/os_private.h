@@ -162,6 +162,11 @@ typedef struct _os_thread_data_t {
     thread_record_t **fork_threads;
     int fork_num_threads;
 
+    /* The instance of the clone record created for this thread's in-flight
+     * vfork or CLONE_VFORK clone, or 0 (see cleanup_after_vfork_child_death()).
+     */
+    uint64 vfork_child_instance;
+
     /* We would use event_t's here except we can't use mutexes in
      * our signal handler
      */

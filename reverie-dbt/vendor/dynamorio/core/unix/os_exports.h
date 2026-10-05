@@ -582,6 +582,8 @@ reg_t
 get_clone_record_app_xsp(void *record);
 byte *
 get_clone_record_dstack(void *record);
+uint64
+get_clone_record_instance(void *record);
 
 #if defined(AARCHXX) || defined(RISCV64)
 reg_t

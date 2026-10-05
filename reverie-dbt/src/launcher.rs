@@ -69,6 +69,7 @@ pub const CLIENT_THREAD_START_FAILURE_EXIT_CODE: i32 = 125;
 pub struct DbtRunner {
     drrun: PathBuf,
     client: PathBuf,
+    dynamorio_arguments: Vec<OsString>,
     client_arguments: Vec<OsString>,
     diagnostic_file: Option<Arc<File>>,
     evidence: Option<Arc<EvidenceSession>>,
@@ -114,6 +115,7 @@ impl DbtRunner {
         Ok(Self {
             drrun,
             client,
+            dynamorio_arguments: Vec::new(),
             client_arguments: Vec::new(),
             diagnostic_file: None,
             evidence: None,
@@ -153,6 +155,13 @@ impl DbtRunner {
     /// Adds an argument passed to the native client in every instrumented process image.
     pub fn client_argument(mut self, argument: impl Into<OsString>) -> Self {
         self.client_arguments.push(argument.into());
+        self
+    }
+
+    /// Adds an option for DynamoRIO itself, which `drrun` receives ahead of the
+    /// native client's path.
+    pub fn dynamorio_argument(mut self, argument: impl Into<OsString>) -> Self {
+        self.dynamorio_arguments.push(argument.into());
         self
     }
 
@@ -843,6 +852,7 @@ impl DbtRunner {
             .arg("-quiet")
             .arg("-disable_rseq")
             .args(["-stack_size", "2M"])
+            .args(&self.dynamorio_arguments)
             .arg("-c")
             .arg(&self.client)
             .arg("-diagnostic_fd")
@@ -1442,6 +1452,7 @@ mod tests {
         DbtRunner {
             drrun: PathBuf::from("/opt/dynamorio/bin64/drrun"),
             client: PathBuf::from("/opt/reverie/libreverie_dbt_client.so"),
+            dynamorio_arguments: Vec::new(),
             client_arguments: Vec::new(),
             diagnostic_file: None,
             evidence: None,
@@ -1561,6 +1572,32 @@ mod tests {
                 "198",
                 "-panic-on-unsupported-syscalls",
                 "-isolated-process-group",
+                "--",
+                "/bin/true",
+            ]
+            .map(OsStr::new)
+        );
+    }
+
+    #[test]
+    fn dynamorio_arguments_precede_the_client() {
+        let wrapped = runner()
+            .dynamorio_argument("-test_vfork_tid_reuse")
+            .client_argument("-test-wait-for-background")
+            .command(&Command::new("/bin/true"), None);
+        assert_eq!(
+            wrapped.get_args().collect::<Vec<_>>(),
+            [
+                "-quiet",
+                "-disable_rseq",
+                "-stack_size",
+                "2M",
+                "-test_vfork_tid_reuse",
+                "-c",
+                "/opt/reverie/libreverie_dbt_client.so",
+                "-diagnostic_fd",
+                "198",
+                "-test-wait-for-background",
                 "--",
                 "/bin/true",
             ]
