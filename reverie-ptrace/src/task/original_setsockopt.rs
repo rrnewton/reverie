@@ -370,6 +370,10 @@ mod original_setsockopt_pure_tests {
         original.rcx = original.rip;
         original.r11 = 0x302;
         let mut physical = original;
+        // The kernel clobbers rcx/r11 at syscall exit. They must differ from
+        // the original here, or deleting the clobber restoration goes unseen.
+        physical.rcx = 0x7fff_0000_1002;
+        physical.r11 = 0x246;
         physical.r10 = 0x2000;
         physical.rax = (-libc::ENOPROTOOPT as i64) as u64;
         physical.eflags = 0x302;
