@@ -167,8 +167,13 @@ use crate::tracer::RootStopLease;
 use crate::tracer::TraceeIdentity;
 use crate::vdso;
 
+const READY_ASSOCIATION_PHASE: &str = "owned Tool state association failed";
+
 // A lifecycle association failure must prevent the following resume, not just
 // report a flag whose waiter may be polled after this future resumes the guest.
+// This is the dynamic LiteInst form only: LiteInst keeps its separate session
+// cleanup guard, so it reports directly and stops with EPROTO. Without LiteInst
+// `TracedTask::observe_ready_thread_state` publishes to the FatalSession instead.
 fn observe_ready_thread_state<T: Tool>(
     tool: &T,
     pid: Pid,
@@ -178,11 +183,11 @@ fn observe_ready_thread_state<T: Tool>(
 ) -> Result<(), Errno> {
     tool.on_thread_state_ready(tid, global, state)
         .map_err(|error| {
-            tracing::error!(%pid, %tid, %error, "owned Tool state association failed");
+            tracing::error!(%pid, %tid, %error, "{READY_ASSOCIATION_PHASE}");
             global.report_backend_failure(reverie::BackendFailure {
                 pid,
                 tid,
-                phase: "owned Tool state association failed",
+                phase: READY_ASSOCIATION_PHASE,
             });
             Errno::EPROTO
         })
@@ -296,6 +301,15 @@ pub enum PreinitPlace {
 #[cfg(test)]
 pub(crate) static CANONICALIZED_FOR_TEST: StdMutex<Vec<(std::thread::ThreadId, i32)>> =
     StdMutex::new(Vec::new());
+
+/// How the controller-owned part of an exec stop ended, before the Tool's
+/// completed thread state is reported ready.
+enum ExecStopProgress {
+    /// Post-exec setup and the post-exec callback completed; still stopped.
+    Ready(Stopped),
+    /// The tracee exited during the post-exec step or initialization.
+    Exited(Pid, ExitStatus),
+}
 
 /// How [`TracedTask::tracee_preinit`] ended.
 pub enum PreinitOutcome {
@@ -7819,7 +7833,27 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .handle_initial_exec(self, &observation)
                 .await?;
         }
-        self.finish_exec_event(task, initial_command)
+        let task = match self
+            .finish_exec_event(task, initial_command)
+            .await
+            .tracee_context(self.tid(), "handle exec stop")?
+        {
+            ExecStopProgress::Ready(task) => task,
+            ExecStopProgress::Exited(pid, status) => return Ok(Wait::Exited(pid, status)),
+        };
+        // A refused ordinary association is the session's failure
+        // (`RunFailed`), not a ptrace failure of this stop; only the LiteInst
+        // errno keeps the stop's annotation.
+        self.observe_ready_thread_state()
+            .map_err(|error| match error {
+                Error::Internal(source) => Error::Tracee {
+                    operation: "handle exec stop",
+                    pid: self.tid(),
+                    source,
+                },
+                error => error,
+            })?;
+        self.resume_after_exec_ready(task)
             .await
             .tracee_context(self.tid(), "handle exec stop")
     }
@@ -7909,7 +7943,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         initial_command: bool,
-    ) -> Result<Wait, TraceError> {
+    ) -> Result<ExecStopProgress, TraceError> {
         // TODO: Update PID? Need to write a test checking this.
 
         // Step the tracee to get the SIGTRAP that immediately follows the
@@ -8025,7 +8059,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                         };
                         running = self.resume_stopped(task, signal)?;
                     }
-                    Wait::Exited(pid, exit_status) => return Ok(Wait::Exited(pid, exit_status)),
+                    Wait::Exited(pid, exit_status) => {
+                        return Ok(ExecStopProgress::Exited(pid, exit_status));
+                    }
                 }
             };
             assert_eq!(event, Event::Signal(Signal::SIGTRAP));
@@ -8035,7 +8071,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let mut task = match self.tracee_preinit(task, PreinitPlace::AtExec).await? {
             PreinitOutcome::Ready(task) => task,
             PreinitOutcome::Exited(pid, exit_status) => {
-                return Ok(Wait::Exited(pid, exit_status));
+                return Ok(ExecStopProgress::Exited(pid, exit_status));
             }
         };
         if let Err(error) = self.install_liteinst_entry_guard(&mut task) {
@@ -8081,7 +8117,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.ordinary_callback_errno("ptrace post-exec callback", result)
             .await?;
         self.ordinary_trace_continuation()?;
-        self.observe_ready_thread_state()?;
+        Ok(ExecStopProgress::Ready(task))
+    }
+
+    /// The rest of an exec stop once its ready association succeeded:
+    /// finalize the post-exec timer requests, then resume or report to GDB.
+    async fn resume_after_exec_ready(&mut self, task: Stopped) -> Result<Wait, TraceError> {
         self.timer.finalize_requests();
 
         if self.attached_by_gdb {
@@ -11365,14 +11406,36 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
-    fn observe_ready_thread_state(&self) -> Result<(), Errno> {
-        observe_ready_thread_state(
-            self.process_state.as_ref(),
-            self.pid(),
-            self.tid(),
-            self.global_state.gs_ref.as_ref(),
-            &self.thread_state,
-        )
+    /// Report the completed Tool thread state, stopping before the next resume
+    /// if the Tool refuses it. Without LiteInst the refusal is the session's
+    /// failure: it is published through the FatalSession, whose reporter makes
+    /// the single `report_backend_failure` call and keeps the Tool's error as
+    /// the run's primary cause, and the run loop stays pending (`RunFailed`)
+    /// while `drive_ordinary` retires the tree. This matches a failed
+    /// `handle_thread_start`.
+    fn observe_ready_thread_state(&self) -> Result<(), Error> {
+        let global = self.global_state.gs_ref.as_ref();
+        if !self.ordinary_failure_enabled() {
+            return observe_ready_thread_state(
+                self.process_state.as_ref(),
+                self.pid(),
+                self.tid(),
+                global,
+                &self.thread_state,
+            )
+            .map_err(Error::from);
+        }
+        match self
+            .process_state
+            .on_thread_state_ready(self.tid(), global, &self.thread_state)
+        {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                tracing::error!(pid = %self.pid(), tid = %self.tid(), %error, "{READY_ASSOCIATION_PHASE}");
+                self.publish_ordinary_failure(READY_ASSOCIATION_PHASE, error);
+                Err(Error::RunFailed)
+            }
+        }
     }
 
     async fn run_loop_internal(&mut self, task: Stopped) -> Result<ExitStatus, Error> {

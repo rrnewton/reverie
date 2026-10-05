@@ -176,9 +176,9 @@ fn native_failed_exec_keeps_original_ready_association() {
 }
 #[test]
 fn ready_callback_failure_returns_eproto_without_dispatch() {
-    // Helper-level check only: no native guest or resume is involved. The
-    // native tests above cover successful ready-state association and resume
-    // ordering; they do not exercise a failing callback's fatal fence.
+    // Helper-level check of the dynamic LiteInst form only: no native guest or
+    // resume is involved. The native refusal tests below cover the FatalSession
+    // route and the stop before resume at both ordinary call sites.
     let log = Log::default();
     let state = Arc::new(AtomicUsize::new(99));
     assert_eq!(
@@ -189,4 +189,189 @@ fn ready_callback_failure_returns_eproto_without_dispatch() {
     assert!(log.ready.lock().unwrap().is_empty());
     assert_eq!(log.dispatched.load(Ordering::SeqCst), 0);
     assert_eq!(state.load(Ordering::SeqCst), 99);
+}
+
+const REFUSAL: &str = "ready callback refused";
+const REFUSAL_MARKER: &[u8] = b"resumed-after-refusal\n";
+
+/// Which ordinary call site of the ready observation the Tool refuses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+enum RefuseAt {
+    #[default]
+    ThreadStart,
+    PostExec,
+}
+
+#[derive(Default)]
+struct RefusalLog {
+    ready: AtomicUsize,
+    dispatched: AtomicUsize,
+    failures: SyncMutex<Vec<reverie::BackendFailure>>,
+}
+#[reverie::global_tool]
+impl GlobalTool for RefusalLog {
+    type Config = RefuseAt;
+    type Request = ();
+    type Response = ();
+    async fn receive_rpc(&self, _from: Pid, _request: ()) {
+        self.dispatched.fetch_add(1, Ordering::SeqCst);
+    }
+    fn report_backend_failure(&self, failure: reverie::BackendFailure) {
+        self.failures.lock().unwrap().push(failure);
+    }
+}
+
+#[derive(Default)]
+struct RefusingTool {
+    at: RefuseAt,
+}
+#[reverie::tool]
+impl Tool for RefusingTool {
+    type GlobalState = RefusalLog;
+    type ThreadState = usize;
+    fn new(_pid: Pid, at: &RefuseAt) -> Self {
+        Self { at: *at }
+    }
+    fn subscriptions(_: &RefuseAt) -> Subscription {
+        let mut events = Subscription::none();
+        events.syscalls([Sysno::getpgid]);
+        events
+    }
+    async fn handle_thread_start<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+    ) -> Result<(), reverie::Error> {
+        *guest.thread_state_mut() = if self.at == RefuseAt::ThreadStart {
+            99
+        } else {
+            1
+        };
+        Ok(())
+    }
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        if self.at == RefuseAt::PostExec {
+            *guest.thread_state_mut() = 99;
+        }
+        Ok(())
+    }
+    fn on_thread_state_ready(
+        &self,
+        _tid: Tid,
+        global: &RefusalLog,
+        state: &usize,
+    ) -> Result<(), reverie::Error> {
+        if *state == 99 {
+            return Err(reverie::Error::Tool(anyhow::anyhow!(REFUSAL)));
+        }
+        global.ready.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        call: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        guest.send_rpc(()).await;
+        Ok(guest.inject(call).await?)
+    }
+}
+
+fn refusal_guest(at: RefuseAt) {
+    unsafe {
+        assert!(libc::syscall(libc::SYS_getpgid, 0) > 0);
+        if at == RefuseAt::PostExec {
+            // The replacement image prints the marker only if the backend
+            // resumes it after the refused post-exec association.
+            let args = [
+                c"sh".as_ptr(),
+                c"-c".as_ptr(),
+                c"printf 'resumed-after-refusal\n'".as_ptr(),
+                std::ptr::null(),
+            ];
+            libc::execv(c"/bin/sh".as_ptr(), args.as_ptr());
+            libc::_exit(91);
+        }
+        assert_eq!(
+            libc::write(1, REFUSAL_MARKER.as_ptr().cast(), REFUSAL_MARKER.len()),
+            REFUSAL_MARKER.len() as isize
+        );
+        libc::_exit(0);
+    }
+}
+
+async fn check_ready_refusal(at: RefuseAt) {
+    let tracer =
+        crate::spawn_fn_with_config::<RefusingTool, _>(move || refusal_guest(at), at, true)
+            .await
+            .expect("spawn ready-refusal fixture");
+    let root = tracer.guest_pid();
+    let termination = tracer
+        .termination_handle()
+        .expect("ordinary termination owner");
+    let mut completion = Box::pin(tracer.wait_with_output_completion());
+    let outcome = match tokio::time::timeout(std::time::Duration::from_secs(20), &mut completion)
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            // Rescue only: a run that never completes is the failure.
+            termination.terminate(reverie::Error::Tool(anyhow::anyhow!("test deadline")));
+            let rescued = tokio::time::timeout(std::time::Duration::from_secs(5), &mut completion)
+                .await
+                .is_ok();
+            panic!("ready refusal did not complete; rescued={rescued}");
+        }
+    };
+    let completed = match outcome {
+        crate::ToolRunOutcome::Complete(completed) => completed,
+        crate::ToolRunOutcome::CleanupPending(pending) => {
+            panic!(
+                "ready refusal left cleanup pending: {:?}",
+                pending.failure()
+            )
+        }
+        crate::ToolRunOutcome::UnsupportedBackend(_) => panic!("ordinary backend unsupported"),
+    };
+    let origin = reverie::BackendFailure {
+        pid: root,
+        tid: root,
+        phase: "owned Tool state association failed",
+    };
+    let log = &completed.global_state;
+    let failure = completed
+        .result
+        .as_ref()
+        .expect_err("refused ready association became a guest result");
+    // The refusal is the session's first failure, with the Tool's own error,
+    // not a generic run-loop errno published after the fact.
+    assert_eq!(failure.origin(), origin, "{failure:?}");
+    assert!(
+        matches!(failure.primary(), reverie::Error::Tool(error) if error.to_string() == REFUSAL),
+        "Tool refusal lost: {failure:?}"
+    );
+    // Exactly one report, made by the FatalSession reporter.
+    assert_eq!(*log.failures.lock().unwrap(), vec![origin]);
+    // The guest was stopped before resume: no guest code ran after the refusal.
+    let prefix = failure
+        .captured_prefix()
+        .expect("requested capture exists even when empty");
+    assert_eq!(prefix.stdout(), b"");
+    let (ready, dispatched) = match at {
+        // The root never ran: neither its getpgid nor its write happened.
+        RefuseAt::ThreadStart => (0, 0),
+        // The original image ran its getpgid; the replacement never ran.
+        RefuseAt::PostExec => (1, 1),
+    };
+    assert_eq!(log.ready.load(Ordering::SeqCst), ready);
+    assert_eq!(log.dispatched.load(Ordering::SeqCst), dispatched);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_thread_start_ready_refusal_fails_session_before_resume() {
+    check_ready_refusal(RefuseAt::ThreadStart).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_post_exec_ready_refusal_fails_session_before_resume() {
+    check_ready_refusal(RefuseAt::PostExec).await;
 }
