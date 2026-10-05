@@ -73,6 +73,8 @@ impl MemoryAccess for Stopped {
         if expected_tid <= 0 || self.0.as_raw() != expected_tid {
             return Err(Errno::ESRCH);
         }
+        // The fixed remote iovec array below holds two segments; a longer
+        // list is refused before any access (documented on the trait).
         if remote.len() > 2 {
             return Err(Errno::E2BIG);
         }

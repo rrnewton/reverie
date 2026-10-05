@@ -83,6 +83,9 @@ pub trait MemoryAccess {
     /// foreground and lifetime authority throughout the operation.
     ///
     /// Backends without this exact capability refuse without accessing memory.
+    /// An implementation may also cap the number of `remote` segments and
+    /// refuse a longer list with `E2BIG`, again without accessing memory; the
+    /// ptrace backend accepts at most two.
     fn write_native_user_vectored(
         &mut self,
         _expected_tid: i32,

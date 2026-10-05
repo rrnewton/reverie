@@ -175,8 +175,10 @@ fn native_failed_exec_keeps_original_ready_association() {
     assert_eq!(log.failures.load(Ordering::SeqCst), 0);
 }
 #[test]
-fn ready_callback_failure_reports_fatal_fence_and_returns_before_resume() {
-    // Exact shared callable boundary; no native guest/resume is claimed here.
+fn ready_callback_failure_returns_eproto_without_dispatch() {
+    // Helper-level check only: no native guest or resume is involved. The
+    // native tests above cover the fatal fence and the resume ordering at the
+    // call sites.
     let log = Log::default();
     let state = Arc::new(AtomicUsize::new(99));
     assert_eq!(
