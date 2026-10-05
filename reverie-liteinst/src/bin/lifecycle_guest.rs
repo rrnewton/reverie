@@ -739,6 +739,18 @@ fn tool_output_fd(reserved: libc::c_int, peer: libc::c_int) {
         assert_eq!(reverie_liteinst::tool_output_fd(), Some(again));
         again
     };
+    // Calls that name a number the guest has closed fail as Linux fails them,
+    // also when the socket has since moved into that number.
+    let relocated = unsafe {
+        let stale = libc::fcntl(libc::STDOUT_FILENO, libc::F_DUPFD_CLOEXEC, 1025);
+        assert!(stale >= 1025 && stale != relocated, "free number {stale}");
+        assert_eq!(libc::close(stale), 0);
+        assert_eq!(libc::dup2(libc::STDOUT_FILENO, relocated), relocated);
+        assert_eq!(reverie_liteinst::tool_output_fd(), Some(stale));
+        assert_eq!(libc::close(relocated), 0);
+        stale
+    };
+    readiness_and_paths_ignore(relocated);
     let socket_link = || std::fs::read_link(format!("/proc/self/fd/{relocated}")).unwrap();
     assert_eq!(socket_link(), before);
     unsafe { libc::getppid() };
@@ -854,6 +866,83 @@ fn tool_output_fd(reserved: libc::c_int, peer: libc::c_int) {
     }
     assert_eq!(receive(), None);
     println!("tool output fd: protected");
+}
+
+/// Readiness and path calls that name `socket`, the Tool output socket's
+/// number, behave as Linux treats a number the guest has not opened:
+/// `epoll_ctl`, `epoll_wait`, `sendfile`'s input, `timerfd_gettime`,
+/// `inotify_add_watch` and a relative, `AT_EMPTY_PATH` or null path against it
+/// fail with `EBADF`; an absolute path ignores it, an empty path without the
+/// flag fails with `ENOENT`, and `utimensat` with both times `UTIME_OMIT`
+/// succeeds.
+fn readiness_and_paths_ignore(socket: libc::c_int) {
+    let errno = || std::io::Error::last_os_error().raw_os_error();
+    unsafe {
+        let mut pipe = [-1; 2];
+        assert_eq!(libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC), 0);
+        assert_eq!(libc::write(pipe[1], b"x".as_ptr().cast(), 1), 1);
+        let epoll = libc::epoll_create1(libc::EPOLL_CLOEXEC);
+        assert!(epoll >= 0);
+        let mut event = libc::epoll_event {
+            events: libc::EPOLLIN as u32,
+            u64: 0,
+        };
+        assert_eq!(
+            libc::epoll_ctl(epoll, libc::EPOLL_CTL_ADD, socket, &mut event),
+            -1
+        );
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::epoll_wait(socket, &mut event, 1, 0), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::epoll_wait(socket, &mut event, 0, 0), -1);
+        assert_eq!(errno(), Some(libc::EINVAL));
+        assert_eq!(
+            libc::openat(socket, c"relative".as_ptr(), libc::O_RDONLY),
+            -1
+        );
+        assert_eq!(errno(), Some(libc::EBADF));
+        let null = libc::openat(
+            socket,
+            c"/dev/null".as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        );
+        assert!(null >= 0, "{}", std::io::Error::last_os_error());
+        assert_eq!(libc::close(null), 0);
+        let mut status: libc::stat = std::mem::zeroed();
+        assert_eq!(
+            libc::fstatat(socket, c"".as_ptr(), &mut status, libc::AT_EMPTY_PATH),
+            -1
+        );
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::fstatat(socket, c"".as_ptr(), &mut status, 0), -1);
+        assert_eq!(errno(), Some(libc::ENOENT));
+        assert_eq!(
+            libc::utimensat(socket, c"relative".as_ptr(), std::ptr::null(), 0),
+            -1
+        );
+        assert_eq!(errno(), Some(libc::EBADF));
+        let omit = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
+        };
+        assert_eq!(
+            libc::utimensat(socket, c"relative".as_ptr(), [omit, omit].as_ptr(), 0),
+            0
+        );
+        assert_eq!(libc::sendfile(pipe[1], socket, std::ptr::null_mut(), 1), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        let mut timer: libc::itimerspec = std::mem::zeroed();
+        assert_eq!(libc::timerfd_gettime(socket, &mut timer), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(
+            libc::inotify_add_watch(socket, c"/".as_ptr(), libc::IN_ACCESS),
+            -1
+        );
+        assert_eq!(errno(), Some(libc::EBADF));
+        for fd in [pipe[0], pipe[1], epoll] {
+            assert_eq!(libc::close(fd), 0);
+        }
+    }
 }
 
 /// Reports whether the kernel randomizes this process's address space.
