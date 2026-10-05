@@ -291,6 +291,7 @@ rust_library(
                     "serde",
                     "bincode",
                     "reverie",
+                    "reverie-rpc-transport",
                 ],
                 "default": ["preload-constructor"],
                 "preload-constructor": [],
@@ -304,6 +305,7 @@ rust_library(
         "fbsource//third-party/rust:libc",
         "fbsource//third-party/rust:serde",
         ":reverie",
+        ":reverie-rpc-transport",
     ],
 )
 

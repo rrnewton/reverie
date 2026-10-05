@@ -57,6 +57,7 @@ compile_error!("reverie-inguest requires Linux x86-64");
 pub mod dispatch;
 pub mod fmt;
 pub mod fork;
+pub mod guest;
 pub mod lifecycle;
 pub mod seccomp;
 pub mod signal;

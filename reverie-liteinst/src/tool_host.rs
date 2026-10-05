@@ -143,7 +143,8 @@ where
     T: Tool + 'static,
 {
     crate::syscall_fallback::initialize()?;
-    let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
+    let rpc =
+        CoordinatorRpc::<T::GlobalState>::connect(coordinator, runtime::replace_coordinator_fd)?;
     runtime::reserve_coordinator_fd(rpc.raw_fd())?;
     let stats =
         if let Some(stats_coordinator) = std::env::var_os(crate::backend::STATS_COORDINATOR_ENV) {

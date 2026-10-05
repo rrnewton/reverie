@@ -298,8 +298,8 @@ mod tests {
     }
 
     // A tiny coordinator that speaks the exact wire protocol: send a config
-    // frame, then echo each request's numeric payload incremented by one,
-    // aggregating a running total to model shared GlobalState across
+    // frame, then add each request's numeric payload to one running total
+    // and reply with that total, which models GlobalState shared across
     // connections.
     #[test]
     fn end_to_end_against_a_wire_server() {

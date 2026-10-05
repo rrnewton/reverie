@@ -586,37 +586,8 @@ impl SiteSlot {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum SyscallDispatch {
-    Trap,
-    InstalledHook,
-    Fallback,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct SyscallEvent {
-    pub(crate) number: i64,
-    pub(crate) args: [u64; 6],
-    pub(crate) instruction_pointer: u64,
-    pub(crate) result: i64,
-    pub(crate) context: usize,
-    pub(crate) dispatch: SyscallDispatch,
-    pub(crate) guest_pkru: Option<u32>,
-}
-
-impl SyscallEvent {
-    /// Forward only this guest operation. Runtime-private syscall buffers must
-    /// retain caller access and continue to use the ordinary raw gate.
-    pub(crate) unsafe fn forward(&mut self) -> i64 {
-        let result = unsafe {
-            reverie_inguest::trap::raw_syscall6_with_result(self.number, self.args, self.guest_pkru)
-        };
-        // Permission effects survive negative errno and later Tool result
-        // transformation. Private injection never calls this operation.
-        self.guest_pkru = result.pkru;
-        result.result
-    }
-}
+pub(crate) use reverie_inguest::guest::event::SyscallDispatch;
+pub(crate) use reverie_inguest::guest::event::SyscallEvent;
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-252): Review shared reverie-inguest built-in tool parser.
