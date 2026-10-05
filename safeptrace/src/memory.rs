@@ -21,6 +21,9 @@ use syscalls::Errno;
 use super::Stopped;
 
 #[cfg(target_arch = "x86_64")]
+mod native_read;
+
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
 struct NativePkruLayout {
     offset: usize,
@@ -70,7 +73,7 @@ fn native_pkru_layout() -> Result<Option<NativePkruLayout>, Errno> {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn validate_native_key0_xstate(state: &[u8], layout: NativePkruLayout) -> Result<(), Errno> {
+fn decode_native_pkru_xstate(state: &[u8], layout: NativePkruLayout) -> Result<u32, Errno> {
     // NT_X86_XSTATE uses the standard user XSAVE layout. Its architectural
     // header is fixed; the PKRU component's offset comes from actual CPUID.
     // Refuse compacted, truncated, reserved, or unsupported layouts rather than
@@ -102,7 +105,12 @@ fn validate_native_key0_xstate(state: &[u8], layout: NativePkruLayout) -> Result
         }
         u32::from_le_bytes(component[..4].try_into().unwrap())
     };
-    if pkru & 3 != 0 {
+    Ok(pkru)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn validate_native_key0_xstate(state: &[u8], layout: NativePkruLayout) -> Result<(), Errno> {
+    if decode_native_pkru_xstate(state, layout)? & 3 != 0 {
         Err(Errno::EFAULT)
     } else {
         Ok(())
@@ -153,6 +161,28 @@ impl Stopped {
 }
 
 impl MemoryAccess for Stopped {
+    fn read_native_user_exact(
+        &self,
+        expected_tid: i32,
+        address: usize,
+        buf: &mut [u8],
+    ) -> Result<(), reverie_memory::NativeUserReadError> {
+        if expected_tid <= 0 || self.0.as_raw() != expected_tid {
+            return Err(reverie_memory::NativeUserReadError::Refused(
+                reverie_memory::NativeUserReadRefusal::WrongTask,
+            ));
+        }
+        #[cfg(target_arch = "x86_64")]
+        return native_read::read(self, expected_tid, address, buf);
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (address, buf);
+            Err(reverie_memory::NativeUserReadError::Refused(
+                reverie_memory::NativeUserReadRefusal::UnsupportedPlatform,
+            ))
+        }
+    }
+
     fn validate_native_user_key0_write_access(&self, expected_tid: i32) -> Result<(), Errno> {
         if expected_tid <= 0 || self.0.as_raw() != expected_tid {
             return Err(Errno::ESRCH);
