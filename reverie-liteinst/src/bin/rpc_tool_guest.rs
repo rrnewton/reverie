@@ -47,6 +47,9 @@ mod vdso_getrandom_guest;
 #[path = "rpc_tool_guest/vdso_fail_closed.rs"]
 mod vdso_fail_closed_guest;
 
+#[path = "rpc_tool_guest/late_code.rs"]
+mod late_code_guest;
+
 const CALLS: u64 = 32;
 const TOOL_CPUID_EAX: u32 = 0x1111_1111;
 const TOOL_CPUID_EBX: u32 = 0x2222_2222;
@@ -1910,6 +1913,16 @@ fn main() {
         Some("mask-unsubscribed") => mask_unsubscribed_guest(Path::new(&path)),
         Some("mask-tail") => mask_tail_guest(Path::new(&path)),
         Some("mask-instruction") => mask_instruction_guest(Path::new(&path)),
+        Some("late-code-instruction") => late_code_guest::run_instruction(Path::new(&path)),
+        Some("late-code-dlopen") => {
+            late_code_guest::run_dlopen(Path::new(&path), &args.next().expect("library path"))
+        }
+        Some("late-code-dlopen-system") => late_code_guest::run_dlopen_system(
+            Path::new(&path),
+            &args.next().expect("library path"),
+        ),
+        Some("late-code-gp-fault") => late_code_guest::run_fault(Path::new(&path), false),
+        Some("late-code-null-load") => late_code_guest::run_fault(Path::new(&path), true),
         _ => panic!("expected coordinator or guest"),
     }
 }
