@@ -170,6 +170,7 @@ impl<L: Tool + 'static> TracedTask<L> {
 /// Privately retained at the actual unconverted seccomp callback. Numeric
 /// operands obtained later from a Tool are never a replacement for this stop.
 pub(super) struct OriginalReadEntry {
+    nr: Sysno,
     entry: safeptrace::SyscallEntry,
     failure: StdMutex<Option<String>>,
 }
@@ -224,23 +225,36 @@ impl OriginalReadEntry {
                 entry.arch
             ));
         }
-        if nr != Sysno::read
-            || entry.number != Sysno::read as u64
+        let supported = nr == Sysno::read
+            || (nr == Sysno::recvfrom && args.arg3 == 0 && args.arg4 == 0 && args.arg5 == 0);
+        if !supported
+            || entry.number != nr as u64
             || entry.arguments != raw_arguments(args)
             || !entry.seccomp
         {
             return Err("original native range inspection requires the same seccomp Read".into());
         }
-        let regs = checked_entry_registers(task)?;
-        check_entry(task, nr, args, regs.ip(), regs.stack_ptr(), true)
-            .map_err(|error| error.to_string())?;
+        // Preserve Read's eager independent register-view qualification. For
+        // recvfrom, the immutable safeptrace entry above is retained before
+        // Tool dispatch and `check` performs the independent register read at
+        // the first actual inspection. Ordinary recvfrom calls that no Tool
+        // inspects therefore do not perturb Read's observation accounting.
+        if nr == Sysno::read {
+            let regs = checked_entry_registers(task)?;
+            check_entry(task, nr, args, regs.ip(), regs.stack_ptr(), true)
+                .map_err(|error| error.to_string())?;
+        }
         Ok(Self {
+            nr,
             entry,
             failure: StdMutex::new(None),
         })
     }
 
-    fn check(&self, task: &Stopped, args: SyscallArgs) -> Result<(), String> {
+    fn check(&self, task: &Stopped, nr: Sysno, args: SyscallArgs) -> Result<(), String> {
+        if nr != self.nr {
+            return Err("original native Read syscall kind changed".into());
+        }
         let actual = task.syscall_entry().map_err(|error| error.to_string())?;
         if actual != self.entry || actual.arguments != raw_arguments(args) {
             return Err("original native Read entry changed".into());
@@ -248,14 +262,14 @@ impl OriginalReadEntry {
         let regs = checked_entry_registers(task)?;
         check_entry(
             task,
-            Sysno::read,
+            nr,
             args,
             self.entry.instruction_pointer,
             self.entry.stack_pointer,
             true,
         )
         .map_err(|error| error.to_string())?;
-        if regs.orig_syscall() != Sysno::read as u64
+        if regs.orig_syscall() != nr as u64
             || regs.ip() != self.entry.instruction_pointer
             || regs.stack_ptr() != self.entry.stack_pointer
             || regs.args()
@@ -472,9 +486,10 @@ impl ReadRangeOracle {
 static READ_RANGE_ORACLE: StdOnceLock<StdMutex<ReadRangeOracle>> = StdOnceLock::new();
 
 impl<L: Tool + 'static> TracedTask<L> {
-    pub(super) fn inspect_native_read_range(
+    fn inspect_native_scalar_receive_range(
         &self,
-        read: reverie::syscalls::Read,
+        nr: Sysno,
+        args: SyscallArgs,
     ) -> Result<reverie::OriginalReadRangeVerdict, reverie::Error> {
         let check = || -> Result<_, String> {
             let entry = self
@@ -494,7 +509,6 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Err(primary.clone());
             }
             let inspect = || -> Result<_, String> {
-                let (nr, args) = read.into_parts();
                 if self.injected_syscall_frame.is_some()
                     || self.pending_syscall_already_skipped
                     || self.interrupted_read.is_some()
@@ -504,13 +518,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                     return Err("no matching unconsumed original native Read entry".into());
                 }
                 let task = self.assume_stopped();
-                entry.check(&task, args)?;
+                entry.check(&task, nr, args)?;
                 let mut oracle = READ_RANGE_ORACLE
                     .get_or_init(|| StdMutex::new(ReadRangeOracle::default()))
                     .lock()
                     .map_err(|_| "native range oracle lock poisoned".to_owned())?;
                 let verdict = oracle.inspect(args.arg1, args.arg2);
-                let unchanged = entry.check(&task, args);
+                let unchanged = entry.check(&task, nr, args);
                 match verdict {
                     Err(primary) => Err(primary),
                     Ok(verdict) => {
@@ -525,6 +539,22 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         };
         check().map_err(|error| reverie::Error::Tool(anyhow::anyhow!(error)))
+    }
+
+    pub(super) fn inspect_native_read_range(
+        &self,
+        read: reverie::syscalls::Read,
+    ) -> Result<reverie::OriginalReadRangeVerdict, reverie::Error> {
+        let (nr, args) = read.into_parts();
+        self.inspect_native_scalar_receive_range(nr, args)
+    }
+
+    pub(super) fn inspect_native_recvfrom_range(
+        &self,
+        receive: reverie::syscalls::Recvfrom,
+    ) -> Result<reverie::OriginalReadRangeVerdict, reverie::Error> {
+        let (nr, args) = receive.into_parts();
+        self.inspect_native_scalar_receive_range(nr, args)
     }
 }
 
@@ -549,6 +579,8 @@ mod tests {
         after_completion_refusals: AtomicUsize,
         foreign_fd_refusals: AtomicUsize,
         entry_initial_allowed: AtomicUsize,
+        recvfrom_allowed: AtomicUsize,
+        recvfrom_refusals: AtomicUsize,
     }
 
     #[reverie::global_tool]
@@ -843,7 +875,9 @@ mod tests {
         );
     }
 
-    fn range_test_logging() {
+    fn range_test_logging() -> std::sync::MutexGuard<'static, ()> {
+        static OWNER: StdOnceLock<StdMutex<()>> = StdOnceLock::new();
+        let owner = OWNER.get_or_init(|| StdMutex::new(())).lock().unwrap();
         // Preserve testing::run_tokio_test's exact filter and reentrancy. Keep
         // diagnostic events off libtest's named-result stdout, without dropping
         // any event or relaxing the outside owner's exact result comparator.
@@ -852,6 +886,7 @@ mod tests {
             .with_writer(std::io::stderr)
             .finish();
         tracing::subscriber::set_global_default(collector).unwrap_or(());
+        owner
     }
 
     fn range_queries() -> usize {
@@ -873,7 +908,7 @@ mod tests {
         type ThreadState = RangeState;
         fn subscriptions(_: &()) -> Subscription {
             let mut subscriptions = Subscription::none();
-            subscriptions.syscalls([Sysno::read]);
+            subscriptions.syscalls([Sysno::read, Sysno::recvfrom]);
             subscriptions
         }
         async fn handle_syscall_event<G: Guest<Self>>(
@@ -1046,13 +1081,103 @@ mod tests {
                     return Ok(native?);
                 }
             }
+            if let Syscall::Recvfrom(receive) = call
+                && receive.fd() == 903
+            {
+                let global = guest.local_global_state().unwrap();
+                if receive.flags() == 0 && receive.len() == 1 {
+                    assert_eq!(
+                        guest.inspect_original_recvfrom_range(receive).unwrap(),
+                        OriginalReadRangeVerdict::Allowed
+                    );
+                    global.recvfrom_allowed.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    let result = if receive.flags() == 0 {
+                        guest.inspect_original_recvfrom_range(receive.with_len(receive.len() + 1))
+                    } else {
+                        guest.inspect_original_recvfrom_range(receive)
+                    };
+                    let refusal = tool_refusal(result);
+                    if receive.flags() == 0 {
+                        assert_eq!(refusal, "no matching unconsumed original native Read entry");
+                    } else {
+                        assert_eq!(
+                            refusal,
+                            "original native range inspection requires the same seccomp Read"
+                        );
+                    }
+                    global.recvfrom_refusals.fetch_add(1, Ordering::SeqCst);
+                }
+                return Ok(guest.inject(receive).await?);
+            }
             Ok(guest.inject(call).await?)
         }
     }
 
     #[test]
+    fn original_recvfrom_range_authenticates_only_the_read_equivalent_shape() {
+        let _owner = range_test_logging();
+        let (output, log) = crate::testing::test_fn::<RangeTool, _>(|| unsafe {
+            let mut sockets = [-1; 2];
+            assert_eq!(
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                    0,
+                    sockets.as_mut_ptr(),
+                ),
+                0
+            );
+            assert_eq!(libc::dup3(sockets[0], 903, libc::O_CLOEXEC), 903);
+            assert_eq!(libc::close(sockets[0]), 0);
+            assert_eq!(libc::send(sockets[1], b"abcd".as_ptr().cast(), 4, 0), 4);
+            let mut bytes = [0u8; 4];
+            assert_eq!(
+                libc::recvfrom(
+                    903,
+                    bytes.as_mut_ptr().cast(),
+                    1,
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                ),
+                1
+            );
+            assert_eq!(
+                libc::recvfrom(
+                    903,
+                    bytes.as_mut_ptr().add(1).cast(),
+                    2,
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                ),
+                2
+            );
+            assert_eq!(
+                libc::recvfrom(
+                    903,
+                    bytes.as_mut_ptr().add(3).cast(),
+                    1,
+                    libc::MSG_PEEK,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                ),
+                1
+            );
+            assert_eq!(&bytes, b"abcd");
+            assert_eq!(libc::close(903), 0);
+            assert_eq!(libc::close(sockets[1]), 0);
+        })
+        .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(log.recvfrom_allowed.load(Ordering::SeqCst), 1);
+        assert_eq!(log.recvfrom_refusals.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn original_read_range_uses_actual_null_device_without_payload_access() {
-        range_test_logging();
+        let _owner = range_test_logging();
         let (output, log) = crate::testing::test_fn::<RangeTool, _>(|| unsafe {
             let fd = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
             assert!(fd >= 0);
@@ -1093,7 +1218,7 @@ mod tests {
 
     #[test]
     fn original_read_range_preserves_raw_count_and_sticky_unknown_refusal() {
-        range_test_logging();
+        let _owner = range_test_logging();
         let (output, log) = crate::testing::test_fn::<RangeTool, _>(|| unsafe {
             null_at(900);
             null_at(904);
@@ -1238,7 +1363,7 @@ mod tests {
 
     #[test]
     fn original_read_range_refuses_foreign_original_fd_and_observed_host_filter() {
-        range_test_logging();
+        let _owner = range_test_logging();
         // The metadata oracle has no payload descriptor. An actual different Guest
         // FD still must not replace the retained original Read tuple.
         let (output, log) = crate::testing::test_fn::<RangeTool, _>(|| unsafe {
@@ -1352,7 +1477,7 @@ mod tests {
 
     #[test]
     fn original_read_range_requires_the_same_real_pending_native_entry() {
-        range_test_logging();
+        let _owner = range_test_logging();
         real_compat_read_capture_refusal();
         let (output, log) = crate::testing::test_fn::<RangeTool, _>(|| unsafe {
             null_at(901);

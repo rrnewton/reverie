@@ -239,6 +239,18 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         )))
     }
 
+    /// Inspect the exact retained original native stream `recvfrom` with
+    /// flags=0 and no source-address outputs. The verdict has the same narrow
+    /// meaning as [`Guest::inspect_original_read_range`].
+    fn inspect_original_recvfrom_range(
+        &self,
+        _receive: reverie_syscalls::Recvfrom,
+    ) -> Result<OriginalReadRangeVerdict, Error> {
+        Err(Error::Tool(anyhow::anyhow!(
+            "backend has no authenticated original native recvfrom range check"
+        )))
+    }
+
     /// Returns a mutable reference to thread state.
     fn thread_state_mut(&mut self) -> &mut T::ThreadState;
 
@@ -818,6 +830,13 @@ where
         read: reverie_syscalls::Read,
     ) -> Result<OriginalReadRangeVerdict, Error> {
         self.inner.inspect_original_read_range(read)
+    }
+
+    fn inspect_original_recvfrom_range(
+        &self,
+        receive: reverie_syscalls::Recvfrom,
+    ) -> Result<OriginalReadRangeVerdict, Error> {
+        self.inner.inspect_original_recvfrom_range(receive)
     }
 
     fn thread_state_mut(&mut self) -> &mut L::ThreadState {
