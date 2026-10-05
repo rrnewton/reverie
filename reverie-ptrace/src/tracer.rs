@@ -11256,7 +11256,14 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn async_exit_path_supersedes_preempted_same_generation_lease() {
-        let (_pid, stopped) = spawn_held_stop_child("async exit supersession child");
+        let (pid, _native) = spawn_held_stop_child("async exit supersession child");
+        // handle_exit_event waits through the explicit ptracer-thread
+        // interface. Production tasks enter it with an owner captured by
+        // the explicit constructor while the task is still stopped
+        // (capture_ptracer_child); capture it here at the same point, before
+        // the resume after which this child exits immediately.
+        let stopped = Stopped::new_unchecked_on_ptracer_thread(pid)
+            .expect("capture ptracer-thread owner for held-stop child");
         let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
             &stopped,
             &Event::Signal(Signal::SIGSTOP),
