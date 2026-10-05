@@ -12,10 +12,10 @@ use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 use std::ptr;
 
-use reverie_preload::trap::NativeSyscallResult;
-use reverie_preload::trap::raw_syscall6;
-use reverie_preload::trap::raw_syscall6_with_pkru;
-use reverie_preload::trap::raw_syscall6_with_result;
+use reverie_inguest::trap::NativeSyscallResult;
+use reverie_inguest::trap::raw_syscall6;
+use reverie_inguest::trap::raw_syscall6_with_pkru;
+use reverie_inguest::trap::raw_syscall6_with_result;
 
 fn pkru() -> u32 {
     let result: u32;

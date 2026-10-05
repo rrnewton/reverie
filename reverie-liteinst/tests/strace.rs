@@ -279,7 +279,7 @@ fn run_pc_relative_guest(hooked: bool) -> Output {
     command
         .env_remove("LD_PRELOAD")
         .env_remove("REVERIE_LITEINST_TOOL")
-        .env_remove("REVERIE_PRELOAD_TOOL")
+        .env_remove("REVERIE_INGUEST_TOOL")
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(File::create(directory.path().join("stdout")).unwrap())
@@ -856,7 +856,7 @@ fn spoof_getpid_builtin_mutates_getpid_result() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    // The shared built-in installs via reverie_preload::install_builtin and
+    // The shared built-in installs via reverie_inguest::install_builtin and
     // rewrites the trapped getpid result: the LiteInst trap path MUTATED a
     // syscall return value, not merely observed it.
     assert_eq!(output.stdout, format!("getpid={SPOOF_PID}\n").as_bytes());

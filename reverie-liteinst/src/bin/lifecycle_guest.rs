@@ -524,7 +524,7 @@ fn fallback_fork_stats() {
     let mut status = -1i32;
     loop {
         let waited = unsafe {
-            reverie_preload::trap::raw_syscall6(
+            reverie_inguest::trap::raw_syscall6(
                 libc::SYS_wait4,
                 [child as u64, (&mut status as *mut i32) as u64, 0, 0, 0, 0],
             )
@@ -575,7 +575,7 @@ fn hooked_fork_stats() {
     let mut status = -1i32;
     loop {
         let waited = unsafe {
-            reverie_preload::trap::raw_syscall6(
+            reverie_inguest::trap::raw_syscall6(
                 libc::SYS_wait4,
                 [child as u64, (&mut status as *mut i32) as u64, 0, 0, 0, 0],
             )
@@ -849,7 +849,7 @@ fn tool_output_fd(reserved: libc::c_int, peer: libc::c_int) {
         assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &previous), 0);
         let mut status = -1i32;
         loop {
-            let waited = reverie_preload::trap::raw_syscall6(
+            let waited = reverie_inguest::trap::raw_syscall6(
                 libc::SYS_wait4,
                 [reader as u64, (&raw mut status) as u64, 0, 0, 0, 0],
             );

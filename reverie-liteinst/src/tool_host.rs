@@ -24,11 +24,11 @@ use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
-use reverie_preload::tool_host::DrivenSyscall;
-use reverie_preload::tool_host::TailResult;
-use reverie_preload::tool_host::drive_ready;
-use reverie_preload::tool_host::drive_tool_syscall;
-use reverie_preload::trap::raw_syscall6;
+use reverie_inguest::tool_host::DrivenSyscall;
+use reverie_inguest::tool_host::TailResult;
+use reverie_inguest::tool_host::drive_ready;
+use reverie_inguest::tool_host::drive_tool_syscall;
+use reverie_inguest::trap::raw_syscall6;
 
 use crate::rpc::CoordinatorRpc;
 use crate::rpc::SpinMutex;
@@ -742,10 +742,10 @@ fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Optio
         // suspension until the child exits. Exec remains fail-closed, so exit
         // is the only supported vfork completion boundary for now.
         unsafe {
-            reverie_preload::trap::raw_syscall6_with_result(libc::SYS_fork, [0; 6], permissions)
+            reverie_inguest::trap::raw_syscall6_with_result(libc::SYS_fork, [0; 6], permissions)
         }
     } else {
-        unsafe { reverie_preload::trap::raw_syscall6_with_result(number, args, permissions) }
+        unsafe { reverie_inguest::trap::raw_syscall6_with_result(number, args, permissions) }
     };
     if let Some(output) = guest_pkru {
         *output = physical.pkru;
@@ -908,7 +908,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
     }
 
     // This in-process host has no begin/ready runtime window: install_runtime
-    // prepares instrumentation before reverie_preload::install arms the
+    // prepares instrumentation before reverie_inguest::install arms the
     // seccomp filter through which the Tool receives syscalls, so the
     // runtime's own preparation is never delivered to it.
     fn is_backend_runtime_bootstrap(&self) -> bool {

@@ -8,10 +8,10 @@ use std::sync::OnceLock;
 
 use liteinst2::trampoline::HookContext;
 use liteinst2::trampoline::SavedExtendedStateDescriptor;
-use reverie_preload::trap::frame::FrameError;
-use reverie_preload::trap::frame::SavedState;
-use reverie_preload::trap::frame::SignalFrame;
-use reverie_preload::trap::raw_syscall6;
+use reverie_inguest::trap::frame::FrameError;
+use reverie_inguest::trap::frame::SavedState;
+use reverie_inguest::trap::frame::SignalFrame;
+use reverie_inguest::trap::raw_syscall6;
 
 static SAVE_BYTES: AtomicU32 = AtomicU32::new(512);
 static SAVE_MASK: AtomicU64 = AtomicU64::new(0);

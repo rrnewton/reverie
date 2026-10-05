@@ -20,14 +20,14 @@ use liteinst2::trampoline::HookSite;
 use liteinst2::trampoline::InstalledHook;
 use liteinst2::trampoline::TrampolineArena;
 use liteinst2::trampoline::TrampolineError;
-use reverie_preload::BuiltinTool;
-use reverie_preload::dispatch::SyscallDispatcher;
-use reverie_preload::dispatch::SyscallEvent as PreloadSyscallEvent;
-use reverie_preload::dispatch::is_fork_like;
-use reverie_preload::fork::ForkHook;
-use reverie_preload::lifecycle::InProcessSeccomp;
-use reverie_preload::lifecycle::RuntimeConfig;
-use reverie_preload::trap::raw_syscall6;
+use reverie_inguest::BuiltinTool;
+use reverie_inguest::dispatch::SyscallDispatcher;
+use reverie_inguest::dispatch::SyscallEvent as PreloadSyscallEvent;
+use reverie_inguest::dispatch::is_fork_like;
+use reverie_inguest::fork::ForkHook;
+use reverie_inguest::lifecycle::InProcessSeccomp;
+use reverie_inguest::lifecycle::RuntimeConfig;
+use reverie_inguest::trap::raw_syscall6;
 
 use crate::COMPAT_EVENT_COOKIE_ENV;
 use crate::COMPAT_EVENT_FD_ENV;
@@ -114,7 +114,7 @@ const TOOL_COMPAT: u8 = 2;
 const TOOL_REVERIE: u8 = 3;
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-252): Review shared reverie-preload built-in tool selection.
+// TODO-HUMAN-REVIEW(PR-252): Review shared reverie-inguest built-in tool selection.
 /// `REVERIE_LITEINST_TOOL` value selecting the shared passthrough built-in.
 pub const TOOL_PASSTHROUGH: &str = "passthrough";
 /// `REVERIE_LITEINST_TOOL` value selecting the shared getpid-spoofing built-in.
@@ -609,7 +609,7 @@ impl SyscallEvent {
     /// retain caller access and continue to use the ordinary raw gate.
     pub(crate) unsafe fn forward(&mut self) -> i64 {
         let result = unsafe {
-            reverie_preload::trap::raw_syscall6_with_result(self.number, self.args, self.guest_pkru)
+            reverie_inguest::trap::raw_syscall6_with_result(self.number, self.args, self.guest_pkru)
         };
         // Permission effects survive negative errno and later Tool result
         // transformation. Private injection never calls this operation.
@@ -619,14 +619,14 @@ impl SyscallEvent {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-252): Review shared reverie-preload built-in tool parser.
-/// Parses a shared `reverie-preload` [`BuiltinTool`] from a `REVERIE_LITEINST_TOOL`
+// TODO-HUMAN-REVIEW(PR-252): Review shared reverie-inguest built-in tool parser.
+/// Parses a shared `reverie-inguest` [`BuiltinTool`] from a `REVERIE_LITEINST_TOOL`
 /// value, returning `None` for the LiteInst-native `strace`/`compat` modes and
 /// any other value.
 ///
 /// This is the LiteInst analog of e9patch's `builtin_tool_from_env_value`: it
 /// lets the single `REVERIE_LITEINST_TOOL` selector name a shared built-in
-/// installed verbatim through [`reverie_preload::install_builtin`], bypassing the
+/// installed verbatim through [`reverie_inguest::install_builtin`], bypassing the
 /// LiteInst patching dispatcher.
 pub fn builtin_tool_from_env_value(value: &OsStr) -> Option<BuiltinTool> {
     match value.to_str()? {
@@ -638,11 +638,11 @@ pub fn builtin_tool_from_env_value(value: &OsStr) -> Option<BuiltinTool> {
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-252): Review shared built-in installation entry point.
-/// Installs a shared `reverie-preload` built-in tool verbatim.
+/// Installs a shared `reverie-inguest` built-in tool verbatim.
 ///
 /// Unlike [`install_runtime`], this does NOT prepare LiteInst instrumentation:
 /// the shared built-ins install their own SIGSYS handler and seccomp filter via
-/// [`reverie_preload::install_builtin`] and do not patch syscall sites. This
+/// [`reverie_inguest::install_builtin`] and do not patch syscall sites. This
 /// proves the LiteInst fallback/trap path can service and MUTATE a syscall
 /// result (for example `getpid` -> `SPOOF_PID`), matching e9patch's
 /// `install_builtin_runtime`.
@@ -652,7 +652,7 @@ pub fn builtin_tool_from_env_value(value: &OsStr) -> Option<BuiltinTool> {
 /// The dynamic loader must call this exactly once before application threads
 /// start; it installs process-wide, irreversible seccomp state.
 pub(crate) unsafe fn install_builtin_runtime(tool: BuiltinTool) -> io::Result<()> {
-    unsafe { reverie_preload::install_builtin(tool) }
+    unsafe { reverie_inguest::install_builtin(tool) }
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -661,7 +661,7 @@ pub(crate) unsafe fn install_builtin_runtime(tool: BuiltinTool) -> io::Result<()
 /// knob for the in-guest runtime's `SIGSYS` handler.
 ///
 /// The [`RuntimeConfig`] and the controller that honors it live in
-/// `reverie-preload` and are reviewed exactly once; both ld-preload backends
+/// `reverie-inguest` and are reviewed exactly once; both ld-preload backends
 /// install through that same shared seam. Only the env-var spelling is
 /// LiteInst's, exactly as with `REVERIE_LITEINST_TOOL`. This is the LiteInst
 /// analog of e9patch's `REVERIE_E9PATCH_ALT_STACK`.
@@ -966,7 +966,7 @@ fn enable_instruction_faulting(subscriptions: InstructionSubscriptions) -> io::R
 
 pub(crate) fn initialize_from_environment() -> io::Result<()> {
     let tool_value = std::env::var_os("REVERIE_LITEINST_TOOL");
-    // Prefer a shared reverie-preload built-in when the selector names one, so a
+    // Prefer a shared reverie-inguest built-in when the selector names one, so a
     // single env var is a superset of the LiteInst-native strace/compat modes
     // (matches e9patch's single TOOL_ENV selecting shared built-ins).
     if let Some(value) = tool_value.as_deref()
@@ -1072,7 +1072,7 @@ fn install_runtime(
     let config = runtime_config_from_env()?;
     install_instruction_signal_handler(instructions, config.use_alt_stack)?;
     unsafe {
-        reverie_preload::install(
+        reverie_inguest::install(
             Box::new(LiteinstDispatcher::new(stats, publication)),
             &InProcessSeccomp,
             &config,
@@ -1596,7 +1596,7 @@ pub(crate) fn fallback_syscall_refusal_count(number: i64) -> u64 {
 /// child copy-on-write, so without a
 /// reset the child would report the parent's residual surface and hook activity
 /// as its own. This is the same per-process runtime state the shared
-/// [`ForkHook`] seam ([`reverie_preload::fork`]) exists to re-establish in the
+/// [`ForkHook`] seam ([`reverie_inguest::fork`]) exists to re-establish in the
 /// child — the exact mechanism reverie-e9patch uses for its per-process fallback
 /// counters (round 7). Only the *observability* fields are cleared; the site
 /// registry's functional patch state (`address`/`state`/`hook`/`mapping_end`) is
@@ -1681,7 +1681,7 @@ pub(crate) fn record_fork_child_dispatch(
 /// [`reset_fallback_observability`]).
 ///
 /// LiteInst hosts its own `SIGSYS` dispatcher rather than the shared
-/// [`PassthroughDispatcher`](reverie_preload::dispatch::PassthroughDispatcher),
+/// [`PassthroughDispatcher`](reverie_inguest::dispatch::PassthroughDispatcher),
 /// so it invokes this hook itself from [`process_syscall`] after forwarding a
 /// fork-like syscall — but it reuses the *same* reviewed-once
 /// [`ForkHook`]/[`is_fork_like`] seam e9patch does, rather than a private
@@ -2897,7 +2897,7 @@ unsafe fn emulate_through_continuation(
     // SAFETY: both pointers are this invocation's kernel frame. No reference
     // into the context prefix is live past this point.
     let mut frame = match unsafe {
-        reverie_preload::trap::frame::SignalFrame::from_instruction_fault(raw_context, info)
+        reverie_inguest::trap::frame::SignalFrame::from_instruction_fault(raw_context, info)
     } {
         Ok(frame) => frame,
         Err(_) => {
@@ -3283,7 +3283,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
 
     fn dispatch_private_signal(
         &self,
-        frame: &mut reverie_preload::trap::frame::SignalFrame<'_>,
+        frame: &mut reverie_inguest::trap::frame::SignalFrame<'_>,
     ) -> bool {
         self.stats
             .record_path(crate::LiteinstDispatchPath::InGuestPhysicalSigsys);
@@ -3301,7 +3301,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
     fn dispatch_signal(
         &self,
         event: &mut PreloadSyscallEvent,
-        frame: &mut reverie_preload::trap::frame::SignalFrame<'_>,
+        frame: &mut reverie_inguest::trap::frame::SignalFrame<'_>,
     ) {
         self.dispatch_with_frame(event, Some(frame));
     }
@@ -3311,7 +3311,7 @@ impl LiteinstDispatcher {
     fn dispatch_with_frame(
         &self,
         event: &mut PreloadSyscallEvent,
-        frame: Option<&mut reverie_preload::trap::frame::SignalFrame<'_>>,
+        frame: Option<&mut reverie_inguest::trap::frame::SignalFrame<'_>>,
     ) {
         if tool_callback_active() {
             crate::syscall_fallback::enable_nested_runtime_access();
@@ -3327,7 +3327,7 @@ impl LiteinstDispatcher {
                 guest_pkru: event.guest_pkru(),
             };
             forward_nested_tool_syscall(&mut nested);
-            event.set_native_result(reverie_preload::trap::NativeSyscallResult {
+            event.set_native_result(reverie_inguest::trap::NativeSyscallResult {
                 result: nested.result,
                 pkru: nested.guest_pkru,
             });
@@ -3356,7 +3356,7 @@ impl LiteinstDispatcher {
             unsafe {
                 process_syscall(&mut trapped);
             }
-            event.set_native_result(reverie_preload::trap::NativeSyscallResult {
+            event.set_native_result(reverie_inguest::trap::NativeSyscallResult {
                 result: trapped.result,
                 pkru: trapped.guest_pkru,
             });
@@ -4530,7 +4530,7 @@ mod tests {
     use core::sync::atomic::Ordering;
     use std::ffi::OsStr;
 
-    use reverie_preload::BuiltinTool;
+    use reverie_inguest::BuiltinTool;
 
     use super::ALT_STACK_ENV;
     use super::AsyncSignalsBlocked;
@@ -4631,9 +4631,9 @@ mod tests {
 
     #[test]
     fn alt_stack_defaults_to_the_shared_default_when_unset() {
-        // Unset must reproduce the shared reverie-preload default verbatim, so
+        // Unset must reproduce the shared reverie-inguest default verbatim, so
         // the launcher-selected knob is a no-op by default (zero behavior change).
-        use reverie_preload::lifecycle::RuntimeConfig;
+        use reverie_inguest::lifecycle::RuntimeConfig;
         assert_eq!(
             alt_stack_from_env_value(None).unwrap(),
             RuntimeConfig::default().use_alt_stack

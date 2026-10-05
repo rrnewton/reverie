@@ -27,7 +27,7 @@ fn rows(output: &std::process::Output) -> Vec<String> {
 #[test]
 fn guest_buffer_permissions_match_native_on_both_signal_stacks() {
     let run = |mode| {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_reverie-preload-pkey-buffers"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_reverie-inguest-pkey-buffers"))
             .env(CHILD, mode)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

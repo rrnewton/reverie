@@ -7,7 +7,7 @@
  */
 
 //! Shared LD_PRELOAD + seccomp/SIGSYS instrumentation runtime for Reverie's
-//! ld-preload backends (e9patch and liteinst).
+//! in-guest backends (e9patch, LiteInst and SaBRe).
 //!
 //! This crate factors the primitives every ld-preload backend needs out of any
 //! one backend so they are written and reviewed **once**:
@@ -35,22 +35,24 @@
 //!
 //! Established by the `research-ldpreload-derisking` task and enforced here:
 //! this runtime is for **trusted, dynamically linked, non-`AT_SECURE`, no-exec**
-//! x86-64 guests. It does not cover vDSO fast paths, the ~40 loader/startup
-//! syscalls before the constructor runs, static binaries, or `execve`. `fork`
-//! *is* fully covered because the kernel inherits the filter atomically.
+//! x86-64 guests. This crate does not itself rewrite vDSO fast paths (LiteInst
+//! replaces the subscribed ones with trapping stubs), and it does not cover the
+//! ~40 loader/startup syscalls before the constructor runs, static binaries, or
+//! `execve`. `fork` *is* fully covered because the kernel inherits the filter
+//! atomically.
 //!
 //! # Two ways to use it
 //!
 //! * **As a library (`rlib`):** e9patch/liteinst embed the runtime, register a
 //!   custom [`SyscallDispatcher`], and call
 //!   [`install`].
-//! * **As a standalone `LD_PRELOAD` (`cdylib`):** set `REVERIE_PRELOAD_TOOL` and
-//!   preload `libreverie_preload.so`; the constructor installs a built-in tool.
+//! * **As a standalone `LD_PRELOAD` (`cdylib`):** set `REVERIE_INGUEST_TOOL` and
+//!   preload `libreverie_inguest.so`; the constructor installs a built-in tool.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-compile_error!("reverie-preload requires Linux x86-64");
+compile_error!("reverie-inguest requires Linux x86-64");
 
 pub mod dispatch;
 pub mod fmt;
@@ -81,9 +83,9 @@ use crate::lifecycle::LifecycleController;
 use crate::lifecycle::RuntimeConfig;
 
 /// Environment variable selecting a built-in tool for the standalone cdylib.
-pub const TOOL_ENV: &str = "REVERIE_PRELOAD_TOOL";
+pub const TOOL_ENV: &str = "REVERIE_INGUEST_TOOL";
 /// Environment variable overriding the located preload library path.
-pub const LIB_ENV: &str = "REVERIE_PRELOAD_LIB";
+pub const LIB_ENV: &str = "REVERIE_INGUEST_LIB";
 
 /// The built-in tools the standalone `LD_PRELOAD` cdylib can install.
 ///
@@ -202,12 +204,12 @@ pub fn preload_library_path() -> io::Result<PathBuf> {
         io::Error::new(io::ErrorKind::NotFound, "current executable has no parent")
     })?;
     [
-        parent.join("libreverie_preload.so"),
-        parent.join("deps/libreverie_preload.so"),
+        parent.join("libreverie_inguest.so"),
+        parent.join("deps/libreverie_inguest.so"),
         parent
             .parent()
             .unwrap_or(parent)
-            .join("libreverie_preload.so"),
+            .join("libreverie_inguest.so"),
     ]
     .into_iter()
     .find(|path| path.is_file())
@@ -215,7 +217,7 @@ pub fn preload_library_path() -> io::Result<PathBuf> {
         io::Error::new(
             io::ErrorKind::NotFound,
             format!(
-                "cannot find libreverie_preload.so beside {}",
+                "cannot find libreverie_inguest.so beside {}",
                 executable.display()
             ),
         )
@@ -245,9 +247,9 @@ pub fn configure_command(command: &mut Command, tool: BuiltinTool) -> io::Result
 ///
 /// The loader must call this exactly once before application threads start.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn reverie_preload_initialize() {
+pub unsafe extern "C" fn reverie_inguest_initialize() {
     if let Err(error) = initialize_from_environment() {
-        eprintln!("reverie-preload initialization failed: {error}");
+        eprintln!("reverie-inguest initialization failed: {error}");
         unsafe {
             libc::_exit(127);
         }
@@ -257,7 +259,7 @@ pub unsafe extern "C" fn reverie_preload_initialize() {
 #[cfg(feature = "preload-constructor")]
 #[used]
 #[unsafe(link_section = ".init_array")]
-static REVERIE_PRELOAD_INIT: unsafe extern "C" fn() = reverie_preload_initialize;
+static REVERIE_INGUEST_INIT: unsafe extern "C" fn() = reverie_inguest_initialize;
 
 #[cfg(test)]
 mod tests {

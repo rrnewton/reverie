@@ -11,7 +11,7 @@ use std::time::Duration;
 #[path = "../../reverie-rpc-transport/tests/fixtures/owned_lifecycle.rs"]
 mod owned_lifecycle;
 fn run(mode: &str) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-preload-native-syscall-result"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-inguest-native-syscall-result"));
     command.arg(mode);
     let (output, _) = owned_lifecycle::run(command, Duration::from_secs(10)).unwrap();
     println!(

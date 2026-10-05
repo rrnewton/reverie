@@ -9,8 +9,8 @@
 //! A tiny guest used by the smoke test.
 //!
 //! It issues a **raw** `getpid` syscall (bypassing any libc/vDSO caching) and
-//! prints the returned value. Run under `LD_PRELOAD=libreverie_preload.so` with
-//! `REVERIE_PRELOAD_TOOL=spoof-getpid`, the trap rewrites the result, so the
+//! prints the returned value. Run under `LD_PRELOAD=libreverie_inguest.so` with
+//! `REVERIE_INGUEST_TOOL=spoof-getpid`, the trap rewrites the result, so the
 //! probe prints the spoof value — direct proof that SIGSYS interception fired
 //! and mutated a syscall result.
 

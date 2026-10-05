@@ -281,11 +281,11 @@ rust_library(
 )
 
 rust_library(
-    name = "reverie-preload",
-    srcs = glob(["reverie-preload/src/**/*.rs"]),
+    name = "reverie-inguest",
+    srcs = glob(["reverie-inguest/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
-            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-preload"),
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-inguest"),
             "features": {
                 "coordinator-rpc": [
                     "serde",
@@ -296,7 +296,7 @@ rust_library(
                 "preload-constructor": [],
             },
         },
-        "cargo_toml_dir": "reverie-preload",
+        "cargo_toml_dir": "reverie-inguest",
     },
     features = ["coordinator-rpc"],
     deps = [
@@ -333,7 +333,7 @@ rust_library(
         "fbsource//third-party/rust:tokio",
         "fbsource//third-party/rust:tracing",
         ":reverie",
-        ":reverie-preload",
+        ":reverie-inguest",
         ":reverie-ptrace",
         ":reverie-rpc-transport",
     ],
