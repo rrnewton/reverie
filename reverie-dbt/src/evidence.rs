@@ -2259,13 +2259,18 @@ mod tests {
         let source = include_str!("../native/client.c");
         assert!(!source.contains("syscall_exits_process"));
 
+        // Anchor on the definition: the first `invoke_syscall(` is its
+        // forward declaration, two lines above another declaration.
         let invoke_syscall = source
-            .split_once("static int64_t\ninvoke_syscall(")
+            .split_once(
+                "static int64_t\ninvoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {",
+            )
             .unwrap()
             .1
-            .split_once("static int32_t read_registers")
+            .split_once("static int32_t read_registers(")
             .unwrap()
             .0;
+        assert!(invoke_syscall.contains("invoke_raw_syscall(context, sysnum, translated);"));
         assert!(!invoke_syscall.contains("finalize_runtime_process();"));
 
         let pre_syscall = source
@@ -2276,6 +2281,45 @@ mod tests {
             .unwrap()
             .0;
         assert!(!pre_syscall.contains("finalize_runtime_process();"));
+
+        // A self-directed SIGKILL is the one syscall that finalizes, because
+        // DynamoRIO runs no exit callback for it. Both syscall paths reach the
+        // finalizer only through a gate that requires SIGKILL in every
+        // spelling and never matches an exit syscall.
+        let self_sigkill = source
+            .split_once("static bool\nis_self_sigkill(")
+            .unwrap()
+            .1
+            .split_once("static bool finish_evidence_before_self_sigkill(")
+            .unwrap()
+            .0;
+        assert!(!self_sigkill.contains("SYS_exit"));
+        assert_eq!(self_sigkill.matches("case SYS_").count(), 3);
+        assert_eq!(self_sigkill.matches("== SIGKILL &&").count(), 3);
+        let finish = source
+            .split_once("static bool finish_evidence_before_self_sigkill(")
+            .unwrap()
+            .1
+            .split_once("static void refuse_returned_self_sigkill(")
+            .unwrap()
+            .0;
+        assert!(
+            finish.find("is_self_sigkill(").unwrap()
+                < finish.find("finalize_runtime_process();").unwrap()
+        );
+        let original = source
+            .split_once("static bool prepare_original_identity_syscall(")
+            .unwrap()
+            .1
+            .split_once("static void post_syscall(")
+            .unwrap()
+            .0;
+        for path in [invoke_syscall, original] {
+            assert!(
+                path.find("finish_evidence_before_self_sigkill(").unwrap()
+                    < path.find("refuse_returned_self_sigkill(").unwrap()
+            );
+        }
 
         let thread_leave = source
             .split_once("static void evidence_thread_leave(")
