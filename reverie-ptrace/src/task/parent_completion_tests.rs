@@ -6,9 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Real creator death in the two new parent-completion ptrace windows.
-//! The stimulus uses the original PIDFD; the tested error must be an actual
-//! safeptrace Died from a kernel operation, never a supplied errno or wait.
+//! Real creator death in the new parent-completion ptrace windows.
+//! The stimulus uses the original PIDFD; the deferred death must be the
+//! kernel's own report, never a supplied errno or wait: an actual safeptrace
+//! Died from a kernel operation (ESRCH, or the PTRACE_EVENT_EXIT siginfo of
+//! the held creator stop), or the creator's final status returned by the
+//! completion path's own wait after its resume consumed that EXIT stop.
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -17,10 +20,19 @@ use std::time::Duration;
 use super::*;
 use crate::testing::test_fn_with_config;
 
+/// The parent-completion step before which the test kills the creator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Window {
-    BeforeObservation,
-    BeforeRestoration,
+    /// Before the held child-creation stop is checked and resumed.
+    Observation,
+    /// Between the pre-resume death check and PTRACE_SYSCALL, with the
+    /// creator already parked in PTRACE_EVENT_EXIT when PTRACE_SYSCALL runs.
+    Resume,
+    /// After the creator's syscall-exit stop, before its result is read, with
+    /// the creator already parked in PTRACE_EVENT_EXIT when the reads run.
+    Receipt,
+    /// After the syscall-exit receipt, before the saved frame is restored.
+    Restoration,
 }
 struct Log {
     window: Window,
@@ -71,7 +83,17 @@ impl Log {
         }
     }
     fn expected_receipts(&self) -> usize {
-        usize::from(self.window == Window::BeforeRestoration)
+        usize::from(self.window == Window::Restoration)
+    }
+    fn expected_evidence(&self) -> CreatorDeathEvidence {
+        match self.window {
+            Window::Observation | Window::Receipt | Window::Restoration => {
+                CreatorDeathEvidence::Died
+            }
+            Window::Resume => {
+                CreatorDeathEvidence::FinalWait(ExitStatus::Signaled(Signal::SIGKILL, false))
+            }
+        }
     }
 }
 thread_local! {
@@ -129,13 +151,48 @@ fn before_boundary(parent: &Stopped, window: Window) {
     assert_eq!(state.receipts, state.expected_receipts());
     assert_eq!(state.boundary, 0);
     assert_eq!(state.kills, 0);
-    // The next production ptrace operation must supply the real ESRCH/Died.
-    // Do not consume EXIT here: the original run-owned future remains sole owner.
+    // Production must report the kernel's own evidence of this death: a
+    // request on the held stop fails with ESRCH (Died), or succeeds because
+    // the creator is already in PTRACE_EVENT_EXIT, which its post-request
+    // siginfo check reports as Died. Do not consume EXIT here: the original
+    // run-owned future remains sole owner.
     cleanup
         .terminate_bound_task()
         .expect("signal original creator PIDFD");
     state.boundary += 1;
     state.kills += 1;
+    if matches!(window, Window::Resume | Window::Receipt) {
+        // Make the next request run with the creator in its EXIT stop, where
+        // it succeeds. This probe only reads siginfo; it neither waits nor
+        // resumes.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match parent.getsiginfo() {
+                Ok(siginfo)
+                    if siginfo.si_signo == libc::SIGTRAP
+                        && siginfo.si_code == libc::SIGTRAP | (libc::PTRACE_EVENT_EXIT << 8) =>
+                {
+                    break;
+                }
+                Ok(siginfo) => assert_eq!(
+                    siginfo.si_code,
+                    if window == Window::Resume {
+                        libc::SIGTRAP | (libc::PTRACE_EVENT_FORK << 8)
+                    } else {
+                        libc::SIGTRAP | 0x80
+                    },
+                    "creator still in its held stop or its EXIT stop"
+                ),
+                Err(TraceError::Died(_)) => {}
+                Err(error) => panic!("siginfo probe of killed creator: {error:?}"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "SIGKILLed creator reached PTRACE_EVENT_EXIT"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 pub(super) fn before_observation(parent: &Stopped, has_saved_context: bool) {
@@ -145,12 +202,22 @@ pub(super) fn before_observation(parent: &Stopped, has_saved_context: bool) {
             "different pending syscall uses private frame"
         );
     }
-    before_boundary(parent, Window::BeforeObservation);
+    before_boundary(parent, Window::Observation);
+}
+pub(super) fn before_resume(parent: &Stopped) {
+    before_boundary(parent, Window::Resume);
+}
+pub(super) fn before_receipt(parent: &Stopped) {
+    before_boundary(parent, Window::Receipt);
 }
 pub(super) fn before_restoration(parent: &Stopped) {
-    before_boundary(parent, Window::BeforeRestoration);
+    before_boundary(parent, Window::Restoration);
 }
-pub(super) fn deferred_died(creator: Pid, owner: &TerminalCleanup) {
+pub(super) fn deferred_death(
+    creator: Pid,
+    owner: &TerminalCleanup,
+    evidence: CreatorDeathEvidence,
+) {
     let Some(log) = active() else { return };
     let mut state = log.lock().unwrap();
     assert_eq!(state.creator, Some(creator));
@@ -163,6 +230,7 @@ pub(super) fn deferred_died(creator: Pid, owner: &TerminalCleanup) {
     );
     assert_eq!(state.kills, 1);
     assert_eq!(state.receipts, state.expected_receipts());
+    assert_eq!(evidence, state.expected_evidence());
     assert_eq!(state.died, 0);
     state.died += 1;
 }
@@ -262,7 +330,7 @@ impl Tool for Observer {
                 assert_eq!(state.creator, Some(tid));
                 assert_eq!(state.child, Some(child));
                 assert_eq!(raw, i64::from(child.as_raw()));
-                assert_eq!(state.window, Window::BeforeRestoration);
+                assert_eq!(state.window, Window::Restoration);
                 assert_eq!(state.receipts, 0);
                 state.receipts += 1;
             }
@@ -320,7 +388,7 @@ impl Tool for Observer {
             assert_eq!(status, ExitStatus::Signaled(Signal::SIGKILL, false));
             assert_eq!(
                 state.died, 1,
-                "actual generation-bound ptrace Died was deferred"
+                "actual generation-bound kernel death evidence was deferred"
             );
             assert_eq!(state.receipts, state.expected_receipts());
             assert_eq!(state.terminal.len(), 1);
@@ -440,9 +508,17 @@ fn run_case(window: Window) {
 }
 #[test]
 fn actual_creator_death_before_parent_observation_preserves_published_child() {
-    run_case(Window::BeforeObservation);
+    run_case(Window::Observation);
+}
+#[test]
+fn actual_creator_death_before_parent_resume_preserves_published_child() {
+    run_case(Window::Resume);
+}
+#[test]
+fn actual_creator_death_before_parent_receipt_preserves_published_child() {
+    run_case(Window::Receipt);
 }
 #[test]
 fn actual_creator_death_after_parent_receipt_before_restore_preserves_published_child() {
-    run_case(Window::BeforeRestoration);
+    run_case(Window::Restoration);
 }

@@ -349,6 +349,43 @@ pub(crate) fn dead_or(task: &Stopped, error: TraceError) -> TraceError {
     }
 }
 
+/// Native parent completion: the kernel's report that the creator died while
+/// its completion handler held one of its stops.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CreatorDeathEvidence {
+    /// A request on the held stop failed with `ESRCH`, or `PTRACE_GETSIGINFO`
+    /// showed the creator in its `PTRACE_EVENT_EXIT` stop.
+    Died,
+    /// The creator's own wait returned its final status after a resume.
+    FinalWait(ExitStatus),
+}
+
+/// Native parent completion: returns `result`, read from or written to the
+/// held creator stop `parent`, only while the creator is still in that stop.
+///
+/// A SIGKILL takes a tracee out of a ptrace stop without a tracer request.
+/// Until the tracee dequeues it, requests fail with `ESRCH` (`Died`). Then the
+/// tracee parks in `PTRACE_EVENT_EXIT`, where requests succeed again, so a
+/// successful read or write proves nothing. The kill is monotonic: the held
+/// stop never returns. So after the request, [`Stopped::died_into_exit_stop`]
+/// either finds the creator dead (`ESRCH` or the EXIT siginfo) or proves that
+/// it was not yet killed when `result` was obtained.
+///
+/// The stops held here are the creator's child-creation event, vfork-done and
+/// syscall-exit stops, never its EXIT stop, and the tracer has not resumed it
+/// from them. So an EXIT siginfo proves a fatal signal even after a request
+/// that succeeded, which is the case [`Stopped::died_into_exit_stop`] cannot
+/// otherwise see.
+fn creator_still_held<T>(parent: &Stopped, result: Result<T, TraceError>) -> Result<T, TraceError> {
+    if let Err(died @ TraceError::Died(_)) = result {
+        return Err(died);
+    }
+    match parent.died_into_exit_stop() {
+        Some(died) => Err(died),
+        None => result,
+    }
+}
+
 /// Returns the result of a memory request on `task`, passing an error through
 /// [`dead_or`].
 fn memory_request<T, E: Into<TraceError>>(
@@ -10203,6 +10240,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Some(native_return.unwrap_or(i64::from(id.as_raw())) as u64),
                 child_context.is_some(),
             );
+            // A SIGKILL that lands before or during these writes can carry the
+            // creator into PTRACE_EVENT_EXIT, where they succeed again. Never
+            // hand such a stop back as the completed syscall-exit stop.
+            let restored = if native_return.is_some() {
+                creator_still_held(&parent, restored)
+            } else {
+                restored
+            };
             if let Err(error) = restored {
                 if native_return.is_some() {
                     self.handle_parent_completion_error(
@@ -10289,12 +10334,26 @@ impl<L: Tool + 'static> TracedTask<L> {
             && zombie.pid() == self.tid()
             && owner.same_generation(&zombie.terminal_cleanup())
         {
-            #[cfg(test)]
-            parent_completion_tests::deferred_died(self.tid(), owner);
-            future::pending::<()>().await;
-            unreachable!("the original EXIT owner cancels this borrowed handler");
+            self.defer_creator_death(owner, CreatorDeathEvidence::Died)
+                .await
         }
         self.fail_parent_syscall_completion(error).await
+    }
+
+    /// Leave this creator's death to the run-owned EXIT/final continuation,
+    /// which cancels the borrowed handler. `evidence` is the kernel's own
+    /// report of the death that this handler saw.
+    async fn defer_creator_death(
+        &self,
+        owner: &TerminalCleanup,
+        evidence: CreatorDeathEvidence,
+    ) -> ! {
+        #[cfg(test)]
+        parent_completion_tests::deferred_death(self.tid(), owner, evidence);
+        #[cfg(not(test))]
+        let _ = (owner, evidence);
+        future::pending::<()>().await;
+        unreachable!("the original EXIT owner cancels this borrowed handler");
     }
 
     /// Keep the current syscall future pending until the original run-owned
@@ -10332,9 +10391,17 @@ impl<L: Tool + 'static> TracedTask<L> {
         let creator = parent.pid();
         let generation = parent.terminal_cleanup();
         let (nr, _) = observation;
-        if creator != self.tid() || parent.getregs()?.orig_syscall() as i32 != nr as i32 {
+        if creator != self.tid() {
             return Err(Errno::EPROTO.into());
         }
+        // Check for death before PTRACE_SYSCALL: resuming a creator that a
+        // SIGKILL already parked in PTRACE_EVENT_EXIT would consume that stop.
+        let regs = creator_still_held(&parent, parent.getregs())?;
+        if regs.orig_syscall() as i32 != nr as i32 {
+            return Err(Errno::EPROTO.into());
+        }
+        #[cfg(test)]
+        parent_completion_tests::before_resume(&parent);
         let mut running = self.syscall_stopped(parent, None)?;
         let mut vfork_done = false;
         loop {
@@ -10349,8 +10416,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }
                     match event {
                         Event::Syscall => {
-                            let raw = parent.syscall_exit_result()?;
-                            let regs = parent.getregs()?;
+                            // Both reads can succeed, or fail with EPROTO, in
+                            // the EXIT stop of a creator killed after this
+                            // stop. Deliver no receipt from that stop.
+                            #[cfg(test)]
+                            parent_completion_tests::before_receipt(&parent);
+                            let read = parent
+                                .syscall_exit_result()
+                                .and_then(|raw| Ok((raw, parent.getregs()?)));
+                            let (raw, regs) = creator_still_held(&parent, read)?;
                             if regs.orig_syscall() as i32 != nr as i32 || regs.ret() as i64 != raw {
                                 return Err(Errno::EPROTO.into());
                             }
@@ -10362,6 +10436,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         }
                         Event::VforkDone if op == ChildOp::Vfork && !vfork_done => {
                             vfork_done = true;
+                            creator_still_held(&parent, Ok(()))?;
                             running = self.syscall_stopped(parent, None)?;
                         }
                         // No signal, entry, duplicate child event or other stop
@@ -10370,7 +10445,29 @@ impl<L: Tool + 'static> TracedTask<L> {
                         _ => return Err(Errno::EPROTO.into()),
                     }
                 }
-                Wait::Exited(_, status) => self.exit(status).await,
+                // A SIGKILL that lands after the check above but before
+                // PTRACE_SYSCALL can park the creator in PTRACE_EVENT_EXIT
+                // first; PTRACE_SYSCALL then resumes it from that stop, no EXIT
+                // stop is published, and this wait receives the final status.
+                // The notifier published that same status on this generation,
+                // so the run-owned EXIT future resolves (ECHILD with the
+                // published status) and reports it. LiteInst's terminal owner
+                // treats that ECHILD as an internal error, so it keeps
+                // consuming the status here as before. A final wait that is
+                // not this generation's published status fails closed.
+                Wait::Exited(exited, status) => {
+                    if !self.ordinary_failure_enabled() {
+                        self.exit(status).await
+                    }
+                    if exited == creator && generation.observed_exit_status() == Ok(Some(status)) {
+                        self.defer_creator_death(
+                            &generation,
+                            CreatorDeathEvidence::FinalWait(status),
+                        )
+                        .await
+                    }
+                    return Err(Errno::ECHILD.into());
+                }
             }
         }
     }
