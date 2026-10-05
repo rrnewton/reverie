@@ -1502,9 +1502,12 @@ impl Stopped {
     /// is `SIGTRAP | (PTRACE_EVENT_EXIT << 8)`.
     ///
     /// Call this only on the capability for a stop other than the exit stop,
-    /// after a request on it failed with `ESRCH`. Holding such a stop, the
-    /// tracer has not resumed the tracee, so a tracee found in its exit stop
-    /// was taken there by a fatal signal and the held stop is dead.
+    /// one the tracer has not resumed the tracee from. Then a tracee found
+    /// in its exit stop was taken there by a fatal signal and the held stop
+    /// is dead. That holds whether the last request on the stop failed with
+    /// `ESRCH` or succeeded: a request that succeeds in the exit stop looks
+    /// the same as one that succeeds in the held stop, so a caller that must
+    /// know which stop answered can call this after a successful request too.
     pub fn died_into_exit_stop(&self) -> Option<Error> {
         match self.getsiginfo() {
             Ok(siginfo)
