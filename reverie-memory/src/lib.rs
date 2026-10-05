@@ -20,6 +20,35 @@ pub use addr::AddrSliceMut;
 pub use local::LocalMemory;
 use syscalls::Errno;
 
+/// One numeric destination in another process's address space.
+///
+/// Unlike [`io::IoSliceMut`], this forms no Rust reference to the remote
+/// address. The address is only a kernel operand for a backend that has
+/// independently authenticated the stopped target task.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RemoteIoVec {
+    address: usize,
+    length: usize,
+}
+
+impl RemoteIoVec {
+    pub fn new(address: AddrMut<u8>, length: usize) -> Result<Self, Errno> {
+        address.as_raw().checked_add(length).ok_or(Errno::EFAULT)?;
+        Ok(Self {
+            address: address.as_raw(),
+            length,
+        })
+    }
+
+    pub fn address(self) -> usize {
+        self.address
+    }
+
+    pub fn length(self) -> usize {
+        self.length
+    }
+}
+
 /// Trait for accessing potentially remote memory.
 pub trait MemoryAccess {
     /// Reads bytes from the address space. Returns the number of bytes read.
@@ -58,7 +87,7 @@ pub trait MemoryAccess {
         &mut self,
         _expected_tid: i32,
         _local: &[io::IoSlice],
-        _remote: &mut [io::IoSliceMut],
+        _remote: &[RemoteIoVec],
     ) -> Result<usize, Errno> {
         Err(Errno::EOPNOTSUPP)
     }
@@ -475,10 +504,10 @@ mod native_user_write_tests {
         }
 
         let mut memory = Unsupported;
-        let mut target = [0xa5; 8];
         let local = [io::IoSlice::new(b"newbytes")];
-        let result =
-            memory.write_native_user_vectored(1, &local, &mut [io::IoSliceMut::new(&mut target)]);
+        let target = [0xa5; 8];
+        let remote = [RemoteIoVec::new(AddrMut::from_ptr(target.as_ptr()).unwrap(), 8).unwrap()];
+        let result = memory.write_native_user_vectored(1, &local, &remote);
         assert_eq!(result, Err(Errno::EOPNOTSUPP));
         assert_eq!(Errno::EOPNOTSUPP, Errno::new(libc::ENOTSUP));
         assert_eq!(target, [0xa5; 8]);
