@@ -34,6 +34,7 @@ const GP_FAULT_OFFSET: usize = 10;
 const NULL_LOAD_STUB: usize = 80;
 const NULL_LOAD_OFFSET: usize = 2;
 const REPEATS: usize = 32;
+const STRADDLER_REPEATS: usize = 8;
 const LEAVES: [(u32, u32); 5] = [(0, 0), (1, 0), (7, 0), (0xd, 1), (0x8000_0000, 0)];
 
 static CPUID_CALLBACKS: AtomicU64 = AtomicU64::new(0);
@@ -136,12 +137,16 @@ const fn sentinel(index: u64) -> u64 {
 }
 
 fn invoke(page: *mut u8, offset: usize, rax: u64, rcx: u64) -> Registers {
+    invoke_at(unsafe { page.add(offset) }, rax, rcx)
+}
+
+fn invoke_at(code: *const u8, rax: u64, rcx: u64) -> Registers {
     let mut registers = Registers {
         rax,
         rcx,
         ..Registers::default()
     };
-    unsafe { late_code_invoke(page.add(offset), &mut registers) };
+    unsafe { late_code_invoke(code, &mut registers) };
     registers
 }
 
@@ -389,6 +394,222 @@ pub(super) fn run_dlopen_system(path: &Path, library: &OsStr) {
     std::io::stdout().flush().unwrap();
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(liteinst-straddler-cpuid): Review the cross-line instruction guest.
+/// CPUID/RDTSC/RDTSCP inside this executable's text, where an arena exists,
+/// each placed so LiteInst's 8-byte word patch would cross a 64-byte cache
+/// line. With cross-line publication disabled the hook is refused before any
+/// byte changes, so every execution must trap and reach the Tool through the
+/// continuation. Nix's coreutils runs the same shape in `__cpu_indicator_init`
+/// (CPUID at line offset 58) before `main`.
+pub(super) fn run_straddler(path: &Path) {
+    install(path);
+    let stubs = [
+        (straddler_cpuid as *const u8, 58),
+        (straddler_rdtsc as *const u8, 61),
+        (straddler_rdtscp as *const u8, 63),
+    ];
+    for (stub, offset) in stubs {
+        assert_eq!(stub as usize % 64, offset, "stub {stub:?} is misplaced");
+    }
+    let [(cpuid, _), (rdtsc, _), (rdtscp, _)] = stubs;
+    let fallback_before = observations();
+    let owned_before = OWNED_STACK_CALLBACKS.load(Ordering::Relaxed);
+    let cpuid_before = CPUID_CALLBACKS.load(Ordering::Relaxed);
+    let mut calls = [0_u64; 3];
+
+    for (leaf, subleaf) in LEAVES {
+        let expected = tool_cpuid(leaf, subleaf);
+        for _ in 0..STRADDLER_REPEATS {
+            let registers = invoke_at(cpuid, u64::from(leaf), u64::from(subleaf));
+            calls[0] += 1;
+            assert_eq!(
+                [registers.rax, registers.rbx, registers.rcx, registers.rdx],
+                [expected.eax, expected.ebx, expected.ecx, expected.edx].map(u64::from),
+                "cross-line CPUID({leaf:#x}, {subleaf:#x}) must return the Tool's result"
+            );
+            assert_untouched(&registers, "cpuid");
+        }
+    }
+    assert_eq!(
+        CPUID_CALLBACKS.load(Ordering::Relaxed) - cpuid_before,
+        calls[0],
+        "every cross-line CPUID must reach the Tool exactly once"
+    );
+
+    let first = TSC_CALLBACKS.load(Ordering::Relaxed);
+    let rcx_input = 0x0123_4567_89ab_cdef;
+    for _ in 0..STRADDLER_REPEATS {
+        let registers = invoke_at(rdtsc, 0, rcx_input);
+        calls[1] += 1;
+        let callback = TSC_CALLBACKS.load(Ordering::Relaxed);
+        assert_eq!(callback - first, calls[1] + calls[2]);
+        assert_eq!((registers.rdx << 32) | registers.rax, tool_tsc(callback));
+        assert_eq!(registers.rbx, sentinel(1), "RDTSC must not define rbx");
+        assert_eq!(registers.rcx, rcx_input, "RDTSC must not define rcx");
+        assert_untouched(&registers, "rdtsc");
+
+        let registers = invoke_at(rdtscp, 0, rcx_input);
+        calls[2] += 1;
+        let callback = TSC_CALLBACKS.load(Ordering::Relaxed);
+        assert_eq!(callback - first, calls[1] + calls[2]);
+        assert_eq!((registers.rdx << 32) | registers.rax, tool_tsc(callback));
+        assert_eq!(registers.rcx, u64::from(tool_aux(callback)));
+        assert_eq!(registers.rbx, sentinel(1), "RDTSCP must not define rbx");
+        assert_untouched(&registers, "rdtscp");
+    }
+
+    let total = calls.iter().sum::<u64>();
+    let fallback = delta(observations(), fallback_before);
+    assert_eq!(
+        fallback, [total; 3],
+        "each cross-line instruction is one continuation entry, callback and completion"
+    );
+    let owned = OWNED_STACK_CALLBACKS.load(Ordering::Relaxed) - owned_before;
+    assert_eq!(
+        owned, total,
+        "every cross-line instruction runs the Tool on the owned continuation stack"
+    );
+    for ((stub, offset), expected) in stubs.into_iter().zip(calls) {
+        let address = stub as u64;
+        assert_eq!(
+            reverie_liteinst::reverie_liteinst_site_trap_count(address),
+            expected,
+            "the site at line offset {offset} must trap on every execution"
+        );
+        assert_eq!(
+            reverie_liteinst::reverie_liteinst_site_hook_count(address),
+            0,
+            "the site at line offset {offset} must never be patched"
+        );
+    }
+    println!(
+        "straddler cpuid=tool rdtsc=tool rdtscp=tool calls={total} continuation={} owned-stack={owned} hooks=0 registers=preserved",
+        fallback[0]
+    );
+    run_straddler_neighbour();
+    run_stale_jump_neighbour();
+    std::io::stdout().flush().unwrap();
+}
+
+/// A CPUID whose patch would overwrite the start of a neighbour's jump that
+/// survived a no-op mremap (the neighbour is then STALE, but its jump bytes
+/// are unchanged) must not be patched: the stale jump still counts as
+/// published. It runs through the continuation and falls into the
+/// neighbour's surviving jump, which still reaches the Tool.
+fn run_stale_jump_neighbour() {
+    let before = straddler_stale_before as *const u8;
+    let patched = straddler_stale_patched as *const u8;
+    assert_eq!(before as usize % 64, 16, "stale-jump stub is misplaced");
+    assert_eq!(patched as usize, before as usize + 4);
+    let (leaf, subleaf) = (1, 0);
+    let first = tool_cpuid(leaf, subleaf);
+    let second = tool_cpuid(first.eax, first.ecx);
+    for _ in 0..STRADDLER_REPEATS {
+        let registers = invoke_at(patched, u64::from(leaf), u64::from(subleaf));
+        assert_eq!(
+            [registers.rax, registers.rbx, registers.rcx, registers.rdx],
+            [first.eax, first.ebx, first.ecx, first.edx].map(u64::from),
+        );
+        assert_untouched(&registers, "patched");
+    }
+    let patched_hooks = reverie_liteinst::reverie_liteinst_site_hook_count(patched as u64);
+    assert!(patched_hooks > 0, "the neighbour must be patched first");
+    let page = (patched as usize & !4095) as *mut libc::c_void;
+    let remapped = unsafe { libc::mremap(page, 4096, 4096, 0) };
+    assert_eq!(remapped, page, "no-op mremap must keep the page in place");
+    let cpuid_before = CPUID_CALLBACKS.load(Ordering::Relaxed);
+    for _ in 0..STRADDLER_REPEATS {
+        let registers = invoke_at(before, u64::from(leaf), u64::from(subleaf));
+        assert_eq!(
+            [registers.rax, registers.rbx, registers.rcx, registers.rdx],
+            [second.eax, second.ebx, second.ecx, second.edx].map(u64::from),
+            "both CPUIDs must return the Tool's results"
+        );
+        assert_untouched(&registers, "before");
+    }
+    let calls = STRADDLER_REPEATS as u64;
+    assert_eq!(
+        CPUID_CALLBACKS.load(Ordering::Relaxed) - cpuid_before,
+        2 * calls,
+        "every CPUID must reach the Tool once"
+    );
+    let address = before as u64;
+    let traps = reverie_liteinst::reverie_liteinst_site_trap_count(address);
+    let hooks = reverie_liteinst::reverie_liteinst_site_hook_count(address);
+    assert_eq!(
+        (traps, hooks),
+        (calls, 0),
+        "the site before the stale jump must trap every time and never be patched"
+    );
+    println!("straddler-stale-jump cpuid=tool traps={traps} hooks=0");
+}
+
+/// A patchable CPUID whose word patch would cover a cross-line CPUID that
+/// already executes through the continuation. A thread there resumes after
+/// that instruction, which would then be inside the neighbour's jump, so the
+/// neighbour must not be patched either, even after a no-op mremap of the
+/// page: both keep reaching the Tool, and entering the covered site directly
+/// afterwards still runs its original bytes.
+fn run_straddler_neighbour() {
+    let neighbour = straddler_neighbour as *const u8;
+    let covered = straddler_covered as *const u8;
+    assert_eq!(neighbour as usize % 64, 54, "neighbour stub is misplaced");
+    assert_eq!(covered as usize, neighbour as usize + 4);
+    let cpuid_before = CPUID_CALLBACKS.load(Ordering::Relaxed);
+    let (leaf, subleaf) = (1, 0);
+    let first = tool_cpuid(leaf, subleaf);
+    // The neighbour runs CPUID twice: its own, then the covered one on the
+    // first one's outputs.
+    let second = tool_cpuid(first.eax, first.ecx);
+    let check_covered = |label: &str| {
+        let registers = invoke_at(covered, u64::from(leaf), u64::from(subleaf));
+        assert_eq!(
+            [registers.rax, registers.rbx, registers.rcx, registers.rdx],
+            [first.eax, first.ebx, first.ecx, first.edx].map(u64::from),
+            "{label}: the covered CPUID must return the Tool's result"
+        );
+        assert_untouched(&registers, label);
+    };
+    for _ in 0..STRADDLER_REPEATS {
+        check_covered("covered before");
+    }
+    // A no-op mremap of the page invalidates every site in it; that must
+    // not lift the covered site's reservation against the neighbour's patch.
+    let page = (covered as usize & !4095) as *mut libc::c_void;
+    let remapped = unsafe { libc::mremap(page, 4096, 4096, 0) };
+    assert_eq!(remapped, page, "no-op mremap must keep the page in place");
+    for _ in 0..STRADDLER_REPEATS {
+        let registers = invoke_at(neighbour, u64::from(leaf), u64::from(subleaf));
+        assert_eq!(
+            [registers.rax, registers.rbx, registers.rcx, registers.rdx],
+            [second.eax, second.ebx, second.ecx, second.edx].map(u64::from),
+            "both CPUIDs in the neighbour must return the Tool's results"
+        );
+        assert_untouched(&registers, "neighbour");
+    }
+    for _ in 0..STRADDLER_REPEATS {
+        check_covered("covered after");
+    }
+    let calls = STRADDLER_REPEATS as u64;
+    let callbacks = CPUID_CALLBACKS.load(Ordering::Relaxed) - cpuid_before;
+    assert_eq!(callbacks, 4 * calls, "every CPUID must reach the Tool once");
+    let traps = [neighbour, covered]
+        .map(|site| reverie_liteinst::reverie_liteinst_site_trap_count(site as u64));
+    let hooks = [neighbour, covered]
+        .map(|site| reverie_liteinst::reverie_liteinst_site_hook_count(site as u64));
+    assert_eq!(
+        traps,
+        [calls, 3 * calls],
+        "both sites must trap on every execution"
+    );
+    assert_eq!(hooks, [0, 0], "neither site may be patched");
+    println!(
+        "straddler-neighbour cpuid=tool callbacks={callbacks} traps={}+{} hooks=0",
+        traps[0], traps[1]
+    );
+}
+
 /// An undecodable fault in late code must still kill the guest with SIGSEGV.
 pub(super) fn run_fault(path: &Path, null_load: bool) -> ! {
     install(path);
@@ -407,6 +628,13 @@ pub(super) fn run_fault(path: &Path, null_load: bool) -> ! {
 
 unsafe extern "C" {
     fn late_code_invoke(code: *const u8, registers: *mut Registers);
+    fn straddler_cpuid();
+    fn straddler_rdtsc();
+    fn straddler_rdtscp();
+    fn straddler_neighbour();
+    fn straddler_covered();
+    fn straddler_stale_before();
+    fn straddler_stale_patched();
     fn reverie_liteinst_on_owned_fallback_stack(address: usize) -> bool;
     fn reverie_liteinst_owned_fallback_observation(selector: u32) -> u64;
 }
@@ -466,5 +694,108 @@ late_code_invoke:
     pop rbx
     ret
     .size late_code_invoke, .-late_code_invoke
+"#
+);
+
+// Each stub starts at the named offset of a 64-byte line, so the 8-byte word
+// patch at its first byte would cross into the next line; the neighbour at
+// offset 54 fits in its line, and its patch would cover the CPUID at 58. The
+// stale-jump pair at offsets 16 and 20 fits in its line: the CPUID at 20 is
+// patched first, and the one at 16 would overwrite the start of its jump. The INT3 padding
+// before a stub is never executed; the NOPs after it give the patcher whole
+// instructions to cover, as ordinary code would.
+core::arch::global_asm!(
+    r#"
+    .text
+    .p2align 6
+    .skip 58, 0xcc
+    .global straddler_cpuid
+    .hidden straddler_cpuid
+    .type straddler_cpuid,@function
+straddler_cpuid:
+    cpuid
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    ret
+    .size straddler_cpuid, .-straddler_cpuid
+
+    .p2align 6
+    .skip 61, 0xcc
+    .global straddler_rdtsc
+    .hidden straddler_rdtsc
+    .type straddler_rdtsc,@function
+straddler_rdtsc:
+    rdtsc
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    ret
+    .size straddler_rdtsc, .-straddler_rdtsc
+
+    .p2align 6
+    .skip 63, 0xcc
+    .global straddler_rdtscp
+    .hidden straddler_rdtscp
+    .type straddler_rdtscp,@function
+straddler_rdtscp:
+    rdtscp
+    nop
+    nop
+    nop
+    nop
+    nop
+    ret
+    .size straddler_rdtscp, .-straddler_rdtscp
+
+    .p2align 6
+    .skip 54, 0xcc
+    .global straddler_neighbour
+    .hidden straddler_neighbour
+    .type straddler_neighbour,@function
+straddler_neighbour:
+    cpuid
+    nop
+    nop
+    .global straddler_covered
+    .hidden straddler_covered
+straddler_covered:
+    cpuid
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    ret
+    .size straddler_neighbour, .-straddler_neighbour
+
+    .p2align 6
+    .skip 16, 0xcc
+    .global straddler_stale_before
+    .hidden straddler_stale_before
+    .type straddler_stale_before,@function
+straddler_stale_before:
+    cpuid
+    nop
+    nop
+    .global straddler_stale_patched
+    .hidden straddler_stale_patched
+straddler_stale_patched:
+    cpuid
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    ret
+    .size straddler_stale_before, .-straddler_stale_before
 "#
 );

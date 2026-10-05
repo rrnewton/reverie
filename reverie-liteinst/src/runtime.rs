@@ -292,6 +292,14 @@ const SITE_INSTALLING: u8 = 1;
 const SITE_ACTIVE: u8 = 2;
 const SITE_FALLBACK: u8 = 3;
 const SITE_STALE: u8 = 4;
+/// The hook was refused, under the installation lock, after the site's bytes
+/// were re-read and found intact and before the runtime changed any page
+/// protection or byte there; no other site's published patch covers it, and
+/// no later patch may cover it (see [`check_neighbours`]). Execution therefore
+/// resumes after the instruction on the original code. Only the
+/// instruction-fault path records this state; every other caller records
+/// `SITE_FALLBACK` for any refusal.
+const SITE_UNPATCHABLE: u8 = 5;
 const INSTRUCTION_CPUID: u8 = 1;
 const INSTRUCTION_RDTSC: u8 = 2;
 
@@ -648,6 +656,12 @@ struct SiteSlot {
     hook_count: AtomicU64,
     instruction_len: AtomicU8,
     straddle_prefix: AtomicU8,
+    /// The eight bytes at the site before this runtime first published a
+    /// patch there, and the eight bytes after it did; valid only while
+    /// `words_recorded` is set (see [`stale_jump_survives`]).
+    original_word: AtomicU64,
+    published_word: AtomicU64,
+    words_recorded: AtomicBool,
 }
 
 impl SiteSlot {
@@ -661,6 +675,9 @@ impl SiteSlot {
             hook_count: AtomicU64::new(0),
             instruction_len: AtomicU8::new(0),
             straddle_prefix: AtomicU8::new(0),
+            original_word: AtomicU64::new(0),
+            published_word: AtomicU64::new(0),
+            words_recorded: AtomicBool::new(false),
         }
     }
 }
@@ -1680,6 +1697,11 @@ fn mark_site_range_stale(start: u64, len: u64, replacement_end: u64) {
         if start <= address && address < end {
             site.mapping_end.store(replacement_end, Ordering::Release);
             let state = site.state.load(Ordering::Acquire);
+            // SITE_UNPATCHABLE stays: an invalidation (even a no-op mremap)
+            // must not lift the reservation that keeps neighbouring patches
+            // off a site threads still run through the continuation. If the
+            // code really was replaced, a CPUID/RDTSC there is still decoded
+            // at the fault and emulated, only never patched.
             if matches!(state, SITE_ACTIVE | SITE_FALLBACK) {
                 site.state.store(SITE_STALE, Ordering::Release);
             }
@@ -1999,6 +2021,208 @@ fn lock_installation() -> io::Result<InstallGuard> {
         .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "LiteInst installation is busy"))
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(liteinst-straddler-cpuid): Review the untouched-code boundary.
+/// Why [`install_site_hook`] installed no hook.
+struct InstallFailure {
+    error: io::Error,
+    /// True only for a refusal that proves the site's code is the original:
+    /// reached under the installation lock, after the expected bytes were
+    /// re-read and [`check_neighbours`] found no published patch over the
+    /// instruction or the point after it, and before the runtime changed any
+    /// page protection or wrote any byte. A busy lock, a missing arena, a
+    /// byte mismatch (another thread may have just published a jump there),
+    /// and every failure from the protection change onward count as touched,
+    /// even where nothing may have been written.
+    code_untouched: bool,
+}
+
+impl InstallFailure {
+    fn untouched(error: io::Error) -> Self {
+        Self {
+            error,
+            code_untouched: true,
+        }
+    }
+
+    fn touched(error: io::Error) -> Self {
+        Self {
+            error,
+            code_untouched: false,
+        }
+    }
+}
+
+impl From<InstallFailure> for io::Error {
+    fn from(failure: InstallFailure) -> Self {
+        failure.error
+    }
+}
+
+/// How a proposed patch relates to one other claimed site.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NeighbourConflict {
+    /// The proposed site's instruction, or the point after it, lies inside
+    /// the other site's published (or possibly partly published) jump, so
+    /// its bytes are not known to be the original.
+    InsidePublishedPatch,
+    /// The proposed patch would overwrite the start of another site's jump.
+    OverlapsPublishedPatch,
+    /// The proposed patch would cover a site that a thread may be executing
+    /// through the continuation (or is deciding about), which resumes after
+    /// that instruction.
+    CoversContinuationSite,
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(liteinst-straddler-cpuid): Review the neighbour-overlap rules.
+/// Classify a proposed word patch at `address`, whose instruction is
+/// `instruction_len` bytes long, against another site at `other` in `state`.
+/// `other_len` is that site's instruction length, or 0 when not yet recorded
+/// (then the longest emulated instruction, 3 bytes, is assumed).
+fn neighbour_conflict(
+    address: u64,
+    instruction_len: u64,
+    other: u64,
+    state: u8,
+    other_len: u64,
+) -> Option<NeighbourConflict> {
+    if other == 0 || other == address {
+        return None;
+    }
+    let word = liteinst2::patcher::WORD_PATCH_BYTES as u64;
+    let patch_end = address.saturating_add(word);
+    match state {
+        SITE_ACTIVE | SITE_FALLBACK => {
+            let other_end = other.saturating_add(word);
+            if other < address.saturating_add(instruction_len) && other_end > address {
+                Some(NeighbourConflict::InsidePublishedPatch)
+            } else if other < patch_end && other_end > address {
+                Some(NeighbourConflict::OverlapsPublishedPatch)
+            } else {
+                None
+            }
+        }
+        SITE_INSTALLING | SITE_UNPATCHABLE => {
+            let other_len = if other_len == 0 { 3 } else { other_len };
+            // Starting exactly at the other site's resume point is safe.
+            (address < other.saturating_add(other_len) && patch_end > other)
+                .then_some(NeighbourConflict::CoversContinuationSite)
+        }
+        _ => None,
+    }
+}
+
+/// The conflict that decides a proposed patch against every other site in
+/// `sites` (address, state, recorded instruction length). Every site is
+/// examined: [`NeighbourConflict::InsidePublishedPatch`] dominates, because a
+/// refusal is untouched only if no published jump covers the site, whatever
+/// order the site table yields its entries in.
+fn neighbours_conflict(
+    address: u64,
+    instruction_len: u64,
+    sites: impl IntoIterator<Item = (u64, u8, u64)>,
+) -> Option<NeighbourConflict> {
+    let mut found = None;
+    for (other, state, other_len) in sites {
+        match neighbour_conflict(address, instruction_len, other, state, other_len) {
+            Some(NeighbourConflict::InsidePublishedPatch) => {
+                return Some(NeighbourConflict::InsidePublishedPatch);
+            }
+            Some(conflict) => {
+                found.get_or_insert(conflict);
+            }
+            None => {}
+        }
+    }
+    found
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(liteinst-straddler-cpuid): Review the stale-jump survival rule.
+/// Whether any byte this runtime wrote at a site may still be there.
+/// `words` is the site's (original, published) eight-byte pair, `None` when
+/// none was recorded (a failed or partial publication); `current` is the
+/// site's eight bytes now, `None` unless all eight were readable. A byte
+/// survives when it differs from the original and equals the published byte,
+/// or when it is an INT3 that was not in the original (a cross-line guard:
+/// liteinst2 guards every front-fragment byte, changed or not). Only when
+/// no byte survives is the old patch provably gone, whatever part of its
+/// window a mapping change replaced.
+fn stale_jump_survives(words: Option<(u64, u64)>, current: Option<[u8; 8]>) -> bool {
+    let (Some((original, published)), Some(current)) = (words, current) else {
+        return true;
+    };
+    let (original, published) = (original.to_le_bytes(), published.to_le_bytes());
+    (0..8).any(|offset| {
+        let byte = current[offset];
+        (published[offset] != original[offset] && byte == published[offset])
+            || (byte == liteinst2::patcher::BREAKPOINT_OPCODE
+                && original[offset] != liteinst2::patcher::BREAKPOINT_OPCODE)
+    })
+}
+
+/// The state a neighbour check uses for a site in `state`. A `SITE_STALE`
+/// site was ACTIVE or FALLBACK before a mapping invalidation, which may have
+/// left some or all of its jump in place (a no-op mremap leaves all of it; a
+/// partial replacement can restore the first byte and keep the rest), so it
+/// counts as a published, possibly partial, patch unless
+/// [`stale_jump_survives`] proves every byte it wrote is gone.
+fn neighbour_check_state(state: u8, survives: bool) -> u8 {
+    match state {
+        SITE_STALE if survives => SITE_FALLBACK,
+        state => state,
+    }
+}
+
+/// Refuse a patch at `address` that conflicts with another claimed site.
+/// Called with the installation lock held, so no other patch is being
+/// published concurrently, and before any protection change or write.
+fn check_neighbours(address: u64, instruction_len: u64) -> Result<(), InstallFailure> {
+    let Some(sites) = SITES.get() else {
+        return Ok(());
+    };
+    let conflict = neighbours_conflict(
+        address,
+        instruction_len,
+        sites.iter().map(|slot| {
+            let other = slot.address.load(Ordering::Acquire);
+            let state = slot.state.load(Ordering::Acquire);
+            // Read a stale site's window without risking a fault: part or
+            // all of its mapping may be gone.
+            let survives = state == SITE_STALE && other != 0 && {
+                let words = slot.words_recorded.load(Ordering::Acquire).then(|| {
+                    (
+                        slot.original_word.load(Ordering::Acquire),
+                        slot.published_word.load(Ordering::Acquire),
+                    )
+                });
+                let mut bytes = [0_u8; 8];
+                let current =
+                    (unsafe { read_own_bytes(other, &mut bytes) } == bytes.len()).then_some(bytes);
+                stale_jump_survives(words, current)
+            };
+            (
+                other,
+                neighbour_check_state(state, survives),
+                u64::from(slot.instruction_len.load(Ordering::Acquire)),
+            )
+        }),
+    );
+    match conflict {
+        None => Ok(()),
+        Some(NeighbourConflict::InsidePublishedPatch) => Err(InstallFailure::touched(
+            io::Error::other("site lies inside another site's published LiteInst patch"),
+        )),
+        Some(NeighbourConflict::OverlapsPublishedPatch) => Err(InstallFailure::untouched(
+            io::Error::other("LiteInst patch would overlap another site's patch"),
+        )),
+        Some(NeighbourConflict::CoversContinuationSite) => Err(InstallFailure::untouched(
+            io::Error::other("LiteInst patch would cover a site executed through the continuation"),
+        )),
+    }
+}
+
 unsafe fn install_site_hook(
     address: u64,
     slot: &'static SiteSlot,
@@ -2007,11 +2231,14 @@ unsafe fn install_site_hook(
     expected_instruction: &[u8],
     manage_protection: bool,
     entry_proof: EntryProof,
-) -> io::Result<HostInstallResult> {
-    let _install_guard = lock_installation()?;
+) -> Result<HostInstallResult, InstallFailure> {
+    // Nothing below proves the site's bytes are the original until they are
+    // re-read under the lock, so the busy and no-arena refusals are touched.
+    let _install_guard = lock_installation().map_err(InstallFailure::touched)?;
     let _allocation_scope = crate::patch_alloc::enter();
     let arena = arena_for(address)
-        .ok_or_else(|| io::Error::other("no reachable LiteInst arena for syscall site"))?;
+        .ok_or_else(|| io::Error::other("no reachable LiteInst arena for syscall site"))
+        .map_err(InstallFailure::touched)?;
     let mut mapping_end = slot.mapping_end.load(Ordering::Acquire);
     if mapping_end <= address {
         mapping_end = arena.mapping_end;
@@ -2020,23 +2247,28 @@ unsafe fn install_site_hook(
     let available = usize::try_from(mapping_end - address)
         .unwrap_or(0)
         .min(PATCH_SNAPSHOT_BYTES);
-    if available < liteinst2::patcher::WORD_PATCH_BYTES {
-        return Err(io::Error::other(
-            "syscall site is too close to its executable mapping end",
-        ));
-    }
     // SAFETY: arena_for proved this byte range lies in a live executable VMA.
     let candidate =
         unsafe { core::slice::from_raw_parts(address as usize as *const u8, available) };
     if candidate.get(..expected_instruction.len()) != Some(expected_instruction) {
-        return Err(io::Error::other(
+        // The bytes changed since the fault decoded them: another thread may
+        // have published a jump over this site.
+        return Err(InstallFailure::touched(io::Error::other(
             "fault site does not contain the expected x86-64 instruction",
-        ));
+        )));
+    }
+    slot.instruction_len
+        .store(expected_instruction.len() as u8, Ordering::Release);
+    check_neighbours(address, expected_instruction.len() as u64)?;
+    if available < liteinst2::patcher::WORD_PATCH_BYTES {
+        return Err(InstallFailure::untouched(io::Error::other(
+            "syscall site is too close to its executable mapping end",
+        )));
     }
     let scanner = InstructionScanner::default();
     let scan = scanner
         .scan_prefix(candidate, address, liteinst2::patcher::WORD_PATCH_BYTES)
-        .map_err(|error| io::Error::other(error.to_string()))?;
+        .map_err(|error| InstallFailure::untouched(io::Error::other(error.to_string())))?;
     // A refusal here precedes the candidate metadata below, so the ptrace
     // controller classifies it as an ordinary fallback, not a straddler bail.
     let proof = match entry_proof {
@@ -2047,13 +2279,13 @@ unsafe fn install_site_hook(
             prove_within(address, SiteEntries { len: 2, limit }, scan.instructions())
         }
         EntryProof::Refused => {
-            return Err(io::Error::other(
+            return Err(InstallFailure::untouched(io::Error::other(
                 "the tracer's entry census refused the syscall site",
-            ));
+            )));
         }
         EntryProof::NotListed => Ok(()),
     };
-    proof.map_err(|refusal| io::Error::other(refusal.to_string()))?;
+    proof.map_err(|refusal| InstallFailure::untouched(io::Error::other(refusal.to_string())))?;
     let instruction_len = scan
         .instructions()
         .first()
@@ -2089,19 +2321,38 @@ unsafe fn install_site_hook(
         .store(straddle_prefix as u8, Ordering::Release);
     let staleness = match publication {
         PatchPublication::Quiescent => None,
-        PatchPublication::Concurrent => Some(crate::straddler::budget_for_patch(
-            address as usize,
-            scanner.cache_line_size(),
-        )?),
+        PatchPublication::Concurrent => Some(
+            crate::straddler::budget_for_patch(address as usize, scanner.cache_line_size())
+                .map_err(InstallFailure::untouched)?,
+        ),
     };
     let code = scan.snapshot();
+    // `available` is at least WORD_PATCH_BYTES here, and the bytes were just
+    // verified, so these are the site's original eight bytes.
+    let original_word = u64::from_le_bytes(
+        candidate[..liteinst2::patcher::WORD_PATCH_BYTES]
+            .try_into()
+            .expect("the patch window is eight bytes"),
+    );
+    // Until a publication completes, a stale record of this site must count
+    // as possibly published.
+    slot.words_recorded.store(false, Ordering::Release);
 
+    // Every failure from here on may follow a protection change or a write to
+    // the guest's code. Record SITE_FALLBACK while the lock is still held, so
+    // no later installer's neighbour check sees this site as merely
+    // INSTALLING when part of a jump may already be published.
+    let published_failure = |error: io::Error| {
+        slot.state.store(SITE_FALLBACK, Ordering::Release);
+        InstallFailure::touched(error)
+    };
     if manage_protection {
         unsafe {
             set_text_protection(
                 address,
                 libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-            )?;
+            )
+            .map_err(published_failure)?;
         }
     }
     // A guarded cross-line plan rejects a trampoline displacement containing
@@ -2150,7 +2401,7 @@ unsafe fn install_site_hook(
             if manage_protection {
                 let _ = unsafe { set_text_protection(address, libc::PROT_READ | libc::PROT_EXEC) };
             }
-            return Err(io::Error::other(error.to_string()));
+            return Err(published_failure(io::Error::other(error.to_string())));
         }
     };
     let activation = match publication {
@@ -2164,11 +2415,12 @@ unsafe fn install_site_hook(
         if manage_protection {
             let _ = unsafe { set_text_protection(address, libc::PROT_READ | libc::PROT_EXEC) };
         }
-        return Err(io::Error::other(error.to_string()));
+        return Err(published_failure(io::Error::other(error.to_string())));
     }
     if manage_protection {
         unsafe {
-            set_text_protection(address, libc::PROT_READ | libc::PROT_EXEC)?;
+            set_text_protection(address, libc::PROT_READ | libc::PROT_EXEC)
+                .map_err(published_failure)?;
         }
     }
 
@@ -2190,6 +2442,12 @@ unsafe fn install_site_hook(
         straddle_prefix: straddle_prefix as u64,
         complete: 1,
     };
+    // SAFETY: the window lies in this live executable mapping, which the
+    // installation lock keeps from being patched concurrently.
+    let published_word = unsafe { core::ptr::read_unaligned(address as usize as *const u64) };
+    slot.original_word.store(original_word, Ordering::Release);
+    slot.published_word.store(published_word, Ordering::Release);
+    slot.words_recorded.store(true, Ordering::Release);
     let installed = Box::into_raw(Box::new(installed));
     slot.hook.store(installed, Ordering::Release);
     slot.instruction_len
@@ -2224,9 +2482,12 @@ fn install_vdso_sites(sites: &[reverie_ptrace::VdsoSyscallSite]) -> io::Result<(
                 EntryProof::NotListed,
             )
         }
-        .map_err(|error| {
+        .map_err(|failure| {
             site.state.store(SITE_FALLBACK, Ordering::Release);
-            io::Error::other(format!("failed to install LiteInst vDSO hook: {error}"))
+            io::Error::other(format!(
+                "failed to install LiteInst vDSO hook: {}",
+                failure.error
+            ))
         })?;
         unsafe {
             set_mapping_protection(
@@ -2901,7 +3162,7 @@ unsafe extern "C" fn instruction_sigsegv_handler(
         unsafe { deliver_default_sigsegv() };
     }
     if claimed
-        && unsafe {
+        && let Err(failure) = unsafe {
             install_site_hook(
                 address,
                 site,
@@ -2912,9 +3173,15 @@ unsafe extern "C" fn instruction_sigsegv_handler(
                 EntryProof::NotListed,
             )
         }
-        .is_err()
     {
-        site.state.store(SITE_FALLBACK, Ordering::Release);
+        site.state.store(
+            if failure.code_untouched {
+                SITE_UNPATCHABLE
+            } else {
+                SITE_FALLBACK
+            },
+            Ordering::Release,
+        );
     }
     if unsafe { set_all_instruction_native(false) }.is_err() {
         emit_in_guest_stage(b"instruction-sigsegv-disable-native-failed");
@@ -2923,14 +3190,28 @@ unsafe extern "C" fn instruction_sigsegv_handler(
     while matches!(site.state.load(Ordering::Acquire), 0 | SITE_INSTALLING) {
         core::hint::spin_loop();
     }
-    if site.state.load(Ordering::Acquire) != SITE_ACTIVE {
-        // A failed installation may already have published part or all of
-        // the jump (for example, when restoring the page's permissions fails
-        // after the patch is written), so the bytes after this instruction
-        // are no longer known to be the original code. Resuming past the
-        // instruction could execute the jump's displacement; end the guest.
-        emit_in_guest_stage(b"instruction-sigsegv-site-install-failed");
-        unsafe { deliver_default_sigsegv() };
+    match site.state.load(Ordering::Acquire) {
+        SITE_ACTIVE => {}
+        // The hook was refused before anything at the site changed (for
+        // example, a word patch that would cross a cache line while
+        // cross-line publication is disabled), so the instruction and the
+        // code after it are the original bytes. Emulate it through the
+        // continuation, as for code without an arena; every later execution
+        // of this site traps and takes the same path.
+        SITE_UNPATCHABLE => {
+            unsafe { emulate_through_continuation(info, raw_context, address, kind) };
+            return;
+        }
+        _ => {
+            // A failed installation may already have published part or all
+            // of the jump (for example, when restoring the page's
+            // permissions fails after the patch is written), so the bytes
+            // after this instruction are no longer known to be the original
+            // code. Resuming past the instruction could execute the jump's
+            // displacement; end the guest.
+            emit_in_guest_stage(b"instruction-sigsegv-site-install-failed");
+            unsafe { deliver_default_sigsegv() };
+        }
     }
     let hook = site.hook.load(Ordering::Acquire);
     if hook.is_null() {
@@ -3495,16 +3776,19 @@ impl LiteinstDispatcher {
             site.trap_count.fetch_add(1, Ordering::Relaxed);
             if claimed {
                 let native = unsafe { set_all_instruction_native(true) };
-                let installed = native.and_then(|()| unsafe {
-                    install_site_hook(
-                        instruction_pointer,
-                        site,
-                        installed_syscall_hook,
-                        self.publication,
-                        &[0x0f, 0x05],
-                        true,
-                        EntryProof::Required,
-                    )
+                let installed = native.and_then(|()| {
+                    unsafe {
+                        install_site_hook(
+                            instruction_pointer,
+                            site,
+                            installed_syscall_hook,
+                            self.publication,
+                            &[0x0f, 0x05],
+                            true,
+                            EntryProof::Required,
+                        )
+                    }
+                    .map_err(io::Error::from)
                 });
                 let restored = unsafe { set_all_instruction_native(false) };
                 if restored.is_err() {
@@ -4297,6 +4581,7 @@ mod tests {
     use super::FallbackCounters;
     use super::LiteinstDispatcher;
     use super::MAX_PATCH_SITES;
+    use super::NeighbourConflict;
     use super::ObjectImage;
     use super::RCB_CLOCK;
     use super::RCB_CLOCK_OWNER;
@@ -4305,6 +4590,7 @@ mod tests {
     use super::SITE_FALLBACK;
     use super::SITE_INSTALLING;
     use super::SITE_STALE;
+    use super::SITE_UNPATCHABLE;
     use super::SITES;
     use super::SiteSlot;
     use super::StackLine;
@@ -4319,6 +4605,9 @@ mod tests {
     use super::init_heap_miss_error;
     use super::initialize_rcb_clock_with;
     use super::mark_site_range_stale;
+    use super::neighbour_check_state;
+    use super::neighbour_conflict;
+    use super::neighbours_conflict;
     use super::object_image;
     use super::parse_runtime_maps;
     use super::prepare_in_init_window;
@@ -4326,6 +4615,7 @@ mod tests {
     use super::record_fallback_dispatch;
     use super::refused_process_creation;
     use super::reset_site_observability;
+    use super::stale_jump_survives;
 
     #[test]
     fn every_optional_rcb_setup_error_takes_the_real_unavailable_path() {
@@ -4929,5 +5219,117 @@ mod tests {
         assert_eq!(unsafe { read_own_bytes(0, &mut bytes) }, 0);
         assert_eq!(unsafe { read_own_bytes(u64::MAX - 1, &mut bytes) }, 0);
         unsafe { libc::munmap(pages.cast(), 8192) };
+    }
+    #[test]
+    fn neighbour_conflicts_protect_published_patches_and_continuation_sites() {
+        use NeighbourConflict::CoversContinuationSite as Covers;
+        use NeighbourConflict::InsidePublishedPatch as Inside;
+        use NeighbourConflict::OverlapsPublishedPatch as Overlaps;
+        const A: u64 = 0x1000;
+        // (other site, its state, its recorded length, expected conflict for a
+        // 2-byte instruction at A whose word patch is [A, A + 8)).
+        let cases = [
+            (A, SITE_ACTIVE, 2, None),
+            (0, SITE_ACTIVE, 2, None),
+            // A published jump that covers A or the resume point A + 2.
+            (A - 7, SITE_ACTIVE, 2, Some(Inside)),
+            (A - 1, SITE_FALLBACK, 2, Some(Inside)),
+            (A + 1, SITE_ACTIVE, 2, Some(Inside)),
+            // A published jump starting at or after the resume point, inside
+            // the proposed patch: resuming is safe, patching is not.
+            (A + 2, SITE_ACTIVE, 2, Some(Overlaps)),
+            (A + 7, SITE_FALLBACK, 2, Some(Overlaps)),
+            (A + 8, SITE_ACTIVE, 2, None),
+            (A - 8, SITE_ACTIVE, 2, None),
+            // A site executing through the continuation, or being decided.
+            (A + 4, SITE_UNPATCHABLE, 2, Some(Covers)),
+            (A + 7, SITE_INSTALLING, 0, Some(Covers)),
+            (A + 8, SITE_UNPATCHABLE, 2, None),
+            // The proposed patch may start exactly at its resume point...
+            (A - 2, SITE_UNPATCHABLE, 2, None),
+            (A - 3, SITE_UNPATCHABLE, 3, None),
+            // ...but not inside it; an unrecorded length is taken as 3.
+            (A - 2, SITE_UNPATCHABLE, 3, Some(Covers)),
+            (A - 2, SITE_INSTALLING, 0, Some(Covers)),
+            (A - 3, SITE_INSTALLING, 0, None),
+            // Unclaimed and stale sites constrain nothing.
+            (A + 4, 0, 2, None),
+            (A + 4, SITE_STALE, 2, None),
+        ];
+        for (other, state, other_len, expected) in cases {
+            assert_eq!(
+                neighbour_conflict(A, 2, other, state, other_len),
+                expected,
+                "other={other:#x} state={state} len={other_len}"
+            );
+        }
+    }
+    #[test]
+    fn a_covering_published_patch_dominates_whatever_the_table_order() {
+        use NeighbourConflict::InsidePublishedPatch as Inside;
+        use NeighbourConflict::OverlapsPublishedPatch as Overlaps;
+        const A: u64 = 0x1000;
+        // Codex's arrangement: a FALLBACK syscall at A + 4 (untouched overlap)
+        // and an ACTIVE jump at A - 2 that covers A (touched), in both orders.
+        let overlap = (A + 4, SITE_FALLBACK, 2);
+        let covering = (A - 2, SITE_ACTIVE, 2);
+        assert_eq!(neighbours_conflict(A, 2, [overlap, covering]), Some(Inside));
+        assert_eq!(neighbours_conflict(A, 2, [covering, overlap]), Some(Inside));
+        assert_eq!(neighbours_conflict(A, 2, [overlap]), Some(Overlaps));
+        assert_eq!(neighbours_conflict(A, 2, [(A + 8, SITE_ACTIVE, 2)]), None);
+    }
+    #[test]
+    fn a_stale_site_counts_as_published_unless_its_jump_is_provably_gone() {
+        use NeighbourConflict::InsidePublishedPatch as Inside;
+        let word = |bytes: [u8; 8]| u64::from_le_bytes(bytes);
+        // Codex's arrangement: a cross-line jump at P = page end - 2.
+        let original = [0x0f, 0xa2, 0x0f, 0xa2, 0x90, 0xf8, 0x90, 0x90];
+        let published = [0xe9, 0xfd, 0x0f, 0xa2, 0xff, 0xf8, 0x90, 0x90];
+        let words = Some((word(original), word(published)));
+        // All of it in place (a no-op mremap): survives.
+        assert!(stale_jump_survives(words, Some(published)));
+        // The first page replaced with its original contents, the second
+        // still holding the displacement's high bytes: survives.
+        let partial = [0x0f, 0xa2, 0x0f, 0xa2, 0xff, 0xf8, 0x90, 0x90];
+        assert!(stale_jump_survives(words, Some(partial)));
+        // A surviving INT3 guard, even where the patch kept the byte: survives.
+        let guarded = [0xcc, 0xcc, 0x0f, 0xa2, 0x90, 0xf8, 0x90, 0x90];
+        assert!(stale_jump_survives(words, Some(guarded)));
+        let guard_on_unchanged_byte = [0x0f, 0xa2, 0xcc, 0xa2, 0x90, 0xf8, 0x90, 0x90];
+        assert!(stale_jump_survives(words, Some(guard_on_unchanged_byte)));
+        // Nothing recorded, or not all eight bytes readable: survives.
+        assert!(stale_jump_survives(None, Some(original)));
+        assert!(stale_jump_survives(words, None));
+        // Fully restored, or replaced by unrelated code: gone.
+        assert!(!stale_jump_survives(words, Some(original)));
+        let unrelated = [0x48, 0x89, 0xe5, 0x31, 0xc0, 0x5d, 0xc3, 0x90];
+        assert!(!stale_jump_survives(words, Some(unrelated)));
+
+        assert_eq!(neighbour_check_state(SITE_STALE, true), SITE_FALLBACK);
+        assert_eq!(neighbour_check_state(SITE_STALE, false), SITE_STALE);
+        for state in [
+            0,
+            SITE_INSTALLING,
+            SITE_ACTIVE,
+            SITE_FALLBACK,
+            SITE_UNPATCHABLE,
+        ] {
+            assert_eq!(neighbour_check_state(state, true), state);
+        }
+        // The partially replaced jump at P still refuses a CPUID at P + 2 as
+        // touched; once provably gone it constrains nothing.
+        const P: u64 = 0x1000_0ffe;
+        let stale = (
+            P,
+            neighbour_check_state(SITE_STALE, stale_jump_survives(words, Some(partial))),
+            2,
+        );
+        assert_eq!(neighbours_conflict(P + 2, 2, [stale]), Some(Inside));
+        let gone = (
+            P,
+            neighbour_check_state(SITE_STALE, stale_jump_survives(words, Some(original))),
+            2,
+        );
+        assert_eq!(neighbours_conflict(P + 2, 2, [gone]), None);
     }
 }
