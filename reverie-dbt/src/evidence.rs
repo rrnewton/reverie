@@ -634,7 +634,7 @@ impl Collector {
             FRAME_ERROR => {
                 let detail = String::from_utf8_lossy(payload);
                 return Err(io::Error::other(format!(
-                    "DBT evidence client reported a transport error: {detail}"
+                    "DBT evidence client reported an error: {detail}"
                 )));
             }
             FRAME_CHILD => {
@@ -1916,6 +1916,44 @@ mod tests {
     }
 
     #[test]
+    fn collector_refuses_an_error_after_final() {
+        // The client reports a backend failure that follows a process image's
+        // FINAL frame as an ERROR frame with the next sequence number.
+        let process = ProcessKey {
+            pid: 39,
+            start_time: 45,
+        };
+        let mut collector = Collector::new();
+        start_and_initialize(&mut collector, process);
+        let final_payload = [FINAL_GUEST_COMPLETED];
+        collector
+            .absorb_or_acknowledge_retry(
+                FRAME_FINAL,
+                process,
+                2,
+                frame_digest(FRAME_FINAL, 2, &final_payload),
+                &final_payload,
+            )
+            .unwrap();
+
+        let message = b"backend failure after this process image's FINAL frame";
+        let error = collector
+            .absorb_or_acknowledge_retry(
+                FRAME_ERROR,
+                process,
+                3,
+                frame_digest(FRAME_ERROR, 3, message),
+                message,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "DBT evidence client reported an error: backend failure after this process image's \
+             FINAL frame"
+        );
+    }
+
+    #[test]
     fn collector_requires_exec_before_cancel_and_accepts_valid_cancel() {
         let process = ProcessKey {
             pid: 41,
@@ -2259,13 +2297,18 @@ mod tests {
         let source = include_str!("../native/client.c");
         assert!(!source.contains("syscall_exits_process"));
 
+        // Anchor on the definition: the first `invoke_syscall(` is its
+        // forward declaration, two lines above another declaration.
         let invoke_syscall = source
-            .split_once("static int64_t\ninvoke_syscall(")
+            .split_once(
+                "static int64_t\ninvoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {",
+            )
             .unwrap()
             .1
-            .split_once("static int32_t read_registers")
+            .split_once("static int32_t read_registers(")
             .unwrap()
             .0;
+        assert!(invoke_syscall.contains("invoke_raw_syscall(context, sysnum, translated);"));
         assert!(!invoke_syscall.contains("finalize_runtime_process();"));
 
         let pre_syscall = source
@@ -2276,6 +2319,74 @@ mod tests {
             .unwrap()
             .0;
         assert!(!pre_syscall.contains("finalize_runtime_process();"));
+
+        // A self-directed SIGKILL is the one syscall that finalizes, because
+        // DynamoRIO runs no exit callback for it. Both syscall paths reach the
+        // finalizer only through a gate that requires SIGKILL in every
+        // spelling and never matches an exit syscall.
+        let self_sigkill = source
+            .split_once("static bool\nis_self_sigkill(")
+            .unwrap()
+            .1
+            .split_once("static bool finish_evidence_before_self_sigkill(")
+            .unwrap()
+            .0;
+        assert!(!self_sigkill.contains("SYS_exit"));
+        assert_eq!(self_sigkill.matches("case SYS_").count(), 3);
+        // Each spelling must name exactly this process or this thread: a zero
+        // or negative kill target, or another thread, never qualifies.
+        let spelling = |case: &str| -> String {
+            self_sigkill
+                .split_once(case)
+                .unwrap()
+                .1
+                .split_once(';')
+                .unwrap()
+                .0
+                .split_whitespace()
+                .collect()
+        };
+        assert_eq!(
+            spelling("case SYS_kill:"),
+            "return(int32_t)host_args[1]==SIGKILL&&\
+             (int32_t)host_args[0]==(int32_t)dr_get_process_id()"
+        );
+        assert_eq!(
+            spelling("case SYS_tgkill:"),
+            "return(int32_t)host_args[2]==SIGKILL&&\
+             (int32_t)host_args[0]==(int32_t)dr_get_process_id()&&\
+             (int32_t)host_args[1]==(int32_t)dr_get_thread_id(drcontext)"
+        );
+        assert_eq!(
+            spelling("case SYS_tkill:"),
+            "return(int32_t)host_args[1]==SIGKILL&&\
+             (int32_t)host_args[0]==(int32_t)dr_get_thread_id(drcontext)"
+        );
+        assert_eq!(spelling("default:"), "returnfalse");
+        let finish = source
+            .split_once("static bool finish_evidence_before_self_sigkill(")
+            .unwrap()
+            .1
+            .split_once("static void refuse_returned_self_sigkill(")
+            .unwrap()
+            .0;
+        assert!(
+            finish.find("is_self_sigkill(").unwrap()
+                < finish.find("finalize_runtime_process();").unwrap()
+        );
+        let original = source
+            .split_once("static bool prepare_original_identity_syscall(")
+            .unwrap()
+            .1
+            .split_once("static void post_syscall(")
+            .unwrap()
+            .0;
+        for path in [invoke_syscall, original] {
+            assert!(
+                path.find("finish_evidence_before_self_sigkill(").unwrap()
+                    < path.find("refuse_returned_self_sigkill(").unwrap()
+            );
+        }
 
         let thread_leave = source
             .split_once("static void evidence_thread_leave(")
@@ -2386,6 +2497,21 @@ mod tests {
                 .unwrap()
                 < failure_marker.find("evidence_sender_locked();").unwrap()
         );
+        // A FINAL frame cannot be revised. A failure after it must reach the
+        // collector as an ERROR frame, which refuses the run.
+        let after_final: String = failure_marker
+            .split_once("if (sender->finalized) {")
+            .unwrap()
+            .1
+            .split_once('}')
+            .unwrap()
+            .0
+            .split_whitespace()
+            .collect();
+        assert!(after_final.contains(
+            "evidence_send_frame(EVIDENCE_FRAME_ERROR,message,sizeof(message)-1,\
+             sender->sequence++);"
+        ));
 
         let evidence_flush = source
             .split_once("static bool evidence_flush_locked(")
