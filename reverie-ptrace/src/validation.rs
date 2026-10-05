@@ -21,25 +21,51 @@ use crate::timer::has_precise_ip;
 const IN_TXCP: u64 = 1 << 33;
 const NUM_BRANCHES: u64 = 500;
 
-/// Way to keep track of the validation error when checking for pmu bugs
-#[derive(Error, Debug)]
-pub(crate) enum PmuValidationError {
+/// Why the one-time PMU validation (see [`crate::pmu_validation`]) failed.
+///
+/// Each variant means Reverie could not confirm that the RCB counter its
+/// precise timers are built on counts every retired conditional branch on this
+/// host, either because a check found a defect or because a check could not
+/// run. An event scheduled by RCB count may then fire at a different point
+/// from run to run.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PmuValidationError {
+    /// A test counter could not be opened, so the checks could not run.
     #[error("Failed to create timer: {errno:?} - {msg}")]
-    CouldNotCreateTimer { errno: Errno, msg: &'static str },
+    CouldNotCreateTimer {
+        /// The error `perf_event_open` returned.
+        errno: Errno,
+        /// What the errno means here.
+        msg: &'static str,
+    },
 
+    /// A system call the checks depend on failed, so they could not finish.
     #[error("Unexpected error while checking for pmu bugs: {errno:?} - {msg}")]
-    UnexpectedTestingErrnoError { errno: Errno, msg: &'static str },
+    UnexpectedTestingErrnoError {
+        /// The error the system call returned.
+        errno: Errno,
+        /// Which step failed.
+        msg: &'static str,
+    },
 
+    /// The checks could not finish for a reason other than a failed system
+    /// call, such as a counter read returning too few bytes.
     #[error("Unexpected error while checking for pmu bugs: {0}")]
     UnexpectedTestingError(String),
 
+    /// The kernel did not apply a new sample period set through
+    /// `PERF_EVENT_IOC_PERIOD` until the next overflow.
     #[error("The ioc-period bug was detected")]
     IocPeriodBugDetected,
 
+    /// The processor vendor or model could not be read, so the
+    /// architecture-specific checks could not run.
     #[cfg(target_arch = "x86_64")]
     #[error("Could not read cpu info")]
     CouldNotReadCpuInfo,
 
+    /// The branch counter reported fewer branches than the check executed.
     #[error(
         "Got {actual_events} branch events, expected at least {expected_min_events}. \
         The hardware performance counter seems to not be working. Check \
@@ -52,14 +78,21 @@ pub(crate) enum PmuValidationError {
         this CPU."
     )]
     HardwareCountersNotWorking {
+        /// The branches the counter reported.
         actual_events: i64,
+        /// The branches the check executed.
         expected_min_events: u64,
+        /// The raw event the counter was programmed with.
         config: u64,
     },
 
+    /// The second test counter, opened alongside the first, counted nothing.
     #[error("Your CPU only supports one performance counter in its current configuration")]
     OnlyOnePerformanceCounter,
 
+    /// The AMD Zen SpecLockMap optimization is enabled, so a speculatively
+    /// executed locked instruction can leave the retired-branch count off by
+    /// a few branches. See <https://github.com/rr-debugger/rr/issues/2034>.
     #[cfg(target_arch = "x86_64")]
     #[error(
         "On AMD Zen CPUs, reverie timers will not work reliably unless you disable the \
@@ -68,9 +101,33 @@ pub(crate) enum PmuValidationError {
     )]
     AmdSpecLockMapShouldBeDisabled,
 
+    /// The counter accepts the `IN_TXCP` flag but undercounts with it, a
+    /// defect of some KVM guests on Intel processors.
     #[cfg(target_arch = "x86_64")]
     #[error("Intel Kvm-In-Txcp bug found")]
     IntelKvmInTxcpBugDetected,
+}
+
+impl PmuValidationError {
+    /// The variant's name, which is stable and carries no host-specific values.
+    /// Suitable for a machine-readable marker or report field; use `Display`
+    /// for the human-readable explanation.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::CouldNotCreateTimer { .. } => "CouldNotCreateTimer",
+            Self::UnexpectedTestingErrnoError { .. } => "UnexpectedTestingErrnoError",
+            Self::UnexpectedTestingError(_) => "UnexpectedTestingError",
+            Self::IocPeriodBugDetected => "IocPeriodBugDetected",
+            #[cfg(target_arch = "x86_64")]
+            Self::CouldNotReadCpuInfo => "CouldNotReadCpuInfo",
+            Self::HardwareCountersNotWorking { .. } => "HardwareCountersNotWorking",
+            Self::OnlyOnePerformanceCounter => "OnlyOnePerformanceCounter",
+            #[cfg(target_arch = "x86_64")]
+            Self::AmdSpecLockMapShouldBeDisabled => "AmdSpecLockMapShouldBeDisabled",
+            #[cfg(target_arch = "x86_64")]
+            Self::IntelKvmInTxcpBugDetected => "IntelKvmInTxcpBugDetected",
+        }
+    }
 }
 
 fn init_perf_event_attr(
@@ -429,6 +486,63 @@ fn check_for_kvm_in_txcp_bug() -> Result<(), PmuValidationError> {
 mod test {
     use super::*;
     use crate::perf::is_perf_supported;
+
+    /// Every variant, so a test can cover the whole enum.
+    fn every_variant() -> Vec<PmuValidationError> {
+        vec![
+            PmuValidationError::CouldNotCreateTimer {
+                errno: Errno::EINVAL,
+                msg: "m",
+            },
+            PmuValidationError::UnexpectedTestingErrnoError {
+                errno: Errno::EINVAL,
+                msg: "m",
+            },
+            PmuValidationError::UnexpectedTestingError("m".to_owned()),
+            PmuValidationError::IocPeriodBugDetected,
+            #[cfg(target_arch = "x86_64")]
+            PmuValidationError::CouldNotReadCpuInfo,
+            PmuValidationError::HardwareCountersNotWorking {
+                actual_events: 0,
+                expected_min_events: 1,
+                config: 0x5101c4,
+            },
+            PmuValidationError::OnlyOnePerformanceCounter,
+            #[cfg(target_arch = "x86_64")]
+            PmuValidationError::AmdSpecLockMapShouldBeDisabled,
+            #[cfg(target_arch = "x86_64")]
+            PmuValidationError::IntelKvmInTxcpBugDetected,
+        ]
+    }
+
+    #[test]
+    fn every_variant_name_is_its_identifier_and_distinct() {
+        let variants = every_variant();
+        let names: Vec<&str> = variants.iter().map(PmuValidationError::name).collect();
+        let distinct: std::collections::BTreeSet<&str> = names.iter().copied().collect();
+        assert_eq!(distinct.len(), variants.len(), "names collide: {names:?}");
+        for (variant, name) in variants.iter().zip(&names) {
+            // The Debug form of a variant starts with its identifier, so the
+            // name cannot drift from the variant it reports.
+            assert!(
+                format!("{variant:?}").starts_with(name),
+                "{name} does not name {variant:?}"
+            );
+            assert!(
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()),
+                "{name} is not a bare identifier"
+            );
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_speclockmap_variant_has_a_stable_name() {
+        assert_eq!(
+            PmuValidationError::AmdSpecLockMapShouldBeDisabled.name(),
+            "AmdSpecLockMapShouldBeDisabled"
+        );
+    }
 
     #[test]
     fn test_check_for_ioc_period_bug() {

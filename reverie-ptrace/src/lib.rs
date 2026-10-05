@@ -95,6 +95,7 @@ pub use liteinst_trap_only::SitePatching;
 pub use liteinst_trap_only::SiteTable;
 pub use liteinst_trap_only::probe_ia32_emulation;
 pub use perf::is_perf_supported;
+pub use perf::pmu_validation;
 use reverie::process::launch_window;
 pub use stats::PtraceBackendStatsSnapshot;
 pub use stats::PtraceBackendStatsSource;
@@ -115,6 +116,7 @@ pub use tracer::TracerBuilder;
 pub use tracer::quarantine_cleanup_resource;
 pub use tracer::spawn_fn;
 pub use tracer::spawn_fn_with_config;
+pub use validation::PmuValidationError;
 pub use vdso::VdsoSyscallSite;
 #[cfg(target_arch = "x86_64")]
 pub use vdso::patch_current_vdso;

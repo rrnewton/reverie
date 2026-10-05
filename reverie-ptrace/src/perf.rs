@@ -1181,6 +1181,23 @@ pub fn is_perf_supported() -> bool {
     *IS_PERF_SUPPORTED
 }
 
+/// The result of Reverie's PMU validation on this host.
+///
+/// `Err` means the RCB counter behind Reverie's precise timers may miscount
+/// here (for example [`PmuValidationError::AmdSpecLockMapShouldBeDisabled`]),
+/// so an event scheduled by RCB count may land at a different point from run
+/// to run. Reverie itself only logs this when it creates a timer counter; a
+/// caller that needs reproducible timer placement can refuse to run instead.
+///
+/// The check runs once per process, on the first call to this function or the
+/// first timer counter, whichever comes first, and every later call returns the
+/// same result. It reads the PMU configuration, so call it after any
+/// [`crate::set_pmu_config`]. Call it only when [`is_perf_supported`] is true:
+/// without perf the check cannot create its counters and reports that instead.
+pub fn pmu_validation() -> Result<(), PmuValidationError> {
+    PMU_BUG.clone()
+}
+
 /// Concisely return if `is_perf_supported` is `false`. Useful for guarding
 /// tests.
 #[macro_export]
@@ -1236,6 +1253,15 @@ pub fn do_branches(mut count: u64) {
 #[cfg(test)]
 mod support_test {
     use super::*;
+
+    /// The public result is the one Reverie logs when it creates a timer
+    /// counter, and it does not change between calls.
+    #[test]
+    fn pmu_validation_publishes_the_logged_result() {
+        let first = pmu_validation();
+        assert_eq!(first, *PMU_BUG);
+        assert_eq!(pmu_validation(), first);
+    }
 
     /// The closure predicate used by the nonleader-exec counter handoff test
     /// must key on the event, not on the descriptor number. `dup2` replaces a
