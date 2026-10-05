@@ -435,6 +435,10 @@ fn run_case(case: Case) {
             if result.is_ok() { "Ok" } else { "Err" }
         );
     }
+    static OUTSIDE_OWNER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // PR_SET_CHILD_SUBREAPER and the final P_ALL census are process-wide.
+    // Own the complete adoption/reap/restore lifetime, not one operation.
+    let _outside_owner = OUTSIDE_OWNER.lock().unwrap();
     let started = Instant::now();
     let deadline = started + Duration::from_secs(10);
     let mut previous = 0;
