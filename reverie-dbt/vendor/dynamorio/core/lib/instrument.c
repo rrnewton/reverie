@@ -1545,6 +1545,14 @@ instrument_thread_exit_event(dcontext_t *dcontext)
     if (!dynamo_initialized)
         return;
 
+    /* Another thread is reclaiming the record of a thread that ended without
+     * running any code of its own (see cleanup_after_vfork_child_death()).  An
+     * event here would report a thread exit the application never made, from a
+     * thread and process other than the one that ended.
+     */
+    if (dcontext->client_data->skip_client_thread_exit_event)
+        return;
+
     /* support dr_get_mcontext() from the exit event */
     dcontext->client_data->mcontext_in_dcontext = true;
     /* Note - currently own initexit lock when this is called (see PR 227619). */

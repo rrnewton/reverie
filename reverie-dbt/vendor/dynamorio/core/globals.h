@@ -420,6 +420,11 @@ typedef struct _client_data_t {
 
     /* Flag for dr_invoke_syscall_as_app(). */
     bool skip_client_syscall_events;
+    /* Set on the dcontext of a vfork child that ended without running any exit
+     * code, so that cleanup_after_vfork_child_death() reclaims its record without
+     * a client thread exit event.
+     */
+    bool skip_client_thread_exit_event;
 } client_data_t;
 
 #ifdef UNIX

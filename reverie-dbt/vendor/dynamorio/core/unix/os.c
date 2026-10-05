@@ -6705,6 +6705,18 @@ cleanup_after_vfork_execve(dcontext_t *dcontext)
  * execve and is left to cleanup_after_vfork_execve.  A child that exited through
  * our exit code removed its own record.  So a record found here belongs to a
  * child that ended without cleaning up, and that thread can never run again.
+ *
+ * The record is reclaimed without a client thread exit event.  The child ran no
+ * exit code, and the event would run here, in the parent's thread and process,
+ * as though the child had exited normally: a client that counts or reports
+ * thread exits would report one the application never made.  A child that
+ * exec'd is different; it left this address space through its own execve, and
+ * cleanup_after_vfork_execve keeps delivering its event.  Without the event,
+ * clients and extensions do not free the per-thread state they would free in
+ * it.  Their thread-private allocations go with the child's thread heap, but a
+ * global allocation made at thread init remains: for drreg, 17 vectors of 20
+ * entries and their 17 mutexes, about 3 KB per such child.  Before this routine
+ * the child's whole record remained and the parent skipped process exit.
  */
 static void
 cleanup_after_vfork_child_death(dcontext_t *dcontext, thread_id_t child, uint64 instance)
@@ -6726,6 +6738,8 @@ cleanup_after_vfork_child_death(dcontext_t *dcontext, thread_id_t child, uint64 
         tr->dcontext != NULL && tr->dcontext != dcontext) {
         LOG(THREAD, LOG_SYSCALLS, 2,
             "cleaning up vfork child " TIDFMT " that died without cleanup\n", child);
+        if (tr->dcontext->client_data != NULL)
+            tr->dcontext->client_data->skip_client_thread_exit_event = true;
         dynamo_other_thread_exit(tr);
     }
     if (reused != NULL) {

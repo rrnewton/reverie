@@ -369,6 +369,7 @@ static bool report_summary;
 static bool test_wait_for_background;
 static bool test_kill_announced_child;
 static bool test_thread_exit_evidence;
+static bool test_report_thread_lifecycle;
 static bool test_leave_process_clone_result_pending;
 static bool test_backend_failure;
 static bool test_backend_failure_sender_lookup_miss;
@@ -4980,6 +4981,12 @@ static void thread_init(void* drcontext) {
   DR_ASSERT(counters != NULL);
   memset(counters, 0, sizeof(*counters));
   DR_ASSERT(drmgr_set_tls_field(drcontext, thread_state_index, counters));
+  if (test_report_thread_lifecycle)
+    dr_fprintf(
+        diagnostic_file,
+        "reverie-dbt: test thread init: thread %d in process %d\n",
+        (int)host_tid,
+        (int)dr_get_process_id());
 
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review safe-point preemption per-thread
@@ -5078,6 +5085,17 @@ static void complete_runtime_thread_exit(
 static void thread_exit(void* drcontext) {
   prototype_counters_t* counters =
       (prototype_counters_t*)drmgr_get_tls_field(drcontext, thread_state_index);
+  // The thread this callback reports on is the one that owns drcontext; the
+  // thread that runs it is the current one. They differ only when DynamoRIO
+  // reports one thread's exit from another thread.
+  if (test_report_thread_lifecycle)
+    dr_fprintf(
+        diagnostic_file,
+        "reverie-dbt: test thread exit: thread %d, reported by thread %d in "
+        "process %d\n",
+        (int)dr_get_thread_id(drcontext),
+        (int)dr_get_thread_id(dr_get_current_drcontext()),
+        (int)dr_get_process_id());
   if (counters != NULL) {
     bool owns_runtime = !has_copied_runtime() ||
         (runtime_uses_external_global() && !is_copied_vfork_process());
@@ -5358,6 +5376,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char* argv[]) {
       test_kill_announced_child = true;
     else if (strcmp(argv[i], "-test-thread-exit-evidence") == 0)
       test_thread_exit_evidence = true;
+    else if (strcmp(argv[i], "-test-report-thread-lifecycle") == 0)
+      test_report_thread_lifecycle = true;
     else if (strcmp(argv[i], "-test-leave-process-clone-result-pending") == 0)
       test_leave_process_clone_result_pending = true;
     else if (strcmp(argv[i], "-test-backend-failure") == 0)
@@ -5489,6 +5509,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char* argv[]) {
         strcmp(argv[i], "-test-wait-for-background") == 0 ||
         strcmp(argv[i], "-test-kill-announced-child") == 0 ||
         strcmp(argv[i], "-test-thread-exit-evidence") == 0 ||
+        strcmp(argv[i], "-test-report-thread-lifecycle") == 0 ||
         strcmp(argv[i], "-test-reused-tid") == 0 ||
         strcmp(argv[i], "-test-thread-clone-process-exit") == 0 ||
         strcmp(argv[i], "-test-stalled-thread-start") == 0 ||
