@@ -20,16 +20,16 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
 
-use reverie_preload::BuiltinTool;
-use reverie_preload::SPOOF_PID;
-use reverie_preload::configure_command;
+use reverie_inguest::BuiltinTool;
+use reverie_inguest::SPOOF_PID;
+use reverie_inguest::configure_command;
 
 fn preload_path() -> PathBuf {
-    let probe = PathBuf::from(env!("CARGO_BIN_EXE_reverie-preload-probe"));
+    let probe = PathBuf::from(env!("CARGO_BIN_EXE_reverie-inguest-probe"));
     let target = probe.parent().unwrap();
     [
-        target.join("libreverie_preload.so"),
-        target.join("deps/libreverie_preload.so"),
+        target.join("libreverie_inguest.so"),
+        target.join("deps/libreverie_inguest.so"),
     ]
     .into_iter()
     .find(|path| path.is_file())
@@ -41,7 +41,7 @@ fn run(program: &str, args: &[&str], tool: BuiltinTool) -> Output {
     command.args(args);
     // Point the launcher helper at the freshly built cdylib.
     unsafe {
-        std::env::set_var("REVERIE_PRELOAD_LIB", preload_path());
+        std::env::set_var("REVERIE_INGUEST_LIB", preload_path());
     }
     configure_command(&mut command, tool).unwrap();
     command.output().unwrap()
@@ -63,7 +63,7 @@ fn passthrough_traps_and_forwards_echo() {
 
 #[test]
 fn spoof_getpid_proves_result_mutation() {
-    let probe = env!("CARGO_BIN_EXE_reverie-preload-probe");
+    let probe = env!("CARGO_BIN_EXE_reverie-inguest-probe");
     let output = run(probe, &[], BuiltinTool::SpoofGetpid);
     assert!(
         output.status.success(),
@@ -82,7 +82,7 @@ fn spoof_getpid_proves_result_mutation() {
 #[test]
 fn passthrough_probe_reports_real_pid() {
     // Control: under passthrough the same probe must NOT see the spoof value.
-    let probe = env!("CARGO_BIN_EXE_reverie-preload-probe");
+    let probe = env!("CARGO_BIN_EXE_reverie-inguest-probe");
     let output = run(probe, &[], BuiltinTool::Passthrough);
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();

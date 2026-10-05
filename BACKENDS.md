@@ -108,7 +108,7 @@ generic `Backend`, ptrace is the normal event host.
 
 ### [COMPONENT:TRAPPING]
 
-`reverie-preload` is the shared trapping implementation for the e9patch direct
+`reverie-inguest` is the shared trapping implementation for the e9patch direct
 path and LiteInst. Backends implement `SyscallDispatcher`; the common runtime
 owns the seccomp filter, SIGSYS handler, trusted syscall gate, event-origin
 tagging, and fail-closed default result ([dispatcher interface][preload-dispatch],
@@ -125,7 +125,7 @@ SIGILL handling ([SaBRe router][sabre-sigill], [preload signal contract][preload
 
 The two paths share no backend-private source today. They meet at Reverie's
 `Tool`/`Guest` contracts and, in coordinated mode, at
-`reverie-rpc-transport`. e9patch additionally shares `reverie-preload` with
+`reverie-rpc-transport`. e9patch additionally shares `reverie-inguest` with
 LiteInst and `reverie-ptrace` with the reference backend; SaBRe instead owns a
 separate loader ABI, callback runtime, thread registry, signal machinery,
 memory adapter, and `SabreGuest`

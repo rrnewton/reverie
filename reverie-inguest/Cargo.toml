@@ -1,5 +1,5 @@
 [package]
-name = "reverie-preload"
+name = "reverie-inguest"
 version = "0.4.1"
 authors = ["Meta Platforms"]
 edition = "2024"
@@ -7,13 +7,13 @@ repository = "https://github.com/facebookexperimental/reverie"
 license = "BSD-2-Clause"
 readme = "README.md"
 homepage = "https://hermetic-infra.org"
-documentation = "https://docs.rs/reverie-preload"
+documentation = "https://docs.rs/reverie-inguest"
 keywords = ["linux", "instrumentation", "hermit"]
 categories = ["development-tools::debugging", "os::linux-apis"]
-description = "Shared LD_PRELOAD + seccomp/SIGSYS instrumentation runtime for Reverie ld-preload backends (e9patch, liteinst)"
+description = "Shared LD_PRELOAD + seccomp/SIGSYS instrumentation runtime for Reverie in-guest backends (e9patch, LiteInst, SaBRe)"
 
 # Both an rlib (so e9patch/liteinst embed the runtime and register their own
-# dispatcher) and a cdylib (a standalone `LD_PRELOAD=libreverie_preload.so`
+# dispatcher) and a cdylib (a standalone `LD_PRELOAD=libreverie_inguest.so`
 # skeleton usable on its own and by the integration tests).
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -36,7 +36,7 @@ bincode = { version = "2", features = ["serde"], optional = true }
 reverie = { version = "0.4.1", path = "../reverie", optional = true, package = "reverie-core" }
 
 [[bin]]
-name = "reverie-preload-probe"
+name = "reverie-inguest-probe"
 path = "src/bin/preload_probe.rs"
 
 [[test]]
@@ -48,9 +48,9 @@ name = "pkeys"
 path = "tests/pkeys.rs"
 
 [[bin]]
-name = "reverie-preload-pkey-buffers"
+name = "reverie-inguest-pkey-buffers"
 path = "src/bin/pkey_buffers.rs"
 
 [[bin]]
-name = "reverie-preload-native-syscall-result"
+name = "reverie-inguest-native-syscall-result"
 path = "src/bin/native_syscall_result.rs"

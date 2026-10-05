@@ -7,7 +7,7 @@ backend and [`hermit-run`](https://crates.io/crates/hermit-run) for the CLI.
 Hermit's `liteinst` feature is optional and off by default.
 
 `reverie-liteinst` is an experimental Linux x86-64 Reverie backend built on the
-standalone `liteinst2` patching library, the shared `reverie-preload` runtime,
+standalone `liteinst2` patching library, the shared `reverie-inguest` runtime,
 and `reverie-rpc-transport`.
 
 ## Event path
@@ -15,7 +15,7 @@ and `reverie-rpc-transport`.
 1. A tool-specific DSO calls `install_tool::<T>` from its preload constructor.
    It connects to the coordinator and receives `T::GlobalState::Config` before
    seccomp is active.
-2. `reverie-preload` installs the SIGSYS handler, alternate stack, trusted
+2. `reverie-inguest` installs the SIGSYS handler, alternate stack, trusted
    syscall gate, and seccomp filter.
 3. The first syscall at an instruction reaches SIGSYS. The LiteInst dispatcher
    installs a replace-first hook and changes the saved signal-context RIP to the
@@ -140,32 +140,32 @@ Built-in `strace` and compatibility modes remain available through
 `configure_command`. They use the same shared preload and LiteInst hook path
 without a coordinator.
 
-### Shared `reverie-preload` built-in tools
+### Shared `reverie-inguest` built-in tools
 
 The single `REVERIE_LITEINST_TOOL` selector is a superset of the
 LiteInst-native `strace`/`compat` modes: it also accepts the shared
-`reverie-preload` built-ins `passthrough` and `spoof-getpid`, selected through
+`reverie-inguest` built-ins `passthrough` and `spoof-getpid`, selected through
 `configure_command_builtin(&mut Command, BuiltinTool)`. When one of these values
 is set, the runtime installs the built-in verbatim through
-`reverie_preload::install_builtin` — it does **not** run the LiteInst patching
+`reverie_inguest::install_builtin` — it does **not** run the LiteInst patching
 dispatcher or prepare instrumentation. This is the LiteInst analog of the
 e9patch built-in selector, so the same `BuiltinTool` value installs the same
 shared dispatcher in both backends.
 
 `spoof-getpid` proves the fallback/trap path can service **and mutate** a
-syscall result: a raw `getpid` returns `reverie_preload::SPOOF_PID` instead of
+syscall result: a raw `getpid` returns `reverie_inguest::SPOOF_PID` instead of
 the real PID, while `passthrough` leaves the result unchanged. The
 `reverie-liteinst-spoof-guest` fixture and the
 `spoof_getpid_builtin_mutates_getpid_result` /
 `passthrough_builtin_preserves_getpid_result` tests in `tests/strace.rs` cover
 both.
 
-### Shared `reverie-preload` runtime configuration
+### Shared `reverie-inguest` runtime configuration
 
 The in-guest runtime's `SIGSYS` handler is installed through the shared
-`reverie-preload` `RuntimeConfig`, whose `use_alt_stack` knob decides whether the
+`reverie-inguest` `RuntimeConfig`, whose `use_alt_stack` knob decides whether the
 handler runs on an alternate signal stack. The `RuntimeConfig` and the
-controller that honors it live in `reverie-preload` and are reviewed once; both
+controller that honors it live in `reverie-inguest` and are reviewed once; both
 ld-preload backends install through that same seam. The launcher selects the
 knob per guest with `set_guest_alt_stack(&mut Command, bool)`, which sets the
 `REVERIE_LITEINST_ALT_STACK` environment variable (`1`/`0`, `true`/`false`,
@@ -173,7 +173,7 @@ knob per guest with `set_guest_alt_stack(&mut Command, bool)`, which sets the
 the env-var spelling is LiteInst's — this is the LiteInst analog of e9patch's
 `REVERIE_E9PATCH_ALT_STACK`, so the same `RuntimeConfig` drives both backends.
 It applies to the LiteInst-dispatcher install path (the `strace`/`compat`/Detcore
-modes); a shared `BuiltinTool` installs through `reverie_preload::install_builtin`
+modes); a shared `BuiltinTool` installs through `reverie_inguest::install_builtin`
 with the shared default. The `alt_stack_from_env_value` parser and the
 `set_guest_alt_stack` round-trip are unit-tested in `src/runtime.rs` and
 `src/lib.rs`.
@@ -313,7 +313,7 @@ signal, and no flags beyond `CLONE_CHILD_CLEARTID`, `CLONE_CHILD_SETTID` and
 `CLONE_PARENT_SETTID`, which covers glibc's `fork`; raw `vfork` and `clone3` are
 refused with `ENOTSUP` before forwarding), so `process_syscall`
 invokes the shared
-[`reverie_preload::fork::ForkHook`] seam in the child (guarded by the shared
+[`reverie_inguest::fork::ForkHook`] seam in the child (guarded by the shared
 `is_fork_like` classifier and a zero return value): immediately after the fork
 returns `0` in the child, `reset_fallback_observability` clears inherited
 counters so the child's attribution starts clean. Typed Tool mode then records
@@ -347,7 +347,7 @@ in-process runtime or a current L2 measurement:
   native by design. Canonical L2 assurance is not established by these results.
 - **Four boundary modes were reported in that historical sweep**,
   shared with e9patch because both ld-preload backends routed
-  clone/fork through the same `reverie-preload` dispatcher and share this
+  clone/fork through the same `reverie-inguest` dispatcher and share this
   crate's signal/timer policy: thread `clone` and `fork` are rejected, a
   callable guest signal handler is rejected (fail-closed, nonzero exit), and an
   armed timer never fires (the guest spins to timeout).

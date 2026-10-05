@@ -25,16 +25,16 @@ use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
-use reverie_preload::dispatch::PassthroughDispatcher;
-use reverie_preload::dispatch::SyscallDispatcher;
-use reverie_preload::dispatch::SyscallEvent;
-use reverie_preload::dispatch::SyscallEventSource;
-use reverie_preload::lifecycle::InProcessSeccomp;
-use reverie_preload::tool_host::DrivenSyscall;
-use reverie_preload::tool_host::TailResult;
-use reverie_preload::tool_host::drive_ready;
-use reverie_preload::tool_host::drive_tool_syscall;
-use reverie_preload::trap::raw_syscall6;
+use reverie_inguest::dispatch::PassthroughDispatcher;
+use reverie_inguest::dispatch::SyscallDispatcher;
+use reverie_inguest::dispatch::SyscallEvent;
+use reverie_inguest::dispatch::SyscallEventSource;
+use reverie_inguest::lifecycle::InProcessSeccomp;
+use reverie_inguest::tool_host::DrivenSyscall;
+use reverie_inguest::tool_host::TailResult;
+use reverie_inguest::tool_host::drive_ready;
+use reverie_inguest::tool_host::drive_tool_syscall;
+use reverie_inguest::trap::raw_syscall6;
 
 use crate::aot;
 use crate::dispatch::record_fallback_dispatch;
@@ -143,7 +143,7 @@ where
     // SAFETY: the caller provides the once-before-threads contract. The
     // dispatcher is registered before the controller installs its filter.
     let result =
-        unsafe { reverie_preload::install(Box::new(dispatcher), &InProcessSeccomp, &config) };
+        unsafe { reverie_inguest::install(Box::new(dispatcher), &InProcessSeccomp, &config) };
     if result.is_ok() {
         dispatch_page.commit();
     }
@@ -463,7 +463,7 @@ impl<T: Tool> Guest<T> for E9patchGuest<'_, T> {
 
     // This in-process host has no begin/ready runtime window: the Tool
     // receives syscalls only through the seccomp filter that
-    // reverie_preload::install arms as the last step of runtime installation,
+    // reverie_inguest::install arms as the last step of runtime installation,
     // so the runtime's own setup is never delivered to it.
     fn is_backend_runtime_bootstrap(&self) -> bool {
         false

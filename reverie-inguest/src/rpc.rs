@@ -16,8 +16,9 @@
 //!
 //! The frame format is **identical** to the async
 //! [`reverie-rpc-transport`](https://github.com/rrnewton/reverie/pull/98)
-//! `RpcServer<G>`, so one coordinator serves both async (DBT/SaBRe) and this
-//! synchronous (ld-preload) client:
+//! `RpcServer<G>`, so one coordinator serves this client and the other
+//! synchronous in-guest clients (DBT's `reverie-dbt` `sync_rpc` and SaBRe's
+//! `reverie-rpc-transport` `BlockingRpcClient`):
 //!
 //! * framing: `u32` big-endian length prefix, then a bincode 2
 //!   `config::legacy()` payload;
@@ -39,9 +40,8 @@
 //! immediately usable from normal context (e.g. a backend whose trap mechanism
 //! runs outside a signal handler, or a dedicated servicing thread). Calling it
 //! from *inside* the SIGSYS handler additionally requires routing the socket
-//! reads/writes through the trusted gate ([`crate::trap::raw_syscall6`]); that
-//! raw-gate transport is a documented follow-up and does not change this wire
-//! contract.
+//! reads/writes through the trusted gate ([`crate::trap::raw_syscall6`]), which
+//! [`CoordinatorClient::send_trusted`] does over the same wire contract.
 
 use std::io;
 use std::io::Read;
@@ -300,11 +300,11 @@ mod tests {
     // A tiny coordinator that speaks the exact wire protocol: send a config
     // frame, then echo each request's numeric payload incremented by one,
     // aggregating a running total to model shared GlobalState across
-    // connections (the property the DBT backend lacks).
+    // connections.
     #[test]
     fn end_to_end_against_a_wire_server() {
         let dir = std::path::Path::new("/tmp")
-            .join(format!("reverie-preload-rpc-test-{}", std::process::id()));
+            .join(format!("reverie-inguest-rpc-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join("coord.sock");
         let _ = std::fs::remove_file(&sock);

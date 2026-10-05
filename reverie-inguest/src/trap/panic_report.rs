@@ -58,7 +58,7 @@ pub(super) fn install() {
 /// Ends the process.
 unsafe fn report_and_abort(info: &PanicHookInfo<'_>) -> ! {
     unsafe { block_sigpipe() };
-    write_stderr(b"reverie-preload: panic in the SIGSYS handler");
+    write_stderr(b"reverie-inguest: panic in the SIGSYS handler");
     if let Some(location) = info.location() {
         write_stderr(b" at ");
         write_stderr(location.file().as_bytes());

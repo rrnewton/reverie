@@ -923,7 +923,7 @@ mod tests {
     use std::time::Duration;
 
     use reverie::Tid;
-    use reverie_preload::rpc::CoordinatorClient;
+    use reverie_inguest::rpc::CoordinatorClient;
 
     use super::*;
 

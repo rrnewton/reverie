@@ -37,10 +37,10 @@ use reverie::Signal;
 use reverie::Stack;
 use reverie::TimerSchedule;
 use reverie::Tool as ReverieTool;
+use reverie_inguest::tool_host::DrivenSyscall;
+use reverie_inguest::tool_host::TailResult;
+use reverie_inguest::tool_host::drive_tool_syscall;
 use reverie_memory::MemoryAccess;
-use reverie_preload::tool_host::DrivenSyscall;
-use reverie_preload::tool_host::TailResult;
-use reverie_preload::tool_host::drive_tool_syscall;
 use reverie_rpc_transport::BlockingRpcClient;
 use reverie_rpc_transport::RpcError;
 use reverie_syscalls::Addr;
@@ -1954,7 +1954,7 @@ mod tests {
     /// `d7eb0a1d` made the shared driver restart EVERY private `ERESTARTSYS`, not
     /// only the wait family. An earlier version of this branch deleted the
     /// adapter's non-wait assertion on the grounds that asserting the new
-    /// behaviour here would merely duplicate `reverie-preload`'s unit test. That
+    /// behaviour here would merely duplicate `reverie-inguest`'s unit test. That
     /// reasoning was WRONG and `agent(hermit-123)` measured why: the preload test
     /// establishes the shared driver's POLICY, while an adapter test establishes
     /// that a given CALL SITE applies it. Returning `ERESTARTSYS` for `read` in
@@ -2046,7 +2046,7 @@ mod tests {
     // red, because a wedged run reads as a slow box.
     //
     // Removed rather than inverted: asserting the NEW behaviour here would only
-    // duplicate `classify_outcome_restarts_on_erestartsys` in reverie-preload, which
+    // duplicate `classify_outcome_restarts_on_erestartsys` in reverie-inguest, which
     // already owns that policy.
 
     #[test]

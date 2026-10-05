@@ -41,17 +41,13 @@
 //! application-visible errno. [`drive_tool_syscall`] owns that loop so both
 //! ld-preload backends inherit identical semantics.
 //!
-//! # Not yet here (deferred to the wiring increments)
+//! # Users
 //!
-//! This module is the shared *driver*; it is intentionally **not wired** to any
-//! backend yet, and each backend still carries its own copy of this logic. The
-//! backend seam traits (`HostSyscallEvent`, `HostBackend`, and the slow-path
-//! counter) are co-designed with the first backend that adopts the driver,
-//! where a real implementor validates their shape. When that seam lands, the
-//! host-backend's slow-path counter accessor must be **non-`Option`** so a
-//! converging backend cannot silently drop per-path (fastpath vs slowpath)
-//! counts — that invariant is a hard requirement, recorded here so the wiring
-//! increment honors it.
+//! LiteInst, e9patch and SaBRe drive their Tool callbacks through
+//! [`drive_tool_syscall`]; each still keeps its own Tool host around it. When
+//! a shared host-backend seam replaces those copies, its slow-path counter
+//! accessor must be **non-`Option`** so a converging backend cannot silently
+//! drop per-path (fastpath vs slowpath) counts.
 
 use core::future::Future;
 use core::sync::atomic::AtomicI64;

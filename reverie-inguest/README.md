@@ -1,8 +1,8 @@
-# reverie-preload
+# reverie-inguest
 
 Part of [Hermit](https://hermetic-infra.org) and
 [Reverie](https://docs.rs/reverie-core). See the
-[API documentation](https://docs.rs/reverie-preload) for embedding this runtime,
+[API documentation](https://docs.rs/reverie-inguest) for embedding this runtime,
 and [`hermit-run`](https://crates.io/crates/hermit-run) for the command-line
 interface. Hermit selects this runtime only through optional backends.
 
@@ -34,17 +34,17 @@ atomically, so there is no post-fork install race.
 ## Two ways to use it
 
 * **As a library (`rlib`):** a backend embeds the runtime, registers its own
-  `SyscallDispatcher`, and calls `reverie_preload::install(...)`.
-* **As a standalone `LD_PRELOAD` (`cdylib`):** set `REVERIE_PRELOAD_TOOL`
-  (`passthrough` or `spoof-getpid`) and preload `libreverie_preload.so`.
+  `SyscallDispatcher`, and calls `reverie_inguest::install(...)`.
+* **As a standalone `LD_PRELOAD` (`cdylib`):** set `REVERIE_INGUEST_TOOL`
+  (`passthrough` or `spoof-getpid`) and preload `libreverie_inguest.so`.
 
 ```rust,ignore
-use reverie_preload::dispatch::PassthroughDispatcher;
-use reverie_preload::lifecycle::{InProcessSeccomp, RuntimeConfig};
+use reverie_inguest::dispatch::PassthroughDispatcher;
+use reverie_inguest::lifecycle::{InProcessSeccomp, RuntimeConfig};
 
 // From a backend, before untrusted threads start:
 unsafe {
-    reverie_preload::install(
+    reverie_inguest::install(
         Box::new(PassthroughDispatcher::new()),
         &InProcessSeccomp,
         &RuntimeConfig::default(),

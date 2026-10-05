@@ -32,18 +32,18 @@ mod runtime;
 mod tool_host;
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-252): Review shared reverie-preload built-in re-exports.
-/// Shared `reverie-preload` built-in tool enum and getpid spoof constant.
+// TODO-HUMAN-REVIEW(PR-252): Review shared reverie-inguest built-in re-exports.
+/// Shared `reverie-inguest` built-in tool enum and getpid spoof constant.
 ///
 /// These are re-exported verbatim so LiteInst and e9patch present the same
 /// built-in surface; the same [`BuiltinTool`] value installs the same dispatcher
-/// in both backends via `reverie_preload::install_builtin`.
-pub use reverie_preload::BuiltinTool;
-pub use reverie_preload::SPOOF_PID;
+/// in both backends via `reverie_inguest::install_builtin`.
+pub use reverie_inguest::BuiltinTool;
+pub use reverie_inguest::SPOOF_PID;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-254): Review shared RuntimeConfig alt-stack re-exports.
 /// `REVERIE_LITEINST_ALT_STACK` selector and parser for the shared
-/// `reverie-preload` `RuntimeConfig` alt-stack knob.
+/// `reverie-inguest` `RuntimeConfig` alt-stack knob.
 pub use runtime::ALT_STACK_ENV;
 pub use runtime::IN_GUEST_STAGE_STREAM_ENV;
 pub use runtime::PROCESS_FORK_ENV;
@@ -161,9 +161,9 @@ fn builtin_tool_env_value(tool: BuiltinTool) -> &'static str {
 /// Configures a guest command to load the runtime and select a shared built-in.
 ///
 /// This is the built-in analog of [`configure_command`]: it sets `LD_PRELOAD`
-/// and `REVERIE_LITEINST_TOOL` to a shared `reverie-preload` [`BuiltinTool`]
+/// and `REVERIE_LITEINST_TOOL` to a shared `reverie-inguest` [`BuiltinTool`]
 /// selector, so the runtime installs the built-in verbatim through
-/// `reverie_preload::install_builtin` (no LiteInst patching). It mirrors
+/// `reverie_inguest::install_builtin` (no LiteInst patching). It mirrors
 /// e9patch's launcher-side built-in configuration.
 pub fn configure_command_builtin(command: &mut Command, tool: BuiltinTool) -> io::Result<()> {
     let mut preload = preload_library_path()?.into_os_string();
@@ -179,12 +179,12 @@ pub fn configure_command_builtin(command: &mut Command, tool: BuiltinTool) -> io
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-254): Review launcher-side shared RuntimeConfig alt-stack selector.
-/// Selects the shared `reverie-preload` `RuntimeConfig` alt-stack knob for a guest.
+/// Selects the shared `reverie-inguest` `RuntimeConfig` alt-stack knob for a guest.
 ///
 /// Sets [`ALT_STACK_ENV`] so the in-guest runtime installs its `SIGSYS` handler
 /// with or without an alternate signal stack (`RuntimeConfig::use_alt_stack`).
 /// The `RuntimeConfig` and the controller honoring it are shared with e9patch in
-/// `reverie-preload`; only the env-var spelling is LiteInst's. Leaving this
+/// `reverie-inguest`; only the env-var spelling is LiteInst's. Leaving this
 /// unset preserves the shared default (alt stack on). It composes with
 /// [`configure_command`] and [`configure_command_builtin`]; the written value
 /// round-trips through [`alt_stack_from_env_value`].

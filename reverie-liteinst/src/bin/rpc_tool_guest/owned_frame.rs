@@ -16,7 +16,7 @@ use reverie::Tool;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
-use reverie_preload::trap::raw_syscall6;
+use reverie_inguest::trap::raw_syscall6;
 
 const STACK_BYTES: usize = 1024 * 1024;
 const XSTATE_OFFSET: usize = 512;

@@ -12,8 +12,8 @@ use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Pid;
 // The async-signal-safe spinlock is shared across the in-guest tool hosts.
-pub(crate) use reverie_preload::sync::SpinMutex;
-use reverie_preload::trap::raw_syscall6;
+pub(crate) use reverie_inguest::sync::SpinMutex;
+use reverie_inguest::trap::raw_syscall6;
 use reverie_rpc_transport::BlockingRpcClient;
 
 /// Set in a freshly forked child by [`note_fork_in_child`]. The guest RPC hot

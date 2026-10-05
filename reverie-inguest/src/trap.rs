@@ -38,10 +38,10 @@ core::arch::global_asm!(
     r#"
     .text
     .p2align 4
-    .global reverie_preload_trusted_syscall
-    .hidden reverie_preload_trusted_syscall
-    .type reverie_preload_trusted_syscall,@function
-reverie_preload_trusted_syscall:
+    .global reverie_inguest_trusted_syscall
+    .hidden reverie_inguest_trusted_syscall
+    .type reverie_inguest_trusted_syscall,@function
+reverie_inguest_trusted_syscall:
     mov rax, rdi
     mov rdi, rsi
     mov rsi, rdx
@@ -49,21 +49,21 @@ reverie_preload_trusted_syscall:
     mov r10, r8
     mov r8, r9
     mov r9, [rsp + 8]
-    .global reverie_preload_trusted_syscall_ip
-    .hidden reverie_preload_trusted_syscall_ip
-reverie_preload_trusted_syscall_ip:
+    .global reverie_inguest_trusted_syscall_ip
+    .hidden reverie_inguest_trusted_syscall_ip
+reverie_inguest_trusted_syscall_ip:
     syscall
-    .global reverie_preload_trusted_syscall_return_ip
-    .hidden reverie_preload_trusted_syscall_return_ip
-reverie_preload_trusted_syscall_return_ip:
+    .global reverie_inguest_trusted_syscall_return_ip
+    .hidden reverie_inguest_trusted_syscall_return_ip
+reverie_inguest_trusted_syscall_return_ip:
     ret
-    .size reverie_preload_trusted_syscall, .-reverie_preload_trusted_syscall
+    .size reverie_inguest_trusted_syscall, .-reverie_inguest_trusted_syscall
 
     .p2align 4
-    .global reverie_preload_guest_syscall
-    .hidden reverie_preload_guest_syscall
-    .type reverie_preload_guest_syscall,@function
-reverie_preload_guest_syscall:
+    .global reverie_inguest_guest_syscall
+    .hidden reverie_inguest_guest_syscall
+    .type reverie_inguest_guest_syscall,@function
+reverie_inguest_guest_syscall:
     // SysV arguments: number, pointer to six arguments, interrupted PKRU.
     // Save all stack state and load all memory while caller access is intact.
     push r12
@@ -88,13 +88,13 @@ reverie_preload_guest_syscall:
     lfence
     mov rax, r13
     mov rdx, r14
-    .global reverie_preload_guest_syscall_ip
-    .hidden reverie_preload_guest_syscall_ip
-reverie_preload_guest_syscall_ip:
+    .global reverie_inguest_guest_syscall_ip
+    .hidden reverie_inguest_guest_syscall_ip
+reverie_inguest_guest_syscall_ip:
     syscall
-    .global reverie_preload_guest_syscall_return_ip
-    .hidden reverie_preload_guest_syscall_return_ip
-reverie_preload_guest_syscall_return_ip:
+    .global reverie_inguest_guest_syscall_return_ip
+    .hidden reverie_inguest_guest_syscall_return_ip
+reverie_inguest_guest_syscall_return_ip:
     // The guest may deny this very stack. Restore caller rights entirely in
     // registers before any stack/global/TLS access, also in a COW fork child.
     mov r12, rax
@@ -115,7 +115,7 @@ reverie_preload_guest_syscall_return_ip:
     pop r13
     pop r12
     ret
-    .size reverie_preload_guest_syscall, .-reverie_preload_guest_syscall
+    .size reverie_inguest_guest_syscall, .-reverie_inguest_guest_syscall
 "#
 );
 
@@ -135,7 +135,7 @@ const _: () = {
 };
 
 unsafe extern "C" {
-    fn reverie_preload_trusted_syscall(
+    fn reverie_inguest_trusted_syscall(
         number: u64,
         arg0: u64,
         arg1: u64,
@@ -144,15 +144,15 @@ unsafe extern "C" {
         arg4: u64,
         arg5: u64,
     ) -> i64;
-    static reverie_preload_trusted_syscall_ip: u8;
-    static reverie_preload_trusted_syscall_return_ip: u8;
-    fn reverie_preload_guest_syscall(
+    static reverie_inguest_trusted_syscall_ip: u8;
+    static reverie_inguest_trusted_syscall_return_ip: u8;
+    fn reverie_inguest_guest_syscall(
         number: i64,
         args: *const u64,
         pkru: u32,
     ) -> GuestSyscallResult;
-    static reverie_preload_guest_syscall_ip: u8;
-    static reverie_preload_guest_syscall_return_ip: u8;
+    static reverie_inguest_guest_syscall_ip: u8;
+    static reverie_inguest_guest_syscall_return_ip: u8;
 }
 
 /// The registered dispatcher, as a leaked thin pointer to a boxed trait object.
@@ -177,7 +177,7 @@ thread_local! {
 /// Issues a raw syscall with caller-supplied arguments.
 pub unsafe fn raw_syscall6(number: i64, args: [u64; 6]) -> i64 {
     unsafe {
-        reverie_preload_trusted_syscall(
+        reverie_inguest_trusted_syscall(
             number as u64,
             args[0],
             args[1],
@@ -202,7 +202,7 @@ pub unsafe fn raw_syscall6(number: i64, args: [u64; 6]) -> i64 {
 /// Like the ordinary gate, this cannot resume a clone with a different stack
 /// and must not be used as an ordinary wrapper around rt_sigreturn.
 pub unsafe fn raw_syscall6_with_pkru(number: i64, args: [u64; 6], pkru: u32) -> i64 {
-    unsafe { reverie_preload_guest_syscall(number, args.as_ptr(), pkru).result }
+    unsafe { reverie_inguest_guest_syscall(number, args.as_ptr(), pkru).result }
 }
 
 /// The scalar result and, when requested, permissions returned by one physical
@@ -246,7 +246,7 @@ pub unsafe fn raw_syscall6_with_result(
 ) -> NativeSyscallResult {
     match guest_pkru {
         Some(pkru) => {
-            let result = unsafe { reverie_preload_guest_syscall(number, args.as_ptr(), pkru) };
+            let result = unsafe { reverie_inguest_guest_syscall(number, args.as_ptr(), pkru) };
             NativeSyscallResult {
                 result: result.result,
                 pkru: Some(result.pkru as u32),
@@ -262,8 +262,8 @@ pub unsafe fn raw_syscall6_with_result(
 /// The address range of the trusted gate, for building the seccomp filter.
 pub fn trusted_gate() -> TrustedGate {
     TrustedGate {
-        syscall_ip: ptr::addr_of!(reverie_preload_trusted_syscall_ip) as usize as u64,
-        return_ip: ptr::addr_of!(reverie_preload_trusted_syscall_return_ip) as usize as u64,
+        syscall_ip: ptr::addr_of!(reverie_inguest_trusted_syscall_ip) as usize as u64,
+        return_ip: ptr::addr_of!(reverie_inguest_trusted_syscall_return_ip) as usize as u64,
     }
 }
 
@@ -272,8 +272,8 @@ pub fn trusted_gate() -> TrustedGate {
 /// its RDPKRU/WRPKRU instructions.
 pub fn guest_syscall_gate() -> TrustedGate {
     TrustedGate {
-        syscall_ip: ptr::addr_of!(reverie_preload_guest_syscall_ip) as usize as u64,
-        return_ip: ptr::addr_of!(reverie_preload_guest_syscall_return_ip) as usize as u64,
+        syscall_ip: ptr::addr_of!(reverie_inguest_guest_syscall_ip) as usize as u64,
+        return_ip: ptr::addr_of!(reverie_inguest_guest_syscall_return_ip) as usize as u64,
     }
 }
 
@@ -420,10 +420,10 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
 core::arch::global_asm!(
     r#"
     .text
-    .global reverie_preload_sigsys_pkru
-    .hidden reverie_preload_sigsys_pkru
-    .type reverie_preload_sigsys_pkru,@function
-reverie_preload_sigsys_pkru:
+    .global reverie_inguest_sigsys_pkru
+    .hidden reverie_inguest_sigsys_pkru
+    .type reverie_inguest_sigsys_pkru,@function
+reverie_inguest_sigsys_pkru:
     // Linux enters with default PKRU, which may deny the key of the signal
     // stack itself. No stack, global, TLS, siginfo or ucontext access is safe
     // until permissions are opened. RDI/RSI/RDX are the SA_SIGINFO arguments;
@@ -436,13 +436,13 @@ reverie_preload_sigsys_pkru:
     lfence
     mov rdx, r8
     jmp {handler}
-    .size reverie_preload_sigsys_pkru, .-reverie_preload_sigsys_pkru
+    .size reverie_inguest_sigsys_pkru, .-reverie_inguest_sigsys_pkru
     "#,
     handler = sym sigsys_handler,
 );
 
 unsafe extern "C" {
-    fn reverie_preload_sigsys_pkru(
+    fn reverie_inguest_sigsys_pkru(
         signal_number: libc::c_int,
         info: *mut libc::siginfo_t,
         context: *mut libc::c_void,
@@ -476,7 +476,7 @@ pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
     frame::initialize()?;
     let ospke = pkru::initialize()?;
     let handler = if ospke {
-        reverie_preload_sigsys_pkru
+        reverie_inguest_sigsys_pkru
     } else {
         sigsys_handler
     };
@@ -571,7 +571,7 @@ mod tests {
             panic!("the trapped getppid returned from the handler");
         }
         let expected = format!(
-            "reverie-preload: panic in the SIGSYS handler at {}:{DELIBERATE_PANIC_LINE}:9: \
+            "reverie-inguest: panic in the SIGSYS handler at {}:{DELIBERATE_PANIC_LINE}:9: \
              deliberate panic inside the SIGSYS handler\n",
             file!()
         );

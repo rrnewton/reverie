@@ -14,11 +14,11 @@
 
 use std::ptr;
 
-use reverie_preload::dispatch::PassthroughDispatcher;
-use reverie_preload::lifecycle::InProcessSeccomp;
-use reverie_preload::lifecycle::LifecycleController;
-use reverie_preload::lifecycle::RuntimeConfig;
-use reverie_preload::trap;
+use reverie_inguest::dispatch::PassthroughDispatcher;
+use reverie_inguest::lifecycle::InProcessSeccomp;
+use reverie_inguest::lifecycle::LifecycleController;
+use reverie_inguest::lifecycle::RuntimeConfig;
+use reverie_inguest::trap;
 
 const CHILD: &str = "REVERIE_TEST_PKEY_BUFFERS";
 const MARKER: &str = "buffer row: ";
