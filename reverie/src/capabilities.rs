@@ -173,6 +173,22 @@ pub struct BackendCapabilities {
     /// ENOSYS because it cannot promote that thread to leader.
     pub refuses_nonleader_exec_with_enosys: bool,
 
+    /// The backend commits a `SIGKILL` that a guest thread sends to itself (to
+    /// its own process, or to its own thread) as an immediate exit of the
+    /// caller's whole process: the syscall never returns, so there is no later
+    /// point at which the tool could act on the pending signal. The tool must
+    /// order the process's exit at the kill's own turn, as it orders
+    /// `exit_group`.
+    pub self_sigkill_is_nonreturning_exit: bool,
+
+    /// A `SIGKILL` that a guest thread sends to itself ends the process without
+    /// the backend running a thread-exit callback or reporting the exit to the
+    /// tool afterwards, because the kernel kills the process without the
+    /// backend observing it. The tool must retire the calling thread itself
+    /// before it issues the kill. This is true only for a backend that also
+    /// has `self_sigkill_is_nonreturning_exit`.
+    pub self_sigkill_bypasses_exit_callbacks: bool,
+
     /// The exclusive upper bound of guest user addresses (Linux's
     /// `TASK_SIZE`), when the backend's guest address space has a fixed bound
     /// that differs from the host process's. `None` means the guest runs as a
@@ -209,6 +225,8 @@ impl BackendCapabilities {
         emulates_child_waits: false,
         failed_gettimeofday_may_store_host_time: true,
         refuses_nonleader_exec_with_enosys: false,
+        self_sigkill_is_nonreturning_exit: false,
+        self_sigkill_bypasses_exit_callbacks: false,
         user_address_limit: None,
     };
 
@@ -250,6 +268,8 @@ impl BackendCapabilities {
         runs_exit_robust_list: false,
         requires_thread_directed_process_signals: true,
         supports_parked_write_signal_interruption: false,
+        self_sigkill_is_nonreturning_exit: true,
+        self_sigkill_bypasses_exit_callbacks: true,
         ..Self::PTRACE
     };
 
@@ -267,6 +287,7 @@ impl BackendCapabilities {
         emulates_child_waits: true,
         failed_gettimeofday_may_store_host_time: false,
         refuses_nonleader_exec_with_enosys: true,
+        self_sigkill_is_nonreturning_exit: true,
         user_address_limit: Some(X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT),
         ..Self::PTRACE
     };
@@ -307,6 +328,8 @@ mod tests {
             "emulates_child_waits": false,
             "failed_gettimeofday_may_store_host_time": true,
             "refuses_nonleader_exec_with_enosys": false,
+            "self_sigkill_is_nonreturning_exit": false,
+            "self_sigkill_bypasses_exit_callbacks": false,
             "user_address_limit": null,
         })
     }
@@ -377,6 +400,8 @@ mod tests {
                 "runs_exit_robust_list": false,
                 "requires_thread_directed_process_signals": true,
                 "supports_parked_write_signal_interruption": false,
+                "self_sigkill_is_nonreturning_exit": true,
+                "self_sigkill_bypasses_exit_callbacks": true,
             }))
         );
     }
@@ -397,9 +422,28 @@ mod tests {
                 "emulates_child_waits": true,
                 "failed_gettimeofday_may_store_host_time": false,
                 "refuses_nonleader_exec_with_enosys": true,
+                "self_sigkill_is_nonreturning_exit": true,
                 "user_address_limit": 140_737_488_351_232_u64,
             }))
         );
+    }
+
+    #[test]
+    fn only_a_nonreturning_self_sigkill_can_bypass_exit_callbacks() {
+        for caps in [
+            BackendCapabilities::PTRACE,
+            BackendCapabilities::E9PATCH,
+            BackendCapabilities::LITEINST_IN_GUEST,
+            BackendCapabilities::SABRE,
+            BackendCapabilities::DBT,
+            BackendCapabilities::KVM,
+        ] {
+            assert!(
+                !caps.self_sigkill_bypasses_exit_callbacks
+                    || caps.self_sigkill_is_nonreturning_exit,
+                "{caps:?}"
+            );
+        }
     }
 
     #[test]
