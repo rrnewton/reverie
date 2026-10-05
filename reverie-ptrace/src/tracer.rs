@@ -304,7 +304,14 @@ impl Default for NativeController {
 }
 
 impl NativeController {
-    fn bound_guard(&self) -> Result<PtracerThreadGuard, Errno> {
+    fn guard_for_managed_call(&self) -> Result<PtracerThreadGuard, Errno> {
+        // These callers immediately enter a managed SDK method, which checks
+        // this same guard before callbacks, progress or any early result.
+        // Cloning the private Arc runs no user code between those admissions.
+        if let Some(guard) = self.shared.guard.lock().unwrap().clone() {
+            return Ok(guard);
+        }
+        // A missing anchor still needs the original cold role admission.
         self.check_current()?;
         self.shared
             .guard
@@ -378,7 +385,7 @@ impl ManagedWaitDriver {
     ) -> std::task::Poll<Result<Wait, OwnedWaitError>> {
         match self {
             Self::Native { inner, controller } => {
-                let guard = match controller.bound_guard() {
+                let guard = match controller.guard_for_managed_call() {
                     Ok(guard) => guard,
                     Err(error) => return std::task::Poll::Ready(Err(OwnedWaitError::Errno(error))),
                 };
@@ -432,7 +439,7 @@ impl ManagedExitDriver {
     ) -> std::task::Poll<Result<Stopped, TraceError>> {
         match self {
             Self::Native { inner, controller } => {
-                let guard = match controller.bound_guard() {
+                let guard = match controller.guard_for_managed_call() {
                     Ok(guard) => guard,
                     Err(error) => return std::task::Poll::Ready(Err(error.into())),
                 };
@@ -501,7 +508,7 @@ impl ManagedCleanupDriver {
     ) -> Result<Option<ManagedPendingStatusReservation<'_>>, Errno> {
         match self {
             Self::Native { shared, controller } => {
-                let guard = controller.bound_guard()?;
+                let guard = controller.guard_for_managed_call()?;
                 Ok(shared
                     .reserve_pending_for_cleanup_with_guard(timeout, &guard)?
                     .map(|inner| ManagedPendingStatusReservation {
