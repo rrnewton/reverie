@@ -6676,6 +6676,33 @@ cleanup_after_vfork_execve(dcontext_t *dcontext)
                      num_threads * sizeof(thread_record_t *) HEAPACCT(ACCT_THREAD_MGT));
 }
 
+/* A vfork child that dies without running any of our exit code, as it does
+ * when it is killed by SIGKILL (whether it sent the signal to itself or another
+ * process sent it), leaves its thread record in the list it shares with its
+ * parent.  The parent's later SYS_exit_group then finds a thread from another
+ * thread group, concludes that its own group is not the final one, and skips
+ * process exit along with the client's process exit event.  The kernel holds a
+ * vfork parent until the child has exec'd or terminated, so once the parent's
+ * vfork returns, a child record that is still present and not marked for
+ * execve belongs to a child that terminated without cleaning up.  We clean it
+ * up here, as cleanup_after_vfork_execve does for a child that exec'd.
+ */
+static void
+cleanup_after_vfork_child_death(dcontext_t *dcontext, thread_id_t child)
+{
+    thread_record_t *tr;
+    d_r_mutex_lock(&thread_initexit_lock);
+    tr = thread_lookup(child);
+    /* The child leads its own thread group, so its record carries its own pid. */
+    if (tr != NULL && !tr->execve && tr->pid == (process_id_t)child &&
+        tr->dcontext != NULL && tr->dcontext != dcontext) {
+        LOG(THREAD, LOG_SYSCALLS, 2,
+            "cleaning up vfork child " TIDFMT " that died without cleanup\n", child);
+        dynamo_other_thread_exit(tr);
+    }
+    d_r_mutex_unlock(&thread_initexit_lock);
+}
+
 /* XXX: Discover libc type at runtime and use appropriate stdfile_t variant
  * instead of depending on build-time preprocessor defines. */
 static void
@@ -9451,6 +9478,11 @@ post_system_call(dcontext_t *dcontext)
                 set_syscall_param(dcontext, SYSCALL_PARAM_CLONE_STACK,
                                   dcontext->sys_param1);
             }
+            if (result > 0 &&
+                TEST(CLONE_VFORK,
+                     sysnum == SYS_clone3 ? get_stored_clone3_flags(dcontext)
+                                          : dcontext->sys_param0))
+                cleanup_after_vfork_child_death(dcontext, (thread_id_t)result);
         }
         break;
     }
@@ -9492,6 +9524,8 @@ post_system_call(dcontext_t *dcontext)
                 os_switch_lib_tls(dcontext, false /*to dr*/);
             }
             /* i#2089: we already restored the DR tls in os_clone_post() */
+            if (result > 0)
+                cleanup_after_vfork_child_death(dcontext, (thread_id_t)result);
         }
         break;
     }
