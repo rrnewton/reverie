@@ -3003,3 +3003,120 @@ fn run_explicit_wait_role_outer(name: &str, marker: &str, cell_prefix: &str) -> 
     eprint!("{}", String::from_utf8_lossy(&result.output.stderr));
     true
 }
+
+/// Host-thread tokens identify one OS thread of one process. They differ
+/// across threads and are withheld in a fork child, which inherits the
+/// forking thread's thread-local token but not its identity.
+#[test]
+fn host_thread_tokens_are_per_thread_and_withheld_in_fork_children() {
+    let mine = host_thread::token().expect("token on an ordinary thread");
+    assert_eq!(host_thread::token(), Some(mine));
+    let other = thread::spawn(host_thread::token)
+        .join()
+        .unwrap()
+        .expect("token on a second thread");
+    assert_ne!(other, mine);
+    let owner = LegacyWaitOwner::capture_current().unwrap();
+    assert_eq!(owner.thread, Some(mine));
+    assert!(owner.is_capturing_thread());
+    let child = match unsafe { fork() }.unwrap() {
+        ForkResult::Parent { child } => child,
+        ForkResult::Child => {
+            let withheld = host_thread::token().is_none() && !owner.is_capturing_thread();
+            unsafe { libc::_exit(if withheld { 0 } else { 1 }) };
+        }
+    };
+    let status = waitpid_status_bounded(child, 0, TRACEE_WAIT_TIMEOUT).unwrap();
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 0);
+}
+
+/// The host owner one OS thread captured is reused by that same thread for
+/// every tracee reached through the same procfs mount, never by another
+/// thread, and every reuse still reads the target's current attachment. Holds
+/// on both the native and the forced Linux 6.8 handle.
+#[test]
+fn explicit_owner_capture_is_reused_only_by_its_capturing_thread() {
+    // Reuse needs the never-reused mount IDs of Linux 6.8 and later; before
+    // that, every capture must stay a full one.
+    let reusable = fd_unique_mount(&AlignedProcfs::open().unwrap().root).is_some();
+    let mut uts = unsafe { std::mem::zeroed::<libc::utsname>() };
+    assert_eq!(unsafe { libc::uname(&mut uts) }, 0);
+    let release = unsafe { std::ffi::CStr::from_ptr(uts.release.as_ptr()) }.to_string_lossy();
+    let mut version = release
+        .split(|c: char| !c.is_ascii_digit())
+        .map(|part| part.parse::<u32>().unwrap_or(0));
+    let at_least_6_8 = (version.next().unwrap_or(0), version.next().unwrap_or(0)) >= (6, 8);
+    assert!(
+        reusable || !at_least_6_8,
+        "Linux {release} should report STATX_MNT_ID_UNIQUE"
+    );
+    for forced in [false, true] {
+        let (pid, mut cleanup) = spawn_stopped_process(None).unwrap();
+        let (other_pid, mut other_cleanup) = spawn_stopped_process(None).unwrap();
+        // One forced group per thread: the forced pass pairs a Linux 6.8
+        // handle with a native one.
+        let _force = forced.then(|| LegacyThreadGroup::new(pid));
+        let running = Running::new_on_ptracer_thread(pid.into()).unwrap();
+        cleanup.bind_running_notifier(&running).unwrap();
+        let other_running = Running::new_on_ptracer_thread(other_pid.into()).unwrap();
+        other_cleanup.bind_running_notifier(&other_running).unwrap();
+        let terminal = running.terminal_cleanup();
+        let other_terminal = other_running.terminal_cleanup();
+        let identity = Arc::clone(terminal.event.identity().unwrap());
+        let other = Arc::clone(other_terminal.event.identity().unwrap());
+        // The stopped direct child is untraced, so only an untraced-tolerant
+        // capture succeeds, both the first time and on every reuse.
+        let first = identity.capture_current_owner(true).unwrap();
+        assert!(first.is_capturing_thread());
+        assert_eq!(identity.root_mount.get().is_some(), reusable);
+        assert_eq!(
+            Arc::ptr_eq(&first, &identity.capture_current_owner(true).unwrap()),
+            reusable
+        );
+        assert_eq!(
+            identity.capture_current_owner(false).unwrap_err(),
+            Errno::EPERM
+        );
+        let remote = Arc::clone(&identity);
+        let (foreign, foreign_current) = thread::spawn(move || {
+            let owner = remote.capture_current_owner(true).unwrap();
+            let current = owner.is_current();
+            (owner, current)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(foreign_current, Ok(true));
+        assert!(!Arc::ptr_eq(&first, &foreign));
+        assert_eq!(foreign.is_current(), Ok(false));
+        assert_eq!(first.is_current(), Ok(true));
+        assert_eq!(
+            Arc::ptr_eq(&first, &identity.capture_current_owner(true).unwrap()),
+            reusable
+        );
+        // Both constructors already captured on this thread through the
+        // same mount, so the second tracee reuses the very same owner:
+        // retained descriptors do not grow with the number of tracees.
+        let shared = other.capture_current_owner(true).unwrap();
+        assert!(shared.is_capturing_thread());
+        assert_eq!(identity.root_mount.get(), other.root_mount.get());
+        assert_eq!(Arc::ptr_eq(&first, &shared), reusable);
+        assert_eq!(
+            Arc::ptr_eq(&shared, &other.capture_current_owner(true).unwrap()),
+            reusable
+        );
+        assert_eq!(
+            Arc::ptr_eq(&shared, &identity.capture_current_owner(true).unwrap()),
+            reusable
+        );
+        for (terminal, cleanup, pid) in [
+            (terminal, &mut cleanup, pid),
+            (other_terminal, &mut other_cleanup, other_pid),
+        ] {
+            terminal.request_sigkill().unwrap();
+            assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
+            cleanup.disarm();
+            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        }
+    }
+}
