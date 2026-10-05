@@ -9939,6 +9939,195 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct FunctionVdsoTool;
+
+    #[reverie::tool]
+    impl Tool for FunctionVdsoTool {
+        type GlobalState = ();
+        type ThreadState = usize;
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::clock_gettime].into_iter().collect()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            use reverie::syscalls::MemoryAccess;
+            use reverie::syscalls::Timespec;
+
+            let Syscall::ClockGettime(call) = syscall else {
+                panic!("unexpected subscribed syscall: {syscall:?}");
+            };
+            guest.memory().write_value(
+                call.tp().expect("clock_gettime output buffer"),
+                &Timespec {
+                    tv_sec: 123,
+                    tv_nsec: 456,
+                },
+            )?;
+            *guest.thread_state_mut() += 1;
+            Ok(0)
+        }
+
+        async fn on_exit_thread<G: reverie::GlobalRPC<Self::GlobalState>>(
+            &self,
+            _tid: reverie::Tid,
+            _global: &G,
+            state: Self::ThreadState,
+            status: ExitStatus,
+        ) -> Result<(), Error> {
+            assert_eq!(
+                state, 1,
+                "the function guest's vDSO call must reach the Tool"
+            );
+            assert_eq!(status, ExitStatus::Exited(0));
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_fn_preinit_preserves_vdso_patching() {
+        let tracer = spawn_fn::<FunctionVdsoTool, _>(|| {
+            let mut time = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            assert_eq!(
+                unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) },
+                0
+            );
+            assert_eq!((time.tv_sec, time.tv_nsec), (123, 456));
+        })
+        .await
+        .expect("spawn function guest with a subscribed vDSO call");
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+            .await
+            .expect("function vDSO guest hung")
+            .expect("function vDSO tracing failed");
+        assert_eq!(status, ExitStatus::Exited(0));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[derive(Default)]
+    struct CanonicalExecTool;
+
+    #[cfg(target_arch = "x86_64")]
+    #[reverie::tool]
+    impl Tool for CanonicalExecTool {
+        type GlobalState = ();
+        type ThreadState = usize;
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::all_syscalls()
+        }
+
+        async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+            use std::collections::BTreeMap;
+
+            use reverie::canonical_auxv_value;
+            use reverie::syscalls::Addr;
+            use reverie::syscalls::MemoryAccess;
+            use reverie::vdso::CANONICAL_VDSO_ADDRESS;
+            use reverie::vdso::canonical_vdso_image;
+
+            let stack = guest.regs().await.rsp as usize;
+            let memory = guest.memory();
+            let read = |address| memory.read_value(Addr::<u64>::from_raw(address).unwrap());
+            assert_eq!(read(stack)?, 2, "exec must retain argc");
+            for (index, expected) in [b"/bin/true".as_slice(), b"canonical-exec"]
+                .iter()
+                .enumerate()
+            {
+                let pointer = read(stack + 8 * (index + 1))? as usize;
+                let argument = memory.read_cstring(Addr::from_raw(pointer).unwrap())?;
+                assert_eq!(argument.as_bytes(), *expected, "exec must retain argv");
+            }
+            assert_eq!(read(stack + 24)?, 0, "argv terminator");
+            // TracerBuilder adds these two sanitizer settings after env_clear.
+            for (index, expected) in [
+                b"ASAN_OPTIONS=detect_leaks=0".as_slice(),
+                b"LSAN_OPTIONS=detect_leaks=0",
+                b"REVERIE_PREINIT_TEST=retained",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let pointer = read(stack + 32 + 8 * index)? as usize;
+                let environment = memory.read_cstring(Addr::from_raw(pointer).unwrap())?;
+                assert_eq!(environment.as_bytes(), *expected, "exec must retain envp");
+            }
+            assert_eq!(read(stack + 56)?, 0, "envp terminator");
+
+            let mut auxv = BTreeMap::new();
+            let mut terminated = false;
+            for index in 0..64 {
+                let entry = stack + 64 + 16 * index;
+                let key = read(entry)?;
+                if key == libc::AT_NULL {
+                    terminated = true;
+                    break;
+                }
+                assert!(auxv.insert(key, read(entry + 8)?).is_none());
+            }
+            assert!(terminated, "exec auxiliary vector must terminate");
+            for (&key, &value) in &auxv {
+                if let Some(expected) = canonical_auxv_value(key) {
+                    assert_eq!(value, expected, "canonical auxv entry {key}");
+                }
+            }
+            assert!(auxv.contains_key(&libc::AT_HWCAP));
+            assert!(auxv.contains_key(&libc::AT_HWCAP2));
+            assert_eq!(
+                auxv.get(&libc::AT_SYSINFO_EHDR),
+                Some(&CANONICAL_VDSO_ADDRESS)
+            );
+            let expected = canonical_vdso_image();
+            let mut image = vec![0; expected.len()];
+            memory.read_exact(
+                Addr::<u8>::from_raw(CANONICAL_VDSO_ADDRESS as usize).unwrap(),
+                &mut image,
+            )?;
+            assert_eq!(image, expected, "exec must map the canonical vDSO image");
+            *guest.thread_state_mut() += 1;
+            Ok(())
+        }
+
+        async fn on_exit_thread<G: reverie::GlobalRPC<Self::GlobalState>>(
+            &self,
+            _tid: reverie::Tid,
+            _global: &G,
+            state: Self::ThreadState,
+            status: ExitStatus,
+        ) -> Result<(), Error> {
+            assert_eq!(state, 1, "the command must complete its exec callback");
+            assert_eq!(status, ExitStatus::Exited(0));
+            Ok(())
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn command_exec_preinit_canonicalizes_auxv_and_vdso() {
+        let mut command = Command::new("/bin/true");
+        command
+            .arg("canonical-exec")
+            .env_clear()
+            .env("REVERIE_PREINIT_TEST", "retained");
+        let tracer = TracerBuilder::<CanonicalExecTool>::new(command)
+            .spawn()
+            .await
+            .expect("spawn canonical exec control");
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+            .await
+            .expect("canonical exec control hung")
+            .expect("canonical exec tracing failed");
+        assert_eq!(status, ExitStatus::Exited(0));
+    }
+
+    #[derive(Default)]
     struct StaleStopTool;
 
     #[reverie::tool]
