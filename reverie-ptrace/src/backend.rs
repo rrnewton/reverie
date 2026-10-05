@@ -9,6 +9,7 @@
 //! The ptrace backend's implementation of the [`reverie::Backend`] contract.
 
 use reverie::Backend;
+use reverie::BackendCapabilities;
 use reverie::BackendStatsRequest;
 use reverie::BackendStatsSource;
 use reverie::Error;
@@ -51,6 +52,10 @@ pub struct PtraceBackend;
 #[reverie::backend(?Send)]
 impl Backend for PtraceBackend {
     type Stats = PtraceBackendStatsSnapshot;
+
+    fn capabilities() -> BackendCapabilities {
+        BackendCapabilities::PTRACE
+    }
 
     async fn run<T>(
         command: Command,

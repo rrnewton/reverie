@@ -23,6 +23,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use reverie::Backend;
+use reverie::BackendCapabilities;
 use reverie::BackendStatsRequest;
 use reverie::BackendStatsSource;
 use reverie::Error;
@@ -202,6 +203,16 @@ fn create_preload_bootstrap(coordinator: &Path, tool_data: &[u8]) -> io::Result<
 pub struct LiteinstBackend;
 
 impl LiteinstBackend {
+    /// The capabilities of the ptrace-owned host-hybrid runtime that the
+    /// `run_host_*` entry points start.
+    ///
+    /// [`Backend::capabilities`] answers for the in-guest runtime that
+    /// [`Backend::run`] starts. The two differ only in whether killed threads'
+    /// pending RPCs need cancelling.
+    pub const fn host_capabilities() -> BackendCapabilities {
+        BackendCapabilities::LITEINST_HOST_HYBRID
+    }
+
     /// Runs a Tool under the ptrace-owned LiteInst hybrid runtime.
     ///
     /// Ptrace owns the sole Tool and GlobalTool from exec onward; the preload
@@ -816,6 +827,12 @@ fn inherit_stdio(command: &mut Command) {
 #[reverie::backend(?Send)]
 impl Backend for LiteinstBackend {
     type Stats = crate::LiteinstBackendStatsSnapshot;
+
+    /// The capabilities of the in-guest runtime that [`Backend::run`] starts.
+    /// See [`LiteinstBackend::host_capabilities`] for the host-hybrid runtime.
+    fn capabilities() -> BackendCapabilities {
+        BackendCapabilities::LITEINST_IN_GUEST
+    }
 
     async fn run<T>(
         command: Command,

@@ -32,6 +32,14 @@ pub use reverie_adapter::*;
 pub use reverie_sabre_macros::tool;
 pub use tool::*;
 
+/// The static facts about how a SaBRe plugin runs a guest that a tool may need,
+/// in the same form [`reverie::Backend::capabilities`] reports them for backends
+/// that implement that trait. A SaBRe plugin runs its tool inside each guest
+/// process, so a host that launches one reads this before the run.
+pub const fn capabilities() -> reverie::BackendCapabilities {
+    reverie::BackendCapabilities::SABRE
+}
+
 /// Returns the SaBRe loader built from the source vendored in this package.
 pub fn bundled_sabre_path() -> &'static std::path::Path {
     std::path::Path::new(env!("REVERIE_SABRE_LOADER"))

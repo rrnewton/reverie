@@ -79,6 +79,13 @@ pub struct DbtRunner {
 }
 
 impl DbtRunner {
+    /// The static facts about how this backend runs a guest that a tool may
+    /// need, in the same form [`reverie::Backend::capabilities`] reports them
+    /// for backends that implement that trait.
+    pub const fn capabilities() -> reverie::BackendCapabilities {
+        reverie::BackendCapabilities::DBT
+    }
+
     /// Resolves DynamoRIO and the Reverie DBT client from the environment.
     pub fn from_env() -> io::Result<Self> {
         let dynamorio_home = env::var_os(DYNAMORIO_ENV)

@@ -32,6 +32,7 @@ use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
 use kvm_ioctls::VcpuFd;
 use kvm_ioctls::VmFd;
+use reverie::BackendCapabilities;
 use reverie::BackendStatsRequest;
 use reverie::BackendStatsSource;
 use reverie::ExitStatus;
@@ -1555,6 +1556,15 @@ fn hide_tool_scratch_pages(memory: &GuestMemory) -> Result<()> {
         BOOT_RESERVED_END - THREAD_TOOL_STACK_AREA_START,
     )?;
     Ok(())
+}
+
+impl KvmBackend {
+    /// The static facts about how this backend runs a guest that a tool may
+    /// need, in the same form [`reverie::Backend::capabilities`] reports them
+    /// for backends that implement that trait.
+    pub const fn capabilities() -> BackendCapabilities {
+        BackendCapabilities::KVM
+    }
 }
 
 struct InitializedKvmResources {
