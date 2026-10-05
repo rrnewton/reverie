@@ -3482,7 +3482,11 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
         return;
     }
     if TOOL_MODE.load(Ordering::Relaxed) == TOOL_REVERIE {
+        let hidden = unsafe { hide_runtime_descriptors_from_poll(event) };
         crate::tool_host::dispatch(event);
+        if let Some(hidden) = hidden {
+            unsafe { hidden.finish(event) };
+        }
         observe_mapping_generation(event);
         return;
     }
@@ -3619,7 +3623,10 @@ fn clone_is_fork_like(flags: u64, child_stack: u64) -> bool {
 /// the coordinator connection and, for a guest syscall, the Tool's reserved
 /// output descriptor. A syscall the Tool itself makes (`guest_syscall` false)
 /// may use the output descriptor, which is the Tool's.
-unsafe fn protect_runtime_descriptors(event: &mut SyscallEvent, guest_syscall: bool) -> bool {
+/// The runtime-owned descriptors a syscall is kept from, sorted: the
+/// coordinator connection, and for guest syscalls also the Tool output socket.
+/// Returns the array and how many of its leading entries are in use.
+fn protected_descriptors(guest_syscall: bool) -> ([u64; 2], usize) {
     let mut protected = [u64::MAX; 2];
     let mut count = 0;
     let slots: &[&AtomicI32] = if guest_syscall {
@@ -3634,8 +3641,13 @@ unsafe fn protect_runtime_descriptors(event: &mut SyscallEvent, guest_syscall: b
             count += 1;
         }
     }
+    protected[..count].sort_unstable();
+    (protected, count)
+}
+
+unsafe fn protect_runtime_descriptors(event: &mut SyscallEvent, guest_syscall: bool) -> bool {
+    let (mut protected, count) = protected_descriptors(guest_syscall);
     let protected = &mut protected[..count];
-    protected.sort_unstable();
     if protected.is_empty() {
         return false;
     }
@@ -3657,8 +3669,15 @@ unsafe fn protect_runtime_descriptors(event: &mut SyscallEvent, guest_syscall: b
             .any(|&fd| fd_arg(event, 0) <= fd && fd <= fd_arg(event, 1))
     {
         event.result = unsafe { close_range_preserving_fds(event, protected) };
+    } else if let Some(result) = protected
+        .iter()
+        .find_map(|&fd| unsafe { readiness_refusal(event, fd) })
+    {
+        event.result = result;
     } else if protected.iter().any(|&fd| {
-        syscall_targets_event_fd(event, fd) || (guest_syscall && syscall_uses_socket(event, fd))
+        syscall_targets_event_fd(event, fd)
+            || unsafe { syscall_resolves_path_at(event, fd) }
+            || (guest_syscall && syscall_uses_socket(event, fd))
     }) {
         event.result = -i64::from(libc::EBADF);
     } else {
@@ -3910,7 +3929,6 @@ fn syscall_targets_event_fd(event: &SyscallEvent, event_fd: u64) -> bool {
         | libc::SYS_pwritev
         | libc::SYS_pwritev2
         | libc::SYS_vmsplice
-        | libc::SYS_sendfile
         | libc::SYS_fcntl
         | libc::SYS_ioctl
         | libc::SYS_dup
@@ -3933,7 +3951,34 @@ fn syscall_targets_event_fd(event: &SyscallEvent, event_fd: u64) -> bool {
         | libc::SYS_fadvise64
         | libc::SYS_readahead
         | libc::SYS_getdents64
-        | libc::SYS_fchdir => fd(0),
+        | libc::SYS_getdents
+        | libc::SYS_syncfs
+        | libc::SYS_fchdir
+        // Descriptors of special kinds: a runtime-owned number is not one,
+        // and to the guest it is not open at all.
+        | libc::SYS_signalfd
+        | libc::SYS_signalfd4
+        | libc::SYS_timerfd_settime
+        | libc::SYS_timerfd_gettime
+        | libc::SYS_inotify_add_watch
+        | libc::SYS_inotify_rm_watch
+        | libc::SYS_fanotify_mark
+        | libc::SYS_setns
+        | libc::SYS_pidfd_send_signal
+        | libc::SYS_pidfd_getfd
+        | libc::SYS_process_madvise
+        | libc::SYS_process_mrelease
+        | libc::SYS_io_uring_enter
+        | libc::SYS_io_uring_register
+        | libc::SYS_finit_module
+        | libc::SYS_fsmount
+        | libc::SYS_quotactl_fd
+        | libc::SYS_landlock_add_rule
+        | libc::SYS_landlock_restrict_self => fd(0),
+        libc::SYS_sendfile => fd(0) || fd(1),
+        libc::SYS_epoll_ctl => fd(0) || fd(2),
+        // waitid(P_PIDFD, fd, ...).
+        libc::SYS_waitid => event.args[0] as u32 == 3 && fd(1),
         // A file mapping of the descriptor.
         libc::SYS_mmap => event.args[3] & libc::MAP_ANONYMOUS as u64 == 0 && fd(4),
         libc::SYS_dup2 | libc::SYS_dup3 => fd(0) || fd(1),
@@ -3967,6 +4012,312 @@ fn syscall_uses_socket(event: &SyscallEvent, event_fd: u64) -> bool {
         | libc::SYS_getpeername => fd(0),
         _ => false,
     }
+}
+
+/// The result Linux gives a guest readiness call that names `event_fd`, a
+/// number the guest does not have open: `epoll_wait` on it fails with `EBADF`
+/// (after its own `EINVAL` check of the event count), and a `select` or
+/// `pselect6` whose descriptor sets include it fails with `EBADF`. `None` when
+/// the call does not name it. `poll` and `ppoll` report such an entry instead
+/// of failing; see [`hide_runtime_descriptors_from_poll`].
+///
+/// # Safety
+///
+/// Reads the guest's descriptor sets through [`read_own_memory`].
+unsafe fn readiness_refusal(event: &SyscallEvent, event_fd: u64) -> Option<i64> {
+    match event.number {
+        libc::SYS_epoll_wait | libc::SYS_epoll_pwait | libc::SYS_epoll_pwait2
+            if fd_arg(event, 0) == event_fd =>
+        {
+            let events = event.args[2] as i32;
+            let most = i32::MAX / core::mem::size_of::<libc::epoll_event>() as i32;
+            Some(-i64::from(if events <= 0 || events > most {
+                libc::EINVAL
+            } else {
+                libc::EBADF
+            }))
+        }
+        libc::SYS_select | libc::SYS_pselect6 => {
+            let count = event.args[0] as i32;
+            if count < 0 || event_fd >= count as u64 {
+                return None;
+            }
+            let offset = (event_fd / 64) * 8;
+            let bit = 1u64 << (event_fd % 64);
+            event.args[1..=3].iter().find_map(|&set| {
+                let mut word = 0u64;
+                (set != 0
+                    && unsafe {
+                        read_own_memory(set.wrapping_add(offset), (&raw mut word).cast(), 8)
+                    }
+                    && word & bit != 0)
+                    .then_some(-i64::from(libc::EBADF))
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Whether a guest `*at` syscall resolves a path relative to directory
+/// descriptor `event_fd`, which Linux then fails with `EBADF` because the guest
+/// has no such descriptor open. A path is resolved relative to it when it is
+/// relative, when it is empty and the call's empty-path flag is set, or (for
+/// the calls that take one) when it is a null pointer; an absolute path never
+/// consults the descriptor, and an empty one without the flag fails with
+/// `ENOENT` first, so both run unchanged, as does an unreadable path pointer.
+///
+/// # Safety
+///
+/// Reads the path's first byte through [`read_own_memory`].
+unsafe fn syscall_resolves_path_at(event: &SyscallEvent, event_fd: u64) -> bool {
+    /// How a call treats an empty path: as an error, as naming the
+    /// descriptor itself when a flag bit in an argument is set, or always as
+    /// naming it.
+    #[derive(Clone, Copy)]
+    enum Empty {
+        Fails,
+        Flag(usize, u64),
+        Names,
+    }
+    const AT_EMPTY_PATH: u64 = libc::AT_EMPTY_PATH as u64;
+    // (directory argument, path argument, empty path, null path names the
+    // descriptor)
+    let pairs: &[(usize, usize, Empty, bool)] = match event.number {
+        libc::SYS_openat
+        | libc::SYS_openat2
+        | libc::SYS_mkdirat
+        | libc::SYS_mknodat
+        | libc::SYS_unlinkat
+        | libc::SYS_faccessat
+        | libc::SYS_fchmodat => &[(0, 1, Empty::Fails, false)],
+        libc::SYS_symlinkat => &[(1, 2, Empty::Fails, false)],
+        libc::SYS_fchownat | libc::SYS_name_to_handle_at => {
+            &[(0, 1, Empty::Flag(4, AT_EMPTY_PATH), false)]
+        }
+        libc::SYS_newfstatat | libc::SYS_faccessat2 | libc::SYS_fchmodat2 => {
+            &[(0, 1, Empty::Flag(3, AT_EMPTY_PATH), false)]
+        }
+        libc::SYS_statx | libc::SYS_open_tree | libc::SYS_mount_setattr => {
+            &[(0, 1, Empty::Flag(2, AT_EMPTY_PATH), false)]
+        }
+        // FSPICK_EMPTY_PATH.
+        libc::SYS_fspick => &[(0, 1, Empty::Flag(2, 0x8), false)],
+        libc::SYS_utimensat => &[(0, 1, Empty::Flag(3, AT_EMPTY_PATH), true)],
+        libc::SYS_futimesat => &[(0, 1, Empty::Fails, true)],
+        libc::SYS_readlinkat => &[(0, 1, Empty::Names, false)],
+        libc::SYS_renameat | libc::SYS_renameat2 | libc::SYS_move_mount => {
+            &[(0, 1, Empty::Fails, false), (2, 3, Empty::Fails, false)]
+        }
+        libc::SYS_linkat => &[
+            (0, 1, Empty::Flag(4, AT_EMPTY_PATH), false),
+            (2, 3, Empty::Fails, false),
+        ],
+        libc::SYS_fanotify_mark => &[(3, 4, Empty::Fails, true)],
+        _ => return false,
+    };
+    pairs.iter().any(|&(directory, path, empty, null_names)| {
+        if fd_arg(event, directory) != event_fd {
+            return false;
+        }
+        let path = event.args[path];
+        if path == 0 {
+            return null_names;
+        }
+        let mut first = 0u8;
+        if !unsafe { read_own_memory(path, &raw mut first, 1) } {
+            return false;
+        }
+        match (first, empty) {
+            (b'/', _) => false,
+            (0, Empty::Fails) => false,
+            (0, Empty::Flag(flags, bit)) => event.args[flags] & bit != 0,
+            _ => true,
+        }
+    })
+}
+
+/// A guest `poll` or `ppoll` whose descriptor array names a runtime-owned
+/// descriptor, rewritten so the Tool sees and runs it without that entry.
+/// Linux reports an entry for a number that is not open with `POLLNVAL`, and
+/// counts it, so the call returns at once: the rewritten call has those entries
+/// replaced by `-1` (ignored), which it runs over a copy of the array with a
+/// zero timeout. [`HiddenPollEntries::finish`] then writes the guest's array
+/// back with `POLLNVAL` on those entries and every other entry's result.
+struct HiddenPollEntries {
+    guest_array: u64,
+    original_args: [u64; 6],
+    entries: Vec<libc::pollfd>,
+    substitute: Vec<libc::pollfd>,
+    hidden: i64,
+    _zero_timeout: Box<libc::timespec>,
+}
+
+/// Rewrites a guest `poll`/`ppoll` that names a runtime-owned descriptor; see
+/// [`HiddenPollEntries`]. `None`, leaving the call as it is, when it names none,
+/// when its array cannot be read (Linux fails it with `EFAULT`), or when its
+/// entry count exceeds `RLIMIT_NOFILE` (Linux fails it with `EINVAL`).
+///
+/// # Safety
+///
+/// Reads the guest's array through [`read_own_memory`].
+unsafe fn hide_runtime_descriptors_from_poll(
+    event: &mut SyscallEvent,
+) -> Option<HiddenPollEntries> {
+    if !matches!(event.number, libc::SYS_poll | libc::SYS_ppoll) {
+        return None;
+    }
+    let (protected, count) = protected_descriptors(true);
+    let protected = &protected[..count];
+    let length = event.args[1] as u32 as usize;
+    if protected.is_empty() || length == 0 || length > 1 << 20 {
+        return None;
+    }
+    let guest_array = event.args[0];
+    let mut entries = vec![
+        libc::pollfd {
+            fd: 0,
+            events: 0,
+            revents: 0,
+        };
+        length
+    ];
+    let bytes = length * core::mem::size_of::<libc::pollfd>();
+    if !unsafe { read_own_memory(guest_array, entries.as_mut_ptr().cast(), bytes) } {
+        return None;
+    }
+    let names = |entry: &libc::pollfd| entry.fd >= 0 && protected.contains(&(entry.fd as u64));
+    let hidden = entries.iter().filter(|entry| names(entry)).count();
+    if hidden == 0 {
+        return None;
+    }
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    let queried = unsafe {
+        raw_syscall6(
+            libc::SYS_prlimit64,
+            [
+                0,
+                libc::RLIMIT_NOFILE as u64,
+                0,
+                (&raw mut limit) as u64,
+                0,
+                0,
+            ],
+        )
+    };
+    if queried == 0 && length as u64 > limit.rlim_cur {
+        return None;
+    }
+    let substitute = entries
+        .iter()
+        .map(|entry| libc::pollfd {
+            fd: if names(entry) { -1 } else { entry.fd },
+            events: entry.events,
+            revents: 0,
+        })
+        .collect::<Vec<_>>();
+    let zero_timeout = Box::new(libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    });
+    let original_args = event.args;
+    event.args[0] = substitute.as_ptr() as u64;
+    event.args[2] = if event.number == libc::SYS_poll {
+        0
+    } else {
+        (&raw const *zero_timeout) as u64
+    };
+    Some(HiddenPollEntries {
+        guest_array,
+        original_args,
+        entries,
+        substitute,
+        hidden: hidden as i64,
+        _zero_timeout: zero_timeout,
+    })
+}
+
+impl HiddenPollEntries {
+    /// Restores the guest's arguments and, when the call succeeded, writes its
+    /// array back: `POLLNVAL` on each hidden entry, every other entry's result
+    /// from the call, and a count that includes the hidden entries.
+    unsafe fn finish(mut self, event: &mut SyscallEvent) {
+        event.args = self.original_args;
+        if event.result < 0 {
+            return;
+        }
+        for (entry, ran) in self.entries.iter_mut().zip(&self.substitute) {
+            entry.revents = if ran.fd < 0 && entry.fd >= 0 {
+                libc::POLLNVAL
+            } else {
+                ran.revents
+            };
+        }
+        let bytes = self.entries.len() * core::mem::size_of::<libc::pollfd>();
+        event.result =
+            if unsafe { write_own_memory(self.guest_array, self.entries.as_ptr().cast(), bytes) } {
+                event.result + self.hidden
+            } else {
+                -i64::from(libc::EFAULT)
+            };
+    }
+}
+
+/// Copies `length` bytes at `address` in this process into `out`, through
+/// `process_vm_readv`, so an unmapped or unreadable guest address is an error
+/// rather than a fault in the runtime. Returns whether every byte was read.
+///
+/// # Safety
+///
+/// `out` must be valid for `length` bytes of writes.
+unsafe fn read_own_memory(address: u64, out: *mut u8, length: usize) -> bool {
+    unsafe { copy_own_memory(libc::SYS_process_vm_readv, out, address, length) }
+}
+
+/// Copies `length` bytes from `data` to `address` in this process, through
+/// `process_vm_writev`, so an unmapped or read-only guest address is an error
+/// rather than a fault in the runtime. Returns whether every byte was written.
+///
+/// # Safety
+///
+/// `data` must be valid for `length` bytes of reads.
+unsafe fn write_own_memory(address: u64, data: *const u8, length: usize) -> bool {
+    unsafe {
+        copy_own_memory(
+            libc::SYS_process_vm_writev,
+            data.cast_mut(),
+            address,
+            length,
+        )
+    }
+}
+
+unsafe fn copy_own_memory(number: i64, local: *mut u8, remote: u64, length: usize) -> bool {
+    let local = libc::iovec {
+        iov_base: local.cast(),
+        iov_len: length,
+    };
+    let remote = libc::iovec {
+        iov_base: remote as usize as *mut libc::c_void,
+        iov_len: length,
+    };
+    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
+    let copied = unsafe {
+        raw_syscall6(
+            number,
+            [
+                pid as u64,
+                (&raw const local) as u64,
+                1,
+                (&raw const remote) as u64,
+                1,
+                0,
+            ],
+        )
+    };
+    copied == length as i64
 }
 
 unsafe fn compatibility_event_channel_is_intact(output_fd: libc::c_int) -> bool {
