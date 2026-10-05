@@ -809,8 +809,21 @@ static void mark_backend_failure(void) {
   }
   dr_mutex_lock(evidence_lock);
   sender = evidence_sender_locked();
-  if (sender != NULL)
+  if (sender != NULL) {
     sender->backend_failure = true;
+    // A FINAL frame has already reported this image as guest-completed, and
+    // the process can still exit normally afterwards. Report the failure as an
+    // ERROR frame, which makes the collector refuse the run.
+    if (sender->finalized) {
+      static const unsigned char message[] =
+          "backend failure after this process image's FINAL frame";
+      (void)evidence_send_frame(
+          EVIDENCE_FRAME_ERROR,
+          message,
+          sizeof(message) - 1,
+          sender->sequence++);
+    }
+  }
   dr_mutex_unlock(evidence_lock);
 }
 
@@ -2833,6 +2846,75 @@ forbidden:
   return true;
 }
 
+// DynamoRIO cannot intercept SIGKILL; its self-signal handling covers only
+// SIGABRT. A process that sends itself SIGKILL therefore never reaches the
+// thread-exit and process-exit callbacks that end its protected evidence
+// stream, and publication refuses the whole run for a missing FINAL frame. The
+// helpers below end the stream at the kill instead, by running
+// finalize_runtime_process, which the last thread's exit also runs, and then
+// let the kernel deliver the signal. They do not run
+// complete_runtime_thread_exit, so a runtime that folds per-thread totals at
+// thread exit, such as the prototype counter2-exact tool, reports totals
+// without the last counts of the threads the kill ends.
+//
+// `host_args` are the translated arguments that reach the kernel. Only kill,
+// tgkill and tkill naming exactly this process or this thread qualify. Other
+// spellings that end the process never do: kill with a zero or negative target
+// (a process group or every process), tgkill or tkill naming another thread of
+// this process, rt_sigqueueinfo, rt_tgsigqueueinfo and pidfd_send_signal. A
+// process killed that way still ends without a FINAL frame, so publication
+// refuses the run.
+//
+// Records that another thread of this process emits after the FINAL frame
+// cannot be published. A scheduler that needs complete, deterministic evidence
+// must stop the other threads before it lets the kill run; the kernel's
+// group-wide SIGKILL only bounds how long they keep running. A late emission
+// fails closed: the sender is finalized, so the thread ends the run through
+// exit_runtime_tree, which reports the backend failure to the collector as an
+// ERROR frame, and the collector refuses the run.
+static bool
+is_self_sigkill(void* drcontext, int sysnum, const uint64_t* host_args) {
+  switch (sysnum) {
+    case SYS_kill:
+      return (int32_t)host_args[1] == SIGKILL &&
+          (int32_t)host_args[0] == (int32_t)dr_get_process_id();
+    case SYS_tgkill:
+      return (int32_t)host_args[2] == SIGKILL &&
+          (int32_t)host_args[0] == (int32_t)dr_get_process_id() &&
+          (int32_t)host_args[1] == (int32_t)dr_get_thread_id(drcontext);
+    case SYS_tkill:
+      return (int32_t)host_args[1] == SIGKILL &&
+          (int32_t)host_args[0] == (int32_t)dr_get_thread_id(drcontext);
+    default:
+      return false;
+  }
+}
+
+// Returns true when it ended this process's evidence stream.
+static bool finish_evidence_before_self_sigkill(
+    void* drcontext,
+    int sysnum,
+    const uint64_t* host_args) {
+  if (!evidence_is_enabled() || !is_self_sigkill(drcontext, sysnum, host_args))
+    return false;
+  finalize_runtime_process();
+  return true;
+}
+
+// A self-directed SIGKILL that the kernel delivers does not return. One that
+// returns, for example because a seccomp filter answered it with an error,
+// leaves the process running after its FINAL frame. End the run as a backend
+// failure: exit_runtime_tree reports the failure to the collector, which
+// refuses the run.
+static void refuse_returned_self_sigkill(int64_t result) {
+  dr_fprintf(
+      diagnostic_file,
+      "reverie-dbt: self-directed SIGKILL returned %lld after protected "
+      "evidence was finalized\n",
+      (long long)result);
+  exit_runtime_tree(101);
+}
+
 static int64_t
 invoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {
   prototype_counters_t* counters = (prototype_counters_t*)drmgr_get_tls_field(
@@ -2840,6 +2922,7 @@ invoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {
   uint64_t translated[6];
   int64_t result;
   bool is_clone;
+  bool evidence_finished;
   DR_ASSERT(counters != NULL);
   if (protect_evidence_socket_syscall(context, (int)sysnum, args, &result))
     return result;
@@ -2866,7 +2949,11 @@ invoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {
     require_evidence_flush(EVIDENCE_FRAME_EXEC);
   if (sysnum == SYS_exit || sysnum == SYS_exit_group)
     complete_runtime_thread_exit(counters, (void*)context, sysnum == SYS_exit);
+  evidence_finished = finish_evidence_before_self_sigkill(
+      (void*)context, (int)sysnum, translated);
   result = invoke_raw_syscall(context, sysnum, translated);
+  if (evidence_finished)
+    refuse_returned_self_sigkill(result);
   if (is_exec_syscall((int)sysnum) && result < 0)
     require_evidence_flush(EVIDENCE_FRAME_EXEC_CANCEL);
   if (reject_opened_proc_mem(context, (int)sysnum, result))
@@ -3887,6 +3974,14 @@ static bool prepare_original_identity_syscall(
   }
   (void)prepare_clone_identity(
       counters, sysnum, translated, CLONE_SYSCALL_ORIGINAL);
+  // Execute a self-directed SIGKILL here rather than returning it to
+  // DynamoRIO, so the impossible return can be refused before the application
+  // runs on after its FINAL frame.
+  if (finish_evidence_before_self_sigkill(drcontext, sysnum, translated)) {
+    refuse_returned_self_sigkill(
+        invoke_raw_syscall((uintptr_t)drcontext, sysnum, translated));
+    return false;
+  }
   return true;
 }
 
