@@ -36,6 +36,7 @@ struct Terminal {
 #[derive(Debug, Default)]
 struct BoundaryGlobal {
     terminals: Arc<Mutex<Vec<Terminal>>>,
+    failures: Arc<Mutex<Vec<&'static str>>>,
 }
 #[reverie::global_tool]
 impl GlobalTool for BoundaryGlobal {
@@ -44,6 +45,9 @@ impl GlobalTool for BoundaryGlobal {
     type Response = ();
     async fn receive_rpc(&self, _from: Pid, terminal: Terminal) {
         self.terminals.lock().unwrap().push(terminal);
+    }
+    fn report_backend_failure(&self, failure: reverie::BackendFailure) {
+        self.failures.lock().unwrap().push(failure.phase);
     }
 }
 
@@ -236,9 +240,19 @@ async fn command_case<const MODE: u8>() {
     assert!(raw >= 0, "retain exact command pidfd: {}", Errno::last());
     let pidfd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
     let terminals = tracer.gref.terminals.clone();
+    let failures = tracer.gref.failures.clone();
     let result = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
         .await
         .expect("initial-boundary command hung");
+    // A boundary refusal is the session's one primary backend failure.
+    assert_eq!(
+        *failures.lock().unwrap(),
+        match MODE {
+            1 => vec!["ptrace initial stop"],
+            2 | 6 => vec!["ptrace initial exec"],
+            _ => vec![],
+        }
+    );
     let expected_status = if MODE == 1 || MODE == 2 || MODE == 6 {
         let error = result.expect_err("boundary refusal resumed the command");
         assert!(

@@ -4482,6 +4482,19 @@ const TASK_PANIC_MARKER: &str = "HERMIT_TASK_PANIC";
 /// This is rustc's conventional panic status inside the tracer process. An
 /// embedding executable may normalize it at an outer process boundary, so the
 /// marker above remains the authoritative machine-readable diagnosis.
+///
+/// The tracer process has three fail-closed exit statuses, each paired with a
+/// one-line stderr marker:
+///
+/// | status | constant                             | marker                           |
+/// |--------|--------------------------------------|----------------------------------|
+/// | 101    | `TASK_PANIC_EXIT_CODE`               | `HERMIT_TASK_PANIC`              |
+/// | 102    | `TASK_TERMINATION_FAILURE_EXIT_CODE` | `HERMIT_TASK_TERMINATION_FAILED` |
+/// | 103    | `CHILD_CUSTODY_FAILURE_EXIT_CODE`    | `HERMIT_CHILD_CUSTODY_FAILED`    |
+///
+/// All three share the guest's exit-status space: a guest may itself exit
+/// 101, 102 or 103. Only the marker distinguishes a backend failure from such
+/// a guest status, so harnesses must key on the marker, not the number.
 const TASK_PANIC_EXIT_CODE: i32 = 101;
 
 /// Renders the one-line panic marker. Separate from the exit so it can be
@@ -4541,6 +4554,10 @@ fn guest_task_panic_is_fatal(tid: Pid, payload: Box<dyn std::any::Any + Send>) -
 /// Use the same process boundary as a fatal task panic. EXITKILL requests
 /// kernel termination of the attached domain, but this is not a drain receipt:
 /// the outside command owner must still observe every original actor's exit.
+///
+/// Paired with the `HERMIT_TASK_TERMINATION_FAILED` stderr marker. Like 101
+/// (see `TASK_PANIC_EXIT_CODE`) the number alone is indistinguishable from a
+/// guest that exits 102; the marker is the diagnosis.
 const TASK_TERMINATION_FAILURE_EXIT_CODE: i32 = 102;
 
 fn check_failed_task_termination(result: Result<(), Errno>) -> Result<(), Errno> {
@@ -4565,6 +4582,22 @@ fn failed_task_termination_is_fatal(tid: Pid, error: Errno) -> ! {
     exit_failed_tracer_process(TASK_TERMINATION_FAILURE_EXIT_CODE)
 }
 
+/// Custody of a native newborn could not be established or completed after
+/// the kernel had already created it: for example its creator identity,
+/// notifier registration, retained thread-group identity, admission, initial
+/// or final wait, or terminal Tool cleanup failed. The marker's `phase=`
+/// names the exact step.
+///
+/// Returning would abandon an actor that no Tool owns, and synthesizing a
+/// guest exit status would fabricate an outcome. Use the same process
+/// boundary as a fatal task panic: EXITKILL requests kernel termination of
+/// the attached domain, and the outside command owner must still observe
+/// every original actor's exit. This is not a drain receipt.
+///
+/// Paired with the `HERMIT_CHILD_CUSTODY_FAILED` stderr marker, which names
+/// the creator, the child, the failing phase and the error. Like 101 and 102
+/// (see `TASK_PANIC_EXIT_CODE`) the number alone is indistinguishable from a
+/// guest that exits 103; the marker is the diagnosis.
 const CHILD_CUSTODY_FAILURE_EXIT_CODE: i32 = 103;
 
 fn format_child_custody_failure(creator: Pid, child: Pid, phase: &str, error: &str) -> String {
@@ -7837,10 +7870,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             };
             // No step/preinit has occurred in the new image. Error preserves
             // the original Tool cause through the existing terminal owner.
-            self.process_state
+            if let Err(error) = self
+                .process_state
                 .clone()
                 .handle_initial_exec(self, &observation)
-                .await?;
+                .await
+            {
+                return Err(self.initial_command_failure("ptrace initial exec", error));
+            }
         }
         let task = match self
             .finish_exec_event(task, initial_command)
@@ -11493,10 +11530,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             };
             // Unlike the preceding thread-start callback, this mandatory
             // observation cannot be skipped by its cancellation flag.
-            self.process_state
+            if let Err(error) = self
+                .process_state
                 .clone()
                 .handle_initial_stop(self, &observation)
-                .await?;
+                .await
+            {
+                return Err(self.initial_command_failure("ptrace initial stop", error));
+            }
         }
         self.ordinary_continuation()?;
         self.ordinary_trace_continuation()?;
@@ -11751,6 +11792,19 @@ impl<L: Tool + 'static> TracedTask<L> {
                 record.decision = crate::PtraceCallbackDecision::Cancelled;
             }
         }
+    }
+
+    /// Routes a failed `handle_initial_stop` / `handle_initial_exec` exactly
+    /// like a failed `handle_thread_start`: under ordinary ptrace a Tool error
+    /// is published once as the session's primary failure and the run loop
+    /// stays pending (`RunFailed`) while `drive_ordinary` retires the tree. An
+    /// errno, and every error under LiteInst, keeps the existing propagation.
+    fn initial_command_failure(&self, phase: &'static str, error: reverie::Error) -> Error {
+        if self.ordinary_failure_enabled() && !matches!(error, reverie::Error::Errno(_)) {
+            self.publish_ordinary_failure(phase, error);
+            return Error::RunFailed;
+        }
+        error.into()
     }
 
     fn publish_ordinary_failure(&self, phase: &'static str, error: reverie::Error) {
