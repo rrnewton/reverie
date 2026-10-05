@@ -206,6 +206,59 @@ mod tests {
         );
     }
 
+    /// How many images have been canonicalized so far in this process.
+    fn canonicalized_count() -> usize {
+        crate::task::CANONICALIZED_FOR_TEST
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    /// A new image gets the canonical vDSO and auxv at its exec stop:
+    /// glibc's loader, asked to show the auxv, reports the canonical vDSO
+    /// address and AT_HWCAP, and the image was canonicalized exactly once.
+    #[cfg(target_arch = "x86_64")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_execd_image_gets_the_canonical_vdso_and_auxv_once() {
+        let before = canonicalized_count();
+        let mut command = Command::new("/bin/true");
+        command.env("LD_SHOW_AUXV", "1");
+        let (output, _global, _stats) =
+            PtraceBackend::run_with_output::<CountEverySyscall>(command, ())
+                .await
+                .unwrap();
+        assert_eq!(output.status, ExitStatus::Exited(0));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let line = |key: &str| {
+            stdout
+                .lines()
+                .find(|line| line.starts_with(key))
+                .unwrap_or_else(|| panic!("no {key} line in: {stdout}"))
+                .to_owned()
+        };
+        assert!(line("AT_SYSINFO_EHDR:").ends_with("0x14f000"), "{stdout}");
+        assert!(
+            line("AT_HWCAP:").trim_end().ends_with("78bfbfd"),
+            "{stdout}"
+        );
+        assert_eq!(canonicalized_count() - before, 1);
+    }
+
+    /// The root's first stop comes before its exec, while its stack is still
+    /// the launcher's (here a spawned function's). It must not be read as an
+    /// initial process stack, so nothing is canonicalized for a tracee that
+    /// never execs.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_tracee_that_never_execs_is_not_canonicalized() {
+        let before = canonicalized_count();
+        let tracer = crate::tracer::spawn_fn::<CountEverySyscall, _>(|| {})
+            .await
+            .unwrap();
+        let (status, _global) = tracer.wait().await.unwrap();
+        assert_eq!(status, ExitStatus::Exited(0));
+        assert_eq!(canonicalized_count(), before);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn stats_run_observes_real_tracee_activity() {
         let (status, (), stats) =
