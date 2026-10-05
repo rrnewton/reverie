@@ -6,8 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! An already-failed tracer must not return and detach actors after kill refusal.
-//! This is a native subprocess fixture, not a pure control or a successful run.
+//! An already-failed tracer must not return and detach actors after kill refusal
+//! (exit 102) or after it cannot register a native newborn (exit 103).
+//! These are native subprocess fixtures, not pure controls or successful runs.
 
 #![cfg(target_arch = "x86_64")]
 
@@ -21,7 +22,9 @@ use std::process::Child;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -50,18 +53,23 @@ const PRIMARY: &str = "native fixture retained child then forced pidfd signal re
 enum Case {
     #[default]
     TerminationRefusal,
+    RegistrationRefusal,
 }
 
 impl Case {
     fn selector(self) -> &'static str {
         match self {
             Self::TerminationRefusal => "failed_run_kill_refusal_keeps_tracees_in_exitkill_domain",
+            Self::RegistrationRefusal => {
+                "newborn_registration_failure_keeps_original_tracees_in_exitkill_domain"
+            }
         }
     }
 
     fn exit_code(self) -> i32 {
         match self {
             Self::TerminationRefusal => 102,
+            Self::RegistrationRefusal => 103,
         }
     }
 }
@@ -139,6 +147,11 @@ impl Tool for Refusal {
         true
     }
 
+    fn observe_injected_syscall_preparation(config: &Config) -> bool {
+        // Only the registration case needs a hook before the fork exists.
+        config.case == Case::RegistrationRefusal
+    }
+
     fn init_thread_state(&self, _child: Pid, parent: Option<(Pid, &bool)>) -> bool {
         parent.is_some()
     }
@@ -152,14 +165,43 @@ impl Tool for Refusal {
         _args: SyscallArgs,
         event: InjectedSyscallEvent,
     ) {
-        let InjectedSyscallEvent::ChildCreated(child) = event else {
-            panic!("unexpected native result before the forced failure: {event:?}");
-        };
         assert_eq!(nr, Sysno::fork);
-        // This synchronous hook owns the original NewChild stop. Neither the
-        // stopped creator nor its not-yet-resumed child can recycle these IDs.
-        // Transfer actual PIDFD_THREAD descriptions to the outside test owner.
-        send_original_tracees(self.config.channel, [tid.as_raw(), child.as_raw()]);
+        match (self.config.case, event) {
+            (Case::RegistrationRefusal, InjectedSyscallEvent::Prepared) => {
+                // Before the fork exists: keep one unfiltered thread that can
+                // still bind PIDFD_THREAD for the outside owner, then let this
+                // tracer thread bind the newborn exactly once (the NewChild
+                // event's identity capture) and refuse every later
+                // PIDFD_THREAD open of it. Notifier registration of that
+                // already-identified event, eager at the NewChild stop and
+                // retried by register_newborn_wait, therefore fails natively.
+                start_pidfd_helper(self.config.channel);
+                refuse_repeated_newborn_thread_pidfd_on_this_tracer_thread(tid.as_raw());
+            }
+            (case, InjectedSyscallEvent::ChildCreated(child)) => {
+                // This synchronous hook owns the original NewChild stop. Neither
+                // the stopped creator nor its not-yet-resumed child can recycle
+                // these IDs. Transfer actual PIDFD_THREAD descriptions to the
+                // outside test owner.
+                let pids = [tid.as_raw(), child.as_raw()];
+                match case {
+                    Case::TerminationRefusal => send_original_tracees(self.config.channel, pids),
+                    Case::RegistrationRefusal => {
+                        // The one admitted open was this exact newborn, and
+                        // the refusal is armed on the registering thread.
+                        assert_eq!(BOUND_NEWBORN.load(Ordering::SeqCst), pids[1]);
+                        let fd =
+                            unsafe { libc::syscall(libc::SYS_pidfd_open, pids[1], PIDFD_THREAD) };
+                        let error = std::io::Error::last_os_error().raw_os_error();
+                        assert_eq!((fd, error), (-1, Some(libc::EMFILE)));
+                        send_original_tracees_from_helper(pids);
+                    }
+                }
+            }
+            (case, event) => {
+                panic!("unexpected native result before the forced {case:?} failure: {event:?}")
+            }
+        }
     }
 
     async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
@@ -248,6 +290,139 @@ fn refuse_syscall_on_this_tracer_thread(nr: libc::c_long, errno: i32) {
         0
     );
     assert_eq!(unsafe { libc::prctl(libc::PR_SET_SECCOMP, 2, &program) }, 0);
+}
+
+const PIDFD_THREAD: libc::c_long = libc::O_EXCL as libc::c_long;
+static BOUND_NEWBORN: AtomicI32 = AtomicI32::new(0);
+
+/// Seccomp user notification on this tracer thread (and threads it spawns
+/// later) for pidfd_open. A supervisor thread admits every open except a
+/// repeated PIDFD_THREAD open of the first task other than `creator`: the
+/// NewChild event's own identity capture succeeds, every later registration
+/// of that newborn gets EMFILE. Nothing in the backend is patched.
+fn refuse_repeated_newborn_thread_pidfd_on_this_tracer_thread(creator: i32) {
+    let mut filter = [
+        libc::sock_filter {
+            code: 0x20,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        }, // LD W ABS syscall nr
+        libc::sock_filter {
+            code: 0x15,
+            jt: 0,
+            jf: 1,
+            k: libc::SYS_pidfd_open as u32,
+        },
+        libc::sock_filter {
+            code: 0x06,
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_USER_NOTIF,
+        },
+        libc::sock_filter {
+            code: 0x06,
+            jt: 0,
+            jf: 0,
+            k: 0x7fff_0000,
+        },
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_mut_ptr(),
+    };
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+        0
+    );
+    let listener = unsafe {
+        libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            libc::SECCOMP_FILTER_FLAG_NEW_LISTENER,
+            &program,
+        )
+    };
+    assert!(
+        listener >= 0,
+        "seccomp listener: {}",
+        std::io::Error::last_os_error()
+    );
+    let listener = unsafe { OwnedFd::from_raw_fd(listener as i32) };
+    // Spawned after the filter, so it inherits it; it never calls pidfd_open.
+    std::thread::spawn(move || {
+        loop {
+            let mut request: libc::seccomp_notif = unsafe { std::mem::zeroed() };
+            if unsafe {
+                libc::ioctl(
+                    listener.as_raw_fd(),
+                    libc::SECCOMP_IOCTL_NOTIF_RECV,
+                    &mut request,
+                )
+            } < 0
+            {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                panic!("seccomp notification receive: {error}");
+            }
+            let pid = request.data.args[0] as i32;
+            let thread = request.data.args[1] as libc::c_long & PIDFD_THREAD != 0;
+            let refuse = thread
+                && pid != creator
+                && BOUND_NEWBORN
+                    .compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err_and(|bound| bound == pid);
+            let mut response = libc::seccomp_notif_resp {
+                id: request.id,
+                val: 0,
+                error: 0,
+                flags: 0,
+            };
+            if refuse {
+                response.error = -libc::EMFILE;
+            } else {
+                response.flags = libc::SECCOMP_USER_NOTIF_FLAG_CONTINUE as u32;
+            }
+            // ENOENT: the requesting task was killed meanwhile.
+            unsafe {
+                libc::ioctl(
+                    listener.as_raw_fd(),
+                    libc::SECCOMP_IOCTL_NOTIF_SEND,
+                    &mut response,
+                )
+            };
+        }
+    });
+}
+
+type PidfdHelper = (mpsc::Sender<[i32; 2]>, mpsc::Receiver<()>);
+static PIDFD_HELPER: Mutex<Option<PidfdHelper>> = Mutex::new(None);
+
+/// Spawned before the tracer thread installs its pidfd_open refusal, so this
+/// thread does not inherit that seccomp filter.
+fn start_pidfd_helper(channel: i32) {
+    let (request, requests) = mpsc::channel::<[i32; 2]>();
+    let (ack, acks) = mpsc::channel();
+    std::thread::spawn(move || {
+        for pids in requests {
+            send_original_tracees(channel, pids);
+            ack.send(()).unwrap();
+        }
+    });
+    let previous = PIDFD_HELPER.lock().unwrap().replace((request, acks));
+    assert!(previous.is_none(), "one fork per fixture");
+}
+
+/// Synchronous: returns only after the helper has sent both descriptions, so
+/// both tasks are still held at the original NewChild stop when they are bound.
+fn send_original_tracees_from_helper(pids: [i32; 2]) {
+    let helper = PIDFD_HELPER.lock().unwrap();
+    let (request, acks) = helper.as_ref().expect("pidfd helper started at Prepared");
+    request.send(pids).unwrap();
+    acks.recv_timeout(Duration::from_secs(2))
+        .expect("pidfd helper bound and sent both original tracees");
 }
 
 fn send_original_tracees(channel: i32, pids: [i32; 2]) {
@@ -419,6 +594,11 @@ fn failed_run_kill_refusal_keeps_tracees_in_exitkill_domain() {
     run_case(Case::TerminationRefusal);
 }
 
+#[test]
+fn newborn_registration_failure_keeps_original_tracees_in_exitkill_domain() {
+    run_case(Case::RegistrationRefusal);
+}
+
 fn run_case(case: Case) {
     if let Ok(channel) = std::env::var(CHILD_ENV) {
         let channel: i32 = channel.parse().unwrap();
@@ -432,7 +612,10 @@ fn run_case(case: Case) {
         );
         panic!(
             "failed tracer returned instead of preserving fatal ownership: {}",
-            if result.is_ok() { "Ok" } else { "Err" }
+            match &result {
+                Ok(_) => "Ok".to_owned(),
+                Err(error) => format!("Err({error:?})"),
+            }
         );
     }
     static OUTSIDE_OWNER: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -552,6 +735,31 @@ fn run_case(case: Case) {
             assert_eq!(markers.len(), 1);
             assert!(tracees.pids.iter().any(|pid| markers[0] == format!("HERMIT_TASK_TERMINATION_FAILED tid={pid} exit=102 errno=1 backend_failure=acknowledged cleanup=unconfirmed")));
             assert!(!stderr.contains("HERMIT_CHILD_CUSTODY_FAILED"));
+        }
+        Case::RegistrationRefusal => {
+            // The creator's task reports the custody phase; the child Tool
+            // never started (handle_thread_start would have panicked).
+            assert_eq!(
+                primary,
+                vec![format!(
+                    "TEST_PRIMARY_BACKEND_FAILURE pid={} tid={} phase=register_newborn_wait",
+                    tracees.pids[0], tracees.pids[0],
+                )]
+            );
+            let markers: Vec<_> = stderr
+                .lines()
+                .filter(|line| line.starts_with("HERMIT_CHILD_CUSTODY_FAILED "))
+                .collect();
+            assert_eq!(
+                markers,
+                vec![format!(
+                    "HERMIT_CHILD_CUSTODY_FAILED creator={} child={} exit=103 phase=register_newborn_wait error=errno={} cleanup=unconfirmed",
+                    tracees.pids[0],
+                    tracees.pids[1],
+                    libc::EMFILE,
+                )]
+            );
+            assert!(!stderr.contains("HERMIT_TASK_TERMINATION_FAILED"));
         }
     }
     assert!(!stderr.contains("UNEXPECTED_NATIVE_TERMINAL"));
