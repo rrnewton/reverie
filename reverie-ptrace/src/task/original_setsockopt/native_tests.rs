@@ -92,6 +92,9 @@ impl Tool for OptionTool {
     fn observe_injected_syscalls(_: &()) -> bool {
         true
     }
+    fn retain_original_syscall_entries(_: &()) -> bool {
+        true
+    }
     fn observe_injected_syscall_preparation(_: &()) -> bool {
         true
     }
@@ -471,6 +474,8 @@ struct CaptureConfig {
     // guest does not need or deserialize the parent observation log.
     #[serde(skip)]
     log: Arc<CaptureLog>,
+    /// The Tool's answer to `retain_original_syscall_entries`.
+    retain: bool,
 }
 
 #[derive(Default)]
@@ -511,6 +516,9 @@ impl Tool for CaptureTool {
     fn observe_injected_syscalls(_: &CaptureConfig) -> bool {
         true
     }
+    fn retain_original_syscall_entries(config: &CaptureConfig) -> bool {
+        config.retain
+    }
     fn observe_injected_syscall_preparation(_: &CaptureConfig) -> bool {
         true
     }
@@ -536,10 +544,12 @@ impl Tool for CaptureTool {
         };
         let log = Arc::clone(&guest.local_global_state().unwrap().log);
         assert_eq!(log.callbacks.fetch_add(1, Ordering::SeqCst), 0);
+        // Without the opt-in the backend must not capture at all, even with
+        // the refusing hook armed for this descriptor.
         assert_eq!(
             log.captured.load(Ordering::SeqCst),
-            1,
-            "real native capture seam must precede Tool dispatch"
+            usize::from(guest.config().retain),
+            "real native capture seam must precede Tool dispatch exactly when opted in"
         );
         assert_eq!(guest.regs().await.r9, 0xfeed);
         let mut stack = guest.stack().await;
@@ -571,6 +581,10 @@ fn low_water(fd: i32) -> i32 {
 }
 
 fn run_capture_option(refuse: bool) {
+    run_capture_option_with(refuse, true);
+}
+
+fn run_capture_option_with(refuse: bool, retain: bool) {
     let original =
         unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
     assert!(original >= 0);
@@ -612,9 +626,32 @@ fn run_capture_option(refuse: bool) {
         },
         CaptureConfig {
             log: Arc::clone(&log),
+            retain,
         },
         true,
     );
+    if !retain {
+        // Main's path: no original-entry capture (the armed refusing hook was
+        // never reached), the ordinary private injection changes the option
+        // 1->2, and no Entered phase is reported.
+        assert_eq!(log.captured.load(Ordering::SeqCst), 0);
+        assert!(log.owner.lock().unwrap().is_none());
+        assert_eq!(log.callbacks.load(Ordering::SeqCst), 1);
+        assert_eq!(log.continued.load(Ordering::SeqCst), 1);
+        let (output, _) = result.expect("a Tool without the opt-in must take main's path");
+        assert_eq!(output.status, reverie::ExitStatus::Exited(0));
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        assert_eq!(low_water(socket.as_raw_fd()), 2);
+        assert_eq!(
+            *log.stages.lock().unwrap(),
+            vec![
+                InjectedSyscallEvent::Prepared,
+                InjectedSyscallEvent::Returned(0)
+            ]
+        );
+        drop(socket);
+        return;
+    }
     // Require the real reached phase and retained cleanup, not a universal
     // startup failure or a late numeric lookup, before interpreting the result.
     assert_eq!(log.captured.load(Ordering::SeqCst), 1);
@@ -679,4 +716,11 @@ fn native_original_setsockopt_capture_failure_has_zero_effect() {
 #[test]
 fn native_original_setsockopt_capture_valid_same_ofd_neighbor() {
     run_capture_option(false);
+}
+
+/// A Tool that does not opt in keeps main's setsockopt path: no capture (the
+/// refusing hook stays armed and unreached) and the ordinary private route.
+#[test]
+fn native_setsockopt_without_opt_in_takes_the_private_route() {
+    run_capture_option_with(true, false);
 }

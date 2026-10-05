@@ -573,6 +573,37 @@ pub trait Tool: Send + Sync + Default {
         false
     }
 
+    /// Opt in to the original-syscall-entry contract used by network
+    /// record/replay. Called once per tree at session start, like
+    /// [`Tool::subscriptions`]; the backend latches the answer for the whole
+    /// run, including every later child.
+    ///
+    /// When this returns true, a backend that supports the contract (ptrace):
+    /// - retains the original native seccomp entry of each intercepted `read`,
+    ///   `recvfrom` and `setsockopt` before [`Tool::handle_syscall_event`]
+    ///   runs, which costs extra ptrace register/syscall-info reads per stop;
+    /// - enables [`Guest::inspect_original_read_range`],
+    ///   [`Guest::inspect_original_recvfrom_range`],
+    ///   [`Guest::inject_original_read`], [`Guest::inject_epoll_ctl_copy`],
+    ///   [`Guest::await_recorded_read_interruption`] and
+    ///   [`Guest::finish_interrupted_syscall`];
+    /// - executes a Tool's [`Guest::inject`] of the pending `setsockopt` with
+    ///   only `optval` changed at the original entry rather than as a private
+    ///   injection;
+    /// - leaves `read` sites unpatched under dynamic LiteInst, so every `read`
+    ///   stays on the interception path that owns the original entry.
+    ///
+    /// The default (false) keeps the backend's behaviour and cost from before
+    /// this contract existed: no entry is retained, LiteInst patches `read`
+    /// as usual, `setsockopt` injection takes the ordinary path, and the
+    /// methods listed above refuse with [`Error::Tool`].
+    ///
+    /// Like [`Tool::observe_injected_syscalls`], this is a request, not a
+    /// capability certificate: a backend without the contract still refuses.
+    fn retain_original_syscall_entries(_cfg: &<Self::GlobalState as GlobalTool>::Config) -> bool {
+        false
+    }
+
     /// Retain each observed native effect synchronously at its actual boundary.
     ///
     /// Opted-in `Prepared` precedes the first suspension or resume for the

@@ -94,6 +94,9 @@ impl Tool for EntryObserver {
     fn observe_injected_syscalls(_: &EntryCase) -> bool {
         true
     }
+    fn retain_original_syscall_entries(_: &EntryCase) -> bool {
+        true
+    }
     fn observe_injected_syscall_preparation(_: &EntryCase) -> bool {
         true
     }

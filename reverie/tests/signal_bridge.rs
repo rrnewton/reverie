@@ -68,6 +68,8 @@ impl Stack for TestStack {
 #[derive(Default)]
 struct TestGuest {
     thread_state: (),
+    /// Calls of `inject`.
+    injects: AtomicUsize,
 }
 
 #[reverie::tool]
@@ -125,6 +127,7 @@ impl<T: Tool<GlobalState = (), ThreadState = ()>> Guest<T> for TestGuest {
     async fn daemonize(&mut self) {}
 
     async fn inject<S: SyscallInfo>(&mut self, _syscall: S) -> Result<i64, Errno> {
+        self.injects.fetch_add(1, Ordering::SeqCst);
         Err(Errno::ENOSYS)
     }
 
@@ -301,4 +304,28 @@ fn child_exit_signal_default_refuses_before_publication() {
             errno: Errno::ENOSYS,
         }
     );
+}
+
+/// A backend without an original native Read entry refuses
+/// `inject_original_read` instead of substituting a fresh `inject`, which
+/// would run the Read without the original-entry guarantees a caller asked
+/// for.
+#[test]
+fn inject_original_read_default_refuses_without_injecting() {
+    let mut guest = TestGuest::default();
+    let result = ready(<TestGuest as Guest<LegacyTool>>::inject_original_read(
+        &mut guest,
+        reverie::syscalls::Read::new(),
+    ));
+    match result {
+        Err(Error::Tool(error)) => {
+            assert_eq!(
+                error.to_string(),
+                "backend has no original native Read entry"
+            )
+        }
+        Err(other) => panic!("expected a Tool refusal, got {other:?}"),
+        Ok(_) => panic!("the default inject_original_read must refuse"),
+    }
+    assert_eq!(guest.injects.load(Ordering::SeqCst), 0);
 }

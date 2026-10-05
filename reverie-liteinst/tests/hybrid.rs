@@ -6790,3 +6790,89 @@ async fn host_hybrid_sigtrap_deciding_a_restart_fails_closed() {
         "SIGTRAP delivery did not fail closed: {error}"
     );
 }
+
+/// Counts the reads of the hot read fixture's site that reached the Tool.
+#[derive(Debug, Default)]
+struct ReadSiteEvents {
+    delivered: AtomicU64,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for ReadSiteEvents {
+    type Request = ();
+    type Response = ();
+    /// Whether the Tool opts in to retained original syscall entries.
+    type Config = bool;
+
+    async fn receive_rpc(&self, _from: Tid, _note: ()) {
+        self.delivered.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Forwards every read, opting in to original syscall entries when its
+/// configuration says so.
+#[derive(Default)]
+struct ReadSiteTool;
+
+#[reverie::tool]
+impl Tool for ReadSiteTool {
+    type GlobalState = ReadSiteEvents;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &bool) -> Subscription {
+        [Sysno::read].into_iter().collect()
+    }
+
+    fn retain_original_syscall_entries(config: &bool) -> bool {
+        *config
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        assert_eq!(syscall.number(), Sysno::read);
+        // The fixture's site reads one byte from /dev/zero; the loader's own
+        // reads are larger.
+        if syscall.into_parts().1.arg2 == 1 {
+            guest.send_rpc(()).await;
+        }
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+async fn run_hot_read_site(retain_original_entries: bool) -> (String, u64) {
+    let (_directory, guest) = compile_fixture("hybrid_hot_read_site.c");
+    let (output, global) = LiteinstBackend::run_host_with_output_and_preload::<ReadSiteTool>(
+        Command::new(guest),
+        retain_original_entries,
+        preload_path(),
+    )
+    .await
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    (
+        String::from_utf8(output.stdout).unwrap(),
+        global.delivered.load(Ordering::SeqCst),
+    )
+}
+
+/// A Tool that does not opt in to retained original syscall entries keeps
+/// LiteInst's first-site patching of read: the site traps once, then its other
+/// 31 calls take the installed hook.
+#[tokio::test(flavor = "current_thread")]
+async fn read_site_is_patched_without_the_original_entry_opt_in() {
+    let (stdout, delivered) = run_hot_read_site(false).await;
+    assert_eq!(stdout, "reads=32 traps=1 hooks=31\n");
+    assert_eq!(delivered, 32, "every read must still reach the Tool");
+}
+
+/// A Tool that opts in keeps every read on the native seccomp path, where its
+/// original entry is retained: LiteInst never patches the site.
+#[tokio::test(flavor = "current_thread")]
+async fn read_site_stays_native_with_the_original_entry_opt_in() {
+    let (stdout, delivered) = run_hot_read_site(true).await;
+    assert_eq!(stdout, "reads=32 traps=0 hooks=0\n");
+    assert_eq!(delivered, 32, "every read must still reach the Tool");
+}

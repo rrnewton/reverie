@@ -3445,6 +3445,12 @@ struct GlobalState<G: GlobalTool> {
     /// Optional collector for general ptrace lifecycle activity.
     backend_stats: Option<PtraceBackendStatsSource>,
 
+    /// [`Tool::retain_original_syscall_entries`], latched once at session
+    /// start. False keeps the pre-contract behaviour and cost: no original
+    /// entry capture, LiteInst patches `read`, and setsockopt injection takes
+    /// the ordinary route.
+    retain_original_syscall_entries: bool,
+
     #[cfg(test)]
     final_resume_signal_for_test: Option<FinalResumeSignalForTest>,
 
@@ -3594,6 +3600,7 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             liteinst_runtime: self.liteinst_runtime.clone(),
             fatal_session: self.fatal_session.clone(),
             backend_stats: self.backend_stats.clone(),
+            retain_original_syscall_entries: self.retain_original_syscall_entries,
             #[cfg(test)]
             final_resume_signal_for_test: self.final_resume_signal_for_test.clone(),
             #[cfg(test)]
@@ -4012,6 +4019,7 @@ impl<L: Tool> TracedTask<L> {
     {
         let process_state = Arc::new(L::new(tid, &cfg));
         let fatal_session = Arc::new(FatalSession::new(&gs_ref, tid));
+        let retain_original_syscall_entries = L::retain_original_syscall_entries(&cfg);
         let global_state = GlobalState {
             gs_ref,
             cfg,
@@ -4026,6 +4034,7 @@ impl<L: Tool> TracedTask<L> {
             liteinst_runtime: options.liteinst_runtime,
             fatal_session,
             backend_stats: options.backend_stats,
+            retain_original_syscall_entries,
             #[cfg(test)]
             final_resume_signal_for_test: options.final_resume_signal_for_test,
             #[cfg(test)]
@@ -9072,13 +9081,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         if self.global_state.liteinst_runtime.is_none() {
             return Ok((task, false, None));
         }
-        // Keep this Read on the existing native interception path. Installing
+        // With the original-entry contract (network record/replay opt-in),
+        // keep this Read on the existing native interception path. Installing
         // a first-site hook consumes its seccomp entry and would turn even the
         // first Read into a private attempt that can be interrupted before
         // kernel entry. A post-exit helper is also unsafe while the Read's
         // signal is pending. Decline this optimization, preserving the same
         // Tool callback and data-movement path; static E9 sites remain separate.
-        if nr == Sysno::read {
+        // A Tool that has not opted in patches Read like any other syscall.
+        if nr == Sysno::read && self.global_state.retain_original_syscall_entries {
             return Ok((task, false, None));
         }
         // A task-creating syscall must not be patched. Patching overwrites the
@@ -9418,10 +9429,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             );
             self.pending_syscall = Some((nr, args));
             self.pending_syscall_already_skipped = syscall_already_skipped;
+            // Original-entry capture costs extra ptrace reads per stop; only a
+            // Tool that opted in to the contract pays for it.
+            let retain = self.global_state.retain_original_syscall_entries;
             #[cfg(target_arch = "x86_64")]
             {
                 self.original_setsockopt_entry =
-                    if nr == Sysno::setsockopt && !syscall_already_skipped {
+                    if retain && nr == Sysno::setsockopt && !syscall_already_skipped {
                         Some(original_setsockopt::OriginalSetsockoptEntry::capture(
                             &task, args,
                         ))
@@ -9429,9 +9443,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                         None
                     };
             }
-            self.original_read_entry = (matches!(nr, Sysno::read | Sysno::recvfrom)
-                && !syscall_already_skipped)
-                .then(|| original_context::OriginalReadEntry::capture(&task, nr, args));
+            self.original_read_entry =
+                (retain && matches!(nr, Sysno::read | Sysno::recvfrom) && !syscall_already_skipped)
+                    .then(|| original_context::OriginalReadEntry::capture(&task, nr, args));
 
             let retval = cancellable(self.cancel_handler.clone(), async {
                 self.process_state
@@ -14098,6 +14112,7 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         #[cfg(target_arch = "x86_64")]
         if let Some(original) = original_setsockopt::route_optval_rewrite(
+            self.global_state.retain_original_syscall_entries,
             origin,
             self.pending_syscall,
             nr,
@@ -14707,6 +14722,22 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 }
 
+impl<L: Tool + 'static> TracedTask<L> {
+    /// The original-entry Guest methods are part of the network record/replay
+    /// contract. A Tool that did not opt in sees the same refusal as a backend
+    /// without the contract, before any ptrace access or native effect.
+    fn require_original_syscall_entries(&self, method: &str) -> Result<(), reverie::Error> {
+        if self.global_state.retain_original_syscall_entries {
+            Ok(())
+        } else {
+            Err(reverie::Error::Tool(anyhow::anyhow!(
+                "Guest::{method} requires Tool::retain_original_syscall_entries; \
+                 this Tool did not opt in"
+            )))
+        }
+    }
+}
+
 #[async_trait]
 impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     type Memory = Stopped;
@@ -14759,6 +14790,7 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         &self,
         read: reverie::syscalls::Read,
     ) -> Result<reverie::OriginalReadRangeVerdict, reverie::Error> {
+        self.require_original_syscall_entries("inspect_original_read_range")?;
         self.inspect_native_read_range(read)
     }
 
@@ -14766,6 +14798,7 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         &self,
         receive: reverie::syscalls::Recvfrom,
     ) -> Result<reverie::OriginalReadRangeVerdict, reverie::Error> {
+        self.require_original_syscall_entries("inspect_original_recvfrom_range")?;
         self.inspect_native_recvfrom_range(receive)
     }
 
@@ -14846,7 +14879,8 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     async fn inject_original_read(
         &mut self,
         syscall: reverie::syscalls::Read,
-    ) -> reverie::InjectedReadResult {
+    ) -> Result<reverie::InjectedReadResult, reverie::Error> {
+        self.require_original_syscall_entries("inject_original_read")?;
         #[cfg(target_arch = "x86_64")]
         {
             let (nr, args) = syscall.into_parts();
@@ -14855,13 +14889,16 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
                 self.original_read_entry = None;
             }
             match outcome {
-                Ok(outcome) => outcome,
+                Ok(outcome) => Ok(outcome),
                 Err(error) => self.abort(Err(error)).await,
             }
         }
         #[cfg(not(target_arch = "x86_64"))]
         {
-            reverie::InjectedReadResult::Complete(self.inject(syscall).await)
+            let _ = syscall;
+            Err(reverie::Error::Tool(anyhow::anyhow!(
+                "backend has no original native Read entry"
+            )))
         }
     }
 
@@ -14869,6 +14906,7 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         &mut self,
         syscall: reverie::syscalls::EpollCtl,
     ) -> Result<i64, reverie::Error> {
+        self.require_original_syscall_entries("inject_epoll_ctl_copy")?;
         #[cfg(target_arch = "x86_64")]
         {
             match self.inject_epoll_ctl_copy_entry(syscall).await {
@@ -14890,6 +14928,7 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         call: reverie::syscalls::Read,
         signal: Signal,
     ) -> Result<reverie::InterruptedSyscall, reverie::Error> {
+        self.require_original_syscall_entries("await_recorded_read_interruption")?;
         #[cfg(target_arch = "x86_64")]
         {
             let outcome = self.observe_recorded_read_signal(call, signal).await;
@@ -14913,6 +14952,7 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         ticket: reverie::InterruptedSyscall,
         completed: Option<i64>,
     ) -> Result<(), reverie::Error> {
+        self.require_original_syscall_entries("finish_interrupted_syscall")?;
         #[cfg(target_arch = "x86_64")]
         {
             self.prepare_interrupted_read_handback(&ticket, completed)

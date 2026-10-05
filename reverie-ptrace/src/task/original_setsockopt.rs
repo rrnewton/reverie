@@ -32,7 +32,12 @@ pub(super) fn select_optval_rewrite(
 /// A matching request must consume its capture result, including failure.
 /// Only an inapplicable request may use the existing ordinary injection route.
 /// T is the retained entry in production; pure controls cannot create one.
+///
+/// `retained` is the Tool's latched `retain_original_syscall_entries` opt-in.
+/// Without it no entry was captured and every request takes the ordinary
+/// injection route, exactly as before this contract existed.
 pub(super) fn route_optval_rewrite<T>(
+    retained: bool,
     origin: InjectionOrigin,
     pending: Option<(Sysno, SyscallArgs)>,
     nr: Sysno,
@@ -41,7 +46,8 @@ pub(super) fn route_optval_rewrite<T>(
     skipped: bool,
     captured: Option<Result<T, TraceError>>,
 ) -> Result<Option<T>, TraceError> {
-    if origin != InjectionOrigin::Tool
+    if !retained
+        || origin != InjectionOrigin::Tool
         || !select_optval_rewrite(pending, nr, requested, injected_frame, skipped)
     {
         return Ok(None);
@@ -151,6 +157,7 @@ mod original_setsockopt_pure_tests {
         let mut requested = args();
         requested.arg3 = 0x2000;
         let result = route_optval_rewrite::<u8>(
+            true,
             InjectionOrigin::Tool,
             Some((Sysno::setsockopt, args())),
             Sysno::setsockopt,
@@ -169,6 +176,7 @@ mod original_setsockopt_pure_tests {
         let mut requested = args();
         requested.arg3 = 0x2000;
         let result = route_optval_rewrite::<u8>(
+            true,
             InjectionOrigin::Tool,
             Some((Sysno::setsockopt, args())),
             Sysno::setsockopt,
@@ -185,6 +193,7 @@ mod original_setsockopt_pure_tests {
         requested.arg3 = 0x2000;
         // A value-only routing control, not a native-stop capability.
         let result = route_optval_rewrite(
+            true,
             InjectionOrigin::Tool,
             Some((Sysno::setsockopt, args())),
             Sysno::setsockopt,
@@ -250,6 +259,7 @@ mod original_setsockopt_pure_tests {
             ),
         ] {
             let result = route_optval_rewrite::<u8>(
+                true,
                 origin,
                 pending,
                 nr,
@@ -259,6 +269,35 @@ mod original_setsockopt_pure_tests {
                 Some(Err(Errno::EIO.into())),
             );
             assert!(matches!(result, Ok(None)));
+        }
+    }
+    #[test]
+    fn without_opt_in_applicable_requests_take_the_ordinary_route() {
+        // A Tool that has not opted in has no captured entry. Even a request
+        // that would select the original-entry route (Tool origin, only
+        // optval changed) must keep the ordinary private-injection route,
+        // whatever the capture slot holds.
+        let mut requested = args();
+        requested.arg3 = 0x2000;
+        assert!(select_optval_rewrite(
+            Some((Sysno::setsockopt, args())),
+            Sysno::setsockopt,
+            requested,
+            false,
+            false
+        ));
+        for captured in [None, Some(Err(Errno::EIO.into())), Some(Ok(7u8))] {
+            let result = route_optval_rewrite::<u8>(
+                false,
+                InjectionOrigin::Tool,
+                Some((Sysno::setsockopt, args())),
+                Sysno::setsockopt,
+                requested,
+                false,
+                false,
+                captured,
+            );
+            assert!(matches!(result, Ok(None)), "{result:?}");
         }
     }
     #[test]

@@ -310,10 +310,20 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno>;
 
     /// Executes one scalar Read without representing a pre-entry signal as an
-    /// errno. The compatibility default uses `inject`; it cannot mint an
-    /// interruption ticket or substitute for native observation authority.
-    async fn inject_original_read(&mut self, syscall: crate::syscalls::Read) -> InjectedReadResult {
-        InjectedReadResult::Complete(self.inject(syscall).await)
+    /// errno. A backend that supports this also requires the Tool to opt in
+    /// through [`Tool::retain_original_syscall_entries`].
+    ///
+    /// Unsupported backends refuse. A fresh private Read through
+    /// [`Guest::inject`] is not a substitute: it cannot mint an interruption
+    /// ticket, and a pre-entry signal would surface as a recordable EINTR
+    /// inside `Complete`.
+    async fn inject_original_read(
+        &mut self,
+        _syscall: crate::syscalls::Read,
+    ) -> Result<InjectedReadResult, Error> {
+        Err(Error::Tool(anyhow::anyhow!(
+            "backend has no original native Read entry"
+        )))
     }
 
     /// Execute the epoll_ctl copy shape at its retained original syscall entry.
@@ -867,7 +877,10 @@ where
         self.inner.inject(syscall).await
     }
 
-    async fn inject_original_read(&mut self, syscall: crate::syscalls::Read) -> InjectedReadResult {
+    async fn inject_original_read(
+        &mut self,
+        syscall: crate::syscalls::Read,
+    ) -> Result<InjectedReadResult, Error> {
         self.inner.inject_original_read(syscall).await
     }
 

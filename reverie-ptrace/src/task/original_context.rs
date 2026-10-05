@@ -182,6 +182,9 @@ pub(super) struct OriginalReadEntry {
 #[cfg(test)]
 std::thread_local! {
     static ENTRY_REGISTER_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Calls of [`OriginalReadEntry::capture`]: the per-stop ptrace cost a
+    /// Tool pays only when it opts in to retained original entries.
+    static ORIGINAL_READ_CAPTURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The syscall ABI and NT_PRSTATUS view are separate kernel facts. A changed
@@ -222,6 +225,8 @@ fn checked_entry_registers(task: &Stopped) -> Result<libc::user_regs_struct, Str
 
 impl OriginalReadEntry {
     pub(super) fn capture(task: &Stopped, nr: Sysno, args: SyscallArgs) -> Result<Self, String> {
+        #[cfg(test)]
+        ORIGINAL_READ_CAPTURES.with(|captures| captures.set(captures.get() + 1));
         let entry = task.syscall_entry().map_err(|error| error.to_string())?;
         if entry.arch != 0xc000003e {
             return Err(format!(
@@ -915,6 +920,9 @@ mod tests {
             subscriptions.syscalls([Sysno::read, Sysno::recvfrom]);
             subscriptions
         }
+        fn retain_original_syscall_entries(_: &()) -> bool {
+            true
+        }
         async fn handle_syscall_event<G: Guest<Self>>(
             &self,
             guest: &mut G,
@@ -1116,6 +1124,248 @@ mod tests {
             }
             Ok(guest.inject(call).await?)
         }
+    }
+
+    #[derive(Default)]
+    struct OptInLog {
+        reads: AtomicUsize,
+        receives: AtomicUsize,
+        refusals: AtomicUsize,
+        allowed: AtomicUsize,
+    }
+
+    #[reverie::global_tool]
+    impl GlobalTool for OptInLog {
+        /// The Tool's answer to `retain_original_syscall_entries`.
+        type Config = bool;
+        type Request = ();
+        type Response = ();
+        async fn receive_rpc(&self, _: Pid, _: ()) {}
+    }
+
+    #[derive(Default)]
+    struct OptInTool;
+    impl AsMut<OptInTool> for OptInTool {
+        fn as_mut(&mut self) -> &mut Self {
+            self
+        }
+    }
+
+    fn opt_in_refusal(method: &str) -> String {
+        format!(
+            "Guest::{method} requires Tool::retain_original_syscall_entries; \
+             this Tool did not opt in"
+        )
+    }
+
+    fn assert_opt_in_refusal<T: std::fmt::Debug>(result: Result<T, reverie::Error>, method: &str) {
+        match result {
+            Err(reverie::Error::Tool(error)) => {
+                assert_eq!(error.to_string(), opt_in_refusal(method))
+            }
+            other => panic!("{method} must refuse without the opt-in, got {other:?}"),
+        }
+    }
+
+    #[reverie::tool]
+    impl Tool for OptInTool {
+        type GlobalState = OptInLog;
+        type ThreadState = RangeState;
+        fn subscriptions(_: &bool) -> Subscription {
+            let mut subscriptions = Subscription::none();
+            subscriptions.syscalls([Sysno::read, Sysno::recvfrom]);
+            subscriptions
+        }
+        fn retain_original_syscall_entries(config: &bool) -> bool {
+            *config
+        }
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            call: Syscall,
+        ) -> Result<i64, reverie::Error> {
+            let retain = *guest.config();
+            match call {
+                Syscall::Read(read) if read.fd() == 904 => {
+                    if retain {
+                        assert_eq!(
+                            guest.inspect_original_read_range(read).unwrap(),
+                            OriginalReadRangeVerdict::Allowed
+                        );
+                        guest
+                            .local_global_state()
+                            .unwrap()
+                            .allowed
+                            .fetch_add(1, Ordering::SeqCst);
+                    } else {
+                        assert_opt_in_refusal(
+                            guest.inspect_original_read_range(read),
+                            "inspect_original_read_range",
+                        );
+                        assert_opt_in_refusal(
+                            guest
+                                .inject_original_read(read)
+                                .await
+                                .map(|outcome| format!("{outcome:?}")),
+                            "inject_original_read",
+                        );
+                        assert_opt_in_refusal(
+                            guest
+                                .await_recorded_read_interruption(read, reverie::Signal::SIGUSR1)
+                                .await
+                                .map(|_| ()),
+                            "await_recorded_read_interruption",
+                        );
+                        assert_opt_in_refusal(
+                            guest
+                                .finish_interrupted_syscall(
+                                    reverie::InterruptedSyscall::new(),
+                                    None,
+                                )
+                                .await,
+                            "finish_interrupted_syscall",
+                        );
+                        assert_opt_in_refusal(
+                            guest
+                                .inject_epoll_ctl_copy(reverie::syscalls::EpollCtl::new())
+                                .await,
+                            "inject_epoll_ctl_copy",
+                        );
+                        guest
+                            .local_global_state()
+                            .unwrap()
+                            .refusals
+                            .fetch_add(5, Ordering::SeqCst);
+                    }
+                    guest
+                        .local_global_state()
+                        .unwrap()
+                        .reads
+                        .fetch_add(1, Ordering::SeqCst);
+                    // The ordinary injection still completes the actual Read.
+                    Ok(guest.inject(read).await?)
+                }
+                Syscall::Recvfrom(receive) if receive.fd() == 905 => {
+                    if retain {
+                        assert_eq!(
+                            guest.inspect_original_recvfrom_range(receive).unwrap(),
+                            OriginalReadRangeVerdict::Allowed
+                        );
+                        guest
+                            .local_global_state()
+                            .unwrap()
+                            .allowed
+                            .fetch_add(1, Ordering::SeqCst);
+                    } else {
+                        assert_opt_in_refusal(
+                            guest.inspect_original_recvfrom_range(receive),
+                            "inspect_original_recvfrom_range",
+                        );
+                        guest
+                            .local_global_state()
+                            .unwrap()
+                            .refusals
+                            .fetch_add(1, Ordering::SeqCst);
+                    }
+                    guest
+                        .local_global_state()
+                        .unwrap()
+                        .receives
+                        .fetch_add(1, Ordering::SeqCst);
+                    Ok(guest.inject(receive).await?)
+                }
+                other => Ok(guest.inject(other).await?),
+            }
+        }
+    }
+
+    /// Runs one Read and one recvfrom under [`OptInTool`] and returns its log
+    /// with the original-entry captures and entry register reads it caused.
+    fn run_opt_in_guest(retain: bool) -> (OptInLog, usize, usize) {
+        let captures = ORIGINAL_READ_CAPTURES.with(|captures| captures.get());
+        let register_reads = ENTRY_REGISTER_READS.with(|reads| reads.get());
+        let (output, log) = crate::testing::test_fn_with_config::<OptInTool, _>(
+            || unsafe {
+                let fd = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+                assert!(fd >= 0);
+                assert_eq!(libc::dup3(fd, 904, libc::O_CLOEXEC), 904);
+                assert_eq!(libc::close(fd), 0);
+                let mut bytes = [0xa5u8; 8];
+                assert_eq!(
+                    libc::syscall(libc::SYS_read, 904, bytes.as_mut_ptr(), 8usize),
+                    0
+                );
+                assert_eq!(bytes, [0xa5; 8]);
+                assert_eq!(libc::close(904), 0);
+                let mut sockets = [-1; 2];
+                assert_eq!(
+                    libc::socketpair(
+                        libc::AF_UNIX,
+                        libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                        0,
+                        sockets.as_mut_ptr(),
+                    ),
+                    0
+                );
+                assert_eq!(libc::dup3(sockets[0], 905, libc::O_CLOEXEC), 905);
+                assert_eq!(libc::close(sockets[0]), 0);
+                assert_eq!(libc::send(sockets[1], b"z".as_ptr().cast(), 1, 0), 1);
+                let mut byte = 0u8;
+                assert_eq!(
+                    libc::recvfrom(
+                        905,
+                        (&mut byte as *mut u8).cast(),
+                        1,
+                        0,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                    ),
+                    1
+                );
+                assert_eq!(byte, b'z');
+                assert_eq!(libc::close(905), 0);
+                assert_eq!(libc::close(sockets[1]), 0);
+            },
+            retain,
+            true,
+        )
+        .unwrap();
+        assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+        assert_eq!(log.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(log.receives.load(Ordering::SeqCst), 1);
+        (
+            log,
+            ORIGINAL_READ_CAPTURES.with(|captures| captures.get()) - captures,
+            ENTRY_REGISTER_READS.with(|reads| reads.get()) - register_reads,
+        )
+    }
+
+    /// A Tool that does not opt in pays none of the original-entry capture
+    /// cost, and every original-entry Guest API refuses before any effect;
+    /// ordinary injection completes the same Read and recvfrom.
+    #[test]
+    fn without_opt_in_read_and_recvfrom_are_not_captured_and_apis_refuse() {
+        let _owner = range_test_logging();
+        let (log, captures, register_reads) = run_opt_in_guest(false);
+        assert_eq!(captures, 0, "no original-entry capture without the opt-in");
+        assert_eq!(
+            register_reads, 0,
+            "no entry register read without the opt-in"
+        );
+        assert_eq!(log.refusals.load(Ordering::SeqCst), 6);
+        assert_eq!(log.allowed.load(Ordering::SeqCst), 0);
+    }
+
+    /// The positive control on the same guest and thread-local counters: the
+    /// opt-in captures both entries and the inspection APIs answer.
+    #[test]
+    fn with_opt_in_read_and_recvfrom_are_captured_and_inspectable() {
+        let _owner = range_test_logging();
+        let (log, captures, register_reads) = run_opt_in_guest(true);
+        assert!(captures >= 2, "captures={captures}");
+        assert!(register_reads >= 1, "register_reads={register_reads}");
+        assert_eq!(log.refusals.load(Ordering::SeqCst), 0);
+        assert_eq!(log.allowed.load(Ordering::SeqCst), 2);
     }
 
     #[test]

@@ -97,6 +97,9 @@ impl Tool for ReadObserver {
     fn observe_injected_syscalls(_: &ReadCase) -> bool {
         true
     }
+    fn retain_original_syscall_entries(_: &ReadCase) -> bool {
+        true
+    }
     fn observe_injected_syscall_preparation(_: &ReadCase) -> bool {
         true
     }
@@ -186,7 +189,7 @@ impl Tool for ReadObserver {
             // signal before that second kernel Read can enter.
             assert!(matches!(
                 guest.inject_original_read(call.with_len(0)).await,
-                InjectedReadResult::Complete(Ok(0))
+                Ok(InjectedReadResult::Complete(Ok(0)))
             ));
         }
         if guest.thread_state().attempts == 0
@@ -206,14 +209,14 @@ impl Tool for ReadObserver {
         }
         if self.case == ReadCase::PriorProgress {
             match guest.inject_original_read(call.with_len(1)).await {
-                InjectedReadResult::Complete(Ok(1)) => total = 1,
+                Ok(InjectedReadResult::Complete(Ok(1))) => total = 1,
                 other => panic!("first actual byte: {other:?}"),
             }
             call = call
                 .with_len(1)
                 .with_buf(AddrMut::from_raw(call.buf().unwrap().as_raw() + 1));
         }
-        match guest.inject_original_read(call).await {
+        match guest.inject_original_read(call).await? {
             InjectedReadResult::RecordedInterruption(_) => {
                 panic!("native backend issued recorded control")
             }
