@@ -24,7 +24,8 @@ and `reverie-rpc-transport`.
 4. After `sigreturn`, the trampoline invokes `T::handle_syscall_event` in normal
    guest context. The first invocation and later patched invocations therefore
    use the same tool path; the first site trap is not also a tool execution.
-5. `LiteinstGuest<T>` supplies in-process memory/register access and syscall
+5. reverie-inguest's Tool host (`reverie_inguest::guest::host`, whose `Guest`
+   is `InGuest`) supplies in-process memory/register access and syscall
    injection through the trusted gate. `CoordinatorRpc<G>` serializes
    `GlobalRPC` messages over the same UDS/bincode framing as
    `reverie-rpc-transport::RpcServer<G>`. The launcher accepts concurrent local
