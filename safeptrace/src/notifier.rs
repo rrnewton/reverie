@@ -3036,11 +3036,15 @@ fn retained_proc_status(directory: RawFd) -> Result<RetainedProcStatus, Errno> {
     if count < 0 {
         return Err(Errno::last());
     }
+    parse_retained_proc_status(&bytes[..count as usize])
+}
+
+fn parse_retained_proc_status(bytes: &[u8]) -> Result<RetainedProcStatus, Errno> {
     // Name can contain arbitrary comm bytes. Decode only the kernel's ASCII
     // identity lines, so a later PR_SET_NAME cannot revoke an established
     // wait authority. proc_task_name escapes embedded newlines in Name.
     let field = |name: &str| {
-        let line = bytes[..count as usize]
+        let line = bytes
             .split(|byte| *byte == b'\n')
             .find(|line| line.starts_with(name.as_bytes()))
             .ok_or(Errno::EIO)?;
@@ -3052,6 +3056,31 @@ fn retained_proc_status(directory: RawFd) -> Result<RetainedProcStatus, Errno> {
         tgid: field("Tgid:")?,
         tracer_pid: field("TracerPid:")?,
     })
+}
+
+/// Every positional read starts at zero. proc status uses seq_read_iter,
+/// which resets its iterator and buffered count at that position and runs
+/// show again, including after a partial read. This retains an open file,
+/// never its prior contents; attachment must remain fresh on every poll.
+fn pread_retained_proc_status(status: RawFd) -> Result<RetainedProcStatus, Errno> {
+    let mut bytes = [0u8; 8192];
+    let count = unsafe { libc::pread(status, bytes.as_mut_ptr().cast(), bytes.len(), 0) };
+    if count < 0 {
+        return Err(Errno::last());
+    }
+    parse_retained_proc_status(&bytes[..count as usize])
+}
+
+fn open_optional_status(directory: RawFd) -> Option<OwnedFd> {
+    let _open = launch_window::TransientOpen::begin();
+    let raw = unsafe {
+        libc::openat(
+            directory,
+            c"status".as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    (raw >= 0).then(|| unsafe { OwnedFd::from_raw_fd(raw) })
 }
 
 /// The real parent's TGID is needed only when a new explicit wait interface
@@ -3102,6 +3131,9 @@ struct WorkerIdentity {
     proc_key: ProcDirectoryKey,
     numeric_name: std::ffi::CString,
     proc_root: Option<Arc<AlignedProcfs>>,
+    /// Optional original status file. Every use regenerates current contents
+    /// with pread0; acquisition and read failures take the directory reader.
+    status_fd: Option<OwnedFd>,
 }
 
 impl WorkerIdentity {
@@ -3186,6 +3218,7 @@ impl WorkerIdentity {
             return Err(Errno::ESRCH);
         }
 
+        let status_fd = open_optional_status(proc_dir.as_raw_fd());
         Ok(Self {
             pid,
             snapshot: after,
@@ -3195,6 +3228,7 @@ impl WorkerIdentity {
             proc_key,
             numeric_name: std::ffi::CString::new(pid.as_raw().to_string()).expect("decimal pid"),
             proc_root,
+            status_fd,
         })
     }
 
@@ -3211,7 +3245,13 @@ impl WorkerIdentity {
     /// Reads current attachment state through the retained proc directory,
     /// rather than through a routing number or the capture-time snapshot.
     fn current_tracer_pid(&self) -> Result<Pid, Errno> {
-        let status = retained_proc_status(self.proc_dir.as_raw_fd())?;
+        let status = self
+            .status_fd
+            .as_ref()
+            .and_then(|fd| pread_retained_proc_status(fd.as_raw_fd()).ok())
+            .filter(|status| status.pid == self.pid && status.tgid == self.snapshot.tgid)
+            .map(Ok)
+            .unwrap_or_else(|| retained_proc_status(self.proc_dir.as_raw_fd()))?;
         if status.pid != self.pid || status.tgid != self.snapshot.tgid {
             return Err(Errno::ESRCH);
         }
