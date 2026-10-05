@@ -3402,6 +3402,16 @@ fn report_native_thread_pidfd_requirement() {
         let metadata = metadata.assume_init();
         let kind = metadata.st_mode & libc::S_IFMT;
         if kind == libc::S_IFREG {
+            // A write at a finite file-size limit can deliver fatal SIGXFSZ
+            // instead of letting the constructor return its captured errno.
+            // Decline output if the observed limit is finite or unreadable.
+            // This observation does not pin a concurrent limit change.
+            let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+            if libc::getrlimit(libc::RLIMIT_FSIZE, limit.as_mut_ptr()) != 0
+                || limit.assume_init().rlim_cur != libc::RLIM_INFINITY
+            {
+                return;
+            }
             // The dup shares stderr's offset. A proc-fd reopen would leave
             // later writes able to overwrite this diagnostic.
             libc::write(
@@ -10605,6 +10615,20 @@ mod test {
     }
 
     #[test]
+    fn native_thread_pidfd_refusal_skips_finite_file_size_limit() {
+        let result = run_exact_test_bounded(
+            "notifier::test::native_thread_pidfd_refusal_reports_kernel_requirement",
+            &[("SAFEPTRACE_NATIVE_PIDFD_DIAGNOSTIC_INNER", "file-limit")],
+            false,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(!result.timed_out, "{result:?}");
+        assert!(result.output.status.success(), "{result:?}");
+        assert!(result.output.stderr.is_empty(), "{result:?}");
+    }
+
+    #[test]
     fn native_thread_pidfd_refusal_reports_kernel_requirement() {
         const INNER: &str = "SAFEPTRACE_NATIVE_PIDFD_DIAGNOSTIC_INNER";
         let Some(mode) = env::var_os(INNER) else {
@@ -10673,7 +10697,9 @@ mod test {
         let mut full_reader = None;
         let mut regular_output = None;
         let mut previous_sigpipe = None;
-        if mode == "file" {
+        let mut previous_file_limit = None;
+        let mut previous_sigxfsz = None;
+        if mode == "file" || mode == "file-limit" {
             let fd = unsafe {
                 libc::memfd_create(c"native-pidfd-diagnostic".as_ptr(), libc::MFD_CLOEXEC)
             };
@@ -10688,6 +10714,37 @@ mod test {
                 libc::STDERR_FILENO
             );
             regular_output = Some(fd);
+            if mode == "file-limit" {
+                let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+                assert_eq!(
+                    unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, limit.as_mut_ptr()) },
+                    0
+                );
+                let limit = unsafe { limit.assume_init() };
+                let finite = libc::rlimit {
+                    rlim_cur: 7,
+                    rlim_max: limit.rlim_max,
+                };
+                assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &finite) }, 0);
+                previous_file_limit = Some(limit);
+                previous_sigxfsz = Some(unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_DFL) });
+                assert_ne!(previous_sigxfsz.unwrap(), libc::SIG_ERR);
+                let mut mask = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+                assert_eq!(
+                    unsafe {
+                        libc::pthread_sigmask(
+                            libc::SIG_SETMASK,
+                            std::ptr::null(),
+                            mask.as_mut_ptr(),
+                        )
+                    },
+                    0
+                );
+                assert_eq!(
+                    unsafe { libc::sigismember(mask.as_ptr(), libc::SIGXFSZ) },
+                    0
+                );
+            }
         } else if mode != "pipe" {
             let mut descriptors = [-1; 2];
             assert_eq!(
@@ -10733,7 +10790,39 @@ mod test {
             flags,
             "the diagnostic changed the caller's stderr flags"
         );
-        if mode == "file" {
+        if let Some(previous) = previous_file_limit {
+            let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+            assert_eq!(
+                unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, limit.as_mut_ptr()) },
+                0
+            );
+            let limit = unsafe { limit.assume_init() };
+            assert_eq!(limit.rlim_cur, 7);
+            assert_eq!(limit.rlim_max, previous.rlim_max);
+            let mut action = std::mem::MaybeUninit::<libc::sigaction>::uninit();
+            assert_eq!(
+                unsafe { libc::sigaction(libc::SIGXFSZ, std::ptr::null(), action.as_mut_ptr()) },
+                0
+            );
+            assert_eq!(unsafe { action.assume_init() }.sa_sigaction, libc::SIG_DFL);
+            let mut mask = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+            assert_eq!(
+                unsafe {
+                    libc::pthread_sigmask(libc::SIG_SETMASK, std::ptr::null(), mask.as_mut_ptr())
+                },
+                0
+            );
+            assert_eq!(
+                unsafe { libc::sigismember(mask.as_ptr(), libc::SIGXFSZ) },
+                0
+            );
+            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &previous) }, 0);
+            assert_ne!(
+                unsafe { libc::signal(libc::SIGXFSZ, previous_sigxfsz.unwrap()) },
+                libc::SIG_ERR
+            );
+        }
+        if mode == "file" || mode == "file-limit" {
             assert_eq!(
                 unsafe { libc::write(libc::STDERR_FILENO, b"after\n".as_ptr().cast(), 6) },
                 6
@@ -10763,12 +10852,16 @@ mod test {
             );
             assert_eq!(bytes, [b'x'; 4096]);
         } else if let Some(fd) = regular_output {
-            let expected = [
-                b"before\n".as_slice(),
-                NATIVE_THREAD_PIDFD_REQUIREMENT,
-                b"after\n".as_slice(),
-            ]
-            .concat();
+            let expected = if mode == "file-limit" {
+                b"before\nafter\n".to_vec()
+            } else {
+                [
+                    b"before\n".as_slice(),
+                    NATIVE_THREAD_PIDFD_REQUIREMENT,
+                    b"after\n".as_slice(),
+                ]
+                .concat()
+            };
             assert_eq!(unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_SET) }, 0);
             let mut actual = vec![0; expected.len() + 1];
             let read =
