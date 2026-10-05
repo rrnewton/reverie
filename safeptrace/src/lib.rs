@@ -48,6 +48,8 @@ use syscalls::Sysno;
 use thiserror::Error;
 
 #[cfg(feature = "notifier")]
+pub use crate::notifier::ParentReap;
+#[cfg(feature = "notifier")]
 pub use crate::notifier::ProcStatError;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::PtracerCleanupDriver;
@@ -84,6 +86,107 @@ pub use crate::notifier::TerminalCleanup;
 pub use crate::regs::*;
 use crate::waitid::IdType;
 use crate::waitid::waitid;
+
+// libc 0.2.186 exposes the Linux syscall-info UAPI only for GNU targets.
+#[cfg(target_env = "gnu")]
+type NativeSyscallExitInfo = libc::ptrace_syscall_info;
+
+// On other Linux libc targets the same kernel UAPI has no libc Rust type.
+// Request only the fixed-width common header plus EXIT result prefix from
+// include/uapi/linux/ptrace.h. A different op cannot pass the decoder below.
+#[cfg(not(target_env = "gnu"))]
+#[repr(C)]
+struct NativeSyscallExitInfo {
+    op: u8,
+    reserved: [u8; 3],
+    arch: u32,
+    instruction_pointer: u64,
+    stack_pointer: u64,
+    raw: i64,
+    is_error: u8,
+}
+
+fn decode_native_syscall_exit(
+    info: &NativeSyscallExitInfo,
+    returned_bytes: usize,
+) -> Result<i64, Errno> {
+    #[cfg(target_env = "gnu")]
+    const PREFIX_END: usize = core::mem::offset_of!(libc::ptrace_syscall_info, u)
+        + core::mem::offset_of!(libc::__c_anonymous_ptrace_syscall_info_exit, is_error)
+        + 1;
+    #[cfg(not(target_env = "gnu"))]
+    const PREFIX_END: usize = core::mem::offset_of!(NativeSyscallExitInfo, is_error) + 1;
+    const _: () = assert!(PREFIX_END == 33);
+    #[cfg(target_env = "gnu")]
+    const EXIT: u8 = libc::PTRACE_SYSCALL_INFO_EXIT;
+    #[cfg(not(target_env = "gnu"))]
+    const EXIT: u8 = 2;
+    if returned_bytes < PREFIX_END || info.op != EXIT {
+        return Err(Errno::EPROTO);
+    }
+    // SAFETY: all fields were initialized before ptrace, and its positive EXIT
+    // discriminant/length identifies this integer-only union member.
+    #[cfg(target_env = "gnu")]
+    let (raw, is_error) = unsafe { (info.u.exit.sval, info.u.exit.is_error) };
+    #[cfg(not(target_env = "gnu"))]
+    let (raw, is_error) = (info.raw, info.is_error);
+    if is_error > 1 || (is_error != 0) != (-4095..=-1).contains(&raw) {
+        return Err(Errno::EPROTO);
+    }
+    Ok(raw)
+}
+
+// Integer-only Linux UAPI entry/seccomp prefix, independent of libc's union
+// exposure. An entry requires all 80 bytes; NONE requires its full 24-byte
+// header. Requesting the actual 88-byte buffer preserves the seccomp suffix.
+#[repr(C)]
+#[derive(Default)]
+struct NativeSyscallEntryInfo {
+    op: u8,
+    reserved: [u8; 3],
+    arch: u32,
+    ip: u64,
+    sp: u64,
+    number: u64,
+    arguments: [u64; 6],
+    seccomp_data: u32,
+    padding: u32,
+}
+const _: () = assert!(core::mem::offset_of!(NativeSyscallEntryInfo, arguments) == 32);
+const _: () = assert!(core::mem::size_of::<NativeSyscallEntryInfo>() == 88);
+
+/// Full original operands at an actual Linux ENTRY or SECCOMP stop.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SyscallEntry {
+    /// Linux audit architecture, not inferred from the tracer build.
+    pub arch: u32,
+    /// Actual instruction pointer from the held stop's kernel receipt.
+    pub instruction_pointer: u64,
+    /// Actual stack pointer from that receipt.
+    pub stack_pointer: u64,
+    /// Unchanged full-width syscall number.
+    pub number: u64,
+    /// All six unchanged full-width operands.
+    pub arguments: [u64; 6],
+    /// Whether this receipt is from seccomp rather than syscall-entry tracing.
+    pub seccomp: bool,
+}
+fn decode_native_syscall_entry(
+    info: &NativeSyscallEntryInfo,
+    size: usize,
+) -> Result<SyscallEntry, Errno> {
+    if !matches!(info.op, 1 | 3) || size < if info.op == 3 { 84 } else { 80 } {
+        return Err(Errno::EPROTO);
+    }
+    Ok(SyscallEntry {
+        arch: info.arch,
+        instruction_pointer: info.ip,
+        stack_pointer: info.sp,
+        number: info.number,
+        arguments: info.arguments,
+        seccomp: info.op == 3,
+    })
+}
 
 /// Immutable generation token carried through every typed tracee state.
 #[derive(Clone, Debug)]
@@ -1236,6 +1339,65 @@ impl Stopped {
         self.setregset(NT_ARM_SYSTEM_CALL, &nr)
     }
 
+    /// Read an actual kernel syscall-exit result from this held stop.
+    ///
+    /// This requires the `PTRACE_GET_SYSCALL_INFO` EXIT discriminant and its
+    /// complete fixed result prefix. It refuses an entry, seccomp or ordinary
+    /// signal stop; the caller must not have overwritten the result registers.
+    pub fn syscall_exit_result(&self) -> Result<i64, Error> {
+        // The Linux UAPI prefix is fixed-width even across tracee word sizes.
+        // All fields are integers and initialized before ptrace may write a
+        // shorter prefix. Passing the actual buffer size is
+        // essential: a zero addr requests zero output bytes.
+        // SAFETY: the UAPI contains only integer fields and an integer union;
+        // all-zero is valid, including for a short kernel write.
+        let mut info: NativeSyscallExitInfo = unsafe { core::mem::zeroed() };
+        let size = unsafe {
+            syscalls::syscall!(
+                Sysno::ptrace,
+                libc::PTRACE_GET_SYSCALL_INFO,
+                self.0.as_raw(),
+                core::mem::size_of_val(&info),
+                &mut info as *mut NativeSyscallExitInfo
+            )
+        }
+        .map_err(|error| self.map_err(error))?;
+        decode_native_syscall_exit(&info, size).map_err(Error::Errno)
+    }
+
+    fn read_syscall_entry_info(&self) -> Result<(NativeSyscallEntryInfo, usize), Error> {
+        let mut info = NativeSyscallEntryInfo::default();
+        let size = unsafe {
+            syscalls::syscall!(
+                Sysno::ptrace,
+                libc::PTRACE_GET_SYSCALL_INFO,
+                self.0.as_raw(),
+                core::mem::size_of_val(&info),
+                &mut info as *mut _
+            )
+        }
+        .map_err(|error| self.map_err(error))?;
+        Ok((info, size))
+    }
+
+    /// Reads the full original operands from an authenticated kernel entry.
+    /// EXIT, NONE, truncated and unrecognized operations are refused.
+    pub fn syscall_entry(&self) -> Result<SyscallEntry, Error> {
+        let (info, size) = self.read_syscall_entry_info()?;
+        decode_native_syscall_entry(&info, size).map_err(Error::Errno)
+    }
+
+    /// Checks that this actual held stop has no ENTRY/EXIT/SECCOMP receipt.
+    /// This does not by itself prove that no syscall ran: the caller must also
+    /// retain its first-resume phase and exact task/frame through every wait.
+    pub fn syscall_info_is_none(&self) -> Result<bool, Error> {
+        let (info, size) = self.read_syscall_entry_info()?;
+        if size < 24 {
+            return Err(Error::Errno(Errno::EPROTO));
+        }
+        Ok(info.op == 0)
+    }
+
     /// Gets info about the signal that caused the process to be stopped.
     pub fn getsiginfo(&self) -> Result<libc::siginfo_t, Error> {
         self.1
@@ -1865,6 +2027,13 @@ impl Zombie {
     #[cfg(feature = "notifier")]
     pub fn wait_owned_on_ptracer_thread(self) -> PtracerOwnedWaitFuture {
         self.0.wait_owned_on_ptracer_thread()
+    }
+
+    /// Returns the original generation's terminal acknowledgment without
+    /// claiming its EXIT stop or consuming its final wait.
+    #[cfg(feature = "notifier")]
+    pub fn terminal_cleanup(&self) -> TerminalCleanup {
+        self.0.terminal_cleanup()
     }
 
     /// Reaps the zombie by waiting for it to fully exit.
@@ -3005,5 +3174,95 @@ mod test {
         assert_eq!(exited.pop(), Some((parent_pid, ExitStatus::Exited(0))));
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod syscall_exit_info_tests {
+    use super::*;
+
+    fn exit_info(op: u8, raw: i64, is_error: u8) -> NativeSyscallExitInfo {
+        // SAFETY: same integer-only UAPI initialization as the actual reader.
+        let mut info: NativeSyscallExitInfo = unsafe { core::mem::zeroed() };
+        info.op = op;
+        #[cfg(target_env = "gnu")]
+        {
+            info.u.exit = libc::__c_anonymous_ptrace_syscall_info_exit {
+                sval: raw,
+                is_error,
+            };
+        }
+        #[cfg(not(target_env = "gnu"))]
+        {
+            info.raw = raw;
+            info.is_error = is_error;
+        }
+        info
+    }
+
+    #[test]
+    fn native_exit_prefix_preserves_positive_and_negative_results() {
+        for raw in [0, 1, 12345, -1, -512, -4095, -4096] {
+            let info = exit_info(2, raw, u8::from((-4095..=-1).contains(&raw)));
+            assert_eq!(decode_native_syscall_exit(&info, 33), Ok(raw));
+        }
+    }
+
+    #[test]
+    fn native_exit_prefix_refuses_short_or_other_stop_payloads() {
+        let mut info = exit_info(2, 123, 0);
+        for bytes in [0, 1, 24, 32] {
+            assert_eq!(decode_native_syscall_exit(&info, bytes), Err(Errno::EPROTO));
+        }
+        for op in [0, 1, 3, 255] {
+            info.op = op;
+            assert_eq!(decode_native_syscall_exit(&info, 80), Err(Errno::EPROTO));
+        }
+    }
+
+    #[test]
+    fn native_exit_prefix_refuses_inconsistent_error_discriminants() {
+        for (raw, is_error) in [(123, 1), (-libc::EINTR as i64, 0), (123, 2)] {
+            let info = exit_info(2, raw, is_error);
+            assert_eq!(decode_native_syscall_exit(&info, 33), Err(Errno::EPROTO));
+        }
+    }
+}
+
+#[cfg(test)]
+mod syscall_entry_info_tests {
+    use super::*;
+    #[test]
+    fn entry_requires_complete_exact_kind_and_all_full_width_operands() {
+        let mut info = NativeSyscallEntryInfo {
+            op: 1,
+            arch: 0xc000003e,
+            ip: 0x700000002,
+            sp: 0x7ffff000,
+            number: 0,
+            arguments: [7, 0x123456789, 1u64 << 40, 0x11, 0x22, u64::MAX],
+            ..Default::default()
+        };
+        let entry = decode_native_syscall_entry(&info, 80).unwrap();
+        assert_eq!(entry.arguments, info.arguments);
+        assert_eq!(entry.instruction_pointer, info.ip);
+        assert_eq!(entry.stack_pointer, info.sp);
+        assert_eq!(entry.arch, info.arch);
+        assert_eq!(entry.number, info.number);
+        assert!(!entry.seccomp);
+        for size in 0..80 {
+            assert_eq!(decode_native_syscall_entry(&info, size), Err(Errno::EPROTO));
+        }
+        for op in [0, 2, 4, 255] {
+            info.op = op;
+            assert_eq!(decode_native_syscall_entry(&info, 88), Err(Errno::EPROTO));
+        }
+        info.op = 3;
+        for size in 0..84 {
+            assert_eq!(decode_native_syscall_entry(&info, size), Err(Errno::EPROTO));
+        }
+        let seccomp = decode_native_syscall_entry(&info, 84).unwrap();
+        assert!(seccomp.seccomp);
+        assert_eq!(seccomp.arguments, entry.arguments);
     }
 }

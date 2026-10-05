@@ -29,6 +29,7 @@ async fn ptracer_task_recovers_same_driver_after_pending_adapter_cancellation() 
         Arc::new(()),
         TracedTaskOptions {
             command_bootstrap: false,
+            command_filter: None,
             events: &events,
             injected_syscall_trap: None,
             liteinst_runtime: None,

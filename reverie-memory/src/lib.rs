@@ -95,6 +95,22 @@ pub trait MemoryAccess {
         Err(Errno::EOPNOTSUPP)
     }
 
+    /// Checks the actual stopped task's native write access to protection key 0.
+    ///
+    /// This checks task identity and the target's current protection-key state;
+    /// it does not inspect a mapping or establish that a destination uses key 0.
+    /// The caller must already own that mapping provenance and keep the same
+    /// memory instance, stopped task, foreground ownership, and worker exclusion
+    /// through the immediately following synchronous native write, without an
+    /// await or guest continuation. The result is not transferable authority and
+    /// must not be serialized or reconstructed for a later operation.
+    ///
+    /// Unknown target state and unsupported backends refuse without accessing
+    /// guest memory. Nonzero keys require separate qualification.
+    fn validate_native_user_key0_write_access(&self, _expected_tid: i32) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
     /// Performs a read starting at the given address. The number of bytes read
     /// is returned. The buffer is not guaranteed to be completely filled.
     fn read<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<usize, Errno>
@@ -484,6 +500,33 @@ mod user_access_default_tests {
 #[cfg(test)]
 mod native_user_write_tests {
     use super::*;
+
+    #[test]
+    fn native_key0_write_access_default_refuses_without_memory_effects() {
+        struct Unsupported;
+        impl MemoryAccess for Unsupported {
+            fn read_vectored(
+                &self,
+                _: &[io::IoSlice],
+                _: &mut [io::IoSliceMut],
+            ) -> Result<usize, Errno> {
+                panic!("key0 validation must not call ordinary read");
+            }
+
+            fn write_vectored(
+                &mut self,
+                _: &[io::IoSlice],
+                _: &mut [io::IoSliceMut],
+            ) -> Result<usize, Errno> {
+                panic!("key0 validation must not call ordinary write");
+            }
+        }
+
+        assert_eq!(
+            Unsupported.validate_native_user_key0_write_access(1),
+            Err(Errno::EOPNOTSUPP)
+        );
+    }
 
     #[test]
     fn native_user_write_default_refuses_without_using_ordinary_memory_access() {

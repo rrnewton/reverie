@@ -224,6 +224,7 @@ fn ordinary_post_exec_owner_cell(force_legacy: bool, unrelated_signal: bool) {
         Arc::new(()),
         TracedTaskOptions {
             command_bootstrap: false,
+            command_filter: None,
             events: &events,
             injected_syscall_trap: None,
             liteinst_runtime: None,
@@ -298,11 +299,14 @@ fn ordinary_post_exec_owner_cell(force_legacy: bool, unrelated_signal: bool) {
             "actual post-exec result forced={force_legacy} signal={unrelated_signal}: Stopped({}, {event:?})",
             stopped.pid()
         ),
-        Err(TraceError::Errno(errno)) => eprintln!(
+        Err(Error::Internal(TraceError::Errno(errno))) => eprintln!(
             "actual post-exec result forced={force_legacy} signal={unrelated_signal}: Errno({errno})"
         ),
-        Err(TraceError::Died(_)) => eprintln!(
+        Err(Error::Internal(TraceError::Died(_))) => eprintln!(
             "actual post-exec result forced={force_legacy} signal={unrelated_signal}: Died"
+        ),
+        Err(error) => eprintln!(
+            "actual post-exec result forced={force_legacy} signal={unrelated_signal}: {error}"
         ),
     }
     let expected = if unrelated_signal {

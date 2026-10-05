@@ -4808,12 +4808,39 @@ fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
     Ok(())
 }
 
-async fn run_orphaned(orphans: mpsc::Receiver<Child>, session: Option<Arc<FatalSession>>) {
+type CompletedChild = (
+    Pid,
+    Result<Option<ExitStatus>, reverie::Error>,
+    Option<Arc<TerminalCleanup>>,
+);
+
+fn retain_pending_parent_joins(completed: &mut Vec<CompletedChild>) {
+    completed.retain(|(_, status, terminal)| match (status, terminal) {
+        (Ok(Some(status)), Some(terminal)) => {
+            // A successful, matching final plus PIDFD HUP settles this exact
+            // owner. Recheck older entries too: their real parent may have
+            // reaped them since a previous orphan completion.
+            terminal.is_reaped() != Ok(true)
+                || !matches!(terminal.observed_terminal(), Some(Ok(actual)) if actual == *status)
+        }
+        (Ok(None), Some(_)) => true,
+        (Ok(_), None) => false,
+        // Preserve join errors and mismatched/unobserved receipts for the final
+        // failure-precedence check; HUP alone cannot turn them into success.
+        (Err(_), _) => true,
+    });
+}
+
+async fn run_orphaned(
+    orphans: mpsc::Receiver<Child>,
+    session: Option<Arc<FatalSession>>,
+) -> Vec<CompletedChild> {
     tokio_stream::wrappers::ReceiverStream::new(orphans)
-        .for_each_concurrent(None, |orphan| {
+        .map(|mut orphan| {
             let session = session.clone();
             async move {
                 let pid = orphan.id();
+                let terminal = orphan.terminal.take();
                 let Some(mut daemonizer) = orphan.daemonizer_rx else {
                     tracing::error!(
                         %pid,
@@ -4821,19 +4848,20 @@ async fn run_orphaned(orphans: mpsc::Receiver<Child>, session: Option<Arc<FatalS
                     );
                     let status = orphan.handle.await;
                     tracing::debug!(%pid, ?status, "orphan exited");
-                    return;
+                    return (pid, status, terminal);
                 };
 
                 let daemonizer = daemonizer.recv();
                 futures::pin_mut!(daemonizer);
 
-                match future::select(Box::pin(orphan.handle), daemonizer).await {
+                let status = match future::select(Box::pin(orphan.handle), daemonizer).await {
                     Either::Left((exit_status, _)) => {
                         tracing::debug!(
                             "[reverie] Orphan {} exited with status {:?}",
                             pid,
                             exit_status
                         );
+                        exit_status
                     }
                     Either::Right((kill_switch, handle)) => {
                         tracing::debug!("[reverie] pid {} daemonized", pid);
@@ -4847,6 +4875,7 @@ async fn run_orphaned(orphans: mpsc::Receiver<Child>, session: Option<Arc<FatalS
                                         pid,
                                         exit_status
                                     );
+                                    exit_status
                                 }
                                 Either::Right((_, handle)) => {
                                     tracing::debug!("sending sigkill {}", pid);
@@ -4876,14 +4905,32 @@ async fn run_orphaned(orphans: mpsc::Receiver<Child>, session: Option<Arc<FatalS
                                         pid,
                                         status
                                     );
+                                    status
                                 }
                             }
+                        } else {
+                            // Channel closure is not the owned task's join.
+                            handle.await
                         }
                     }
-                }
+                };
+                (pid, status, terminal)
             }
         })
-        .await;
+        // Preserve the existing unlimited concurrent drain, on the same executor.
+        .buffer_unordered(usize::MAX)
+        .fold(Vec::new(), |mut completed, child| async move {
+            #[cfg(test)]
+            let observed = parent_join_retention_tests::before_collection(&child);
+            completed.push(child);
+            retain_pending_parent_joins(&mut completed);
+            #[cfg(test)]
+            if observed {
+                parent_join_retention_tests::after_collection(&completed);
+            }
+            completed
+        })
+        .await
 }
 
 /// Runs the task tree to completion and returns the exit status of the root
@@ -4896,29 +4943,94 @@ async fn run_task_tree<T: Tool + 'static>(
     ordinary_owned: bool,
 ) -> Result<ExitStatus, Error> {
     let failure = root.fatal_session();
+    let parent_failure = root.parent_completion_failure();
     let root = root.run(child);
     let orphans = run_orphaned(orphanage, ordinary_owned.then(|| failure.clone()));
     futures::pin_mut!(root, orphans);
-    let result = match future::select(root, orphans).await {
+    let (result, completed_children) = match future::select(root, orphans).await {
         future::Either::Left((result, orphans)) => {
-            if result.is_ok() || !liteinst_fail_closed {
+            let completed = if result.is_ok() || !liteinst_fail_closed {
                 // A successful root, and every non-LiteInst backend, still
                 // owns orderly orphan completion.
-                orphans.await;
-            }
+                orphans.await
+            } else {
+                Vec::new()
+            };
             // A failed LiteInst root must return control to its session cleanup
             // guard immediately. A failed descendant can retain an orphanage
             // sender while its Tool exit callback is pending, and waiting for
             // that channel to close would prevent the guard from terminating
             // the exact tracee generations which make the callback pending.
-            result
+            (result, completed)
         }
-        future::Either::Right(((), root)) => root.await,
+        future::Either::Right((completed, root)) => (root.await, completed),
     };
     if ordinary_owned {
         failure.join_owned().await;
     }
-    result
+    let mut parent_join_error = None;
+    if !liteinst_fail_closed {
+        // All ordinary root/process Tool callbacks and child handles have now
+        // completed. Preserve each original generation through this boundary:
+        // its ptrace final may have preceded adoption by our real-parent role.
+        for (pid, status, terminal) in completed_children {
+            let joined = async {
+                let status = status.map_err(|error| anyhow::anyhow!(
+                    "owned child {pid} join did not complete: {error}"
+                ))?;
+                if let Some(terminal) = terminal {
+                    let status = status.ok_or_else(|| {
+                        anyhow::anyhow!("owned child {pid} transferred without a terminal result")
+                    })?;
+                    if !matches!(terminal.observed_terminal(), Some(Ok(actual)) if actual == status) {
+                        return Err(anyhow::anyhow!("owned child {pid} terminal receipt changed"));
+                    }
+                    let parent = terminal.reap_parent_terminal().await.map_err(|error| anyhow::anyhow!(
+                        "owned child {pid} real-parent join failed: {error}"
+                    ))?;
+                    match parent {
+                        safeptrace::ParentReap::OtherParent => {
+                            // The ptrace result above is complete, but a foreign
+                            // real parent still owns disappearance/reaping.
+                            tracing::debug!(%pid, "retained child remains owned by another real parent");
+                        }
+                        parent => tracing::debug!(%pid, ?parent, "joined retained child parent custody"),
+                    }
+                }
+                Ok::<(), anyhow::Error>(())
+            }.await;
+            if let Err(error) = joined {
+                tracing::error!(%pid, %error, "child parent custody remains unresolved");
+                if parent_join_error.is_none() {
+                    parent_join_error = Some(error);
+                }
+            }
+        }
+    }
+    // An ordinary child can fail after the root returned its own actual
+    // status. The orphan drain owns that child's consuming cleanup; only now
+    // may the root take the shared original typed run-loop error.
+    if result.is_ok()
+        && let Some((_, error)) = parent_failure.take_run_error()
+    {
+        return Err(error);
+    }
+    // The ordinary root may have completed before a surviving process child
+    // failed. Recheck the same retained cause only after the existing orphan
+    // drain, so an earlier cached root success cannot hide that later failure.
+    if result.is_ok()
+        && let Some((tid, error)) = parent_failure.cause()
+    {
+        return Err(anyhow::anyhow!(
+            "native parent syscall completion failed for {tid}: {error}; ordinary orphan drain completed"
+        ).into());
+    }
+    match (result, parent_join_error) {
+        (Ok(_), Some(error)) => Err(error.into()),
+        // Preserve an original typed guest/backend error. The secondary parent
+        // custody failure has already been retained in diagnostics above.
+        (result, _) => result,
+    }
 }
 
 type AttachedRun = (
@@ -5090,12 +5202,22 @@ fn seccomp_filter(events: &Subscription, trap_only_patching: bool) -> seccomp::F
 
 /// Specifies *how* the GDB server should listen for incoming connections.
 pub enum GdbConnection {
+    /// An already-bound controller listener. The caller must retire its parent
+    /// fork alias and retain CLOEXEC so only the controller can accept clients.
+    Listener(std::net::TcpListener),
+
     /// The server shall bind to and listen on the given socket address.
     Addr(SocketAddr),
 
     /// The server shall bind to and listen on the given unix domain socket. This
     /// path must not exist, otherwise the bind will fail with `EADDRINUSE`.
     Path(PathBuf),
+}
+
+impl From<std::net::TcpListener> for GdbConnection {
+    fn from(listener: std::net::TcpListener) -> Self {
+        Self::Listener(listener)
+    }
 }
 
 impl From<SocketAddr> for GdbConnection {
@@ -5836,7 +5958,10 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             });
         }
 
-        command.seccomp(seccomp_filter(&traced_events, trap_only_patching));
+        // Retain the same constructor output that is passed to the child.
+        // No caller-supplied filter or later reconstruction issues provenance.
+        let command_filter = Arc::new(seccomp_filter(&traced_events, trap_only_patching));
+        command.seccomp((*command_filter).clone());
 
         // Command::spawn holds the launch lock from the child's first pipe
         // until clone returns, and not while it waits for the child to start
@@ -5931,6 +6056,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             Some(connection) => {
                 let server = match connection {
                     GdbConnection::Addr(addr) => GdbServer::from_addr(addr).await,
+                    GdbConnection::Listener(listener) => GdbServer::from_listener(listener).await,
                     GdbConnection::Path(path) => GdbServer::from_path(&path).await,
                 };
 
@@ -5961,6 +6087,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             config,
             TracedTaskOptions {
                 command_bootstrap: true,
+                command_filter: Some(command_filter),
                 events: &events,
                 injected_syscall_trap: self.injected_syscall_trap,
                 liteinst_runtime: self.liteinst_runtime,
@@ -6189,6 +6316,7 @@ where
                 config,
                 TracedTaskOptions {
                     command_bootstrap: false,
+                    command_filter: None,
                     events: &events,
                     injected_syscall_trap: None,
                     liteinst_runtime: None,
@@ -6227,6 +6355,10 @@ where
         }
     }
 }
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "initial_command_tests.rs"]
+mod initial_command_tests;
 
 #[cfg(all(test, target_arch = "x86_64"))]
 #[path = "clock_origin_tests.rs"]
@@ -14528,5 +14660,222 @@ mod tests {
             73,
             "tracer::tests::command_pretraceme_exit_73_is_initialization_error",
         );
+    }
+}
+
+#[cfg(test)]
+mod parent_join_retention_tests {
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
+    use std::sync::Weak;
+
+    use reverie::GlobalRPC;
+    use reverie::Guest;
+    use reverie::syscalls::Syscall;
+    use reverie::syscalls::SyscallInfo;
+
+    use super::*;
+
+    struct Log {
+        tx: mpsc::UnboundedSender<usize>,
+        rx: Option<mpsc::UnboundedReceiver<usize>>,
+        completed: Vec<Weak<TerminalCleanup>>,
+        terminal: BTreeMap<Pid, ExitStatus>,
+        processes: BTreeSet<Pid>,
+    }
+    thread_local! {
+        static ACTIVE: RefCell<Option<Arc<StdMutex<Log>>>> = const { RefCell::new(None) };
+    }
+    fn active() -> Option<Arc<StdMutex<Log>>> {
+        ACTIVE.with(|slot| slot.borrow().clone())
+    }
+    struct Active;
+    impl Drop for Active {
+        fn drop(&mut self) {
+            ACTIVE.with(|slot| assert!(slot.borrow_mut().take().is_some()));
+        }
+    }
+    pub(super) fn before_collection(child: &CompletedChild) -> bool {
+        let Some(log) = active() else { return false };
+        if !matches!(&child.1, Ok(Some(ExitStatus::Exited(37)))) {
+            return false;
+        }
+        let owner = child
+            .2
+            .as_ref()
+            .expect("actual completed grandchild kept its original owner");
+        assert!(owner.wait(Duration::from_secs(1)));
+        assert!(matches!(
+            owner.observed_terminal(),
+            Some(Ok(ExitStatus::Exited(37)))
+        ));
+        assert!(
+            owner.is_reaped().unwrap(),
+            "guest parent completed its own native wait"
+        );
+        log.lock().unwrap().completed.push(Arc::downgrade(owner));
+        true
+    }
+    pub(super) fn after_collection(completed: &[CompletedChild]) {
+        let log = active().unwrap();
+        let log = log.lock().unwrap();
+        assert!(
+            completed.is_empty(),
+            "settled successful orphan tuples accumulated under a live root"
+        );
+        assert!(
+            log.completed.iter().all(|owner| owner.upgrade().is_none()),
+            "settled original PIDFD owner remained in the drain collection"
+        );
+        log.tx.send(log.completed.len()).unwrap();
+    }
+    #[derive(Default)]
+    struct Global;
+    #[reverie::global_tool]
+    impl GlobalTool for Global {
+        type Config = ();
+        type Request = ();
+        type Response = ();
+        async fn receive_rpc(&self, _: Pid, _: ()) {}
+    }
+    #[derive(Default)]
+    struct Observer;
+    #[reverie::tool]
+    impl Tool for Observer {
+        type GlobalState = Global;
+        type ThreadState = ();
+        fn subscriptions(_: &()) -> Subscription {
+            let mut sub = Subscription::none();
+            sub.syscall(Sysno::getuid);
+            sub
+        }
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            _: &mut G,
+            call: Syscall,
+        ) -> Result<i64, Error> {
+            assert!(matches!(call, Syscall::Getuid(_)));
+            let (_, args) = call.into_parts();
+            assert_eq!(args.arg0, 0x4ausize);
+            let log = active().unwrap();
+            let mut rx = log.lock().unwrap().rx.take().unwrap();
+            let completed = rx
+                .recv()
+                .await
+                .expect("existing orphan drain completed before root resumes");
+            assert_eq!(completed, args.arg1 + 1);
+            let mut log = log.lock().unwrap();
+            assert!(log.completed.iter().all(|owner| owner.upgrade().is_none()));
+            assert!(log.rx.replace(rx).is_none());
+            Ok(0)
+        }
+        fn on_backend_thread_terminal(&self, tid: Pid, _: &Global, _: &mut (), status: ExitStatus) {
+            assert!(
+                active()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .terminal
+                    .insert(tid, status)
+                    .is_none()
+            );
+        }
+        async fn on_exit_process<G: GlobalRPC<Global>>(
+            self,
+            pid: Pid,
+            _: &G,
+            status: ExitStatus,
+        ) -> Result<(), Error> {
+            let log = active().unwrap();
+            let mut log = log.lock().unwrap();
+            assert_eq!(log.terminal.get(&pid), Some(&status));
+            assert!(log.processes.insert(pid));
+            Ok(())
+        }
+    }
+    #[test]
+    fn repeated_guest_reaped_orphans_release_owners_before_live_root_exit() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let log = Arc::new(StdMutex::new(Log {
+            tx,
+            rx: Some(rx),
+            completed: Vec::new(),
+            terminal: BTreeMap::new(),
+            processes: BTreeSet::new(),
+        }));
+        ACTIVE.with(|slot| assert!(slot.borrow_mut().replace(Arc::clone(&log)).is_none()));
+        let _active = Active;
+        let (output, _) = crate::testing::test_fn::<Observer, _>(|| unsafe {
+            for iteration in 0..8usize {
+                let parent = libc::fork();
+                assert!(parent >= 0);
+                if parent == 0 {
+                    let child = libc::fork();
+                    assert!(child >= 0);
+                    if child == 0 {
+                        libc::_exit(37);
+                    }
+                    let mut status = 0;
+                    assert_eq!(libc::waitpid(child, &mut status, 0), child);
+                    assert!(libc::WIFEXITED(status));
+                    assert_eq!(libc::WEXITSTATUS(status), 37);
+                    libc::_exit(23);
+                }
+                let mut status = 0;
+                assert_eq!(libc::waitpid(parent, &mut status, 0), parent);
+                assert!(libc::WIFEXITED(status));
+                assert_eq!(libc::WEXITSTATUS(status), 23);
+                // The original root remains alive through every collector check.
+                assert_eq!(
+                    libc::syscall(libc::SYS_getuid, 0x4ausize, iteration, 0, 0, 0, 0),
+                    0
+                );
+            }
+        })
+        .expect("real repeated guest fork/wait tree completes without retained historical owners");
+        assert_eq!(output.status, ExitStatus::Exited(0));
+        let log = log.lock().unwrap();
+        assert_eq!(log.completed.len(), 8);
+        assert!(log.completed.iter().all(|owner| owner.upgrade().is_none()));
+        assert_eq!(log.terminal.len(), 17);
+        assert_eq!(log.processes.len(), 17);
+        assert_eq!(
+            log.terminal
+                .values()
+                .filter(|status| **status == ExitStatus::Exited(37))
+                .count(),
+            8
+        );
+        assert_eq!(
+            log.terminal
+                .values()
+                .filter(|status| **status == ExitStatus::Exited(23))
+                .count(),
+            8
+        );
+        assert_eq!(
+            log.terminal
+                .values()
+                .filter(|status| **status == ExitStatus::Exited(0))
+                .count(),
+            1
+        );
+        for tid in log.terminal.keys() {
+            assert!(log.processes.contains(tid));
+            assert_eq!(unsafe { libc::kill(tid.as_raw(), 0) }, -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+            assert_eq!(
+                unsafe { libc::waitpid(tid.as_raw(), std::ptr::null_mut(), libc::WNOHANG) },
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
+            );
+        }
     }
 }

@@ -32,6 +32,8 @@ use reverie::vdso::vdso_exports;
 use tracing::debug;
 use tracing::warn;
 
+use crate::task::TracedTask;
+
 /// The classified entry points of a vDSO image.
 #[derive(Debug)]
 struct VdsoTable {
@@ -369,11 +371,10 @@ pub(crate) fn vdso_writable_hook_for_test(pid: i32, hook: Box<dyn Fn()>) -> impl
 /// patch VDSOs when enabled
 ///
 /// `guest` must be in one of ptrace's stopped states.
-pub async fn vdso_patch<G, T>(guest: &mut G, subscriptions: &Subscription) -> Result<(), Error>
-where
-    G: Guest<T>,
-    T: Tool,
-{
+pub(crate) async fn vdso_patch<T: Tool + 'static>(
+    guest: &mut TracedTask<T>,
+    subscriptions: &Subscription,
+) -> Result<(), Error> {
     let replacements = vdso_replacements(subscriptions)?;
     let Some(table) = vdso_table()? else {
         return Ok(());
@@ -412,7 +413,7 @@ where
 
         // Allow write access to the vdso memory page.
         guest
-            .inject_with_retry(
+            .inject_backend_with_retry(
                 Mprotect::new()
                     .with_addr(AddrMut::from_raw(vdso.address.0 as usize))
                     .with_len(guest_len as usize)
@@ -450,7 +451,7 @@ where
         }
 
         guest
-            .inject_with_retry(
+            .inject_backend_with_retry(
                 Mprotect::new()
                     .with_addr(AddrMut::from_raw(vdso.address.0 as usize))
                     .with_len(guest_len as usize)
@@ -478,11 +479,10 @@ where
 /// auxiliary vector the kernel wrote follows `argv` and `envp`, and ld.so has
 /// not read it yet. `/proc/<pid>/auxv` keeps the kernel's values.
 #[cfg(target_arch = "x86_64")]
-pub async fn canonicalize_new_image<G, T>(guest: &mut G, stack: u64) -> Result<(), Error>
-where
-    G: Guest<T>,
-    T: Tool,
-{
+pub(crate) async fn canonicalize_new_image<T: Tool + 'static>(
+    guest: &mut TracedTask<T>,
+    stack: u64,
+) -> Result<(), Error> {
     use reverie::canonical_auxv_value;
     use reverie::syscalls::Addr;
     use reverie::syscalls::MapFlags;
@@ -492,7 +492,7 @@ where
     use reverie::vdso::canonical_vdso_image;
 
     let mut memory = guest.memory();
-    let read = |memory: &G::Memory, at: u64| -> Result<u64, Error> {
+    let read = |memory: &<TracedTask<T> as Guest<T>>::Memory, at: u64| -> Result<u64, Error> {
         let address: Addr<u64> = Addr::from_raw(at as usize).ok_or(Errno::EFAULT)?;
         Ok(memory.read_value(address)?)
     };
@@ -526,7 +526,7 @@ where
     };
 
     let mapped = guest
-        .inject_with_retry(
+        .inject_backend_with_retry(
             Mmap::new()
                 .with_addr(Addr::from_raw(CANONICAL_VDSO_ADDRESS as usize))
                 .with_len(CANONICAL_VDSO_SIZE as usize)
@@ -547,7 +547,7 @@ where
     let image = AddrMut::from_raw(CANONICAL_VDSO_ADDRESS as usize).ok_or(Errno::EFAULT)?;
     memory.write_exact(image, canonical_vdso_image())?;
     guest
-        .inject_with_retry(
+        .inject_backend_with_retry(
             Mprotect::new()
                 .with_addr(AddrMut::from_raw(CANONICAL_VDSO_ADDRESS as usize))
                 .with_len(CANONICAL_VDSO_SIZE as usize)

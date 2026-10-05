@@ -25,6 +25,8 @@
 //! registers they save and restore.
 
 use reverie::Errno;
+#[cfg(target_arch = "x86_64")]
+use reverie::InjectedSyscallEvent;
 #[cfg(test)]
 use reverie::Pid;
 use reverie::Tool;
@@ -1363,14 +1365,23 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         view: libc::user_regs_struct,
+        observation: Option<(Sysno, SyscallArgs)>,
     ) -> Result<Result<i64, Errno>, TraceError> {
         match self.trap_only_hop(task, view).await? {
             HopOutcome::ExitStop(task) => {
                 let regs = task.getregs()?;
+                self.observe_injected_syscall(
+                    observation,
+                    InjectedSyscallEvent::Returned(regs.rax as i64),
+                );
                 Ok(Errno::from_ret(regs.rax as usize).map(|x| x as i64))
             }
             HopOutcome::Other(Wait::Stopped(parent, Event::NewChild(op, child))) => {
                 let ret = child.pid().as_raw() as i64;
+                self.observe_injected_syscall(
+                    observation,
+                    InjectedSyscallEvent::ChildCreated(child.pid()),
+                );
                 // Restore the site's view in the parent as ptrace's exact
                 // inject leaves it (rip S+2, the arguments, orig_rax, rcx and
                 // r11) except rax, which the kernel writes when the call
@@ -1380,14 +1391,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                 // step, would show that id where ptrace shows the entry's
                 // -ENOSYS. The child still gets the view as its context.
                 super::restore_context(&parent, view, None, false)?;
+                // Like the GDB step path, the masked hop supplies no
+                // authenticated syscall-exit receipt for the creating call.
                 let _ = self
-                    .dispatch_new_task(op, parent, child, None, Some(view))
+                    .dispatch_new_task(op, parent, child, None, Some(view), None)
                     .await?;
                 Ok(Ok(ret))
             }
-            HopOutcome::Other(Wait::Stopped(task, Event::Exec(former_tid))) => {
-                let next_state = self.handle_exec_event(task, former_tid).await?;
-                self.execve(next_state).await
+            HopOutcome::Other(wait @ Wait::Stopped(_, Event::Exec(_))) => {
+                // As status_to_result does for an injected exec: the run loop
+                // handles the Exec stop after this inject's handler is dropped.
+                self.execve(wait).await
             }
             HopOutcome::Other(Wait::Exited(_pid, exit_status)) => self.exit(exit_status).await,
             HopOutcome::Other(wait) => self.abort(Ok(wait)).await,
@@ -1685,6 +1699,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     0,
                     0,
                 ),
+                false,
             )
             .await?;
         if let Err(errno) = restored {
@@ -1861,6 +1876,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         _task: Stopped,
         _view: libc::user_regs_struct,
+        _observation: Option<(Sysno, SyscallArgs)>,
     ) -> Result<Result<i64, Errno>, TraceError> {
         Err(self.trap_only_unsupported("trap-only hop"))
     }

@@ -189,6 +189,7 @@ fn guest_stack_owner_cell(force_legacy: bool) {
         Arc::new(()),
         TracedTaskOptions {
             command_bootstrap: false,
+            command_filter: None,
             events: &events,
             injected_syscall_trap: None,
             liteinst_runtime: None,

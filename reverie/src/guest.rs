@@ -15,6 +15,7 @@ use reverie_syscalls::SyscallInfo;
 
 use crate::Never;
 use crate::Pid;
+use crate::Signal;
 use crate::SignalEvent;
 use crate::auxv::Auxv;
 use crate::backtrace::Backtrace;
@@ -24,6 +25,16 @@ use crate::timer::TimerSchedule;
 use crate::tool::GlobalRPC;
 use crate::tool::GlobalTool;
 use crate::tool::Tool;
+
+/// The native scalar Read user-address range check only. This is not a
+/// mapping, writable-memory, copied-payload, or network-source capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OriginalReadRangeVerdict {
+    /// The native ABI accepts the original pointer/count range.
+    Allowed,
+    /// The native ABI rejects the original pointer/count with EFAULT.
+    Fault,
+}
 
 /// The logical kind of a guest memory region reported by
 /// [`Guest::detlog_memory_regions`].
@@ -51,6 +62,61 @@ pub struct DetlogMemoryRegion {
     pub start: u64,
     /// Exclusive end guest virtual address.
     pub end: u64,
+}
+
+/// A backend-owned interruption before an exact injected syscall entered Linux.
+/// This value is not an errno or a completed syscall. The backend must retain
+/// its matching stopped task until [`Guest::finish_interrupted_syscall`].
+#[derive(Clone, Debug)]
+pub struct InterruptedSyscall(std::sync::Arc<Option<Signal>>);
+
+impl InterruptedSyscall {
+    /// Allocates a fresh backend ticket. Constructing one supplies no authority:
+    /// completion must match the ticket retained by that backend's held task.
+    pub fn new() -> Self {
+        Self(std::sync::Arc::new(None))
+    }
+
+    /// Allocates a ticket naming the actual signal stop retained by a backend.
+    /// The cause does not replace the identity check against that stopped task.
+    pub fn with_signal(signal: Signal) -> Self {
+        Self(std::sync::Arc::new(Some(signal)))
+    }
+
+    /// The actual stopped signal, when supplied by the retaining backend.
+    pub fn signal(&self) -> Option<Signal> {
+        *self.0
+    }
+
+    /// Tests identity without accepting an equal-looking or cloned owner ID.
+    pub fn same(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl std::fmt::Display for InterruptedSyscall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("original syscall interrupted before kernel entry")
+    }
+}
+impl std::error::Error for InterruptedSyscall {}
+impl Default for InterruptedSyscall {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The outcome of the shared scalar Read delegate boundary.
+/// A completed value alone is not a native receipt: Tools still require their
+/// existing exact Prepared/Returned observations and provider custody.
+#[derive(Debug)]
+pub enum InjectedReadResult {
+    /// The invocation supplied its ordinary result, including Linux errors.
+    Complete(Result<i64, Errno>),
+    /// No kernel entry occurred; no result or recordable errno exists.
+    Interrupted(InterruptedSyscall),
+    /// Replay consumed an explicit interruption control, not a Read result.
+    /// Native injection paths must reject this variant.
+    RecordedInterruption(InterruptedSyscall),
 }
 
 /// A representation of a guest task (thread).
@@ -143,6 +209,36 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// thread.
     fn memory(&self) -> Self::Memory;
 
+    /// Borrow the actual run-global Tool instance when this backend owns it in
+    /// the same process. A remote RPC proxy or a process-local copy of another
+    /// coordinator's state cannot supply this reference. Unsupported backends
+    /// return `None`; callers must not reconstruct the instance from config,
+    /// serialized thread state, or numeric identities.
+    ///
+    /// This association grants no stopped-task, MM, scheduler, native-worker,
+    /// or memory-access authority. A Tool must still validate those properties
+    /// against this Guest's current thread state and actual memory interface.
+    /// The reference borrows this Guest; no new owner or serialized capability
+    /// is created. In particular, a Tool may retain immutable borrows during
+    /// preparation, then use one actual Memory value for a synchronous checked
+    /// operation before resuming or mutably operating on the Guest.
+    fn local_global_state(&self) -> Option<&T::GlobalState> {
+        None
+    }
+
+    /// Inspect the exact retained original native scalar Read without consuming,
+    /// rewriting, resuming, or injecting it. A successful verdict checks only
+    /// the kernel's address-range rule, never whether guest memory is mapped.
+    /// Unsupported backends refuse rather than guessing a user-address limit.
+    fn inspect_original_read_range(
+        &self,
+        _read: reverie_syscalls::Read,
+    ) -> Result<OriginalReadRangeVerdict, Error> {
+        Err(Error::Tool(anyhow::anyhow!(
+            "backend has no authenticated original native Read range check"
+        )))
+    }
+
     /// Returns a mutable reference to thread state.
     fn thread_state_mut(&mut self) -> &mut T::ThreadState;
 
@@ -200,6 +296,60 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     ///    Failed calls to `execve` will still return, however. Thus, it is safe to
     ///    use [`Result::unwrap_err`] on the result of the `inject`.
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno>;
+
+    /// Executes one scalar Read without representing a pre-entry signal as an
+    /// errno. The compatibility default uses `inject`; it cannot mint an
+    /// interruption ticket or substitute for native observation authority.
+    async fn inject_original_read(&mut self, syscall: crate::syscalls::Read) -> InjectedReadResult {
+        InjectedReadResult::Complete(self.inject(syscall).await)
+    }
+
+    /// Execute the epoll_ctl copy shape at its retained original syscall entry.
+    /// Only epfd and fd become full-width -1; op, event pointer, and all other
+    /// operands retain their original values. This does not register interest
+    /// and does not bypass seccomp: filters may reject the changed operands.
+    /// The provider must authenticate post-filter bytes separately. A returned
+    /// EBADF is not a copy receipt, and DEL has no event copy. Missing original
+    /// context is a Tool/backend error, never a fresh private helper fallback.
+    async fn inject_epoll_ctl_copy(
+        &mut self,
+        _call: crate::syscalls::EpollCtl,
+    ) -> Result<i64, Error> {
+        Err(Error::Tool(anyhow::anyhow!(
+            "backend has no original epoll copy entry"
+        )))
+    }
+
+    /// Waits at the same attempt boundary for the real signal named by a
+    /// recorded pre-entry Read interruption. No Read may execute or supply a
+    /// native result. The returned ticket retains the actual signal stop until
+    /// `finish_interrupted_syscall`; the record alone grants no signal custody.
+    async fn await_recorded_read_interruption(
+        &mut self,
+        _call: crate::syscalls::Read,
+        _signal: Signal,
+    ) -> Result<InterruptedSyscall, Error> {
+        Err(Error::Tool(anyhow::anyhow!(
+            "backend has no recorded Read signal boundary"
+        )))
+    }
+
+    /// Ends a positively canceled, unentered invocation after the Tool has
+    /// released its exact operation custody. `completed` is a prior partial
+    /// count from the same logical syscall, never a result for the canceled
+    /// attempt. This prepares the handback; the Tool must finish its ordinary
+    /// post-hook and return that count or the same ticket as `Error::Tool`.
+    /// Only the backend's exact retained callback consumes the ticket and
+    /// dispatches the original signal, with no synthetic syscall errno.
+    async fn finish_interrupted_syscall(
+        &mut self,
+        _ticket: InterruptedSyscall,
+        _completed: Option<i64>,
+    ) -> Result<(), Error> {
+        Err(Error::Tool(anyhow::anyhow!(
+            "backend has no interrupted syscall handback"
+        )))
+    }
 
     /// Similar to [`Guest::inject`], except that it never returns. Since it does
     /// not return to the caller, the syscall return value cannot be altered or
@@ -659,6 +809,17 @@ where
         self.inner.memory()
     }
 
+    fn local_global_state(&self) -> Option<&L::GlobalState> {
+        self.inner.local_global_state()
+    }
+
+    fn inspect_original_read_range(
+        &self,
+        read: reverie_syscalls::Read,
+    ) -> Result<OriginalReadRangeVerdict, Error> {
+        self.inner.inspect_original_read_range(read)
+    }
+
     fn thread_state_mut(&mut self) -> &mut L::ThreadState {
         self.inner.thread_state_mut().as_mut()
     }
@@ -685,6 +846,37 @@ where
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         self.inner.inject(syscall).await
+    }
+
+    async fn inject_original_read(&mut self, syscall: crate::syscalls::Read) -> InjectedReadResult {
+        self.inner.inject_original_read(syscall).await
+    }
+
+    async fn inject_epoll_ctl_copy(
+        &mut self,
+        call: crate::syscalls::EpollCtl,
+    ) -> Result<i64, Error> {
+        self.inner.inject_epoll_ctl_copy(call).await
+    }
+
+    async fn await_recorded_read_interruption(
+        &mut self,
+        call: crate::syscalls::Read,
+        signal: Signal,
+    ) -> Result<InterruptedSyscall, Error> {
+        self.inner
+            .await_recorded_read_interruption(call, signal)
+            .await
+    }
+
+    async fn finish_interrupted_syscall(
+        &mut self,
+        ticket: InterruptedSyscall,
+        completed: Option<i64>,
+    ) -> Result<(), Error> {
+        self.inner
+            .finish_interrupted_syscall(ticket, completed)
+            .await
     }
 
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {

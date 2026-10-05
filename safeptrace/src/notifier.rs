@@ -722,6 +722,7 @@ struct Event {
     /// with time remaining while it holds `worker_done_lock`.
     #[cfg(test)]
     worker_done_park_signal: Mutex<Option<mpsc::SyncSender<()>>>,
+    worker_done_waiters: ExitWaiters,
 
     /// Serializes kernel wait-status ownership before either synchronous
     /// fallback/capture or notifier registration can inspect mutable state.
@@ -1280,6 +1281,7 @@ impl Event {
             worker_done_wait_probe: Mutex::new(None),
             #[cfg(test)]
             worker_done_park_signal: Mutex::new(None),
+            worker_done_waiters: ExitWaiters::default(),
             cleanup_cancel_requested: AtomicBool::new(false),
             cleanup_claim_waiters: AtomicUsize::new(0),
             wait_owner: AtomicU8::new(WAIT_OWNER_NONE),
@@ -2338,6 +2340,7 @@ impl Event {
             debug_assert!(matches!(previous, WORKER_RUNNING | WORKER_FINISHING));
             self.worker_done_changed.notify_all();
         }
+        self.worker_done_waiters.wake_all();
         // Do not hold worker_done_lock while acquiring wait_owner_lock.
         self.notify_wait_owner_change();
     }
@@ -5866,6 +5869,19 @@ fn parse_bound_stat_flags(bytes: &[u8], pid: Pid) -> Result<u32, ProcStatError> 
         .ok_or(ProcStatError::Format("flags overflow u32"))
 }
 
+/// Outcome of joining this generation's separate real-parent wait after its
+/// original ptrace notifier has finished. No variant invents an exit status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParentReap {
+    /// This process consumed the exact terminal status retained by the notifier.
+    Reaped,
+    /// The retained PIDFD reports HUP: the generation was already reaped.
+    AlreadyReaped,
+    /// Linux says this process is not the real wait owner. The other parent's
+    /// obligation remains; this is not proof of global disappearance.
+    OtherParent,
+}
+
 /// A synchronous acknowledgment that a PID's wait owner has observed a
 /// terminal state, removed its exact registry entry, and released the notifier
 /// worker's identity reference. Caller-owned typed states and cleanup handles
@@ -5917,6 +5933,37 @@ impl TerminalCleanup {
         return_deadline: Instant,
     ) -> Result<CancellableEventRegistration, Errno> {
         NOTIFIER.try_event_for_cleanup(self.pid, &self.event, return_deadline)
+    }
+
+    /// Returns the TGID captured with this exact task's retained PIDFD_THREAD.
+    ///
+    /// This does not reopen a numeric PID or refresh procfs. The snapshot is
+    /// suitable for classifying a newborn before its first resume; it is not a
+    /// claim about a later exec transition. An unbound or projected handle
+    /// cannot supply a thread-group identity.
+    pub fn thread_group_id(&self) -> Result<Pid, Errno> {
+        let identity = self.event.identity().ok_or(Errno::ENXIO)?;
+        if identity.pid != self.pid || identity.snapshot.tgid.as_raw() <= 0 {
+            return Err(Errno::ECHILD);
+        }
+        Ok(identity.snapshot.tgid)
+    }
+
+    /// Duplicate this generation's already retained PIDFD_THREAD. This is a
+    /// custody description, not a liveness assertion: it remains useful after
+    /// actual final wait. No numeric PID is reopened or procfs state refreshed.
+    /// A generation captured without PIDFD_THREAD (the legacy leader pidfd or
+    /// procfs fallback on kernels before 6.9) has no thread pidfd to lend and
+    /// is refused with EINVAL, the same errno as the native-policy refusal.
+    pub fn duplicate_bound_thread_pidfd(&self) -> Result<OwnedFd, Errno> {
+        let identity = self.event.identity().ok_or(Errno::ENXIO)?;
+        if identity.pid != self.pid || identity.snapshot.tgid.as_raw() <= 0 {
+            return Err(Errno::ECHILD);
+        }
+        match &identity.pidfd {
+            ThreadHandle::Pidfd(fd) => fd.try_clone().map_err(io_errno),
+            ThreadHandle::LegacyLeader { .. } | ThreadHandle::Procfs { .. } => Err(Errno::EINVAL),
+        }
     }
 
     /// Returns the last typed notifier registration error, if any.
@@ -5991,6 +6038,28 @@ impl TerminalCleanup {
         event.mark_worker_done();
     }
 
+    /// Terminate this already bound task after an acknowledged failed run.
+    /// This uses the retained notifier PIDFD_THREAD; it neither reopens a PID
+    /// nor signals a numeric group. ESRCH means that exact task is already dead,
+    /// not that its terminal wait or descendant cleanup has been consumed.
+    pub fn terminate_bound_task(&self) -> Result<(), Errno> {
+        let identity = self.event.identity().ok_or(Errno::ENXIO)?;
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                identity.pidfd.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io_errno(io::Error::last_os_error()))
+        }
+    }
+
     /// Returns true when both handles carry the same immutable Event generation.
     pub fn same_generation(&self, other: &Self) -> bool {
         Arc::ptr_eq(self.event.event(), other.event.event())
@@ -6033,6 +6102,111 @@ impl TerminalCleanup {
             ECHILD_STATUS => Err(Errno::ECHILD),
             status => Ok(Some(crate::ExitStatus::from_raw(status))),
         }
+    }
+
+    /// Observe retirement of the retained kernel generation without waiting or
+    /// consuming a status. This does not reopen a numeric PID.
+    pub fn is_reaped(&self) -> Result<bool, Errno> {
+        let identity = self.event.identity().ok_or(Errno::ENXIO)?;
+        if identity.pid != self.pid {
+            return Err(Errno::ECHILD);
+        }
+        let mut fd = libc::pollfd {
+            fd: identity.pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut fd, 1, 0) } < 0 {
+            return Err(io_errno(io::Error::last_os_error()));
+        }
+        if fd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+            return Err(Errno::EBADF);
+        }
+        Ok(fd.revents & libc::POLLHUP != 0)
+    }
+
+    /// Join a process leader's real-parent wait after actual terminal delivery.
+    ///
+    /// The caller must finish its tree's consuming Tool/child cleanup before
+    /// calling this. The original notifier remains the sole ptrace wait owner:
+    /// this method first joins its completion, then issues one nonblocking wait
+    /// on that same retained PIDFD. It cannot consume a living guest parent's
+    /// child: Linux returns ECHILD until this process is the real wait owner.
+    /// ECHILD without PIDFD HUP is reported distinctly as [`ParentReap::OtherParent`].
+    /// A missing/unknown native terminal or a nonleader is refused.
+    pub async fn reap_parent_terminal(&self) -> Result<ParentReap, Errno> {
+        let identity = self.event.identity().ok_or(Errno::ENXIO)?;
+        if identity.pid != self.pid || identity.snapshot.tgid != self.pid {
+            return Err(Errno::EINVAL);
+        }
+        let event = self.event.event();
+        let expected = event.status.lock().terminal;
+        if expected == ECHILD_STATUS {
+            return Err(Errno::ECHILD);
+        }
+        if expected == INVALID_STATUS
+            || (!libc::WIFEXITED(expected) && !libc::WIFSIGNALED(expected))
+        {
+            return Err(Errno::EBUSY);
+        }
+        let waiter = Arc::new(ExitWaiter::default());
+        std::future::poll_fn(|cx| {
+            event.worker_done_waiters.register(&waiter, cx.waker());
+            if event.worker_state.load(Ordering::Acquire) == WORKER_DONE {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        if self.is_reaped()? {
+            return Ok(ParentReap::AlreadyReaped);
+        }
+        let flags = WaitPidFlag::from_bits_retain(libc::WEXITED | libc::WNOHANG | libc::__WALL);
+        match waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags) {
+            Ok(Some(actual)) if actual == expected => {
+                if !self.is_reaped()? {
+                    return Err(Errno::EPROTO);
+                }
+                Ok(ParentReap::Reaped)
+            }
+            Ok(Some(_)) => Err(Errno::EPROTO),
+            Ok(None) => Err(Errno::EAGAIN),
+            Err(Errno::ECHILD) => {
+                if self.is_reaped()? {
+                    Ok(ParentReap::AlreadyReaped)
+                } else {
+                    Ok(ParentReap::OtherParent)
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Reads an already published final wait from this retained generation.
+    ///
+    /// This performs no kernel wait, PID lookup, resume, or exit-stop claim.
+    /// Ordinary queued stops are neither returned nor removed. None means no
+    /// final observation exists; ECHILD remains an error, never an exit status.
+    /// An ExitFuture poll stays Pending while `exit_publication` is held, so an
+    /// exit error is never visible before this final status is stored.
+    pub fn observed_terminal(&self) -> Option<Result<super::ExitStatus, Error>> {
+        // Read-only: this mints no Stopped capability and joins no wait, so it
+        // needs no wait-role token (try_replay_sync_terminal now requires one).
+        let handle = self.event.resolved_handle();
+        let reservation = handle.event().try_terminal_reservation_sync()?;
+        Some(match reservation {
+            Err(error) => Err(error.into()),
+            Ok(reservation) => {
+                let status = reservation.status;
+                if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                    Wait::from_raw_with_token(self.pid, status, TraceeToken::new())
+                        .map(|wait| wait.assume_exited().1)
+                } else {
+                    Err(Errno::EPROTO.into())
+                }
+            }
+        })
     }
 
     /// Reserves the oldest queued nonterminal state after cancellation.
@@ -9199,6 +9373,161 @@ mod test {
         assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
     }
 
+    #[test]
+    fn retained_terminal_observation_skips_no_status_and_mints_no_exit_claim() {
+        let handle = EventHandle::new();
+        let cleanup = TerminalCleanup {
+            pid: Pid::from_raw(31).into(),
+            event: handle.clone(),
+        };
+        let event = handle.event();
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let winner = Arc::new(ExitWaiter::default());
+        let competitor = Arc::new(ExitWaiter::default());
+        let stopped = (libc::SIGSTOP << 8) | 0x7f;
+
+        assert_eq!(cleanup.observed_terminal(), None);
+        event.update(stopped);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(cleanup.observed_terminal(), None, "EXIT is not final");
+        assert_eq!(event.poll_exit(&winner, &waker), Poll::Ready(Ok(())));
+        assert_eq!(
+            event.poll_exit(&competitor, &waker),
+            Poll::Ready(Err(Errno::EALREADY))
+        );
+        assert_eq!(
+            cleanup.observed_terminal(),
+            None,
+            "a competing claim is not final"
+        );
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_CLAIMED
+        );
+        assert_eq!(event.status.lock().pending.front(), Some(&stopped));
+
+        event.update(37 << 8);
+        assert_eq!(
+            cleanup.observed_terminal(),
+            Some(Ok(super::super::ExitStatus::Exited(37)))
+        );
+        assert_eq!(
+            event.poll_status(&waker),
+            Poll::Ready(Ok(stopped)),
+            "read-only terminal observation must not consume the old FIFO"
+        );
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(37 << 8)));
+        assert_eq!(
+            event.poll_exit(&competitor, &waker),
+            Poll::Ready(Err(Errno::EALREADY))
+        );
+    }
+
+    #[test]
+    fn retained_terminal_observation_keeps_generation_and_echild_distinct() {
+        let old = EventHandle::new();
+        let replacement = EventHandle::new();
+        let old_cleanup = TerminalCleanup {
+            pid: Pid::from_raw(32).into(),
+            event: old.clone(),
+        };
+        let replacement_cleanup = TerminalCleanup {
+            pid: Pid::from_raw(32).into(),
+            event: replacement.clone(),
+        };
+        old.event().update(37 << 8);
+        replacement.event().mark_echild();
+        assert_eq!(
+            old_cleanup.observed_terminal(),
+            Some(Ok(super::super::ExitStatus::Exited(37)))
+        );
+        assert_eq!(
+            replacement_cleanup.observed_terminal(),
+            Some(Err(Error::Errno(Errno::ECHILD)))
+        );
+        assert!(!old_cleanup.same_generation(&replacement_cleanup));
+        assert_eq!(
+            old_cleanup.observed_terminal(),
+            Some(Ok(super::super::ExitStatus::Exited(37)))
+        );
+    }
+
+    /// Adapted to main's terminal publication (56a76efd5): the final status
+    /// is stored while `exit_publication` is held, and an ExitFuture poll
+    /// that meets that hold stays Pending instead of returning an error.
+    /// The pause is main's `terminal_echild_pause`, inside that hold.
+    #[test]
+    fn retained_terminal_observation_joins_the_actual_publication_gap() {
+        for terminal in [Some(37 << 8), Some(libc::SIGKILL), None] {
+            let handle = EventHandle::new();
+            let cleanup = TerminalCleanup {
+                pid: Pid::from_raw(33).into(),
+                event: handle.clone(),
+            };
+            handle.event().update((libc::SIGSTOP << 8) | 0x7f);
+            if terminal.is_some() {
+                handle.event().update(PTRACE_EVENT_EXIT_STOP);
+            }
+            let (captured_tx, captured_rx) = mpsc::sync_channel(1);
+            let (resume_tx, resume_rx) = mpsc::channel();
+            *handle.event().terminal_echild_pause.lock() = Some(BoundedTestPause {
+                captured: captured_tx,
+                resume: resume_rx,
+            });
+            let publisher_handle = handle.clone();
+            let publisher = thread::spawn(move || match terminal {
+                Some(status) => {
+                    publisher_handle.event().update(status);
+                }
+                None => publisher_handle.event().mark_echild(),
+            });
+            captured_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("reach actual publication gap");
+            let installed_in_gap = handle.event().status.lock().terminal;
+            let waker = Waker::from(Arc::new(WakeCounter::default()));
+            let waiter = Arc::new(ExitWaiter::default());
+            let poll_in_gap = handle.event().poll_exit(&waiter, &waker);
+            let (reader_started_tx, reader_started_rx) = mpsc::sync_channel(1);
+            let reader = thread::spawn(move || {
+                reader_started_tx.send(()).unwrap();
+                cleanup.observed_terminal()
+            });
+            reader_started_rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+            resume_tx.send(()).unwrap();
+            publisher.join().unwrap();
+            let observed = reader.join().unwrap();
+            assert_eq!(
+                installed_in_gap,
+                terminal.unwrap_or(ECHILD_STATUS),
+                "capability expiration exposed an absent final status"
+            );
+            assert_eq!(
+                poll_in_gap,
+                Poll::Pending,
+                "an exit poll during publication returned before the final status"
+            );
+            assert_eq!(
+                handle.event().poll_exit(&waiter, &waker),
+                Poll::Ready(Err(if terminal.is_some() {
+                    Errno::EALREADY
+                } else {
+                    Errno::ECHILD
+                }))
+            );
+            let expected = match terminal {
+                Some(status) if status == libc::SIGKILL => {
+                    Ok(super::super::ExitStatus::Signaled(Signal::SIGKILL, false))
+                }
+                Some(_) => Ok(super::super::ExitStatus::Exited(37)),
+                None => Err(Error::Errno(Errno::ECHILD)),
+            };
+            assert_eq!(observed, Some(expected));
+        }
+    }
+
     /// The synchronous owner rolls a dead status back for its cleanup
     /// claimant, except a dead Exec, which can never decode. It is consumed
     /// and the owner released, as on the async path: the epoch Exec is
@@ -9831,6 +10160,51 @@ mod test {
         );
         assert!(terminal.wait(deadline.saturating_duration_since(Instant::now())));
         root_cleanup.disarm();
+    }
+
+    #[test]
+    fn terminal_bound_termination_uses_retained_pidfd_and_cannot_signal_projection() {
+        let (pid, mut guard) = spawn_stopped_process(None).expect("spawn bound termination");
+        let running = Running::new(pid.into());
+        guard
+            .bind_running_notifier(&running)
+            .expect("bind original notifier generation");
+        let cleanup = guard.terminal().expect("retained notifier cleanup");
+        assert_eq!(cleanup.thread_group_id(), Ok(pid.into()));
+        cleanup
+            .terminate_bound_task()
+            .expect("signal held pidfd under actual test credentials");
+        assert!(
+            cleanup.wait(Duration::from_secs(1)),
+            "original task worker did not settle"
+        );
+        let original = cleanup.event.clone();
+        guard.disarm();
+
+        let (replacement_pid, replacement_guard) =
+            spawn_stopped_process(None).expect("spawn numeric projection sentinel");
+        let projected = TerminalCleanup {
+            pid: replacement_pid.into(),
+            event: original,
+        };
+        assert_eq!(projected.thread_group_id(), Err(Errno::ECHILD));
+        assert_eq!(projected.terminate_bound_task(), Err(Errno::ESRCH));
+        assert!(
+            !pidfd_exited(&replacement_guard.pidfd).expect("poll exact sentinel"),
+            "retired handle signalled a projected replacement"
+        );
+        reap_stopped_process(replacement_guard);
+    }
+
+    #[test]
+    fn terminal_bound_termination_refuses_unbound_handle_without_numeric_lookup() {
+        let cleanup = TerminalCleanup::new_unregistered(
+            Pid::from_raw(std::process::id() as i32).into(),
+            &TraceeToken::new(),
+        );
+        assert_eq!(cleanup.thread_group_id(), Err(Errno::ENXIO));
+        assert_eq!(cleanup.terminate_bound_task(), Err(Errno::ENXIO));
+        assert!(cleanup.event.identity().is_none());
     }
 
     /// A real fork stop queued before the exit stop: a SIGKILL takes the

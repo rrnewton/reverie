@@ -20,6 +20,95 @@ use syscalls::Errno;
 
 use super::Stopped;
 
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+struct NativePkruLayout {
+    offset: usize,
+    size: usize,
+    user_features: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+fn native_pkru_layout() -> Result<Option<NativePkruLayout>, Errno> {
+    use core::arch::x86_64::__cpuid_count;
+
+    let maximum_leaf = __cpuid_count(0, 0).eax;
+    if maximum_leaf < 7 {
+        return Ok(None);
+    }
+    let features = __cpuid_count(7, 0).ecx;
+    // OSPKE reports CR4.PKE, not merely hardware support. With PKE disabled,
+    // userspace cannot install PKRU restrictions or enable the privileged bit.
+    if features & (1 << 4) == 0 {
+        return Ok(None);
+    }
+    if features & (1 << 3) == 0 || maximum_leaf < 0x0d {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let xsave = __cpuid_count(1, 0).ecx;
+    if xsave & ((1 << 26) | (1 << 27)) != ((1 << 26) | (1 << 27)) {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let user = __cpuid_count(0x0d, 0);
+    let user_features = u64::from(user.eax) | (u64::from(user.edx) << 32);
+    let pkru = __cpuid_count(0x0d, 9);
+    let offset = pkru.ebx as usize;
+    let size = pkru.eax as usize;
+    if user_features & (1 << 9) == 0
+        || pkru.ecx & 1 != 0
+        || size != 8
+        || offset < 576
+        || offset.checked_add(size).ok_or(Errno::EOPNOTSUPP)? > user.ecx as usize
+    {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    Ok(Some(NativePkruLayout {
+        offset,
+        size,
+        user_features,
+    }))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn validate_native_key0_xstate(state: &[u8], layout: NativePkruLayout) -> Result<(), Errno> {
+    // NT_X86_XSTATE uses the standard user XSAVE layout. Its architectural
+    // header is fixed; the PKRU component's offset comes from actual CPUID.
+    // Refuse compacted, truncated, reserved, or unsupported layouts rather than
+    // mistaking another component or missing bytes for an allowed PKRU value.
+    let header = state.get(512..576).ok_or(Errno::EOPNOTSUPP)?;
+    let features = u64::from_le_bytes(header[..8].try_into().unwrap());
+    let compact = u64::from_le_bytes(header[8..16].try_into().unwrap());
+    if layout.size != 8
+        || layout.offset < 576
+        || layout.user_features & (1 << 9) == 0
+        || features & !layout.user_features != 0
+        || compact != 0
+        || header[16..].iter().any(|byte| *byte != 0)
+    {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let end = layout
+        .offset
+        .checked_add(layout.size)
+        .ok_or(Errno::EOPNOTSUPP)?;
+    let component = state.get(layout.offset..end).ok_or(Errno::EOPNOTSUPP)?;
+    // An absent XSTATE_BV bit specifies architectural initial state (PKRU=0),
+    // not the stale bytes in that component's otherwise unspecified payload.
+    let pkru = if features & (1 << 9) == 0 {
+        0
+    } else {
+        if component[4..].iter().any(|byte| *byte != 0) {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        u32::from_le_bytes(component[..4].try_into().unwrap())
+    };
+    if pkru & 3 != 0 {
+        Err(Errno::EFAULT)
+    } else {
+        Ok(())
+    }
+}
+
 impl Stopped {
     /// Does a read that is already page-aligned.
     fn read_aligned(&self, addr: Addr<u8>, buf: &mut [u8]) -> Result<usize, Errno> {
@@ -64,6 +153,30 @@ impl Stopped {
 }
 
 impl MemoryAccess for Stopped {
+    fn validate_native_user_key0_write_access(&self, expected_tid: i32) -> Result<(), Errno> {
+        if expected_tid <= 0 || self.0.as_raw() != expected_tid {
+            return Err(Errno::ESRCH);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let target_error = |error| match error {
+                super::Error::Errno(errno) => errno,
+                super::Error::Died(_) => Errno::ESRCH,
+            };
+            match native_pkru_layout()? {
+                Some(layout) => {
+                    let state = self.getxstate().map_err(target_error)?;
+                    validate_native_key0_xstate(&state.0, layout)
+                }
+                // Even without OS protection keys, verify the actual stopped
+                // target rather than returning success on a numeric ID alone.
+                None => self.getregs().map_err(target_error).map(|_| ()),
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        Err(Errno::EOPNOTSUPP)
+    }
+
     fn write_native_user_vectored(
         &mut self,
         expected_tid: i32,
@@ -971,5 +1084,240 @@ mod test {
         );
         unmap_pages(mapping, length);
         assert!(passed);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn key0_xstate_fixture() -> (Vec<u8>, NativePkruLayout) {
+        let mut state = vec![0; 584];
+        state[512..520].copy_from_slice(&(1_u64 << 9).to_le_bytes());
+        (
+            state,
+            NativePkruLayout {
+                offset: 576,
+                size: 8,
+                user_features: 1 << 9,
+            },
+        )
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn native_key0_xstate_checks_both_key0_bits_without_requiring_other_keys() {
+        let (mut state, layout) = key0_xstate_fixture();
+        for pkru in [0_u32, 0x5555_5554, 0xffff_fffc, 1, 2, 3, 0x5555_5555] {
+            state[576..580].copy_from_slice(&pkru.to_le_bytes());
+            let expected = if pkru & 3 == 0 {
+                Ok(())
+            } else {
+                Err(Errno::EFAULT)
+            };
+            assert_eq!(validate_native_key0_xstate(&state, layout), expected);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn native_key0_xstate_absent_bit_means_initial_state_not_payload_bytes() {
+        let (mut state, layout) = key0_xstate_fixture();
+        state[512..520].fill(0);
+        state[576..584].fill(0xff);
+        assert_eq!(validate_native_key0_xstate(&state, layout), Ok(()));
+        // The same bytes are no longer initial state when XSTATE_BV retains
+        // PKRU. Reserved bits and actual key0 denial must each refuse.
+        state[512..520].copy_from_slice(&(1_u64 << 9).to_le_bytes());
+        assert_eq!(
+            validate_native_key0_xstate(&state, layout),
+            Err(Errno::EOPNOTSUPP)
+        );
+        state[580..584].fill(0);
+        assert_eq!(
+            validate_native_key0_xstate(&state, layout),
+            Err(Errno::EFAULT)
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn native_key0_xstate_refuses_unknown_compact_truncated_and_malformed_layouts() {
+        let (state, layout) = key0_xstate_fixture();
+        assert_eq!(validate_native_key0_xstate(&state, layout), Ok(()));
+        for length in [0, 512, 575, 576, 580, 583] {
+            assert_eq!(
+                validate_native_key0_xstate(&state[..length], layout),
+                Err(Errno::EOPNOTSUPP),
+                "truncated length {length}"
+            );
+        }
+        for invalid in [
+            NativePkruLayout {
+                offset: 512,
+                ..layout
+            },
+            NativePkruLayout {
+                offset: usize::MAX,
+                ..layout
+            },
+            NativePkruLayout { size: 4, ..layout },
+            NativePkruLayout {
+                user_features: 0,
+                ..layout
+            },
+        ] {
+            assert_eq!(
+                validate_native_key0_xstate(&state, invalid),
+                Err(Errno::EOPNOTSUPP)
+            );
+        }
+        for (offset, value) in [(519, 0x80), (520, 1), (527, 0x80), (528, 1), (580, 1)] {
+            let mut invalid = state.clone();
+            invalid[offset] |= value;
+            assert_eq!(
+                validate_native_key0_xstate(&invalid, layout),
+                Err(Errno::EOPNOTSUPP),
+                "malformed offset {offset}"
+            );
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn with_actual_stopped_pkru<F>(pkru: u32, address: usize, parent: F) -> bool
+    where
+        F: FnOnce(Pid, usize) -> bool,
+    {
+        match unsafe { fork() }.unwrap() {
+            ForkResult::Parent { child, .. } => {
+                assert_eq!(
+                    waitpid(child, None).unwrap(),
+                    WaitStatus::Stopped(child, Signal::SIGTRAP)
+                );
+                let result = parent(child.into(), address);
+                // All access decisions, guarded stores, and canary readbacks
+                // are complete and retained in result. Re-enable key0 only
+                // for teardown: kernel return-to-user work can need user data
+                // before the next user instruction can restore PKRU itself.
+                // No guest-memory write or protection change participates in
+                // the observed store outcome.
+                let memory = Stopped::new_unchecked(child.into());
+                let layout = native_pkru_layout().unwrap().unwrap();
+                let mut state = memory.getxstate().unwrap();
+                let value = u32::from_le_bytes(
+                    state.0[layout.offset..layout.offset + 4]
+                        .try_into()
+                        .unwrap(),
+                );
+                state.0[layout.offset..layout.offset + 4]
+                    .copy_from_slice(&(value & !3).to_le_bytes());
+                let features = u64::from_le_bytes(state.0[512..520].try_into().unwrap());
+                state.0[512..520].copy_from_slice(&(features | (1 << 9)).to_le_bytes());
+                memory.setxstate(&state).unwrap();
+                ptrace::cont(child, None).unwrap();
+                assert_eq!(waitpid(child, None).unwrap(), WaitStatus::Exited(child, 0));
+                result
+            }
+            ForkResult::Child => {
+                ptrace::traceme().unwrap();
+                // No stack or data access occurs while key0 is denied. INT3
+                // stops at the actual WRPKRU state before any user signal
+                // frame. After the tracer resumes, restore access before Rust
+                // or libc can touch the stack again.
+                unsafe {
+                    core::arch::asm!(
+                        "xor ecx, ecx",
+                        "xor edx, edx",
+                        "wrpkru",
+                        "int3",
+                        "xor eax, eax",
+                        "wrpkru",
+                        inout("eax") pkru => _,
+                        out("ecx") _,
+                        out("edx") _,
+                        options(nostack),
+                    );
+                    libc::_exit(0);
+                }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn native_key0_write_access_matches_actual_stopped_wrpkru_and_guards_stores() {
+        let layout = native_pkru_layout()
+            .expect("native CPU/OS PKRU layout must be supported")
+            .expect("actual WRPKRU control requires OS-enabled protection keys");
+        for pkru in [0, 1, 2, 3] {
+            let (mapping, length) = map_pages(1);
+            unsafe { core::ptr::write_bytes(mapping, 0xa5, 32) };
+            let passed = with_actual_stopped_pkru(pkru, mapping as usize, |child, address| {
+                let mut memory = Stopped::new_unchecked(child);
+                let state = memory.getxstate().unwrap();
+                let features = u64::from_le_bytes(state.0[512..520].try_into().unwrap());
+                let observed = if features & (1 << 9) == 0 {
+                    0
+                } else {
+                    u32::from_le_bytes(
+                        state.0[layout.offset..layout.offset + 4]
+                            .try_into()
+                            .unwrap(),
+                    )
+                };
+                eprintln!(
+                    "actual stopped WRPKRU requested={pkru:#x} observed={observed:#x} xstate_bv={features:#x}"
+                );
+                let before = native_write_readback(&memory, address);
+                let identity_refusals =
+                    [0, -1, std::process::id() as i32].into_iter().all(|wrong| {
+                        memory.validate_native_user_key0_write_access(wrong) == Err(Errno::ESRCH)
+                    });
+                let access = memory.validate_native_user_key0_write_access(child.as_raw());
+                // Same memory instance and stopped task; no await or resume
+                // may separate this read-only check from its guarded write.
+                let result = access.and_then(|()| {
+                    memory.write_native_user_vectored(
+                        child.as_raw(),
+                        &[io::IoSlice::new(b"newbytes")],
+                        &[remote(address + 8, 8)],
+                    )
+                });
+                let mut expected = [0xa5; 32];
+                let expected_result = if pkru == 0 {
+                    expected[8..16].copy_from_slice(b"newbytes");
+                    Ok(8)
+                } else {
+                    Err(Errno::EFAULT)
+                };
+                observed == pkru
+                    && identity_refusals
+                    && before == Some([0xa5; 32])
+                    && result == expected_result
+                    && native_write_readback(&memory, address) == Some(expected)
+            });
+            let parent_unchanged =
+                unsafe { core::slice::from_raw_parts(mapping, 32) } == [0xa5; 32];
+            unmap_pages(mapping, length);
+            assert!(passed, "actual target PKRU {pkru:#x}");
+            assert!(parent_unchanged);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn native_key0_write_access_refuses_untraced_target_without_memory_effect() {
+        // This live process is not stopped under its own ptrace control. An
+        // equal numeric ID is insufficient: the actual register read must fail.
+        let tid = unsafe { libc::syscall(libc::SYS_gettid) } as i32;
+        let mut memory = Stopped::new_unchecked(Pid::from_raw(tid));
+        let mut canary = [0xa5; 32];
+        let result = memory
+            .validate_native_user_key0_write_access(tid)
+            .and_then(|()| {
+                memory.write_native_user_vectored(
+                    tid,
+                    &[io::IoSlice::new(b"newbytes")],
+                    &[remote(canary.as_mut_ptr() as usize + 8, 8)],
+                )
+            });
+        assert!(result.is_err());
+        assert_eq!(canary, [0xa5; 32]);
     }
 }

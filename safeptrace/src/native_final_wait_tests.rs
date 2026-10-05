@@ -6,32 +6,6 @@
 mod native_final_wait_tests {
     use super::*;
 
-    // Port adaptation: the source branch's public `TerminalCleanup::is_reaped`
-    // arrived with a later, unported change. These tests need only its
-    // observation, so it is reproduced here verbatim as a test-only helper.
-    impl TerminalCleanup {
-        /// Observe retirement of the retained kernel generation without
-        /// waiting or consuming a status. This does not reopen a numeric PID.
-        fn is_reaped(&self) -> Result<bool, Errno> {
-            let identity = self.event.identity().ok_or(Errno::ENXIO)?;
-            if identity.pid != self.pid {
-                return Err(Errno::ECHILD);
-            }
-            let mut fd = libc::pollfd {
-                fd: identity.pidfd.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            if unsafe { libc::poll(&mut fd, 1, 0) } < 0 {
-                return Err(io_errno(io::Error::last_os_error()));
-            }
-            if fd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
-                return Err(Errno::EBADF);
-            }
-            Ok(fd.revents & libc::POLLHUP != 0)
-        }
-    }
-
     fn remaining(deadline: Instant) -> Duration {
         deadline.saturating_duration_since(Instant::now())
     }

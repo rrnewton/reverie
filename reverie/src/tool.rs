@@ -14,6 +14,8 @@
 
 use async_trait::async_trait;
 use reverie_syscalls::Syscall;
+use reverie_syscalls::SyscallArgs;
+use reverie_syscalls::Sysno;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -30,6 +32,28 @@ use crate::guest::Guest;
 use crate::rdtsc::Rdtsc;
 #[cfg(target_arch = "x86_64")]
 use crate::rdtsc::RdtscResult;
+
+/// Borrowed backend provenance at a Command root's initial stopped boundaries.
+///
+/// The ptrace backend supplies a private implementation only while it retains
+/// the actual stopped root. This observation is not a kernel policy receipt:
+/// a consumer must join its retained PIDFD and native observation to the same
+/// task, and compare the actual installed program with the filter below.
+/// Function guests, descendants, attachments, and later execs do not issue it.
+pub trait InitialCommandObservation: Sync {
+    /// The original root task whose stopped continuation the backend owns.
+    fn root_tid(&self) -> Tid;
+
+    /// The former TID from the actual initial EXEC event, or `None` before the
+    /// launcher's first resume. A consumer requiring a leader exec checks this
+    /// against both `root_tid` and the current Guest identity.
+    fn former_tid(&self) -> Option<Tid>;
+
+    /// The exact filter constructed by this backend and passed to its Command
+    /// installer. This does not establish installation, inherited policy, or
+    /// permission to change syscall operands.
+    fn seccomp_filter(&self) -> &crate::process::seccomp::Filter;
+}
 
 /// Who owns a guest thread: the single axis that governs *both* how the thread
 /// executes *and* who owns its thread-synchronization primitives (`futex`,
@@ -108,6 +132,53 @@ impl ThreadOwnership {
     pub fn futex_is_host_owned(self) -> bool {
         matches!(self, ThreadOwnership::Host)
     }
+}
+
+/// A native effect observed while executing one exact [`Guest::inject`] call.
+///
+/// This is an observation, not an instruction to resume the guest, complete a
+/// scheduler turn, or retire an unresolved operation. The Tool must bind it to
+/// the operation retained in the supplied owned thread state. A syscall number,
+/// argument tuple, or numeric child ID alone is not that authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InjectedSyscallEvent {
+    /// The backend is about to prepare this exact Tool injection while it still
+    /// owns the stopped task and mutable Tool state. This is delivered before
+    /// any suspension or guest resume in that injection. It can bind existing
+    /// shared custody, but proves neither kernel entry nor a result/no-effect:
+    /// preparation, cancellation, or task death may prevent execution entirely.
+    /// Backend-internal and tail injections do not issue this observation.
+    Prepared,
+    /// The same interruption-aware invocation stopped before its first native
+    /// ENTRY/SECCOMP boundary. This is emitted synchronously with the exact
+    /// stopped task still retained; it is neither a return nor owner death.
+    InterruptedBeforeEntry,
+    /// The backend authenticated the original number and all six arguments at
+    /// Linux's actual ENTRY or SECCOMP stop. This supplies no selection/result.
+    Entered,
+    /// A native syscall-exit boundary yielded this unchanged register value.
+    /// Negative Linux errors and restart values are retained verbatim. This is
+    /// not an errno invented after interrupted injection or failed restoration.
+    Returned(i64),
+    /// The backend received an actual child-creation event for this child.
+    /// It has not necessarily initialized or started the child Tool state yet;
+    /// this event is distinct from returning a positive syscall result.
+    ChildCreated(Tid),
+    /// The parent subsequently reached an authenticated syscall-exit boundary
+    /// for the same child-creating injection. `raw` is the unchanged native
+    /// result read there before restoring any parent registers. The retained
+    /// child identity comes from the preceding `ChildCreated` event; neither
+    /// that event nor returning from child dispatch supplies this completion.
+    /// This does not assert child startup or termination. A parent killed or
+    /// canceled before the actual boundary has no such observation. The ptrace
+    /// implementation currently supplies this receipt only without GDB attached;
+    /// absence does not establish either completion or failure.
+    ChildSyscallReturned {
+        /// Native child identity retained at the preceding child event.
+        child: Tid,
+        /// Unchanged signed result from the actual parent syscall-exit stop.
+        raw: i64,
+    },
 }
 
 /// The global half of a complete Reverie tool.
@@ -481,6 +552,114 @@ pub trait Tool: Send + Sync + Default {
         ThreadOwnership::Tool
     }
 
+    /// Request native observations for calls made through [`Guest::inject`].
+    ///
+    /// The default avoids additional native inspection for existing Tools.
+    /// This opt-in is not a backend capability certificate: a Tool requiring
+    /// these observations must separately admit a backend that implements the
+    /// contract. Tail injection and backend-internal injections are excluded.
+    fn observe_injected_syscalls(_cfg: &<Self::GlobalState as GlobalTool>::Config) -> bool {
+        false
+    }
+
+    /// Also request the pre-invocation phase on the same observation channel.
+    ///
+    /// This requires `observe_injected_syscalls` and defaults to false so
+    /// existing result/child observers retain their event contract. Prepared
+    /// binds existing custody only; it never proves execution or no effect.
+    fn observe_injected_syscall_preparation(
+        _cfg: &<Self::GlobalState as GlobalTool>::Config,
+    ) -> bool {
+        false
+    }
+
+    /// Retain each observed native effect synchronously at its actual boundary.
+    ///
+    /// Opted-in `Prepared` precedes the first suspension or resume for the
+    /// original Tool injection. It is distinct from every native effect below.
+    /// `ChildCreated` precedes child dispatch. `ChildSyscallReturned` follows
+    /// the real parent syscall exit, after child publication but before parent
+    /// register restoration or return from `Guest::inject`. An ordinary
+    /// `Returned` observation likewise precedes restoration and continuation.
+    ///
+    /// The backend supplies its existing run-global instance and the exact
+    /// thread state which owns the injection. The implementation must commit
+    /// any shared acknowledgement before returning, then wake its dependants.
+    /// A local flag consumed only by `on_exit_thread` is insufficient: that
+    /// callback may run after joins of children waiting for this acknowledgement.
+    /// Do not block on guest progress or send a cancellable RPC from this hook.
+    /// Validation failures must be retained as run failures through the existing
+    /// [`GlobalTool::report_backend_failure`] contract, not turned into guest
+    /// errno results or successful no-effect observations.
+    ///
+    /// No callback means no observation. In particular, death, a signal stop,
+    /// cancellation, and failure to read native registers do not imply failure
+    /// or success of an injected operation. This hook does not change the
+    /// original guest return, signal, restoration error, or child-start path.
+    fn on_injected_syscall_observed(
+        &self,
+        _tid: Tid,
+        _global_state: &Self::GlobalState,
+        _thread_state: &mut Self::ThreadState,
+        _nr: Sysno,
+        _args: SyscallArgs,
+        _event: InjectedSyscallEvent,
+    ) {
+    }
+
+    /// Retain actual native thread termination before dependent child joins or
+    /// asynchronous Tool cleanup. Called once for a backend-owned terminal wait;
+    /// a synthetic cleanup status or a pre-exit notification is not sufficient.
+    ///
+    /// This is independent of [`Self::on_exit_thread`], whose contract also
+    /// covers cancellation of live tasks. It proves that this task can execute
+    /// no later operation. It does not reveal whether an earlier unobserved
+    /// operation changed another task or created a surviving child, and must not
+    /// release that operation's custody on such an inference. Missing delivery
+    /// must remain distinct from a delivered terminal status.
+    ///
+    /// As with `on_injected_syscall_observed`, commit shared acknowledgement
+    /// synchronously and do not wait for guest progress from this hook.
+    fn on_backend_thread_terminal(
+        &self,
+        _tid: Tid,
+        _global_state: &Self::GlobalState,
+        _thread_state: &mut Self::ThreadState,
+        _status: ExitStatus,
+    ) {
+    }
+
+    /// Whether this exact pending invocation needs an external physical birth
+    /// admission before Tool state construction. The default preserves the
+    /// ordinary provider-absent path and acquires no additional descriptors.
+    /// The backend latches this decision when it retains the native child,
+    /// before any initial-wait or admission callback can be canceled.
+    fn requires_native_child_admission(&self, _parent: &Self::ThreadState) -> bool {
+        false
+    }
+
+    /// Admit one native child while the backend still owns its creator state,
+    /// exact child generation, and original initial-wait outcome. This callback
+    /// precedes init_thread_state; cancellation leaves those owners in the
+    /// backend's pending-child stage and may re-enter this callback. A Tool
+    /// must retain external submissions before awaiting and recover the same
+    /// request rather than resubmitting a physical effect.
+    ///
+    /// `terminal` is Some only after actual final wait, never logical Tool exit,
+    /// an EXIT stop, a missing task, or a failed callback. `child_pidfd` borrows
+    /// the notifier's retained PIDFD_THREAD, without numeric reattachment.
+    async fn admit_native_child(
+        &self,
+        _creator: Tid,
+        _child: Tid,
+        _global: &Self::GlobalState,
+        _parent: &mut Self::ThreadState,
+        _child_pidfd: std::os::fd::BorrowedFd<'_>,
+        _terminal: Option<ExitStatus>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// A guest process creates additional threads, which need their tool state
     /// initialized. This method returns a newly-allocated thread state. This
     /// method necessarily runs before the first instruction of a newly created
@@ -534,6 +713,40 @@ pub trait Tool: Send + Sync + Default {
     ///  * `&self`: The process-level state for this thread.
     ///  * `guest`: A handle to the guest thread.
     async fn handle_thread_start<T: Guest<Self>>(&self, _guest: &mut T) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Observe the held Command root before its first launcher resume, after
+    /// `handle_thread_start` and before the backend's own filter installation.
+    ///
+    /// This callback is outside cancellation of `handle_thread_start`. Failure
+    /// is a run error and must not fall through to resume. The backend's ordinary
+    /// terminal/cancellation owner remains responsible for the actual task.
+    /// A consumer may read the stopped context, including native GETREGSET, but
+    /// must not resume it or inject a guest operation. Default behavior is empty.
+    async fn handle_initial_stop<T: Guest<Self>>(
+        &self,
+        _guest: &mut T,
+        _observation: &dyn InitialCommandObservation,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Observe the Command root's actual first successful EXEC before any step,
+    /// pre-initialization of the new image, or guest instruction can run.
+    ///
+    /// Launch provenance and the old pending syscall have already been cleared.
+    /// This shares the same task and Tool state as `handle_initial_stop`; it is
+    /// not another startup registry. The consumer must validate native identity
+    /// and policy receipts while this stopped continuation remains held. It may
+    /// read registers but must not resume or inject. An error remains a Tool/run
+    /// failure, never a guest errno, and precedes every subsequent resume.
+    /// Other backends must supply an equivalent boundary before relying on it.
+    async fn handle_initial_exec<T: Guest<Self>>(
+        &self,
+        _guest: &mut T,
+        _observation: &dyn InitialCommandObservation,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
