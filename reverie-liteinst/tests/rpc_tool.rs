@@ -1044,3 +1044,44 @@ fn undecodable_late_code_fault_ends_the_guest_by_sigsegv() {
         }
     }
 }
+
+// A CPUID/RDTSC/RDTSCP inside an arena whose 8-byte word patch would cross a
+// cache line is refused before any byte changes while cross-line publication
+// is disabled. The guest must keep running: each execution traps and reaches
+// the Tool through the continuation, and the site is never patched. Nix's
+// coreutils runs this shape in `__cpu_indicator_init` before `main`.
+#[test]
+fn cross_line_instruction_site_reaches_the_tool_through_the_continuation() {
+    for on_alt_stack in [true, false] {
+        let output = late_code_guest("straddler-instruction", &[], on_alt_stack, |command| {
+            command
+                .env_remove(reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV)
+                .env(reverie_liteinst::IN_GUEST_STAGE_STREAM_ENV, "1");
+        });
+        if instruction_control_refused(&output, "straddler-instruction") {
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "straddler cpuid=tool rdtsc=tool rdtscp=tool calls=56 continuation=56 owned-stack=56 hooks=0 registers=preserved\n",
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stage_count = |stage: &str| stderr.lines().filter(|line| line.ends_with(stage)).count();
+        for (stage, expected) in [
+            ("stage=instruction-fault-continuation-cpuid", 40),
+            ("stage=instruction-fault-continuation-rdtsc", 8),
+            ("stage=instruction-fault-continuation-rdtscp", 8),
+        ] {
+            assert_eq!(stage_count(stage), expected, "{stage}: {stderr}");
+        }
+        assert!(
+            !stderr.contains("instruction-sigsegv-"),
+            "no refusal stage may appear: {stderr}"
+        );
+    }
+}

@@ -292,6 +292,11 @@ const SITE_INSTALLING: u8 = 1;
 const SITE_ACTIVE: u8 = 2;
 const SITE_FALLBACK: u8 = 3;
 const SITE_STALE: u8 = 4;
+/// The hook was refused before the runtime changed the site's page protection
+/// or wrote any byte there, so the original instruction is still intact and
+/// execution may resume at it. Only the instruction-fault path records this
+/// state; every other caller records `SITE_FALLBACK` for any refusal.
+const SITE_UNPATCHABLE: u8 = 5;
 const INSTRUCTION_CPUID: u8 = 1;
 const INSTRUCTION_RDTSC: u8 = 2;
 
@@ -1680,7 +1685,7 @@ fn mark_site_range_stale(start: u64, len: u64, replacement_end: u64) {
         if start <= address && address < end {
             site.mapping_end.store(replacement_end, Ordering::Release);
             let state = site.state.load(Ordering::Acquire);
-            if matches!(state, SITE_ACTIVE | SITE_FALLBACK) {
+            if matches!(state, SITE_ACTIVE | SITE_FALLBACK | SITE_UNPATCHABLE) {
                 site.state.store(SITE_STALE, Ordering::Release);
             }
         }
@@ -1999,6 +2004,41 @@ fn lock_installation() -> io::Result<InstallGuard> {
         .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "LiteInst installation is busy"))
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(liteinst-straddler-cpuid): Review the untouched-code boundary.
+/// Why [`install_site_hook`] installed no hook.
+struct InstallFailure {
+    error: io::Error,
+    /// True only for a refusal reached before the runtime changed the site's
+    /// page protection or wrote any byte of the guest's code, so resuming at
+    /// the original instruction executes exactly the original code. Every
+    /// failure from the protection change onward counts as touched, even
+    /// where the patcher may not have written yet.
+    code_untouched: bool,
+}
+
+impl InstallFailure {
+    fn untouched(error: io::Error) -> Self {
+        Self {
+            error,
+            code_untouched: true,
+        }
+    }
+
+    fn touched(error: io::Error) -> Self {
+        Self {
+            error,
+            code_untouched: false,
+        }
+    }
+}
+
+impl From<InstallFailure> for io::Error {
+    fn from(failure: InstallFailure) -> Self {
+        failure.error
+    }
+}
+
 unsafe fn install_site_hook(
     address: u64,
     slot: &'static SiteSlot,
@@ -2007,11 +2047,12 @@ unsafe fn install_site_hook(
     expected_instruction: &[u8],
     manage_protection: bool,
     entry_proof: EntryProof,
-) -> io::Result<HostInstallResult> {
-    let _install_guard = lock_installation()?;
+) -> Result<HostInstallResult, InstallFailure> {
+    let _install_guard = lock_installation().map_err(InstallFailure::untouched)?;
     let _allocation_scope = crate::patch_alloc::enter();
     let arena = arena_for(address)
-        .ok_or_else(|| io::Error::other("no reachable LiteInst arena for syscall site"))?;
+        .ok_or_else(|| io::Error::other("no reachable LiteInst arena for syscall site"))
+        .map_err(InstallFailure::untouched)?;
     let mut mapping_end = slot.mapping_end.load(Ordering::Acquire);
     if mapping_end <= address {
         mapping_end = arena.mapping_end;
@@ -2021,22 +2062,22 @@ unsafe fn install_site_hook(
         .unwrap_or(0)
         .min(PATCH_SNAPSHOT_BYTES);
     if available < liteinst2::patcher::WORD_PATCH_BYTES {
-        return Err(io::Error::other(
+        return Err(InstallFailure::untouched(io::Error::other(
             "syscall site is too close to its executable mapping end",
-        ));
+        )));
     }
     // SAFETY: arena_for proved this byte range lies in a live executable VMA.
     let candidate =
         unsafe { core::slice::from_raw_parts(address as usize as *const u8, available) };
     if candidate.get(..expected_instruction.len()) != Some(expected_instruction) {
-        return Err(io::Error::other(
+        return Err(InstallFailure::untouched(io::Error::other(
             "fault site does not contain the expected x86-64 instruction",
-        ));
+        )));
     }
     let scanner = InstructionScanner::default();
     let scan = scanner
         .scan_prefix(candidate, address, liteinst2::patcher::WORD_PATCH_BYTES)
-        .map_err(|error| io::Error::other(error.to_string()))?;
+        .map_err(|error| InstallFailure::untouched(io::Error::other(error.to_string())))?;
     // A refusal here precedes the candidate metadata below, so the ptrace
     // controller classifies it as an ordinary fallback, not a straddler bail.
     let proof = match entry_proof {
@@ -2047,13 +2088,13 @@ unsafe fn install_site_hook(
             prove_within(address, SiteEntries { len: 2, limit }, scan.instructions())
         }
         EntryProof::Refused => {
-            return Err(io::Error::other(
+            return Err(InstallFailure::untouched(io::Error::other(
                 "the tracer's entry census refused the syscall site",
-            ));
+            )));
         }
         EntryProof::NotListed => Ok(()),
     };
-    proof.map_err(|refusal| io::Error::other(refusal.to_string()))?;
+    proof.map_err(|refusal| InstallFailure::untouched(io::Error::other(refusal.to_string())))?;
     let instruction_len = scan
         .instructions()
         .first()
@@ -2089,19 +2130,22 @@ unsafe fn install_site_hook(
         .store(straddle_prefix as u8, Ordering::Release);
     let staleness = match publication {
         PatchPublication::Quiescent => None,
-        PatchPublication::Concurrent => Some(crate::straddler::budget_for_patch(
-            address as usize,
-            scanner.cache_line_size(),
-        )?),
+        PatchPublication::Concurrent => Some(
+            crate::straddler::budget_for_patch(address as usize, scanner.cache_line_size())
+                .map_err(InstallFailure::untouched)?,
+        ),
     };
     let code = scan.snapshot();
 
+    // Every failure from here on may follow a protection change or a write to
+    // the guest's code.
     if manage_protection {
         unsafe {
             set_text_protection(
                 address,
                 libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-            )?;
+            )
+            .map_err(InstallFailure::touched)?;
         }
     }
     // A guarded cross-line plan rejects a trampoline displacement containing
@@ -2150,7 +2194,7 @@ unsafe fn install_site_hook(
             if manage_protection {
                 let _ = unsafe { set_text_protection(address, libc::PROT_READ | libc::PROT_EXEC) };
             }
-            return Err(io::Error::other(error.to_string()));
+            return Err(InstallFailure::touched(io::Error::other(error.to_string())));
         }
     };
     let activation = match publication {
@@ -2164,11 +2208,12 @@ unsafe fn install_site_hook(
         if manage_protection {
             let _ = unsafe { set_text_protection(address, libc::PROT_READ | libc::PROT_EXEC) };
         }
-        return Err(io::Error::other(error.to_string()));
+        return Err(InstallFailure::touched(io::Error::other(error.to_string())));
     }
     if manage_protection {
         unsafe {
-            set_text_protection(address, libc::PROT_READ | libc::PROT_EXEC)?;
+            set_text_protection(address, libc::PROT_READ | libc::PROT_EXEC)
+                .map_err(InstallFailure::touched)?;
         }
     }
 
@@ -2224,9 +2269,12 @@ fn install_vdso_sites(sites: &[reverie_ptrace::VdsoSyscallSite]) -> io::Result<(
                 EntryProof::NotListed,
             )
         }
-        .map_err(|error| {
+        .map_err(|failure| {
             site.state.store(SITE_FALLBACK, Ordering::Release);
-            io::Error::other(format!("failed to install LiteInst vDSO hook: {error}"))
+            io::Error::other(format!(
+                "failed to install LiteInst vDSO hook: {}",
+                failure.error
+            ))
         })?;
         unsafe {
             set_mapping_protection(
@@ -2901,7 +2949,7 @@ unsafe extern "C" fn instruction_sigsegv_handler(
         unsafe { deliver_default_sigsegv() };
     }
     if claimed
-        && unsafe {
+        && let Err(failure) = unsafe {
             install_site_hook(
                 address,
                 site,
@@ -2912,9 +2960,15 @@ unsafe extern "C" fn instruction_sigsegv_handler(
                 EntryProof::NotListed,
             )
         }
-        .is_err()
     {
-        site.state.store(SITE_FALLBACK, Ordering::Release);
+        site.state.store(
+            if failure.code_untouched {
+                SITE_UNPATCHABLE
+            } else {
+                SITE_FALLBACK
+            },
+            Ordering::Release,
+        );
     }
     if unsafe { set_all_instruction_native(false) }.is_err() {
         emit_in_guest_stage(b"instruction-sigsegv-disable-native-failed");
@@ -2923,14 +2977,28 @@ unsafe extern "C" fn instruction_sigsegv_handler(
     while matches!(site.state.load(Ordering::Acquire), 0 | SITE_INSTALLING) {
         core::hint::spin_loop();
     }
-    if site.state.load(Ordering::Acquire) != SITE_ACTIVE {
-        // A failed installation may already have published part or all of
-        // the jump (for example, when restoring the page's permissions fails
-        // after the patch is written), so the bytes after this instruction
-        // are no longer known to be the original code. Resuming past the
-        // instruction could execute the jump's displacement; end the guest.
-        emit_in_guest_stage(b"instruction-sigsegv-site-install-failed");
-        unsafe { deliver_default_sigsegv() };
+    match site.state.load(Ordering::Acquire) {
+        SITE_ACTIVE => {}
+        // The hook was refused before anything at the site changed (for
+        // example, a word patch that would cross a cache line while
+        // cross-line publication is disabled), so the instruction and the
+        // code after it are the original bytes. Emulate it through the
+        // continuation, as for code without an arena; every later execution
+        // of this site traps and takes the same path.
+        SITE_UNPATCHABLE => {
+            unsafe { emulate_through_continuation(info, raw_context, address, kind) };
+            return;
+        }
+        _ => {
+            // A failed installation may already have published part or all
+            // of the jump (for example, when restoring the page's
+            // permissions fails after the patch is written), so the bytes
+            // after this instruction are no longer known to be the original
+            // code. Resuming past the instruction could execute the jump's
+            // displacement; end the guest.
+            emit_in_guest_stage(b"instruction-sigsegv-site-install-failed");
+            unsafe { deliver_default_sigsegv() };
+        }
     }
     let hook = site.hook.load(Ordering::Acquire);
     if hook.is_null() {
@@ -3495,16 +3563,19 @@ impl LiteinstDispatcher {
             site.trap_count.fetch_add(1, Ordering::Relaxed);
             if claimed {
                 let native = unsafe { set_all_instruction_native(true) };
-                let installed = native.and_then(|()| unsafe {
-                    install_site_hook(
-                        instruction_pointer,
-                        site,
-                        installed_syscall_hook,
-                        self.publication,
-                        &[0x0f, 0x05],
-                        true,
-                        EntryProof::Required,
-                    )
+                let installed = native.and_then(|()| {
+                    unsafe {
+                        install_site_hook(
+                            instruction_pointer,
+                            site,
+                            installed_syscall_hook,
+                            self.publication,
+                            &[0x0f, 0x05],
+                            true,
+                            EntryProof::Required,
+                        )
+                    }
+                    .map_err(io::Error::from)
                 });
                 let restored = unsafe { set_all_instruction_native(false) };
                 if restored.is_err() {

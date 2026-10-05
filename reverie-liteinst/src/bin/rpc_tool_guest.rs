@@ -1923,6 +1923,7 @@ fn main() {
         ),
         Some("late-code-gp-fault") => late_code_guest::run_fault(Path::new(&path), false),
         Some("late-code-null-load") => late_code_guest::run_fault(Path::new(&path), true),
+        Some("straddler-instruction") => late_code_guest::run_straddler(Path::new(&path)),
         _ => panic!("expected coordinator or guest"),
     }
 }
