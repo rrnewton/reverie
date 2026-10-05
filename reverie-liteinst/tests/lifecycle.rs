@@ -303,6 +303,33 @@ async fn in_guest_runs_disable_address_space_randomization() {
     );
 }
 
+/// A descriptor the in-guest Tool reserves for its own output is kept from the
+/// guest exactly as the coordinator connection is: the guest cannot close,
+/// replace, write or query it, while the Tool's own write reaches it. The file
+/// holds exactly the Tool's bytes and none of the guest's.
+#[tokio::test(flavor = "current_thread")]
+async fn a_reserved_tool_output_fd_is_protected_from_the_guest() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("tool-output");
+    let mut command = guest_command("tool-output-fd");
+    command.arg(&output);
+    let (result, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(command, (), preload),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert_eq!(result.stdout, b"tool output fd: protected\n", "{result:?}");
+    assert_eq!(
+        std::fs::read(&output).unwrap(),
+        b"tool
+"
+    );
+}
+
 /// Asserts the statistics of one `fast-path` guest run.
 fn assert_fast_path_stats(
     global: &LifecycleGlobal,
