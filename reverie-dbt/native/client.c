@@ -420,7 +420,7 @@ static _Atomic uint64_t virtual_tsc __attribute__((aligned(64)));
 static process_id_t runtime_owner_pid;
 static bool has_copied_runtime(void);
 static bool is_copied_vfork_process(void);
-static void finalize_runtime_process(void);
+static void finalize_runtime_process(bool self_sigkill);
 static void mark_backend_failure(void);
 static void complete_runtime_thread_exit(
     prototype_counters_t* counters,
@@ -458,6 +458,7 @@ static void exit_runtime_tree(int exit_code) {
 #define EVIDENCE_FRAME_CHILD 7
 #define EVIDENCE_FINAL_GUEST_COMPLETED 0
 #define EVIDENCE_FINAL_BACKEND_FAILURE 1
+#define EVIDENCE_FINAL_SELF_SIGKILL 2
 #define EVIDENCE_CONFIG_PAGE_SIZE 4096
 
 static const unsigned char evidence_channel_magic[8] =
@@ -516,6 +517,7 @@ typedef struct {
   bool finalization_started;
   bool finalized;
   bool backend_failure;
+  bool self_sigkill;
   bool initialization_record_sent;
   uint32_t active_threads;
 } evidence_sender_state_t;
@@ -698,9 +700,13 @@ static bool evidence_send_frame(
   return false;
 }
 
-static bool evidence_process_start_time(
+// Reads one unsigned decimal field of /proc/<process>/stat, numbered as in
+// proc(5). Fields 1 to 3 (the pid, the parenthesized command name and the state
+// letter) are not read here.
+static bool evidence_process_stat_field(
     process_id_t process,
-    uint64_t* start_time) {
+    int wanted_field,
+    uint64_t* value) {
   char path[64];
   char stat_buffer[1024];
   char* cursor;
@@ -709,6 +715,8 @@ static bool evidence_process_start_time(
   int length;
   int field;
   uint64_t parsed = 0;
+  if (wanted_field < 4)
+    return false;
   length = dr_snprintf(path, sizeof(path), "/proc/%d/stat", (int)process);
   if (length <= 0 || (size_t)length >= sizeof(path))
     return false;
@@ -726,15 +734,15 @@ static bool evidence_process_start_time(
   if (cursor == NULL)
     return false;
   ++cursor;
-  for (field = 3; field <= 22; ++field) {
+  for (field = 3; field <= wanted_field; ++field) {
     while (*cursor == ' ')
       ++cursor;
     if (*cursor == 0)
       return false;
     end = cursor;
-    while (*end != 0 && *end != ' ')
+    while (*end != 0 && *end != ' ' && *end != '\n')
       ++end;
-    if (field == 22) {
+    if (field == wanted_field) {
       if (cursor == end)
         return false;
       while (cursor != end) {
@@ -742,12 +750,18 @@ static bool evidence_process_start_time(
           return false;
         parsed = parsed * 10 + (uint64_t)(*cursor++ - '0');
       }
-      *start_time = parsed;
+      *value = parsed;
       return true;
     }
     cursor = end;
   }
   return false;
+}
+
+static bool evidence_process_start_time(
+    process_id_t process,
+    uint64_t* start_time) {
+  return evidence_process_stat_field(process, 22, start_time);
 }
 
 static bool evidence_current_identity(
@@ -809,8 +823,23 @@ static void mark_backend_failure(void) {
   }
   dr_mutex_lock(evidence_lock);
   sender = evidence_sender_locked();
-  if (sender != NULL)
+  if (sender != NULL) {
     sender->backend_failure = true;
+    // A FINAL frame has already ended this image's stream, and the process can
+    // still exit normally afterwards. Report the failure as an ERROR frame,
+    // which makes the collector refuse the run. The send is best effort and
+    // can be lost. A self-directed SIGKILL's FINAL frame does not depend on
+    // it: the launcher confirms how that process ended.
+    if (sender->finalized) {
+      static const unsigned char message[] =
+          "backend failure after this process image's FINAL frame";
+      (void)evidence_send_frame(
+          EVIDENCE_FRAME_ERROR,
+          message,
+          sizeof(message) - 1,
+          sender->sequence++);
+    }
+  }
   dr_mutex_unlock(evidence_lock);
 }
 
@@ -847,8 +876,12 @@ static bool evidence_flush_locked(
     if (terminal_kind == EVIDENCE_FRAME_FINAL) {
       sender->backend_failure |=
           atomic_load_explicit(&runtime_backend_failure, memory_order_acquire);
-      final_outcome = sender->backend_failure ? EVIDENCE_FINAL_BACKEND_FAILURE
-                                              : EVIDENCE_FINAL_GUEST_COMPLETED;
+      if (sender->backend_failure)
+        final_outcome = EVIDENCE_FINAL_BACKEND_FAILURE;
+      else if (sender->self_sigkill)
+        final_outcome = EVIDENCE_FINAL_SELF_SIGKILL;
+      else
+        final_outcome = EVIDENCE_FINAL_GUEST_COMPLETED;
       payload = &final_outcome;
       payload_length = sizeof(final_outcome);
     }
@@ -1087,7 +1120,7 @@ static void evidence_thread_leave(prototype_counters_t* counters) {
   if (last_thread &&
       !(test_kill_announced_child && runtime_process_group != 0 &&
         process != runtime_process_group))
-    finalize_runtime_process();
+    finalize_runtime_process(false);
 }
 
 static void initialize_evidence_transport(void) {
@@ -2833,6 +2866,116 @@ forbidden:
   return true;
 }
 
+// DynamoRIO cannot intercept SIGKILL; its self-signal handling covers only
+// SIGABRT. A process that sends itself SIGKILL therefore never reaches the
+// thread-exit and process-exit callbacks that end its protected evidence
+// stream, and publication refuses the whole run for a missing FINAL frame. The
+// helpers below end the stream at the kill instead, by running
+// finalize_runtime_process, which the last thread's exit also runs, and then
+// let the kernel deliver the signal. They do not run
+// complete_runtime_thread_exit, so a runtime that folds per-thread totals at
+// thread exit, such as the prototype counter2-exact tool, reports totals
+// without the last counts of the threads the kill ends.
+//
+// `host_args` are the translated arguments that reach the kernel. Only kill,
+// tgkill and tkill naming exactly this process or this thread qualify. Other
+// spellings that end the process never do: kill with a zero or negative target
+// (a process group or every process), tgkill or tkill naming another thread of
+// this process, rt_sigqueueinfo, rt_tgsigqueueinfo and pidfd_send_signal. A
+// process killed that way still ends without a FINAL frame, so publication
+// refuses the run.
+//
+// The FINAL frame sent here carries the SELF_SIGKILL outcome, not
+// GUEST_COMPLETED. Before it acknowledges that frame, the collector takes a
+// pidfd for the sending process, and after the guest exits the launcher uses
+// it to check that the kernel really ended the process with SIGKILL. A kill
+// that returns ends the process with status 101 instead (see
+// refuse_returned_self_sigkill), so the run is refused without depending on
+// any later frame from this process reaching the collector.
+//
+// The stream ends early only when the calling thread is the only thread of
+// its process. Any other thread could run a client callback after the FINAL
+// frame, its records could not be published, and this client has no way to
+// stop it first. With another thread live, the kill runs without a FINAL
+// frame, and publication refuses the run for the missing frame.
+static bool
+is_self_sigkill(void* drcontext, int sysnum, const uint64_t* host_args) {
+  switch (sysnum) {
+    case SYS_kill:
+      return (int32_t)host_args[1] == SIGKILL &&
+          (int32_t)host_args[0] == (int32_t)dr_get_process_id();
+    case SYS_tgkill:
+      return (int32_t)host_args[2] == SIGKILL &&
+          (int32_t)host_args[0] == (int32_t)dr_get_process_id() &&
+          (int32_t)host_args[1] == (int32_t)dr_get_thread_id(drcontext);
+    case SYS_tkill:
+      return (int32_t)host_args[1] == SIGKILL &&
+          (int32_t)host_args[0] == (int32_t)dr_get_thread_id(drcontext);
+    default:
+      return false;
+  }
+}
+
+// How long a self-directed SIGKILL waits, in milliseconds, for the other
+// threads of its process to finish exiting. A thread that pthread_join has
+// already reported as finished stays in the kernel's thread count until the
+// kernel releases it, a moment later.
+#define SELF_SIGKILL_THREAD_EXIT_WAIT_MS 1000
+
+// Returns true when the calling thread is the only thread of its process, as
+// the kernel counts threads (/proc/<pid>/stat field 20, num_threads). That
+// count includes a new thread from the moment its clone returns, and a thread
+// group leader that has exited while other threads still run. When it is 1,
+// no other thread of this process exists that could run a client callback,
+// and only the calling thread could create one.
+static bool evidence_process_is_single_threaded(void) {
+  uint64_t threads;
+  int waited = 0;
+  for (;;) {
+    if (!evidence_process_stat_field((process_id_t)getpid(), 20, &threads))
+      return false;
+    if (threads == 1)
+      return true;
+    if (waited++ == SELF_SIGKILL_THREAD_EXIT_WAIT_MS)
+      return false;
+    dr_sleep(1);
+  }
+}
+
+// Returns true when it ended this process's evidence stream.
+static bool finish_evidence_before_self_sigkill(
+    void* drcontext,
+    int sysnum,
+    const uint64_t* host_args) {
+  if (!evidence_is_enabled() || !is_self_sigkill(drcontext, sysnum, host_args))
+    return false;
+  if (!evidence_process_is_single_threaded()) {
+    dr_fprintf(
+        diagnostic_file,
+        "reverie-dbt: self-directed SIGKILL with other threads live; this "
+        "process image's protected evidence ends without a FINAL frame\n");
+    return false;
+  }
+  finalize_runtime_process(true);
+  return true;
+}
+
+// A self-directed SIGKILL that the kernel delivers does not return. One that
+// returns, for example because a seccomp filter answered it with an error,
+// leaves the process running after its FINAL frame. exit_runtime_tree ends it
+// with status 101, after first killing the launched root when this process is
+// a descendant. The launcher's check of the SELF_SIGKILL outcome then finds
+// that exit status rather than a SIGKILL and refuses the run. The ERROR frame
+// that exit_runtime_tree also sends is only an earlier, best-effort report.
+static void refuse_returned_self_sigkill(int64_t result) {
+  dr_fprintf(
+      diagnostic_file,
+      "reverie-dbt: self-directed SIGKILL returned %lld after protected "
+      "evidence was finalized\n",
+      (long long)result);
+  exit_runtime_tree(101);
+}
+
 static int64_t
 invoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {
   prototype_counters_t* counters = (prototype_counters_t*)drmgr_get_tls_field(
@@ -2840,6 +2983,7 @@ invoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {
   uint64_t translated[6];
   int64_t result;
   bool is_clone;
+  bool evidence_finished;
   DR_ASSERT(counters != NULL);
   if (protect_evidence_socket_syscall(context, (int)sysnum, args, &result))
     return result;
@@ -2866,7 +3010,11 @@ invoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {
     require_evidence_flush(EVIDENCE_FRAME_EXEC);
   if (sysnum == SYS_exit || sysnum == SYS_exit_group)
     complete_runtime_thread_exit(counters, (void*)context, sysnum == SYS_exit);
+  evidence_finished = finish_evidence_before_self_sigkill(
+      (void*)context, (int)sysnum, translated);
   result = invoke_raw_syscall(context, sysnum, translated);
+  if (evidence_finished)
+    refuse_returned_self_sigkill(result);
   if (is_exec_syscall((int)sysnum) && result < 0)
     require_evidence_flush(EVIDENCE_FRAME_EXEC_CANCEL);
   if (reject_opened_proc_mem(context, (int)sysnum, result))
@@ -3887,6 +4035,14 @@ static bool prepare_original_identity_syscall(
   }
   (void)prepare_clone_identity(
       counters, sysnum, translated, CLONE_SYSCALL_ORIGINAL);
+  // Execute a self-directed SIGKILL here rather than returning it to
+  // DynamoRIO, so the impossible return can be refused before the application
+  // runs on after its FINAL frame.
+  if (finish_evidence_before_self_sigkill(drcontext, sysnum, translated)) {
+    refuse_returned_self_sigkill(
+        invoke_raw_syscall((uintptr_t)drcontext, sysnum, translated));
+    return false;
+  }
   return true;
 }
 
@@ -4067,7 +4223,10 @@ static bool is_copied_vfork_process(void) {
       (int32_t)dr_get_process_id();
 }
 
-static void finalize_runtime_process(void) {
+// Ends this process image's protected evidence stream. `self_sigkill` is true
+// only when the calling thread, the process's only thread, is about to send
+// the process SIGKILL; the FINAL frame then carries the SELF_SIGKILL outcome.
+static void finalize_runtime_process(bool self_sigkill) {
   evidence_sender_state_t* sender = NULL;
   if (evidence_is_enabled()) {
     dr_mutex_lock(evidence_lock);
@@ -4085,6 +4244,7 @@ static void finalize_runtime_process(void) {
       return;
     }
     sender->finalization_started = true;
+    sender->self_sigkill = self_sigkill;
     dr_mutex_unlock(evidence_lock);
   }
   if (!has_copied_runtime() ||
@@ -5041,7 +5201,7 @@ static void event_exit(void) {
         atomic_load_explicit(&test_reused_tid_exercised, memory_order_acquire)
             ? 1
             : 0);
-  finalize_runtime_process();
+  finalize_runtime_process(false);
   uint64_t branches;
   uint64_t syscalls;
   uint64_t rewritten;

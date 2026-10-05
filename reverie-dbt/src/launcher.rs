@@ -702,6 +702,14 @@ impl DbtRunner {
         } else {
             let process_group = child.id() as i32;
             let observed = wait_for_exit_without_reaping(child.id());
+            // A process that ended its evidence stream at its own SIGKILL is
+            // checked before the group is signalled below, so that only the
+            // kernel's report of the guest's kill can confirm it.
+            if observed.is_ok()
+                && let Some(evidence) = &self.evidence
+            {
+                evidence.confirm_self_sigkills();
+            }
             let terminated = if observed.is_ok() {
                 terminate_process_group(process_group)
             } else {

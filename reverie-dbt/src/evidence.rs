@@ -18,6 +18,8 @@ use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
 use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
+use std::os::fd::OwnedFd;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::SocketAddr;
@@ -49,6 +51,7 @@ const FRAME_ERROR: u8 = 6;
 const FRAME_CHILD: u8 = 7;
 const FINAL_GUEST_COMPLETED: u8 = 0;
 const FINAL_BACKEND_FAILURE: u8 = 1;
+const FINAL_SELF_SIGKILL: u8 = 2;
 
 const FILE_MAGIC: &[u8; 8] = b"RVDBTEF1";
 const FILE_VERSION: u16 = 1;
@@ -68,6 +71,10 @@ const SESSION_FINISHED: u8 = 3;
 enum FinalOutcome {
     GuestCompleted,
     BackendFailure,
+    /// The process ended its stream at its own SIGKILL, just before executing
+    /// the kill. Publication also needs the launcher to confirm that the kernel
+    /// then ended the process with SIGKILL; see [`SelfSigkills`].
+    SelfSigkill,
 }
 
 impl TryFrom<&[u8]> for FinalOutcome {
@@ -77,6 +84,7 @@ impl TryFrom<&[u8]> for FinalOutcome {
         match payload {
             [FINAL_GUEST_COMPLETED] => Ok(Self::GuestCompleted),
             [FINAL_BACKEND_FAILURE] => Ok(Self::BackendFailure),
+            [FINAL_SELF_SIGKILL] => Ok(Self::SelfSigkill),
             [_] => Err(invalid_data("DBT evidence FINAL frame outcome is unknown")),
             _ => Err(invalid_data(
                 "DBT evidence FINAL frame outcome has the wrong length",
@@ -305,6 +313,7 @@ pub(crate) struct EvidenceSession {
     address_hex: String,
     token_hex: String,
     root_process: Arc<Mutex<Option<ProcessKey>>>,
+    self_sigkills: Arc<Mutex<SelfSigkills>>,
     stop: Arc<AtomicBool>,
     #[cfg(test)]
     acknowledgement_drops: AcknowledgementDropControl,
@@ -334,8 +343,10 @@ impl EvidenceSession {
         listener.set_nonblocking(true)?;
 
         let root_process = Arc::new(Mutex::new(None));
+        let self_sigkills = Arc::new(Mutex::new(SelfSigkills::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let worker_root_process = Arc::clone(&root_process);
+        let worker_self_sigkills = Arc::clone(&self_sigkills);
         let worker_stop = Arc::clone(&stop);
         let acknowledgement_drops = AcknowledgementDropControl::default();
         let worker_acknowledgement_drops = acknowledgement_drops.clone();
@@ -346,6 +357,7 @@ impl EvidenceSession {
                     listener,
                     token,
                     worker_root_process,
+                    worker_self_sigkills,
                     worker_stop,
                     worker_acknowledgement_drops,
                 )
@@ -355,6 +367,7 @@ impl EvidenceSession {
             address_hex: encode_hex(address),
             token_hex: encode_hex(&token),
             root_process,
+            self_sigkills,
             stop,
             #[cfg(test)]
             acknowledgement_drops,
@@ -415,6 +428,39 @@ impl EvidenceSession {
             ));
         }
         Ok(())
+    }
+
+    /// Checks how each process whose FINAL frame announced a self-directed
+    /// SIGKILL really ended, and records the verdict that publication needs.
+    ///
+    /// Call it after the root has exited and before the launcher signals the
+    /// process group, so that the launcher's own SIGKILL cannot be mistaken for
+    /// the guest's. No SELF_SIGKILL FINAL frame is accepted once it has
+    /// started, so a process that announces its kill later refuses the run.
+    pub(crate) fn confirm_self_sigkills(&self) {
+        let pending = self.self_sigkills.lock().unwrap().seal();
+        let deadline = Instant::now() + SELF_SIGKILL_EXIT_WAIT;
+        for (process, pidfd) in pending {
+            let verdict = match wait_for_exit_status(&pidfd, process, deadline) {
+                Ok(status)
+                    if libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGKILL =>
+                {
+                    Ok(())
+                }
+                Ok(status) => Err(format!(
+                    "DBT evidence process {} ended its stream for a self-directed SIGKILL, \
+                     but it {}",
+                    process.pid,
+                    describe_wait_status(status)
+                )),
+                Err(error) => Err(format!(
+                    "DBT evidence process {} ended its stream for a self-directed SIGKILL, \
+                     and how it ended could not be confirmed: {error}",
+                    process.pid
+                )),
+            };
+            self.self_sigkills.lock().unwrap().record(process, verdict);
+        }
     }
 
     pub(crate) fn finish(&self, publication_allowed: bool) -> io::Result<()> {
@@ -496,17 +542,229 @@ struct FrameReceipt {
     digest: [u8; 16],
 }
 
+/// How long the launcher waits, in total, for the processes whose FINAL frame
+/// announced a self-directed SIGKILL to end.
+const SELF_SIGKILL_EXIT_WAIT: Duration = Duration::from_secs(5);
+
+/// The processes whose FINAL frame announced a self-directed SIGKILL, and what
+/// the launcher found about how each one ended.
+///
+/// The client sends that FINAL frame just before it executes the kill, so the
+/// frame alone proves nothing: a kill that returns leaves the process running
+/// after its stream has ended, and any later report from it can be lost. The
+/// collector therefore takes a pidfd for the sending process before it
+/// acknowledges the frame, and after the root exits the launcher reads the
+/// kernel's report of how that process ended. Publication requires that the
+/// kernel ended every such process with SIGKILL.
+#[derive(Debug, Default)]
+struct SelfSigkills {
+    /// Set when the launcher starts confirming. Registration closes then.
+    sealed: bool,
+    registered: BTreeSet<ProcessKey>,
+    pending: BTreeMap<ProcessKey, OwnedFd>,
+    confirmed: BTreeSet<ProcessKey>,
+    refused: BTreeMap<ProcessKey, String>,
+}
+
+impl SelfSigkills {
+    fn register(
+        &mut self,
+        process: ProcessKey,
+        open_pidfd: impl FnOnce() -> io::Result<OwnedFd>,
+    ) -> io::Result<()> {
+        // An exact transport retry of an accepted frame registers nothing new.
+        if self.registered.contains(&process) {
+            return Ok(());
+        }
+        if self.sealed {
+            return Err(io::Error::other(
+                "DBT evidence received a self-directed SIGKILL FINAL frame after the \
+                 launcher began confirming process exits",
+            ));
+        }
+        let pidfd = open_pidfd()?;
+        self.registered.insert(process);
+        self.pending.insert(process, pidfd);
+        Ok(())
+    }
+
+    fn seal(&mut self) -> BTreeMap<ProcessKey, OwnedFd> {
+        self.sealed = true;
+        std::mem::take(&mut self.pending)
+    }
+
+    fn record(&mut self, process: ProcessKey, verdict: Result<(), String>) {
+        match verdict {
+            Ok(()) => {
+                self.confirmed.insert(process);
+            }
+            Err(reason) => {
+                self.refused.insert(process, reason);
+            }
+        }
+    }
+
+    /// Requires a confirmed SIGKILL for every process in `self_sigkilled`, and
+    /// refuses if the launcher refused any registered process.
+    fn require_confirmed(&self, self_sigkilled: &BTreeSet<ProcessKey>) -> io::Result<()> {
+        if let Some(reason) = self.refused.values().next() {
+            return Err(io::Error::other(reason.clone()));
+        }
+        for process in self_sigkilled {
+            if !self.confirmed.contains(process) {
+                return Err(io::Error::other(format!(
+                    "DBT evidence process {} ended its stream for a self-directed SIGKILL \
+                     that was never confirmed",
+                    process.pid
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Opens a pidfd for the process at the other end of `stream`, which sent the
+/// frame that `process` names.
+fn peer_pidfd(stream: &UnixStream, process: ProcessKey) -> io::Result<OwnedFd> {
+    let mut raw: libc::c_int = -1;
+    let mut length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: `raw` and `length` are writable and sized for SO_PEERPIDFD.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERPIDFD,
+            (&mut raw as *mut libc::c_int).cast(),
+            &mut length,
+        )
+    };
+    if result == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    if raw < 0 {
+        return Err(invalid_data("DBT evidence peer pidfd is invalid"));
+    }
+    // SAFETY: the kernel has just installed `raw` as a new descriptor, which
+    // nothing else owns.
+    let pidfd = unsafe { OwnedFd::from_raw_fd(raw) };
+    if length as usize != std::mem::size_of::<libc::c_int>() {
+        return Err(invalid_data("DBT evidence peer pidfd has the wrong size"));
+    }
+    // The pidfd names the process that connected. Without PIDFD_INFO_EXIT the
+    // kernel answers only while that process is unreaped, and until it is
+    // reaped no other process can take its pid. A pidfd that answers for this
+    // pid therefore proves that the start time read earlier for `process`
+    // belonged to the sender.
+    let info = pidfd_get_info(&pidfd, 0)?;
+    if info.mask & libc::PIDFD_INFO_PID as u64 == 0 || info.tgid != process.pid {
+        return Err(invalid_data(
+            "DBT evidence peer pidfd names another process",
+        ));
+    }
+    Ok(pidfd)
+}
+
+/// Returns the kernel's PIDFD_GET_INFO report for `pidfd`, with the optional
+/// fields that `request` names where the kernel has them.
+fn pidfd_get_info(pidfd: &OwnedFd, request: u64) -> io::Result<libc::pidfd_info> {
+    // SAFETY: pidfd_info is plain integer data, for which all zeroes is valid.
+    let mut info: libc::pidfd_info = unsafe { std::mem::zeroed() };
+    info.mask = request;
+    // SAFETY: `info` is a writable pidfd_info, the type PIDFD_GET_INFO encodes.
+    let result = unsafe { libc::ioctl(pidfd.as_raw_fd(), libc::PIDFD_GET_INFO, &mut info) };
+    if result == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(info)
+}
+
+/// Waits until every thread of the process behind `pidfd` has exited, and
+/// returns its wait status as waitpid reports it.
+fn wait_for_exit_status(
+    pidfd: &OwnedFd,
+    process: ProcessKey,
+    deadline: Instant,
+) -> io::Result<i32> {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let mut poll_fd = libc::pollfd {
+            fd: pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout = remaining.min(Duration::from_millis(10)).as_millis() as libc::c_int;
+        // SAFETY: `poll_fd` is one writable pollfd.
+        let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout) };
+        if ready == -1 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        } else if ready == 1 && poll_fd.revents & libc::POLLIN != 0 {
+            // A pidfd becomes readable once every thread of its process has
+            // exited. The kernel reports the status through the pidfd once
+            // the process is reaped, and through procfs until then.
+            let info = pidfd_get_info(pidfd, libc::PIDFD_INFO_EXIT as u64)?;
+            if info.mask & libc::PIDFD_INFO_EXIT as u64 != 0 {
+                return Ok(info.exit_code);
+            }
+            if let Some(status) = zombie_exit_status(process) {
+                return Ok(status);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "the process did not end within {} ms",
+                    SELF_SIGKILL_EXIT_WAIT.as_millis()
+                ),
+            ));
+        }
+    }
+}
+
+/// Returns the wait status of `process` while it is an unreaped zombie.
+///
+/// /proc/<pid>/stat field 52, exit_code, holds the status that waitpid will
+/// report. The kernel shows it only to a reader allowed to trace the process
+/// and shows 0 otherwise, which reads as a normal exit and is refused.
+fn zombie_exit_status(process: ProcessKey) -> Option<i32> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", process.pid)).ok()?;
+    let (_, after_name) = stat.rsplit_once(')')?;
+    // The tail starts at field 3 (`state`).
+    let fields: Vec<_> = after_name.split_ascii_whitespace().collect();
+    if *fields.first()? != "Z" || fields.get(19)?.parse::<u64>().ok()? != process.start_time {
+        return None;
+    }
+    fields.get(49)?.parse().ok()
+}
+
+fn describe_wait_status(status: i32) -> String {
+    if libc::WIFEXITED(status) {
+        format!("exited with status {}", libc::WEXITSTATUS(status))
+    } else if libc::WIFSIGNALED(status) {
+        format!("was killed by signal {}", libc::WTERMSIG(status))
+    } else {
+        format!("ended with wait status {status:#x}")
+    }
+}
+
 struct CollectedEvidence {
     encoded_records: Vec<u8>,
     record_count: u64,
     payload_bytes: u64,
     hash: u64,
+    /// Processes whose FINAL frame carried the SELF_SIGKILL outcome. The
+    /// artifact may be published only once each of their kills is confirmed.
+    self_sigkilled: BTreeSet<ProcessKey>,
 }
 
 struct Collector {
     images: BTreeMap<ProcessKey, ImageState>,
     expected_processes: BTreeSet<ProcessKey>,
     terminal_processes: BTreeSet<ProcessKey>,
+    self_sigkilled: BTreeSet<ProcessKey>,
     last_receipts: BTreeMap<ProcessKey, FrameReceipt>,
     encoded_records: Vec<u8>,
     record_count: u64,
@@ -522,6 +780,7 @@ impl Collector {
             images: BTreeMap::new(),
             expected_processes: BTreeSet::new(),
             terminal_processes: BTreeSet::new(),
+            self_sigkilled: BTreeSet::new(),
             last_receipts: BTreeMap::new(),
             encoded_records: Vec::new(),
             record_count: 0,
@@ -630,11 +889,14 @@ impl Collector {
                 self.images.remove(&process);
                 self.terminal_processes.insert(process);
                 self.backend_failure |= outcome == FinalOutcome::BackendFailure;
+                if outcome == FinalOutcome::SelfSigkill {
+                    self.self_sigkilled.insert(process);
+                }
             }
             FRAME_ERROR => {
                 let detail = String::from_utf8_lossy(payload);
                 return Err(io::Error::other(format!(
-                    "DBT evidence client reported a transport error: {detail}"
+                    "DBT evidence client reported an error: {detail}"
                 )));
             }
             FRAME_CHILD => {
@@ -858,6 +1120,7 @@ impl Collector {
             record_count: self.record_count,
             payload_bytes: self.payload_bytes,
             hash: self.hash,
+            self_sigkilled: self.self_sigkilled,
         })
     }
 }
@@ -866,6 +1129,7 @@ fn serve(
     listener: UnixListener,
     token: [u8; CHANNEL_TOKEN_LEN],
     root_process: Arc<Mutex<Option<ProcessKey>>>,
+    self_sigkills: Arc<Mutex<SelfSigkills>>,
     stop: Arc<AtomicBool>,
     acknowledgement_drops: AcknowledgementDropControl,
 ) -> io::Result<CollectedEvidence> {
@@ -889,6 +1153,7 @@ fn serve(
                     &mut stream,
                     &token,
                     &root_process,
+                    &self_sigkills,
                     &mut collector,
                     &acknowledgement_drops,
                 ) {
@@ -905,13 +1170,19 @@ fn serve(
             Err(error) => return Err(error),
         }
     }
-    collector.finish()
+    let collected = collector.finish()?;
+    self_sigkills
+        .lock()
+        .unwrap()
+        .require_confirmed(&collected.self_sigkilled)?;
+    Ok(collected)
 }
 
 fn handle_connection(
     stream: &mut UnixStream,
     token: &[u8; CHANNEL_TOKEN_LEN],
     root_process: &Mutex<Option<ProcessKey>>,
+    self_sigkills: &Mutex<SelfSigkills>,
     collector: &mut Collector,
     acknowledgement_drops: &AcknowledgementDropControl,
 ) -> io::Result<()> {
@@ -972,6 +1243,16 @@ fn handle_connection(
     let expected_digest = frame_digest(kind, sequence, &payload);
     if !constant_time_equal(&digest, &expected_digest) {
         return Err(invalid_data("DBT evidence frame digest is invalid"));
+    }
+    // Take the pidfd before the ACK. The client executes its kill once the
+    // frame is acknowledged, and the process may be reaped soon after.
+    if kind == FRAME_FINAL
+        && FinalOutcome::try_from(payload.as_slice()).ok() == Some(FinalOutcome::SelfSigkill)
+    {
+        self_sigkills
+            .lock()
+            .unwrap()
+            .register(process, || peer_pidfd(stream, process))?;
     }
     collector.absorb_or_acknowledge_retry(kind, process, sequence, digest, &payload)?;
     // The frame is durable in collector state before the ACK. If the peer
@@ -1729,7 +2010,9 @@ mod tests {
         for (payload, expected) in [
             (Vec::new(), "wrong length"),
             (vec![FINAL_GUEST_COMPLETED, 0], "wrong length"),
-            (vec![2], "unknown"),
+            // Outcome byte 2 is FINAL_SELF_SIGKILL, so 3 is the first unknown.
+            (vec![3], "unknown"),
+            (vec![u8::MAX], "unknown"),
         ] {
             let mut collector = Collector::new();
             start_and_initialize(&mut collector, process);
@@ -1741,6 +2024,37 @@ mod tests {
                 "FINAL payload {payload:?} was refused for the wrong reason: {error}"
             );
         }
+    }
+
+    #[test]
+    fn collector_reports_each_self_sigkill_final_for_confirmation() {
+        let root = ProcessKey {
+            pid: 131,
+            start_time: 137,
+        };
+        let child = ProcessKey {
+            pid: 132,
+            start_time: 138,
+        };
+        let mut collector = Collector::new();
+        start_and_initialize(&mut collector, root);
+        start_and_initialize(&mut collector, child);
+        collector
+            .absorb(FRAME_FINAL, child, 2, &[FINAL_SELF_SIGKILL])
+            .unwrap();
+        collector
+            .absorb(FRAME_FINAL, root, 2, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
+        let collected = collector.finish().unwrap();
+        assert_eq!(collected.self_sigkilled, BTreeSet::from([child]));
+
+        let mut collector = Collector::new();
+        start_and_initialize(&mut collector, root);
+        collector
+            .absorb(FRAME_FINAL, root, 2, &[FINAL_SELF_SIGKILL])
+            .unwrap();
+        let collected = collector.finish().unwrap();
+        assert_eq!(collected.self_sigkilled, BTreeSet::from([root]));
     }
 
     #[test]
@@ -1912,6 +2226,44 @@ mod tests {
                 .to_string()
                 .contains("retry changed an accepted frame"),
             "unexpected refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn collector_refuses_an_error_after_final() {
+        // The client reports a backend failure that follows a process image's
+        // FINAL frame as an ERROR frame with the next sequence number.
+        let process = ProcessKey {
+            pid: 39,
+            start_time: 45,
+        };
+        let mut collector = Collector::new();
+        start_and_initialize(&mut collector, process);
+        let final_payload = [FINAL_GUEST_COMPLETED];
+        collector
+            .absorb_or_acknowledge_retry(
+                FRAME_FINAL,
+                process,
+                2,
+                frame_digest(FRAME_FINAL, 2, &final_payload),
+                &final_payload,
+            )
+            .unwrap();
+
+        let message = b"backend failure after this process image's FINAL frame";
+        let error = collector
+            .absorb_or_acknowledge_retry(
+                FRAME_ERROR,
+                process,
+                3,
+                frame_digest(FRAME_ERROR, 3, message),
+                message,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "DBT evidence client reported an error: backend failure after this process image's \
+             FINAL frame"
         );
     }
 
@@ -2117,6 +2469,7 @@ mod tests {
             record_count: 0,
             payload_bytes: 0,
             hash: FNV_OFFSET,
+            self_sigkilled: BTreeSet::new(),
         };
         assert!(finalize_output(&mut file, Ok(collected), false).is_err());
         assert_eq!(file.metadata().unwrap().len(), 0);
@@ -2154,6 +2507,236 @@ mod tests {
         session.claim_run().unwrap();
         let error = session.claim_run().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    fn placeholder_pidfd() -> OwnedFd {
+        OwnedFd::from(std::fs::File::open("/dev/null").unwrap())
+    }
+
+    fn open_pidfd(pid: u32) -> OwnedFd {
+        // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor.
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+        assert!(
+            raw >= 0,
+            "pidfd_open failed: {}",
+            io::Error::last_os_error()
+        );
+        // SAFETY: the kernel has just installed `raw` as a new descriptor.
+        unsafe { OwnedFd::from_raw_fd(raw as libc::c_int) }
+    }
+
+    fn spawn_process(program: &str, arguments: &[&str]) -> (std::process::Child, ProcessKey) {
+        let child = std::process::Command::new(program)
+            .args(arguments)
+            .spawn()
+            .unwrap();
+        // The child stays readable in procfs, as a zombie at worst, until it is
+        // reaped below.
+        let process = ProcessKey {
+            pid: child.id(),
+            start_time: process_start_time(child.id()).unwrap(),
+        };
+        (child, process)
+    }
+
+    /// Whether this kernel answers PIDFD_GET_INFO (Linux 6.13 and later).
+    /// Without it, every self-directed SIGKILL must be refused.
+    fn kernel_answers_pidfd_get_info() -> bool {
+        pidfd_get_info(&open_pidfd(std::process::id()), 0).is_ok()
+    }
+
+    /// Whether this kernel reports a reaped process's wait status through
+    /// PIDFD_INFO_EXIT (Linux 6.15 and later).
+    fn kernel_reports_reaped_exit_status() -> bool {
+        let (mut child, _) = spawn_process("true", &[]);
+        let pidfd = open_pidfd(child.id());
+        child.wait().unwrap();
+        pidfd_get_info(&pidfd, libc::PIDFD_INFO_EXIT as u64)
+            .is_ok_and(|info| info.mask & libc::PIDFD_INFO_EXIT as u64 != 0)
+    }
+
+    fn is_sigkill(status: i32) -> bool {
+        libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGKILL
+    }
+
+    #[test]
+    fn self_sigkill_confirmation_requires_a_confirmed_kill_for_each_process() {
+        let first = ProcessKey {
+            pid: 141,
+            start_time: 147,
+        };
+        let second = ProcessKey {
+            pid: 142,
+            start_time: 148,
+        };
+
+        let mut self_sigkills = SelfSigkills::default();
+        self_sigkills.require_confirmed(&BTreeSet::new()).unwrap();
+        self_sigkills
+            .register(first, || Ok(placeholder_pidfd()))
+            .unwrap();
+        let pending = self_sigkills.seal();
+        assert_eq!(pending.keys().copied().collect::<Vec<_>>(), [first]);
+        self_sigkills.record(first, Ok(()));
+        self_sigkills
+            .require_confirmed(&BTreeSet::from([first]))
+            .unwrap();
+
+        // A SELF_SIGKILL FINAL frame that never registered a pidfd.
+        let error = self_sigkills
+            .require_confirmed(&BTreeSet::from([first, second]))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "DBT evidence process 142 ended its stream for a self-directed SIGKILL \
+             that was never confirmed"
+        );
+
+        // One refused process refuses the run, whatever the collector kept.
+        self_sigkills.record(second, Err("the process exited with status 101".to_owned()));
+        for kept in [BTreeSet::new(), BTreeSet::from([first])] {
+            let error = self_sigkills.require_confirmed(&kept).unwrap_err();
+            assert_eq!(error.to_string(), "the process exited with status 101");
+        }
+    }
+
+    #[test]
+    fn self_sigkill_registration_closes_when_confirmation_starts() {
+        let first = ProcessKey {
+            pid: 151,
+            start_time: 157,
+        };
+        let second = ProcessKey {
+            pid: 152,
+            start_time: 158,
+        };
+        let mut self_sigkills = SelfSigkills::default();
+
+        // A pidfd that cannot be opened refuses the frame and registers nothing.
+        let error = self_sigkills
+            .register(first, || Err(io::Error::other("no pidfd")))
+            .unwrap_err();
+        assert_eq!(error.to_string(), "no pidfd");
+        assert!(self_sigkills.seal().is_empty());
+
+        let mut self_sigkills = SelfSigkills::default();
+        self_sigkills
+            .register(first, || Ok(placeholder_pidfd()))
+            .unwrap();
+        // An exact transport retry opens no second pidfd.
+        self_sigkills
+            .register(first, || panic!("a retry opened a second pidfd"))
+            .unwrap();
+        assert_eq!(self_sigkills.seal().len(), 1);
+        self_sigkills
+            .register(first, || panic!("a retry opened a second pidfd"))
+            .unwrap();
+        let error = self_sigkills
+            .register(second, || panic!("a sealed ledger opened a pidfd"))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "DBT evidence received a self-directed SIGKILL FINAL frame after the \
+             launcher began confirming process exits"
+        );
+        assert!(self_sigkills.seal().is_empty());
+    }
+
+    #[test]
+    fn self_sigkill_exit_status_comes_from_the_kernel_before_and_after_reap() {
+        let (mut child, process) = spawn_process("sleep", &["30"]);
+        let pidfd = open_pidfd(child.id());
+        child.kill().unwrap();
+        let deadline = Instant::now() + SELF_SIGKILL_EXIT_WAIT;
+        let unreaped = wait_for_exit_status(&pidfd, process, deadline);
+        if !kernel_answers_pidfd_get_info() {
+            assert!(unreaped.is_err(), "an unconfirmable kill was accepted");
+            child.wait().unwrap();
+            return;
+        }
+        let status = unreaped.unwrap();
+        assert!(is_sigkill(status), "{}", describe_wait_status(status));
+        // Until the reap, procfs is the only report.
+        assert_eq!(zombie_exit_status(process), Some(status));
+        assert_eq!(
+            zombie_exit_status(ProcessKey {
+                start_time: process.start_time + 1,
+                ..process
+            }),
+            None
+        );
+
+        child.wait().unwrap();
+        assert_eq!(zombie_exit_status(process), None);
+        let reaped = wait_for_exit_status(&pidfd, process, deadline);
+        if kernel_reports_reaped_exit_status() {
+            let status = reaped.unwrap();
+            assert!(is_sigkill(status), "{}", describe_wait_status(status));
+        } else {
+            assert!(
+                reaped.is_err(),
+                "a reaped process was confirmed without a status"
+            );
+        }
+    }
+
+    #[test]
+    fn self_sigkill_confirmation_reports_a_normal_exit_as_an_exit() {
+        let (mut child, process) = spawn_process("sh", &["-c", "exit 101"]);
+        let pidfd = open_pidfd(child.id());
+        let result = wait_for_exit_status(&pidfd, process, Instant::now() + SELF_SIGKILL_EXIT_WAIT);
+        if kernel_answers_pidfd_get_info() {
+            let status = result.unwrap();
+            assert!(!is_sigkill(status));
+            assert_eq!(describe_wait_status(status), "exited with status 101");
+        } else {
+            assert!(result.is_err(), "an unconfirmable exit was reported");
+        }
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn self_sigkill_confirmation_times_out_for_a_live_process() {
+        let (mut child, process) = spawn_process("sleep", &["30"]);
+        let pidfd = open_pidfd(child.id());
+        assert_eq!(zombie_exit_status(process), None);
+        let error =
+            wait_for_exit_status(&pidfd, process, Instant::now() + Duration::from_millis(50))
+                .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn peer_pidfd_names_only_the_connected_process() {
+        let (local, _remote) = UnixStream::pair().unwrap();
+        let own = ProcessKey {
+            pid: std::process::id(),
+            start_time: process_start_time(std::process::id()).unwrap(),
+        };
+        let result = peer_pidfd(&local, own);
+        if !kernel_answers_pidfd_get_info() {
+            assert!(
+                result.is_err(),
+                "a peer pidfd was accepted without PIDFD_GET_INFO"
+            );
+            return;
+        }
+        let pidfd = result.unwrap();
+        assert_eq!(pidfd_get_info(&pidfd, 0).unwrap().tgid, own.pid);
+        let error = peer_pidfd(
+            &local,
+            ProcessKey {
+                pid: own.pid + 1,
+                ..own
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "DBT evidence peer pidfd names another process"
+        );
     }
 
     #[test]
@@ -2211,7 +2794,7 @@ mod tests {
     fn native_shutdown_precedes_evidence_background_quiescence() {
         let source = include_str!("../native/client.c");
         let finalizer = source
-            .split_once("static void finalize_runtime_process(void) {")
+            .split_once("static void finalize_runtime_process(bool self_sigkill) {")
             .unwrap()
             .1
             .split_once("static void report_copied_unsupported_syscall")
@@ -2259,14 +2842,19 @@ mod tests {
         let source = include_str!("../native/client.c");
         assert!(!source.contains("syscall_exits_process"));
 
+        // Anchor on the definition: the first `invoke_syscall(` is its
+        // forward declaration, two lines above another declaration.
         let invoke_syscall = source
-            .split_once("static int64_t\ninvoke_syscall(")
+            .split_once(
+                "static int64_t\ninvoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {",
+            )
             .unwrap()
             .1
-            .split_once("static int32_t read_registers")
+            .split_once("static int32_t read_registers(")
             .unwrap()
             .0;
-        assert!(!invoke_syscall.contains("finalize_runtime_process();"));
+        assert!(invoke_syscall.contains("invoke_raw_syscall(context, sysnum, translated);"));
+        assert!(!invoke_syscall.contains("finalize_runtime_process("));
 
         let pre_syscall = source
             .split_once("static bool pre_syscall(")
@@ -2275,7 +2863,99 @@ mod tests {
             .split_once("static void thread_init")
             .unwrap()
             .0;
-        assert!(!pre_syscall.contains("finalize_runtime_process();"));
+        assert!(!pre_syscall.contains("finalize_runtime_process("));
+
+        // A self-directed SIGKILL is the one syscall that finalizes, because
+        // DynamoRIO runs no exit callback for it. Both syscall paths reach the
+        // finalizer only through a gate that requires SIGKILL in every
+        // spelling and never matches an exit syscall.
+        let self_sigkill = source
+            .split_once("static bool\nis_self_sigkill(")
+            .unwrap()
+            .1
+            .split_once("static bool finish_evidence_before_self_sigkill(")
+            .unwrap()
+            .0;
+        assert!(!self_sigkill.contains("SYS_exit"));
+        assert_eq!(self_sigkill.matches("case SYS_").count(), 3);
+        // Each spelling must name exactly this process or this thread: a zero
+        // or negative kill target, or another thread, never qualifies.
+        let spelling = |case: &str| -> String {
+            self_sigkill
+                .split_once(case)
+                .unwrap()
+                .1
+                .split_once(';')
+                .unwrap()
+                .0
+                .split_whitespace()
+                .collect()
+        };
+        assert_eq!(
+            spelling("case SYS_kill:"),
+            "return(int32_t)host_args[1]==SIGKILL&&\
+             (int32_t)host_args[0]==(int32_t)dr_get_process_id()"
+        );
+        assert_eq!(
+            spelling("case SYS_tgkill:"),
+            "return(int32_t)host_args[2]==SIGKILL&&\
+             (int32_t)host_args[0]==(int32_t)dr_get_process_id()&&\
+             (int32_t)host_args[1]==(int32_t)dr_get_thread_id(drcontext)"
+        );
+        assert_eq!(
+            spelling("case SYS_tkill:"),
+            "return(int32_t)host_args[1]==SIGKILL&&\
+             (int32_t)host_args[0]==(int32_t)dr_get_thread_id(drcontext)"
+        );
+        assert_eq!(spelling("default:"), "returnfalse");
+        let finish = source
+            .split_once("static bool finish_evidence_before_self_sigkill(")
+            .unwrap()
+            .1
+            .split_once("static void refuse_returned_self_sigkill(")
+            .unwrap()
+            .0;
+        // The early FINAL frame carries the SELF_SIGKILL outcome, and only a
+        // process with no other thread may send it.
+        assert!(
+            finish.find("is_self_sigkill(").unwrap()
+                < finish
+                    .find("if (!evidence_process_is_single_threaded()) {")
+                    .unwrap()
+        );
+        assert!(
+            finish
+                .find("if (!evidence_process_is_single_threaded()) {")
+                .unwrap()
+                < finish.find("finalize_runtime_process(true);").unwrap()
+        );
+        assert_eq!(source.matches("finalize_runtime_process(true);").count(), 1);
+        let single_threaded: String = source
+            .split_once("static bool evidence_process_is_single_threaded(void) {")
+            .unwrap()
+            .1
+            .split_once("static bool finish_evidence_before_self_sigkill(")
+            .unwrap()
+            .0
+            .split_whitespace()
+            .collect();
+        assert!(single_threaded.contains(
+            "if(!evidence_process_stat_field((process_id_t)getpid(),20,&threads))returnfalse;\
+             if(threads==1)returntrue;"
+        ));
+        let original = source
+            .split_once("static bool prepare_original_identity_syscall(")
+            .unwrap()
+            .1
+            .split_once("static void post_syscall(")
+            .unwrap()
+            .0;
+        for path in [invoke_syscall, original] {
+            assert!(
+                path.find("finish_evidence_before_self_sigkill(").unwrap()
+                    < path.find("refuse_returned_self_sigkill(").unwrap()
+            );
+        }
 
         let thread_leave = source
             .split_once("static void evidence_thread_leave(")
@@ -2285,7 +2965,7 @@ mod tests {
             .unwrap()
             .0;
         assert!(thread_leave.contains("if (last_thread"));
-        assert!(thread_leave.contains("finalize_runtime_process();"));
+        assert!(thread_leave.contains("finalize_runtime_process(false);"));
 
         let event_exit = source
             .split_once("static void event_exit(void) {")
@@ -2294,7 +2974,7 @@ mod tests {
             .split_once("static void runtime_idle(void)")
             .unwrap()
             .0;
-        assert!(event_exit.contains("finalize_runtime_process();"));
+        assert!(event_exit.contains("finalize_runtime_process(false);"));
     }
 
     #[test]
@@ -2331,9 +3011,9 @@ mod tests {
         assert!(background_runtime < background_callback_leave);
         assert!(background_callback_leave < background_final);
         assert!(background_final < background_quiescent);
-        assert!(event_exit.contains("finalize_runtime_process();"));
+        assert!(event_exit.contains("finalize_runtime_process(false);"));
         let finalizer = source
-            .split_once("static void finalize_runtime_process(void) {")
+            .split_once("static void finalize_runtime_process(bool self_sigkill) {")
             .unwrap()
             .1
             .split_once("static void report_copied_unsupported_syscall")
@@ -2386,6 +3066,21 @@ mod tests {
                 .unwrap()
                 < failure_marker.find("evidence_sender_locked();").unwrap()
         );
+        // A FINAL frame cannot be revised. A failure after it must reach the
+        // collector as an ERROR frame, which refuses the run.
+        let after_final: String = failure_marker
+            .split_once("if (sender->finalized) {")
+            .unwrap()
+            .1
+            .split_once('}')
+            .unwrap()
+            .0
+            .split_whitespace()
+            .collect();
+        assert!(after_final.contains(
+            "evidence_send_frame(EVIDENCE_FRAME_ERROR,message,sizeof(message)-1,\
+             sender->sequence++);"
+        ));
 
         let evidence_flush = source
             .split_once("static bool evidence_flush_locked(")
@@ -2397,6 +3092,25 @@ mod tests {
         assert!(evidence_flush.contains(
             "sender->backend_failure |=\n          atomic_load_explicit(&runtime_backend_failure"
         ));
+        // A backend failure outranks a self-directed SIGKILL.
+        assert!(
+            evidence_flush
+                .find("final_outcome = EVIDENCE_FINAL_BACKEND_FAILURE;")
+                .unwrap()
+                < evidence_flush
+                    .find("final_outcome = EVIDENCE_FINAL_SELF_SIGKILL;")
+                    .unwrap()
+        );
+        for (name, value) in [
+            ("EVIDENCE_FINAL_GUEST_COMPLETED", FINAL_GUEST_COMPLETED),
+            ("EVIDENCE_FINAL_BACKEND_FAILURE", FINAL_BACKEND_FAILURE),
+            ("EVIDENCE_FINAL_SELF_SIGKILL", FINAL_SELF_SIGKILL),
+        ] {
+            assert!(
+                source.contains(&format!("#define {name} {value}\n")),
+                "{name} differs between the client and the collector"
+            );
+        }
 
         let exit_runtime_tree = source
             .split_once("static void exit_runtime_tree(int exit_code) {")
