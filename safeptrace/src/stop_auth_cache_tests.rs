@@ -34,6 +34,20 @@ fn stop_authentication_is_shared_and_revalidated_after_real_transitions() {
         assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
         let stopped = Stopped::new_unchecked_on_ptracer_thread(root.into()).unwrap();
         let original = stopped.1.event().clone();
+        // Force both optional descriptor proofs to refuse. The unchanged
+        // exact read counts below then exercise the strong directory/status
+        // fallback and its real transition invalidation on either kernel.
+        stopped
+            .1
+            .ptracer_owner
+            .as_ref()
+            .unwrap()
+            .force_directory_proof
+            .store(true, Ordering::Relaxed);
+        original
+            .event()
+            .numeric_auth_force_directory
+            .store(true, Ordering::Relaxed);
         let generation = stopped.generation();
         assert_eq!(
             original
@@ -123,4 +137,70 @@ fn stop_authentication_is_shared_and_revalidated_after_real_transitions() {
         assert!(!std::path::Path::new(&format!("/proc/{root}")).exists());
     }
     emit_completion_marker("ACTUAL_STOP_AUTHENTICATION_CACHE_TRANSITIONS_EXERCISED");
+}
+
+#[cfg(not(sanitized))]
+#[test]
+fn retained_descriptor_proofs_authenticate_the_real_owner_and_target() {
+    const NAME: &str = "retained_descriptor_proofs_authenticate_the_real_owner_and_target";
+    if run_legacy_test_outer_with_outcome(
+        NAME,
+        Some("ACTUAL_RETAINED_DESCRIPTOR_AUTHENTICATION_EXERCISED"),
+    ) {
+        return;
+    }
+    for forced in [false, true] {
+        let root = match unsafe { fork() }.unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                crate::traceme_and_stop().unwrap();
+                unsafe {
+                    libc::_exit(23);
+                }
+            }
+        };
+        let mut cleanup = TraceeCleanupGuard::new(root).unwrap();
+        let _force = forced.then(|| LegacyThreadGroup::new(root));
+        let status = waitpid_status_bounded(root, libc::__WALL, TRACEE_WAIT_TIMEOUT).unwrap();
+        assert!(libc::WIFSTOPPED(status));
+        assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
+        let stopped = Stopped::new_unchecked_on_ptracer_thread(root.into()).unwrap();
+        let original = stopped.1.event().clone();
+        let owner = stopped.1.ptracer_owner.as_ref().unwrap();
+        let owner_fd = owner
+            .self_signal_fd
+            .as_ref()
+            .expect("real cold descriptor proof");
+        assert!(descriptor_is_current_task(owner_fd.as_raw_fd()));
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    assert!(!descriptor_is_current_task(owner_fd.as_raw_fd()));
+                    assert!(!owner.is_current().unwrap());
+                })
+                .join()
+                .unwrap();
+        });
+        assert_eq!(original.identity().unwrap().pidfd_is_live(), Ok(true));
+        let registers = stopped.getregs().unwrap();
+        for _ in 0..128 {
+            assert_eq!(stopped.getregs().unwrap(), registers);
+            assert_eq!(stopped.getsiginfo().unwrap().si_signo, libc::SIGSTOP);
+        }
+        assert_eq!(
+            original
+                .event()
+                .numeric_auth_status_reads
+                .load(Ordering::Relaxed),
+            0
+        );
+        let _detached = stopped.detach(Signal::SIGKILL).unwrap();
+        let terminal = waitpid_status_bounded(root, libc::__WALL, TRACEE_WAIT_TIMEOUT).unwrap();
+        assert!(libc::WIFSIGNALED(terminal));
+        assert_eq!(libc::WTERMSIG(terminal), libc::SIGKILL);
+        assert_eq!(original.identity().unwrap().pidfd_is_live(), Ok(false));
+        cleanup.disarm();
+        assert!(!std::path::Path::new(&format!("/proc/{root}")).exists());
+    }
+    emit_completion_marker("ACTUAL_RETAINED_DESCRIPTOR_AUTHENTICATION_EXERCISED");
 }

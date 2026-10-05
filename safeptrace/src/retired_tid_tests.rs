@@ -217,6 +217,11 @@ mod retired_tid {
         );
         assert!(!*original.event().terminal_reaping.read());
         let warm_epoch = env::var_os(KEEP_WARM).map(|_| {
+            owner.force_directory_proof.store(true, Ordering::Relaxed);
+            original
+                .event()
+                .numeric_auth_force_directory
+                .store(true, Ordering::Relaxed);
             // Warm the positive proof through genuine SDK requests at the
             // original consumed newborn stop. A controlled raw resume below
             // deliberately leaves that epoch valid, so the later refusal

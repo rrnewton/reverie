@@ -88,14 +88,19 @@ explicit interface, and to numeric ptrace requests, memory access, and stopped
 observations through an explicit state. A new host owner is authenticated
 through the Event's original proc mount before any queued status is transferred.
 
-Numeric requests compare fresh directory metadata for both the executing
-thread and target with their pinned original proc directories. A successful
-full target status check is reused until a wait event is published or decoded,
-a resume or detach succeeds, or the attachment reconnects. Changes to status
-read permissions during an already validated stop are observed at the next
-validation; directory lookup failures are still reported immediately. Failed
-validation and raw ptrace errors are never cached, so a later request can retry
-through the same original capability.
+Numeric requests first use retained descriptors for positive kernel proofs:
+a self-only signal0 query authenticates the original executing host task, and
+a target signal0 query proves the original target PID object is still live.
+These queries deliver no signal. Any refusal, denial or unsupported descriptor
+takes the original proc identity checks instead; a refused query alone never
+proves identity or retirement. This fallback compares fresh directory metadata
+with the pinned original directories. Its successful full target status check
+is reused until a wait event is published or decoded, a resume or detach
+succeeds, or the attachment reconnects. Proc lookup and status-read permission
+errors are checked when this fallback runs, rather than during a successful
+descriptor proof. Within one validated stop, repeated fallback requests reuse
+the successful status check. Failed validation and raw ptrace errors are never
+cached, so a later request can retry through the same original capability.
 
 Selecting a host thread alone does not authorize waiting for an untraced task.
 The explicit wait interfaces also authenticate the original attachment or the
