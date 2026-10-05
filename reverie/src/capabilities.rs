@@ -1,0 +1,427 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! Static facts about how a backend runs a guest.
+//!
+//! A tool that models a guest (for example a deterministic scheduler) sometimes
+//! has to act differently depending on what the backend underneath it does: is a
+//! guest thread a host task that a host signal can reach, does the kernel finish
+//! robust-list cleanup before the tool hears about a thread exit, does the tool
+//! share the guest's descriptor table? [`BackendCapabilities`] answers those
+//! questions, one field per fact, so the tool reads the fact it needs instead of
+//! asking which backend it is running on.
+//!
+//! # Scope: one answer per run
+//!
+//! Every field is a property of the backend for the whole run. One backend runs
+//! every guest thread of a run, none of these facts change while it runs, and a
+//! tool that runs inside the guest receives its configuration (including this
+//! struct) once, before the first guest callback. Facts that depend on a
+//! particular thread or a particular request (for example where a parked signal
+//! may be observed) are not here; they stay queries on [`Guest`](crate::Guest).
+//!
+//! # Where the values live
+//!
+//! The per-backend values are associated constants of this type, in the core
+//! crate, rather than only in each backend crate. A host such as Hermit selects
+//! a backend at run time and must configure its tool for backends it was not
+//! built to link (some backends are optional, heavy builds). Each backend crate
+//! still answers for itself: [`Backend::capabilities`](crate::Backend::capabilities)
+//! for [`Backend`](crate::Backend) implementors, and an inherent
+//! `capabilities()` on backends that do not implement that trait. Those return
+//! the matching constant. The tests below pin every constant field by field,
+//! and `reverie-kvm` also checks that its user address limit is the one its
+//! executor enforces.
+//!
+//! # Adding a field
+//!
+//! The struct is `#[non_exhaustive]`, so code outside this crate cannot build
+//! one field by field: it starts from a constant. A new field must be given a
+//! value in every constant below; there is no default to fall back on.
+
+use serde::Deserialize;
+use serde::Serialize;
+
+/// Static, per-run facts about a backend that a tool may need to model the
+/// guest correctly. See the [module documentation](self) for scope and
+/// ownership.
+///
+/// Field names describe what the backend does, never which backend it is.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BackendCapabilities {
+    /// The tool runs inside the guest process and shares its descriptor table,
+    /// so it can describe a guest descriptor it has not seen opened (an
+    /// inherited stdio descriptor, or one passed through a descriptor-passing
+    /// call) by inspecting it directly.
+    pub tool_shares_guest_descriptor_table: bool,
+
+    /// After a successful `execve`, the backend starts the tool afresh in the
+    /// new image, and the tool rediscovers the guest's live descriptors from
+    /// the process rather than keeping its own model. Descriptor state that only
+    /// the tool's model holds (for example a pipe the tool made physically
+    /// nonblocking while the guest still sees it as blocking) must therefore be
+    /// handed across the exec explicitly.
+    pub rediscovers_descriptors_after_exec: bool,
+
+    /// Scheduler turns for I/O on a tool-managed internal pipe (a pipe that is
+    /// physically nonblocking while the guest sees it as blocking) include a
+    /// descriptor-discovery turn whose count depends on host timing. The tool
+    /// marks those turns so their count is not treated as guest-visible
+    /// progress.
+    pub internal_pipe_turns_are_host_timed: bool,
+
+    /// A zero-timeout poll by a task that owns a loopback connection must
+    /// yield its turn to another runnable task first; without that yield a
+    /// poller can starve the loopback peer it is waiting for.
+    pub loopback_pollers_yield_to_peers: bool,
+
+    /// Guest clock reads may bypass the backend's time virtualization, so an
+    /// absolute futex deadline may have been computed from the host clock
+    /// rather than from the tool's logical clock.
+    pub guest_clock_reads_bypass_backend: bool,
+
+    /// The backend already returns deterministic values in every register that
+    /// a `syscall` instruction clobbers, so the tool must not write the whole
+    /// register set back after a syscall.
+    pub virtualizes_syscall_clobbers: bool,
+
+    /// A pending tool request from a thread that the tool has logically killed
+    /// is not resolved by the kernel's exit-group teardown, so the tool must
+    /// cancel it explicitly.
+    pub needs_killed_thread_rpc_cancellation: bool,
+
+    /// The backend reports a process's final physical exit separately, after
+    /// the tool's logical cleanup for that process, so the tool can order
+    /// guest-visible child-exit events after the kernel publishes them.
+    pub reports_physical_process_exits: bool,
+
+    /// A signal interrupts a blocking syscall that the backend runs outside the
+    /// tool's scheduler, and the interrupted thread's continuation request
+    /// arrives only afterwards. The tool must wait for that continuation
+    /// instead of treating the thread as parked inside its own scheduler.
+    pub signal_interrupts_external_syscalls: bool,
+
+    /// The backend reports every process child through the tool's
+    /// child-registration callbacks, so the tool's own record of children is
+    /// complete. When this is false the tool must not conclude ECHILD from an
+    /// empty record.
+    pub tracks_process_children: bool,
+
+    /// The kernel completes a thread's robust-futex list cleanup before the
+    /// backend delivers that thread's exit to the tool, so the tool can leave
+    /// the owner-word update to the kernel.
+    pub runs_exit_robust_list: bool,
+
+    /// The backend cannot execute a process-directed signal syscall with the
+    /// tool's process identifier, so the tool must translate an unambiguous
+    /// process target to a specific thread.
+    pub requires_thread_directed_process_signals: bool,
+
+    /// The backend can interrupt a pipe write that the tool's scheduler has
+    /// parked when another task signals the writer, preserving Linux's signal
+    /// mask, disposition and syscall-restart behavior.
+    pub supports_parked_write_signal_interruption: bool,
+
+    /// The backend starts a `CLONE_VFORK` child only after the parent's clone
+    /// call has returned to the tool, so the child registers after the parent
+    /// asks to continue. The tool must keep waiting for the late child rather
+    /// than treat its absence as a failed clone.
+    pub defers_vfork_child_registration: bool,
+
+    /// The backend virtualizes the capability bounding set and ambient
+    /// capabilities that `prctl` reads and changes.
+    pub virtualizes_capability_prctls: bool,
+
+    /// The backend installs a deterministic CPUID policy itself, without
+    /// trapping CPUID instructions to the tool.
+    pub virtualizes_cpuid: bool,
+
+    /// The backend implements guest-visible `madvise` semantics, so the tool
+    /// may forward an `madvise` call to it.
+    pub supports_madvise: bool,
+
+    /// The backend owns guest signal delivery: a host signal sent to a host
+    /// task cannot reach a guest thread, and the backend offers a run-scoped
+    /// process signal control (see
+    /// [`BackendSignalControlMode`](crate::BackendSignalControlMode)) through
+    /// which a tool publishes process signals. A tool that models real-time
+    /// interval timers must publish their expiries through that control rather
+    /// than by sending host signals.
+    pub provides_process_signal_control: bool,
+
+    /// The backend implements the child-wait syscalls (`wait4`, `waitid`)
+    /// itself against its own process records, including the copy of the
+    /// result to guest memory. A child can become waitable before the backend
+    /// reports its final CPU time, and only terminal events (exits and the
+    /// terminal subset of `WUNTRACED`) are waitable.
+    pub emulates_child_waits: bool,
+
+    /// A `gettimeofday` call that fails with EFAULT may already have stored
+    /// host wall-clock time in the guest's buffer, so the tool must repair the
+    /// words it stored. When this is false the backend never stores host time
+    /// there.
+    pub failed_gettimeofday_may_store_host_time: bool,
+
+    /// The backend validates the new image of an `execve` issued by a thread
+    /// that is not its process's group leader, and then refuses the exec with
+    /// ENOSYS because it cannot promote that thread to leader.
+    pub refuses_nonleader_exec_with_enosys: bool,
+
+    /// The exclusive upper bound of guest user addresses (Linux's
+    /// `TASK_SIZE`), when the backend's guest address space has a fixed bound
+    /// that differs from the host process's. `None` means the guest runs as a
+    /// host process and shares the host kernel's bound.
+    pub user_address_limit: Option<u64>,
+}
+
+/// Exclusive upper bound of user addresses in an x86-64 guest with four-level
+/// paging: Linux's `TASK_SIZE_MAX`, one page below 2^47.
+pub const X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT: u64 = (1 << 47) - 4096;
+
+impl BackendCapabilities {
+    /// `reverie-ptrace`: every guest thread is a host task stopped and resumed
+    /// through ptrace, so the kernel does most of the work.
+    pub const PTRACE: Self = Self {
+        tool_shares_guest_descriptor_table: false,
+        rediscovers_descriptors_after_exec: false,
+        internal_pipe_turns_are_host_timed: false,
+        loopback_pollers_yield_to_peers: false,
+        guest_clock_reads_bypass_backend: false,
+        virtualizes_syscall_clobbers: false,
+        needs_killed_thread_rpc_cancellation: false,
+        reports_physical_process_exits: false,
+        signal_interrupts_external_syscalls: false,
+        tracks_process_children: true,
+        runs_exit_robust_list: true,
+        requires_thread_directed_process_signals: false,
+        supports_parked_write_signal_interruption: true,
+        defers_vfork_child_registration: false,
+        virtualizes_capability_prctls: false,
+        virtualizes_cpuid: false,
+        supports_madvise: true,
+        provides_process_signal_control: false,
+        emulates_child_waits: false,
+        failed_gettimeofday_may_store_host_time: true,
+        refuses_nonleader_exec_with_enosys: false,
+        user_address_limit: None,
+    };
+
+    /// `reverie-e9patch`: the guest is rewritten ahead of time and then run
+    /// under the ptrace tracer, so its run-time facts are ptrace's.
+    pub const E9PATCH: Self = Self::PTRACE;
+
+    /// `reverie-liteinst` with its in-guest runtime: the tool runs in the
+    /// guest, with no ptrace exit-group teardown behind it.
+    pub const LITEINST_IN_GUEST: Self = Self {
+        needs_killed_thread_rpc_cancellation: true,
+        runs_exit_robust_list: false,
+        supports_parked_write_signal_interruption: false,
+        ..Self::PTRACE
+    };
+
+    /// `reverie-sabre`: the tool runs inside the guest process as a SaBRe
+    /// plugin, under a ptrace supervisor that reaps processes.
+    pub const SABRE: Self = Self {
+        tool_shares_guest_descriptor_table: true,
+        rediscovers_descriptors_after_exec: true,
+        internal_pipe_turns_are_host_timed: true,
+        loopback_pollers_yield_to_peers: true,
+        guest_clock_reads_bypass_backend: true,
+        virtualizes_syscall_clobbers: true,
+        needs_killed_thread_rpc_cancellation: true,
+        reports_physical_process_exits: true,
+        signal_interrupts_external_syscalls: true,
+        runs_exit_robust_list: false,
+        supports_parked_write_signal_interruption: false,
+        ..Self::PTRACE
+    };
+
+    /// `reverie-dbt`: the guest runs under dynamic binary translation with the
+    /// tool in the guest process.
+    pub const DBT: Self = Self {
+        needs_killed_thread_rpc_cancellation: true,
+        tracks_process_children: false,
+        runs_exit_robust_list: false,
+        requires_thread_directed_process_signals: true,
+        supports_parked_write_signal_interruption: false,
+        ..Self::PTRACE
+    };
+
+    /// `reverie-kvm`: guest threads run in a virtual machine that the backend
+    /// drives, and the backend implements many syscalls itself.
+    pub const KVM: Self = Self {
+        needs_killed_thread_rpc_cancellation: true,
+        runs_exit_robust_list: false,
+        supports_parked_write_signal_interruption: false,
+        defers_vfork_child_registration: true,
+        virtualizes_capability_prctls: true,
+        virtualizes_cpuid: true,
+        supports_madvise: false,
+        provides_process_signal_control: true,
+        emulates_child_waits: true,
+        failed_gettimeofday_may_store_host_time: false,
+        refuses_nonleader_exec_with_enosys: true,
+        user_address_limit: Some(X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT),
+        ..Self::PTRACE
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every field of `caps`, by name, so a test can compare a whole constant
+    /// against a literal table. Serializing covers every field, including ones
+    /// added later, and a new field makes every table below fail until it is
+    /// given a value.
+    fn table(caps: BackendCapabilities) -> serde_json::Value {
+        serde_json::to_value(caps).unwrap()
+    }
+
+    fn ptrace_table() -> serde_json::Value {
+        serde_json::json!({
+            "tool_shares_guest_descriptor_table": false,
+            "rediscovers_descriptors_after_exec": false,
+            "internal_pipe_turns_are_host_timed": false,
+            "loopback_pollers_yield_to_peers": false,
+            "guest_clock_reads_bypass_backend": false,
+            "virtualizes_syscall_clobbers": false,
+            "needs_killed_thread_rpc_cancellation": false,
+            "reports_physical_process_exits": false,
+            "signal_interrupts_external_syscalls": false,
+            "tracks_process_children": true,
+            "runs_exit_robust_list": true,
+            "requires_thread_directed_process_signals": false,
+            "supports_parked_write_signal_interruption": true,
+            "defers_vfork_child_registration": false,
+            "virtualizes_capability_prctls": false,
+            "virtualizes_cpuid": false,
+            "supports_madvise": true,
+            "provides_process_signal_control": false,
+            "emulates_child_waits": false,
+            "failed_gettimeofday_may_store_host_time": true,
+            "refuses_nonleader_exec_with_enosys": false,
+            "user_address_limit": null,
+        })
+    }
+
+    /// The ptrace table with `changes` applied; every key in `changes` must
+    /// already exist and must actually change, so a table cannot list a no-op.
+    fn ptrace_with(changes: serde_json::Value) -> serde_json::Value {
+        let mut table = ptrace_table();
+        for (key, value) in changes.as_object().unwrap() {
+            let slot = table
+                .get_mut(key)
+                .unwrap_or_else(|| panic!("unknown field {key}"));
+            assert_ne!(slot, value, "{key} does not differ from ptrace");
+            *slot = value.clone();
+        }
+        table
+    }
+
+    #[test]
+    fn ptrace_capabilities() {
+        assert_eq!(table(BackendCapabilities::PTRACE), ptrace_table());
+    }
+
+    #[test]
+    fn e9patch_capabilities_are_ptraces() {
+        assert_eq!(table(BackendCapabilities::E9PATCH), ptrace_table());
+    }
+
+    #[test]
+    fn liteinst_in_guest_capabilities() {
+        assert_eq!(
+            table(BackendCapabilities::LITEINST_IN_GUEST),
+            ptrace_with(serde_json::json!({
+                "needs_killed_thread_rpc_cancellation": true,
+                "runs_exit_robust_list": false,
+                "supports_parked_write_signal_interruption": false,
+            }))
+        );
+    }
+
+    #[test]
+    fn sabre_capabilities() {
+        assert_eq!(
+            table(BackendCapabilities::SABRE),
+            ptrace_with(serde_json::json!({
+                "tool_shares_guest_descriptor_table": true,
+                "rediscovers_descriptors_after_exec": true,
+                "internal_pipe_turns_are_host_timed": true,
+                "loopback_pollers_yield_to_peers": true,
+                "guest_clock_reads_bypass_backend": true,
+                "virtualizes_syscall_clobbers": true,
+                "needs_killed_thread_rpc_cancellation": true,
+                "reports_physical_process_exits": true,
+                "signal_interrupts_external_syscalls": true,
+                "runs_exit_robust_list": false,
+                "supports_parked_write_signal_interruption": false,
+            }))
+        );
+    }
+
+    #[test]
+    fn dbt_capabilities() {
+        assert_eq!(
+            table(BackendCapabilities::DBT),
+            ptrace_with(serde_json::json!({
+                "needs_killed_thread_rpc_cancellation": true,
+                "tracks_process_children": false,
+                "runs_exit_robust_list": false,
+                "requires_thread_directed_process_signals": true,
+                "supports_parked_write_signal_interruption": false,
+            }))
+        );
+    }
+
+    #[test]
+    fn kvm_capabilities() {
+        assert_eq!(
+            table(BackendCapabilities::KVM),
+            ptrace_with(serde_json::json!({
+                "needs_killed_thread_rpc_cancellation": true,
+                "runs_exit_robust_list": false,
+                "supports_parked_write_signal_interruption": false,
+                "defers_vfork_child_registration": true,
+                "virtualizes_capability_prctls": true,
+                "virtualizes_cpuid": true,
+                "supports_madvise": false,
+                "provides_process_signal_control": true,
+                "emulates_child_waits": true,
+                "failed_gettimeofday_may_store_host_time": false,
+                "refuses_nonleader_exec_with_enosys": true,
+                "user_address_limit": 140_737_488_351_232_u64,
+            }))
+        );
+    }
+
+    #[test]
+    fn four_level_user_limit_is_one_page_below_2_pow_47() {
+        assert_eq!(X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT, 0x7fff_ffff_f000);
+    }
+
+    #[test]
+    fn capabilities_round_trip_through_serde() {
+        for caps in [
+            BackendCapabilities::PTRACE,
+            BackendCapabilities::E9PATCH,
+            BackendCapabilities::LITEINST_IN_GUEST,
+            BackendCapabilities::SABRE,
+            BackendCapabilities::DBT,
+            BackendCapabilities::KVM,
+        ] {
+            let json = serde_json::to_string(&caps).unwrap();
+            assert_eq!(
+                serde_json::from_str::<BackendCapabilities>(&json).unwrap(),
+                caps
+            );
+        }
+    }
+}

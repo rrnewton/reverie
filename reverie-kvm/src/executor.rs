@@ -89,6 +89,17 @@ const MAX_CAPTURED_OUTPUT: usize = 64 * 1024 * 1024;
 const PAGE_SIZE: u64 = 4096;
 const MAX_RW_COUNT: usize = (i32::MAX as usize) & !(PAGE_SIZE as usize - 1);
 const X86_64_GUEST_USER_LIMIT: u64 = (1_u64 << 47) - PAGE_SIZE;
+
+#[cfg(test)]
+mod backend_capability_tests {
+    #[test]
+    fn capabilities_report_the_user_address_limit_the_executor_enforces() {
+        assert_eq!(
+            crate::KvmBackend::capabilities().user_address_limit,
+            Some(super::X86_64_GUEST_USER_LIMIT)
+        );
+    }
+}
 const GUEST_NOFILE_LIMIT: libc::c_int = 1 << 20;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-235): Review the single virtual network namespace identity.

@@ -23,6 +23,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use reverie::Backend;
+use reverie::BackendCapabilities;
 use reverie::BackendStatsRequest;
 use reverie::BackendStatsSource;
 use reverie::Error;
@@ -548,6 +549,11 @@ fn inherit_stdio(command: &mut Command) {
 #[reverie::backend(?Send)]
 impl Backend for LiteinstBackend {
     type Stats = crate::LiteinstBackendStatsSnapshot;
+
+    /// The capabilities of the in-guest runtime that [`Backend::run`] starts.
+    fn capabilities() -> BackendCapabilities {
+        BackendCapabilities::LITEINST_IN_GUEST
+    }
 
     async fn run<T>(
         command: Command,
