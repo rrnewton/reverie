@@ -166,8 +166,44 @@ const CLIENT_BACKGROUND_IMAGES: usize = 1;
 
 fn compile_self_sigkill_fixture(directory: &Path) -> std::path::PathBuf {
     let fixture = directory.join("self-sigkill");
-    compile_fixture("evidence_self_sigkill.c", &fixture, &[]);
+    compile_fixture("evidence_self_sigkill.c", &fixture, &["-pthread"]);
     fixture
+}
+
+/// Counts the root's process-exit summary lines in the client's diagnostics.
+///
+/// A forked or vfork child never prints one, so a run whose root reaches
+/// process exit prints exactly one.
+fn process_exit_summaries(output: &Output) -> usize {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .filter(|line| line.starts_with("reverie-dbt: tool="))
+        .count()
+}
+
+/// Asserts that the root observed its child killed by SIGKILL and then ran its
+/// own process exit.
+///
+/// A vfork child that dies by SIGKILL runs no DynamoRIO exit code, so its
+/// thread record stays in the address space it shared with the root. Unless
+/// DynamoRIO removes that record, the root's exit_group sees a thread from
+/// another thread group, skips process exit, and the client's process-exit
+/// summary is missing.
+fn assert_root_survived_child_sigkill(mode: &str, output: &Output) {
+    assert!(
+        output.status.success(),
+        "self-SIGKILL {mode} guest exited unsuccessfully: {output:?}"
+    );
+    assert_eq!(
+        output.stdout,
+        format!("self-sigkill-{mode}-ok\n").into_bytes(),
+        "the parent must observe its {mode} child killed by SIGKILL"
+    );
+    assert_eq!(
+        process_exit_summaries(output),
+        1,
+        "the root must reach process exit after its {mode} child died by SIGKILL: {output:?}"
+    );
 }
 
 /// Runs one mode of the self-SIGKILL fixture under protected evidence and
@@ -181,7 +217,8 @@ fn try_run_self_sigkill_fixture(mode: &str) -> (std::io::Result<Output>, Vec<u8>
         .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
         .evidence_file(&evidence_file)
         .expect("configure protected evidence")
-        .client_argument("-test-wait-for-background");
+        .client_argument("-test-wait-for-background")
+        .summary(true);
     let mut guest = Command::new(fixture);
     guest.arg(mode);
     let result = runner.output(&guest);
@@ -214,20 +251,29 @@ fn run_self_sigkill_fixture(mode: &str) -> (Output, reverie_dbt::DbtEvidence) {
 
 fn assert_child_self_sigkill_evidence(mode: &str) {
     let (output, evidence) = run_self_sigkill_fixture(mode);
-    assert!(
-        output.status.success(),
-        "self-SIGKILL {mode} guest exited unsuccessfully: {output:?}"
-    );
-    assert_eq!(
-        output.stdout,
-        format!("self-sigkill-{mode}-ok\n").into_bytes(),
-        "the parent must observe its {mode} child killed by SIGKILL"
-    );
+    assert_root_survived_child_sigkill(mode, &output);
     assert_eq!(
         evidence.initialization_records(),
         CLIENT_BACKGROUND_IMAGES + 2,
         "the root and its {mode} child must each publish one image initialization"
     );
+}
+
+/// Runs one mode of the self-SIGKILL fixture without protected evidence, so
+/// DynamoRIO rather than the client executes a self-directed kill, and so a
+/// child killed by another thread, which cannot end its own evidence stream,
+/// does not make the collector refuse the run.
+fn run_self_sigkill_fixture_without_evidence(mode: &str) -> Output {
+    let directory = tempfile::tempdir().expect("fixture tempdir");
+    let fixture = compile_self_sigkill_fixture(directory.path());
+    let runner = DbtRunner::from_env()
+        .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+        .summary(true);
+    let mut guest = Command::new(fixture);
+    guest.arg(mode);
+    runner
+        .output(&guest)
+        .unwrap_or_else(|error| panic!("self-SIGKILL {mode} run failed: {error}"))
 }
 
 #[test]
@@ -240,6 +286,26 @@ fn protected_evidence_finishes_a_forked_child_that_sigkills_itself() {
 #[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
 fn protected_evidence_finishes_a_vfork_child_that_sigkills_itself() {
     assert_child_self_sigkill_evidence("vfork");
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn protected_evidence_finishes_a_clone_vfork_child_that_sigkills_itself() {
+    assert_child_self_sigkill_evidence("clone-vfork");
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn process_exit_runs_after_a_vfork_child_sigkills_itself() {
+    let output = run_self_sigkill_fixture_without_evidence("vfork");
+    assert_root_survived_child_sigkill("vfork", &output);
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn process_exit_runs_after_a_thread_sigkills_a_vfork_child() {
+    let output = run_self_sigkill_fixture_without_evidence("vfork-external");
+    assert_root_survived_child_sigkill("vfork-external", &output);
 }
 
 #[test]
