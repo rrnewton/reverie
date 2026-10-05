@@ -6,9 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! An already-failed tracer must not return and detach actors after kill refusal
-//! (exit 102) or after it cannot register a native newborn (exit 103).
-//! These are native subprocess fixtures, not pure controls or successful runs.
+//! An already-failed tracer must not detach or resume actors after kill refusal
+//! or after it cannot register a native newborn (exit 103). On the default
+//! route a refused kill keeps cleanup pending and resumable with both tracees
+//! still stopped; exit 102 is reserved for the dynamic LiteInst route (see
+//! `tracer::liteinst_termination_refusal_tests`). These are native subprocess
+//! fixtures, not pure controls or successful runs.
 
 #![cfg(target_arch = "x86_64")]
 
@@ -41,6 +44,10 @@ use reverie::Tool;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::Sysno;
+use reverie_ptrace::PtraceRunFailure;
+use reverie_ptrace::ToolRunOutcome;
+use reverie_ptrace::spawn_fn_with_config;
+use reverie_ptrace::testing::run_tokio_test;
 use reverie_ptrace::testing::test_fn_with_config;
 use serde::Deserialize;
 use serde::Serialize;
@@ -68,7 +75,8 @@ impl Case {
 
     fn exit_code(self) -> i32 {
         match self {
-            Self::TerminationRefusal => 102,
+            // The inner owner holds the pending cleanup and ends normally.
+            Self::TerminationRefusal => 0,
             Self::RegistrationRefusal => 103,
         }
     }
@@ -185,7 +193,11 @@ impl Tool for Refusal {
                 // outside test owner.
                 let pids = [tid.as_raw(), child.as_raw()];
                 match case {
-                    Case::TerminationRefusal => send_original_tracees(self.config.channel, pids),
+                    Case::TerminationRefusal => {
+                        ORIGINAL_TRACEES[0].store(pids[0], Ordering::SeqCst);
+                        ORIGINAL_TRACEES[1].store(pids[1], Ordering::SeqCst);
+                        send_original_tracees(self.config.channel, pids)
+                    }
                     Case::RegistrationRefusal => {
                         // The one admitted open was this exact newborn, and
                         // the refusal is armed on the registering thread.
@@ -609,9 +621,96 @@ fn newborn_registration_failure_keeps_original_tracees_in_exitkill_domain() {
     run_case(Case::RegistrationRefusal);
 }
 
+static ORIGINAL_TRACEES: [AtomicI32; 2] = [AtomicI32::new(0), AtomicI32::new(0)];
+
+fn task_state(tid: i32) -> String {
+    let stat = std::fs::read_to_string(format!("/proc/{tid}/stat")).unwrap();
+    let after = &stat[stat.rfind(')').unwrap() + 2..];
+    after.split(' ').next().unwrap().to_owned()
+}
+
+/// The default (ordinary) route keeps a refused group cleanup pending and
+/// resumable instead of exiting 102: the completion API yields the original
+/// owner, a resumed attempt is refused again by the same thread's filter, and
+/// neither guest is resumed. Exit 102 is now reached only by the dynamic
+/// LiteInst route, which `tracer::liteinst_termination_refusal_tests` pins.
+fn run_default_route_refusal(channel: i32) -> ! {
+    run_tokio_test(async move {
+        let tracer = spawn_fn_with_config::<Refusal, _>(
+            || unsafe {
+                libc::syscall(libc::SYS_fork);
+                libc::_exit(97); // Neither guest may execute after the failed run.
+            },
+            Config {
+                channel,
+                case: Case::TerminationRefusal,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+        let pending = match tracer.wait_with_output_completion().await {
+            ToolRunOutcome::CleanupPending(pending) => pending,
+            ToolRunOutcome::Complete(_) => panic!("refused cleanup reported completion"),
+            ToolRunOutcome::UnsupportedBackend(_) => panic!("ordinary route unsupported"),
+        };
+        let pids = [0, 1].map(|index| ORIGINAL_TRACEES[index].load(Ordering::SeqCst));
+        assert!(pids[0] > 0 && pids[1] > 0 && pids[0] != pids[1]);
+        let refusals = |failure: &PtraceRunFailure| {
+            assert_eq!(
+                failure.primary().to_string(),
+                "GlobalTool reported a failed ptrace run"
+            );
+            for origin in std::iter::once(failure.origin()).chain(
+                failure
+                    .secondary()
+                    .iter()
+                    .map(|secondary| secondary.origin()),
+            ) {
+                assert_eq!(
+                    (origin.pid.as_raw(), origin.tid.as_raw(), origin.phase),
+                    (pids[0], pids[0], "ptrace tree cleanup")
+                );
+            }
+            for secondary in failure.secondary() {
+                assert!(
+                    matches!(secondary.error(), Error::Errno(errno) if *errno == reverie::Errno::EPERM),
+                    "unexpected cleanup error: {:?}",
+                    secondary.error()
+                );
+            }
+            failure.secondary().len()
+        };
+        let first = refusals(pending.failure());
+        assert!(first >= 1, "the refused kill must be retained");
+        assert!(pending.callback_diagnostics().is_empty());
+        let first_states = pids.map(task_state);
+        assert_eq!(first_states, ["t", "t"], "a guest was resumed");
+        let pending = match pending.resume_cleanup().await {
+            ToolRunOutcome::CleanupPending(pending) => pending,
+            ToolRunOutcome::Complete(_) => panic!("refused resumed cleanup reported completion"),
+            ToolRunOutcome::UnsupportedBackend(_) => panic!("ordinary route unsupported"),
+        };
+        let second = refusals(pending.failure());
+        assert_eq!(second, first + 1, "one more refused attempt per resume");
+        let second_states = pids.map(task_state);
+        assert_eq!(second_states, ["t", "t"], "a guest was resumed");
+        eprintln!(
+            "TEST_CLEANUP_PENDING creator={} child={} refusals={first}->{second} states=t,t->t,t",
+            pids[0], pids[1]
+        );
+        // Keep the pending owner: the process ends without dropping it, and
+        // PTRACE_O_EXITKILL ends both still-stopped tracees.
+        unsafe { libc::_exit(0) }
+    })
+}
+
 fn run_case(case: Case) {
     if let Ok(channel) = std::env::var(CHILD_ENV) {
         let channel: i32 = channel.parse().unwrap();
+        if case == Case::TerminationRefusal {
+            run_default_route_refusal(channel);
+        }
         let result = test_fn_with_config::<Refusal, _>(
             || unsafe {
                 libc::syscall(libc::SYS_fork);
@@ -685,7 +784,7 @@ fn run_case(case: Case) {
     assert_eq!(
         owner.status.and_then(|status| status.code()),
         Some(case.exit_code()),
-        "exact fatal refusal status for this case"
+        "exact refusal status for this case"
     );
     let tracees = owner.tracees.as_mut().unwrap();
     for index in 0..2 {
@@ -738,12 +837,25 @@ fn run_case(case: Case) {
                     tracees.pids[1], tracees.pids[1],
                 )]
             );
+            // Main's resumable cleanup: the owner was yielded, a resumed
+            // attempt was refused once more, and both tracees stayed stopped.
             let markers: Vec<_> = stderr
                 .lines()
-                .filter(|line| line.starts_with("HERMIT_TASK_TERMINATION_FAILED "))
+                .filter(|line| line.starts_with("TEST_CLEANUP_PENDING "))
                 .collect();
             assert_eq!(markers.len(), 1);
-            assert!(tracees.pids.iter().any(|pid| markers[0] == format!("HERMIT_TASK_TERMINATION_FAILED tid={pid} exit=102 errno=1 backend_failure=acknowledged cleanup=unconfirmed")));
+            let prefix = format!(
+                "TEST_CLEANUP_PENDING creator={} child={} refusals=",
+                tracees.pids[0], tracees.pids[1]
+            );
+            let counts = markers[0]
+                .strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(" states=t,t->t,t"))
+                .unwrap_or_else(|| panic!("unexpected pending marker: {}", markers[0]));
+            let (first, second) = counts.split_once("->").unwrap();
+            let (first, second): (usize, usize) = (first.parse().unwrap(), second.parse().unwrap());
+            assert!(first >= 1 && second == first + 1, "{}", markers[0]);
+            assert!(!stderr.contains("HERMIT_TASK_TERMINATION_FAILED"));
             assert!(!stderr.contains("HERMIT_CHILD_CUSTODY_FAILED"));
         }
         Case::RegistrationRefusal => {

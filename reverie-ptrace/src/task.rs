@@ -2961,7 +2961,7 @@ impl FatalSession {
         self.backend_signalling.store(true, Ordering::Release);
         // A vfork parent can be kernel-blocked behind a captured child. Signal
         // these exact child generations before waiting for the parent stop.
-        {
+        loop {
             let error = {
                 let tree = self.tree.lock().unwrap();
                 tree.vfork_children
@@ -2979,10 +2979,9 @@ impl FatalSession {
                     })
             };
             if let Some(error) = error {
-                failed_task_termination_is_fatal(
-                    self.root.expect("fatal session has a root owner"),
-                    error,
-                );
+                self.retry_after(error.into()).await;
+            } else {
+                break;
             }
         }
         // Retain the original owning Stopped in this suspended session future
@@ -3000,9 +2999,6 @@ impl FatalSession {
                 .await
             {
                 Ok(()) => break,
-                Err(reverie::Error::Errno(error)) => {
-                    failed_task_termination_is_fatal(task.tid, error)
-                }
                 Err(error) => self.retry_after(error).await,
             }
         }
@@ -3061,25 +3057,29 @@ impl FatalSession {
                 // This future, retained by the run driver on refusal, is the
                 // sole owner of these unhanded child receivers until reaping.
                 for newborn in &mut newborns {
-                    let signal = newborn.signal();
-                    match signal {
-                        Ok(()) | Err(Errno::ESRCH) => {}
-                        Err(error) => failed_task_termination_is_fatal(newborn.tid, error),
+                    loop {
+                        let signal = newborn.signal();
+                        match signal {
+                            Ok(()) | Err(Errno::ESRCH) => break,
+                            Err(error) => self.retry_after(error.into()).await,
+                        }
                     }
                 }
-                {
+                loop {
                     let errors = self.signal_groups();
-                    if !errors.is_empty() {
-                        failed_task_termination_is_fatal(
-                            self.root.expect("fatal session has a root owner"),
-                            errors[0],
-                        );
+                    if errors.is_empty() {
+                        break;
+                    }
+                    for error in errors {
+                        self.retry_after(error.into()).await;
                     }
                 }
                 for task in &tasks {
-                    match task.terminal.request_sigkill() {
-                        Ok(()) | Err(Errno::ESRCH) => {}
-                        Err(error) => failed_task_termination_is_fatal(task.tid, error),
+                    loop {
+                        match task.terminal.request_sigkill() {
+                            Ok(()) | Err(Errno::ESRCH) => break,
+                            Err(error) => self.retry_after(error.into()).await,
+                        }
                     }
                 }
                 self.changed.notify_waiters();
