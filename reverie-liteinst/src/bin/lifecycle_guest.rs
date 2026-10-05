@@ -191,6 +191,13 @@ impl Tool for LifecycleTool {
             let outcome = timer_outcome(guest.set_timer_precise(TimerSchedule::Rcbs(1)));
             SET_TIMER_PRECISE_OUTCOME.store(outcome, Ordering::Relaxed);
         }
+        let output = TOOL_OUTPUT.load(Ordering::Relaxed);
+        if syscall.number() == Sysno::getppid && output >= 0 {
+            // Tool code writes to its reserved descriptor through its own syscall.
+            let socket = reverie_liteinst::tool_output_fd().expect("a reserved Tool output socket");
+            let written = unsafe { libc::write(socket, b"tool\n".as_ptr().cast(), 5) };
+            assert_eq!(written, 5, "{}", std::io::Error::last_os_error());
+        }
         if syscall.number() == Sysno::read {
             if READ_CALLS.fetch_add(1, Ordering::Relaxed) < 2 {
                 return Err(restart_same_entry());
@@ -570,6 +577,173 @@ fn hooked_fork_stats() {
     println!("hooked fork stats: child=finished");
 }
 
+/// The fixture Tool's reserved output descriptor, in mode `tool-output-fd`.
+static TOOL_OUTPUT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// Reserves one end of a `SOCK_SEQPACKET` pair as the Tool's output descriptor,
+/// before the Tool is installed, as a Tool's constructor would, and returns the
+/// reserved number and the guest's own other end. A regular file (`path`) is
+/// refused first.
+fn reserve_tool_output_fd(path: &std::ffi::OsStr) -> (libc::c_int, libc::c_int) {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::File::create(path).unwrap();
+    // SAFETY: main runs before any application thread, and before install_tool.
+    let refused = unsafe { reverie_liteinst::reserve_tool_output_fd(file.as_raw_fd()) };
+    assert_eq!(
+        refused.unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput,
+        "a regular file must be refused"
+    );
+    // The refused descriptor is still the caller's.
+    assert_ne!(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) }, -1);
+    drop(file);
+
+    let mut pair = [-1; 2];
+    let created = unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+            0,
+            pair.as_mut_ptr(),
+        )
+    };
+    assert_eq!(created, 0, "{}", std::io::Error::last_os_error());
+    let [original, peer] = pair;
+    // SAFETY: as above.
+    let reserved = unsafe { reverie_liteinst::reserve_tool_output_fd(original) }.unwrap();
+    assert!(reserved >= 1025, "reserved {reserved}");
+    TOOL_OUTPUT.store(reserved, Ordering::Relaxed);
+    // The original number is closed, so the guest's descriptors are unchanged.
+    assert_eq!(unsafe { libc::fcntl(original, libc::F_GETFD) }, -1);
+    (reserved, peer)
+}
+
+/// The guest tries to close, replace, write, query, truncate, extend and map the
+/// Tool's reserved output descriptor, to reach it with high bits set in a
+/// descriptor argument, to open, create over or truncate it through procfs, and
+/// to close it with `close_range`; every attempt fails or is a no-op. Then the
+/// Tool's own write (its `getppid` callback sends `tool`) reaches the guest's
+/// end of the pair as the only message.
+fn tool_output_fd(reserved: libc::c_int, peer: libc::c_int) {
+    let link = || std::fs::read_link(format!("/proc/self/fd/{reserved}")).unwrap();
+    let before = link();
+    let errno = || std::io::Error::last_os_error().raw_os_error();
+    unsafe {
+        assert_eq!(libc::close(reserved), 0);
+        assert_eq!(libc::write(reserved, b"guest".as_ptr().cast(), 5), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::fcntl(reserved, libc::F_GETFD), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        // Socket operations: a daemon shutting down every inherited socket
+        // must not silence the Tool.
+        assert_eq!(libc::shutdown(reserved, libc::SHUT_RDWR), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::send(reserved, b"guest".as_ptr().cast(), 5, 0), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        let mut kind: libc::c_int = 0;
+        let mut kind_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        assert_eq!(
+            libc::getsockopt(
+                reserved,
+                libc::SOL_SOCKET,
+                libc::SO_TYPE,
+                (&raw mut kind).cast(),
+                &mut kind_len,
+            ),
+            -1
+        );
+        assert_eq!(errno(), Some(libc::EBADF));
+        // The kernel reads descriptor arguments as 32 bits; high bits must not
+        // carry an operation past the protection.
+        let aliased = i64::from(reserved) | (1 << 32);
+        assert_eq!(
+            libc::syscall(libc::SYS_write, aliased, b"guest".as_ptr(), 5),
+            -1
+        );
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::syscall(libc::SYS_close, aliased), 0);
+        // Operations on the file itself.
+        assert_eq!(libc::ftruncate(reserved, 0), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::fallocate(reserved, 0, 0, 4096), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        let mapping = libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            reserved,
+            0,
+        );
+        assert_eq!(mapping, libc::MAP_FAILED);
+        assert_eq!(errno(), Some(libc::EBADF));
+        // A socket cannot be reopened, created over or truncated by name.
+        for alias in [
+            format!("/proc/self/fd/{reserved}"),
+            format!("/dev/fd/{reserved}"),
+        ] {
+            let path = std::ffi::CString::new(alias).unwrap();
+            assert_eq!(
+                libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_TRUNC),
+                -1
+            );
+            assert_eq!(libc::creat(path.as_ptr(), 0o600), -1);
+            assert_eq!(libc::truncate(path.as_ptr(), 0), -1);
+        }
+    }
+    // A dup2 or dup3 onto the number succeeds, as if it were free; the socket
+    // moves to another number, which the Tool keeps using.
+    let relocated = unsafe {
+        assert_eq!(libc::dup2(libc::STDOUT_FILENO, reserved), reserved);
+        let moved = reverie_liteinst::tool_output_fd().unwrap();
+        assert!(moved != reserved && moved >= 1025, "moved to {moved}");
+        assert_eq!(libc::dup3(libc::STDOUT_FILENO, moved, 0), moved);
+        let again = reverie_liteinst::tool_output_fd().unwrap();
+        assert!(
+            again != moved && again != reserved && again >= 1025,
+            "moved to {again}"
+        );
+        again
+    };
+    let socket_link = || std::fs::read_link(format!("/proc/self/fd/{relocated}")).unwrap();
+    assert_eq!(socket_link(), before);
+    unsafe { libc::getppid() };
+    // The Tool's message is the only one the guest's end receives.
+    let mut message = [0u8; 64];
+    let received = unsafe {
+        libc::recv(
+            peer,
+            message.as_mut_ptr().cast(),
+            message.len(),
+            libc::MSG_DONTWAIT,
+        )
+    };
+    assert_eq!(&message[..received.max(0) as usize], b"tool\n");
+    let more = unsafe {
+        libc::recv(
+            peer,
+            message.as_mut_ptr().cast(),
+            message.len(),
+            libc::MSG_DONTWAIT,
+        )
+    };
+    assert_eq!((more, errno()), (-1, Some(libc::EAGAIN)));
+    // Last, because it also closes the guest's own end of the pair.
+    unsafe {
+        assert_eq!(
+            libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32),
+            0
+        );
+        let aliased_first = 3u64 | (1 << 32);
+        assert_eq!(
+            libc::syscall(libc::SYS_close_range, aliased_first, u32::MAX, 0u32),
+            0
+        );
+    }
+    assert_eq!(socket_link(), before);
+    println!("tool output fd: protected");
+}
+
 /// Reports whether the kernel randomizes this process's address space.
 fn address_randomization() {
     let personality = unsafe { libc::personality(0xffff_ffff) };
@@ -587,6 +761,13 @@ fn main() {
     let mode = arguments.next().expect("missing lifecycle fixture mode");
     if mode == "fallback-fork-stats" {
         fallback_fork_stats();
+        return;
+    }
+    if mode == "tool-output-fd" {
+        let (reserved, peer) =
+            reserve_tool_output_fd(&arguments.next().expect("missing scratch path"));
+        install_tool();
+        tool_output_fd(reserved, peer);
         return;
     }
     install_tool();
