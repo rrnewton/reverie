@@ -13,6 +13,7 @@ mod retired_tid {
     const NAME: &str = "notifier::test::retired_tid::explicit_unregistered_retired_target_refuses_numeric_requests";
     const INNER: &str = "SAFEPTRACE_RETIRED_TARGET_INNER";
     const FORCE: &str = "SAFEPTRACE_RETIRED_TARGET_FORCE";
+    const KEEP_WARM: &str = "SAFEPTRACE_RETIRED_TARGET_KEEP_AUTH_WARM";
     const MARKER: &str = "ACTUAL_EXPLICIT_UNREGISTERED_RETIRED_TARGET_EXERCISED";
 
     struct FixtureDirectory(std::path::PathBuf);
@@ -88,6 +89,31 @@ mod retired_tid {
             result != 0
         });
         (Pid::from_raw(result), status)
+    }
+
+    #[test]
+    fn cached_stop_authentication_refuses_actual_retired_tid_reuse() {
+        for forced in [false, true] {
+            let output = run_exact_in_pid_namespace_bounded(
+                NAME,
+                &[
+                    (INNER, "1"),
+                    (FORCE, if forced { "1" } else { "0" }),
+                    (KEEP_WARM, "1"),
+                ],
+            )
+            .expect("start real warm-cache exec/exact-reuse control");
+            assert!(output.status.success(), "warm cache reuse: {output:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter(|line| *line == "ACTUAL_WARM_AUTH_CACHE_TID_REUSE_REFUSED")
+                    .count(),
+                1,
+                "warm cache control omitted completed physical reuse proof: {output:?}"
+            );
+        }
+        emit_completion_marker("ACTUAL_WARM_AUTH_CACHE_TID_REUSE_REFUSED");
     }
 
     #[test]
@@ -190,7 +216,29 @@ mod retired_tid {
             WORKER_NOT_STARTED
         );
         assert!(!*original.event().terminal_reaping.read());
-        let old_running = stopped.resume(None).unwrap();
+        let warm_epoch = env::var_os(KEEP_WARM).map(|_| {
+            // Warm the positive proof through genuine SDK requests at the
+            // original consumed newborn stop. A controlled raw resume below
+            // deliberately leaves that epoch valid, so the later refusal
+            // must come from the fresh original-target inode lookup.
+            stopped.getsiginfo().unwrap();
+            stopped.getregs().unwrap();
+            let epoch = original.event().numeric_auth_epoch.load(Ordering::Acquire);
+            assert_eq!(
+                original
+                    .event()
+                    .numeric_auth_checked_epoch
+                    .load(Ordering::Acquire),
+                epoch
+            );
+            epoch
+        });
+        let old_running = if warm_epoch.is_some() {
+            raw_request(libc::PTRACE_CONT, former, 0);
+            Running::from_token(stopped.0, stopped.1)
+        } else {
+            stopped.resume(None).unwrap()
+        };
         let parent_running = parent.resume(None).unwrap();
         let mut replacement = Pid::from_raw(0);
         let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
@@ -261,6 +309,20 @@ mod retired_tid {
         let siginfo = fresh.getsiginfo().unwrap();
         let registers = fresh.getregs().unwrap();
         let old = generation.assume_stopped();
+        if let Some(epoch) = warm_epoch {
+            assert_eq!(
+                original.event().numeric_auth_epoch.load(Ordering::Acquire),
+                epoch
+            );
+            assert_eq!(
+                original
+                    .event()
+                    .numeric_auth_checked_epoch
+                    .load(Ordering::Acquire),
+                epoch,
+                "the old positive authentication must still match its epoch"
+            );
+        }
         #[cfg(feature = "memory")]
         {
             use reverie_memory::{Addr, AddrMut, MemoryAccess, RemoteIoVec};
@@ -390,6 +452,20 @@ mod retired_tid {
             -1
         );
         assert_eq!(Errno::last(), Errno::ECHILD);
+        if let Some(epoch) = warm_epoch {
+            assert_eq!(
+                original.event().numeric_auth_epoch.load(Ordering::Acquire),
+                epoch
+            );
+            assert_eq!(
+                original
+                    .event()
+                    .numeric_auth_checked_epoch
+                    .load(Ordering::Acquire),
+                epoch
+            );
+            emit_completion_marker("ACTUAL_WARM_AUTH_CACHE_TID_REUSE_REFUSED");
+        }
         println!(
             "RETIRED_EXPLICIT_TARGET_REFUSAL native={native} forced={forced} former_tid={former} exact_reuse=true same_ptracer=true old_gate_open=true old_worker_unstarted=true actual_original_retired=ESRCH retired_numeric_requests=ESRCH replacement_siginfo_and_registers_preserved=true actual_fresh_interrupt=EVENT_STOP actual_group_kill=SIGKILL root_and_member_reaped=true final_ECHILD=true"
         );

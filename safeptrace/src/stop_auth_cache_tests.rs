@@ -1,0 +1,126 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+#[cfg(not(sanitized))]
+#[test]
+fn stop_authentication_is_shared_and_revalidated_after_real_transitions() {
+    const NAME: &str = "stop_authentication_is_shared_and_revalidated_after_real_transitions";
+    if run_legacy_test_outer_with_outcome(
+        NAME,
+        Some("ACTUAL_STOP_AUTHENTICATION_CACHE_TRANSITIONS_EXERCISED"),
+    ) {
+        return;
+    }
+    for forced in [false, true] {
+        let root = match unsafe { fork() }.unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                crate::traceme_and_stop().unwrap();
+                unsafe {
+                    libc::raise(libc::SIGTRAP);
+                    libc::_exit(23);
+                }
+            }
+        };
+        let mut cleanup = TraceeCleanupGuard::new(root).unwrap();
+        let _force = forced.then(|| LegacyThreadGroup::new(root));
+        let status = waitpid_status_bounded(root, libc::__WALL, TRACEE_WAIT_TIMEOUT).unwrap();
+        assert!(libc::WIFSTOPPED(status));
+        assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
+        let stopped = Stopped::new_unchecked_on_ptracer_thread(root.into()).unwrap();
+        let original = stopped.1.event().clone();
+        let generation = stopped.generation();
+        assert_eq!(
+            original
+                .event()
+                .numeric_auth_status_reads
+                .load(Ordering::Relaxed),
+            0
+        );
+        let registers = stopped.getregs().unwrap();
+        for _ in 0..128 {
+            assert_eq!(stopped.getregs().unwrap(), registers);
+            assert_eq!(stopped.getsiginfo().unwrap().si_signo, libc::SIGSTOP);
+        }
+        assert_eq!(
+            original
+                .event()
+                .numeric_auth_status_reads
+                .load(Ordering::Relaxed),
+            1
+        );
+        stopped
+            .setoptions(Options::PTRACE_O_TRACESYSGOOD | Options::PTRACE_O_TRACEEXIT)
+            .unwrap();
+        assert_eq!(
+            original
+                .event()
+                .numeric_auth_status_reads
+                .load(Ordering::Relaxed),
+            1
+        );
+
+        // SINGLESTEP and SYSCALL each resume the real stop. Their actual
+        // consumed reports must require a new full proof, even though the
+        // generation, ptracer and retained proc directory remain the same.
+        let running = stopped.step(None).unwrap();
+        let (stopped, event) = running
+            .wait_sync_on_ptracer_thread()
+            .wait()
+            .unwrap()
+            .assume_stopped();
+        assert_eq!(event, crate::Event::Signal(Signal::SIGTRAP));
+        assert_eq!(stopped.generation(), generation);
+        let registers = stopped.getregs().unwrap();
+        for _ in 0..128 {
+            assert_eq!(stopped.getregs().unwrap(), registers);
+        }
+        assert_eq!(
+            original
+                .event()
+                .numeric_auth_status_reads
+                .load(Ordering::Relaxed),
+            2
+        );
+
+        let running = stopped.syscall(None).unwrap();
+        let (stopped, event) = running
+            .wait_sync_on_ptracer_thread()
+            .wait()
+            .unwrap()
+            .assume_stopped();
+        assert_eq!(event, crate::Event::Syscall);
+        assert_eq!(stopped.generation(), generation);
+        let registers = stopped.getregs().unwrap();
+        for _ in 0..128 {
+            assert_eq!(stopped.getregs().unwrap(), registers);
+        }
+        assert_eq!(
+            original
+                .event()
+                .numeric_auth_status_reads
+                .load(Ordering::Relaxed),
+            3
+        );
+
+        // DETACH invalidates the proof too and returns reaping to the real
+        // parent. The original descriptor still supplies exact cleanup.
+        let epoch = original.event().numeric_auth_epoch.load(Ordering::Acquire);
+        let _detached = stopped.detach(Signal::SIGKILL).unwrap();
+        assert_ne!(
+            original.event().numeric_auth_epoch.load(Ordering::Acquire),
+            epoch
+        );
+        let terminal = waitpid_status_bounded(root, libc::__WALL, TRACEE_WAIT_TIMEOUT).unwrap();
+        assert!(libc::WIFSIGNALED(terminal));
+        assert_eq!(libc::WTERMSIG(terminal), libc::SIGKILL);
+        cleanup.disarm();
+        assert!(!std::path::Path::new(&format!("/proc/{root}")).exists());
+    }
+    emit_completion_marker("ACTUAL_STOP_AUTHENTICATION_CACHE_TRANSITIONS_EXERCISED");
+}

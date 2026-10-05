@@ -262,7 +262,7 @@ impl TraceeToken {
             // an already-retired retained target before a numeric request
             // can address its replacement. This is a lifetime precheck,
             // not an atomic descriptor-valued ptrace operation.
-            self.event.check_numeric_target_lifetime()?;
+            self.event.check_numeric_target_lifetime(owner)?;
         }
         request()
     }
@@ -609,6 +609,8 @@ impl Wait {
     }
 
     fn from_raw_with_token(pid: Pid, status: i32, token: TraceeToken) -> Result<Self, Error> {
+        #[cfg(feature = "notifier")]
+        token.event().invalidate_numeric_auth();
         Ok(if libc::WIFEXITED(status) {
             Wait::Exited(pid, ExitStatus::Exited(libc::WEXITSTATUS(status)))
         } else if libc::WIFSIGNALED(status) {
@@ -972,6 +974,8 @@ impl Stopped {
     /// Converts this capability into the running state after a successful
     /// ptrace request moved the tracee out of its stop.
     fn into_running(self) -> Running {
+        #[cfg(feature = "notifier")]
+        self.1.event().invalidate_numeric_auth();
         self.retire_statuses_before_exit_stop();
         Running::from_token(self.0, self.1)
     }

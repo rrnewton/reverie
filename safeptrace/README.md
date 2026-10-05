@@ -88,6 +88,15 @@ explicit interface, and to numeric ptrace requests, memory access, and stopped
 observations through an explicit state. A new host owner is authenticated
 through the Event's original proc mount before any queued status is transferred.
 
+Numeric requests compare fresh directory metadata for both the executing
+thread and target with their pinned original proc directories. A successful
+full target status check is reused until a wait event is published or decoded,
+a resume or detach succeeds, or the attachment reconnects. Changes to status
+read permissions during an already validated stop are observed at the next
+validation; directory lookup failures are still reported immediately. Failed
+validation and raw ptrace errors are never cached, so a later request can retry
+through the same original capability.
+
 Selecting a host thread alone does not authorize waiting for an untraced task.
 The explicit wait interfaces also authenticate the original attachment or the
 task's real parent TGID before transferring a queued status or exit capability.
