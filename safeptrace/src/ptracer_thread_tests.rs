@@ -3003,3 +3003,274 @@ fn run_explicit_wait_role_outer(name: &str, marker: &str, cell_prefix: &str) -> 
     eprint!("{}", String::from_utf8_lossy(&result.output.stderr));
     true
 }
+
+/// Host-thread tokens identify one OS thread of one process. They differ
+/// across threads and are withheld in a fork child, which inherits the
+/// forking thread's thread-local token but not its identity.
+#[test]
+fn host_thread_tokens_are_per_thread_and_withheld_in_fork_children() {
+    let mine = host_thread::token().expect("token on an ordinary thread");
+    assert_eq!(host_thread::token(), Some(mine));
+    let other = thread::spawn(host_thread::token)
+        .join()
+        .unwrap()
+        .expect("token on a second thread");
+    assert_ne!(other, mine);
+    let owner = LegacyWaitOwner::capture_current().unwrap();
+    assert_eq!(owner.thread, Some(mine));
+    assert!(owner.is_capturing_thread());
+    let child = match unsafe { fork() }.unwrap() {
+        ForkResult::Parent { child } => child,
+        ForkResult::Child => {
+            let withheld = host_thread::token().is_none() && !owner.is_capturing_thread();
+            unsafe { libc::_exit(if withheld { 0 } else { 1 }) };
+        }
+    };
+    let status = waitpid_status_bounded(child, 0, TRACEE_WAIT_TIMEOUT).unwrap();
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 0);
+}
+
+/// The host owner one OS thread captured is reused by that same thread for
+/// every tracee reached through the same procfs mount, never by another
+/// thread, and every reuse still reads the target's current attachment. Holds
+/// on both the native and the forced Linux 6.8 handle.
+#[test]
+fn explicit_owner_capture_is_reused_only_by_its_capturing_thread() {
+    // Reuse needs the never-reused mount IDs of Linux 6.8 and later; before
+    // that, every capture must stay a full one.
+    let reusable = fd_unique_mount(&AlignedProcfs::open().unwrap().root).is_some();
+    let mut uts = unsafe { std::mem::zeroed::<libc::utsname>() };
+    assert_eq!(unsafe { libc::uname(&mut uts) }, 0);
+    let release = unsafe { std::ffi::CStr::from_ptr(uts.release.as_ptr()) }.to_string_lossy();
+    let mut version = release
+        .split(|c: char| !c.is_ascii_digit())
+        .map(|part| part.parse::<u32>().unwrap_or(0));
+    let at_least_6_8 = (version.next().unwrap_or(0), version.next().unwrap_or(0)) >= (6, 8);
+    assert!(
+        reusable || !at_least_6_8,
+        "Linux {release} should report STATX_MNT_ID_UNIQUE"
+    );
+    for forced in [false, true] {
+        let (pid, mut cleanup) = spawn_stopped_process(None).unwrap();
+        let (other_pid, mut other_cleanup) = spawn_stopped_process(None).unwrap();
+        // One forced group per thread: the forced pass pairs a Linux 6.8
+        // handle with a native one.
+        let _force = forced.then(|| LegacyThreadGroup::new(pid));
+        let running = Running::new_on_ptracer_thread(pid.into()).unwrap();
+        cleanup.bind_running_notifier(&running).unwrap();
+        let other_running = Running::new_on_ptracer_thread(other_pid.into()).unwrap();
+        other_cleanup.bind_running_notifier(&other_running).unwrap();
+        let terminal = running.terminal_cleanup();
+        let other_terminal = other_running.terminal_cleanup();
+        let identity = Arc::clone(terminal.event.identity().unwrap());
+        let other = Arc::clone(other_terminal.event.identity().unwrap());
+        // The stopped direct child is untraced, so only an untraced-tolerant
+        // capture succeeds, both the first time and on every reuse.
+        let first = identity.capture_current_owner(true).unwrap();
+        assert!(first.is_capturing_thread());
+        assert_eq!(identity.root_mount.get().is_some(), reusable);
+        assert_eq!(
+            Arc::ptr_eq(&first, &identity.capture_current_owner(true).unwrap()),
+            reusable
+        );
+        assert_eq!(
+            identity.capture_current_owner(false).unwrap_err(),
+            Errno::EPERM
+        );
+        let remote = Arc::clone(&identity);
+        let (foreign, foreign_current) = thread::spawn(move || {
+            let owner = remote.capture_current_owner(true).unwrap();
+            let current = owner.is_current();
+            (owner, current)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(foreign_current, Ok(true));
+        assert!(!Arc::ptr_eq(&first, &foreign));
+        assert_eq!(foreign.is_current(), Ok(false));
+        assert_eq!(first.is_current(), Ok(true));
+        assert_eq!(
+            Arc::ptr_eq(&first, &identity.capture_current_owner(true).unwrap()),
+            reusable
+        );
+        // Both constructors already captured on this thread through the
+        // same mount, so the second tracee reuses the very same owner:
+        // retained descriptors do not grow with the number of tracees.
+        let shared = other.capture_current_owner(true).unwrap();
+        assert!(shared.is_capturing_thread());
+        assert_eq!(identity.root_mount.get(), other.root_mount.get());
+        assert_eq!(Arc::ptr_eq(&first, &shared), reusable);
+        assert_eq!(
+            Arc::ptr_eq(&shared, &other.capture_current_owner(true).unwrap()),
+            reusable
+        );
+        assert_eq!(
+            Arc::ptr_eq(&shared, &identity.capture_current_owner(true).unwrap()),
+            reusable
+        );
+        for (terminal, cleanup, pid) in [
+            (terminal, &mut cleanup, pid),
+            (other_terminal, &mut other_cleanup, other_pid),
+        ] {
+            terminal.request_sigkill().unwrap();
+            assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
+            cleanup.disarm();
+            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        }
+    }
+}
+
+/// A resume proof holds only on the thread whose request the kernel accepted,
+/// only while the Event has no unconsumed publication, and never after an
+/// explicit detach began, including one that overlapped the resume.
+#[test]
+fn resume_proof_is_withdrawn_by_publication_detach_and_other_threads() {
+    let handle = EventHandle::new();
+    let event = Arc::clone(handle.event());
+    assert!(!event.resumed_by_calling_thread_without_publication());
+    assert_eq!(handle.resuming(|| Err::<(), _>(Errno::ESRCH)), Err(Errno::ESRCH));
+    assert!(!event.resumed_by_calling_thread_without_publication());
+    handle.resuming(|| Ok::<_, Errno>(())).unwrap();
+    assert!(event.resumed_by_calling_thread_without_publication());
+
+    let remote = Arc::clone(&event);
+    assert!(
+        !thread::spawn(move || remote.resumed_by_calling_thread_without_publication())
+            .join()
+            .unwrap()
+    );
+    let child = match unsafe { fork() }.unwrap() {
+        ForkResult::Parent { child } => child,
+        ForkResult::Child => {
+            let withheld = !event.resumed_by_calling_thread_without_publication();
+            unsafe { libc::_exit(if withheld { 0 } else { 1 }) };
+        }
+    };
+    let status = waitpid_status_bounded(child, 0, TRACEE_WAIT_TIMEOUT).unwrap();
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 0);
+
+    event.status.lock().pending.push_back(0x137f);
+    assert!(!event.resumed_by_calling_thread_without_publication());
+    event.status.lock().pending.pop_front();
+    assert!(event.resumed_by_calling_thread_without_publication());
+    event.status.lock().terminal = 0;
+    assert!(!event.resumed_by_calling_thread_without_publication());
+    event.status.lock().terminal = INVALID_STATUS;
+    assert!(event.resumed_by_calling_thread_without_publication());
+    event.exit_status.store(EXIT_STOPPED, Ordering::Release);
+    assert!(!event.resumed_by_calling_thread_without_publication());
+    event.exit_status.store(EXIT_PENDING, Ordering::Release);
+    assert!(event.resumed_by_calling_thread_without_publication());
+
+    assert_eq!(handle.detaching(|| Err::<(), _>(Errno::ESRCH)), Err(Errno::ESRCH));
+    assert!(!event.resumed_by_calling_thread_without_publication());
+    handle.resuming(|| Ok::<_, Errno>(())).unwrap();
+    assert!(event.resumed_by_calling_thread_without_publication());
+    handle.detaching(|| Ok::<_, Errno>(())).unwrap();
+    assert!(!event.resumed_by_calling_thread_without_publication());
+    // A resume that overlapped a detach records nothing.
+    handle
+        .resuming(|| {
+            handle.event().clear_resume_proof();
+            Ok::<_, Errno>(())
+        })
+        .unwrap();
+    assert!(!event.resumed_by_calling_thread_without_publication());
+    let detaches = event.resume_proof_detaches();
+    event.clear_resume_proof();
+    event.record_resume_proof(detaches);
+    assert!(!event.resumed_by_calling_thread_without_publication());
+    handle.resuming(|| Ok::<_, Errno>(())).unwrap();
+    assert!(event.resumed_by_calling_thread_without_publication());
+}
+
+/// After the owner's own accepted resume, constructing and polling an
+/// explicit wait reads no procfs status on a native thread pidfd, and an
+/// explicit detach withdraws that proof. The forced Linux 6.8 handle keeps
+/// its own legacy authentication and still completes the same waits.
+#[tokio::test(flavor = "current_thread")]
+#[cfg(not(sanitized))]
+async fn explicit_ptracer_wait_after_own_resume_reads_no_procfs() {
+    const MARKER: &str = "ACTUAL_EXPLICIT_PTRACER_RESUME_PROOF_EXERCISED";
+    if run_legacy_test_outer_with_outcome(
+        "explicit_ptracer_wait_after_own_resume_reads_no_procfs",
+        Some(MARKER),
+    ) {
+        return;
+    }
+    let status_reads = || PROC_STATUS_READS.with(Cell::get);
+    for forced in [false, true] {
+        let (root, tid, release, mut root_cleanup) = legacy_owner_guest();
+        let _force = forced.then(|| LegacyThreadGroup::new(root));
+        let running =
+            Running::seize_on_ptracer_thread(tid.into(), legacy_thread_options()).unwrap();
+        let native = running.terminal_cleanup().has_thread_pidfd().unwrap();
+        assert_eq!(native, !forced);
+        let event = Arc::clone(running.1.event().event());
+        assert!(!event.resumed_by_calling_thread_without_publication());
+        running.interrupt().unwrap();
+        let mut driver = running.wait_owned_on_ptracer_thread().into_driver();
+        let (stopped, stop) = tokio::time::timeout(
+            TRACEE_WAIT_TIMEOUT,
+            futures::future::poll_fn(|cx| driver.poll_on_ptracer_thread(cx)),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .assume_stopped();
+        assert_eq!(stop, crate::Event::Stop);
+        assert!(!event.resumed_by_calling_thread_without_publication());
+
+        let before = status_reads();
+        let running = stopped.resume(None).unwrap();
+        assert!(event.resumed_by_calling_thread_without_publication());
+        let mut driver = running.wait_owned_on_ptracer_thread().into_driver();
+        let waker = futures::task::noop_waker();
+        for _ in 0..3 {
+            assert!(
+                driver
+                    .poll_on_ptracer_thread(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+        }
+        let reads = status_reads() - before;
+        if native {
+            assert_eq!(reads, 0, "procfs status reads after the owner's resume");
+        }
+
+        assert_eq!(
+            unsafe {
+                libc::ptrace(
+                    libc::PTRACE_INTERRUPT,
+                    tid.as_raw(),
+                    std::ptr::null_mut::<libc::c_void>(),
+                    std::ptr::null_mut::<libc::c_void>(),
+                )
+            },
+            0
+        );
+        let (stopped, stop) = tokio::time::timeout(
+            TRACEE_WAIT_TIMEOUT,
+            futures::future::poll_fn(|cx| driver.poll_on_ptracer_thread(cx)),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .assume_stopped();
+        assert_eq!(stop, crate::Event::Stop);
+        let detached = stopped.detach(None).unwrap();
+        assert!(!event.resumed_by_calling_thread_without_publication());
+        assert_eq!(
+            unsafe { libc::write(release.as_raw_fd(), b"x".as_ptr().cast(), 1) },
+            1
+        );
+        drop(detached);
+        legacy_owner_reap_root(root, &mut root_cleanup);
+        println!(
+            "EXPLICIT_PTRACER_RESUME_PROOF native={native} forced={forced} status_reads_after_resume={reads} detach_withdrew=true"
+        );
+    }
+    emit_completion_marker(MARKER);
+}
