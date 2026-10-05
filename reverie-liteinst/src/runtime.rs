@@ -213,22 +213,7 @@ static PATCH_PUBLICATION: AtomicU8 = AtomicU8::new(PatchPublication::Concurrent 
 static PROCESS_FORKS_ALLOWED: AtomicBool = AtomicBool::new(true);
 static SITE_PATCHING_ENABLED: AtomicBool = AtomicBool::new(true);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum InstructionEventKind {
-    Cpuid,
-    Rdtsc,
-    Rdtscp,
-}
-
-impl InstructionEventKind {
-    /// Length of the only encoding the runtime recognizes for this kind.
-    pub(crate) const fn encoded_len(self) -> u64 {
-        match self {
-            Self::Cpuid | Self::Rdtsc => 2,
-            Self::Rdtscp => 3,
-        }
-    }
-}
+pub(crate) use reverie_inguest::guest::event::InstructionEventKind;
 
 #[derive(Default)]
 #[repr(C)]
