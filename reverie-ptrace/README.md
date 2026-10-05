@@ -30,13 +30,23 @@ kernel and Ubuntu AppArmor requirements.
 
 ## Kernel compatibility and fatal cleanup
 
-The ordinary ptrace engine explicitly selects safeptrace's
-`*_on_ptracer_thread` SDK mode. This permits retained-descriptor tracing and
-process/thread lifecycle notification on Linux 6.8. Native thread pidfds are
-used from Linux 6.9. Safeptrace's generic sibling-pollable SDK interfaces retain
-their native `PIDFD_THREAD` requirement; they do not implicitly select the
-owner-thread fallback. Optional LiteInst cleanup also retains its native
-thread-pidfd requirement.
+The ordinary ptrace engine selects its wait and decode mode from each task's
+original retained target handle. An actual `PIDFD_THREAD` handle selects the
+Native notifier and decoder. Other retained handles use safeptrace's explicit
+`*_on_ptracer_thread` mode, including on Linux 6.8. Selection preserves the
+original generation and controller through child creation, exec and
+cancellation. Managed Native waits, reservations and exit delivery recheck
+that same controller after waker callbacks before consuming a status or
+transferring a stop capability.
+
+Safeptrace's generic sibling-pollable SDK interfaces retain their native
+`PIDFD_THREAD` requirement from Linux 6.9. Native memory operations retain the
+existing generic SDK contract; further owner-thread memory enforcement remains
+open in [the tracked limitation](https://github.com/rrnewton/reverie/issues/860).
+Optional LiteInst cleanup also requires native thread pidfds. If its outer exit
+adapter is abandoned after the original driver has claimed a stop, the cleanup
+owner retains that driver. Cleanup can refuse with `EALREADY`; it cannot reset
+the claim as unclaimed, and automatic recovery is not guaranteed.
 
 On the legacy ordinary path, Reverie's fatal-tree cleanup requests SIGSTOP
 through already captured regular group pidfds, relays actual signal-delivery
@@ -50,7 +60,7 @@ reports on the actual ptrace-owning OS thread. Retained target and host-owner
 directories authenticate that wait authority independently of signal
 permissions. Background hints never substitute for consumed stop or terminal
 reports, including when a host ptracer thread exits or reattaches.
-The local SDK wrappers are `!Send` and `!Sync`; the backend retains their
+The explicit local SDK wrappers are `!Send` and `!Sync`; the backend retains their
 original authority in Send, non-Future drivers and explicitly polls them on
 the owning ptracer thread. Guest trait and callback futures keep their existing
 Send contracts. A refused or cancelled adapter retains its driver in the
