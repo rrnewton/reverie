@@ -240,6 +240,48 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
     assert_fast_path_stats(&global, &stats);
 }
 
+/// Both launchers start the guest with address-space randomization disabled,
+/// as Reverie's ptrace and DBT launchers do, so its stack, heap and mapping
+/// addresses are the same in every run.
+#[tokio::test(flavor = "current_thread")]
+async fn in_guest_runs_disable_address_space_randomization() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (output, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("address-randomization"),
+            (),
+            preload.clone(),
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        output.stdout, b"address randomization=disabled\n",
+        "{output:?}"
+    );
+
+    let (output, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload_data::<CoordinatorOnlyTool>(
+            bootstrap_guest_command("address-randomization"),
+            (),
+            preload,
+            b"lifecycle".to_vec(),
+        ),
+    )
+    .await
+    .expect("bootstrap run hung")
+    .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        output.stdout, b"address randomization=disabled\n",
+        "{output:?}"
+    );
+}
+
 /// Asserts the statistics of one `fast-path` guest run.
 fn assert_fast_path_stats(
     global: &LifecycleGlobal,
