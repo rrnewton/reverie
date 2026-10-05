@@ -188,6 +188,79 @@ fn decode_native_syscall_entry(
     })
 }
 
+/// Kernel-reported architecture and instruction context of a syscall-info stop.
+///
+/// This is observation metadata, not a source, mutation, or resume capability.
+/// In particular, a native tracer can receive a different tracee audit ABI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SyscallStopContext {
+    /// Linux audit architecture reported by the kernel.
+    pub arch: u32,
+    /// Actual stopped instruction pointer, without a guessed instruction rewind.
+    pub instruction_pointer: u64,
+    /// Actual stopped stack pointer.
+    pub stack_pointer: u64,
+}
+
+/// A direction-bearing observation of an actual `PTRACE_GET_SYSCALL_INFO` reply.
+///
+/// An ENTRY is not a SECCOMP decision or a completed syscall. An EXIT does not
+/// prove which logical operation owns it, whether a restart is final, or that
+/// an injected context has been restored. Callers must retain those owners.
+/// Copying this metadata grants no control, source-read, or retirement rights.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyscallStopInfo {
+    /// This stop has no kernel syscall-entry, exit, or seccomp receipt.
+    None(SyscallStopContext),
+    /// Actual pre-effect syscall-entry tracing stop, not a Tool callback.
+    Entry(SyscallEntry),
+    /// Actual syscall-exit tracing stop with its unchanged signed kernel result.
+    Exit {
+        /// Architecture and instruction context from the same reply.
+        context: SyscallStopContext,
+        /// Raw result, preserving Linux restart pseudo-errors as well as errno.
+        result: i64,
+    },
+    /// Actual seccomp tracing stop, distinct from an administrative ENTRY.
+    Seccomp(SyscallEntry),
+}
+
+fn decode_native_syscall_stop(
+    info: &NativeSyscallEntryInfo,
+    size: usize,
+) -> Result<SyscallStopInfo, Errno> {
+    // The shared header ends at byte24. A NONE reply still needs that complete
+    // header; zero-initialized unread bytes must not become a false NONE stop.
+    if size < 24 {
+        return Err(Errno::EPROTO);
+    }
+    let context = SyscallStopContext {
+        arch: info.arch,
+        instruction_pointer: info.ip,
+        stack_pointer: info.sp,
+    };
+    match info.op {
+        0 => Ok(SyscallStopInfo::None(context)),
+        1 => decode_native_syscall_entry(info, size).map(SyscallStopInfo::Entry),
+        3 => decode_native_syscall_entry(info, size).map(SyscallStopInfo::Seccomp),
+        2 if size >= 33 => {
+            // Linux's integer-only union puts EXIT.rval at offset24 and its
+            // one-byte is_error at offset32. The entry-shaped buffer covers
+            // both. Read that byte in native memory order, not by a lossy cast
+            // of the entire first argument word (which assumes little endian).
+            const _: () = assert!(core::mem::offset_of!(NativeSyscallEntryInfo, number) == 24);
+            const _: () = assert!(core::mem::offset_of!(NativeSyscallEntryInfo, arguments) == 32);
+            let result = info.number as i64;
+            let is_error = info.arguments[0].to_ne_bytes()[0];
+            if is_error > 1 || (is_error != 0) != (-4095..=-1).contains(&result) {
+                return Err(Errno::EPROTO);
+            }
+            Ok(SyscallStopInfo::Exit { context, result })
+        }
+        _ => Err(Errno::EPROTO),
+    }
+}
+
 /// Immutable generation token carried through every typed tracee state.
 #[derive(Clone, Debug)]
 struct TraceeToken {
@@ -1385,6 +1458,17 @@ impl Stopped {
     pub fn syscall_entry(&self) -> Result<SyscallEntry, Error> {
         let (info, size) = self.read_syscall_entry_info()?;
         decode_native_syscall_entry(&info, size).map_err(Error::Errno)
+    }
+
+    /// Classify this held stop using the kernel's actual direction and ABI.
+    ///
+    /// Refuses unknown operations and incomplete reply prefixes. This keeps
+    /// NONE distinct from EXIT and does not infer entry/exit by alternating
+    /// on syscall-stop signals.
+    /// The returned metadata is not a consumed-stop or source authority.
+    pub fn syscall_stop_info(&self) -> Result<SyscallStopInfo, Error> {
+        let (info, size) = self.read_syscall_entry_info()?;
+        decode_native_syscall_stop(&info, size).map_err(Error::Errno)
     }
 
     /// Checks that this actual held stop has no ENTRY/EXIT/SECCOMP receipt.
@@ -3264,5 +3348,146 @@ mod syscall_entry_info_tests {
         let seccomp = decode_native_syscall_entry(&info, 84).unwrap();
         assert!(seccomp.seccomp);
         assert_eq!(seccomp.arguments, entry.arguments);
+    }
+}
+
+#[cfg(test)]
+mod syscall_stop_info_tests {
+    use super::*;
+
+    fn info(op: u8) -> NativeSyscallEntryInfo {
+        NativeSyscallEntryInfo {
+            op,
+            arch: 0xc000003e,
+            ip: 0x700000002,
+            sp: 0x7ffff000,
+            number: 1u64 << 40,
+            arguments: [7, 0x123456789, 1u64 << 48, 0x11, 0x22, u64::MAX],
+            ..Default::default()
+        }
+    }
+
+    fn context(info: &NativeSyscallEntryInfo) -> SyscallStopContext {
+        SyscallStopContext {
+            arch: info.arch,
+            instruction_pointer: info.ip,
+            stack_pointer: info.sp,
+        }
+    }
+
+    fn exit_info(result: i64, is_error: u8) -> NativeSyscallEntryInfo {
+        let mut info = info(2);
+        info.number = result as u64;
+        // Nonzero suffix bytes ensure the decoder uses exactly is_error's
+        // byte and does not require unreported/padding fields to be zero.
+        let mut bytes = [0xa5; 8];
+        bytes[0] = is_error;
+        info.arguments[0] = u64::from_ne_bytes(bytes);
+        info
+    }
+
+    #[test]
+    fn entry_is_not_seccomp_or_exit_and_keeps_all_operands() {
+        let info = info(1);
+        let expected = decode_native_syscall_entry(&info, 80).unwrap();
+        assert_eq!(
+            decode_native_syscall_stop(&info, 80),
+            Ok(SyscallStopInfo::Entry(expected))
+        );
+        assert!(!expected.seccomp);
+        assert_eq!(expected.arguments, info.arguments);
+        assert_eq!(expected.number, 1u64 << 40);
+        for size in 0..80 {
+            assert_eq!(decode_native_syscall_stop(&info, size), Err(Errno::EPROTO));
+        }
+    }
+
+    #[test]
+    fn seccomp_is_not_administrative_entry_and_requires_its_suffix() {
+        let info = info(3);
+        let expected = decode_native_syscall_entry(&info, 84).unwrap();
+        assert!(expected.seccomp);
+        assert_eq!(
+            decode_native_syscall_stop(&info, 84),
+            Ok(SyscallStopInfo::Seccomp(expected))
+        );
+        for size in 0..84 {
+            assert_eq!(decode_native_syscall_stop(&info, size), Err(Errno::EPROTO));
+        }
+    }
+
+    #[test]
+    fn exit_preserves_result_restart_and_context_without_becoming_none() {
+        for result in [0, 1, i64::MAX, -1, -512, -513, -514, -516, -4095, -4096] {
+            let info = exit_info(result, u8::from((-4095..=-1).contains(&result)));
+            assert_eq!(
+                decode_native_syscall_stop(&info, 33),
+                Ok(SyscallStopInfo::Exit {
+                    context: context(&info),
+                    result,
+                })
+            );
+            for size in 0..33 {
+                assert_eq!(decode_native_syscall_stop(&info, size), Err(Errno::EPROTO));
+            }
+        }
+    }
+
+    #[test]
+    fn exit_refuses_inconsistent_error_byte_without_normalizing_errno() {
+        for (result, is_error) in [(1, 1), (-512, 0), (-4095, 0), (-4096, 1), (0, 2)] {
+            assert_eq!(
+                decode_native_syscall_stop(&exit_info(result, is_error), 33),
+                Err(Errno::EPROTO)
+            );
+        }
+    }
+
+    #[test]
+    fn none_requires_actual_complete_header_not_zeroed_unread_storage() {
+        let info = info(0);
+        assert_eq!(
+            decode_native_syscall_stop(&info, 24),
+            Ok(SyscallStopInfo::None(context(&info)))
+        );
+        for size in 0..24 {
+            assert_eq!(decode_native_syscall_stop(&info, size), Err(Errno::EPROTO));
+        }
+    }
+
+    #[test]
+    fn unknown_discriminants_never_turn_into_a_completed_or_absent_syscall() {
+        for op in [4, 5, 127, 255] {
+            for size in [0, 24, 33, 80, 84, 88, 1024] {
+                assert_eq!(
+                    decode_native_syscall_stop(&info(op), size),
+                    Err(Errno::EPROTO)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn actual_audit_abi_is_preserved_instead_of_inferred_from_low_number() {
+        for arch in [0xc000003e, 0x40000003, 0xc00000b7, 0xffffffff] {
+            let mut entry = info(1);
+            entry.arch = arch;
+            entry.number = 1;
+            let SyscallStopInfo::Entry(observed) = decode_native_syscall_stop(&entry, 80).unwrap()
+            else {
+                panic!("actual ENTRY direction lost");
+            };
+            assert_eq!(observed.arch, arch);
+            assert_eq!(observed.number, 1);
+            let mut exit = exit_info(1, 0);
+            exit.arch = arch;
+            assert_eq!(
+                decode_native_syscall_stop(&exit, 33),
+                Ok(SyscallStopInfo::Exit {
+                    context: context(&exit),
+                    result: 1,
+                })
+            );
+        }
     }
 }
