@@ -65,6 +65,11 @@ thread. A foreign-thread refusal retains the original state and wait
 authority. Keep that same driver and return it to its owner; an adapter must
 not drop it on error or rebuild a state from the numeric PID.
 
+Local cleanup construction from an owned state retains that state's original
+host anchor and role witness. It does not capture a replacement owner or
+upgrade a constructor-only role. Shared handles without such an anchor keep
+their cold binding behavior; named operations authenticate before progress.
+
 A successful explicit attach or seize can still carry a notifier-capture
 error. The returned state retains that refusal, available through its cleanup
 handle, and local waits do not retry capture against a possibly reused PID.
