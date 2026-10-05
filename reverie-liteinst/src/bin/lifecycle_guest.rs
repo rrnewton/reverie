@@ -191,6 +191,12 @@ impl Tool for LifecycleTool {
             let outcome = timer_outcome(guest.set_timer_precise(TimerSchedule::Rcbs(1)));
             SET_TIMER_PRECISE_OUTCOME.store(outcome, Ordering::Relaxed);
         }
+        let output = TOOL_OUTPUT.load(Ordering::Relaxed);
+        if syscall.number() == Sysno::getppid && output >= 0 {
+            // Tool code writes to its reserved descriptor through its own syscall.
+            let written = unsafe { libc::write(output, b"tool\n".as_ptr().cast(), 5) };
+            assert_eq!(written, 5, "{}", std::io::Error::last_os_error());
+        }
         if syscall.number() == Sysno::read {
             if READ_CALLS.fetch_add(1, Ordering::Relaxed) < 2 {
                 return Err(restart_same_entry());
@@ -570,6 +576,56 @@ fn hooked_fork_stats() {
     println!("hooked fork stats: child=finished");
 }
 
+/// The fixture Tool's reserved output descriptor, in mode `tool-output-fd`.
+static TOOL_OUTPUT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// Opens `path` and reserves it as the Tool's output descriptor, before the Tool
+/// is installed, as a Tool's constructor would.
+fn reserve_tool_output_fd(path: &std::ffi::OsStr) -> libc::c_int {
+    use std::os::fd::IntoRawFd;
+    let file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .unwrap();
+    let original = file.into_raw_fd();
+    // SAFETY: main runs before any application thread, and before install_tool.
+    let reserved = unsafe { reverie_liteinst::reserve_tool_output_fd(original) }.unwrap();
+    assert!(reserved >= 1024, "reserved {reserved}");
+    TOOL_OUTPUT.store(reserved, Ordering::Relaxed);
+    // The original number is closed, so the guest's descriptors are unchanged.
+    assert_eq!(unsafe { libc::fcntl(original, libc::F_GETFD) }, -1);
+    reserved
+}
+
+/// The guest tries to close, replace, write and query the Tool's reserved output
+/// descriptor, and to close it with `close_range`; every attempt fails or is a
+/// no-op, and afterwards the descriptor still names the same open file, to
+/// which the Tool can still write (its `getppid` callback writes `tool`).
+fn tool_output_fd(reserved: libc::c_int) {
+    let link = || std::fs::read_link(format!("/proc/self/fd/{reserved}")).unwrap();
+    let before = link();
+    let errno = || std::io::Error::last_os_error().raw_os_error();
+    unsafe {
+        assert_eq!(libc::close(reserved), 0);
+        assert_eq!(libc::dup2(libc::STDOUT_FILENO, reserved), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::dup3(libc::STDOUT_FILENO, reserved, 0), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::write(reserved, b"guest".as_ptr().cast(), 5), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(libc::fcntl(reserved, libc::F_GETFD), -1);
+        assert_eq!(errno(), Some(libc::EBADF));
+        assert_eq!(
+            libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32),
+            0
+        );
+    }
+    assert_eq!(link(), before);
+    unsafe { libc::getppid() };
+    println!("tool output fd: protected");
+}
+
 /// Reports whether the kernel randomizes this process's address space.
 fn address_randomization() {
     let personality = unsafe { libc::personality(0xffff_ffff) };
@@ -587,6 +643,12 @@ fn main() {
     let mode = arguments.next().expect("missing lifecycle fixture mode");
     if mode == "fallback-fork-stats" {
         fallback_fork_stats();
+        return;
+    }
+    if mode == "tool-output-fd" {
+        let reserved = reserve_tool_output_fd(&arguments.next().expect("missing output path"));
+        install_tool();
+        tool_output_fd(reserved);
         return;
     }
     install_tool();

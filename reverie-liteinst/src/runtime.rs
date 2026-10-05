@@ -145,6 +145,8 @@ const INSTRUCTION_RDTSC: u8 = 2;
 static TOOL_MODE: AtomicU8 = AtomicU8::new(0);
 static EVENT_FD: AtomicI32 = AtomicI32::new(libc::STDERR_FILENO);
 static COORDINATOR_FD: AtomicI32 = AtomicI32::new(-1);
+/// An output descriptor the in-guest Tool owns; see [`reserve_tool_output_fd`].
+static TOOL_OUTPUT_FD: AtomicI32 = AtomicI32::new(-1);
 static EVENT_COOKIE: AtomicU64 = AtomicU64::new(0);
 static EVENT_DEVICE: AtomicU64 = AtomicU64::new(0);
 static EVENT_INODE: AtomicU64 = AtomicU64::new(0);
@@ -390,6 +392,38 @@ pub(crate) fn reserve_coordinator_fd(fd: libc::c_int) -> io::Result<()> {
                 "coordinator FD reserved twice",
             )
         })
+}
+
+/// Moves `fd`, an output descriptor the in-guest Tool owns (for example a file
+/// its log records go to), to a reserved number at or above 1024, closes `fd`,
+/// and returns the reserved number. From then on the runtime keeps the guest
+/// away from it exactly as it does from the coordinator connection: a guest
+/// `close` of it reports success and does nothing, a `close_range` over it
+/// spares it, and a guest `read`, `write`, `dup2` onto it or other descriptor
+/// operation on it fails with `EBADF`. Tool code writes to it through its own
+/// syscalls, which the runtime does not dispatch to the guest's protections.
+/// A forked child inherits the descriptor and its protection.
+///
+/// # Safety
+///
+/// Call at most once per process, before [`crate::install_tool`], while the
+/// process is still single-threaded.
+pub unsafe fn reserve_tool_output_fd(fd: libc::c_int) -> io::Result<libc::c_int> {
+    let reserved = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 1024 as libc::c_int) };
+    if reserved < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if let Err(actual) =
+        TOOL_OUTPUT_FD.compare_exchange(-1, reserved, Ordering::AcqRel, Ordering::Acquire)
+    {
+        unsafe { libc::close(reserved) };
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("a Tool output descriptor is already reserved ({actual})"),
+        ));
+    }
+    unsafe { libc::close(fd) };
+    Ok(reserved)
 }
 
 /// Rebinds the protected coordinator descriptor after a fork child reconnects.
@@ -2453,7 +2487,9 @@ fn forward_nested_tool_syscall(event: &mut SyscallEvent) {
         event.result = -i64::from(libc::ENOTSUP);
     } else if unsupported_signal_state {
         event.result = -i64::from(libc::EPERM);
-    } else if !(protect_runtime_control(event) || unsafe { protect_coordinator_channel(event) }) {
+    } else if !(protect_runtime_control(event)
+        || unsafe { protect_runtime_descriptors(event, false) })
+    {
         event.result = unsafe { event.forward() };
         observe_mapping_generation(event);
     }
@@ -3400,7 +3436,7 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
     if tool_mode == TOOL_REVERIE && protect_runtime_control(event) {
         return;
     }
-    if tool_mode == TOOL_REVERIE && unsafe { protect_coordinator_channel(event) } {
+    if tool_mode == TOOL_REVERIE && unsafe { protect_runtime_descriptors(event, true) } {
         return;
     }
     if TOOL_MODE.load(Ordering::Relaxed) == TOOL_REVERIE {
@@ -3537,17 +3573,42 @@ fn clone_is_fork_like(flags: u64, child_stack: u64) -> bool {
         && flags & !(SIGNAL_MASK | allowed_flags) == 0
 }
 
-unsafe fn protect_coordinator_channel(event: &mut SyscallEvent) -> bool {
-    let fd = COORDINATOR_FD.load(Ordering::Acquire);
-    if fd < 0 {
+/// Keeps the guest away from the descriptors the runtime owns in Tool mode:
+/// the coordinator connection and, for a guest syscall, the Tool's reserved
+/// output descriptor. A syscall the Tool itself makes (`guest_syscall` false)
+/// may use the output descriptor, which is the Tool's.
+unsafe fn protect_runtime_descriptors(event: &mut SyscallEvent, guest_syscall: bool) -> bool {
+    let mut protected = [u64::MAX; 2];
+    let mut count = 0;
+    let slots: &[&AtomicI32] = if guest_syscall {
+        &[&COORDINATOR_FD, &TOOL_OUTPUT_FD]
+    } else {
+        &[&COORDINATOR_FD]
+    };
+    for slot in slots {
+        let fd = slot.load(Ordering::Acquire);
+        if fd >= 0 {
+            protected[count] = fd as u64;
+            count += 1;
+        }
+    }
+    let protected = &mut protected[..count];
+    protected.sort_unstable();
+    if protected.is_empty() {
         return false;
     }
-    let fd = fd as u64;
-    if event.number == libc::SYS_close && event.args[0] == fd {
+    if event.number == libc::SYS_close && protected.contains(&event.args[0]) {
         event.result = 0;
-    } else if event.number == libc::SYS_close_range && event.args[0] <= fd && fd <= event.args[1] {
-        event.result = unsafe { close_range_preserving_event_fd(event, fd) };
-    } else if syscall_targets_event_fd(event, fd) {
+    } else if event.number == libc::SYS_close_range
+        && protected
+            .iter()
+            .any(|&fd| event.args[0] <= fd && fd <= event.args[1])
+    {
+        event.result = unsafe { close_range_preserving_fds(event, protected) };
+    } else if protected
+        .iter()
+        .any(|&fd| syscall_targets_event_fd(event, fd))
+    {
         event.result = -i64::from(libc::EBADF);
     } else {
         return false;
@@ -3580,6 +3641,11 @@ unsafe fn protect_compatibility_event_channel(event: &mut SyscallEvent) -> bool 
 }
 
 unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -> i64 {
+    unsafe { close_range_preserving_fds(event, &[event_fd]) }
+}
+
+/// Runs a guest `close_range` without closing any of `preserved`, which is sorted.
+unsafe fn close_range_preserving_fds(event: &SyscallEvent, preserved: &[u64]) -> i64 {
     const CLOSE_RANGE_UNSHARE: u64 = 1 << 1;
     const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
 
@@ -3598,16 +3664,26 @@ unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -
         flags &= !CLOSE_RANGE_UNSHARE;
     }
 
-    if first < event_fd {
-        let result =
-            unsafe { raw_syscall6(libc::SYS_close_range, [first, event_fd - 1, flags, 0, 0, 0]) };
-        if result < 0 {
-            return result;
+    // Close each gap of [first, last] between the preserved descriptors.
+    let mut start = first;
+    for &fd in preserved {
+        if fd < start || fd > last {
+            continue;
+        }
+        if start < fd {
+            let result =
+                unsafe { raw_syscall6(libc::SYS_close_range, [start, fd - 1, flags, 0, 0, 0]) };
+            if result < 0 {
+                return result;
+            }
+        }
+        start = fd + 1;
+        if start == 0 {
+            return 0;
         }
     }
-    if event_fd < last {
-        let result =
-            unsafe { raw_syscall6(libc::SYS_close_range, [event_fd + 1, last, flags, 0, 0, 0]) };
+    if start <= last {
+        let result = unsafe { raw_syscall6(libc::SYS_close_range, [start, last, flags, 0, 0, 0]) };
         if result < 0 {
             return result;
         }
