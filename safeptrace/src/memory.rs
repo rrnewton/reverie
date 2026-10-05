@@ -91,17 +91,19 @@ impl MemoryAccess for Stopped {
         // distinct from a native successful zero-byte result. Remote addresses
         // remain numeric kernel operands; no Rust reference into this process
         // is formed for another process's mapping.
-        Errno::result(unsafe {
-            libc::process_vm_writev(
-                self.0.as_raw(),
-                local.as_ptr() as *const libc::iovec,
-                local.len() as libc::c_ulong,
-                raw_remote.as_ptr(),
-                remote.len() as libc::c_ulong,
-                0,
-            )
+        self.1.on_held_tid(|| {
+            Errno::result(unsafe {
+                libc::process_vm_writev(
+                    self.0.as_raw(),
+                    local.as_ptr() as *const libc::iovec,
+                    local.len() as libc::c_ulong,
+                    raw_remote.as_ptr(),
+                    remote.len() as libc::c_ulong,
+                    0,
+                )
+            })
+            .map(|count| count as usize)
         })
-        .map(|count| count as usize)
     }
 
     /// Does a vectored read from the remote address space. Returns the number of

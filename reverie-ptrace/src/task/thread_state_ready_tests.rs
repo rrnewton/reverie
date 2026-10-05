@@ -177,8 +177,8 @@ fn native_failed_exec_keeps_original_ready_association() {
 #[test]
 fn ready_callback_failure_returns_eproto_without_dispatch() {
     // Helper-level check only: no native guest or resume is involved. The
-    // native tests above cover the fatal fence and the resume ordering at the
-    // call sites.
+    // native tests above cover successful ready-state association and resume
+    // ordering; they do not exercise a failing callback's fatal fence.
     let log = Log::default();
     let state = Arc::new(AtomicUsize::new(99));
     assert_eq!(

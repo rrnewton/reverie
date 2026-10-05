@@ -4030,12 +4030,37 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
     event.mark_worker_done();
 }
 
+fn check_sync_wait_authority(handle: &EventHandle, token: &TraceeToken) -> Result<(), Errno> {
+    token.policy.check_handle(handle)?;
+    if token.policy == WaitPolicy::PtracerThread {
+        // The explicit synchronous driver establishes and retains these on
+        // the original token before entering this path. A terminal join must
+        // not bind a new owner or mint a wait role from a cached publication.
+        let owner = token.ptracer_owner.clone().ok_or(Errno::EPERM)?;
+        if !token.ptracer_wait_role {
+            return Err(Errno::EPERM);
+        }
+        let mut affinity = PtracerAffinity {
+            owner: Some(owner),
+            wait_role: true,
+        };
+        affinity.check_host(handle)?;
+        if !handle.event().is_terminal() && !*handle.event().terminal_reaping.read() {
+            affinity.check_attachment(handle)?;
+        }
+    }
+    Ok(())
+}
+
 fn try_replay_sync_terminal(
     pid: Pid,
     handle: &EventHandle,
     token: &TraceeToken,
 ) -> Option<Result<Wait, Error>> {
     let handle = handle.resolved_handle();
+    if let Err(error) = check_sync_wait_authority(&handle, token) {
+        return Some(Err(error.into()));
+    }
     let event = handle.event();
     let reservation = event.try_terminal_reservation_sync()?;
     Some(match reservation {
@@ -4057,7 +4082,8 @@ fn try_wait_retained_notifier_terminal(
     handle: &EventHandle,
     token: &TraceeToken,
 ) -> Option<Result<Wait, Error>> {
-    if let Err(error) = token.policy.check_handle(handle) {
+    let handle = handle.resolved_handle();
+    if let Err(error) = check_sync_wait_authority(&handle, token) {
         return Some(Err(error.into()));
     }
     let identity = handle.identity()?;
@@ -4083,7 +4109,7 @@ fn try_wait_retained_notifier_terminal(
         Ok(SyncWaitOwnership::Claimed(_)) => return None,
         Err(error) => return Some(Err(error.into())),
     }
-    wait_retained_notifier_terminal_status(pid, handle, token)
+    wait_retained_notifier_terminal_status(pid, &handle, token)
 }
 
 /// The caller has selected this original Event's committed notifier through
@@ -4093,7 +4119,7 @@ fn wait_retained_notifier_terminal_status(
     handle: &EventHandle,
     token: &TraceeToken,
 ) -> Option<Result<Wait, Error>> {
-    if let Err(error) = token.policy.check_handle(handle) {
+    if let Err(error) = check_sync_wait_authority(handle, token) {
         return Some(Err(error.into()));
     }
     let event = handle.event();
@@ -4131,7 +4157,7 @@ fn reconcile_failed_sync_capture(
 ) -> Result<Wait, Error> {
     loop {
         let handle = requested.resolved_handle();
-        token.policy.check_handle(&handle)?;
+        check_sync_wait_authority(&handle, token)?;
         let event = Arc::clone(handle.event());
         let ownership = event.claim_sync_wait()?;
         if !Arc::ptr_eq(handle.event(), &event) {
@@ -4148,8 +4174,10 @@ fn reconcile_failed_sync_capture(
             return Err(capture_error.into());
         }
         return match ownership {
-            SyncWaitOwnership::Notifier => wait_retained_notifier_terminal_status(pid, &handle, token)
-                .unwrap_or_else(|| Err(capture_error.into())),
+            SyncWaitOwnership::Notifier => {
+                wait_retained_notifier_terminal_status(pid, &handle, token)
+                    .unwrap_or_else(|| Err(capture_error.into()))
+            }
             SyncWaitOwnership::Claimed(_owner) => {
                 // Rollback/no owner supplies no wait authority. A terminal
                 // publication during arbitration can still be replayed; in

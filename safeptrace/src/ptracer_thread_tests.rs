@@ -244,6 +244,133 @@ fn explicit_ptracer_mode_cannot_recapture_an_unbound_generic_token() {
     assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
 }
 
+#[tokio::test(flavor = "current_thread")]
+#[cfg(all(feature = "memory", not(sanitized)))]
+async fn explicit_native_user_write_enforces_original_ptracer_owner() {
+    use reverie_memory::{Addr, AddrMut, MemoryAccess, RemoteIoVec};
+    use std::io::IoSlice;
+
+    if run_legacy_test_outer("explicit_native_user_write_enforces_original_ptracer_owner") {
+        return;
+    }
+    for forced in [false, true] {
+        // The child inherits this private mapping before creating its member.
+        // Its remote bytes and the parent's unchanged bytes are independent.
+        let canary = vec![0x5au8; 32];
+        let address = canary.as_ptr() as usize;
+        std::hint::black_box(&canary);
+        let (root, tid, release, mut root_cleanup) = legacy_owner_guest();
+        let _force = forced.then(|| LegacyThreadGroup::new(root));
+        let running =
+            Running::seize_on_ptracer_thread(tid.into(), legacy_thread_options()).unwrap();
+        let terminal = running.terminal_cleanup();
+        running.interrupt().unwrap();
+        let (mut stopped, event) = running
+            .wait_sync_on_ptracer_thread()
+            .wait()
+            .unwrap()
+            .assume_stopped();
+        assert_eq!(event, crate::Event::Stop);
+        let generation = stopped.generation();
+        let native = terminal.has_thread_pidfd().unwrap();
+        if forced {
+            assert!(!native);
+            assert!(matches!(
+                stopped.1.event().identity().unwrap().pidfd,
+                ThreadHandle::Procfs { .. }
+            ));
+        }
+        let remote = [RemoteIoVec::new(AddrMut::from_raw(address + 12).unwrap(), 8).unwrap()];
+        let mut expected = [0x5au8; 32];
+        let mut observed = [0u8; 32];
+        stopped
+            .read_exact(Addr::from_raw(address).unwrap(), &mut observed)
+            .unwrap();
+        assert_eq!(observed, expected);
+        let first = [0x33u8; 8];
+        assert_eq!(
+            stopped.write_native_user_vectored(tid.as_raw(), &[IoSlice::new(&first)], &remote),
+            Ok(8)
+        );
+        expected[12..20].copy_from_slice(&first);
+        stopped
+            .read_exact(Addr::from_raw(address).unwrap(), &mut observed)
+            .unwrap();
+        assert_eq!(observed, expected);
+        assert_eq!(canary, [0x5a; 32]);
+
+        stopped = thread::spawn(move || {
+            let forbidden = [0x77u8; 8];
+            assert_eq!(
+                stopped.write_native_user_vectored(
+                    tid.as_raw(),
+                    &[IoSlice::new(&forbidden)],
+                    &remote,
+                ),
+                Err(Errno::EPERM)
+            );
+            stopped
+        })
+        .join()
+        .unwrap();
+        assert_eq!(stopped.generation(), generation);
+        stopped
+            .read_exact(Addr::from_raw(address).unwrap(), &mut observed)
+            .unwrap();
+        assert_eq!(
+            observed, expected,
+            "foreign native write changed the target"
+        );
+        assert_eq!(canary, [0x5a; 32]);
+
+        let second = [0x44u8; 8];
+        let remote = [RemoteIoVec::new(AddrMut::from_raw(address + 12).unwrap(), 8).unwrap()];
+        assert_eq!(
+            stopped.write_native_user_vectored(tid.as_raw(), &[IoSlice::new(&second)], &remote),
+            Ok(8)
+        );
+        expected[12..20].copy_from_slice(&second);
+        stopped
+            .read_exact(Addr::from_raw(address).unwrap(), &mut observed)
+            .unwrap();
+        assert_eq!(observed, expected);
+        assert_eq!(canary, [0x5a; 32]);
+
+        let exit = stopped.exit_event_on_ptracer_thread();
+        let running = stopped.resume(None).unwrap();
+        assert_eq!(
+            unsafe { libc::write(release.as_raw_fd(), b"x".as_ptr().cast(), 1) },
+            1
+        );
+        let stopped = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, exit)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stopped.getevent().unwrap(), 23 << 8);
+        drop(running);
+        assert!(matches!(
+            tokio::time::timeout(
+                TRACEE_WAIT_TIMEOUT,
+                stopped.resume(None).unwrap().wait_owned_on_ptracer_thread(),
+            )
+            .await
+            .unwrap()
+            .unwrap(),
+            Wait::Exited(pid, crate::ExitStatus::Exited(23)) if pid == tid.into()
+        ));
+        assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
+        assert_eq!(
+            terminal.observed_exit_status(),
+            Ok(Some(crate::ExitStatus::Exited(23)))
+        );
+        legacy_owner_reap_root(root, &mut root_cleanup);
+        assert!(!std::path::Path::new(&format!("/proc/{tid}")).exists());
+        println!(
+            "NATIVE_USER_WRITE_OWNER forced={forced} native={native} foreign=EPERM canaries_preserved=true owner_recovered=true exit=23 done=true"
+        );
+    }
+}
+
 #[test]
 fn explicit_ptracer_interfaces_preserve_portable_auto_trait_contracts() {
     fn send<T: Send>() {}

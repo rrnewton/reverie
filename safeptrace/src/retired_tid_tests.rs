@@ -261,6 +261,38 @@ mod retired_tid {
         let siginfo = fresh.getsiginfo().unwrap();
         let registers = fresh.getregs().unwrap();
         let old = generation.assume_stopped();
+        #[cfg(feature = "memory")]
+        {
+            use reverie_memory::{Addr, AddrMut, MemoryAccess, RemoteIoVec};
+            use std::io::IoSlice;
+
+            // The replacement is parked on its genuine writable clone stack.
+            // The stale token still names the same numeric TID, with its old
+            // gate open: only the retained generation guard can refuse this
+            // permission-respecting native write before touching these bytes.
+            let address = (registers.rsp as usize).checked_sub(16).unwrap();
+            let mut before = [0u8; 8];
+            fresh
+                .read_exact(Addr::from_raw(address).unwrap(), &mut before)
+                .unwrap();
+            let changed = before.map(|byte| byte ^ 0xff);
+            let remote = [RemoteIoVec::new(AddrMut::from_raw(address).unwrap(), 8).unwrap()];
+            let mut stale_memory = generation.assume_stopped();
+            assert_eq!(
+                stale_memory.write_native_user_vectored(
+                    former.as_raw(),
+                    &[IoSlice::new(&changed)],
+                    &remote,
+                ),
+                Err(Errno::ESRCH)
+            );
+            assert_eq!(stale_memory.generation(), generation);
+            let mut after = [0u8; 8];
+            fresh
+                .read_exact(Addr::from_raw(address).unwrap(), &mut after)
+                .unwrap();
+            assert_eq!(after, before, "stale native write changed the replacement");
+        }
         for _ in 0..2 {
             assert!(matches!(old.getsiginfo(), Err(Error::Died(_))));
             assert!(matches!(old.getregs(), Err(Error::Died(_))));
