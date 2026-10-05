@@ -36,6 +36,7 @@ pub(super) fn select_optval_rewrite(
 /// `retained` is the Tool's latched `retain_original_syscall_entries` opt-in.
 /// Without it no entry was captured and every request takes the ordinary
 /// injection route, exactly as before this contract existed.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn route_optval_rewrite<T>(
     retained: bool,
     origin: InjectionOrigin,
