@@ -198,6 +198,16 @@ impl Tool for Refusal {
                     }
                 }
             }
+            (
+                Case::TerminationRefusal,
+                InjectedSyscallEvent::ChildSyscallReturned { child, raw },
+            ) => {
+                // The contract orders this after child publication only, not
+                // after child Tool startup, so the parent's actual fork return
+                // may precede the forced failure. Its result is the child; the
+                // creator then stays parked in handle_syscall_event.
+                assert_eq!(raw, i64::from(child.as_raw()));
+            }
             (case, event) => {
                 panic!("unexpected native result before the forced {case:?} failure: {event:?}")
             }
