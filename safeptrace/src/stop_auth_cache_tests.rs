@@ -204,3 +204,85 @@ fn retained_descriptor_proofs_authenticate_the_real_owner_and_target() {
     }
     emit_completion_marker("ACTUAL_RETAINED_DESCRIPTOR_AUTHENTICATION_EXERCISED");
 }
+
+#[cfg(not(sanitized))]
+#[test]
+fn owned_cleanup_preserves_original_anchor_without_discarded_capture() {
+    const NAME: &str = "owned_cleanup_preserves_original_anchor_without_discarded_capture";
+    if run_legacy_test_outer_with_outcome(
+        NAME,
+        Some("ACTUAL_OWNED_CLEANUP_CAPTURE_REUSE_EXERCISED"),
+    ) {
+        return;
+    }
+    for forced in [false, true] {
+        let root = match unsafe { fork() }.unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                crate::traceme_and_stop().unwrap();
+                unsafe {
+                    libc::_exit(23);
+                }
+            }
+        };
+        let mut cleanup = TraceeCleanupGuard::new(root).unwrap();
+        let _force = forced.then(|| LegacyThreadGroup::new(root));
+        let status = waitpid_status_bounded(root, libc::__WALL, TRACEE_WAIT_TIMEOUT).unwrap();
+        assert!(libc::WIFSTOPPED(status));
+        assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
+        let stopped = Stopped::new_unchecked_on_ptracer_thread(root.into()).unwrap();
+        let original = stopped.1.event().clone();
+        let owner = stopped.1.ptracer_owner.as_ref().unwrap();
+        let captures = PTRACER_OWNER_CAPTURES.with(Cell::get);
+        for _ in 0..128 {
+            let local = stopped.terminal_cleanup_on_ptracer_thread();
+            assert!(Arc::ptr_eq(
+                local.driver.affinity.owner.as_ref().unwrap(),
+                owner
+            ));
+            assert_eq!(local.driver.affinity.wait_role, stopped.1.ptracer_wait_role);
+            assert!(
+                local
+                    .shared()
+                    .same_generation(&TerminalCleanup::new_unregistered(root.into(), &stopped.1))
+            );
+        }
+        assert_eq!(PTRACER_OWNER_CAPTURES.with(Cell::get), captures);
+
+        // Dropping a role witness never changes its host anchor. A passive
+        // cleanup constructor must retain false, leaving first-operation
+        // role authentication to the original operation path.
+        let mut constructor_only = stopped.1.clone();
+        constructor_only.ptracer_wait_role = false;
+        let conservative = PtracerTerminalCleanup::new(root.into(), &constructor_only);
+        assert!(!conservative.driver.affinity.wait_role);
+        assert!(Arc::ptr_eq(
+            conservative.driver.affinity.owner.as_ref().unwrap(),
+            owner
+        ));
+        assert_eq!(PTRACER_OWNER_CAPTURES.with(Cell::get), captures);
+
+        // A shared-only facade genuinely has no host anchor. Keep the cold
+        // binding behavior instead of extending the owned-state fast path.
+        let shared = TerminalCleanup::new_unregistered(root.into(), &stopped.1);
+        let cold = shared.on_ptracer_thread();
+        assert!(cold.driver.affinity.owner.is_some());
+        assert!(cold.driver.affinity.wait_role);
+        assert_eq!(PTRACER_OWNER_CAPTURES.with(Cell::get), captures + 1);
+        assert_eq!(
+            original.event().worker_state.load(Ordering::Acquire),
+            WORKER_NOT_STARTED
+        );
+        assert!(!*original.event().terminal_reaping.read());
+        let registers = stopped.getregs().unwrap();
+        assert_eq!(stopped.getregs().unwrap(), registers);
+        assert_eq!(stopped.getsiginfo().unwrap().si_signo, libc::SIGSTOP);
+        let _detached = stopped.detach(Signal::SIGKILL).unwrap();
+        let terminal = waitpid_status_bounded(root, libc::__WALL, TRACEE_WAIT_TIMEOUT).unwrap();
+        assert!(libc::WIFSIGNALED(terminal));
+        assert_eq!(libc::WTERMSIG(terminal), libc::SIGKILL);
+        cleanup.disarm();
+        assert!(!std::path::Path::new(&format!("/proc/{root}")).exists());
+    }
+    emit_completion_marker("ACTUAL_OWNED_CLEANUP_CAPTURE_REUSE_EXERCISED");
+}

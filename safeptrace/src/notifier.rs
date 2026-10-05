@@ -815,6 +815,7 @@ type AttachmentCaptureHook = Box<dyn FnOnce(Pid, &AttachmentAnchor)>;
 #[cfg(test)]
 thread_local! {
     static ATTACHMENT_CAPTURE_HOOK: std::cell::RefCell<Option<AttachmentCaptureHook>> = const { std::cell::RefCell::new(None) };
+    static PTRACER_OWNER_CAPTURES: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -862,6 +863,8 @@ impl LegacyWaitOwner {
     }
 
     fn capture_at(root: AlignedProcfs) -> Result<Self, Errno> {
+        #[cfg(test)]
+        PTRACER_OWNER_CAPTURES.with(|captures| captures.set(captures.get() + 1));
         let tid = Pid::from(nix::unistd::gettid());
         let lifetime = root.open_current_thread()?;
         let current = retained_proc_status(lifetime.as_raw_fd())?;
@@ -7182,12 +7185,25 @@ impl PtracerTerminalCleanup {
         // kernel wait owner. Startup may still have an unregistered cleanup
         // guard to install; registration begins only when this facade requests
         // progress, a wait, or a reservation.
-        let mut cleanup = Self::from_shared(TerminalCleanup::new_unregistered(pid, token));
         if let Some(owner) = &token.ptracer_owner {
-            cleanup.driver.affinity.owner = Some(Arc::clone(owner));
-            cleanup.driver.affinity.wait_role = token.ptracer_wait_role;
+            // The token already carries this original host generation. Do
+            // not cold-capture a different owner only to discard it, and do
+            // not upgrade a constructor-only role before its first operation.
+            Self {
+                driver: PtracerCleanupDriver {
+                    shared: TerminalCleanup::new_unregistered(pid, token),
+                    affinity: PtracerAffinity {
+                        owner: Some(Arc::clone(owner)),
+                        wait_role: token.ptracer_wait_role,
+                    },
+                },
+                local: PhantomData,
+            }
+        } else {
+            // Shared/generic input has no original host anchor to carry.
+            // Preserve its existing cold binding and refusal behavior.
+            Self::from_shared(TerminalCleanup::new_unregistered(pid, token))
         }
-        cleanup
     }
 
     fn from_shared(shared: TerminalCleanup) -> Self {
