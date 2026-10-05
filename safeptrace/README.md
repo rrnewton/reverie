@@ -115,6 +115,17 @@ its waits return `EPERM` until an actual attachment establishes that role.
 An established role stays with that same task generation through its final
 published result, including after its proc directory disappears.
 
+For a held ptrace stop, named operations can authenticate the current
+attachment with a read-only `PTRACE_GETEVENTMSG` scratch query followed by a
+positive lifetime query through the original target descriptor. The scratch
+message is discarded. This proof is fresh on every operation and changes no
+role or queued status. Every nonpositive result takes the existing fresh
+retained-directory attachment check, including while the target is running.
+Status-read permission checks run on that fallback; a positive kernel proof
+does not repeat a procfs open. An existing host anchor and established role
+also need no discarded constructor check: the first operation authenticates
+them normally. Constructor-only and unbound roles keep their original binding.
+
 Ptrace requests still address numeric TIDs. The explicit interface checks the
 retained target before issuing a request and rejects an already retired target.
 A running nonleader can exec, release its TID, and be replaced by another tracee

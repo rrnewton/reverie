@@ -816,6 +816,8 @@ type AttachmentCaptureHook = Box<dyn FnOnce(Pid, &AttachmentAnchor)>;
 thread_local! {
     static ATTACHMENT_CAPTURE_HOOK: std::cell::RefCell<Option<AttachmentCaptureHook>> = const { std::cell::RefCell::new(None) };
     static PTRACER_OWNER_CAPTURES: Cell<usize> = const { Cell::new(0) };
+    static PTRACER_HOST_PROOFS: Cell<usize> = const { Cell::new(0) };
+    static PTRACER_ATTACHMENT_STATUS_READS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -6787,11 +6789,18 @@ impl PtracerAffinity {
         let mut affinity = Self { owner, wait_role };
         // Construction on a foreign thread retains the original state. Its
         // first owning-thread poll can authenticate without numeric capture.
-        let _ = affinity.check_host(handle);
+        // With an existing owner and role, the discarded proof cannot change
+        // any field. Defer only that case to the first named operation; None
+        // and constructor-only roles retain their existing binding behavior.
+        if affinity.owner.is_none() || !affinity.wait_role {
+            let _ = affinity.check_host(handle);
+        }
         affinity
     }
 
     fn check_host(&mut self, handle: &EventHandle) -> Result<(), Errno> {
+        #[cfg(test)]
+        PTRACER_HOST_PROOFS.with(|proofs| proofs.set(proofs.get() + 1));
         WaitPolicy::PtracerThread.check_handle(handle)?;
         if self.owner.is_none() {
             self.owner = Some(handle.capture_current_owner()?);
@@ -6816,6 +6825,22 @@ impl PtracerAffinity {
     fn check_attachment(&self, handle: &EventHandle) -> Result<(), Errno> {
         let identity = handle.identity().ok_or(Errno::ENODATA)?;
         let owner = self.owner.as_ref().ok_or(Errno::EPERM)?;
+        // GETEVENTMSG is a nondestructive scratch read. Its success requires
+        // the kernel's current ptracer to be this executing task and a held
+        // ptrace stop. Check the original descriptor AFTER that numeric read:
+        // a read from a replacement TID must never prove our attachment.
+        // Hold the same Event gate against its registered reaper/adoption.
+        // This is a fresh proof, not cached ownership or a stop acknowledgment.
+        if let Some(_held) = handle.hold_tid()
+            && nix::sys::ptrace::getevent(identity.pid.into()).is_ok()
+            && identity.pidfd_is_live() == Ok(true)
+        {
+            return Ok(());
+        }
+        // Running, retired, denied and unsupported queries preserve the old
+        // retained-directory read and its typed error/owner selection.
+        #[cfg(test)]
+        PTRACER_ATTACHMENT_STATUS_READS.with(|reads| reads.set(reads.get() + 1));
         let tracer = match identity.current_tracer_pid() {
             Ok(tracer) => tracer,
             // de_thread may retire the original proc inode before the sole
