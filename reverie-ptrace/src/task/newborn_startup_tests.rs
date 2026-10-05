@@ -355,16 +355,32 @@ pub(super) async fn deliver_initial(
         let state = log.lock().unwrap();
         assert!(cleanup.same_generation(state.target_cleanup.as_ref().unwrap()));
     }
-    kill_to_exit(&cleanup);
-    if case == Case::DaemonPending {
-        let creator = log.lock().unwrap().creator_cleanup.clone().unwrap();
-        wait_until(|| creator.exit_stop_observed());
-    }
     if matches!(case, Case::CompetingClaim | Case::RevokedClaim) {
-        let claim = stopped
-            .exit_event()
-            .await
-            .expect("test owns actual sole EXIT claim");
+        // This fixture must own the genuine EXIT capability before handing
+        // initial delivery back to the production select. Merely observing
+        // EXIT_STOPPED does not prove publication has released its lock: an
+        // await here can yield Pending and let the select's other branch claim
+        // first. Poll only this real claimant within the original one-second
+        // fixture bound; no production claimant or terminal check is changed.
+        let mut exit = Box::pin(stopped.exit_event());
+        assert!(matches!(futures::poll!(exit.as_mut()), Poll::Pending));
+        assert!(cleanup.observed_terminal().is_none());
+        cleanup
+            .terminate_bound_task()
+            .expect("signal original held pidfd");
+        let waker = futures::task::noop_waker();
+        let mut context = std::task::Context::from_waker(&waker);
+        let mut claim = None;
+        wait_until(|| match exit.as_mut().poll(&mut context) {
+            Poll::Pending => false,
+            Poll::Ready(result) => {
+                claim = Some(result);
+                true
+            }
+        });
+        let claim = claim.unwrap().expect("test owns actual sole EXIT claim");
+        assert!(cleanup.exit_stop_observed());
+        assert!(cleanup.observed_terminal().is_none(), "EXIT is not final");
         assert!(cleanup.same_generation(&claim.terminal_cleanup()));
         if case == Case::RevokedClaim {
             // The exact claimed value is transferred exclusively to the test's
@@ -373,6 +389,12 @@ pub(super) async fn deliver_initial(
         }
         let mut state = log.lock().unwrap();
         assert!(state.cleanup_claim.replace(claim).is_none());
+    } else {
+        kill_to_exit(&cleanup);
+        if case == Case::DaemonPending {
+            let creator = log.lock().unwrap().creator_cleanup.clone().unwrap();
+            wait_until(|| creator.exit_stop_observed());
+        }
     }
     let mut first = true;
     future::poll_fn(|cx| {
