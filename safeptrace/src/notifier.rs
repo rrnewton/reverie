@@ -664,7 +664,7 @@ struct Event {
     legacy_wait: Mutex<LegacyWaitProgress>,
     /// The actual host ptracer's immutable lifetime, bound only by that live
     /// thread after retained-generation attachment authentication.
-    legacy_wait_owner: OnceLock<LegacyWaitOwner>,
+    legacy_wait_owner: OnceLock<Arc<LegacyWaitOwner>>,
     /// A separately acquired native descriptor may join a legacy Event. The
     /// one worker drains consumed legacy statuses before using this anchor;
     /// existing legacy facades keep their immutable descriptor/error mode.
@@ -777,6 +777,10 @@ pub(super) struct LegacyWaitOwner {
     // thread-self through the capture-time mount to authenticate the task
     // executing now without consulting a later absolute /proc overmount.
     proc_root: AlignedProcfs,
+    // The capturing OS thread's never-reused host_thread token, if tokens
+    // are available in this process. It only short-cuts `is_current` on
+    // that same thread; every other caller takes the full procfs check.
+    thread: Option<u64>,
 }
 
 /// The task selected before an initial numeric attachment. The raw ptrace
@@ -837,12 +841,148 @@ impl AttachmentAnchor {
     }
 }
 
+/// Identifies the executing OS thread without procfs.
+///
+/// Every thread draws its token from a process-wide counter that never
+/// repeats, so a token recorded by a [`LegacyWaitOwner`] matches only the
+/// thread that captured it, never a later thread that reuses its numeric TID.
+/// A forked child copies the forking thread's thread-local token, so tokens
+/// are honoured only while a `MADV_WIPEONFORK` canary page still holds its
+/// marker: the kernel zero-fills that page in every fork child, which then
+/// always takes the full procfs check. Initialization takes no lock, so a fork
+/// cannot leave a child waiting on a lock held by a parent thread. A
+/// `CLONE_VM` child that shares its parent's TLS without `CLONE_SETTLS`
+/// (vfork, posix_spawn) must not run Rust code at all before exec.
+mod host_thread {
+    use std::cell::Cell;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    const MARKER: u64 = 0x5265_7665_7269_6531;
+    /// CANARY states: 0 is not yet installed, UNAVAILABLE means this process
+    /// cannot use tokens, and anything else is the canary page address.
+    const UNAVAILABLE: usize = 1;
+    static CANARY: AtomicUsize = AtomicUsize::new(0);
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+
+    std::thread_local! {
+        static TOKEN: Cell<u64> = const { Cell::new(0) };
+    }
+
+    fn install() -> usize {
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let len = usize::try_from(page)
+            .ok()
+            .filter(|len| *len > 0)
+            .unwrap_or(4096);
+        let addr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        let mine = if addr == libc::MAP_FAILED {
+            UNAVAILABLE
+        } else if unsafe { libc::madvise(addr, len, libc::MADV_WIPEONFORK) } != 0 {
+            unsafe { libc::munmap(addr, len) };
+            UNAVAILABLE
+        } else {
+            unsafe { &*addr.cast::<AtomicU64>() }.store(MARKER, Ordering::Relaxed);
+            addr as usize
+        };
+        match CANARY.compare_exchange(0, mine, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => mine,
+            Err(installed) => {
+                if mine != UNAVAILABLE {
+                    unsafe { libc::munmap(addr, len) };
+                }
+                installed
+            }
+        }
+    }
+
+    /// This OS thread's token, or None in a fork child, when the canary
+    /// could not be installed, or while thread-local storage is torn down.
+    pub(super) fn token() -> Option<u64> {
+        let mut canary = CANARY.load(Ordering::Acquire);
+        if canary == 0 {
+            canary = install();
+        }
+        if canary == UNAVAILABLE
+            || unsafe { &*(canary as *const AtomicU64) }.load(Ordering::Relaxed) != MARKER
+        {
+            return None;
+        }
+        TOKEN
+            .try_with(|token| {
+                if token.get() == 0 {
+                    token.set(NEXT.fetch_add(1, Ordering::Relaxed));
+                }
+                token.get()
+            })
+            .ok()
+    }
+}
+
+/// Owners each OS thread captured, keyed by the never-reused ID of the
+/// procfs mount each went through. At most `LIMIT` per thread, so the
+/// descriptors they retain scale with tracer threads and procfs mounts, not
+/// with tracees. A fork child holds no [`host_thread`] token, so it never
+/// matches or changes an entry it inherited.
+mod host_owners {
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    use super::LegacyWaitOwner;
+
+    const LIMIT: usize = 4;
+
+    type Owners = RefCell<Vec<(u64, Arc<LegacyWaitOwner>)>>;
+
+    std::thread_local! {
+        static OWNERS: Owners = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn get(mount: u64) -> Option<Arc<LegacyWaitOwner>> {
+        OWNERS
+            .try_with(|owners| {
+                owners
+                    .try_borrow()
+                    .ok()?
+                    .iter()
+                    .find(|(key, owner)| *key == mount && owner.is_capturing_thread())
+                    .map(|(_, owner)| Arc::clone(owner))
+            })
+            .ok()
+            .flatten()
+    }
+
+    pub(super) fn offer(mount: u64, owner: &Arc<LegacyWaitOwner>) {
+        let _ = OWNERS.try_with(|owners| {
+            let Ok(mut owners) = owners.try_borrow_mut() else {
+                return;
+            };
+            owners.retain(|(key, cached)| *key != mount && cached.is_capturing_thread());
+            if owners.len() >= LIMIT {
+                owners.remove(0);
+            }
+            owners.push((mount, Arc::clone(owner)));
+        });
+    }
+}
+
 impl LegacyWaitOwner {
     fn capture_current() -> Result<Self, Errno> {
         Self::capture_at(AlignedProcfs::open()?)
     }
 
     fn capture_at(root: AlignedProcfs) -> Result<Self, Errno> {
+        let thread = host_thread::token();
         let tid = Pid::from(nix::unistd::gettid());
         let current = root.current_thread_status()?;
         if current.pid != tid || current.tgid != Pid::from(nix::unistd::getpid()) {
@@ -854,7 +994,16 @@ impl LegacyWaitOwner {
             tgid: Pid::from(nix::unistd::getpid()),
             lifetime,
             proc_root: root,
+            thread,
         })
+    }
+
+    /// True only on the OS thread that captured this owner, in the process
+    /// that captured it. That thread is necessarily live, still has this
+    /// TID and TGID, and resolves as thread-self through the capture-time
+    /// mount, which is everything the full procfs check establishes.
+    fn is_capturing_thread(&self) -> bool {
+        self.thread.is_some() && self.thread == host_thread::token()
     }
 
     fn is_live(&self) -> Result<bool, Errno> {
@@ -866,7 +1015,17 @@ impl LegacyWaitOwner {
     }
 
     pub(super) fn is_current(&self) -> Result<bool, Errno> {
-        if self.tid != Pid::from(nix::unistd::gettid()) || !self.is_live()? {
+        if self.tid != Pid::from(nix::unistd::gettid()) {
+            return Ok(false);
+        }
+        // Each ptracer request, poll and driver construction authenticates
+        // its host; three procfs status reads per check made every ptrace
+        // stop several times more expensive. The capturing thread needs none
+        // of the two status reads below.
+        if self.is_capturing_thread() {
+            return Ok(true);
+        }
+        if !self.is_live()? {
             return Ok(false);
         }
         let current = self.proc_root.current_thread_status()?;
@@ -2609,7 +2768,7 @@ impl EventHandle {
 
     pub(super) fn capture_current_ptracer_owner(&self) -> Result<Arc<LegacyWaitOwner>, Errno> {
         let identity = self.identity().ok_or(Errno::ENODATA)?;
-        identity.capture_current_owner(false).map(Arc::new)
+        identity.capture_current_owner(false)
     }
 
     pub(super) fn capture_current_owner(&self) -> Result<Arc<LegacyWaitOwner>, Errno> {
@@ -2619,14 +2778,13 @@ impl EventHandle {
         if !identity.authenticates_wait_role(&owner)? {
             return Err(Errno::EPERM);
         }
-        Ok(Arc::new(owner))
+        Ok(owner)
     }
 
     pub(super) fn capture_current_constructor_owner(&self) -> Result<Arc<LegacyWaitOwner>, Errno> {
         self.identity()
             .ok_or(Errno::ENODATA)?
             .capture_current_owner(true)
-            .map(Arc::new)
     }
 
     pub(super) fn authenticates_wait_role(&self, owner: &LegacyWaitOwner) -> Result<bool, Errno> {
@@ -2985,6 +3143,10 @@ struct WorkerIdentity {
     proc_dir: OwnedFd,
     proc_inode: u64,
     proc_root: Option<Arc<AlignedProcfs>>,
+    /// The never-reused ID of the procfs mount that this identity's first
+    /// token-bearing owner capture went through. It selects which owner the
+    /// capturing thread may reuse instead of capturing again.
+    root_mount: OnceLock<u64>,
 }
 
 impl WorkerIdentity {
@@ -3075,6 +3237,7 @@ impl WorkerIdentity {
             proc_dir,
             proc_inode,
             proc_root,
+            root_mount: OnceLock::new(),
         })
     }
 
@@ -3120,7 +3283,44 @@ impl WorkerIdentity {
     /// caller carrying a copied native token into a descendant namespace.
     /// Derive the root from the retained target directory for native Events
     /// that predate any local interface; never join it to a fresh /proc.
-    fn capture_current_owner(&self, allow_untraced: bool) -> Result<LegacyWaitOwner, Errno> {
+    fn capture_current_owner(&self, allow_untraced: bool) -> Result<Arc<LegacyWaitOwner>, Errno> {
+        // A capture costs three procfs status reads and three opens, and
+        // every ptracer request, poll and driver construction asks for one.
+        // An owner this same OS thread already captured through the same
+        // procfs mount is what a fresh capture would produce: one live
+        // thread's TID, thread-self and alignment with the mount's PID
+        // namespace cannot change. Only the target's attachment can, so
+        // check that again.
+        if let Some(owner) = self
+            .root_mount
+            .get()
+            .and_then(|mount| host_owners::get(*mount))
+        {
+            self.check_capturing_tracer(allow_untraced)?;
+            return Ok(owner);
+        }
+        let owner = Arc::new(self.capture_current_owner_from_procfs(allow_untraced)?);
+        if owner.is_capturing_thread()
+            && let Some(mount) = fd_unique_mount(&owner.proc_root.root)
+            && *self.root_mount.get_or_init(|| mount) == mount
+        {
+            host_owners::offer(mount, &owner);
+        }
+        Ok(owner)
+    }
+
+    fn check_capturing_tracer(&self, allow_untraced: bool) -> Result<(), Errno> {
+        let tracer = self.current_tracer_pid()?;
+        if tracer != Pid::from(nix::unistd::gettid()) && !(allow_untraced && tracer.as_raw() == 0) {
+            return Err(Errno::EPERM);
+        }
+        Ok(())
+    }
+
+    fn capture_current_owner_from_procfs(
+        &self,
+        allow_untraced: bool,
+    ) -> Result<LegacyWaitOwner, Errno> {
         let _open = launch_window::TransientOpen::begin();
         let root = match &self.proc_root {
             Some(root) => root.root.try_clone().map_err(io_errno)?,
@@ -3139,10 +3339,7 @@ impl WorkerIdentity {
             }
         };
         let root = AlignedProcfs::from_root(root)?;
-        let tracer = self.current_tracer_pid()?;
-        if tracer != Pid::from(nix::unistd::gettid()) && !(allow_untraced && tracer.as_raw() == 0) {
-            return Err(Errno::EPERM);
-        }
+        self.check_capturing_tracer(allow_untraced)?;
         LegacyWaitOwner::capture_at(root)
     }
 
@@ -4577,6 +4774,26 @@ fn procfs_error_shows_exit(error: &std::io::Error) -> bool {
         Some(errno) => errno == libc::ENOENT || errno == libc::ESRCH,
         None => error.kind() == std::io::ErrorKind::NotFound,
     }
+}
+
+/// The kernel's never-reused ID for the mount that `fd` resolves through, or
+/// None before Linux 6.8 added `STATX_MNT_ID_UNIQUE`.
+fn fd_unique_mount(fd: &OwnedFd) -> Option<u64> {
+    let mut metadata = std::mem::MaybeUninit::<libc::statx>::zeroed();
+    let rc = unsafe {
+        libc::statx(
+            fd.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH,
+            libc::STATX_MNT_ID_UNIQUE,
+            metadata.as_mut_ptr(),
+        )
+    };
+    if rc < 0 {
+        return None;
+    }
+    let metadata = unsafe { metadata.assume_init() };
+    (metadata.stx_mask & libc::STATX_MNT_ID_UNIQUE != 0).then_some(metadata.stx_mnt_id)
 }
 
 fn fd_inode(fd: &OwnedFd) -> std::io::Result<u64> {
