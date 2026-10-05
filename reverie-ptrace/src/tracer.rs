@@ -62,9 +62,14 @@ use reverie::syscalls::Sysno;
 use safeptrace::ChildOp;
 use safeptrace::Error as TraceError;
 use safeptrace::Event;
+use safeptrace::ExitFuture;
+use safeptrace::GuardedPendingStatusReservation;
 use safeptrace::OwnedWaitError;
+use safeptrace::OwnedWaitFuture;
 use safeptrace::PtracerCleanupDriver;
 use safeptrace::PtracerExitDriver;
+use safeptrace::PtracerPendingStatusReservation;
+use safeptrace::PtracerThreadGuard;
 use safeptrace::PtracerWaitDriver;
 use safeptrace::Running;
 use safeptrace::Stopped;
@@ -260,46 +265,469 @@ pub(crate) struct HeldRootStop {
     armed: bool,
 }
 
+/// The one original host controller shared by independently owned tracees.
+/// Children share no target generation, wait queue or parent owner Arc.
+#[derive(Clone, Default)]
+pub(crate) struct PtracerController {
+    guard: Arc<StdMutex<Option<PtracerThreadGuard>>>,
+}
+
+impl PtracerController {
+    pub(crate) fn retain_from(&self, original: &Self) {
+        let guard = original.guard.lock().unwrap().clone();
+        if let Some(guard) = guard {
+            let mut current = self.guard.lock().unwrap();
+            if current.is_none() {
+                *current = Some(guard);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct NativeController {
+    shared: PtracerController,
+    /// Only a root owner may cold-bind, through its first original input.
+    /// Children receive the shared host anchor and never select another one.
+    origin: Option<TraceeGeneration>,
+    cold_bind: bool,
+}
+
+impl Default for NativeController {
+    fn default() -> Self {
+        Self {
+            shared: PtracerController::default(),
+            origin: None,
+            cold_bind: true,
+        }
+    }
+}
+
+impl NativeController {
+    fn bound_guard(&self) -> Result<PtracerThreadGuard, Errno> {
+        self.check_current()?;
+        self.shared
+            .guard
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(Errno::ENODATA)
+    }
+
+    fn bind_if_missing(&self) -> Result<(), Errno> {
+        if self.shared.guard.lock().unwrap().is_some() {
+            return Ok(());
+        }
+        self.check_current()
+    }
+
+    fn check_current(&self) -> Result<(), Errno> {
+        let mut retained = self.shared.guard.lock().unwrap();
+        if let Some(guard) = retained.as_ref() {
+            return guard.check_current();
+        }
+        let origin = self.origin.as_ref().ok_or(Errno::ENODATA)?;
+        // This cold binder authenticates the original Event's actual ptracer
+        // or startup-parent role. The host-only factory alone cannot admit a
+        // generic Native token on a sibling thread.
+        let guard = match origin.retained_ptracer_thread_guard()? {
+            Some(guard) => guard,
+            None => origin.ptracer_thread_guard_for_wait()?,
+        };
+        guard.check_current()?;
+        // Cache only successful admission. A foreign or transient refusal
+        // leaves this same original input available for its owner to retry.
+        *retained = Some(guard);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PtracerMode {
+    Native,
+    Explicit,
+}
+
+/// Every variant retains its original input across a non-owning refusal.
+enum ManagedWaitDriver {
+    Native {
+        inner: OwnedWaitFuture,
+        controller: NativeController,
+    },
+    Explicit {
+        inner: PtracerWaitDriver,
+        controller: NativeController,
+    },
+    Refused {
+        inner: OwnedWaitFuture,
+        error: Errno,
+    },
+}
+
+impl ManagedWaitDriver {
+    fn generation(&self) -> Option<TraceeGeneration> {
+        match self {
+            Self::Native { inner, .. } | Self::Refused { inner, .. } => inner.generation(),
+            Self::Explicit { inner, .. } => inner.generation(),
+        }
+    }
+
+    fn poll_on_ptracer_thread(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Wait, OwnedWaitError>> {
+        match self {
+            Self::Native { inner, controller } => {
+                let guard = match controller.bound_guard() {
+                    Ok(guard) => guard,
+                    Err(error) => return std::task::Poll::Ready(Err(OwnedWaitError::Errno(error))),
+                };
+                inner.poll_with_ptracer_guard(cx, &guard)
+            }
+            Self::Explicit { inner, controller } => {
+                if let Err(error) = controller.bind_if_missing() {
+                    return std::task::Poll::Ready(Err(OwnedWaitError::Errno(error)));
+                }
+                inner.poll_on_ptracer_thread(cx)
+            }
+            Self::Refused { error, .. } => {
+                std::task::Poll::Ready(Err(OwnedWaitError::Errno(*error)))
+            }
+        }
+    }
+
+    fn into_zombie_after_observed_death(self) -> Result<safeptrace::Zombie, Box<Self>> {
+        match self {
+            Self::Native { inner, controller } => inner
+                .into_zombie_after_observed_death()
+                .map_err(|inner| Box::new(Self::Native { inner, controller })),
+            Self::Explicit { inner, controller } => inner
+                .into_zombie_after_observed_death()
+                .map_err(|inner| Box::new(Self::Explicit { inner, controller })),
+            refused @ Self::Refused { .. } => Err(Box::new(refused)),
+        }
+    }
+}
+
+enum ManagedExitDriver {
+    Native {
+        inner: ExitFuture,
+        controller: NativeController,
+    },
+    Explicit {
+        inner: PtracerExitDriver,
+        controller: NativeController,
+    },
+    Refused {
+        // Retain the original Event/epoch even though capture was refused.
+        _inner: ExitFuture,
+        error: Errno,
+    },
+}
+
+impl ManagedExitDriver {
+    fn poll_on_ptracer_thread(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Stopped, TraceError>> {
+        match self {
+            Self::Native { inner, controller } => {
+                let guard = match controller.bound_guard() {
+                    Ok(guard) => guard,
+                    Err(error) => return std::task::Poll::Ready(Err(error.into())),
+                };
+                inner.poll_with_ptracer_guard(cx, &guard)
+            }
+            Self::Explicit { inner, controller } => {
+                if let Err(error) = controller.bind_if_missing() {
+                    return std::task::Poll::Ready(Err(error.into()));
+                }
+                inner.poll_on_ptracer_thread(cx)
+            }
+            Self::Refused { error, .. } => std::task::Poll::Ready(Err((*error).into())),
+        }
+    }
+}
+
+enum ManagedCleanupDriver {
+    Native {
+        shared: TerminalCleanup,
+        controller: NativeController,
+    },
+    Explicit {
+        inner: PtracerCleanupDriver,
+        controller: NativeController,
+    },
+    Refused {
+        shared: TerminalCleanup,
+        error: Errno,
+    },
+}
+
+impl ManagedCleanupDriver {
+    fn shared(&self) -> &TerminalCleanup {
+        match self {
+            Self::Native { shared, .. } | Self::Refused { shared, .. } => shared,
+            Self::Explicit { inner, .. } => inner.shared(),
+        }
+    }
+
+    fn mode(&self) -> Result<PtracerMode, Errno> {
+        match self {
+            Self::Native { .. } => Ok(PtracerMode::Native),
+            Self::Explicit { .. } => Ok(PtracerMode::Explicit),
+            Self::Refused { error, .. } => Err(*error),
+        }
+    }
+
+    #[cfg(test)]
+    fn progress_on_ptracer_thread(&mut self) -> Result<(), Errno> {
+        match self {
+            Self::Native { shared, controller } => {
+                controller.check_current()?;
+                shared.ensure_registered()
+            }
+            Self::Explicit { inner, controller } => {
+                controller.bind_if_missing()?;
+                inner.progress_on_ptracer_thread()
+            }
+            Self::Refused { error, .. } => Err(*error),
+        }
+    }
+
+    fn reserve_pending_on_ptracer_thread(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<ManagedPendingStatusReservation<'_>>, Errno> {
+        match self {
+            Self::Native { shared, controller } => {
+                let guard = controller.bound_guard()?;
+                Ok(shared
+                    .reserve_pending_for_cleanup_with_guard(timeout, &guard)?
+                    .map(|inner| ManagedPendingStatusReservation {
+                        inner: ManagedReservation::Native(inner),
+                        local: std::marker::PhantomData,
+                    }))
+            }
+            Self::Explicit { inner, controller } => {
+                controller.bind_if_missing()?;
+                Ok(inner
+                    .reserve_pending_on_ptracer_thread(timeout)?
+                    .map(|inner| ManagedPendingStatusReservation {
+                        inner: ManagedReservation::Explicit(inner),
+                        local: std::marker::PhantomData,
+                    }))
+            }
+            Self::Refused { error, .. } => Err(*error),
+        }
+    }
+}
+
+enum ManagedReservation<'a> {
+    Native(GuardedPendingStatusReservation<'a>),
+    Explicit(PtracerPendingStatusReservation<'a>),
+}
+
+/// Keep the whole borrowed transaction !Send even with send_guard enabled.
+struct ManagedPendingStatusReservation<'a> {
+    inner: ManagedReservation<'a>,
+    local: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl ManagedPendingStatusReservation<'_> {
+    fn decode(&self) -> Result<Wait, TraceError> {
+        match &self.inner {
+            ManagedReservation::Native(inner) => inner.decode(),
+            ManagedReservation::Explicit(inner) => inner.decode(),
+        }
+    }
+
+    fn commit(self) -> Result<(), Errno> {
+        match self.inner {
+            ManagedReservation::Native(mut inner) => inner.commit(),
+            ManagedReservation::Explicit(inner) => {
+                inner.commit();
+                Ok(())
+            }
+        }
+    }
+
+    fn consume_dead_exec(self) -> Result<bool, Errno> {
+        match self.inner {
+            ManagedReservation::Native(mut inner) => inner.consume_dead_exec(),
+            ManagedReservation::Explicit(inner) => Ok(inner.consume_dead_exec().is_ok()),
+        }
+    }
+}
+
 /// Ordinary cancellation retains the same event/stop authority as the running
-/// task. No new procfs identity or descriptor is captured for this guard.
+/// task. Mode selection inspects that original descriptor, never a new PID.
 #[derive(Default)]
 pub(crate) struct PtracerWaitOwner {
     generation: StdMutex<Option<TraceeGeneration>>,
-    waits: StdMutex<Vec<Arc<StdMutex<Option<PtracerWaitDriver>>>>>,
-    exits: StdMutex<Vec<Arc<StdMutex<PtracerExitDriver>>>>,
-    cleanup: StdMutex<Option<PtracerCleanupDriver>>,
+    controller: StdMutex<NativeController>,
+    waits: StdMutex<Vec<Arc<StdMutex<Option<ManagedWaitDriver>>>>>,
+    exits: StdMutex<Vec<Arc<StdMutex<ManagedExitDriver>>>>,
+    cleanup: StdMutex<Option<ManagedCleanupDriver>>,
     inherited: StdMutex<Vec<Arc<PtracerWaitOwner>>>,
 }
 
 impl PtracerWaitOwner {
     pub(crate) fn bind_running(&self, running: &Running) {
-        self.bind(
-            running.generation(),
-            running.terminal_cleanup_on_ptracer_thread().into_driver(),
-        );
+        self.bind(running.generation(), || {
+            running.terminal_cleanup_on_ptracer_thread().into_driver()
+        });
     }
 
     pub(crate) fn bind_stopped(&self, stopped: &Stopped) {
-        self.bind(
-            stopped.generation(),
-            stopped.terminal_cleanup_on_ptracer_thread().into_driver(),
-        );
+        self.bind(stopped.generation(), || {
+            stopped.terminal_cleanup_on_ptracer_thread().into_driver()
+        });
     }
 
-    fn bind(&self, generation: TraceeGeneration, cleanup: PtracerCleanupDriver) {
+    fn bind(
+        &self,
+        generation: TraceeGeneration,
+        explicit_cleanup: impl FnOnce() -> PtracerCleanupDriver,
+    ) {
+        let shared = generation.terminal_cleanup();
         let mut current = self.generation.lock().unwrap();
         if let Some(previous) = current.as_ref() {
             assert!(
                 previous.pid() == generation.pid()
-                    && previous
-                        .assume_stopped()
-                        .terminal_cleanup()
-                        .same_generation(cleanup.shared()),
+                    && previous.terminal_cleanup().same_generation(&shared),
                 "ptracer owner cannot change task generation"
             );
         }
-        *self.cleanup.lock().unwrap() = Some(cleanup);
+        let mut controller = self.controller.lock().unwrap();
+        if controller.cold_bind && controller.origin.is_none() {
+            controller.origin = Some(generation.clone());
+        }
+        let mut cleanup = self.cleanup.lock().unwrap();
+        if let Some(cleanup) = cleanup.as_ref() {
+            assert!(
+                cleanup.shared().same_generation(&shared),
+                "ptracer cleanup cannot change task generation"
+            );
+        }
+        if cleanup.is_none() {
+            let classification = generation
+                .retained_ptracer_thread_guard()
+                .and_then(|_| shared.has_thread_pidfd());
+            *cleanup = Some(match classification {
+                Ok(true) => ManagedCleanupDriver::Native {
+                    shared,
+                    controller: controller.clone(),
+                },
+                Ok(false) => ManagedCleanupDriver::Explicit {
+                    inner: explicit_cleanup(),
+                    controller: controller.clone(),
+                },
+                Err(error) => ManagedCleanupDriver::Refused { shared, error },
+            });
+        }
+        if cleanup.as_ref().unwrap().mode().is_ok()
+            && controller.shared.guard.lock().unwrap().is_none()
+        {
+            // Retain the startup controller before a future or Tool callback
+            // can expose the Native input. This void binding itself grants no
+            // progress: on refusal the cell stays empty and each operation
+            // retries the same original admission, returning its typed error.
+            let _ = controller.check_current();
+        }
         *current = Some(generation);
+    }
+
+    pub(crate) fn controller(&self) -> PtracerController {
+        self.controller.lock().unwrap().shared.clone()
+    }
+
+    pub(crate) fn prime_controller(&self) -> Result<(), Errno> {
+        self.controller.lock().unwrap().check_current()
+    }
+
+    pub(crate) fn with_controller(shared: PtracerController) -> Self {
+        Self {
+            controller: StdMutex::new(NativeController {
+                shared,
+                origin: None,
+                cold_bind: false,
+            }),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn child_owner(&self) -> Self {
+        Self::with_controller(self.controller())
+    }
+
+    fn mode(&self) -> Result<PtracerMode, Errno> {
+        self.cleanup
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok_or(Errno::ENODATA)?
+            .mode()
+    }
+
+    fn running_driver(&self, running: Running) -> ManagedWaitDriver {
+        self.bind_running(&running);
+        match self.mode() {
+            Ok(PtracerMode::Native) => ManagedWaitDriver::Native {
+                inner: running.wait_owned(),
+                controller: self.controller.lock().unwrap().clone(),
+            },
+            Ok(PtracerMode::Explicit) => ManagedWaitDriver::Explicit {
+                inner: running.wait_owned_on_ptracer_thread().into_driver(),
+                controller: self.controller.lock().unwrap().clone(),
+            },
+            Err(error) => ManagedWaitDriver::Refused {
+                inner: running.wait_owned(),
+                error,
+            },
+        }
+    }
+
+    fn stopped_driver(&self, stopped: Stopped) -> ManagedWaitDriver {
+        self.bind_stopped(&stopped);
+        match self.mode() {
+            Ok(PtracerMode::Native) => ManagedWaitDriver::Native {
+                inner: stopped.wait_owned(),
+                controller: self.controller.lock().unwrap().clone(),
+            },
+            Ok(PtracerMode::Explicit) => ManagedWaitDriver::Explicit {
+                inner: stopped.wait_owned_on_ptracer_thread().into_driver(),
+                controller: self.controller.lock().unwrap().clone(),
+            },
+            Err(error) => ManagedWaitDriver::Refused {
+                inner: stopped.wait_owned(),
+                error,
+            },
+        }
+    }
+
+    fn zombie_driver(&self, zombie: safeptrace::Zombie) -> ManagedWaitDriver {
+        let generation = zombie.generation();
+        self.bind(generation.clone(), || {
+            generation
+                .assume_stopped()
+                .terminal_cleanup_on_ptracer_thread()
+                .into_driver()
+        });
+        match self.mode() {
+            Ok(PtracerMode::Native) => ManagedWaitDriver::Native {
+                inner: zombie.wait_owned(),
+                controller: self.controller.lock().unwrap().clone(),
+            },
+            Ok(PtracerMode::Explicit) => ManagedWaitDriver::Explicit {
+                inner: zombie.wait_owned_on_ptracer_thread().into_driver(),
+                controller: self.controller.lock().unwrap().clone(),
+            },
+            Err(error) => ManagedWaitDriver::Refused {
+                inner: zombie.wait_owned(),
+                error,
+            },
+        }
     }
 
     pub(crate) fn stopped(&self) -> Stopped {
@@ -314,6 +742,16 @@ impl PtracerWaitOwner {
     pub(crate) fn inherit(&self, owner: Arc<Self>) {
         if std::ptr::eq(self, owner.as_ref()) {
             return;
+        }
+        // postspawn transfers the already-admitted startup controller before
+        // the task's first bind. A later exec inheritance retains both owners
+        // without replacing either successful original controller anchor.
+        if self.generation.lock().unwrap().is_none() {
+            *self.controller.lock().unwrap() = NativeController {
+                shared: owner.controller(),
+                origin: None,
+                cold_bind: false,
+            };
         }
         let mut inherited = self.inherited.lock().unwrap();
         if !inherited.iter().any(|entry| Arc::ptr_eq(entry, &owner)) {
@@ -334,7 +772,7 @@ impl PtracerWaitOwner {
     fn with_pending<T>(
         &self,
         timeout: Duration,
-        operation: impl FnOnce(safeptrace::PtracerPendingStatusReservation<'_>) -> Result<T, Error>,
+        operation: impl FnOnce(ManagedPendingStatusReservation<'_>) -> Result<T, Error>,
     ) -> Result<Option<T>, Error> {
         // The local reservation is deliberately !Send. Complete its decode,
         // child capture and commit synchronously, before any async suspension.
@@ -348,15 +786,11 @@ impl PtracerWaitOwner {
 
     fn wait_driver(
         self: &Arc<Self>,
-        driver: PtracerWaitDriver,
+        driver: ManagedWaitDriver,
     ) -> BoxFuture<'static, Result<Wait, TraceError>> {
-        self.bind(
-            driver
-                .generation()
-                .expect("unfinished wait has its original generation"),
-            driver
-                .cleanup_on_ptracer_thread()
-                .expect("unfinished wait retains its original cleanup"),
+        assert!(
+            driver.generation().is_some(),
+            "unfinished wait has its original generation"
         );
         let slot = Arc::new(StdMutex::new(Some(driver)));
         self.waits.lock().unwrap().push(slot.clone());
@@ -378,7 +812,7 @@ impl PtracerWaitOwner {
                         let zombie = match driver.into_zombie_after_observed_death() {
                             Ok(zombie) => zombie,
                             Err(driver) => {
-                                *retained = Some(driver);
+                                *retained = Some(*driver);
                                 return std::task::Poll::Ready(Err(Errno::EPROTO.into()));
                             }
                         };
@@ -407,15 +841,14 @@ impl PtracerWaitOwner {
         self: &Arc<Self>,
         running: Running,
     ) -> BoxFuture<'static, Result<Wait, TraceError>> {
-        self.bind_running(&running);
-        self.wait_driver(running.wait_owned_on_ptracer_thread().into_driver())
+        self.wait_driver(self.running_driver(running))
     }
 
     pub(crate) fn reap_zombie(
         self: &Arc<Self>,
         zombie: safeptrace::Zombie,
     ) -> BoxFuture<'static, Result<ExitStatus, TraceError>> {
-        let mut wait = self.wait_driver(zombie.wait_owned_on_ptracer_thread().into_driver());
+        let mut wait = self.wait_driver(self.zombie_driver(zombie));
         let owner = self.clone();
         Box::pin(async move {
             loop {
@@ -424,8 +857,9 @@ impl PtracerWaitOwner {
                     Ok(Wait::Stopped(stopped, Event::Exit)) => {
                         wait = match stopped.resume(None) {
                             Ok(running) => owner.wait_running(running),
-                            Err(TraceError::Died(zombie)) => owner
-                                .wait_driver(zombie.wait_owned_on_ptracer_thread().into_driver()),
+                            Err(TraceError::Died(zombie)) => {
+                                owner.wait_driver(owner.zombie_driver(zombie))
+                            }
                             Err(error) => return Err(error),
                         };
                     }
@@ -433,8 +867,7 @@ impl PtracerWaitOwner {
                         panic!("Task {stopped:?} unexpected stop event {event:?}")
                     }
                     Err(TraceError::Died(zombie)) => {
-                        wait =
-                            owner.wait_driver(zombie.wait_owned_on_ptracer_thread().into_driver());
+                        wait = owner.wait_driver(owner.zombie_driver(zombie));
                     }
                     Err(error) => return Err(error),
                 }
@@ -443,11 +876,10 @@ impl PtracerWaitOwner {
     }
 
     pub(crate) fn wait_owned_stopped(self: &Arc<Self>, stopped: Stopped) -> PtracerOwnedWait {
-        self.bind_stopped(&stopped);
-        self.wait_owned_driver(stopped.wait_owned_on_ptracer_thread().into_driver())
+        self.wait_owned_driver(self.stopped_driver(stopped))
     }
 
-    fn wait_owned_driver(self: &Arc<Self>, driver: PtracerWaitDriver) -> PtracerOwnedWait {
+    fn wait_owned_driver(self: &Arc<Self>, driver: ManagedWaitDriver) -> PtracerOwnedWait {
         let slot = Arc::new(StdMutex::new(Some(driver)));
         self.waits.lock().unwrap().push(slot.clone());
         PtracerOwnedWait {
@@ -461,7 +893,21 @@ impl PtracerWaitOwner {
         stopped: &Stopped,
     ) -> BoxFuture<'static, Result<Stopped, TraceError>> {
         self.bind_stopped(stopped);
-        self.exit_driver(stopped.exit_event_on_ptracer_thread().into_driver())
+        let driver = match self.mode() {
+            Ok(PtracerMode::Native) => ManagedExitDriver::Native {
+                inner: stopped.exit_event(),
+                controller: self.controller.lock().unwrap().clone(),
+            },
+            Ok(PtracerMode::Explicit) => ManagedExitDriver::Explicit {
+                inner: stopped.exit_event_on_ptracer_thread().into_driver(),
+                controller: self.controller.lock().unwrap().clone(),
+            },
+            Err(error) => ManagedExitDriver::Refused {
+                _inner: stopped.exit_event(),
+                error,
+            },
+        };
+        self.exit_driver(driver)
     }
 
     pub(crate) fn exit_running(
@@ -469,13 +915,32 @@ impl PtracerWaitOwner {
         running: &Running,
     ) -> BoxFuture<'static, Result<Stopped, TraceError>> {
         self.bind_running(running);
-        self.exit_driver(running.exit_event_on_ptracer_thread().into_driver())
+        let driver = match self.mode() {
+            Ok(PtracerMode::Native) => ManagedExitDriver::Native {
+                inner: running.exit_event(),
+                controller: self.controller.lock().unwrap().clone(),
+            },
+            Ok(PtracerMode::Explicit) => ManagedExitDriver::Explicit {
+                inner: running.exit_event_on_ptracer_thread().into_driver(),
+                controller: self.controller.lock().unwrap().clone(),
+            },
+            Err(error) => ManagedExitDriver::Refused {
+                _inner: running.exit_event(),
+                error,
+            },
+        };
+        self.exit_driver(driver)
     }
 
     fn exit_driver(
         self: &Arc<Self>,
-        driver: PtracerExitDriver,
+        driver: ManagedExitDriver,
     ) -> BoxFuture<'static, Result<Stopped, TraceError>> {
+        // Adapter cancellation retains this original driver, including a
+        // Native exit capability withheld after a callback-time refusal.
+        // This does not permit cleanup to reset its claim as unclaimed: an
+        // optional LiteInst path that abandons the adapter can still receive
+        // EALREADY rather than recover the capability through another owner.
         let slot = Arc::new(StdMutex::new(driver));
         self.exits.lock().unwrap().push(slot.clone());
         let owner = self.clone();
@@ -495,7 +960,7 @@ impl PtracerWaitOwner {
 
 pub(crate) struct PtracerOwnedWait {
     owner: Arc<PtracerWaitOwner>,
-    slot: Arc<StdMutex<Option<PtracerWaitDriver>>>,
+    slot: Arc<StdMutex<Option<ManagedWaitDriver>>>,
 }
 
 impl std::future::Future for PtracerOwnedWait {
@@ -659,14 +1124,28 @@ pub(crate) struct FatalNewborn {
 }
 
 impl FatalNewborn {
+    #[cfg(test)]
     pub(crate) fn new(parent: Pid, child: &Running) -> Self {
         let waits = Arc::new(PtracerWaitOwner::default());
+        Self::with_waits(parent, child, waits)
+    }
+
+    pub(crate) fn with_controller(
+        parent: Pid,
+        child: &Running,
+        controller: PtracerController,
+    ) -> Self {
+        let waits = Arc::new(PtracerWaitOwner::with_controller(controller));
+        Self::with_waits(parent, child, waits)
+    }
+
+    fn with_waits(parent: Pid, child: &Running, waits: Arc<PtracerWaitOwner>) -> Self {
         let exit = waits.exit_running(child);
         Self {
             tid: child.pid(),
             parent,
             handed: false,
-            terminal: Arc::new(child.terminal_cleanup()),
+            terminal: Arc::new(child.generation().terminal_cleanup()),
             exit,
             waits,
         }
@@ -701,10 +1180,10 @@ impl FatalNewborn {
             .waits
             .with_pending(Duration::ZERO, |pending| {
                 match pending.decode() {
-                    Ok(_) => pending.commit(),
-                    Err(error) => match pending.consume_dead_exec() {
-                        Ok(()) => {}
-                        Err(_) => return Err(anyhow::Error::new(error).into()),
+                    Ok(_) => pending.commit()?,
+                    Err(error) => match pending.consume_dead_exec()? {
+                        true => {}
+                        false => return Err(anyhow::Error::new(error).into()),
                     },
                 }
                 Ok(())
@@ -744,14 +1223,14 @@ impl FatalNewborn {
                 match pending.decode() {
                     Ok(Wait::Stopped(task, Event::NewChild(op, child))) => {
                         session.capture(task.pid(), op, &child);
-                        pending.commit();
+                        pending.commit()?;
                     }
-                    Ok(_) => pending.commit(),
+                    Ok(_) => pending.commit()?,
                     // A dead Exec can never decode. Keep every other refusal
                     // on the same original FIFO front for its next retry.
-                    Err(error) => match pending.consume_dead_exec() {
-                        Ok(()) => {}
-                        Err(_) => return Err(anyhow::Error::new(error).into()),
+                    Err(error) => match pending.consume_dead_exec()? {
+                        true => {}
+                        false => return Err(anyhow::Error::new(error).into()),
                     },
                 }
                 Ok(())
@@ -772,7 +1251,8 @@ impl FatalNewborn {
         let held = Arc::new(StdMutex::new(None));
         let mut next = stopped;
         let status = loop {
-            match finish_ordinary_terminal(next, &self.terminal, &held, session).await {
+            match finish_ordinary_terminal(next, &self.terminal, &held, &self.waits, session).await
+            {
                 OrdinaryTerminal::Exited(status, _, _) => break status,
                 OrdinaryTerminal::Exec {
                     stopped, former, ..
@@ -1020,7 +1500,7 @@ pub(crate) async fn finish_ordinary_exit(
 ) -> OrdinaryTerminal {
     #[cfg(test)]
     pause_callback_exit_for_test(session, stop.tid, None).await;
-    finish_ordinary_terminal(stopped, &stop.terminal, &stop.held, session).await
+    finish_ordinary_terminal(stopped, &stop.terminal, &stop.held, &stop.waits, session).await
 }
 
 #[cfg(test)]
@@ -1056,6 +1536,7 @@ async fn finish_ordinary_terminal(
     stopped: Result<Stopped, TraceError>,
     terminal: &TerminalCleanup,
     held: &Arc<StdMutex<Option<HeldRootStop>>>,
+    waits: &PtracerWaitOwner,
     session: &FatalSession,
 ) -> OrdinaryTerminal {
     // Set once, when the exit stop this path entered holding is left.
@@ -1120,7 +1601,7 @@ async fn finish_ordinary_terminal(
                                 // wait consumed them in order before popping it.
                                 drop(stopped);
                                 entry_exit_stop.get_or_insert(EntryExitStop::Unread);
-                                break zombie.wait_owned_on_ptracer_thread().into_driver();
+                                break waits.zombie_driver(zombie);
                             }
                             Err(error) => {
                                 session.retry_after(anyhow::Error::new(error).into()).await;
@@ -1177,7 +1658,7 @@ async fn finish_ordinary_terminal(
                             entry_exit_stop.get_or_insert(left);
                             #[cfg(test)]
                             hold_until_exec_reported_for_test(&running, terminal).await;
-                            break running.wait_owned_on_ptracer_thread().into_driver();
+                            break waits.running_driver(running);
                         }
                         Err((retained, Errno::ESRCH)) => {
                             // A real group-fatal signal may advance this EXIT
@@ -1188,7 +1669,7 @@ async fn finish_ordinary_terminal(
                             // retired them, and for a queued exit stop popped
                             // from the FIFO they were consumed before it.
                             entry_exit_stop.get_or_insert(left);
-                            break retained.wait_owned_on_ptracer_thread().into_driver();
+                            break waits.stopped_driver(retained);
                         }
                         Err((retained, error)) => {
                             stopped = retained;
@@ -1197,7 +1678,7 @@ async fn finish_ordinary_terminal(
                     }
                 }
             }
-            Err(TraceError::Died(zombie)) => zombie.wait_owned_on_ptracer_thread().into_driver(),
+            Err(TraceError::Died(zombie)) => waits.zombie_driver(zombie),
             Err(error) => {
                 if let Ok(Some(status)) = terminal.observed_exit_status() {
                     let receipt = session.ordinary_receipt();
@@ -1333,7 +1814,7 @@ async fn finish_ordinary_terminal(
                         // no GETEVENTMSG and no resume are issued on it. The
                         // group SIGKILL above supersedes it, so only this same
                         // generation's actual next event can settle the path.
-                        wait = stopped.wait_owned_on_ptracer_thread().into_driver();
+                        wait = waits.stopped_driver(stopped);
                         continue;
                     }
                     // An exit stop reaches this ordinary wait only if it was
@@ -1400,9 +1881,9 @@ impl FatalTaskStop {
                     Ok(wait) => wait,
                     // The tracee left this exec stop through a fatal signal. It
                     // is not a stop the tracee is in, so it proves no freeze.
-                    Err(error) => match pending.consume_dead_exec() {
-                        Ok(()) => return Ok(false),
-                        Err(_) => return Err(anyhow::Error::new(error).into()),
+                    Err(error) => match pending.consume_dead_exec()? {
+                        true => return Ok(false),
+                        false => return Err(anyhow::Error::new(error).into()),
                     },
                 };
                 if let Wait::Stopped(task, Event::NewChild(op, child)) = &wait {
@@ -1414,7 +1895,7 @@ impl FatalTaskStop {
                 }
                 // Child ownership is retained before removing its parent's FIFO
                 // front. The stopped task cannot create another child meanwhile.
-                pending.commit();
+                pending.commit()?;
                 Ok(true)
             })?;
             match consumed {
@@ -1517,9 +1998,9 @@ impl FatalTaskStop {
             let consumed = self.waits.with_pending(Duration::ZERO, |pending| {
                 let wait = match pending.decode() {
                     Ok(wait) => wait,
-                    Err(error) => match pending.consume_dead_exec() {
-                        Ok(()) => return Ok(LegacyPending::Retired),
-                        Err(_) => return Err(anyhow::Error::new(error).into()),
+                    Err(error) => match pending.consume_dead_exec()? {
+                        true => return Ok(LegacyPending::Retired),
+                        false => return Err(anyhow::Error::new(error).into()),
                     },
                 };
                 if let Wait::Stopped(task, Event::NewChild(op, child)) = &wait {
@@ -1531,7 +2012,7 @@ impl FatalTaskStop {
                             Ok(info) if is_sigstop_delivery(&info) => {
                                 // Commit before resuming. A refusal retains this
                                 // very same Stopped across the session's retry.
-                                pending.commit();
+                                pending.commit()?;
                                 return Ok(LegacyPending::Delivery(task));
                             }
                             Err(TraceError::Errno(Errno::EINVAL)) => {
@@ -1547,7 +2028,7 @@ impl FatalTaskStop {
                             Ok(_) | Err(TraceError::Died(_) | TraceError::Errno(Errno::ESRCH)) => {
                                 // This FIFO stop is no longer the actual SIGSTOP
                                 // delivery. Do not resume or acknowledge it.
-                                pending.commit();
+                                pending.commit()?;
                                 return Ok(LegacyPending::Delivery(task));
                             }
                             Err(error) => return Err(anyhow::Error::new(error).into()),
@@ -1580,7 +2061,7 @@ impl FatalTaskStop {
                             );
                         }
                         Ok(_) | Err(TraceError::Died(_) | TraceError::Errno(Errno::ESRCH)) => {
-                            pending.commit();
+                            pending.commit()?;
                             return Ok(LegacyPending::Delivery(task));
                         }
                         Err(error) => return Err(anyhow::Error::new(error).into()),
@@ -1591,7 +2072,7 @@ impl FatalTaskStop {
                     }
                     Wait::Exited(_, _) => {}
                 }
-                pending.commit();
+                pending.commit()?;
                 Ok(LegacyPending::Held)
             })?;
             match consumed {
@@ -4997,6 +5478,7 @@ async fn postspawn<L: Tool + 'static>(
     tracer.ptracer_waits.inherit(waits);
     tracer.ptracer_waits.bind_stopped(&child);
     let ordinary_session = tracer.fatal_session();
+    ordinary_session.bind_controller(&tracer.ptracer_waits);
     #[cfg(test)]
     tests::retain_fatal_root_observer_for_test(&child);
     tracer.arm_liteinst_root_stop(&child, &Event::Signal(Signal::SIGSTOP));
@@ -6254,6 +6736,7 @@ mod seccomp_filter_tests;
 
 #[cfg(test)]
 mod tests {
+    include!("tracer/adaptive_wait_tests.rs");
     include!("tracer/legacy_group_stop_tests.rs");
     include!("tracer/fatal_callback_tests.rs");
     include!("tracer/fatal_vfork_tests.rs");

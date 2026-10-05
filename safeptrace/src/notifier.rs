@@ -1841,8 +1841,23 @@ impl Event {
 
     /// Reserves the next status without removing a fallibly decoded FIFO front.
     fn poll_status_reservation(&self, waker: &Waker) -> Poll<Result<StatusReservation<'_>, Errno>> {
+        self.poll_status_reservation_with_guard(waker, None)
+    }
+
+    fn poll_status_reservation_with_guard(
+        &self,
+        waker: &Waker,
+        guard: Option<&PtracerThreadGuard>,
+    ) -> Poll<Result<StatusReservation<'_>, Errno>> {
         // Register the waker *before* checking the status to avoid a race condition.
         self.status_waker.register(waker);
+        // Register may run arbitrary RawWaker clone/drop callbacks. A managed
+        // controller must still be its original host before reserving a front.
+        if let Some(guard) = guard
+            && let Err(error) = guard.check_current()
+        {
+            return Poll::Ready(Err(error));
+        }
 
         let state = self.status.lock();
         if let Some(status) = state.pending.front().copied() {
@@ -2093,6 +2108,15 @@ impl Event {
         reservation: StatusReservation<'_>,
         decode: impl FnOnce(i32) -> Result<T, Error>,
     ) -> Result<StatusReturn<T>, Error> {
+        self.decode_status_return_with_guard(reservation, None, decode)
+    }
+
+    fn decode_status_return_with_guard<T>(
+        &self,
+        reservation: StatusReservation<'_>,
+        guard: Option<&PtracerThreadGuard>,
+        decode: impl FnOnce(i32) -> Result<T, Error>,
+    ) -> Result<StatusReturn<T>, Error> {
         let transaction = match self.begin_status_return(
             reservation.status,
             WAIT_OWNER_NOTIFIER,
@@ -2103,7 +2127,13 @@ impl Event {
                 return Ok(StatusReturn::Cancelled(reservation.status));
             }
         };
-        let decoded = match decode(reservation.status) {
+        let decoded = decode(reservation.status);
+        // Child Event adoption can notify an already registered waker. Check
+        // again before this transaction can remove its original FIFO front.
+        if let Some(guard) = guard {
+            guard.check_current()?;
+        }
+        let decoded = match decoded {
             Ok(decoded) => decoded,
             // "Death under ptrace" race (see `man 2 ptrace`): the tracee died
             // between the notifier's `waitid` latching this ptrace-event stop and
@@ -2744,6 +2774,23 @@ impl EventHandle {
             .map(Arc::new)
     }
 
+    pub(super) fn capture_host_thread_guard(&self) -> Result<PtracerThreadGuard, Errno> {
+        if let Some(error) = self.initial_capture_error() {
+            return Err(error);
+        }
+        let identity = self.identity().ok_or_else(|| {
+            self.event()
+                .registration_error
+                .lock()
+                .unwrap_or(Errno::ENODATA)
+        })?;
+        let _open = launch_window::TransientOpen::begin();
+        let owner = LegacyWaitOwner::capture_at(identity.original_proc_root()?)?;
+        Ok(PtracerThreadGuard {
+            owner: Arc::new(owner),
+        })
+    }
+
     pub(super) fn authenticates_wait_role(&self, owner: &LegacyWaitOwner) -> Result<bool, Errno> {
         self.identity()
             .ok_or(Errno::ENODATA)?
@@ -3282,6 +3329,15 @@ impl WorkerIdentity {
     /// that predate any local interface; never join it to a fresh /proc.
     fn capture_current_owner(&self, allow_untraced: bool) -> Result<LegacyWaitOwner, Errno> {
         let _open = launch_window::TransientOpen::begin();
+        let root = self.original_proc_root()?;
+        let tracer = self.current_tracer_pid()?;
+        if tracer != Pid::from(nix::unistd::gettid()) && !(allow_untraced && tracer.as_raw() == 0) {
+            return Err(Errno::EPERM);
+        }
+        LegacyWaitOwner::capture_at(root)
+    }
+
+    fn original_proc_root(&self) -> Result<AlignedProcfs, Errno> {
         let root = match &self.proc_root {
             Some(root) => root.root.try_clone().map_err(io_errno)?,
             None => {
@@ -3298,12 +3354,7 @@ impl WorkerIdentity {
                 unsafe { OwnedFd::from_raw_fd(raw) }
             }
         };
-        let root = AlignedProcfs::from_root(root)?;
-        let tracer = self.current_tracer_pid()?;
-        if tracer != Pid::from(nix::unistd::gettid()) && !(allow_untraced && tracer.as_raw() == 0) {
-            return Err(Errno::EPERM);
-        }
-        LegacyWaitOwner::capture_at(root)
+        AlignedProcfs::from_root(root)
     }
 
     fn is_same_process_generation(&self) -> bool {
@@ -6111,7 +6162,7 @@ impl TerminalCleanup {
         cleanup
     }
 
-    fn new_unregistered(pid: Pid, token: &TraceeToken) -> Self {
+    pub(super) fn new_unregistered(pid: Pid, token: &TraceeToken) -> Self {
         let event = token.event().clone();
         Self { pid, event }
     }
@@ -6274,6 +6325,30 @@ impl TerminalCleanup {
     ) -> Option<PendingStatusReservation<'_>> {
         WaitPolicy::Native.check_handle(&self.event).ok()?;
         self.reserve_pending_for_policy(timeout, WaitPolicy::Native)
+    }
+
+    /// Reserves a Native cleanup front for one retained controller host.
+    ///
+    /// Registration errors remain typed. The host is checked before waiting
+    /// and after the bounded wait, and the returned local reservation checks
+    /// that same guard before decoding or committing. A refusal removes no
+    /// FIFO front. This does not add explicit target checks to Native ptrace.
+    pub fn reserve_pending_for_cleanup_with_guard(
+        &self,
+        timeout: Duration,
+        guard: &PtracerThreadGuard,
+    ) -> Result<Option<GuardedPendingStatusReservation<'_>>, Errno> {
+        WaitPolicy::Native.check_handle(&self.event)?;
+        guard.check_current()?;
+        self.ensure_registered()?;
+        let inner = self.reserve_pending_for_policy(timeout, WaitPolicy::Native);
+        guard.check_current()?;
+        Ok(inner.map(|inner| GuardedPendingStatusReservation {
+            inner: Some(inner),
+            guard: guard.clone(),
+            dead_exec_consumed: false,
+            local: PhantomData,
+        }))
     }
 
     fn reserve_pending_for_policy(
@@ -6474,7 +6549,7 @@ impl PendingStatusReservation<'_> {
     /// it. The decode is repeated here, so only a death the kernel reports
     /// consumes the status. As on a status wait, the Exec whose report
     /// advanced the exit epoch is counted as retired and its exit stop is
-    /// forwarded to the FIFO; see [`Event::forward_exit_stop_after_dead_exec`].
+    /// forwarded to the FIFO so the same ordinary waiter can reach it.
     pub fn consume_dead_exec(self) -> Result<(), Self> {
         let token = TraceeToken::from_event_for_policy(self.event.clone(), self.policy);
         self.consume_dead_exec_with_token(token)
@@ -6505,6 +6580,75 @@ impl PendingStatusReservation<'_> {
     }
 }
 
+/// A Native FIFO reservation tied to one retained controller host.
+///
+/// This is !Send and !Sync regardless of parking_lot feature unification.
+/// Fallible operations retain the same front or already completed retirement
+/// for the original host to recover. Dropping an uncommitted front rolls back.
+#[must_use = "retain this reservation on refusal; commit only after ownership is stored"]
+pub struct GuardedPendingStatusReservation<'a> {
+    inner: Option<PendingStatusReservation<'a>>,
+    guard: PtracerThreadGuard,
+    dead_exec_consumed: bool,
+    local: PhantomData<Rc<()>>,
+}
+
+impl GuardedPendingStatusReservation<'_> {
+    /// Decodes without removing the front, checking the same controller.
+    pub fn decode(&self) -> Result<Wait, Error> {
+        self.guard.check_current()?;
+        let result = self.inner.as_ref().ok_or(Errno::EALREADY)?.decode();
+        // Event adoption during child decode can run notification callbacks.
+        self.guard.check_current()?;
+        result
+    }
+
+    /// Removes the front only after a fresh original-host check succeeds.
+    /// A refusal leaves this reservation unchanged and available for retry.
+    pub fn commit(&mut self) -> Result<(), Errno> {
+        self.guard.check_current()?;
+        self.inner.take().ok_or(Errno::EALREADY)?.commit();
+        Ok(())
+    }
+
+    /// Retires only an actual Exec front whose decoder reports death.
+    ///
+    /// False preserves the front. A dead-Exec retirement is recorded here
+    /// before notification callbacks; a refusal after them keeps that exact
+    /// completed retirement for the original host's retry, without a second
+    /// removal or invented stop.
+    pub fn consume_dead_exec(&mut self) -> Result<bool, Errno> {
+        self.guard.check_current()?;
+        if self.dead_exec_consumed {
+            return Ok(true);
+        }
+        let inner = self.inner.as_ref().ok_or(Errno::EALREADY)?;
+        if inner.status != PTRACE_EVENT_EXEC_STOP {
+            return Ok(false);
+        }
+        let dead = matches!(inner.decode(), Err(Error::Died(_)));
+        self.guard.check_current()?;
+        if !dead {
+            return Ok(false);
+        }
+        let mut inner = self.inner.take().unwrap();
+        let epoch_exec = inner.state.epoch_exec == Some(0);
+        if epoch_exec {
+            inner.state.retired_dead_exec += 1;
+        }
+        let committed = inner.state.pop_front();
+        debug_assert_eq!(committed, Some(inner.status));
+        let PendingStatusReservation { event, state, .. } = inner;
+        drop(state);
+        self.dead_exec_consumed = true;
+        if epoch_exec {
+            event.event().forward_exit_stop_after_dead_exec();
+        }
+        self.guard.check_current()?;
+        Ok(true)
+    }
+}
+
 /// A future representing a process state change.
 pub struct WaitFuture {
     pid: Pid,
@@ -6525,6 +6669,15 @@ impl WaitFuture {
         cx: &mut Context<'_>,
         policy: WaitPolicy,
     ) -> Poll<Result<Wait, Error>> {
+        self.poll_with_guard(cx, policy, None)
+    }
+
+    fn poll_with_guard(
+        &mut self,
+        cx: &mut Context<'_>,
+        policy: WaitPolicy,
+        guard: Option<&PtracerThreadGuard>,
+    ) -> Poll<Result<Wait, Error>> {
         let pid = self.pid;
         let event_handle = match NOTIFIER.event_for_policy(pid, self.token.event(), policy) {
             Ok(event) => event,
@@ -6539,7 +6692,11 @@ impl WaitFuture {
             } else {
                 Ok(())
             };
-            let reservation = match event.poll_status_reservation(cx.waker()) {
+            let readiness = match guard {
+                Some(guard) => event.poll_status_reservation_with_guard(cx.waker(), Some(guard)),
+                None => event.poll_status_reservation(cx.waker()),
+            };
+            let reservation = match readiness {
                 Poll::Ready(Ok(reservation)) => reservation,
                 Poll::Ready(Err(errno)) => return Poll::Ready(Err(errno.into())),
                 Poll::Pending => {
@@ -6549,7 +6706,7 @@ impl WaitFuture {
                     };
                 }
             };
-            return match event.decode_status_return(reservation, |status| {
+            return match event.decode_status_return_with_guard(reservation, guard, |status| {
                 // The explicit driver already authenticated its retained
                 // original owner. Carry that same anchor into this stop;
                 // recapturing it here would immediately discard the result.
@@ -6617,17 +6774,23 @@ pub enum OwnedWaitError {
 #[must_use = "this future owns an unfinished generation-bound wait"]
 pub struct OwnedWaitFuture {
     inner: Option<WaitFuture>,
+    observed_death: bool,
+    managed_guard: Option<PtracerThreadGuard>,
 }
 impl OwnedWaitFuture {
     pub(super) fn new(running: Running) -> Self {
         Self {
             inner: Some(WaitFuture::new(running)),
+            observed_death: false,
+            managed_guard: None,
         }
     }
 
     pub(super) fn from_stopped(stopped: Stopped) -> Self {
         Self {
             inner: Some(WaitFuture::from_stopped(stopped)),
+            observed_death: false,
+            managed_guard: None,
         }
     }
 
@@ -6636,10 +6799,19 @@ impl OwnedWaitFuture {
         cx: &mut Context<'_>,
         policy: WaitPolicy,
     ) -> Poll<Result<Wait, OwnedWaitError>> {
+        self.poll_with_guard(cx, policy, None)
+    }
+
+    fn poll_with_guard(
+        &mut self,
+        cx: &mut Context<'_>,
+        policy: WaitPolicy,
+        guard: Option<&PtracerThreadGuard>,
+    ) -> Poll<Result<Wait, OwnedWaitError>> {
         let Some(inner) = self.inner.as_mut() else {
             return Poll::Ready(Err(OwnedWaitError::Completed));
         };
-        match inner.poll_for_policy(cx, policy) {
+        match inner.poll_with_guard(cx, policy, guard) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Ok(wait)) => {
                 self.inner.take();
@@ -6650,9 +6822,63 @@ impl OwnedWaitFuture {
                 // This internal decoder diagnostic carries a cloned token.
                 // Keep only the original wait owner before exposing the error.
                 drop(zombie);
+                self.observed_death = true;
                 Poll::Ready(Err(OwnedWaitError::Died))
             }
         }
+    }
+
+    /// Polls the Native wait for one retained execution-controller host.
+    ///
+    /// The first admitted call retains this same guard. Waker callbacks are
+    /// followed by a new host check before reserving or decoding a FIFO front,
+    /// and decoding is checked before removal. A refusal leaves the original
+    /// input and FIFO front available to that host. The ordinary [`Future`]
+    /// implementation keeps its generic Native polling contract.
+    pub fn poll_with_ptracer_guard(
+        &mut self,
+        cx: &mut Context<'_>,
+        guard: &PtracerThreadGuard,
+    ) -> Poll<Result<Wait, OwnedWaitError>> {
+        let Some(inner) = self.inner.as_ref() else {
+            return Poll::Ready(Err(OwnedWaitError::Completed));
+        };
+        if let Err(error) = WaitPolicy::Native.check_handle(inner.token.event()) {
+            return Poll::Ready(Err(OwnedWaitError::Errno(error)));
+        }
+        let guard = match PtracerThreadGuard::retain_for_poll(&mut self.managed_guard, guard) {
+            Ok(guard) => guard,
+            Err(error) => return Poll::Ready(Err(OwnedWaitError::Errno(error))),
+        };
+        self.poll_with_guard(cx, WaitPolicy::Native, Some(&guard))
+    }
+
+    /// Retains this unfinished wait's original generation without a lookup.
+    /// A successful poll transfers it out of this future.
+    pub fn generation(&self) -> Option<super::TraceeGeneration> {
+        self.inner
+            .as_ref()
+            .map(|inner| super::TraceeGeneration(inner.pid, inner.token.clone()))
+    }
+
+    /// Retains a passive shared cleanup facade for the same original input.
+    /// This does not register a waiter or capture a numeric target. Request
+    /// registration before using the shared facade's Native reservations.
+    pub fn terminal_cleanup(&self) -> Option<TerminalCleanup> {
+        self.inner
+            .as_ref()
+            .map(|inner| TerminalCleanup::new_unregistered(inner.pid, &inner.token))
+    }
+
+    /// Transfers the same unfinished input after a real decoder death.
+    /// A refusal returns this unchanged future; a failed backend request is
+    /// never replaced with a numeric constructor or an inferred exit status.
+    pub fn into_zombie_after_observed_death(mut self) -> Result<super::Zombie, Self> {
+        if !self.observed_death || self.inner.is_none() {
+            return Err(self);
+        }
+        let inner = self.inner.take().unwrap();
+        Ok(super::Zombie(Running::from_token(inner.pid, inner.token)))
     }
 }
 
@@ -6684,6 +6910,8 @@ pub struct ExitFuture {
     pid: Pid,
     event: EventHandle,
     waiter: Arc<ExitWaiter>,
+    managed_guard: Option<PtracerThreadGuard>,
+    managed_delivery: Option<Stopped>,
 }
 
 impl ExitFuture {
@@ -6695,6 +6923,8 @@ impl ExitFuture {
                 waker: WakerSlot::default(),
                 epoch: token.event().event().exit_epoch.load(Ordering::Acquire),
             }),
+            managed_guard: None,
+            managed_delivery: None,
         }
     }
 
@@ -6726,6 +6956,68 @@ impl ExitFuture {
             },
         }
     }
+
+    /// Polls a Native exit capability for the same retained controller host.
+    ///
+    /// Waker registration is followed by a fresh check before claiming the
+    /// epoch. The claimed stop is retained here before notifying other
+    /// waiters. If a notification callback changes the executing host, the
+    /// refusal keeps that exact stop for the original host's next call;
+    /// no second claim is made. Continue using this managed method until
+    /// delivery, and keep this future through refusals and cancellation.
+    /// The ordinary [`Future`] implementation is unchanged.
+    pub fn poll_with_ptracer_guard(
+        &mut self,
+        cx: &mut Context<'_>,
+        guard: &PtracerThreadGuard,
+    ) -> Poll<Result<Stopped, Error>> {
+        if let Err(error) = WaitPolicy::Native.check_handle(&self.event) {
+            return Poll::Ready(Err(error.into()));
+        }
+        let guard = match PtracerThreadGuard::retain_for_poll(&mut self.managed_guard, guard) {
+            Ok(guard) => guard,
+            Err(error) => return Poll::Ready(Err(error.into())),
+        };
+        if let Some(stopped) = self.managed_delivery.take() {
+            return Poll::Ready(Ok(stopped));
+        }
+
+        let event_handle =
+            match NOTIFIER.event_for_policy(self.pid, &self.event, WaitPolicy::Native) {
+                Ok(event) => event,
+                Err(error) => return Poll::Ready(Err(error.into())),
+            };
+        let event = event_handle.event();
+        // Keep the original register -> claim -> notify order. Registration
+        // may clone/drop an arbitrary waker before the irreversible claim.
+        event.exit_waiters.register(&self.waiter, cx.waker());
+        if let Err(error) = guard.check_current() {
+            return Poll::Ready(Err(error.into()));
+        }
+        let Some(publication) = event.exit_publication.try_lock() else {
+            return Poll::Pending;
+        };
+        let result = event.poll_exit_epoch(&self.waiter);
+        drop(publication);
+        if result.is_ready() {
+            if matches!(result, Poll::Ready(Ok(()))) {
+                self.managed_delivery = Some(Stopped::from_exit_token(
+                    self.pid,
+                    TraceeToken::from_event_for_policy(event_handle.clone(), WaitPolicy::Native),
+                    self.waiter.epoch,
+                ));
+            }
+            event.exit_waiters.wake_all();
+            if let Err(error) = guard.check_current() {
+                return Poll::Ready(Err(error.into()));
+            }
+        }
+        match result {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(self.managed_delivery.take().unwrap())),
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error.into())),
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
 
 impl Future for ExitFuture {
@@ -6733,6 +7025,57 @@ impl Future for ExitFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.get_mut().poll_for_policy(cx, WaitPolicy::Native)
+    }
+}
+
+/// A retained host thread identity for an execution controller.
+///
+/// This guard checks the exact host task that was bound at construction,
+/// including across sibling threads, raw forks and PID namespace aliases.
+/// It grants no task attachment, wait role, stopped capability or ptrace
+/// request. A controller must bind it before exposing callbacks or suspending
+/// work, and retain the same guard through errors and cancellation. Native
+/// task operations still follow the generic SDK's lifetime contract.
+#[derive(Clone)]
+pub struct PtracerThreadGuard {
+    owner: Arc<LegacyWaitOwner>,
+}
+
+impl PtracerThreadGuard {
+    fn retain_for_poll(retained: &mut Option<Self>, supplied: &Self) -> Result<Self, Errno> {
+        if let Some(guard) = retained.as_ref() {
+            if !Arc::ptr_eq(&guard.owner, &supplied.owner) {
+                return Err(Errno::EPERM);
+            }
+            guard.check_current()?;
+            return Ok(guard.clone());
+        }
+        supplied.check_current()?;
+        *retained = Some(supplied.clone());
+        Ok(supplied.clone())
+    }
+
+    pub(super) fn from_owner(owner: Arc<LegacyWaitOwner>) -> Self {
+        Self { owner }
+    }
+
+    /// Authenticates this guard's original host task without selecting a new
+    /// owner. Every refusal remains typed; it neither consumes a wait result
+    /// nor changes the original task's capabilities.
+    pub fn check_current(&self) -> Result<(), Errno> {
+        if self.owner.is_current()? {
+            Ok(())
+        } else {
+            Err(Errno::EPERM)
+        }
+    }
+
+    pub(super) fn check_wait_role(&self, event: &EventHandle) -> Result<(), Errno> {
+        if event.authenticates_wait_role(&self.owner)? {
+            Ok(())
+        } else {
+            Err(Errno::EPERM)
+        }
     }
 }
 
@@ -7367,6 +7710,8 @@ impl TerminalCleanup {
 
 #[cfg(test)]
 mod test {
+    include!("adaptive_api_tests.rs");
+    include!("managed_native_tests.rs");
     include!("stop_auth_cache_tests.rs");
     include!("retired_tid_tests.rs");
     include!("legacy_thread_tests.rs");

@@ -75,6 +75,66 @@ error. The returned state retains that refusal, available through its cleanup
 handle, and local waits do not retry capture against a possibly reused PID.
 Retain the returned state when handling the error.
 
+## Integrating an execution controller
+
+A controller can choose the native wait contract when the **original retained
+descriptor** supports `PIDFD_THREAD`. `TraceeGeneration::terminal_cleanup` and
+`OwnedWaitFuture::terminal_cleanup` return passive handles for that same
+generation; `has_thread_pidfd` reports its actual descriptor class. These
+accessors do not register a worker or capture the numeric target again.
+Use the Native wait, exit and reservation methods consistently for a native
+generation, and the explicit methods consistently for a fallback generation.
+An acquisition error is not evidence that another mode is available.
+
+`TraceeGeneration::ptracer_thread_guard_for_wait` provides a separate cold
+controller binding. It authenticates the current host and the original task's
+actual ptracer or real-parent wait role before returning a `PtracerThreadGuard`.
+Bind it before callbacks or suspension, then retain that same guard through
+child capture, errors, cancellation and final results. For managed Native
+polling, use `OwnedWaitFuture::poll_with_ptracer_guard` and
+`ExitFuture::poll_with_ptracer_guard`. These check that same original host
+after waker callbacks and before decoding, removing a FIFO front or claiming
+an exit stop. A foreign refusal keeps the original unfinished wait available
+for its controller to recover. The ordinary Native `Future` implementations
+retain their sibling polling contract.
+
+An exit notification can run a callback after a legitimate claim. The managed
+exit future stores that exact stopped capability before notification and
+keeps it on refusal. Retain the same future until its original controller
+recovers the result; cleanup must account for that claimed capability rather
+than resetting its epoch or revoking it as an unclaimed stop.
+
+`TerminalCleanup::reserve_pending_for_cleanup_with_guard` returns a local
+`GuardedPendingStatusReservation`. Its decode and fallible commit operations
+check the same guard, and refusal before commit preserves the FIFO front.
+Dead-Exec retirement is durable in the original Event before notifications;
+retry through that retained cleanup owner observes the genuine remaining
+statuses. This retirement is not an exit or freeze acknowledgment. A local
+completed-result flag survives only while its reservation wrapper is retained.
+
+`retained_ptracer_thread_guard` passively returns an existing anchor when the
+token already carries a positive role witness. It captures nothing and keeps
+that same anchor after target retirement. Check the returned guard's host
+before use; the saved witness is not a fresh attachment check. A missing or
+constructor-only witness still needs the cold binder while the target is live.
+
+The separate `ptracer_thread_guard` method selects only a host identity; it
+does not prove a target attachment or wait role. A missing host anchor cannot
+be recovered from a native target directory after that task has retired.
+Keep the early guard rather than recapturing one during terminal cleanup.
+Sharing a controller guard with a child does not share the parent's target
+generation or its FIFO. Child capture still follows the chosen wait interface;
+a generic native child-acquisition refusal remains an error.
+
+`OwnedWaitFuture::generation` and `Zombie::generation` retain their original
+generation without a lookup. `into_zombie_after_observed_death` transfers the
+same unfinished native wait only after its decoder has reported `Died`; every
+other refusal returns that future unchanged. These additions preserve the
+generic futures' `Send` and sibling-polling contract. A controller's host guard
+does not add the explicit state's target checks to a native numeric ptrace or
+memory request. Those requests retain the native SDK's existing lifetime
+contract and concurrent exec/reuse limitation described below.
+
 ## Kernel and namespace requirements
 
 Linux introduced `PIDFD_THREAD` in 6.9. The explicit interface can fall back
