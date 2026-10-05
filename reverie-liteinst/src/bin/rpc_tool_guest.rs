@@ -1923,6 +1923,17 @@ fn main() {
         ),
         Some("late-code-gp-fault") => late_code_guest::run_fault(Path::new(&path), false),
         Some("late-code-null-load") => late_code_guest::run_fault(Path::new(&path), true),
+        Some("straddler-instruction") => late_code_guest::run_straddler(Path::new(&path)),
+        Some("straddler-reclaim-partial") => late_code_guest::run_reclaim_partial(Path::new(&path)),
+        Some("straddler-shared-mapping") => late_code_guest::run_shared_mapping(Path::new(&path)),
+        Some("straddler-split-mapping") => late_code_guest::run_split_mapping(Path::new(&path)),
+        Some("fallback-syscall-then-rdtsc") => {
+            late_code_guest::run_syscall_then_rdtsc(Path::new(&path))
+        }
+        Some("straddler-private-alias") => late_code_guest::run_private_alias(Path::new(&path)),
+        Some("straddler-syscall-reservation") => {
+            late_code_guest::run_syscall_reservation(Path::new(&path))
+        }
         _ => panic!("expected coordinator or guest"),
     }
 }

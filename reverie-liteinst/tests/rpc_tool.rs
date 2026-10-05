@@ -1044,3 +1044,224 @@ fn undecodable_late_code_fault_ends_the_guest_by_sigsegv() {
         }
     }
 }
+
+// A CPUID/RDTSC/RDTSCP inside an arena whose 8-byte word patch would cross a
+// cache line is refused before any byte changes while cross-line publication
+// is disabled. The guest must keep running: each execution traps and reaches
+// the Tool through the continuation, and the site is never patched. Nix's
+// coreutils runs this shape in `__cpu_indicator_init` before `main`.
+// A patchable neighbour whose patch would cover such a site, and so the
+// point where a thread in its continuation resumes, must stay unpatched too.
+#[test]
+fn cross_line_instruction_site_reaches_the_tool_through_the_continuation() {
+    for on_alt_stack in [true, false] {
+        let output = late_code_guest("straddler-instruction", &[], on_alt_stack, |command| {
+            command
+                .env_remove(reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV)
+                .env(reverie_liteinst::IN_GUEST_STAGE_STREAM_ENV, "1");
+        });
+        if instruction_control_refused(&output, "straddler-instruction") {
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "straddler cpuid=tool rdtsc=tool rdtscp=tool calls=56 continuation=56 owned-stack=56 hooks=0 registers=preserved\n\
+             straddler-neighbour cpuid=tool callbacks=32 traps=8+24 hooks=0\n\
+             straddler-stale-jump cpuid=tool traps=8 hooks=0\n",
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stage_count = |stage: &str| stderr.lines().filter(|line| line.ends_with(stage)).count();
+        for (stage, expected) in [
+            ("stage=instruction-fault-continuation-cpuid", 80),
+            ("stage=instruction-fault-continuation-rdtsc", 8),
+            ("stage=instruction-fault-continuation-rdtscp", 8),
+        ] {
+            assert_eq!(stage_count(stage), expected, "{stage}: {stderr}");
+        }
+        assert!(
+            !stderr.contains("instruction-sigsegv-"),
+            "no refusal stage may appear: {stderr}"
+        );
+    }
+}
+
+// A patched CPUID whose cross-line jump spans a page boundary, with only the
+// first page later replaced by its original bytes: executing the CPUID again
+// reclaims the site while the jump's displacement survives on the second
+// page. The runtime must end the guest (the earlier patch may survive)
+// rather than resume through the continuation into those bytes.
+#[test]
+fn reclaiming_a_site_whose_jump_partly_survives_fails_closed() {
+    use std::os::unix::process::ExitStatusExt;
+
+    for on_alt_stack in [true, false] {
+        let output = late_code_guest("straddler-reclaim-partial", &[], on_alt_stack, |command| {
+            command
+                .env(reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV, "20000")
+                .env(reverie_liteinst::IN_GUEST_STAGE_STREAM_ENV, "1");
+        });
+        if instruction_control_refused(&output, "straddler-reclaim-partial") {
+            return;
+        }
+        assert_eq!(
+            output.status.signal(),
+            Some(libc::SIGSEGV),
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "reclaim-partial ready\n",
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stage_count = |stage: &str| stderr.lines().filter(|line| line.ends_with(stage)).count();
+        assert_eq!(
+            stage_count("stage=instruction-sigsegv-site-install-failed"),
+            1,
+            "alt_stack={on_alt_stack}: {stderr}"
+        );
+        // The site was patched, never emulated, and the reclaim must not
+        // resume through the continuation.
+        assert!(
+            !stderr.contains("stage=instruction-fault-continuation-cpuid"),
+            "alt_stack={on_alt_stack}: {stderr}"
+        );
+    }
+}
+
+// A syscall refused before any publication runs through the SIGSYS
+// continuation and leaves no footprint. After a no-op mremap makes it STALE,
+// a CPUID whose patch would cover it must still not be patched.
+#[test]
+fn a_stale_syscall_fallback_site_keeps_its_continuation_reservation() {
+    for on_alt_stack in [true, false] {
+        let output = late_code_guest(
+            "straddler-syscall-reservation",
+            &[],
+            on_alt_stack,
+            |command| {
+                command.env_remove(reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV);
+            },
+        );
+        if instruction_control_refused(&output, "straddler-syscall-reservation") {
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "straddler-syscall-reservation cpuid=tool syscall=getpid traps=8 hooks=0+0\n",
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+    }
+}
+
+// LiteInst publishes only into private mappings: a write through a shared
+// executable mapping would change the page cache that every alias and every
+// other process executes, behind their site tables. CPUIDs in a shared
+// mapping, even one whose word fits a cache line, must trap every time, reach
+// the Tool through the continuation, and leave the shared page unchanged.
+#[test]
+fn a_shared_executable_mapping_is_never_patched() {
+    for on_alt_stack in [true, false] {
+        let output = late_code_guest("straddler-shared-mapping", &[], on_alt_stack, |command| {
+            command.env_remove(reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV);
+        });
+        if instruction_control_refused(&output, "straddler-shared-mapping") {
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "shared-mapping cpuid=tool traps=8+8 hooks=0+0 page=unchanged\n",
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+    }
+}
+
+// A refused CPUID at a private page end resumes in an adjacent shared
+// mapping. LiteInst never publishes into shared mappings, so the resume
+// bytes are the original ones and the continuation must work.
+#[test]
+fn a_refused_site_resuming_into_a_shared_mapping_runs_through_the_continuation() {
+    for on_alt_stack in [true, false] {
+        let output = late_code_guest("straddler-split-mapping", &[], on_alt_stack, |command| {
+            command.env_remove(reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV);
+        });
+        if instruction_control_refused(&output, "straddler-split-mapping") {
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "split-mapping cpuid=tool traps=8\n",
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+    }
+}
+
+// A syscall refused before anything was written runs through the SIGSYS
+// continuation without leaving a footprint, so the patchable RDTSC starting
+// exactly at its resume point must still be patched.
+#[test]
+fn an_instruction_at_a_fallback_syscalls_resume_point_is_still_patched() {
+    for on_alt_stack in [true, false] {
+        let output = late_code_guest(
+            "fallback-syscall-then-rdtsc",
+            &[],
+            on_alt_stack,
+            |command| {
+                command.env_remove(reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV);
+            },
+        );
+        if instruction_control_refused(&output, "fallback-syscall-then-rdtsc") {
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "fallback-syscall-then-rdtsc rdtsc=tool traps=1 patched=1\n",
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+    }
+}
+
+// One file page mapped private and shared. The shared alias executes first
+// and must not be patched (the write would show through the clean private
+// alias); the private continuation site then runs on its original bytes.
+#[test]
+fn a_shared_alias_is_not_patched_under_a_private_continuation_site() {
+    for on_alt_stack in [true, false] {
+        let output = late_code_guest("straddler-private-alias", &[], on_alt_stack, |command| {
+            command.env_remove(reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV);
+        });
+        if instruction_control_refused(&output, "straddler-private-alias") {
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "private-alias shared=unpatched private=original cpuid=tool traps=8+8\n",
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+    }
+}
