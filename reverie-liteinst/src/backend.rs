@@ -540,6 +540,27 @@ fn configure_in_guest_command_preload(command: &mut Command, preload: PathBuf) {
     command.env("LD_PRELOAD", ld_preload);
 }
 
+/// Disables address-space randomization for the guest, as Reverie's ptrace and
+/// DBT launchers do. Randomized stack, heap and mapping addresses differ from
+/// run to run, and a guest observes them, so two runs of the same program would
+/// diverge. `personality(2)` is async-signal-safe and survives `execve`.
+fn disable_address_space_randomization(command: &mut std::process::Command) {
+    // SAFETY: the closure makes only async-signal-safe `personality` calls.
+    unsafe {
+        command.pre_exec(|| {
+            let current = libc::personality(0xffff_ffff);
+            if current == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            let deterministic = current as libc::c_ulong | libc::ADDR_NO_RANDOMIZE as libc::c_ulong;
+            if libc::personality(deterministic) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 fn inherit_stdio(command: &mut Command) {
     command.stdin(reverie::process::Stdio::inherit());
     command.stdout(reverie::process::Stdio::inherit());
@@ -812,6 +833,7 @@ where
     let wait = match tool_data {
         Some(tool_data) => {
             let mut child_command = command.try_into_std()?;
+            disable_address_space_randomization(&mut child_command);
             child_command.env_remove(STATS_COORDINATOR_ENV);
             if let Some(stats_socket) = &stats_socket {
                 child_command.env(STATS_COORDINATOR_ENV, stats_socket);
@@ -844,6 +866,7 @@ where
         }
         None => {
             let mut child_command = command.try_into_std()?;
+            disable_address_space_randomization(&mut child_command);
             child_command.env(COORDINATOR_ENV, &socket);
             child_command.env_remove(STATS_COORDINATOR_ENV);
             if let Some(stats_socket) = &stats_socket {

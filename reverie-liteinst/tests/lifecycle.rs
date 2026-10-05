@@ -240,6 +240,69 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
     assert_fast_path_stats(&global, &stats);
 }
 
+/// A guest command that does not inherit `ADDR_NO_RANDOMIZE` from the test
+/// runner (for example one started under `setarch -R`), so only the backend
+/// can set it. Caller `pre_exec` hooks run before the backend's.
+fn randomized_guest_command(mut command: Command) -> Command {
+    // SAFETY: the hook makes only async-signal-safe `personality` calls.
+    unsafe {
+        command.pre_exec(|| {
+            let current = libc::personality(0xffff_ffff);
+            if current == -1 {
+                return Err(reverie::syscalls::Errno::new(libc::EINVAL));
+            }
+            let randomized = current as libc::c_ulong & !(libc::ADDR_NO_RANDOMIZE as libc::c_ulong);
+            if libc::personality(randomized) == -1 {
+                return Err(reverie::syscalls::Errno::new(libc::EINVAL));
+            }
+            Ok(())
+        });
+    }
+    command
+}
+
+/// Both launchers start the guest with address-space randomization disabled,
+/// as Reverie's ptrace and DBT launchers do, so its stack, heap and mapping
+/// addresses are the same in every run.
+#[tokio::test(flavor = "current_thread")]
+async fn in_guest_runs_disable_address_space_randomization() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (output, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            randomized_guest_command(guest_command("address-randomization")),
+            (),
+            preload.clone(),
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        output.stdout, b"address randomization=disabled\n",
+        "{output:?}"
+    );
+
+    let (output, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload_data::<CoordinatorOnlyTool>(
+            randomized_guest_command(bootstrap_guest_command("address-randomization")),
+            (),
+            preload,
+            b"lifecycle".to_vec(),
+        ),
+    )
+    .await
+    .expect("bootstrap run hung")
+    .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        output.stdout, b"address randomization=disabled\n",
+        "{output:?}"
+    );
+}
+
 /// Asserts the statistics of one `fast-path` guest run.
 fn assert_fast_path_stats(
     global: &LifecycleGlobal,

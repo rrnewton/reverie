@@ -570,6 +570,17 @@ fn hooked_fork_stats() {
     println!("hooked fork stats: child=finished");
 }
 
+/// Reports whether the kernel randomizes this process's address space.
+fn address_randomization() {
+    let personality = unsafe { libc::personality(0xffff_ffff) };
+    assert_ne!(personality, -1, "{}", std::io::Error::last_os_error());
+    let disabled = personality as libc::c_ulong & libc::ADDR_NO_RANDOMIZE as libc::c_ulong != 0;
+    println!(
+        "address randomization={}",
+        if disabled { "disabled" } else { "enabled" }
+    );
+}
+
 fn main() {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
@@ -594,6 +605,7 @@ fn main() {
         Some("restart-read") => restart_read(),
         Some("nested-hook") => nested_hook(),
         Some("hooked-fork-stats") => hooked_fork_stats(),
+        Some("address-randomization") => address_randomization(),
         _ => panic!("unknown lifecycle fixture mode {mode:?}"),
     }
 }
