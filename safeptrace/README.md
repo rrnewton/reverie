@@ -44,6 +44,9 @@ requirement to stderr on a best-effort basis when it returns `EINVAL`;
 the explicit fallback does not emit that diagnostic. Linux still requires the
 actual ptracer thread for ptrace operations such as resuming a stop.
 
+Regular-file output is skipped when the observed `RLIMIT_FSIZE` is finite or
+cannot be read. This check does not pin the limit against concurrent changes.
+
 For older kernels, select the explicit ptracer-thread interface when creating
 the state: `Running::new_on_ptracer_thread`,
 `Running::attach_on_ptracer_thread`, or `Running::seize_on_ptracer_thread`.
