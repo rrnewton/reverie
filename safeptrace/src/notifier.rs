@@ -638,6 +638,12 @@ struct Event {
     /// the read side for its duration and is refused once the flag is set,
     /// so it can never reach a replacement task that reused the TID.
     terminal_reaping: RwLock<bool>,
+    /// Full retained-status validation is shared by accessors in one stop.
+    /// Fresh owner/target directory identities are still checked per request.
+    numeric_auth_epoch: AtomicUsize,
+    numeric_auth_checked_epoch: AtomicUsize,
+    #[cfg(test)]
+    numeric_auth_status_reads: AtomicUsize,
 
     /// Waker for regular status events.
     status_waker: WakerSlot,
@@ -771,6 +777,10 @@ pub(super) struct LegacyWaitOwner {
     // Opening status through this retained directory resolves the original
     // PID object. It cannot authenticate a later reused numeric host TID.
     lifetime: OwnedFd,
+    // This is the genuine thread-self directory, whose path differs from
+    // the top-level /proc/<tid> inode. Keep that same inode pinned and compare
+    // a fresh same-root thread-self lookup on every request, even cache hits.
+    directory_key: ProcDirectoryKey,
     // Current gettid is relative to the caller's active PID namespace. A
     // copied driver can have the same numeric ID after a fork into another
     // namespace while this original owner remains live. Resolve genuine
@@ -844,15 +854,17 @@ impl LegacyWaitOwner {
 
     fn capture_at(root: AlignedProcfs) -> Result<Self, Errno> {
         let tid = Pid::from(nix::unistd::gettid());
-        let current = root.current_thread_status()?;
+        let lifetime = root.open_current_thread()?;
+        let current = retained_proc_status(lifetime.as_raw_fd())?;
         if current.pid != tid || current.tgid != Pid::from(nix::unistd::getpid()) {
             return Err(Errno::EXDEV);
         }
-        let lifetime = root.open_pid(tid, libc::O_RDONLY)?;
+        let directory_key = fd_directory_key(&lifetime).map_err(io_errno)?;
         Ok(Self {
             tid,
             tgid: Pid::from(nix::unistd::getpid()),
             lifetime,
+            directory_key,
             proc_root: root,
         })
     }
@@ -866,11 +878,13 @@ impl LegacyWaitOwner {
     }
 
     pub(super) fn is_current(&self) -> Result<bool, Errno> {
-        if self.tid != Pid::from(nix::unistd::gettid()) || !self.is_live()? {
+        if self.tid != Pid::from(nix::unistd::gettid()) {
             return Ok(false);
         }
-        let current = self.proc_root.current_thread_status()?;
-        Ok(current.pid == self.tid && current.tgid == self.tgid)
+        // procfs resolves this magic link to the executing kernel task in
+        // the retained mount. Its pinned inode distinguishes raw-fork/TID
+        // namespace aliases; fstat of the retained FD alone would not.
+        Ok(self.proc_root.directory_key(c"thread-self")? == self.directory_key)
     }
 }
 
@@ -1246,6 +1260,10 @@ impl Event {
             exit_waiters: ExitWaiters::default(),
             exit_publication: Mutex::new(()),
             terminal_reaping: RwLock::new(false),
+            numeric_auth_epoch: AtomicUsize::new(1),
+            numeric_auth_checked_epoch: AtomicUsize::new(0),
+            #[cfg(test)]
+            numeric_auth_status_reads: AtomicUsize::new(0),
             status_waker: WakerSlot::default(),
             status: Mutex::new(StatusState {
                 pending: VecDeque::new(),
@@ -1311,6 +1329,10 @@ impl Event {
     /// and refuses every later one.
     fn mark_terminal_reaping(&self) {
         *self.terminal_reaping.write() = true;
+    }
+
+    fn invalidate_numeric_auth(&self) {
+        self.numeric_auth_epoch.fetch_add(1, Ordering::AcqRel);
     }
 
     fn hold_tid(&self) -> Option<TidHold<'_>> {
@@ -1643,6 +1665,7 @@ impl Event {
     /// Replaces the status and notifies the notifier of the change. Returns the
     /// old status if there was one.
     pub fn update(&self, status: i32) -> Option<i32> {
+        self.invalidate_numeric_auth();
         if status == PTRACE_EVENT_EXIT_STOP {
             self.publish_exit_stop(|| {});
             return None;
@@ -1681,6 +1704,7 @@ impl Event {
             self.update(status);
             return;
         }
+        self.invalidate_numeric_auth();
 
         // A synchronous wait directly returns this stopped capability. Keep
         // the raw stop rollback-safe in the regular FIFO without separately
@@ -2539,13 +2563,55 @@ impl EventHandle {
     /// A retained proc entry can disappear with ENOENT; normalize that only
     /// when this same retained descriptor separately reports actual ESRCH.
     /// A live, denied, or unreadable descriptor leaves the read errno intact.
-    pub(super) fn check_numeric_target_lifetime(&self) -> Result<(), Errno> {
+    pub(super) fn check_numeric_target_lifetime(
+        &self,
+        owner: &LegacyWaitOwner,
+    ) -> Result<(), Errno> {
         let identity = self.identity().ok_or(Errno::ENODATA)?;
+        // A cached status does not pin a stopped task against fatal signals
+        // or nonleader exec. Revalidate the original same-path proc inode
+        // before every numeric request, including an unregistered Event.
+        match owner.proc_root.directory_key(&identity.numeric_name) {
+            Ok(key) if key == identity.proc_key => {}
+            Ok(_) => return Err(Errno::ESRCH),
+            Err(Errno::ENOENT) => {
+                // Preserve the retained-directory errno distinction. Missing
+                // numeric lookup alone is not proof that our descriptor died.
+                return match identity.current_tracer_pid() {
+                    Err(Errno::ENOENT) if identity.pidfd_is_live() == Ok(false) => {
+                        Err(Errno::ESRCH)
+                    }
+                    Err(error) => Err(error),
+                    Ok(_) => Err(Errno::ENOENT),
+                };
+            }
+            Err(error) => return Err(error),
+        }
+        let event = self.event();
+        let epoch = event.numeric_auth_epoch.load(Ordering::Acquire);
+        if event.numeric_auth_checked_epoch.load(Ordering::Acquire) == epoch {
+            return Ok(());
+        }
+        #[cfg(test)]
+        event
+            .numeric_auth_status_reads
+            .fetch_add(1, Ordering::Relaxed);
         match identity.current_tracer_pid() {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                // Cache only the epoch observed BEFORE validation. A wait or
+                // resume racing this read leaves the new epoch unvalidated.
+                event
+                    .numeric_auth_checked_epoch
+                    .store(epoch, Ordering::Release);
+                Ok(())
+            }
             Err(Errno::ENOENT) if identity.pidfd_is_live() == Ok(false) => Err(Errno::ESRCH),
             Err(error) => Err(error),
         }
+    }
+
+    pub(super) fn invalidate_numeric_auth(&self) {
+        self.event().invalidate_numeric_auth();
     }
 
     pub(super) fn initial_capture_error(&self) -> Option<Errno> {
@@ -2557,6 +2623,7 @@ impl EventHandle {
     /// after that retired owner reaches DONE; native descriptor waiters keep
     /// their original facade and lifetime behavior.
     pub(super) fn reconnect_attachment(&self, pid: Pid) -> Self {
+        self.invalidate_numeric_auth();
         loop {
             let handle = self.resolved_handle();
             let Some(identity) = handle.identity() else {
@@ -2984,6 +3051,8 @@ struct WorkerIdentity {
     pidfd: ThreadHandle,
     proc_dir: OwnedFd,
     proc_inode: u64,
+    proc_key: ProcDirectoryKey,
+    numeric_name: std::ffi::CString,
     proc_root: Option<Arc<AlignedProcfs>>,
 }
 
@@ -3041,7 +3110,8 @@ impl WorkerIdentity {
                 .map_err(io_errno)?
                 .into(),
         };
-        let proc_inode = fd_inode(&proc_dir).map_err(io_errno)?;
+        let proc_key = fd_directory_key(&proc_dir).map_err(io_errno)?;
+        let proc_inode = proc_key.inode;
         let read_snapshot = || match &proc_root {
             Some(_) => retained_proc_snapshot(proc_dir.as_raw_fd()),
             None => worker_proc_snapshot(pid),
@@ -3074,6 +3144,8 @@ impl WorkerIdentity {
             pidfd,
             proc_dir,
             proc_inode,
+            proc_key,
+            numeric_name: std::ffi::CString::new(pid.as_raw().to_string()).expect("decimal pid"),
             proc_root,
         })
     }
@@ -3523,6 +3595,21 @@ struct AlignedProcfs {
     root: OwnedFd,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProcDirectoryKey {
+    device: libc::dev_t,
+    inode: libc::ino_t,
+}
+
+impl ProcDirectoryKey {
+    fn from_stat(metadata: libc::stat) -> Self {
+        Self {
+            device: metadata.st_dev,
+            inode: metadata.st_ino,
+        }
+    }
+}
+
 impl AlignedProcfs {
     fn open() -> Result<Self, Errno> {
         let _open = launch_window::TransientOpen::begin();
@@ -3587,7 +3674,7 @@ impl AlignedProcfs {
         }
     }
 
-    fn current_thread_status(&self) -> Result<RetainedProcStatus, Errno> {
+    fn open_current_thread(&self) -> Result<OwnedFd, Errno> {
         let _open = launch_window::TransientOpen::begin();
         // procfs's thread-self link resolves the executing kernel task in
         // this retained mount's namespace. Follow that genuine kernel link;
@@ -3602,8 +3689,31 @@ impl AlignedProcfs {
         if raw < 0 {
             return Err(Errno::last());
         }
-        let directory = unsafe { OwnedFd::from_raw_fd(raw) };
-        retained_proc_status(directory.as_raw_fd())
+        Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+    }
+
+    #[cfg(test)]
+    fn current_thread_status(&self) -> Result<RetainedProcStatus, Errno> {
+        retained_proc_status(self.open_current_thread()?.as_raw_fd())
+    }
+
+    fn directory_key(&self, name: &std::ffi::CStr) -> Result<ProcDirectoryKey, Errno> {
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe {
+            libc::fstatat(
+                self.root.as_raw_fd(),
+                name.as_ptr(),
+                metadata.as_mut_ptr(),
+                0,
+            )
+        } < 0
+        {
+            Err(Errno::last())
+        } else {
+            Ok(ProcDirectoryKey::from_stat(unsafe {
+                metadata.assume_init()
+            }))
+        }
     }
 }
 
@@ -4280,12 +4390,15 @@ fn sync_decode_token(token: &TraceeToken, event: EventHandle) -> TraceeToken {
     }
 }
 
-fn resume_cancelled_sync_status(pid: Pid, status: i32) -> Result<(), Error> {
+fn resume_cancelled_sync_status(pid: Pid, status: i32, handle: &EventHandle) -> Result<(), Error> {
     if !libc::WIFSTOPPED(status) {
         return Ok(());
     }
     match nix::sys::ptrace::cont(pid.into(), None) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            handle.invalidate_numeric_auth();
+            Ok(())
+        }
         // An untraced job-control stop needs no resume for the already-pending
         // exact-pidfd SIGKILL to terminate it.
         // SIGKILL can advance an exit-stopped task before PTRACE_CONT reaches
@@ -4374,7 +4487,7 @@ fn wait_sync_for_policy(
                     })? {
                         StatusReturn::Returned(decoded) => return Ok(decoded),
                         StatusReturn::Cancelled(status) => {
-                            resume_cancelled_sync_status(pid, status)?;
+                            resume_cancelled_sync_status(pid, status, &handle)?;
                             cancelling = true;
                         }
                         // The owner is released; claim the next status anew.
@@ -4466,7 +4579,7 @@ fn wait_sync_for_policy(
                     })? {
                         StatusReturn::Returned(decoded) => return Ok(decoded),
                         StatusReturn::Cancelled(reserved_status) => {
-                            resume_cancelled_sync_status(pid, reserved_status)?;
+                            resume_cancelled_sync_status(pid, reserved_status, &handle)?;
                             cancelling = true;
                         }
                         // The owner is released; claim the next status anew.
@@ -4580,11 +4693,17 @@ fn procfs_error_shows_exit(error: &std::io::Error) -> bool {
 }
 
 fn fd_inode(fd: &OwnedFd) -> std::io::Result<u64> {
+    fd_directory_key(fd).map(|key| key.inode)
+}
+
+fn fd_directory_key(fd: &OwnedFd) -> std::io::Result<ProcDirectoryKey> {
     let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
     if unsafe { libc::fstat(fd.as_raw_fd(), metadata.as_mut_ptr()) } < 0 {
         Err(io::Error::last_os_error())
     } else {
-        Ok(unsafe { metadata.assume_init() }.st_ino)
+        Ok(ProcDirectoryKey::from_stat(unsafe {
+            metadata.assume_init()
+        }))
     }
 }
 
@@ -6324,11 +6443,17 @@ impl WaitFuture {
                 }
             };
             return match event.decode_status_return(reservation, |status| {
-                let mut token = TraceeToken::from_event_for_policy(event_handle.clone(), policy);
-                if policy == WaitPolicy::PtracerThread {
-                    token.ptracer_owner = ptracer_owner.clone();
-                    token.ptracer_wait_role = ptracer_wait_role;
-                }
+                // The explicit driver already authenticated its retained
+                // original owner. Carry that same anchor into this stop;
+                // recapturing it here would immediately discard the result.
+                let token = TraceeToken {
+                    event: event_handle.clone(),
+                    policy,
+                    ptracer_owner: (policy == WaitPolicy::PtracerThread)
+                        .then(|| ptracer_owner.clone())
+                        .flatten(),
+                    ptracer_wait_role: policy == WaitPolicy::PtracerThread && ptracer_wait_role,
+                };
                 Wait::from_raw_with_token(pid, status, token)
             }) {
                 Ok(StatusReturn::Returned(decoded)) => Poll::Ready(Ok(decoded)),
@@ -7099,6 +7224,7 @@ impl TerminalCleanup {
 
 #[cfg(test)]
 mod test {
+    include!("stop_auth_cache_tests.rs");
     include!("retired_tid_tests.rs");
     include!("legacy_thread_tests.rs");
     include!("legacy_owner_tests.rs");
