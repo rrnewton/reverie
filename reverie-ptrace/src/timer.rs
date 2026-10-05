@@ -67,8 +67,6 @@ use std::cmp::Ordering::Greater;
 use std::cmp::Ordering::Less;
 use std::sync::OnceLock;
 
-use crate::tracer::PtracerWaitOwner;
-use crate::tracer::WaitOnPtracer;
 use reverie::Errno;
 use reverie::Pid;
 use reverie::RegDisplay;
@@ -94,6 +92,8 @@ use tracing::trace;
 use tracing::warn;
 
 use crate::perf::*;
+use crate::tracer::PtracerWaitOwner;
+use crate::tracer::WaitOnPtracer;
 
 // This signal is unused, in that the kernel will never send it to a process.
 const MARKER_SIGNAL: Signal = reverie::PERF_EVENT_SIGNAL;
