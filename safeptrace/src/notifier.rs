@@ -204,6 +204,13 @@ static PIDFD_LIVENESS_ERRORS: LazyLock<Mutex<HashMap<Pid, VecDeque<Errno>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+thread_local! {
+    // Procfs status reads made by this thread, so a test can assert that a
+    // hot path performs none.
+    static PROC_STATUS_READS: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
 static PROCFS_OBSERVATION_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -648,6 +655,10 @@ struct Event {
 
     /// Wakes synchronous cancellation cleanup when a status is published.
     status_changed: Condvar,
+
+    /// The tracer thread proved by this generation's latest resume; see
+    /// [`Event::resumed_by_calling_thread_without_publication`].
+    resume_proof: Mutex<ResumeProof>,
     #[cfg(test)]
     sync_wait_entered: Mutex<Option<mpsc::SyncSender<SyncWaitTestTransition>>>,
     #[cfg(test)]
@@ -664,7 +675,7 @@ struct Event {
     legacy_wait: Mutex<LegacyWaitProgress>,
     /// The actual host ptracer's immutable lifetime, bound only by that live
     /// thread after retained-generation attachment authentication.
-    legacy_wait_owner: OnceLock<LegacyWaitOwner>,
+    legacy_wait_owner: OnceLock<Arc<LegacyWaitOwner>>,
     /// A separately acquired native descriptor may join a legacy Event. The
     /// one worker drains consumed legacy statuses before using this anchor;
     /// existing legacy facades keep their immutable descriptor/error mode.
@@ -751,6 +762,21 @@ struct Event {
     legacy_worker_cycle_pause: Mutex<Option<BoundedTestPause>>,
 }
 
+/// The OS thread whose successful ptrace request last resumed a tracee.
+///
+/// The kernel accepts a resume only from the tracee's current tracer thread,
+/// so a recorded resume proves which thread was the tracer at that moment.
+/// Only an explicit detach changes the tracer without first publishing a
+/// stop to the same Event, and it withdraws the proof before its request.
+#[derive(Debug, Default)]
+struct ResumeProof {
+    /// The [`host_thread`] token of the resuming thread, or 0 for none.
+    thread: u64,
+    /// Explicit detaches so far. A resume that overlapped one records
+    /// nothing, so a stale resume cannot restore a withdrawn proof.
+    detaches: u64,
+}
+
 /// Keeps a generation's TID from being reaped. See [`EventHandle::hold_tid`].
 pub(super) struct TidHold<'a> {
     _guard: RwLockReadGuard<'a, bool>,
@@ -777,6 +803,10 @@ pub(super) struct LegacyWaitOwner {
     // thread-self through the capture-time mount to authenticate the task
     // executing now without consulting a later absolute /proc overmount.
     proc_root: AlignedProcfs,
+    // The capturing OS thread's never-reused host_thread token, if tokens
+    // are available in this process. It only short-cuts `is_current` on
+    // that same thread; every other caller takes the full procfs check.
+    thread: Option<u64>,
 }
 
 /// The task selected before an initial numeric attachment. The raw ptrace
@@ -837,12 +867,148 @@ impl AttachmentAnchor {
     }
 }
 
+/// Identifies the executing OS thread without procfs.
+///
+/// Every thread draws its token from a process-wide counter that never
+/// repeats, so a token recorded by a [`LegacyWaitOwner`] matches only the
+/// thread that captured it, never a later thread that reuses its numeric TID.
+/// A forked child copies the forking thread's thread-local token, so tokens
+/// are honoured only while a `MADV_WIPEONFORK` canary page still holds its
+/// marker: the kernel zero-fills that page in every fork child, which then
+/// always takes the full procfs check. Initialization takes no lock, so a fork
+/// cannot leave a child waiting on a lock held by a parent thread. A
+/// `CLONE_VM` child that shares its parent's TLS without `CLONE_SETTLS`
+/// (vfork, posix_spawn) must not run Rust code at all before exec.
+mod host_thread {
+    use std::cell::Cell;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    const MARKER: u64 = 0x5265_7665_7269_6531;
+    /// CANARY states: 0 is not yet installed, UNAVAILABLE means this process
+    /// cannot use tokens, and anything else is the canary page address.
+    const UNAVAILABLE: usize = 1;
+    static CANARY: AtomicUsize = AtomicUsize::new(0);
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+
+    std::thread_local! {
+        static TOKEN: Cell<u64> = const { Cell::new(0) };
+    }
+
+    fn install() -> usize {
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let len = usize::try_from(page)
+            .ok()
+            .filter(|len| *len > 0)
+            .unwrap_or(4096);
+        let addr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        let mine = if addr == libc::MAP_FAILED {
+            UNAVAILABLE
+        } else if unsafe { libc::madvise(addr, len, libc::MADV_WIPEONFORK) } != 0 {
+            unsafe { libc::munmap(addr, len) };
+            UNAVAILABLE
+        } else {
+            unsafe { &*addr.cast::<AtomicU64>() }.store(MARKER, Ordering::Relaxed);
+            addr as usize
+        };
+        match CANARY.compare_exchange(0, mine, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => mine,
+            Err(installed) => {
+                if mine != UNAVAILABLE {
+                    unsafe { libc::munmap(addr, len) };
+                }
+                installed
+            }
+        }
+    }
+
+    /// This OS thread's token, or None in a fork child, when the canary
+    /// could not be installed, or while thread-local storage is torn down.
+    pub(super) fn token() -> Option<u64> {
+        let mut canary = CANARY.load(Ordering::Acquire);
+        if canary == 0 {
+            canary = install();
+        }
+        if canary == UNAVAILABLE
+            || unsafe { &*(canary as *const AtomicU64) }.load(Ordering::Relaxed) != MARKER
+        {
+            return None;
+        }
+        TOKEN
+            .try_with(|token| {
+                if token.get() == 0 {
+                    token.set(NEXT.fetch_add(1, Ordering::Relaxed));
+                }
+                token.get()
+            })
+            .ok()
+    }
+}
+
+/// Owners each OS thread captured, keyed by the never-reused ID of the
+/// procfs mount each went through. At most `LIMIT` per thread, so the
+/// descriptors they retain scale with tracer threads and procfs mounts, not
+/// with tracees. A fork child holds no [`host_thread`] token, so it never
+/// matches or changes an entry it inherited.
+mod host_owners {
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    use super::LegacyWaitOwner;
+
+    const LIMIT: usize = 4;
+
+    type Owners = RefCell<Vec<(u64, Arc<LegacyWaitOwner>)>>;
+
+    std::thread_local! {
+        static OWNERS: Owners = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn get(mount: u64) -> Option<Arc<LegacyWaitOwner>> {
+        OWNERS
+            .try_with(|owners| {
+                owners
+                    .try_borrow()
+                    .ok()?
+                    .iter()
+                    .find(|(key, owner)| *key == mount && owner.is_capturing_thread())
+                    .map(|(_, owner)| Arc::clone(owner))
+            })
+            .ok()
+            .flatten()
+    }
+
+    pub(super) fn offer(mount: u64, owner: &Arc<LegacyWaitOwner>) {
+        let _ = OWNERS.try_with(|owners| {
+            let Ok(mut owners) = owners.try_borrow_mut() else {
+                return;
+            };
+            owners.retain(|(key, cached)| *key != mount && cached.is_capturing_thread());
+            if owners.len() >= LIMIT {
+                owners.remove(0);
+            }
+            owners.push((mount, Arc::clone(owner)));
+        });
+    }
+}
+
 impl LegacyWaitOwner {
     fn capture_current() -> Result<Self, Errno> {
         Self::capture_at(AlignedProcfs::open()?)
     }
 
     fn capture_at(root: AlignedProcfs) -> Result<Self, Errno> {
+        let thread = host_thread::token();
         let tid = Pid::from(nix::unistd::gettid());
         let current = root.current_thread_status()?;
         if current.pid != tid || current.tgid != Pid::from(nix::unistd::getpid()) {
@@ -854,7 +1020,16 @@ impl LegacyWaitOwner {
             tgid: Pid::from(nix::unistd::getpid()),
             lifetime,
             proc_root: root,
+            thread,
         })
+    }
+
+    /// True only on the OS thread that captured this owner, in the process
+    /// that captured it. That thread is necessarily live, still has this
+    /// TID and TGID, and resolves as thread-self through the capture-time
+    /// mount, which is everything the full procfs check establishes.
+    fn is_capturing_thread(&self) -> bool {
+        self.thread.is_some() && self.thread == host_thread::token()
     }
 
     fn is_live(&self) -> Result<bool, Errno> {
@@ -866,7 +1041,17 @@ impl LegacyWaitOwner {
     }
 
     pub(super) fn is_current(&self) -> Result<bool, Errno> {
-        if self.tid != Pid::from(nix::unistd::gettid()) || !self.is_live()? {
+        if self.tid != Pid::from(nix::unistd::gettid()) {
+            return Ok(false);
+        }
+        // Each ptracer request, poll and driver construction authenticates
+        // its host; three procfs status reads per check made every ptrace
+        // stop several times more expensive. The capturing thread needs none
+        // of the two status reads below.
+        if self.is_capturing_thread() {
+            return Ok(true);
+        }
+        if !self.is_live()? {
             return Ok(false);
         }
         let current = self.proc_root.current_thread_status()?;
@@ -1257,6 +1442,7 @@ impl Event {
                 epoch_exec: None,
             }),
             status_changed: Condvar::new(),
+            resume_proof: Mutex::new(ResumeProof::default()),
             #[cfg(test)]
             sync_wait_entered: Mutex::new(None),
             #[cfg(test)]
@@ -1776,6 +1962,51 @@ impl Event {
 
     fn is_terminal(&self) -> bool {
         self.status.lock().terminal != INVALID_STATUS
+    }
+
+    /// The detach count a resume must still observe to record its proof.
+    fn resume_proof_detaches(&self) -> u64 {
+        self.resume_proof.lock().detaches
+    }
+
+    /// Records that the calling thread's ptrace request just resumed this
+    /// generation, unless an explicit detach began after `detaches` was read.
+    fn record_resume_proof(&self, detaches: u64) {
+        let mut proof = self.resume_proof.lock();
+        if proof.detaches == detaches {
+            proof.thread = host_thread::token().unwrap_or(0);
+        }
+    }
+
+    /// Withdraws any resume proof before an explicit detach request.
+    fn clear_resume_proof(&self) {
+        let mut proof = self.resume_proof.lock();
+        proof.thread = 0;
+        proof.detaches = proof.detaches.wrapping_add(1);
+    }
+
+    /// Whether the calling OS thread resumed this generation and nothing has
+    /// been published since that could carry a change of tracer.
+    ///
+    /// The kernel accepts a resume only from the tracee's tracer thread, so a
+    /// recorded resume proves the calling thread was its tracer. Afterwards
+    /// the tracer changes only through a detach, which needs a stopped tracee
+    /// and withdraws this proof first when made through [`crate::Stopped`],
+    /// or through an exit or exec, which this generation's worker publishes
+    /// as a stop, an exit stop or a terminal status. Any such publication
+    /// that is still unconsumed makes this false. This reads no procfs.
+    fn resumed_by_calling_thread_without_publication(&self) -> bool {
+        let Some(thread) = host_thread::token() else {
+            return false;
+        };
+        if self.resume_proof.lock().thread != thread {
+            return false;
+        }
+        if self.exit_status.load(Ordering::Acquire) != EXIT_PENDING {
+            return false;
+        }
+        let state = self.status.lock();
+        state.pending.is_empty() && state.terminal == INVALID_STATUS
     }
 
     /// Reserves the next status without removing a fallibly decoded FIFO front.
@@ -2541,6 +2772,17 @@ impl EventHandle {
     /// A live, denied, or unreadable descriptor leaves the read errno intact.
     pub(super) fn check_numeric_target_lifetime(&self) -> Result<(), Errno> {
         let identity = self.identity().ok_or(Errno::ENODATA)?;
+        // This runs before every explicit request, and a status read costs
+        // an open, a read and a close of the target's procfs entry. Signal 0
+        // through the retained PID object succeeds exactly while a task is
+        // still attached to it, which is when that read would succeed too.
+        // Only a live answer skips the read; ESRCH, a denied signal or any
+        // other error keeps the original read and its errno mapping below.
+        // This uses the descriptor directly so that the injected test
+        // results stay with the read path they were written for.
+        if pidfd_is_live(&identity.pidfd) == Ok(true) {
+            return Ok(());
+        }
         match identity.current_tracer_pid() {
             Ok(_) => Ok(()),
             Err(Errno::ENOENT) if identity.pidfd_is_live() == Ok(false) => Err(Errno::ESRCH),
@@ -2609,7 +2851,7 @@ impl EventHandle {
 
     pub(super) fn capture_current_ptracer_owner(&self) -> Result<Arc<LegacyWaitOwner>, Errno> {
         let identity = self.identity().ok_or(Errno::ENODATA)?;
-        identity.capture_current_owner(false).map(Arc::new)
+        identity.capture_current_owner(false)
     }
 
     pub(super) fn capture_current_owner(&self) -> Result<Arc<LegacyWaitOwner>, Errno> {
@@ -2619,14 +2861,13 @@ impl EventHandle {
         if !identity.authenticates_wait_role(&owner)? {
             return Err(Errno::EPERM);
         }
-        Ok(Arc::new(owner))
+        Ok(owner)
     }
 
     pub(super) fn capture_current_constructor_owner(&self) -> Result<Arc<LegacyWaitOwner>, Errno> {
         self.identity()
             .ok_or(Errno::ENODATA)?
             .capture_current_owner(true)
-            .map(Arc::new)
     }
 
     pub(super) fn authenticates_wait_role(&self, owner: &LegacyWaitOwner) -> Result<bool, Errno> {
@@ -2648,6 +2889,30 @@ impl EventHandle {
 
     fn event(&self) -> &Arc<Event> {
         &self.resolved().0.event
+    }
+
+    /// Runs a ptrace request that resumes this generation and, when the
+    /// kernel accepts it, records the calling thread as its proved tracer.
+    pub(super) fn resuming<T>(
+        &self,
+        request: impl FnOnce() -> Result<T, Errno>,
+    ) -> Result<T, Errno> {
+        let event = self.event();
+        let detaches = event.resume_proof_detaches();
+        let result = request();
+        if result.is_ok() {
+            event.record_resume_proof(detaches);
+        }
+        result
+    }
+
+    /// Runs an explicit detach request after withdrawing any resume proof.
+    pub(super) fn detaching<T>(
+        &self,
+        request: impl FnOnce() -> Result<T, Errno>,
+    ) -> Result<T, Errno> {
+        self.event().clear_resume_proof();
+        request()
     }
 
     /// Performs at most one bounded consuming query for a Procfs notifier.
@@ -2902,6 +3167,8 @@ struct RetainedProcStatus {
 /// signal permission and wait authority have different kernel checks. A
 /// denied signal, including a seccomp-synthesized EPERM, proves no lifetime.
 fn retained_proc_status(directory: RawFd) -> Result<RetainedProcStatus, Errno> {
+    #[cfg(test)]
+    let _ = PROC_STATUS_READS.try_with(|reads| reads.set(reads.get() + 1));
     let _open = launch_window::TransientOpen::begin();
     let raw = unsafe {
         libc::openat(
@@ -2985,6 +3252,10 @@ struct WorkerIdentity {
     proc_dir: OwnedFd,
     proc_inode: u64,
     proc_root: Option<Arc<AlignedProcfs>>,
+    /// The never-reused ID of the procfs mount that this identity's first
+    /// token-bearing owner capture went through. It selects which owner the
+    /// capturing thread may reuse instead of capturing again.
+    root_mount: OnceLock<u64>,
 }
 
 impl WorkerIdentity {
@@ -3075,6 +3346,7 @@ impl WorkerIdentity {
             proc_dir,
             proc_inode,
             proc_root,
+            root_mount: OnceLock::new(),
         })
     }
 
@@ -3086,6 +3358,19 @@ impl WorkerIdentity {
                 current.same_process_generation(&self.snapshot)
                     && tracer_is_current(current.tracer_pid)
             })
+    }
+
+    /// True only when the kernel reports the task now holding this TID as
+    /// ptrace-stopped under the calling OS thread. PTRACE_GETEVENTMSG has no
+    /// side effect and succeeds only if the target's tracer is the caller
+    /// and the target is in a ptrace stop; every other case, including a
+    /// running target, reports false and proves nothing.
+    ///
+    /// The numeric TID can name a different task only after this identity's
+    /// task has been reaped, and then current_tracer_pid reports ENOENT or
+    /// ESRCH, which check_attachment also accepts.
+    fn is_stopped_under_calling_thread(&self) -> bool {
+        nix::sys::ptrace::getevent(self.pid.into()).is_ok()
     }
 
     /// Reads current attachment state through the retained proc directory,
@@ -3120,7 +3405,44 @@ impl WorkerIdentity {
     /// caller carrying a copied native token into a descendant namespace.
     /// Derive the root from the retained target directory for native Events
     /// that predate any local interface; never join it to a fresh /proc.
-    fn capture_current_owner(&self, allow_untraced: bool) -> Result<LegacyWaitOwner, Errno> {
+    fn capture_current_owner(&self, allow_untraced: bool) -> Result<Arc<LegacyWaitOwner>, Errno> {
+        // A capture costs three procfs status reads and three opens, and
+        // every ptracer request, poll and driver construction asks for one.
+        // An owner this same OS thread already captured through the same
+        // procfs mount is what a fresh capture would produce: one live
+        // thread's TID, thread-self and alignment with the mount's PID
+        // namespace cannot change. Only the target's attachment can, so
+        // check that again.
+        if let Some(owner) = self
+            .root_mount
+            .get()
+            .and_then(|mount| host_owners::get(*mount))
+        {
+            self.check_capturing_tracer(allow_untraced)?;
+            return Ok(owner);
+        }
+        let owner = Arc::new(self.capture_current_owner_from_procfs(allow_untraced)?);
+        if owner.is_capturing_thread()
+            && let Some(mount) = fd_unique_mount(&owner.proc_root.root)
+            && *self.root_mount.get_or_init(|| mount) == mount
+        {
+            host_owners::offer(mount, &owner);
+        }
+        Ok(owner)
+    }
+
+    fn check_capturing_tracer(&self, allow_untraced: bool) -> Result<(), Errno> {
+        let tracer = self.current_tracer_pid()?;
+        if tracer != Pid::from(nix::unistd::gettid()) && !(allow_untraced && tracer.as_raw() == 0) {
+            return Err(Errno::EPERM);
+        }
+        Ok(())
+    }
+
+    fn capture_current_owner_from_procfs(
+        &self,
+        allow_untraced: bool,
+    ) -> Result<LegacyWaitOwner, Errno> {
         let _open = launch_window::TransientOpen::begin();
         let root = match &self.proc_root {
             Some(root) => root.root.try_clone().map_err(io_errno)?,
@@ -3139,10 +3461,7 @@ impl WorkerIdentity {
             }
         };
         let root = AlignedProcfs::from_root(root)?;
-        let tracer = self.current_tracer_pid()?;
-        if tracer != Pid::from(nix::unistd::gettid()) && !(allow_untraced && tracer.as_raw() == 0) {
-            return Err(Errno::EPERM);
-        }
+        self.check_capturing_tracer(allow_untraced)?;
         LegacyWaitOwner::capture_at(root)
     }
 
@@ -4577,6 +4896,32 @@ fn procfs_error_shows_exit(error: &std::io::Error) -> bool {
         Some(errno) => errno == libc::ENOENT || errno == libc::ESRCH,
         None => error.kind() == std::io::ErrorKind::NotFound,
     }
+}
+
+/// `STATX_MNT_ID_UNIQUE` from the Linux 6.8 uapi `<linux/stat.h>`. The libc
+/// crate exports it only from 0.2.190, and this crate accepts libc 0.2.186, so
+/// a consumer resolving an older libc (Hermit's lockfile has 0.2.189) must
+/// still compile.
+const STATX_MNT_ID_UNIQUE: libc::c_uint = 0x0000_4000;
+
+/// The kernel's never-reused ID for the mount that `fd` resolves through, or
+/// None before Linux 6.8 added `STATX_MNT_ID_UNIQUE`.
+fn fd_unique_mount(fd: &OwnedFd) -> Option<u64> {
+    let mut metadata = std::mem::MaybeUninit::<libc::statx>::zeroed();
+    let rc = unsafe {
+        libc::statx(
+            fd.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH,
+            STATX_MNT_ID_UNIQUE,
+            metadata.as_mut_ptr(),
+        )
+    };
+    if rc < 0 {
+        return None;
+    }
+    let metadata = unsafe { metadata.assume_init() };
+    (metadata.stx_mask & STATX_MNT_ID_UNIQUE != 0).then_some(metadata.stx_mnt_id)
 }
 
 fn fd_inode(fd: &OwnedFd) -> std::io::Result<u64> {
@@ -6324,11 +6669,20 @@ impl WaitFuture {
                 }
             };
             return match event.decode_status_return(reservation, |status| {
-                let mut token = TraceeToken::from_event_for_policy(event_handle.clone(), policy);
-                if policy == WaitPolicy::PtracerThread {
-                    token.ptracer_owner = ptracer_owner.clone();
-                    token.ptracer_wait_role = ptracer_wait_role;
-                }
+                let token = if policy == WaitPolicy::PtracerThread {
+                    // The result keeps this wait's original owner and role.
+                    // Capturing a fresh owner first, as the generic
+                    // constructor does, would cost target status reads for
+                    // a value that is replaced immediately.
+                    TraceeToken {
+                        event: event_handle.clone(),
+                        policy,
+                        ptracer_owner: ptracer_owner.clone(),
+                        ptracer_wait_role,
+                    }
+                } else {
+                    TraceeToken::from_event_for_policy(event_handle.clone(), policy)
+                };
                 Wait::from_raw_with_token(pid, status, token)
             }) {
                 Ok(StatusReturn::Returned(decoded)) => Poll::Ready(Ok(decoded)),
@@ -6626,6 +6980,15 @@ impl PtracerAffinity {
     fn check_attachment(&self, handle: &EventHandle) -> Result<(), Errno> {
         let identity = handle.identity().ok_or(Errno::ENODATA)?;
         let owner = self.owner.as_ref().ok_or(Errno::EPERM)?;
+        // Every wait, exit and cleanup poll checks attachment, which made
+        // one procfs status read per ptrace stop. When this is the owner's
+        // capturing thread and the kernel reports the target stopped under
+        // it, the target's tracer is the owner, which is what the TracerPid
+        // comparison below establishes. A running, detached, foreign-attached
+        // or exited target, or any other thread, takes the full check.
+        if owner.is_capturing_thread() && identity.is_stopped_under_calling_thread() {
+            return Ok(());
+        }
         let tracer = match identity.current_tracer_pid() {
             Ok(tracer) => tracer,
             // de_thread may retire the original proc inode before the sole
@@ -6645,6 +7008,27 @@ impl PtracerAffinity {
             return Err(Errno::EPERM);
         }
         Ok(())
+    }
+
+    /// [`Self::check_attachment`] for a wait poll, which usually finds the
+    /// target running after its owner resumed it: no ptrace request can probe
+    /// a running tracee without side effects, so the full check would read
+    /// procfs once per stop. The owner's capturing thread may instead rely
+    /// on its own accepted resume while the Event has published nothing that
+    /// could carry a change of tracer. Every other case takes the full check.
+    fn check_wait_attachment(&self, handle: &EventHandle) -> Result<(), Errno> {
+        handle.identity().ok_or(Errno::ENODATA)?;
+        if self
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.is_capturing_thread())
+            && handle
+                .event()
+                .resumed_by_calling_thread_without_publication()
+        {
+            return Ok(());
+        }
+        self.check_attachment(handle)
     }
 }
 
@@ -6706,7 +7090,7 @@ impl PtracerWaitDriver {
         }
         if !handle.event().is_terminal()
             && !*handle.event().terminal_reaping.read()
-            && let Err(error) = self.affinity.check_attachment(handle)
+            && let Err(error) = self.affinity.check_wait_attachment(handle)
         {
             // The sole worker may have reaped between the first flag read
             // and the retained attachment read. Its real pending terminal
@@ -6995,12 +7379,23 @@ impl PtracerTerminalCleanup {
         // kernel wait owner. Startup may still have an unregistered cleanup
         // guard to install; registration begins only when this facade requests
         // progress, a wait, or a reservation.
-        let mut cleanup = Self::from_shared(TerminalCleanup::new_unregistered(pid, token));
-        if let Some(owner) = &token.ptracer_owner {
-            cleanup.driver.affinity.owner = Some(Arc::clone(owner));
-            cleanup.driver.affinity.wait_role = token.ptracer_wait_role;
+        let shared = TerminalCleanup::new_unregistered(pid, token);
+        match &token.ptracer_owner {
+            // Adopt the token's owner and role as they are. Constructing
+            // through `from_shared` would first capture an owner from the
+            // target's status, only for this assignment to replace it.
+            Some(owner) => Self {
+                driver: PtracerCleanupDriver {
+                    shared,
+                    affinity: PtracerAffinity {
+                        owner: Some(Arc::clone(owner)),
+                        wait_role: token.ptracer_wait_role,
+                    },
+                },
+                local: PhantomData,
+            },
+            None => Self::from_shared(shared),
         }
-        cleanup
     }
 
     fn from_shared(shared: TerminalCleanup) -> Self {

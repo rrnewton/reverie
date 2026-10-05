@@ -266,6 +266,31 @@ impl TraceeToken {
         }
         request()
     }
+
+    /// [`Self::on_held_tid`] for a request that resumes the tracee. An
+    /// accepted resume lets the resuming thread's next wait poll prove its
+    /// attachment without procfs; see `notifier::EventHandle::resuming`.
+    fn on_held_tid_resuming(
+        &self,
+        request: impl FnOnce() -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        #[cfg(feature = "notifier")]
+        return self.event.resuming(|| self.on_held_tid(request));
+        #[cfg(not(feature = "notifier"))]
+        self.on_held_tid(request)
+    }
+
+    /// [`Self::on_held_tid`] for a detach, which first withdraws the proof
+    /// that [`Self::on_held_tid_resuming`] records.
+    fn on_held_tid_detaching(
+        &self,
+        request: impl FnOnce() -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        #[cfg(feature = "notifier")]
+        return self.event.detaching(|| self.on_held_tid(request));
+        #[cfg(not(feature = "notifier"))]
+        self.on_held_tid(request)
+    }
 }
 
 fn nix_errno(err: nix::Error) -> Errno {
@@ -1136,7 +1161,7 @@ impl Stopped {
     /// Resumes the process and transitions it back to a running state.
     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         self.1
-            .on_held_tid(|| ptrace::cont(self.0.into(), sig).map_err(nix_errno))
+            .on_held_tid_resuming(|| ptrace::cont(self.0.into(), sig).map_err(nix_errno))
             .map_err(|err| self.map_err(err))?;
         Ok(self.into_running())
     }
@@ -1156,7 +1181,7 @@ impl Stopped {
     ) -> Result<Running, (Self, Errno)> {
         let result = self
             .1
-            .on_held_tid(|| ptrace::cont(self.0.into(), sig).map_err(nix_errno));
+            .on_held_tid_resuming(|| ptrace::cont(self.0.into(), sig).map_err(nix_errno));
         self.finish_retained_resume(result)
     }
 
@@ -1205,7 +1230,7 @@ impl Stopped {
     /// delivering a signal specified by `sig`.
     pub fn step<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         self.1
-            .on_held_tid(|| ptrace::step(self.0.into(), sig).map_err(nix_errno))
+            .on_held_tid_resuming(|| ptrace::step(self.0.into(), sig).map_err(nix_errno))
             .map_err(|err| self.map_err(err))?;
         Ok(self.into_running())
     }
@@ -1214,7 +1239,7 @@ impl Stopped {
     /// entry to or exit from a system call.
     pub fn syscall<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         self.1
-            .on_held_tid(|| ptrace::syscall(self.0.into(), sig).map_err(nix_errno))
+            .on_held_tid_resuming(|| ptrace::syscall(self.0.into(), sig).map_err(nix_errno))
             .map_err(|err| self.map_err(err))?;
         Ok(self.into_running())
     }
@@ -1402,7 +1427,7 @@ impl Stopped {
     /// Detaches from and then resumes the stopped tracee.
     pub fn detach<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         self.1
-            .on_held_tid(|| ptrace::detach(self.0.into(), sig).map_err(nix_errno))
+            .on_held_tid_detaching(|| ptrace::detach(self.0.into(), sig).map_err(nix_errno))
             .map_err(|err| self.map_err(err))?;
         Ok(self.into_running())
     }
