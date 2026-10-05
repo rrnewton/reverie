@@ -117,6 +117,8 @@ impl Backend for PtraceBackend {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
 
@@ -124,12 +126,24 @@ mod tests {
     use reverie::Guest;
     use reverie::Pid;
     use reverie::Subscription;
+    use reverie::Tid;
     use reverie::syscalls::Syscall;
 
     use super::*;
 
     #[derive(Debug, Default)]
-    struct SyscallCount(AtomicU64);
+    struct SyscallCount(AtomicU64, Mutex<HashSet<i32>>);
+
+    impl SyscallCount {
+        fn only_tracee_tid(&self) -> i32 {
+            let tids = self
+                .1
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert_eq!(tids.len(), 1, "the control must identify its actual tracee");
+            *tids.iter().next().unwrap()
+        }
+    }
 
     #[reverie::global_tool]
     impl GlobalTool for SyscallCount {
@@ -152,6 +166,20 @@ mod tests {
 
         fn subscriptions(_config: &()) -> Subscription {
             Subscription::all_syscalls()
+        }
+
+        fn on_thread_state_ready(
+            &self,
+            tid: Tid,
+            global: &SyscallCount,
+            _state: &Self::ThreadState,
+        ) -> Result<(), Error> {
+            global
+                .1
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(tid.as_raw());
+            Ok(())
         }
 
         async fn handle_syscall_event<G: Guest<Self>>(
@@ -206,12 +234,15 @@ mod tests {
         );
     }
 
-    /// How many images have been canonicalized so far in this process.
-    fn canonicalized_count() -> usize {
+    /// Count only this host's actual tracee, retaining any pre-exec record too.
+    fn canonicalized_count(tid: i32) -> usize {
+        let host = std::thread::current().id();
         crate::task::CANONICALIZED_FOR_TEST
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .len()
+            .iter()
+            .filter(|(owner, recorded_tid)| *owner == host && *recorded_tid == tid)
+            .count()
     }
 
     /// A new image gets the canonical vDSO and auxv at its exec stop:
@@ -220,10 +251,9 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[tokio::test(flavor = "current_thread")]
     async fn an_execd_image_gets_the_canonical_vdso_and_auxv_once() {
-        let before = canonicalized_count();
         let mut command = Command::new("/bin/true");
         command.env("LD_SHOW_AUXV", "1");
-        let (output, _global, _stats) =
+        let (output, global, _stats) =
             PtraceBackend::run_with_output::<CountEverySyscall>(command, ())
                 .await
                 .unwrap();
@@ -241,7 +271,7 @@ mod tests {
             line("AT_HWCAP:").trim_end().ends_with("78bfbfd"),
             "{stdout}"
         );
-        assert_eq!(canonicalized_count() - before, 1);
+        assert_eq!(canonicalized_count(global.only_tracee_tid()), 1);
     }
 
     /// The root's first stop comes before its exec, while its stack is still
@@ -250,13 +280,12 @@ mod tests {
     /// never execs.
     #[tokio::test(flavor = "current_thread")]
     async fn a_tracee_that_never_execs_is_not_canonicalized() {
-        let before = canonicalized_count();
         let tracer = crate::tracer::spawn_fn::<CountEverySyscall, _>(|| {})
             .await
             .unwrap();
-        let (status, _global) = tracer.wait().await.unwrap();
+        let (status, global) = tracer.wait().await.unwrap();
         assert_eq!(status, ExitStatus::Exited(0));
-        assert_eq!(canonicalized_count(), before);
+        assert_eq!(canonicalized_count(global.only_tracee_tid()), 0);
     }
 
     #[tokio::test(flavor = "current_thread")]

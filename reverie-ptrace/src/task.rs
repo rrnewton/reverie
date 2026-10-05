@@ -287,9 +287,11 @@ pub enum PreinitPlace {
     AtExec,
 }
 
-/// The tids whose new image was given the canonical vDSO and auxv, in order.
+/// The actual host threads and tracee tids whose images were canonicalized.
+/// The host separates independent libtests; the tid binds each count to its tracee.
 #[cfg(test)]
-pub(crate) static CANONICALIZED_FOR_TEST: StdMutex<Vec<i32>> = StdMutex::new(Vec::new());
+pub(crate) static CANONICALIZED_FOR_TEST: StdMutex<Vec<(std::thread::ThreadId, i32)>> =
+    StdMutex::new(Vec::new());
 
 /// How [`TracedTask::tracee_preinit`] ended.
 pub enum PreinitOutcome {
@@ -4603,7 +4605,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             CANONICALIZED_FOR_TEST
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .push(task.pid().as_raw());
+                .push((std::thread::current().id(), task.pid().as_raw()));
             match vdso::canonicalize_new_image(self, regs.rsp).await {
                 Ok(()) => {}
                 // A tracee that died meanwhile reports a bare errno.
