@@ -42,6 +42,16 @@ use crate::validation::check_for_pmu_bugs;
 
 static PMU_BUG: LazyLock<Result<(), PmuValidationError>> = LazyLock::new(check_for_pmu_bugs);
 
+/// Whether this host's performance counters passed Reverie's validation: the
+/// counters work, and no known counting bug (such as AMD Zen SpecLockMap) is
+/// present. Reverie computes this once per process, on the first call here or
+/// the first timer, and only logs a failure. A tool that needs exact
+/// retired-branch counts, such as a deterministic one, can refuse to run on a
+/// host where this returns an error.
+pub fn pmu_validation() -> Result<(), &'static PmuValidationError> {
+    PMU_BUG.as_ref().copied()
+}
+
 // Not available in the libc crate
 const F_SETOWN_EX: libc::c_int = 15;
 const F_SETSIG: libc::c_int = 10;
