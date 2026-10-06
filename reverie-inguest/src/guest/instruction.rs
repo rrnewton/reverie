@@ -12,19 +12,30 @@
 //! `SIGSEGV`. This module holds the process's subscriptions, the preflight and
 //! the switches for those controls, the decoder for the faulting encodings,
 //! native execution at private helper sites that are never patched, and the
-//! hand-off of a fault to the fallback continuation for emulation.
+//! hand-off of a fault to the fallback continuation for emulation, and the
+//! `SIGSEGV` handler itself, which asks the backend (through an
+//! [`InstructionFaultSeam`]) where a fault lies and whether its site can be
+//! patched.
 
 use core::arch::global_asm;
+use core::ptr;
+use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::Ordering;
 use std::io;
 
 use crate::guest::context::RegisterContext;
 use crate::guest::event::InstructionEventKind;
+use crate::guest::support::IN_GUEST_STAGE_WRITE_FAILURE_STATUS;
 use crate::guest::support::KernelSigaction;
 use crate::guest::support::SignalInstallGuard;
+use crate::guest::support::StackLine;
 use crate::guest::support::emit_in_guest_stage;
 use crate::guest::support::exit_now;
+use crate::guest::support::mapping_name_at;
+use crate::guest::support::read_own_bytes;
+use crate::guest::support::stage_stream_enabled;
+use crate::guest::support::tool_callback_active;
 use crate::trap::raw_syscall6;
 
 global_asm!(
@@ -581,6 +592,240 @@ pub unsafe fn deliver_default_sigsegv() -> ! {
         )
     };
     unsafe { exit_now(128 + libc::SIGSEGV) }
+}
+
+/// Where a faulting instruction lies, as the backend's seam reports it.
+pub enum FaultSite {
+    /// In code the backend can patch; the decoded instruction at the fault.
+    Patchable {
+        /// The instruction.
+        kind: InstructionEventKind,
+        /// Its exact encoding, as `decode_instruction` returns it.
+        encoding: &'static [u8],
+    },
+    /// Outside all code the backend can patch: emulated if the bytes are
+    /// exactly a subscribed instruction and the fault is kernel-raised.
+    Unpatchable,
+    /// In code the backend can patch, but not a recognized instruction. The
+    /// backend has reported it; the process ends by default `SIGSEGV`.
+    Refused,
+}
+
+/// What the backend did with a subscribed instruction's patchable site.
+pub enum PatchOutcome {
+    /// Resume at this address (the hook's trampoline), which runs the Tool's
+    /// callback and continues after the instruction.
+    Resume(u64),
+    /// Nothing at the site changed: emulate the instruction through the
+    /// fallback continuation.
+    Emulate,
+    /// The site may be partly patched, so the code after the instruction is no
+    /// longer known; the process ends by default `SIGSEGV`.
+    Failed,
+}
+
+/// The backend's part of instruction fault handling. Both functions are
+/// called only from the `SIGSEGV` handler installed by
+/// [`install_instruction_signal_handler`], for a fault at `address` (the
+/// frame's RIP), and must be async-signal-safe.
+pub struct InstructionFaultSeam {
+    /// Classifies the fault. `info` may be null; `context` is the handler's
+    /// kernel frame, valid for reads during the call.
+    pub locate: unsafe fn(
+        address: u64,
+        info: *const libc::siginfo_t,
+        context: *const libc::ucontext_t,
+    ) -> FaultSite,
+    /// Patches the site of a subscribed instruction reported as
+    /// [`FaultSite::Patchable`]; never called inside a Tool callback.
+    pub patch: unsafe fn(
+        address: u64,
+        kind: InstructionEventKind,
+        encoding: &'static [u8],
+    ) -> PatchOutcome,
+}
+
+static INSTRUCTION_FAULT_SEAM: AtomicPtr<InstructionFaultSeam> = AtomicPtr::new(ptr::null_mut());
+
+/// Records `subscriptions` and, when any instruction is subscribed, installs
+/// the instruction fault handler as this process's `SIGSEGV` action, using
+/// `seam` for the backend's part (on the alternate signal stack when
+/// `on_alt_stack`).
+///
+/// # Safety
+///
+/// `seam`'s functions must meet [`InstructionFaultSeam`]'s contract. The
+/// handler replaces any `SIGSEGV` action the process had.
+pub unsafe fn install_instruction_signal_handler(
+    seam: &'static InstructionFaultSeam,
+    subscriptions: InstructionSubscriptions,
+    on_alt_stack: bool,
+) -> io::Result<()> {
+    if !set_instruction_subscriptions(subscriptions) {
+        return Ok(());
+    }
+    INSTRUCTION_FAULT_SEAM.store(ptr::from_ref(seam).cast_mut(), Ordering::Release);
+
+    let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+    action.sa_flags = libc::SA_SIGINFO | if on_alt_stack { libc::SA_ONSTACK } else { 0 };
+    action.sa_sigaction = instruction_sigsegv_handler as *const () as usize;
+    if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::sigaction(libc::SIGSEGV, &action, ptr::null_mut()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+unsafe extern "C" fn instruction_sigsegv_handler(
+    signal: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+) {
+    if signal != libc::SIGSEGV || context.is_null() {
+        emit_in_guest_stage(b"instruction-sigsegv-invalid-context");
+        unsafe { deliver_default_sigsegv() };
+    }
+    // SAFETY: stored from a &'static before the handler was installed.
+    let Some(seam) = (unsafe { INSTRUCTION_FAULT_SEAM.load(Ordering::Acquire).as_ref() }) else {
+        emit_in_guest_stage(b"instruction-sigsegv-no-seam");
+        unsafe { deliver_default_sigsegv() };
+    };
+    // Keep the raw kernel pointer: the fallback continuation borrows the same
+    // frame through `SignalFrame`, which must not alias a live reference.
+    let raw_context = context;
+    let address = unsafe {
+        (*raw_context.cast::<libc::ucontext_t>()).uc_mcontext.gregs[libc::REG_RIP as usize]
+    } as u64;
+    let (kind, expected) =
+        match unsafe { (seam.locate)(address, info, raw_context.cast::<libc::ucontext_t>()) } {
+            FaultSite::Patchable { kind, encoding } => (kind, encoding),
+            FaultSite::Refused => unsafe { deliver_default_sigsegv() },
+            FaultSite::Unpatchable => {
+                unsafe { emulate_unpatchable_instruction(info, raw_context, address) };
+                return;
+            }
+        };
+    if !instruction_is_subscribed(kind) {
+        emit_in_guest_stage(b"instruction-sigsegv-unsubscribed");
+        unsafe { deliver_default_sigsegv() };
+    }
+
+    // An unpatched instruction reached from an active Tool callback must not
+    // allocate a trampoline. After fork, the arena cursor is process-private
+    // but its backing pages are shared; child publication would let the parent
+    // reuse and overwrite the same slot. Execute at the private native helper
+    // and advance the faulting context instead.
+    if tool_callback_active() {
+        let context = unsafe { &mut *raw_context.cast::<libc::ucontext_t>() };
+        unsafe { execute_nested_fault_natively(kind, context, expected.len()) };
+        return;
+    }
+
+    match unsafe { (seam.patch)(address, kind, expected) } {
+        PatchOutcome::Resume(entry) => {
+            let context = unsafe { &mut *raw_context.cast::<libc::ucontext_t>() };
+            context.uc_mcontext.gregs[libc::REG_RIP as usize] = entry as i64;
+        }
+        PatchOutcome::Emulate => unsafe {
+            emulate_through_continuation(info, raw_context, address, kind)
+        },
+        PatchOutcome::Failed => unsafe { deliver_default_sigsegv() },
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(liteinst-late-code-cpuid): Review emulation of instructions outside every arena.
+/// Handle an instruction fault at `address`, which lies outside all code the
+/// backend can patch (for LiteInst, every arena recorded at startup), so no
+/// hook can ever be published there.
+///
+/// Only a kernel-raised fault (`SI_KERNEL`, the #GP of CPUID faulting or
+/// `PR_TSC_SIGSEGV`) whose bytes, read without risking a nested fault, are
+/// exactly CPUID, RDTSC, or RDTSCP is emulated. Everything else keeps the
+/// default `SIGSEGV` the guest would have received without the runtime.
+unsafe fn emulate_unpatchable_instruction(
+    info: *const libc::siginfo_t,
+    raw_context: *mut libc::c_void,
+    address: u64,
+) {
+    let mut bytes = [0_u8; 8];
+    let available = unsafe { read_own_bytes(address, &mut bytes) };
+    let kernel_fault = !info.is_null() && unsafe { (*info).si_code } == libc::SI_KERNEL;
+    let decoded = kernel_fault
+        .then(|| decode_instruction(&bytes[..available]))
+        .flatten();
+    let Some((kind, expected)) = decoded else {
+        emit_unarenaed_refusal_stage(
+            b"instruction-sigsegv-no-reachable-arena",
+            address,
+            &bytes[..available],
+        );
+        unsafe { deliver_default_sigsegv() };
+    };
+    if !instruction_is_subscribed(kind) {
+        emit_in_guest_stage(b"instruction-sigsegv-unsubscribed");
+        unsafe { deliver_default_sigsegv() };
+    }
+    if tool_callback_active() {
+        let context = unsafe { &mut *raw_context.cast::<libc::ucontext_t>() };
+        unsafe { execute_nested_fault_natively(kind, context, expected.len()) };
+        return;
+    }
+    unsafe { emulate_through_continuation(info, raw_context, address, kind) };
+}
+
+/// Emit the refusal of a fault outside every arena with its absolute RIP, the
+/// `/proc/self/maps` path of the mapping containing it (`[anon]` when the
+/// mapping has none, `[unmapped]` when no mapping contains it), and the bytes
+/// that could be read there. Allocation-free and signal-safe; it reads the
+/// maps file only when the stage stream is enabled.
+fn emit_unarenaed_refusal_stage(stage: &[u8], address: u64, bytes: &[u8]) {
+    if !stage_stream_enabled() {
+        return;
+    }
+    let mut name = [0_u8; 256];
+    let name = match unsafe { mapping_name_at(address, &mut name) } {
+        Some(0) => b"[anon]".as_slice(),
+        Some(len) => &name[..len],
+        None => b"[unmapped]".as_slice(),
+    };
+    let mut line = StackLine::new();
+    line.push_bytes(b"INFO reverie_liteinst::tool_host: [in-guest pid=");
+    line.push_signed(unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) });
+    line.push_bytes(b" tid=");
+    line.push_signed(unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) });
+    line.push_bytes(b"] stage=");
+    line.push_bytes(stage);
+    line.push_bytes(b" rip=0x");
+    line.push_hex(address);
+    line.push_bytes(b" bytes=");
+    for (index, byte) in bytes.iter().enumerate() {
+        if index != 0 {
+            line.push_bytes(b"-");
+        }
+        line.push_hex_byte(*byte);
+    }
+    line.push_bytes(b" map=");
+    line.push_bytes(name);
+    line.push_bytes(b"\n");
+    let written = unsafe {
+        raw_syscall6(
+            libc::SYS_write,
+            [
+                libc::STDERR_FILENO as u64,
+                line.as_bytes().as_ptr() as u64,
+                line.as_bytes().len() as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if written != line.as_bytes().len() as i64 {
+        unsafe { exit_now(IN_GUEST_STAGE_WRITE_FAILURE_STATUS) };
+    }
 }
 
 #[cfg(test)]
