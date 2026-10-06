@@ -136,7 +136,6 @@ use reverie_inguest::guest::instruction::FaultSite;
 use reverie_inguest::guest::instruction::InstructionFaultSeam;
 pub(crate) use reverie_inguest::guest::instruction::InstructionSubscriptions;
 use reverie_inguest::guest::instruction::PatchOutcome;
-use reverie_inguest::guest::instruction::any_instruction_subscribed;
 pub(crate) use reverie_inguest::guest::instruction::cpuid_interception_enabled;
 use reverie_inguest::guest::instruction::decode_instruction;
 use reverie_inguest::guest::instruction::deliver_default_sigsegv;
@@ -146,9 +145,10 @@ use reverie_inguest::guest::instruction::install_instruction_signal_handler;
 pub(crate) use reverie_inguest::guest::instruction::preflight_instruction_faulting;
 use reverie_inguest::guest::instruction::set_all_instruction_native;
 use reverie_inguest::guest::instruction::set_instruction_native;
+pub(crate) use reverie_inguest::guest::signal::prepare_guest_signal_state;
+pub(crate) use reverie_inguest::guest::signal::reserved_signal_mask;
+pub(crate) use reverie_inguest::guest::signal::signal_action_supported;
 use reverie_inguest::guest::support::IN_GUEST_STAGE_WRITE_FAILURE_STATUS;
-use reverie_inguest::guest::support::KernelSigaction;
-pub(crate) use reverie_inguest::guest::support::SignalInstallGuard;
 pub(crate) use reverie_inguest::guest::support::StackLine;
 pub(crate) use reverie_inguest::guest::support::ToolCallbackGuard;
 pub(crate) use reverie_inguest::guest::support::emit_in_guest_stage;
@@ -513,20 +513,6 @@ pub fn alt_stack_from_env_value(value: Option<&OsStr>) -> io::Result<bool> {
 fn runtime_config_from_env() -> io::Result<RuntimeConfig> {
     let use_alt_stack = alt_stack_from_env_value(std::env::var_os(ALT_STACK_ENV).as_deref())?;
     Ok(RuntimeConfig { use_alt_stack })
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-913): Review the reserved-signal set kept unblocked.
-/// Signals the runtime receives as forced signals and so must never be
-/// blocked: SIGSYS for every trapped system call, and SIGSEGV for CPUID or
-/// RDTSC faulting while an instruction is subscribed. Linux resets a blocked
-/// forced signal to its default action, which kills the process.
-pub(crate) fn reserved_signal_mask() -> u64 {
-    let mut reserved = 1_u64 << (libc::SIGSYS - 1);
-    if any_instruction_subscribed() {
-        reserved |= 1_u64 << (libc::SIGSEGV - 1);
-    }
-    reserved
 }
 
 pub(crate) fn initialize_from_environment() -> io::Result<()> {
@@ -1910,120 +1896,6 @@ fn vdso_callback(number: i64) -> io::Result<liteinst2::trampoline::HookCallback>
             format!("unsupported LiteInst vDSO syscall number {number}"),
         )),
     }
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-133): Review atomic signal-state preparation.
-pub(crate) fn prepare_guest_signal_state(
-    instructions: InstructionSubscriptions,
-) -> io::Result<SignalInstallGuard> {
-    let sigsys = 1_u64 << (libc::SIGSYS - 1);
-    let sigsegv = if instructions.cpuid || instructions.rdtsc {
-        1_u64 << (libc::SIGSEGV - 1)
-    } else {
-        0
-    };
-    let install_mask = u64::MAX;
-    let mut previous_mask = 0_u64;
-    let result = unsafe {
-        raw_syscall6(
-            libc::SYS_rt_sigprocmask,
-            [
-                libc::SIG_SETMASK as u64,
-                (&raw const install_mask) as u64,
-                (&raw mut previous_mask) as u64,
-                core::mem::size_of::<u64>() as u64,
-                0,
-                0,
-            ],
-        )
-    };
-    if result < 0 {
-        return Err(io::Error::from_raw_os_error((-result) as i32));
-    }
-    let guard = SignalInstallGuard::restoring(previous_mask & !(sigsys | sigsegv));
-
-    for signal in 1..=64 {
-        if matches!(signal, libc::SIGKILL | libc::SIGSTOP) {
-            continue;
-        }
-        let mut action = KernelSigaction::default();
-        let result = unsafe {
-            raw_syscall6(
-                libc::SYS_rt_sigaction,
-                [
-                    signal as u64,
-                    0,
-                    (&raw mut action) as u64,
-                    core::mem::size_of::<u64>() as u64,
-                    0,
-                    0,
-                ],
-            )
-        };
-        if result < 0 {
-            return Err(io::Error::from_raw_os_error((-result) as i32));
-        }
-        if action.handler != libc::SIG_DFL as u64 && action.handler != libc::SIG_IGN as u64 {
-            let default_action = KernelSigaction::default();
-            let result = unsafe {
-                raw_syscall6(
-                    libc::SYS_rt_sigaction,
-                    [
-                        signal as u64,
-                        (&raw const default_action) as u64,
-                        0,
-                        core::mem::size_of::<u64>() as u64,
-                        0,
-                        0,
-                    ],
-                )
-            };
-            if result < 0 {
-                return Err(io::Error::from_raw_os_error((-result) as i32));
-            }
-        }
-    }
-    Ok(guard)
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-133): Review fault-safe guest signal-action decoding.
-pub(crate) fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
-    if number != libc::SYS_rt_sigaction || args[1] == 0 {
-        return true;
-    }
-    if args[0] == libc::SIGSYS as u64
-        || (args[0] == libc::SIGSEGV as u64 && any_instruction_subscribed())
-    {
-        return false;
-    }
-
-    let mut handler = 0_u64;
-    let local = libc::iovec {
-        iov_base: (&raw mut handler).cast(),
-        iov_len: core::mem::size_of::<u64>(),
-    };
-    let remote = libc::iovec {
-        iov_base: args[1] as usize as *mut libc::c_void,
-        iov_len: core::mem::size_of::<u64>(),
-    };
-    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
-    let read = unsafe {
-        raw_syscall6(
-            libc::SYS_process_vm_readv,
-            [
-                pid as u64,
-                (&raw const local) as u64,
-                1,
-                (&raw const remote) as u64,
-                1,
-                0,
-            ],
-        )
-    };
-    read == core::mem::size_of::<u64>() as i64
-        && matches!(handler, value if value == libc::SIG_DFL as u64 || value == libc::SIG_IGN as u64)
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED

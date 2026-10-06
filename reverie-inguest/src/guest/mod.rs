@@ -27,4 +27,5 @@ pub mod host;
 pub mod instruction;
 #[cfg(feature = "coordinator-rpc")]
 pub mod rpc;
+pub mod signal;
 pub mod support;
