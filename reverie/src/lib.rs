@@ -71,6 +71,7 @@ mod signal;
 mod signal_observation;
 mod stack;
 mod subscription;
+pub mod task_ids;
 mod timer;
 mod tool;
 pub mod vdso;

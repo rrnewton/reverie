@@ -3375,7 +3375,8 @@ impl ElfExecutor {
             .get(state.tid)
             .expect("registered KVM task exists")
             .process_generation;
-        let next_pid = state.pid.saturating_add(1);
+        let next_pid =
+            reverie::task_ids::next_task_id(state.pid, state.ids_per_task).unwrap_or(i32::MAX);
         let sigchld_auto_reap = Arc::new(AtomicBool::new(sigchld_auto_reaps(&state)));
         let address_space = None;
         file_table = Arc::new(std::sync::Mutex::new(
@@ -3572,13 +3573,20 @@ impl ElfExecutor {
         )
     }
 
-    /// Reserve the next run-wide task ID without wrapping. Once the space is
-    /// exhausted every later clone fails with EAGAIN, as Linux does when no
-    /// PID is free, and the counter no longer moves.
+    /// Reserve the next run-wide task ID without wrapping, spending the run's
+    /// IDs per task (`reverie::task_ids`). Once the space is exhausted every
+    /// later clone fails with EAGAIN, as Linux does when no PID is free, and
+    /// the counter no longer moves.
     fn allocate_task_id(&self) -> Option<i32> {
+        let ids_per_task = self.state.ids_per_task;
+        // The counter holds the next ID to hand out; i32::MAX marks the space
+        // as exhausted, so the last valid ID is handed out once whatever the
+        // step, and the counter then stays at i32::MAX.
         self.next_pid
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |next| {
-                next.checked_add(1)
+                (next > 0 && next < i32::MAX).then(|| {
+                    reverie::task_ids::next_task_id(next, ids_per_task).unwrap_or(i32::MAX)
+                })
             })
             .ok()
             .filter(|id| *id > 0)
@@ -21697,6 +21705,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         logical_clock_ns: 0,
         umask: 0o022,
         random_seed: 0,
+        ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
         getrandom_offset: 0,
         host_metadata_timestamps: false,
         thread_name: *b"test\0\0\0\0\0\0\0\0\0\0\0\0",
@@ -60799,6 +60808,48 @@ mod tests {
                     .is_empty(),
             );
         }
+    }
+
+    /// With Hermit's ptrace-reference numbering a run's tasks spend two IDs
+    /// each: the root's first child is root + 2, then root + 4, root + 6, ...
+    /// for processes and threads alike; with the default, Linux's, they are
+    /// consecutive.
+    #[test]
+    fn task_ids_follow_the_configured_numbering() {
+        let dir = TestDir::new();
+        for (ids_per_task, offsets) in [
+            (reverie::task_ids::HERMIT_PTRACE_IDS_PER_TASK, [2, 4, 6]),
+            (reverie::task_ids::LINUX_IDS_PER_TASK, [1, 2, 3]),
+        ] {
+            let mut state = test_state(&dir.0);
+            state.ids_per_task = ids_per_task;
+            let root = state.pid;
+            let executor = ElfExecutor::new(state, false);
+            for offset in offsets {
+                assert_eq!(
+                    executor.allocate_task_id(),
+                    Some(root + offset),
+                    "{ids_per_task}"
+                );
+            }
+        }
+    }
+
+    /// With two IDs per task the last valid ID is still handed out once:
+    /// candidates MAX - 3 and MAX - 1 succeed, then every request fails and the
+    /// counter stays at i32::MAX.
+    #[test]
+    fn task_id_allocation_hands_out_the_last_id_with_a_wider_step() {
+        let dir = TestDir::new();
+        let mut state = test_state(&dir.0);
+        state.ids_per_task = reverie::task_ids::HERMIT_PTRACE_IDS_PER_TASK;
+        let executor = ElfExecutor::new(state, false);
+        executor.next_pid.store(i32::MAX - 3, Ordering::SeqCst);
+        assert_eq!(executor.allocate_task_id(), Some(i32::MAX - 3));
+        assert_eq!(executor.allocate_task_id(), Some(i32::MAX - 1));
+        assert_eq!(executor.allocate_task_id(), None);
+        assert_eq!(executor.allocate_task_id(), None);
+        assert_eq!(executor.next_pid.load(Ordering::SeqCst), i32::MAX);
     }
 
     #[test]
