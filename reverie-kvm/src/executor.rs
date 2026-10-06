@@ -3375,7 +3375,7 @@ impl ElfExecutor {
             .get(state.tid)
             .expect("registered KVM task exists")
             .process_generation;
-        let next_pid = state.pid.saturating_add(1);
+        let next_pid = state.pid.saturating_add(2);
         let sigchld_auto_reap = Arc::new(AtomicBool::new(sigchld_auto_reaps(&state)));
         let address_space = None;
         file_table = Arc::new(std::sync::Mutex::new(
@@ -3578,7 +3578,7 @@ impl ElfExecutor {
     fn allocate_task_id(&self) -> Option<i32> {
         self.next_pid
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |next| {
-                next.checked_add(1)
+                next.checked_add(2)
             })
             .ok()
             .filter(|id| *id > 0)
