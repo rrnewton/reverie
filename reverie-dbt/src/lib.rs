@@ -45,6 +45,7 @@ use std::task::Poll;
 use std::task::Waker;
 
 pub use counter2_global::Counter2Global;
+pub use evidence::CoordinatorEvidence;
 pub use evidence::DbtEvidence;
 pub use evidence::DbtEvidenceLogLevel;
 pub use evidence::decode_evidence;
