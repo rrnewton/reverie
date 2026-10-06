@@ -20,7 +20,6 @@ use liteinst2::trampoline::InstalledHook;
 use liteinst2::trampoline::TrampolineArena;
 use liteinst2::trampoline::TrampolineError;
 use reverie_inguest::BuiltinTool;
-use reverie_inguest::dispatch::SyscallDispatcher;
 use reverie_inguest::dispatch::SyscallEvent as PreloadSyscallEvent;
 use reverie_inguest::dispatch::is_fork_like;
 use reverie_inguest::fork::ForkHook;
@@ -52,7 +51,6 @@ const fn const_bytes_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 const UNSET_RESULT: i64 = i64::MIN;
-const SYS_IO_PGETEVENTS: i64 = 333;
 const TOOL_STRACE: u8 = 1;
 const TOOL_COMPAT: u8 = 2;
 const TOOL_REVERIE: u8 = 3;
@@ -156,6 +154,11 @@ pub(crate) use reverie_inguest::guest::support::exit_now;
 pub(crate) use reverie_inguest::guest::support::read_own_bytes;
 pub(crate) use reverie_inguest::guest::support::scan_own_maps;
 pub(crate) use reverie_inguest::guest::support::tool_callback_active;
+use reverie_inguest::guest::trap_dispatch::InGuestDispatcher;
+use reverie_inguest::guest::trap_dispatch::SitePatch;
+use reverie_inguest::guest::trap_dispatch::TrapPath;
+use reverie_inguest::guest::trap_dispatch::TrapSeam;
+use reverie_inguest::guest::trap_dispatch::forward_nested_tool_syscall;
 
 struct RuntimeArena {
     mapping_start: u64,
@@ -539,7 +542,10 @@ fn install_runtime(
     }?;
     unsafe {
         reverie_inguest::install(
-            Box::new(LiteinstDispatcher::new(stats, publication)),
+            Box::new(InGuestDispatcher::new(LiteinstSeam::new(
+                stats,
+                publication,
+            ))),
             &InProcessSeccomp,
             &config,
         )
@@ -1803,53 +1809,6 @@ fn vdso_callback(number: i64) -> io::Result<liteinst2::trampoline::HookCallback>
     }
 }
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-133): Review nested Tool syscall guards and raw forwarding.
-fn forward_nested_tool_syscall(event: &mut SyscallEvent) {
-    let unsupported_process =
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        event.number == libc::SYS_clone
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == libc::SYS_clone3
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == libc::SYS_fork
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == libc::SYS_vfork
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == libc::SYS_execve
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == libc::SYS_execveat;
-    let unsupported_signal_state =
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        event.number == libc::SYS_rt_sigaction
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == libc::SYS_rt_sigprocmask
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == libc::SYS_sigaltstack
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == libc::SYS_rt_sigsuspend
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == libc::SYS_pselect6
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == libc::SYS_ppoll
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == libc::SYS_epoll_pwait
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == libc::SYS_epoll_pwait2
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || event.number == SYS_IO_PGETEVENTS;
-    if unsupported_process {
-        event.result = -i64::from(libc::ENOTSUP);
-    } else if unsupported_signal_state {
-        event.result = -i64::from(libc::EPERM);
-    } else if !(protect_runtime_control(event)
-        || unsafe { protect_runtime_descriptors(event, false) })
-    {
-        event.result = unsafe { event.forward() };
-        observe_mapping_generation(event);
-    }
-}
-
 fn instruction_at(address: u64) -> Option<(InstructionEventKind, &'static [u8])> {
     let arena = arena_for(address)?;
     let available = usize::try_from(arena.mapping_end.checked_sub(address)?)
@@ -2119,7 +2078,8 @@ unsafe fn dispatch_syscall_context(
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review guarded installed-hook bypass for Tool-internal syscalls.
     if tool_callback_active() {
-        forward_nested_tool_syscall(&mut event);
+        // SAFETY: a Tool callback's own syscall, which runs natively.
+        unsafe { forward_nested_tool_syscall(&mut event, observe_mapping_generation) };
         context.rax = event.result as u64;
         context.rcx = context.instruction_pointer.saturating_add(2);
         context.r11 = context.rflags;
@@ -2198,20 +2158,13 @@ unsafe fn locate_syscall_site(resume_address: u64) -> Option<u64> {
 
 type RecordFallbackStats = fn(crate::stats::GuestStatsHooks, u64);
 
-struct LiteinstDispatcher {
+struct LiteinstSeam {
     stats: crate::stats::GuestStatsHooks,
     record_fallback_stats: RecordFallbackStats,
     publication: PatchPublication,
 }
 
-impl LiteinstDispatcher {
-    fn refuse_fallback(&self, event: &mut PreloadSyscallEvent) {
-        FALLBACK_REFUSALS.record(event.number());
-        self.stats
-            .record_path(crate::LiteinstDispatchPath::FallbackRefusal);
-        event.fail(libc::EOPNOTSUPP);
-    }
-
+impl LiteinstSeam {
     fn new(stats: crate::stats::GuestStatsHooks, publication: PatchPublication) -> Self {
         Self {
             stats,
@@ -2225,86 +2178,26 @@ impl LiteinstDispatcher {
     }
 }
 
-fn record_disabled_fallback_stats(_stats: crate::stats::GuestStatsHooks, _address: u64) {}
-
-#[cfg(test)]
-static ENABLED_FALLBACK_CLASSIFICATIONS: AtomicU64 = AtomicU64::new(0);
-
-fn record_enabled_fallback_stats(stats: crate::stats::GuestStatsHooks, address: u64) {
-    #[cfg(test)]
-    ENABLED_FALLBACK_CLASSIFICATIONS.fetch_add(1, Ordering::Relaxed);
-    if !SITE_PATCHING_ENABLED.load(Ordering::Relaxed) {
-        stats.record_path(crate::LiteinstDispatchPath::PatchingDisabledFallback);
-        return;
-    }
-    let straddler =
-        find_site(address).is_some_and(|site| site.straddle_prefix.load(Ordering::Relaxed) != 0);
-    stats.record_path(if straddler {
-        crate::LiteinstDispatchPath::CachelineStraddlerFallback
-    } else {
-        crate::LiteinstDispatchPath::UnpatchableOrOtherFallback
-    });
-}
-
-impl SyscallDispatcher for LiteinstDispatcher {
-    fn dispatch(&self, event: &mut PreloadSyscallEvent) {
-        self.dispatch_with_frame(event, None);
+// LiteInst's part of the shared SIGSYS dispatcher
+// (reverie_inguest::guest::trap_dispatch): its compatibility Tools' fork and
+// wait fallbacks, the arena-based location of the syscall instruction, site
+// patching, and its counters and statistics.
+impl TrapSeam for LiteinstSeam {
+    fn record_path(&self, path: TrapPath) {
+        self.stats.record_path(match path {
+            TrapPath::NestedSigsys => crate::LiteinstDispatchPath::InGuestNestedSigsys,
+            TrapPath::Sigsys => crate::LiteinstDispatchPath::InGuestSigsys,
+            TrapPath::PhysicalSigsys => crate::LiteinstDispatchPath::InGuestPhysicalSigsys,
+            TrapPath::FallbackCompletion => crate::LiteinstDispatchPath::FallbackCompletionSigsys,
+            TrapPath::FallbackRefusal => crate::LiteinstDispatchPath::FallbackRefusal,
+        });
     }
 
-    fn dispatch_private_signal(
-        &self,
-        frame: &mut reverie_inguest::trap::frame::SignalFrame<'_>,
-    ) -> bool {
-        self.stats
-            .record_path(crate::LiteinstDispatchPath::InGuestPhysicalSigsys);
-        match crate::syscall_fallback::complete(frame) {
-            Ok(true) => {
-                self.stats
-                    .record_path(crate::LiteinstDispatchPath::FallbackCompletionSigsys);
-                true
-            }
-            Ok(false) => false,
-            Err(_) => unsafe { exit_now(126) },
-        }
+    fn observe_nested(&self, event: &SyscallEvent) {
+        observe_mapping_generation(event);
     }
 
-    fn dispatch_signal(
-        &self,
-        event: &mut PreloadSyscallEvent,
-        frame: &mut reverie_inguest::trap::frame::SignalFrame<'_>,
-    ) {
-        self.dispatch_with_frame(event, Some(frame));
-    }
-}
-
-impl LiteinstDispatcher {
-    fn dispatch_with_frame(
-        &self,
-        event: &mut PreloadSyscallEvent,
-        frame: Option<&mut reverie_inguest::trap::frame::SignalFrame<'_>>,
-    ) {
-        if tool_callback_active() {
-            crate::syscall_fallback::enable_nested_runtime_access();
-            self.stats
-                .record_path(crate::LiteinstDispatchPath::InGuestNestedSigsys);
-            let mut nested = SyscallEvent {
-                number: event.number(),
-                args: event.args(),
-                instruction_pointer: event.instruction_pointer(),
-                result: UNSET_RESULT,
-                context: 0,
-                dispatch: SyscallDispatch::Trap,
-                guest_pkru: event.guest_pkru(),
-            };
-            forward_nested_tool_syscall(&mut nested);
-            event.set_native_result(reverie_inguest::trap::NativeSyscallResult {
-                result: nested.result,
-                pkru: nested.guest_pkru,
-            });
-            return;
-        }
-        self.stats
-            .record_path(crate::LiteinstDispatchPath::InGuestSigsys);
+    unsafe fn intercept(&self, event: &mut PreloadSyscallEvent) -> bool {
         let mode = TOOL_MODE.load(Ordering::Relaxed);
         let args = event.args();
         let compatibility_trap_fallback =
@@ -2330,13 +2223,16 @@ impl LiteinstDispatcher {
                 result: trapped.result,
                 pkru: trapped.guest_pkru,
             });
-            return;
+            return true;
         }
+        false
+    }
 
-        let resume_address = event.instruction_pointer();
-        let instruction_pointer = unsafe { locate_syscall_site(resume_address) }
-            .unwrap_or(resume_address.saturating_sub(2));
+    unsafe fn syscall_site(&self, resume_address: u64) -> u64 {
+        unsafe { locate_syscall_site(resume_address) }.unwrap_or(resume_address.saturating_sub(2))
+    }
 
+    unsafe fn patch_site(&self, instruction_pointer: u64) -> SitePatch {
         if SITE_PATCHING_ENABLED.load(Ordering::Relaxed)
             && let Some((site, claimed)) = claim_site(instruction_pointer)
         {
@@ -2360,9 +2256,7 @@ impl LiteinstDispatcher {
                 let restored = unsafe { set_all_instruction_native(false) };
                 if restored.is_err() {
                     site.state.store(SITE_FALLBACK, Ordering::Release);
-                    record_fallback_dispatch(event.number());
-                    self.refuse_fallback(event);
-                    return;
+                    return SitePatch::Refuse;
                 }
                 if installed.is_err() {
                     site.state.store(SITE_FALLBACK, Ordering::Release);
@@ -2375,32 +2269,50 @@ impl LiteinstDispatcher {
                 let hook = site.hook.load(Ordering::Acquire);
                 if !hook.is_null() {
                     // SAFETY: active sites retain their InstalledHook for process lifetime.
-                    event.defer_to(unsafe { (*hook).trampoline().address() });
-                    return;
+                    return SitePatch::Defer(unsafe { (*hook).trampoline().address() });
                 }
             }
         }
-
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        record_fallback_dispatch(event.number());
-        if mode == TOOL_REVERIE
-            && let Some(frame) = frame
-        {
-            // SAFETY: this is the SIGSYS handler's dispatch with the trap's own
-            // frame for the syscall at `instruction_pointer`; on Ok(Some) the
-            // event is deferred to the entry, and on Err the process ends.
-            match unsafe { crate::syscall_fallback::prepare_signal(instruction_pointer, frame) } {
-                Ok(Some(entry)) => {
-                    (self.record_fallback_stats)(self.stats, instruction_pointer);
-                    event.defer_to(entry);
-                    return;
-                }
-                Ok(None) => {}
-                Err(_) => unsafe { exit_now(126) },
-            }
-        }
-        self.refuse_fallback(event);
+        SitePatch::NotPatched
     }
+
+    fn continuation_allowed(&self) -> bool {
+        TOOL_MODE.load(Ordering::Relaxed) == TOOL_REVERIE
+    }
+
+    fn record_fallback(&self, number: i64) {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        record_fallback_dispatch(number);
+    }
+
+    fn record_continuation(&self, instruction_pointer: u64) {
+        (self.record_fallback_stats)(self.stats, instruction_pointer);
+    }
+
+    fn record_refusal(&self, number: i64) {
+        FALLBACK_REFUSALS.record(number);
+    }
+}
+
+fn record_disabled_fallback_stats(_stats: crate::stats::GuestStatsHooks, _address: u64) {}
+
+#[cfg(test)]
+static ENABLED_FALLBACK_CLASSIFICATIONS: AtomicU64 = AtomicU64::new(0);
+
+fn record_enabled_fallback_stats(stats: crate::stats::GuestStatsHooks, address: u64) {
+    #[cfg(test)]
+    ENABLED_FALLBACK_CLASSIFICATIONS.fetch_add(1, Ordering::Relaxed);
+    if !SITE_PATCHING_ENABLED.load(Ordering::Relaxed) {
+        stats.record_path(crate::LiteinstDispatchPath::PatchingDisabledFallback);
+        return;
+    }
+    let straddler =
+        find_site(address).is_some_and(|site| site.straddle_prefix.load(Ordering::Relaxed) != 0);
+    stats.record_path(if straddler {
+        crate::LiteinstDispatchPath::CachelineStraddlerFallback
+    } else {
+        crate::LiteinstDispatchPath::UnpatchableOrOtherFallback
+    });
 }
 
 unsafe extern "C" fn tool_trampoline() {
@@ -2830,7 +2742,7 @@ mod tests {
     use super::ENABLED_FALLBACK_CLASSIFICATIONS;
     use super::FORK_HOOK;
     use super::FallbackCounters;
-    use super::LiteinstDispatcher;
+    use super::LiteinstSeam;
     use super::MAX_PATCH_SITES;
     use super::NeighbourConflict;
     use super::ObjectImage;
@@ -2865,12 +2777,12 @@ mod tests {
     #[test]
     fn disabled_dispatch_does_not_classify_fallback_sites() {
         let before = ENABLED_FALLBACK_CLASSIFICATIONS.load(Ordering::Relaxed);
-        let dispatcher = LiteinstDispatcher::new(
+        let seam = LiteinstSeam::new(
             crate::stats::GuestStatsHooks::DISABLED,
             super::PatchPublication::Concurrent,
         );
 
-        (dispatcher.record_fallback_stats)(dispatcher.stats, 0xdead_beef);
+        (seam.record_fallback_stats)(seam.stats, 0xdead_beef);
 
         assert_eq!(
             ENABLED_FALLBACK_CLASSIFICATIONS.load(Ordering::Relaxed),
