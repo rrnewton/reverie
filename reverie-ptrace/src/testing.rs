@@ -82,6 +82,13 @@ pub fn cancelled_timer_signals_discarded() -> u64 {
     crate::timer::CANCELLED_TIMER_SIGNALS_DISCARDED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The number of staged precise timer events this process has re-armed at
+/// their second stage (see [`crate::PmuConfig::stages`]). Concurrent tests in
+/// one process share the count.
+pub fn precise_timer_second_stages_armed() -> u64 {
+    crate::timer::SECOND_STAGES_ARMED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub use crate::timer::KeptProgramming;
 
 /// Makes the timers of this process check, from now on, at every disregarded
@@ -91,8 +98,9 @@ pub use crate::timer::KeptProgramming;
 /// request made it: that no call that changes the counter's programming
 /// (enable, disable, refresh, reset, period or signal delivery) was made on it
 /// since the request, and that the counter still overflows at the clock at
-/// which the request programmed it to, the target less the skid margin for a
-/// precise event. The check reads both counters once per such stop.
+/// which the request programmed it to, the target less the margin the request
+/// programmed for a precise event (see [`crate::PmuConfig::stages`]). A staged
+/// event's second stage is checked as the programming its re-arm made. The check reads both counters once per such stop.
 ///
 /// A stop whose check passes and that hands nothing on is checked again at
 /// the thread's next stop, or at the event's next request, cancellation or

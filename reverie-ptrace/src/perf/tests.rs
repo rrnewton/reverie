@@ -37,6 +37,8 @@ fn paused_fixture() -> (
         records: None,
         raw_syscall: Some(paused_read_gate),
         programmings: std::sync::atomic::AtomicU64::new(0),
+        sample_time: false,
+        last_sample_time: None,
     });
     (page, counter)
 }
@@ -158,5 +160,69 @@ fn malformed_record_ends_the_count() {
     assert_eq!(
         count_sample_records(0, head, |position| headers[&position]),
         1
+    );
+}
+
+#[test]
+fn newest_sample_time_is_that_of_the_last_sample() {
+    // Samples with times, among other records, past the wrapping point of
+    // the positions.
+    let start = u64::MAX - 23;
+    let records = [
+        (perf::PERF_RECORD_SAMPLE, 16),
+        (perf::PERF_RECORD_THROTTLE, 24),
+        (perf::PERF_RECORD_SAMPLE, 16),
+        (perf::PERF_RECORD_LOST, 24),
+    ];
+    let (headers, head) = record_headers(start, &records);
+    let mut times = std::collections::BTreeMap::new();
+    let mut time = 1000;
+    for (&position, header) in &headers {
+        time += 1;
+        times.insert(position.wrapping_add(8), time + u64::from(header.type_));
+    }
+    let first = start.wrapping_add(8);
+    let second = start.wrapping_add(16 + 24 + 8);
+    let read = |position| headers[&position];
+    let read_time = |position| times[&position];
+    assert_eq!(
+        scan_sample_records(start, head, read, Some(read_time)),
+        SampleScan {
+            samples: 2,
+            newest_time: Some(times[&second]),
+        }
+    );
+    // A record the kernel has not finished publishing is not read.
+    assert_eq!(
+        scan_sample_records(start, second.wrapping_sub(4), read, Some(read_time)),
+        SampleScan {
+            samples: 1,
+            newest_time: Some(times[&first]),
+        }
+    );
+    // Without times, none is read.
+    assert_eq!(
+        scan_sample_records(start, head, read, None::<fn(u64) -> u64>),
+        SampleScan {
+            samples: 2,
+            newest_time: None,
+        }
+    );
+}
+
+#[test]
+fn sample_without_room_for_a_time_has_none() {
+    let (headers, head) = record_headers(0, &[(perf::PERF_RECORD_SAMPLE, 8)]);
+    assert_eq!(
+        scan_sample_records(
+            0,
+            head,
+            |position| headers[&position],
+            Some(|_| panic!("no time to read"))
+        ),
+        SampleScan {
+            samples: 1,
+            newest_time: None,
+        }
     );
 }

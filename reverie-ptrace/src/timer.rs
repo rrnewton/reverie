@@ -127,6 +127,19 @@ pub use reverie::SKID_OVERSHOOT_MARKER;
 /// that does not parse as `u64` is ignored (processor default retained).
 pub const SKID_MARGIN_OVERRIDE_ENV: &str = "REVERIE_SKID_MARGIN_OVERRIDE";
 
+/// The overflow interrupt latency, in nanoseconds, that the second stage of a
+/// staged precise timer event leaves room for by default (see
+/// [`PmuConfig::stages`]). Measured on AMD family 1Ah, the latency was 43 ns
+/// at the median and 185 ns at the 99th percentile, and reached about 590 ns
+/// in a noisy hour (https://github.com/rrnewton/hermit/issues/3810).
+pub const DEFAULT_SKID_LATENCY_BUDGET_NS: u64 = 600;
+
+/// When set to a parseable `u64`, this env var replaces
+/// [`DEFAULT_SKID_LATENCY_BUDGET_NS`] for the whole process. `0` stages no
+/// precise event, so that each is programmed at the skid margin. A value that
+/// does not parse as `u64` is ignored (default retained).
+pub const SKID_LATENCY_BUDGET_ENV: &str = "REVERIE_SKID_LATENCY_BUDGET_NS";
+
 /// Supervisor-only witness nonce. When the consuming harness (the hermit
 /// *supervisor*) sets this env var, its exact value is stamped into every
 /// [`SKID_OVERSHOOT_MARKER`] line as a ` witness=<value>` field. A downstream
@@ -164,6 +177,11 @@ pub(crate) static OVERTAKEN_WITH_NOTIFICATION_QUEUED_EVENTS: std::sync::Mutex<Ve
 
 /// How many events [`OVERTAKEN_WITH_NOTIFICATION_QUEUED_EVENTS`] keeps.
 const OVERTAKEN_WITH_NOTIFICATION_QUEUED_KEPT: usize = 1024;
+
+/// Staged precise events re-armed at their second stage (see
+/// [`PmuConfig::stages`]), for tests.
+pub(crate) static SECOND_STAGES_ARMED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// Timer signals whose signal-delivery stop found their event cancelled, and
 /// which were discarded there, for tests.
@@ -264,6 +282,30 @@ struct ArmedProgramming {
     programmings: u64,
 }
 
+/// The programming of a staged precise event's first stage (see
+/// [`PmuConfig::stages`]).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct FirstStage {
+    /// `CLOCK_MONOTONIC`, in nanoseconds, once the request programmed it,
+    /// with the thread still stopped.
+    programmed_ns: u64,
+    /// The clock of the request.
+    programmed_clock: u64,
+}
+
+/// `CLOCK_MONOTONIC` in nanoseconds, the clock of `timer`'s sample records,
+/// or `u64::MAX`, which no sample follows, if it cannot be read.
+fn monotonic_ns() -> u64 {
+    nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC)
+        .ok()
+        .and_then(|ts| {
+            let secs = u64::try_from(ts.tv_sec()).ok()?;
+            let nanos = u64::try_from(ts.tv_nsec()).ok()?;
+            secs.checked_mul(1_000_000_000)?.checked_add(nanos)
+        })
+        .unwrap_or(u64::MAX)
+}
+
 /// Counts a check of a kept programming, and records it if it found the
 /// programming changed.
 fn count_kept_programming_check(check: KeptProgramming) {
@@ -343,6 +385,7 @@ pub struct PmuConfig {
     rcb_event: u64,
     skid_margin: u64,
     skid_margin_override: Option<u64>,
+    skid_latency_budget_ns: u64,
 }
 
 impl PmuConfig {
@@ -391,6 +434,7 @@ impl PmuConfig {
             rcb_event: BR_RETIRED,
             skid_margin: 1000,
             skid_margin_override: None,
+            skid_latency_budget_ns: DEFAULT_SKID_LATENCY_BUDGET_NS,
         }
         .with_env_overrides()
     }
@@ -417,6 +461,7 @@ impl PmuConfig {
             rcb_event: profile.raw_rcb_event(),
             skid_margin: profile.default_skid_margin(),
             skid_margin_override: None,
+            skid_latency_budget_ns: DEFAULT_SKID_LATENCY_BUDGET_NS,
         })
     }
 
@@ -426,13 +471,54 @@ impl PmuConfig {
         self
     }
 
+    /// Replaces the interrupt latency that staged precise events leave room
+    /// for (see [`Self::stages`]). `0` stages no event.
+    pub fn with_skid_latency_budget_ns(mut self, budget_ns: u64) -> Self {
+        self.skid_latency_budget_ns = budget_ns;
+        self
+    }
+
+    /// Applies the env overrides: [`SKID_MARGIN_OVERRIDE_ENV`] and
+    /// [`SKID_LATENCY_BUDGET_ENV`].
+    fn with_env_overrides(self) -> Self {
+        self.with_skid_margin_env().with_skid_latency_budget_env()
+    }
+
+    /// Applies the [`SKID_LATENCY_BUDGET_ENV`] override, if the env var is
+    /// present and parses as a `u64`, as [`Self::with_skid_margin_env`] does.
+    fn with_skid_latency_budget_env(self) -> Self {
+        match std::env::var(SKID_LATENCY_BUDGET_ENV) {
+            Ok(raw) => match raw.trim().parse::<u64>() {
+                Ok(v) => {
+                    eprintln!(
+                        "[reverie-ptrace] {}={} active: staged precise timer events leave \
+                         room for {} ns of interrupt latency{}",
+                        SKID_LATENCY_BUDGET_ENV,
+                        raw,
+                        v,
+                        if v == 0 { " (staging off)" } else { "" }
+                    );
+                    self.with_skid_latency_budget_ns(v)
+                }
+                Err(_) => {
+                    eprintln!(
+                        "[reverie-ptrace] ignoring {}={:?}: not a u64; using {} ns",
+                        SKID_LATENCY_BUDGET_ENV, raw, DEFAULT_SKID_LATENCY_BUDGET_NS
+                    );
+                    self
+                }
+            },
+            Err(_) => self,
+        }
+    }
+
     /// Applies the [`SKID_MARGIN_OVERRIDE_ENV`] fault-injection override, if the
     /// env var is present and parses as a `u64`. A missing var leaves the
     /// processor default untouched; a present-but-unparseable value is ignored
     /// with a warning rather than aborting startup. When the override is applied
     /// it is announced loudly on stderr, because it deliberately degrades timer
     /// precision to force the overshoot path.
-    fn with_env_overrides(self) -> Self {
+    fn with_skid_margin_env(self) -> Self {
         match std::env::var(SKID_MARGIN_OVERRIDE_ENV) {
             Ok(raw) => match raw.trim().parse::<u64>() {
                 Ok(v) => {
@@ -491,9 +577,85 @@ impl PmuConfig {
     /// above the table's largest raises it, so that the point still comes
     /// before the period.
     pub fn keep_margin(&self) -> u64 {
-        self.skid_margin()
-            .max(LARGEST_TABLE_SKID_MARGIN)
+        self.first_stage_margin()
             .saturating_add(SINGLESTEP_TIMEOUT_RCBS)
+    }
+
+    /// The interrupt latency, in nanoseconds, that the second stage of a
+    /// staged precise event leaves room for (see [`Self::stages`]), or `0` if
+    /// no event is staged.
+    pub fn skid_latency_budget_ns(&self) -> u64 {
+        self.skid_latency_budget_ns
+    }
+
+    /// How many RCBs short of its target the first stage of a staged precise
+    /// event is programmed (see [`Self::stages`]): the base of
+    /// [`Self::keep_margin`], so that the keep point still lies at or before
+    /// the programming's period.
+    pub fn first_stage_margin(&self) -> u64 {
+        self.skid_margin().max(LARGEST_TABLE_SKID_MARGIN)
+    }
+
+    /// Whether a precise event requested `ticks` RCBs ahead is staged.
+    ///
+    /// The overflow interrupt arrives a short time after the overflow, and
+    /// the guest retires branches at its own rate meanwhile, so the skid in
+    /// RCBs is that rate times the interrupt latency. The skid margin is a
+    /// count, which a guest retiring branches fast enough can overrun.
+    /// A staged event is first programmed [`Self::first_stage_margin`] RCBs
+    /// short of its target. At that notification's stop, the guest's branch
+    /// rate since the programming sizes the margin of the second
+    /// programming (see [`Self::second_stage_margin`]), whose notification
+    /// is then delivered as an unstaged event's is: by single stepping to the
+    /// target.
+    ///
+    /// Staging changes how far short of the target the last notification
+    /// comes, and so how many single steps reach the target. It never
+    /// changes the requested target or instruction offset, and an event
+    /// whose last notification arrives short of its target is still
+    /// delivered exactly there. The first stage's stop resumes the guest
+    /// with no Tool callback, as a stop that reschedules a spurious wakeup
+    /// does, and stops add no RCBs. The measured rate is a past average: it
+    /// bounds neither a faster suffix nor the interrupt latency's tail, so
+    /// a notification can still arrive past the target. That case keeps the
+    /// existing overshoot contract (see `TimerImpl::attempt_single_step`):
+    /// the overshoot is recorded and the event is delivered at the observed
+    /// counter. A mismeasured rate changes the cost and how likely that is,
+    /// not where an on-target event is delivered.
+    ///
+    /// An event is staged only if the first stage programs a notification,
+    /// rather than sending an artificial signal, and if a second stage can
+    /// come closer than the first: the first stage margin is larger than the
+    /// skid margin, which is not overridden, and the latency budget is not
+    /// zero.
+    pub fn stages(&self, ticks: u64) -> bool {
+        self.skid_latency_budget_ns != 0
+            && self.skid_margin_override.is_none()
+            && self.first_stage_margin() > self.skid_margin()
+            && ticks > self.first_stage_margin() + SINGLESTEP_TIMEOUT_RCBS
+    }
+
+    /// The margin of the second stage of a staged precise event (see
+    /// [`Self::stages`]), whose first stage's notification came `rcbs` RCBs
+    /// and `elapsed_ns` nanoseconds after its programming: the RCBs retired
+    /// in [`Self::skid_latency_budget_ns`] at that rate, but at least the
+    /// skid margin and at most the first stage margin. Without an elapsed
+    /// time, as when the notification's sample record is missing, it is the
+    /// skid margin.
+    ///
+    /// The elapsed time runs from the programming, before the guest resumed,
+    /// to the interrupt, so it can only overstate the time the guest ran,
+    /// and the rate can only be understated, to the skid margin at least.
+    pub fn second_stage_margin(&self, rcbs: u64, elapsed_ns: Option<u64>) -> u64 {
+        let floor = self.skid_margin();
+        let Some(elapsed_ns) = elapsed_ns.filter(|&elapsed_ns| elapsed_ns > 0) else {
+            return floor;
+        };
+        let margin = (u128::from(rcbs) * u128::from(self.skid_latency_budget_ns))
+            .div_ceil(u128::from(elapsed_ns));
+        u64::try_from(margin)
+            .unwrap_or(u64::MAX)
+            .clamp(floor, self.first_stage_margin().max(floor))
     }
 
     /// Emits the single canonical [`SKID_OVERSHOOT_MARKER`] line to stderr.
@@ -1303,6 +1465,16 @@ struct TimerImpl {
     /// programmed. Consuming notifications does not clear it.
     programming_overflowed: bool,
 
+    /// How many RCBs short of the active precise event's target its latest
+    /// programming put the notification: the first stage margin while a
+    /// staged event's first stage is programmed, and at most that (see
+    /// [`PmuConfig::stages`]).
+    event_margin: u64,
+
+    /// The programming of the active precise event's first stage, if it is
+    /// staged and that programming's notification has not been delivered.
+    first_stage: Option<FirstStage>,
+
     initial_command: InitialCommand,
 
     /// Requests made before the first post-exec callback have no physical
@@ -1473,16 +1645,19 @@ enum ActiveEvent {
 
 impl ActiveEvent {
     /// Given the current clock, determine if another event is required to get the
-    /// clock to its expected state
-    fn reschedule_if_spurious_wakeup(&self, curr_clock: u64) -> Option<TimerEventRequest> {
+    /// clock to its expected state. A precise event needs one if more than
+    /// `max_single_step_count` steps remain.
+    fn reschedule_if_spurious_wakeup(
+        &self,
+        curr_clock: u64,
+        max_single_step_count: u64,
+    ) -> Option<TimerEventRequest> {
         match self {
             ActiveEvent::Precise {
                 clock_target,
                 offset: _,
             } => {
-                if clock_target.saturating_sub(curr_clock)
-                    > get_pmu_config().max_single_step_count()
-                {
+                if clock_target.saturating_sub(curr_clock) > max_single_step_count {
                     Some(TimerEventRequest::Precise(*clock_target - curr_clock))
                 } else {
                     None
@@ -1601,7 +1776,24 @@ impl TimerImpl {
             builder.precise_ip(1);
         }
 
-        let mut timer = builder.check_for_pmu_bugs().create()?;
+        // The time of the first stage's overflow measures the guest's branch
+        // rate for a staged precise event (see `PmuConfig::stages`).
+        builder.check_for_pmu_bugs().sample_time(true);
+        let mut timer = match builder.create() {
+            Ok(timer) => timer,
+            Err(errno) => {
+                // A failure of the counter itself fails again here.
+                let timer = builder.sample_time(false).create()?;
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| {
+                    warn!(
+                        %errno,
+                        "Could not record timer overflow times; the second stage of a staged precise timer event takes the skid margin"
+                    )
+                });
+                timer
+            }
+        };
         timer.set_signal_delivery(guest_tid, MARKER_SIGNAL)?;
         timer.reset()?;
         // measure the target tid irrespective of CPU
@@ -1676,6 +1868,8 @@ impl TimerImpl {
             overflow_period: None,
             overflow_recorded: false,
             programming_overflowed: false,
+            event_margin: get_pmu_config().skid_margin(),
+            first_stage: None,
             initial_command: if initial_command {
                 InitialCommand::WaitingForExec
             } else {
@@ -1701,12 +1895,23 @@ impl TimerImpl {
     }
 
     pub fn request_event(&mut self, evt: TimerEventRequest) -> Result<(), Errno> {
-        let (delivery, notification) = match evt {
+        let config = get_pmu_config();
+        let (delivery, margin) = match evt {
             TimerEventRequest::Precise(ticks) | TimerEventRequest::PreciseInstruction(ticks, _) => {
-                (ticks, ticks.saturating_sub(get_pmu_config().skid_margin()))
+                let staged =
+                    self.initial_command == InitialCommand::Ordinary && config.stages(ticks);
+                (
+                    ticks,
+                    if staged {
+                        config.first_stage_margin()
+                    } else {
+                        config.skid_margin()
+                    },
+                )
             }
-            TimerEventRequest::Imprecise(ticks) => (ticks, ticks),
+            TimerEventRequest::Imprecise(ticks) => (ticks, 0),
         };
+        let notification = delivery.saturating_sub(margin);
         if delivery == 0 {
             return Err(Errno::EINVAL); // bail before setting timer
         }
@@ -1716,7 +1921,9 @@ impl TimerImpl {
         }
         self.recheck_kept_programming();
         self.armed_programming = None;
+        self.first_stage = None;
         if self.initial_command != InitialCommand::Ordinary {
+            self.event_margin = margin;
             self.event = Self::event_at(evt, self.read_clock() + delivery);
             self.held_initial_event = Some(self.event);
             self.set_status(EventStatus::Scheduled);
@@ -1724,6 +1931,7 @@ impl TimerImpl {
             return Ok(());
         }
         self.prepare_notification(notification)?;
+        self.event_margin = margin;
         self.event = Self::event_at(evt, self.read_clock() + delivery);
         self.set_status(EventStatus::Scheduled);
         if kept_programming_checks() {
@@ -1733,7 +1941,78 @@ impl TimerImpl {
                 programmings: self.timer.programmings(),
             });
         }
+        if margin > config.skid_margin() && self.overflow_period.is_some() {
+            // The guest has not run since the programming, so the time from
+            // here to its overflow is at least the time it ran.
+            self.first_stage = Some(FirstStage {
+                programmed_ns: monotonic_ns(),
+                programmed_clock: self.read_clock(),
+            });
+        }
         Ok(())
+    }
+
+    /// Re-arms the active precise event, staged and found at `clock` by its
+    /// first stage's notification, at its second stage, if `clock` is short
+    /// of the target by more than the second stage margin plus an artificial
+    /// notification's steps (see [`PmuConfig::stages`]). `sample_time` is the
+    /// time of the latest overflow whose sample record was read. Returns
+    /// whether it re-armed the event.
+    ///
+    /// Only the programming changes: the event, its target and offset, is
+    /// the one requested.
+    fn rearm_second_stage(
+        &mut self,
+        first_stage: FirstStage,
+        clock: u64,
+        sample_time: Option<u64>,
+    ) -> Result<bool, Errno> {
+        let ActiveEvent::Precise { clock_target, .. } = self.event else {
+            return Ok(false);
+        };
+        let config = get_pmu_config();
+        // A sample from before the programming is an earlier one's.
+        let elapsed_ns = sample_time
+            .filter(|&time| time > first_stage.programmed_ns)
+            .map(|time| time - first_stage.programmed_ns);
+        let rcbs = clock.saturating_sub(first_stage.programmed_clock);
+        let margin = config.second_stage_margin(rcbs, elapsed_ns);
+        let remaining = clock_target.saturating_sub(clock);
+        debug!(
+            rcbs,
+            ?elapsed_ns,
+            margin,
+            remaining,
+            "Second stage of a staged precise timer event"
+        );
+        if remaining <= margin.saturating_add(SINGLESTEP_TIMEOUT_RCBS) {
+            return Ok(false);
+        }
+        #[cfg(test)]
+        {
+            self.preempted_overflow_counted = false;
+        }
+        self.recheck_kept_programming();
+        self.armed_programming = None;
+        self.prepare_notification(remaining - margin)?;
+        self.event_margin = margin;
+        self.set_status(EventStatus::Scheduled);
+        if kept_programming_checks() {
+            self.armed_programming = self.overflow_period.map(|period| ArmedProgramming {
+                overflow_point: clock + period,
+                programmings: self.timer.programmings(),
+            });
+        }
+        SECOND_STAGES_ARMED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(true)
+    }
+
+    /// The most single steps the active precise event's latest programming
+    /// can need: its margin plus an artificial notification's steps.
+    fn max_single_step_count(&self) -> u64 {
+        self.event_margin
+            .max(get_pmu_config().skid_margin())
+            .saturating_add(SINGLESTEP_TIMEOUT_RCBS)
     }
 
     /// Sets the status of a new or cancelled event. Earlier stops and steps
@@ -2612,8 +2891,12 @@ impl TimerImpl {
 
         // Last check to see if this an unexpected wakeup (a signal before the minimum expected)
         let ctr = self.read_clock();
+        let first_stage = self.first_stage.take();
 
-        if let Some(additional_timer_request) = self.event.reschedule_if_spurious_wakeup(ctr) {
+        if let Some(additional_timer_request) = self
+            .event
+            .reschedule_if_spurious_wakeup(ctr, self.max_single_step_count())
+        {
             debug!("Spurious wakeup - rescheduling new timer event");
             if let Err(errno) = self.request_event(additional_timer_request) {
                 warn!(
@@ -2623,6 +2906,17 @@ impl TimerImpl {
             } else {
                 return Err(HandleFailure::Cancelled(task));
             };
+        } else if let Some(first_stage) = first_stage {
+            // As after a spurious wakeup, the guest resumes with no Tool
+            // callback, toward the same target.
+            match self.rearm_second_stage(first_stage, ctr, self.timer.last_sample_time()) {
+                Ok(true) => return Err(HandleFailure::Cancelled(task)),
+                Ok(false) => {}
+                Err(errno) => warn!(
+                    "Attempted to re-arm a staged precise timer event at its second stage, but failed with - {:?}; single stepping from the first stage",
+                    errno
+                ),
+            }
         }
 
         // Before we drive the event to completion, clear `send_artificial_signal` flag so that:
@@ -2670,12 +2964,14 @@ impl TimerImpl {
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         let target_rcb = current.target_rcb;
-        // The perf interrupt can arrive *past* the target when descheduling or
-        // migration delays signal handling long enough for the actual skid to
-        // exceed the margin. Single stepping cannot move the guest backward, so
-        // record the overshoot and deliver the timer event at the observed
-        // counter. The Tool can then account for the late event and either end
-        // the timeslice or re-arm the next timer through its normal callback.
+        // The perf interrupt can arrive *past* the target: the guest retires
+        // branches until the interrupt stops the counter, so the skid is its
+        // branch rate times the interrupt's latency, which can exceed the
+        // margin (https://github.com/rrnewton/hermit/issues/3810). Single
+        // stepping cannot move the guest backward, so record the overshoot and
+        // deliver the timer event at the observed counter. The Tool can then
+        // account for the late event and either end the timeslice or re-arm
+        // the next timer through its normal callback.
         if get_pmu_config().record_overshoot_if_past_target(current.rcbs(), target_rcb) {
             warn!(
                 "Precise timer interrupt arrived after target: actual {} > target {}; \
@@ -2687,7 +2983,7 @@ impl TimerImpl {
             count_host_timed(|events| events.overshoot += 1);
             return Ok(task);
         }
-        let max_single_step_count = get_pmu_config().max_single_step_count();
+        let max_single_step_count = self.max_single_step_count();
         assert!(
             target_rcb - current.rcbs() <= max_single_step_count,
             "Single steps from {} to {} requested ({} steps), but that exceeds the skid margin + minimum perf timer steps ({}). \
@@ -3338,6 +3634,8 @@ mod tests {
                 overflow_period: None,
                 overflow_recorded: false,
                 programming_overflowed: false,
+                event_margin: get_pmu_config().skid_margin(),
+                first_stage: None,
                 initial_command: InitialCommand::Ordinary,
                 held_initial_event: Some(event),
                 interrupted: None,
@@ -3482,6 +3780,162 @@ mod tests {
         }
         let signo = unsafe { libc::sigtimedwait(&set, &mut info, &timeout) };
         (signo == super::MARKER_SIGNAL as i32).then_some(info)
+    }
+
+    /// Blocks the timer's signal on the calling thread, so that the test can
+    /// take its notifications.
+    fn block_timer_signal() {
+        let mut blocked: libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, super::MARKER_SIGNAL as i32);
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, core::ptr::null_mut()),
+                0
+            );
+        }
+    }
+
+    // A staged precise event's first stage is programmed the first stage
+    // margin short of its target. At the first stage's notification, the
+    // re-arm programs the second stage the measured branch rate times the
+    // latency budget short of the same target, or the skid margin short
+    // without a time from the programming, and leaves the event, its target
+    // and offset, as requested. A notification too late for a second stage
+    // to come closer leaves the first stage's margin to step.
+    #[test]
+    fn a_staged_event_is_rearmed_short_of_the_same_target() {
+        use reverie::Pid;
+
+        use super::ActiveEvent;
+        use super::EventStatus;
+        use super::LARGEST_TABLE_SKID_MARGIN;
+        use super::SINGLESTEP_TIMEOUT_RCBS;
+        use super::TimerEventRequest;
+        use super::TimerImpl;
+        use super::get_pmu_config;
+
+        const TICKS: u64 = 1_000_000;
+        let config = get_pmu_config();
+        if !config.stages(TICKS) {
+            eprintln!("skipping: this processor's precise events are not staged");
+            return;
+        }
+        block_timer_signal();
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        let mut timer = TimerImpl::new(pid, tid, false).expect("control requires a working PMU");
+        // The clock stands still, as a stopped guest's does, so that every
+        // read in a call is the same.
+        timer.clock.disable().unwrap();
+        let first = config.first_stage_margin();
+        let skid = config.skid_margin();
+        assert_eq!(first, LARGEST_TABLE_SKID_MARGIN);
+
+        timer
+            .request_event(TimerEventRequest::PreciseInstruction(TICKS, 3))
+            .unwrap();
+        timer.timer.disable().unwrap();
+        let requested = timer.event;
+        let ActiveEvent::Precise {
+            clock_target,
+            offset: 3,
+        } = requested
+        else {
+            panic!("a precise event: {requested:?}");
+        };
+        assert_eq!(timer.overflow_period, Some(TICKS - first));
+        assert_eq!(timer.event_margin, first);
+        assert_eq!(
+            timer.max_single_step_count(),
+            first + SINGLESTEP_TIMEOUT_RCBS
+        );
+        let stage = timer.first_stage.expect("the request is staged");
+        assert_eq!(stage.programmed_clock, clock_target - TICKS);
+
+        // Too late: the first stage's margin is stepped.
+        let clock = clock_target - skid - SINGLESTEP_TIMEOUT_RCBS;
+        assert_eq!(timer.rearm_second_stage(stage, clock, None), Ok(false));
+        assert_eq!(timer.event, requested);
+        assert_eq!(timer.overflow_period, Some(TICKS - first));
+        assert_eq!(timer.event_margin, first);
+
+        // The notification finds the guest 200 RCBs past the overflow, which
+        // it reached at 8 RCBs per ns.
+        let clock = clock_target - first + 200;
+        let rcbs = clock - stage.programmed_clock;
+        assert_eq!(rcbs % 8, 0);
+        let margin = (8 * config.skid_latency_budget_ns()).clamp(skid, first);
+        let remaining = clock_target - clock;
+        assert!(
+            margin + SINGLESTEP_TIMEOUT_RCBS < remaining,
+            "the default latency budget leaves a second stage: {margin}"
+        );
+        let sample_time = stage.programmed_ns + rcbs / 8;
+        assert_eq!(
+            timer.rearm_second_stage(stage, clock, Some(sample_time)),
+            Ok(true)
+        );
+        assert_eq!(timer.event, requested);
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+        assert_eq!(timer.overflow_period, Some(remaining - margin));
+        assert_eq!(timer.event_margin, margin);
+        assert_eq!(
+            timer.max_single_step_count(),
+            margin + SINGLESTEP_TIMEOUT_RCBS
+        );
+        assert_eq!(
+            timer.armed_programming.map(|armed| armed.overflow_point),
+            Some(clock_target - margin)
+        );
+
+        // A sample from before the programming, or none, gives no rate.
+        for sample_time in [Some(stage.programmed_ns), None] {
+            assert_eq!(
+                timer.rearm_second_stage(stage, clock, sample_time),
+                Ok(true)
+            );
+            assert_eq!(timer.event, requested);
+            assert_eq!(timer.overflow_period, Some(remaining - skid));
+            assert_eq!(timer.event_margin, skid);
+        }
+        timer.timer.disable().unwrap();
+    }
+
+    // The first stage's overflow records its time, after the programming,
+    // where the re-arm reads it.
+    #[test]
+    fn an_overflow_records_when_it_happened() {
+        use reverie::Pid;
+
+        use super::TimerImpl;
+        use super::monotonic_ns;
+        use crate::perf::do_branches;
+
+        block_timer_signal();
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        let mut timer = TimerImpl::new(pid, tid, false).expect("control requires a working PMU");
+        assert_eq!(timer.timer.take_sample_records(), Some(0));
+        if !timer.timer.records_sample_time() {
+            eprintln!("skipping: this PMU's overflow records have no time");
+            return;
+        }
+        const PERIOD: u64 = 10_000;
+
+        let before = monotonic_ns();
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        let after = monotonic_ns();
+        take_timer_signal().expect("the counter overflowed");
+        assert_eq!(timer.timer.last_sample_time(), None);
+        timer.mark_overflows_consumed();
+        let time = timer
+            .timer
+            .last_sample_time()
+            .expect("the overflow's record has its time");
+        assert!(before < time && time < after, "{before} < {time} < {after}");
     }
 
     #[test]
@@ -4198,7 +4652,11 @@ mod tests {
         guest.run(1_000);
         const TARGET: u64 = 1_000_000;
         let config = super::get_pmu_config();
-        let period = TARGET - config.skid_margin();
+        let period = if config.stages(TARGET) {
+            TARGET - config.first_stage_margin()
+        } else {
+            TARGET - config.skid_margin()
+        };
         fn inner(timer: &mut Timer) -> &mut TimerImpl {
             timer.inner.as_mut().unwrap()
         }
@@ -4675,6 +5133,79 @@ mod tests {
         assert_eq!(config.skid_margin(), 0);
         // max_single_step_count() == skid_margin() + SINGLESTEP_TIMEOUT_RCBS (5).
         assert_eq!(config.max_single_step_count(), 5);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn second_stage_margin_is_the_rate_times_the_latency_budget() {
+        use super::DEFAULT_SKID_LATENCY_BUDGET_NS;
+        use super::LARGEST_TABLE_SKID_MARGIN;
+
+        // EPYC 9D85: skid margin 1000.
+        let config = PmuConfig::from_family_model(0x1A, 0x11);
+        assert_eq!(
+            config.skid_latency_budget_ns(),
+            DEFAULT_SKID_LATENCY_BUDGET_NS
+        );
+        assert_eq!(config.first_stage_margin(), LARGEST_TABLE_SKID_MARGIN);
+        // 8 RCBs per ns, the measured rate of a dense branch loop, for 600 ns.
+        assert_eq!(
+            config.second_stage_margin(8_000_000, Some(1_000_000)),
+            4_800
+        );
+        // Rounded up.
+        assert_eq!(
+            config.second_stage_margin(8_000_001, Some(1_000_000)),
+            4_801
+        );
+        // A low rate takes the skid margin, a high one the first stage's.
+        assert_eq!(config.second_stage_margin(100_000, Some(1_000_000)), 1_000);
+        assert_eq!(
+            config.second_stage_margin(100_000_000, Some(1_000_000)),
+            LARGEST_TABLE_SKID_MARGIN
+        );
+        // Without a time, or with none elapsed, it is the skid margin.
+        assert_eq!(config.second_stage_margin(8_000_000, None), 1_000);
+        assert_eq!(config.second_stage_margin(8_000_000, Some(0)), 1_000);
+        // No overflow in the product.
+        assert_eq!(
+            config.second_stage_margin(u64::MAX, Some(1)),
+            LARGEST_TABLE_SKID_MARGIN
+        );
+        let config = config.with_skid_latency_budget_ns(400);
+        assert_eq!(
+            config.second_stage_margin(8_000_000, Some(1_000_000)),
+            3_200
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn only_a_programmed_first_stage_short_of_a_smaller_margin_is_staged() {
+        use super::LARGEST_TABLE_SKID_MARGIN;
+        use super::SINGLESTEP_TIMEOUT_RCBS;
+
+        let config = PmuConfig::from_family_model(0x1A, 0x11);
+        let shortest = LARGEST_TABLE_SKID_MARGIN + SINGLESTEP_TIMEOUT_RCBS + 1;
+        assert!(config.stages(shortest));
+        assert!(config.stages(u64::MAX));
+        // Its first stage would be an artificial signal.
+        assert!(!config.stages(shortest - 1));
+        assert!(!config.stages(1));
+        // Staging is off.
+        assert!(
+            !config
+                .clone()
+                .with_skid_latency_budget_ns(0)
+                .stages(shortest)
+        );
+        // An overridden skid margin is kept, even below the table's.
+        assert!(!config.clone().with_skid_margin_override(0).stages(shortest));
+        // No second stage comes closer than a margin as large as the first
+        // stage's.
+        let amd = PmuConfig::from_family_model(0x17, 0x71);
+        assert_eq!(amd.skid_margin(), LARGEST_TABLE_SKID_MARGIN);
+        assert!(!amd.stages(u64::MAX));
     }
 
     #[cfg(target_arch = "x86_64")]
