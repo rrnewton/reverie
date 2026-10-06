@@ -32,6 +32,7 @@ use reverie::GlobalTool;
 use reverie::Tool;
 use reverie::process::Command;
 use reverie::process::Output as ReverieOutput;
+use reverie_rpc_transport::ConnectionAdmission;
 use reverie_rpc_transport::ConnectionMonitor;
 use reverie_rpc_transport::RpcError;
 use reverie_rpc_transport::RpcServer;
@@ -200,7 +201,28 @@ fn create_preload_bootstrap(coordinator: &Path, tool_data: &[u8]) -> io::Result<
 /// Online LiteInst backend with a coordinator-owned `GlobalTool`.
 pub struct LiteinstBackend;
 
+tokio::task_local! {
+    /// The admission every run started inside
+    /// [`LiteinstBackend::with_connection_admission`] installs on its
+    /// coordinator.
+    static CONNECTION_ADMISSION: Arc<dyn ConnectionAdmission>;
+}
+
 impl LiteinstBackend {
+    /// Runs `future` so that every LiteInst run it starts admits each guest
+    /// connection to its coordinator through `admission` before serving it:
+    /// the admission receives the connecting process's pidfd before the
+    /// configuration handshake, and a refusal closes the connection (see
+    /// [`ConnectionAdmission`]). The statistics connection is not admitted; it
+    /// carries no scheduled request. Runs started outside such a scope admit
+    /// every connection unchecked, as before.
+    pub async fn with_connection_admission<F: Future>(
+        admission: Arc<dyn ConnectionAdmission>,
+        future: F,
+    ) -> F::Output {
+        CONNECTION_ADMISSION.scope(admission, future).await
+    }
+
     /// Runs a tool using an explicit tool-specific preload library.
     ///
     /// This path dispatches patchable syscalls in the guest and keeps the
@@ -809,13 +831,25 @@ where
     let socket = directory.path().join("coordinator.sock");
     let global = Arc::new(T::GlobalState::init_global_state(&config).await);
     let connected = Arc::new(AtomicBool::new(false));
-    let server = RpcServer::bind_with_connection_readiness(
+    let mut server = RpcServer::bind_with_connection_readiness(
         &socket,
         global.clone(),
         config,
         connected.clone(),
     )
     .map_err(|error| io::Error::other(error.to_string()))?;
+    if let Ok(admission) = CONNECTION_ADMISSION.try_with(Arc::clone) {
+        // Weak, so the admission's reporter never keeps the coordinator's
+        // global state alive past the run (launch reclaims it by value); a
+        // report arriving after the run finds no global and is dropped.
+        let exits = Arc::downgrade(&global);
+        admission.attach_exit_reporter(Arc::new(move |pid| {
+            if let Some(global) = exits.upgrade() {
+                global.on_backend_process_exited(pid);
+            }
+        }));
+        server.set_connection_admission(admission);
+    }
     let mut connection_monitors = vec![server.connection_monitor()];
     let (stats_global, stats_server, stats_socket) = if stats_request.is_enabled() {
         let socket = directory.path().join("stats.sock");
