@@ -45,9 +45,11 @@ use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::PROGRAM_HEADERS_ADDRESS;
 use crate::bootstrap::VDSO_ADDRESS;
 use crate::memory::AllocationCursors;
+use crate::memory::MMAP_BASE;
 use crate::memory::RegionKind;
 use crate::memory::USER_ADDRESS_END;
 use crate::memory::USER_STACK_TOP;
+use crate::memory::UserWindow;
 use crate::signal::ProcessSignalState;
 use crate::signal::SharedThreadSignalState;
 
@@ -57,19 +59,21 @@ pub(crate) mod parent_death;
 const PAGE_SIZE: u64 = 4096;
 pub(crate) const TASK_COMM_LEN: usize = 16;
 pub(crate) const STACK_LIMIT: u64 = 8 * 1024 * 1024;
-const MMAP_GAP: u64 = 1024 * 1024;
 const MAX_PROGRAM_HEADERS_SIZE: usize = PAGE_SIZE as usize;
 const MAX_INTERPRETER_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SCRIPT_INTERPRETERS: usize = 4;
 const MAIN_LOAD_BIAS: u64 = 2 * 1024 * 1024;
 const _: () = assert!(BOOT_RESERVED_END <= MAIN_LOAD_BIAS);
-const INTERPRETER_LOAD_BIAS: u64 = 16 * 1024 * 1024;
+/// The host kernel's own vDSO pages that Linux 7.x maps top-down below the
+/// interpreter at exec ([vvar] 0x4000, [vvar_vclock] 0x2000, [vdso] 0x2000).
+/// Hermit's ptrace backend maps its canonical vDSO elsewhere but leaves these
+/// in place, as do the other backends that run on the host kernel, so they
+/// occupy the address space. KVM reserves the same range, inaccessible, so its
+/// mappings land at the same addresses.
+const VDSO_GAP: u64 = 0x8000;
+const LARGE_PAGE_SIZE: u64 = 2 * 1024 * 1024;
 const IOPRIO_CLASS_SHIFT: u32 = 13;
 pub(crate) const GUEST_CAPABILITY_MASK: u64 = (1_u64 << 41) - 1;
-/// Page-aligned program-break gap reserved between a large main image and a
-/// relocated interpreter base. Only applies when the main image would overrun
-/// the historical fixed [`INTERPRETER_LOAD_BIAS`]; small PIEs are unaffected.
-const INTERPRETER_MIN_BRK_HEADROOM: u64 = 4 * 1024 * 1024;
 const PROC_SUPER_MAGIC: libc::c_long = 0x9fa0;
 const POLICY_OPEN_EINTR_ATTEMPTS: usize = 16;
 
@@ -1628,18 +1632,12 @@ fn load_executable(
     let main_entry = main_bias
         .checked_add(elf.entry)
         .ok_or_else(|| Error::UnsupportedElf("main entry point overflow".to_string()))?;
+    let layout = establish_linux_layout(memory, main_end)?;
 
-    let (entry_point, at_base, image_end) = if let Some(path) = interpreter_path(image, &elf)? {
-        // TODO-HUMAN-REVIEW(reverie-kvm): relocate the interpreter above large
-        // main images instead of failing to load.
-        //
-        // Place the dynamic interpreter (ld.so) above the main image. Small
-        // PIEs keep the historical fixed 16 MiB base, so their memory layout is
-        // byte-identical to before. Large PIEs (e.g. rustc, cargo) whose image
-        // would overrun that base get the interpreter relocated just above the
-        // main image, with a page-aligned program-break gap, instead of the
-        // previous hard "overlaps interpreter base" load failure.
-        let interpreter_load_bias = interpreter_load_bias(main_end)?;
+    let (entry_point, at_base) = if let Some(path) = interpreter_path(image, &elf)? {
+        // Linux maps the interpreter (ld.so) first, top-down below mmap_base,
+        // so it sits at the top of the mmap window whatever the main image's
+        // size.
         let interpreter_image = read_interpreter_image(&path)?;
         let interpreter = Elf::parse(&interpreter_image)?;
         validate_elf(&interpreter, false)?;
@@ -1648,22 +1646,22 @@ fn load_executable(
                 "program interpreter must be ET_DYN".to_string(),
             ));
         }
-        let interpreter_end = load_segments(
-            memory,
-            &interpreter_image,
-            &interpreter,
-            interpreter_load_bias,
-        )?;
-        let interpreter_entry = interpreter_load_bias
+        let (first, end) = load_span(&interpreter)?;
+        let span = end - first;
+        if span > layout.mmap_end - layout.identity_end - VDSO_GAP {
+            return Err(Error::LongModeMemoryTooSmall);
+        }
+        let user_bias = MMAP_BASE - span - first;
+        let physical_bias = layout.mmap_end - span - first;
+        load_segments(memory, &interpreter_image, &interpreter, physical_bias)?;
+        reserve_vdso_gap(memory, layout.mmap_end - span)?;
+        let interpreter_entry = user_bias
             .checked_add(interpreter.entry)
             .ok_or_else(|| Error::UnsupportedElf("interpreter entry point overflow".to_string()))?;
-        (
-            interpreter_entry,
-            interpreter_load_bias,
-            main_end.max(interpreter_end),
-        )
+        (interpreter_entry, user_bias)
     } else {
-        (main_entry, 0, main_end)
+        reserve_vdso_gap(memory, layout.mmap_end)?;
+        (main_entry, 0)
     };
 
     let program_headers_address = elf
@@ -1702,28 +1700,12 @@ fn load_executable(
     )?;
     memory.map_user_range(memory.guest_end() - STACK_LIMIT, STACK_LIMIT, false)?;
     let program_break = align_up(main_end, PAGE_SIZE)?;
-    let mmap_next = align_up(
-        image_end
-            .checked_add(MMAP_GAP)
-            .ok_or_else(|| Error::UnsupportedElf("initial mmap base overflow".to_string()))?,
-        PAGE_SIZE,
-    )?;
-    let mmap_limit = memory
-        .guest_end()
-        .checked_sub(STACK_LIMIT)
-        .ok_or(Error::LongModeMemoryTooSmall)?;
-    if mmap_next >= mmap_limit {
-        return Err(Error::LongModeMemoryTooSmall);
-    }
-    let brk_limit = if at_base == 0 {
-        mmap_next
-    } else {
-        // The interpreter is loaded at `at_base`; the program break grows in the
-        // gap between the main image and the interpreter, so cap it there. For a
-        // relocated (large-PIE) interpreter this equals the dynamic base rather
-        // than the fixed `INTERPRETER_LOAD_BIAS`.
-        at_base
-    };
+    // Mappings are placed top-down in the mmap window, [mmap_base, mmap_limit)
+    // physically; the program break grows up to the end of the identity
+    // addresses, below the window.
+    let mmap_next = layout.identity_end;
+    let mmap_limit = layout.mmap_end;
+    let brk_limit = layout.identity_end;
 
     let cwd_fd = OpenOptions::new()
         .read(true)
@@ -2004,12 +1986,16 @@ fn read_interpreter_image(path: &str) -> Result<Vec<u8>> {
     Ok(image)
 }
 
+/// Loads `elf`'s PT_LOAD segments at physical `physical_bias + p_vaddr` and
+/// returns the physical end of the image. The caller decides the user address
+/// those pages have (the same for a non-PIE image; a window's for ld.so).
 fn load_segments(
     memory: &mut GuestMemory,
     image: &[u8],
     elf: &Elf<'_>,
-    load_bias: u64,
+    physical_bias: u64,
 ) -> Result<u64> {
+    let load_bias = physical_bias;
     let entry = load_bias
         .checked_add(elf.entry)
         .ok_or_else(|| Error::UnsupportedElf("ELF entry point overflow".to_string()))?;
@@ -2239,26 +2225,86 @@ fn align_up(value: u64, alignment: u64) -> Result<u64> {
         .ok_or_else(|| Error::UnsupportedElf("address alignment overflow".to_string()))
 }
 
-/// Choose the load base for the dynamic interpreter (`ld.so`) given the end of
-/// the already-loaded main image.
-///
-/// Small position-independent executables keep the historical fixed
-/// [`INTERPRETER_LOAD_BIAS`], so their layout is unchanged. When the main image
-/// would reach into or past that base (large PIEs such as `rustc` or `cargo`),
-/// the interpreter is instead placed just above the main image, page-aligned
-/// and past a reserved [`INTERPRETER_MIN_BRK_HEADROOM`] program-break gap. This
-/// replaces the previous hard "overlaps interpreter base" load failure.
-fn interpreter_load_bias(main_end: u64) -> Result<u64> {
-    if main_end <= INTERPRETER_LOAD_BIAS {
-        Ok(INTERPRETER_LOAD_BIAS)
-    } else {
-        align_up(
-            main_end
-                .checked_add(INTERPRETER_MIN_BRK_HEADROOM)
-                .ok_or_else(|| Error::UnsupportedElf("interpreter base overflow".to_string()))?,
-            PAGE_SIZE,
-        )
+/// The physical layout of a loaded guest (see the K2 design note).
+pub(crate) struct LinuxLayout {
+    /// The end of the identity user addresses (boot area, a non-PIE image, the
+    /// program break) and the start of the mmap window.
+    pub(crate) identity_end: u64,
+    /// The physical end of the mmap window, whose user end is `MMAP_BASE`.
+    pub(crate) mmap_end: u64,
+}
+
+/// Places the mmap window between the identity addresses and the stack window
+/// and ends the identity user addresses at its start. The window's user end is
+/// `MMAP_BASE`, and its physical end agrees with `MMAP_BASE` modulo a large
+/// page, so alignment decisions are the same in both and the window maps with
+/// large pages.
+pub(crate) fn establish_linux_layout(
+    memory: &mut GuestMemory,
+    main_end: u64,
+) -> Result<LinuxLayout> {
+    let stack_start = memory
+        .guest_end()
+        .checked_sub(STACK_LIMIT)
+        .ok_or(Error::LongModeMemoryTooSmall)?;
+    let remainder = MMAP_BASE % LARGE_PAGE_SIZE;
+    let mut mmap_end = stack_start / LARGE_PAGE_SIZE * LARGE_PAGE_SIZE + remainder;
+    if mmap_end > stack_start {
+        mmap_end = mmap_end
+            .checked_sub(LARGE_PAGE_SIZE)
+            .ok_or(Error::LongModeMemoryTooSmall)?;
     }
+    let identity_end = align_up((memory.guest_end() / 4).max(main_end), LARGE_PAGE_SIZE)?;
+    if identity_end + VDSO_GAP + PAGE_SIZE > mmap_end {
+        return Err(Error::LongModeMemoryTooSmall);
+    }
+    memory.establish_user_window(UserWindow {
+        physical_start: identity_end,
+        physical_end: mmap_end,
+        user_start: MMAP_BASE - (mmap_end - identity_end),
+        user_end: MMAP_BASE,
+    })?;
+    memory.set_user_identity_end(identity_end);
+    Ok(LinuxLayout {
+        identity_end,
+        mmap_end,
+    })
+}
+
+/// The page-aligned span `[first, end)` of `elf`'s PT_LOAD segments.
+fn load_span(elf: &Elf<'_>) -> Result<(u64, u64)> {
+    let loads = elf
+        .program_headers
+        .iter()
+        .filter(|header| header.p_type == PT_LOAD);
+    let first = loads
+        .clone()
+        .map(|header| header.p_vaddr & !(PAGE_SIZE - 1))
+        .min()
+        .ok_or_else(|| Error::UnsupportedElf("ELF has no PT_LOAD segment".to_string()))?;
+    let mut end = 0;
+    for header in loads {
+        end = end.max(align_up(
+            header
+                .p_vaddr
+                .checked_add(header.p_memsz)
+                .ok_or_else(|| Error::UnsupportedElf("PT_LOAD address overflow".to_string()))?,
+            PAGE_SIZE,
+        )?);
+    }
+    Ok((first, end))
+}
+
+/// Reserves the host vDSO pages' range ([`VDSO_GAP`]) just below physical
+/// `below`, inaccessible, so mappings are placed around it as on the host.
+pub(crate) fn reserve_vdso_gap(memory: &mut GuestMemory, below: u64) -> Result<()> {
+    let start = below
+        .checked_sub(VDSO_GAP)
+        .ok_or(Error::LongModeMemoryTooSmall)?;
+    memory
+        .reserve_region(start, VDSO_GAP, RegionKind::Mmap)?
+        .commit();
+    memory.map_user_permissions(start, VDSO_GAP, false, false)
 }
 
 #[cfg(test)]
@@ -2346,7 +2392,7 @@ mod tests {
         );
         assert_eq!(
             memory.reserved_pages() as u64,
-            BOOT_RESERVED_END / PAGE_SIZE + 2 + STACK_LIMIT / PAGE_SIZE
+            BOOT_RESERVED_END / PAGE_SIZE + 2 + STACK_LIMIT / PAGE_SIZE + VDSO_GAP / PAGE_SIZE
         );
         assert_eq!(
             memory.allocation_cursors().unwrap().mmap_next,
@@ -2587,59 +2633,72 @@ mod tests {
         );
     }
 
+    /// The mmap window ends at Linux's mmap_base, its physical end agrees with
+    /// mmap_base modulo a large page, and the identity user addresses end where
+    /// it begins. A large image moves the identity end above it, not into the
+    /// window, so ld.so's place at the window's top does not move.
     #[test]
-    fn small_pie_keeps_fixed_interpreter_base() {
-        // A typical small PIE loads well under 16 MiB; layout must be unchanged.
+    fn linux_layout_places_the_mmap_window_below_mmap_base() {
+        const MIB: u64 = 1024 * 1024;
+        let mut memory = GuestMemory::new(0, (1024 * MIB) as usize).unwrap();
+        let layout = establish_linux_layout(&mut memory, 0x40_5000).unwrap();
+        assert_eq!(layout.identity_end, 256 * MIB);
+        assert_eq!(layout.mmap_end, 1024 * MIB - STACK_LIMIT - PAGE_SIZE);
         assert_eq!(
-            interpreter_load_bias(MAIN_LOAD_BIAS).unwrap(),
-            INTERPRETER_LOAD_BIAS
+            layout.mmap_end % LARGE_PAGE_SIZE,
+            MMAP_BASE % LARGE_PAGE_SIZE
         );
         assert_eq!(
-            interpreter_load_bias(3 * 1024 * 1024).unwrap(),
-            INTERPRETER_LOAD_BIAS
+            memory.physical_to_user(layout.mmap_end - PAGE_SIZE),
+            Some(MMAP_BASE - PAGE_SIZE)
         );
-        // Exactly at the fixed base still uses it (boundary is inclusive).
         assert_eq!(
-            interpreter_load_bias(INTERPRETER_LOAD_BIAS).unwrap(),
-            INTERPRETER_LOAD_BIAS
+            memory.user_range_to_guest(MMAP_BASE - PAGE_SIZE, PAGE_SIZE),
+            Some(layout.mmap_end - PAGE_SIZE)
         );
+        assert_eq!(memory.user_range_to_guest(MMAP_BASE, 1), None);
+        assert_eq!(memory.user_range_to_guest(layout.identity_end, 1), None);
+        assert_eq!(
+            memory.user_range_to_guest(layout.identity_end - 1, 1),
+            Some(layout.identity_end - 1)
+        );
+
+        let mut large = GuestMemory::new(0, (1024 * MIB) as usize).unwrap();
+        let layout = establish_linux_layout(&mut large, 300 * MIB + 1).unwrap();
+        assert_eq!(layout.identity_end, 302 * MIB);
+        assert_eq!(layout.mmap_end, 1024 * MIB - STACK_LIMIT - PAGE_SIZE);
+        let mut small = GuestMemory::new(0, (8 * MIB) as usize).unwrap();
+        assert!(establish_linux_layout(&mut small, 0x40_5000).is_err());
     }
 
+    /// A loaded program's mappings are bounded by the layout: the program break
+    /// grows to the identity end, mappings fill the window below mmap_base, and
+    /// the host vDSO pages' range just below mmap_base (no interpreter here) is
+    /// reserved and inaccessible.
     #[test]
-    fn large_pie_relocates_interpreter_above_main_image() {
-        // rustc/cargo observed main image end that overran the fixed base.
-        let main_end = 0x015b_bb30;
-        let base = interpreter_load_bias(main_end).unwrap();
-        // Interpreter is placed above the main image (no overlap)...
-        assert!(
-            base > main_end,
-            "interpreter base {base:#x} must clear main end {main_end:#x}"
-        );
-        // ...page-aligned...
+    fn loader_reserves_the_vdso_gap_and_bounds_mappings_by_the_layout() {
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let image = test_static_elf(&[0x0f, 0x0b]);
+        let loaded = load_static_elf(
+            &mut memory,
+            &image,
+            &["initial"],
+            &[],
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+        let gap = memory
+            .user_range_to_guest(MMAP_BASE - VDSO_GAP, VDSO_GAP)
+            .unwrap();
+        assert_eq!(gap + VDSO_GAP, loaded.mmap_limit);
+        assert_eq!(memory.reservation_kind(gap), Some(RegionKind::Mmap));
+        memory.enable_user_access();
+        assert!(memory.user().read(MMAP_BASE - VDSO_GAP, &mut [0]).is_err());
+        assert_eq!(loaded.brk_limit, loaded.mmap_base);
         assert_eq!(
-            base % PAGE_SIZE,
-            0,
-            "interpreter base {base:#x} must be page aligned"
+            memory.physical_to_user(loaded.mmap_base),
+            Some(MMAP_BASE - (loaded.mmap_limit - loaded.mmap_base))
         );
-        // ...past the reserved program-break headroom...
-        assert!(
-            base >= main_end + INTERPRETER_MIN_BRK_HEADROOM,
-            "interpreter base {base:#x} must reserve brk headroom above {main_end:#x}"
-        );
-        // ...and above the historical fixed base since the image overran it.
-        assert!(base > INTERPRETER_LOAD_BIAS);
-        // Exact expected value: align_up(main_end + headroom, PAGE_SIZE).
-        assert_eq!(
-            base,
-            align_up(main_end + INTERPRETER_MIN_BRK_HEADROOM, PAGE_SIZE).unwrap()
-        );
-    }
-
-    #[test]
-    fn interpreter_base_overflow_is_reported() {
-        // A main image ending near u64::MAX cannot reserve headroom; report it
-        // rather than wrapping.
-        assert!(interpreter_load_bias(u64::MAX - 1024).is_err());
     }
 
     #[test]
