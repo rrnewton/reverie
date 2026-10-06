@@ -1723,23 +1723,45 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
             });
         }
 
-        // Stack: the live user stack spans [rsp, guest_end). The unused pages
-        // below rsp are deterministically zeroed at setup, so hashing the live
-        // region is both cheaper than the full 8 MiB mapping and deterministic
-        // across the two runs of a `--verify` pair (execution is deterministic,
-        // so rsp is identical at the same syscall stop).
-        let guest_end = self.memory.guest_end();
+        // Stack: the live stack spans [rsp, end of its accessible run). The
+        // initial stack's run ends at most at USER_STACK_TOP, at the top of the
+        // user address space as on Linux. A stack below it (a thread's, in
+        // memory it mapped) ends at its first inaccessible page, at most at
+        // the window's identity range or the end of guest memory. The unused pages below rsp are deterministically zeroed at
+        // setup, so hashing the live region is both cheaper than the full
+        // mapping and deterministic across the two runs of a `--verify` pair
+        // (execution is deterministic, so rsp is identical at the same syscall
+        // stop).
         let rsp = self.registers.rsp;
-        if rsp >= self.memory.guest_base() && rsp < guest_end {
+        if let Some(end) = live_stack_end(&self.memory, rsp) {
             regions.push(DetlogMemoryRegion {
                 kind: DetlogRegionKind::Stack,
                 start: rsp,
-                end: guest_end,
+                end,
             });
         }
 
         Some(regions)
     }
+}
+
+/// The exclusive end of the live stack that starts at `rsp`, for hashing: see
+/// `detlog_memory_regions`. The region runs over the accessible pages from
+/// `rsp` upward and stops at the first page a read would fault on, so it can
+/// always be read whole. `None` when `rsp` is not on an accessible page.
+fn live_stack_end(memory: &GuestMemory, rsp: u64) -> Option<u64> {
+    let window = memory.user_stack_window_length();
+    let low_end = memory.guest_end() - window.unwrap_or(0);
+    let limit = if window.is_some_and(|length| rsp >= crate::memory::USER_ADDRESS_END - length) {
+        crate::memory::USER_STACK_TOP
+    } else if rsp >= memory.guest_base() && rsp < low_end {
+        low_end
+    } else {
+        return None;
+    };
+    let length = usize::try_from(limit.checked_sub(rsp)?).ok()?;
+    let accessible = memory.user().user_accessible_prefix(rsp, length).ok()?;
+    (accessible != 0).then_some(rsp + accessible as u64)
 }
 
 /// A stack allocator backed by a low page reserved for Tool injection buffers.
@@ -6307,6 +6329,61 @@ mod tests {
 
     fn synthetic_initial_exec() -> SyscallRequest {
         SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0x200, 0x300, 0, 0, 0])
+    }
+
+    /// The live stack region is the run of accessible pages from rsp upward: up
+    /// to USER_STACK_TOP in the stack window, and, for a stack below it (a
+    /// thread's), up to its first unmapped page. The whole region can be read,
+    /// as Detcore's stack hashing reads it, and the read sees stack writes.
+    #[test]
+    fn live_stack_end_covers_window_and_low_stacks() {
+        use reverie::syscalls::Addr;
+        use reverie::syscalls::AddrMut;
+        use reverie::syscalls::MemoryAccess;
+
+        const MIB: u64 = 1024 * 1024;
+        let mut memory = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        let window = memory.establish_user_stack_window(8 * MIB).unwrap();
+        memory.map_user_range(8 * MIB, 8 * MIB, false).unwrap();
+        // A 64 KiB thread stack in low memory, followed by an unmapped gap.
+        let thread_stack = 4 * MIB;
+        memory
+            .map_user_range(thread_stack, 64 * 1024, false)
+            .unwrap();
+        memory.enable_user_access();
+
+        assert_eq!(
+            super::live_stack_end(&memory, window + 16),
+            Some(crate::memory::USER_STACK_TOP)
+        );
+        let rsp = thread_stack + 60 * 1024;
+        let end = super::live_stack_end(&memory, rsp).unwrap();
+        assert_eq!(end, thread_stack + 64 * 1024);
+        assert_eq!(
+            super::live_stack_end(&memory, thread_stack + 64 * 1024),
+            None
+        );
+        assert_eq!(super::live_stack_end(&memory, 8 * MIB), None);
+        assert_eq!(
+            super::live_stack_end(&memory, crate::memory::USER_STACK_TOP),
+            None
+        );
+
+        let read = |memory: &GuestMemory| {
+            let mut bytes = vec![0; (end - rsp) as usize];
+            memory
+                .read_exact(Addr::<u8>::from_raw(rsp as usize).unwrap(), &mut bytes)
+                .unwrap();
+            bytes
+        };
+        let before = read(&memory);
+        MemoryAccess::write(
+            &mut memory,
+            AddrMut::<u8>::from_raw((rsp + 8) as usize).unwrap(),
+            &[0x5a],
+        )
+        .unwrap();
+        assert_ne!(read(&memory), before);
     }
 
     #[test]

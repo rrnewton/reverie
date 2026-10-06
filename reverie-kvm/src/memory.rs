@@ -200,9 +200,33 @@ struct Mapping {
     sync_mmu: Mutex<Option<bool>>,
 }
 
+/// The end of the x86-64 user address space with 4-level paging.
+pub(crate) const USER_ADDRESS_END: u64 = 1 << 47;
+/// Linux's `TASK_SIZE` and initial stack top with address randomization off.
+pub(crate) const USER_STACK_TOP: u64 = USER_ADDRESS_END - PAGE_SIZE as u64;
+
+/// Places the physical range `[physical_start, physical_end)` at the top of the
+/// user address space, `[USER_ADDRESS_END - length, USER_ADDRESS_END)`, so the
+/// guest's stack sits where Linux puts it. Only addresses below
+/// [`USER_STACK_TOP`] are user addresses, as on Linux. The range's identity
+/// addresses are then not user addresses at all, so one physical page is never
+/// reachable at two user addresses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StackWindow {
+    physical_start: u64,
+    physical_end: u64,
+}
+
+impl StackWindow {
+    fn user_start(self) -> u64 {
+        USER_ADDRESS_END - (self.physical_end - self.physical_start)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct AddressSpaceState {
     coverage: IdentityCoverage,
+    stack_window: Option<StackWindow>,
     cursors: Option<AllocationCursors>,
     reservations: BTreeMap<u64, RegionKind>,
     enabled: bool,
@@ -275,6 +299,7 @@ impl AddressSpaceState {
                 start,
                 end: start + length as u64,
             },
+            stack_window: None,
             cursors: None,
             reservations: BTreeMap::new(),
             enabled: false,
@@ -283,7 +308,60 @@ impl AddressSpaceState {
         }
     }
 
+    fn invalid_address(&self, address: u64, length: usize) -> Error {
+        Error::InvalidGuestAddress {
+            address,
+            length,
+            guest_base: self.coverage.start,
+            guest_end: self.coverage.end,
+        }
+    }
+
+    /// The physical address of user address `address`, and the exclusive
+    /// physical limit a copy starting there may run to: [`USER_STACK_TOP`]'s
+    /// physical address inside the stack window; the start of the window's
+    /// identity range (never a user address) below it; the end of the arena
+    /// otherwise.
+    fn user_extent(&self, address: u64, length: usize) -> Result<(u64, u64)> {
+        if let Some(window) = self.stack_window {
+            let user_start = window.user_start();
+            if address >= user_start {
+                if address >= USER_STACK_TOP {
+                    return Err(self.invalid_address(address, length));
+                }
+                return Ok((
+                    address - user_start + window.physical_start,
+                    window.physical_end - PAGE_SIZE as u64,
+                ));
+            }
+            if (window.physical_start..window.physical_end).contains(&address) {
+                return Err(self.invalid_address(address, length));
+            }
+            if address < window.physical_start && address >= self.coverage.start {
+                return Ok((address, window.physical_start));
+            }
+        }
+        if address < self.coverage.start || address >= self.coverage.end {
+            return Err(self.invalid_address(address, length));
+        }
+        Ok((address, self.coverage.end))
+    }
+
     fn translate(&self, address: u64, length: usize) -> Result<u64> {
+        if let Some(window) = self.stack_window {
+            let user_start = window.user_start();
+            if address >= user_start {
+                let end = address.checked_add(length as u64);
+                if end.is_none_or(|end| end > USER_STACK_TOP) {
+                    return Err(self.invalid_address(address, length));
+                }
+                return Ok(address - user_start + window.physical_start);
+            }
+            let end = address.saturating_add(length as u64);
+            if address < window.physical_end && end > window.physical_start {
+                return Err(self.invalid_address(address, length));
+            }
+        }
         let offset = address.checked_sub(self.coverage.start);
         let end = offset.and_then(|offset| offset.checked_add(length as u64));
         if end.is_none_or(|end| end > self.coverage.end - self.coverage.start) {
@@ -1319,6 +1397,66 @@ impl GuestMemory {
         self.mapping.slice.length == 0
     }
 
+    /// Places the top `length` bytes of this memory at the top of the user
+    /// address space (see [`StackWindow`]) and returns the window's first user
+    /// address. Repeating it with the same range changes nothing. The caller
+    /// maps the same window in the guest's page tables.
+    pub(crate) fn establish_user_stack_window(&self, length: u64) -> Result<u64> {
+        let physical_end = self.guest_end();
+        let physical_start = physical_end
+            .checked_sub(length)
+            .filter(|start| *start >= self.guest_base() && length.is_multiple_of(PAGE_SIZE as u64))
+            .ok_or(Error::LongModeMemoryTooSmall)?;
+        let window = StackWindow {
+            physical_start,
+            physical_end,
+        };
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .stack_window = Some(window);
+        Ok(window.user_start())
+    }
+
+    /// The stack window's length, once established.
+    pub(crate) fn user_stack_window_length(&self) -> Option<u64> {
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .stack_window
+            .map(|window| window.physical_end - window.physical_start)
+    }
+
+    /// The physical address of the user range `[address, address + length)`,
+    /// or `None` when it is not one contiguous range of user addresses.
+    pub(crate) fn user_range_to_guest(&self, address: u64, length: u64) -> Option<u64> {
+        let length = usize::try_from(length).ok()?;
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .translate(address, length)
+            .ok()
+    }
+
+    /// Whether `[address, address + length)` is one contiguous range of user
+    /// addresses, mapped or not.
+    pub(crate) fn user_range_is_addressable(&self, address: u64, length: u64) -> bool {
+        self.user_range_to_guest(address, length).is_some()
+    }
+
+    /// The physical address of user address `address`, for a copy of `length`
+    /// bytes.
+    fn translate_user(&self, address: u64, length: usize) -> Result<u64> {
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .translate(address, length)
+    }
+
     // TODO-HUMAN-REVIEW(PR-132): Review the host-side KVM user mapping API.
     pub(crate) fn clear_user_access(&self) {
         if self.contains_shared_file() {
@@ -1585,7 +1723,8 @@ impl GuestMemory {
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn read(&self, guest_address: u64, destination: &mut [u8]) -> Result<()> {
         self.with_copy(|copy| {
-            self.checked_offset(guest_address, destination.len())?;
+            let physical = self.translate_user(guest_address, destination.len())?;
+            self.checked_offset(physical, destination.len())?;
             if self.user().user_accessible_prefix_admitted(
                 guest_address,
                 destination.len(),
@@ -1597,7 +1736,7 @@ impl GuestMemory {
                     length: destination.len(),
                 });
             }
-            self.read_raw_admitted(guest_address, destination, copy)
+            self.read_raw_admitted(physical, destination, copy)
         })
     }
 
@@ -1634,7 +1773,8 @@ impl GuestMemory {
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn write(&mut self, guest_address: u64, source: &[u8]) -> Result<()> {
         self.with_copy(|copy| {
-            self.checked_offset(guest_address, source.len())?;
+            let physical = self.translate_user(guest_address, source.len())?;
+            self.checked_offset(physical, source.len())?;
             if self
                 .user()
                 .user_accessible_prefix_admitted(guest_address, source.len(), copy)?
@@ -1645,7 +1785,7 @@ impl GuestMemory {
                     length: source.len(),
                 });
             }
-            self.write_raw_admitted(guest_address, source, copy)
+            self.write_raw_admitted(physical, source, copy)
         })
     }
 
@@ -1746,11 +1886,12 @@ impl GuestMemory {
         debug_assert_eq!(copied, source.len());
         Ok(())
     }
-    /// Zeros a guest-physical address range.
+    /// Zeros a range of user addresses, as [`GuestMemory::write`] writes one.
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn zero(&mut self, guest_address: u64, length: usize) -> Result<()> {
         self.with_copy(|copy| {
-            self.checked_offset(guest_address, length)?;
+            let physical = self.translate_user(guest_address, length)?;
+            self.checked_offset(physical, length)?;
             if self
                 .user()
                 .user_accessible_prefix_admitted(guest_address, length, copy)?
@@ -1761,7 +1902,7 @@ impl GuestMemory {
                     length,
                 });
             }
-            self.zero_raw_admitted(guest_address, length, copy)
+            self.zero_raw_admitted(physical, length, copy)
         })
     }
 
@@ -2034,9 +2175,6 @@ impl UserMemory {
     fn guest_base(&self) -> u64 {
         self.memory.guest_base()
     }
-    fn guest_end(&self) -> u64 {
-        self.memory.guest_end()
-    }
 
     fn translate_admitted(&self, address: u64, length: usize, _copy: &CopyAccess) -> Result<u64> {
         self.memory
@@ -2138,10 +2276,10 @@ impl UserMemory {
                 let Some(page_address) = first_page.checked_add(alias_offset as u64) else {
                     break;
                 };
-                if page_address < self.guest_base() || page_address >= self.guest_end() {
+                let Ok((physical, _)) = permissions.user_extent(page_address, PAGE_SIZE) else {
                     continue;
-                }
-                let page = page_address / PAGE_SIZE as u64;
+                };
+                let page = physical / PAGE_SIZE as u64;
                 if permissions.enabled
                     && !matches!(
                         permissions.pages.get(&page),
@@ -2155,7 +2293,7 @@ impl UserMemory {
                     None => BackingSlice {
                         backing: self.memory.mapping.slice.backing.clone(),
                         offset: self.memory.mapping.slice.offset
-                            + (page_address - self.guest_base()) as usize,
+                            + (physical - self.guest_base()) as usize,
                         length: PAGE_SIZE,
                     },
                 };
@@ -2377,20 +2515,21 @@ impl UserMemory {
                 return Ok(0);
             }
             self.translate_admitted(guest_address, 1, copy)?;
-            let end = guest_address
-                .checked_add(destination.len() as u64)
-                .ok_or(Error::GuestMemoryAccessDenied {
+            guest_address.checked_add(destination.len() as u64).ok_or(
+                Error::GuestMemoryAccessDenied {
                     address: guest_address,
                     length: destination.len(),
-                })?
-                .min(self.guest_end());
+                },
+            )?;
             let access = self
                 .memory
                 .mapping
                 .address_space
                 .lock()
                 .expect("guest memory access map lock poisoned");
-            let mut cursor = guest_address;
+            let (start, limit) = access.user_extent(guest_address, destination.len())?;
+            let end = start.saturating_add(destination.len() as u64).min(limit);
+            let mut cursor = start;
             while cursor < end {
                 if access.enabled
                     && !matches!(
@@ -2402,7 +2541,7 @@ impl UserMemory {
                 }
                 cursor = ((cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64).min(end);
             }
-            let length = (cursor - guest_address) as usize;
+            let length = (cursor - start) as usize;
             if length != 0 {
                 let physical = access.translate(guest_address, length)?;
                 let offset = self.memory.checked_offset(physical, length)?;
@@ -2444,20 +2583,21 @@ impl UserMemory {
             return Ok(0);
         }
         self.translate_admitted(guest_address, 1, copy)?;
-        let requested_end = guest_address.checked_add(source.len() as u64).ok_or(
-            Error::GuestMemoryAccessDenied {
+        guest_address
+            .checked_add(source.len() as u64)
+            .ok_or(Error::GuestMemoryAccessDenied {
                 address: guest_address,
                 length: source.len(),
-            },
-        )?;
-        let end = requested_end.min(self.guest_end());
+            })?;
         let access = self
             .memory
             .mapping
             .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
-        let mut cursor = guest_address;
+        let (start, limit) = access.user_extent(guest_address, source.len())?;
+        let end = start.saturating_add(source.len() as u64).min(limit);
+        let mut cursor = start;
         while cursor < end {
             if access.enabled
                 && !matches!(
@@ -2469,7 +2609,7 @@ impl UserMemory {
             }
             cursor = ((cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64).min(end);
         }
-        let length = usize::try_from(cursor - guest_address).expect("copyout prefix fits usize");
+        let length = usize::try_from(cursor - start).expect("copyout prefix fits usize");
         if length == source.len() || (partial && length != 0) {
             let physical = access.translate(guest_address, length)?;
             let offset = self.memory.checked_offset(physical, length)?;
@@ -2537,29 +2677,19 @@ impl UserMemory {
         if length == 0 {
             return Ok(0);
         }
-        if guest_address < self.guest_base() || guest_address >= self.guest_end() {
-            return Err(Error::InvalidGuestAddress {
-                address: guest_address,
-                length,
-                guest_base: self.guest_base(),
-                guest_end: self.guest_end(),
-            });
-        }
-        let requested_end = guest_address.saturating_add(length as u64);
-        let end = requested_end.min(self.guest_end());
         let access = self
             .memory
             .mapping
             .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
+        let (start, limit) = access.user_extent(guest_address, length)?;
+        let end = start.saturating_add(length as u64).min(limit);
         if !access.enabled {
-            return Ok(
-                usize::try_from(end - guest_address).expect("guest memory prefix must fit usize")
-            );
+            return Ok(usize::try_from(end - start).expect("guest memory prefix must fit usize"));
         }
 
-        let mut cursor = guest_address;
+        let mut cursor = start;
         while cursor < end {
             if !matches!(
                 access.pages.get(&(cursor / PAGE_SIZE as u64)),
@@ -2570,7 +2700,7 @@ impl UserMemory {
             let next_page = (cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64;
             cursor = next_page.min(end);
         }
-        Ok(usize::try_from(cursor - guest_address).expect("guest memory prefix must fit usize"))
+        Ok(usize::try_from(cursor - start).expect("guest memory prefix must fit usize"))
     }
 
     pub(crate) fn user_writable_prefix(&self, guest_address: u64, length: usize) -> Result<usize> {
@@ -2587,29 +2717,18 @@ impl UserMemory {
         if length == 0 {
             return Ok(0);
         }
-        if guest_address < self.guest_base() || guest_address >= self.guest_end() {
-            return Err(Error::InvalidGuestAddress {
-                address: guest_address,
-                length,
-                guest_base: self.guest_base(),
-                guest_end: self.guest_end(),
-            });
-        }
-        let end = guest_address
-            .saturating_add(length as u64)
-            .min(self.guest_end());
         let access = self
             .memory
             .mapping
             .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
+        let (start, limit) = access.user_extent(guest_address, length)?;
+        let end = start.saturating_add(length as u64).min(limit);
         if !access.enabled {
-            return Ok(
-                usize::try_from(end - guest_address).expect("guest memory prefix must fit usize")
-            );
+            return Ok(usize::try_from(end - start).expect("guest memory prefix must fit usize"));
         }
-        let mut cursor = guest_address;
+        let mut cursor = start;
         while cursor < end {
             if !matches!(
                 access.pages.get(&(cursor / PAGE_SIZE as u64)),
@@ -2620,7 +2739,7 @@ impl UserMemory {
             let next_page = (cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64;
             cursor = next_page.min(end);
         }
-        Ok(usize::try_from(cursor - guest_address).expect("guest memory prefix must fit usize"))
+        Ok(usize::try_from(cursor - start).expect("guest memory prefix must fit usize"))
     }
 }
 
@@ -2679,7 +2798,10 @@ impl MemoryAccess for GuestMemory {
             }
             let destination =
                 &mut write_to[destination_index][destination_offset..destination_offset + count];
-            if let Err(error) = self.read_raw_admitted(address, destination, &copy) {
+            let physical = self
+                .translate_user(address, count)
+                .map_err(|_| Errno::EFAULT)?;
+            if let Err(error) = self.read_raw_admitted(physical, destination, &copy) {
                 drop(copy);
                 if matches!(
                     error.primary(),
@@ -2752,7 +2874,10 @@ impl MemoryAccess for GuestMemory {
                 };
             }
             let source = &read_from[source_index][source_offset..source_offset + count];
-            if let Err(error) = self.write_raw_admitted(address, source, &copy) {
+            let physical = self
+                .translate_user(address, source.len())
+                .map_err(|_| Errno::EFAULT)?;
+            if let Err(error) = self.write_raw_admitted(physical, source, &copy) {
                 drop(copy);
                 if matches!(
                     error.primary(),
@@ -4471,6 +4596,67 @@ mod tests {
                 &original,
             );
         }
+    }
+
+    /// The stack window places the top of guest memory at the top of the user
+    /// address space; its identity addresses stop being user addresses, and
+    /// only addresses below Linux's TASK_SIZE are.
+    #[test]
+    fn stack_window_translates_only_its_user_addresses() {
+        const MIB: u64 = 1024 * 1024;
+        let memory = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        assert_eq!(memory.user_range_to_guest(8 * MIB, 1), Some(8 * MIB));
+        let window = memory.establish_user_stack_window(8 * MIB).unwrap();
+        assert_eq!(window, USER_ADDRESS_END - 8 * MIB);
+        assert_eq!(memory.user_stack_window_length(), Some(8 * MIB));
+
+        assert_eq!(memory.user_range_to_guest(window, 1), Some(8 * MIB));
+        assert_eq!(
+            memory.user_range_to_guest(USER_STACK_TOP - 8, 8),
+            Some(16 * MIB - PAGE_SIZE as u64 - 8)
+        );
+        assert_eq!(memory.user_range_to_guest(USER_STACK_TOP, 1), None);
+        assert_eq!(memory.user_range_to_guest(USER_STACK_TOP - 1, 2), None);
+        assert_eq!(memory.user_range_to_guest(window - 1, 1), None);
+        // The window's identity addresses are not user addresses.
+        assert_eq!(memory.user_range_to_guest(8 * MIB, 1), None);
+        assert_eq!(memory.user_range_to_guest(16 * MIB - 1, 1), None);
+        assert_eq!(memory.user_range_to_guest(8 * MIB - 1, 2), None);
+        assert_eq!(
+            memory.user_range_to_guest(8 * MIB - 1, 1),
+            Some(8 * MIB - 1)
+        );
+
+        // A copy below the window stops where the window's identity range
+        // begins, even when the physical pages beyond it are mapped.
+        memory
+            .map_user_range(8 * MIB - PAGE_SIZE as u64, 2 * PAGE_SIZE as u64, false)
+            .unwrap();
+        memory.enable_user_access();
+        let user = memory.user();
+        assert_eq!(
+            user.user_accessible_prefix(8 * MIB - PAGE_SIZE as u64, 2 * PAGE_SIZE)
+                .unwrap(),
+            PAGE_SIZE
+        );
+        assert!(user.user_accessible_prefix(8 * MIB, 1).is_err());
+        // The window's first page is physical 8 MiB, mapped above; its second
+        // is not.
+        assert_eq!(
+            user.user_accessible_prefix(window, 2 * PAGE_SIZE).unwrap(),
+            PAGE_SIZE
+        );
+
+        // The public copies name the window by its user addresses.
+        let mut memory = memory;
+        memory.write(window, &[0x5a; 8]).unwrap();
+        let mut bytes = [0; 8];
+        memory.read_raw(8 * MIB, &mut bytes).unwrap();
+        assert_eq!(bytes, [0x5a; 8]);
+        memory.zero(window, 8).unwrap();
+        memory.read(window, &mut bytes).unwrap();
+        assert_eq!(bytes, [0; 8]);
+        assert!(memory.zero(8 * MIB, 8).is_err());
     }
 
     #[test]
