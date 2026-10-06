@@ -76,6 +76,7 @@ pub struct DbtRunner {
     summary: bool,
     isolated_process_group: bool,
     terminate_process_group_on_exit: bool,
+    defer_evidence_finish: bool,
 }
 
 impl DbtRunner {
@@ -121,6 +122,7 @@ impl DbtRunner {
             summary: false,
             isolated_process_group: false,
             terminate_process_group_on_exit: false,
+            defer_evidence_finish: false,
         })
     }
 
@@ -184,6 +186,39 @@ impl DbtRunner {
     pub fn evidence_log_level(mut self, level: DbtEvidenceLogLevel) -> Self {
         self.evidence_log_level = level;
         self
+    }
+
+    /// The appender for records the coordinator emits into this run's
+    /// protected evidence, when an evidence file is configured.
+    pub fn coordinator_evidence(&self) -> Option<crate::CoordinatorEvidence> {
+        self.evidence
+            .as_ref()
+            .map(|evidence| evidence.coordinator_evidence())
+    }
+
+    /// Keeps the protected evidence open after the guest tree is reaped, until
+    /// [`Self::finish_deferred_evidence`].
+    ///
+    /// A coordinator that appends records through [`Self::coordinator_evidence`]
+    /// keeps emitting after the guest exits (Detcore's scheduler logs that its
+    /// run queue emptied), so finishing when the tree is reaped would make
+    /// whether those records are in the stream depend on timing. The caller
+    /// finishes its own shutdown first, then finishes the evidence. Failure
+    /// paths still finish immediately and refuse publication.
+    pub fn defer_evidence_finish(mut self) -> Self {
+        self.defer_evidence_finish = true;
+        self
+    }
+
+    /// Finishes evidence whose finish [`Self::defer_evidence_finish`] deferred,
+    /// combining the guest's `status` with the evidence result as an undeferred
+    /// run does.
+    pub fn finish_deferred_evidence(&self, status: ExitStatus) -> io::Result<ExitStatus> {
+        let evidence = match &self.evidence {
+            Some(evidence) => evidence.finish_deferred(),
+            None => Ok(()),
+        };
+        combine_status_and_evidence(Ok(status), evidence)
     }
 
     /// Runs the DynamoRIO launcher in a new process group when enabled.
@@ -717,6 +752,12 @@ impl DbtRunner {
                 (Err(error), _) => Err(error),
             }
         };
+        if self.defer_evidence_finish
+            && let Some(evidence) = &self.evidence
+        {
+            evidence.defer_finish(status.is_ok());
+            return status;
+        }
         let evidence = self.finish_evidence(status.is_ok());
         combine_status_and_evidence(status, evidence)
     }
@@ -1441,6 +1482,7 @@ mod tests {
             summary: false,
             isolated_process_group: false,
             terminate_process_group_on_exit: false,
+            defer_evidence_finish: false,
         }
     }
 

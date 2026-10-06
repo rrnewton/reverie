@@ -300,6 +300,67 @@ pub fn decode_evidence(bytes: &[u8]) -> io::Result<DbtEvidence> {
     })
 }
 
+/// The collector the socket worker and the coordinator's in-process appender
+/// share. Both absorb under this one lock, so the collected stream is the
+/// order in which records were absorbed. `None` once the worker has finished.
+#[derive(Clone)]
+struct SharedCollector(Arc<Mutex<Option<Collector>>>);
+
+impl SharedCollector {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(Some(Collector::new()))))
+    }
+
+    fn with<T>(&self, absorb: impl FnOnce(&mut Collector) -> io::Result<T>) -> io::Result<T> {
+        match self.0.lock().unwrap().as_mut() {
+            Some(collector) => absorb(collector),
+            None => Err(io::Error::other(
+                "DBT evidence collector was already finished",
+            )),
+        }
+    }
+
+    fn take(&self) -> io::Result<Collector> {
+        self.0
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| io::Error::other("DBT evidence collector was already finished"))
+    }
+}
+
+impl std::fmt::Debug for SharedCollector {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SharedCollector")
+    }
+}
+
+/// Appends records emitted by the coordinator, the host process that owns a
+/// coordinated DBT run's global state, to that run's protected evidence.
+///
+/// The coordinator's tool emits records too (under Detcore, the scheduler's),
+/// and they belong in the run's stream at the point they happened. Each guest
+/// record is absorbed before the guest callback that emitted it returns, and a
+/// guest that asks the coordinator for something waits for the reply. So a
+/// coordinator record appended when it is emitted lands after every guest
+/// record that preceded the request and before every guest record that follows
+/// the reply: appending at emission time is the order in which they happened.
+#[derive(Clone, Debug)]
+pub struct CoordinatorEvidence {
+    collector: SharedCollector,
+}
+
+impl CoordinatorEvidence {
+    /// Appends one record: a canonical tracing record with exactly one
+    /// terminal newline, as a guest emits. A record that imitates a process
+    /// image initialization record is refused, as is any record after the
+    /// run's evidence was finished.
+    pub fn append(&self, record: &[u8]) -> io::Result<()> {
+        self.collector
+            .with(|collector| collector.absorb_coordinator_record(record))
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct EvidenceSession {
     address_hex: String,
@@ -313,6 +374,9 @@ pub(crate) struct EvidenceSession {
     output: Mutex<Option<File>>,
     worker: Mutex<Option<JoinHandle<io::Result<CollectedEvidence>>>>,
     result: Mutex<Option<Result<(), String>>>,
+    collector: SharedCollector,
+    /// Set when the run's finish was deferred: whether publication is allowed.
+    deferred_publication: Mutex<Option<bool>>,
 }
 
 impl EvidenceSession {
@@ -339,6 +403,8 @@ impl EvidenceSession {
         let worker_stop = Arc::clone(&stop);
         let acknowledgement_drops = AcknowledgementDropControl::default();
         let worker_acknowledgement_drops = acknowledgement_drops.clone();
+        let collector = SharedCollector::new();
+        let worker_collector = collector.clone();
         let worker = std::thread::Builder::new()
             .name("reverie-dbt-evidence".into())
             .spawn(move || {
@@ -348,6 +414,7 @@ impl EvidenceSession {
                     worker_root_process,
                     worker_stop,
                     worker_acknowledgement_drops,
+                    worker_collector,
                 )
             })?;
 
@@ -363,7 +430,30 @@ impl EvidenceSession {
             output: Mutex::new(Some(output)),
             worker: Mutex::new(Some(worker)),
             result: Mutex::new(None),
+            collector,
+            deferred_publication: Mutex::new(None),
         })
+    }
+
+    /// The appender for records the coordinator emits into this run.
+    pub(crate) fn coordinator_evidence(&self) -> CoordinatorEvidence {
+        CoordinatorEvidence {
+            collector: self.collector.clone(),
+        }
+    }
+
+    /// Records the launcher's publication decision for a finish deferred
+    /// until [`Self::finish_deferred`].
+    pub(crate) fn defer_finish(&self, publication_allowed: bool) {
+        *self.deferred_publication.lock().unwrap() = Some(publication_allowed);
+    }
+
+    /// Finishes a deferred run with the publication decision recorded by
+    /// [`Self::defer_finish`]; a run whose decision was never recorded did not
+    /// prove its process-tree cleanup and is not published.
+    pub(crate) fn finish_deferred(&self) -> io::Result<()> {
+        let publication_allowed = self.deferred_publication.lock().unwrap().unwrap_or(false);
+        self.finish(publication_allowed)
     }
 
     pub(crate) fn client_arguments(&self) -> [String; 4] {
@@ -800,6 +890,45 @@ impl Collector {
             cursor = record_end;
         }
 
+        self.append_encoded(payload, record_count, payload_bytes)?;
+        if initialized {
+            self.images
+                .get_mut(&process)
+                .expect("validated DATA process remains live")
+                .initialized = true;
+        }
+        Ok(())
+    }
+
+    /// Absorbs one record the coordinator emitted. It belongs to no guest
+    /// process image, so it is checked as a record and never as image
+    /// lifecycle: it must be one canonical tracing record and must not imitate
+    /// an initialization record, which only a guest image may emit.
+    fn absorb_coordinator_record(&mut self, record: &[u8]) -> io::Result<()> {
+        validate_record(record)?;
+        if !matches!(
+            classify_initialization_record(record),
+            InitializationRecord::Other
+        ) {
+            return Err(invalid_data(
+                "DBT coordinator record imitates a process image initialization record",
+            ));
+        }
+        let length = u32::try_from(record.len())
+            .map_err(|_| invalid_data("DBT coordinator record is too long"))?;
+        let mut payload = Vec::with_capacity(4 + record.len());
+        payload.extend_from_slice(&length.to_le_bytes());
+        payload.extend_from_slice(record);
+        self.append_encoded(&payload, 1, u64::from(length))
+    }
+
+    /// Appends length-prefixed records to the collected stream.
+    fn append_encoded(
+        &mut self,
+        payload: &[u8],
+        record_count: u64,
+        payload_bytes: u64,
+    ) -> io::Result<()> {
         let new_len = self
             .encoded_records
             .len()
@@ -818,12 +947,6 @@ impl Collector {
             .payload_bytes
             .checked_add(payload_bytes)
             .ok_or_else(|| invalid_data("DBT evidence payload length overflowed"))?;
-        if initialized {
-            self.images
-                .get_mut(&process)
-                .expect("validated DATA process remains live")
-                .initialized = true;
-        }
         Ok(())
     }
 
@@ -868,8 +991,8 @@ fn serve(
     root_process: Arc<Mutex<Option<ProcessKey>>>,
     stop: Arc<AtomicBool>,
     acknowledgement_drops: AcknowledgementDropControl,
+    collector: SharedCollector,
 ) -> io::Result<CollectedEvidence> {
-    let mut collector = Collector::new();
     let mut shutdown_connections = 0_u32;
     loop {
         let stopping = stop.load(Ordering::Acquire);
@@ -889,7 +1012,7 @@ fn serve(
                     &mut stream,
                     &token,
                     &root_process,
-                    &mut collector,
+                    &collector,
                     &acknowledgement_drops,
                 ) {
                     let _ = stream.write_all(&[1]);
@@ -905,14 +1028,14 @@ fn serve(
             Err(error) => return Err(error),
         }
     }
-    collector.finish()
+    collector.take()?.finish()
 }
 
 fn handle_connection(
     stream: &mut UnixStream,
     token: &[u8; CHANNEL_TOKEN_LEN],
     root_process: &Mutex<Option<ProcessKey>>,
-    collector: &mut Collector,
+    collector: &SharedCollector,
     acknowledgement_drops: &AcknowledgementDropControl,
 ) -> io::Result<()> {
     let mut header = [0_u8; CHANNEL_HEADER_LEN];
@@ -950,7 +1073,9 @@ fn handle_connection(
         pid,
         start_time: process_start_time(pid)?,
     };
-    if !collector.has_admitted(process) && !initial_peer_is_admissible(process, root) {
+    if !collector.with(|collector| Ok(collector.has_admitted(process)))?
+        && !initial_peer_is_admissible(process, root)
+    {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "DBT evidence peer is outside the launched process tree",
@@ -973,7 +1098,9 @@ fn handle_connection(
     if !constant_time_equal(&digest, &expected_digest) {
         return Err(invalid_data("DBT evidence frame digest is invalid"));
     }
-    collector.absorb_or_acknowledge_retry(kind, process, sequence, digest, &payload)?;
+    collector.with(|collector| {
+        collector.absorb_or_acknowledge_retry(kind, process, sequence, digest, &payload)
+    })?;
     // The frame is durable in collector state before the ACK. If the peer
     // times out and closes here, its exact retry is acknowledged idempotently.
     if acknowledgement_drops.should_drop() {
@@ -1537,6 +1664,89 @@ mod tests {
         assert_eq!(evidence.records(), [FIRST_RECORD, SECOND_RECORD]);
     }
 
+    const COORDINATOR_RECORD: &[u8] =
+        b"1970-01-01T00:00:00.000000Z INFO detcore::scheduler: [scheduler] guest in queue\n";
+
+    #[test]
+    fn coordinator_records_land_where_they_were_absorbed() {
+        let process = ProcessKey {
+            pid: 41,
+            start_time: 43,
+        };
+        let shared = SharedCollector::new();
+        let coordinator = CoordinatorEvidence {
+            collector: shared.clone(),
+        };
+        // Before the guest starts, between two guest records, and after the
+        // guest's FINAL frame: each lands at its absorption point.
+        coordinator.append(COORDINATOR_RECORD).unwrap();
+        shared
+            .with(|collector| {
+                start_and_initialize(collector, process);
+                collector.absorb(FRAME_DATA, process, 2, &encode_records(&[FIRST_RECORD]))
+            })
+            .unwrap();
+        coordinator.append(COORDINATOR_RECORD).unwrap();
+        shared
+            .with(|collector| {
+                collector.absorb(FRAME_DATA, process, 3, &encode_records(&[SECOND_RECORD]))?;
+                collector.absorb(FRAME_FINAL, process, 4, &[FINAL_GUEST_COMPLETED])
+            })
+            .unwrap();
+        coordinator.append(COORDINATOR_RECORD).unwrap();
+
+        let collected = shared.take().unwrap().finish().unwrap();
+        assert_eq!(collected.record_count, 6);
+        let mut output = tempfile::tempfile().unwrap();
+        publish(&mut output, collected).unwrap();
+        output.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        output.read_to_end(&mut bytes).unwrap();
+        let evidence = decode_evidence(&bytes).unwrap();
+        assert_eq!(
+            evidence.all_records(),
+            [
+                COORDINATOR_RECORD,
+                INITIALIZATION_RECORD,
+                FIRST_RECORD,
+                COORDINATOR_RECORD,
+                SECOND_RECORD,
+                COORDINATOR_RECORD,
+            ]
+        );
+        assert_eq!(evidence.initialization_records(), 1);
+    }
+
+    #[test]
+    fn coordinator_records_are_refused_unless_canonical_and_comparable() {
+        let shared = SharedCollector::new();
+        let coordinator = CoordinatorEvidence {
+            collector: shared.clone(),
+        };
+        // Only a guest image may announce an image initialization.
+        assert!(coordinator.append(INITIALIZATION_RECORD).is_err());
+        let mut lookalike = INITIALIZATION_RECORD.to_vec();
+        lookalike.insert(lookalike.len() - 1, b'!');
+        assert!(coordinator.append(&lookalike).is_err());
+        for malformed in [
+            b"".as_slice(),
+            b"INFO detcore: no canonical prefix\n",
+            b"1970-01-01T00:00:00.000000Z INFO detcore: no newline",
+            b"1970-01-01T00:00:00.000000Z INFO detcore: two\nlines\n",
+            b"1970-01-01T00:00:00.000000Z NOTICE detcore: unknown level\n",
+        ] {
+            assert!(coordinator.append(malformed).is_err(), "{malformed:?}");
+        }
+        // Nothing refused reached the stream.
+        assert_eq!(
+            shared.with(|collector| Ok(collector.record_count)).unwrap(),
+            0
+        );
+        // After the worker finishes, an append is refused rather than lost.
+        let _ = shared.take().unwrap();
+        assert!(coordinator.append(COORDINATOR_RECORD).is_err());
+    }
+
     #[test]
     fn all_records_keeps_each_initialization_record_at_its_arrival_position() {
         let streams: [&[&[u8]]; 5] = [
@@ -1559,8 +1769,9 @@ mod tests {
                 SECOND_RECORD,
                 INITIALIZATION_RECORD,
             ],
-            // The decoder also accepts a comparable record before the first
-            // initialization record, which the collector never writes.
+            // A comparable record before the first initialization record: the
+            // collector writes one when the coordinator emits before the guest
+            // starts.
             &[FIRST_RECORD, INITIALIZATION_RECORD, SECOND_RECORD],
         ];
         for raw_records in streams {
