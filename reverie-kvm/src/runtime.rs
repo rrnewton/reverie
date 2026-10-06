@@ -1723,23 +1723,42 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
             });
         }
 
-        // Stack: the live user stack spans [rsp, guest_end). The unused pages
-        // below rsp are deterministically zeroed at setup, so hashing the live
-        // region is both cheaper than the full 8 MiB mapping and deterministic
-        // across the two runs of a `--verify` pair (execution is deterministic,
-        // so rsp is identical at the same syscall stop).
-        let guest_end = self.memory.guest_end();
+        // Stack: the live stack spans [rsp, top of its region). The initial
+        // stack's region ends at USER_STACK_TOP, at the top of the user address
+        // space as on Linux. A stack below it (a thread's, in memory it mapped)
+        // runs as far as the user addresses below the window go: up to the
+        // window's identity range, or to the end of guest memory when no window
+        // exists. The unused pages below rsp are deterministically zeroed at
+        // setup, so hashing the live region is both cheaper than the full
+        // mapping and deterministic across the two runs of a `--verify` pair
+        // (execution is deterministic, so rsp is identical at the same syscall
+        // stop).
         let rsp = self.registers.rsp;
-        if rsp >= self.memory.guest_base() && rsp < guest_end {
+        if let Some(end) = live_stack_end(&self.memory, rsp) {
             regions.push(DetlogMemoryRegion {
                 kind: DetlogRegionKind::Stack,
                 start: rsp,
-                end: guest_end,
+                end,
             });
         }
 
         Some(regions)
     }
+}
+
+/// The exclusive end of the live stack that starts at `rsp`, for hashing: see
+/// `detlog_memory_regions`. `None` when `rsp` is not a user address.
+fn live_stack_end(memory: &GuestMemory, rsp: u64) -> Option<u64> {
+    let window = memory.user_stack_window_length();
+    let low_end = memory.guest_end() - window.unwrap_or(0);
+    let end = if window.is_some_and(|length| rsp >= crate::memory::USER_ADDRESS_END - length) {
+        crate::memory::USER_STACK_TOP
+    } else if rsp >= memory.guest_base() && rsp < low_end {
+        low_end
+    } else {
+        return None;
+    };
+    (rsp < end).then_some(end)
 }
 
 /// A stack allocator backed by a low page reserved for Tool injection buffers.
@@ -6307,6 +6326,27 @@ mod tests {
 
     fn synthetic_initial_exec() -> SyscallRequest {
         SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0x200, 0x300, 0, 0, 0])
+    }
+
+    /// The live stack ends at USER_STACK_TOP inside the stack window, at the
+    /// window's identity range for a stack below it (a thread's), and at the
+    /// end of guest memory when no window exists.
+    #[test]
+    fn live_stack_end_covers_window_and_low_stacks() {
+        const MIB: u64 = 1024 * 1024;
+        let memory = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        assert_eq!(super::live_stack_end(&memory, 4 * MIB), Some(16 * MIB));
+        let window = memory.establish_user_stack_window(8 * MIB).unwrap();
+        assert_eq!(
+            super::live_stack_end(&memory, window + 16),
+            Some(crate::memory::USER_STACK_TOP)
+        );
+        assert_eq!(super::live_stack_end(&memory, 4 * MIB), Some(8 * MIB));
+        assert_eq!(super::live_stack_end(&memory, 8 * MIB), None);
+        assert_eq!(
+            super::live_stack_end(&memory, crate::memory::USER_STACK_TOP),
+            None
+        );
     }
 
     #[test]

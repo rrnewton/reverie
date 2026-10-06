@@ -4383,9 +4383,17 @@ impl KvmBackend {
 
         let registers = self.vcpu.get_regs()?;
         let mut instruction = [0];
+        // The faulting instruction is named by its user address, which the
+        // stack window places away from its physical address.
+        let Some(instruction_address) = self
+            .memory
+            .user_range_to_guest(exception.instruction_pointer, 1)
+        else {
+            return Ok(false);
+        };
         if self
             .memory
-            .read_raw(exception.instruction_pointer, &mut instruction)
+            .read_raw(instruction_address, &mut instruction)
             .is_err()
             || instruction != [0xed]
             || registers.rbx & u64::from(u32::MAX) != VMWARE_BACKDOOR_MAGIC
@@ -5836,6 +5844,10 @@ pub(crate) use tests::minimal_test_elf;
 
 #[cfg(test)]
 mod tests {
+    /// The stack window's first page in a 16 MiB test memory: the user address
+    /// of physical 0x80_0000, which these tests use as scratch memory.
+    const STACK_SCRATCH: u64 = crate::memory::USER_ADDRESS_END - crate::elf::STACK_LIMIT;
+
     use super::*;
 
     include!("cpuid_runtime_tests.rs");
@@ -8429,7 +8441,7 @@ mod tests {
                 .unwrap()
                 .as_ref()
                 .unwrap()
-                .read(0x80_0000, &mut bytes)
+                .read(STACK_SCRATCH, &mut bytes)
                 .unwrap();
             self.observations.lock().unwrap().push((status, bytes));
         }
@@ -8490,7 +8502,7 @@ mod tests {
             .memory
             .map_user_permissions(0x80_0000, 4096, true, writable)
             .unwrap();
-        parent.memory.write(0x80_0000, &[0x5a; 4096]).unwrap();
+        parent.memory.write(STACK_SCRATCH, &[0x5a; 4096]).unwrap();
         let mut child = parent
             .prepare_forked_process(
                 &executor, 2, None, None, None, None, false, false, true, None,
@@ -8498,7 +8510,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             child.executor.execute(
-                &SyscallRequest::new(libc::SYS_set_tid_address as u64, [0x80_0000, 0, 0, 0, 0, 0]),
+                &SyscallRequest::new(
+                    libc::SYS_set_tid_address as u64,
+                    [STACK_SCRATCH, 0, 0, 0, 0, 0]
+                ),
                 &child.backend.memory
             ),
             2
@@ -8527,12 +8542,12 @@ mod tests {
                 .unwrap()
         };
         let mut before_wrapper = [0; 4096];
-        memory.read(0x80_0000, &mut before_wrapper).unwrap();
+        memory.read(STACK_SCRATCH, &mut before_wrapper).unwrap();
         parent
             .finish_forked_process(&mut executor, child, status, stdout.clone(), stderr.clone())
             .unwrap();
         let mut after_wrapper = [0; 4096];
-        memory.read(0x80_0000, &mut after_wrapper).unwrap();
+        memory.read(STACK_SCRATCH, &mut after_wrapper).unwrap();
         assert_eq!(status.into_raw(), libc::SIGSEGV | 0x80);
         assert!(stdout.is_empty());
         assert!(stderr.is_empty());
@@ -8552,11 +8567,11 @@ mod tests {
             .unwrap();
         let request = SyscallRequest::new(
             libc::SYS_wait4 as u64,
-            [2, 0x80_0000, libc::WNOHANG as u64, 0, 0, 0],
+            [2, STACK_SCRATCH, libc::WNOHANG as u64, 0, 0, 0],
         );
         assert_eq!(executor.execute(&request, &parent.memory), 2);
         let mut wait_status = [0; 4];
-        parent.memory.read(0x80_0000, &mut wait_status).unwrap();
+        parent.memory.read(STACK_SCRATCH, &mut wait_status).unwrap();
         assert_eq!(i32::from_ne_bytes(wait_status), libc::SIGSEGV | 0x80);
     }
 
@@ -8741,7 +8756,7 @@ mod tests {
             .memory
             .map_user_permissions(0x80_0000, 4096, true, writable)
             .unwrap();
-        parent.memory.write(0x80_0000, &[0x5a; 4096]).unwrap();
+        parent.memory.write(STACK_SCRATCH, &[0x5a; 4096]).unwrap();
         let mut child = parent
             .prepare_forked_process(
                 &executor, 2, None, None, None, None, false, false, true, None,
@@ -8749,7 +8764,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             child.executor.execute(
-                &SyscallRequest::new(libc::SYS_set_tid_address as u64, [0x80_0000, 0, 0, 0, 0, 0]),
+                &SyscallRequest::new(
+                    libc::SYS_set_tid_address as u64,
+                    [STACK_SCRATCH, 0, 0, 0, 0, 0]
+                ),
                 &child.backend.memory
             ),
             2
@@ -8778,12 +8796,12 @@ mod tests {
                 .unwrap()
         };
         let mut before_wrapper = [0; 4096];
-        memory.read(0x80_0000, &mut before_wrapper).unwrap();
+        memory.read(STACK_SCRATCH, &mut before_wrapper).unwrap();
         parent
             .finish_forked_process(&mut executor, child, status, stdout.clone(), stderr.clone())
             .unwrap();
         let mut after_wrapper = [0; 4096];
-        memory.read(0x80_0000, &mut after_wrapper).unwrap();
+        memory.read(STACK_SCRATCH, &mut after_wrapper).unwrap();
         assert_eq!(status.into_raw(), libc::SIGSEGV | 0x80);
         assert!(stdout.is_empty());
         assert!(stderr.is_empty());
@@ -8803,11 +8821,11 @@ mod tests {
             .unwrap();
         let request = SyscallRequest::new(
             libc::SYS_wait4 as u64,
-            [2, 0x80_0000, libc::WNOHANG as u64, 0, 0, 0],
+            [2, STACK_SCRATCH, libc::WNOHANG as u64, 0, 0, 0],
         );
         assert_eq!(executor.execute(&request, &parent.memory), 2);
         let mut wait_status = [0; 4];
-        parent.memory.read(0x80_0000, &mut wait_status).unwrap();
+        parent.memory.read(STACK_SCRATCH, &mut wait_status).unwrap();
         assert_eq!(i32::from_ne_bytes(wait_status), libc::SIGSEGV | 0x80);
     }
 
@@ -8881,11 +8899,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((status, slot, bytes));
+            let address = *self.address.lock().unwrap();
+            let physical = memory.user_range_to_guest(address, 4).unwrap();
             memory
-                .write_raw(
-                    *self.address.lock().unwrap(),
-                    &0x6b6b_6b6b_i32.to_ne_bytes(),
-                )
+                .write_raw(physical, &0x6b6b_6b6b_i32.to_ne_bytes())
                 .unwrap();
         }
     }
@@ -9021,9 +9038,9 @@ mod tests {
             .memory
             .map_user_permissions(0x80_0000, 8192, true, true)
             .unwrap();
-        parent.memory.write(0x80_0000, &[0x5a; 8192]).unwrap();
+        parent.memory.write(STACK_SCRATCH, &[0x5a; 8192]).unwrap();
         let offset = if mode == 3 { 4094 } else { 64 };
-        let address = 0x80_0000 + offset;
+        let address = STACK_SCRATCH + offset;
         match mode {
             0 => {}
             1 => parent
@@ -9086,7 +9103,8 @@ mod tests {
             let (result_sender, result_receiver) = std::sync::mpsc::channel();
             *log.wake_observed.lock().unwrap() = Some(wake_receiver);
             let waiter = std::thread::spawn(move || {
-                let host = memory.host_address() + address - memory.guest_base();
+                let physical = memory.user_range_to_guest(address, 4).unwrap();
+                let host = memory.host_address() + physical - memory.guest_base();
                 let bound = libc::timespec {
                     tv_sec: 1,
                     tv_nsec: 0,
@@ -9126,7 +9144,9 @@ mod tests {
                 .recv_timeout(std::time::Duration::from_secs(1))
                 .unwrap();
             qualify_waiter_enrollment(
-                parent.memory.host_address() + address - parent.memory.guest_base(),
+                parent.memory.host_address()
+                    + parent.memory.user_range_to_guest(address, 4).unwrap()
+                    - parent.memory.guest_base(),
                 &result_receiver,
             );
             Some(waiter)
@@ -9944,10 +9964,30 @@ mod tests {
         let Some((backend, _executor, _boundary)) = backend_at_completed_tool_boundary() else {
             return;
         };
-        for address in (PAGE_SIZE..backend.memory.guest_end()).step_by(PAGE_SIZE as usize) {
+        let stack_start = backend.memory.guest_end() - crate::elf::STACK_LIMIT;
+        for address in (PAGE_SIZE..stack_start).step_by(PAGE_SIZE as usize) {
             let translated = backend.vcpu.translate_gva(address).unwrap();
             assert_eq!(translated.valid, 1, "address {address:#x}");
             assert_eq!(translated.physical_address, address);
+        }
+        // The stack's identity addresses are unmapped; its user addresses at the
+        // top of the user address space map onto the same physical pages.
+        let window = crate::memory::USER_ADDRESS_END - crate::elf::STACK_LIMIT;
+        for physical in (stack_start..backend.memory.guest_end()).step_by(PAGE_SIZE as usize) {
+            assert_eq!(
+                backend.vcpu.translate_gva(physical).unwrap().valid,
+                0,
+                "identity address {physical:#x}"
+            );
+            let user = window + (physical - stack_start);
+            let translated = backend.vcpu.translate_gva(user).unwrap();
+            if user >= crate::memory::USER_STACK_TOP {
+                // Linux's TASK_SIZE page is not a user address: it faults.
+                assert_eq!(translated.valid, 0, "guard address {user:#x}");
+                continue;
+            }
+            assert_eq!(translated.valid, 1, "user address {user:#x}");
+            assert_eq!(translated.physical_address, physical);
         }
         for address in [0, 1, PAGE_SIZE - 1] {
             assert_eq!(
@@ -10924,7 +10964,7 @@ mod tests {
         executable_file.write_all(&image).unwrap();
         drop(executable_file);
 
-        let stack_bottom = backend.memory.guest_end() - crate::elf::STACK_LIMIT;
+        let stack_bottom = crate::memory::USER_ADDRESS_END - crate::elf::STACK_LIMIT;
         let path_address = stack_bottom;
         let path = executable.as_os_str().as_bytes();
         backend.memory.write(path_address, path).unwrap();
@@ -10966,6 +11006,10 @@ mod tests {
         let sentinel_address = stack_bottom + PAGE_SIZE;
         const SENTINEL: [u8; 16] = *b"old-image-state!";
         backend.memory.write(sentinel_address, &SENTINEL).unwrap();
+        let sentinel_physical = backend
+            .memory
+            .user_range_to_guest(sentinel_address, SENTINEL.len() as u64)
+            .unwrap();
         let retained = backend.memory.clone();
         let error = backend
             .run_process_action(&mut executor, action, false)
@@ -10981,9 +11025,9 @@ mod tests {
         assert!(
             !backend
                 .memory
-                .user_range_is_mapped(sentinel_address, SENTINEL.len() as u64)
+                .user_range_is_mapped(sentinel_physical, SENTINEL.len() as u64)
         );
-        retained.read_raw(sentinel_address, &mut observed).unwrap();
+        retained.read_raw(sentinel_physical, &mut observed).unwrap();
         assert_eq!(observed, [0; SENTINEL.len()]);
     }
 
