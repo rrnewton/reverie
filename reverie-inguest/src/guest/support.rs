@@ -9,7 +9,8 @@
 //! Runtime support shared by the in-guest trap path: the opt-in stage stream
 //! of diagnostic markers, an immediate process exit, the per-thread marker of
 //! a running Tool callback, a fault-safe read of the process's own memory, and
-//! an allocation-free scan of `/proc/self/maps`. Everything here uses raw
+//! an allocation-free scan of `/proc/self/maps`, and the kernel signal-action
+//! layout with a guard that restores the signal mask. Everything here uses raw
 //! syscalls and stack buffers only, so it is usable in signal context (the
 //! maps scan when its callback is, too).
 
@@ -170,6 +171,57 @@ impl StackLine {
             DIGITS[usize::from(value >> 4)],
             DIGITS[usize::from(value & 0xf)],
         ]);
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-133): Review nested Tool syscall guards and raw forwarding.
+#[repr(C)]
+#[derive(Default)]
+/// The kernel's `struct sigaction` for `rt_sigaction` on x86_64 with a 64-bit
+/// signal mask, as raw syscalls pass it (not libc's layout).
+pub struct KernelSigaction {
+    /// The handler address, or `SIG_DFL` / `SIG_IGN`.
+    pub handler: u64,
+    /// The `SA_*` flags.
+    pub flags: u64,
+    /// The restorer the kernel returns through (`SA_RESTORER`).
+    pub restorer: u64,
+    /// The signals blocked while the handler runs.
+    pub mask: u64,
+}
+
+/// Restores this thread's signal mask to a recorded value when dropped, and
+/// ends the process with status 126 if that fails.
+pub struct SignalInstallGuard {
+    restore_mask: u64,
+}
+
+impl SignalInstallGuard {
+    /// A guard that restores the signal mask to `restore_mask`.
+    pub fn restoring(restore_mask: u64) -> Self {
+        Self { restore_mask }
+    }
+}
+
+impl Drop for SignalInstallGuard {
+    fn drop(&mut self) {
+        let result = unsafe {
+            raw_syscall6(
+                libc::SYS_rt_sigprocmask,
+                [
+                    libc::SIG_SETMASK as u64,
+                    (&raw const self.restore_mask) as u64,
+                    0,
+                    core::mem::size_of::<u64>() as u64,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if result < 0 {
+            unsafe { exit_now(126) };
+        }
     }
 }
 

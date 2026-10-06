@@ -24,6 +24,7 @@ pub mod continuation;
 pub mod event;
 #[cfg(feature = "coordinator-rpc")]
 pub mod host;
+pub mod instruction;
 #[cfg(feature = "coordinator-rpc")]
 pub mod rpc;
 pub mod support;
