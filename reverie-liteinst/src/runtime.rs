@@ -1840,6 +1840,12 @@ unsafe fn locate_instruction_fault(
     info: *const libc::siginfo_t,
     context: *const libc::ucontext_t,
 ) -> FaultSite {
+    // With site patching off, no instruction site is patched either: every
+    // CPUID, RDTSC and RDTSCP is emulated through the continuation, as for
+    // code without an arena.
+    if !SITE_PATCHING_ENABLED.load(Ordering::Relaxed) {
+        return FaultSite::Unpatchable;
+    }
     if let Some((kind, encoding)) = instruction_at(address) {
         return FaultSite::Patchable { kind, encoding };
     }
