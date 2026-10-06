@@ -37,7 +37,7 @@ iced-x86 = { version = "1.21.0", default-features = false, features = ["std", "d
 libc = "0.2.186"
 liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "2032b49d983f74ec8472761d7704c64c00085a55" }
 reverie = { version = "0.4.1", path = "../reverie", package = "reverie-core" }
-reverie-inguest = { version = "0.4.1", path = "../reverie-inguest", default-features = false, features = ["coordinator-rpc"] }
+reverie-inguest = { version = "0.4.1", path = "../reverie-inguest", default-features = false, features = ["coordinator-rpc", "rcb-clock"] }
 reverie-ptrace = { version = "0.4.1", path = "../reverie-ptrace" }
 reverie-rpc-transport = { version = "0.4.1", path = "../reverie-rpc-transport" }
 serde = { version = "1.0.219", features = ["derive"] }

@@ -295,16 +295,24 @@ rust_library(
                 ],
                 "default": ["preload-constructor"],
                 "preload-constructor": [],
+                "rcb-clock": [
+                    "reverie",
+                    "reverie-ptrace",
+                ],
             },
         },
         "cargo_toml_dir": "reverie-inguest",
     },
-    features = ["coordinator-rpc"],
+    features = [
+        "coordinator-rpc",
+        "rcb-clock",
+    ],
     deps = [
         "fbsource//third-party/rust:bincode",
         "fbsource//third-party/rust:libc",
         "fbsource//third-party/rust:serde",
         ":reverie",
+        ":reverie-ptrace",
         ":reverie-rpc-transport",
     ],
 )

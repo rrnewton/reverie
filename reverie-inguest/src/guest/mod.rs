@@ -11,11 +11,14 @@
 //! the register context they save, the allocator that keeps Tool callbacks
 //! off libc's heap, the synchronous coordinator RPC handle an in-guest Tool
 //! sends its global requests through, the Tool host that runs the Tool, and
-//! the fallback continuation that runs a trapped call in ordinary context.
+//! the fallback continuation that runs a trapped call in ordinary context,
+//! and the RCB clock that measures the guest's own progress.
 //! The rest of the trap path and the launcher move here in the following
 //! steps of the in-guest plan (<https://github.com/rrnewton/hermit/issues/3520>, step C3).
 
 pub mod alloc;
+#[cfg(feature = "rcb-clock")]
+pub mod clock;
 pub mod context;
 pub mod continuation;
 pub mod event;
