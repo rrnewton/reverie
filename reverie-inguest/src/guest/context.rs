@@ -15,7 +15,7 @@
 /// trampolines (liteinst2's `HookContext`) and the fallback continuation save,
 /// and the runtime reads and writes it through a pointer.
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RegisterContext {
     /// Address of the displaced (hooked or continued) instruction.
     pub instruction_pointer: u64,
@@ -54,8 +54,18 @@ pub struct RegisterContext {
     /// Saved RFLAGS.
     pub rflags: u64,
     /// The saver's descriptor of the saved extended (FPU/vector) state;
-    /// opaque here and never written.
+    /// opaque here and never written. All zeros means no saved state (the
+    /// trampolines' "unavailable" descriptor), which is what [`Default`]
+    /// gives.
     saved_extended_state: [u64; 4],
+}
+
+impl RegisterContext {
+    /// Whether the context carries no saved extended state, as one built by
+    /// the fallback continuation (or [`Default`]) does.
+    pub fn extended_state_unavailable(&self) -> bool {
+        self.saved_extended_state == [0; 4]
+    }
 }
 
 const _: () = {
