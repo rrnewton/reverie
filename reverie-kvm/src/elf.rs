@@ -76,6 +76,12 @@ const LARGE_PAGE_SIZE: u64 = 2 * 1024 * 1024;
 /// for a static program and 4 MiB for one with an interpreter, as before the
 /// mmap window existed.
 const STATIC_BRK_HEADROOM: u64 = 1024 * 1024;
+/// Where Linux loads a PIE main image with address randomization off
+/// (x86-64 ELF_ET_DYN_BASE).
+const PIE_BASE: u64 = 0x5555_5555_4000;
+/// The PIE window's user start: the large page holding [`PIE_BASE`], so the
+/// window maps with large pages.
+const PIE_WINDOW_USER_START: u64 = PIE_BASE & !(LARGE_PAGE_SIZE - 1);
 const INTERPRETED_BRK_HEADROOM: u64 = 4 * 1024 * 1024;
 const IOPRIO_CLASS_SHIFT: u32 = 13;
 pub(crate) const GUEST_CAPABILITY_MASK: u64 = (1_u64 << 41) - 1;
@@ -1643,29 +1649,6 @@ fn load_executable(
         }
     }
 
-    let main_bias = if elf.header.e_type == ET_DYN {
-        MAIN_LOAD_BIAS
-    } else {
-        0
-    };
-    let main_end = load_segments(memory, image, &elf, main_bias)?;
-    // Linux's end_data: the highest end of a PT_LOAD segment's file contents.
-    let min_break = elf
-        .program_headers
-        .iter()
-        .filter(|header| header.p_type == PT_LOAD)
-        .map(|header| {
-            main_bias
-                .checked_add(header.p_vaddr)
-                .and_then(|start| start.checked_add(header.p_filesz))
-                .ok_or_else(|| Error::UnsupportedElf("PT_LOAD address overflow".to_string()))
-        })
-        .try_fold(BOOT_RESERVED_END, |end, segment| {
-            Ok::<_, Error>(end.max(segment?))
-        })?;
-    let main_entry = main_bias
-        .checked_add(elf.entry)
-        .ok_or_else(|| Error::UnsupportedElf("main entry point overflow".to_string()))?;
     let interpreter_image = interpreter_path(image, &elf)?
         .map(|path| read_interpreter_image(&path))
         .transpose()?;
@@ -1688,12 +1671,66 @@ fn load_executable(
     } else {
         STATIC_BRK_HEADROOM
     };
-    let layout = establish_linux_layout(
-        memory,
-        main_end,
-        brk_headroom,
-        interpreter.as_ref().map(|(_, _, span)| *span),
-    )?;
+    let interpreter_span = interpreter.as_ref().map(|(_, _, span)| *span);
+
+    // A PIE main image loads where Linux loads it, PIE_BASE, in its own window
+    // carved out of identity memory, with its program break; identity memory
+    // then holds no image, so the layout is chosen before the image loads. A
+    // non-PIE image, or a PIE in memory too small for its window, loads in
+    // identity memory (a PIE at MAIN_LOAD_BIAS), and the layout follows it.
+    let mut pie_window = None;
+    let mut layout = None;
+    if elf.header.e_type == ET_DYN
+        && let Some(mut pie_layout) =
+            establish_linux_layout(memory, BOOT_RESERVED_END, 0, interpreter_span)?
+    {
+        let (first, end) = load_span(&elf)?;
+        pie_window = establish_pie_window(memory, &mut pie_layout, end - first, brk_headroom)?;
+        if pie_window.is_some() {
+            layout = Some(pie_layout);
+        } else {
+            memory.clear_user_layout();
+        }
+    }
+    let (main_bias, physical_bias) = match &pie_window {
+        Some(window) => {
+            let (first, _) = load_span(&elf)?;
+            let bias_error =
+                || Error::UnsupportedElf("PIE segments lie above the PIE window".to_string());
+            (
+                PIE_BASE.checked_sub(first).ok_or_else(bias_error)?,
+                (window.physical_start + (PIE_BASE - PIE_WINDOW_USER_START))
+                    .checked_sub(first)
+                    .ok_or_else(bias_error)?,
+            )
+        }
+        None if elf.header.e_type == ET_DYN => (MAIN_LOAD_BIAS, MAIN_LOAD_BIAS),
+        None => (0, 0),
+    };
+    // load_segments returns the physical end; the user end is the same
+    // distance past the user bias.
+    let main_end = load_segments(memory, image, &elf, physical_bias)? - physical_bias + main_bias;
+    // Linux's end_data: the highest end of a PT_LOAD segment's file contents.
+    let min_break = elf
+        .program_headers
+        .iter()
+        .filter(|header| header.p_type == PT_LOAD)
+        .map(|header| {
+            main_bias
+                .checked_add(header.p_vaddr)
+                .and_then(|start| start.checked_add(header.p_filesz))
+                .ok_or_else(|| Error::UnsupportedElf("PT_LOAD address overflow".to_string()))
+        })
+        .try_fold(BOOT_RESERVED_END, |end, segment| {
+            Ok::<_, Error>(end.max(segment?))
+        })?;
+    let main_entry = main_bias
+        .checked_add(elf.entry)
+        .ok_or_else(|| Error::UnsupportedElf("main entry point overflow".to_string()))?;
+    let layout = match layout {
+        Some(layout) => Some(layout),
+        None => establish_linux_layout(memory, main_end, brk_headroom, interpreter_span)?,
+    };
 
     let (entry_point, at_base) = match (&interpreter, &layout) {
         (Some((interpreter, first, span)), Some(layout)) => {
@@ -1771,7 +1808,7 @@ fn load_executable(
     // memory too small for one) mappings are placed bottom-up above the
     // program break's headroom, below the stack, as before the window existed.
     let (mmap_next, mmap_limit) = match &layout {
-        Some(layout) => (layout.identity_end, layout.mmap_end),
+        Some(layout) => (layout.mmap_start, layout.mmap_end),
         None => (
             align_up(
                 main_end.checked_add(STATIC_BRK_HEADROOM).ok_or_else(|| {
@@ -1782,7 +1819,13 @@ fn load_executable(
             stack_start,
         ),
     };
-    let brk_limit = mmap_next;
+    // The program break grows to the end of the identity addresses, or of the
+    // PIE window.
+    let brk_limit = match (&pie_window, &layout) {
+        (Some(window), _) => window.user_end(),
+        (None, Some(layout)) => layout.identity_end,
+        (None, None) => mmap_next,
+    };
 
     let cwd_fd = OpenOptions::new()
         .read(true)
@@ -2315,8 +2358,11 @@ fn align_up(value: u64, alignment: u64) -> Result<u64> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct LinuxLayout {
     /// The end of the identity user addresses (boot area, a non-PIE image, the
-    /// program break) and the start of the mmap window.
+    /// program break).
     pub(crate) identity_end: u64,
+    /// The physical start of the mmap window: `identity_end`, or the PIE
+    /// window's end when there is one.
+    pub(crate) mmap_start: u64,
     /// The physical end of the mmap window.
     pub(crate) mmap_end: u64,
     /// The window's user end: `MMAP_BASE`, unless memory is too tight for that
@@ -2388,8 +2434,68 @@ pub(crate) fn establish_linux_layout(
     memory.set_user_identity_end(identity_end);
     Ok(Some(LinuxLayout {
         identity_end,
+        mmap_start: identity_end,
         mmap_end,
         mmap_user_end,
+    }))
+}
+
+/// A PIE main image's window: physical memory just below the mmap window,
+/// mapped at user [`PIE_WINDOW_USER_START`], holding the image at [`PIE_BASE`]
+/// and its program break.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PieWindow {
+    pub(crate) physical_start: u64,
+    pub(crate) physical_end: u64,
+}
+
+impl PieWindow {
+    pub(crate) fn user_end(&self) -> u64 {
+        PIE_WINDOW_USER_START + (self.physical_end - self.physical_start)
+    }
+}
+
+/// Carves the PIE window for an image of `span` bytes out of the top of the
+/// identity memory `layout` left below the mmap window, and ends the identity
+/// addresses at its start. The window holds the image (from [`PIE_BASE`]'s
+/// offset into its first large page) and room for the program break: a
+/// quarter of guest memory, or as little as `brk_headroom` when memory is
+/// tight. Both ends are large-page aligned, so the window maps with large
+/// pages. `None` when even that does not fit above the first large page; the
+/// image then loads in identity memory, as before the window existed.
+pub(crate) fn establish_pie_window(
+    memory: &mut GuestMemory,
+    layout: &mut LinuxLayout,
+    span: u64,
+    brk_headroom: u64,
+) -> Result<Option<PieWindow>> {
+    let image = (PIE_BASE - PIE_WINDOW_USER_START)
+        .checked_add(span)
+        .ok_or_else(|| Error::UnsupportedElf("PIE span overflow".to_string()))?;
+    let size = |headroom: u64| {
+        image
+            .checked_add(headroom)
+            .ok_or_else(|| Error::UnsupportedElf("PIE span overflow".to_string()))
+            .and_then(|size| align_up(size, LARGE_PAGE_SIZE))
+    };
+    let end = layout.mmap_start / LARGE_PAGE_SIZE * LARGE_PAGE_SIZE;
+    let preferred = size((memory.guest_end() / 4).max(brk_headroom))?;
+    let least = size(brk_headroom)?;
+    let start = end.saturating_sub(preferred).max(LARGE_PAGE_SIZE);
+    if end < start || end - start < least {
+        return Ok(None);
+    }
+    memory.establish_user_window(UserWindow {
+        physical_start: start,
+        physical_end: end,
+        user_start: PIE_WINDOW_USER_START,
+        user_end: PIE_WINDOW_USER_START + (end - start),
+    })?;
+    memory.set_user_identity_end(start);
+    layout.identity_end = start;
+    Ok(Some(PieWindow {
+        physical_start: start,
+        physical_end: end,
     }))
 }
 
@@ -3045,6 +3151,94 @@ mod tests {
         .unwrap();
         assert_eq!(layout.mmap_end, 0x31_0000);
         assert_eq!(layout.mmap_user_end, MMAP_BASE - 0xef000);
+    }
+
+    /// A PIE main image loads where Linux loads it, ELF_ET_DYN_BASE, in its
+    /// own window below the mmap window, and its program break follows the
+    /// image there: brk grows and shrinks in the window, and the window's
+    /// physical pages are not identity addresses.
+    #[test]
+    fn pie_main_image_loads_at_linux_pie_base() {
+        const MIB: u64 = 1024 * 1024;
+        let image = test_elf(ET_DYN, 0x1000, 0x3000, None, &[0x0f, 0x0b]);
+        let mut memory = GuestMemory::new(0, (64 * MIB) as usize).unwrap();
+        let mut loaded = load_static_elf(
+            &mut memory,
+            &image,
+            &["initial"],
+            &[],
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+        // Linux biases a PIE so that its first segment (here at 0x1000) lands
+        // at ELF_ET_DYN_BASE.
+        assert_eq!(loaded.entry_point, PIE_BASE);
+        assert_eq!(loaded.program_break, PIE_BASE + 0x3000);
+        assert_eq!(loaded.heap_base, PIE_BASE + 0x3000);
+        let physical = memory.user_range_to_guest(PIE_BASE, 0x3000).unwrap();
+        let (windows, identity_end) = memory.user_layout();
+        assert_eq!(windows.len(), 3, "PIE, mmap and stack windows");
+        assert!(physical >= identity_end && physical < loaded.mmap_base);
+        assert_eq!(physical % LARGE_PAGE_SIZE, (PIE_BASE) % LARGE_PAGE_SIZE);
+        assert_eq!(memory.user_range_to_guest(physical, 1), None);
+        assert!(loaded.brk_limit > loaded.program_break);
+        assert_eq!(
+            memory.user_range_to_guest(loaded.brk_limit - PAGE_SIZE, PAGE_SIZE),
+            Some(loaded.mmap_base - PAGE_SIZE)
+        );
+        memory.enable_user_access();
+        // Mappings that fall back to identity memory (here MAP_32BIT) stay
+        // below the PIE window.
+        let low = crate::executor::place_mapping(
+            &memory,
+            &loaded,
+            PAGE_SIZE,
+            0,
+            crate::executor::MappingKind::Anonymous,
+            true,
+        )
+        .unwrap();
+        assert_eq!(low, identity_end - PAGE_SIZE);
+        let grown = PIE_BASE + 0x3000 + 16 * PAGE_SIZE;
+        assert_eq!(
+            crate::executor::test_brk(&mut memory, &mut loaded, grown),
+            grown as i64
+        );
+        memory.user().write(grown - 1, &[7]).unwrap();
+        let shrunk = PIE_BASE + 0x3000 + PAGE_SIZE;
+        assert_eq!(
+            crate::executor::test_brk(&mut memory, &mut loaded, shrunk),
+            shrunk as i64
+        );
+        assert!(memory.user().read(grown - 1, &mut [0]).is_err());
+        let limit = loaded.brk_limit;
+        assert_eq!(
+            crate::executor::test_brk(&mut memory, &mut loaded, limit),
+            shrunk as i64
+        );
+    }
+
+    /// A PIE in memory too small for its window loads in identity memory, at
+    /// 2 MiB, as before the window existed.
+    #[test]
+    fn pie_without_room_for_its_window_loads_in_identity_memory() {
+        const MIB: u64 = 1024 * 1024;
+        let image = test_elf(ET_DYN, 0x1000, 0x3000, None, &[0x0f, 0x0b]);
+        let mut memory = GuestMemory::new(0, (12 * MIB) as usize).unwrap();
+        let loaded = load_static_elf(
+            &mut memory,
+            &image,
+            &["initial"],
+            &[],
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(loaded.entry_point, MAIN_LOAD_BIAS + 0x1000);
+        assert_eq!(
+            memory.user_range_to_guest(MAIN_LOAD_BIAS + 0x1000, PAGE_SIZE),
+            Some(MAIN_LOAD_BIAS + 0x1000)
+        );
+        assert_eq!(memory.user_range_to_guest(PIE_BASE, 1), None);
     }
 
     /// brk does not go below the image's data (Linux's end_data under
