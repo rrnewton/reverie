@@ -888,6 +888,40 @@ fn late_code_instructions_reach_the_tool_through_the_continuation() {
     }
 }
 
+// With site patching off (the trap-only mode in-guest-trap needs), CPUID,
+// RDTSC and RDTSCP inside an arena are emulated through the continuation like
+// late code: no site is patched, and each reaches the Tool once with the same
+// result.
+#[test]
+fn site_patching_off_emulates_in_arena_instructions_through_the_continuation() {
+    for on_alt_stack in [true, false] {
+        let output = late_code_guest(
+            "late-code-instruction-trap-only",
+            &[],
+            on_alt_stack,
+            |command| {
+                command.env(reverie_liteinst::SITE_PATCHING_ENV, "0");
+            },
+        );
+        if instruction_control_refused(&output, "late-code-instruction-trap-only") {
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "late-code trap-only cpuid=tool rdtsc=tool rdtscp=tool equals-in-arena=1 continuation=163+7 owned-stack=170 sites=0 registers=preserved\n",
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+    }
+}
+
 // With site patching off, a fork runs entirely on the fallback continuation,
 // and the child first reads its RCB clock while still on that continuation.
 // Binding the child's fresh PMU counter reads CPUID; that is the runtime's own
