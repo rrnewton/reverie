@@ -72,6 +72,15 @@ pub trait ConnectionAdmission: Send + Sync {
     /// [`ExitReporter`]. An admission that observes exits through the pidfds
     /// it admits keeps it; the default ignores it.
     fn attach_exit_reporter(&self, _reporter: Arc<dyn ExitReporter>) {}
+
+    /// Told when an accepted connection cannot be offered to
+    /// [`ConnectionAdmission::admit`] at all, because the connecting
+    /// process's pidfd could not be obtained (for example, descriptor
+    /// exhaustion, or the process already reaped). The server then refuses
+    /// the connection, as for a refused admission. An admission that fails
+    /// the run on a refused connection should fail it here too; the default
+    /// ignores it.
+    fn admission_failed(&self, _error: &std::io::Error) {}
 }
 
 /// What an admission that observes guest exits may tell, and ask, the
@@ -126,7 +135,13 @@ fn admit_connection(
     let Some(admission) = admission else {
         return Ok(None);
     };
-    let peer = peer_pidfd(stream)?;
+    let peer = match peer_pidfd(stream) {
+        Ok(peer) => peer,
+        Err(error) => {
+            admission.admission_failed(&error);
+            return Err(error.into());
+        }
+    };
     Ok(Some(admission.admit(peer)?))
 }
 
@@ -635,4 +650,54 @@ where
 // connection error so a coordinator operator can see it.
 fn tracing_disconnect(e: &RpcError) {
     eprintln!("reverie-rpc-transport: guest connection ended with error: {e}");
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use std::os::fd::FromRawFd;
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// Records what the server told it.
+    #[derive(Default)]
+    struct Recording {
+        admitted: Mutex<bool>,
+        failed: Mutex<Option<std::io::ErrorKind>>,
+    }
+
+    impl ConnectionAdmission for Recording {
+        fn admit(&self, _peer: OwnedFd) -> std::io::Result<Admitted> {
+            *self.admitted.lock().unwrap() = true;
+            Ok(Admitted { process_id: 1 })
+        }
+
+        fn admission_failed(&self, error: &std::io::Error) {
+            *self.failed.lock().unwrap() = Some(error.kind());
+        }
+    }
+
+    /// A connection whose peer pidfd cannot be obtained is reported through
+    /// `admission_failed` and refused, and never reaches `admit`. A pipe
+    /// stands in for the socket so `SO_PEERPIDFD` fails deterministically.
+    #[tokio::test]
+    async fn a_connection_without_a_peer_pidfd_is_reported_and_refused() {
+        let mut pipe = [0; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        let _write_end = unsafe { OwnedFd::from_raw_fd(pipe[1]) };
+        let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(pipe[0]) };
+        std_stream.set_nonblocking(true).unwrap();
+        let stream = UnixStream::from_std(std_stream).unwrap();
+        let recording = Arc::new(Recording::default());
+        let admission: Arc<dyn ConnectionAdmission> = recording.clone();
+        assert!(admit_connection(Some(&admission), &stream).is_err());
+        assert!(
+            recording.failed.lock().unwrap().is_some(),
+            "the server must report a connection it could not offer for admission"
+        );
+        assert!(!*recording.admitted.lock().unwrap());
+    }
 }
