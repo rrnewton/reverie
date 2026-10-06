@@ -26,3 +26,4 @@ pub mod event;
 pub mod host;
 #[cfg(feature = "coordinator-rpc")]
 pub mod rpc;
+pub mod support;

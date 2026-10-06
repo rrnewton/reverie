@@ -121,7 +121,6 @@ pub const TOOL_PASSTHROUGH: &str = "passthrough";
 pub const TOOL_SPOOF_GETPID: &str = "spoof-getpid";
 const EVENT_CHANNEL_IDENTITY_FAILURE_STATUS: i32 = 120;
 const EVENT_CHANNEL_WRITE_FAILURE_STATUS: i32 = 121;
-const IN_GUEST_STAGE_WRITE_FAILURE_STATUS: i32 = 123;
 /// Enables fail-closed, allocation-free in-guest lifecycle stage markers on stderr.
 pub const IN_GUEST_STAGE_STREAM_ENV: &str = "REVERIE_LITEINST_IN_GUEST_STAGE_STREAM";
 const MAX_PATCH_SITES: usize = 4096;
@@ -156,31 +155,9 @@ static TOOL_OUTPUT_RETIREMENT: OnceLock<&'static [u8]> = OnceLock::new();
 static EVENT_COOKIE: AtomicU64 = AtomicU64::new(0);
 static EVENT_DEVICE: AtomicU64 = AtomicU64::new(0);
 static EVENT_INODE: AtomicU64 = AtomicU64::new(0);
-static IN_GUEST_STAGE_STREAM: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static CURRENT_EVENT: Cell<*mut SyscallEvent> = const { Cell::new(ptr::null_mut()) };
-    // Reentry is a property of Tool execution, not of syscall-event storage:
-    // instruction callbacks have no current SyscallEvent but must take the same
-    // native/raw bypasses while holding Tool and thread-state locks.
-    static TOOL_CALLBACK_ACTIVE: AtomicBool = const { AtomicBool::new(false) };
-}
-
-struct ToolCallbackGuard {
-    previous: bool,
-}
-
-impl ToolCallbackGuard {
-    fn enter() -> Self {
-        let previous = TOOL_CALLBACK_ACTIVE.with(|active| active.swap(true, Ordering::Relaxed));
-        Self { previous }
-    }
-}
-
-impl Drop for ToolCallbackGuard {
-    fn drop(&mut self) {
-        TOOL_CALLBACK_ACTIVE.with(|active| active.store(self.previous, Ordering::Relaxed));
-    }
 }
 
 struct CurrentEventGuard {
@@ -198,10 +175,6 @@ impl Drop for CurrentEventGuard {
     fn drop(&mut self) {
         CURRENT_EVENT.set(self.previous);
     }
-}
-
-fn tool_callback_active() -> bool {
-    TOOL_CALLBACK_ACTIVE.with(|active| active.load(Ordering::Relaxed))
 }
 
 static ARENAS: OnceLock<Vec<RuntimeArena>> = OnceLock::new();
@@ -234,6 +207,15 @@ pub(crate) use reverie_inguest::guest::clock::enter_rcb_handler;
 pub(crate) use reverie_inguest::guest::clock::initialize_rcb_clock;
 pub(crate) use reverie_inguest::guest::clock::leave_rcb_handler;
 pub(crate) use reverie_inguest::guest::clock::read_guest_rcb_clock;
+use reverie_inguest::guest::support::IN_GUEST_STAGE_WRITE_FAILURE_STATUS;
+pub(crate) use reverie_inguest::guest::support::StackLine;
+pub(crate) use reverie_inguest::guest::support::ToolCallbackGuard;
+pub(crate) use reverie_inguest::guest::support::emit_in_guest_stage;
+pub(crate) use reverie_inguest::guest::support::exit_now;
+pub(crate) use reverie_inguest::guest::support::mapping_name_at;
+pub(crate) use reverie_inguest::guest::support::read_own_bytes;
+pub(crate) use reverie_inguest::guest::support::scan_own_maps;
+pub(crate) use reverie_inguest::guest::support::tool_callback_active;
 
 pub(crate) fn reserve_coordinator_fd(fd: libc::c_int) -> io::Result<()> {
     COORDINATOR_FD
@@ -857,7 +839,7 @@ pub(crate) fn initialize_reverie_tool(
             ));
         }
     };
-    IN_GUEST_STAGE_STREAM.store(stage_stream, Ordering::Release);
+    reverie_inguest::guest::support::set_stage_stream(stage_stream);
     let process_forks_allowed = match std::env::var_os(PROCESS_FORK_ENV).as_deref() {
         None => true,
         Some(value) if value == OsStr::new("1") => true,
@@ -2376,56 +2358,6 @@ fn decode_instruction(bytes: &[u8]) -> Option<(InstructionEventKind, &'static [u
         [0x0f, 0x01, 0xf9, ..] => Some((InstructionEventKind::Rdtscp, &[0x0f, 0x01, 0xf9])),
         _ => None,
     }
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(liteinst-late-code-cpuid): Review the fault-safe self read of guest code.
-/// Copy up to `out.len()` bytes starting at `address` from this process's own
-/// memory without risking a nested fault, returning how many leading bytes
-/// were readable. `process_vm_readv` reports an unmapped or unreadable page
-/// (including an execute-only one) as a short count or an error instead of
-/// faulting. Each byte is its own remote element, so a readable prefix that
-/// ends at a mapping boundary is still returned.
-///
-/// # Safety
-///
-/// Issues raw syscalls through the trusted gate; safe in signal context.
-unsafe fn read_own_bytes(address: u64, out: &mut [u8; 8]) -> usize {
-    let mut remote = [libc::iovec {
-        iov_base: ptr::null_mut(),
-        iov_len: 0,
-    }; 8];
-    let mut count = 0;
-    for (index, element) in remote.iter_mut().enumerate() {
-        let Some(byte) = address.checked_add(index as u64) else {
-            break;
-        };
-        element.iov_base = byte as usize as *mut libc::c_void;
-        element.iov_len = 1;
-        count += 1;
-    }
-    if count == 0 {
-        return 0;
-    }
-    let local = libc::iovec {
-        iov_base: out.as_mut_ptr().cast(),
-        iov_len: count,
-    };
-    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
-    let read = unsafe {
-        raw_syscall6(
-            libc::SYS_process_vm_readv,
-            [
-                pid as u64,
-                (&raw const local) as u64,
-                1,
-                remote.as_ptr() as u64,
-                count as u64,
-                0,
-            ],
-        )
-    };
-    usize::try_from(read).map_or(0, |read| read.min(count))
 }
 
 fn instruction_is_subscribed(kind: InstructionEventKind) -> bool {
@@ -3962,7 +3894,7 @@ unsafe fn trace_event(event: &SyscallEvent, result: Option<i64>) {
 
     if mode == TOOL_COMPAT && EVENT_COOKIE.load(Ordering::Relaxed) != 0 {
         unsafe {
-            write_compatibility_event(output_fd, &line.bytes[..line.len]);
+            write_compatibility_event(output_fd, line.as_bytes());
         }
     } else {
         let _ = unsafe {
@@ -3970,8 +3902,8 @@ unsafe fn trace_event(event: &SyscallEvent, result: Option<i64>) {
                 libc::SYS_write,
                 [
                     output_fd as u64,
-                    line.bytes.as_ptr() as u64,
-                    line.len as u64,
+                    line.as_bytes().as_ptr() as u64,
+                    line.as_bytes().len() as u64,
                     0,
                     0,
                     0,
@@ -3981,48 +3913,13 @@ unsafe fn trace_event(event: &SyscallEvent, result: Option<i64>) {
     }
 }
 
-/// Emit an allocation-free stage marker from the in-guest Tool process.
-///
-/// This is opt-in because production guests own stderr. When enabled, a short
-/// write is fail-closed so an absent marker cannot be mistaken for a negative
-/// observation across the host/in-guest process boundary.
-pub(crate) fn emit_in_guest_stage(stage: &[u8]) {
-    if !IN_GUEST_STAGE_STREAM.load(Ordering::Acquire) {
-        return;
-    }
-    let mut line = StackLine::new();
-    line.push_bytes(b"INFO reverie_liteinst::tool_host: [in-guest pid=");
-    line.push_signed(unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) });
-    line.push_bytes(b" tid=");
-    line.push_signed(unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) });
-    line.push_bytes(b"] stage=");
-    line.push_bytes(stage);
-    line.push_bytes(b"\n");
-    let written = unsafe {
-        raw_syscall6(
-            libc::SYS_write,
-            [
-                libc::STDERR_FILENO as u64,
-                line.bytes.as_ptr() as u64,
-                line.len as u64,
-                0,
-                0,
-                0,
-            ],
-        )
-    };
-    if written != line.len as i64 {
-        unsafe { exit_now(IN_GUEST_STAGE_WRITE_FAILURE_STATUS) };
-    }
-}
-
 /// Emit the refusal of a fault outside every arena with its absolute RIP, the
 /// `/proc/self/maps` path of the mapping containing it (`[anon]` when the
 /// mapping has none, `[unmapped]` when no mapping contains it), and the bytes
 /// that could be read there. Allocation-free and signal-safe; it reads the
 /// maps file only when the stage stream is enabled.
 fn emit_unarenaed_refusal_stage(stage: &[u8], address: u64, bytes: &[u8]) {
-    if !IN_GUEST_STAGE_STREAM.load(Ordering::Acquire) {
+    if !reverie_inguest::guest::support::stage_stream_enabled() {
         return;
     }
     let mut name = [0_u8; 256];
@@ -4055,26 +3952,17 @@ fn emit_unarenaed_refusal_stage(stage: &[u8], address: u64, bytes: &[u8]) {
             libc::SYS_write,
             [
                 libc::STDERR_FILENO as u64,
-                line.bytes.as_ptr() as u64,
-                line.len as u64,
+                line.as_bytes().as_ptr() as u64,
+                line.as_bytes().len() as u64,
                 0,
                 0,
                 0,
             ],
         )
     };
-    if written != line.len as i64 {
+    if written != line.as_bytes().len() as i64 {
         unsafe { exit_now(IN_GUEST_STAGE_WRITE_FAILURE_STATUS) };
     }
-}
-
-/// Copy the pathname field of the `/proc/self/maps` line containing
-/// `address` into `name`, truncated to its length. Returns the copied length,
-/// 0 for a mapping without a pathname, or `None` when no line contains the
-/// address or the file cannot be read. Uses only raw syscalls and stack
-/// buffers, so it is usable in signal context.
-unsafe fn mapping_name_at(address: u64, name: &mut [u8]) -> Option<usize> {
-    unsafe { scan_own_maps(|line| maps_line_name(line, address, name)) }
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -4088,70 +3976,6 @@ unsafe fn mapping_name_at(address: u64, name: &mut [u8]) -> Option<usize> {
 unsafe fn private_span_protection(address: u64, last: u64) -> Option<i32> {
     unsafe { scan_own_maps(|line| maps_line_private(line, address)) }
         .and_then(|(private, end, protection)| (private && last < end).then_some(protection))
-}
-
-/// Feed each line of `/proc/self/maps` to `line_result` until it returns
-/// `Some`, and return that. Uses only raw syscalls and stack buffers; a line
-/// longer than the buffer is truncated, which keeps its leading fields.
-unsafe fn scan_own_maps<R>(mut line_result: impl FnMut(&[u8]) -> Option<R>) -> Option<R> {
-    let path = c"/proc/self/maps";
-    let fd = unsafe {
-        raw_syscall6(
-            libc::SYS_openat,
-            [
-                libc::AT_FDCWD as u64,
-                path.as_ptr() as u64,
-                (libc::O_RDONLY | libc::O_CLOEXEC) as u64,
-                0,
-                0,
-                0,
-            ],
-        )
-    };
-    if fd < 0 {
-        return None;
-    }
-    let mut chunk = [0_u8; 1024];
-    let mut line = [0_u8; 512];
-    let mut line_len = 0;
-    let mut found = None;
-    'read: loop {
-        let read = unsafe {
-            raw_syscall6(
-                libc::SYS_read,
-                [
-                    fd as u64,
-                    chunk.as_mut_ptr() as u64,
-                    chunk.len() as u64,
-                    0,
-                    0,
-                    0,
-                ],
-            )
-        };
-        let Ok(read) = usize::try_from(read) else {
-            break;
-        };
-        if read == 0 {
-            break;
-        }
-        for byte in chunk[..read.min(chunk.len())].iter().copied() {
-            if byte != b'\n' {
-                if line_len < line.len() {
-                    line[line_len] = byte;
-                    line_len += 1;
-                }
-                continue;
-            }
-            if let Some(result) = line_result(&line[..line_len]) {
-                found = Some(result);
-                break 'read;
-            }
-            line_len = 0;
-        }
-    }
-    let _ = unsafe { raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
-    found
 }
 
 /// Parse one `/proc/self/maps` line; when its range contains `address`,
@@ -4183,43 +4007,6 @@ fn maps_line_private(line: &[u8], address: u64) -> Option<(bool, u64, i32)> {
         .then(|| (permissions.get(3) == Some(&b'p'), end, protection))
 }
 
-/// Parse one `/proc/self/maps` line; when its range contains `address`, copy
-/// its pathname (possibly empty) into `name` and return the copied length.
-fn maps_line_name(line: &[u8], address: u64, name: &mut [u8]) -> Option<usize> {
-    fn hex(bytes: &[u8]) -> Option<u64> {
-        if bytes.is_empty() || bytes.len() > 16 {
-            return None;
-        }
-        bytes.iter().try_fold(0_u64, |value, byte| {
-            let digit = (*byte as char).to_digit(16)?;
-            Some((value << 4) | u64::from(digit))
-        })
-    }
-    let range_end = line.iter().position(|byte| *byte == b' ')?;
-    let range = &line[..range_end];
-    let dash = range.iter().position(|byte| *byte == b'-')?;
-    let start = hex(&range[..dash])?;
-    let end = hex(&range[dash + 1..])?;
-    if address < start || address >= end {
-        return None;
-    }
-    // Skip the range, permissions, offset, device and inode fields; the
-    // remainder after their separating spaces is the pathname.
-    let mut rest = line;
-    for _ in 0..5 {
-        let field_end = rest
-            .iter()
-            .position(|byte| *byte == b' ')
-            .unwrap_or(rest.len());
-        rest = &rest[field_end..];
-        let spaces = rest.iter().take_while(|byte| **byte == b' ').count();
-        rest = &rest[spaces..];
-    }
-    let len = rest.len().min(name.len());
-    name[..len].copy_from_slice(&rest[..len]);
-    Some(len)
-}
-
 fn emit_instruction_refusal_stage(
     stage: &[u8],
     rip_offset: u64,
@@ -4229,7 +4016,7 @@ fn emit_instruction_refusal_stage(
     mapping_len: u64,
     bytes: &[u8],
 ) {
-    if !IN_GUEST_STAGE_STREAM.load(Ordering::Acquire) {
+    if !reverie_inguest::guest::support::stage_stream_enabled() {
         return;
     }
     let mut line = StackLine::new();
@@ -4262,92 +4049,16 @@ fn emit_instruction_refusal_stage(
             libc::SYS_write,
             [
                 libc::STDERR_FILENO as u64,
-                line.bytes.as_ptr() as u64,
-                line.len as u64,
+                line.as_bytes().as_ptr() as u64,
+                line.as_bytes().len() as u64,
                 0,
                 0,
                 0,
             ],
         )
     };
-    if written != line.len as i64 {
+    if written != line.as_bytes().len() as i64 {
         unsafe { exit_now(IN_GUEST_STAGE_WRITE_FAILURE_STATUS) };
-    }
-}
-
-unsafe fn exit_now(code: i32) -> ! {
-    let _ = unsafe { raw_syscall6(libc::SYS_exit_group, [code as u64, 0, 0, 0, 0, 0]) };
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-struct StackLine {
-    bytes: [u8; 512],
-    len: usize,
-}
-
-impl StackLine {
-    const fn new() -> Self {
-        Self {
-            bytes: [0; 512],
-            len: 0,
-        }
-    }
-
-    fn push_bytes(&mut self, bytes: &[u8]) {
-        let available = self.bytes.len().saturating_sub(self.len);
-        let count = available.min(bytes.len());
-        self.bytes[self.len..self.len + count].copy_from_slice(&bytes[..count]);
-        self.len += count;
-    }
-
-    fn push_signed(&mut self, value: i64) {
-        if value < 0 {
-            self.push_bytes(b"-");
-        }
-        self.push_unsigned(value.unsigned_abs());
-    }
-
-    fn push_unsigned(&mut self, mut value: u64) {
-        let mut digits = [0_u8; 20];
-        let mut cursor = digits.len();
-        loop {
-            cursor -= 1;
-            digits[cursor] = b'0' + (value % 10) as u8;
-            value /= 10;
-            if value == 0 {
-                break;
-            }
-        }
-        self.push_bytes(&digits[cursor..]);
-    }
-
-    fn push_hex(&mut self, mut value: u64) {
-        let mut digits = [0_u8; 16];
-        let mut cursor = digits.len();
-        loop {
-            cursor -= 1;
-            let digit = (value & 0xf) as u8;
-            digits[cursor] = if digit < 10 {
-                b'0' + digit
-            } else {
-                b'a' + digit - 10
-            };
-            value >>= 4;
-            if value == 0 {
-                break;
-            }
-        }
-        self.push_bytes(&digits[cursor..]);
-    }
-
-    fn push_hex_byte(&mut self, value: u8) {
-        const DIGITS: &[u8; 16] = b"0123456789abcdef";
-        self.push_bytes(&[
-            DIGITS[usize::from(value >> 4)],
-            DIGITS[usize::from(value & 0xf)],
-        ]);
     }
 }
 
@@ -4374,7 +4085,6 @@ mod tests {
     use super::SITE_UNPATCHABLE;
     use super::SITES;
     use super::SiteSlot;
-    use super::StackLine;
     use super::TOOL_PASSTHROUGH;
     use super::TOOL_SPOOF_GETPID;
     use super::alt_stack_from_env_value;
@@ -4571,15 +4281,6 @@ mod tests {
         assert_eq!(site.address.load(Ordering::Acquire), address);
         assert_eq!(site.state.load(Ordering::Acquire), SITE_ACTIVE);
         assert_eq!(fallback_syscall_count(405), 0);
-    }
-
-    #[test]
-    fn stack_line_formats_signed_and_hex_values() {
-        let mut line = StackLine::new();
-        line.push_signed(-123);
-        line.push_bytes(b" ");
-        line.push_hex(0xdead_beef);
-        assert_eq!(&line.bytes[..line.len], b"-123 deadbeef");
     }
 
     #[test]
@@ -4814,100 +4515,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn maps_line_name_extracts_the_containing_mapping_path() {
-        use super::maps_line_name;
-        let mut name = [0_u8; 64];
-        let line = b"7f1234560000-7f1234570000 r-xp 00002000 fd:01 1234                       /usr/lib64/libcrypto.so.3";
-        assert_eq!(maps_line_name(line, 0x7f12_3456_0000, &mut name), Some(25));
-        assert_eq!(&name[..25], b"/usr/lib64/libcrypto.so.3");
-        assert_eq!(maps_line_name(line, 0x7f12_3456_ffff, &mut name), Some(25));
-        assert_eq!(maps_line_name(line, 0x7f12_3457_0000, &mut name), None);
-        assert_eq!(maps_line_name(line, 0x7f12_3455_ffff, &mut name), None);
-        let anonymous = b"7f0000000000-7f0000001000 rwxp 00000000 00:00 0 ";
-        assert_eq!(
-            maps_line_name(anonymous, 0x7f00_0000_0800, &mut name),
-            Some(0)
-        );
-        let bare = b"7f0000000000-7f0000001000 rwxp 00000000 00:00 0";
-        assert_eq!(maps_line_name(bare, 0x7f00_0000_0800, &mut name), Some(0));
-        let mut short = [0_u8; 4];
-        assert_eq!(maps_line_name(line, 0x7f12_3456_0000, &mut short), Some(4));
-        assert_eq!(&short, b"/usr");
-        assert_eq!(maps_line_name(b"garbage", 0, &mut name), None);
-        assert_eq!(maps_line_name(b"", 0, &mut name), None);
-    }
-
-    #[test]
-    fn mapping_name_at_reads_this_process_maps_without_allocation() {
-        use super::mapping_name_at;
-        let page = unsafe {
-            libc::mmap(
-                core::ptr::null_mut(),
-                4096,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        assert_ne!(page, libc::MAP_FAILED);
-        let mut name = [0_u8; 256];
-        assert_eq!(
-            unsafe { mapping_name_at(page as u64 + 16, &mut name) },
-            Some(0)
-        );
-        let code = mapping_name_at as *const () as usize as u64;
-        let len = unsafe { mapping_name_at(code, &mut name) }.unwrap();
-        let executable = std::env::current_exe().unwrap();
-        assert_eq!(
-            std::str::from_utf8(&name[..len]).unwrap(),
-            executable.to_str().unwrap()
-        );
-        unsafe { libc::munmap(page, 4096) };
-        assert_eq!(
-            unsafe { mapping_name_at(page as u64 + 16, &mut name) },
-            None
-        );
-    }
-
-    #[test]
-    fn own_byte_reads_stop_at_an_unreadable_page_without_faulting() {
-        use super::read_own_bytes;
-        let pages = unsafe {
-            libc::mmap(
-                core::ptr::null_mut(),
-                8192,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        }
-        .cast::<u8>();
-        assert_ne!(pages.cast(), libc::MAP_FAILED);
-        unsafe {
-            pages.add(4094).write(0x0f);
-            pages.add(4095).write(0xa2);
-            assert_eq!(
-                libc::mprotect(pages.add(4096).cast(), 4096, libc::PROT_NONE),
-                0
-            );
-        }
-        let mut bytes = [0_u8; 8];
-        assert_eq!(
-            unsafe { read_own_bytes(pages as u64 + 4094, &mut bytes) },
-            2
-        );
-        assert_eq!(&bytes[..2], &[0x0f, 0xa2]);
-        assert_eq!(
-            unsafe { read_own_bytes(pages as u64 + 4096, &mut bytes) },
-            0
-        );
-        assert_eq!(unsafe { read_own_bytes(0, &mut bytes) }, 0);
-        assert_eq!(unsafe { read_own_bytes(u64::MAX - 1, &mut bytes) }, 0);
-        unsafe { libc::munmap(pages.cast(), 8192) };
-    }
     #[test]
     fn neighbour_conflicts_protect_published_patches_and_continuation_sites() {
         use NeighbourConflict::CoversContinuationSite as Covers;
