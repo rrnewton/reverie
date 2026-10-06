@@ -5170,6 +5170,98 @@ fn static_elf_faults_are_reported_by_direct_and_tool_runtimes() {
     assert_general_protection(io_fault_backend.run_static_elf().unwrap_err());
 }
 
+/// With Hermit's ptrace-reference numbering (`reverie::task_ids`), a guest
+/// whose root is pid 3 sees the IDs Hermit's ptrace backend gives it: forks
+/// 5 and 7, a thread 9, and, after exec, forks 11 and 13. With Linux's default
+/// the same guest sees 4, 5, 6, 7 and 8.
+#[test]
+fn guest_task_ids_follow_the_configured_numbering() {
+    let test = "guest_task_ids_follow_the_configured_numbering";
+    if !kvm_available(test) {
+        return;
+    }
+    let root = TestDirectory::new();
+    let program = compile_c_program(
+        &root.0,
+        "numbering",
+        r#"
+#include <pthread.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static void *thread(void *arg) {
+  (void)arg;
+  printf("thread %ld\n", (long)syscall(SYS_gettid));
+  return NULL;
+}
+
+static void fork_once(const char *label) {
+  pid_t child = fork();
+  if (child == 0) _exit(0);
+  waitpid(child, NULL, 0);
+  printf("%s %d\n", label, child);
+}
+
+int main(int argc, char **argv) {
+  if (argc > 1 && strcmp(argv[1], "after-exec") == 0) {
+    fork_once("fork-after-exec");
+    fork_once("fork-after-exec");
+    return 0;
+  }
+  printf("root %d\n", getpid());
+  fork_once("fork");
+  fork_once("fork");
+  pthread_t t;
+  pthread_create(&t, NULL, thread, NULL);
+  pthread_join(t, NULL);
+  fflush(stdout);
+  char *next[] = {argv[0], "after-exec", NULL};
+  execv("/proc/self/exe", next);
+  return 99;
+}
+"#,
+    );
+    let program = program.to_str().unwrap();
+    for (ids_per_task, expected) in [
+        (
+            reverie::task_ids::HERMIT_PTRACE_IDS_PER_TASK,
+            "root 3\nfork 5\nfork 7\nthread 9\nfork-after-exec 11\nfork-after-exec 13\n",
+        ),
+        (
+            reverie::task_ids::LINUX_IDS_PER_TASK,
+            "root 3\nfork 4\nfork 5\nthread 6\nfork-after-exec 7\nfork-after-exec 8\n",
+        ),
+    ] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend.set_root_pid(3).unwrap();
+        backend.set_ids_per_task(ids_per_task).unwrap();
+        backend
+            .install_static_elf_file_with_context(
+                std::fs::File::open(program).unwrap(),
+                &[program],
+                &["PATH=/usr/bin:/bin"],
+                &root.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(
+            (code, String::from_utf8_lossy(&stdout).into_owned()),
+            (0, expected.to_owned()),
+            "ids_per_task={ids_per_task} stderr={}",
+            String::from_utf8_lossy(&stderr)
+        );
+    }
+    assert!(
+        KvmBackend::new(16 * 1024 * 1024)
+            .unwrap()
+            .set_ids_per_task(0)
+            .is_err()
+    );
+}
+
 /// Exec replaces the guest's whole address-space layout. A program with a
 /// large image raises the identity end (in a 256 MiB guest, above the 182 MiB
 /// a small program gets) and touches a page above the small program's
@@ -11529,6 +11621,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "static_elf_runs_when_guest_memory_is_not_whole_large_pages",
         "static_elf_vmware_probe_runs_from_the_stack",
         "exec_to_a_lower_identity_end_unmaps_the_old_identity_pages",
+        "guest_task_ids_follow_the_configured_numbering",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
