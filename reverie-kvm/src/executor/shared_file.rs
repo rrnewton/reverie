@@ -103,10 +103,29 @@ pub(super) fn mmap_with_shared_files(
     if !is_anonymous && signalfd_mask(state, args[4] as libc::c_int).is_some() {
         return Ok(negative_errno(libc::ENODEV));
     }
-    let address = if fixed {
-        args[0]
+    let kind = if is_anonymous {
+        super::MappingKind::Anonymous
     } else {
-        let Some(address) = find_mmap_address(memory, state, length) else {
+        match state
+            .files
+            .get(&(args[4] as libc::c_int))
+            .map(std::fs::File::metadata)
+        {
+            Some(Ok(metadata)) if metadata.is_file() => super::MappingKind::RegularFile(args[5]),
+            _ => super::MappingKind::Other,
+        }
+    };
+    // A MAP_FIXED address is a user address; the bookkeeping below is by
+    // physical address, and the result is the user address.
+    let address = if fixed {
+        let Some(address) = memory.user_range_to_guest(args[0], length) else {
+            return Ok(negative_errno(libc::ENOMEM));
+        };
+        address
+    } else {
+        let map_32bit = args[3] & libc::MAP_32BIT as u64 != 0;
+        let Some(address) = super::place_mapping(memory, state, length, args[0], kind, map_32bit)
+        else {
             return Ok(negative_errno(libc::ENOMEM));
         };
         address
@@ -271,8 +290,9 @@ pub(super) fn mmap_with_shared_files(
             },
         )?;
     }
+    memory.record_file_pages(address, length as u64, kind.file_offset());
     state.mmap_next = cursors.mmap_next;
-    Ok(address as i64)
+    Ok(memory.physical_to_user(address).unwrap_or(address) as i64)
 }
 
 /// Preserve legacy invalid-argument precedence before a valid file history
@@ -300,28 +320,34 @@ pub(super) fn remap_requires_shared_capability(
     {
         return false;
     }
-    // The source is named by its user address (a stack range sits in the
-    // stack window); the mapping metadata below is by physical address.
+    // The source and destination are user addresses (a window's, in Linux's
+    // layout); the mapping metadata below is by physical address.
     let Some(source) = memory.user_range_to_guest(args[0], old_length) else {
         return false;
     };
     if !memory.user_range_is_mapped(source, old_length) {
         return false;
     }
+    let mut destination = None;
     if fixed {
-        let Some(end) = args[4].checked_add(new_length) else {
+        if !args[4].is_multiple_of(PAGE_SIZE) {
+            return false;
+        }
+        let Some(start) = memory.user_range_to_guest(args[4], new_length) else {
             return false;
         };
-        if args[4] < BOOT_RESERVED_END
-            || !args[4].is_multiple_of(PAGE_SIZE)
+        let end = start + new_length;
+        if start < BOOT_RESERVED_END
             || end > state.mmap_limit
-            || (args[4] < source + old_length && source < end)
+            || (start < source + old_length && source < end)
         {
             return false;
         }
+        destination = Some(start);
     }
     memory.range_contains_shared_file(source, old_length as usize)
-        || (fixed && memory.range_contains_shared_file(args[4], new_length as usize))
+        || destination
+            .is_some_and(|start| memory.range_contains_shared_file(start, new_length as usize))
 }
 
 #[cfg(test)]

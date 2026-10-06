@@ -205,32 +205,50 @@ pub(crate) const USER_ADDRESS_END: u64 = 1 << 47;
 /// Linux's `TASK_SIZE` and initial stack top with address randomization off.
 pub(crate) const USER_STACK_TOP: u64 = USER_ADDRESS_END - PAGE_SIZE as u64;
 
-/// Places the physical range `[physical_start, physical_end)` at the top of the
-/// user address space, `[USER_ADDRESS_END - length, USER_ADDRESS_END)`, so the
-/// guest's stack sits where Linux puts it. Only addresses below
-/// [`USER_STACK_TOP`] are user addresses, as on Linux. The range's identity
-/// addresses are then not user addresses at all, so one physical page is never
-/// reachable at two user addresses.
+/// Linux's `mmap_base` with address randomization off: TASK_SIZE less the
+/// 128 MiB minimum stack gap. Mappings without an address are placed top-down
+/// below it.
+pub(crate) const MMAP_BASE: u64 = USER_STACK_TOP - 128 * 1024 * 1024;
+
+/// A range of guest-physical memory, `[physical_start, physical_end)`, placed at
+/// user addresses starting at `user_start` through the guest page tables, so
+/// the guest sees Linux's layout (the stack below TASK_SIZE, mappings below
+/// `mmap_base`). Only `[user_start, user_end)` are user addresses; `user_end`
+/// may stop short of the physical range, as the stack window's does at
+/// TASK_SIZE. A window's identity addresses are not user addresses, so one
+/// physical page is never reachable at two user addresses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct StackWindow {
-    physical_start: u64,
-    physical_end: u64,
+pub(crate) struct UserWindow {
+    pub(crate) physical_start: u64,
+    pub(crate) physical_end: u64,
+    pub(crate) user_start: u64,
+    pub(crate) user_end: u64,
 }
 
-impl StackWindow {
-    fn user_start(self) -> u64 {
-        USER_ADDRESS_END - (self.physical_end - self.physical_start)
+impl UserWindow {
+    fn contains_user(self, address: u64) -> bool {
+        (self.user_start..self.user_end).contains(&address)
+    }
+
+    pub(crate) fn physical(self, user: u64) -> u64 {
+        user - self.user_start + self.physical_start
     }
 }
 
 #[derive(Clone, Debug)]
 struct AddressSpaceState {
     coverage: IdentityCoverage,
-    stack_window: Option<StackWindow>,
+    windows: Vec<UserWindow>,
+    /// The end of the identity user addresses, once a loader fixes the layout;
+    /// before that, they end where the lowest window's physical range begins.
+    identity_end: Option<u64>,
     cursors: Option<AllocationCursors>,
     reservations: BTreeMap<u64, RegionKind>,
     enabled: bool,
     pages: BTreeMap<u64, UserPageState>,
+    /// The file offset of each page a regular file was mapped into, by
+    /// physical page: Linux places a moved file mapping by its offset.
+    file_pages: BTreeMap<u64, u64>,
     /// Pages whose stable slot-0 HVA now names a separately retained backing.
     /// The current source increment keeps guest placement identity-only.
     backing_pages: BTreeMap<u64, InstalledBackingPage>,
@@ -299,11 +317,13 @@ impl AddressSpaceState {
                 start,
                 end: start + length as u64,
             },
-            stack_window: None,
+            windows: Vec::new(),
+            identity_end: None,
             cursors: None,
             reservations: BTreeMap::new(),
             enabled: false,
             pages: BTreeMap::new(),
+            file_pages: BTreeMap::new(),
             backing_pages: BTreeMap::new(),
         }
     }
@@ -317,50 +337,62 @@ impl AddressSpaceState {
         }
     }
 
+    /// The exclusive end of the identity user addresses.
+    fn identity_limit(&self) -> u64 {
+        self.identity_end
+            .unwrap_or_else(|| {
+                self.windows
+                    .iter()
+                    .map(|window| window.physical_start)
+                    .min()
+                    .unwrap_or(self.coverage.end)
+            })
+            .min(self.coverage.end)
+    }
+
     /// The physical address of user address `address`, and the exclusive
-    /// physical limit a copy starting there may run to: [`USER_STACK_TOP`]'s
-    /// physical address inside the stack window; the start of the window's
-    /// identity range (never a user address) below it; the end of the arena
-    /// otherwise.
+    /// physical limit a copy starting there may run to: the physical address of
+    /// its window's user end, or the end of the identity user addresses.
     fn user_extent(&self, address: u64, length: usize) -> Result<(u64, u64)> {
-        if let Some(window) = self.stack_window {
-            let user_start = window.user_start();
-            if address >= user_start {
-                if address >= USER_STACK_TOP {
-                    return Err(self.invalid_address(address, length));
-                }
-                return Ok((
-                    address - user_start + window.physical_start,
-                    window.physical_end - PAGE_SIZE as u64,
-                ));
-            }
-            if (window.physical_start..window.physical_end).contains(&address) {
-                return Err(self.invalid_address(address, length));
-            }
-            if address < window.physical_start && address >= self.coverage.start {
-                return Ok((address, window.physical_start));
-            }
+        if let Some(window) = self
+            .windows
+            .iter()
+            .find(|window| window.contains_user(address))
+        {
+            return Ok((window.physical(address), window.physical(window.user_end)));
         }
-        if address < self.coverage.start || address >= self.coverage.end {
-            return Err(self.invalid_address(address, length));
+        let limit = self.identity_limit();
+        if (self.coverage.start..limit).contains(&address) {
+            return Ok((address, limit));
         }
-        Ok((address, self.coverage.end))
+        Err(self.invalid_address(address, length))
+    }
+
+    /// The user address of physical address `physical`, if it has one.
+    fn physical_to_user(&self, physical: u64) -> Option<u64> {
+        if let Some(window) = self.windows.iter().find(|window| {
+            (window.physical_start..window.physical(window.user_end)).contains(&physical)
+        }) {
+            return Some(physical - window.physical_start + window.user_start);
+        }
+        (self.coverage.start..self.identity_limit())
+            .contains(&physical)
+            .then_some(physical)
     }
 
     fn translate(&self, address: u64, length: usize) -> Result<u64> {
-        if let Some(window) = self.stack_window {
-            let user_start = window.user_start();
-            if address >= user_start {
-                let end = address.checked_add(length as u64);
-                if end.is_none_or(|end| end > USER_STACK_TOP) {
-                    return Err(self.invalid_address(address, length));
-                }
-                return Ok(address - user_start + window.physical_start);
-            }
-            let end = address.saturating_add(length as u64);
-            if address < window.physical_end && end > window.physical_start {
+        if let Some(window) = self.windows.iter().find(|window| {
+            window.contains_user(address) || (length == 0 && address == window.user_end)
+        }) {
+            let end = address.checked_add(length as u64);
+            if end.is_none_or(|end| end > window.user_end) {
                 return Err(self.invalid_address(address, length));
             }
+            return Ok(window.physical(address));
+        }
+        let end = address.checked_add(length as u64);
+        if end.is_none_or(|end| end > self.identity_limit()) {
+            return Err(self.invalid_address(address, length));
         }
         let offset = address.checked_sub(self.coverage.start);
         let end = offset.and_then(|offset| offset.checked_add(length as u64));
@@ -1398,35 +1430,118 @@ impl GuestMemory {
     }
 
     /// Places the top `length` bytes of this memory at the top of the user
-    /// address space (see [`StackWindow`]) and returns the window's first user
-    /// address. Repeating it with the same range changes nothing. The caller
-    /// maps the same window in the guest's page tables.
+    /// address space (see [`UserWindow`]), below TASK_SIZE, and returns the
+    /// window's first user address. Repeating it changes nothing. The caller
+    /// maps the windows in the guest's page tables.
     pub(crate) fn establish_user_stack_window(&self, length: u64) -> Result<u64> {
         let physical_end = self.guest_end();
         let physical_start = physical_end
             .checked_sub(length)
             .filter(|start| *start >= self.guest_base() && length.is_multiple_of(PAGE_SIZE as u64))
             .ok_or(Error::LongModeMemoryTooSmall)?;
-        let window = StackWindow {
+        let user_start = USER_ADDRESS_END - length;
+        self.establish_user_window(UserWindow {
             physical_start,
             physical_end,
-        };
+            user_start,
+            user_end: USER_STACK_TOP.max(user_start),
+        })?;
+        Ok(user_start)
+    }
+
+    /// Adds `window`, replacing any window with the same user start. Its
+    /// physical range must lie in this memory, be whole pages, and overlap no
+    /// other window's.
+    pub(crate) fn establish_user_window(&self, window: UserWindow) -> Result<()> {
+        let page = PAGE_SIZE as u64;
+        if window.physical_start < self.guest_base()
+            || window.physical_end > self.guest_end()
+            || window.physical_start >= window.physical_end
+            || !window.physical_start.is_multiple_of(page)
+            || !window.physical_end.is_multiple_of(page)
+            || !window.user_start.is_multiple_of(page)
+            || window.user_end < window.user_start
+            || window.user_end - window.user_start > window.physical_end - window.physical_start
+        {
+            return Err(Error::LongModeMemoryTooSmall);
+        }
+        let mut state = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        state
+            .windows
+            .retain(|existing| existing.user_start != window.user_start);
+        if state.windows.iter().any(|existing| {
+            existing.physical_start < window.physical_end
+                && window.physical_start < existing.physical_end
+        }) {
+            return Err(Error::LongModeMemoryTooSmall);
+        }
+        state.windows.push(window);
+        state.windows.sort_by_key(|window| window.user_start);
+        Ok(())
+    }
+
+    /// Ends the identity user addresses at `end`; the memory above it is reached
+    /// only through windows.
+    pub(crate) fn set_user_identity_end(&self, end: u64) {
         self.mapping
             .address_space
             .lock()
             .expect("guest memory access map lock poisoned")
-            .stack_window = Some(window);
-        Ok(window.user_start())
+            .identity_end = Some(end);
+    }
+
+    /// Withdraws every window and the identity end, for a new image's loader to
+    /// lay out the address space again. Like `clear_user_access`, it leaves a
+    /// memory with ordinary-file views alone (that refusal is already
+    /// recorded), so their pages keep their user addresses.
+    pub(crate) fn clear_user_layout(&self) {
+        if self.contains_shared_file() {
+            return;
+        }
+        let mut state = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        state.windows.clear();
+        state.identity_end = None;
+    }
+
+    /// The established windows, by user start, and the end of the identity
+    /// user addresses.
+    pub(crate) fn user_layout(&self) -> (Vec<UserWindow>, u64) {
+        let state = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        (state.windows.clone(), state.identity_limit())
     }
 
     /// The stack window's length, once established.
+    #[cfg(test)]
     pub(crate) fn user_stack_window_length(&self) -> Option<u64> {
         self.mapping
             .address_space
             .lock()
             .expect("guest memory access map lock poisoned")
-            .stack_window
+            .windows
+            .iter()
+            .find(|window| window.user_end == USER_STACK_TOP)
             .map(|window| window.physical_end - window.physical_start)
+    }
+
+    /// The user address of physical address `physical`, if it has one.
+    pub(crate) fn physical_to_user(&self, physical: u64) -> Option<u64> {
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .physical_to_user(physical)
     }
 
     /// The physical address of the user range `[address, address + length)`,
@@ -1439,6 +1554,15 @@ impl GuestMemory {
             .expect("guest memory access map lock poisoned")
             .translate(address, length)
             .ok()
+    }
+
+    /// Whether the user range `[address, address + length)` holds an ordinary
+    /// shared-file page.
+    pub(crate) fn user_range_contains_shared_file(&self, address: u64, length: u64) -> bool {
+        self.user_range_to_guest(address, length)
+            .is_some_and(|physical| {
+                self.range_contains_shared_file(physical, length.try_into().unwrap_or(usize::MAX))
+            })
     }
 
     /// Whether `[address, address + length)` is one contiguous range of user
@@ -1473,6 +1597,7 @@ impl GuestMemory {
             .expect("guest memory access map lock poisoned");
         access.enabled = false;
         access.pages.clear();
+        access.file_pages.clear();
         access.reservations.clear();
         access.cursors = None;
     }
@@ -1559,6 +1684,7 @@ impl GuestMemory {
             .expect("guest memory access map lock poisoned");
         for page in first_page..=last_page {
             access.pages.remove(&page);
+            access.file_pages.remove(&page);
             if !access
                 .reservations
                 .get(&page)
@@ -1568,6 +1694,39 @@ impl GuestMemory {
             }
         }
         Ok(())
+    }
+
+    /// Records that physical `[guest_address, guest_address + length)` maps a
+    /// regular file from byte `offset`, or, with `None`, that it maps none.
+    pub(crate) fn record_file_pages(&self, guest_address: u64, length: u64, offset: Option<u64>) {
+        let Ok(Some((first_page, last_page))) = self.checked_page_range(guest_address, length)
+        else {
+            return;
+        };
+        let mut access = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        for page in first_page..=last_page {
+            match offset
+                .and_then(|offset| offset.checked_add((page - first_page) * PAGE_SIZE as u64))
+            {
+                Some(offset) => access.file_pages.insert(page, offset),
+                None => access.file_pages.remove(&page),
+            };
+        }
+    }
+
+    /// The file offset of the regular-file page at physical `guest_address`.
+    pub(crate) fn file_offset(&self, guest_address: u64) -> Option<u64> {
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .file_pages
+            .get(&(guest_address / PAGE_SIZE as u64))
+            .map(|offset| offset + guest_address % PAGE_SIZE as u64)
     }
 
     // TODO-HUMAN-REVIEW(PR-132): Review the host-side KVM user mapping API.
@@ -1582,6 +1741,55 @@ impl GuestMemory {
             .lock()
             .expect("guest memory access map lock poisoned");
         (first_page..=last_page).all(|page| access.pages.contains_key(&page))
+    }
+
+    /// The highest page-aligned `length`-byte range of unmapped physical pages in
+    /// `[start, end)`, as Linux's top-down allocator chooses the highest free gap
+    /// below mmap_base.
+    pub(crate) fn find_unmapped_user_range_topdown(
+        &self,
+        start: u64,
+        end: u64,
+        length: u64,
+    ) -> Option<u64> {
+        let page_size = PAGE_SIZE as u64;
+        if length == 0
+            || !start.is_multiple_of(page_size)
+            || !end.is_multiple_of(page_size)
+            || !length.is_multiple_of(page_size)
+            || start < self.guest_base()
+            || end > self.guest_end()
+            || start >= end
+        {
+            return None;
+        }
+        let pages_needed = length / page_size;
+        let start_page = start / page_size;
+        let access = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        let mut top = end / page_size;
+        for (&occupied, _) in access.pages.range(start_page..top).rev() {
+            if top - (occupied + 1) >= pages_needed {
+                return (top - pages_needed).checked_mul(page_size);
+            }
+            top = occupied;
+        }
+        (top - start_page >= pages_needed).then(|| (top - pages_needed) * page_size)
+    }
+
+    /// Whether a loader has given this memory Linux's layout: an identity end
+    /// and an mmap window above it, whatever the window's user end (mmap_base,
+    /// or below it in memory too tight for that).
+    pub(crate) fn has_mmap_window(&self) -> bool {
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .identity_end
+            .is_some()
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED: Reuse deterministic holes in the KVM guest arena.
@@ -1678,8 +1886,14 @@ impl GuestMemory {
             .copied()
             .flatten()
             .expect("nonempty mapped range has a last page");
+        // A file mapping's offsets move with it, and a grown one continues its
+        // file past the last page, as Linux grows the file mapping.
+        let old_offsets = (old_first..=old_last)
+            .map(|page| access.file_pages.get(&page).copied())
+            .collect::<Vec<_>>();
         for page in old_first..=old_last {
             access.pages.remove(&page);
+            access.file_pages.remove(&page);
             if !access
                 .reservations
                 .get(&page)
@@ -1695,6 +1909,18 @@ impl GuestMemory {
                 .flatten()
                 .unwrap_or(extension_state);
             access.pages.insert(page, state);
+            let offset = match old_offsets.get(index) {
+                Some(offset) => *offset,
+                None => old_offsets.last().copied().flatten().and_then(|last| {
+                    last.checked_add((index + 1 - old_offsets.len()) as u64 * PAGE_SIZE as u64)
+                }),
+            };
+            // The destination's old provenance goes: a page that is no longer
+            // a file's keeps no offset.
+            match offset {
+                Some(offset) => access.file_pages.insert(page, offset),
+                None => access.file_pages.remove(&page),
+            };
             if !access
                 .reservations
                 .get(&page)
