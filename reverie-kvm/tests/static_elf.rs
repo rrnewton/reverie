@@ -11929,7 +11929,9 @@ int main(void) {
     );
     let executable = executable.to_str().unwrap();
     let image = std::fs::read(executable).unwrap();
-    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    // Hermit's 1 GiB guest: the fixed mapping at 128 MiB lies in its identity
+    // range, which ends at a quarter of guest memory (Linux's layout, K2).
+    let mut backend = KvmBackend::new(1024 * 1024 * 1024).unwrap();
     backend
         .install_static_elf_with_context(
             &image,
@@ -12396,7 +12398,9 @@ int main(void) {
     );
     let executable = executable.to_str().unwrap();
     let image = std::fs::read(executable).unwrap();
-    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    // Hermit's 1 GiB guest: the fixed mapping at 128 MiB lies in its identity
+    // range, which ends at a quarter of guest memory (Linux's layout, K2).
+    let mut backend = KvmBackend::new(1024 * 1024 * 1024).unwrap();
     backend
         .install_static_elf_with_context(
             &image,
@@ -12584,7 +12588,9 @@ int main(void) {
     );
     let executable = executable.to_str().unwrap();
     let image = std::fs::read(executable).unwrap();
-    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    // Hermit's 1 GiB guest: the fixed mapping at 128 MiB lies in its identity
+    // range, which ends at a quarter of guest memory (Linux's layout, K2).
+    let mut backend = KvmBackend::new(1024 * 1024 * 1024).unwrap();
     backend
         .install_static_elf_with_context(
             &image,

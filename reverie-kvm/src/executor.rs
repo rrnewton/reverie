@@ -46,6 +46,7 @@ use crate::elf::load_static_elf;
 use crate::elf::resolve_executable_path;
 use crate::memory::AllocationCursors;
 use crate::memory::HostMemoryOperand;
+use crate::memory::MMAP_BASE;
 use crate::memory::RegionKind;
 use crate::signal::GuestStack;
 use crate::signal::KERNEL_SIGACTION_SIZE;
@@ -554,8 +555,9 @@ fn execute_basic_syscall_dispatch(
             Err(error) => SyscallAction::Failure(error),
         };
     }
-    if number == libc::SYS_munmap as u64
-        && owner.range_contains_shared_file(args[0], args[1].try_into().unwrap_or(usize::MAX))
+    // The shared-file metadata is by physical address; the munmap range is a
+    // user address (a window's, in Linux's layout).
+    if number == libc::SYS_munmap as u64 && owner.user_range_contains_shared_file(args[0], args[1])
     {
         return match munmap_shared_file(&owner, args[0], args[1], transaction) {
             Ok(result) => continue_with(result),
@@ -18986,10 +18988,91 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
 
 // TODO-HUMAN-REVIEW(PR-235): Review deterministic hole-first mmap allocation.
 fn find_mmap_address(memory: &GuestMemory, state: &LoadedStaticElf, length: u64) -> Option<u64> {
-    let next = state.mmap_next.clamp(state.mmap_base, state.mmap_limit);
-    memory
-        .find_unmapped_user_range(state.mmap_base, next, length)
-        .or_else(|| memory.find_unmapped_user_range(next, state.mmap_limit, length))
+    place_mapping(memory, state, length, 0, MappingKind::Anonymous)
+}
+
+/// What a mapping without MAP_FIXED maps, which decides Linux's alignment.
+#[derive(Clone, Copy)]
+pub(crate) enum MappingKind {
+    Anonymous,
+    /// A regular file at this offset.
+    RegularFile(u64),
+    /// Anything else (a device, a pipe): no alignment.
+    Other,
+}
+
+const LARGE_PAGE: u64 = 2 * 1024 * 1024;
+
+/// The physical address Linux would choose for a `length`-byte mapping without
+/// MAP_FIXED. In a memory with Linux's layout (see the K2 design note): a free
+/// page-aligned hint is used as it is; otherwise the highest free gap below
+/// mmap_base, with Linux's large-page alignment (`__thp_get_unmapped_area`)
+/// for an anonymous mapping whose length is a whole number of large pages and
+/// for a regular file range holding a whole aligned large page. A memory a
+/// loader never laid out keeps the bottom-up allocator.
+pub(crate) fn place_mapping(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    length: u64,
+    hint: u64,
+    kind: MappingKind,
+) -> Option<u64> {
+    if !memory.has_mmap_window() {
+        let next = state.mmap_next.clamp(state.mmap_base, state.mmap_limit);
+        return memory
+            .find_unmapped_user_range(state.mmap_base, next, length)
+            .or_else(|| memory.find_unmapped_user_range(next, state.mmap_limit, length));
+    }
+    if hint != 0
+        && let Some(hint) = align_up(hint, PAGE_SIZE)
+        && let Some(physical) = memory.user_range_to_guest(hint, length)
+        && physical >= BOOT_RESERVED_END
+        && physical
+            .checked_add(length)
+            .is_some_and(|end| end <= state.mmap_limit)
+        && memory.find_unmapped_user_range(physical, physical + length, length) == Some(physical)
+    {
+        return Some(physical);
+    }
+    // Linux maps at a free hint wherever it is. A low hint KVM cannot back
+    // exactly (memory exists only below the identity end and in the windows)
+    // gets the highest free range of identity memory below it, so the result
+    // stays low and near the hint rather than at the top of the address space.
+    if hint != 0
+        && hint < MMAP_BASE / 2
+        && let Some(found) = memory.find_unmapped_user_range_topdown(
+            BOOT_RESERVED_END,
+            align_up(hint, PAGE_SIZE)
+                .unwrap_or(state.mmap_base)
+                .min(state.mmap_base),
+            length,
+        )
+    {
+        return Some(found);
+    }
+    let top_down =
+        |length| memory.find_unmapped_user_range_topdown(state.mmap_base, state.mmap_limit, length);
+    let offset = match kind {
+        // Linux aligns an anonymous mapping only when it has no hint.
+        MappingKind::Anonymous if hint == 0 && length.is_multiple_of(LARGE_PAGE) => Some(0),
+        MappingKind::RegularFile(offset)
+            if offset.checked_add(length).is_some_and(|end| {
+                end / LARGE_PAGE * LARGE_PAGE > align_up(offset, LARGE_PAGE).unwrap_or(u64::MAX)
+            }) =>
+        {
+            Some(offset)
+        }
+        _ => None,
+    };
+    if let Some(offset) = offset
+        && let Some(padded) = length.checked_add(LARGE_PAGE)
+        && let Some(found) = top_down(padded)
+    {
+        let user = memory.physical_to_user(found)?;
+        let shift = offset.wrapping_sub(user) & (LARGE_PAGE - 1);
+        return Some(found + if shift == 0 { LARGE_PAGE } else { shift });
+    }
+    top_down(length)
 }
 
 fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -19027,12 +19110,27 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         // Do not expose the non-mappable eventfd carrier's ESPIPE result.
         return negative_errno(libc::ENODEV);
     }
-    // Linux treats a nonfixed address as a hint. This bounded personality uses
-    // its deterministic allocator rather than risking an occupied mapping.
+    // A MAP_FIXED address is a user address; the bookkeeping below is by
+    // physical address, and the result is the user address.
     let address = if fixed {
-        args[0]
+        let Some(address) = memory.user_range_to_guest(args[0], length) else {
+            return negative_errno(libc::ENOMEM);
+        };
+        address
     } else {
-        let Some(address) = find_mmap_address(memory, state, length) else {
+        let kind = if is_anonymous {
+            MappingKind::Anonymous
+        } else {
+            match state
+                .files
+                .get(&(args[4] as libc::c_int))
+                .map(std::fs::File::metadata)
+            {
+                Some(Ok(metadata)) if metadata.is_file() => MappingKind::RegularFile(args[5]),
+                _ => MappingKind::Other,
+            }
+        };
+        let Some(address) = place_mapping(memory, state, length, args[0], kind) else {
             return negative_errno(libc::ENOMEM);
         };
         address
@@ -19123,7 +19221,7 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     if !fixed {
         state.mmap_next = state.mmap_next.max(end);
     }
-    address as i64
+    memory.physical_to_user(address).unwrap_or(address) as i64
 }
 
 fn munmap(memory: &mut GuestMemory, address: u64, length: u64) -> i64 {
@@ -19275,10 +19373,9 @@ fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
 }
 
 fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    // The source is named by its user address (a stack range sits in the stack
-    // window); the bookkeeping below is by physical address. A remap in place
-    // returns the user address. A move lands below mmap_limit, where user and
-    // physical addresses are the same, as does a MREMAP_FIXED destination.
+    // The source and a MREMAP_FIXED destination are user addresses (a window's,
+    // in Linux's layout); the bookkeeping below is by physical address, and the
+    // result is the user address of wherever the mapping ends up.
     let user_address = args[0];
     let Some(old_length) = align_up(args[1], PAGE_SIZE) else {
         return negative_errno(libc::EINVAL);
@@ -19356,7 +19453,10 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
         return negative_errno(libc::ENOMEM);
     }
     let destination = if flags & libc::MREMAP_FIXED as u64 != 0 {
-        args[4]
+        let Some(destination) = memory.user_range_to_guest(args[4], new_length) else {
+            return negative_errno(libc::EINVAL);
+        };
+        destination
     } else {
         let Some(destination) = find_mmap_address(memory, state, new_length) else {
             return negative_errno(libc::ENOMEM);
@@ -19407,7 +19507,7 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     if flags & libc::MREMAP_FIXED as u64 == 0 {
         state.mmap_next = state.mmap_next.max(destination_end);
     }
-    destination as i64
+    memory.physical_to_user(destination).unwrap_or(destination) as i64
 }
 
 fn validate_range(memory: &GuestMemory, address: u64, length: u64) -> i64 {
@@ -20911,7 +21011,7 @@ fn preflight_wait_shared_outputs(
     if !offsets.iter().any(|offset| {
         address
             .checked_add(*offset)
-            .is_some_and(|address| memory.range_contains_shared_file(address, 4))
+            .is_some_and(|address| memory.user_range_contains_shared_file(address, 4))
     }) {
         return Ok(());
     }
@@ -20946,7 +21046,7 @@ fn wait4_result(
         return Ok(negative_errno(libc::EINVAL));
     }
     let nonblocking = args[2] as libc::c_int & libc::WNOHANG != 0;
-    if args[1] != 0 && memory.range_contains_shared_file(args[1], 4) {
+    if args[1] != 0 && memory.user_range_contains_shared_file(args[1], 4) {
         // This observation never consumes a ready child. A no-result return
         // does not attempt a status store, so its native ECHILD/zero result
         // precedes the shared scalar capability check. A ready or potentially
@@ -53233,6 +53333,112 @@ mod tests {
         );
         let unmapped = AddrMut::from_raw((window + 2 * PAGE_SIZE) as usize).unwrap();
         assert!(MemoryAccess::write(&mut memory, unmapped, &[0x33; 8]).is_err());
+    }
+
+    /// In Linux's layout, mappings without MAP_FIXED are placed as Linux 7.x
+    /// places them (measured under ptrace; see the K2 design note): top-down
+    /// below mmap_base and the host vDSO pages, with large-page alignment for
+    /// an anonymous length that is a whole number of large pages (and no hint)
+    /// and for a regular file range holding an aligned large page; a free hint
+    /// is used as is; MAP_FIXED reaches the identity addresses below the
+    /// identity end and is refused at it.
+    #[test]
+    fn mappings_follow_linux_top_down_placement() {
+        const MIB: u64 = 1024 * 1024;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (64 * MIB) as usize).unwrap();
+        let layout =
+            crate::elf::establish_linux_layout(&mut memory, BOOT_RESERVED_END + PAGE_SIZE).unwrap();
+        crate::elf::reserve_vdso_gap(&mut memory, layout.mmap_end).unwrap();
+        state.mmap_base = layout.identity_end;
+        state.mmap_next = layout.identity_end;
+        state.mmap_limit = layout.mmap_end;
+        state.brk_limit = layout.identity_end;
+        memory.enable_user_access();
+        let large = root.0.join("three-mib.bin");
+        std::fs::write(&large, vec![0; 0x30_0000]).unwrap();
+        let small = root.0.join("small.bin");
+        std::fs::write(&small, vec![0; 29_499]).unwrap();
+        state.files.insert(3, std::fs::File::open(&large).unwrap());
+        state.files.insert(4, std::fs::File::open(&small).unwrap());
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let anonymous = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
+        let mut map = |memory: &mut GuestMemory, args: [u64; 6]| {
+            syscall_result(memory, &mut state, libc::SYS_mmap, args)
+        };
+        for (length, expected) in [
+            (0x1000, 0x7fff_f7ff_6000_u64),
+            (0x10_0000, 0x7fff_f7ef_6000),
+            (0x20_0000, 0x7fff_f7c0_0000),
+            (0x20_1000, 0x7fff_f79f_f000),
+            (0x40_0000, 0x7fff_f740_0000),
+            (0x3f_f000, 0x7fff_f700_1000),
+        ] {
+            assert_eq!(
+                map(&mut memory, [0, length, read_write, anonymous, u64::MAX, 0]),
+                expected as i64,
+                "anonymous {length:#x}"
+            );
+        }
+        let private = libc::MAP_PRIVATE as u64;
+        let read = libc::PROT_READ as u64;
+        assert_eq!(
+            map(&mut memory, [0, 0x30_0000, read, private, 3, 0]),
+            0x7fff_f6c0_0000
+        );
+        assert_eq!(
+            // The highest gap that fits: above the aligned large-page mapping.
+            map(&mut memory, [0, 29_499, read, private, 4, 0]),
+            0x7fff_f7ee_e000
+        );
+        let hint = BOOT_RESERVED_END + 16 * PAGE_SIZE;
+        assert_eq!(
+            map(
+                &mut memory,
+                [hint, PAGE_SIZE, read_write, anonymous, u64::MAX, 0]
+            ),
+            hint as i64
+        );
+        // An occupied hint falls back to top-down placement without alignment.
+        assert_eq!(
+            map(
+                &mut memory,
+                [hint, 0x20_0000, read_write, anonymous, u64::MAX, 0]
+            ),
+            0x7fff_f6a0_0000
+        );
+        // A low hint with no memory behind it lands as high as possible in
+        // identity memory below it, not at the top of the address space.
+        let unbacked = 0x1_0000_0000;
+        let placed = map(
+            &mut memory,
+            [unbacked, 2 * PAGE_SIZE, read_write, anonymous, u64::MAX, 0],
+        );
+        assert_eq!(placed as u64, layout.identity_end - 2 * PAGE_SIZE);
+        let fixed = anonymous | libc::MAP_FIXED as u64;
+        let below = layout.identity_end - 3 * PAGE_SIZE;
+        assert_eq!(
+            map(
+                &mut memory,
+                [below, PAGE_SIZE, read_write, fixed, u64::MAX, 0]
+            ),
+            below as i64
+        );
+        assert_eq!(
+            map(
+                &mut memory,
+                [
+                    layout.identity_end,
+                    PAGE_SIZE,
+                    read_write,
+                    fixed,
+                    u64::MAX,
+                    0
+                ]
+            ),
+            negative_errno(libc::ENOMEM)
+        );
     }
 
     #[test]
