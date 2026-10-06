@@ -67,8 +67,12 @@ pub(crate) const VDSO_ADDRESS: u64 =
 // worker gets one Tool scratch page after the vDSO, indexed by the same slot
 // that owns its private syscall transport.
 pub(crate) const THREAD_TOOL_STACK_AREA_START: u64 = VDSO_ADDRESS + PAGE_SIZE;
-pub(crate) const BOOT_RESERVED_END: u64 =
+// The page-directory-pointer table and page directory that map the user stack
+// window (`map_user_stack_window`) at the top of the user address space.
+const STACK_WINDOW_PDPT_ADDRESS: u64 =
     THREAD_TOOL_STACK_AREA_START + TOOL_STACK_SIZE * MAX_GUEST_THREADS;
+const STACK_WINDOW_DIRECTORY_ADDRESS: u64 = STACK_WINDOW_PDPT_ADDRESS + PAGE_SIZE;
+pub(crate) const BOOT_RESERVED_END: u64 = STACK_WINDOW_DIRECTORY_ADDRESS + PAGE_SIZE;
 const _: () = {
     assert!(TOOL_STACK_TOP <= THREAD_SYSCALL_AREA_START);
     assert!(
@@ -628,7 +632,60 @@ fn write_page_tables(memory: &mut GuestMemory) -> Result<()> {
             )?;
         }
     }
+    // The loader may already have placed the stack window; keep it.
+    if let Some(length) = memory.user_stack_window_length() {
+        map_user_stack_window(memory, length)?;
+    }
     Ok(())
+}
+
+/// Maps the top `length` bytes of guest memory at the top of the user address
+/// space, where Linux puts the initial stack, and unmaps their identity
+/// addresses so one physical page is never reachable at two user addresses.
+/// Returns the window's first user address. Both the window and `length` must
+/// be whole large pages within one gigabyte; repeating it changes nothing.
+pub(crate) fn map_user_stack_window(memory: &mut GuestMemory, length: u64) -> Result<u64> {
+    let user_start = memory.establish_user_stack_window(length)?;
+    let physical_start = memory.guest_end() - length;
+    if !physical_start.is_multiple_of(LARGE_PAGE_SIZE)
+        || !length.is_multiple_of(LARGE_PAGE_SIZE)
+        || length > PAGE_DIRECTORY_SPAN
+    {
+        return Err(Error::LongModeMemoryTooSmall);
+    }
+    let entry = std::mem::size_of::<u64>() as u64;
+    let index = |address: u64, shift: u32| (address >> shift) & 511;
+    memory.zero_raw(STACK_WINDOW_PDPT_ADDRESS, PAGE_SIZE as usize)?;
+    memory.zero_raw(STACK_WINDOW_DIRECTORY_ADDRESS, PAGE_SIZE as usize)?;
+    write_u64(
+        memory,
+        PML4_ADDRESS + index(user_start, 39) * entry,
+        STACK_WINDOW_PDPT_ADDRESS | 0x7,
+    )?;
+    write_u64(
+        memory,
+        STACK_WINDOW_PDPT_ADDRESS + index(user_start, 30) * entry,
+        STACK_WINDOW_DIRECTORY_ADDRESS | 0x7,
+    )?;
+    let entries_per_directory = PAGE_SIZE / entry;
+    for page in 0..length / LARGE_PAGE_SIZE {
+        let physical = physical_start + page * LARGE_PAGE_SIZE;
+        write_u64(
+            memory,
+            STACK_WINDOW_DIRECTORY_ADDRESS + (index(user_start, 21) + page) * entry,
+            physical | 0x87,
+        )?;
+        let identity_page = physical / LARGE_PAGE_SIZE;
+        let directory = (identity_page / entries_per_directory) as usize;
+        if let Some(directory_address) = PAGE_DIRECTORY_ADDRESSES.get(directory) {
+            write_u64(
+                memory,
+                directory_address + (identity_page % entries_per_directory) * entry,
+                0,
+            )?;
+        }
+    }
+    Ok(user_start)
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Emit a minimal kernel-note vDSO for glibc.
@@ -961,7 +1018,8 @@ mod tests {
 
         assert_eq!(first_top - TOOL_STACK_SIZE, THREAD_TOOL_STACK_AREA_START);
         assert_eq!(second_top - first_top, TOOL_STACK_SIZE);
-        assert_eq!(last_top, BOOT_RESERVED_END);
+        assert_eq!(last_top, STACK_WINDOW_PDPT_ADDRESS);
+        assert_eq!(BOOT_RESERVED_END, STACK_WINDOW_PDPT_ADDRESS + 2 * PAGE_SIZE);
     }
 
     #[test]
