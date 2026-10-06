@@ -506,11 +506,18 @@ fn the_timer_fires_in_a_loop_that_traps_in_every_round(rcbs: u64) {
         // margin short of the target, keeps the event. The trap at the
         // period keeps it too unless the notification stopped the guest
         // first, and, if it finds the notification not yet queued, hands the
-        // event on as lost; the steps then begin there.
-        let period = rcbs - PmuConfig::new().skid_margin();
+        // event on as lost; the steps then begin there. A staged event (see
+        // `PmuConfig::stages`) has two periods, and the trap at the first
+        // can hand it on to its second stage in the same way. A guest that
+        // traps at every branch retires them far too slowly for the second
+        // stage margin to exceed the skid margin, so the last period is the
+        // same.
+        let config = PmuConfig::new();
+        let period = rcbs - config.skid_margin();
+        let periods = if config.stages(rcbs) { 2 } else { 1 };
         assert!(
-            (period..=period + 1).contains(&run.keeps) && run.handed_on <= 1,
-            "{} traps kept the event, and {} handed it on, with the period at {period}",
+            (period..=period + 1).contains(&run.keeps) && run.handed_on <= periods,
+            "{} traps kept the event, and {} handed it on, with the last of {periods} periods at {period}",
             run.keeps,
             run.handed_on
         );

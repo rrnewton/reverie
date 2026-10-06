@@ -106,6 +106,12 @@ pub struct PerfCounter {
     /// Calls on this counter that change its programming, successful or not
     /// (see [`PerfCounter::programmings`]).
     programmings: std::sync::atomic::AtomicU64,
+    /// Whether each sample record holds the sample's time (see
+    /// [`Builder::sample_time`]).
+    sample_time: bool,
+    /// The time of the newest sample record taken, if any held one (see
+    /// [`PerfCounter::last_sample_time`]).
+    last_sample_time: Option<u64>,
 }
 
 /// A ring buffer mapping that receives the sample records of a counter.
@@ -147,6 +153,7 @@ pub struct Builder {
     precise_ip: u32,
     fast_reads: bool,
     enable_on_exec: bool,
+    sample_time: bool,
 }
 
 impl Builder {
@@ -172,6 +179,7 @@ impl Builder {
             precise_ip: 0,
             fast_reads: false,
             enable_on_exec: false,
+            sample_time: false,
         }
     }
 
@@ -230,6 +238,15 @@ impl Builder {
         self
     }
 
+    /// Write the time of each overflow, on `CLOCK_MONOTONIC`, into its
+    /// sample record, and nothing else besides the header (see
+    /// [`PerfCounter::last_sample_time`]). The kernel reads the clock in its
+    /// overflow handler, after the counter has stopped counting.
+    pub(crate) fn sample_time(&mut self, enable: bool) -> &mut Self {
+        self.sample_time = enable;
+        self
+    }
+
     /// Render the builder into a `PerfCounter`. Created counters begin in a
     /// disabled state. Additional initialization steps should be performed,
     /// followed by a call to [`PerfCounter::enable`].
@@ -261,6 +278,11 @@ impl Builder {
         attr.set_pinned(1); // error state if we are descheduled from the PMU
         attr.set_precise_ip(self.precise_ip.into());
         attr.__bindgen_anon_2.wakeup_events = 1; // generate a wakeup (overflow) after one sample event
+        if self.sample_time {
+            attr.sample_type = perf::PERF_SAMPLE_TIME as u64;
+            attr.set_use_clockid(1);
+            attr.clockid = libc::CLOCK_MONOTONIC;
+        }
 
         let pid = self.pid;
         let cpu = self.cpu;
@@ -339,6 +361,8 @@ impl Builder {
             records: None,
             raw_syscall,
             programmings: std::sync::atomic::AtomicU64::new(0),
+            sample_time: self.sample_time,
+            last_sample_time: None,
         })
     }
 
@@ -881,7 +905,9 @@ impl PerfCounter {
 
     /// Count the sample records written since the last call and release
     /// their space. Other record types, such as throttling and loss records,
-    /// are not counted. Returns `None` if no records are mapped.
+    /// are not counted. Returns `None` if no records are mapped. Records the
+    /// time of the newest sample taken, if the samples hold times (see
+    /// [`PerfCounter::last_sample_time`]).
     pub(crate) fn take_sample_records(&mut self) -> Option<u64> {
         use core::ptr::addr_of;
         use core::ptr::addr_of_mut;
@@ -889,12 +915,13 @@ impl PerfCounter {
         use core::sync::atomic::fence;
 
         let records = self.records.as_ref()?;
+        let sample_time = self.sample_time;
         let page = records.page.as_ptr();
         let page_size = get_mmap_size() as u64;
         // SAFETY: `page` maps the metadata page followed by the data pages
         // for the lifetime of `records`. Only this method writes `data_tail`,
         // and `&mut self` excludes concurrent calls.
-        let samples = unsafe {
+        let scan = unsafe {
             let head = core::ptr::read_volatile(addr_of!((*page).data_head));
             // Pairs with the kernel's barrier before it publishes `data_head`.
             fence(Ordering::Acquire);
@@ -911,19 +938,46 @@ impl PerfCounter {
             };
             let data = page.cast::<u8>().add(offset as usize);
             // Records are 8-byte aligned and the data size is a multiple of
-            // the page size, so a header never wraps.
-            let samples = count_sample_records(tail, head, |position| {
-                core::ptr::read_volatile(
-                    data.add((position % size) as usize)
-                        .cast::<perf::perf_event_header>(),
-                )
-            });
+            // the page size, so neither a header nor a time wraps.
+            let scan = scan_sample_records(
+                tail,
+                head,
+                |position| {
+                    core::ptr::read_volatile(
+                        data.add((position % size) as usize)
+                            .cast::<perf::perf_event_header>(),
+                    )
+                },
+                sample_time.then_some(|position: u64| {
+                    core::ptr::read_volatile(data.add((position % size) as usize).cast::<u64>())
+                }),
+            );
             // The records must be read before their space is released.
             fence(Ordering::SeqCst);
             core::ptr::write_volatile(addr_of_mut!((*page).data_tail), head);
-            samples
+            scan
         };
-        Some(samples)
+        if scan.newest_time.is_some() {
+            self.last_sample_time = scan.newest_time;
+        }
+        Some(scan.samples)
+    }
+
+    /// Whether the counter writes the time of each overflow into its sample
+    /// record (see [`Builder::sample_time`]).
+    #[cfg(test)]
+    pub(crate) fn records_sample_time(&self) -> bool {
+        self.sample_time
+    }
+
+    /// The `CLOCK_MONOTONIC` time, in nanoseconds, of the newest sample that
+    /// [`PerfCounter::take_sample_records`] has taken, or `None` if it has
+    /// taken none with a time. Only a counter built with
+    /// [`Builder::sample_time`] records times. The time is that of the
+    /// overflow interrupt, when the counter stopped counting, and not that of
+    /// the overflow itself.
+    pub(crate) fn last_sample_time(&self) -> Option<u64> {
+        self.last_sample_time
     }
 
     /// Whether a sample record buffer is mapped, so that
@@ -941,16 +995,43 @@ impl PerfCounter {
     }
 }
 
+/// What [`scan_sample_records`] found.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct SampleScan {
+    /// The `PERF_RECORD_SAMPLE` records.
+    samples: u64,
+    /// The time of the last sample record that holds one.
+    newest_time: Option<u64>,
+}
+
 /// Count the `PERF_RECORD_SAMPLE` records from `tail` to `head` of a ring
 /// buffer, where `read_header` reads the header of the record at a position.
+#[cfg(test)]
 fn count_sample_records(
     tail: u64,
     head: u64,
-    mut read_header: impl FnMut(u64) -> perf::perf_event_header,
+    read_header: impl FnMut(u64) -> perf::perf_event_header,
 ) -> u64 {
+    scan_sample_records(tail, head, read_header, None::<fn(u64) -> u64>).samples
+}
+
+/// Count the `PERF_RECORD_SAMPLE` records from `tail` to `head` of a ring
+/// buffer, where `read_header` reads the header of the record at a position.
+/// If the samples hold times, `read_time` reads the `u64` at a position, and
+/// the time of the last sample is returned too. A sample's time follows its
+/// header when `PERF_SAMPLE_TIME` is the only sample type, as
+/// [`Builder::sample_time`] sets.
+fn scan_sample_records(
+    tail: u64,
+    head: u64,
+    mut read_header: impl FnMut(u64) -> perf::perf_event_header,
+    mut read_time: Option<impl FnMut(u64) -> u64>,
+) -> SampleScan {
     let header_size = core::mem::size_of::<perf::perf_event_header>() as u64;
+    let time_size = core::mem::size_of::<u64>() as u64;
     let mut position = tail;
     let mut samples = 0;
+    let mut newest_time = None;
     while head.wrapping_sub(position) >= header_size {
         let header = read_header(position);
         let record_size = u64::from(header.size);
@@ -963,10 +1044,18 @@ fn count_sample_records(
         }
         if header.type_ == perf::PERF_RECORD_SAMPLE {
             samples += 1;
+            if let Some(read_time) = read_time.as_mut()
+                && record_size >= header_size + time_size
+            {
+                newest_time = Some(read_time(position.wrapping_add(header_size)));
+            }
         }
         position = position.wrapping_add(record_size);
     }
-    samples
+    SampleScan {
+        samples,
+        newest_time,
+    }
 }
 
 /// Execute the `rdpmc` instruction to read hardware performance counter number
@@ -1364,6 +1453,8 @@ pub(crate) mod terminal_close_tests {
             records: None,
             raw_syscall: Some(raw_syscall),
             programmings: std::sync::atomic::AtomicU64::new(0),
+            sample_time: false,
+            last_sample_time: None,
         }
     }
 
