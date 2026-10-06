@@ -25,6 +25,7 @@ pub mod event;
 #[cfg(feature = "coordinator-rpc")]
 pub mod host;
 pub mod instruction;
+pub mod protect;
 #[cfg(feature = "coordinator-rpc")]
 pub mod rpc;
 pub mod signal;
