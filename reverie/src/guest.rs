@@ -351,6 +351,15 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         None
     }
 
+    /// The process signal control mode installed for this run: what
+    /// [`GlobalTool::install_backend_signal_control`] returned when the
+    /// backend offered its control. The answer is fixed before the first
+    /// guest hook and is the same for every task of the run. A backend that
+    /// offers no control answers `Unchanged`.
+    fn signal_control_mode(&self) -> crate::BackendSignalControlMode {
+        crate::BackendSignalControlMode::Unchanged
+    }
+
     /// Current parked-observation capability, bound to this exact callback.
     fn parked_signal_site(&self) -> Option<crate::CallbackSignalSite> {
         None
@@ -720,6 +729,9 @@ where
 
     fn signal_task_identity(&self) -> Option<crate::SignalTaskIdentity> {
         self.inner.signal_task_identity()
+    }
+    fn signal_control_mode(&self) -> crate::BackendSignalControlMode {
+        self.inner.signal_control_mode()
     }
     fn parked_signal_site(&self) -> Option<crate::CallbackSignalSite> {
         self.inner.parked_signal_site()

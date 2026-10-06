@@ -422,3 +422,145 @@ fn default_tool_handler_tail_injects_through_executor() {
         Some((libc::SYS_write as u64, b"hello".to_vec()))
     );
 }
+
+/// How many GlobalStates the dequeue-observation fixtures initialized.
+static OBSERVING_GLOBALS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many times those GlobalStates were asked to install signal control.
+static OBSERVING_INSTALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// The fixtures' Config.
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+struct ObservingConfig {
+    /// Tool::may_observe_signal_dequeues.
+    may_observe: bool,
+    /// Tool::requires_signal_control.
+    requires_control: bool,
+    /// Installation answers ToolControlled rather than Unchanged.
+    claim_control: bool,
+}
+
+#[derive(Default)]
+struct ObservingGlobal {
+    claim_control: bool,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for ObservingGlobal {
+    type Request = ();
+    type Response = ();
+    type Config = ObservingConfig;
+
+    async fn init_global_state(config: &ObservingConfig) -> Self {
+        OBSERVING_GLOBALS.fetch_add(1, Ordering::SeqCst);
+        Self {
+            claim_control: config.claim_control,
+        }
+    }
+
+    fn install_backend_signal_control(
+        &self,
+        control: Option<reverie::BackendSignalControl>,
+    ) -> Result<reverie::BackendSignalControlMode, reverie::Error> {
+        assert!(control.is_none(), "the non-ELF loop offers no control");
+        OBSERVING_INSTALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(if self.claim_control {
+            reverie::BackendSignalControlMode::ToolControlled
+        } else {
+            reverie::BackendSignalControlMode::Unchanged
+        })
+    }
+
+    async fn receive_rpc(&self, _from: Pid, _request: ()) {}
+}
+
+#[derive(Default)]
+struct ObservingTool;
+
+#[reverie::tool]
+impl Tool for ObservingTool {
+    type GlobalState = ObservingGlobal;
+    type ThreadState = ();
+
+    fn may_observe_signal_dequeues(config: &ObservingConfig) -> bool {
+        config.may_observe
+    }
+
+    fn requires_signal_control(config: &ObservingConfig) -> bool {
+        config.requires_control
+    }
+}
+
+/// The run's result, and how many GlobalStates it initialized and asked to
+/// install signal control.
+fn run_observing_tool(config: ObservingConfig) -> (Result<(), reverie_kvm::Error>, usize, usize) {
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_syscall(
+            ENTRY_POINT,
+            FRAME_ADDRESS,
+            SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]),
+        )
+        .unwrap();
+    let globals = OBSERVING_GLOBALS.load(Ordering::SeqCst);
+    let installs = OBSERVING_INSTALLS.load(Ordering::SeqCst);
+    let result = futures::executor::block_on(backend.run_with_tool::<ObservingTool, _>(
+        config,
+        |_: &SyscallRequest, _: &reverie_kvm::GuestMemory| 7,
+    ))
+    .map(|_| ());
+    (
+        result,
+        OBSERVING_GLOBALS.load(Ordering::SeqCst) - globals,
+        OBSERVING_INSTALLS.load(Ordering::SeqCst) - installs,
+    )
+}
+
+fn refused_with(result: &Result<(), reverie_kvm::Error>, errno: reverie::syscalls::Errno) -> bool {
+    matches!(
+        result,
+        Err(reverie_kvm::Error::Reverie(reverie::Error::Errno(actual))) if *actual == errno
+    )
+}
+
+#[test]
+fn non_elf_loop_runs_observers_and_refuses_required_or_unoffered_control() {
+    if !kvm_available("non_elf_loop_runs_observers_and_refuses_required_or_unoffered_control") {
+        return;
+    }
+    let config = |may_observe, requires_control, claim_control| ObservingConfig {
+        may_observe,
+        requires_control,
+        claim_control,
+    };
+    // The fixtures share counters, so one test runs every case in order.
+    // A Tool whose run requires process signal control, which this loop
+    // cannot offer, is refused once its GlobalState exists, so its startup
+    // record is kept, and before it is asked to install a control. Admitting
+    // observation as well does not change that.
+    for may_observe in [false, true] {
+        let (result, globals, installs) = run_observing_tool(config(may_observe, true, false));
+        assert!(
+            refused_with(&result, reverie::syscalls::Errno::ENOSYS),
+            "{result:?}"
+        );
+        assert_eq!(globals, 1, "the refusal follows GlobalState");
+        assert_eq!(installs, 0, "the refusal precedes installation");
+    }
+
+    // Claiming control that was never offered is refused after installation.
+    let (result, globals, installs) = run_observing_tool(config(false, false, true));
+    assert!(
+        refused_with(&result, reverie::syscalls::Errno::EINVAL),
+        "{result:?}"
+    );
+    assert_eq!((globals, installs), (1, 1));
+
+    // A Tool that only admits dequeue observation, or neither observes nor
+    // claims control, runs to completion as it did before the bound existed.
+    for may_observe in [true, false] {
+        let (result, globals, installs) = run_observing_tool(config(may_observe, false, false));
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!((globals, installs), (1, 1));
+    }
+}

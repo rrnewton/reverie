@@ -80,7 +80,7 @@ struct ParkedRetirementTool;
 impl Tool for ParkedRetirementTool {
     type GlobalState = RetirementGlobal;
     type ThreadState = ();
-    fn observe_signal_dequeues(_: &u8) -> bool {
+    fn may_observe_signal_dequeues(_: &u8) -> bool {
         true
     }
     async fn handle_syscall_event<G: Guest<Self>>(
@@ -89,6 +89,11 @@ impl Tool for ParkedRetirementTool {
         call: Syscall,
     ) -> Result<i64, reverie::Error> {
         if call.number() == Sysno::getpid && call.into_parts().1.arg0 == 0x72657469 {
+            // The Guest reports the mode this run's GlobalState installed.
+            assert_eq!(
+                guest.signal_control_mode(),
+                reverie::BackendSignalControlMode::ToolControlled
+            );
             let site = guest
                 .parked_signal_site()
                 .expect("real original syscall callback");

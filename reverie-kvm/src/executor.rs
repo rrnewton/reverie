@@ -6214,6 +6214,15 @@ impl ElfExecutor {
         self.signal_registry.controlled()
     }
 
+    /// The mode installed for this run, as the Tool returned it.
+    pub(crate) fn signal_control_mode(&self) -> reverie::BackendSignalControlMode {
+        if self.signal_controlled() {
+            reverie::BackendSignalControlMode::ToolControlled
+        } else {
+            reverie::BackendSignalControlMode::Unchanged
+        }
+    }
+
     pub(crate) fn delivery_permit(&self) -> Option<reverie::SignalDeliveryPermit> {
         self.signal_registry.permit(self.admitted_signal_identity())
     }

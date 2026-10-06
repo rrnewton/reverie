@@ -6995,6 +6995,124 @@ fn static_elf_executes_syscall_and_exits() {
     assert_eq!(backend.run_static_elf().unwrap(), 0);
 }
 
+/// A Tool whose run requires process signal control. Its configuration says
+/// whether it takes the control the static-ELF runner offers.
+#[derive(Default)]
+struct RequiredControlGlobal {
+    take: bool,
+    installs: std::sync::atomic::AtomicUsize,
+    thread_starts: std::sync::atomic::AtomicUsize,
+    failures: Mutex<Vec<reverie::BackendFailure>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for RequiredControlGlobal {
+    type Request = ();
+    type Response = ();
+    type Config = bool;
+
+    async fn init_global_state(take: &bool) -> Self {
+        Self {
+            take: *take,
+            ..Self::default()
+        }
+    }
+
+    fn install_backend_signal_control(
+        &self,
+        control: Option<BackendSignalControl>,
+    ) -> Result<BackendSignalControlMode, reverie::Error> {
+        assert!(
+            control.is_some(),
+            "the static-ELF runner offers the control"
+        );
+        self.installs.fetch_add(1, Ordering::SeqCst);
+        Ok(if self.take {
+            BackendSignalControlMode::ToolControlled
+        } else {
+            BackendSignalControlMode::Unchanged
+        })
+    }
+
+    async fn receive_rpc(&self, _from: Pid, _: ()) {
+        self.thread_starts.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn report_backend_failure(&self, event: reverie::BackendFailure) {
+        self.failures.lock().unwrap().push(event);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RequiredControlTool;
+
+#[reverie::tool]
+impl Tool for RequiredControlTool {
+    type GlobalState = RequiredControlGlobal;
+    type ThreadState = ();
+
+    fn requires_signal_control(_: &bool) -> bool {
+        true
+    }
+
+    async fn handle_thread_start<T: Guest<Self>>(
+        &self,
+        guest: &mut T,
+    ) -> Result<(), reverie::Error> {
+        guest.send_rpc(()).await;
+        Ok(())
+    }
+}
+
+#[test]
+fn static_elf_refuses_a_required_signal_control_the_tool_declined() {
+    if !kvm_available("KVM required signal control test") {
+        return;
+    }
+    // exit_group(0): the program itself cannot fail.
+    let code = [
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ];
+    for take in [false, true] {
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        backend
+            .install_static_elf(&static_elf(&code), "/bin/true")
+            .unwrap();
+        let completion = futures::executor::block_on(
+            backend.run_static_elf_with_tool_completion::<RequiredControlTool>(take, true),
+        )
+        .unwrap();
+        let global = completion.global_state;
+        assert_eq!(global.installs.load(Ordering::SeqCst), 1, "take={take}");
+        if take {
+            // Taking the offered control satisfies the requirement.
+            let (status, stdout, stderr) = completion.result.unwrap();
+            assert_eq!(status, 0);
+            assert!(stdout.is_empty() && stderr.is_empty());
+            assert_eq!(global.thread_starts.load(Ordering::SeqCst), 1);
+            assert!(global.failures.lock().unwrap().is_empty());
+            continue;
+        }
+        // Declining it is refused with EINVAL before the first thread starts,
+        // through the installation failure path, which publishes once.
+        let error = completion.result.unwrap_err();
+        assert!(
+            matches!(
+                error.primary(),
+                Error::Reverie(reverie::Error::Errno(errno)) if *errno == Errno::EINVAL
+            ),
+            "{error}"
+        );
+        assert_eq!(global.thread_starts.load(Ordering::SeqCst), 0);
+        let failures = global.failures.lock().unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].phase, "process signal control installation");
+    }
+}
+
 #[test]
 fn static_elf_host_futex_wait_observes_finite_timeout() {
     if !kvm_available("KVM host futex timeout test") {
@@ -21627,7 +21745,7 @@ mod pdeathsig {
         fn new(_: Pid, mode: &u8) -> Self {
             Self { mode: *mode }
         }
-        fn observe_signal_dequeues(_: &u8) -> bool {
+        fn may_observe_signal_dequeues(_: &u8) -> bool {
             true
         }
         async fn handle_signal_dequeue<G: Guest<Self>>(

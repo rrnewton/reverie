@@ -133,13 +133,36 @@ pub trait GlobalTool: Send + Sync + Default {
     }
 
     /// Install one run-scoped backend capability before the first guest hook.
-    /// The default preserves backend-owned selection. A Tool that requires
-    /// controlled process signals must reject missing capabilities here.
+    /// The default preserves backend-owned selection. A Tool may reject a
+    /// missing capability here. A Tool whose
+    /// [`Tool::requires_signal_control`] holds need not: reverie-kvm refuses
+    /// that run with `EINVAL` when it offered a control and this did not
+    /// return `ToolControlled`, and with `ENOSYS`, before asking, when it has
+    /// no control to offer.
+    ///
+    /// `ToolControlled` is valid only when `control` is `Some`: a backend
+    /// refuses a run whose Tool claims control of a capability it did not
+    /// receive.
     fn install_backend_signal_control(
         &self,
         _control: Option<crate::BackendSignalControl>,
     ) -> Result<crate::BackendSignalControlMode, Error> {
         Ok(crate::BackendSignalControlMode::Unchanged)
+    }
+
+    /// Whether this run observes signal dequeues through
+    /// [`Tool::handle_signal_dequeue`], given the mode that
+    /// [`Self::install_backend_signal_control`] returned.
+    ///
+    /// The backend asks only when [`Tool::may_observe_signal_dequeues`]
+    /// admitted observation for the run's configuration, and enables
+    /// observation only when both answers are `true`. It asks after
+    /// installation, once for each process it starts, so the answer must
+    /// depend only on `mode` and on state fixed before installation returned.
+    /// The default observes whenever the configuration admitted it, whatever
+    /// the mode.
+    fn observe_signal_dequeues(&self, _mode: crate::BackendSignalControlMode) -> bool {
+        true
     }
 
     /// Authorize the current real user-return boundary. The backend calls
@@ -635,12 +658,36 @@ pub trait Tool: Send + Sync + Default {
         Ok(Some(signal))
     }
 
-    /// Enables acknowledgment of real KVM pending removals before thread start.
+    /// Admits acknowledgment of real KVM pending removals before thread start.
     /// Other Tools retain their existing pending-state behavior by default.
-    /// The static-ELF runner requires effective [`ThreadOwnership::Tool`],
-    /// including caller overrides, and rejects an incompatible Host choice
-    /// before initializing GlobalState or consuming/executing the installed ELF.
-    fn observe_signal_dequeues(_config: &<Self::GlobalState as GlobalTool>::Config) -> bool {
+    ///
+    /// This is an upper bound known from configuration alone: a run observes
+    /// dequeues only when this returns `true` and, after installation,
+    /// [`GlobalTool::observe_signal_dequeues`] also returns `true` for the
+    /// installed mode. The bound exists for refusals that must precede
+    /// installation and any guest code. The static-ELF runner requires
+    /// effective [`ThreadOwnership::Tool`], including caller overrides, and
+    /// rejects an incompatible Host choice before initializing GlobalState or
+    /// consuming/executing the installed ELF. Admitting observation does not
+    /// require process signal control: see [`Tool::requires_signal_control`].
+    fn may_observe_signal_dequeues(_config: &<Self::GlobalState as GlobalTool>::Config) -> bool {
+        false
+    }
+
+    /// Whether this run cannot proceed without process signal control, known
+    /// from configuration alone.
+    ///
+    /// reverie-kvm's non-ELF loop, which has no process signal control to
+    /// offer, rejects a `true` answer with `ENOSYS` after initializing
+    /// GlobalState, so that state's startup records are kept, and before
+    /// asking it to install a control. reverie-kvm's runners that offer
+    /// control consult this after
+    /// [`GlobalTool::install_backend_signal_control`] returns: a `true` answer
+    /// with any mode other than `ToolControlled` is refused with `EINVAL`
+    /// before the first guest hook, through the same failure path as an
+    /// installation error. The default requires nothing, so a Tool that only
+    /// observes dequeues runs everywhere it ran before.
+    fn requires_signal_control(_config: &<Self::GlobalState as GlobalTool>::Config) -> bool {
         false
     }
 

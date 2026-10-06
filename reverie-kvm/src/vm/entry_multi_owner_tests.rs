@@ -418,7 +418,7 @@ mod entry_multi_owner_tests {
             subscriptions.syscall(Sysno::getpid);
             subscriptions
         }
-        fn observe_signal_dequeues(_: &()) -> bool {
+        fn may_observe_signal_dequeues(_: &()) -> bool {
             true
         }
         fn init_thread_state(&self, tid: Pid, parent: Option<(Pid, &Arc<u64>)>) -> Arc<u64> {

@@ -565,6 +565,25 @@ impl ProcessExecutionContext {
     }
 }
 
+/// Refuses, with `EINVAL`, a run whose Tool requires process signal control
+/// (see [`Tool::requires_signal_control`]) but did not take the control this
+/// backend offered it. Such a run would otherwise reach its first guest hook
+/// with the capability present and nothing controlling it, so the backend
+/// stops it before any Tool or thread is constructed. An installation error is
+/// returned unchanged, keeping its original cause.
+fn require_offered_signal_control<T: Tool>(
+    config: &<T::GlobalState as GlobalTool>::Config,
+    installed: std::result::Result<reverie::BackendSignalControlMode, reverie::Error>,
+) -> std::result::Result<reverie::BackendSignalControlMode, reverie::Error> {
+    let mode = installed?;
+    if T::requires_signal_control(config)
+        && mode != reverie::BackendSignalControlMode::ToolControlled
+    {
+        return Err(Errno::EINVAL.into());
+    }
+    Ok(mode)
+}
+
 fn injection_is_explicit_exit(request: &SyscallRequest) -> bool {
     matches!(
         request.number() as libc::c_long,
@@ -1423,6 +1442,15 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
 
     fn signal_task_identity(&self) -> Option<reverie::SignalTaskIdentity> {
         self.executor.signal_task_identity()
+    }
+    fn signal_control_mode(&self) -> reverie::BackendSignalControlMode {
+        // The run's shared signal registry records the installed mode. Only
+        // the static-ELF executor can hold a ToolControlled installation.
+        if self.executor.signal_controlled() {
+            reverie::BackendSignalControlMode::ToolControlled
+        } else {
+            reverie::BackendSignalControlMode::Unchanged
+        }
     }
     fn parked_signal_site(&self) -> Option<reverie::CallbackSignalSite> {
         if self.notifying_dequeue || self.stack_checked_out.load(Ordering::Acquire) {
@@ -4208,9 +4236,22 @@ impl KvmBackend {
         let tool_stack_top = self.tool_stack_top();
         let pid = Pid::from_raw(self.root_pid);
         let global_state = T::GlobalState::init_global_state(&config).await;
-        global_state
+        if T::requires_signal_control(&config) {
+            // This loop has no process signal control to offer, so it cannot
+            // serve a Tool whose run requires it. Refuse before the Tool is
+            // asked about control or any guest code runs. The global state
+            // already exists, as it did when the Tool itself refused the
+            // missing control here, so whatever it records at startup is kept.
+            // A Tool that only admits dequeue observation runs as before.
+            return Err(Error::Reverie(Errno::ENOSYS.into()));
+        }
+        let mode = global_state
             .install_backend_signal_control(None)
             .map_err(Error::Reverie)?;
+        if mode == reverie::BackendSignalControlMode::ToolControlled {
+            // A Tool cannot control a capability this loop never offered.
+            return Err(Error::Reverie(Errno::EINVAL.into()));
+        }
         let entry_scope = self.start_entry_driver();
         let tool = Arc::new(T::new(pid, &config));
         let subscriptions = T::subscriptions(&config);
@@ -4565,7 +4606,7 @@ impl KvmBackend {
         // `Tool::thread_ownership` (default: Tool-owned "follow children"). This
         // is why the KVM backend no longer needs the caller to opt threads in.
         self.resolve_thread_ownership(T::thread_ownership(&config));
-        if T::observe_signal_dequeues(&config) && self.thread_ownership.executes_on_host() {
+        if T::may_observe_signal_dequeues(&config) && self.thread_ownership.executes_on_host() {
             // This combination is known before GlobalState initialization or
             // consuming the installed image. An uninstrumented worker has no
             // removing Guest on which to acknowledge its pending-state effects.
@@ -4591,9 +4632,12 @@ impl KvmBackend {
         let executor = ElfExecutor::with_output(loaded, capture_owner.clone());
         // Atomic run-level installation precedes Tool/thread construction and
         // the first handle_thread_start. No capability is inferred from a PID.
-        let mode = match global_state
-            .install_backend_signal_control(Some(executor.backend_signal_control()))
-        {
+        // A Tool that requires the control and declines it is refused here,
+        // through the same failure path as an installation error.
+        let mode = match require_offered_signal_control::<T>(
+            &config,
+            global_state.install_backend_signal_control(Some(executor.backend_signal_control())),
+        ) {
             Ok(mode) => mode,
             Err(error) => {
                 let context = FailureContext::new(failure.clone(), pid, pid);
@@ -5018,7 +5062,12 @@ impl KvmBackend {
             self.set_tool_failure(Some(failure.for_thread(tid)));
         }
         executor.observe_ignored_signals_with_tool();
-        if T::observe_signal_dequeues(config) {
+        // The configuration bound admits observation; the mode installed for
+        // the run, shared by every process through its signal registry,
+        // decides it.
+        if T::may_observe_signal_dequeues(config)
+            && global_state.observe_signal_dequeues(executor.signal_control_mode())
+        {
             executor.enable_signal_dequeues();
         }
         let tool_stack_top = self.tool_stack_top();

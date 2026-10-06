@@ -47,7 +47,7 @@ impl Tool for CaptureTool {
     fn new(_: Pid, mode: &u8) -> Self {
         Self { mode: *mode }
     }
-    fn observe_signal_dequeues(_: &u8) -> bool {
+    fn may_observe_signal_dequeues(_: &u8) -> bool {
         true
     }
     fn subscriptions(_: &u8) -> Subscription {

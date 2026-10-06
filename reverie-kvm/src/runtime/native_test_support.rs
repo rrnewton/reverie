@@ -86,6 +86,12 @@ impl<T: Tool> GuestSyscallExecutor<T> for NoInstructions<'_> {
     fn signal_task_identity(&self) -> Option<reverie::SignalTaskIdentity> {
         self.executor.signal_task_identity()
     }
+    // Native callbacks answer Guest::signal_control_mode from the same shared
+    // registry the production adapter reads, so they cannot disagree with the
+    // mode the root owner installed.
+    fn signal_controlled(&self) -> bool {
+        self.executor.signal_controlled()
+    }
     fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
         Some(self.failure.run.subscribe())
     }
@@ -232,9 +238,13 @@ where
         // Like the installed-ELF path, install once for the run before its
         // first callback. fork_child shares this registry and does not reinstall.
         // The caller has already constructed Tool/thread state in this native API.
-        let mode = match owner.global.install_backend_signal_control(Some(
-            owner.executor.as_ref().unwrap().backend_signal_control(),
-        )) {
+        // As there, a Tool that requires the control and declines it is refused.
+        let mode = match super::require_offered_signal_control::<T>(
+            &owner.config,
+            owner.global.install_backend_signal_control(Some(
+                owner.executor.as_ref().unwrap().backend_signal_control(),
+            )),
+        ) {
             Ok(mode) => mode,
             Err(error) => {
                 let error = owner
