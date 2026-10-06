@@ -132,20 +132,20 @@ pub(crate) use reverie_inguest::guest::clock::initialize_rcb_clock;
 pub(crate) use reverie_inguest::guest::clock::leave_rcb_handler;
 pub(crate) use reverie_inguest::guest::clock::read_guest_rcb_clock;
 pub(crate) use reverie_inguest::guest::event::InstructionEventKind;
+use reverie_inguest::guest::instruction::FaultSite;
+use reverie_inguest::guest::instruction::InstructionFaultSeam;
 pub(crate) use reverie_inguest::guest::instruction::InstructionSubscriptions;
+use reverie_inguest::guest::instruction::PatchOutcome;
 use reverie_inguest::guest::instruction::any_instruction_subscribed;
 pub(crate) use reverie_inguest::guest::instruction::cpuid_interception_enabled;
 use reverie_inguest::guest::instruction::decode_instruction;
 use reverie_inguest::guest::instruction::deliver_default_sigsegv;
-use reverie_inguest::guest::instruction::emulate_through_continuation;
 use reverie_inguest::guest::instruction::enable_instruction_faulting;
 use reverie_inguest::guest::instruction::execute_native_instruction;
-use reverie_inguest::guest::instruction::execute_nested_fault_natively;
-use reverie_inguest::guest::instruction::instruction_is_subscribed;
+use reverie_inguest::guest::instruction::install_instruction_signal_handler;
 pub(crate) use reverie_inguest::guest::instruction::preflight_instruction_faulting;
 use reverie_inguest::guest::instruction::set_all_instruction_native;
 use reverie_inguest::guest::instruction::set_instruction_native;
-use reverie_inguest::guest::instruction::set_instruction_subscriptions;
 use reverie_inguest::guest::support::IN_GUEST_STAGE_WRITE_FAILURE_STATUS;
 use reverie_inguest::guest::support::KernelSigaction;
 pub(crate) use reverie_inguest::guest::support::SignalInstallGuard;
@@ -153,7 +153,6 @@ pub(crate) use reverie_inguest::guest::support::StackLine;
 pub(crate) use reverie_inguest::guest::support::ToolCallbackGuard;
 pub(crate) use reverie_inguest::guest::support::emit_in_guest_stage;
 pub(crate) use reverie_inguest::guest::support::exit_now;
-pub(crate) use reverie_inguest::guest::support::mapping_name_at;
 pub(crate) use reverie_inguest::guest::support::read_own_bytes;
 pub(crate) use reverie_inguest::guest::support::scan_own_maps;
 pub(crate) use reverie_inguest::guest::support::tool_callback_active;
@@ -530,26 +529,6 @@ pub(crate) fn reserved_signal_mask() -> u64 {
     reserved
 }
 
-fn install_instruction_signal_handler(
-    subscriptions: InstructionSubscriptions,
-    on_alt_stack: bool,
-) -> io::Result<()> {
-    if !set_instruction_subscriptions(subscriptions) {
-        return Ok(());
-    }
-
-    let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
-    action.sa_flags = libc::SA_SIGINFO | if on_alt_stack { libc::SA_ONSTACK } else { 0 };
-    action.sa_sigaction = instruction_sigsegv_handler as *const () as usize;
-    if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if unsafe { libc::sigaction(libc::SIGSEGV, &action, ptr::null_mut()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
 pub(crate) fn initialize_from_environment() -> io::Result<()> {
     let tool_value = std::env::var_os("REVERIE_LITEINST_TOOL");
     // Prefer a shared reverie-inguest built-in when the selector names one, so a
@@ -656,7 +635,17 @@ fn install_runtime(
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-254): Review launcher-selected RuntimeConfig at the install seam.
     let config = runtime_config_from_env()?;
-    install_instruction_signal_handler(instructions, config.use_alt_stack)?;
+    // SAFETY: LiteInst's seam functions are the code this runtime's own
+    // SIGSEGV handler ran before the handler moved to reverie-inguest: they
+    // read the arenas and site table recorded at startup and patch a claimed
+    // site, with raw syscalls and no allocation.
+    unsafe {
+        install_instruction_signal_handler(
+            &INSTRUCTION_FAULT_SEAM,
+            instructions,
+            config.use_alt_stack,
+        )
+    }?;
     unsafe {
         reverie_inguest::install(
             Box::new(LiteinstDispatcher::new(stats, publication)),
@@ -2104,70 +2093,56 @@ fn instruction_callback(kind: InstructionEventKind) -> liteinst2::trampoline::Ho
     }
 }
 
-unsafe extern "C" fn instruction_sigsegv_handler(
-    signal: libc::c_int,
-    info: *mut libc::siginfo_t,
-    context: *mut libc::c_void,
-) {
-    if signal != libc::SIGSEGV || context.is_null() {
-        emit_in_guest_stage(b"instruction-sigsegv-invalid-context");
-        unsafe { deliver_default_sigsegv() };
+// LiteInst's half of the shared instruction fault handler
+// (reverie_inguest::guest::instruction): where the fault lies relative to the
+// arenas recorded at startup.
+unsafe fn locate_instruction_fault(
+    address: u64,
+    info: *const libc::siginfo_t,
+    context: *const libc::ucontext_t,
+) -> FaultSite {
+    if let Some((kind, encoding)) = instruction_at(address) {
+        return FaultSite::Patchable { kind, encoding };
     }
-    // Keep the raw kernel pointer: the fallback continuation borrows the same
-    // frame through `SignalFrame`, which must not alias a live reference.
-    let raw_context = context;
-    let address = unsafe {
-        (*raw_context.cast::<libc::ucontext_t>()).uc_mcontext.gregs[libc::REG_RIP as usize]
-    } as u64;
-    let Some((kind, expected)) = instruction_at(address) else {
-        if let Some(arena) = arena_for(address) {
-            let context = unsafe { &*raw_context.cast::<libc::ucontext_t>() };
-            let available = usize::try_from(arena.mapping_end.saturating_sub(address))
-                .unwrap_or(0)
-                .min(8);
-            let bytes =
-                unsafe { core::slice::from_raw_parts(address as usize as *const u8, available) };
-            let fault_address = if info.is_null() {
-                0
-            } else {
-                unsafe { (*info).si_addr() as usize as u64 }
-            };
-            emit_instruction_refusal_stage(
-                b"instruction-sigsegv-unrecognized-bytes",
-                address.saturating_sub(arena.mapping_start),
-                fault_address,
-                context.uc_mcontext.gregs[libc::REG_RSP as usize] as u64,
-                arena.mapping_name.as_bytes(),
-                arena.mapping_end.saturating_sub(arena.mapping_start),
-                bytes,
-            );
-            unsafe { deliver_default_sigsegv() };
-        }
-        // Code mapped after the runtime started (a dlopen'd library's
-        // constructor, JIT output) has no arena and can never be patched.
-        unsafe { emulate_unpatchable_instruction(info, raw_context, address) };
-        return;
-    };
-    if !instruction_is_subscribed(kind) {
-        emit_in_guest_stage(b"instruction-sigsegv-unsubscribed");
-        unsafe { deliver_default_sigsegv() };
+    if let Some(arena) = arena_for(address) {
+        let context = unsafe { &*context };
+        let available = usize::try_from(arena.mapping_end.saturating_sub(address))
+            .unwrap_or(0)
+            .min(8);
+        let bytes =
+            unsafe { core::slice::from_raw_parts(address as usize as *const u8, available) };
+        let fault_address = if info.is_null() {
+            0
+        } else {
+            unsafe { (*info).si_addr() as usize as u64 }
+        };
+        emit_instruction_refusal_stage(
+            b"instruction-sigsegv-unrecognized-bytes",
+            address.saturating_sub(arena.mapping_start),
+            fault_address,
+            context.uc_mcontext.gregs[libc::REG_RSP as usize] as u64,
+            arena.mapping_name.as_bytes(),
+            arena.mapping_end.saturating_sub(arena.mapping_start),
+            bytes,
+        );
+        return FaultSite::Refused;
     }
+    // Code mapped after the runtime started (a dlopen'd library's
+    // constructor, JIT output) has no arena and can never be patched.
+    FaultSite::Unpatchable
+}
 
-    // An unpatched instruction reached from an active Tool callback must not
-    // allocate a trampoline. After fork, the arena cursor is process-private
-    // but its backing pages are shared; child publication would let the parent
-    // reuse and overwrite the same slot. Execute at the private native helper
-    // and advance the faulting context instead.
-    if tool_callback_active() {
-        let context = unsafe { &mut *raw_context.cast::<libc::ucontext_t>() };
-        unsafe { execute_nested_fault_natively(kind, context, expected.len()) };
-        return;
-    }
-
+// The other half of LiteInst's seam: patch a subscribed instruction's site so
+// it and every later execution jump to its hook. Runs in the SIGSEGV handler,
+// outside any Tool callback.
+unsafe fn patch_instruction_fault(
+    address: u64,
+    kind: InstructionEventKind,
+    encoding: &'static [u8],
+) -> PatchOutcome {
     let Some((site, claimed)) = claim_site(address) else {
         emit_in_guest_stage(b"instruction-sigsegv-site-table-full");
-        unsafe { emulate_through_continuation(info, raw_context, address, kind) };
-        return;
+        return PatchOutcome::Emulate;
     };
     site.trap_count.fetch_add(1, Ordering::Relaxed);
     if unsafe { set_all_instruction_native(true) }.is_err() {
@@ -2181,7 +2156,7 @@ unsafe extern "C" fn instruction_sigsegv_handler(
                 site,
                 instruction_callback(kind),
                 patch_publication(),
-                expected,
+                encoding,
                 true,
                 EntryProof::NotListed,
             )
@@ -2212,10 +2187,7 @@ unsafe extern "C" fn instruction_sigsegv_handler(
         // code after it are the original bytes. Emulate it through the
         // continuation, as for code without an arena; every later execution
         // of this site traps and takes the same path.
-        SITE_UNPATCHABLE => {
-            unsafe { emulate_through_continuation(info, raw_context, address, kind) };
-            return;
-        }
+        SITE_UNPATCHABLE => return PatchOutcome::Emulate,
         _ => {
             // A failed installation may already have published part or all
             // of the jump (for example, when restoring the page's
@@ -2224,58 +2196,21 @@ unsafe extern "C" fn instruction_sigsegv_handler(
             // code. Resuming past the instruction could execute the jump's
             // displacement; end the guest.
             emit_in_guest_stage(b"instruction-sigsegv-site-install-failed");
-            unsafe { deliver_default_sigsegv() };
+            return PatchOutcome::Failed;
         }
     }
     let hook = site.hook.load(Ordering::Acquire);
     if hook.is_null() {
         emit_in_guest_stage(b"instruction-sigsegv-hook-missing");
-        unsafe { deliver_default_sigsegv() };
+        return PatchOutcome::Failed;
     }
-    let context = unsafe { &mut *raw_context.cast::<libc::ucontext_t>() };
-    context.uc_mcontext.gregs[libc::REG_RIP as usize] =
-        unsafe { (*hook).trampoline().address() } as i64;
+    PatchOutcome::Resume(unsafe { (*hook).trampoline().address() })
 }
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(liteinst-late-code-cpuid): Review emulation of instructions outside every arena.
-/// Handle an instruction fault at `address`, which lies outside every arena
-/// recorded at startup, so no hook can ever be published there.
-///
-/// Only a kernel-raised fault (`SI_KERNEL`, the #GP of CPUID faulting or
-/// `PR_TSC_SIGSEGV`) whose bytes, read without risking a nested fault, are
-/// exactly CPUID, RDTSC, or RDTSCP is emulated. Everything else keeps the
-/// default `SIGSEGV` the guest would have received without the runtime.
-unsafe fn emulate_unpatchable_instruction(
-    info: *const libc::siginfo_t,
-    raw_context: *mut libc::c_void,
-    address: u64,
-) {
-    let mut bytes = [0_u8; 8];
-    let available = unsafe { read_own_bytes(address, &mut bytes) };
-    let kernel_fault = !info.is_null() && unsafe { (*info).si_code } == libc::SI_KERNEL;
-    let decoded = kernel_fault
-        .then(|| decode_instruction(&bytes[..available]))
-        .flatten();
-    let Some((kind, expected)) = decoded else {
-        emit_unarenaed_refusal_stage(
-            b"instruction-sigsegv-no-reachable-arena",
-            address,
-            &bytes[..available],
-        );
-        unsafe { deliver_default_sigsegv() };
-    };
-    if !instruction_is_subscribed(kind) {
-        emit_in_guest_stage(b"instruction-sigsegv-unsubscribed");
-        unsafe { deliver_default_sigsegv() };
-    }
-    if tool_callback_active() {
-        let context = unsafe { &mut *raw_context.cast::<libc::ucontext_t>() };
-        unsafe { execute_nested_fault_natively(kind, context, expected.len()) };
-        return;
-    }
-    unsafe { emulate_through_continuation(info, raw_context, address, kind) };
-}
+static INSTRUCTION_FAULT_SEAM: InstructionFaultSeam = InstructionFaultSeam {
+    locate: locate_instruction_fault,
+    patch: patch_instruction_fault,
+};
 
 unsafe fn installed_instruction_hook(context: *mut HookContext, kind: InstructionEventKind) {
     if let Some(context) = unsafe { context.as_ref() }
@@ -3414,58 +3349,6 @@ unsafe fn trace_event(event: &SyscallEvent, result: Option<i64>) {
                 ],
             )
         };
-    }
-}
-
-/// Emit the refusal of a fault outside every arena with its absolute RIP, the
-/// `/proc/self/maps` path of the mapping containing it (`[anon]` when the
-/// mapping has none, `[unmapped]` when no mapping contains it), and the bytes
-/// that could be read there. Allocation-free and signal-safe; it reads the
-/// maps file only when the stage stream is enabled.
-fn emit_unarenaed_refusal_stage(stage: &[u8], address: u64, bytes: &[u8]) {
-    if !reverie_inguest::guest::support::stage_stream_enabled() {
-        return;
-    }
-    let mut name = [0_u8; 256];
-    let name = match unsafe { mapping_name_at(address, &mut name) } {
-        Some(0) => b"[anon]".as_slice(),
-        Some(len) => &name[..len],
-        None => b"[unmapped]".as_slice(),
-    };
-    let mut line = StackLine::new();
-    line.push_bytes(b"INFO reverie_liteinst::tool_host: [in-guest pid=");
-    line.push_signed(unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) });
-    line.push_bytes(b" tid=");
-    line.push_signed(unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) });
-    line.push_bytes(b"] stage=");
-    line.push_bytes(stage);
-    line.push_bytes(b" rip=0x");
-    line.push_hex(address);
-    line.push_bytes(b" bytes=");
-    for (index, byte) in bytes.iter().enumerate() {
-        if index != 0 {
-            line.push_bytes(b"-");
-        }
-        line.push_hex_byte(*byte);
-    }
-    line.push_bytes(b" map=");
-    line.push_bytes(name);
-    line.push_bytes(b"\n");
-    let written = unsafe {
-        raw_syscall6(
-            libc::SYS_write,
-            [
-                libc::STDERR_FILENO as u64,
-                line.as_bytes().as_ptr() as u64,
-                line.as_bytes().len() as u64,
-                0,
-                0,
-                0,
-            ],
-        )
-    };
-    if written != line.as_bytes().len() as i64 {
-        unsafe { exit_now(IN_GUEST_STAGE_WRITE_FAILURE_STATUS) };
     }
 }
 
