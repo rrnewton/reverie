@@ -331,11 +331,11 @@ fn getdents64_alias_failure_case_selected(
             &directory.0,
         )
         .unwrap();
-    // The loader maps the stack through guest_end(), while its strings and
-    // initial stack grow down from guest_end() - 4096. This fixture never
-    // writes the zero-filled top-page headroom. Probe one real mapped byte
-    // before arming, then require the same access/value after completion.
-    let memory_probe_address = backend.memory().unwrap().guest_end() - 1;
+    // The loader puts the stack at the top of the user address space, as Linux
+    // does: its strings end with an 8-byte NULL just below 0x7fff_ffff_f000,
+    // which this fixture never writes. Probe that mapped byte before arming,
+    // then require the same access/value after completion.
+    let memory_probe_address = 0x7fff_ffff_efff;
     let mut before_run_memory = [0xff];
     backend
         .memory()

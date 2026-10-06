@@ -157,7 +157,11 @@ fn install_counted_program(backend: &mut crate::KvmBackend, code: &[u8]) -> u64 
         )
         .unwrap();
     assert_eq!(backend.vcpu.get_sregs().unwrap().cs.dpl, 3);
-    let marker = backend.vcpu.get_regs().unwrap().rsp - 8;
+    // The guest names the marker at rsp - 8; the host reads it physically.
+    let marker = backend
+        .memory
+        .user_range_to_guest(backend.vcpu.get_regs().unwrap().rsp - 8, 1)
+        .unwrap();
     backend.memory.write_raw(marker, &[0]).unwrap();
     backend.vcpu.track_clock().unwrap();
     marker

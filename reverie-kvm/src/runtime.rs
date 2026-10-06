@@ -1723,18 +1723,20 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
             });
         }
 
-        // Stack: the live user stack spans [rsp, guest_end). The unused pages
-        // below rsp are deterministically zeroed at setup, so hashing the live
-        // region is both cheaper than the full 8 MiB mapping and deterministic
-        // across the two runs of a `--verify` pair (execution is deterministic,
-        // so rsp is identical at the same syscall stop).
-        let guest_end = self.memory.guest_end();
+        // Stack: the live user stack spans [rsp, USER_STACK_TOP), at the top of
+        // the user address space as on Linux. The unused pages below rsp are
+        // deterministically zeroed at setup, so hashing the live region is both
+        // cheaper than the full 8 MiB mapping and deterministic across the two
+        // runs of a `--verify` pair (execution is deterministic, so rsp is
+        // identical at the same syscall stop).
+        let stack_top = crate::memory::USER_STACK_TOP;
+        let stack_bottom = crate::memory::USER_ADDRESS_END - crate::elf::STACK_LIMIT;
         let rsp = self.registers.rsp;
-        if rsp >= self.memory.guest_base() && rsp < guest_end {
+        if (stack_bottom..stack_top).contains(&rsp) {
             regions.push(DetlogMemoryRegion {
                 kind: DetlogRegionKind::Stack,
                 start: rsp,
-                end: guest_end,
+                end: stack_top,
             });
         }
 

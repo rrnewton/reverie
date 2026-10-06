@@ -17394,9 +17394,11 @@ fn proc_self_cmdline_content(state: &LoadedStaticElf) -> Vec<u8> {
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Expose only the deterministic guest stack map.
 // TODO-HUMAN-REVIEW(PR-223): Review the minimal synthetic process map surface.
-fn proc_self_maps_content(state: &LoadedStaticElf) -> Vec<u8> {
-    let stack_start = state.mmap_limit;
-    let stack_end = stack_start.saturating_add(STACK_LIMIT);
+fn proc_self_maps_content(_state: &LoadedStaticElf) -> Vec<u8> {
+    // The ELF loader places the stack in the window at the top of the user
+    // address space, below Linux's TASK_SIZE.
+    let stack_start = crate::memory::USER_ADDRESS_END - STACK_LIMIT;
+    let stack_end = crate::memory::USER_STACK_TOP;
     format!("{stack_start:012x}-{stack_end:012x} rw-p 00000000 00:00 0 [stack]\n").into_bytes()
 }
 
@@ -18508,7 +18510,9 @@ fn arch_prctl(
     args: &[u64; 6],
 ) -> SyscallAction {
     match args[0] {
-        ARCH_SET_FS | ARCH_SET_GS if args[1] < memory.guest_end() => {
+        ARCH_SET_FS | ARCH_SET_GS
+            if args[1] < memory.guest_end() || range_is_valid(memory, args[1], 1) =>
+        {
             let (base, segment) = if args[0] == ARCH_SET_FS {
                 state.fs_base = args[1];
                 (state.fs_base, SegmentBase::Fs)
@@ -19136,6 +19140,10 @@ fn munmap(memory: &mut GuestMemory, address: u64, length: u64) -> i64 {
     let Ok(length) = usize::try_from(length) else {
         return negative_errno(libc::EINVAL);
     };
+    // The bookkeeping below is by physical address.
+    let Some(address) = memory.user_range_to_guest(address, length as u64) else {
+        return negative_errno(libc::EINVAL);
+    };
     match memory.zero_raw(address, length) {
         Ok(()) => match memory.unmap_user_range(address, length as u64) {
             Ok(()) => 0,
@@ -19171,6 +19179,9 @@ fn msync(memory: &GuestMemory, args: &[u64; 6]) -> crate::Result<i64> {
     let Ok(length) = usize::try_from(length) else {
         return Ok(negative_errno(libc::ENOMEM));
     };
+    let Some(address) = memory.user_range_to_guest(address, length as u64) else {
+        return Ok(negative_errno(libc::ENOMEM));
+    };
     memory.sync_shared_file_range(address, length, flags)
 }
 
@@ -19191,6 +19202,9 @@ fn munmap_shared_file(
         return Ok(negative_errno(libc::EINVAL));
     }
     let Ok(length) = usize::try_from(length) else {
+        return Ok(negative_errno(libc::EINVAL));
+    };
+    let Some(address) = memory.user_range_to_guest(address, length as u64) else {
         return Ok(negative_errno(libc::EINVAL));
     };
     memory.publish_private_range(
@@ -19225,7 +19239,11 @@ fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     let Some(length) = align_up(requested_length, PAGE_SIZE) else {
         return negative_errno(libc::ENOMEM);
     };
-    if !range_is_valid(memory, address, length) || !memory.user_range_is_mapped(address, length) {
+    // The bookkeeping below is by physical address.
+    let Some(address) = memory.user_range_to_guest(address, length) else {
+        return negative_errno(libc::ENOMEM);
+    };
+    if !memory.user_range_is_mapped(address, length) {
         return negative_errno(libc::ENOMEM);
     }
     if protection & libc::PROT_EXEC as u64 != 0
@@ -19271,7 +19289,7 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
         || !old_address.is_multiple_of(PAGE_SIZE)
         || flags & !allowed_flags != 0
         || flags & libc::MREMAP_FIXED as u64 != 0 && flags & libc::MREMAP_MAYMOVE as u64 == 0
-        || !range_is_valid(memory, old_address, old_length)
+        || !identity_range_is_valid(memory, old_address, old_length)
         || !memory.user_range_is_mapped(old_address, old_length)
     {
         return negative_errno(libc::EINVAL);
@@ -19410,6 +19428,9 @@ fn mincore(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     {
         return negative_errno(libc::EINVAL);
     }
+    let Some(address) = memory.user_range_to_guest(address, length) else {
+        return negative_errno(libc::EINVAL);
+    };
     if !memory.user_range_is_mapped(address, length) {
         return negative_errno(libc::ENOMEM);
     }
@@ -21371,11 +21392,17 @@ fn read_string_array(memory: &GuestMemory, address: u64) -> Result<Vec<String>, 
     Err(negative_errno(libc::E2BIG))
 }
 
+/// Whether `[address, address + length)` is one contiguous range of user
+/// addresses (mapped or not), including the stack window at the top of the
+/// user address space.
 fn range_is_valid(memory: &GuestMemory, address: u64, length: u64) -> bool {
-    address >= memory.guest_base()
-        && address
-            .checked_add(length)
-            .is_some_and(|end| end <= memory.guest_end())
+    memory.user_range_is_addressable(address, length)
+}
+
+/// Like [`range_is_valid`], for a syscall that names memory only by its
+/// physical address (mremap): the range must also be outside the stack window.
+fn identity_range_is_valid(memory: &GuestMemory, address: u64, length: u64) -> bool {
+    memory.user_range_to_guest(address, length) == Some(address)
 }
 
 fn align_up(value: u64, alignment: u64) -> Option<u64> {
