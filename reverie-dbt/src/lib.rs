@@ -112,11 +112,12 @@ pub type RuntimeIdler = unsafe extern "C" fn();
 /// An external runtime used with this native client must export
 /// `reverie_dbt_runtime_abi_version`, `reverie_dbt_runtime_callbacks_size`,
 /// `reverie_dbt_runtime_thread_created_v2`,
-/// `reverie_dbt_runtime_process_clone_result`, and
-/// `reverie_dbt_runtime_background_init_v2`. Advancing a consumer's Reverie
-/// revision without those matching exports is an incomplete cross-repository
-/// update and fails at link or at the pre-callback ABI check.
-pub const DBT_RUNTIME_ABI_VERSION: u32 = 4;
+/// `reverie_dbt_runtime_process_clone_result`,
+/// `reverie_dbt_runtime_background_init_v2`, and (from version 5)
+/// `reverie_dbt_runtime_rdtsc`. Advancing a consumer's Reverie revision without
+/// those matching exports is an incomplete cross-repository update and fails at
+/// link or at the pre-callback ABI check.
+pub const DBT_RUNTIME_ABI_VERSION: u32 = 5;
 
 #[cfg(feature = "prototype-runtime")]
 #[repr(C)]
@@ -164,6 +165,37 @@ pub struct DbtRuntimeCallbacks {
 #[unsafe(no_mangle)]
 pub extern "C" fn reverie_dbt_runtime_abi_version() -> u32 {
     DBT_RUNTIME_ABI_VERSION
+}
+
+/// Answers a guest `rdtsc` or `rdtscp` (ABI version 5): 1 with `tsc` and `aux`
+/// written when the runtime's tool answers it, 0 to leave it to the native
+/// client's fixed-stride counter, negative on failure.
+///
+/// The prototype tools observe syscalls and do not virtualize time, so this
+/// runtime leaves every read to the client, as before version 5. A runtime
+/// whose tool owns the guest's clock (Detcore, in hermit) answers here instead.
+///
+/// # Safety
+///
+/// Never dereferences its arguments.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_dbt_runtime_rdtsc(
+    _context: *mut c_void,
+    _counters: *mut PrototypeCounters,
+    _tid: i32,
+    _pid: i32,
+    _branches: u64,
+    _with_aux: i32,
+    _invoke_syscall: SyscallInvoker,
+    _read_registers: RegisterReader,
+    _write_registers: RegisterWriter,
+    _emit: tools::Emitter,
+    _tsc: *mut u64,
+    _aux: *mut u32,
+) -> i32 {
+    0
 }
 
 /// Reports the exact callback-structure size for the current ABI version.

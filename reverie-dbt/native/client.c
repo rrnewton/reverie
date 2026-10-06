@@ -224,7 +224,7 @@ static const cpuid_result_t extended_cpuid[] = {
 // exit, and app-level writes re-enter the syscall interception path.
 typedef void (*reverie_emit_fn_t)(const char* buf, size_t len);
 typedef void (*reverie_idle_fn_t)(void);
-#define REVERIE_DBT_RUNTIME_ABI_VERSION 4u
+#define REVERIE_DBT_RUNTIME_ABI_VERSION 5u
 // TODO-HUMAN-REVIEW(PR-162): Review the additive stdout-emit runtime callback
 // ABI.
 typedef struct {
@@ -345,6 +345,22 @@ extern int32_t reverie_dbt_runtime_pre_syscall(
     memory_reader_t read_memory,
     memory_writer_t write_memory,
     reverie_emit_fn_t emit);
+// Answers one rdtsc (with_aux == 0) or rdtscp: 1 with *tsc (and *aux) written
+// when the runtime's tool answers it, 0 when the runtime leaves it to the
+// client's fixed-stride counter, negative on failure (ABI version 5).
+extern int32_t reverie_dbt_runtime_rdtsc(
+    void* context,
+    prototype_counters_t* counters,
+    int32_t tid,
+    int32_t pid,
+    uint64_t branches,
+    int32_t with_aux,
+    syscall_invoker_t invoke_syscall,
+    register_reader_t read_registers,
+    register_writer_t write_registers,
+    reverie_emit_fn_t emit,
+    uint64_t* tsc,
+    uint32_t* aux);
 extern const char* reverie_dbt_runtime_name(void);
 extern uint8_t reverie_dbt_runtime_kind_code(void);
 extern void reverie_dbt_runtime_totals(
@@ -1463,12 +1479,71 @@ static uint64_t next_virtual_tsc(void) {
       VIRTUAL_TSC_STRIDE;
 }
 
-// Emulate rdtsc: return the 64-bit virtual TSC in EDX:EAX, leaving all other
+static int64_t
+invoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args);
+static int32_t read_registers(uintptr_t context, struct user_regs_struct* out);
+static int32_t write_registers(
+    uintptr_t context,
+    const struct user_regs_struct* in);
+
+static void ensure_runtime_background(void);
+// The TSC an rdtsc or rdtscp returns. A runtime whose tool answers it is asked
+// first: under Detcore that is Detcore's virtual clock, charged and logged as
+// under ptrace, so the guest's TSC names the same instant as its
+// clock_gettime. A runtime that leaves it to the client, and a copied child,
+// which runs no runtime (its clock syscalls are answered here too), get the
+// fixed-stride counter.
+static uint64_t guest_tsc(void* drcontext, bool with_aux, uint32_t* aux) {
+  *aux = 0;
+  if (!has_copied_runtime() ||
+      (runtime_uses_external_global() && !is_copied_vfork_process())) {
+    prototype_counters_t* counters = (prototype_counters_t*)drmgr_get_tls_field(
+        drcontext, thread_state_index);
+    uint64_t tsc = 0;
+    uint32_t runtime_aux = 0;
+    int32_t answered;
+    DR_ASSERT(counters != NULL);
+    // The loader reads the TSC before its first syscall, which is where a
+    // runtime owner otherwise starts the runtime; start it here the same way.
+    if (!has_copied_runtime())
+      ensure_runtime_background();
+    while (!reverie_dbt_runtime_ready(
+        atomic_load_explicit(&image_generation, memory_order_acquire)))
+      dr_sleep(1);
+    evidence_callback_enter();
+    answered = reverie_dbt_runtime_rdtsc(
+        drcontext,
+        counters,
+        (int32_t)dr_get_thread_id(drcontext),
+        (int32_t)dr_get_process_id(),
+        atomic_load_explicit(&branch_count, memory_order_relaxed),
+        with_aux ? 1 : 0,
+        invoke_syscall,
+        read_registers,
+        write_registers,
+        reverie_dbt_emit,
+        &tsc,
+        &runtime_aux);
+    evidence_callback_leave();
+    if (answered == 1) {
+      *aux = runtime_aux;
+      return tsc;
+    }
+    if (answered != 0) {
+      exit_runtime_tree(101);
+      return 0;
+    }
+  }
+  return next_virtual_tsc();
+}
+
+// Emulate rdtsc: return the 64-bit TSC in EDX:EAX, leaving all other
 // registers (notably ECX) untouched, exactly as the hardware rdtsc does.
 static void emulate_rdtsc(void) {
   void* drcontext = dr_get_current_drcontext();
   dr_mcontext_t registers = {sizeof(registers), DR_MC_INTEGER};
-  uint64_t tsc = next_virtual_tsc();
+  uint32_t aux;
+  uint64_t tsc = guest_tsc(drcontext, false, &aux);
 
   DR_ASSERT(dr_get_mcontext(drcontext, &registers));
   registers.xax = (reg_t)(tsc & UINT32_C(0xFFFFFFFF));
@@ -1476,18 +1551,19 @@ static void emulate_rdtsc(void) {
   DR_ASSERT(dr_set_mcontext(drcontext, &registers));
 }
 
-// Emulate rdtscp: like rdtsc, but also set ECX to the TSC_AUX value. A
-// deterministic run must report a stable processor id, so TSC_AUX is fixed at 0
-// (matching Detcore's `RdtscResult` aux handling for a single virtual CPU).
+// Emulate rdtscp: like rdtsc, but also set ECX to the TSC_AUX value: the
+// runtime's (Detcore's, for its single virtual CPU), or 0 with the
+// fixed-stride counter, so a deterministic run reports a stable processor id.
 static void emulate_rdtscp(void) {
   void* drcontext = dr_get_current_drcontext();
   dr_mcontext_t registers = {sizeof(registers), DR_MC_INTEGER};
-  uint64_t tsc = next_virtual_tsc();
+  uint32_t aux;
+  uint64_t tsc = guest_tsc(drcontext, true, &aux);
 
   DR_ASSERT(dr_get_mcontext(drcontext, &registers));
   registers.xax = (reg_t)(tsc & UINT32_C(0xFFFFFFFF));
   registers.xdx = (reg_t)((tsc >> 32) & UINT32_C(0xFFFFFFFF));
-  registers.xcx = 0;
+  registers.xcx = (reg_t)aux;
   DR_ASSERT(dr_set_mcontext(drcontext, &registers));
 }
 
