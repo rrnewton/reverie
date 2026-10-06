@@ -30,3 +30,4 @@ pub mod protect;
 pub mod rpc;
 pub mod signal;
 pub mod support;
+pub mod trap_dispatch;

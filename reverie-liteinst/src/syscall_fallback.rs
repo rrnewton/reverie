@@ -9,9 +9,6 @@ use std::sync::OnceLock;
 use liteinst2::trampoline::HookContext;
 use reverie_inguest::guest::context::RegisterContext;
 use reverie_inguest::guest::continuation;
-pub(crate) use reverie_inguest::guest::continuation::complete;
-pub(crate) use reverie_inguest::guest::continuation::enable_nested_runtime_access;
-pub(crate) use reverie_inguest::guest::continuation::prepare_signal;
 pub(crate) use reverie_inguest::guest::continuation::rebind_fork_child;
 use reverie_inguest::guest::event::InstructionEventKind;
 

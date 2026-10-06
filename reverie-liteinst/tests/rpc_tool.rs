@@ -888,6 +888,32 @@ fn late_code_instructions_reach_the_tool_through_the_continuation() {
     }
 }
 
+// With site patching off, a fork runs entirely on the fallback continuation,
+// and the child first reads its RCB clock while still on that continuation.
+// Binding the child's fresh PMU counter reads CPUID; that is the runtime's own
+// code and must run natively, not be emulated through the busy continuation
+// (which used to kill the child with SIGSEGV and leave the parent waiting).
+#[test]
+fn site_patching_off_fork_child_binds_its_clock_and_exits() {
+    for on_alt_stack in [true, false] {
+        let output = late_code_guest("nested-instruction-fork", &[], on_alt_stack, |command| {
+            command.env(reverie_liteinst::SITE_PATCHING_ENV, "0");
+        });
+        if instruction_control_refused(&output, "nested-instruction-fork trap-only") {
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "nested-cpuid=native nested-rdtsc=native nested-rdtscp=native guest-cpuid=tool guest-rdtsc=tool guest-rdtscp=tool child-getpid=complete child-exit=0\n",
+            "alt_stack={on_alt_stack}: {output:?}"
+        );
+    }
+}
+
 // The libcrypto shape: a dlopen'd library's constructor runs CPUID and RDTSC in
 // code the runtime never saw at startup.
 #[test]

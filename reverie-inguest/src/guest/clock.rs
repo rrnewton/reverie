@@ -87,7 +87,12 @@ fn rcb_clock() -> io::Result<Option<&'static reverie_ptrace::InGuestRcbCounter>>
     if RCB_CLOCK_OWNER.get() != owner {
         // A fork/clone child inherits the parent's TLS bytes, including an fd
         // that still measures the parent thread. Leak that inherited handle
-        // and bind a fresh PMU event to this calling thread.
+        // and bind a fresh PMU event to this calling thread. Binding is the
+        // runtime's own code, not the guest's: it reads CPUID (PMU discovery),
+        // which must run natively, as inside a Tool callback, rather than be
+        // emulated through the fallback continuation, which a fork child can
+        // still be running when it first gets here.
+        let _runtime_code = crate::guest::support::ToolCallbackGuard::enter();
         initialize_rcb_clock()?;
     }
     let current = RCB_CLOCK.get();
