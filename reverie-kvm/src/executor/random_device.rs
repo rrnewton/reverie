@@ -370,11 +370,23 @@ fn random_device_mmap(
     };
     let kind = flags & libc::MAP_TYPE;
     let fixed = flags & (libc::MAP_FIXED | libc::MAP_FIXED_NOREPLACE) != 0;
-    let address = if fixed {
-        args[0]
+    // `address` is the user address; `physical` names its memory, for the
+    // bookkeeping checks below.
+    let (address, physical) = if fixed {
+        (args[0], memory.user_range_to_guest(args[0], length))
     } else {
-        match find_mmap_address(memory, state, length) {
-            Some(address) => address,
+        match crate::executor::place_mapping(
+            memory,
+            state,
+            length,
+            args[0],
+            crate::executor::MappingKind::Other,
+            flags & libc::MAP_32BIT != 0,
+        ) {
+            Some(physical) => (
+                memory.physical_to_user(physical).unwrap_or(physical),
+                Some(physical),
+            ),
             None => return negative_errno(libc::ENOMEM),
         }
     };
@@ -390,11 +402,13 @@ fn random_device_mmap(
     if fixed && !address.is_multiple_of(PAGE_SIZE) {
         return negative_errno(libc::EINVAL);
     }
-    if address < BOOT_RESERVED_END || end > state.mmap_limit {
+    let Some(physical) = physical.filter(|physical| {
+        *physical >= BOOT_RESERVED_END && physical + length <= state.mmap_limit
+    }) else {
         return negative_errno(libc::ENOMEM);
-    }
+    };
     if flags & libc::MAP_FIXED_NOREPLACE != 0
-        && (address..address + length)
+        && (physical..physical + length)
             .step_by(PAGE_SIZE as usize)
             .any(|page| memory.user_range_is_mapped(page, PAGE_SIZE))
     {

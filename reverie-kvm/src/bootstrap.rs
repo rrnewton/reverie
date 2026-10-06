@@ -16,8 +16,6 @@ use crate::Error;
 use crate::GuestMemory;
 use crate::Result;
 use crate::VMCALL_SYSCALL_TRANSPORT;
-use crate::memory::USER_ADDRESS_END;
-use crate::memory::USER_STACK_TOP;
 use crate::syscall::FRAME_SIZE;
 use crate::syscall::RESULT_WORD;
 use crate::syscall::RETURN_FLAGS_WORD;
@@ -69,20 +67,14 @@ pub(crate) const VDSO_ADDRESS: u64 =
 // worker gets one Tool scratch page after the vDSO, indexed by the same slot
 // that owns its private syscall transport.
 pub(crate) const THREAD_TOOL_STACK_AREA_START: u64 = VDSO_ADDRESS + PAGE_SIZE;
-// The tables that map the user stack window (`map_user_stack_window`) at the
-// top of the user address space: a page-directory-pointer table, a page
-// directory, the page tables of the window's 4 KiB pages, and one page table
-// that splits the identity large page holding the window's first byte.
-const STACK_WINDOW_PDPT_ADDRESS: u64 =
+// The pool of page-table pages that map the user windows (`install_user_windows`):
+// the stack window below TASK_SIZE, the mmap window below mmap_base, and the
+// split of an identity large page that straddles the identity limit.
+const WINDOW_TABLE_POOL_ADDRESS: u64 =
     THREAD_TOOL_STACK_AREA_START + TOOL_STACK_SIZE * MAX_GUEST_THREADS;
-const STACK_WINDOW_DIRECTORY_ADDRESS: u64 = STACK_WINDOW_PDPT_ADDRESS + PAGE_SIZE;
-const STACK_WINDOW_TABLES_ADDRESS: u64 = STACK_WINDOW_DIRECTORY_ADDRESS + PAGE_SIZE;
-/// The largest stack window the window's page tables can map.
-const STACK_WINDOW_MAX: u64 = 8 * 1024 * 1024;
-const STACK_WINDOW_TABLES: u64 = STACK_WINDOW_MAX / LARGE_PAGE_SIZE;
-const STACK_WINDOW_SPLIT_TABLE_ADDRESS: u64 =
-    STACK_WINDOW_TABLES_ADDRESS + STACK_WINDOW_TABLES * PAGE_SIZE;
-pub(crate) const BOOT_RESERVED_END: u64 = STACK_WINDOW_SPLIT_TABLE_ADDRESS + PAGE_SIZE;
+const WINDOW_TABLE_POOL_PAGES: u64 = 12;
+pub(crate) const BOOT_RESERVED_END: u64 =
+    WINDOW_TABLE_POOL_ADDRESS + WINDOW_TABLE_POOL_PAGES * PAGE_SIZE;
 const _: () = {
     assert!(TOOL_STACK_TOP <= THREAD_SYSCALL_AREA_START);
     assert!(
@@ -232,6 +224,16 @@ pub(crate) fn configure_long_mode_with_syscall_area(
     sregs.cr3 = PML4_ADDRESS;
     sregs.cr4 |= CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_OSXSAVE;
     sregs.efer |= EFER_SCE | EFER_LME | EFER_LMA | EFER_NXE;
+    if initialize_shared_tables {
+        // The page tables were just rewritten, and an exec's new layout can
+        // unmap identity pages the old image used. Passing through a different
+        // CR3 makes KVM reset its MMU, which flushes the guest's cached
+        // translations before the vCPU next runs; setting an unchanged CR3
+        // alone does not.
+        let mut through = sregs;
+        through.cr3 = PDPT_ADDRESS;
+        vcpu.set_sregs(&through)?;
+    }
     vcpu.set_sregs(&sregs)?;
 
     let mut xcrs = vcpu.get_xcrs()?;
@@ -642,106 +644,139 @@ fn write_page_tables(memory: &mut GuestMemory) -> Result<()> {
             )?;
         }
     }
-    // The loader may already have placed the stack window; keep it.
-    if let Some(length) = memory.user_stack_window_length() {
-        map_user_stack_window(memory, length)?;
-    }
-    Ok(())
+    // The loader may already have placed windows; keep them.
+    install_user_windows(memory)
 }
 
-/// Maps the top `length` bytes of guest memory at the top of the user address
-/// space, where Linux puts the initial stack, and unmaps their identity
-/// addresses so one physical page is never reachable at two user addresses.
-/// Returns the window's first user address. The window is mapped with 4 KiB
-/// pages, and the page at Linux's `TASK_SIZE` (`USER_STACK_TOP`), which is not a
-/// user address, is left unmapped so a guest access to it faults as on Linux.
-/// `length` must be whole pages, at most `STACK_WINDOW_MAX`, and leave the
-/// first large page alone; repeating it changes nothing.
+/// Places the top `length` bytes of guest memory at the top of the user address
+/// space, where Linux puts the initial stack, and maps every window in the
+/// page tables (`install_user_windows`). Returns the window's first user
+/// address. `length` must be whole pages and leave the first large page alone.
 pub(crate) fn map_user_stack_window(memory: &mut GuestMemory, length: u64) -> Result<u64> {
-    if length > STACK_WINDOW_MAX
-        || memory
-            .guest_end()
-            .checked_sub(length)
-            .is_none_or(|start| start < LARGE_PAGE_SIZE)
+    if memory
+        .guest_end()
+        .checked_sub(length)
+        .is_none_or(|start| start < LARGE_PAGE_SIZE)
     {
         return Err(Error::LongModeMemoryTooSmall);
     }
     let user_start = memory.establish_user_stack_window(length)?;
-    let physical_start = memory.guest_end() - length;
+    install_user_windows(memory)?;
+    Ok(user_start)
+}
+
+/// Page-table pages handed out from the window table pool.
+struct TablePool {
+    next: u64,
+}
+
+impl TablePool {
+    const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+
+    fn allocate(&mut self, memory: &mut GuestMemory) -> Result<u64> {
+        if self.next == WINDOW_TABLE_POOL_PAGES {
+            return Err(Error::LongModeMemoryTooSmall);
+        }
+        let table = WINDOW_TABLE_POOL_ADDRESS + self.next * PAGE_SIZE;
+        self.next += 1;
+        memory.zero_raw(table, PAGE_SIZE as usize)?;
+        Ok(table)
+    }
+
+    /// The table that entry `index` of `table` points to, allocating it when the
+    /// entry is empty.
+    fn child(&mut self, memory: &mut GuestMemory, table: u64, index: u64) -> Result<u64> {
+        let entry_address = table + index * std::mem::size_of::<u64>() as u64;
+        let entry = read_u64(memory, entry_address)?;
+        if entry != 0 {
+            return Ok(entry & Self::ADDRESS_MASK);
+        }
+        let child = self.allocate(memory)?;
+        write_u64(memory, entry_address, child | 0x7)?;
+        Ok(child)
+    }
+}
+
+/// Maps every user window (see `crate::memory::UserWindow`) in the guest page
+/// tables, maps the identity addresses below the identity limit and unmaps
+/// those at and above it, so no physical page is reachable at two user addresses. A window uses a
+/// 2 MiB page wherever a whole aligned block of it maps to an aligned physical
+/// block, and 4 KiB pages elsewhere; addresses past a window's user end (the
+/// stack window's TASK_SIZE page) stay unmapped, so a guest access faults as on
+/// Linux. The tables come from a fixed pool in the boot area and are rebuilt
+/// whole each time, so repeating it changes nothing.
+pub(crate) fn install_user_windows(memory: &mut GuestMemory) -> Result<()> {
+    let (windows, identity_limit) = memory.user_layout();
     let entry = std::mem::size_of::<u64>() as u64;
     let entries = PAGE_SIZE / entry;
     let index = |address: u64, shift: u32| (address >> shift) & (entries - 1);
-    memory.zero_raw(STACK_WINDOW_PDPT_ADDRESS, PAGE_SIZE as usize)?;
-    memory.zero_raw(STACK_WINDOW_DIRECTORY_ADDRESS, PAGE_SIZE as usize)?;
-    memory.zero_raw(
-        STACK_WINDOW_TABLES_ADDRESS,
-        (STACK_WINDOW_TABLES * PAGE_SIZE) as usize,
-    )?;
-    write_u64(
-        memory,
-        PML4_ADDRESS + index(user_start, 39) * entry,
-        STACK_WINDOW_PDPT_ADDRESS | 0x7,
-    )?;
-    write_u64(
-        memory,
-        STACK_WINDOW_PDPT_ADDRESS + index(user_start, 30) * entry,
-        STACK_WINDOW_DIRECTORY_ADDRESS | 0x7,
-    )?;
-    // The window ends at the top of the address space, so its page tables
-    // fill the last directory entries.
-    let first_directory_entry = entries - STACK_WINDOW_TABLES;
-    for table in 0..STACK_WINDOW_TABLES {
-        write_u64(
-            memory,
-            STACK_WINDOW_DIRECTORY_ADDRESS + (first_directory_entry + table) * entry,
-            (STACK_WINDOW_TABLES_ADDRESS + table * PAGE_SIZE) | 0x7,
-        )?;
+    // Only the first top-level entry maps identity addresses.
+    for slot in 1..entries {
+        write_u64(memory, PML4_ADDRESS + slot * entry, 0)?;
     }
-    let window_base = USER_ADDRESS_END - STACK_WINDOW_MAX;
-    for page in 0..length / PAGE_SIZE {
-        let user = user_start + page * PAGE_SIZE;
-        if user >= USER_STACK_TOP {
-            continue;
+    let mut pool = TablePool { next: 0 };
+    for window in &windows {
+        let mut user = window.user_start;
+        while user < window.user_end {
+            let physical = window.physical(user);
+            let pdpt = pool.child(memory, PML4_ADDRESS, index(user, 39))?;
+            let directory = pool.child(memory, pdpt, index(user, 30))?;
+            if user.is_multiple_of(LARGE_PAGE_SIZE)
+                && physical.is_multiple_of(LARGE_PAGE_SIZE)
+                && user + LARGE_PAGE_SIZE <= window.user_end
+            {
+                write_u64(memory, directory + index(user, 21) * entry, physical | 0x87)?;
+                user += LARGE_PAGE_SIZE;
+                continue;
+            }
+            let table = pool.child(memory, directory, index(user, 21))?;
+            write_u64(memory, table + index(user, 12) * entry, physical | 0x7)?;
+            user += PAGE_SIZE;
         }
-        let slot = (user - window_base) / PAGE_SIZE;
-        write_u64(
-            memory,
-            STACK_WINDOW_TABLES_ADDRESS + slot * entry,
-            (physical_start + page * PAGE_SIZE) | 0x7,
-        )?;
     }
-    // Remove the window's identity addresses. A large page wholly at or above
-    // the window's start is unmapped; the one holding its first byte, when the
-    // window does not start on a large page, is split so that only the pages
-    // below the window stay mapped.
-    let first_large_page = physical_start / LARGE_PAGE_SIZE;
     let mapped_large_pages = memory.guest_end().div_ceil(LARGE_PAGE_SIZE);
-    for large_page in first_large_page..mapped_large_pages {
-        let directory = (large_page / entries) as usize;
-        let Some(directory_address) = PAGE_DIRECTORY_ADDRESSES.get(directory) else {
+    // Identity addresses that cover all of memory are mapped as
+    // `write_page_tables` maps them, in whole large pages.
+    let identity_limit = if identity_limit >= memory.guest_end() {
+        mapped_large_pages * LARGE_PAGE_SIZE
+    } else {
+        identity_limit
+    };
+    if identity_limit < LARGE_PAGE_SIZE {
+        return Err(Error::LongModeMemoryTooSmall);
+    }
+    // Map the identity addresses below the limit and unmap those at and above
+    // it, rewriting every large page after the first (which keeps its page
+    // table) so that a limit an earlier layout lowered is raised again. A large
+    // page wholly below the limit is mapped, one wholly above it unmapped, and
+    // one that straddles it split so that only its pages below the limit stay
+    // mapped.
+    for large_page in 1..mapped_large_pages {
+        let Some(directory_address) = PAGE_DIRECTORY_ADDRESSES.get((large_page / entries) as usize)
+        else {
             continue;
         };
         let directory_entry = directory_address + (large_page % entries) * entry;
         let base = large_page * LARGE_PAGE_SIZE;
-        if base >= physical_start {
+        if base + LARGE_PAGE_SIZE <= identity_limit {
+            write_u64(memory, directory_entry, base | 0x87)?;
+            continue;
+        }
+        if base >= identity_limit {
             write_u64(memory, directory_entry, 0)?;
             continue;
         }
-        memory.zero_raw(STACK_WINDOW_SPLIT_TABLE_ADDRESS, PAGE_SIZE as usize)?;
-        for page in 0..(physical_start - base) / PAGE_SIZE {
+        let table = pool.allocate(memory)?;
+        for page in 0..(identity_limit - base) / PAGE_SIZE {
             write_u64(
                 memory,
-                STACK_WINDOW_SPLIT_TABLE_ADDRESS + page * entry,
+                table + page * entry,
                 (base + page * PAGE_SIZE) | 0x7,
             )?;
         }
-        write_u64(
-            memory,
-            directory_entry,
-            STACK_WINDOW_SPLIT_TABLE_ADDRESS | 0x7,
-        )?;
+        write_u64(memory, directory_entry, table | 0x7)?;
     }
-    Ok(user_start)
+    Ok(())
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Emit a minimal kernel-note vDSO for glibc.
@@ -1074,10 +1109,10 @@ mod tests {
 
         assert_eq!(first_top - TOOL_STACK_SIZE, THREAD_TOOL_STACK_AREA_START);
         assert_eq!(second_top - first_top, TOOL_STACK_SIZE);
-        assert_eq!(last_top, STACK_WINDOW_PDPT_ADDRESS);
+        assert_eq!(last_top, WINDOW_TABLE_POOL_ADDRESS);
         assert_eq!(
             BOOT_RESERVED_END,
-            STACK_WINDOW_PDPT_ADDRESS + (3 + STACK_WINDOW_TABLES) * PAGE_SIZE
+            WINDOW_TABLE_POOL_ADDRESS + WINDOW_TABLE_POOL_PAGES * PAGE_SIZE
         );
     }
 
@@ -1104,6 +1139,62 @@ mod tests {
             read_u64(&memory, 0xe000 + 511 * 8).unwrap(),
             0xbfe0_0000 | 0x87
         );
+    }
+
+    /// The guest-physical address the page tables map `address` to, walking
+    /// them as the CPU does.
+    fn walk(memory: &GuestMemory, address: u64) -> Option<u64> {
+        const MASK: u64 = 0x000f_ffff_ffff_f000;
+        let index = |shift: u32| ((address >> shift) & 511) * 8;
+        let pml4 = read_u64(memory, PML4_ADDRESS + index(39)).unwrap();
+        if pml4 & 1 == 0 {
+            return None;
+        }
+        let pdpt = read_u64(memory, (pml4 & MASK) + index(30)).unwrap();
+        if pdpt & 1 == 0 {
+            return None;
+        }
+        let directory = read_u64(memory, (pdpt & MASK) + index(21)).unwrap();
+        if directory & 1 == 0 {
+            return None;
+        }
+        if directory & 0x80 != 0 {
+            return Some(
+                (directory & MASK & !(LARGE_PAGE_SIZE - 1)) | (address & (LARGE_PAGE_SIZE - 1)),
+            );
+        }
+        let table = read_u64(memory, (directory & MASK) + index(12)).unwrap();
+        (table & 1 != 0).then_some((table & MASK) | (address & (PAGE_SIZE - 1)))
+    }
+
+    /// A new layout's page tables replace the old one's whole: an identity end
+    /// raised by a larger image maps the identity pages the old window held,
+    /// and lowering it again unmaps them.
+    #[test]
+    fn page_tables_follow_an_identity_end_that_moves_both_ways() {
+        const MIB: u64 = 1024 * 1024;
+        let mut memory = GuestMemory::new(0, (64 * MIB) as usize).unwrap();
+        write_page_tables(&mut memory).unwrap();
+        for main_end in [3 * MIB, 48 * MIB, 3 * MIB] {
+            memory.clear_user_layout();
+            crate::elf::establish_linux_layout(&mut memory, main_end, MIB, None)
+                .unwrap()
+                .unwrap();
+            map_user_stack_window(&mut memory, 8 * MIB).unwrap();
+            let (windows, identity_end) = memory.user_layout();
+            assert_eq!(windows.len(), 2);
+            for address in (PAGE_SIZE..identity_end).step_by(PAGE_SIZE as usize) {
+                assert_eq!(walk(&memory, address), Some(address), "{address:#x}");
+            }
+            for address in (identity_end..memory.guest_end()).step_by(PAGE_SIZE as usize) {
+                assert_eq!(walk(&memory, address), None, "{address:#x}");
+            }
+            for window in &windows {
+                for user in (window.user_start..window.user_end).step_by(PAGE_SIZE as usize) {
+                    assert_eq!(walk(&memory, user), Some(window.physical(user)));
+                }
+            }
+        }
     }
 
     #[test]
