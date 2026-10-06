@@ -85,15 +85,6 @@ const SITE_UNPATCHABLE: u8 = 5;
 
 static TOOL_MODE: AtomicU8 = AtomicU8::new(0);
 static EVENT_FD: AtomicI32 = AtomicI32::new(libc::STDERR_FILENO);
-static COORDINATOR_FD: AtomicI32 = AtomicI32::new(-1);
-/// An output descriptor the in-guest Tool owns; see [`reserve_tool_output_fd`].
-static TOOL_OUTPUT_FD: AtomicI32 = AtomicI32::new(-1);
-/// The lowest number the Tool output socket takes. The coordinator connection,
-/// which connects after the socket is reserved, keeps 1024 as it always has.
-const TOOL_OUTPUT_FD_MIN: u64 = 1025;
-/// The message the runtime sends on the Tool output socket if it ever has to
-/// give the socket up; see [`reserve_tool_output_fd`].
-static TOOL_OUTPUT_RETIREMENT: OnceLock<&'static [u8]> = OnceLock::new();
 static EVENT_COOKIE: AtomicU64 = AtomicU64::new(0);
 static EVENT_DEVICE: AtomicU64 = AtomicU64::new(0);
 static EVENT_INODE: AtomicU64 = AtomicU64::new(0);
@@ -124,7 +115,6 @@ static SITES: OnceLock<Box<[SiteSlot]>> = OnceLock::new();
 static PAGE_SIZE: AtomicU64 = AtomicU64::new(0);
 static INSTALL_HELD: AtomicBool = AtomicBool::new(false);
 static PATCH_PUBLICATION: AtomicU8 = AtomicU8::new(PatchPublication::Concurrent as u8);
-static PROCESS_FORKS_ALLOWED: AtomicBool = AtomicBool::new(true);
 static SITE_PATCHING_ENABLED: AtomicBool = AtomicBool::new(true);
 
 pub(crate) use reverie_inguest::guest::clock::enter_rcb_handler;
@@ -145,6 +135,16 @@ use reverie_inguest::guest::instruction::install_instruction_signal_handler;
 pub(crate) use reverie_inguest::guest::instruction::preflight_instruction_faulting;
 use reverie_inguest::guest::instruction::set_all_instruction_native;
 use reverie_inguest::guest::instruction::set_instruction_native;
+use reverie_inguest::guest::protect::close_range_preserving_fds;
+use reverie_inguest::guest::protect::fd_arg;
+use reverie_inguest::guest::protect::protect_runtime_control;
+use reverie_inguest::guest::protect::protect_runtime_descriptors;
+pub(crate) use reverie_inguest::guest::protect::replace_coordinator_fd;
+pub(crate) use reverie_inguest::guest::protect::reserve_coordinator_fd;
+pub use reverie_inguest::guest::protect::reserve_tool_output_fd;
+use reverie_inguest::guest::protect::set_process_forks_allowed;
+use reverie_inguest::guest::protect::syscall_targets_event_fd;
+pub use reverie_inguest::guest::protect::tool_output_fd;
 pub(crate) use reverie_inguest::guest::signal::prepare_guest_signal_state;
 pub(crate) use reverie_inguest::guest::signal::reserved_signal_mask;
 pub(crate) use reverie_inguest::guest::signal::signal_action_supported;
@@ -156,101 +156,6 @@ pub(crate) use reverie_inguest::guest::support::exit_now;
 pub(crate) use reverie_inguest::guest::support::read_own_bytes;
 pub(crate) use reverie_inguest::guest::support::scan_own_maps;
 pub(crate) use reverie_inguest::guest::support::tool_callback_active;
-
-pub(crate) fn reserve_coordinator_fd(fd: libc::c_int) -> io::Result<()> {
-    COORDINATOR_FD
-        .compare_exchange(-1, fd, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ())
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "coordinator FD reserved twice",
-            )
-        })
-}
-
-/// Moves `fd`, a socket the in-guest Tool owns for its own output (for example
-/// one end of a socket pair its log records go to), to a reserved number at or
-/// above 1025 (1024 stays the coordinator connection's), closes `fd`, and
-/// returns the reserved number. From then on the runtime keeps the guest
-/// away from it exactly as it does from the coordinator connection: a guest
-/// `close` of it reports success and does nothing, a `close_range` over it
-/// spares it, and a guest `read`, `write`, `shutdown`, `send`, `setsockopt` or
-/// other descriptor operation on it fails with `EBADF`. A guest `dup2`/`dup3`
-/// onto its number succeeds as it would if the number were free: the runtime
-/// first moves the socket to another free number at or above 1025, so the Tool
-/// must read the current number from [`tool_output_fd`] for each use. Tool code
-/// writes to it through its own syscalls, which the runtime does not dispatch
-/// to the guest's protections. A forked child inherits the descriptor and its
-/// protection.
-///
-/// A guest dup onto the number needs one more free descriptor at or above 1025
-/// to move the socket to. When there is none (the descriptor table is full),
-/// the runtime gives the socket up so the guest's call keeps its native
-/// outcome: it sends `retirement` on the socket, closes the socket, and
-/// [`tool_output_fd`] then returns `None`. The Tool chooses a message its
-/// reader treats as "output incomplete". The send waits for room, as a
-/// blocking write of any Tool record does, and finishes a partial send, so a
-/// reader that keeps reading always receives the whole message, even when a
-/// forked child still holds the socket open and no end-of-file comes.
-///
-/// Only a socket is accepted (`InvalidInput` otherwise, leaving `fd` open), as
-/// for the coordinator connection: the guest can reach a regular file, pipe or
-/// FIFO through other names, such as `/proc/self/fd/<n>`, and truncate, map or
-/// reopen it, none of which a descriptor protection can stop; a socket cannot
-/// be reopened, truncated or mapped.
-///
-/// # Safety
-///
-/// Call at most once per process, before [`crate::install_tool`], while the
-/// process is still single-threaded.
-pub unsafe fn reserve_tool_output_fd(
-    fd: libc::c_int,
-    retirement: &'static [u8],
-) -> io::Result<libc::c_int> {
-    let mut metadata: libc::stat = unsafe { core::mem::zeroed() };
-    if unsafe { libc::fstat(fd, &raw mut metadata) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if metadata.st_mode & libc::S_IFMT != libc::S_IFSOCK {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "a Tool output descriptor must be a socket",
-        ));
-    }
-    let reserved =
-        unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, TOOL_OUTPUT_FD_MIN as libc::c_int) };
-    if reserved < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if let Err(actual) =
-        TOOL_OUTPUT_FD.compare_exchange(-1, reserved, Ordering::AcqRel, Ordering::Acquire)
-    {
-        unsafe { libc::close(reserved) };
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("a Tool output descriptor is already reserved ({actual})"),
-        ));
-    }
-    let _ = TOOL_OUTPUT_RETIREMENT.set(retirement);
-    unsafe { libc::close(fd) };
-    Ok(reserved)
-}
-
-/// Rebinds the protected coordinator descriptor after a fork child reconnects.
-///
-/// `COORDINATOR_FD` is process-local after fork, so this changes only the
-/// child's protection slot; the parent's connection and descriptor are intact.
-pub(crate) fn replace_coordinator_fd(old: libc::c_int, new: libc::c_int) -> io::Result<()> {
-    COORDINATOR_FD
-        .compare_exchange(old, new, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ())
-        .map_err(|actual| {
-            io::Error::other(format!(
-                "coordinator FD changed concurrently: expected {old}, observed {actual}"
-            ))
-        })
-}
 
 struct RuntimeArena {
     mapping_start: u64,
@@ -602,7 +507,7 @@ pub(crate) fn initialize_reverie_tool(
             ));
         }
     };
-    PROCESS_FORKS_ALLOWED.store(process_forks_allowed, Ordering::Release);
+    set_process_forks_allowed(process_forks_allowed);
     debug_assert!(site_patching || vdso_sites.is_empty());
     SITE_PATCHING_ENABLED.store(site_patching, Ordering::Release);
     TOOL_MODE.store(TOOL_REVERIE, Ordering::Release);
@@ -2510,27 +2415,6 @@ unsafe extern "C" fn tool_trampoline() {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-127): Review process-global preload safety guards.
-fn protect_runtime_control(event: &mut SyscallEvent) -> bool {
-    let unsupported_process =
-        is_fork_like(event.number) && !PROCESS_FORKS_ALLOWED.load(Ordering::Acquire);
-    let protected_signal =
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-133): Review fail-closed guest signal-handler policy.
-        !signal_action_supported(event.number, event.args)
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || (event.number == libc::SYS_sigaltstack && event.args[0] != 0);
-
-    if unsupported_process {
-        event.result = -i64::from(libc::ENOTSUP);
-    } else if protected_signal {
-        event.result = -i64::from(libc::EPERM);
-    } else {
-        return false;
-    }
-    true
-}
-
 unsafe fn process_syscall(event: &mut SyscallEvent) {
     let tool_mode = TOOL_MODE.load(Ordering::Relaxed);
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -2684,218 +2568,6 @@ fn clone_is_fork_like(flags: u64, child_stack: u64) -> bool {
         && flags & !(SIGNAL_MASK | allowed_flags) == 0
 }
 
-/// Keeps the guest away from the descriptors the runtime owns in Tool mode:
-/// the coordinator connection and, for a guest syscall, the Tool's reserved
-/// output descriptor. A syscall the Tool itself makes (`guest_syscall` false)
-/// may use the output descriptor, which is the Tool's.
-/// The runtime-owned descriptors a syscall is kept from, sorted: the
-/// coordinator connection, and for guest syscalls also the Tool output socket.
-/// Returns the array and how many of its leading entries are in use.
-fn protected_descriptors(guest_syscall: bool) -> ([u64; 2], usize) {
-    let mut protected = [u64::MAX; 2];
-    let mut count = 0;
-    let slots: &[&AtomicI32] = if guest_syscall {
-        &[&COORDINATOR_FD, &TOOL_OUTPUT_FD]
-    } else {
-        &[&COORDINATOR_FD]
-    };
-    for slot in slots {
-        let fd = slot.load(Ordering::Acquire);
-        if fd >= 0 {
-            protected[count] = fd as u64;
-            count += 1;
-        }
-    }
-    protected[..count].sort_unstable();
-    (protected, count)
-}
-
-unsafe fn protect_runtime_descriptors(event: &mut SyscallEvent, guest_syscall: bool) -> bool {
-    let (mut protected, count) = protected_descriptors(guest_syscall);
-    let protected = &mut protected[..count];
-    if protected.is_empty() {
-        return false;
-    }
-    if guest_syscall {
-        match unsafe { relocate_tool_output_for_dup(event, protected) } {
-            DupOntoToolOutput::NotThis => {}
-            DupOntoToolOutput::Proceed => return false,
-            DupOntoToolOutput::Refuse(result) => {
-                event.result = result;
-                return true;
-            }
-        }
-    }
-    if event.number == libc::SYS_close && protected.contains(&fd_arg(event, 0)) {
-        event.result = 0;
-    } else if event.number == libc::SYS_close_range
-        && protected
-            .iter()
-            .any(|&fd| fd_arg(event, 0) <= fd && fd <= fd_arg(event, 1))
-    {
-        event.result = unsafe { close_range_preserving_fds(event, protected) };
-    } else if let Some(result) = protected
-        .iter()
-        .find_map(|&fd| readiness_refusal(event, fd))
-    {
-        event.result = result;
-    } else if protected.iter().any(|&fd| {
-        syscall_targets_event_fd(event, fd) || (guest_syscall && syscall_uses_socket(event, fd))
-    }) {
-        event.result = -i64::from(libc::EBADF);
-    } else {
-        return false;
-    }
-    true
-}
-
-/// What to do with a guest syscall that may be a `dup2`/`dup3` onto the Tool
-/// output socket's number.
-enum DupOntoToolOutput {
-    /// Not such a call: protect as usual.
-    NotThis,
-    /// The socket's number is free now; run the guest's call.
-    Proceed,
-    /// The call fails as Linux would fail it, before anything moved.
-    Refuse(i64),
-}
-
-/// A guest `dup2`/`dup3` onto the Tool output socket's number is an ordinary
-/// operation the guest is entitled to: that number is free as far as the guest
-/// knows. First applies the kernel's own checks, in its order, without moving
-/// anything: `dup3` flags other than `O_CLOEXEC` (`EINVAL`), a target at or
-/// above `RLIMIT_NOFILE`, and a source that is not open (`EBADF`). Then moves
-/// the socket to another free number at or above 1025 and closes the old one,
-/// so the guest's call runs on a free number with its native outcome. When no
-/// descriptor is free to move it to, gives the socket up instead (see
-/// [`reserve_tool_output_fd`]). No unprotected copy of the socket is left
-/// behind on any path.
-unsafe fn relocate_tool_output_for_dup(
-    event: &SyscallEvent,
-    protected: &[u64],
-) -> DupOntoToolOutput {
-    if !matches!(event.number, libc::SYS_dup2 | libc::SYS_dup3) {
-        return DupOntoToolOutput::NotThis;
-    }
-    let tool = TOOL_OUTPUT_FD.load(Ordering::Acquire);
-    let source = fd_arg(event, 0);
-    if tool < 0 || fd_arg(event, 1) != tool as u64 || protected.contains(&source) {
-        return DupOntoToolOutput::NotThis;
-    }
-    if event.number == libc::SYS_dup3 && fd_arg(event, 2) & !(libc::O_CLOEXEC as u64) != 0 {
-        return DupOntoToolOutput::Refuse(-i64::from(libc::EINVAL));
-    }
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    let queried = unsafe {
-        raw_syscall6(
-            libc::SYS_prlimit64,
-            [
-                0,
-                libc::RLIMIT_NOFILE as u64,
-                0,
-                (&raw mut limit) as u64,
-                0,
-                0,
-            ],
-        )
-    };
-    if queried == 0 && tool as u64 >= limit.rlim_cur {
-        return DupOntoToolOutput::Refuse(-i64::from(libc::EBADF));
-    }
-    if unsafe { raw_syscall6(libc::SYS_fcntl, [source, libc::F_GETFD as u64, 0, 0, 0, 0]) } < 0 {
-        return DupOntoToolOutput::Refuse(-i64::from(libc::EBADF));
-    }
-    let moved = unsafe {
-        raw_syscall6(
-            libc::SYS_fcntl,
-            [
-                tool as u64,
-                libc::F_DUPFD_CLOEXEC as u64,
-                TOOL_OUTPUT_FD_MIN,
-                0,
-                0,
-                0,
-            ],
-        )
-    };
-    let replacement = if moved >= 0 { moved as i32 } else { -1 };
-    if TOOL_OUTPUT_FD
-        .compare_exchange(tool, replacement, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        if moved >= 0 {
-            unsafe { raw_syscall6(libc::SYS_close, [moved as u64, 0, 0, 0, 0, 0]) };
-        }
-        return DupOntoToolOutput::NotThis;
-    }
-    if moved < 0 {
-        // No descriptor to move the socket to: tell its reader the output is
-        // incomplete, then give it up.
-        if let Some(message) = TOOL_OUTPUT_RETIREMENT.get() {
-            send_retirement(tool, message);
-        }
-    }
-    // The socket lives on as `moved`, or not at all; the guest's call gets the
-    // old number.
-    unsafe { raw_syscall6(libc::SYS_close, [tool as u64, 0, 0, 0, 0, 0]) };
-    DupOntoToolOutput::Proceed
-}
-
-/// Sends all of `message` on `socket`, waiting for room as a blocking write
-/// does (also when the socket was made non-blocking) and resuming a partial
-/// send. It stops early only when the socket cannot take the message at all,
-/// such as when its reader has gone; `MSG_NOSIGNAL` keeps that from raising
-/// SIGPIPE in the guest.
-fn send_retirement(socket: libc::c_int, message: &[u8]) {
-    let mut rest = message;
-    while !rest.is_empty() {
-        let sent = unsafe {
-            raw_syscall6(
-                libc::SYS_sendto,
-                [
-                    socket as u64,
-                    rest.as_ptr() as u64,
-                    rest.len() as u64,
-                    libc::MSG_NOSIGNAL as u64,
-                    0,
-                    0,
-                ],
-            )
-        };
-        if sent > 0 {
-            rest = &rest[sent as usize..];
-        } else if sent == -i64::from(libc::EAGAIN) {
-            let mut writable = libc::pollfd {
-                fd: socket,
-                events: libc::POLLOUT,
-                revents: 0,
-            };
-            let polled = unsafe {
-                raw_syscall6(
-                    libc::SYS_poll,
-                    [(&raw mut writable) as u64, 1, -1i64 as u64, 0, 0, 0],
-                )
-            };
-            if polled < 0 && polled != -i64::from(libc::EINTR) {
-                return;
-            }
-        } else if sent != -i64::from(libc::EINTR) {
-            return;
-        }
-    }
-}
-
-/// The Tool output socket's current number, if one is reserved
-/// ([`reserve_tool_output_fd`]). It can change when the guest `dup2`s onto it,
-/// so the Tool reads it for each use.
-pub fn tool_output_fd() -> Option<libc::c_int> {
-    let fd = TOOL_OUTPUT_FD.load(Ordering::Acquire);
-    (fd >= 0).then_some(fd)
-}
-
 unsafe fn protect_compatibility_event_channel(event: &mut SyscallEvent) -> bool {
     let event_fd = EVENT_FD.load(Ordering::Acquire) as u64;
 
@@ -2922,181 +2594,6 @@ unsafe fn protect_compatibility_event_channel(event: &mut SyscallEvent) -> bool 
 
 unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -> i64 {
     unsafe { close_range_preserving_fds(event, &[event_fd]) }
-}
-
-/// Runs a guest `close_range` without closing any of `preserved`, which is sorted.
-unsafe fn close_range_preserving_fds(event: &SyscallEvent, preserved: &[u64]) -> i64 {
-    const CLOSE_RANGE_UNSHARE: u64 = 1 << 1;
-    const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
-
-    let first = fd_arg(event, 0);
-    let last = fd_arg(event, 1);
-    let mut flags = fd_arg(event, 2);
-    if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 {
-        return -i64::from(libc::EINVAL);
-    }
-    if flags & CLOSE_RANGE_UNSHARE != 0 {
-        let result =
-            unsafe { raw_syscall6(libc::SYS_unshare, [libc::CLONE_FILES as u64, 0, 0, 0, 0, 0]) };
-        if result < 0 {
-            return result;
-        }
-        flags &= !CLOSE_RANGE_UNSHARE;
-    }
-
-    // Close each gap of [first, last] between the preserved descriptors.
-    let mut start = first;
-    for &fd in preserved {
-        if fd < start || fd > last {
-            continue;
-        }
-        if start < fd {
-            let result =
-                unsafe { raw_syscall6(libc::SYS_close_range, [start, fd - 1, flags, 0, 0, 0]) };
-            if result < 0 {
-                return result;
-            }
-        }
-        start = fd + 1;
-        if start == 0 {
-            return 0;
-        }
-    }
-    if start <= last {
-        let result = unsafe { raw_syscall6(libc::SYS_close_range, [start, last, flags, 0, 0, 0]) };
-        if result < 0 {
-            return result;
-        }
-    }
-    0
-}
-
-/// Syscall argument `index` as the kernel reads a descriptor, `close_range`
-/// bound or flags argument: the low 32 bits of the register. Comparing the full
-/// register would let `fd | 1 << 32` reach the descriptor past a protection.
-fn fd_arg(event: &SyscallEvent, index: usize) -> u64 {
-    u64::from(event.args[index] as u32)
-}
-
-fn syscall_targets_event_fd(event: &SyscallEvent, event_fd: u64) -> bool {
-    let fd = |index| fd_arg(event, index) == event_fd;
-    match event.number {
-        libc::SYS_read
-        | libc::SYS_readv
-        | libc::SYS_pread64
-        | libc::SYS_preadv
-        | libc::SYS_preadv2
-        | libc::SYS_write
-        | libc::SYS_writev
-        | libc::SYS_pwrite64
-        | libc::SYS_pwritev
-        | libc::SYS_pwritev2
-        | libc::SYS_vmsplice
-        | libc::SYS_fcntl
-        | libc::SYS_ioctl
-        | libc::SYS_dup
-        // Operations that change, lock or describe the open file itself.
-        | libc::SYS_ftruncate
-        | libc::SYS_fallocate
-        | libc::SYS_fchmod
-        | libc::SYS_fchown
-        | libc::SYS_fsetxattr
-        | libc::SYS_fremovexattr
-        | libc::SYS_fgetxattr
-        | libc::SYS_flistxattr
-        | libc::SYS_flock
-        | libc::SYS_fsync
-        | libc::SYS_fdatasync
-        | libc::SYS_sync_file_range
-        | libc::SYS_lseek
-        | libc::SYS_fstat
-        | libc::SYS_fstatfs
-        | libc::SYS_fadvise64
-        | libc::SYS_readahead
-        | libc::SYS_getdents64
-        | libc::SYS_getdents
-        | libc::SYS_syncfs
-        | libc::SYS_fchdir
-        // Descriptors of special kinds: a runtime-owned number is not one,
-        // and to the guest it is not open at all.
-        | libc::SYS_signalfd
-        | libc::SYS_signalfd4
-        | libc::SYS_timerfd_settime
-        | libc::SYS_timerfd_gettime
-        | libc::SYS_inotify_add_watch
-        | libc::SYS_inotify_rm_watch
-        | libc::SYS_fanotify_mark
-        | libc::SYS_setns
-        | libc::SYS_pidfd_send_signal
-        | libc::SYS_pidfd_getfd
-        | libc::SYS_process_madvise
-        | libc::SYS_process_mrelease
-        | libc::SYS_finit_module
-        | libc::SYS_fsmount
-        | libc::SYS_quotactl_fd
-        | libc::SYS_landlock_add_rule
-        | libc::SYS_landlock_restrict_self => fd(0),
-        libc::SYS_sendfile => fd(0) || fd(1),
-        libc::SYS_epoll_ctl => fd(0) || fd(2),
-        // waitid(P_PIDFD, fd, ...).
-        libc::SYS_waitid => event.args[0] as u32 == 3 && fd(1),
-        // A file mapping of the descriptor.
-        libc::SYS_mmap => event.args[3] & libc::MAP_ANONYMOUS as u64 == 0 && fd(4),
-        libc::SYS_dup2 | libc::SYS_dup3 => fd(0) || fd(1),
-        libc::SYS_splice | libc::SYS_copy_file_range => fd(0) || fd(2),
-        libc::SYS_tee => fd(0) || fd(1),
-        _ => false,
-    }
-}
-
-/// Whether a guest syscall shuts down, configures, connects, or sends or
-/// receives on socket `event_fd`. Only guest syscalls are checked: the Tool's
-/// own RPC client uses these on the coordinator connection.
-fn syscall_uses_socket(event: &SyscallEvent, event_fd: u64) -> bool {
-    let fd = |index| fd_arg(event, index) == event_fd;
-    match event.number {
-        libc::SYS_shutdown
-        | libc::SYS_getsockopt
-        | libc::SYS_setsockopt
-        | libc::SYS_sendto
-        | libc::SYS_recvfrom
-        | libc::SYS_sendmsg
-        | libc::SYS_recvmsg
-        | libc::SYS_sendmmsg
-        | libc::SYS_recvmmsg
-        | libc::SYS_connect
-        | libc::SYS_bind
-        | libc::SYS_listen
-        | libc::SYS_accept
-        | libc::SYS_accept4
-        | libc::SYS_getsockname
-        | libc::SYS_getpeername => fd(0),
-        _ => false,
-    }
-}
-
-/// The result Linux gives a guest `epoll_wait`, `epoll_pwait` or
-/// `epoll_pwait2` on `event_fd`, a number the guest does not have open: `EBADF`,
-/// after Linux's own `EINVAL` check of the event count. `None` for any other
-/// call. (`poll`, `ppoll`, `select` and `pselect6` name descriptors inside guest
-/// memory, and `*at` calls use their directory argument only for some paths;
-/// checking them would cost correct programs' calls a guest-memory read, so a
-/// buggy program that passes a runtime-owned number there is a known limit.)
-fn readiness_refusal(event: &SyscallEvent, event_fd: u64) -> Option<i64> {
-    match event.number {
-        libc::SYS_epoll_wait | libc::SYS_epoll_pwait | libc::SYS_epoll_pwait2
-            if fd_arg(event, 0) == event_fd =>
-        {
-            let events = event.args[2] as i32;
-            let most = i32::MAX / core::mem::size_of::<libc::epoll_event>() as i32;
-            Some(-i64::from(if events <= 0 || events > most {
-                libc::EINVAL
-            } else {
-                libc::EBADF
-            }))
-        }
-        _ => None,
-    }
 }
 
 unsafe fn compatibility_event_channel_is_intact(output_fd: libc::c_int) -> bool {
