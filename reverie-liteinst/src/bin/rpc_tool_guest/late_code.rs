@@ -225,7 +225,9 @@ fn delta(after: [u64; 3], before: [u64; 3]) -> [u64; 3] {
 }
 
 /// CPUID/RDTSC/RDTSCP in an anonymous executable page mapped after startup.
-pub(super) fn run_instruction(path: &Path) {
+/// `trap_only`: the runtime runs with site patching off, so the in-arena
+/// ("patched path") instructions take the continuation too.
+pub(super) fn run_instruction(path: &Path, trap_only: bool) {
     install(path);
     let page = map_late_code();
     let fallback_before = observations();
@@ -285,15 +287,24 @@ pub(super) fn run_instruction(path: &Path) {
     assert_eq!((tscp, aux), (tool_tsc(first + 5), tool_aux(first + 5)));
     assert_eq!(TSC_CALLBACKS.load(Ordering::Relaxed) - first, 5);
 
+    // The in-arena instructions above: one CPUID per leaf, one RDTSC and one
+    // RDTSCP. With site patching off they take the continuation as well.
+    let in_arena = if trap_only {
+        LEAVES.len() as u64 + 2
+    } else {
+        0
+    };
     let fallback = delta(observations(), fallback_before);
     assert_eq!(
-        fallback, [late; 3],
-        "each late instruction is one continuation entry, callback and completion"
+        fallback,
+        [late + in_arena; 3],
+        "each continued instruction is one continuation entry, callback and completion"
     );
     let owned = OWNED_STACK_CALLBACKS.load(Ordering::Relaxed) - owned_before;
     assert_eq!(
-        owned, late,
-        "exactly the late instructions run the Tool on the owned continuation stack"
+        owned,
+        late + in_arena,
+        "exactly the continued instructions run the Tool on the owned continuation stack"
     );
     let sites = [CPUID_STUB, RDTSC_STUB, RDTSCP_STUB]
         .into_iter()
@@ -304,9 +315,15 @@ pub(super) fn run_instruction(path: &Path) {
         })
         .sum::<u64>();
     assert_eq!(sites, 0, "code without an arena must never claim a site");
-    println!(
-        "late-code cpuid=tool rdtsc=tool rdtscp=tool equals-patched=1 continuation={late} owned-stack={owned} sites={sites} registers=preserved"
-    );
+    if trap_only {
+        println!(
+            "late-code trap-only cpuid=tool rdtsc=tool rdtscp=tool equals-in-arena=1 continuation={late}+{in_arena} owned-stack={owned} sites={sites} registers=preserved"
+        );
+    } else {
+        println!(
+            "late-code cpuid=tool rdtsc=tool rdtscp=tool equals-patched=1 continuation={late} owned-stack={owned} sites={sites} registers=preserved"
+        );
+    }
     std::io::stdout().flush().unwrap();
 }
 

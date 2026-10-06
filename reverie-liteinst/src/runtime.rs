@@ -330,8 +330,9 @@ pub const PROCESS_FORK_ENV: &str = "REVERIE_LITEINST_PROCESS_FORK";
 /// includes subscribed vDSO fast paths: they get ptrace's whole
 /// `mov $nr, %eax; syscall; ret` stubs with no hook
 /// ([`reverie_ptrace::patch_current_vdso_trapping`]) instead of hooked bare
-/// `syscall`s. Subscribed `cpuid`, `rdtsc`, and `rdtscp` instructions are not
-/// covered: their first fault still claims and patches the instruction site.
+/// `syscall`s. Subscribed `cpuid`, `rdtsc`, and `rdtscp` instructions are
+/// covered too: no instruction site is claimed or patched, and each one is
+/// emulated through the same fallback continuation, as for late code.
 /// Any other value is rejected. The variable is not removed, so the guest can
 /// read it in its environment. Only an in-guest Reverie Tool (the
 /// `install_tool` family) honors `0`. When the runtime is selected from the
@@ -1840,6 +1841,12 @@ unsafe fn locate_instruction_fault(
     info: *const libc::siginfo_t,
     context: *const libc::ucontext_t,
 ) -> FaultSite {
+    // With site patching off, no instruction site is patched either: every
+    // CPUID, RDTSC and RDTSCP is emulated through the continuation, as for
+    // code without an arena.
+    if !SITE_PATCHING_ENABLED.load(Ordering::Relaxed) {
+        return FaultSite::Unpatchable;
+    }
     if let Some((kind, encoding)) = instruction_at(address) {
         return FaultSite::Patchable { kind, encoding };
     }

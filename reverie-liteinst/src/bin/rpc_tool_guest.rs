@@ -1913,7 +1913,10 @@ fn main() {
         Some("mask-unsubscribed") => mask_unsubscribed_guest(Path::new(&path)),
         Some("mask-tail") => mask_tail_guest(Path::new(&path)),
         Some("mask-instruction") => mask_instruction_guest(Path::new(&path)),
-        Some("late-code-instruction") => late_code_guest::run_instruction(Path::new(&path)),
+        Some("late-code-instruction") => late_code_guest::run_instruction(Path::new(&path), false),
+        Some("late-code-instruction-trap-only") => {
+            late_code_guest::run_instruction(Path::new(&path), true)
+        }
         Some("late-code-dlopen") => {
             late_code_guest::run_dlopen(Path::new(&path), &args.next().expect("library path"))
         }
