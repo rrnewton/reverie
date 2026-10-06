@@ -14,19 +14,32 @@ mod shared_file_dispatch_tests {
 
     impl Fixture {
         fn new() -> Self {
+            Self::with_stack_window(0)
+        }
+
+        /// The fixture with `stack_pages` more pages above mmap_limit, placed as
+        /// a mapped stack window at the top of the user address space.
+        fn with_stack_window(stack_pages: u64) -> Self {
             let root = TestDir::new();
             let mut state = test_state(&root.0);
             state.brk_limit = BOOT_RESERVED_END + 4 * PAGE_SIZE;
             state.mmap_base = state.brk_limit;
             state.mmap_next = state.mmap_base;
             state.mmap_limit = state.mmap_base + 16 * PAGE_SIZE;
-            let memory = GuestMemory::new(0, state.mmap_limit as usize).unwrap();
-            memory
-                .write_raw(0, &vec![0xa5; state.mmap_limit as usize])
-                .unwrap();
+            let size = state.mmap_limit + stack_pages * PAGE_SIZE;
+            let memory = GuestMemory::new(0, size as usize).unwrap();
+            memory.write_raw(0, &vec![0xa5; size as usize]).unwrap();
             memory
                 .map_user_permissions(0, BOOT_RESERVED_END, true, true)
                 .unwrap();
+            if stack_pages != 0 {
+                memory
+                    .establish_user_stack_window(stack_pages * PAGE_SIZE)
+                    .unwrap();
+                memory
+                    .map_user_permissions(state.mmap_limit, stack_pages * PAGE_SIZE, true, true)
+                    .unwrap();
+            }
             memory.enable_user_access();
             memory.set_allocation_cursors(AllocationCursors::from_elf(&state));
             let path = root.0.join("ordinary-file");
@@ -665,6 +678,42 @@ mod shared_file_dispatch_tests {
             assert_eq!(layout(&f.memory, &f.state), before);
             assert_eq!(std::fs::read(&f.path).unwrap(), f.expected);
         }
+    }
+
+    /// A stack-window source remapped onto a shared-file destination is refused
+    /// before any effect: the source bytes, the layout and the file stay as
+    /// they were.
+    #[test]
+    fn stack_window_mremap_onto_shared_file_refuses_before_effects() {
+        let mut f = Fixture::with_stack_window(4);
+        let fd = f.open(true);
+        let shared = f.shared(fd, 0, 0, true);
+        let source = crate::memory::USER_ADDRESS_END - 4 * PAGE_SIZE;
+        f.memory.user().write(source, b"stack canary").unwrap();
+        let before = layout(&f.memory, &f.state);
+        let error = failure(execute_basic_syscall(
+            &mut f.memory,
+            &mut f.state,
+            &SyscallRequest::new(
+                libc::SYS_mremap as u64,
+                [
+                    source,
+                    PAGE_SIZE,
+                    PAGE_SIZE,
+                    (libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED) as u64,
+                    shared,
+                    0,
+                ],
+            ),
+        ));
+        capability(
+            &error,
+            "mremap",
+            "this layout operation intersects an ordinary shared-file view",
+        );
+        // The layout includes every byte of guest memory, the source's too.
+        assert_eq!(layout(&f.memory, &f.state), before);
+        assert_eq!(std::fs::read(&f.path).unwrap(), f.expected);
     }
 
     #[test]

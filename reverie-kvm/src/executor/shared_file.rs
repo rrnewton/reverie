@@ -297,8 +297,15 @@ pub(super) fn remap_requires_shared_capability(
         || flags & !allowed != 0
         || (fixed && flags & libc::MREMAP_MAYMOVE as u64 == 0)
         || !range_is_valid(memory, args[0], old_length)
-        || !memory.user_range_is_mapped(args[0], old_length)
     {
+        return false;
+    }
+    // The source is named by its user address (a stack range sits in the
+    // stack window); the mapping metadata below is by physical address.
+    let Some(source) = memory.user_range_to_guest(args[0], old_length) else {
+        return false;
+    };
+    if !memory.user_range_is_mapped(source, old_length) {
         return false;
     }
     if fixed {
@@ -308,12 +315,12 @@ pub(super) fn remap_requires_shared_capability(
         if args[4] < BOOT_RESERVED_END
             || !args[4].is_multiple_of(PAGE_SIZE)
             || end > state.mmap_limit
-            || (args[4] < args[0] + old_length && args[0] < end)
+            || (args[4] < source + old_length && source < end)
         {
             return false;
         }
     }
-    memory.range_contains_shared_file(args[0], old_length as usize)
+    memory.range_contains_shared_file(source, old_length as usize)
         || (fixed && memory.range_contains_shared_file(args[4], new_length as usize))
 }
 

@@ -59,7 +59,11 @@ mod entry_construction_tests {
             .install_static_elf(&minimal_test_elf(&code), "/bin/entry-construction")
             .unwrap();
         let registers = parent.vcpu.get_regs().unwrap();
-        let data = registers.rsp - 8;
+        // The guest increments the byte at rsp - 8; the test reads it physically.
+        let data = parent
+            .memory
+            .user_range_to_guest(registers.rsp - 8, 1)
+            .unwrap();
         parent.memory.write_raw(data, &[0]).unwrap();
         let xsave = parent.vcpu.get_xsave().unwrap();
         let cpuid = parent.cpuid_policy;

@@ -46,6 +46,8 @@ use crate::bootstrap::PROGRAM_HEADERS_ADDRESS;
 use crate::bootstrap::VDSO_ADDRESS;
 use crate::memory::AllocationCursors;
 use crate::memory::RegionKind;
+use crate::memory::USER_ADDRESS_END;
+use crate::memory::USER_STACK_TOP;
 use crate::signal::ProcessSignalState;
 use crate::signal::SharedThreadSignalState;
 
@@ -55,7 +57,6 @@ pub(crate) mod parent_death;
 const PAGE_SIZE: u64 = 4096;
 pub(crate) const TASK_COMM_LEN: usize = 16;
 pub(crate) const STACK_LIMIT: u64 = 8 * 1024 * 1024;
-const STACK_STRING_HEADROOM: u64 = 4096;
 const MMAP_GAP: u64 = 1024 * 1024;
 const MAX_PROGRAM_HEADERS_SIZE: usize = PAGE_SIZE as usize;
 const MAX_INTERPRETER_BYTES: u64 = 16 * 1024 * 1024;
@@ -1689,6 +1690,7 @@ fn load_executable(
     memory
         .reserve_region(stack_start, STACK_LIMIT, RegionKind::Stack)?
         .commit();
+    crate::bootstrap::map_user_stack_window(memory, STACK_LIMIT)?;
     let (stack_pointer, auxv) = build_initial_stack(
         memory,
         &elf,
@@ -2124,26 +2126,34 @@ fn build_initial_stack(
     at_base: u64,
     at_entry: u64,
 ) -> Result<(u64, Vec<(libc::c_ulong, libc::c_ulong)>)> {
-    // Strings (argv[], envp[], the AT_RANDOM bytes) live in a high region that
-    // grows downward from the top of guest memory; the pointer arrays and auxv
-    // that reference them are written lower, at the final `rsp`.
-    let mut cursor = memory.guest_end().saturating_sub(STACK_STRING_HEADROOM);
+    // Linux's layout (fs/exec.c, then create_elf_tables in fs/binfmt_elf.c)
+    // with address randomization off, at its addresses, so pointers the guest
+    // sees match a traced guest's: from the top of the user address space down,
+    // an 8-byte NULL, the exec filename, the envp strings and the argv strings
+    // (so argv[0] is lowest and the strings ascend argv, envp, execfn), then,
+    // below argv[0] rounded down to 16 bytes, the platform string, the
+    // AT_RANDOM bytes, and the 16-byte-aligned pointer arrays and auxv.
+    // Addresses here are user addresses in the stack window.
+    let bottom = USER_ADDRESS_END - STACK_LIMIT;
+    let mut cursor = USER_STACK_TOP - std::mem::size_of::<u64>() as u64;
+    write_user_stack(memory, cursor, &[0; 8])?;
 
-    // Push argv/envp strings, recording each guest address. argv[0] is first.
-    let mut arg_addresses = Vec::with_capacity(argv.len());
-    for arg in argv {
-        cursor = push_c_string(memory, cursor, arg.as_bytes())?;
-        arg_addresses.push(cursor);
-    }
-    let mut env_addresses = Vec::with_capacity(envp.len());
-    for entry in envp {
+    // AT_EXECFN names the filename given to execve. Hermit launches and execs
+    // a guest by the same string it passes as argv[0].
+    cursor = push_c_string(memory, cursor, argv[0].as_bytes())?;
+    let execfn_address = cursor;
+    let mut env_addresses = vec![0; envp.len()];
+    for (index, entry) in envp.iter().enumerate().rev() {
         cursor = push_c_string(memory, cursor, entry.as_bytes())?;
-        env_addresses.push(cursor);
+        env_addresses[index] = cursor;
     }
-    let argv0_address = arg_addresses[0];
+    let mut arg_addresses = vec![0; argv.len()];
+    for (index, arg) in argv.iter().enumerate().rev() {
+        cursor = push_c_string(memory, cursor, arg.as_bytes())?;
+        arg_addresses[index] = cursor;
+    }
 
-    // Linux writes the platform string below the argument and environment
-    // strings, and the AT_RANDOM bytes below it.
+    cursor &= !0xf;
     cursor = push_c_string(memory, cursor, GUEST_PLATFORM)?;
     let platform_address = cursor;
 
@@ -2154,7 +2164,7 @@ fn build_initial_stack(
     cursor = cursor
         .checked_sub(random.len() as u64)
         .ok_or(Error::LongModeMemoryTooSmall)?;
-    memory.write_raw(cursor, &random)?;
+    write_user_stack(memory, cursor, &random)?;
     let random_address = cursor;
 
     // Build the SysV initial stack image, low to high:
@@ -2170,7 +2180,7 @@ fn build_initial_stack(
         base: at_base,
         entry: at_entry,
         random: random_address,
-        execfn: argv0_address,
+        execfn: execfn_address,
         platform: platform_address,
     });
 
@@ -2191,7 +2201,7 @@ fn build_initial_stack(
         .checked_sub(stack_size)
         .ok_or(Error::LongModeMemoryTooSmall)?
         & !0xf;
-    if cursor < memory.guest_end().saturating_sub(STACK_LIMIT) {
+    if cursor < bottom {
         return Err(Error::LongModeMemoryTooSmall);
     }
 
@@ -2199,8 +2209,16 @@ fn build_initial_stack(
     for word in words {
         stack.extend_from_slice(&word.to_le_bytes());
     }
-    memory.write_raw(cursor, &stack)?;
+    write_user_stack(memory, cursor, &stack)?;
     Ok((cursor, auxv))
+}
+
+/// Writes `bytes` at user address `address` in the stack window.
+fn write_user_stack(memory: &mut GuestMemory, address: u64, bytes: &[u8]) -> Result<()> {
+    let physical = memory
+        .user_range_to_guest(address, bytes.len() as u64)
+        .ok_or(Error::LongModeMemoryTooSmall)?;
+    memory.write_raw(physical, bytes)
 }
 
 /// Writes a NUL-terminated copy of `bytes` ending just below `cursor` and
@@ -2209,8 +2227,8 @@ fn push_c_string(memory: &mut GuestMemory, cursor: u64, bytes: &[u8]) -> Result<
     let start = cursor
         .checked_sub((bytes.len() + 1) as u64)
         .ok_or(Error::LongModeMemoryTooSmall)?;
-    memory.write_raw(start, bytes)?;
-    memory.write_raw(start + bytes.len() as u64, &[0])?;
+    write_user_stack(memory, start, bytes)?;
+    write_user_stack(memory, start + bytes.len() as u64, &[0])?;
     Ok(start)
 }
 
@@ -2338,7 +2356,8 @@ mod tests {
         memory.read_raw(TEST_LOAD_ADDRESS, &mut code).unwrap();
         assert_eq!(code, [0x90, 0xc3]);
         let mut argc = [0; 8];
-        memory.read_raw(loaded.stack_pointer, &mut argc).unwrap();
+        let stack = memory.user_range_to_guest(loaded.stack_pointer, 8).unwrap();
+        memory.read_raw(stack, &mut argc).unwrap();
         assert_eq!(u64::from_le_bytes(argc), 2);
         memory.enable_user_access();
         // Later overlapping headers replace policy; they do not union it.
@@ -2464,6 +2483,74 @@ mod tests {
         assert_eq!(value(11), 0);
     }
 
+    /// The initial stack follows Linux's exec layout at Linux's addresses, so
+    /// the pointers a guest sees match a traced guest's: an 8-byte NULL below
+    /// TASK_SIZE, the exec filename, the envp strings and the argv strings
+    /// (ascending argv, envp, execfn), then, below argv[0] rounded down to 16
+    /// bytes, the platform string, the AT_RANDOM bytes, and the 16-byte-aligned
+    /// argc, argv, envp and auxv words.
+    #[test]
+    fn initial_stack_follows_linux_exec_layout() {
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let image = test_static_elf(&[0x0f, 0x0b]);
+        let loaded = load_static_elf(
+            &mut memory,
+            &image,
+            &["/prog", "a"],
+            &["X=1", "Y=22"],
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+        let execfn = USER_STACK_TOP - 8 - 6;
+        let env_y = execfn - 5;
+        let env_x = env_y - 4;
+        let arg1 = env_x - 2;
+        let arg0 = arg1 - 6;
+        let platform = (arg0 & !0xf) - 7;
+        let random = platform - 16;
+        let auxv = |key: libc::c_ulong| {
+            loaded
+                .auxv
+                .iter()
+                .find(|(entry, _)| *entry == key)
+                .unwrap()
+                .1
+        };
+        assert_eq!(auxv(libc::AT_EXECFN), execfn);
+        assert_eq!(auxv(AT_PLATFORM), platform);
+        assert_eq!(auxv(libc::AT_RANDOM), random);
+        let read = |address: u64, length: usize| {
+            let mut bytes = vec![0; length];
+            let physical = memory.user_range_to_guest(address, length as u64).unwrap();
+            memory.read_raw(physical, &mut bytes).unwrap();
+            bytes
+        };
+        assert_eq!(read(USER_STACK_TOP - 8, 8), [0; 8]);
+        assert_eq!(
+            read(arg0, (USER_STACK_TOP - 8 - arg0) as usize),
+            b"/prog\0a\0X=1\0Y=22\0/prog\0"
+        );
+        assert_eq!(read(platform, 7), b"x86_64\0");
+
+        assert_eq!(read(random, 16), b"Reverie-KVM-ELF!");
+
+        let words = 1 + 3 + 3 + 2 * loaded.auxv.len() as u64 + 2;
+        assert_eq!(loaded.stack_pointer, (random - words * 8) & !0xf);
+        let stack: Vec<u64> = read(loaded.stack_pointer, words as usize * 8)
+            .chunks(8)
+            .map(|word| u64::from_le_bytes(word.try_into().unwrap()))
+            .collect();
+        assert_eq!(stack[..7], [2, arg0, arg1, 0, env_x, env_y, 0]);
+        // The auxv pairs as the guest reads them, then AT_NULL.
+        let pairs: Vec<(u64, u64)> = stack[7..]
+            .chunks(2)
+            .map(|pair| (pair[0], pair[1]))
+            .collect();
+        let (last, entries) = pairs.split_last().unwrap();
+        assert_eq!(*last, (AT_NULL, 0));
+        assert_eq!(entries, loaded.auxv.as_slice());
+    }
+
     /// `AT_PLATFORM` points at the platform string on the guest stack.
     #[test]
     fn loaded_auxiliary_vector_names_the_platform() {
@@ -2484,6 +2571,7 @@ mod tests {
             .unwrap()
             .1;
         let mut bytes = [0; 7];
+        let platform = memory.user_range_to_guest(platform, 7).unwrap();
         memory.read_raw(platform, &mut bytes).unwrap();
         assert_eq!(&bytes, b"x86_64\0");
     }

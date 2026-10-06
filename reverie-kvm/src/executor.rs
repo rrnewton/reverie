@@ -17394,9 +17394,11 @@ fn proc_self_cmdline_content(state: &LoadedStaticElf) -> Vec<u8> {
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Expose only the deterministic guest stack map.
 // TODO-HUMAN-REVIEW(PR-223): Review the minimal synthetic process map surface.
-fn proc_self_maps_content(state: &LoadedStaticElf) -> Vec<u8> {
-    let stack_start = state.mmap_limit;
-    let stack_end = stack_start.saturating_add(STACK_LIMIT);
+fn proc_self_maps_content(_state: &LoadedStaticElf) -> Vec<u8> {
+    // The ELF loader places the stack in the window at the top of the user
+    // address space, below Linux's TASK_SIZE.
+    let stack_start = crate::memory::USER_ADDRESS_END - STACK_LIMIT;
+    let stack_end = crate::memory::USER_STACK_TOP;
     format!("{stack_start:012x}-{stack_end:012x} rw-p 00000000 00:00 0 [stack]\n").into_bytes()
 }
 
@@ -18508,7 +18510,9 @@ fn arch_prctl(
     args: &[u64; 6],
 ) -> SyscallAction {
     match args[0] {
-        ARCH_SET_FS | ARCH_SET_GS if args[1] < memory.guest_end() => {
+        ARCH_SET_FS | ARCH_SET_GS
+            if args[1] < memory.guest_end() || range_is_valid(memory, args[1], 1) =>
+        {
             let (base, segment) = if args[0] == ARCH_SET_FS {
                 state.fs_base = args[1];
                 (state.fs_base, SegmentBase::Fs)
@@ -19136,6 +19140,10 @@ fn munmap(memory: &mut GuestMemory, address: u64, length: u64) -> i64 {
     let Ok(length) = usize::try_from(length) else {
         return negative_errno(libc::EINVAL);
     };
+    // The bookkeeping below is by physical address.
+    let Some(address) = memory.user_range_to_guest(address, length as u64) else {
+        return negative_errno(libc::EINVAL);
+    };
     match memory.zero_raw(address, length) {
         Ok(()) => match memory.unmap_user_range(address, length as u64) {
             Ok(()) => 0,
@@ -19171,6 +19179,9 @@ fn msync(memory: &GuestMemory, args: &[u64; 6]) -> crate::Result<i64> {
     let Ok(length) = usize::try_from(length) else {
         return Ok(negative_errno(libc::ENOMEM));
     };
+    let Some(address) = memory.user_range_to_guest(address, length as u64) else {
+        return Ok(negative_errno(libc::ENOMEM));
+    };
     memory.sync_shared_file_range(address, length, flags)
 }
 
@@ -19191,6 +19202,9 @@ fn munmap_shared_file(
         return Ok(negative_errno(libc::EINVAL));
     }
     let Ok(length) = usize::try_from(length) else {
+        return Ok(negative_errno(libc::EINVAL));
+    };
+    let Some(address) = memory.user_range_to_guest(address, length as u64) else {
         return Ok(negative_errno(libc::EINVAL));
     };
     memory.publish_private_range(
@@ -19225,7 +19239,11 @@ fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     let Some(length) = align_up(requested_length, PAGE_SIZE) else {
         return negative_errno(libc::ENOMEM);
     };
-    if !range_is_valid(memory, address, length) || !memory.user_range_is_mapped(address, length) {
+    // The bookkeeping below is by physical address.
+    let Some(address) = memory.user_range_to_guest(address, length) else {
+        return negative_errno(libc::ENOMEM);
+    };
+    if !memory.user_range_is_mapped(address, length) {
         return negative_errno(libc::ENOMEM);
     }
     if protection & libc::PROT_EXEC as u64 != 0
@@ -19257,7 +19275,11 @@ fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
 }
 
 fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let old_address = args[0];
+    // The source is named by its user address (a stack range sits in the stack
+    // window); the bookkeeping below is by physical address. A remap in place
+    // returns the user address. A move lands below mmap_limit, where user and
+    // physical addresses are the same, as does a MREMAP_FIXED destination.
+    let user_address = args[0];
     let Some(old_length) = align_up(args[1], PAGE_SIZE) else {
         return negative_errno(libc::EINVAL);
     };
@@ -19268,12 +19290,16 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     let allowed_flags = (libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED) as u64;
     if old_length == 0
         || new_length == 0
-        || !old_address.is_multiple_of(PAGE_SIZE)
+        || !user_address.is_multiple_of(PAGE_SIZE)
         || flags & !allowed_flags != 0
         || flags & libc::MREMAP_FIXED as u64 != 0 && flags & libc::MREMAP_MAYMOVE as u64 == 0
-        || !range_is_valid(memory, old_address, old_length)
-        || !memory.user_range_is_mapped(old_address, old_length)
     {
+        return negative_errno(libc::EINVAL);
+    }
+    let Some(old_address) = memory.user_range_to_guest(user_address, old_length) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if !memory.user_range_is_mapped(old_address, old_length) {
         return negative_errno(libc::EINVAL);
     }
 
@@ -19293,7 +19319,7 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
         {
             return negative_errno(libc::EFAULT);
         }
-        return old_address as i64;
+        return user_address as i64;
     }
 
     let old_end = old_address + old_length;
@@ -19322,7 +19348,7 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
             }
             reservation.commit();
             state.mmap_next = state.mmap_next.max(new_end);
-            return old_address as i64;
+            return user_address as i64;
         }
     }
 
@@ -19358,6 +19384,11 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     let Ok(new_length_usize) = usize::try_from(new_length) else {
         return negative_errno(libc::ENOMEM);
     };
+    // Refuse a destination the remap below would refuse, before any byte is
+    // copied or zeroed.
+    if memory.range_contains_shared_file(destination, new_length_usize) {
+        return negative_errno(libc::EFAULT);
+    }
     let Ok(reservation) = memory.reserve_region(destination, new_length, RegionKind::Mmap) else {
         return negative_errno(libc::EFAULT);
     };
@@ -19410,6 +19441,9 @@ fn mincore(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     {
         return negative_errno(libc::EINVAL);
     }
+    let Some(address) = memory.user_range_to_guest(address, length) else {
+        return negative_errno(libc::EINVAL);
+    };
     if !memory.user_range_is_mapped(address, length) {
         return negative_errno(libc::ENOMEM);
     }
@@ -21371,11 +21405,11 @@ fn read_string_array(memory: &GuestMemory, address: u64) -> Result<Vec<String>, 
     Err(negative_errno(libc::E2BIG))
 }
 
+/// Whether `[address, address + length)` is one contiguous range of user
+/// addresses (mapped or not), including the stack window at the top of the
+/// user address space.
 fn range_is_valid(memory: &GuestMemory, address: u64, length: u64) -> bool {
-    address >= memory.guest_base()
-        && address
-            .checked_add(length)
-            .is_some_and(|end| end <= memory.guest_end())
+    memory.user_range_is_addressable(address, length)
 }
 
 fn align_up(value: u64, alignment: u64) -> Option<u64> {
@@ -53080,6 +53114,125 @@ mod tests {
             ),
             negative_errno(libc::ENOMEM)
         );
+    }
+
+    /// The memory-management syscalls name the stack by its user addresses at
+    /// the top of the user address space and act on its physical pages; the
+    /// stack's identity addresses are not user addresses. mremap in place
+    /// returns the user address, and a move lands in low memory.
+    #[test]
+    fn memory_syscalls_act_on_the_stack_window() {
+        const MIB: u64 = 1024 * 1024;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        state.mmap_next = BOOT_RESERVED_END + PAGE_SIZE;
+        state.mmap_limit = 8 * MIB;
+        memory
+            .reserve_region(8 * MIB, 8 * MIB, crate::memory::RegionKind::Stack)
+            .unwrap()
+            .commit();
+        let window = memory.establish_user_stack_window(8 * MIB).unwrap();
+        memory.map_user_range(8 * MIB, 8 * MIB, false).unwrap();
+        memory.enable_user_access();
+
+        let mut call = |memory: &mut GuestMemory, number, args| {
+            syscall_result(memory, &mut state, number, args)
+        };
+        assert_eq!(
+            call(
+                &mut memory,
+                libc::SYS_mprotect,
+                [
+                    window + PAGE_SIZE,
+                    PAGE_SIZE,
+                    libc::PROT_NONE as u64,
+                    0,
+                    0,
+                    0
+                ],
+            ),
+            0
+        );
+        let boundary = AddrMut::from_raw((window + PAGE_SIZE - 8) as usize).unwrap();
+        assert_eq!(
+            MemoryAccess::write(&mut memory, boundary, &[0x5a; 16]).unwrap(),
+            8
+        );
+        assert_eq!(
+            call(
+                &mut memory,
+                libc::SYS_mprotect,
+                [
+                    8 * MIB + PAGE_SIZE,
+                    PAGE_SIZE,
+                    libc::PROT_READ as u64,
+                    0,
+                    0,
+                    0
+                ],
+            ),
+            negative_errno(libc::ENOMEM)
+        );
+        assert_eq!(
+            call(
+                &mut memory,
+                libc::SYS_mremap,
+                [window, PAGE_SIZE, PAGE_SIZE, 0, 0, 0],
+            ),
+            window as i64
+        );
+        assert_eq!(
+            call(
+                &mut memory,
+                libc::SYS_mremap,
+                [8 * MIB, PAGE_SIZE, PAGE_SIZE, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        let shrink = window + 4 * PAGE_SIZE;
+        assert_eq!(
+            call(
+                &mut memory,
+                libc::SYS_mremap,
+                [shrink, 2 * PAGE_SIZE, PAGE_SIZE, 0, 0, 0],
+            ),
+            shrink as i64
+        );
+        let tail = AddrMut::from_raw((shrink + PAGE_SIZE) as usize).unwrap();
+        assert!(MemoryAccess::write(&mut memory, tail, &[0x11; 8]).is_err());
+        let moved = window + 8 * PAGE_SIZE;
+        let marker = AddrMut::from_raw(moved as usize).unwrap();
+        assert_eq!(
+            MemoryAccess::write(&mut memory, marker, &[0x77; 8]).unwrap(),
+            8
+        );
+        let destination = call(
+            &mut memory,
+            libc::SYS_mremap,
+            [
+                moved,
+                PAGE_SIZE,
+                2 * PAGE_SIZE,
+                libc::MREMAP_MAYMOVE as u64,
+                0,
+                0,
+            ],
+        );
+        assert!((BOOT_RESERVED_END as i64..(8 * MIB) as i64).contains(&destination));
+        let mut copied = [0; 8];
+        memory.user().read(destination as u64, &mut copied).unwrap();
+        assert_eq!(copied, [0x77; 8]);
+        assert_eq!(
+            call(
+                &mut memory,
+                libc::SYS_munmap,
+                [window + 2 * PAGE_SIZE, PAGE_SIZE, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let unmapped = AddrMut::from_raw((window + 2 * PAGE_SIZE) as usize).unwrap();
+        assert!(MemoryAccess::write(&mut memory, unmapped, &[0x33; 8]).is_err());
     }
 
     #[test]

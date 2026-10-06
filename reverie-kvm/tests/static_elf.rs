@@ -331,11 +331,11 @@ fn getdents64_alias_failure_case_selected(
             &directory.0,
         )
         .unwrap();
-    // The loader maps the stack through guest_end(), while its strings and
-    // initial stack grow down from guest_end() - 4096. This fixture never
-    // writes the zero-filled top-page headroom. Probe one real mapped byte
-    // before arming, then require the same access/value after completion.
-    let memory_probe_address = backend.memory().unwrap().guest_end() - 1;
+    // The loader puts the stack at the top of the user address space, as Linux
+    // does: its strings end with an 8-byte NULL just below 0x7fff_ffff_f000,
+    // which this fixture never writes. Probe that mapped byte before arming,
+    // then require the same access/value after completion.
+    let memory_probe_address = 0x7fff_ffff_efff;
     let mut before_run_memory = [0xff];
     backend
         .memory()
@@ -5213,6 +5213,67 @@ fn static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes() {
     assert_eq!(code, 0);
     assert!(stdout.is_empty());
     assert!(stderr.is_empty());
+}
+
+/// Guest memory that is whole pages but not whole large pages still runs a
+/// program: its stack window starts off a large-page boundary (at 9 MiB here).
+#[test]
+fn static_elf_runs_when_guest_memory_is_not_whole_large_pages() {
+    if !kvm_available("static_elf_runs_when_guest_memory_is_not_whole_large_pages") {
+        return;
+    }
+    let code = [
+        0x48, 0x83, 0xec, 0x10, // sub rsp, 16
+        0xc6, 0x04, 0x24, 0x2a, // mov byte [rsp], 42
+        0x0f, 0xb6, 0x3c, 0x24, // movzx edi, byte [rsp]
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0x0f, 0x05, // syscall
+    ];
+    let image = static_elf(&code);
+    let mut backend = KvmBackend::new(17 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf(&image, "/bin/odd-memory")
+        .unwrap();
+    assert_eq!(backend.run_static_elf().unwrap(), 42);
+}
+
+/// The VMware probe resolves when it runs from the stack, whose user addresses
+/// (at the top of the user address space) differ from its physical addresses.
+#[test]
+fn static_elf_vmware_probe_runs_from_the_stack() {
+    if !kvm_available("static_elf_vmware_probe_runs_from_the_stack") {
+        return;
+    }
+
+    let probe = [
+        0xbb, 0x68, 0x58, 0x4d, 0x56, // mov ebx, 0x564d5868
+        0xb9, 0x58, 0x56, 0x00, 0x00, // mov ecx, 0x5658
+        0x31, 0xd2, // xor edx, edx
+        0xed, // in eax, dx
+        0x85, 0xdb, // test ebx, ebx
+        0x75, 0x09, // jne failure
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // failure: mov eax, SYS_exit
+        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
+        0x0f, 0x05, // syscall
+    ];
+    // Copy the probe below the stack pointer and jump to it.
+    let mut code = vec![0x48, 0x8d, 0x35, 19, 0, 0, 0]; // lea rsi, [rip + 19]
+    code.extend_from_slice(&[0xb9, probe.len() as u8, 0, 0, 0]); // mov ecx, len
+    code.extend_from_slice(&[0x48, 0x81, 0xec, 0x00, 0x01, 0x00, 0x00]); // sub rsp, 256
+    code.extend_from_slice(&[0x48, 0x89, 0xe7]); // mov rdi, rsp
+    code.extend_from_slice(&[0xf3, 0xa4]); // rep movsb
+    code.extend_from_slice(&[0xff, 0xe4]); // jmp rsp
+    code.extend_from_slice(&probe);
+    let image = static_elf(&code);
+
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(&image, "/bin/vmware-probe-stack")
+        .unwrap();
+    assert_eq!(backend.run_static_elf().unwrap(), 0);
 }
 
 #[test]
@@ -11272,6 +11333,8 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "getdents64_alias_suffix_cleanup_stops_tool_and_guest",
         "getdents64_alias_eof_cleanup_stops_direct_guest",
         "getdents64_alias_eof_cleanup_stops_tool_and_guest",
+        "static_elf_runs_when_guest_memory_is_not_whole_large_pages",
+        "static_elf_vmware_probe_runs_from_the_stack",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
