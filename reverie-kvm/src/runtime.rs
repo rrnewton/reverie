@@ -239,12 +239,6 @@ pub(crate) fn is_backend_owned_syscall(number: u64, thread_ownership: ThreadOwne
     if number == libc::SYS_futex as u64 {
         return thread_ownership.futex_is_host_owned();
     }
-    // QEMU's root event loop waits on worker eventfds. KVM syscall
-    // injection cannot perform ppoll, so use translated host descriptors in
-    // either ownership mode.
-    if number == libc::SYS_ppoll as u64 {
-        return true;
-    }
 
     // Host-owned workers execute outside the Tool and can create descriptors
     // that the root event loop consumes. Their scalar and vectored reads must
@@ -254,8 +248,17 @@ pub(crate) fn is_backend_owned_syscall(number: u64, thread_ownership: ThreadOwne
     // pipes physically nonblocking while keeping them logically blocking; if
     // the backend consumes those reads itself, the implementation-only EAGAIN
     // leaks to the guest instead of entering Detcore's polling retry path.
+    //
+    // ppoll follows the same rule. QEMU's root event loop waits on the
+    // eventfds of host-owned workers, so with host-owned workers it uses the
+    // backend's translated host descriptors. With Tool-owned threads it must
+    // reach the Tool like every other syscall, which injects it (the executor
+    // implements ppoll); otherwise the guest's ppoll would bypass the Tool's
+    // scheduling and observation entirely.
     thread_ownership.executes_on_host()
-        && (number == libc::SYS_read as u64 || number == libc::SYS_readv as u64)
+        && (number == libc::SYS_read as u64
+            || number == libc::SYS_readv as u64
+            || number == libc::SYS_ppoll as u64)
 }
 
 /// Executes a syscall on behalf of a KVM guest.
@@ -6660,9 +6663,18 @@ mod tests {
 
     #[test]
     fn worker_shared_syscall_ownership_follows_thread_ownership() {
-        // ppoll always stays backend-owned because KVM injection cannot execute it.
+        // ppoll is backend-owned only with host-owned workers (QEMU's event
+        // loop waits on their eventfds); with Tool-owned threads it reaches
+        // the Tool, which injects it.
+        assert!(is_backend_owned_syscall(
+            libc::SYS_ppoll as u64,
+            ThreadOwnership::Host
+        ));
+        assert!(!is_backend_owned_syscall(
+            libc::SYS_ppoll as u64,
+            ThreadOwnership::Tool
+        ));
         for ownership in [ThreadOwnership::Host, ThreadOwnership::Tool] {
-            assert!(is_backend_owned_syscall(libc::SYS_ppoll as u64, ownership));
             assert!(!is_backend_owned_syscall(
                 libc::SYS_clock_gettime as u64,
                 ownership
