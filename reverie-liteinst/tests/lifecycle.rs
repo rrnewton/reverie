@@ -39,7 +39,15 @@ struct LifecycleGlobal {
     /// independently of the backend's statistics and reported once per
     /// process at exit.
     callbacks: AtomicU64,
+    /// Pids reported through `on_backend_process_exited`.
+    exited: std::sync::Mutex<Vec<i32>>,
+    /// Calls of `report_backend_failure`.
+    backend_failures: AtomicU64,
 }
+
+/// What `LifecycleGlobal::backend_pending_process_exits` returns, so a test can
+/// tell the global's answer from the reporter's empty one after the run.
+const PENDING_EXIT_SENTINEL: i32 = 4242;
 
 #[reverie::global_tool]
 impl GlobalTool for LifecycleGlobal {
@@ -61,6 +69,18 @@ impl GlobalTool for LifecycleGlobal {
             _ => panic!("unknown lifecycle fixture RPC {event}"),
         };
         counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn on_backend_process_exited(&self, pid: i32) {
+        self.exited.lock().unwrap().push(pid);
+    }
+
+    fn backend_pending_process_exits(&self) -> Vec<i32> {
+        vec![PENDING_EXIT_SENTINEL]
+    }
+
+    fn report_backend_failure(&self, _event: reverie::BackendFailure) {
+        self.backend_failures.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -876,4 +896,154 @@ async fn supervisor_restarts_read_without_leaking_private_errno() {
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(output.stdout, b"read-result=4243 calls=3\n", "{output:?}");
+}
+
+/// Admits every guest connection and records the pid each pidfd names, and
+/// whether the launcher attached an exit reporter before the first admission.
+/// At the first admission, mid-run, it uses each of the reporter's methods
+/// once.
+#[derive(Default)]
+struct RecordingAdmission {
+    seen: std::sync::Mutex<Vec<i32>>,
+    reporter_before_first_admission: std::sync::atomic::AtomicBool,
+    reporter: std::sync::Mutex<Option<std::sync::Arc<dyn reverie_rpc_transport::ExitReporter>>>,
+    pending_at_first_admission: std::sync::Mutex<Option<Vec<i32>>>,
+}
+
+impl reverie_rpc_transport::ConnectionAdmission for RecordingAdmission {
+    fn attach_exit_reporter(
+        &self,
+        reporter: std::sync::Arc<dyn reverie_rpc_transport::ExitReporter>,
+    ) {
+        if self.seen.lock().unwrap().is_empty() {
+            self.reporter_before_first_admission
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        *self.reporter.lock().unwrap() = Some(reporter);
+    }
+
+    fn admit(
+        &self,
+        peer: std::os::fd::OwnedFd,
+    ) -> std::io::Result<reverie_rpc_transport::Admitted> {
+        use std::os::fd::AsRawFd;
+        let fdinfo =
+            std::fs::read_to_string(format!("/proc/self/fdinfo/{}", peer.as_raw_fd())).unwrap();
+        let pid: i32 = fdinfo
+            .lines()
+            .find_map(|line| line.strip_prefix("Pid:"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let mut seen = self.seen.lock().unwrap();
+        if seen.is_empty()
+            && let Some(reporter) = self.reporter.lock().unwrap().as_ref()
+        {
+            *self.pending_at_first_admission.lock().unwrap() =
+                Some(reporter.pending_process_exits());
+            reporter.process_exited(pid);
+            reporter.backend_failed(reverie::BackendFailure {
+                pid: reverie::Pid::from_raw(pid),
+                tid: reverie::Tid::from_raw(pid),
+                phase: "lifecycle test",
+            });
+        }
+        seen.push(pid);
+        Ok(reverie_rpc_transport::Admitted { process_id: pid })
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn connection_admission_sees_each_guest_process_before_it_is_served() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let marker_directory = tempfile::tempdir().unwrap();
+    let marker = marker_directory.path().join("descendant.marker");
+    let mut command = guest_command("root-exits-first");
+    command.arg(&marker);
+    let admission = std::sync::Arc::new(RecordingAdmission::default());
+
+    let (status, global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::with_connection_admission(
+            admission.clone(),
+            LiteinstBackend::run_with_preload::<CoordinatorOnlyTool>(command, (), preload),
+        ),
+    )
+    .await
+    .expect("an admitted run hung")
+    .unwrap();
+
+    // Admission did not change the run, and every admitted connection was a
+    // guest process, never the coordinator itself, each admitted once.
+    assert_eq!(status, ExitStatus::Exited(23));
+    assert_eq!(std::fs::read(&marker).unwrap(), b"descendant-finished\n");
+    assert_eq!(global.fork.load(Ordering::Relaxed), 1);
+    let seen = admission.seen.lock().unwrap().clone();
+    assert!(!seen.is_empty(), "no guest connection was admitted");
+    let me = std::process::id() as i32;
+    assert!(seen.iter().all(|&pid| pid > 0 && pid != me), "{seen:?}");
+    let mut unique = seen.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        seen.len(),
+        "a process was admitted twice: {seen:?}"
+    );
+    assert!(
+        admission
+            .reporter_before_first_admission
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "the launcher must attach the exit reporter before admitting a connection"
+    );
+    // During the run each reporter method reached the global tool's hook.
+    assert_eq!(
+        *admission.pending_at_first_admission.lock().unwrap(),
+        Some(vec![PENDING_EXIT_SENTINEL])
+    );
+    assert_eq!(*global.exited.lock().unwrap(), [seen[0]]);
+    assert_eq!(global.backend_failures.load(Ordering::Relaxed), 1);
+    // After the run the reporter holds no global, so it reaches nothing.
+    let reporter = admission.reporter.lock().unwrap().clone().unwrap();
+    assert!(reporter.pending_process_exits().is_empty());
+    reporter.process_exited(seen[0]);
+}
+
+struct RefusingAdmission;
+
+impl reverie_rpc_transport::ConnectionAdmission for RefusingAdmission {
+    fn admit(
+        &self,
+        _peer: std::os::fd::OwnedFd,
+    ) -> std::io::Result<reverie_rpc_transport::Admitted> {
+        Err(std::io::Error::other("refused by the test"))
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn refused_guest_connection_fails_the_run() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let marker_directory = tempfile::tempdir().unwrap();
+    let marker = marker_directory.path().join("descendant.marker");
+    let mut command = guest_command("root-exits-first");
+    command.arg(&marker);
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::with_connection_admission(
+            std::sync::Arc::new(RefusingAdmission),
+            LiteinstBackend::run_with_preload::<CoordinatorOnlyTool>(command, (), preload),
+        ),
+    )
+    .await
+    .expect("a refused run hung");
+
+    // The guest never reaches its program: the run fails or the guest exits
+    // with something other than the fixture's own status.
+    match result {
+        Err(_) => {}
+        Ok((status, _global)) => assert_ne!(status, ExitStatus::Exited(23)),
+    }
+    assert!(!marker.exists(), "the refused guest ran its program");
 }

@@ -16,6 +16,9 @@
 //! guests — including forked children that connect later — observe one unified
 //! global state, which is exactly the property the DBT backend currently lacks.
 
+use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
+use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,6 +42,94 @@ use crate::codec::write_message;
 use crate::envelope::RequestEnvelope;
 use crate::error::RpcError;
 
+/// `SO_PEERPIDFD` (Linux 6.5): a pidfd for the process that connected the
+/// socket. Defined here because the libc crate exports it only from its
+/// unstable `new` module. The value is asm-generic's, which x86_64 uses.
+const SO_PEERPIDFD: libc::c_int = 77;
+
+/// The process a guest connection's requests must come from, as decided by a
+/// [`ConnectionAdmission`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Admitted {
+    /// The id the connection's first request must name as its sender.
+    pub process_id: i32,
+}
+
+/// Decides whether an accepted guest connection may be served.
+///
+/// The server calls it once per connection, after `accept` and before the
+/// configuration handshake or any request, with a pidfd for the connecting
+/// process from `SO_PEERPIDFD`. The kernel recorded that process at
+/// `connect`, so the descriptor cannot name another process and does not
+/// follow a reused pid. An error refuses the connection: the server closes it
+/// unserved, and a retained issue monitor records the refusal.
+pub trait ConnectionAdmission: Send + Sync {
+    /// Admits the connecting process, returning the id its requests must
+    /// come from, or refuses it.
+    fn admit(&self, peer: OwnedFd) -> std::io::Result<Admitted>;
+
+    /// Receives, before any connection is admitted, the coordinator's
+    /// [`ExitReporter`]. An admission that observes exits through the pidfds
+    /// it admits keeps it; the default ignores it.
+    fn attach_exit_reporter(&self, _reporter: Arc<dyn ExitReporter>) {}
+}
+
+/// What an admission that observes guest exits may tell, and ask, the
+/// coordinator's global tool during the run; see
+/// [`ConnectionAdmission::attach_exit_reporter`]. Each method forwards to the
+/// global tool's hook of the same purpose. None waits for guest progress, and
+/// after the run each does nothing (or returns nothing).
+pub trait ExitReporter: Send + Sync {
+    /// Guest process `pid` has physically exited
+    /// (`GlobalTool::on_backend_process_exited`).
+    fn process_exited(&self, pid: i32);
+
+    /// The processes whose exit the tool granted and is waiting to see
+    /// complete (`GlobalTool::backend_pending_process_exits`), for a
+    /// watchdog.
+    fn pending_process_exits(&self) -> Vec<i32>;
+
+    /// The run cannot continue faithfully
+    /// (`GlobalTool::report_backend_failure`).
+    fn backend_failed(&self, failure: reverie::BackendFailure);
+}
+
+/// A pidfd for the process that connected `stream`.
+fn peer_pidfd(stream: &impl AsRawFd) -> std::io::Result<OwnedFd> {
+    let mut fd: libc::c_int = -1;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            SO_PEERPIDFD,
+            &mut fd as *mut libc::c_int as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if fd < 0 || len as usize != std::mem::size_of::<libc::c_int>() {
+        return Err(std::io::Error::other(format!(
+            "SO_PEERPIDFD returned descriptor {fd} (length {len})"
+        )));
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Runs `admission`, if any, on an accepted connection.
+fn admit_connection(
+    admission: Option<&Arc<dyn ConnectionAdmission>>,
+    stream: &UnixStream,
+) -> Result<Option<Admitted>, RpcError> {
+    let Some(admission) = admission else {
+        return Ok(None);
+    };
+    let peer = peer_pidfd(stream)?;
+    Ok(Some(admission.admit(peer)?))
+}
+
 /// A coordinator that serves one shared [`GlobalTool`] instance to many guest
 /// processes over a Unix-domain socket.
 pub struct RpcServer<G: GlobalTool> {
@@ -50,6 +141,7 @@ pub struct RpcServer<G: GlobalTool> {
     connection_readiness: Option<Arc<AtomicBool>>,
     connections: ConnectionMonitor,
     issues: Option<RpcIssueMonitor>,
+    admission: Option<Arc<dyn ConnectionAdmission>>,
 }
 
 /// Actual connection failures, retained independently of the serving task.
@@ -299,7 +391,14 @@ where
             connection_readiness,
             connections: ConnectionMonitor::new(),
             issues: None,
+            admission: None,
         })
+    }
+
+    /// Admits every later connection through `admission` before serving it;
+    /// see [`ConnectionAdmission`].
+    pub fn set_connection_admission(&mut self, admission: Arc<dyn ConnectionAdmission>) {
+        self.admission = Some(admission);
     }
 
     /// The filesystem path this coordinator is listening on. Guests connect
@@ -370,10 +469,21 @@ where
                 completed: false,
             };
             let retain_issues = self.issues.is_some();
+            let admission = self.admission.clone();
             connections.spawn(async move {
                 let _connection_guard = connection_guard;
-                let future =
-                    serve_connection_inner(global, config, stream, readiness, connection_readiness);
+                let future = async move {
+                    let admitted = admit_connection(admission.as_ref(), &stream)?;
+                    serve_connection_inner(
+                        global,
+                        config,
+                        stream,
+                        readiness,
+                        connection_readiness,
+                        admitted,
+                    )
+                    .await
+                };
                 if retain_issues {
                     let mut future = std::pin::pin!(future);
                     let result = std::future::poll_fn(|context| {
@@ -404,12 +514,14 @@ where
     pub async fn serve_one(&self) -> Result<(), RpcError> {
         let (stream, _addr) = self.listener.accept().await?;
         let _connection_guard = self.connections.connected();
+        let admitted = admit_connection(self.admission.as_ref(), &stream)?;
         serve_connection_inner(
             self.global.clone(),
             self.config.clone(),
             stream,
             self.readiness.clone(),
             self.connection_readiness.clone(),
+            admitted,
         )
         .await
     }
@@ -444,7 +556,7 @@ pub async fn serve_connection<G>(
 where
     G: GlobalTool,
 {
-    serve_connection_inner(global, config, stream, None, None).await
+    serve_connection_inner(global, config, stream, None, None, None).await
 }
 
 /// Serve an independently owned asynchronous byte stream using the same
@@ -462,7 +574,7 @@ where
     G: GlobalTool,
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    serve_connection_inner(global, config, stream, None, None).await
+    serve_connection_inner(global, config, stream, None, None, None).await
 }
 
 async fn serve_connection_inner<G, S>(
@@ -471,6 +583,7 @@ async fn serve_connection_inner<G, S>(
     mut stream: S,
     readiness: Option<Arc<AtomicBool>>,
     connection_readiness: Option<Arc<AtomicBool>>,
+    mut admitted: Option<Admitted>,
 ) -> Result<(), RpcError>
 where
     G: GlobalTool,
@@ -497,6 +610,17 @@ where
         };
         let RequestEnvelope { from, request } =
             decode::<RequestEnvelope<G::Request>>(&request_bytes)?;
+        // An admitted connection's first request must come from the admitted
+        // process: a guest process is single-threaded, and a forked child
+        // reconnects before it sends anything, so its first sender is itself.
+        if let Some(Admitted { process_id }) = admitted.take() {
+            if from.as_raw() != process_id {
+                return Err(RpcError::Io(std::io::Error::other(format!(
+                    "connection admitted for process {process_id} sent its first request as {}",
+                    from.as_raw()
+                ))));
+            }
+        }
         if let Some(readiness) = &readiness {
             readiness.store(true, Ordering::Release);
         }

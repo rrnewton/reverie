@@ -208,6 +208,22 @@ pub trait GlobalTool: Send + Sync + Default {
         Ok(())
     }
 
+    /// Reports that guest process `pid` has physically left the host, for a
+    /// backend whose process exits complete asynchronously
+    /// ([`crate::BackendCapabilities::process_exits_complete_asynchronously`]).
+    /// The backend calls it once per process, after the kernel has published
+    /// the exit to the parent. It must not wait for guest progress.
+    fn on_backend_process_exited(&self, _pid: i32) {}
+
+    /// The guest processes whose exit the tool has granted and whose physical
+    /// exit has not been reported through
+    /// [`GlobalTool::on_backend_process_exited`] yet. A backend whose process
+    /// exits complete asynchronously reads it from a watchdog, to notice an
+    /// exit that never completes. It must not wait for guest progress.
+    fn backend_pending_process_exits(&self) -> Vec<i32> {
+        Vec::new()
+    }
+
     /// Receive a (potentially) inter-process upcall on the global state object.
     /// This intended to be IPC, inter-process communication, in some backends,
     /// and a local method call in others, but never truly a communication

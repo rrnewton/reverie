@@ -274,6 +274,24 @@ any application thread starts.
   mappings disappear. It remains fail closed; completing exec requires a
   non-seccomp in-guest coverage mechanism or another bootstrap that does not
   reintroduce a ptracer.
+- Process exits complete asynchronously (`BackendCapabilities::
+  process_exits_complete_asynchronously`): a guest process leaves the host some
+  time after the tool grants its exit. A tool that holds scheduling until each
+  exit is physically complete (Hermit's Detcore does) needs the coordinator's
+  owner to report completions; `LiteinstBackend::with_connection_admission`
+  hands it each connecting process's pidfd for that. Under such a hold, these
+  topologies cannot make progress, because the exiting process waits on
+  another guest that needs a scheduler turn:
+  - a guest serving FUSE or CUSE (holding a `/dev/fuse` or `/dev/cuse` device
+    descriptor) or holding a seccomp user-notification listener: refused by
+    the tool with a named error;
+  - a guest serving a kernel network-filesystem client (NFS, CIFS, 9p) mounted
+    outside the guest set: unsupported. A tool can only detect the stall
+    (Hermit fails the run by name after a 1 s kernel wait or its 60 s
+    watchdog); a soft mount whose retry budget expires in under 1 s can
+    complete with semantics that differ from a ptrace run;
+  - a guest serving another guest's userfaultfd faults: supported, but a stall
+    is only detected, as for the network-filesystem case.
 - This is in-process instrumentation, not a security sandbox.
 
 Hermit CLI linkage and a published `liteinst2` revision are separate integration
