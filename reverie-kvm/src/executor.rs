@@ -570,12 +570,9 @@ fn execute_basic_syscall_dispatch(
         && args[0] >= BOOT_RESERVED_END.max(state.min_break)
         && args[0] < state.brk_limit
         && if args[0] > state.program_break {
-            owner.range_contains_shared_file(
-                state.program_break,
-                (args[0] - state.program_break)
-                    .try_into()
-                    .unwrap_or(usize::MAX),
-            )
+            // The break is a user address (a PIE window's is not physical).
+            owner
+                .user_range_contains_shared_file(state.program_break, args[0] - state.program_break)
         } else {
             // Shrinking also retires mappings. Check the exact page-rounded
             // interval used by brk, before its legacy errno adapter could
@@ -585,7 +582,7 @@ fn execute_basic_syscall_dispatch(
                 align_up(state.program_break, PAGE_SIZE),
             ) {
                 (Some(start), Some(end)) if end > start => {
-                    owner.range_contains_shared_file(start, (end - start) as usize)
+                    owner.user_range_contains_shared_file(start, end - start)
                 }
                 _ => false,
             }
@@ -18991,23 +18988,33 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
                 state.mmap_limit
             };
             let guarded = end.saturating_add(PAGE_SIZE).min(identity_top.max(end));
-            if memory.find_unmapped_user_range(first, guarded, guarded - first) != Some(first) {
+            // The break is a user address (in a PIE window, not physical);
+            // the bookkeeping below is by physical address.
+            let Some(physical) = memory.user_range_to_guest(first, guarded - first) else {
+                return state.program_break as i64;
+            };
+            if memory.find_unmapped_user_range(
+                physical,
+                physical + (guarded - first),
+                guarded - first,
+            ) != Some(physical)
+            {
                 return state.program_break as i64;
             }
             let Ok(length) = usize::try_from(end - first) else {
                 return state.program_break as i64;
             };
-            let Ok(reservation) = memory.reserve_region(first, end - first, RegionKind::Heap)
+            let Ok(reservation) = memory.reserve_region(physical, end - first, RegionKind::Heap)
             else {
                 return state.program_break as i64;
             };
-            if memory.zero_raw(first, length).is_err()
-                || memory.map_user_range(first, end - first, false).is_err()
+            if memory.zero_raw(physical, length).is_err()
+                || memory.map_user_range(physical, end - first, false).is_err()
             {
                 return state.program_break as i64;
             }
             reservation.commit();
-            memory.record_file_pages(first, end - first, None);
+            memory.record_file_pages(physical, end - first, None);
         }
     } else if requested < previous {
         let Some(unmap_start) = align_up(requested, PAGE_SIZE) else {
@@ -19018,8 +19025,12 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
         };
         if unmap_end > unmap_start
             && memory
-                .unmap_user_range(unmap_start, unmap_end - unmap_start)
-                .is_err()
+                .user_range_to_guest(unmap_start, unmap_end - unmap_start)
+                .is_none_or(|physical| {
+                    memory
+                        .unmap_user_range(physical, unmap_end - unmap_start)
+                        .is_err()
+                })
         {
             return state.program_break as i64;
         }
@@ -19126,6 +19137,14 @@ pub(crate) fn place_mapping(
         .then_some(physical)
     };
     let window = memory.has_mmap_window();
+    // The top of the identity memory a mapping may fall back to: the identity
+    // end (below a PIE window, if any) in a laid-out memory, the mapping
+    // range's start without a window.
+    let identity_top = if window {
+        memory.user_layout().1
+    } else {
+        state.mmap_base
+    };
     if map_32bit {
         // Linux takes a free hint that ends below 2 GiB, else the lowest free
         // range in [1 GiB, 2 GiB). KVM's guests back little or no memory
@@ -19149,7 +19168,7 @@ pub(crate) fn place_mapping(
         }
         return memory.find_unmapped_user_range_topdown(
             BOOT_RESERVED_END,
-            state.mmap_base.min(MAP_32BIT_END),
+            identity_top.min(MAP_32BIT_END),
             length,
         );
     }
@@ -19171,7 +19190,7 @@ pub(crate) fn place_mapping(
         && memory.user_range_to_guest(hint, length).is_none()
         && let Some(found) = memory.find_unmapped_user_range_topdown(
             BOOT_RESERVED_END,
-            hint.min(state.mmap_base),
+            hint.min(identity_top),
             length,
         )
     {
@@ -19203,7 +19222,7 @@ pub(crate) fn place_mapping(
     // (at addresses Linux would not choose), as all of memory did before the
     // window existed.
     top_down(length).or_else(|| {
-        memory.find_unmapped_user_range_topdown(BOOT_RESERVED_END, state.mmap_base, length)
+        memory.find_unmapped_user_range_topdown(BOOT_RESERVED_END, identity_top, length)
     })
 }
 
