@@ -244,8 +244,15 @@ impl BackendCapabilities {
 
     /// `reverie-dbt`: the guest runs under dynamic binary translation with the
     /// tool in the guest process.
+    ///
+    /// A DBT process runs as its own host process, so its final exit is a
+    /// separate kernel event after the tool's logical cleanup. The backend
+    /// reports it through the host process and thread identities it hands the
+    /// tool for every thread (the same ones thread-directed signals need): the
+    /// tool can observe each process's exit from them.
     pub const DBT: Self = Self {
         needs_killed_thread_rpc_cancellation: true,
+        reports_physical_process_exits: true,
         tracks_process_children: false,
         runs_exit_robust_list: false,
         requires_thread_directed_process_signals: true,
@@ -373,6 +380,7 @@ mod tests {
             table(BackendCapabilities::DBT),
             ptrace_with(serde_json::json!({
                 "needs_killed_thread_rpc_cancellation": true,
+                "reports_physical_process_exits": true,
                 "tracks_process_children": false,
                 "runs_exit_robust_list": false,
                 "requires_thread_directed_process_signals": true,
