@@ -9964,31 +9964,47 @@ mod tests {
         let Some((backend, _executor, _boundary)) = backend_at_completed_tool_boundary() else {
             return;
         };
-        let stack_start = backend.memory.guest_end() - crate::elf::STACK_LIMIT;
-        for address in (PAGE_SIZE..stack_start).step_by(PAGE_SIZE as usize) {
+        // Identity addresses map one-to-one up to the identity end. Every
+        // window's user addresses map onto its physical pages, and those pages'
+        // identity addresses (everything from the identity end up) are unmapped.
+        let (windows, identity_end) = backend.memory.user_layout();
+        assert_eq!(windows.len(), 2, "the mmap and stack windows");
+        for address in (PAGE_SIZE..identity_end).step_by(PAGE_SIZE as usize) {
             let translated = backend.vcpu.translate_gva(address).unwrap();
             assert_eq!(translated.valid, 1, "address {address:#x}");
             assert_eq!(translated.physical_address, address);
         }
-        // The stack's identity addresses are unmapped; its user addresses at the
-        // top of the user address space map onto the same physical pages.
-        let window = crate::memory::USER_ADDRESS_END - crate::elf::STACK_LIMIT;
-        for physical in (stack_start..backend.memory.guest_end()).step_by(PAGE_SIZE as usize) {
+        for physical in (identity_end..backend.memory.guest_end()).step_by(PAGE_SIZE as usize) {
             assert_eq!(
                 backend.vcpu.translate_gva(physical).unwrap().valid,
                 0,
                 "identity address {physical:#x}"
             );
-            let user = window + (physical - stack_start);
-            let translated = backend.vcpu.translate_gva(user).unwrap();
-            if user >= crate::memory::USER_STACK_TOP {
-                // Linux's TASK_SIZE page is not a user address: it faults.
-                assert_eq!(translated.valid, 0, "guard address {user:#x}");
-                continue;
-            }
-            assert_eq!(translated.valid, 1, "user address {user:#x}");
-            assert_eq!(translated.physical_address, physical);
         }
+        for window in &windows {
+            for user in (window.user_start..window.user_end).step_by(PAGE_SIZE as usize) {
+                let translated = backend.vcpu.translate_gva(user).unwrap();
+                assert_eq!(translated.valid, 1, "user address {user:#x}");
+                assert_eq!(translated.physical_address, window.physical(user));
+            }
+        }
+        // Linux's TASK_SIZE page is not a user address: it faults.
+        assert_eq!(
+            backend
+                .vcpu
+                .translate_gva(crate::memory::USER_STACK_TOP)
+                .unwrap()
+                .valid,
+            0
+        );
+        assert_eq!(
+            backend
+                .vcpu
+                .translate_gva(crate::memory::MMAP_BASE)
+                .unwrap()
+                .valid,
+            0
+        );
         for address in [0, 1, PAGE_SIZE - 1] {
             assert_eq!(
                 backend.vcpu.translate_gva(address).unwrap().valid,

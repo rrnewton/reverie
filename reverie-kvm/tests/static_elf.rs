@@ -5170,6 +5170,81 @@ fn static_elf_faults_are_reported_by_direct_and_tool_runtimes() {
     assert_general_protection(io_fault_backend.run_static_elf().unwrap_err());
 }
 
+/// Exec replaces the guest's whole address-space layout. A program with a
+/// large image raises the identity end (in a 256 MiB guest, above the 182 MiB
+/// a small program gets) and touches a page above the small program's
+/// identity end; the small program it then executes faults on that address,
+/// because the new page tables leave it unmapped and the old translation is
+/// not reused.
+#[test]
+fn exec_to_a_lower_identity_end_unmaps_the_old_identity_pages() {
+    let test = "exec_to_a_lower_identity_end_unmaps_the_old_identity_pages";
+    if !kvm_available(test) {
+        return;
+    }
+    let root = TestDirectory::new();
+    let reader = compile_c_program(
+        &root.0,
+        "reader",
+        r#"
+#include <stdlib.h>
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 70;
+  volatile char *page = (volatile char *)strtoull(argv[1], NULL, 0);
+  return *page;
+}
+"#,
+    );
+    let writer_source = format!(
+        r#"
+#include <errno.h>
+#include <stdio.h>
+#include <unistd.h>
+
+static char big[200 << 20];
+
+int main(void) {{
+  volatile char *page = big + (190 << 20);
+  *page = 1;
+  if (*page != 1) return 71;
+  char address[32];
+  snprintf(address, sizeof address, "%p", (void *)page);
+  char *argv[] = {{"reader", address, NULL}};
+  char *envp[] = {{NULL}};
+  execve("{}", argv, envp);
+  return errno;
+}}
+"#,
+        reader.display()
+    );
+    let writer = compile_c_program(&root.0, "writer", &writer_source);
+    let writer = writer.to_str().unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_file_with_context(
+            std::fs::File::open(writer).unwrap(),
+            &[writer],
+            &["PATH=/usr/bin:/bin"],
+            &root.0,
+        )
+        .unwrap();
+    match unwrap_shared_guest_exception(backend.run_static_elf_captured().unwrap_err()) {
+        Error::GuestException {
+            vector,
+            fault_address,
+            ..
+        } => {
+            assert_eq!(vector, 14);
+            assert!(
+                (182 << 20..208 << 20).contains(&fault_address),
+                "fault address {fault_address:#x}"
+            );
+        }
+        error => panic!("expected a page fault in the executed program, got {error}"),
+    }
+}
+
 #[test]
 fn static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes() {
     match Kvm::new() {
@@ -11453,6 +11528,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "getdents64_alias_eof_cleanup_stops_tool_and_guest",
         "static_elf_runs_when_guest_memory_is_not_whole_large_pages",
         "static_elf_vmware_probe_runs_from_the_stack",
+        "exec_to_a_lower_identity_end_unmaps_the_old_identity_pages",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])

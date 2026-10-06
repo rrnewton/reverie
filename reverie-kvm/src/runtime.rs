@@ -1755,7 +1755,8 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         // initial stack's run ends at most at USER_STACK_TOP, at the top of the
         // user address space as on Linux. A stack below it (a thread's, in
         // memory it mapped) ends at its first inaccessible page, at most at
-        // the window's identity range or the end of guest memory. The unused pages below rsp are deterministically zeroed at
+        // the end of the window or identity addresses holding it. The unused
+        // pages below rsp are deterministically zeroed at
         // setup, so hashing the live region is both cheaper than the full
         // mapping and deterministic across the two runs of a `--verify` pair
         // (execution is deterministic, so rsp is identical at the same syscall
@@ -1778,12 +1779,17 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
 /// `rsp` upward and stops at the first page a read would fault on, so it can
 /// always be read whole. `None` when `rsp` is not on an accessible page.
 fn live_stack_end(memory: &GuestMemory, rsp: u64) -> Option<u64> {
-    let window = memory.user_stack_window_length();
-    let low_end = memory.guest_end() - window.unwrap_or(0);
-    let limit = if window.is_some_and(|length| rsp >= crate::memory::USER_ADDRESS_END - length) {
-        crate::memory::USER_STACK_TOP
-    } else if rsp >= memory.guest_base() && rsp < low_end {
-        low_end
+    // The run cannot pass the end of the user addresses holding rsp: the
+    // window holding it (the initial stack's, or the mmap window, where
+    // threads' stacks are mapped), or else the identity addresses.
+    let (windows, identity_end) = memory.user_layout();
+    let limit = if let Some(window) = windows
+        .iter()
+        .find(|window| window.user_start <= rsp && rsp < window.user_end)
+    {
+        window.user_end
+    } else if rsp >= memory.guest_base() && rsp < identity_end {
+        identity_end
     } else {
         return None;
     };
@@ -6417,6 +6423,53 @@ mod tests {
             super::live_stack_end(&memory, crate::memory::USER_STACK_TOP),
             None
         );
+
+        let read = |memory: &GuestMemory| {
+            let mut bytes = vec![0; (end - rsp) as usize];
+            memory
+                .read_exact(Addr::<u8>::from_raw(rsp as usize).unwrap(), &mut bytes)
+                .unwrap();
+            bytes
+        };
+        let before = read(&memory);
+        MemoryAccess::write(
+            &mut memory,
+            AddrMut::<u8>::from_raw((rsp + 8) as usize).unwrap(),
+            &[0x5a],
+        )
+        .unwrap();
+        assert_ne!(read(&memory), before);
+    }
+
+    /// In Linux's layout a thread's stack is mapped in the mmap window. Its live
+    /// region runs from rsp to its first unmapped page, can be read whole, and
+    /// the read sees writes to the stack.
+    #[test]
+    fn live_stack_end_covers_thread_stacks_in_the_mmap_window() {
+        use reverie::syscalls::Addr;
+        use reverie::syscalls::AddrMut;
+        use reverie::syscalls::MemoryAccess;
+
+        const MIB: u64 = 1024 * 1024;
+        let mut memory = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        crate::elf::establish_linux_layout(&mut memory, 0x20_2000, MIB, None)
+            .unwrap()
+            .unwrap();
+        memory.establish_user_stack_window(8 * MIB).unwrap();
+        // A 64 KiB thread stack 1 MiB below mmap_base, with unmapped pages
+        // above it.
+        let thread_stack = crate::memory::MMAP_BASE - MIB;
+        let physical = memory.user_range_to_guest(thread_stack, 64 * 1024).unwrap();
+        assert!(physical >= memory.user_layout().1);
+        memory.map_user_range(physical, 64 * 1024, false).unwrap();
+        memory.enable_user_access();
+
+        let rsp = thread_stack + 60 * 1024;
+        let end = super::live_stack_end(&memory, rsp).unwrap();
+        assert_eq!(end, thread_stack + 64 * 1024);
+        assert_eq!(super::live_stack_end(&memory, end), None);
+        // The stack's physical address is not a user address.
+        assert_eq!(super::live_stack_end(&memory, physical + 60 * 1024), None);
 
         let read = |memory: &GuestMemory| {
             let mut bytes = vec![0; (end - rsp) as usize];

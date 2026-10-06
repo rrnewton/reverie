@@ -474,6 +474,7 @@ impl GuestMemory {
                 }
                 None => {
                     prepared.pages.remove(&page);
+                    prepared.file_pages.remove(&page);
                     if !prepared
                         .reservations
                         .get(&page)
@@ -1012,11 +1013,12 @@ impl UserMemory {
     /// rollback of arbitrary intervening syscall effects.
     pub(crate) fn preflight_atomic_store(&self, address: u64, length: usize) -> Result<()> {
         self.memory.with_copy(|copy| {
-            self.translate_admitted(address, length, copy)?;
+            let physical = self.translate_admitted(address, length, copy)?;
             if self.user_writable_prefix_admitted(address, length, copy)? != length {
                 return Err(Error::GuestMemoryAccessDenied { address, length });
             }
-            if self.memory.range_contains_shared_file(address, length) {
+            // Shared-file metadata is by physical address.
+            if self.memory.range_contains_shared_file(physical, length) {
                 return Err(Error::SharedFileCapability { operation: "atomic scalar store", reason: "truncate-capable file backing has no proven fault-contained atomic store" });
             }
             Ok(())

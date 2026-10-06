@@ -46,6 +46,7 @@ use crate::elf::load_static_elf;
 use crate::elf::resolve_executable_path;
 use crate::memory::AllocationCursors;
 use crate::memory::HostMemoryOperand;
+use crate::memory::MMAP_BASE;
 use crate::memory::RegionKind;
 use crate::signal::GuestStack;
 use crate::signal::KERNEL_SIGACTION_SIZE;
@@ -554,8 +555,9 @@ fn execute_basic_syscall_dispatch(
             Err(error) => SyscallAction::Failure(error),
         };
     }
-    if number == libc::SYS_munmap as u64
-        && owner.range_contains_shared_file(args[0], args[1].try_into().unwrap_or(usize::MAX))
+    // The shared-file metadata is by physical address; the munmap range is a
+    // user address (a window's, in Linux's layout).
+    if number == libc::SYS_munmap as u64 && owner.user_range_contains_shared_file(args[0], args[1])
     {
         return match munmap_shared_file(&owner, args[0], args[1], transaction) {
             Ok(result) => continue_with(result),
@@ -18959,21 +18961,45 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
     }
     let previous = state.program_break;
     if requested > previous {
-        let Ok(length) = usize::try_from(requested - previous) else {
+        // As on Linux, growth adds only the whole pages from the old break's
+        // page end to the new break's; the page holding the old break stays
+        // as it is, and growth within it only moves the break.
+        let (Some(first), Some(end)) = (
+            align_up(previous, PAGE_SIZE),
+            align_up(requested, PAGE_SIZE),
+        ) else {
             return state.program_break as i64;
         };
-        let Ok(reservation) = memory.reserve_region(previous, length as u64, RegionKind::Heap)
-        else {
-            return state.program_break as i64;
-        };
-        if memory.zero_raw(previous, length).is_err()
-            || memory
-                .map_user_range(previous, requested - previous, false)
-                .is_err()
-        {
-            return state.program_break as i64;
+        if end > first {
+            // Like Linux, refuse growth that reaches a mapping or the page
+            // below one (brk keeps a page between the new break and the next
+            // mapping), before anything changes. The check stops where the
+            // identity addresses above the break end: at the window, or at
+            // the end of the mapping range without one.
+            let identity_top = if memory.has_mmap_window() {
+                state.brk_limit
+            } else {
+                state.mmap_limit
+            };
+            let guarded = end.saturating_add(PAGE_SIZE).min(identity_top.max(end));
+            if memory.find_unmapped_user_range(first, guarded, guarded - first) != Some(first) {
+                return state.program_break as i64;
+            }
+            let Ok(length) = usize::try_from(end - first) else {
+                return state.program_break as i64;
+            };
+            let Ok(reservation) = memory.reserve_region(first, end - first, RegionKind::Heap)
+            else {
+                return state.program_break as i64;
+            };
+            if memory.zero_raw(first, length).is_err()
+                || memory.map_user_range(first, end - first, false).is_err()
+            {
+                return state.program_break as i64;
+            }
+            reservation.commit();
+            memory.record_file_pages(first, end - first, None);
         }
-        reservation.commit();
     } else if requested < previous {
         let Some(unmap_start) = align_up(requested, PAGE_SIZE) else {
             return state.program_break as i64;
@@ -18993,12 +19019,183 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
     requested as i64
 }
 
+#[cfg(test)]
+pub(crate) fn test_brk(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    requested: u64,
+) -> i64 {
+    brk(memory, state, requested)
+}
+
 // TODO-HUMAN-REVIEW(PR-235): Review deterministic hole-first mmap allocation.
-fn find_mmap_address(memory: &GuestMemory, state: &LoadedStaticElf, length: u64) -> Option<u64> {
-    let next = state.mmap_next.clamp(state.mmap_base, state.mmap_limit);
+/// Bottom-up placement in `[mmap_base, limit)` for a memory without an mmap
+/// window: the lowest hole below the cursor, else the lowest range from the
+/// cursor up, else (a hole that the cursor splits) the lowest range anywhere.
+fn legacy_placement(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    length: u64,
+    limit: u64,
+) -> Option<u64> {
+    let next = state
+        .mmap_next
+        .clamp(state.mmap_base, limit.max(state.mmap_base));
     memory
         .find_unmapped_user_range(state.mmap_base, next, length)
-        .or_else(|| memory.find_unmapped_user_range(next, state.mmap_limit, length))
+        .or_else(|| memory.find_unmapped_user_range(next, limit, length))
+        .or_else(|| memory.find_unmapped_user_range(state.mmap_base, limit, length))
+}
+
+/// Where mremap moves the mapping at physical `old_address`: as Linux does,
+/// by the mapping's kind, a regular file keeping its file offset.
+fn find_mremap_destination(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    old_address: u64,
+    length: u64,
+) -> Option<u64> {
+    let kind = memory
+        .file_offset(old_address)
+        .map_or(MappingKind::Anonymous, MappingKind::RegularFile);
+    place_mapping(memory, state, length, 0, kind, false)
+}
+
+/// What a mapping without MAP_FIXED maps, which decides Linux's alignment.
+#[derive(Clone, Copy)]
+pub(crate) enum MappingKind {
+    Anonymous,
+    /// A regular file at this offset.
+    RegularFile(u64),
+    /// Anything else (a device, a pipe): no alignment.
+    Other,
+}
+
+impl MappingKind {
+    pub(crate) fn file_offset(self) -> Option<u64> {
+        match self {
+            Self::RegularFile(offset) => Some(offset),
+            _ => None,
+        }
+    }
+}
+
+const LARGE_PAGE: u64 = 2 * 1024 * 1024;
+/// Linux's default vm.mmap_min_addr: the lowest address a hint is raised to.
+const MMAP_MIN_ADDR: u64 = 0x1_0000;
+/// MAP_32BIT mappings lie below 2 GiB.
+const MAP_32BIT_END: u64 = 0x8000_0000;
+
+/// The physical address Linux would choose for a `length`-byte mapping without
+/// MAP_FIXED. In a memory with Linux's layout (see the K2 design note): a free
+/// page-aligned hint is used as it is; otherwise the highest free gap below
+/// mmap_base, with Linux's large-page alignment (`__thp_get_unmapped_area`)
+/// for an anonymous mapping whose length is a whole number of large pages and
+/// for a regular file range holding a whole aligned large page. A MAP_32BIT
+/// mapping stays below 2 GiB. A memory a loader never laid out keeps the
+/// bottom-up allocator.
+pub(crate) fn place_mapping(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    length: u64,
+    hint: u64,
+    kind: MappingKind,
+    map_32bit: bool,
+) -> Option<u64> {
+    // Linux rounds a hint down to a page and raises a nonzero one to
+    // mmap_min_addr (do_mmap's round_hint_to_min).
+    let hint = match hint & !(PAGE_SIZE - 1) {
+        0 => 0,
+        hint => hint.max(MMAP_MIN_ADDR),
+    };
+    let free_hint = |hint: u64| {
+        let physical = memory.user_range_to_guest(hint, length)?;
+        (physical >= BOOT_RESERVED_END
+            && physical.checked_add(length)? <= state.mmap_limit
+            && memory.find_unmapped_user_range(physical, physical + length, length)
+                == Some(physical))
+        .then_some(physical)
+    };
+    let window = memory.has_mmap_window();
+    if map_32bit {
+        // Linux takes a free hint that ends below 2 GiB, else the lowest free
+        // range in [1 GiB, 2 GiB). KVM's guests back little or no memory
+        // there. Without a window, the mapping range's part below 2 GiB comes
+        // first, bottom-up as there; then, in either layout, the highest free
+        // identity memory below 2 GiB and below the mapping range.
+        if hint != 0
+            && hint
+                .checked_add(length)
+                .is_some_and(|end| end <= MAP_32BIT_END)
+            && let Some(physical) = free_hint(hint)
+        {
+            return Some(physical);
+        }
+        let low_limit = state.mmap_limit.min(MAP_32BIT_END);
+        if !window
+            && state.mmap_base < low_limit
+            && let Some(found) = legacy_placement(memory, state, length, low_limit)
+        {
+            return Some(found);
+        }
+        return memory.find_unmapped_user_range_topdown(
+            BOOT_RESERVED_END,
+            state.mmap_base.min(MAP_32BIT_END),
+            length,
+        );
+    }
+    if !window {
+        return legacy_placement(memory, state, length, state.mmap_limit);
+    }
+    if hint != 0
+        && let Some(physical) = free_hint(hint)
+    {
+        return Some(physical);
+    }
+    // Linux maps at a free hint wherever it is. A low hint KVM cannot back
+    // exactly (memory exists only below the identity end and in the windows)
+    // gets the highest free range of identity memory below it, so the result
+    // stays low and near the hint rather than at the top of the address space.
+    // A hint KVM can back but is occupied is ignored, as Linux ignores it.
+    if hint != 0
+        && hint < MMAP_BASE / 2
+        && memory.user_range_to_guest(hint, length).is_none()
+        && let Some(found) = memory.find_unmapped_user_range_topdown(
+            BOOT_RESERVED_END,
+            hint.min(state.mmap_base),
+            length,
+        )
+    {
+        return Some(found);
+    }
+    let top_down =
+        |length| memory.find_unmapped_user_range_topdown(state.mmap_base, state.mmap_limit, length);
+    let offset = match kind {
+        // Linux aligns an anonymous mapping only when it has no hint.
+        MappingKind::Anonymous if hint == 0 && length.is_multiple_of(LARGE_PAGE) => Some(0),
+        MappingKind::RegularFile(offset)
+            if offset.checked_add(length).is_some_and(|end| {
+                end / LARGE_PAGE * LARGE_PAGE > align_up(offset, LARGE_PAGE).unwrap_or(u64::MAX)
+            }) =>
+        {
+            Some(offset)
+        }
+        _ => None,
+    };
+    if let Some(offset) = offset
+        && let Some(padded) = length.checked_add(LARGE_PAGE)
+        && let Some(found) = top_down(padded)
+    {
+        let user = memory.physical_to_user(found)?;
+        let shift = offset.wrapping_sub(user) & (LARGE_PAGE - 1);
+        return Some(found + if shift == 0 { LARGE_PAGE } else { shift });
+    }
+    // When the window is full, identity memory below it still holds mappings
+    // (at addresses Linux would not choose), as all of memory did before the
+    // window existed.
+    top_down(length).or_else(|| {
+        memory.find_unmapped_user_range_topdown(BOOT_RESERVED_END, state.mmap_base, length)
+    })
 }
 
 fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -19036,12 +19233,28 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         // Do not expose the non-mappable eventfd carrier's ESPIPE result.
         return negative_errno(libc::ENODEV);
     }
-    // Linux treats a nonfixed address as a hint. This bounded personality uses
-    // its deterministic allocator rather than risking an occupied mapping.
-    let address = if fixed {
-        args[0]
+    let kind = if is_anonymous {
+        MappingKind::Anonymous
     } else {
-        let Some(address) = find_mmap_address(memory, state, length) else {
+        match state
+            .files
+            .get(&(args[4] as libc::c_int))
+            .map(std::fs::File::metadata)
+        {
+            Some(Ok(metadata)) if metadata.is_file() => MappingKind::RegularFile(args[5]),
+            _ => MappingKind::Other,
+        }
+    };
+    // A MAP_FIXED address is a user address; the bookkeeping below is by
+    // physical address, and the result is the user address.
+    let address = if fixed {
+        let Some(address) = memory.user_range_to_guest(args[0], length) else {
+            return negative_errno(libc::ENOMEM);
+        };
+        address
+    } else {
+        let map_32bit = flags & libc::MAP_32BIT as u64 != 0;
+        let Some(address) = place_mapping(memory, state, length, args[0], kind, map_32bit) else {
             return negative_errno(libc::ENOMEM);
         };
         address
@@ -19129,10 +19342,11 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     }
 
     reservation.commit();
+    memory.record_file_pages(address, length as u64, kind.file_offset());
     if !fixed {
         state.mmap_next = state.mmap_next.max(end);
     }
-    address as i64
+    memory.physical_to_user(address).unwrap_or(address) as i64
 }
 
 fn munmap(memory: &mut GuestMemory, address: u64, length: u64) -> i64 {
@@ -19284,10 +19498,9 @@ fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
 }
 
 fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    // The source is named by its user address (a stack range sits in the stack
-    // window); the bookkeeping below is by physical address. A remap in place
-    // returns the user address. A move lands below mmap_limit, where user and
-    // physical addresses are the same, as does a MREMAP_FIXED destination.
+    // The source and a MREMAP_FIXED destination are user addresses (a window's,
+    // in Linux's layout); the bookkeeping below is by physical address, and the
+    // result is the user address of wherever the mapping ends up.
     let user_address = args[0];
     let Some(old_length) = align_up(args[1], PAGE_SIZE) else {
         return negative_errno(libc::EINVAL);
@@ -19337,7 +19550,11 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
             return negative_errno(libc::ENOMEM);
         };
         let extension_length = new_length - old_length;
+        // The grown range must stay one run of user addresses: growing across
+        // the identity end or a window's end would reach pages with no user
+        // address.
         if new_end <= state.mmap_limit
+            && memory.user_range_to_guest(user_address, new_length) == Some(old_address)
             && memory.find_unmapped_user_range(old_end, new_end, extension_length) == Some(old_end)
         {
             let Ok(extension) = usize::try_from(new_length - old_length) else {
@@ -19365,9 +19582,13 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
         return negative_errno(libc::ENOMEM);
     }
     let destination = if flags & libc::MREMAP_FIXED as u64 != 0 {
-        args[4]
+        let Some(destination) = memory.user_range_to_guest(args[4], new_length) else {
+            return negative_errno(libc::EINVAL);
+        };
+        destination
     } else {
-        let Some(destination) = find_mmap_address(memory, state, new_length) else {
+        let Some(destination) = find_mremap_destination(memory, state, old_address, new_length)
+        else {
             return negative_errno(libc::ENOMEM);
         };
         destination
@@ -19416,7 +19637,7 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     if flags & libc::MREMAP_FIXED as u64 == 0 {
         state.mmap_next = state.mmap_next.max(destination_end);
     }
-    destination as i64
+    memory.physical_to_user(destination).unwrap_or(destination) as i64
 }
 
 fn validate_range(memory: &GuestMemory, address: u64, length: u64) -> i64 {
@@ -20920,7 +21141,7 @@ fn preflight_wait_shared_outputs(
     if !offsets.iter().any(|offset| {
         address
             .checked_add(*offset)
-            .is_some_and(|address| memory.range_contains_shared_file(address, 4))
+            .is_some_and(|address| memory.user_range_contains_shared_file(address, 4))
     }) {
         return Ok(());
     }
@@ -20955,7 +21176,7 @@ fn wait4_result(
         return Ok(negative_errno(libc::EINVAL));
     }
     let nonblocking = args[2] as libc::c_int & libc::WNOHANG != 0;
-    if args[1] != 0 && memory.range_contains_shared_file(args[1], 4) {
+    if args[1] != 0 && memory.user_range_contains_shared_file(args[1], 4) {
         // This observation never consumes a ready child. A no-result return
         // does not attempt a status store, so its native ECHILD/zero result
         // precedes the shared scalar capability check. A ready or potentially
@@ -21867,7 +22088,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_mapping_in_brk_gap_is_replaced_and_released_by_heap_growth_and_shrink() {
+    fn fixed_mapping_in_brk_gap_blocks_heap_growth_until_unmapped() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         state.heap_base = BOOT_RESERVED_END;
@@ -21899,6 +22120,33 @@ mod tests {
         assert_eq!(memory.reservation_kind(address), Some(RegionKind::Mmap));
         assert_eq!(memory.user().user_writable_prefix(address, 16).unwrap(), 0);
         let new_break = address + PAGE_SIZE;
+        // As on Linux, the break does not grow over the mapping: brk returns
+        // the old break, and the mapping keeps its bytes and permissions.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_brk,
+                [new_break, 0, 0, 0, 0, 0]
+            ),
+            state.heap_base as i64
+        );
+        assert_eq!(memory.reservation_kind(address), Some(RegionKind::Mmap));
+        assert_eq!(memory.user().user_writable_prefix(address, 16).unwrap(), 0);
+        let mut kept = [0; 16];
+        memory.read_raw(address, &mut kept).unwrap();
+        assert_eq!(kept, [0xa5; 16]);
+        // Once it is unmapped, the break grows over its pages, which the heap
+        // owns, zeroed and writable, and shrinking releases them.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munmap,
+                [address, PAGE_SIZE, 0, 0, 0, 0]
+            ),
+            0
+        );
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -53242,6 +53490,869 @@ mod tests {
         );
         let unmapped = AddrMut::from_raw((window + 2 * PAGE_SIZE) as usize).unwrap();
         assert!(MemoryAccess::write(&mut memory, unmapped, &[0x33; 8]).is_err());
+    }
+
+    /// In Linux's layout, mappings without MAP_FIXED are placed as Linux 7.x
+    /// places them (measured under ptrace; see the K2 design note): top-down
+    /// below mmap_base and the host vDSO pages, with large-page alignment for
+    /// an anonymous length that is a whole number of large pages (and no hint)
+    /// and for a regular file range holding an aligned large page; a free hint
+    /// is used as is and an occupied one ignored; MAP_FIXED reaches the
+    /// identity addresses below the identity end and is refused at it; a
+    /// mapping the window cannot hold goes to identity memory.
+    #[test]
+    fn mappings_follow_linux_top_down_placement() {
+        const MIB: u64 = 1024 * 1024;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (128 * MIB) as usize).unwrap();
+        let layout = crate::elf::establish_linux_layout(
+            &mut memory,
+            BOOT_RESERVED_END + PAGE_SIZE,
+            MIB,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(layout.identity_end, 86 * MIB);
+        crate::elf::reserve_vdso_gap(&mut memory, layout.mmap_end).unwrap();
+        state.mmap_base = layout.identity_end;
+        state.mmap_next = layout.identity_end;
+        state.mmap_limit = layout.mmap_end;
+        state.brk_limit = layout.identity_end;
+        memory.enable_user_access();
+        let large = root.0.join("three-mib.bin");
+        std::fs::write(&large, vec![0; 0x30_0000]).unwrap();
+        let small = root.0.join("small.bin");
+        std::fs::write(&small, vec![0; 29_499]).unwrap();
+        state.files.insert(3, std::fs::File::open(&large).unwrap());
+        state.files.insert(4, std::fs::File::open(&small).unwrap());
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let anonymous = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
+        let mut map = |memory: &mut GuestMemory, args: [u64; 6]| {
+            syscall_result(memory, &mut state, libc::SYS_mmap, args)
+        };
+        for (length, expected) in [
+            (0x1000, 0x7fff_f7ff_6000_u64),
+            (0x10_0000, 0x7fff_f7ef_6000),
+            (0x20_0000, 0x7fff_f7c0_0000),
+            (0x20_1000, 0x7fff_f79f_f000),
+            (0x40_0000, 0x7fff_f740_0000),
+            (0x3f_f000, 0x7fff_f700_1000),
+        ] {
+            assert_eq!(
+                map(&mut memory, [0, length, read_write, anonymous, u64::MAX, 0]),
+                expected as i64,
+                "anonymous {length:#x}"
+            );
+        }
+        let private = libc::MAP_PRIVATE as u64;
+        let read = libc::PROT_READ as u64;
+        assert_eq!(
+            map(&mut memory, [0, 0x30_0000, read, private, 3, 0]),
+            0x7fff_f6c0_0000
+        );
+        assert_eq!(
+            // The highest gap that fits: above the aligned large-page mapping.
+            map(&mut memory, [0, 29_499, read, private, 4, 0]),
+            0x7fff_f7ee_e000
+        );
+        let hint = BOOT_RESERVED_END + 16 * PAGE_SIZE;
+        assert_eq!(
+            map(
+                &mut memory,
+                [hint, PAGE_SIZE, read_write, anonymous, u64::MAX, 0]
+            ),
+            hint as i64
+        );
+        // An occupied hint is ignored: the highest gap below mmap_base, not the
+        // free identity memory just below the hint.
+        assert_eq!(
+            map(
+                &mut memory,
+                [hint, PAGE_SIZE, read_write, anonymous, u64::MAX, 0]
+            ),
+            0x7fff_f7ee_d000
+        );
+        // An occupied hint falls back to top-down placement without alignment.
+        assert_eq!(
+            map(
+                &mut memory,
+                [hint, 0x20_0000, read_write, anonymous, u64::MAX, 0]
+            ),
+            0x7fff_f6a0_0000
+        );
+        // A low hint with no memory behind it lands as high as possible in
+        // identity memory below it, not at the top of the address space.
+        let unbacked = 0x1_0000_0000;
+        let placed = map(
+            &mut memory,
+            [unbacked, 2 * PAGE_SIZE, read_write, anonymous, u64::MAX, 0],
+        );
+        assert_eq!(placed as u64, layout.identity_end - 2 * PAGE_SIZE);
+        let fixed = anonymous | libc::MAP_FIXED as u64;
+        let below = layout.identity_end - 3 * PAGE_SIZE;
+        assert_eq!(
+            map(
+                &mut memory,
+                [below, PAGE_SIZE, read_write, fixed, u64::MAX, 0]
+            ),
+            below as i64
+        );
+        assert_eq!(
+            map(
+                &mut memory,
+                [
+                    layout.identity_end,
+                    PAGE_SIZE,
+                    read_write,
+                    fixed,
+                    u64::MAX,
+                    0
+                ]
+            ),
+            negative_errno(libc::ENOMEM)
+        );
+        // 12 MiB of the window is left; 16 MiB goes to the top of the free
+        // identity memory.
+        assert_eq!(
+            map(
+                &mut memory,
+                [0, 16 * MIB, read_write, anonymous, u64::MAX, 0]
+            ),
+            (layout.identity_end - 3 * PAGE_SIZE - 16 * MIB) as i64
+        );
+    }
+
+    /// A guest of `size` bytes laid out as the loader lays out a static
+    /// program at the boot area's end, with the vDSO gap reserved.
+    fn linux_layout_fixture(
+        root: &TestDir,
+        size: u64,
+    ) -> (GuestMemory, LoadedStaticElf, crate::elf::LinuxLayout) {
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, size as usize).unwrap();
+        let layout = crate::elf::establish_linux_layout(
+            &mut memory,
+            BOOT_RESERVED_END + PAGE_SIZE,
+            1024 * 1024,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        crate::elf::reserve_vdso_gap(&mut memory, layout.mmap_end).unwrap();
+        state.mmap_base = layout.identity_end;
+        state.mmap_next = layout.identity_end;
+        state.mmap_limit = layout.mmap_end;
+        state.brk_limit = layout.identity_end;
+        memory.enable_user_access();
+        (memory, state, layout)
+    }
+
+    /// The measured sequence in a 64 MiB guest, whose window (18 MiB) cannot
+    /// hold the 3 MiB file after the anonymous mappings: the file goes to the
+    /// top of identity memory, and later mappings still fill the window as
+    /// Linux fills its address space.
+    #[test]
+    fn mappings_in_a_small_window_fall_back_to_identity_memory() {
+        const MIB: u64 = 1024 * 1024;
+        let root = TestDir::new();
+        let (mut memory, mut state, layout) = linux_layout_fixture(&root, 64 * MIB);
+        assert_eq!(layout.identity_end, 38 * MIB);
+        let large = root.0.join("three-mib.bin");
+        std::fs::write(&large, vec![0; 0x30_0000]).unwrap();
+        let small = root.0.join("small.bin");
+        std::fs::write(&small, vec![0; 29_499]).unwrap();
+        state.files.insert(3, std::fs::File::open(&large).unwrap());
+        state.files.insert(4, std::fs::File::open(&small).unwrap());
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let anonymous = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
+        let mut map = |memory: &mut GuestMemory, args: [u64; 6]| {
+            syscall_result(memory, &mut state, libc::SYS_mmap, args)
+        };
+        for (length, expected) in [
+            (0x1000, 0x7fff_f7ff_6000_u64),
+            (0x10_0000, 0x7fff_f7ef_6000),
+            (0x20_0000, 0x7fff_f7c0_0000),
+            (0x20_1000, 0x7fff_f79f_f000),
+            (0x40_0000, 0x7fff_f740_0000),
+            (0x3f_f000, 0x7fff_f700_1000),
+        ] {
+            assert_eq!(
+                map(&mut memory, [0, length, read_write, anonymous, u64::MAX, 0]),
+                expected as i64,
+                "anonymous {length:#x}"
+            );
+        }
+        let private = libc::MAP_PRIVATE as u64;
+        let read = libc::PROT_READ as u64;
+        assert_eq!(
+            map(&mut memory, [0, 0x30_0000, read, private, 3, 0]),
+            (layout.identity_end - 0x30_0000) as i64
+        );
+        assert_eq!(
+            map(&mut memory, [0, 29_499, read, private, 4, 0]),
+            0x7fff_f7ee_e000
+        );
+    }
+
+    /// A MAP_32BIT mapping lies below 2 GiB: a free hint below 2 GiB as is,
+    /// otherwise the highest free identity memory below 2 GiB (KVM backs
+    /// nothing in Linux's [1 GiB, 2 GiB) search range). MAP_FIXED overrides it.
+    #[test]
+    fn map_32bit_mappings_stay_below_two_gib() {
+        const MIB: u64 = 1024 * 1024;
+        let root = TestDir::new();
+        let (mut memory, mut state, layout) = linux_layout_fixture(&root, 128 * MIB);
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let low = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT) as u64;
+        let map = |memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: [u64; 6]| {
+            syscall_result(memory, state, libc::SYS_mmap, args)
+        };
+        assert_eq!(
+            map(
+                &mut memory,
+                &mut state,
+                [0, PAGE_SIZE, read_write, low, u64::MAX, 0]
+            ),
+            (layout.identity_end - PAGE_SIZE) as i64
+        );
+        assert_eq!(
+            map(
+                &mut memory,
+                &mut state,
+                [0x0400_0000, PAGE_SIZE, read_write, low, u64::MAX, 0]
+            ),
+            0x0400_0000
+        );
+        // A hint above 2 GiB is not used.
+        assert_eq!(
+            map(
+                &mut memory,
+                &mut state,
+                [
+                    MMAP_BASE - 0x10_0000,
+                    PAGE_SIZE,
+                    read_write,
+                    low,
+                    u64::MAX,
+                    0
+                ]
+            ),
+            (layout.identity_end - 2 * PAGE_SIZE) as i64
+        );
+        let fixed = low | libc::MAP_FIXED as u64;
+        assert_eq!(
+            map(
+                &mut memory,
+                &mut state,
+                [
+                    MMAP_BASE - 0x10_0000,
+                    PAGE_SIZE,
+                    read_write,
+                    fixed,
+                    u64::MAX,
+                    0
+                ]
+            ),
+            (MMAP_BASE - 0x10_0000) as i64
+        );
+
+        // A 3 GiB guest's identity memory reaches past 2 GiB; MAP_32BIT stops
+        // below it.
+        let (mut big, mut big_state, big_layout) = linux_layout_fixture(&root, 3072 * MIB);
+        assert!(big_layout.identity_end > MAP_32BIT_END);
+        assert_eq!(
+            map(
+                &mut big,
+                &mut big_state,
+                [0, PAGE_SIZE, read_write, low, u64::MAX, 0]
+            ),
+            (MAP_32BIT_END - PAGE_SIZE) as i64
+        );
+    }
+
+    /// Linux rounds a hint down to a page: an unaligned free hint maps at its
+    /// page, and an unaligned occupied one is ignored. A hint below the first
+    /// page is no hint, so large-page alignment applies.
+    #[test]
+    fn hints_round_down_to_a_page() {
+        const MIB: u64 = 1024 * 1024;
+        let root = TestDir::new();
+        let (mut memory, mut state, _layout) = linux_layout_fixture(&root, 128 * MIB);
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let anonymous = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
+        let mut map = |memory: &mut GuestMemory, args: [u64; 6]| {
+            syscall_result(memory, &mut state, libc::SYS_mmap, args)
+        };
+        assert_eq!(
+            map(
+                &mut memory,
+                [0x0400_0123, PAGE_SIZE, read_write, anonymous, u64::MAX, 0]
+            ),
+            0x0400_0000
+        );
+        assert_eq!(
+            map(
+                &mut memory,
+                [0x0400_0123, PAGE_SIZE, read_write, anonymous, u64::MAX, 0]
+            ),
+            0x7fff_f7ff_6000
+        );
+        assert_eq!(
+            map(
+                &mut memory,
+                [0x10, 2 * MIB, read_write, anonymous, u64::MAX, 0]
+            ),
+            0x7fff_f7c0_0000
+        );
+    }
+
+    /// mremap moves a regular-file mapping as Linux does, by its file offset:
+    /// grown to 4 MiB from offset 0x1000, it lands 0x1000 past a large-page
+    /// boundary, and its pages keep their offsets. An anonymous mapping moved
+    /// the same way lands on a boundary.
+    #[test]
+    fn moved_file_mremap_keeps_its_file_offset_alignment() {
+        const MIB: u64 = 1024 * 1024;
+        let root = TestDir::new();
+        let (mut memory, mut state, _layout) = linux_layout_fixture(&root, 128 * MIB);
+        let path = root.0.join("file.bin");
+        std::fs::write(&path, vec![7; 2 * PAGE_SIZE as usize]).unwrap();
+        state.files.insert(3, std::fs::File::open(&path).unwrap());
+        let read = libc::PROT_READ as u64;
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let private_fixed = (libc::MAP_PRIVATE | libc::MAP_FIXED) as u64;
+        let anonymous_fixed = private_fixed | libc::MAP_ANONYMOUS as u64;
+        let maymove = libc::MREMAP_MAYMOVE as u64;
+        for (start, fd, offset, protection, alignment) in [
+            (0x0400_0000_u64, 3_u64, PAGE_SIZE, read, PAGE_SIZE),
+            (0x0500_0000, u64::MAX, 0, read_write, 0),
+        ] {
+            let flags = if fd == 3 {
+                private_fixed
+            } else {
+                anonymous_fixed
+            };
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_mmap,
+                    [start, PAGE_SIZE, protection, flags, fd, offset]
+                ),
+                start as i64
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_mmap,
+                    [
+                        start + PAGE_SIZE,
+                        PAGE_SIZE,
+                        read_write,
+                        anonymous_fixed,
+                        u64::MAX,
+                        0
+                    ]
+                ),
+                (start + PAGE_SIZE) as i64
+            );
+            let moved = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mremap,
+                [start, PAGE_SIZE, 4 * MIB, maymove, 0, 0],
+            ) as u64;
+            assert!(moved > MAP_32BIT_END, "{moved:#x}");
+            assert_eq!(moved % (2 * MIB), alignment, "{moved:#x}");
+            let physical = memory.user_range_to_guest(moved, 4 * MIB).unwrap();
+            if fd == 3 {
+                assert_eq!(memory.file_offset(physical), Some(PAGE_SIZE));
+                assert_eq!(
+                    memory.file_offset(physical + PAGE_SIZE),
+                    Some(2 * PAGE_SIZE)
+                );
+                let mut byte = [0];
+                memory.user().read(moved, &mut byte).unwrap();
+                assert_eq!(byte, [7]);
+            } else {
+                assert_eq!(memory.file_offset(physical), None);
+            }
+            assert_eq!(memory.file_offset(start), None);
+        }
+    }
+
+    /// In memory too tight for the preferred window, the window ends at the
+    /// stack window with its user end below mmap_base; placement there is
+    /// still Linux's: top-down below the vDSO gap, free hints honoured, and
+    /// MAP_32BIT kept below 2 GiB.
+    #[test]
+    fn a_window_with_a_moved_user_end_places_mappings_as_linux_does() {
+        let root = TestDir::new();
+        let (mut memory, mut state, layout) =
+            linux_layout_fixture(&root, 11 * 1024 * 1024 + 0x1_0000);
+        assert_eq!(layout.mmap_end, 0x31_0000);
+        assert_eq!(layout.mmap_user_end, MMAP_BASE - 0xef000);
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let anonymous = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
+        let mut map = |memory: &mut GuestMemory, args: [u64; 6]| {
+            syscall_result(memory, &mut state, libc::SYS_mmap, args)
+        };
+        assert_eq!(
+            map(
+                &mut memory,
+                [0, PAGE_SIZE, read_write, anonymous, u64::MAX, 0]
+            ),
+            (layout.mmap_user_end - 0x8000 - PAGE_SIZE) as i64
+        );
+        let low = anonymous | libc::MAP_32BIT as u64;
+        assert_eq!(
+            map(&mut memory, [0, PAGE_SIZE, read_write, low, u64::MAX, 0]),
+            (layout.identity_end - PAGE_SIZE) as i64
+        );
+        let hint = BOOT_RESERVED_END + 4 * PAGE_SIZE + 0x123;
+        assert_eq!(
+            map(
+                &mut memory,
+                [hint, PAGE_SIZE, read_write, anonymous, u64::MAX, 0]
+            ),
+            (BOOT_RESERVED_END + 4 * PAGE_SIZE) as i64
+        );
+    }
+
+    /// Without a window (a static program in memory too small for one, or a
+    /// memory no loader laid out), a MAP_32BIT mapping takes a free hint below
+    /// 2 GiB, else the mapping range's part below 2 GiB bottom-up, else the
+    /// highest free identity memory below 2 GiB and below the mapping range,
+    /// even when the mapping range starts above 2 GiB.
+    #[test]
+    fn map_32bit_without_a_window_stays_below_two_gib() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 3 * 1024 * 1024 * 1024).unwrap();
+        memory.enable_user_access();
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let low = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT) as u64;
+        let map = |memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: [u64; 6]| {
+            syscall_result(memory, state, libc::SYS_mmap, args)
+        };
+        state.mmap_base = 0xbf7f_f000;
+        state.mmap_next = 0xbf7f_f000;
+        state.mmap_limit = 0xbf80_0000;
+        memory.set_allocation_cursors(AllocationCursors::from_elf(&state));
+        assert_eq!(
+            map(
+                &mut memory,
+                &mut state,
+                [0x4000_0000, PAGE_SIZE, read_write, low, u64::MAX, 0]
+            ),
+            0x4000_0000
+        );
+        assert_eq!(
+            map(
+                &mut memory,
+                &mut state,
+                [0, PAGE_SIZE, read_write, low, u64::MAX, 0]
+            ),
+            (MAP_32BIT_END - PAGE_SIZE) as i64
+        );
+        state.mmap_base = 0x7fff_c000;
+        state.mmap_next = 0x7fff_c000;
+        memory.set_allocation_cursors(AllocationCursors::from_elf(&state));
+        assert_eq!(
+            map(
+                &mut memory,
+                &mut state,
+                [0, 3 * PAGE_SIZE, read_write, low, u64::MAX, 0]
+            ),
+            0x7fff_c000
+        );
+        assert_eq!(
+            map(
+                &mut memory,
+                &mut state,
+                [0, PAGE_SIZE, read_write, low, u64::MAX, 0]
+            ),
+            0x7fff_b000
+        );
+    }
+
+    /// The program break does not grow into a mapping placed in identity
+    /// memory above it (a MAP_32BIT mapping without a window, or one the
+    /// window could not hold), nor to the page just below it: brk returns the
+    /// old break and the mapping keeps its bytes; growth that leaves a page
+    /// free below the mapping succeeds.
+    #[test]
+    fn brk_refuses_to_grow_into_a_mapping() {
+        const MIB: u64 = 1024 * 1024;
+        let root = TestDir::new();
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let anonymous = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
+        let low = anonymous | libc::MAP_32BIT as u64;
+
+        // No window: the 11 MiB + 12 KiB static layout, one page of mapping
+        // range, so a two-page MAP_32BIT mapping goes just below it.
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (11 * MIB + 0x3000) as usize).unwrap();
+        memory.enable_user_access();
+        state.heap_base = 0x20_2000;
+        state.program_break = 0x20_2000;
+        state.brk_limit = 0x30_2000;
+        state.mmap_base = 0x30_2000;
+        state.mmap_next = 0x30_2000;
+        state.mmap_limit = 0x30_3000;
+        memory.set_allocation_cursors(AllocationCursors::from_elf(&state));
+        // With a window: a 20 MiB mapping the 18 MiB window cannot hold.
+        let (mut windowed, mut windowed_state, layout) = linux_layout_fixture(&root, 64 * MIB);
+        windowed_state.heap_base = 0x30_0000;
+        windowed_state.program_break = 0x30_0000;
+        windowed.set_allocation_cursors(AllocationCursors::from_elf(&windowed_state));
+        for (memory, state, flags, length, expected) in [
+            (&mut memory, &mut state, low, 2 * PAGE_SIZE, 0x30_0000),
+            (
+                &mut windowed,
+                &mut windowed_state,
+                anonymous,
+                20 * MIB,
+                layout.identity_end - 20 * MIB,
+            ),
+        ] {
+            assert_eq!(
+                syscall_result(
+                    memory,
+                    state,
+                    libc::SYS_mmap,
+                    [0, length, read_write, flags, u64::MAX, 0]
+                ),
+                expected as i64
+            );
+            memory.user().write(expected, &[0x5a]).unwrap();
+            let before = state.program_break;
+            assert_eq!(
+                syscall_result(
+                    memory,
+                    state,
+                    libc::SYS_brk,
+                    [expected + PAGE_SIZE, 0, 0, 0, 0, 0]
+                ),
+                before as i64
+            );
+            let mut byte = [0];
+            memory.user().read(expected, &mut byte).unwrap();
+            assert_eq!(byte, [0x5a]);
+            // Linux keeps a page between the break and the mapping.
+            assert_eq!(
+                syscall_result(memory, state, libc::SYS_brk, [expected, 0, 0, 0, 0, 0]),
+                before as i64
+            );
+            assert_eq!(
+                syscall_result(
+                    memory,
+                    state,
+                    libc::SYS_brk,
+                    [expected - PAGE_SIZE, 0, 0, 0, 0, 0]
+                ),
+                (expected - PAGE_SIZE) as i64
+            );
+            memory.user().read(expected, &mut byte).unwrap();
+            assert_eq!(byte, [0x5a]);
+        }
+    }
+
+    /// Heap growth adds only whole pages above the old break's page: a
+    /// mapping now in that page (the heap's page was unmapped and a private
+    /// file page mapped there through a hint) keeps its bytes, permissions,
+    /// reservation and file offset when the break grows past it. Growth
+    /// within the break's page only moves the break, even with a mapping on
+    /// the next page.
+    #[test]
+    fn brk_growth_leaves_the_old_break_page_alone() {
+        const MIB: u64 = 1024 * 1024;
+        let root = TestDir::new();
+        let (mut memory, mut state, _layout) = linux_layout_fixture(&root, 64 * MIB);
+        let base = 0x30_0000;
+        state.heap_base = base;
+        state.program_break = base;
+        memory.set_allocation_cursors(AllocationCursors::from_elf(&state));
+        let path = root.0.join("file.bin");
+        std::fs::write(&path, vec![7; 2 * PAGE_SIZE as usize]).unwrap();
+        state.files.insert(3, std::fs::File::open(&path).unwrap());
+        let read = libc::PROT_READ as u64;
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let call = |memory: &mut GuestMemory, state: &mut LoadedStaticElf, number, args| {
+            syscall_result(memory, state, number, args)
+        };
+        assert_eq!(
+            call(
+                &mut memory,
+                &mut state,
+                libc::SYS_brk,
+                [base + 1, 0, 0, 0, 0, 0]
+            ),
+            (base + 1) as i64
+        );
+        assert_eq!(
+            call(
+                &mut memory,
+                &mut state,
+                libc::SYS_munmap,
+                [base, PAGE_SIZE, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            call(
+                &mut memory,
+                &mut state,
+                libc::SYS_mmap,
+                [
+                    base,
+                    PAGE_SIZE,
+                    read,
+                    libc::MAP_PRIVATE as u64,
+                    3,
+                    PAGE_SIZE
+                ]
+            ),
+            base as i64
+        );
+        assert_eq!(
+            call(
+                &mut memory,
+                &mut state,
+                libc::SYS_brk,
+                [base + PAGE_SIZE + 1, 0, 0, 0, 0, 0]
+            ),
+            (base + PAGE_SIZE + 1) as i64
+        );
+        let mut bytes = [0; 16];
+        memory.user().read(base + 0x100, &mut bytes).unwrap();
+        assert_eq!(bytes, [7; 16]);
+        assert_eq!(
+            memory.user().user_writable_prefix(base + 0x100, 1).unwrap(),
+            0
+        );
+        assert_eq!(memory.reservation_kind(base), Some(RegionKind::Mmap));
+        assert_eq!(memory.file_offset(base), Some(PAGE_SIZE));
+        assert_eq!(
+            memory.reservation_kind(base + PAGE_SIZE),
+            Some(RegionKind::Heap)
+        );
+
+        // Growth within the break's page with a mapping on the next page.
+        let next = base + 2 * PAGE_SIZE;
+        let anonymous_fixed = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64;
+        assert_eq!(
+            call(
+                &mut memory,
+                &mut state,
+                libc::SYS_mmap,
+                [next, PAGE_SIZE, read_write, anonymous_fixed, u64::MAX, 0]
+            ),
+            next as i64
+        );
+        assert_eq!(
+            call(
+                &mut memory,
+                &mut state,
+                libc::SYS_brk,
+                [base + PAGE_SIZE + 2, 0, 0, 0, 0, 0]
+            ),
+            (base + PAGE_SIZE + 2) as i64
+        );
+        assert_eq!(
+            call(
+                &mut memory,
+                &mut state,
+                libc::SYS_brk,
+                [next + 1, 0, 0, 0, 0, 0]
+            ),
+            (base + PAGE_SIZE + 2) as i64
+        );
+    }
+
+    /// Without a window, a free range that the allocation cursor splits is
+    /// still found: map a page, unmap it, and three pages fit where it was.
+    #[test]
+    fn legacy_placement_reuses_a_hole_the_cursor_splits() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 16 * 1024 * 1024).unwrap();
+        memory.enable_user_access();
+        state.mmap_base = 0x30_2000;
+        state.mmap_next = 0x30_2000;
+        state.mmap_limit = 0x30_5000;
+        memory.set_allocation_cursors(AllocationCursors::from_elf(&state));
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let anonymous = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mmap,
+                [0, PAGE_SIZE, read_write, anonymous, u64::MAX, 0]
+            ),
+            0x30_2000
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munmap,
+                [0x30_2000, PAGE_SIZE, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mmap,
+                [0, 3 * PAGE_SIZE, read_write, anonymous, u64::MAX, 0]
+            ),
+            0x30_2000
+        );
+    }
+
+    /// A page that an anonymous mapping replaces through MREMAP_FIXED no
+    /// longer counts as the file page it was: moving it later places it as
+    /// anonymous memory, on a large-page boundary.
+    #[test]
+    fn mremap_fixed_over_a_file_page_drops_its_file_offset() {
+        const MIB: u64 = 1024 * 1024;
+        let root = TestDir::new();
+        let (mut memory, mut state, _layout) = linux_layout_fixture(&root, 128 * MIB);
+        let path = root.0.join("file.bin");
+        std::fs::write(&path, vec![7; 2 * PAGE_SIZE as usize]).unwrap();
+        state.files.insert(3, std::fs::File::open(&path).unwrap());
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let anonymous_fixed = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64;
+        let file_fixed = (libc::MAP_PRIVATE | libc::MAP_FIXED) as u64;
+        let (anonymous, file) = (0x0400_0000_u64, 0x0500_0000_u64);
+        for (address, flags, fd, offset) in [
+            (anonymous, anonymous_fixed, u64::MAX, 0),
+            (file, file_fixed, 3, PAGE_SIZE),
+        ] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_mmap,
+                    [address, PAGE_SIZE, read_write, flags, fd, offset]
+                ),
+                address as i64
+            );
+        }
+        assert_eq!(memory.file_offset(file), Some(PAGE_SIZE));
+        let fixed_move = (libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED) as u64;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mremap,
+                [anonymous, PAGE_SIZE, PAGE_SIZE, fixed_move, file, 0]
+            ),
+            file as i64
+        );
+        assert_eq!(memory.file_offset(file), None);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mmap,
+                [
+                    file + PAGE_SIZE,
+                    PAGE_SIZE,
+                    read_write,
+                    anonymous_fixed,
+                    u64::MAX,
+                    0
+                ]
+            ),
+            (file + PAGE_SIZE) as i64
+        );
+        let moved = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_mremap,
+            [file, PAGE_SIZE, 4 * MIB, libc::MREMAP_MAYMOVE as u64, 0, 0],
+        ) as u64;
+        assert!(moved > MAP_32BIT_END, "{moved:#x}");
+        assert_eq!(moved % (2 * MIB), 0, "{moved:#x}");
+    }
+
+    /// mremap grows a mapping in place only while the grown range stays one run
+    /// of user addresses: a page just below the identity end cannot grow into
+    /// the window's physical memory, which has no identity user address.
+    /// Without MREMAP_MAYMOVE that is ENOMEM; with it the mapping moves.
+    #[test]
+    fn mremap_does_not_grow_across_the_identity_end() {
+        const MIB: u64 = 1024 * 1024;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (64 * MIB) as usize).unwrap();
+        let layout = crate::elf::establish_linux_layout(
+            &mut memory,
+            BOOT_RESERVED_END + PAGE_SIZE,
+            MIB,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        state.mmap_base = layout.identity_end;
+        state.mmap_next = layout.identity_end;
+        state.mmap_limit = layout.mmap_end;
+        state.brk_limit = layout.identity_end;
+        memory.enable_user_access();
+        let read_write = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let fixed = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64;
+        let last = layout.identity_end - PAGE_SIZE;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mmap,
+                [last, PAGE_SIZE, read_write, fixed, u64::MAX, 0]
+            ),
+            last as i64
+        );
+        assert!(
+            memory
+                .find_unmapped_user_range(
+                    layout.identity_end,
+                    layout.identity_end + PAGE_SIZE,
+                    PAGE_SIZE
+                )
+                .is_some()
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mremap,
+                [last, PAGE_SIZE, 2 * PAGE_SIZE, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOMEM)
+        );
+        assert!(memory.user_range_to_guest(last, PAGE_SIZE).is_some());
+        let moved = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_mremap,
+            [
+                last,
+                PAGE_SIZE,
+                2 * PAGE_SIZE,
+                libc::MREMAP_MAYMOVE as u64,
+                0,
+                0,
+            ],
+        ) as u64;
+        assert_ne!(moved, last);
+        assert!(memory.user().write(moved + PAGE_SIZE, &[1]).is_ok());
+        assert!(memory.user().write(moved, &[1]).is_ok());
     }
 
     #[test]

@@ -56,6 +56,45 @@ mod shared_file_dispatch_tests {
             }
         }
 
+        /// A 16 MiB fixture with Linux's layout, so mappings without MAP_FIXED
+        /// land in the mmap window, at user addresses that are not physical.
+        fn with_linux_layout() -> Self {
+            const SIZE: u64 = 16 * 1024 * 1024;
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, SIZE as usize).unwrap();
+            let layout = crate::elf::establish_linux_layout(
+                &mut memory,
+                BOOT_RESERVED_END + PAGE_SIZE,
+                1024 * 1024,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            state.brk_limit = layout.identity_end;
+            state.mmap_base = layout.identity_end;
+            state.mmap_next = layout.identity_end;
+            state.mmap_limit = layout.mmap_end;
+            memory.write_raw(0, &vec![0xa5; SIZE as usize]).unwrap();
+            memory
+                .map_user_permissions(0, BOOT_RESERVED_END, true, true)
+                .unwrap();
+            memory.enable_user_access();
+            memory.set_allocation_cursors(AllocationCursors::from_elf(&state));
+            let path = root.0.join("ordinary-file");
+            let expected: Vec<u8> = (0..3 * PAGE_SIZE as usize)
+                .map(|i| (i.wrapping_mul(17).wrapping_add(29)) as u8)
+                .collect();
+            std::fs::write(&path, &expected).unwrap();
+            Self {
+                memory,
+                state,
+                path,
+                expected,
+                root,
+            }
+        }
+
         fn open(&mut self, writable: bool) -> i64 {
             let file = std::fs::OpenOptions::new()
                 .read(true)
@@ -1021,6 +1060,89 @@ mod shared_file_dispatch_tests {
         assert!(executor.take_process_action().is_none());
         assert_eq!(layout(&f.memory, &executor.state), before);
         assert_eq!(std::fs::read(&f.path).unwrap(), f.expected);
+    }
+
+    /// The wait output preflight checks the shared-file metadata of the
+    /// physical page behind a window address, so a status field in a shared
+    /// mapping in the mmap window is refused before a ready child is consumed.
+    #[test]
+    fn wait_shared_refusal_in_the_mmap_window_precedes_child_consumption() {
+        for (waitid_call, later_field) in [(false, false), (true, false), (true, true)] {
+            for checked in [false, true] {
+                let mut f = Fixture::with_linux_layout();
+                let fd = f.open(true);
+                let flags = (libc::MAP_SHARED) as u64;
+                let protection = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+                let shared = syscall_result(
+                    &mut f.memory,
+                    &mut f.state,
+                    libc::SYS_mmap,
+                    [0, PAGE_SIZE, protection, flags, fd as u64, 0],
+                ) as u64;
+                assert_eq!(shared, crate::memory::MMAP_BASE - PAGE_SIZE);
+                let physical = f.memory.user_range_to_guest(shared, PAGE_SIZE).unwrap();
+                assert_ne!(physical, shared);
+                assert!(f.memory.user_range_contains_shared_file(shared, PAGE_SIZE));
+                // A private page below it holds the earlier waitid fields.
+                let private = syscall_result(
+                    &mut f.memory,
+                    &mut f.state,
+                    libc::SYS_mmap,
+                    [
+                        0,
+                        PAGE_SIZE,
+                        protection,
+                        (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
+                        u64::MAX,
+                        0,
+                    ],
+                ) as u64;
+                assert_eq!(private, shared - PAGE_SIZE);
+                let output = if later_field {
+                    shared - 16
+                } else {
+                    shared + 16
+                };
+                let (number, args) = if waitid_call {
+                    (
+                        libc::SYS_waitid,
+                        [
+                            libc::P_PID as u64,
+                            7,
+                            output,
+                            libc::WEXITED as u64,
+                            0x200,
+                            0,
+                        ],
+                    )
+                } else {
+                    (libc::SYS_wait4, [7, output, 0, 0x200, 0, 0])
+                };
+                let mut executor = f.take_executor();
+                executor.state.children.insert(7, ExitStatus::Exited(3));
+                let before = layout(&f.memory, &executor.state);
+                let request = SyscallRequest::new(number as u64, args);
+                let error = if checked {
+                    executor.execute_checked(&request, &f.memory).unwrap_err()
+                } else {
+                    failure(execute_basic_syscall(
+                        &mut f.memory,
+                        &mut executor.state,
+                        &request,
+                    ))
+                };
+                capability(
+                    &error,
+                    "atomic scalar store",
+                    "truncate-capable file backing has no proven fault-contained atomic store",
+                );
+                assert_eq!(executor.state.children.get(&7), Some(ExitStatus::Exited(3)));
+                assert!(executor.state.consumed_child_wait.is_none());
+                assert!(executor.take_process_action().is_none());
+                assert_eq!(layout(&f.memory, &executor.state), before);
+                assert_eq!(std::fs::read(&f.path).unwrap(), f.expected);
+            }
+        }
     }
 
     #[test]
