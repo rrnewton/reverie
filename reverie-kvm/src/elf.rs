@@ -849,6 +849,11 @@ pub(crate) struct LoadedStaticElf {
     /// Initial program break set at load time (`align_up(main_end)`); the base
     /// of the brk-managed heap. The live heap spans `[heap_base, program_break)`.
     pub heap_base: u64,
+    /// The lowest break brk accepts: Linux's `mm->end_data` (the end of the
+    /// main image's file-backed segment contents), its minimum under
+    /// CONFIG_COMPAT_BRK without brk randomization. Shrinking below it
+    /// would unmap the image's data.
+    pub min_break: u64,
     pub program_break: u64,
     pub brk_limit: u64,
     pub mmap_base: u64,
@@ -1121,6 +1126,7 @@ impl LoadedStaticElf {
             entry_point: self.entry_point,
             stack_pointer: self.stack_pointer,
             heap_base: self.heap_base,
+            min_break: self.min_break,
             program_break: self.program_break,
             brk_limit: self.brk_limit,
             mmap_base: self.mmap_base,
@@ -1637,6 +1643,20 @@ fn load_executable(
         0
     };
     let main_end = load_segments(memory, image, &elf, main_bias)?;
+    // Linux's end_data: the highest end of a PT_LOAD segment's file contents.
+    let min_break = elf
+        .program_headers
+        .iter()
+        .filter(|header| header.p_type == PT_LOAD)
+        .map(|header| {
+            main_bias
+                .checked_add(header.p_vaddr)
+                .and_then(|start| start.checked_add(header.p_filesz))
+                .ok_or_else(|| Error::UnsupportedElf("PT_LOAD address overflow".to_string()))
+        })
+        .try_fold(BOOT_RESERVED_END, |end, segment| {
+            Ok::<_, Error>(end.max(segment?))
+        })?;
     let main_entry = main_bias
         .checked_add(elf.entry)
         .ok_or_else(|| Error::UnsupportedElf("main entry point overflow".to_string()))?;
@@ -1781,6 +1801,7 @@ fn load_executable(
         entry_point,
         stack_pointer,
         heap_base: program_break,
+        min_break,
         program_break,
         brk_limit,
         mmap_base: mmap_next,
@@ -3017,6 +3038,48 @@ mod tests {
         .unwrap();
         assert_eq!(layout.mmap_end, 0x31_0000);
         assert_eq!(layout.mmap_user_end, MMAP_BASE - 0xef000);
+    }
+
+    /// brk does not go below the image's data (Linux's end_data under
+    /// CONFIG_COMPAT_BRK): with a fully file-backed segment the data page
+    /// survives a request below it; with bss, the break may go down to the end
+    /// of the file contents, as on Linux, and no lower.
+    #[test]
+    fn brk_stays_at_or_above_the_image_data() {
+        let mut contents = vec![0; 0x2000];
+        contents[..2].copy_from_slice(&[0x0f, 0x0b]);
+        contents[0x1800] = 0x5a;
+        let full = test_static_elf(&contents);
+        let bss = test_static_elf(&[0x0f, 0x0b]);
+        for (image, min_break) in [(full, 0x20_2000_u64), (bss, 0x20_0002)] {
+            let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+            let mut loaded = load_static_elf(
+                &mut memory,
+                &image,
+                &["initial"],
+                &[],
+                &std::env::current_dir().unwrap(),
+            )
+            .unwrap();
+            memory.enable_user_access();
+            assert_eq!(loaded.min_break, min_break);
+            assert_eq!(loaded.program_break, 0x20_2000);
+            let below = min_break - 1;
+            assert_eq!(
+                crate::executor::test_brk(&mut memory, &mut loaded, below),
+                0x20_2000
+            );
+            let mut byte = [0];
+            memory.user().read(0x20_1800, &mut byte).unwrap();
+            assert_eq!(byte, [image_byte(min_break)]);
+            assert_eq!(
+                crate::executor::test_brk(&mut memory, &mut loaded, min_break),
+                min_break as i64
+            );
+        }
+        fn image_byte(min_break: u64) -> u8 {
+            if min_break == 0x20_2000 { 0x5a } else { 0 }
+        }
     }
 
     /// An image whose end is a large-page boundary past the window's usual
