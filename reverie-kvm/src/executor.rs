@@ -567,7 +567,7 @@ fn execute_basic_syscall_dispatch(
     let touches_file_remap = number == libc::SYS_mremap as u64
         && shared_file::remap_requires_shared_capability(&owner, state, args);
     let touches_file_brk = number == libc::SYS_brk as u64
-        && args[0] >= BOOT_RESERVED_END
+        && args[0] >= BOOT_RESERVED_END.max(state.min_break)
         && args[0] < state.brk_limit
         && if args[0] > state.program_break {
             owner.range_contains_shared_file(
@@ -18956,7 +18956,8 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
     if requested == 0 {
         return state.program_break as i64;
     }
-    if requested < BOOT_RESERVED_END || requested >= state.brk_limit {
+    // Linux refuses a break below the image's data (end_data).
+    if requested < BOOT_RESERVED_END.max(state.min_break) || requested >= state.brk_limit {
         return state.program_break as i64;
     }
     let previous = state.program_break;
@@ -21669,6 +21670,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         entry_point: 0,
         stack_pointer: 0,
         heap_base: BOOT_RESERVED_END,
+        min_break: BOOT_RESERVED_END,
         program_break: BOOT_RESERVED_END,
         brk_limit: BOOT_RESERVED_END + PAGE_SIZE,
         mmap_base: BOOT_RESERVED_END + PAGE_SIZE,

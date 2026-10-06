@@ -1735,20 +1735,21 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         // guest-address regions instead, readable through `memory()`.
         let mut regions = Vec::new();
 
-        // Heap: the brk-managed heap spans [heap_base, program_break), where
-        // heap_base is the initial break (align_up(main_end)). `brk()` maps
-        // exactly these pages as it grows, so hashing this range reads only
-        // mapped guest memory. The gap below heap_base (down to
-        // BOOT_RESERVED_END) is unmapped and must NOT be hashed. Skip an empty
-        // heap (guest never grew its break).
-        if let Some((heap_base, program_break)) = self.executor.heap_region()
-            && program_break > heap_base
-        {
-            regions.push(DetlogMemoryRegion {
-                kind: DetlogRegionKind::Heap,
-                start: heap_base,
-                end: program_break,
-            });
+        // Heap: the brk-managed heap lies in [heap_base, program_break), where
+        // heap_base is the initial break (align_up(main_end)). The guest can
+        // unmap or protect pages inside it, so report each readable run as
+        // its own region, as Linux's maps list each heap mapping: hashing
+        // then reads only readable memory and cannot fail. The gap below
+        // heap_base (down to BOOT_RESERVED_END) is never hashed. An empty
+        // heap (the guest never grew its break) reports nothing.
+        if let Some((heap_base, program_break)) = self.executor.heap_region() {
+            for (start, end) in live_heap_extents(&self.memory, heap_base, program_break) {
+                regions.push(DetlogMemoryRegion {
+                    kind: DetlogRegionKind::Heap,
+                    start,
+                    end,
+                });
+            }
         }
 
         // Stack: the live stack spans [rsp, end of its accessible run). The
@@ -1772,6 +1773,29 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
 
         Some(regions)
     }
+}
+
+/// The readable runs of the heap `[heap_base, program_break)`, in address
+/// order, for hashing: see `detlog_memory_regions`. A page the guest unmapped
+/// or made unreadable splits the heap; each run can be read whole.
+fn live_heap_extents(memory: &GuestMemory, heap_base: u64, program_break: u64) -> Vec<(u64, u64)> {
+    const PAGE: u64 = 4096;
+    let mut extents = Vec::new();
+    let mut start = heap_base;
+    while start < program_break {
+        let readable = usize::try_from(program_break - start)
+            .ok()
+            .and_then(|length| memory.user().user_accessible_prefix(start, length).ok())
+            .unwrap_or(0) as u64;
+        if readable != 0 {
+            extents.push((start, start + readable));
+            start += readable;
+        } else {
+            // Skip the unreadable page holding `start`.
+            start = (start / PAGE + 1) * PAGE;
+        }
+    }
+    extents
 }
 
 /// The exclusive end of the live stack that starts at `rsp`, for hashing: see
@@ -6482,6 +6506,59 @@ mod tests {
         MemoryAccess::write(
             &mut memory,
             AddrMut::<u8>::from_raw((rsp + 8) as usize).unwrap(),
+            &[0x5a],
+        )
+        .unwrap();
+        assert_ne!(read(&memory), before);
+    }
+
+    /// A heap the guest punched a hole in (munmap) or protected is reported
+    /// as its readable runs, each of which reads whole and sees writes.
+    #[test]
+    fn live_heap_extents_skip_unreadable_pages() {
+        use reverie::syscalls::Addr;
+        use reverie::syscalls::AddrMut;
+        use reverie::syscalls::MemoryAccess;
+
+        const PAGE: u64 = 4096;
+        let mut memory = GuestMemory::new(0, 16 * 1024 * 1024).unwrap();
+        let base = 0x30_0000;
+        memory.map_user_range(base, 4 * PAGE, false).unwrap();
+        memory.unmap_user_range(base + PAGE, PAGE).unwrap();
+        memory
+            .map_user_permissions(base + 3 * PAGE, PAGE, false, false)
+            .unwrap();
+        memory.enable_user_access();
+
+        let extents = super::live_heap_extents(&memory, base, base + 3 * PAGE + 0x800);
+        assert_eq!(
+            extents,
+            [(base, base + PAGE), (base + 2 * PAGE, base + 3 * PAGE)]
+        );
+        assert_eq!(
+            super::live_heap_extents(&memory, base, base + 2 * PAGE + 0x800),
+            [
+                (base, base + PAGE),
+                (base + 2 * PAGE, base + 2 * PAGE + 0x800)
+            ]
+        );
+        assert!(super::live_heap_extents(&memory, base, base).is_empty());
+        let read = |memory: &GuestMemory| {
+            extents
+                .iter()
+                .map(|&(start, end)| {
+                    let mut bytes = vec![0; (end - start) as usize];
+                    memory
+                        .read_exact(Addr::<u8>::from_raw(start as usize).unwrap(), &mut bytes)
+                        .unwrap();
+                    bytes
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = read(&memory);
+        MemoryAccess::write(
+            &mut memory,
+            AddrMut::<u8>::from_raw((base + 2 * PAGE + 8) as usize).unwrap(),
             &[0x5a],
         )
         .unwrap();
