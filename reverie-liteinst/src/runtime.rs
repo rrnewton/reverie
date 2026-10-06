@@ -2861,7 +2861,11 @@ unsafe fn emulate_through_continuation(
             unsafe { deliver_default_sigsegv() };
         }
     };
-    match crate::syscall_fallback::prepare_instruction_signal(address, kind, &mut frame) {
+    // SAFETY: this is the SIGSEGV handler and `frame` is the fault's own frame
+    // for the `kind` instruction at `address`; on Ok(Some) the RIP is set to
+    // the entry below, and on Err the process ends.
+    match unsafe { crate::syscall_fallback::prepare_instruction_signal(address, kind, &mut frame) }
+    {
         Ok(Some(entry)) => {
             emit_in_guest_stage(match kind {
                 InstructionEventKind::Cpuid => b"instruction-fault-continuation-cpuid",
@@ -3372,7 +3376,10 @@ impl LiteinstDispatcher {
         if mode == TOOL_REVERIE
             && let Some(frame) = frame
         {
-            match crate::syscall_fallback::prepare_signal(instruction_pointer, frame) {
+            // SAFETY: this is the SIGSYS handler's dispatch with the trap's own
+            // frame for the syscall at `instruction_pointer`; on Ok(Some) the
+            // event is deferred to the entry, and on Err the process ends.
+            match unsafe { crate::syscall_fallback::prepare_signal(instruction_pointer, frame) } {
                 Ok(Some(entry)) => {
                     (self.record_fallback_stats)(self.stats, instruction_pointer);
                     event.defer_to(entry);
