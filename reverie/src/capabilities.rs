@@ -101,6 +101,14 @@ pub struct BackendCapabilities {
     /// guest-visible child-exit events after the kernel publishes them.
     pub reports_physical_process_exits: bool,
 
+    /// A process leaves the host some time after its scheduler-granted exit,
+    /// outside any turn, and the backend reports each such exit, once the
+    /// kernel has published it to the parent, through the tool's
+    /// physical-exit completion. The tool must not select another turn while
+    /// such an exit is pending, or a peer could observe the exiting process's
+    /// descriptors still open.
+    pub process_exits_complete_asynchronously: bool,
+
     /// A signal interrupts a blocking syscall that the backend runs outside the
     /// tool's scheduler, and the interrupted thread's continuation request
     /// arrives only afterwards. The tool must wait for that continuation
@@ -196,6 +204,7 @@ impl BackendCapabilities {
         virtualizes_syscall_clobbers: false,
         needs_killed_thread_rpc_cancellation: false,
         reports_physical_process_exits: false,
+        process_exits_complete_asynchronously: false,
         signal_interrupts_external_syscalls: false,
         tracks_process_children: true,
         runs_exit_robust_list: true,
@@ -220,6 +229,7 @@ impl BackendCapabilities {
     /// guest, with no ptrace exit-group teardown behind it.
     pub const LITEINST_IN_GUEST: Self = Self {
         needs_killed_thread_rpc_cancellation: true,
+        process_exits_complete_asynchronously: true,
         runs_exit_robust_list: false,
         supports_parked_write_signal_interruption: false,
         ..Self::PTRACE
@@ -294,6 +304,7 @@ mod tests {
             "virtualizes_syscall_clobbers": false,
             "needs_killed_thread_rpc_cancellation": false,
             "reports_physical_process_exits": false,
+            "process_exits_complete_asynchronously": false,
             "signal_interrupts_external_syscalls": false,
             "tracks_process_children": true,
             "runs_exit_robust_list": true,
@@ -341,6 +352,7 @@ mod tests {
             table(BackendCapabilities::LITEINST_IN_GUEST),
             ptrace_with(serde_json::json!({
                 "needs_killed_thread_rpc_cancellation": true,
+                "process_exits_complete_asynchronously": true,
                 "runs_exit_robust_list": false,
                 "supports_parked_write_signal_interruption": false,
             }))
