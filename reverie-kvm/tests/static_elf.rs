@@ -5170,6 +5170,128 @@ fn static_elf_faults_are_reported_by_direct_and_tool_runtimes() {
     assert_general_protection(io_fault_backend.run_static_elf().unwrap_err());
 }
 
+/// With Hermit's ptrace-reference numbering (`reverie::task_ids`), a guest
+/// whose root is pid 3 sees the IDs Hermit's ptrace backend gives it, and the
+/// step carries into the tasks it creates: the first child (5) forks a
+/// grandchild (7), so the root's next fork is 9; a thread (11) starts a nested
+/// thread (13); after exec the forks are 15 and 17. With Linux's default the
+/// same guest sees 4, 5, 6, 7, 8, 9, 10, whether set explicitly or by
+/// default. The step applies whether it is set before or after the image is
+/// installed.
+#[test]
+fn guest_task_ids_follow_the_configured_numbering() {
+    let test = "guest_task_ids_follow_the_configured_numbering";
+    if !kvm_available(test) {
+        return;
+    }
+    let root = TestDirectory::new();
+    let program = compile_c_program(
+        &root.0,
+        "numbering",
+        r#"
+#include <pthread.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static void *nested(void *arg) {
+  (void)arg;
+  printf("nested %ld\n", (long)syscall(SYS_gettid));
+  return NULL;
+}
+
+static void *thread(void *arg) {
+  (void)arg;
+  printf("thread %ld\n", (long)syscall(SYS_gettid));
+  pthread_t t;
+  pthread_create(&t, NULL, nested, NULL);
+  pthread_join(t, NULL);
+  return NULL;
+}
+
+static void fork_once(const char *label, int grandchild) {
+  fflush(stdout);
+  pid_t child = fork();
+  if (child == 0) {
+    if (grandchild) {
+      pid_t inner = fork();
+      if (inner == 0) _exit(0);
+      waitpid(inner, NULL, 0);
+      printf("grandchild %d\n", inner);
+      fflush(stdout);
+    }
+    _exit(0);
+  }
+  waitpid(child, NULL, 0);
+  printf("%s %d\n", label, child);
+}
+
+int main(int argc, char **argv) {
+  if (argc > 1 && strcmp(argv[1], "after-exec") == 0) {
+    fork_once("fork-after-exec", 0);
+    fork_once("fork-after-exec", 0);
+    return 0;
+  }
+  printf("root %d\n", getpid());
+  fork_once("fork", 1);
+  fork_once("fork", 0);
+  pthread_t t;
+  pthread_create(&t, NULL, thread, NULL);
+  pthread_join(t, NULL);
+  fflush(stdout);
+  char *next[] = {argv[0], "after-exec", NULL};
+  execv("/proc/self/exe", next);
+  return 99;
+}
+"#,
+    );
+    let program = program.to_str().unwrap();
+    let reference = "root 3\ngrandchild 7\nfork 5\nfork 9\nthread 11\nnested 13\n\
+                     fork-after-exec 15\nfork-after-exec 17\n";
+    let linux = "root 3\ngrandchild 5\nfork 4\nfork 6\nthread 7\nnested 8\n\
+                 fork-after-exec 9\nfork-after-exec 10\n";
+    let hermit_step = Some(reverie::task_ids::HERMIT_PTRACE_IDS_PER_TASK);
+    let linux_step = Some(reverie::task_ids::LINUX_IDS_PER_TASK);
+    for (before_install, after_install, expected) in [
+        (hermit_step, None, reference),
+        (None, hermit_step, reference),
+        (linux_step, None, linux),
+        (None, None, linux),
+    ] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend.set_root_pid(3).unwrap();
+        if let Some(step) = before_install {
+            backend.set_ids_per_task(step).unwrap();
+        }
+        backend
+            .install_static_elf_file_with_context(
+                std::fs::File::open(program).unwrap(),
+                &[program],
+                &["PATH=/usr/bin:/bin"],
+                &root.0,
+            )
+            .unwrap();
+        if let Some(step) = after_install {
+            backend.set_ids_per_task(step).unwrap();
+        }
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(
+            (code, String::from_utf8_lossy(&stdout).into_owned()),
+            (0, expected.to_owned()),
+            "before={before_install:?} after={after_install:?} stderr={}",
+            String::from_utf8_lossy(&stderr)
+        );
+    }
+    assert!(
+        KvmBackend::new(16 * 1024 * 1024)
+            .unwrap()
+            .set_ids_per_task(0)
+            .is_err()
+    );
+}
+
 /// Exec replaces the guest's whole address-space layout. A program with a
 /// large image raises the identity end (in a 256 MiB guest, above the 182 MiB
 /// a small program gets) and touches a page above the small program's
@@ -11529,6 +11651,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "static_elf_runs_when_guest_memory_is_not_whole_large_pages",
         "static_elf_vmware_probe_runs_from_the_stack",
         "exec_to_a_lower_identity_end_unmaps_the_old_identity_pages",
+        "guest_task_ids_follow_the_configured_numbering",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])

@@ -1494,6 +1494,8 @@ pub struct KvmBackend {
     pub(crate) stdin: Arc<Mutex<Option<File>>>,
     pub(crate) native_exit_broker: Option<crate::native_exit_broker::BrokerClient>,
     pub(crate) root_pid: i32,
+    /// Task IDs each new guest task spends (`set_ids_per_task`).
+    pub(crate) ids_per_task: i32,
     // One optional collector is shared by every fork and thread backend in the
     // guest tree. `None` is the allocation-free, update-free default.
     pub(crate) exit_collector: Option<Arc<KvmExitCollector>>,
@@ -1816,6 +1818,7 @@ impl KvmBackend {
             stdin: Arc::new(Mutex::new(stdin)),
             native_exit_broker: None,
             root_pid: 1,
+            ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
             exit_collector: None,
             abandoned_runs: Arc::default(),
         })
@@ -1919,6 +1922,23 @@ impl KvmBackend {
              unrepresentable now that one ThreadOwnership drives both decisions",
             self.thread_ownership,
         );
+    }
+
+    /// Number new guest tasks spending `ids_per_task` task IDs each, from the
+    /// root's ID up (see `reverie::task_ids`): Linux's 1 by default; Hermit
+    /// passes `reverie::task_ids::HERMIT_PTRACE_IDS_PER_TASK` so its guests see
+    /// the IDs its ptrace reference gives them. Applies to the installed image
+    /// and any later one; fails for a step below 1.
+    pub fn set_ids_per_task(&mut self, ids_per_task: i32) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        if ids_per_task < 1 {
+            return Err(Error::InvalidTaskIdStep(ids_per_task));
+        }
+        self.ids_per_task = ids_per_task;
+        if let Some(loaded) = self.static_elf.as_mut() {
+            loaded.ids_per_task = ids_per_task;
+        }
+        Ok(())
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -2050,6 +2070,7 @@ impl KvmBackend {
     }
 
     fn install_loaded_static_elf(&mut self, mut loaded: LoadedStaticElf) -> Result<()> {
+        loaded.ids_per_task = self.ids_per_task;
         loaded.pid = self.root_pid;
         loaded.pgid = self.root_pid;
         loaded.tid = self.root_pid;
