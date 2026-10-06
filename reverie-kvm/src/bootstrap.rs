@@ -68,11 +68,13 @@ pub(crate) const VDSO_ADDRESS: u64 =
 // that owns its private syscall transport.
 pub(crate) const THREAD_TOOL_STACK_AREA_START: u64 = VDSO_ADDRESS + PAGE_SIZE;
 // The pool of page-table pages that map the user windows (`install_user_windows`):
-// the stack window below TASK_SIZE, the mmap window below mmap_base, and the
-// split of an identity large page that straddles the identity limit.
+// the stack window below TASK_SIZE, the mmap window below mmap_base, a PIE
+// main image's window at ELF_ET_DYN_BASE, and the split of an identity large
+// page that straddles the identity limit. 15 pages keep BOOT_RESERVED_END below
+// 2 MiB, where images load.
 const WINDOW_TABLE_POOL_ADDRESS: u64 =
     THREAD_TOOL_STACK_AREA_START + TOOL_STACK_SIZE * MAX_GUEST_THREADS;
-const WINDOW_TABLE_POOL_PAGES: u64 = 12;
+const WINDOW_TABLE_POOL_PAGES: u64 = 15;
 pub(crate) const BOOT_RESERVED_END: u64 =
     WINDOW_TABLE_POOL_ADDRESS + WINDOW_TABLE_POOL_PAGES * PAGE_SIZE;
 const _: () = {
