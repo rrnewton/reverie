@@ -693,21 +693,563 @@ fn clone3_is_plain_fork(address: u64, size: u64) -> bool {
         && fields[8..].iter().all(|field| *field == 0)
 }
 
-fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Option<u32>>) -> i64 {
-    let permissions = guest_pkru.as_ref().and_then(|value| **value);
-    let physical = if number == libc::SYS_vfork {
-        // A real vfork child would run the instrumentation callback on the
-        // parent's shared stack. Use a COW fork and preserve vfork's parent
-        // suspension until the child exits. Exec remains fail-closed, so exit
-        // is the only supported vfork completion boundary for now.
-        unsafe { crate::trap::raw_syscall6_with_result(libc::SYS_fork, [0; 6], permissions) }
+/// One process creation the guest asked for, as the runtime performed or
+/// refused it; reported to the [`PhysicalCreationHook`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhysicalCreation {
+    /// The child exists. Its birth identity is the pidfs inode number of the
+    /// pidfd the kernel created atomically with it (`CLONE_PIDFD`): one inode
+    /// per process, never reused while the kernel runs, so it names the child
+    /// even after the child has died, been reaped and had its pid reused.
+    Created {
+        /// The child's pid, which the guest receives.
+        pid: i32,
+        /// The child's pidfs inode number.
+        birth_identity: u64,
+    },
+    /// The guest's own call failed with this errno, which the guest
+    /// receives. No child exists.
+    Failed {
+        /// The errno the guest receives.
+        errno: i32,
+    },
+    /// The runtime could not perform the creation exactly as the guest's own
+    /// call would have run. Whatever the hook returns, the creating process
+    /// then ends with status 125.
+    Refused {
+        /// Why.
+        refusal: CreationRefusal,
+        /// A child that was created anyway.
+        child: Option<RefusedChild>,
+    },
+}
+
+/// A child created for a refused creation (see [`PhysicalCreation::Refused`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RefusedChild {
+    /// The child's pid.
+    pub pid: i32,
+    /// Whether Linux accepted the runtime's SIGKILL, sent through the
+    /// child's pidfd before it was closed.
+    pub killed: bool,
+}
+
+/// Why the runtime refused a creation; see [`PhysicalCreation::Refused`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreationRefusal {
+    /// The guest installed a seccomp filter. It sees the runtime's own calls
+    /// (the readability probes, clone3, fstatfs, close and pidfd_send_signal)
+    /// and can make them fail or report results Linux did not produce, so
+    /// none of them can be trusted.
+    GuestSeccompFilter,
+    /// The guest's protection keys deny access to key 0, which the runtime's
+    /// own clone3 record and pidfd output carry.
+    ProtectionKeyDenied,
+    /// The runtime cannot tell what Linux's own reading of the guest's
+    /// clone_args would return: it cannot copy a page Linux can read (a
+    /// write-only page), or its readability probe of a page gave a result
+    /// that proves neither a read nor a fault.
+    ArgumentsUnreadable,
+    /// The physical clone3 failed with an errno other than those the guest's
+    /// own call returns for the same reason (EAGAIN, ENOMEM or ENOSPC, and
+    /// for a guest clone3 also E2BIG or EINVAL from its own record). Errors
+    /// such as EMFILE for the runtime's pidfd, or ENOSYS from a filter that
+    /// denies clone3 but not fork, cannot be attributed to the guest's call.
+    RuntimeError(i32),
+    /// The child exists, but its pidfd is not a pidfs inode or cannot be
+    /// read, so it has no birth identity.
+    IdentityUnavailable,
+    /// The child exists, but the runtime's pidfd was not closed: close failed
+    /// with this errno, or (0) close reported success or EINTR while the
+    /// descriptor stayed open.
+    CloseFailed(i32),
+}
+
+/// Called by the runtime in the creating process only, exactly once for each
+/// process creation the guest asks for (fork, the copying vfork, and the
+/// plain-fork forms of clone and clone3), whether it succeeded, failed or was
+/// refused. The call happens synchronously after the physical call returns
+/// and the transient pidfd is closed, and before the copying vfork's wait or
+/// the return to the Tool. The hook must not wait for guest progress or take
+/// the dispatch locks. An error, like a refusal, ends the creating process
+/// with status 125; the Tool reports its own failure before returning one.
+pub type PhysicalCreationHook = fn(PhysicalCreation) -> io::Result<()>;
+
+static CREATION_HOOK: std::sync::OnceLock<PhysicalCreationHook> = std::sync::OnceLock::new();
+
+/// Why [`set_physical_creation_hook`] failed.
+#[derive(Debug)]
+pub enum CreationHookError {
+    /// A hook is already registered.
+    AlreadyRegistered,
+    /// The kernel's pidfds are not pidfs inodes (Linux before 6.9), so a
+    /// pidfd's inode number does not identify one process.
+    PidfsUnavailable,
+    /// The pidfd opened to check for pidfs was not closed (see
+    /// [`CreationRefusal::CloseFailed`]), and is still open.
+    ProbeNotClosed(i32),
+}
+
+/// Registers the process's [`PhysicalCreationHook`]. With a hook registered,
+/// the runtime performs every process creation as `clone3` with a
+/// runtime-owned `CLONE_PIDFD` output, to report the child's birth identity;
+/// without one, creations run exactly as before. Fails if a hook is already
+/// registered, or if the kernel's pidfds are not pidfs inodes.
+pub fn set_physical_creation_hook(hook: PhysicalCreationHook) -> Result<(), CreationHookError> {
+    pidfs_available()?;
+    CREATION_HOOK
+        .set(hook)
+        .map_err(|_| CreationHookError::AlreadyRegistered)
+}
+
+/// The filesystem magic of pidfs (`PIDFS_MAGIC`), where Linux 6.9 and later
+/// give each process one pidfd inode.
+const PIDFS_MAGIC: i64 = 0x5049_4446;
+
+/// Whether a pidfd for this process is a pidfs inode.
+fn pidfs_available() -> Result<(), CreationHookError> {
+    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
+    let pidfd = unsafe { raw_syscall6(libc::SYS_pidfd_open, [pid as u64, 0, 0, 0, 0, 0]) };
+    if pidfd < 0 {
+        return Err(CreationHookError::PidfsUnavailable);
+    }
+    let identity = pidfs_identity(pidfd as libc::c_int);
+    close_runtime_descriptor(pidfd as libc::c_int).map_err(CreationHookError::ProbeNotClosed)?;
+    identity
+        .map(|_| ())
+        .ok_or(CreationHookError::PidfsUnavailable)
+}
+
+/// Closes a descriptor the runtime opened, and confirms that Linux released
+/// it: a seccomp filter can report success or EINTR without running close.
+/// Linux releases the descriptor even when close reports EINTR. Fails with
+/// close's errno, or 0 if the descriptor is still open.
+fn close_runtime_descriptor(fd: libc::c_int) -> Result<(), i32> {
+    let closed = unsafe { raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
+    if closed < 0 && closed != -i64::from(libc::EINTR) {
+        return Err((-closed) as i32);
+    }
+    let open = unsafe {
+        raw_syscall6(
+            libc::SYS_fcntl,
+            [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
+        )
+    };
+    if open == -i64::from(libc::EBADF) {
+        Ok(())
     } else {
-        unsafe { crate::trap::raw_syscall6_with_result(number, args, permissions) }
+        Err(if closed < 0 { (-closed) as i32 } else { 0 })
+    }
+}
+
+/// Whether the guest asked for a seccomp filter of its own; see
+/// [`CreationRefusal::GuestSeccompFilter`]. Inherited by fork children.
+static GUEST_SECCOMP_FILTER: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Records a guest call that installs a seccomp filter, before it is
+/// forwarded, whether or not it then succeeds.
+fn note_guest_seccomp_filter(number: i64, args: [u64; 6]) {
+    let installs = (number == libc::SYS_seccomp
+        && args[0] == u64::from(libc::SECCOMP_SET_MODE_FILTER))
+        || (number == libc::SYS_prctl
+            && args[0] == libc::PR_SET_SECCOMP as u64
+            && args[1] == u64::from(libc::SECCOMP_MODE_FILTER));
+    if installs {
+        GUEST_SECCOMP_FILTER.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The birth identity of `pidfd`: its inode number, if it is a pidfs inode.
+/// Before pidfs every pidfd shares one anonymous inode, which names no
+/// process.
+fn pidfs_identity(pidfd: libc::c_int) -> Option<u64> {
+    let mut filesystem = core::mem::MaybeUninit::<libc::statfs>::zeroed();
+    let statfs = unsafe {
+        raw_syscall6(
+            libc::SYS_fstatfs,
+            [pidfd as u64, filesystem.as_mut_ptr() as u64, 0, 0, 0, 0],
+        )
+    };
+    // `f_type`'s width differs between targets.
+    #[allow(clippy::unnecessary_cast)]
+    let magic = unsafe { filesystem.assume_init() }.f_type as i64;
+    if statfs != 0 || magic != PIDFS_MAGIC {
+        return None;
+    }
+    let mut metadata = core::mem::MaybeUninit::<libc::stat>::zeroed();
+    let stat = unsafe {
+        raw_syscall6(
+            libc::SYS_fstat,
+            [pidfd as u64, metadata.as_mut_ptr() as u64, 0, 0, 0, 0],
+        )
+    };
+    (stat == 0).then(|| unsafe { metadata.assume_init() }.st_ino)
+}
+
+/// Linux's limit on a clone3 `size` (PAGE_SIZE); a larger one is E2BIG.
+const CLONE_ARGS_SIZE_LIMIT: usize = 4096;
+/// The `struct clone_args` size Linux knows (CLONE_ARGS_SIZE_VER2). It copies
+/// this much first, then requires any longer record's tail to be zero.
+const CLONE_ARGS_SIZE_KNOWN: usize = 88;
+
+/// A creation the runtime did not perform.
+enum Unperformed {
+    /// The guest's own call would fail with this errno.
+    Failed(i32),
+    Refused(CreationRefusal),
+}
+
+/// Whether the guest's protection keys deny the runtime's key-0 memory,
+/// which the kernel must read and write under them.
+fn guest_keys_deny_runtime_memory(permissions: Option<u32>) -> bool {
+    // PKRU holds an access-disable and a write-disable bit per key; key 0's
+    // are bits 0 and 1.
+    permissions.is_some_and(|pkru| pkru & 0b11 != 0)
+}
+
+/// Fills `record` with the `clone3` arguments that perform the plain-fork
+/// creation `number`/`args` with a `CLONE_PIDFD` output at `pidfd`, and
+/// returns their size. Callers have already accepted the call with
+/// [`is_plain_fork`].
+fn clone3_record_for(
+    number: i64,
+    args: [u64; 6],
+    pidfd: u64,
+    permissions: Option<u32>,
+    record: &mut [u64; CLONE_ARGS_SIZE_LIMIT / 8],
+) -> Result<usize, Unperformed> {
+    const PIDFD: u64 = libc::CLONE_PIDFD as u64;
+    const SIGNAL_MASK: u64 = 0xff;
+    const SIZE_VER0: usize = 64;
+    let fields: [u64; 8] = match number {
+        // The copying vfork stays a COW fork with the parent waiting: no
+        // CLONE_VM or CLONE_VFORK is applied physically.
+        libc::SYS_fork | libc::SYS_vfork => [PIDFD, pidfd, 0, 0, libc::SIGCHLD as u64, 0, 0, 0],
+        // Legacy clone(flags, stack, parent_tid, child_tid, tls): the CSIGNAL
+        // byte becomes exit_signal, and each TID output keeps its own
+        // destination, separate from the pidfd output. The plain-fork subset
+        // has no stack and no CLONE_SETTLS.
+        libc::SYS_clone => {
+            let flags = args[0];
+            let child_tid_flags = (libc::CLONE_CHILD_SETTID | libc::CLONE_CHILD_CLEARTID) as u64;
+            let child_tid = if flags & child_tid_flags != 0 {
+                args[3]
+            } else {
+                0
+            };
+            let parent_tid = if flags & libc::CLONE_PARENT_SETTID as u64 != 0 {
+                args[2]
+            } else {
+                0
+            };
+            [
+                (flags & !SIGNAL_MASK) | PIDFD,
+                pidfd,
+                child_tid,
+                parent_tid,
+                flags & SIGNAL_MASK,
+                0,
+                0,
+                0,
+            ]
+        }
+        // The guest's whole record at its own size, so Linux checks the size
+        // and the tail on the same bytes, plus the runtime's CLONE_PIDFD
+        // output.
+        libc::SYS_clone3 => {
+            let size = copy_guest_clone_args(args[0], args[1], permissions, record)?;
+            record[0] |= PIDFD;
+            record[1] = pidfd;
+            return Ok(size);
+        }
+        _ => unreachable!("is_plain_fork accepts only fork, vfork, clone and clone3"),
+    };
+    record[..fields.len()].copy_from_slice(&fields);
+    Ok(SIZE_VER0)
+}
+
+/// Copies the guest's `clone_args` (`size` bytes at `address`) into `record`,
+/// failing exactly where Linux's own reading (`copy_struct_from_user`) fails,
+/// or refusing where the runtime cannot tell what Linux would return.
+///
+/// Linux reads the record under the guest's protection keys and native page
+/// permissions. For a record longer than the 88 bytes it knows, it first
+/// checks that the tail is zero, in ascending order: a nonzero byte is E2BIG,
+/// and a fault before any nonzero byte is EFAULT. Only then does it copy the
+/// first 88 bytes, where a fault is EFAULT.
+fn copy_guest_clone_args(
+    address: u64,
+    size: u64,
+    permissions: Option<u32>,
+    record: &mut [u64; CLONE_ARGS_SIZE_LIMIT / 8],
+) -> Result<usize, Unperformed> {
+    const PAGE: usize = 4096;
+    let size = usize::try_from(size).unwrap_or(usize::MAX);
+    if size > CLONE_ARGS_SIZE_LIMIT {
+        return Err(Unperformed::Failed(libc::E2BIG));
+    }
+    let start = address as usize;
+    let Some(end) = start.checked_add(size) else {
+        return Err(Unperformed::Failed(libc::EFAULT));
+    };
+    let unknown = || Unperformed::Refused(CreationRefusal::ArgumentsUnreadable);
+    let bytes = unsafe { core::slice::from_raw_parts_mut(record.as_mut_ptr().cast::<u8>(), size) };
+    // Checks [from, to) page by page, copying each readable page's bytes.
+    // Stops at the first page Linux cannot read, or (with `zero_tail`) at the
+    // first page holding a nonzero byte.
+    let mut walk = |from: usize, to: usize, zero_tail: bool| -> Result<(), Unperformed> {
+        if from >= to {
+            return Ok(());
+        }
+        let mut page = from & !(PAGE - 1);
+        while page < to {
+            let low = page.max(from);
+            let high = (page + PAGE).min(to);
+            match native_readability(low & !3, permissions) {
+                Readability::Readable => {}
+                Readability::Unreadable => return Err(Unperformed::Failed(libc::EFAULT)),
+                Readability::Unknown => return Err(unknown()),
+            }
+            if !read_guest(low, &mut bytes[low - start..high - start]) {
+                return Err(unknown());
+            }
+            if zero_tail
+                && bytes[low - start..high - start]
+                    .iter()
+                    .any(|byte| *byte != 0)
+            {
+                return Err(Unperformed::Failed(libc::E2BIG));
+            }
+            page += PAGE;
+        }
+        Ok(())
+    };
+    let head_end = start + size.min(CLONE_ARGS_SIZE_KNOWN);
+    walk(head_end, end, true)?;
+    walk(start, head_end, false)?;
+    Ok(size)
+}
+
+/// Copies guest memory at `address` into `buffer` without the guest's
+/// protection keys (process_vm_readv); false unless every byte was copied.
+fn read_guest(address: usize, buffer: &mut [u8]) -> bool {
+    let local = libc::iovec {
+        iov_base: buffer.as_mut_ptr().cast(),
+        iov_len: buffer.len(),
+    };
+    let remote = libc::iovec {
+        iov_base: address as *mut libc::c_void,
+        iov_len: buffer.len(),
+    };
+    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
+    let read = unsafe {
+        raw_syscall6(
+            libc::SYS_process_vm_readv,
+            [
+                pid as u64,
+                (&raw const local) as u64,
+                1,
+                (&raw const remote) as u64,
+                1,
+                0,
+            ],
+        )
+    };
+    read == buffer.len() as i64
+}
+
+/// What Linux's own read of a page would do, under the guest's rights.
+enum Readability {
+    Readable,
+    Unreadable,
+    /// The probes proved neither a read nor a fault.
+    Unknown,
+}
+
+/// Whether Linux can read the aligned word at `address` under the guest's
+/// protection keys and native page permissions. Two `FUTEX_WAIT`s with a
+/// zero timeout read it without any effect: one expecting the word's actual
+/// value (copied without the keys) must time out, and one expecting another
+/// value must return EAGAIN; each faults with EFAULT where Linux cannot
+/// read. A result that a fixed errno could fake is not accepted as either.
+/// When the runtime cannot copy the word, both probes faulting still proves
+/// that Linux cannot read it; any other result is unknown.
+fn native_readability(address: usize, permissions: Option<u32>) -> Readability {
+    let mut word = [0_u8; 4];
+    let copied = read_guest(address, &mut word);
+    let actual = u32::from_ne_bytes(word);
+    let timeout = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let wait = |expected: u32| unsafe {
+        crate::trap::raw_syscall6_with_result(
+            libc::SYS_futex,
+            [
+                address as u64,
+                (libc::FUTEX_WAIT | libc::FUTEX_PRIVATE_FLAG) as u64,
+                u64::from(expected),
+                (&raw const timeout) as u64,
+                0,
+                0,
+            ],
+            permissions,
+        )
+    }
+    .result;
+    let fault = -i64::from(libc::EFAULT);
+    match (wait(actual), wait(!actual)) {
+        (equal, different)
+            if copied
+                && equal == -i64::from(libc::ETIMEDOUT)
+                && different == -i64::from(libc::EAGAIN) =>
+        {
+            Readability::Readable
+        }
+        (equal, different) if equal == fault && different == fault => Readability::Unreadable,
+        _ => Readability::Unknown,
+    }
+}
+
+/// Whether a physical clone3 errno is one the guest's own call returns for
+/// the same reason; any other is refused (see
+/// [`CreationRefusal::RuntimeError`]).
+fn errno_is_the_guests(number: i64, errno: i32) -> bool {
+    matches!(errno, libc::EAGAIN | libc::ENOMEM | libc::ENOSPC)
+        || (number == libc::SYS_clone3 && matches!(errno, libc::E2BIG | libc::EINVAL))
+}
+
+/// Reports `creation` to `hook`; ends the process if the hook fails or the
+/// creation was refused.
+fn report_creation(hook: PhysicalCreationHook, creation: PhysicalCreation) {
+    let refused = matches!(creation, PhysicalCreation::Refused { .. });
+    if hook(creation).is_err() || refused {
+        unsafe {
+            let _ = raw_syscall6(libc::SYS_exit_group, [125, 0, 0, 0, 0, 0]);
+        }
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Performs a plain-fork creation as clone3 with the runtime's CLONE_PIDFD
+/// output, and reports it to `hook`. Never runs the guest's call another way.
+fn reported_creation(
+    hook: PhysicalCreationHook,
+    number: i64,
+    args: [u64; 6],
+    guest_pkru: Option<&mut Option<u32>>,
+) -> i64 {
+    let permissions = guest_pkru.as_ref().and_then(|value| **value);
+    let refuse = |refusal, child| {
+        report_creation(hook, PhysicalCreation::Refused { refusal, child });
+        unreachable!("a refused creation ends the process");
+    };
+    if GUEST_SECCOMP_FILTER.load(core::sync::atomic::Ordering::Relaxed) {
+        refuse(CreationRefusal::GuestSeccompFilter, None);
+    }
+    // The record and the pidfd output live on this runtime stack, which the
+    // kernel reads and writes under the guest's protection keys.
+    if guest_keys_deny_runtime_memory(permissions) {
+        refuse(CreationRefusal::ProtectionKeyDenied, None);
+    }
+    let mut pidfd: libc::c_int = -1;
+    let mut record = [0_u64; CLONE_ARGS_SIZE_LIMIT / 8];
+    let size = match clone3_record_for(
+        number,
+        args,
+        (&raw mut pidfd) as u64,
+        permissions,
+        &mut record,
+    ) {
+        Ok(size) => size,
+        Err(Unperformed::Failed(errno)) => {
+            report_creation(hook, PhysicalCreation::Failed { errno });
+            return -i64::from(errno);
+        }
+        Err(Unperformed::Refused(refusal)) => {
+            refuse(refusal, None);
+            unreachable!();
+        }
+    };
+    let physical = unsafe {
+        crate::trap::raw_syscall6_with_result(
+            libc::SYS_clone3,
+            [record.as_ptr() as u64, size as u64, 0, 0, 0, 0],
+            permissions,
+        )
     };
     if let Some(output) = guest_pkru {
         *output = physical.pkru;
     }
     let result = physical.result;
+    if result == 0 {
+        // The child, which holds no copy of the pidfd: the kernel installs
+        // it in the parent's table only.
+        return 0;
+    }
+    if result < 0 {
+        let errno = (-result) as i32;
+        if !errno_is_the_guests(number, errno) {
+            refuse(CreationRefusal::RuntimeError(errno), None);
+        }
+        report_creation(hook, PhysicalCreation::Failed { errno });
+        return result;
+    }
+    let pid = result as i32;
+    let refused_child = || {
+        let sent = unsafe {
+            raw_syscall6(
+                libc::SYS_pidfd_send_signal,
+                [pidfd as u64, libc::SIGKILL as u64, 0, 0, 0, 0],
+            )
+        };
+        Some(RefusedChild {
+            pid,
+            killed: sent == 0,
+        })
+    };
+    let Some(birth_identity) = pidfs_identity(pidfd) else {
+        let child = refused_child();
+        let _ = close_runtime_descriptor(pidfd);
+        refuse(CreationRefusal::IdentityUnavailable, child);
+        unreachable!();
+    };
+    if let Err(errno) = close_runtime_descriptor(pidfd) {
+        // The descriptor may still be open, so the kill can still use it.
+        refuse(CreationRefusal::CloseFailed(errno), refused_child());
+    }
+    report_creation(
+        hook,
+        PhysicalCreation::Created {
+            pid,
+            birth_identity,
+        },
+    );
+    result
+}
+
+fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Option<u32>>) -> i64 {
+    let result = if let Some(hook) = CREATION_HOOK.get().copied() {
+        reported_creation(hook, number, args, guest_pkru)
+    } else {
+        let permissions = guest_pkru.as_ref().and_then(|value| **value);
+        let physical = if number == libc::SYS_vfork {
+            // A real vfork child would run the instrumentation callback on the
+            // parent's shared stack. Use a COW fork and preserve vfork's parent
+            // suspension until the child exits. Exec remains fail-closed, so exit
+            // is the only supported vfork completion boundary for now.
+            unsafe { crate::trap::raw_syscall6_with_result(libc::SYS_fork, [0; 6], permissions) }
+        } else {
+            unsafe { crate::trap::raw_syscall6_with_result(number, args, permissions) }
+        };
+        if let Some(output) = guest_pkru {
+            *output = physical.pkru;
+        }
+        physical.result
+    };
     if number == libc::SYS_vfork && result > 0 {
         let mut info = core::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
         loop {
@@ -742,6 +1284,9 @@ fn injected_syscall_guard(
     number: i64,
     args: [u64; 6],
 ) -> Option<Errno> {
+    // Every forwarded guest call passes here, so this is where a guest's own
+    // seccomp filter is noticed.
+    note_guest_seccomp_filter(number, args);
     let unsupported_process =
         // AUTONOMOUS-BOT-IMPLEMENTED
         (matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_vfork)
@@ -1223,5 +1768,34 @@ mod tests {
             assert_eq!(bytes, [0; 8]);
         }
         assert_eq!(stack.size(), 24);
+    }
+
+    /// A pidfd's inode is a birth identity only on pidfs. An anonymous inode,
+    /// which every pidfd shared before pidfs, is rejected.
+    #[test]
+    fn only_a_pidfs_inode_is_a_birth_identity() {
+        let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) } as i32;
+        assert!(pidfd >= 0, "{}", std::io::Error::last_os_error());
+        let mut metadata: libc::stat = unsafe { core::mem::zeroed() };
+        assert_eq!(unsafe { libc::fstat(pidfd, &mut metadata) }, 0);
+        assert_eq!(pidfs_identity(pidfd), Some(metadata.st_ino));
+        assert!(pidfs_available().is_ok());
+        let anonymous = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
+        assert!(anonymous >= 0);
+        assert_eq!(pidfs_identity(anonymous), None);
+        unsafe {
+            libc::close(pidfd);
+            libc::close(anonymous);
+        }
+    }
+
+    /// Only a PKRU that denies key 0's access or writes refuses the creation.
+    #[test]
+    fn guest_keys_deny_runtime_memory_only_when_key_0_is_restricted() {
+        assert!(!guest_keys_deny_runtime_memory(None));
+        assert!(!guest_keys_deny_runtime_memory(Some(0)));
+        assert!(!guest_keys_deny_runtime_memory(Some(0x5555_5554)));
+        assert!(guest_keys_deny_runtime_memory(Some(0b01)));
+        assert!(guest_keys_deny_runtime_memory(Some(0b10)));
     }
 }
