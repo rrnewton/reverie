@@ -15,6 +15,7 @@ use reverie_syscalls::SyscallInfo;
 
 use crate::Never;
 use crate::Pid;
+use crate::Signal;
 use crate::SignalEvent;
 use crate::auxv::Auxv;
 use crate::backtrace::Backtrace;
@@ -289,6 +290,16 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// `ENOSYS`; adding this method does not change ptrace signal delivery.
     async fn defer_signal_delivery(&mut self, _event: SignalEvent) -> Result<(), Error> {
         Err(Errno::ENOSYS.into())
+    }
+
+    /// The signal the backend holds for delivery when the guest resumes, if it
+    /// holds one: on ptrace, a signal that stopped one of this callback's
+    /// injections before its `syscall` instruction ran, which the tracer took
+    /// from the kernel's queue and keeps in its single held slot. A later stop
+    /// of another injection replaces it. `None` when nothing is held, and the
+    /// default for backends that hold no signal this way.
+    fn held_signal(&self) -> Option<Signal> {
+        None
     }
 
     /// Queues a Tool-selected terminal child event for the current process.
@@ -780,6 +791,10 @@ where
 
     async fn defer_signal_delivery(&mut self, event: SignalEvent) -> Result<(), Error> {
         self.inner.defer_signal_delivery(event).await
+    }
+
+    fn held_signal(&self) -> Option<Signal> {
+        self.inner.held_signal()
     }
 
     async fn queue_child_exit_signal(

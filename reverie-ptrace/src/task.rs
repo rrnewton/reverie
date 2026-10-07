@@ -8084,6 +8084,10 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         }
     }
 
+    fn held_signal(&self) -> Option<Signal> {
+        self.pending_signal
+    }
+
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         // Call a non-templatized function to reduce code bloat.
         let (nr, args) = syscall.into_parts();
