@@ -25,6 +25,12 @@ const RPC_CLOCK_GETTIME: u64 = 2;
 const RPC_GETTIMEOFDAY: u64 = 3;
 const RPC_FORK: u64 = 4;
 const RPC_CLOSE_RANGE: u64 = 5;
+const RPC_BLOCKING: u64 = 6;
+/// Set by the `blocking-global-rpc` mode: the next getpid callback probes
+/// `blocking_global_rpc` from inside the callback, outside its own send_rpc.
+static PROBE_BLOCKING_RPC: AtomicBool = AtomicBool::new(false);
+/// The probe's outcome: 1 when both calls behaved as required.
+static BLOCKING_RPC_OK: AtomicU64 = AtomicU64::new(0);
 /// Set before `install_tool` by the mode that checks a Tool sees the guest's
 /// descriptor-closing calls; the Tool then subscribes to `close` and
 /// `close_range` too.
@@ -153,6 +159,20 @@ impl GlobalTool for LifecycleGlobal {
     }
 }
 
+/// A global state no Tool in this process uses: `blocking_global_rpc` must
+/// refuse it.
+#[derive(Default)]
+struct UnusedGlobal;
+
+#[reverie::global_tool]
+impl GlobalTool for UnusedGlobal {
+    type Request = u64;
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Tid, _event: u64) {}
+}
+
 #[derive(Default)]
 struct LifecycleTool;
 
@@ -191,6 +211,9 @@ impl Tool for LifecycleTool {
         syscall: Syscall,
     ) -> Result<i64, Error> {
         CALLBACKS.fetch_add(1, Ordering::Relaxed);
+        if syscall.number() == Sysno::getpid && PROBE_BLOCKING_RPC.swap(false, Ordering::Relaxed) {
+            probe_blocking_global_rpc();
+        }
         if syscall.number() == Sysno::wait4 {
             if FORCE_WAIT_RESTART.swap(false, Ordering::Relaxed) {
                 return Err(restart_same_entry());
@@ -651,12 +674,28 @@ fn reserve_tool_output_fd(path: &std::ffi::OsStr) -> (libc::c_int, libc::c_int) 
     (reserved, peer)
 }
 
-/// The guest tries to close, replace, write, query, truncate, extend and map the
-/// Tool's reserved output descriptor, to reach it with high bits set in a
-/// descriptor argument, to open, create over or truncate it through procfs, and
-/// to close it with `close_range`; every attempt fails or is a no-op. Then the
-/// Tool's own write (its `getppid` callback sends `tool`) reaches the guest's
-/// end of the pair as the only message.
+/// Synchronous Tool code inside a callback, outside the callback's own
+/// send_rpc, reaches the coordinator through the process's connection with
+/// `blocking_global_rpc`; a global state that is not the installed Tool's is
+/// refused without sending. The getpid callback runs the probe.
+fn blocking_global_rpc() {
+    PROBE_BLOCKING_RPC.store(true, Ordering::Relaxed);
+    unsafe { libc::getpid() };
+    assert_eq!(BLOCKING_RPC_OK.load(Ordering::Relaxed), 1);
+    println!("blocking global rpc: ok");
+}
+
+/// Run by the getpid callback for the `blocking-global-rpc` mode.
+fn probe_blocking_global_rpc() {
+    let sent = reverie_liteinst::blocking_global_rpc::<LifecycleGlobal>(RPC_BLOCKING);
+    let refused = reverie_liteinst::blocking_global_rpc::<UnusedGlobal>(RPC_BLOCKING);
+    let ok = sent.is_ok()
+        && refused
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::InvalidInput);
+    BLOCKING_RPC_OK.store(u64::from(ok), Ordering::Relaxed);
+}
+
 /// A guest `close_range` over every descriptor from 3 up, a fresh pipe's
 /// included. The range covers the coordinator connection and any reserved Tool output
 /// socket, so the runtime once handled it before Tool dispatch; now the Tool
@@ -682,6 +721,12 @@ fn close_range_through_tool() {
     println!("close range through tool: ok");
 }
 
+/// The guest tries to close, replace, write, query, truncate, extend and map the
+/// Tool's reserved output descriptor, to reach it with high bits set in a
+/// descriptor argument, to open, create over or truncate it through procfs, and
+/// to close it with `close_range`; every attempt fails or is a no-op. Then the
+/// Tool's own write (its `getppid` callback sends `tool`) reaches the guest's
+/// end of the pair as the only message.
 fn tool_output_fd(reserved: libc::c_int, peer: libc::c_int) {
     let link = || std::fs::read_link(format!("/proc/self/fd/{reserved}")).unwrap();
     let before = link();
@@ -964,6 +1009,11 @@ fn main() {
     let mode = arguments.next().expect("missing lifecycle fixture mode");
     if mode == "fallback-fork-stats" {
         fallback_fork_stats();
+        return;
+    }
+    if mode == "blocking-global-rpc" {
+        install_tool();
+        blocking_global_rpc();
         return;
     }
     if mode == "close-range-through-tool" {

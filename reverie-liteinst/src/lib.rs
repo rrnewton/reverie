@@ -58,6 +58,7 @@ pub use runtime::site_patching_from_env_value;
 pub use runtime::tool_output_fd;
 pub use straddler::STRADDLER_STALENESS_TICKS_ENV;
 pub use straddler::straddler_staleness_from_env_value;
+pub use tool_host::blocking_global_rpc;
 pub use tool_host::install_tool;
 pub use tool_host::install_tool_from_bootstrap;
 pub use tool_host::install_tool_quiescent;
