@@ -6044,6 +6044,18 @@ impl<L: Tool + 'static> TracedTask<L> {
                     if let Some(stats) = &self.global_state.backend_stats {
                         stats.record_tracee_exit();
                     }
+                    if self.is_main_thread() {
+                        // The process leader's final wait status has been
+                        // consumed, which the kernel allows only once every
+                        // thread of the process is gone. For a traced child
+                        // that consumption is when the kernel publishes the
+                        // exit to the guest parent, so report it now
+                        // (BackendCapabilities::reports_child_exit_publication),
+                        // before the Tool's exit hooks run.
+                        self.global_state
+                            .gs_ref
+                            .on_backend_process_exited(self.pid().as_raw());
+                    }
                     // Whether the run loop returned or the exit stop cut it
                     // short, the thread has ended its timer event.
                     self.timer.settle_at_exit();
