@@ -21,6 +21,9 @@ use crate::runtime::SyscallEvent;
 trait ToolHandler: Send + Sync {
     fn dispatch(&self, event: &mut SyscallEvent);
     fn dispatch_instruction(&self, kind: runtime::InstructionEventKind, context: &mut HookContext);
+    /// The installed Tool's coordinator connection, as a
+    /// `CoordinatorRpc<T::GlobalState>`; see [`blocking_global_rpc`].
+    fn rpc(&self) -> &dyn std::any::Any;
 }
 
 impl<T: Tool + 'static> ToolHandler for ToolHost<T, LiteinstRuntime> {
@@ -43,6 +46,10 @@ impl<T: Tool + 'static> ToolHandler for ToolHost<T, LiteinstRuntime> {
         // it instruments.
         let context = unsafe { &mut *(context as *mut HookContext).cast::<RegisterContext>() };
         unsafe { ToolHost::dispatch_instruction(self, kind, context) };
+    }
+
+    fn rpc(&self) -> &dyn std::any::Any {
+        ToolHost::rpc(self)
     }
 }
 
@@ -259,6 +266,43 @@ where
         site_patching,
         &vdso_sites,
     )
+}
+
+/// Sends `request` to the coordinator's global state and waits for its
+/// response, from the installed Tool's own synchronous code running inside a
+/// Tool callback but outside the callback's own `send_rpc`: for example from
+/// a synchronous method a callback calls, where no [`reverie::Guest`] is at
+/// hand. Inside a callback the runtime's own syscalls are not intercepted.
+/// Guest code outside a callback cannot use this: its syscalls on the
+/// coordinator connection are guest syscalls, which the runtime refuses. It uses the process's one existing
+/// coordinator connection, so it reconnects after a fork exactly as callbacks
+/// do, and it adds no descriptor.
+///
+/// Fails, without sending, when no Tool is installed in this process, when
+/// `G` is not the installed Tool's global state, or when another request of
+/// this process is in flight on the connection (re-entry, which waiting would
+/// deadlock).
+pub fn blocking_global_rpc<G: reverie::GlobalTool + 'static>(
+    request: G::Request,
+) -> io::Result<G::Response> {
+    let handler = HANDLER
+        .get()
+        .ok_or_else(|| io::Error::other("no in-guest Tool is installed in this process"))?;
+    let rpc = handler
+        .rpc()
+        .downcast_ref::<CoordinatorRpc<G>>()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the requested global state is not the installed Tool's",
+            )
+        })?;
+    rpc.send_blocking_unless_in_flight(request).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "another coordinator request of this process is in flight",
+        )
+    })
 }
 
 pub(crate) fn dispatch(event: &mut SyscallEvent) {

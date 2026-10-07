@@ -113,6 +113,13 @@ pub struct ToolHost<T: Tool, R: HostRuntime> {
     runtime: R,
 }
 
+impl<T: Tool, R: HostRuntime> ToolHost<T, R> {
+    /// This process's coordinator connection.
+    pub fn rpc(&self) -> &CoordinatorRpc<T::GlobalState> {
+        &self.rpc
+    }
+}
+
 impl<T, R> ToolHost<T, R>
 where
     T: Tool + 'static,

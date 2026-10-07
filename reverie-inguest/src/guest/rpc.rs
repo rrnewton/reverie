@@ -107,10 +107,33 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
     }
 }
 
-#[reverie::tool]
-impl<G: GlobalTool> GlobalRPC<G> for CoordinatorRpc<G> {
-    async fn send_rpc(&self, message: G::Request) -> G::Response {
-        let mut connection = self.connection.lock();
+/// A blocking request found another request of this process in flight on
+/// the connection; see [`CoordinatorRpc::send_blocking_unless_in_flight`].
+#[derive(Debug)]
+pub struct RequestInFlight;
+
+impl<G: GlobalTool> CoordinatorRpc<G> {
+    /// Sends `message` and waits for the response, from Tool code that runs
+    /// outside a Tool callback's own `send_rpc` (for example inside a
+    /// synchronous method the callback called). A process's guest code is
+    /// single-threaded and its callbacks complete each request before
+    /// returning, so another request in flight means re-entry; that is
+    /// refused rather than waited on, because waiting would deadlock.
+    pub fn send_blocking_unless_in_flight(
+        &self,
+        message: G::Request,
+    ) -> Result<G::Response, RequestInFlight> {
+        let connection = self.connection.try_lock().ok_or(RequestInFlight)?;
+        Ok(self.exchange(connection, message))
+    }
+
+    /// One request and response on `connection`, reconnecting first in a
+    /// freshly forked child.
+    fn exchange(
+        &self,
+        mut connection: crate::sync::SpinGuard<'_, RpcConnection<G>>,
+        message: G::Request,
+    ) -> G::Response {
         // Fork detection without a per-hop syscall: the common round-trip only
         // reads the atfork flag. It is set exclusively in a freshly forked
         // child, so `getpid`/`gettid` are issued only when a fork has actually
@@ -131,6 +154,13 @@ impl<G: GlobalTool> GlobalRPC<G> for CoordinatorRpc<G> {
             Ok(response) => response,
             Err(_) => rpc_fatal(123),
         }
+    }
+}
+
+#[reverie::tool]
+impl<G: GlobalTool> GlobalRPC<G> for CoordinatorRpc<G> {
+    async fn send_rpc(&self, message: G::Request) -> G::Response {
+        self.exchange(self.connection.lock(), message)
     }
 
     fn config(&self) -> &G::Config {

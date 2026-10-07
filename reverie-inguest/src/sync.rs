@@ -46,6 +46,14 @@ impl<T> SpinMutex<T> {
         }
         SpinGuard { mutex: self }
     }
+
+    /// Acquire the lock only if it is free now.
+    pub fn try_lock(&self) -> Option<SpinGuard<'_, T>> {
+        self.held
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+            .then_some(SpinGuard { mutex: self })
+    }
 }
 
 // SAFETY: access to the inner value is serialized by the spinlock.
@@ -75,5 +83,22 @@ impl<T> core::ops::DerefMut for SpinGuard<'_, T> {
 impl<T> Drop for SpinGuard<'_, T> {
     fn drop(&mut self) {
         self.mutex.held.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_lock_fails_only_while_the_lock_is_held() {
+        let mutex = SpinMutex::new(1);
+        let held = mutex.try_lock().expect("a free lock is acquired");
+        assert!(mutex.try_lock().is_none(), "a held lock was acquired twice");
+        drop(held);
+        let mut again = mutex.try_lock().expect("a released lock is acquired");
+        *again += 1;
+        drop(again);
+        assert_eq!(*mutex.lock(), 2);
     }
 }
