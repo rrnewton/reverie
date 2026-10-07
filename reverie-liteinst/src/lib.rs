@@ -40,6 +40,12 @@ mod tool_host;
 /// in both backends via `reverie_inguest::install_builtin`.
 pub use reverie_inguest::BuiltinTool;
 pub use reverie_inguest::SPOOF_PID;
+pub use reverie_inguest::guest::host::CreationHookError;
+pub use reverie_inguest::guest::host::CreationRefusal;
+pub use reverie_inguest::guest::host::PhysicalCreation;
+pub use reverie_inguest::guest::host::PhysicalCreationHook;
+pub use reverie_inguest::guest::host::RefusedChild;
+pub use reverie_inguest::guest::host::set_physical_creation_hook;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-254): Review shared RuntimeConfig alt-stack re-exports.
 /// `REVERIE_LITEINST_ALT_STACK` selector and parser for the shared
