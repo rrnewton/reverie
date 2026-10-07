@@ -261,9 +261,18 @@ pub trait GlobalTool: Send + Sync + Default {
     /// while the thread's whole process is exiting because of a signal whose
     /// default action dumps core, before the thread is released to finish
     /// exiting. The kernel has already made the fatal decision and its own
-    /// core dump step is over, so the thread's exit status cannot change; the
-    /// thread's memory is still mapped and may be read through
-    /// `/proc/<tid>/mem`.
+    /// core dump step is over, so the thread's exit status cannot change.
+    ///
+    /// The thread's memory is normally still mapped and may be read through
+    /// `/proc/<tid>/mem`, but holding the thread does not keep it there. The
+    /// kernel's OOM reaper, any process that calls `process_mrelease` on the
+    /// dying process, or anything that ends the exit stop early can unmap it
+    /// before or during the call, including after the backend's last
+    /// successful register read, and a process outside the thread group that
+    /// shares the address space can keep writing to it. A read can therefore fail, come back short, or
+    /// return pages that were reaped or are being changed. A consumer must
+    /// treat unavailable or partial memory as a normal outcome and keep
+    /// whatever it got rather than fail.
     ///
     /// The call is per thread: each thread of the dying process reaches its
     /// own exit stop, in host order, so one process death can produce several

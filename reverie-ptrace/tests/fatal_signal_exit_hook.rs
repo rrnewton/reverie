@@ -7,9 +7,11 @@
  */
 
 //! `GlobalTool::on_fatal_signal_exit` runs once for each thread of a process
-//! that a core-dumping signal ends, while the thread is held at its exit stop
-//! with its memory still mapped, and never for a thread that exits any other
-//! way, including one that seccomp kills while its process lives on.
+//! that a core-dumping signal ends, while the thread is held at its exit stop,
+//! and never for a thread that exits any other way, including one that
+//! seccomp kills while its process lives on. Nothing in these tests reaps a
+//! held guest's memory, so the hook here expects to read it; a real consumer
+//! must tolerate a failed or short read.
 //!
 //! Every guest sets its soft `RLIMIT_CORE` to 1 first. The kernel refuses to
 //! write a core at that limit, whether `core_pattern` names a file or a pipe,
