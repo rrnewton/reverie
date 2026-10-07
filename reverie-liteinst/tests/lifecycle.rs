@@ -27,6 +27,8 @@ const RPC_GETTIMEOFDAY: u64 = 3;
 const RPC_FORK: u64 = 4;
 const RPC_CLOSE_RANGE: u64 = 5;
 const RPC_BLOCKING: u64 = 6;
+const RPC_PARK: u64 = 7;
+const RPC_FAIL: u64 = 8;
 /// Tags a process's exit-time count of its Tool callbacks.
 const RPC_CALLBACK_COUNT: u64 = 1 << 32;
 const BACKEND_OUTPUT_CHILD_ENV: &str = "REVERIE_LITEINST_BACKEND_OUTPUT_TEST_CHILD";
@@ -49,6 +51,8 @@ struct LifecycleGlobal {
     exited: std::sync::Mutex<Vec<i32>>,
     /// Calls of `report_backend_failure`.
     backend_failures: AtomicU64,
+    /// Processes parked by `RPC_PARK`.
+    parked: AtomicU64,
 }
 
 /// What `LifecycleGlobal::backend_pending_process_exits` returns, so a test can
@@ -61,7 +65,22 @@ impl GlobalTool for LifecycleGlobal {
     type Response = ();
     type Config = ();
 
-    async fn receive_rpc(&self, _from: Tid, event: u64) {
+    async fn receive_rpc(&self, from: Tid, event: u64) {
+        if event == RPC_PARK {
+            self.parked.fetch_add(1, Ordering::Relaxed);
+            std::future::pending::<()>().await;
+        }
+        if event == RPC_FAIL {
+            while self.parked.load(Ordering::Relaxed) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            self.report_backend_failure(reverie::BackendFailure {
+                pid: reverie::Pid::from_raw(from.as_raw()),
+                tid: from,
+                phase: "lifecycle fixture refusal",
+            });
+            return;
+        }
         if event & RPC_CALLBACK_COUNT != 0 {
             self.callbacks
                 .fetch_add(event & !RPC_CALLBACK_COUNT, Ordering::Relaxed);
@@ -89,6 +108,12 @@ impl GlobalTool for LifecycleGlobal {
 
     fn report_backend_failure(&self, _event: reverie::BackendFailure) {
         self.backend_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    async fn wait_for_backend_failure(&self) {
+        while self.backend_failures.load(Ordering::Relaxed) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 }
 
@@ -518,6 +543,27 @@ async fn run_lifecycle_mode(mode: &str) -> (std::process::Output, String) {
     .unwrap();
     let stdout = String::from_utf8_lossy(&result.stdout).into_owned();
     (result, stdout)
+}
+
+/// A backend failure the coordinator's tool reports, while another guest
+/// process is parked in a request the tool never answers, ends the run at once
+/// with an error. Before, the launch waited for the root guest, which was the
+/// parked process, forever.
+#[tokio::test(flavor = "current_thread")]
+async fn a_backend_failure_ends_the_run_while_a_process_is_parked() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let error = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("backend-failure"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("a backend failure left the run hanging")
+    .unwrap_err();
+    assert!(error.to_string().contains("backend failure"), "{error}");
 }
 
 /// Synchronous Tool code inside a callback, outside the callback's own
