@@ -945,6 +945,24 @@ fn write_injected_frame(
 /// Hands a thread that a core-dumping signal killed to the global tool.
 type FatalSignalExitHook = Box<dyn Fn(&reverie::FatalSignalExit) + Send + Sync>;
 
+/// `PF_DUMPCORE` and `PF_SIGNALED` from the kernel's `include/linux/sched.h`.
+const PF_DUMPCORE: u64 = 0x200;
+const PF_SIGNALED: u64 = 0x400;
+
+/// The kernel's `task_struct::flags` for `tid`, field 9 of `/proc/<tid>/stat`.
+fn kernel_task_flags(tid: Pid) -> std::io::Result<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{tid}/stat"))?;
+    let invalid = |what| std::io::Error::new(std::io::ErrorKind::InvalidData, what);
+    stat.rsplit_once(") ")
+        .ok_or_else(|| invalid("malformed stat"))?
+        .1
+        .split_ascii_whitespace()
+        .nth(6)
+        .ok_or_else(|| invalid("missing flags"))?
+        .parse()
+        .map_err(|_| invalid("malformed flags"))
+}
+
 /// The first ordinary-ptrace fatal error cancels every followed task. Keep the
 /// actual error until the entire tree has completed its real terminal waits.
 #[derive(Default)]
@@ -1740,10 +1758,10 @@ impl FatalSession {
         }
     }
 
-    /// Offers a thread held at its exit stop after a core-dumping fatal
-    /// signal to the global Tool, while its memory is still mapped. Reads the
-    /// thread's registers without changing them; a thread whose registers
-    /// cannot be read is not offered.
+    /// Offers a thread held at its exit stop while a core-dumping fatal signal
+    /// ends its process to the global Tool, while its memory is still mapped.
+    /// Reads the thread's registers and kernel flags without changing them; a
+    /// thread whose registers or flags cannot be read is not offered.
     pub(crate) fn offer_fatal_signal_exit(&self, stopped: &Stopped, status: ExitStatus) {
         let (Some(hook), ExitStatus::Signaled(signal, _)) = (&self.fatal_signal_exit, status)
         else {
@@ -1752,13 +1770,25 @@ impl FatalSession {
         if !reverie::signal_dumps_core(signal) {
             return;
         }
-        if let Ok(regs) = stopped.getregs() {
-            hook(&reverie::FatalSignalExit {
-                tid: stopped.pid(),
-                signal,
-                status,
-                regs,
-            });
+        // The kernel's fatal-signal path marks every thread of the dying
+        // process PF_SIGNALED. A thread that exits with a signal number
+        // without it (seccomp KILL_THREAD, a kernel oops) leaves its process
+        // running. PF_DUMPCORE marks the thread that ran the core dump step.
+        let Ok(flags) = kernel_task_flags(stopped.pid()) else {
+            return;
+        };
+        if flags & PF_SIGNALED == 0 {
+            return;
+        }
+        let Ok(regs) = stopped.getregs() else {
+            return;
+        };
+        let deadline = *self.cleanup_deadline.lock().unwrap();
+        let dumping = flags & PF_DUMPCORE != 0;
+        if let Some(exit) =
+            reverie::FatalSignalExit::new(stopped.pid(), status, dumping, deadline, regs)
+        {
+            hook(&exit);
         }
     }
 
@@ -8799,5 +8829,102 @@ mod tests {
                 "task::tests::fatal_marker_capture_tests::ordinary_return_uses_real_capture_without_fatal_marker",
             )
         }
+    }
+
+    /// A thread offered after the run has failed carries the failed run's
+    /// cleanup deadline, so a Tool can bound its capture by it; one offered
+    /// before carries none. Drives a real tracee to its SIGSEGV exit stop.
+    #[test]
+    fn a_fatal_signal_exit_offered_after_the_run_failed_carries_the_cleanup_deadline() {
+        use nix::unistd::ForkResult;
+
+        let pid = match unsafe { nix::unistd::fork() }.expect("fork crashing child") {
+            ForkResult::Child => {
+                safeptrace::traceme_and_stop().expect("TRACEME crashing child");
+                // A core limit of one byte makes the kernel run its dump step
+                // without writing a host core.
+                let mut limit = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                // The test harness's inherited SIGSEGV handler would
+                // otherwise catch the signal.
+                unsafe {
+                    if libc::getrlimit(libc::RLIMIT_CORE, &mut limit) != 0 {
+                        libc::_exit(1);
+                    }
+                    limit.rlim_cur = 1;
+                    if libc::setrlimit(libc::RLIMIT_CORE, &limit) != 0 {
+                        libc::_exit(1);
+                    }
+                    libc::signal(libc::SIGSEGV, libc::SIG_DFL);
+                    libc::raise(libc::SIGSEGV);
+                    libc::_exit(0)
+                }
+            }
+            ForkResult::Parent { child } => Pid::from(child),
+        };
+        let (stopped, event) = Running::new(pid).wait().expect("wait").assume_stopped();
+        assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+        stopped
+            .setoptions(safeptrace::Options::PTRACE_O_TRACEEXIT)
+            .expect("set PTRACE_O_TRACEEXIT");
+        let (stopped, event) = stopped
+            .resume(None)
+            .expect("resume")
+            .wait()
+            .expect("wait")
+            .assume_stopped();
+        assert_eq!(event, Event::Signal(Signal::SIGSEGV));
+        let (stopped, event) = stopped
+            .resume(Signal::SIGSEGV)
+            .expect("deliver SIGSEGV")
+            .wait()
+            .expect("wait")
+            .assume_stopped();
+        assert_eq!(event, Event::Exit);
+        let status = ExitStatus::from_raw(stopped.getevent().expect("exit status") as i32);
+        assert_eq!(status, ExitStatus::Signaled(Signal::SIGSEGV, false));
+
+        let offers = Arc::new(StdMutex::new(Vec::new()));
+        let record = offers.clone();
+        let session = FatalSession {
+            fatal_signal_exit: Some(Box::new(move |exit: &reverie::FatalSignalExit| {
+                record
+                    .lock()
+                    .unwrap()
+                    .push((exit.tid, exit.signal, exit.dumping, exit.deadline));
+            })),
+            ..FatalSession::default()
+        };
+        session.offer_fatal_signal_exit(&stopped, status);
+        let before_failure = std::time::Instant::now();
+        session.fail_at(
+            BackendFailure {
+                pid,
+                tid: pid,
+                phase: "fatal signal exit test",
+            },
+            anyhow::anyhow!("deliberate run failure").into(),
+        );
+        session.offer_fatal_signal_exit(&stopped, status);
+
+        let offers = offers.lock().unwrap().clone();
+        assert_eq!(offers.len(), 2, "{offers:?}");
+        assert_eq!(offers[0], (pid, Signal::SIGSEGV, true, None));
+        let (tid, signal, dumping, deadline) = offers[1];
+        assert_eq!((tid, signal, dumping), (pid, Signal::SIGSEGV, true));
+        let deadline = deadline.expect("an offer after the failure carries the deadline");
+        assert!(deadline > before_failure, "{deadline:?} {before_failure:?}");
+
+        let exited = stopped
+            .resume(None)
+            .expect("finish exit")
+            .wait()
+            .expect("wait");
+        assert_eq!(
+            exited.assume_exited().1,
+            ExitStatus::Signaled(Signal::SIGSEGV, false)
+        );
     }
 }
