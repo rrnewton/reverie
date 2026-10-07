@@ -259,6 +259,73 @@ fn protected_descriptors(guest_syscall: bool) -> ([u64; 2], usize) {
 /// than the runtime's own protected descriptors, which it spares or moves
 /// through their slots; a descriptor the guest closes is the guest's to close.
 pub unsafe fn protect_runtime_descriptors(event: &mut SyscallEvent, guest_syscall: bool) -> bool {
+    unsafe { protect_runtime_descriptors_inner(event, guest_syscall, false) }
+}
+
+/// [`protect_runtime_descriptors`] for a guest syscall that a Tool dispatches
+/// next: a `close` or `close_range` is left to the Tool, so the Tool accounts
+/// for the guest descriptors it closes (Detcore's descriptor table, holders
+/// and port release). The Tool forwards the call through `inject` or
+/// `tail_inject`, which apply [`protect_forwarded_descriptor_change`] at
+/// physical execution, so the guest-visible result is the same as when this
+/// function handled the call itself. Every other protection is unchanged.
+///
+/// # Safety
+///
+/// As [`protect_runtime_descriptors`].
+pub unsafe fn protect_runtime_descriptors_before_tool(event: &mut SyscallEvent) -> bool {
+    unsafe { protect_runtime_descriptors_inner(event, true, true) }
+}
+
+/// A guest `close` or `close_range` that a Tool forwards after
+/// [`protect_runtime_descriptors_before_tool`] left it to the Tool: the same
+/// protection, applied at physical execution. A `close` of a protected
+/// descriptor returns 0 without closing it; a `close_range` over one closes
+/// the rest of its range. Returns the result to give the Tool instead of
+/// running the call, or `None` to run the call as asked.
+///
+/// # Safety
+///
+/// As [`close_range_preserving_fds`]: `number` and `args` are a `close` or
+/// `close_range` the Tool runs for the guest, in the guest's own descriptor
+/// table, whether the guest's call forwarded unchanged or one the Tool issues
+/// on the guest's behalf. Every descriptor it closes, other than the
+/// runtime's own (which are spared), is the guest's to close, and the caller
+/// holds no live owner or borrow of one.
+pub unsafe fn protect_forwarded_descriptor_change(number: i64, args: [u64; 6]) -> Option<i64> {
+    if !is_descriptor_change_left_to_tool(number) {
+        return None;
+    }
+    let (mut protected, count) = protected_descriptors(true);
+    let protected = &mut protected[..count];
+    if protected.is_empty() {
+        return None;
+    }
+    let fd = |index: usize| u64::from(args[index] as u32);
+    if number == libc::SYS_close && protected.contains(&fd(0)) {
+        Some(0)
+    } else if number == libc::SYS_close_range && protected.iter().any(|&p| fd(0) <= p && p <= fd(1))
+    {
+        Some(unsafe { close_range_preserving_args(args, protected) })
+    } else {
+        None
+    }
+}
+
+/// The descriptor-closing calls a Tool must see (see
+/// [`protect_runtime_descriptors_before_tool`]).
+fn is_descriptor_change_left_to_tool(number: i64) -> bool {
+    matches!(number, libc::SYS_close | libc::SYS_close_range)
+}
+
+unsafe fn protect_runtime_descriptors_inner(
+    event: &mut SyscallEvent,
+    guest_syscall: bool,
+    leave_descriptor_changes_to_tool: bool,
+) -> bool {
+    if leave_descriptor_changes_to_tool && is_descriptor_change_left_to_tool(event.number) {
+        return false;
+    }
     let (mut protected, count) = protected_descriptors(guest_syscall);
     let protected = &mut protected[..count];
     if protected.is_empty() {
@@ -403,12 +470,23 @@ unsafe fn relocate_tool_output_for_dup(
 /// those in `preserved`; a descriptor the guest closes is the guest's to
 /// close.
 pub unsafe fn close_range_preserving_fds(event: &SyscallEvent, preserved: &[u64]) -> i64 {
+    unsafe { close_range_preserving_args(event.args, preserved) }
+}
+
+/// [`close_range_preserving_fds`] on the call's raw argument registers.
+///
+/// # Safety
+///
+/// As [`close_range_preserving_fds`].
+unsafe fn close_range_preserving_args(args: [u64; 6], preserved: &[u64]) -> i64 {
+    // As `fd_arg`: the kernel reads the low 32 bits of each register.
+    let arg = |index: usize| u64::from(args[index] as u32);
     const CLOSE_RANGE_UNSHARE: u64 = 1 << 1;
     const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
 
-    let first = fd_arg(event, 0);
-    let last = fd_arg(event, 1);
-    let mut flags = fd_arg(event, 2);
+    let first = arg(0);
+    let last = arg(1);
+    let mut flags = arg(2);
     if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 {
         return -i64::from(libc::EINVAL);
     }

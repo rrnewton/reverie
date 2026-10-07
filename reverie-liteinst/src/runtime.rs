@@ -136,7 +136,7 @@ use reverie_inguest::guest::instruction::set_instruction_native;
 use reverie_inguest::guest::protect::close_range_preserving_fds;
 use reverie_inguest::guest::protect::fd_arg;
 use reverie_inguest::guest::protect::protect_runtime_control;
-use reverie_inguest::guest::protect::protect_runtime_descriptors;
+use reverie_inguest::guest::protect::protect_runtime_descriptors_before_tool;
 pub(crate) use reverie_inguest::guest::protect::replace_coordinator_fd;
 pub(crate) use reverie_inguest::guest::protect::reserve_coordinator_fd;
 pub use reverie_inguest::guest::protect::reserve_tool_output_fd;
@@ -2369,7 +2369,7 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
     if tool_mode == TOOL_REVERIE && protect_runtime_control(event) {
         return;
     }
-    if tool_mode == TOOL_REVERIE && unsafe { protect_runtime_descriptors(event, true) } {
+    if tool_mode == TOOL_REVERIE && unsafe { protect_runtime_descriptors_before_tool(event) } {
         return;
     }
     if TOOL_MODE.load(Ordering::Relaxed) == TOOL_REVERIE {
