@@ -27,6 +27,7 @@ use super::signal;
 use super::stats;
 use super::tool::Tool;
 use super::tool::ToolGlobal;
+use super::tool_output;
 
 /// Creates an instance of a Tool. This is called when `ToolGlobal::global` is
 /// called for the first time.
@@ -69,6 +70,7 @@ pub fn sbr_init<T: ToolGlobal>(
         register_detours::<T>(fn_icept_reg);
 
         stats::init_guest_stats();
+        tool_output::init_tool_output();
         *vdso_callback = Some(callbacks::handle_vdso::<T>);
         *syscall_handler = Some(callbacks::handle_syscall::<T>);
         *rdtsc_handler = Some(callbacks::handle_rdtsc::<T>);

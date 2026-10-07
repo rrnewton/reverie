@@ -11,6 +11,7 @@
 use std::os::unix::io::AsRawFd;
 use std::os::unix::io::RawFd;
 use std::ptr;
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::AcqRel;
 use std::sync::atomic::Ordering::Acquire;
@@ -78,9 +79,18 @@ impl ProcessRegistry {
                 return unsafe { &(*current).files };
             }
 
+            // A forked child inherits the descriptors marked inherited, and their
+            // protection with them (`protect_inherited_raw_fd`).
+            let mut files = ProtectedFiles::new();
+            for slot in &INHERITED {
+                let fd = slot.load(Acquire);
+                if fd >= 0 {
+                    files.insert(&fd);
+                }
+            }
             let candidate = Box::into_raw(Box::new(RegistryValue {
                 pid,
-                files: Mutex::new(ProtectedFiles::new()),
+                files: Mutex::new(files),
             }));
             match self
                 .current
@@ -99,6 +109,11 @@ impl ProcessRegistry {
 }
 
 static PROTECTED_FILES: ProcessRegistry = ProcessRegistry::new();
+
+/// Descriptors that every process of the guest keeps protected: a forked child's
+/// registry starts with them. Atomics, not a lock, so a child forked while another
+/// thread held a lock can still read them.
+static INHERITED: [AtomicI32; 4] = [const { AtomicI32::new(-1) }; 4];
 
 fn protected_files() -> &'static Mutex<ProtectedFiles> {
     PROTECTED_FILES.get()
@@ -149,6 +164,16 @@ pub fn is_protected<Fd: AsRawFd>(fd: &Fd) -> bool {
 
 pub(crate) fn protect_raw_fd(fd: RawFd) {
     protected_files().lock().insert(&fd);
+}
+
+/// Protects `fd` in this process and in every process forked from it later.
+/// Returns false, protecting it in this process only, if every inherited slot
+/// is taken.
+pub(crate) fn protect_inherited_raw_fd(fd: RawFd) -> bool {
+    protect_raw_fd(fd);
+    INHERITED.iter().any(|slot| {
+        slot.load(Acquire) == fd || slot.compare_exchange(-1, fd, AcqRel, Acquire).is_ok()
+    })
 }
 
 pub(crate) fn protect_raw_pair_with<F, E>(create: F) -> Result<(RawFd, RawFd), E>
@@ -345,6 +370,36 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    /// A descriptor marked inherited stays protected in a forked child, whose
+    /// registry starts empty otherwise; a plainly protected one does not.
+    #[test]
+    fn inherited_protection_survives_fork() {
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (inherited, plain) = (fds[0], fds[1]);
+        assert!(protect_inherited_raw_fd(inherited));
+        protect_raw_fd(plain);
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            unsafe { libc::alarm(5) };
+            let ok = is_protected(&inherited) && !is_protected(&plain);
+            unsafe { libc::_exit(if ok { 0 } else { 1 }) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+        for slot in &INHERITED {
+            let _ = slot.compare_exchange(inherited, -1, AcqRel, Acquire);
+        }
+        unprotect_raw_fd(inherited);
+        unprotect_raw_fd(plain);
+        unsafe {
+            libc::close(inherited);
+            libc::close(plain);
+        }
+    }
 
     #[test]
     fn fork_child_does_not_reuse_locked_registry() {
