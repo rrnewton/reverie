@@ -139,8 +139,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_cf_is_refused_before_perf_event_open() {
-        let config = PmuConfig::try_from_family_model(0x06, 0xcf);
+    fn an_unknown_model_is_refused_before_perf_event_open() {
+        let config = PmuConfig::try_from_family_model(0x06, 0x01);
         let error = InGuestRcbCounter::current_thread_with_config(config, None).unwrap_err();
         assert_eq!(error, Errno::ENODEV);
     }

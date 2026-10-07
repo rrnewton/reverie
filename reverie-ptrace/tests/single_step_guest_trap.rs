@@ -512,7 +512,7 @@ fn the_timer_fires_in_a_loop_that_traps_in_every_round(rcbs: u64) {
         // traps at every branch retires them far too slowly for the second
         // stage margin to exceed the skid margin, so the last period is the
         // same.
-        let config = PmuConfig::new();
+        let config = PmuConfig::new().expect("this host has a PMU profile");
         let period = rcbs - config.skid_margin();
         let periods = if config.stages(rcbs) { 2 } else { 1 };
         assert!(

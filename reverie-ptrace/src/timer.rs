@@ -94,6 +94,7 @@ use tracing::warn;
 use crate::perf::*;
 use crate::tracer::PtracerWaitOwner;
 use crate::tracer::WaitOnPtracer;
+use crate::validation::PmuValidationError;
 
 // This signal is unused, in that the kernel will never send it to a process.
 const MARKER_SIGNAL: Signal = reverie::PERF_EVENT_SIGNAL;
@@ -150,6 +151,10 @@ pub const SKID_LATENCY_BUDGET_ENV: &str = "REVERIE_SKID_LATENCY_BUDGET_NS";
 pub const WITNESS_TOKEN_ENV: &str = "HERMIT_SKID_WITNESS_TOKEN";
 
 static PMU_CONFIG: OnceLock<PmuConfig> = OnceLock::new();
+
+/// The skid margin [`set_skid_margin_override`] recorded, applied to the PMU
+/// configuration when it is first built.
+static SKID_MARGIN_OVERRIDE: OnceLock<u64> = OnceLock::new();
 
 /// Overflow records forgotten because their notification had left the
 /// thread's pending queue, for tests.
@@ -365,12 +370,15 @@ fn version_is_preempt_rt(version: &str) -> bool {
     version.len() >= UTS_VERSION_MAX || version.split_whitespace().any(|word| word == "PREEMPT_RT")
 }
 
+/// The process's PMU configuration, which must already exist: every caller
+/// runs after [`TimerImpl::new`] or [`crate::validation`] has built it through
+/// [`try_get_pmu_config`], which refuses a CPU with no profile.
 pub(crate) fn get_pmu_config() -> &'static PmuConfig {
-    PMU_CONFIG.get_or_init(PmuConfig::new)
+    try_get_pmu_config().expect("the PMU configuration is read only after it was built")
 }
 
-/// [`get_pmu_config`], or `None` where it would panic: no configuration was
-/// set and this CPU has no profile.
+/// The process's PMU configuration, built on first use, or `None` when no
+/// configuration was set and this CPU has no profile.
 pub(crate) fn try_get_pmu_config() -> Option<&'static PmuConfig> {
     match PMU_CONFIG.get() {
         Some(config) => Some(config),
@@ -397,29 +405,46 @@ impl PmuConfig {
     /// contract because they also require a measured skid margin.
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn try_new() -> Option<Self> {
-        let features = raw_cpuid::CpuId::new().get_feature_info()?;
-        Self::try_from_family_model(features.family_id(), features.model_id())
-            .map(Self::with_env_overrides)
+        Self::new().ok()
     }
 
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn try_new() -> Option<Self> {
-        Some(Self::new())
+        Self::new().ok()
     }
 
-    /// Creates / initializes the PMU config.
+    /// The PMU configuration for this CPU, with the environment's overrides and
+    /// the margin [`set_skid_margin_override`] recorded.
+    ///
+    /// Refuses, rather than guessing an event, a CPU that is not in the
+    /// profile table ([`PmuValidationError::UnsupportedCpu`]) or whose CPUID
+    /// cannot be read ([`PmuValidationError::CouldNotReadCpuInfo`]).
     #[cfg(target_arch = "x86_64")]
-    pub fn new() -> Self {
-        let c = raw_cpuid::CpuId::new();
-        let fi = c
+    pub fn new() -> Result<Self, PmuValidationError> {
+        let features = raw_cpuid::CpuId::new()
             .get_feature_info()
-            .expect("CPUID feature information is required to configure the PMU");
-        Self::from_cpuid_features(fi).with_env_overrides()
+            .ok_or(PmuValidationError::CouldNotReadCpuInfo)?;
+        Ok(
+            Self::for_family_model(features.family_id(), features.model_id())?
+                .with_env_overrides()
+                .with_recorded_skid_margin(),
+        )
+    }
+
+    /// The PMU configuration of an x86 CPU with this family and model, without
+    /// any override, or [`PmuValidationError::UnsupportedCpu`] for one that is
+    /// not in the profile table. It does not read this host's CPUID.
+    #[cfg(target_arch = "x86_64")]
+    pub fn for_family_model(family_id: u8, model_id: u8) -> Result<Self, PmuValidationError> {
+        Self::try_from_family_model(family_id, model_id).ok_or(PmuValidationError::UnsupportedCpu {
+            family: family_id,
+            model: model_id,
+        })
     }
 
     /// Creates / initializes the PMU config.
     #[cfg(target_arch = "aarch64")]
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, PmuValidationError> {
         // TODO:
         //  1. Compute the microarchitecture from
         //     `/sys/devices/system/cpu/cpu*/regs/identification/midr_el1`
@@ -430,29 +455,20 @@ impl PmuConfig {
         const BR_RETIRED: u64 = 0x21;
 
         // For now, always assume that we can get retired branch events.
-        Self {
+        Ok(Self {
             rcb_event: BR_RETIRED,
             skid_margin: 1000,
             skid_margin_override: None,
             skid_latency_budget_ns: DEFAULT_SKID_LATENCY_BUDGET_NS,
         }
         .with_env_overrides()
+        .with_recorded_skid_margin())
     }
 
-    #[cfg(target_arch = "x86_64")]
-    fn from_cpuid_features(fi: raw_cpuid::FeatureInfo) -> Self {
-        Self::from_family_model(fi.family_id(), fi.model_id())
-    }
-
-    #[cfg(target_arch = "x86_64")]
+    /// [`Self::for_family_model`] for a model these tests know is in the table.
+    #[cfg(all(test, target_arch = "x86_64"))]
     fn from_family_model(family_id: u8, model_id: u8) -> Self {
-        Self::try_from_family_model(family_id, model_id).unwrap_or_else(|| match family_id {
-            0x06 => panic!("Unsupported Intel processor model: {:#x}", model_id),
-            family => panic!(
-                "Unsupported processor family, model: ({:#x},{:#x})",
-                family, model_id
-            ),
-        })
+        Self::for_family_model(family_id, model_id).expect("a model in the profile table")
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -482,6 +498,17 @@ impl PmuConfig {
     /// [`SKID_LATENCY_BUDGET_ENV`].
     fn with_env_overrides(self) -> Self {
         self.with_skid_margin_env().with_skid_latency_budget_env()
+    }
+
+    /// Applies the margin [`set_skid_margin_override`] recorded, if any. It is
+    /// applied after [`Self::with_env_overrides`], so it wins over
+    /// [`SKID_MARGIN_OVERRIDE_ENV`], as an explicit override built from
+    /// [`Self::new`] always did.
+    fn with_recorded_skid_margin(self) -> Self {
+        match SKID_MARGIN_OVERRIDE.get() {
+            Some(&margin) => self.with_skid_margin_override(margin),
+            None => self,
+        }
     }
 
     /// Applies the [`SKID_LATENCY_BUDGET_ENV`] override, if the env var is
@@ -765,18 +792,60 @@ impl PmuConfig {
     }
 }
 
-impl Default for PmuConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Installs the PMU configuration used by subsequently created ptrace timers.
 ///
 /// Returns the supplied configuration if a timer has already initialized the process-wide
 /// configuration. Callers should install overrides before spawning a [`crate::Tracer`].
 pub fn set_pmu_config(config: PmuConfig) -> Result<(), PmuConfig> {
     PMU_CONFIG.set(config)
+}
+
+/// Records `skid_margin` as the margin of the PMU configuration this process
+/// builds on first use, without reading this host's CPUID: a tool can accept
+/// a margin before it knows whether the host has a profile, and a host with
+/// none is refused only when a timer needs one.
+///
+/// Returns `skid_margin` back, recording nothing, once a margin was recorded
+/// or the configuration was built or set, because it would then be lost.
+/// Record it before spawning a [`crate::Tracer`].
+pub fn set_skid_margin_override(skid_margin: u64) -> Result<(), u64> {
+    record_skid_margin(
+        &SKID_MARGIN_OVERRIDE,
+        PMU_CONFIG.get().is_some(),
+        skid_margin,
+    )
+}
+
+/// Whether this host's CPU has a PMU profile, the precondition for a ptrace
+/// timer. It only reads CPUID and the profile table: it builds no
+/// configuration, applies no override and writes nothing, so a tool can ask
+/// before it starts and disable or refuse its timeslice rather than run
+/// without the timer it asked for.
+#[cfg(target_arch = "x86_64")]
+pub fn host_pmu_profile() -> Result<(), PmuValidationError> {
+    let features = raw_cpuid::CpuId::new()
+        .get_feature_info()
+        .ok_or(PmuValidationError::CouldNotReadCpuInfo)?;
+    PmuConfig::for_family_model(features.family_id(), features.model_id()).map(drop)
+}
+
+/// Every aarch64 CPU gets a configuration ([`PmuConfig::new`]).
+#[cfg(target_arch = "aarch64")]
+pub fn host_pmu_profile() -> Result<(), PmuValidationError> {
+    Ok(())
+}
+
+/// [`set_skid_margin_override`] against `slot`, with `config_built` saying
+/// whether the configuration it would change exists already.
+fn record_skid_margin(
+    slot: &OnceLock<u64>,
+    config_built: bool,
+    skid_margin: u64,
+) -> Result<(), u64> {
+    if config_built {
+        return Err(skid_margin);
+    }
+    slot.set(skid_margin)
 }
 
 /// Whether a stop at `rcb_actual` has reached the delivery point of a precise
@@ -895,9 +964,11 @@ impl Timer {
     fn with_initial_command(guest_pid: Pid, guest_tid: Tid, initial_command: bool) -> Self {
         // No errors are exposed here, as the construction should be
         // bullet-proof, and if it wasn't, consumers wouldn't be able to
-        // meaningfully handle the error anyway.
+        // meaningfully handle the error anyway. A CPU with no PMU profile has
+        // no event to count, so its tasks get no timer, as on a host without
+        // perf: building one would fail for every task, timer or not.
         Self {
-            inner: if is_perf_supported() {
+            inner: if is_perf_supported() && try_get_pmu_config().is_some() {
                 Some(
                     TimerImpl::new(guest_pid, guest_tid, initial_command).unwrap_or_else(|err| {
                         panic!(
@@ -1763,7 +1834,9 @@ impl ClockCounter {
 
 impl TimerImpl {
     pub fn new(guest_pid: Pid, guest_tid: Tid, initial_command: bool) -> Result<Self, Errno> {
-        let evt = get_pmu_config().rcb_event();
+        // A CPU with no profile has no event to count; refuse it as the
+        // in-guest clock does, rather than panic in the tracer.
+        let evt = try_get_pmu_config().ok_or(Errno::ENODEV)?.rcb_event();
 
         // measure the target tid irrespective of CPU
         let mut builder = Builder::new(guest_tid.as_raw(), -1);
@@ -5089,8 +5162,48 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn unknown_cpu_is_unavailable_to_fallible_in_guest_clock() {
-        assert_eq!(PmuConfig::try_from_family_model(0x06, 0xCF), None);
+        assert_eq!(PmuConfig::try_from_family_model(0x06, 0x01), None);
         assert_eq!(PmuConfig::try_from_family_model(0xFF, 0x01), None);
+    }
+
+    // A GitHub-hosted runner is family 6 model 0xCF (Emerald Rapids): every
+    // timer there panicked with "Unsupported Intel processor model: 0xcf"
+    // (https://github.com/rrnewton/hermit/actions/runs/37695112596).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn emerald_rapids_uses_sapphire_rapids_profile() {
+        let emerald = PmuConfig::from_family_model(0x06, 0xCF);
+        let sapphire = PmuConfig::from_family_model(0x06, 0x8F);
+        assert_eq!(emerald, sapphire);
+        assert_eq!(emerald.raw_rcb_event(), 0x5101c4);
+        assert_eq!(emerald.skid_margin(), 125);
+    }
+
+    // A CPU with no profile is a typed refusal that names it, not a panic.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_cpu_with_no_profile_is_refused_with_its_family_and_model() {
+        assert!(matches!(
+            PmuConfig::for_family_model(0x06, 0x01),
+            Err(crate::validation::PmuValidationError::UnsupportedCpu {
+                family: 0x06,
+                model: 0x01
+            })
+        ));
+        assert!(PmuConfig::for_family_model(0x1A, 0x11).is_ok());
+    }
+
+    // A margin is recorded once, and only while the configuration it would
+    // change does not exist yet; otherwise it is handed back.
+    #[test]
+    fn a_skid_margin_is_recorded_once_and_only_before_the_configuration_is_built() {
+        let slot = std::sync::OnceLock::new();
+        assert_eq!(super::record_skid_margin(&slot, true, 7), Err(7));
+        assert_eq!(slot.get(), None);
+        assert_eq!(super::record_skid_margin(&slot, false, 4321), Ok(()));
+        assert_eq!(slot.get(), Some(&4321));
+        assert_eq!(super::record_skid_margin(&slot, false, 9), Err(9));
+        assert_eq!(slot.get(), Some(&4321));
     }
 
     #[cfg(target_arch = "x86_64")]

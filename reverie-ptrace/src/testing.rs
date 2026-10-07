@@ -300,7 +300,9 @@ pub fn rerun_skid_margin() -> Option<u64> {
         .parse()
         .expect("a re-run's skid margin must be a u64");
     assert_eq!(
-        crate::PmuConfig::new().skid_margin(),
+        crate::PmuConfig::new()
+            .expect("this host has a PMU profile")
+            .skid_margin(),
         margin,
         "the re-run's skid margin override must be in effect"
     );

@@ -311,7 +311,10 @@ fn the_first_trap_near_the_target_cancels_the_timer_in_a_loop_that_traps_in_ever
 /// cancels the event: the keep margin short of the target. The same on every
 /// processor in Reverie's PMU table.
 fn keep_point() -> u64 {
-    PERF_RCBS - PmuConfig::new().keep_margin()
+    PERF_RCBS
+        - PmuConfig::new()
+            .expect("this host has a PMU profile")
+            .keep_margin()
 }
 
 /// The conditional branches between the request and a trap placed by

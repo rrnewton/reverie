@@ -116,7 +116,9 @@ fn request() {
 #[test]
 fn a_staged_event_fires_once_at_its_target() {
     ret_without_perf!();
-    let staged = PmuConfig::new().stages(PERF_RCBS);
+    let staged = PmuConfig::new()
+        .expect("this host has a PMU profile")
+        .stages(PERF_RCBS);
     let _ = reverie::take_skid_overshoot_count();
     let second_stages = precise_timer_second_stages_armed();
     let events = check_fn_with_config::<PreciseTimerTool, _>(

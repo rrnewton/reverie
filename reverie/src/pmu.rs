@@ -47,6 +47,13 @@ impl PmuProfile {
                 0x9A => (0x5101c4, 125),                      // Intel Alder Lake
                 0x8F => (0x5101c4, 125),                      // Intel Sapphire Rapids
                 0x86 => (0x5101c4, 100),                      // Intel Icelake
+                // Intel Emerald Rapids (Raptor Cove; Linux INTEL_EMERALDRAPIDS_X).
+                // Intel's perfmon tables encode BR_INST_RETIRED as Sapphire
+                // Rapids does (EMR emeraldrapids_core.json v1.25 and SPR
+                // sapphirerapids_core.json v1.40: event C4, umask 01 COND_TAKEN,
+                // 10 COND_NTAKEN, 11 COND), and rr gives both the same profile,
+                // so this repeats Sapphire Rapids' entry.
+                0xCF => (0x5101c4, 125),
                 _ => return None,
             },
             // Turin EPYC family 1Ah model 11h has p99 skid of 384 RCBs. A 1K

@@ -386,7 +386,10 @@ fn a_timer_beyond_the_keep_margin_fires_at_its_target_without_records() {
 async fn timer_beyond_the_keep_margin_fires_at_its_target() {
     reverie_ptrace::testing::disable_timer_overflow_records();
     let mode = "handler-quiet-spin";
-    let rcbs = reverie_ptrace::PmuConfig::new().keep_margin() + 2 * LANDING_NEAR_RCBS;
+    let rcbs = reverie_ptrace::PmuConfig::new()
+        .expect("this host has a PMU profile")
+        .keep_margin()
+        + 2 * LANDING_NEAR_RCBS;
     let expected = landing_events(Some(format!("timer +{rcbs}")));
     // A run's events are explained by skid if they are the expected events,
     // or if the run witnessed an overshoot and only its timer event, the last,
