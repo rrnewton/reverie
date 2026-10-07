@@ -674,6 +674,296 @@ fn reserve_tool_output_fd(path: &std::ffi::OsStr) -> (libc::c_int, libc::c_int) 
     (reserved, peer)
 }
 
+/// The last creation the runtime reported to the hook, and how many it reported.
+static CREATION_RESULT: AtomicI64 = AtomicI64::new(0);
+static CREATION_IDENTITY: AtomicU64 = AtomicU64::new(0);
+static CREATIONS: AtomicU64 = AtomicU64::new(0);
+
+fn record_creation(creation: reverie_liteinst::PhysicalCreation) -> std::io::Result<()> {
+    use reverie_liteinst::PhysicalCreation;
+    let (result, identity) = match creation {
+        PhysicalCreation::Created {
+            pid,
+            birth_identity,
+        } => (i64::from(pid), birth_identity),
+        PhysicalCreation::Failed { errno } => (-i64::from(errno), 0),
+        PhysicalCreation::Refused { .. } => (i64::MIN, 0),
+    };
+    CREATION_RESULT.store(result, Ordering::Relaxed);
+    CREATION_IDENTITY.store(identity, Ordering::Relaxed);
+    CREATIONS.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Registers `hook`. Where the kernel has no pidfs (before Linux 6.9) the
+/// runtime refuses the hook, which is the correct behaviour there: say so and
+/// let the mode end, so the test can require that refusal.
+fn register_creation_hook(hook: reverie_liteinst::PhysicalCreationHook) -> bool {
+    match reverie_liteinst::set_physical_creation_hook(hook) {
+        Ok(()) => true,
+        Err(reverie_liteinst::CreationHookError::PidfsUnavailable) => {
+            println!("creation hook refused: pidfs unavailable");
+            false
+        }
+        Err(other) => panic!("creation hook not registered: {other:?}"),
+    }
+}
+
+/// Fails only for a creation that produced a child with an identity, after
+/// saying so with a raw write, so that the test can tell a hook error after a
+/// real creation from any refusal (both end the process with status 125).
+fn fail_after_creation(creation: reverie_liteinst::PhysicalCreation) -> std::io::Result<()> {
+    if let reverie_liteinst::PhysicalCreation::Created {
+        pid,
+        birth_identity,
+    } = creation
+        && pid > 0
+        && birth_identity != 0
+    {
+        let line = b"created, hook failing\n";
+        unsafe { libc::write(1, line.as_ptr().cast(), line.len()) };
+        return Err(std::io::Error::other("refused"));
+    }
+    let line = b"not a creation\n";
+    unsafe { libc::write(1, line.as_ptr().cast(), line.len()) };
+    Ok(())
+}
+
+/// Writes which refusal the runtime reported, with a raw write: the process
+/// ends with status 125 as soon as the hook returns.
+fn print_refusal(creation: reverie_liteinst::PhysicalCreation) -> std::io::Result<()> {
+    use reverie_liteinst::CreationRefusal;
+    use reverie_liteinst::PhysicalCreation;
+    let line: &[u8] = match creation {
+        PhysicalCreation::Refused {
+            refusal: CreationRefusal::ArgumentsUnreadable,
+            child: None,
+        } => b"refused: arguments unreadable, no child\n",
+        PhysicalCreation::Refused { .. } => b"refused: another refusal\n",
+        _ => b"not refused\n",
+    };
+    unsafe { libc::write(1, line.as_ptr().cast(), line.len()) };
+    Ok(())
+}
+
+/// A page-aligned mapping of two pages: the first readable and writable,
+/// the second with `second`.
+fn two_pages(second: libc::c_int) -> *mut u8 {
+    let pages = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            8192,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(pages, libc::MAP_FAILED);
+    let pages = pages.cast::<u8>();
+    assert_eq!(
+        unsafe { libc::mprotect(pages.add(4096).cast(), 4096, second) },
+        0
+    );
+    pages
+}
+
+/// Installs an allow-all seccomp filter as a guest would, returning the raw
+/// syscall result.
+fn allow_all_seccomp_filter() -> i64 {
+    let mut allow = libc::sock_filter {
+        code: (libc::BPF_RET | libc::BPF_K) as u16,
+        jt: 0,
+        jf: 0,
+        k: libc::SECCOMP_RET_ALLOW,
+    };
+    let program = libc::sock_fprog {
+        len: 1,
+        filter: &raw mut allow,
+    };
+    unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+    unsafe {
+        libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            0,
+            &raw const program,
+        )
+    }
+}
+
+/// A clone3 whose record is `size` bytes at `record`, from the guest's view.
+fn raw_clone3(record: *const u8, size: usize) -> i64 {
+    unsafe { libc::syscall(libc::SYS_clone3, record, size) }
+}
+
+/// The descriptors of this process that are pidfds.
+fn pidfd_count() -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .filter_map(|entry| std::fs::read_link(entry.unwrap().path()).ok())
+        .filter(|target| target.to_string_lossy().contains("pidfd"))
+        .count()
+}
+
+/// With a creation hook registered, every creation form reaches it once, in
+/// the parent, with the child's pid and the pidfs inode of the child: the
+/// same inode a pidfd opened on the not-yet-reaped child reports. No
+/// transient pidfd is left in the parent's table, and legacy clone's
+/// CLONE_PARENT_SETTID output still reaches the guest.
+fn creation_identity() {
+    let check = |form: &str, child: libc::pid_t, before: u64| {
+        assert!(child > 0, "{form}: {}", std::io::Error::last_os_error());
+        assert_eq!(
+            CREATIONS.load(Ordering::Relaxed),
+            before + 1,
+            "{form}: one report"
+        );
+        assert_eq!(
+            CREATION_RESULT.load(Ordering::Relaxed),
+            i64::from(child),
+            "{form}"
+        );
+        assert_eq!(
+            pidfd_count(),
+            0,
+            "{form}: a transient pidfd was left behind"
+        );
+        // The child has exited but is not reaped yet (its SIGCHLD is default),
+        // so a pidfd opened now names the same process.
+        let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, child, 0) } as libc::c_int;
+        assert!(
+            pidfd >= 0,
+            "{form}: pidfd_open: {}",
+            std::io::Error::last_os_error()
+        );
+        let mut metadata: libc::stat = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::fstat(pidfd, &mut metadata) }, 0);
+        assert_eq!(
+            CREATION_IDENTITY.load(Ordering::Relaxed),
+            metadata.st_ino,
+            "{form}: the reported birth identity"
+        );
+        unsafe { libc::close(pidfd) };
+        // waitid, not wait4: this fixture's Tool answers wait4 itself.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::waitid(libc::P_PID, child as libc::id_t, &mut info, libc::WEXITED) },
+            0,
+            "{form}: {}",
+            std::io::Error::last_os_error()
+        );
+        assert_eq!(unsafe { info.si_status() }, 0, "{form}");
+    };
+    let exit_child = || unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+    let mut identities = Vec::new();
+
+    let before = CREATIONS.load(Ordering::Relaxed);
+    let child = unsafe { libc::syscall(libc::SYS_fork) } as libc::pid_t;
+    if child == 0 {
+        exit_child();
+    }
+    // Let the child reach its exit before the pidfd_open check.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    check("fork", child, before);
+    identities.push(CREATION_IDENTITY.load(Ordering::Relaxed));
+
+    let before = CREATIONS.load(Ordering::Relaxed);
+    let child = unsafe { libc::syscall(libc::SYS_vfork) } as libc::pid_t;
+    if child == 0 {
+        exit_child();
+    }
+    check("vfork", child, before);
+    identities.push(CREATION_IDENTITY.load(Ordering::Relaxed));
+
+    let before = CREATIONS.load(Ordering::Relaxed);
+    let mut parent_tid: libc::pid_t = 0;
+    let flags = (libc::SIGCHLD | libc::CLONE_PARENT_SETTID) as u64;
+    let child = unsafe {
+        libc::syscall(
+            libc::SYS_clone,
+            flags,
+            0u64,
+            &raw mut parent_tid,
+            0u64,
+            0u64,
+        )
+    } as libc::pid_t;
+    if child == 0 {
+        exit_child();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(parent_tid, child, "clone: CLONE_PARENT_SETTID");
+    check("clone", child, before);
+    identities.push(CREATION_IDENTITY.load(Ordering::Relaxed));
+
+    let before = CREATIONS.load(Ordering::Relaxed);
+    let mut clone_args = [0u64; 8];
+    clone_args[4] = libc::SIGCHLD as u64;
+    let child = unsafe {
+        libc::syscall(
+            libc::SYS_clone3,
+            clone_args.as_mut_ptr(),
+            std::mem::size_of_val(&clone_args),
+        )
+    } as libc::pid_t;
+    if child == 0 {
+        exit_child();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    check("clone3", child, before);
+    identities.push(CREATION_IDENTITY.load(Ordering::Relaxed));
+
+    // Each child has its own identity, and none is missing.
+    let mut distinct = identities.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert!(
+        distinct.len() == 4 && !distinct.contains(&0),
+        "identities {identities:?}"
+    );
+
+    // A failed clone3 reaches the hook with the errno Linux's own copy of
+    // the record returns, and creates no child.
+    let failed = |form: &str, record: *const u8, size: usize, errno: i32| {
+        let before = CREATIONS.load(Ordering::Relaxed);
+        let child = raw_clone3(record, size);
+        if child == 0 {
+            exit_child();
+        }
+        assert_eq!(
+            (child, std::io::Error::last_os_error().raw_os_error()),
+            (-1, Some(errno)),
+            "{form}"
+        );
+        assert_eq!(CREATIONS.load(Ordering::Relaxed), before + 1, "{form}");
+        assert_eq!(
+            CREATION_RESULT.load(Ordering::Relaxed),
+            -i64::from(errno),
+            "{form}"
+        );
+    };
+    // 96 bytes with a nonzero byte past the 88 Linux knows: E2BIG.
+    let mut long = [0u64; 12];
+    long[4] = libc::SIGCHLD as u64;
+    long[11] = 1;
+    failed("nonzero tail", long.as_ptr().cast(), 96, libc::E2BIG);
+    // More than a page: E2BIG before anything is read.
+    failed("oversized", long.as_ptr().cast(), 4097, libc::E2BIG);
+    // Linux checks a long record's tail before copying its first 88 bytes,
+    // in ascending order. A 300-byte record whose tail runs from a readable
+    // page into an inaccessible one: EFAULT if the readable part of the tail
+    // is zero, E2BIG if it holds a nonzero byte, which Linux reaches first.
+    let pages = two_pages(libc::PROT_NONE);
+    let record = unsafe { pages.add(4096 - 200) };
+    unsafe { *record.add(32).cast::<u64>() = libc::SIGCHLD as u64 };
+    failed("unreadable tail", record, 300, libc::EFAULT);
+    unsafe { *record.add(150) = 1 };
+    failed("nonzero tail before a fault", record, 300, libc::E2BIG);
+
+    println!("creation identity: ok");
+}
+
 /// Synchronous Tool code inside a callback, outside the callback's own
 /// send_rpc, reaches the coordinator through the process's connection with
 /// `blocking_global_rpc`; a global state that is not the installed Tool's is
@@ -1009,6 +1299,68 @@ fn main() {
     let mode = arguments.next().expect("missing lifecycle fixture mode");
     if mode == "fallback-fork-stats" {
         fallback_fork_stats();
+        return;
+    }
+    if mode == "creation-hook-fails" {
+        install_tool();
+        if !register_creation_hook(fail_after_creation) {
+            return;
+        }
+        let child = unsafe { libc::syscall(libc::SYS_fork) };
+        if child == 0 {
+            unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+        }
+        // The runtime ends this process before the fork returns here.
+        println!("creation hook failure did not end the process");
+        return;
+    }
+    if mode == "guest-filter-after-hook" {
+        // With a hook registered, the guest cannot attach a filter, and
+        // creations keep working.
+        install_tool();
+        if !register_creation_hook(record_creation) {
+            return;
+        }
+        let refused = allow_all_seccomp_filter();
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        let child = unsafe { libc::syscall(libc::SYS_fork) } as libc::pid_t;
+        if child == 0 {
+            unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+        }
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let waited =
+            unsafe { libc::waitid(libc::P_PID, child as libc::id_t, &mut info, libc::WEXITED) };
+        println!(
+            "filter={refused} errno={errno:?} created={} waited={waited}",
+            CREATION_RESULT.load(Ordering::Relaxed) == i64::from(child) && child > 0
+        );
+        return;
+    }
+    if mode == "creation-write-only-args" {
+        install_tool();
+        if !register_creation_hook(print_refusal) {
+            return;
+        }
+        // The 88 bytes Linux copies first are readable; the rest of a
+        // 200-byte record is in a write-only page, which Linux's own read
+        // can read but the runtime's process_vm_readv cannot.
+        let pages = two_pages(libc::PROT_WRITE);
+        let record = unsafe { pages.add(4096 - 88) };
+        unsafe { *record.add(32).cast::<u64>() = libc::SIGCHLD as u64 };
+        let child = raw_clone3(record, 200);
+        if child == 0 {
+            unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+        }
+        // The runtime ends this process before the clone3 returns here.
+        println!("refused creation returned {child}");
+        return;
+    }
+    if mode == "creation-identity" {
+        install_tool();
+        if !register_creation_hook(record_creation) {
+            return;
+        }
+        creation_identity();
         return;
     }
     if mode == "blocking-global-rpc" {

@@ -172,8 +172,21 @@ impl SeccompFilter {
         if result != 0 {
             return Err(io::Error::last_os_error());
         }
+        // Recorded without a syscall, so that nothing changes for a process
+        // that never registers a creation hook.
+        RUNTIME_FILTER_INSTALLED.store(true, core::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
+}
+
+static RUNTIME_FILTER_INSTALLED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Whether [`SeccompFilter::install`] has succeeded in this process (or the
+/// parent it was forked from), so that every later guest syscall is
+/// intercepted.
+pub fn runtime_filter_installed() -> bool {
+    RUNTIME_FILTER_INSTALLED.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 const fn stmt(code: u16, value: u32) -> libc::sock_filter {
