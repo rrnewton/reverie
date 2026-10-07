@@ -159,6 +159,24 @@ pub struct BackendCapabilities {
     /// advice even when it may not forward the others (`supports_madvise`).
     pub supports_madv_dontneed: bool,
 
+    /// The backend reports, through
+    /// [`GlobalTool::on_backend_process_exited`](crate::GlobalTool::on_backend_process_exited),
+    /// the moment the kernel publishes a guest child process's exit to its
+    /// guest parent. Under ptrace that is when the tracer consumes the
+    /// process leader's final wait status: the kernel notifies the real parent
+    /// of a traced child only then. A tool can hold its schedule until the
+    /// report, so the parent's exit notification is generated at a
+    /// scheduler-chosen point.
+    ///
+    /// The report covers every ordinary, initialized process leader whose
+    /// final status the tracer consumes, once each, including one killed
+    /// before its exit was scheduled (it can arrive before the tool grants
+    /// that exit). Processes the tool never registered or initialized (a fork
+    /// child that dies during initialization, the root before it starts,
+    /// unregistered children reaped at cleanup) are not reported; the tool
+    /// never schedules an exit for them.
+    pub reports_child_exit_publication: bool,
+
     /// The backend owns guest signal delivery: a host signal sent to a host
     /// task cannot reach a guest thread, and the backend offers a run-scoped
     /// process signal control (see
@@ -220,6 +238,7 @@ impl BackendCapabilities {
         virtualizes_cpuid: false,
         supports_madvise: true,
         supports_madv_dontneed: true,
+        reports_child_exit_publication: true,
         provides_process_signal_control: false,
         emulates_child_waits: false,
         failed_gettimeofday_may_store_host_time: true,
@@ -238,6 +257,7 @@ impl BackendCapabilities {
         process_exits_complete_asynchronously: true,
         runs_exit_robust_list: false,
         supports_parked_write_signal_interruption: false,
+        reports_child_exit_publication: false,
         ..Self::PTRACE
     };
 
@@ -255,6 +275,7 @@ impl BackendCapabilities {
         signal_interrupts_external_syscalls: true,
         runs_exit_robust_list: false,
         supports_parked_write_signal_interruption: false,
+        reports_child_exit_publication: false,
         ..Self::PTRACE
     };
 
@@ -266,6 +287,7 @@ impl BackendCapabilities {
         runs_exit_robust_list: false,
         requires_thread_directed_process_signals: true,
         supports_parked_write_signal_interruption: false,
+        reports_child_exit_publication: false,
         ..Self::PTRACE
     };
 
@@ -284,6 +306,7 @@ impl BackendCapabilities {
         failed_gettimeofday_may_store_host_time: false,
         refuses_nonleader_exec_with_enosys: true,
         user_address_limit: Some(X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT),
+        reports_child_exit_publication: false,
         ..Self::PTRACE
     };
 }
@@ -321,6 +344,7 @@ mod tests {
             "virtualizes_cpuid": false,
             "supports_madvise": true,
             "supports_madv_dontneed": true,
+            "reports_child_exit_publication": true,
             "provides_process_signal_control": false,
             "emulates_child_waits": false,
             "failed_gettimeofday_may_store_host_time": true,
@@ -362,6 +386,7 @@ mod tests {
                 "process_exits_complete_asynchronously": true,
                 "runs_exit_robust_list": false,
                 "supports_parked_write_signal_interruption": false,
+                "reports_child_exit_publication": false,
             }))
         );
     }
@@ -382,6 +407,7 @@ mod tests {
                 "signal_interrupts_external_syscalls": true,
                 "runs_exit_robust_list": false,
                 "supports_parked_write_signal_interruption": false,
+                "reports_child_exit_publication": false,
             }))
         );
     }
@@ -396,6 +422,7 @@ mod tests {
                 "runs_exit_robust_list": false,
                 "requires_thread_directed_process_signals": true,
                 "supports_parked_write_signal_interruption": false,
+                "reports_child_exit_publication": false,
             }))
         );
     }
@@ -417,6 +444,7 @@ mod tests {
                 "failed_gettimeofday_may_store_host_time": false,
                 "refuses_nonleader_exec_with_enosys": true,
                 "user_address_limit": 140_737_488_351_232_u64,
+                "reports_child_exit_publication": false,
             }))
         );
     }
