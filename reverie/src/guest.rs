@@ -478,6 +478,31 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         }
     }
 
+    /// Like [`Guest::inject`], for a syscall that must run exactly once while
+    /// signals may be pending for the thread, as the nonblocking probe of a
+    /// call a signal woke. A signal that would stop the injection before its
+    /// `syscall` instruction runs is put back in the kernel's queue, with its
+    /// siginfo, instead of being held by the backend, so the syscall runs
+    /// once whichever signals are pending, and every pending signal is
+    /// delivered when the guest resumes. Every later injection in the same
+    /// callback requeues the same way, so none of them can hold one of those
+    /// signals in place of another. `SIGSTOP` and an external `SIGTRAP`, which
+    /// cannot be requeued, keep [`Guest::inject`]'s handling.
+    ///
+    /// Returns `None`, without running the syscall, when the backend cannot
+    /// make that promise: it does not implement requeueing (the default), it
+    /// already holds a signal from an earlier injection in this callback,
+    /// whose report and siginfo the requeue would not carry, or the syscall
+    /// installs a temporary signal mask, after which a signal can only be
+    /// held. The ptrace backend implements it.
+    async fn inject_requeuing_signals<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+    ) -> Option<Result<i64, Errno>> {
+        let _ = syscall;
+        None
+    }
+
     /// Converts this `Guest<T>` such that it implements `Guest<U>`. This is
     /// useful when forwarding callbacks to a "child" tool.
     #[allow(clippy::wrong_self_convention)]
@@ -694,6 +719,13 @@ where
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         self.inner.inject(syscall).await
+    }
+
+    async fn inject_requeuing_signals<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+    ) -> Option<Result<i64, Errno>> {
+        self.inner.inject_requeuing_signals(syscall).await
     }
 
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {

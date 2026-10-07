@@ -2288,6 +2288,15 @@ pub struct TracedTask<L: Tool> {
     /// that a guest about to exit need not make.
     in_held_signal_callback: bool,
 
+    /// Set by `Guest::inject_requeuing_signals` for the rest of the Tool
+    /// callback that called it: a signal that stops one of its injections
+    /// before the `syscall` instruction is put back in the kernel's queue
+    /// (`requeue_signals_before_original_syscall`) instead of being held in
+    /// the single `pending_signal` slot, which a second such signal would
+    /// replace. Cleared when each syscall callback starts and ends, saved and
+    /// cleared around a signal callback, and cleared by a successful exec.
+    requeue_signals_for_injection: bool,
+
     /// Set by every successful exec (`handle_exec_event`). A held signal's
     /// report clears it before `Tool::handle_signal_event` runs, so it then
     /// tells whether the callback executed a program (`report_signal`).
@@ -2500,6 +2509,7 @@ impl<L: Tool> TracedTask<L> {
             signal_callback_replaced_restart_block: false,
             signal_callback_guest_restart_block: false,
             in_held_signal_callback: false,
+            requeue_signals_for_injection: false,
             signal_callback_execed: false,
             unreported_stop_signal: None,
             reported_requeued_signals: HashMap::new(),
@@ -2574,6 +2584,7 @@ impl<L: Tool> TracedTask<L> {
             signal_callback_replaced_restart_block: false,
             signal_callback_guest_restart_block: false,
             in_held_signal_callback: false,
+            requeue_signals_for_injection: false,
             signal_callback_execed: false,
             unreported_stop_signal: None,
             reported_requeued_signals: HashMap::new(),
@@ -2645,6 +2656,7 @@ impl<L: Tool> TracedTask<L> {
             signal_callback_replaced_restart_block: false,
             signal_callback_guest_restart_block: false,
             in_held_signal_callback: false,
+            requeue_signals_for_injection: false,
             signal_callback_execed: false,
             unreported_stop_signal: None,
             reported_requeued_signals: HashMap::new(),
@@ -3962,6 +3974,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.injected_syscall_frame = Some(frame_address);
             self.pending_syscall = Some((nr, args));
 
+            self.requeue_signals_for_injection = false;
             let retval = cancellable(self.cancel_handler.clone(), async {
                 self.process_state
                     .clone()
@@ -3969,6 +3982,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .await
             })
             .await;
+            self.requeue_signals_for_injection = false;
 
             let retval = match retval {
                 Some(Err(error)) => match error.into_errno() {
@@ -4477,6 +4491,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let outer_guest_block =
             std::mem::replace(&mut self.signal_callback_guest_restart_block, false);
         let outer_held = std::mem::replace(&mut self.in_held_signal_callback, held);
+        let outer_requeue = std::mem::replace(&mut self.requeue_signals_for_injection, false);
         let result = if held {
             let outer_execed = std::mem::replace(&mut self.signal_callback_execed, false);
             let result = cancellable(self.cancel_handler.clone(), async {
@@ -4504,6 +4519,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         };
         self.in_signal_callback = outer;
         self.in_held_signal_callback = outer_held;
+        self.requeue_signals_for_injection = outer_requeue;
         self.signal_callback_replaced_restart_block = outer_replaced;
         self.signal_callback_guest_restart_block = outer_guest_block;
         let signal = self
@@ -4644,6 +4660,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         // guest's return register.
         self.in_signal_callback = false;
         self.in_held_signal_callback = false;
+        // An injected exec never returns to the callback that set it.
+        self.requeue_signals_for_injection = false;
         self.signal_callback_replaced_restart_block = false;
         self.signal_callback_guest_restart_block = false;
         self.signal_callback_execed = true;
@@ -4881,6 +4899,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             );
             self.pending_syscall = Some((nr, args));
 
+            self.requeue_signals_for_injection = false;
             let retval = cancellable(self.cancel_handler.clone(), async {
                 self.process_state
                     .clone()
@@ -4888,6 +4907,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .await
             })
             .await;
+            self.requeue_signals_for_injection = false;
 
             let retval = match retval {
                 Some(Err(error)) if !matches!(error, reverie::Error::Errno(_)) => {
@@ -6773,7 +6793,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .step_private_syscall_discarding_late_timer(stopped, nr)
                 .await?;
         }
-        if (original && child_context.is_some()) || self.in_held_signal_callback {
+        if (original && child_context.is_some())
+            || self.in_held_signal_callback
+            || self.requeue_signals_for_injection
+        {
             (wait, seccomp_trapped) = self
                 .requeue_signals_before_original_syscall(wait, seccomp_trapped, nr)
                 .await?;
@@ -8088,6 +8111,27 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         // Call a non-templatized function to reduce code bloat.
         let (nr, args) = syscall.into_parts();
         self.do_inject(nr, args).await
+    }
+
+    async fn inject_requeuing_signals<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+    ) -> Option<Result<i64, Errno>> {
+        let (nr, args) = syscall.into_parts();
+        // A held signal's report and siginfo live in `pending_signal`, which
+        // a requeue does not carry; after a mask-swapping syscall a signal
+        // can only be held (`PrivateStep::Held`).
+        if self.pending_signal.is_some() || swaps_signal_mask(nr) {
+            return None;
+        }
+        // `untraced_syscall_with` requeues every signal that stops a
+        // private-page step before its instruction
+        // (`requeue_signals_before_original_syscall`) while this is set. It
+        // stays set for the rest of this callback, so a later injection
+        // cannot hold one of the requeued signals in place of another; each
+        // callback starts with it clear.
+        self.requeue_signals_for_injection = true;
+        Some(self.do_inject(nr, args).await)
     }
 
     #[allow(unreachable_code)]
