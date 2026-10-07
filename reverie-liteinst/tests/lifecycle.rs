@@ -387,6 +387,139 @@ async fn a_close_range_over_runtime_descriptors_reaches_the_tool() {
     assert!(global.getpid.load(Ordering::Relaxed) >= 1);
 }
 
+/// With a creation hook registered, the runtime performs every creation
+/// form (fork, the copying vfork, legacy clone, clone3) as clone3 with its
+/// own CLONE_PIDFD output, reports each once with the child's pid and pidfs
+/// inode, and leaves no pidfd in the guest's table.
+#[tokio::test(flavor = "current_thread")]
+async fn a_creation_hook_receives_each_childs_birth_identity() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (result, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("creation-identity"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    if !creation_hook_supported(&result) {
+        return;
+    }
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert_eq!(result.stdout, b"creation identity: ok\n", "{result:?}");
+}
+
+/// A creation hook that fails after a real creation (a child with an
+/// identity) ends the creating process with status 125 before the creation
+/// returns to the guest.
+#[tokio::test(flavor = "current_thread")]
+async fn a_failing_creation_hook_ends_the_creating_process() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (result, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("creation-hook-fails"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    if !creation_hook_supported(&result) {
+        return;
+    }
+    assert_eq!(result.status.code(), Some(125), "{result:?}");
+    // The hook saw a real creation (a child with an identity) before its
+    // error ended the process; the guest's own line after the fork never
+    // printed.
+    assert_eq!(result.stdout, b"created, hook failing\n", "{result:?}");
+}
+
+/// A clone3 whose record tail Linux can read but the runtime cannot (a
+/// write-only page) is refused: no child exists, the hook hears why, and the
+/// creating process ends with status 125 before the call returns.
+#[tokio::test(flavor = "current_thread")]
+async fn a_creation_the_runtime_cannot_perform_faithfully_is_refused() {
+    let (result, stdout) = run_lifecycle_mode("creation-write-only-args").await;
+    if !creation_hook_supported(&result) {
+        return;
+    }
+    assert_eq!(result.status.code(), Some(125), "{result:?}");
+    assert_eq!(
+        stdout, "refused: arguments unreadable, no child\n",
+        "{result:?}"
+    );
+}
+
+/// Once a creation hook is registered, a guest seccomp filter is refused
+/// with EOPNOTSUPP while creations keep working. (That no other filter is
+/// attached when the hook is registered is the registering side's
+/// prerequisite, established from outside the process.)
+#[tokio::test(flavor = "current_thread")]
+async fn a_creation_hook_excludes_guest_seccomp_filters() {
+    let (result, stdout) = run_lifecycle_mode("guest-filter-after-hook").await;
+    if !creation_hook_supported(&result) {
+        return;
+    }
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert_eq!(
+        stdout,
+        format!(
+            "filter=-1 errno=Some({}) created=true waited=0\n",
+            libc::EOPNOTSUPP
+        ),
+        "{result:?}"
+    );
+}
+
+/// Whether this kernel gives each process a pidfs inode (Linux 6.9 and
+/// later), decided from the release, independently of the runtime. Without
+/// it, registering a creation hook is correctly refused.
+fn kernel_has_pidfs() -> bool {
+    let mut name: libc::utsname = unsafe { std::mem::zeroed() };
+    assert_eq!(unsafe { libc::uname(&mut name) }, 0);
+    let release = unsafe { std::ffi::CStr::from_ptr(name.release.as_ptr()) }.to_string_lossy();
+    let mut numbers = release
+        .split(|c: char| !c.is_ascii_digit())
+        .map(|part| part.parse::<u32>().unwrap_or(0));
+    (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0)) >= (6, 9)
+}
+
+/// On a kernel without pidfs, a creation-hook mode must report the refusal
+/// and end normally; returns true when the caller's positive checks apply.
+fn creation_hook_supported(result: &std::process::Output) -> bool {
+    if kernel_has_pidfs() {
+        return true;
+    }
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert_eq!(
+        result.stdout, b"creation hook refused: pidfs unavailable\n",
+        "{result:?}"
+    );
+    false
+}
+
+async fn run_lifecycle_mode(mode: &str) -> (std::process::Output, String) {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (result, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command(mode),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    let stdout = String::from_utf8_lossy(&result.stdout).into_owned();
+    (result, stdout)
+}
+
 /// Synchronous Tool code inside a callback, outside the callback's own
 /// send_rpc, sends a request to the global state through the process's
 /// existing coordinator connection with `blocking_global_rpc`, and a request
