@@ -1830,6 +1830,21 @@ impl GuestMemory {
     }
 
     // TODO-HUMAN-REVIEW(PR-132): Review the host-side KVM user mapping API.
+    /// Whether any page of physical `[guest_address, guest_address + length)`
+    /// is mapped.
+    pub(crate) fn user_range_has_mapping(&self, guest_address: u64, length: u64) -> bool {
+        let Ok(Some((first_page, last_page))) = self.checked_page_range(guest_address, length)
+        else {
+            return false;
+        };
+        let access = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        access.pages.range(first_page..=last_page).next().is_some()
+    }
+
     pub(crate) fn user_range_is_mapped(&self, guest_address: u64, length: u64) -> bool {
         let Ok(Some((first_page, last_page))) = self.checked_page_range(guest_address, length)
         else {
