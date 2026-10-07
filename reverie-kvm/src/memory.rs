@@ -7,6 +7,7 @@
  */
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
@@ -103,6 +104,20 @@ impl RawMemoryRead<'_> {
         self.memory
             .read_raw_admitted(address, destination, self.copy)
     }
+}
+
+/// What `MADV_DONTNEED` must do to a user range (see
+/// `GuestMemory::dontneed_plan`).
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct DontneedPlan {
+    /// Physical addresses of the private anonymous pages, which then read as
+    /// zeros.
+    pub(crate) private_anonymous: Vec<u64>,
+    /// Whether a page is a private copy of a regular file, which Linux would
+    /// read from the file again.
+    pub(crate) private_file: bool,
+    /// Whether part of the range is not mapped.
+    pub(crate) unmapped: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -249,6 +264,9 @@ struct AddressSpaceState {
     /// The file offset of each page a regular file was mapped into, by
     /// physical page: Linux places a moved file mapping by its offset.
     file_pages: BTreeMap<u64, u64>,
+    /// The physical pages of `MAP_SHARED | MAP_ANONYMOUS` mappings. Their
+    /// contents survive `MADV_DONTNEED`, which drops private anonymous pages.
+    shared_anonymous_pages: BTreeSet<u64>,
     /// Pages whose stable slot-0 HVA now names a separately retained backing.
     /// The current source increment keeps guest placement identity-only.
     backing_pages: BTreeMap<u64, InstalledBackingPage>,
@@ -324,6 +342,7 @@ impl AddressSpaceState {
             enabled: false,
             pages: BTreeMap::new(),
             file_pages: BTreeMap::new(),
+            shared_anonymous_pages: BTreeSet::new(),
             backing_pages: BTreeMap::new(),
         }
     }
@@ -1598,6 +1617,7 @@ impl GuestMemory {
         access.enabled = false;
         access.pages.clear();
         access.file_pages.clear();
+        access.shared_anonymous_pages.clear();
         access.reservations.clear();
         access.cursors = None;
     }
@@ -1685,6 +1705,7 @@ impl GuestMemory {
         for page in first_page..=last_page {
             access.pages.remove(&page);
             access.file_pages.remove(&page);
+            access.shared_anonymous_pages.remove(&page);
             if !access
                 .reservations
                 .get(&page)
@@ -1698,7 +1719,21 @@ impl GuestMemory {
 
     /// Records that physical `[guest_address, guest_address + length)` maps a
     /// regular file from byte `offset`, or, with `None`, that it maps none.
+    /// The range is not shared anonymous memory.
     pub(crate) fn record_file_pages(&self, guest_address: u64, length: u64, offset: Option<u64>) {
+        self.record_page_backing(guest_address, length, offset, false);
+    }
+
+    /// Records what a new mapping of physical `[guest_address, guest_address +
+    /// length)` maps: a regular file from byte `offset` (or none), and whether
+    /// it is `MAP_SHARED | MAP_ANONYMOUS`. Whatever the range held before goes.
+    pub(crate) fn record_page_backing(
+        &self,
+        guest_address: u64,
+        length: u64,
+        offset: Option<u64>,
+        shared_anonymous: bool,
+    ) {
         let Ok(Some((first_page, last_page))) = self.checked_page_range(guest_address, length)
         else {
             return;
@@ -1715,7 +1750,72 @@ impl GuestMemory {
                 Some(offset) => access.file_pages.insert(page, offset),
                 None => access.file_pages.remove(&page),
             };
+            if shared_anonymous {
+                access.shared_anonymous_pages.insert(page);
+            } else {
+                access.shared_anonymous_pages.remove(&page);
+            }
         }
+    }
+
+    /// What `MADV_DONTNEED` over user `[user_start, user_start + length)` must
+    /// do (both page-aligned, `length` nonzero). Computed under one lock, in
+    /// time bounded by the smaller of the range's page count and the number of
+    /// mapped pages.
+    pub(crate) fn dontneed_plan(&self, user_start: u64, length: u64) -> DontneedPlan {
+        let page_size = PAGE_SIZE as u64;
+        let range_pages = length / page_size;
+        let access = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        let mut plan = DontneedPlan {
+            private_anonymous: Vec::new(),
+            private_file: false,
+            unmapped: false,
+        };
+        let mut mapped = 0_u64;
+        let mut classify = |physical_page: u64, plan: &mut DontneedPlan| {
+            if !access.pages.contains_key(&physical_page) {
+                return;
+            }
+            mapped += 1;
+            let shared_file = access
+                .backing_pages
+                .get(&physical_page)
+                .is_some_and(|page| {
+                    matches!(page._slice.backing.kind, BackingKind::OrdinaryFile { .. })
+                });
+            if shared_file || access.shared_anonymous_pages.contains(&physical_page) {
+                // Shared contents survive: nothing to do.
+            } else if access.file_pages.contains_key(&physical_page) {
+                plan.private_file = true;
+            } else {
+                plan.private_anonymous.push(physical_page * page_size);
+            }
+        };
+        if range_pages <= access.pages.len() as u64 {
+            for index in 0..range_pages {
+                if let Ok(physical) = access.translate(user_start + index * page_size, PAGE_SIZE) {
+                    classify(physical / page_size, &mut plan);
+                }
+            }
+        } else {
+            let user_end = user_start + length;
+            let pages: Vec<u64> = access.pages.keys().copied().collect();
+            for physical_page in pages {
+                if access
+                    .physical_to_user(physical_page * page_size)
+                    .is_some_and(|user| (user_start..user_end).contains(&user))
+                {
+                    classify(physical_page, &mut plan);
+                }
+            }
+            plan.private_anonymous.sort_unstable();
+        }
+        plan.unmapped = mapped < range_pages;
+        plan
     }
 
     /// The file offset of the regular-file page at physical `guest_address`.
@@ -1891,9 +1991,15 @@ impl GuestMemory {
         let old_offsets = (old_first..=old_last)
             .map(|page| access.file_pages.get(&page).copied())
             .collect::<Vec<_>>();
+        // Shared anonymous memory stays shared where it moves, and a grown
+        // mapping is shared like its last page.
+        let old_shared_anonymous = (old_first..=old_last)
+            .map(|page| access.shared_anonymous_pages.contains(&page))
+            .collect::<Vec<_>>();
         for page in old_first..=old_last {
             access.pages.remove(&page);
             access.file_pages.remove(&page);
+            access.shared_anonymous_pages.remove(&page);
             if !access
                 .reservations
                 .get(&page)
@@ -1921,6 +2027,16 @@ impl GuestMemory {
                 Some(offset) => access.file_pages.insert(page, offset),
                 None => access.file_pages.remove(&page),
             };
+            let shared_anonymous = old_shared_anonymous
+                .get(index)
+                .or(old_shared_anonymous.last())
+                .copied()
+                .unwrap_or(false);
+            if shared_anonymous {
+                access.shared_anonymous_pages.insert(page);
+            } else {
+                access.shared_anonymous_pages.remove(&page);
+            }
             if !access
                 .reservations
                 .get(&page)

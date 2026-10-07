@@ -1149,7 +1149,7 @@ fn execute_basic_syscall_inner(
         // AUTONOMOUS-BOT-IMPLEMENTED
         mprotect(memory, args)
     } else if number == libc::SYS_madvise as u64 {
-        validate_range(memory, args[0], args[1])
+        madvise(memory, args)
     } else if number == libc::SYS_munlock as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         munlock_guest_range(memory, args[0], args[1])
@@ -19370,7 +19370,12 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     }
 
     reservation.commit();
-    memory.record_file_pages(address, length as u64, kind.file_offset());
+    memory.record_page_backing(
+        address,
+        length as u64,
+        kind.file_offset(),
+        is_anonymous && is_shared,
+    );
     if !fixed {
         state.mmap_next = state.mmap_next.max(end);
     }
@@ -19666,6 +19671,50 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
         state.mmap_next = state.mmap_next.max(destination_end);
     }
     memory.physical_to_user(destination).unwrap_or(destination) as i64
+}
+
+/// madvise(2). `MADV_DONTNEED` drops the range's private anonymous pages,
+/// which then read as zeros, and leaves shared pages (shared anonymous memory
+/// and shared file views) as they are, as Linux keeps their contents. A private
+/// copy of a regular file would have to read the file again, which this backend
+/// cannot do, so a range holding one is refused with ENOSYS before any page
+/// changes. As in Linux (mm/madvise.c), the advice applies to the mapped parts
+/// of a range with holes, which then reports ENOMEM. Other advice only
+/// validates the range.
+fn madvise(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+    if args[2] as libc::c_int != libc::MADV_DONTNEED {
+        return validate_range(memory, args[0], args[1]);
+    }
+    let start = args[0];
+    if !start.is_multiple_of(PAGE_SIZE) {
+        return negative_errno(libc::EINVAL);
+    }
+    // Linux rounds the length up to whole pages: a length that rounds to zero
+    // or a range that wraps is EINVAL, and a zero length succeeds.
+    let length = args[1].wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    if args[1] != 0 && length == 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    if start.checked_add(length).is_none() {
+        return negative_errno(libc::EINVAL);
+    }
+    if length == 0 {
+        return 0;
+    }
+    let plan = memory.dontneed_plan(start, length);
+    if plan.private_file {
+        return negative_errno(libc::ENOSYS);
+    }
+    for page in plan.private_anonymous {
+        if memory.zero_raw(page, PAGE_SIZE as usize).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
+    }
+    if plan.unmapped {
+        negative_errno(libc::ENOMEM)
+    } else {
+        0
+    }
 }
 
 fn validate_range(memory: &GuestMemory, address: u64, length: u64) -> i64 {
@@ -53003,6 +53052,247 @@ mod tests {
             first as i64
         );
         assert_eq!(state.mmap_next, first + 2 * PAGE_SIZE);
+    }
+
+    fn madvise_memory(pages: u64) -> (TestDir, LoadedStaticElf, GuestMemory) {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let memory_size = BOOT_RESERVED_END + (pages + 1) * PAGE_SIZE;
+        let memory = GuestMemory::new(0, memory_size as usize).unwrap();
+        state.mmap_next = BOOT_RESERVED_END + PAGE_SIZE;
+        state.mmap_limit = memory_size;
+        (root, state, memory)
+    }
+
+    fn madvise_map(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        flags: libc::c_int,
+        fd: libc::c_int,
+        pages: u64,
+    ) -> u64 {
+        let address = syscall_result(
+            memory,
+            state,
+            libc::SYS_mmap,
+            [
+                0,
+                pages * PAGE_SIZE,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                flags as u64,
+                fd as u64,
+                0,
+            ],
+        );
+        assert!(address > 0, "mmap failed with {address}");
+        address as u64
+    }
+
+    fn dontneed(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        address: u64,
+        length: u64,
+    ) -> i64 {
+        syscall_result(
+            memory,
+            state,
+            libc::SYS_madvise,
+            [address, length, libc::MADV_DONTNEED as u64, 0, 0, 0],
+        )
+    }
+
+    fn page_bytes(memory: &GuestMemory, address: u64) -> [u8; 8] {
+        let mut bytes = [0; 8];
+        memory.read(address, &mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn madvise_dontneed_zeroes_private_anonymous_pages_and_keeps_shared_ones() {
+        let (_root, mut state, mut memory) = madvise_memory(8);
+        let private = madvise_map(
+            &mut memory,
+            &mut state,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            2,
+        );
+        let shared = madvise_map(
+            &mut memory,
+            &mut state,
+            libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+            -1,
+            1,
+        );
+        memory.write(private, b"private0").unwrap();
+        memory.write(private + PAGE_SIZE, b"private1").unwrap();
+        memory.write(shared, b"shared!!").unwrap();
+
+        assert_eq!(dontneed(&mut memory, &mut state, private, 2 * PAGE_SIZE), 0);
+        assert_eq!(page_bytes(&memory, private), [0; 8]);
+        assert_eq!(page_bytes(&memory, private + PAGE_SIZE), [0; 8]);
+        // Linux keeps shared anonymous contents (shmem) through MADV_DONTNEED.
+        assert_eq!(dontneed(&mut memory, &mut state, shared, PAGE_SIZE), 0);
+        assert_eq!(&page_bytes(&memory, shared), b"shared!!");
+    }
+
+    #[test]
+    fn madvise_dontneed_refuses_a_private_file_copy_before_changing_any_page() {
+        let (root, mut state, mut memory) = madvise_memory(8);
+        std::fs::write(root.0.join("file"), b"contents").unwrap();
+        state
+            .files
+            .insert(5, std::fs::File::open(root.0.join("file")).unwrap());
+        let anonymous = madvise_map(
+            &mut memory,
+            &mut state,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            1,
+        );
+        let file = madvise_map(&mut memory, &mut state, libc::MAP_PRIVATE, 5, 1);
+        assert_eq!(file, anonymous + PAGE_SIZE);
+        memory.write(anonymous, b"anon-new").unwrap();
+        memory.write(file, b"file-new").unwrap();
+
+        // Linux would read the file's page again; this backend cannot, so it
+        // refuses the whole call and changes nothing, the anonymous page included.
+        assert_eq!(
+            dontneed(&mut memory, &mut state, anonymous, 2 * PAGE_SIZE),
+            negative_errno(libc::ENOSYS)
+        );
+        assert_eq!(&page_bytes(&memory, anonymous), b"anon-new");
+        assert_eq!(&page_bytes(&memory, file), b"file-new");
+    }
+
+    #[test]
+    fn madvise_dontneed_applies_to_mapped_parts_then_reports_a_hole() {
+        let (_root, mut state, mut memory) = madvise_memory(8);
+        let first = madvise_map(
+            &mut memory,
+            &mut state,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            3,
+        );
+        for page in 0..3 {
+            memory.write(first + page * PAGE_SIZE, b"occupied").unwrap();
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munmap,
+                [first + PAGE_SIZE, PAGE_SIZE, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            dontneed(&mut memory, &mut state, first, 3 * PAGE_SIZE),
+            negative_errno(libc::ENOMEM)
+        );
+        assert_eq!(page_bytes(&memory, first), [0; 8]);
+        assert_eq!(page_bytes(&memory, first + 2 * PAGE_SIZE), [0; 8]);
+    }
+
+    #[test]
+    fn madvise_dontneed_validates_and_rounds_its_arguments_as_linux_does() {
+        let (_root, mut state, mut memory) = madvise_memory(8);
+        let first = madvise_map(
+            &mut memory,
+            &mut state,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            2,
+        );
+        memory.write(first, b"rounded!").unwrap();
+        memory.write(first + PAGE_SIZE, b"untouchd").unwrap();
+        let top_page = !(PAGE_SIZE - 1);
+        for (address, length, expected) in [
+            (first + 1, PAGE_SIZE, negative_errno(libc::EINVAL)),
+            (first, 0, 0),
+            // The length rounds up to zero pages: EINVAL, as Linux.
+            (first, u64::MAX, negative_errno(libc::EINVAL)),
+            (top_page, 2 * PAGE_SIZE, negative_errno(libc::EINVAL)),
+        ] {
+            assert_eq!(
+                dontneed(&mut memory, &mut state, address, length),
+                expected,
+                "madvise({address:#x}, {length:#x}, MADV_DONTNEED)"
+            );
+        }
+        assert_eq!(&page_bytes(&memory, first), b"rounded!");
+        // A one-byte length covers the whole first page and nothing more.
+        assert_eq!(dontneed(&mut memory, &mut state, first, 1), 0);
+        assert_eq!(page_bytes(&memory, first), [0; 8]);
+        assert_eq!(&page_bytes(&memory, first + PAGE_SIZE), b"untouchd");
+    }
+
+    #[test]
+    fn madvise_dontneed_follows_shared_anonymous_memory_through_mremap_fork_and_replacement() {
+        let (_root, mut state, mut memory) = madvise_memory(12);
+        let shared = madvise_map(
+            &mut memory,
+            &mut state,
+            libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+            -1,
+            1,
+        );
+        let blocker = madvise_map(
+            &mut memory,
+            &mut state,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            1,
+        );
+        assert_eq!(blocker, shared + PAGE_SIZE);
+        memory.write(shared, b"carried!").unwrap();
+        let moved = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_mremap,
+            [
+                shared,
+                PAGE_SIZE,
+                2 * PAGE_SIZE,
+                libc::MREMAP_MAYMOVE as u64,
+                0,
+                0,
+            ],
+        ) as u64;
+        assert_ne!(moved, shared);
+        memory.write(moved + PAGE_SIZE, b"grownpg!").unwrap();
+        // The moved page and the grown page are both still shared.
+        assert_eq!(dontneed(&mut memory, &mut state, moved, 2 * PAGE_SIZE), 0);
+        assert_eq!(&page_bytes(&memory, moved), b"carried!");
+        assert_eq!(&page_bytes(&memory, moved + PAGE_SIZE), b"grownpg!");
+
+        // A fork's copy of the address space keeps the mark.
+        let mut child = memory.snapshot().unwrap();
+        assert_eq!(dontneed(&mut child, &mut state, moved, PAGE_SIZE), 0);
+        assert_eq!(&page_bytes(&child, moved), b"carried!");
+
+        // A private mapping placed over it is private anonymous memory.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mmap,
+                [
+                    moved,
+                    PAGE_SIZE,
+                    (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                    (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64,
+                    -1_i32 as u64,
+                    0,
+                ],
+            ),
+            moved as i64
+        );
+        memory.write(moved, b"replaced").unwrap();
+        assert_eq!(dontneed(&mut memory, &mut state, moved, PAGE_SIZE), 0);
+        assert_eq!(page_bytes(&memory, moved), [0; 8]);
     }
 
     #[test]

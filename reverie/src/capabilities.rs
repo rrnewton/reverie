@@ -154,6 +154,11 @@ pub struct BackendCapabilities {
     /// may forward an `madvise` call to it.
     pub supports_madvise: bool,
 
+    /// The backend implements `MADV_DONTNEED` (private anonymous pages then
+    /// read as zeros; shared contents survive), so the tool may forward that
+    /// advice even when it may not forward the others (`supports_madvise`).
+    pub supports_madv_dontneed: bool,
+
     /// The backend owns guest signal delivery: a host signal sent to a host
     /// task cannot reach a guest thread, and the backend offers a run-scoped
     /// process signal control (see
@@ -214,6 +219,7 @@ impl BackendCapabilities {
         virtualizes_capability_prctls: false,
         virtualizes_cpuid: false,
         supports_madvise: true,
+        supports_madv_dontneed: true,
         provides_process_signal_control: false,
         emulates_child_waits: false,
         failed_gettimeofday_may_store_host_time: true,
@@ -314,6 +320,7 @@ mod tests {
             "virtualizes_capability_prctls": false,
             "virtualizes_cpuid": false,
             "supports_madvise": true,
+            "supports_madv_dontneed": true,
             "provides_process_signal_control": false,
             "emulates_child_waits": false,
             "failed_gettimeofday_may_store_host_time": true,

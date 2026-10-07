@@ -475,6 +475,7 @@ impl GuestMemory {
                 None => {
                     prepared.pages.remove(&page);
                     prepared.file_pages.remove(&page);
+                    prepared.shared_anonymous_pages.remove(&page);
                     if !prepared
                         .reservations
                         .get(&page)
