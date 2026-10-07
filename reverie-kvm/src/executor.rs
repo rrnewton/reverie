@@ -566,15 +566,14 @@ fn execute_basic_syscall_dispatch(
     }
     let touches_file_remap = number == libc::SYS_mremap as u64
         && shared_file::remap_requires_shared_capability(&owner, state, args);
+    // Growth needs no check here: brk refuses growth that reaches any
+    // mapping, a shared file view included, before it changes anything, and
+    // returns the old break as Linux does.
     let touches_file_brk = number == libc::SYS_brk as u64
         && args[0] >= BOOT_RESERVED_END.max(state.min_break)
-        && args[0] < state.brk_limit
-        && if args[0] > state.program_break {
-            // The break is a user address (a PIE window's is not physical).
-            owner
-                .user_range_contains_shared_file(state.program_break, args[0] - state.program_break)
-        } else {
-            // Shrinking also retires mappings. Check the exact page-rounded
+        && args[0] < state.program_break
+        && {
+            // Shrinking retires mappings. Check the exact page-rounded
             // interval used by brk, before its legacy errno adapter could
             // hide a shared-file capability refusal as the old break value.
             match (
@@ -19023,16 +19022,21 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
         let Some(unmap_end) = align_up(previous, PAGE_SIZE) else {
             return state.program_break as i64;
         };
-        if unmap_end > unmap_start
-            && memory
-                .user_range_to_guest(unmap_start, unmap_end - unmap_start)
-                .is_none_or(|physical| {
-                    memory
-                        .unmap_user_range(physical, unmap_end - unmap_start)
-                        .is_err()
-                })
-        {
-            return state.program_break as i64;
+        if unmap_end > unmap_start {
+            let Some(physical) = memory.user_range_to_guest(unmap_start, unmap_end - unmap_start)
+            else {
+                return state.program_break as i64;
+            };
+            // Linux (mm/mmap.c, brk) releases the pages only when a mapping
+            // intersects them; with none (the program unmapped its heap) it
+            // returns the old break unchanged.
+            if !memory.user_range_has_mapping(physical, unmap_end - unmap_start)
+                || memory
+                    .unmap_user_range(physical, unmap_end - unmap_start)
+                    .is_err()
+            {
+                return state.program_break as i64;
+            }
         }
     }
     state.program_break = requested;
@@ -22164,6 +22168,59 @@ mod tests {
         let mut expected = [0xa5; 16];
         expected[4..12].copy_from_slice(&state.fs_base.to_ne_bytes());
         assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn brk_shrink_releases_pages_only_when_a_mapping_intersects_them() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.heap_base = BOOT_RESERVED_END;
+        state.program_break = state.heap_base;
+        state.brk_limit = state.heap_base + 8 * PAGE_SIZE;
+        state.mmap_base = state.brk_limit;
+        state.mmap_next = state.mmap_base;
+        state.mmap_limit = state.mmap_base + 4 * PAGE_SIZE;
+        let mut memory = GuestMemory::new(0, state.mmap_limit as usize).unwrap();
+        let base = state.heap_base;
+        let brk = |memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64| {
+            syscall_result(memory, state, libc::SYS_brk, [requested, 0, 0, 0, 0, 0])
+        };
+        let munmap =
+            |memory: &mut GuestMemory, state: &mut LoadedStaticElf, at: u64, pages: u64| {
+                syscall_result(
+                    memory,
+                    state,
+                    libc::SYS_munmap,
+                    [at, pages * PAGE_SIZE, 0, 0, 0, 0],
+                )
+            };
+        assert_eq!(
+            brk(&mut memory, &mut state, base + 3 * PAGE_SIZE),
+            (base + 3 * PAGE_SIZE) as i64
+        );
+        assert_eq!(munmap(&mut memory, &mut state, base, 3), 0);
+        // Linux 7.1.3 finds no mapping in the released pages and returns the
+        // old break unchanged.
+        assert_eq!(
+            brk(&mut memory, &mut state, base),
+            (base + 3 * PAGE_SIZE) as i64
+        );
+        assert_eq!(state.program_break, base + 3 * PAGE_SIZE);
+
+        // With one page still mapped, the shrink releases it and succeeds.
+        assert_eq!(
+            brk(&mut memory, &mut state, base + 6 * PAGE_SIZE),
+            (base + 6 * PAGE_SIZE) as i64
+        );
+        let partial = base + 4 * PAGE_SIZE;
+        assert_eq!(brk(&mut memory, &mut state, partial), partial as i64);
+        assert_eq!(
+            brk(&mut memory, &mut state, partial + 2 * PAGE_SIZE),
+            (partial + 2 * PAGE_SIZE) as i64
+        );
+        assert_eq!(munmap(&mut memory, &mut state, partial, 1), 0);
+        assert_eq!(brk(&mut memory, &mut state, partial), partial as i64);
+        assert!(!memory.user_range_has_mapping(partial, 2 * PAGE_SIZE));
     }
 
     #[test]

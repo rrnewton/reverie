@@ -755,25 +755,30 @@ mod shared_file_dispatch_tests {
         assert_eq!(std::fs::read(&f.path).unwrap(), f.expected);
     }
 
+    /// As on Linux, brk does not grow over a mapping, a shared file view
+    /// included: it returns the old break and changes nothing.
     #[test]
-    fn heap_growth_over_shared_file_refuses_before_break_or_bytes_change() {
+    fn heap_growth_over_shared_file_returns_the_old_break_unchanged() {
         let mut f = Fixture::new();
         let fd = f.open(true);
         let address = f.state.heap_base + PAGE_SIZE;
         f.shared(fd, address, PAGE_SIZE, true);
         let before = layout(&f.memory, &f.state);
-        let error = failure(execute_basic_syscall(
-            &mut f.memory,
-            &mut f.state,
-            &SyscallRequest::new(libc::SYS_brk as u64, [address + PAGE_SIZE, 0, 0, 0, 0, 0]),
-        ));
-        capability(
-            &error,
-            "brk",
-            "this layout operation intersects an ordinary shared-file view",
-        );
-        assert_eq!(layout(&f.memory, &f.state), before);
-        assert_eq!(std::fs::read(&f.path).unwrap(), f.expected);
+        let old_break = f.state.program_break;
+        for requested in [address + PAGE_SIZE, address + 17] {
+            assert_eq!(
+                syscall_result(
+                    &mut f.memory,
+                    &mut f.state,
+                    libc::SYS_brk,
+                    [requested, 0, 0, 0, 0, 0],
+                ),
+                old_break as i64,
+                "brk({requested:#x})"
+            );
+            assert_eq!(layout(&f.memory, &f.state), before);
+            assert_eq!(std::fs::read(&f.path).unwrap(), f.expected);
+        }
     }
 
     #[test]
