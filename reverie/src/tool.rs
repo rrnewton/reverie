@@ -257,6 +257,18 @@ pub trait GlobalTool: Send + Sync + Default {
     /// Tool callbacks or physical worker joins that depend on that transition.
     fn report_backend_failure(&self, _event: BackendFailure) {}
 
+    /// Called by a backend that holds guest thread `exit.tid` at its exit stop
+    /// after a signal whose default action dumps core has killed it, before
+    /// the thread is released to finish exiting. The kernel has already made
+    /// the fatal decision and its own core dump step is over, so the exit
+    /// status cannot change; the thread's memory is still mapped and may be
+    /// read through `/proc/<tid>/mem`. Every thread of a dying process reaches
+    /// its exit stop with the same status, so a process can produce several
+    /// calls, in host order. The thread waits for the return, so the method
+    /// must be bounded, must not wait for guest progress, and must not modify
+    /// the guest. The default does nothing. Only the ptrace backend calls it.
+    fn on_fatal_signal_exit(&self, _exit: &FatalSignalExit) {}
+
     /// Waits until this run cannot continue faithfully. Each call must subscribe
     /// independently: multiple Tool callbacks and the scheduler may be waiting.
     /// The default preserves Tools that do not own a scheduler.
@@ -329,6 +341,37 @@ pub struct BackendFailure {
     pub tid: Tid,
     /// Backend operation that failed.
     pub phase: &'static str,
+}
+
+/// A guest thread held at its exit stop after a core-dumping fatal signal.
+/// See [`GlobalTool::on_fatal_signal_exit`].
+#[derive(Clone, Copy, Debug)]
+pub struct FatalSignalExit {
+    /// Host thread ID of the dying thread.
+    pub tid: Tid,
+    /// The signal that killed the thread's process.
+    pub signal: Signal,
+    /// The exit status the kernel reported at the exit stop.
+    pub status: ExitStatus,
+    /// The thread's general-purpose registers at its exit stop.
+    pub regs: libc::user_regs_struct,
+}
+
+/// Whether the default action of `signal` dumps core (signal(7)).
+pub fn signal_dumps_core(signal: Signal) -> bool {
+    matches!(
+        signal,
+        Signal::SIGABRT
+            | Signal::SIGBUS
+            | Signal::SIGFPE
+            | Signal::SIGILL
+            | Signal::SIGQUIT
+            | Signal::SIGSEGV
+            | Signal::SIGSYS
+            | Signal::SIGTRAP
+            | Signal::SIGXCPU
+            | Signal::SIGXFSZ
+    )
 }
 
 /// A child state and waitability decision observed by an execution backend.

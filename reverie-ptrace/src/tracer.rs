@@ -1498,7 +1498,12 @@ async fn finish_ordinary_terminal(
                         });
                         match observed_event {
                             Ok(raw) => {
-                                exit_status = Some(ExitStatus::from_raw(raw as i32));
+                                let status = ExitStatus::from_raw(raw as i32);
+                                exit_status = Some(status);
+                                // Still held at the exit stop, after the
+                                // fatal decision: nothing done here can
+                                // change the status read above.
+                                session.offer_fatal_signal_exit(&stopped, status);
                                 #[cfg(test)]
                                 if let Some(control) =
                                     EXIT_RESUME_CONTROL.with(|slot| slot.borrow().clone())
