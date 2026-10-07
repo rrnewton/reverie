@@ -320,6 +320,12 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
 
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Result<i64>;
 
+    /// Takes the typed refusal of the last `execute`, when the backend declined
+    /// it as an operation it cannot perform.
+    fn take_unsupported_refusal(&mut self) -> Option<reverie::UnsupportedRefusal> {
+        None
+    }
+
     /// Reserve backend bookkeeping before executing an injected syscall.
     /// Refusal is terminal backend failure, never an emulated syscall errno.
     fn prepare_signal_effects(&mut self) -> std::result::Result<(), Errno> {
@@ -709,6 +715,9 @@ where
 
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Result<i64> {
         self.polled_read_attempt = None;
+        // A refusal left by a syscall the guest issued without an injection
+        // describes that syscall, not this one.
+        let _stale = self.executor.take_unsupported_refusal();
         if !self.signal_injection_allowed(request) {
             // KvmGuest performs the same check before dispatch. Keep the
             // production executor fail-closed as well: a future Guest caller
@@ -755,6 +764,10 @@ where
         self.last_result = Some(result);
         self.polled_read_attempt = Some((*request, result));
         Ok(result)
+    }
+
+    fn take_unsupported_refusal(&mut self) -> Option<reverie::UnsupportedRefusal> {
+        self.executor.take_unsupported_refusal()
     }
 
     fn prepare_signal_effects(&mut self) -> std::result::Result<(), Errno> {
@@ -1200,6 +1213,9 @@ struct KvmGuest<'a, T: Tool> {
     observation_lease: Option<reverie::ParkedObservationLease>,
     notifying_dequeue: bool,
     entry_watch: crate::entry::driver::EntryDriverWatch,
+    // The typed refusal of this handler's most recent injection, if the
+    // backend declined it as unsupported. Every injection replaces it.
+    unsupported_refusal: Option<reverie::UnsupportedRefusal>,
 }
 
 impl<'a, T: Tool> KvmGuest<'a, T> {
@@ -1244,6 +1260,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
             observation_lease: None,
             notifying_dequeue: false,
             entry_watch,
+            unsupported_refusal: None,
         }
     }
 
@@ -1560,6 +1577,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> std::result::Result<i64, Errno> {
         self.admit_ordinary_operation().await;
         self.executor.invalidate_polled_read_attempt();
+        self.unsupported_refusal = None;
         let request = SyscallRequest::from_syscall(syscall);
         if !self.executor.ordinary_injection_allowed(&request) {
             return Err(Errno::ENOSYS);
@@ -1583,7 +1601,10 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         }
         self.admit_ordinary_operation().await;
         let raw = match self.executor.execute(&request, &self.memory) {
-            Ok(raw) => raw,
+            Ok(raw) => {
+                self.unsupported_refusal = self.executor.take_unsupported_refusal();
+                raw
+            }
             Err(Error::ChildWaitGroupExit { status }) => {
                 // The group exit is already committed, not a request to cancel
                 // an ordinary callback. Preserve its status across owned future
@@ -1775,6 +1796,10 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         }
 
         Some(regions)
+    }
+
+    fn take_unsupported_refusal(&mut self) -> Option<reverie::UnsupportedRefusal> {
+        self.unsupported_refusal.take()
     }
 }
 

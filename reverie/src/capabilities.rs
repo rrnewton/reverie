@@ -199,11 +199,6 @@ pub struct BackendCapabilities {
     /// there.
     pub failed_gettimeofday_may_store_host_time: bool,
 
-    /// The backend validates the new image of an `execve` issued by a thread
-    /// that is not its process's group leader, and then refuses the exec with
-    /// ENOSYS because it cannot promote that thread to leader.
-    pub refuses_nonleader_exec_with_enosys: bool,
-
     /// The exclusive upper bound of guest user addresses (Linux's
     /// `TASK_SIZE`), when the backend's guest address space has a fixed bound
     /// that differs from the host process's. `None` means the guest runs as a
@@ -242,7 +237,6 @@ impl BackendCapabilities {
         provides_process_signal_control: false,
         emulates_child_waits: false,
         failed_gettimeofday_may_store_host_time: true,
-        refuses_nonleader_exec_with_enosys: false,
         user_address_limit: None,
     };
 
@@ -304,7 +298,6 @@ impl BackendCapabilities {
         provides_process_signal_control: true,
         emulates_child_waits: true,
         failed_gettimeofday_may_store_host_time: false,
-        refuses_nonleader_exec_with_enosys: true,
         user_address_limit: Some(X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT),
         reports_child_exit_publication: false,
         ..Self::PTRACE
@@ -348,7 +341,6 @@ mod tests {
             "provides_process_signal_control": false,
             "emulates_child_waits": false,
             "failed_gettimeofday_may_store_host_time": true,
-            "refuses_nonleader_exec_with_enosys": false,
             "user_address_limit": null,
         })
     }
@@ -442,7 +434,6 @@ mod tests {
                 "provides_process_signal_control": true,
                 "emulates_child_waits": true,
                 "failed_gettimeofday_may_store_host_time": false,
-                "refuses_nonleader_exec_with_enosys": true,
                 "user_address_limit": 140_737_488_351_232_u64,
                 "reports_child_exit_publication": false,
             }))

@@ -4785,6 +4785,7 @@ struct WorkerExecOverlapLog {
     worker_errno: Mutex<Option<i32>>,
     worker_ready: Condvar,
     root_value_preserved: AtomicBool,
+    worker_refusal_checks: Mutex<Option<i64>>,
 }
 
 impl Default for WorkerExecOverlapLog {
@@ -4794,9 +4795,21 @@ impl Default for WorkerExecOverlapLog {
             worker_errno: Mutex::new(None),
             worker_ready: Condvar::new(),
             root_value_preserved: AtomicBool::new(false),
+            worker_refusal_checks: Mutex::new(None),
         }
     }
 }
+
+/// The worker's refused exec reported the typed refusal exactly when the
+/// backend refused the operation as unsupported (ENOSYS), and nothing for an
+/// ordinary failure.
+const REFUSAL_MATCHES_ERRNO: i64 = 1 << 0;
+/// Taking the refusal cleared it.
+const REFUSAL_TAKEN_ONCE: i64 = 1 << 1;
+/// A later injection replaced an untaken refusal.
+const REFUSAL_REPLACED_BY_NEXT_INJECTION: i64 = 1 << 2;
+const ALL_REFUSAL_CHECKS: i64 =
+    REFUSAL_MATCHES_ERRNO | REFUSAL_TAKEN_ONCE | REFUSAL_REPLACED_BY_NEXT_INJECTION;
 
 impl WorkerExecOverlapLog {
     fn worker_errno(&self) -> Option<i32> {
@@ -4808,6 +4821,13 @@ impl WorkerExecOverlapLog {
 
     fn root_value_preserved(&self) -> bool {
         self.root_value_preserved.load(Ordering::SeqCst)
+    }
+
+    fn worker_refusal_checks(&self) -> Option<i64> {
+        *self
+            .worker_refusal_checks
+            .lock()
+            .expect("worker refusal result lock poisoned")
     }
 }
 
@@ -4857,6 +4877,14 @@ impl GlobalTool for WorkerExecOverlapLog {
                     .store(value != 0, Ordering::SeqCst);
                 0
             }
+            // Record which typed-refusal checks the worker observed passing.
+            4 => {
+                *self
+                    .worker_refusal_checks
+                    .lock()
+                    .expect("worker refusal result lock poisoned") = Some(value);
+                0
+            }
             _ => panic!("unexpected worker exec test operation {operation}"),
         }
     }
@@ -4898,7 +4926,7 @@ impl Tool for WorkerExecOverlapTool {
             }
         } else {
             assert_ne!(guest.tid(), guest.pid());
-            let (path, argv, envp, execveat, _) = *guest.config();
+            let (path, argv, envp, execveat, expected_errno) = *guest.config();
             let request = Execve::new()
                 .with_path(PathPtr::from_ptr(path as *const libc::c_char))
                 .with_argv(Option::<CArrayPtr<CStrPtr>>::from_raw(argv))
@@ -4911,6 +4939,44 @@ impl Tool for WorkerExecOverlapTool {
                 guest.inject(request).await
             };
             let error = result.expect_err("worker image replacement unexpectedly succeeded");
+
+            let mut checks = 0;
+            let refusal = guest.take_unsupported_refusal();
+            let expected_refusal = (expected_errno == libc::ENOSYS).then(|| {
+                reverie::UnsupportedRefusal::new(
+                    reverie::UnsupportedOperation::NonLeaderExec,
+                    Errno::ENOSYS,
+                    "KVM nonleader exec is unsupported",
+                )
+            });
+            if refusal == expected_refusal {
+                checks |= REFUSAL_MATCHES_ERRNO;
+            }
+            if guest.take_unsupported_refusal().is_none() {
+                checks |= REFUSAL_TAKEN_ONCE;
+            }
+            // Refuse the same exec again and leave the record untaken: the
+            // next injection, which the backend performs, must replace it.
+            let again = if execveat {
+                guest
+                    .inject(reverie::syscalls::Execveat::from(request))
+                    .await
+            } else {
+                guest.inject(request).await
+            };
+            assert_eq!(
+                again,
+                Err(error),
+                "a repeated worker exec changed its errno"
+            );
+            guest
+                .inject(reverie::syscalls::Getpid::new())
+                .await
+                .expect("getpid after a refused exec");
+            if guest.take_unsupported_refusal().is_none() {
+                checks |= REFUSAL_REPLACED_BY_NEXT_INJECTION;
+            }
+            guest.send_rpc((4, checks)).await;
             guest.send_rpc((1, i64::from(error.into_raw()))).await;
         }
 
@@ -7940,6 +8006,7 @@ fn check_worker_exec_preserves_shared_memory(
     assert!(stderr.is_empty());
     assert_eq!(log.worker_errno(), Some(expected_errno));
     assert!(log.root_value_preserved());
+    assert_eq!(log.worker_refusal_checks(), Some(ALL_REFUSAL_CHECKS));
 }
 
 #[test]
