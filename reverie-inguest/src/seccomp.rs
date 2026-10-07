@@ -153,6 +153,9 @@ impl SeccompFilter {
     /// before untrusted application threads start, after the SIGSYS handler is
     /// in place.
     pub unsafe fn install(&mut self) -> io::Result<()> {
+        // Whether a filter is already attached (inherited, or installed by
+        // guest code before the runtime): see `runtime_filter_state`.
+        let earlier = unsafe { libc::prctl(libc::PR_GET_SECCOMP, 0, 0, 0, 0) } == 2;
         if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -172,7 +175,39 @@ impl SeccompFilter {
         if result != 0 {
             return Err(io::Error::last_os_error());
         }
+        RUNTIME_FILTER.store(
+            if earlier {
+                RuntimeFilter::AfterAnother as u8
+            } else {
+                RuntimeFilter::Alone as u8
+            },
+            core::sync::atomic::Ordering::Relaxed,
+        );
         Ok(())
+    }
+}
+
+/// Whether the runtime's filter is installed, and whether another filter was
+/// attached before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeFilter {
+    /// [`SeccompFilter::install`] has not succeeded in this process image.
+    NotInstalled = 0,
+    /// Installed, with no filter attached before it.
+    Alone = 1,
+    /// Installed after another filter was already attached.
+    AfterAnother = 2,
+}
+
+static RUNTIME_FILTER: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(RuntimeFilter::NotInstalled as u8);
+
+/// The runtime filter's state; inherited by fork children.
+pub fn runtime_filter_state() -> RuntimeFilter {
+    match RUNTIME_FILTER.load(core::sync::atomic::Ordering::Relaxed) {
+        1 => RuntimeFilter::Alone,
+        2 => RuntimeFilter::AfterAnother,
+        _ => RuntimeFilter::NotInstalled,
     }
 }
 
