@@ -942,6 +942,9 @@ fn write_injected_frame(
     Ok(task.write_value(address, frame)?)
 }
 
+/// Hands a thread that a core-dumping signal killed to the global tool.
+type FatalSignalExitHook = Box<dyn Fn(&reverie::FatalSignalExit) + Send + Sync>;
+
 /// The first ordinary-ptrace fatal error cancels every followed task. Keep the
 /// actual error until the entire tree has completed its real terminal waits.
 #[derive(Default)]
@@ -953,6 +956,7 @@ pub(crate) struct FatalSession {
     failure: StdMutex<Option<PtraceRunFailure>>,
     published: AtomicBool,
     reporter: Option<Box<dyn Fn(BackendFailure) -> bool + Send + Sync>>,
+    fatal_signal_exit: Option<FatalSignalExitHook>,
     closed: AtomicBool,
     root: Option<Pid>,
     changed: Notify,
@@ -1715,6 +1719,7 @@ impl FatalSession {
     }
     fn new<G: GlobalTool + 'static>(global: &Arc<G>, root: Pid) -> Self {
         let weak = Arc::downgrade(global);
+        let fatal_weak = weak.clone();
         Self {
             root: Some(root),
             ptracer_thread: Some(std::thread::current().id()),
@@ -1726,7 +1731,34 @@ impl FatalSession {
                     false
                 }
             })),
+            fatal_signal_exit: Some(Box::new(move |exit| {
+                if let Some(global) = fatal_weak.upgrade() {
+                    global.on_fatal_signal_exit(exit);
+                }
+            })),
             ..Self::default()
+        }
+    }
+
+    /// Offers a thread held at its exit stop after a core-dumping fatal
+    /// signal to the global Tool, while its memory is still mapped. Reads the
+    /// thread's registers without changing them; a thread whose registers
+    /// cannot be read is not offered.
+    pub(crate) fn offer_fatal_signal_exit(&self, stopped: &Stopped, status: ExitStatus) {
+        let (Some(hook), ExitStatus::Signaled(signal, _)) = (&self.fatal_signal_exit, status)
+        else {
+            return;
+        };
+        if !reverie::signal_dumps_core(signal) {
+            return;
+        }
+        if let Ok(regs) = stopped.getregs() {
+            hook(&reverie::FatalSignalExit {
+                tid: stopped.pid(),
+                signal,
+                status,
+                regs,
+            });
         }
     }
 
