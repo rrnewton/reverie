@@ -6,9 +6,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! `GlobalTool::on_fatal_signal_exit` runs once for a thread a core-dumping
-//! signal kills, while the thread is held at its exit stop with its memory
-//! still mapped, and never for a thread that exits any other way.
+//! `GlobalTool::on_fatal_signal_exit` runs once for each thread of a process
+//! that a core-dumping signal ends, while the thread is held at its exit stop
+//! with its memory still mapped, and never for a thread that exits any other
+//! way, including one that seccomp kills while its process lives on.
+//!
+//! Every guest sets its soft `RLIMIT_CORE` to 1 first. The kernel refuses to
+//! write a core at that limit, whether `core_pattern` names a file or a pipe,
+//! so no guest leaves a core on the host and every core-dumped flag is false
+//! wherever the test runs. The kernel still runs its core dump step.
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;
@@ -19,7 +25,6 @@ use reverie::FatalSignalExit;
 use reverie::GlobalTool;
 use reverie::Pid;
 use reverie::Signal;
-use reverie::Subscription;
 use reverie::Tool;
 use reverie_ptrace::testing::test_fn_with_config;
 
@@ -34,20 +39,55 @@ fn shared_page() -> usize {
     page.as_ptr() as usize
 }
 
+/// Keeps the kernel from writing a core for this guest; see the module doc.
+fn refuse_host_core() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) }, 0);
+    limit.rlim_cur = 1;
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) }, 0);
+}
+
+/// Writes `bytes` to the start of the shared page, for the hook to read back.
+unsafe fn mark(page: usize, bytes: &[u8]) {
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), page as *mut u8, bytes.len()) };
+}
+
+/// The calling thread's ID, as the first four bytes the hook will read.
+fn tid_mark() -> [u8; 4] {
+    unsafe { libc::gettid() }.to_ne_bytes()
+}
+
+/// Faults by writing to address 8, which is never mapped.
+fn segfault() -> ! {
+    unsafe { std::ptr::dangling_mut::<u64>().write_volatile(1) };
+    unreachable!("the write above faults")
+}
+
 #[derive(Debug)]
 struct Seen {
     tid: Pid,
     signal: Signal,
     status: ExitStatus,
+    dumping: bool,
+    failed_run: bool,
     rip: u64,
     /// The guest's bytes at the page, read through `/proc/<tid>/mem` from
     /// inside the hook.
     page: Vec<u8>,
 }
 
+impl Seen {
+    fn marked_tid(&self) -> i32 {
+        i32::from_ne_bytes(self.page[..4].try_into().unwrap())
+    }
+}
+
 #[derive(Default)]
 struct FatalLog {
-    page: Mutex<usize>,
+    page: usize,
     seen: Mutex<Vec<Seen>>,
 }
 
@@ -59,24 +99,25 @@ impl GlobalTool for FatalLog {
 
     async fn init_global_state(page: &usize) -> Self {
         Self {
-            page: Mutex::new(*page),
-            seen: Mutex::new(Vec::new()),
+            page: *page,
+            ..Self::default()
         }
     }
 
     async fn receive_rpc(&self, _from: Pid, _request: ()) {}
 
     fn on_fatal_signal_exit(&self, exit: &FatalSignalExit) {
-        let page = *self.page.lock().unwrap();
         let mut bytes = vec![0; DYING.len()];
         let mem = File::open(format!("/proc/{}/mem", exit.tid.as_raw()))
             .expect("the dying thread's memory should still be open");
-        mem.read_exact_at(&mut bytes, page as u64)
+        mem.read_exact_at(&mut bytes, self.page as u64)
             .expect("the dying thread's memory should still be mapped");
         self.seen.lock().unwrap().push(Seen {
             tid: exit.tid,
             signal: exit.signal,
             status: exit.status,
+            dumping: exit.dumping,
+            failed_run: exit.deadline.is_some(),
             rip: exit.regs.rip,
             page: bytes,
         });
@@ -90,31 +131,35 @@ struct FatalLogTool;
 impl Tool for FatalLogTool {
     type GlobalState = FatalLog;
     type ThreadState = ();
-
-    fn subscriptions(_config: &usize) -> Subscription {
-        Subscription::none()
-    }
 }
 
 fn run(guest: impl FnOnce(usize)) -> (ExitStatus, Vec<Seen>) {
     let page = shared_page();
-    let (output, log) = test_fn_with_config::<FatalLogTool, _>(|| guest(page), page, true)
-        .expect("the guest should run");
+    let (output, log) = test_fn_with_config::<FatalLogTool, _>(
+        || {
+            refuse_host_core();
+            guest(page)
+        },
+        page,
+        true,
+    )
+    .expect("the guest should run");
     (output.status, log.seen.into_inner().unwrap())
 }
 
 #[test]
 fn a_segfault_is_offered_once_with_its_memory_still_mapped() {
-    let (status, seen) = run(|page| unsafe {
-        std::ptr::copy_nonoverlapping(DYING.as_ptr(), page as *mut u8, DYING.len());
-        // The dangling pointer is address 8, which is never mapped.
-        std::ptr::dangling_mut::<u64>().write_volatile(1);
+    let (status, seen) = run(|page| {
+        unsafe { mark(page, DYING) };
+        segfault()
     });
-    assert_eq!(status, ExitStatus::Signaled(Signal::SIGSEGV, true));
+    assert_eq!(status, ExitStatus::Signaled(Signal::SIGSEGV, false));
     assert_eq!(seen.len(), 1, "{seen:?}");
     let seen = &seen[0];
     assert_eq!(seen.signal, Signal::SIGSEGV);
     assert_eq!(seen.status, status);
+    assert!(seen.dumping, "the faulting thread ran the core dump step");
+    assert!(!seen.failed_run);
     assert!(seen.tid.as_raw() > 0);
     assert_ne!(seen.rip, 0);
     assert_eq!(
@@ -128,9 +173,10 @@ fn a_segfault_is_offered_once_with_its_memory_still_mapped() {
 #[test]
 fn an_abort_is_offered() {
     let (status, seen) = run(|_| std::process::abort());
-    assert_eq!(status, ExitStatus::Signaled(Signal::SIGABRT, true));
+    assert_eq!(status, ExitStatus::Signaled(Signal::SIGABRT, false));
     assert_eq!(seen.len(), 1, "{seen:?}");
     assert_eq!(seen[0].signal, Signal::SIGABRT);
+    assert!(seen[0].dumping);
 }
 
 #[test]
@@ -144,4 +190,131 @@ fn signals_that_dump_no_core_and_ordinary_exits_are_not_offered() {
     let (status, seen) = run(|_| unsafe { libc::_exit(3) });
     assert_eq!(status, ExitStatus::Exited(3));
     assert!(seen.is_empty(), "{seen:?}");
+}
+
+/// Each thread of the dying process is offered once, all with the same
+/// signal, and only the thread that faulted is the dumping one.
+#[test]
+fn every_thread_of_a_multithreaded_crash_is_offered_and_one_is_dumping() {
+    let (status, seen) = run(|page| {
+        let started = std::sync::Arc::new(std::sync::Barrier::new(4));
+        for _ in 0..3 {
+            let started = started.clone();
+            std::thread::spawn(move || {
+                started.wait();
+                loop {
+                    std::thread::park();
+                }
+            });
+        }
+        started.wait();
+        unsafe { mark(page, &tid_mark()) };
+        segfault()
+    });
+    assert_eq!(status, ExitStatus::Signaled(Signal::SIGSEGV, false));
+    assert_eq!(seen.len(), 4, "{seen:#?}");
+    let mut tids: Vec<_> = seen.iter().map(|seen| seen.tid).collect();
+    tids.sort();
+    tids.dedup();
+    assert_eq!(tids.len(), 4, "a thread was offered twice: {seen:#?}");
+    for seen in &seen {
+        assert_eq!(seen.signal, Signal::SIGSEGV);
+        assert_eq!(seen.status, ExitStatus::Signaled(Signal::SIGSEGV, false));
+        assert!(!seen.failed_run);
+    }
+    let dumping: Vec<_> = seen.iter().filter(|seen| seen.dumping).collect();
+    assert_eq!(dumping.len(), 1, "{seen:#?}");
+    assert_eq!(
+        dumping[0].tid.as_raw(),
+        dumping[0].marked_tid(),
+        "the dumping thread is not the one that faulted"
+    );
+}
+
+/// A forked child's crash is offered with the child's own memory, and the
+/// parent goes on to exit normally.
+#[test]
+fn a_forked_child_crash_is_offered_with_its_own_memory() {
+    let (status, seen) = run(|page| unsafe {
+        let child = libc::fork();
+        if child == 0 {
+            mark(page, &tid_mark());
+            segfault();
+        }
+        let mut wstatus = 0;
+        assert_eq!(libc::waitpid(child, &mut wstatus, 0), child);
+        let ok = libc::WIFSIGNALED(wstatus) && libc::WTERMSIG(wstatus) == libc::SIGSEGV;
+        libc::_exit(if ok { 0 } else { 1 });
+    });
+    assert_eq!(status, ExitStatus::Exited(0));
+    assert_eq!(seen.len(), 1, "{seen:#?}");
+    assert_eq!(seen[0].status, ExitStatus::Signaled(Signal::SIGSEGV, false));
+    assert!(seen[0].dumping);
+    assert_eq!(
+        seen[0].tid.as_raw(),
+        seen[0].marked_tid(),
+        "the hook read memory that is not the child's"
+    );
+}
+
+/// `SECCOMP_RET_KILL_THREAD` ends one thread of a multithreaded process
+/// with SIGSYS, a core-dumping signal number, without a fatal signal to the
+/// process, which then exits normally. That thread is not offered.
+#[test]
+fn a_thread_seccomp_kills_while_its_process_lives_on_is_not_offered() {
+    let (status, seen) = run(|_| {
+        std::thread::spawn(|| unsafe {
+            // Kill the thread on getppid, allow every other syscall.
+            let filter = [
+                libc::sock_filter {
+                    code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+                    jt: 0,
+                    jf: 0,
+                    k: 0,
+                },
+                libc::sock_filter {
+                    code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+                    jt: 0,
+                    jf: 1,
+                    k: libc::SYS_getppid as u32,
+                },
+                libc::sock_filter {
+                    code: (libc::BPF_RET | libc::BPF_K) as u16,
+                    jt: 0,
+                    jf: 0,
+                    k: libc::SECCOMP_RET_KILL_THREAD,
+                },
+                libc::sock_filter {
+                    code: (libc::BPF_RET | libc::BPF_K) as u16,
+                    jt: 0,
+                    jf: 0,
+                    k: libc::SECCOMP_RET_ALLOW,
+                },
+            ];
+            let program = libc::sock_fprog {
+                len: filter.len() as u16,
+                filter: filter.as_ptr() as *mut _,
+            };
+            assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+            let installed = libc::syscall(
+                libc::SYS_seccomp,
+                libc::SECCOMP_SET_MODE_FILTER,
+                0,
+                &program as *const libc::sock_fprog,
+            );
+            assert_eq!(installed, 0);
+            libc::syscall(libc::SYS_getppid);
+        });
+        // The killed thread never returns, so wait for it to leave the
+        // thread list rather than joining it.
+        while std::fs::read_dir("/proc/self/task").unwrap().count() > 1 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        unsafe { libc::_exit(7) };
+    });
+    assert_eq!(status, ExitStatus::Exited(7));
+    assert!(
+        seen.is_empty(),
+        "offered a thread of a process that went on to exit normally: {seen:#?}"
+    );
 }

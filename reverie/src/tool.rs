@@ -258,14 +258,32 @@ pub trait GlobalTool: Send + Sync + Default {
     fn report_backend_failure(&self, _event: BackendFailure) {}
 
     /// Called by a backend that holds guest thread `exit.tid` at its exit stop
-    /// after a signal whose default action dumps core has killed it, before
-    /// the thread is released to finish exiting. The kernel has already made
-    /// the fatal decision and its own core dump step is over, so the exit
-    /// status cannot change; the thread's memory is still mapped and may be
-    /// read through `/proc/<tid>/mem`. Every thread of a dying process reaches
-    /// its exit stop with the same status, so a process can produce several
-    /// calls, in host order. The thread waits for the return, so the method
-    /// must be bounded, must not wait for guest progress, and must not modify
+    /// while the thread's whole process is exiting because of a signal whose
+    /// default action dumps core, before the thread is released to finish
+    /// exiting. The kernel has already made the fatal decision and its own
+    /// core dump step is over, so the thread's exit status cannot change; the
+    /// thread's memory is still mapped and may be read through
+    /// `/proc/<tid>/mem`.
+    ///
+    /// The call is per thread: each thread of the dying process reaches its
+    /// own exit stop, in host order, so one process death can produce several
+    /// calls. At most one of them has `exit.dumping` set: the thread that
+    /// took the signal, when the kernel ran its core dump step. A thread that
+    /// ends with a core-dumping signal number but without a process-wide
+    /// fatal signal, such as one killed by `SECCOMP_RET_KILL_THREAD` while
+    /// its process lives on, is not offered.
+    ///
+    /// Delivery is best effort. A death is not offered when the backend never
+    /// holds the thread at a readable exit stop, for example when the stop has
+    /// already been advanced, the registers or `/proc/<tid>/stat` cannot be
+    /// read, the root dies during backend initialization, or the thread is
+    /// reaped as a zombie.
+    ///
+    /// The call runs synchronously on the backend's tracing thread, which
+    /// drives every guest task, so its host time stalls the whole guest tree.
+    /// It can come after `report_backend_failure`, when `exit.deadline` names
+    /// the instant by which cleanup must finish. The method must be bounded,
+    /// must not panic, must not wait for guest progress, and must not modify
     /// the guest. The default does nothing. Only the ptrace backend calls it.
     fn on_fatal_signal_exit(&self, _exit: &FatalSignalExit) {}
 
@@ -343,18 +361,54 @@ pub struct BackendFailure {
     pub phase: &'static str,
 }
 
-/// A guest thread held at its exit stop after a core-dumping fatal signal.
-/// See [`GlobalTool::on_fatal_signal_exit`].
+/// A guest thread held at its exit stop while a core-dumping fatal signal
+/// ends its process. See [`GlobalTool::on_fatal_signal_exit`].
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct FatalSignalExit {
     /// Host thread ID of the dying thread.
     pub tid: Tid,
-    /// The signal that killed the thread's process.
+    /// The signal that is ending the thread's process. It is the same for
+    /// every thread of the process and always equals the signal in `status`.
     pub signal: Signal,
-    /// The exit status the kernel reported at the exit stop.
+    /// This thread's exit status at its exit stop. Its core-dumped flag is
+    /// per thread: the kernel sets it only on the thread that dumped core,
+    /// and only when a core was written, so it can differ between threads
+    /// and from the status the process finally reports to its waiter.
     pub status: ExitStatus,
+    /// Whether this thread took the signal and ran the kernel's core dump
+    /// step, whether or not that step wrote a core. At most one thread of a
+    /// dying process has it, and none when the kernel skipped the step, for
+    /// example for a process that is not dumpable.
+    pub dumping: bool,
+    /// The instant by which the backend must finish cleaning up a run that
+    /// has already failed, or `None` while the run has not failed.
+    pub deadline: Option<std::time::Instant>,
     /// The thread's general-purpose registers at its exit stop.
     pub regs: libc::user_regs_struct,
+}
+
+impl FatalSignalExit {
+    /// Describes a thread held at its exit stop, for backends that offer it.
+    pub fn new(
+        tid: Tid,
+        status: ExitStatus,
+        dumping: bool,
+        deadline: Option<std::time::Instant>,
+        regs: libc::user_regs_struct,
+    ) -> Option<Self> {
+        let ExitStatus::Signaled(signal, _) = status else {
+            return None;
+        };
+        Some(Self {
+            tid,
+            signal,
+            status,
+            dumping,
+            deadline,
+            regs,
+        })
+    }
 }
 
 /// Whether the default action of `signal` dumps core (signal(7)).
