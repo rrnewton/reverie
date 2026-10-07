@@ -75,6 +75,7 @@ use crate::elf::TaskLifecycleTable;
 use crate::elf::initial_thread_name;
 use crate::elf::load_static_elf;
 use crate::elf::load_static_elf_file;
+use crate::elf::load_static_elf_with_execfn;
 use crate::executor::AbandonedRuns;
 use crate::executor::CapturedOutput;
 #[cfg(test)]
@@ -2069,6 +2070,33 @@ impl KvmBackend {
         self.install_loaded_static_elf(loaded)
     }
 
+    /// As [`Self::install_static_elf_with_context`], for an image exec'd by
+    /// the filename `execfn`: Linux copies that filename to the top of the
+    /// initial stack and names it in `AT_EXECFN`. When a launcher has
+    /// already rewritten a `#!` script's `argv` to its interpreter, `execfn`
+    /// is still the script's filename, as `execve` gave it to the kernel, so
+    /// the guest's stack matches a traced guest's.
+    pub fn install_static_elf_with_exec_context(
+        &mut self,
+        image: &[u8],
+        execfn: &std::ffi::OsStr,
+        argv: &[&str],
+        envp: &[&str],
+        cwd: &Path,
+    ) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        self.vcpu.check_initial_elf_install()?;
+        let loaded = load_static_elf_with_execfn(
+            &mut self.memory,
+            image,
+            Some(std::os::unix::ffi::OsStrExt::as_bytes(execfn)),
+            argv,
+            envp,
+            cwd,
+        )?;
+        self.install_loaded_static_elf(loaded)
+    }
+
     fn install_loaded_static_elf(&mut self, mut loaded: LoadedStaticElf) -> Result<()> {
         loaded.ids_per_task = self.ids_per_task;
         loaded.pid = self.root_pid;
@@ -2318,6 +2346,7 @@ impl KvmBackend {
         &mut self,
         executor: &mut ElfExecutor,
         executable: (&Path, Option<Arc<File>>),
+        execfn: Option<&[u8]>,
         image: &[u8],
         argv: &[String],
         envp: &[String],
@@ -2340,7 +2369,14 @@ impl KvmBackend {
 
         let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
-        let mut loaded = load_static_elf(&mut self.memory, image, &argv, &envp, executor.cwd())?;
+        let mut loaded = load_static_elf_with_execfn(
+            &mut self.memory,
+            image,
+            execfn,
+            &argv,
+            &envp,
+            executor.cwd(),
+        )?;
         let (executable_path, executable_file) = executable;
         loaded.executable_path = executable_file
             .as_ref()
@@ -3107,6 +3143,7 @@ impl KvmBackend {
             ProcessAction::Exec {
                 executable_path,
                 executable_file,
+                execfn,
                 image,
                 argv,
                 envp,
@@ -3135,6 +3172,7 @@ impl KvmBackend {
                 let result = self.exec_process(
                     executor,
                     (&executable_path, executable_file),
+                    execfn.as_deref(),
                     &image,
                     &argv,
                     &envp,
@@ -7325,6 +7363,7 @@ mod tests {
         let exec = ProcessAction::Exec {
             executable_path: std::path::PathBuf::new(),
             executable_file: None,
+            execfn: None,
             image: Vec::new(),
             argv: Vec::new(),
             envp: Vec::new(),
@@ -7422,6 +7461,7 @@ mod tests {
         ProcessAction::Exec {
             executable_path: std::path::PathBuf::new(),
             executable_file: None,
+            execfn: None,
             image: Vec::new(),
             argv: Vec::new(),
             envp: Vec::new(),
@@ -10088,6 +10128,7 @@ mod tests {
                     .exec_process(
                         &mut executor,
                         (Path::new("/page-zero-exec"), None),
+                        None,
                         &minimal_test_elf(&[HLT]),
                         &["/page-zero-exec".to_owned()],
                         &[],
@@ -10840,6 +10881,7 @@ mod tests {
             ProcessAction::Exec {
                 executable_path: Path::new("/worker-exec-guard").to_owned(),
                 executable_file: None,
+                execfn: None,
                 image,
                 argv: vec!["/worker-exec-guard".to_owned()],
                 envp: Vec::new(),

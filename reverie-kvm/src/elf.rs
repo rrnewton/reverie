@@ -1465,9 +1465,28 @@ impl LoadedStaticElf {
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review script loading and executable resolution.
+/// Loads `image` as exec'd by the filename `argv[0]`; see
+/// [`load_static_elf_with_execfn`].
 pub(crate) fn load_static_elf(
     memory: &mut GuestMemory,
     image: &[u8],
+    argv: &[&str],
+    envp: &[&str],
+    cwd: &Path,
+) -> Result<LoadedStaticElf> {
+    load_static_elf_with_execfn(memory, image, None, argv, envp, cwd)
+}
+
+/// Loads `image` as `execve(execfn, argv, envp)` would. `execfn` is the
+/// filename given to execve, byte for byte, which Linux copies to the top of
+/// the new stack and names in `AT_EXECFN`; `None` means `argv[0]`. A `#!`
+/// script keeps it: for a script Linux still records the script's filename
+/// there, not the interpreter's. Given explicitly, it is also the script's
+/// own argument after the interpreter (bprm->interp), whatever `argv[0]` is.
+pub(crate) fn load_static_elf_with_execfn(
+    memory: &mut GuestMemory,
+    image: &[u8],
+    execfn: Option<&[u8]>,
     argv: &[&str],
     envp: &[&str],
     cwd: &Path,
@@ -1477,7 +1496,18 @@ pub(crate) fn load_static_elf(
     let owner = memory.clone();
     let _transaction = owner.allocation_guard();
     begin_image(memory)?;
-    let result = load_executable(memory, image, argv, envp, cwd, 0, None);
+    let script_name = execfn.map(|execfn| String::from_utf8_lossy(execfn).into_owned());
+    let result = load_executable(
+        memory,
+        image,
+        execfn,
+        script_name.as_deref(),
+        argv,
+        envp,
+        cwd,
+        0,
+        None,
+    );
     if result.is_err() {
         memory.clear_user_access();
     }
@@ -1497,7 +1527,17 @@ pub(crate) fn load_static_elf_file(
     let owner = memory.clone();
     let _transaction = owner.allocation_guard();
     begin_image(memory)?;
-    let result = load_executable(memory, &image, argv, envp, cwd, 0, Some(Arc::new(file)));
+    let result = load_executable(
+        memory,
+        &image,
+        None,
+        None,
+        argv,
+        envp,
+        cwd,
+        0,
+        Some(Arc::new(file)),
+    );
     let mut loaded = match result {
         Ok(loaded) => loaded,
         Err(error) => {
@@ -1571,9 +1611,16 @@ fn read_file_image(file: &File) -> std::io::Result<Vec<u8>> {
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review recursive script interpreter loading.
+#[allow(clippy::too_many_arguments)]
+/// `script_name` is the name of the file `image` came from, as the kernel
+/// passes it to a `#!` interpreter (bprm->interp): the exec filename, then
+/// each interpreter's name as its script's `#!` line gives it. `None` keeps
+/// the older rule: the retained file's path, else `argv[0]` resolved.
 fn load_executable(
     memory: &mut GuestMemory,
     image: &[u8],
+    execfn: Option<&[u8]>,
+    script_name: Option<&str>,
     argv: &[&str],
     envp: &[&str],
     cwd: &Path,
@@ -1583,13 +1630,16 @@ fn load_executable(
     let argv0 = *argv
         .first()
         .ok_or_else(|| Error::UnsupportedElf("argv must contain at least argv[0]".to_string()))?;
+    let execfn = execfn.unwrap_or(argv0.as_bytes());
     if let Some((interpreter, optional_argument)) = parse_shebang(image)? {
         if script_depth >= MAX_SCRIPT_INTERPRETERS {
             return Err(Error::UnsupportedElf(
                 "script interpreter recursion limit exceeded".to_string(),
             ));
         }
-        let script_path = if let Some(file) = executable_file.as_ref() {
+        let script_path = if let Some(name) = script_name {
+            PathBuf::from(name)
+        } else if let Some(file) = executable_file.as_ref() {
             std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?
         } else {
             resolve_executable_path(argv0, envp, cwd)?
@@ -1627,6 +1677,8 @@ fn load_executable(
         return load_executable(
             memory,
             &interpreter_image,
+            Some(execfn),
+            script_name.map(|_| interpreter.as_str()),
             &interpreter_argv,
             envp,
             cwd,
@@ -1638,10 +1690,15 @@ fn load_executable(
     let elf = Elf::parse(image)?;
     validate_elf(&elf, true)?;
 
-    for entry in argv.iter().chain(envp.iter()) {
-        if entry.as_bytes().contains(&0) {
+    for entry in argv
+        .iter()
+        .chain(envp.iter())
+        .map(|entry| entry.as_bytes())
+        .chain([execfn])
+    {
+        if entry.contains(&0) {
             return Err(Error::UnsupportedElf(
-                "an argv/envp entry contains an embedded NUL byte".to_string(),
+                "an execfn/argv/envp entry contains an embedded NUL byte".to_string(),
             ));
         }
     }
@@ -1815,6 +1872,7 @@ fn load_executable(
     let (stack_pointer, auxv) = build_initial_stack(
         memory,
         &elf,
+        execfn,
         argv,
         envp,
         program_headers_address,
@@ -2265,9 +2323,11 @@ fn copy_program_headers(memory: &mut GuestMemory, image: &[u8], elf: &Elf<'_>) -
     memory.write_raw(PROGRAM_HEADERS_ADDRESS, headers)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_initial_stack(
     memory: &mut GuestMemory,
     elf: &Elf<'_>,
+    execfn: &[u8],
     argv: &[&str],
     envp: &[&str],
     program_headers_address: u64,
@@ -2286,9 +2346,9 @@ fn build_initial_stack(
     let mut cursor = USER_STACK_TOP - std::mem::size_of::<u64>() as u64;
     write_user_stack(memory, cursor, &[0; 8])?;
 
-    // AT_EXECFN names the filename given to execve. Hermit launches and execs
-    // a guest by the same string it passes as argv[0].
-    cursor = push_c_string(memory, cursor, argv[0].as_bytes())?;
+    // AT_EXECFN names the filename given to execve (bprm->filename), which
+    // for a `#!` script is the script's, not the interpreter's.
+    cursor = push_c_string(memory, cursor, execfn)?;
     let execfn_address = cursor;
     let mut env_addresses = vec![0; envp.len()];
     for (index, entry) in envp.iter().enumerate().rev() {
@@ -2895,6 +2955,120 @@ mod tests {
         let (last, entries) = pairs.split_last().unwrap();
         assert_eq!(*last, (AT_NULL, 0));
         assert_eq!(entries, loaded.auxv.as_slice());
+    }
+
+    /// AT_EXECFN names the filename execve was given, which Linux copies to
+    /// the top of the stack above the envp and argv strings. For a `#!`
+    /// script that filename is the script's even though argv[0] is now the
+    /// interpreter's, both when a launcher rewrote argv itself and when this
+    /// loader resolves the script. Naming the interpreter instead shortens the
+    /// strings and moves every stack address the guest logs.
+    #[test]
+    fn initial_stack_names_the_execve_filename_not_argv0() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let read_c_string = |memory: &GuestMemory, address: u64| {
+            let mut bytes = Vec::new();
+            loop {
+                let mut byte = [0];
+                let physical = memory
+                    .user_range_to_guest(address + bytes.len() as u64, 1)
+                    .unwrap();
+                memory.read_raw(physical, &mut byte).unwrap();
+                if byte[0] == 0 {
+                    return String::from_utf8(bytes).unwrap();
+                }
+                bytes.push(byte[0]);
+            }
+        };
+        let execfn_of = |loaded: &LoadedStaticElf| {
+            loaded
+                .auxv
+                .iter()
+                .find(|(entry, _)| *entry == libc::AT_EXECFN)
+                .unwrap()
+                .1
+        };
+
+        // A launcher that already rewrote a script's argv to its interpreter.
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let loaded = load_static_elf_with_execfn(
+            &mut memory,
+            &test_static_elf(&[0x0f, 0x0b]),
+            Some(b"/s/run.sh"),
+            &["/bin/i", "/s/run.sh"],
+            &[],
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+        let execfn = USER_STACK_TOP - 8 - 10;
+        assert_eq!(execfn_of(&loaded), execfn);
+        assert_eq!(read_c_string(&memory, execfn), "/s/run.sh");
+        let words = 1 + 3 + 1 + 2 * loaded.auxv.len() as u64 + 2;
+        let argv0 = execfn - 10 - 7;
+        let random = ((argv0 & !0xf) - 7) - 16;
+        assert_eq!(loaded.stack_pointer, (random - words * 8) & !0xf);
+
+        // A script this loader resolves itself keeps the script's filename.
+        let dir = std::env::temp_dir().join(format!("reverie-kvm-execfn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let interpreter = dir.join("interpreter");
+        std::fs::write(&interpreter, test_static_elf(&[0x0f, 0x0b])).unwrap();
+        std::fs::set_permissions(&interpreter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = dir.join("script.sh");
+        let script_body = format!("#!{}\n", interpreter.display());
+        std::fs::write(&script, &script_body).unwrap();
+        let script_name = script.to_str().unwrap();
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let loaded = load_static_elf(
+            &mut memory,
+            script_body.as_bytes(),
+            &[script_name, "a"],
+            &[],
+            &dir,
+        )
+        .unwrap();
+        assert_eq!(read_c_string(&memory, execfn_of(&loaded)), script_name);
+
+        // Given explicitly, the filename is also the script's argument, even
+        // under a display-only argv[0] and through a script interpreter that
+        // is itself a script, whose name its `#!` line gives.
+        let inner = dir.join("inner.sh");
+        std::fs::write(&inner, &script_body).unwrap();
+        std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let inner_name = inner.to_str().unwrap();
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let loaded = load_static_elf_with_execfn(
+            &mut memory,
+            format!("#!{inner_name}\n").as_bytes(),
+            Some(b"./outer"),
+            &["display", "a"],
+            &[],
+            &dir,
+        )
+        .unwrap();
+        assert_eq!(read_c_string(&memory, execfn_of(&loaded)), "./outer");
+        let word = |address: u64| {
+            let mut bytes = [0; 8];
+            let physical = memory.user_range_to_guest(address, 8).unwrap();
+            memory.read_raw(physical, &mut bytes).unwrap();
+            u64::from_le_bytes(bytes)
+        };
+        let argc = word(loaded.stack_pointer);
+        let argv = (1..=argc)
+            .map(|index| read_c_string(&memory, word(loaded.stack_pointer + 8 * index)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            argv,
+            [
+                interpreter.canonicalize().unwrap().to_str().unwrap(),
+                inner_name,
+                "./outer",
+                "a"
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `AT_PLATFORM` points at the platform string on the guest stack.

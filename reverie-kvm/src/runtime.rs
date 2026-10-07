@@ -1120,6 +1120,7 @@ where
                         ProcessAction::Exec {
                             executable_path,
                             executable_file,
+                            execfn,
                             image,
                             argv,
                             envp,
@@ -1127,6 +1128,7 @@ where
                             self.backend.exec_process(
                                 self.executor,
                                 (&executable_path, executable_file),
+                                execfn.as_deref(),
                                 &image,
                                 &argv,
                                 &envp,

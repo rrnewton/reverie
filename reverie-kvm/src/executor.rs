@@ -42,7 +42,7 @@ use crate::elf::STACK_LIMIT;
 use crate::elf::TASK_COMM_LEN;
 #[cfg(any(test, feature = "native-test-support"))]
 use crate::elf::initialize_regular_create_directory_policy;
-use crate::elf::load_static_elf;
+use crate::elf::load_static_elf_with_execfn;
 use crate::elf::resolve_executable_path;
 use crate::memory::AllocationCursors;
 use crate::memory::HostMemoryOperand;
@@ -377,6 +377,9 @@ pub(crate) enum ProcessAction {
     Exec {
         executable_path: std::path::PathBuf,
         executable_file: Option<Arc<std::fs::File>>,
+        /// The filename execve was given, byte for byte, for `AT_EXECFN`;
+        /// `None` is `argv[0]`.
+        execfn: Option<Vec<u8>>,
         image: Vec<u8>,
         argv: Vec<String>,
         envp: Vec<String>,
@@ -3788,16 +3791,26 @@ impl ElfExecutor {
                 }
                 executable
             }
-            None => match resolve_guest_exec_image(&self.state, path, &envp) {
+            None => match resolve_guest_exec_image(&self.state, path.clone(), &envp) {
                 Ok(executable) => executable,
                 Err(error) => return error,
             },
         };
+        // The filename execve was given (bprm->filename), byte for byte as
+        // the guest wrote it: Linux names it in AT_EXECFN and passes it as a
+        // `#!` script's own argument. The retained parent-death exec gives
+        // the alias it admitted.
+        let execfn = if retained_static_image {
+            executable.path.as_os_str().as_bytes().to_vec()
+        } else {
+            path
+        };
         let path = executable.path;
         let image = executable.image;
         let mut executable_file = executable.file;
+        // Linux runs an empty argv as one empty argument (fs/exec.c).
         let argv = if argv.is_empty() {
-            vec![path.to_string_lossy().into_owned()]
+            vec![String::new()]
         } else {
             argv
         };
@@ -3811,7 +3824,8 @@ impl ElfExecutor {
             // PT_INTERP lookup can be reached through this retained authority.
             (image, argv)
         } else {
-            match resolve_exec_shebang(path, image, argv, |interpreter| {
+            let script_name = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&execfn));
+            match resolve_exec_shebang(script_name, image, argv, |interpreter| {
                 let resolved = read_executable_file(&self.state, interpreter)?;
                 executable_file = resolved.file;
                 Ok(resolved.image)
@@ -3829,9 +3843,10 @@ impl ElfExecutor {
         };
         let argv_refs = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp_refs = envp.iter().map(String::as_str).collect::<Vec<_>>();
-        if load_static_elf(
+        if load_static_elf_with_execfn(
             &mut validation_memory,
             &image,
+            Some(&execfn),
             &argv_refs,
             &envp_refs,
             &self.state.cwd,
@@ -3851,6 +3866,7 @@ impl ElfExecutor {
         self.process_action = Some(ProcessAction::Exec {
             executable_path,
             executable_file,
+            execfn: Some(execfn),
             image,
             argv,
             envp,
@@ -42292,6 +42308,7 @@ mod tests {
             f.executor.process_action = Some(ProcessAction::Exec {
                 executable_path: f.root.0.join("b"),
                 executable_file: Some(file),
+                execfn: None,
                 image: Vec::new(),
                 argv: Vec::new(),
                 envp: Vec::new(),
@@ -62965,6 +62982,123 @@ mod tests {
             executable.as_os_str().as_bytes(),
             "the embedding API's unknown initial identity stays best effort",
         );
+    }
+
+    /// A guest's execve records the filename it gave, byte for byte, as
+    /// Linux's bprm->filename: that string, not argv[0], not the interpreter
+    /// of a `#!` script and not the path this backend resolved, is what the
+    /// new image's AT_EXECFN names at the top of its stack, and a script's
+    /// own argument is the same string even when it is relative. A traced
+    /// guest's initial stack is laid out from it, so any other string moves
+    /// every stack address the new image logs. An empty argv runs as one
+    /// empty argument, as on Linux.
+    #[test]
+    fn guest_exec_records_the_execve_filename_for_at_execfn() {
+        use std::os::unix::ffi::OsStrExt;
+        const PATH_ADDRESS: u64 = 0x200;
+        const STRINGS_ADDRESS: u64 = 0x1000;
+        const ARGV_ADDRESS: u64 = 0x400;
+        const ENVP_ADDRESS: u64 = 0x500;
+        let root = TestDir::new();
+        let executable = |path: &Path, bytes: &[u8]| {
+            std::fs::write(path, bytes).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let program = root.0.join("program");
+        executable(&program, &crate::vm::minimal_test_elf(&[0xf4]));
+        std::fs::create_dir(root.0.join("sub")).unwrap();
+        executable(
+            &root.0.join("sub/run.sh"),
+            format!("#!{}\n", program.display()).as_bytes(),
+        );
+        executable(
+            &root.0.join(std::ffi::OsStr::from_bytes(b"sub/\xff")),
+            &crate::vm::minimal_test_elf(&[0xf4]),
+        );
+        let program_name = program.to_str().unwrap().to_owned();
+        let path_env = format!("PATH={}", root.0.display());
+        let name_arg = || vec!["name".to_owned(), "arg".to_owned()];
+
+        for (filename, argv, envp, expected_argv) in [
+            // An ELF exec'd under another argv[0], as a shell runs every command.
+            (
+                program_name.as_bytes().to_vec(),
+                vec!["name", "arg"],
+                vec![],
+                name_arg(),
+            ),
+            // A relative script name: Linux passes it, unresolved, as the
+            // script's argument after the interpreter.
+            (
+                b"sub/run.sh".to_vec(),
+                vec!["name", "arg"],
+                vec![],
+                vec![
+                    program_name.clone(),
+                    "sub/run.sh".to_owned(),
+                    "arg".to_owned(),
+                ],
+            ),
+            // A bare name this backend finds on PATH keeps its spelling.
+            (
+                b"program".to_vec(),
+                vec!["name", "arg"],
+                vec![path_env.as_str()],
+                name_arg(),
+            ),
+            // A name that is not UTF-8 keeps its bytes.
+            (
+                b"sub/\xff".to_vec(),
+                vec!["name", "arg"],
+                vec![],
+                name_arg(),
+            ),
+            // An empty argv.
+            (
+                program_name.as_bytes().to_vec(),
+                vec![],
+                vec![],
+                vec![String::new()],
+            ),
+        ] {
+            let label = String::from_utf8_lossy(&filename).into_owned();
+            let mut executor = ElfExecutor::new(test_state(&root.0), false);
+            let mut memory = GuestMemory::new(0, 16 * 1024 * 1024).unwrap();
+            let mut with_nul = filename.clone();
+            with_nul.push(0);
+            memory.write(PATH_ADDRESS, &with_nul).unwrap();
+            let mut cursor = STRINGS_ADDRESS;
+            let mut array = |base: u64, entries: &[&str], memory: &mut GuestMemory| {
+                let mut words = Vec::new();
+                for entry in entries {
+                    memory
+                        .write(cursor, format!("{entry}\0").as_bytes())
+                        .unwrap();
+                    words.push(cursor);
+                    cursor += entry.len() as u64 + 1;
+                }
+                words.push(0);
+                for (index, word) in words.into_iter().enumerate() {
+                    memory
+                        .write(base + 8 * index as u64, &word.to_le_bytes())
+                        .unwrap();
+                }
+            };
+            array(ARGV_ADDRESS, &argv, &mut memory);
+            array(ENVP_ADDRESS, &envp, &mut memory);
+            let request = SyscallRequest::new(
+                libc::SYS_execve as u64,
+                [PATH_ADDRESS, ARGV_ADDRESS, ENVP_ADDRESS, 0, 0, 0],
+            );
+
+            assert_eq!(executor.prepare_exec(&memory, &request, None), 0, "{label}");
+            let Some(ProcessAction::Exec { execfn, argv, .. }) = executor.process_action.take()
+            else {
+                panic!("execve of {label} staged no exec");
+            };
+            assert_eq!(execfn.as_deref(), Some(filename.as_slice()), "{label}");
+            assert_eq!(argv, expected_argv, "{label}");
+        }
     }
 
     // Non-`#!` payload; the resolver only checks that it is not a script.
