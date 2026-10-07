@@ -1238,6 +1238,11 @@ fn execute_basic_syscall_inner(
         clock_nanosleep(memory, args)
     } else if number == libc::SYS_gettimeofday as u64 {
         gettimeofday(memory, args)
+    } else if number == libc::SYS_time as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(https://github.com/rrnewton/hermit/issues/3765):
+        // Review KVM time(2) dispatch.
+        time(memory, state, args)
     } else if number == libc::SYS_readlink as u64 {
         readlink(memory, state, args, capture_metadata)
     } else if number == libc::SYS_readlinkat as u64 {
@@ -6158,6 +6163,7 @@ impl ElfExecutor {
                     | libc::SYS_sync_file_range
                     | libc::SYS_syncfs
                     | libc::SYS_tgkill
+                    | libc::SYS_time
                     | libc::SYS_timerfd_create
                     | libc::SYS_timerfd_gettime
                     | libc::SYS_timerfd_settime
@@ -20320,25 +20326,48 @@ fn clock_gettime(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[
     result
 }
 
+/// `gettimeofday(2)`, storing zeros for both outputs. As Linux, `tv_sec` and
+/// then `tv_usec` are each stored with `put_user` (all eight bytes or none,
+/// writable pages only, shared-file pages included), and the first failed
+/// store returns EFAULT, leaving an already stored `tv_sec` in place. `tz` is
+/// then copied with `copy_to_user`, which stores the writable prefix before
+/// it faults.
 fn gettimeofday(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
+    const TV_USEC_OFFSET: u64 = std::mem::offset_of!(libc::timeval, tv_usec) as u64;
     if args[0] != 0 {
-        let timeval = libc::timeval {
-            tv_sec: 0,
-            tv_usec: 0,
-        };
-        let result = write_struct(memory, args[0], &timeval);
-        if result != 0 {
-            return result;
+        let user = memory.user();
+        let stored = user.store_user_u64(args[0], 0).is_ok()
+            && args[0]
+                .checked_add(TV_USEC_OFFSET)
+                .is_some_and(|tv_usec| user.store_user_u64(tv_usec, 0).is_ok());
+        if !stored {
+            return negative_errno(libc::EFAULT);
         }
     }
-    if args[1] != 0 {
-        return write_bytes(
-            memory,
-            args[1],
-            &[0; std::mem::size_of::<libc::c_int>() * 2],
-        );
+    if args[1] != 0
+        && memory
+            .user()
+            .copy_to_user(args[1], &[0; std::mem::size_of::<libc::c_int>() * 2])
+            .is_err()
+    {
+        return negative_errno(libc::EFAULT);
     }
     0
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(https://github.com/rrnewton/hermit/issues/3765):
+// Review KVM time(2): logical seconds and the whole-or-nothing tloc store.
+/// `time(2)`: the private logical clock's whole seconds, also stored at
+/// `tloc` when it is not null. As Linux's `put_user`, the store writes all
+/// eight bytes or none, only to writable pages (shared-file pages included),
+/// and a failed store returns EFAULT. Reading the clock does not advance it.
+fn time(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let seconds = state.logical_clock_ns / 1_000_000_000;
+    if args[0] != 0 && memory.user().store_user_u64(args[0], seconds).is_err() {
+        return negative_errno(libc::EFAULT);
+    }
+    seconds as i64
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review shared readlink guest path handling.
@@ -23149,6 +23178,62 @@ mod tests {
             negative_errno(libc::EFAULT)
         );
         assert_eq!(state.logical_clock_ns, 2);
+    }
+
+    #[test]
+    fn time_returns_logical_seconds_and_stores_them_whole_or_not_at_all() {
+        const TLOC: u64 = 0x100;
+        const SENTINEL: [u8; 8] = [0xa5; 8];
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.logical_clock_ns = 3_999_999_999;
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_time, [0; 6]),
+            3
+        );
+
+        memory.write(TLOC, &SENTINEL).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_time,
+                [TLOC, 0, 0, 0, 0, 0]
+            ),
+            3
+        );
+        assert_eq!(read_struct::<u64>(&memory, TLOC), 3);
+
+        // A `tloc` whose last four bytes lie past the end of memory faults
+        // without storing its first four.
+        let straddling = PAGE_SIZE - 4;
+        memory.write(straddling, &SENTINEL[..4]).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_time,
+                [straddling, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(read_struct::<[u8; 4]>(&memory, straddling), [0xa5; 4]);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_time,
+                [u64::MAX, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+
+        // Reading the clock does not advance it.
+        assert_eq!(state.logical_clock_ns, 3_999_999_999);
     }
 
     #[test]
@@ -54823,6 +54908,132 @@ mod tests {
         assert_ne!(moved, last);
         assert!(memory.user().write(moved + PAGE_SIZE, &[1]).is_ok());
         assert!(memory.user().write(moved, &[1]).is_ok());
+    }
+
+    /// time(2) and gettimeofday(2) store only to writable pages, as Linux's
+    /// `put_user` and `copy_to_user` do: a read-only page faults like an
+    /// unmapped one. Each eight-byte scalar is stored whole or not at all,
+    /// gettimeofday keeps a `tv_sec` it stored before `tv_usec` faulted, and
+    /// its `tz` copy keeps the writable prefix.
+    #[test]
+    fn time_and_gettimeofday_store_only_to_writable_pages() {
+        const READ_ONLY: u64 = 2 * PAGE_SIZE;
+        const UNMAPPED: u64 = 3 * PAGE_SIZE;
+        const TIMEZONE: u64 = 0x200;
+        const SENTINEL: [u8; 16] = [0xa5; 16];
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.logical_clock_ns = 7_000_000_000;
+        let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+        memory.enable_user_access();
+        memory.map_user_range(0, 2 * PAGE_SIZE, false).unwrap();
+        memory
+            .map_user_permissions(READ_ONLY, PAGE_SIZE, true, false)
+            .unwrap();
+        let reset = |memory: &mut GuestMemory| {
+            memory.write_raw(READ_ONLY - 16, &SENTINEL).unwrap();
+            memory.write_raw(READ_ONLY, &SENTINEL).unwrap();
+            memory.write_raw(TIMEZONE, &SENTINEL[..8]).unwrap();
+        };
+        let mut call = |memory: &mut GuestMemory, number: libc::c_long, a0: u64, a1: u64| {
+            syscall_result(memory, &mut state, number, [a0, a1, 0, 0, 0, 0])
+        };
+        let bytes = |memory: &GuestMemory, address: u64| read_struct::<[u8; 8]>(memory, address);
+        let efault = negative_errno(libc::EFAULT);
+
+        // time(2): a read-only tloc, and one whose last four bytes are
+        // read-only, fault without storing a byte.
+        for tloc in [READ_ONLY, READ_ONLY + 0x100, READ_ONLY - 4] {
+            reset(&mut memory);
+            assert_eq!(
+                call(&mut memory, libc::SYS_time, tloc, 0),
+                efault,
+                "{tloc:#x}"
+            );
+            assert_eq!(bytes(&memory, READ_ONLY - 8), [0xa5; 8], "{tloc:#x}");
+            assert_eq!(bytes(&memory, READ_ONLY), [0xa5; 8], "{tloc:#x}");
+            assert_eq!(bytes(&memory, READ_ONLY + 0x100), [0; 8], "{tloc:#x}");
+        }
+        reset(&mut memory);
+        assert_eq!(call(&mut memory, libc::SYS_time, READ_ONLY - 8, 0), 7);
+        assert_eq!(bytes(&memory, READ_ONLY - 8), 7_u64.to_ne_bytes());
+
+        // gettimeofday(2): a read-only tv faults before tz is looked at, with
+        // nothing stored, whether tz is valid, unmapped or null.
+        for tz in [0, TIMEZONE, UNMAPPED] {
+            reset(&mut memory);
+            assert_eq!(
+                call(&mut memory, libc::SYS_gettimeofday, READ_ONLY, tz),
+                efault,
+                "{tz:#x}"
+            );
+            assert_eq!(bytes(&memory, READ_ONLY), [0xa5; 8], "{tz:#x}");
+            assert_eq!(bytes(&memory, READ_ONLY + 8), [0xa5; 8], "{tz:#x}");
+            assert_eq!(bytes(&memory, TIMEZONE), [0xa5; 8], "{tz:#x}");
+        }
+
+        // tv_sec writable, tv_usec read-only: tv_sec is stored, then EFAULT.
+        reset(&mut memory);
+        assert_eq!(
+            call(&mut memory, libc::SYS_gettimeofday, READ_ONLY - 8, TIMEZONE),
+            efault
+        );
+        assert_eq!(bytes(&memory, READ_ONLY - 8), [0; 8]);
+        assert_eq!(bytes(&memory, READ_ONLY), [0xa5; 8]);
+        assert_eq!(bytes(&memory, TIMEZONE), [0xa5; 8]);
+
+        // tv_sec itself straddles into the read-only page: nothing stored.
+        reset(&mut memory);
+        assert_eq!(
+            call(&mut memory, libc::SYS_gettimeofday, READ_ONLY - 4, 0),
+            efault
+        );
+        assert_eq!(bytes(&memory, READ_ONLY - 8), [0xa5; 8]);
+        assert_eq!(bytes(&memory, READ_ONLY), [0xa5; 8]);
+
+        // A writable tv with a read-only tz: tv is stored, then EFAULT.
+        reset(&mut memory);
+        assert_eq!(
+            call(
+                &mut memory,
+                libc::SYS_gettimeofday,
+                READ_ONLY - 16,
+                READ_ONLY
+            ),
+            efault
+        );
+        assert_eq!(bytes(&memory, READ_ONLY - 16), [0; 8]);
+        assert_eq!(bytes(&memory, READ_ONLY - 8), [0; 8]);
+        assert_eq!(bytes(&memory, READ_ONLY), [0xa5; 8]);
+
+        // A tz whose second half is read-only keeps its writable first half.
+        reset(&mut memory);
+        assert_eq!(
+            call(&mut memory, libc::SYS_gettimeofday, 0, READ_ONLY - 4),
+            efault
+        );
+        assert_eq!(
+            bytes(&memory, READ_ONLY - 8),
+            [0xa5, 0xa5, 0xa5, 0xa5, 0, 0, 0, 0]
+        );
+        assert_eq!(bytes(&memory, READ_ONLY), [0xa5; 8]);
+
+        // Every output writable: zeros everywhere, success.
+        reset(&mut memory);
+        assert_eq!(
+            call(
+                &mut memory,
+                libc::SYS_gettimeofday,
+                READ_ONLY - 16,
+                TIMEZONE
+            ),
+            0
+        );
+        assert_eq!(bytes(&memory, READ_ONLY - 16), [0; 8]);
+        assert_eq!(bytes(&memory, READ_ONLY - 8), [0; 8]);
+        assert_eq!(bytes(&memory, TIMEZONE), [0; 8]);
+        assert_eq!(state.logical_clock_ns, 7_000_000_000);
     }
 
     #[test]

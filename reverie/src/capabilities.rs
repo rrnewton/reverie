@@ -193,12 +193,6 @@ pub struct BackendCapabilities {
     /// terminal subset of `WUNTRACED`) are waitable.
     pub emulates_child_waits: bool,
 
-    /// A `gettimeofday` call that fails with EFAULT may already have stored
-    /// host wall-clock time in the guest's buffer, so the tool must repair the
-    /// words it stored. When this is false the backend never stores host time
-    /// there.
-    pub failed_gettimeofday_may_store_host_time: bool,
-
     /// The exclusive upper bound of guest user addresses (Linux's
     /// `TASK_SIZE`), when the backend's guest address space has a fixed bound
     /// that differs from the host process's. `None` means the guest runs as a
@@ -236,7 +230,6 @@ impl BackendCapabilities {
         reports_child_exit_publication: true,
         provides_process_signal_control: false,
         emulates_child_waits: false,
-        failed_gettimeofday_may_store_host_time: true,
         user_address_limit: None,
     };
 
@@ -297,7 +290,6 @@ impl BackendCapabilities {
         supports_madvise: false,
         provides_process_signal_control: true,
         emulates_child_waits: true,
-        failed_gettimeofday_may_store_host_time: false,
         user_address_limit: Some(X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT),
         reports_child_exit_publication: false,
         ..Self::PTRACE
@@ -340,7 +332,6 @@ mod tests {
             "reports_child_exit_publication": true,
             "provides_process_signal_control": false,
             "emulates_child_waits": false,
-            "failed_gettimeofday_may_store_host_time": true,
             "user_address_limit": null,
         })
     }
@@ -433,7 +424,6 @@ mod tests {
                 "supports_madvise": false,
                 "provides_process_signal_control": true,
                 "emulates_child_waits": true,
-                "failed_gettimeofday_may_store_host_time": false,
                 "user_address_limit": 140_737_488_351_232_u64,
                 "reports_child_exit_publication": false,
             }))

@@ -596,6 +596,34 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     fn take_unsupported_refusal(&mut self) -> Option<crate::UnsupportedRefusal> {
         None
     }
+
+    /// Returns half-open guest address ranges, `(start, end)`, that together
+    /// contain every address at which a syscall could store its output into
+    /// guest memory, as Linux's `put_user` does for `time(2)`'s `tloc`.
+    ///
+    /// A tool uses this to rule out a store it cannot observe: a word that
+    /// does not lie wholly inside these ranges cannot have been stored by a
+    /// syscall, because a syscall's store to any of its bytes faults. The
+    /// ranges may also contain addresses at which such a store faults, so a
+    /// word inside them proves nothing. They may be unsorted, overlapping or
+    /// adjacent.
+    ///
+    /// The default lists every mapping in `/proc/<pid>/maps` for the process
+    /// returned by [`Guest::pid`], whatever its protection. That is correct
+    /// when `pid()` is the guest process. Backends whose `pid()` is not the
+    /// guest (for example the KVM backend, where it is the host VMM process)
+    /// override this with their own record of the guest's address space.
+    fn storable_memory_ranges(&self) -> Result<Vec<(u64, u64)>, crate::Error> {
+        let maps = {
+            let _open = crate::process::launch_window::TransientOpen::begin();
+            procfs::process::Process::new(self.pid().as_raw()).and_then(|process| process.maps())
+        };
+        match maps {
+            Ok(maps) => Ok(maps.into_iter().map(|map| map.address).collect()),
+            Err(procfs::ProcError::Io(err, _)) => Err(crate::Error::Io(err)),
+            Err(err) => Err(crate::Error::Tool(anyhow::anyhow!(err))),
+        }
+    }
 }
 
 /// Wraps a `Guest<T>` such that it implements `Guest<U>`.
@@ -822,5 +850,9 @@ where
 
     fn take_unsupported_refusal(&mut self) -> Option<crate::UnsupportedRefusal> {
         self.inner.take_unsupported_refusal()
+    }
+
+    fn storable_memory_ranges(&self) -> Result<Vec<(u64, u64)>, crate::Error> {
+        self.inner.storable_memory_ranges()
     }
 }

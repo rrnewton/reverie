@@ -126,6 +126,22 @@ enum BackingKind {
     OrdinaryFile { max_writable: bool },
 }
 
+/// How a user copyout treats a destination that is not wholly writable, and
+/// a truncate-capable shared-file backing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Copyout {
+    /// `copy_to_user`: stores the writable prefix, through the
+    /// fault-contained file copy where the backing is a shared file.
+    Prefix,
+    /// `put_user` of a scalar whose store must not tear: all bytes or none,
+    /// and a truncate-capable file backing is refused, because it has no
+    /// proven fault-contained atomic store.
+    AtomicScalar,
+    /// All bytes or none by page permission, through the same
+    /// fault-contained file copy as [`Copyout::Prefix`].
+    Whole,
+}
+
 #[derive(Debug)]
 struct Backing {
     fd: OwnedFd,
@@ -397,6 +413,61 @@ impl AddressSpaceState {
         (self.coverage.start..self.identity_limit())
             .contains(&physical)
             .then_some(physical)
+    }
+
+    /// The user address ranges a user store may write, in address order with
+    /// adjacent pages merged: every user address of every accessible page, or,
+    /// while page permissions are not enforced, every user address. A user
+    /// store outside them fails.
+    ///
+    /// Read-only accessible pages are included because `UserMemory::write`,
+    /// which still stores most syscall results, such as `clock_gettime(2)`'s,
+    /// admits every accessible page.
+    fn user_storable_ranges(&self) -> Vec<(u64, u64)> {
+        let page = PAGE_SIZE as u64;
+        let identity_limit = self.identity_limit();
+        let mut ranges: Vec<(u64, u64)> = if self.enabled {
+            self.pages
+                .iter()
+                .filter(|(_, state)| matches!(state, UserPageState::Accessible { .. }))
+                .filter_map(|(&number, _)| number.checked_mul(page))
+                .flat_map(|physical| {
+                    // Every user address that can reach this page: its identity
+                    // address, and its address in each window that maps it.
+                    // Listing an identity address that a window shadows only
+                    // widens the ranges.
+                    let identity = (self.coverage.start..identity_limit)
+                        .contains(&physical)
+                        .then_some(physical);
+                    let windows = self
+                        .windows
+                        .iter()
+                        .filter(move |window| {
+                            (window.physical_start..window.physical(window.user_end))
+                                .contains(&physical)
+                        })
+                        .map(move |window| physical - window.physical_start + window.user_start);
+                    identity.into_iter().chain(windows)
+                })
+                .filter_map(|user| Some((user, user.checked_add(page)?)))
+                .collect()
+        } else {
+            self.windows
+                .iter()
+                .map(|window| (window.user_start, window.user_end))
+                .chain(std::iter::once((self.coverage.start, identity_limit)))
+                .collect()
+        };
+        ranges.retain(|(start, end)| start < end);
+        ranges.sort_unstable();
+        let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
+        for (start, end) in ranges {
+            match merged.last_mut() {
+                Some(last) if start <= last.1 => last.1 = last.1.max(end),
+                _ => merged.push((start, end)),
+            }
+        }
+        merged
     }
 
     fn translate(&self, address: u64, length: usize) -> Result<u64> {
@@ -1561,6 +1632,19 @@ impl GuestMemory {
             .lock()
             .expect("guest memory access map lock poisoned")
             .physical_to_user(physical)
+    }
+
+    /// The user address ranges a user store may write, in address order with
+    /// adjacent pages merged: every accessible page, or, while page
+    /// permissions are not enforced, every user address. A user store outside
+    /// them fails; one inside them can still fail, for example on a read-only
+    /// page through a path that checks writability.
+    pub(crate) fn user_storable_ranges(&self) -> Vec<(u64, u64)> {
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .user_storable_ranges()
     }
 
     /// The physical address of the user range `[address, address + length)`,
@@ -2844,19 +2928,30 @@ impl UserMemory {
     }
 
     pub(crate) fn copy_to_user(&self, guest_address: u64, source: &[u8]) -> Result<()> {
-        self.write_user(guest_address, source, true)
+        self.write_user(guest_address, source, Copyout::Prefix)
     }
 
     pub(crate) fn put_user_i16(&self, guest_address: u64, value: i16) -> Result<()> {
-        self.write_user(guest_address, &value.to_ne_bytes(), false)
+        self.write_user(guest_address, &value.to_ne_bytes(), Copyout::AtomicScalar)
     }
 
     pub(crate) fn put_user_i32(&self, guest_address: u64, value: i32) -> Result<()> {
-        self.write_user(guest_address, &value.to_ne_bytes(), false)
+        self.write_user(guest_address, &value.to_ne_bytes(), Copyout::AtomicScalar)
+    }
+
+    /// Linux's eight-byte `put_user` as `gettimeofday(2)` and `time(2)` use
+    /// it: stores all of `value` only when every byte is on a writable user
+    /// page, and otherwise stores nothing. Unlike [`Self::put_user_i32`], a
+    /// writable shared-file destination is supported, through the same
+    /// fault-contained file copy that [`Self::copy_to_user`] and
+    /// [`Self::write`] use. A fault in that copy (a truncated file) is the
+    /// terminal `SharedFileCopy` failure those report, not EFAULT.
+    pub(crate) fn store_user_u64(&self, guest_address: u64, value: u64) -> Result<()> {
+        self.write_user(guest_address, &value.to_ne_bytes(), Copyout::Whole)
     }
 
     pub(crate) fn copy_to_user_prefix(&self, guest_address: u64, source: &[u8]) -> Result<usize> {
-        self.write_user_prefix(guest_address, source, true)
+        self.write_user_prefix(guest_address, source, Copyout::Prefix)
     }
 
     /// Copy the readable prefix under one admission and one permission/backing
@@ -2914,8 +3009,8 @@ impl UserMemory {
         })
     }
 
-    fn write_user(&self, guest_address: u64, source: &[u8], partial: bool) -> Result<()> {
-        if self.write_user_prefix(guest_address, source, partial)? != source.len() {
+    fn write_user(&self, guest_address: u64, source: &[u8], mode: Copyout) -> Result<()> {
+        if self.write_user_prefix(guest_address, source, mode)? != source.len() {
             return Err(Error::GuestMemoryAccessDenied {
                 address: guest_address,
                 length: source.len(),
@@ -2924,16 +3019,16 @@ impl UserMemory {
         Ok(())
     }
 
-    fn write_user_prefix(&self, guest_address: u64, source: &[u8], partial: bool) -> Result<usize> {
+    fn write_user_prefix(&self, guest_address: u64, source: &[u8], mode: Copyout) -> Result<usize> {
         self.memory
-            .with_copy(|copy| self.write_user_prefix_admitted(guest_address, source, partial, copy))
+            .with_copy(|copy| self.write_user_prefix_admitted(guest_address, source, mode, copy))
     }
 
     fn write_user_prefix_admitted(
         &self,
         guest_address: u64,
         source: &[u8],
-        partial: bool,
+        mode: Copyout,
         copy: &CopyAccess,
     ) -> Result<usize> {
         if source.is_empty() {
@@ -2967,7 +3062,7 @@ impl UserMemory {
             cursor = ((cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64).min(end);
         }
         let length = usize::try_from(cursor - start).expect("copyout prefix fits usize");
-        if length == source.len() || (partial && length != 0) {
+        if length == source.len() || (mode == Copyout::Prefix && length != 0) {
             let physical = access.translate(guest_address, length)?;
             let offset = self.memory.checked_offset(physical, length)?;
             let chunks = self
@@ -2976,7 +3071,7 @@ impl UserMemory {
                 .host_chunks_from_state(&access, offset, length);
             // Permission failure takes precedence. A scalar must refuse the
             // entire destination before even a preceding private chunk changes.
-            if !partial
+            if mode == Copyout::AtomicScalar
                 && chunks
                     .iter()
                     .any(|chunk| matches!(chunk.backing.kind, BackingKind::OrdinaryFile { .. }))
@@ -4104,7 +4199,7 @@ impl MemoryAccess for UserMemory {
                 gate.copy_blocking(origin.clone()).map_err(|_| Errno::EIO)?,
             );
             let local_result =
-                self.write_user_prefix_admitted(addr.as_raw() as u64, buf, true, &copy);
+                self.write_user_prefix_admitted(addr.as_raw() as u64, buf, Copyout::Prefix, &copy);
             #[cfg(test)]
             let local_result = match (local_result, &self.memory.test_user_copy_failure) {
                 (Ok(copied), Some(injection)) => {
@@ -4429,6 +4524,7 @@ mod tests {
             assert_cause(user.copy_to_user(BASE, b"lost"), &original);
             assert_cause(user.copy_to_user_prefix(BASE, b"lost"), &original);
             assert_cause(user.put_user_i32(BASE, 0), &original);
+            assert_cause(user.store_user_u64(BASE, 0), &original);
             assert_cause(user.user_accessible_prefix(BASE, 4), &original);
             assert_cause(user.user_writable_prefix(BASE, 4), &original);
             assert_cause(user.host_operand(BASE, 4), &original);
@@ -4635,7 +4731,7 @@ mod tests {
             user.read_admitted(BASE, &mut bytes, &copy).unwrap();
             assert_eq!(&bytes, b"data");
             assert_eq!(
-                user.write_user_prefix_admitted(BASE, b"next", true, &copy)
+                user.write_user_prefix_admitted(BASE, b"next", Copyout::Prefix, &copy)
                     .unwrap(),
                 4
             );
@@ -4953,6 +5049,69 @@ mod tests {
                 &original,
             );
         }
+    }
+
+    /// The storable ranges hold every user address of every page a user store
+    /// is admitted to: all user addresses before permissions are enforced,
+    /// then each accessible page (read-only ones too, which `UserMemory::write`
+    /// admits) under every user address that reaches it.
+    #[test]
+    fn user_storable_ranges_cover_every_user_address_of_each_accessible_page() {
+        const MIB: u64 = 1024 * 1024;
+        let page = PAGE_SIZE as u64;
+        let memory = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        let window = memory.establish_user_stack_window(8 * MIB).unwrap();
+        assert_eq!(
+            memory.user_storable_ranges(),
+            vec![(0, 8 * MIB), (window, USER_STACK_TOP)]
+        );
+
+        // Two adjacent writable pages, a read-only page after a gap, an
+        // inaccessible page, the window's first page, and the window's last
+        // physical page, which has no user address.
+        memory
+            .map_user_permissions(page, 2 * page, true, true)
+            .unwrap();
+        memory
+            .map_user_permissions(4 * page, page, true, false)
+            .unwrap();
+        memory.map_user_range(5 * page, page, true).unwrap();
+        memory
+            .map_user_permissions(8 * MIB, page, true, true)
+            .unwrap();
+        memory
+            .map_user_permissions(16 * MIB - page, page, true, true)
+            .unwrap();
+        memory.enable_user_access();
+        assert_eq!(
+            memory.user_storable_ranges(),
+            vec![
+                (page, 3 * page),
+                (4 * page, 5 * page),
+                (window, window + page)
+            ]
+        );
+        memory.user().write(4 * page, &[1; 8]).unwrap();
+        assert!(memory.user().write(5 * page, &[1; 8]).is_err());
+        assert!(memory.user().write(3 * page, &[1; 8]).is_err());
+
+        // A page reached both through the identity addresses and through the
+        // window is listed under both.
+        memory.set_user_identity_end(9 * MIB);
+        assert_eq!(
+            memory.user_storable_ranges(),
+            vec![
+                (page, 3 * page),
+                (4 * page, 5 * page),
+                (8 * MIB, 8 * MIB + page),
+                (window, window + page),
+            ]
+        );
+        memory.user().write(8 * MIB, &[2; 8]).unwrap();
+        memory.user().write(window + 8, &[3; 8]).unwrap();
+        let mut bytes = [0; 16];
+        memory.read_raw(8 * MIB, &mut bytes).unwrap();
+        assert_eq!(bytes, [[2; 8], [3; 8]].concat()[..]);
     }
 
     /// The stack window places the top of guest memory at the top of the user

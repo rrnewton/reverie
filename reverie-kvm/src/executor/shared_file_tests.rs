@@ -1290,4 +1290,59 @@ mod shared_file_dispatch_tests {
         assert!(f.memory.entry_gate().pending_failure().is_none());
         assert_eq!(std::fs::read(&f.path).unwrap(), f.expected);
     }
+
+    /// gettimeofday(2) and time(2) store into a writable MAP_SHARED file
+    /// mapping, as they did through `UserMemory::write` before they followed
+    /// `put_user`'s writability rule: whole words, across a private page and
+    /// a shared page too, without a capability refusal or a pending failure.
+    /// A read-only shared mapping faults with nothing stored.
+    #[test]
+    fn gettimeofday_and_time_store_into_a_writable_shared_file_mapping() {
+        let mut f = Fixture::new();
+        f.state.logical_clock_ns = 9_000_000_000;
+        let private = f.private();
+        let fd = f.open(true);
+        let shared = f.shared(fd, 0, 0, true);
+        assert_eq!(shared, private + PAGE_SIZE);
+        let call = |f: &mut Fixture, number: libc::c_long, a0: u64, a1: u64| {
+            syscall_result(&mut f.memory, &mut f.state, number, [a0, a1, 0, 0, 0, 0])
+        };
+
+        f.memory.write_raw(shared - 16, &[0xa5; 16]).unwrap();
+        assert_eq!(call(&mut f, libc::SYS_time, shared + 0x10, 0), 9);
+        assert_eq!(
+            call(&mut f, libc::SYS_gettimeofday, shared + 0x100, shared + 0x200),
+            0
+        );
+        // tv_sec on the private page, tv_usec on the shared page.
+        assert_eq!(call(&mut f, libc::SYS_gettimeofday, shared - 8, 0), 0);
+        // tloc straddles the private page and the shared page.
+        assert_eq!(call(&mut f, libc::SYS_time, shared - 4, 0), 9);
+        assert!(f.memory.entry_gate().pending_failure().is_none());
+
+        let seconds = 9_u64.to_ne_bytes();
+        let mut expected = f.expected.clone();
+        expected[..4].copy_from_slice(&seconds[4..]);
+        expected[4..8].fill(0);
+        expected[0x10..0x18].copy_from_slice(&seconds);
+        expected[0x100..0x110].fill(0);
+        expected[0x200..0x208].fill(0);
+        assert_eq!(std::fs::read(&f.path).unwrap(), expected);
+        assert_eq!(read_struct::<[u8; 8]>(&f.memory, shared - 16), [0xa5; 8]);
+        assert_eq!(read_struct::<[u8; 4]>(&f.memory, shared - 8), [0; 4]);
+        assert_eq!(read_struct::<[u8; 4]>(&f.memory, shared - 4)[..], seconds[..4]);
+
+        // A read-only shared mapping of the same file: EFAULT, nothing stored.
+        let read_only = f.shared(fd, shared + PAGE_SIZE, 0, false);
+        assert_eq!(
+            call(&mut f, libc::SYS_time, read_only + 0x20, 0),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            call(&mut f, libc::SYS_gettimeofday, read_only + 0x20, 0),
+            negative_errno(libc::EFAULT)
+        );
+        assert!(f.memory.entry_gate().pending_failure().is_none());
+        assert_eq!(std::fs::read(&f.path).unwrap(), expected);
+    }
 }
