@@ -58,6 +58,8 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 const CANONICAL_RECORD_PREFIX: &[u8] = b"1970-01-01T00:00:00.000000Z ";
 const INITIALIZATION_RECORD: &[u8] =
     b"1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: protected evidence initialized\n";
+/// The initialization record with its length prefix, as it enters the stream.
+const ENCODED_INITIALIZATION_LEN: usize = 4 + INITIALIZATION_RECORD.len();
 const INITIALIZATION_MESSAGE_PREFIX: &[u8] = b"reverie_dbt::evidence: protected evidence init";
 const SESSION_NEW: u8 = 0;
 const SESSION_RUNNING: u8 = 1;
@@ -610,6 +612,10 @@ struct CollectedEvidence {
 /// comparable record has its initialization record placed at the end of the
 /// stream. Every such record is the same protocol constant, so their order
 /// there carries nothing.
+///
+/// A held-back record counts against the memory bound from the moment it is
+/// accepted, so the collected stream plus every record still to be placed
+/// never exceeds `byte_limit`.
 struct Collector {
     images: BTreeMap<ProcessKey, ImageState>,
     expected_processes: BTreeSet<ProcessKey>,
@@ -618,6 +624,10 @@ struct Collector {
     /// Initialization records of images that ended without writing a
     /// comparable record; [`Collector::finish`] places them at the end.
     trailing_initializations: u64,
+    /// Encoded bytes of the accepted initialization records not yet in
+    /// `encoded_records`: those held by live images and the trailing ones.
+    held_initialization_bytes: usize,
+    byte_limit: usize,
     encoded_records: Vec<u8>,
     record_count: u64,
     payload_bytes: u64,
@@ -628,12 +638,18 @@ struct Collector {
 
 impl Collector {
     fn new() -> Self {
+        Self::with_byte_limit(MAX_EVIDENCE_BYTES)
+    }
+
+    fn with_byte_limit(byte_limit: usize) -> Self {
         Self {
             images: BTreeMap::new(),
             expected_processes: BTreeSet::new(),
             terminal_processes: BTreeSet::new(),
             last_receipts: BTreeMap::new(),
             trailing_initializations: 0,
+            held_initialization_bytes: 0,
+            byte_limit,
             encoded_records: Vec::new(),
             record_count: 0,
             payload_bytes: 0,
@@ -891,6 +907,7 @@ impl Collector {
         // The frame's records as they enter the stream: an initialization
         // record is held back until the image's first comparable record.
         let mut placed = Vec::with_capacity(payload.len());
+        let mut held_bytes = self.held_initialization_bytes;
         let mut record_count = 0_u64;
         let mut payload_bytes = 0_u64;
         while cursor < payload.len() {
@@ -918,6 +935,9 @@ impl Collector {
                 InitializationRecord::Exact => {
                     initialized = true;
                     unplaced = true;
+                    held_bytes = held_bytes
+                        .checked_add(ENCODED_INITIALIZATION_LEN)
+                        .ok_or_else(|| invalid_data("DBT evidence exceeded its memory bound"))?;
                 }
                 InitializationRecord::Lookalike => {
                     return Err(invalid_data(
@@ -932,6 +952,7 @@ impl Collector {
                 InitializationRecord::Other => {
                     if unplaced {
                         unplaced = false;
+                        held_bytes -= ENCODED_INITIALIZATION_LEN;
                         encode_initialization_record(&mut placed);
                         record_count = record_count
                             .checked_add(1)
@@ -954,7 +975,7 @@ impl Collector {
             cursor = record_end;
         }
 
-        self.append_encoded(&placed, record_count, payload_bytes)?;
+        self.append_encoded(&placed, record_count, payload_bytes, held_bytes)?;
         let image = self
             .images
             .get_mut(&process)
@@ -983,25 +1004,38 @@ impl Collector {
         let mut payload = Vec::with_capacity(4 + record.len());
         payload.extend_from_slice(&length.to_le_bytes());
         payload.extend_from_slice(record);
-        self.append_encoded(&payload, 1, u64::from(length))
+        self.append_encoded(
+            &payload,
+            1,
+            u64::from(length),
+            self.held_initialization_bytes,
+        )
     }
 
-    /// Appends length-prefixed records to the collected stream.
+    /// Appends length-prefixed records to the collected stream, leaving
+    /// `held_bytes` of accepted initialization records still to be placed.
+    /// The stream and the held records together must fit the memory bound.
     fn append_encoded(
         &mut self,
         payload: &[u8],
         record_count: u64,
         payload_bytes: u64,
+        held_bytes: usize,
     ) -> io::Result<()> {
         let new_len = self
             .encoded_records
             .len()
             .checked_add(payload.len())
-            .filter(|length| *length <= MAX_EVIDENCE_BYTES)
+            .filter(|length| {
+                length
+                    .checked_add(held_bytes)
+                    .is_some_and(|total| total <= self.byte_limit)
+            })
             .ok_or_else(|| invalid_data("DBT evidence exceeded its memory bound"))?;
         self.encoded_records
             .reserve(new_len - self.encoded_records.len());
         self.encoded_records.extend_from_slice(payload);
+        self.held_initialization_bytes = held_bytes;
         self.hash = fnv_update(self.hash, payload);
         self.record_count = self
             .record_count
@@ -1040,15 +1074,28 @@ impl Collector {
                 "DBT evidence is missing a child process START or FINAL frame",
             ));
         }
-        let mut trailing = Vec::new();
-        for _ in 0..self.trailing_initializations {
-            encode_initialization_record(&mut trailing);
-        }
+        // Every image is final, so the held records are exactly the trailing
+        // ones. Size the tail and check it against the bound before
+        // allocating it.
+        let trailing_len = usize::try_from(self.trailing_initializations)
+            .ok()
+            .and_then(|count| count.checked_mul(ENCODED_INITIALIZATION_LEN))
+            .filter(|length| {
+                self.encoded_records
+                    .len()
+                    .checked_add(*length)
+                    .is_some_and(|total| total <= self.byte_limit)
+            })
+            .ok_or_else(|| invalid_data("DBT evidence exceeded its memory bound"))?;
         let trailing_bytes = self
             .trailing_initializations
             .checked_mul(INITIALIZATION_RECORD.len() as u64)
             .ok_or_else(|| invalid_data("DBT evidence payload length overflowed"))?;
-        self.append_encoded(&trailing, self.trailing_initializations, trailing_bytes)?;
+        let mut trailing = Vec::with_capacity(trailing_len);
+        for _ in 0..self.trailing_initializations {
+            encode_initialization_record(&mut trailing);
+        }
+        self.append_encoded(&trailing, self.trailing_initializations, trailing_bytes, 0)?;
         Ok(CollectedEvidence {
             encoded_records: self.encoded_records,
             record_count: self.record_count,
@@ -2093,6 +2140,102 @@ mod tests {
         );
         // Every initialization record is still counted.
         assert_eq!(evidence.initialization_records(), 3);
+    }
+
+    #[test]
+    fn collector_charges_held_initializations_against_the_memory_bound_when_accepted() {
+        const IMAGES: usize = 12;
+        let process = ProcessKey {
+            pid: 73,
+            start_time: 79,
+        };
+        let initialize = encode_records(&[INITIALIZATION_RECORD]);
+        // Images of one process that each exec, and finally exit, without
+        // writing a comparable record. The process key stays known, so the
+        // process-state bound never limits how many there are.
+        let mut collector = Collector::with_byte_limit(IMAGES * ENCODED_INITIALIZATION_LEN);
+        for image in 0..IMAGES {
+            collector.absorb(FRAME_START, process, 0, &[]).unwrap();
+            collector
+                .absorb(FRAME_DATA, process, 1, &initialize)
+                .unwrap();
+            if image + 1 < IMAGES {
+                collector.absorb(FRAME_EXEC, process, 2, &[]).unwrap();
+            }
+        }
+        collector
+            .absorb(FRAME_FINAL, process, 2, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
+        let collected = collector.finish().unwrap();
+        assert_eq!(collected.record_count, IMAGES as u64);
+        assert_eq!(
+            collected.encoded_records.len(),
+            IMAGES * ENCODED_INITIALIZATION_LEN
+        );
+
+        // One byte less: the last image's initialization record is refused
+        // when it arrives, not after it was held and the tail was built.
+        let mut collector = Collector::with_byte_limit(IMAGES * ENCODED_INITIALIZATION_LEN - 1);
+        for _ in 1..IMAGES {
+            collector.absorb(FRAME_START, process, 0, &[]).unwrap();
+            collector
+                .absorb(FRAME_DATA, process, 1, &initialize)
+                .unwrap();
+            collector.absorb(FRAME_EXEC, process, 2, &[]).unwrap();
+        }
+        collector.absorb(FRAME_START, process, 0, &[]).unwrap();
+        let refused = collector
+            .absorb(FRAME_DATA, process, 1, &initialize)
+            .unwrap_err();
+        assert!(refused.to_string().contains("memory bound"), "{refused}");
+    }
+
+    #[test]
+    fn comparable_records_cannot_spend_the_room_held_initializations_reserve() {
+        let silent = ProcessKey {
+            pid: 83,
+            start_time: 89,
+        };
+        let writer = ProcessKey {
+            pid: 97,
+            start_time: 101,
+        };
+        let first = encode_records(&[FIRST_RECORD]);
+        // Room for both images' initialization records and the writer's one
+        // comparable record.
+        let room = 2 * ENCODED_INITIALIZATION_LEN + first.len();
+
+        let mut collector = Collector::with_byte_limit(room);
+        start_and_initialize(&mut collector, silent);
+        start_and_initialize(&mut collector, writer);
+        collector.absorb(FRAME_DATA, writer, 2, &first).unwrap();
+        collector
+            .absorb(FRAME_FINAL, writer, 3, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
+        collector
+            .absorb(FRAME_FINAL, silent, 2, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
+        assert_eq!(collector.finish().unwrap().encoded_records.len(), room);
+
+        // One byte less: the silent image's held record keeps its room, so
+        // the writer's record is refused rather than the tail later.
+        let mut collector = Collector::with_byte_limit(room - 1);
+        start_and_initialize(&mut collector, silent);
+        start_and_initialize(&mut collector, writer);
+        let refused = collector.absorb(FRAME_DATA, writer, 2, &first).unwrap_err();
+        assert!(refused.to_string().contains("memory bound"), "{refused}");
+
+        // A coordinator record is charged against the same reserved room.
+        let coordinator_room = ENCODED_INITIALIZATION_LEN + first.len();
+        let mut collector = Collector::with_byte_limit(coordinator_room);
+        start_and_initialize(&mut collector, silent);
+        collector.absorb_coordinator_record(FIRST_RECORD).unwrap();
+        let mut collector = Collector::with_byte_limit(coordinator_room - 1);
+        start_and_initialize(&mut collector, silent);
+        let refused = collector
+            .absorb_coordinator_record(FIRST_RECORD)
+            .unwrap_err();
+        assert!(refused.to_string().contains("memory bound"), "{refused}");
     }
 
     #[test]
