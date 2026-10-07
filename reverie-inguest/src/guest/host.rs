@@ -262,6 +262,13 @@ where
             } else if let Some(error) = injected_syscall_guard(&self.runtime, number, args) {
                 event.result = -i64::from(error.into_raw());
                 return;
+            } else if let Some(result) =
+                unsafe { super::protect::protect_forwarded_descriptor_change(number, args) }
+            {
+                // A close or close_range the runtime left for dispatch, of a
+                // Tool that does not subscribe to it: protected here instead.
+                event.result = result;
+                return;
             }
             // This is the original unsubscribed guest operation. Private
             // inject/tail_inject below deliberately keep caller rights.
@@ -993,6 +1000,11 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
         if let Some(error) = injected_syscall_guard(self.runtime, number, raw_args) {
             return Err(error);
         }
+        if let Some(result) =
+            unsafe { super::protect::protect_forwarded_descriptor_change(number, raw_args) }
+        {
+            return Errno::from_ret(result as usize).map(|value| value as i64);
+        }
         if is_exit_syscall(number) {
             self.tail.set_exit(number, raw_args);
             return std::future::pending().await;
@@ -1034,6 +1046,10 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             }
         } else if let Some(error) = injected_syscall_guard(self.runtime, number, args) {
             self.tail.set_result(-i64::from(error.into_raw()));
+        } else if let Some(result) =
+            unsafe { super::protect::protect_forwarded_descriptor_change(number, args) }
+        {
+            self.tail.set_result(result);
         } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
         } else {
