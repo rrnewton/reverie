@@ -624,6 +624,31 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
             Err(err) => Err(crate::Error::Tool(anyhow::anyhow!(err))),
         }
     }
+
+    /// Returns how the guest's kernel checks a range of guest memory before a
+    /// syscall reads or writes it: the user address limit that Linux's
+    /// `access_ok` enforces (a syscall accepts `[base, base + len)` exactly
+    /// when `base + len` does not overflow and is at most
+    /// [`max_end`](crate::UserAddressLimit::max_end)), and whether a lone I/O
+    /// vector is shortened to `MAX_RW_COUNT` bytes before that check
+    /// ([`caps_single_vector`](crate::UserAddressLimit::caps_single_vector)).
+    /// On x86-64 Linux the limit is `TASK_SIZE_MAX`, which is
+    /// [`X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT`](crate::X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT)
+    /// under four-level paging.
+    ///
+    /// The limit says nothing about what is mapped: copying a range within it
+    /// can still fault.
+    ///
+    /// The default asks the running kernel and caches the answer for the
+    /// tool's process after the first successful measurement, which is
+    /// correct when the guest runs as a host process: both facts belong to
+    /// the kernel, so the tool's process and the guest's share them. Backends
+    /// whose guest address space has its own bound (for example the KVM
+    /// backend, whose guest page tables are four-level whatever the host's
+    /// are) override this with the rule their own syscall emulation applies.
+    fn user_address_limit(&self) -> Result<crate::UserAddressLimit, crate::Error> {
+        crate::user_address::host_user_address_limit()
+    }
 }
 
 /// Wraps a `Guest<T>` such that it implements `Guest<U>`.
@@ -854,5 +879,9 @@ where
 
     fn storable_memory_ranges(&self) -> Result<Vec<(u64, u64)>, crate::Error> {
         self.inner.storable_memory_ranges()
+    }
+
+    fn user_address_limit(&self) -> Result<crate::UserAddressLimit, crate::Error> {
+        self.inner.user_address_limit()
     }
 }

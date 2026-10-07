@@ -89,7 +89,16 @@ const MAX_HOST_IO: usize = 16 * 1024 * 1024;
 const MAX_CAPTURED_OUTPUT: usize = 64 * 1024 * 1024;
 const PAGE_SIZE: u64 = 4096;
 const MAX_RW_COUNT: usize = (i32::MAX as usize) & !(PAGE_SIZE as usize - 1);
-const X86_64_GUEST_USER_LIMIT: u64 = (1_u64 << 47) - PAGE_SIZE;
+/// The guest's user address limit, which the executor's range checks
+/// enforce.
+pub(crate) const X86_64_GUEST_USER_LIMIT: u64 = (1_u64 << 47) - PAGE_SIZE;
+/// The range rule `KvmGuest` reports as `Guest::user_address_limit`: the
+/// executor's limit, and its vectored-I/O import (`decode_guest_iovecs`)
+/// shortens a lone vector to `MAX_RW_COUNT` before checking it.
+pub(crate) const GUEST_USER_ADDRESS_LIMIT: reverie::UserAddressLimit = reverie::UserAddressLimit {
+    max_end: X86_64_GUEST_USER_LIMIT,
+    caps_single_vector: true,
+};
 /// Diagnostic carried by this backend's typed refusal of an exec from a thread
 /// that is not its group's leader.
 pub(crate) const NONLEADER_EXEC_REFUSAL: &str = "KVM nonleader exec is unsupported";
@@ -113,16 +122,6 @@ fn nonleader_exec_refusal(result: i64, tid: i32, pid: i32) -> Option<reverie::Un
     })
 }
 
-#[cfg(test)]
-mod backend_capability_tests {
-    #[test]
-    fn capabilities_report_the_user_address_limit_the_executor_enforces() {
-        assert_eq!(
-            crate::KvmBackend::capabilities().user_address_limit,
-            Some(super::X86_64_GUEST_USER_LIMIT)
-        );
-    }
-}
 const GUEST_NOFILE_LIMIT: libc::c_int = 1 << 20;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-235): Review the single virtual network namespace identity.

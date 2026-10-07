@@ -75,6 +75,7 @@ pub mod task_ids;
 mod timer;
 mod tool;
 mod unsupported;
+mod user_address;
 pub mod vdso;
 
 pub use auxv::*;
@@ -99,6 +100,8 @@ pub use subscription::*;
 pub use timer::*;
 pub use tool::*;
 pub use unsupported::*;
+pub use user_address::UserAddressLimit;
+pub use user_address::X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT;
 
 /// The identifier for a specific thread, corresponding to the output of gettid.
 /// In many cases, Linux blurs the Pid/Tid distinction, but Reverie should
