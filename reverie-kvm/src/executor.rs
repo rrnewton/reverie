@@ -517,10 +517,13 @@ fn execute_basic_syscall_dispatch(
         reverie::SignalTaskIdentity,
     )>,
 ) -> SyscallAction {
+    // madvise counts: MADV_DONTNEED classifies pages and then zeroes them, and
+    // a mapping replaced between the two (by a host-owned worker's executor)
+    // must not have its new contents erased.
     let mutates_layout = matches!(request.number(), number if
         number == libc::SYS_brk as u64 || number == libc::SYS_mmap as u64
         || number == libc::SYS_mremap as u64 || number == libc::SYS_munmap as u64
-        || number == libc::SYS_mprotect as u64);
+        || number == libc::SYS_mprotect as u64 || number == libc::SYS_madvise as u64);
     if !mutates_layout {
         return execute_basic_syscall_inner(
             memory,
@@ -53163,6 +53166,49 @@ mod tests {
         let mut bytes = [0; 8];
         memory.read(address, &mut bytes).unwrap();
         bytes
+    }
+
+    /// MADV_DONTNEED holds the allocation guard that every layout change holds,
+    /// from its classification through its last zeroed page, so a concurrent
+    /// executor (a host-owned worker) cannot replace a page between the two.
+    #[test]
+    fn madvise_dontneed_waits_for_the_allocation_guard() {
+        let (root, mut state, mut memory) = madvise_memory(8);
+        let private = madvise_map(
+            &mut memory,
+            &mut state,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            1,
+        );
+        memory.write(private, b"guarded!").unwrap();
+        let mut worker_memory = memory.clone();
+        let mut worker_state = test_state(&root.0);
+        worker_state.mmap_limit = state.mmap_limit;
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let guard = memory.allocation_guard();
+            let worker = scope.spawn(move || {
+                let result = syscall_result(
+                    &mut worker_memory,
+                    &mut worker_state,
+                    libc::SYS_madvise,
+                    [private, PAGE_SIZE, libc::MADV_DONTNEED as u64, 0, 0, 0],
+                );
+                done.send(()).unwrap();
+                result
+            });
+            assert!(
+                finished
+                    .recv_timeout(std::time::Duration::from_millis(300))
+                    .is_err(),
+                "madvise ran while another layout change held the allocation guard"
+            );
+            assert_eq!(&page_bytes(&memory, private), b"guarded!");
+            drop(guard);
+            assert_eq!(worker.join().unwrap(), 0);
+        });
+        assert_eq!(page_bytes(&memory, private), [0; 8]);
     }
 
     #[test]
