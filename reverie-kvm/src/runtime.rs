@@ -1810,6 +1810,15 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         // accessible, so report those pages.
         Ok(self.memory.user_storable_ranges())
     }
+
+    fn user_address_limit(&self) -> std::result::Result<reverie::UserAddressLimit, reverie::Error> {
+        // The guest's page tables are four-level whatever the host's are, and
+        // the executor checks guest ranges against this limit, not the host
+        // kernel's, which can be the five-level one. Its vectored-I/O import
+        // shortens a lone vector to MAX_RW_COUNT before the check, as Linux
+        // 6.4 and later do, whatever the host kernel does.
+        Ok(crate::executor::GUEST_USER_ADDRESS_LIMIT)
+    }
 }
 
 /// The readable runs of the heap `[heap_base, program_break)`, in address

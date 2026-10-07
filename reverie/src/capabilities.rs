@@ -34,9 +34,7 @@
 //! still answers for itself: [`Backend::capabilities`](crate::Backend::capabilities)
 //! for [`Backend`](crate::Backend) implementors, and an inherent
 //! `capabilities()` on backends that do not implement that trait. Those return
-//! the matching constant. The tests below pin every constant field by field,
-//! and `reverie-kvm` also checks that its user address limit is the one its
-//! executor enforces.
+//! the matching constant. The tests below pin every constant field by field.
 //!
 //! # Adding a field
 //!
@@ -192,17 +190,7 @@ pub struct BackendCapabilities {
     /// reports its final CPU time, and only terminal events (exits and the
     /// terminal subset of `WUNTRACED`) are waitable.
     pub emulates_child_waits: bool,
-
-    /// The exclusive upper bound of guest user addresses (Linux's
-    /// `TASK_SIZE`), when the backend's guest address space has a fixed bound
-    /// that differs from the host process's. `None` means the guest runs as a
-    /// host process and shares the host kernel's bound.
-    pub user_address_limit: Option<u64>,
 }
-
-/// Exclusive upper bound of user addresses in an x86-64 guest with four-level
-/// paging: Linux's `TASK_SIZE_MAX`, one page below 2^47.
-pub const X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT: u64 = (1 << 47) - 4096;
 
 impl BackendCapabilities {
     /// `reverie-ptrace`: every guest thread is a host task stopped and resumed
@@ -230,7 +218,6 @@ impl BackendCapabilities {
         reports_child_exit_publication: true,
         provides_process_signal_control: false,
         emulates_child_waits: false,
-        user_address_limit: None,
     };
 
     /// `reverie-e9patch`: the guest is rewritten ahead of time and then run
@@ -290,7 +277,6 @@ impl BackendCapabilities {
         supports_madvise: false,
         provides_process_signal_control: true,
         emulates_child_waits: true,
-        user_address_limit: Some(X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT),
         reports_child_exit_publication: false,
         ..Self::PTRACE
     };
@@ -332,7 +318,6 @@ mod tests {
             "reports_child_exit_publication": true,
             "provides_process_signal_control": false,
             "emulates_child_waits": false,
-            "user_address_limit": null,
         })
     }
 
@@ -424,15 +409,9 @@ mod tests {
                 "supports_madvise": false,
                 "provides_process_signal_control": true,
                 "emulates_child_waits": true,
-                "user_address_limit": 140_737_488_351_232_u64,
                 "reports_child_exit_publication": false,
             }))
         );
-    }
-
-    #[test]
-    fn four_level_user_limit_is_one_page_below_2_pow_47() {
-        assert_eq!(X86_64_FOUR_LEVEL_USER_ADDRESS_LIMIT, 0x7fff_ffff_f000);
     }
 
     #[test]
