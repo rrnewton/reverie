@@ -25,6 +25,7 @@ const RPC_GETPID: u64 = 1;
 const RPC_CLOCK_GETTIME: u64 = 2;
 const RPC_GETTIMEOFDAY: u64 = 3;
 const RPC_FORK: u64 = 4;
+const RPC_CLOSE_RANGE: u64 = 5;
 /// Tags a process's exit-time count of its Tool callbacks.
 const RPC_CALLBACK_COUNT: u64 = 1 << 32;
 const BACKEND_OUTPUT_CHILD_ENV: &str = "REVERIE_LITEINST_BACKEND_OUTPUT_TEST_CHILD";
@@ -35,6 +36,8 @@ struct LifecycleGlobal {
     clock_gettime: AtomicU64,
     gettimeofday: AtomicU64,
     fork: AtomicU64,
+    /// Guest `close_range` calls the in-guest Tool saw.
+    close_range: AtomicU64,
     /// Every in-guest Tool syscall callback, counted in guest memory
     /// independently of the backend's statistics and reported once per
     /// process at exit.
@@ -66,6 +69,7 @@ impl GlobalTool for LifecycleGlobal {
             RPC_CLOCK_GETTIME => &self.clock_gettime,
             RPC_GETTIMEOFDAY => &self.gettimeofday,
             RPC_FORK => &self.fork,
+            RPC_CLOSE_RANGE => &self.close_range,
             _ => panic!("unknown lifecycle fixture RPC {event}"),
         };
         counter.fetch_add(1, Ordering::Relaxed);
@@ -349,6 +353,34 @@ async fn a_reserved_tool_output_fd_is_protected_from_the_guest() {
     .unwrap();
     assert_eq!(result.status.code(), Some(0), "{result:?}");
     assert_eq!(result.stdout, b"tool output fd: protected\n", "{result:?}");
+}
+
+/// A guest `close_range` whose range covers the runtime's own descriptors
+/// reaches a Tool that subscribes to it, so the Tool can account for the guest
+/// descriptors it closes; the runtime still spares its own descriptors at
+/// physical execution, so the guest-visible result is unchanged and the
+/// coordinator connection survives.
+#[tokio::test(flavor = "current_thread")]
+async fn a_close_range_over_runtime_descriptors_reaches_the_tool() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (result, global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("close-range-through-tool"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert_eq!(
+        result.stdout, b"close range through tool: ok\n",
+        "{result:?}"
+    );
+    assert_eq!(global.close_range.load(Ordering::Relaxed), 1);
+    assert!(global.getpid.load(Ordering::Relaxed) >= 1);
 }
 
 /// Asserts the statistics of one `fast-path` guest run.

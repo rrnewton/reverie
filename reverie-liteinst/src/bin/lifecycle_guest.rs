@@ -24,6 +24,11 @@ const RPC_GETPID: u64 = 1;
 const RPC_CLOCK_GETTIME: u64 = 2;
 const RPC_GETTIMEOFDAY: u64 = 3;
 const RPC_FORK: u64 = 4;
+const RPC_CLOSE_RANGE: u64 = 5;
+/// Set before `install_tool` by the mode that checks a Tool sees the guest's
+/// descriptor-closing calls; the Tool then subscribes to `close` and
+/// `close_range` too.
+static SUBSCRIBE_CLOSES: AtomicBool = AtomicBool::new(false);
 /// Tags the one RPC a process sends at `exit_group` with its count of Tool
 /// callbacks, so the host can compare the backend's dispatch counts with the
 /// callbacks the Tool actually made.
@@ -170,6 +175,13 @@ impl Tool for LifecycleTool {
             Sysno::exit_group,
         ]
         .into_iter()
+        .chain(
+            SUBSCRIBE_CLOSES
+                .load(Ordering::Relaxed)
+                .then_some([Sysno::close, Sysno::close_range])
+                .into_iter()
+                .flatten(),
+        )
         .collect()
     }
 
@@ -223,7 +235,8 @@ impl Tool for LifecycleTool {
             Sysno::gettimeofday => RPC_GETTIMEOFDAY,
             Sysno::fork | Sysno::clone => RPC_FORK,
             Sysno::wait4 => unreachable!("wait4 is handled before event classification"),
-            Sysno::getppid | Sysno::exit | Sysno::exit_group => 0,
+            Sysno::close_range => RPC_CLOSE_RANGE,
+            Sysno::getppid | Sysno::close | Sysno::exit | Sysno::exit_group => 0,
             number => panic!("unexpected lifecycle fixture syscall {number}"),
         };
         if event != 0 {
@@ -644,6 +657,31 @@ fn reserve_tool_output_fd(path: &std::ffi::OsStr) -> (libc::c_int, libc::c_int) 
 /// to close it with `close_range`; every attempt fails or is a no-op. Then the
 /// Tool's own write (its `getppid` callback sends `tool`) reaches the guest's
 /// end of the pair as the only message.
+/// A guest `close_range` over every descriptor from 3 up, a fresh pipe's
+/// included. The range covers the coordinator connection and any reserved Tool output
+/// socket, so the runtime once handled it before Tool dispatch; now the Tool
+/// sees it (its callback reports it to the global) and forwards it, and the
+/// runtime spares its own descriptors at physical execution. Both pipe ends
+/// close, and a later getpid still reaches the coordinator.
+fn close_range_through_tool() {
+    let mut pipe = [0; 2];
+    assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+    // From 3 up: past stdio, and over the coordinator connection, which the
+    // runtime opened before the pipe at a lower number.
+    let closed = unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) };
+    assert_eq!(closed, 0, "{}", std::io::Error::last_os_error());
+    for end in pipe {
+        assert_eq!(unsafe { libc::fcntl(end, libc::F_GETFD) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
+    }
+    // The coordinator connection survived: this call's RPC reaches it.
+    unsafe { libc::getpid() };
+    println!("close range through tool: ok");
+}
+
 fn tool_output_fd(reserved: libc::c_int, peer: libc::c_int) {
     let link = || std::fs::read_link(format!("/proc/self/fd/{reserved}")).unwrap();
     let before = link();
@@ -926,6 +964,12 @@ fn main() {
     let mode = arguments.next().expect("missing lifecycle fixture mode");
     if mode == "fallback-fork-stats" {
         fallback_fork_stats();
+        return;
+    }
+    if mode == "close-range-through-tool" {
+        SUBSCRIBE_CLOSES.store(true, Ordering::Relaxed);
+        install_tool();
+        close_range_through_tool();
         return;
     }
     if mode == "tool-output-fd" {
