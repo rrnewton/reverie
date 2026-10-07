@@ -210,9 +210,16 @@ pub trait GlobalTool: Send + Sync + Default {
 
     /// Reports that guest process `pid` has physically left the host, for a
     /// backend whose process exits complete asynchronously
-    /// ([`crate::BackendCapabilities::process_exits_complete_asynchronously`]).
-    /// The backend calls it once per process, after the kernel has published
-    /// the exit to the parent. It must not wait for guest progress.
+    /// ([`crate::BackendCapabilities::process_exits_complete_asynchronously`]),
+    /// or that the kernel has published `pid`'s exit to its guest parent, for a
+    /// backend that reports child-exit publication
+    /// ([`crate::BackendCapabilities::reports_child_exit_publication`]: under
+    /// ptrace, right after the tracer consumes the final wait status of an
+    /// ordinary, initialized process leader; see that capability for the
+    /// processes it does not cover). The backend calls it once per process,
+    /// after the kernel has published the exit to the parent, and possibly
+    /// before the tool has granted that process's exit. It must not wait for
+    /// guest progress.
     fn on_backend_process_exited(&self, _pid: i32) {}
 
     /// The guest processes whose exit the tool has granted and whose physical
