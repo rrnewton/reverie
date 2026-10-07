@@ -1801,6 +1801,15 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     fn take_unsupported_refusal(&mut self) -> Option<reverie::UnsupportedRefusal> {
         self.unsupported_refusal.take()
     }
+
+    fn storable_memory_ranges(&self) -> std::result::Result<Vec<(u64, u64)>, reverie::Error> {
+        // `pid()` is the host VMM process, whose `/proc/<pid>/maps` describes
+        // host addresses, not guest ones. The executor stores a syscall's
+        // output, such as `time(2)`'s `tloc`, through `UserMemory`, which
+        // admits only the user pages that the guest's memory records as
+        // accessible, so report those pages.
+        Ok(self.memory.user_storable_ranges())
+    }
 }
 
 /// The readable runs of the heap `[heap_base, program_break)`, in address
