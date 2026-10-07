@@ -1278,9 +1278,13 @@ fn set_nonblocking(stream: &impl AsRawFd) -> io::Result<()> {
 const READ_ON: u8 = 0;
 /// Process-group cleanup failed: the readers stop and return an error.
 const READ_DISCARD: u8 = 1;
-/// The run failed after its tree was reaped: the readers stop and return what
-/// they have read.
+/// The run failed after its tree was reaped: the readers read what is already
+/// in their pipes, then stop and return everything they have read.
 const READ_KEEP: u8 = 2;
+
+/// At most this many more bytes are read after [`READ_KEEP`] is seen, so a
+/// writer outside the reaped tree that never pauses cannot hold a reader.
+const KEPT_OUTPUT_DRAIN_BYTES: usize = 1 << 20;
 
 /// How long the output readers may keep draining after a run that was reaped
 /// has failed. A reaped tree has closed its pipes, so this bounds only a pipe
@@ -1290,27 +1294,43 @@ const FAILED_RUN_OUTPUT_DRAIN: std::time::Duration = std::time::Duration::from_s
 fn read_cancellable(reader: &mut impl Read, stop: &AtomicU8) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 8192];
-    let stopped = |bytes: &mut Vec<u8>| match stop.load(Ordering::Acquire) {
-        READ_DISCARD => Some(Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "DBT output capture cancelled after process-group cleanup failed",
-        ))),
-        READ_KEEP => Some(Ok(std::mem::take(bytes))),
-        _ => None,
-    };
+    // Bytes still allowed after READ_KEEP was seen; None until then.
+    let mut kept_budget: Option<usize> = None;
     loop {
-        if let Some(result) = stopped(&mut bytes) {
-            return result;
+        match stop.load(Ordering::Acquire) {
+            READ_DISCARD => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "DBT output capture cancelled after process-group cleanup failed",
+                ));
+            }
+            READ_KEEP if kept_budget.is_none() => kept_budget = Some(KEPT_OUTPUT_DRAIN_BYTES),
+            _ => {}
         }
-        match reader.read(&mut buffer) {
+        let limit = match kept_budget {
+            Some(0) => return Ok(bytes),
+            Some(budget) => budget.min(buffer.len()),
+            None => buffer.len(),
+        };
+        match reader.read(&mut buffer[..limit]) {
             Ok(0) => return Ok(bytes),
-            Ok(read) => bytes.extend_from_slice(&buffer[..read]),
+            Ok(read) => {
+                bytes.extend_from_slice(&buffer[..read]);
+                if let Some(budget) = &mut kept_budget {
+                    *budget = budget.saturating_sub(read);
+                }
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if let Some(result) = stopped(&mut bytes) {
-                    return result;
+                // The pipe is empty for now. After READ_KEEP that is the end of
+                // the output; otherwise wait for more, or for a stop, which the
+                // top of the loop handles before the next read.
+                if kept_budget.is_some() {
+                    return Ok(bytes);
                 }
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                if stop.load(Ordering::Acquire) == READ_ON {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
             }
             Err(error) => return Err(error),
         }
@@ -1957,21 +1977,61 @@ mod tests {
         let (mut reader, mut writer) = UnixStream::pair().unwrap();
         set_nonblocking(&reader).unwrap();
         writer.write_all(b"the reason the run failed\n").unwrap();
-        let stop = Arc::new(AtomicU8::new(READ_ON));
-        std::thread::scope(|scope| {
-            let reader_stop = Arc::clone(&stop);
-            let handle = scope.spawn(move || read_cancellable(&mut reader, &reader_stop));
-            // `writer` stays open, as a pipe held outside the reaped tree
-            // would, so the reader never sees end of file.
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            assert!(!handle.is_finished());
-            stop.store(READ_KEEP, Ordering::Release);
-            assert_eq!(
-                handle.join().unwrap().unwrap(),
-                b"the reason the run failed\n"
-            );
-        });
+        // The stop comes before the reader has read anything, the worst case
+        // for a slow reader. `writer` stays open, as a pipe held outside the
+        // reaped tree would, so the reader never sees end of file; what is
+        // already in the pipe must still be returned.
+        let stop = AtomicU8::new(READ_KEEP);
+        assert_eq!(
+            read_cancellable(&mut reader, &stop).unwrap(),
+            b"the reason the run failed\n"
+        );
         drop(writer);
+    }
+
+    #[test]
+    fn a_kept_output_reader_reads_exactly_its_cap_from_a_source_that_never_ends() {
+        // Never reports end of file or EAGAIN, like a writer that never pauses
+        // and always wins the race with the reader. Its reads are one byte
+        // short of the reader's buffer, so a cap that did not limit each read
+        // to the remaining budget would overshoot.
+        struct ShortReads;
+        impl Read for ShortReads {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let length = buffer.len().min(8191);
+                buffer[..length].fill(b'x');
+                Ok(length)
+            }
+        }
+        let mut endless = ShortReads;
+        let stop = AtomicU8::new(READ_KEEP);
+        let kept = read_cancellable(&mut endless, &stop).unwrap();
+        assert_eq!(kept.len(), KEPT_OUTPUT_DRAIN_BYTES);
+    }
+
+    #[test]
+    fn a_kept_output_reader_stops_although_a_writer_never_pauses() {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixStream;
+
+        let (mut reader, mut writer) = UnixStream::pair().unwrap();
+        set_nonblocking(&reader).unwrap();
+        let stop = AtomicU8::new(READ_KEEP);
+        std::thread::scope(|scope| {
+            // Writes until the reader is dropped.
+            let writer = scope.spawn(move || while writer.write_all(&[b'x'; 4096]).is_ok() {});
+            // The reader may find the socket empty before the writer runs and
+            // return at once; this test checks only that it returns and that
+            // the writer is released. The cap itself is pinned above.
+            let kept = read_cancellable(&mut reader, &stop).unwrap();
+            assert!(
+                kept.len() <= KEPT_OUTPUT_DRAIN_BYTES,
+                "read {} bytes after the stop",
+                kept.len()
+            );
+            drop(reader);
+            writer.join().unwrap();
+        });
     }
 
     #[test]
