@@ -1759,7 +1759,9 @@ impl FatalSession {
     }
 
     /// Offers a thread held at its exit stop while a core-dumping fatal signal
-    /// ends its process to the global Tool, while its memory is still mapped.
+    /// ends its process to the global Tool. Its memory is normally still
+    /// mapped, but the exit stop does not pin it: it can be reaped before or
+    /// during the call, so the Tool's reads of it may fail or come back short.
     /// Reads the thread's registers and kernel flags without changing them; a
     /// thread whose registers or flags cannot be read is not offered.
     pub(crate) fn offer_fatal_signal_exit(&self, stopped: &Stopped, status: ExitStatus) {
