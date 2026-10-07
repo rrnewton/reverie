@@ -693,9 +693,167 @@ fn clone3_is_plain_fork(address: u64, size: u64) -> bool {
         && fields[8..].iter().all(|field| *field == 0)
 }
 
+/// One physical process creation the runtime performed for the guest, as
+/// reported to the [`PhysicalCreationHook`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhysicalCreation {
+    /// The creating call's result: the child's pid, or a negative errno.
+    pub result: i64,
+    /// The child's birth identity: the pidfs inode number of the pidfd the
+    /// kernel created atomically with the child (`CLONE_PIDFD`). One inode
+    /// per process, never reused while the kernel runs, so it names the
+    /// child even after the child has died and been reaped and its pid
+    /// reused. `None` when the creation failed or the inode could not be
+    /// read.
+    pub birth_identity: Option<u64>,
+}
+
+/// Called by the runtime in the creating process only, exactly once per
+/// physical process creation it performs for the guest (fork, the copying
+/// vfork, and the plain-fork forms of clone and clone3), whether the creation
+/// succeeded or failed. The call happens synchronously after the physical
+/// call returns and the transient pidfd is closed, and before the copying
+/// vfork's wait or the return to the Tool. The hook must not wait for guest
+/// progress or take the dispatch locks. An error ends the creating process
+/// with status 125; the Tool reports its own failure before returning one.
+pub type PhysicalCreationHook = fn(PhysicalCreation) -> io::Result<()>;
+
+static CREATION_HOOK: std::sync::OnceLock<PhysicalCreationHook> = std::sync::OnceLock::new();
+
+/// Registers the process's [`PhysicalCreationHook`]. With a hook registered,
+/// the runtime performs every process creation as `clone3` with a
+/// runtime-owned `CLONE_PIDFD` output, to report the child's birth identity;
+/// without one, creations run exactly as before. Fails with the hook already
+/// registered.
+pub fn set_physical_creation_hook(hook: PhysicalCreationHook) -> Result<(), PhysicalCreationHook> {
+    CREATION_HOOK.set(hook)
+}
+
+/// The `clone3` arguments (`struct clone_args`, size version 0) that perform
+/// the plain-fork creation `number`/`args` with a `CLONE_PIDFD` output at
+/// `pidfd`, or `None` when the guest's own `clone_args` cannot be read.
+/// Callers have already accepted the call with [`is_plain_fork`].
+fn clone3_args_for(number: i64, args: [u64; 6], pidfd: u64) -> Option<[u64; 8]> {
+    const PIDFD: u64 = libc::CLONE_PIDFD as u64;
+    const SIGNAL_MASK: u64 = 0xff;
+    match number {
+        // The copying vfork stays a COW fork with the parent waiting: no
+        // CLONE_VM or CLONE_VFORK is applied physically.
+        libc::SYS_fork | libc::SYS_vfork => {
+            Some([PIDFD, pidfd, 0, 0, libc::SIGCHLD as u64, 0, 0, 0])
+        }
+        // Legacy clone(flags, stack, parent_tid, child_tid, tls): the CSIGNAL
+        // byte becomes exit_signal, and each TID output keeps its own
+        // destination, separate from the pidfd output. The plain-fork subset
+        // has no stack and no CLONE_SETTLS.
+        libc::SYS_clone => {
+            let flags = args[0];
+            let child_tid_flags = (libc::CLONE_CHILD_SETTID | libc::CLONE_CHILD_CLEARTID) as u64;
+            let child_tid = if flags & child_tid_flags != 0 {
+                args[3]
+            } else {
+                0
+            };
+            let parent_tid = if flags & libc::CLONE_PARENT_SETTID as u64 != 0 {
+                args[2]
+            } else {
+                0
+            };
+            Some([
+                (flags & !SIGNAL_MASK) | PIDFD,
+                pidfd,
+                child_tid,
+                parent_tid,
+                flags & SIGNAL_MASK,
+                0,
+                0,
+                0,
+            ])
+        }
+        // The guest's own clone_args, field by field (`is_plain_fork` has
+        // checked its size, pointer and that every field past these is zero),
+        // plus the runtime's CLONE_PIDFD output.
+        libc::SYS_clone3 => {
+            let mut fields = read_guest_clone_args(args[0], args[1])?;
+            fields[0] |= PIDFD;
+            fields[1] = pidfd;
+            Some(fields)
+        }
+        _ => None,
+    }
+}
+
+/// The first eight fields of a guest `struct clone_args`.
+fn read_guest_clone_args(address: u64, size: u64) -> Option<[u64; 8]> {
+    let mut fields = [0_u64; 8];
+    let read_len = core::mem::size_of_val(&fields);
+    if address == 0 || size < read_len as u64 {
+        return None;
+    }
+    let local = libc::iovec {
+        iov_base: fields.as_mut_ptr().cast(),
+        iov_len: read_len,
+    };
+    let remote = libc::iovec {
+        iov_base: address as usize as *mut libc::c_void,
+        iov_len: read_len,
+    };
+    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
+    let read = unsafe {
+        raw_syscall6(
+            libc::SYS_process_vm_readv,
+            [
+                pid as u64,
+                (&raw const local) as u64,
+                1,
+                (&raw const remote) as u64,
+                1,
+                0,
+            ],
+        )
+    };
+    (read == read_len as i64).then_some(fields)
+}
+
+/// The pidfs inode number of `pidfd`, then closes it.
+fn birth_identity_and_close(pidfd: libc::c_int) -> Option<u64> {
+    let mut metadata = core::mem::MaybeUninit::<libc::stat>::zeroed();
+    let stat = unsafe {
+        raw_syscall6(
+            libc::SYS_fstat,
+            [pidfd as u64, metadata.as_mut_ptr() as u64, 0, 0, 0, 0],
+        )
+    };
+    unsafe { raw_syscall6(libc::SYS_close, [pidfd as u64, 0, 0, 0, 0, 0]) };
+    (stat == 0).then(|| unsafe { metadata.assume_init() }.st_ino)
+}
+
 fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Option<u32>>) -> i64 {
     let permissions = guest_pkru.as_ref().and_then(|value| **value);
-    let physical = if number == libc::SYS_vfork {
+    // With a creation hook: clone3 with the runtime's CLONE_PIDFD output. The
+    // argument record and the pidfd output live on this runtime stack, which
+    // the kernel reads and writes under the guest's protection keys; the
+    // runtime's memory carries the default key, which every guest can access.
+    let mut pidfd: libc::c_int = -1;
+    let creation = CREATION_HOOK.get().copied().and_then(|hook| {
+        clone3_args_for(number, args, (&raw mut pidfd) as u64).map(|record| (hook, record))
+    });
+    let physical = if let Some((_, record)) = &creation {
+        unsafe {
+            crate::trap::raw_syscall6_with_result(
+                libc::SYS_clone3,
+                [
+                    record.as_ptr() as u64,
+                    core::mem::size_of_val(record) as u64,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+                permissions,
+            )
+        }
+    } else if number == libc::SYS_vfork {
         // A real vfork child would run the instrumentation callback on the
         // parent's shared stack. Use a COW fork and preserve vfork's parent
         // suspension until the child exits. Exec remains fail-closed, so exit
@@ -708,6 +866,29 @@ fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Optio
         *output = physical.pkru;
     }
     let result = physical.result;
+    if let Some((hook, _)) = creation
+        && result != 0
+    {
+        // The parent (or a failed creation). The child, which returns 0,
+        // holds no copy of the pidfd: the kernel installs it in the parent's
+        // table only.
+        let birth_identity = (result > 0)
+            .then(|| birth_identity_and_close(pidfd))
+            .flatten();
+        if hook(PhysicalCreation {
+            result,
+            birth_identity,
+        })
+        .is_err()
+        {
+            unsafe {
+                let _ = raw_syscall6(libc::SYS_exit_group, [125, 0, 0, 0, 0, 0]);
+            }
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    }
     if number == libc::SYS_vfork && result > 0 {
         let mut info = core::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
         loop {

@@ -387,6 +387,48 @@ async fn a_close_range_over_runtime_descriptors_reaches_the_tool() {
     assert!(global.getpid.load(Ordering::Relaxed) >= 1);
 }
 
+/// With a creation hook registered, the runtime performs every creation
+/// form (fork, the copying vfork, legacy clone, clone3) as clone3 with its
+/// own CLONE_PIDFD output, reports each once with the child's pid and pidfs
+/// inode, and leaves no pidfd in the guest's table.
+#[tokio::test(flavor = "current_thread")]
+async fn a_creation_hook_receives_each_childs_birth_identity() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (result, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("creation-identity"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert_eq!(result.stdout, b"creation identity: ok\n", "{result:?}");
+}
+
+/// A creation hook that fails ends the creating process with status 125
+/// before the creation returns to the guest.
+#[tokio::test(flavor = "current_thread")]
+async fn a_failing_creation_hook_ends_the_creating_process() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (result, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("creation-hook-fails"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    assert_eq!(result.status.code(), Some(125), "{result:?}");
+    assert!(result.stdout.is_empty(), "{result:?}");
+}
+
 /// Synchronous Tool code inside a callback, outside the callback's own
 /// send_rpc, sends a request to the global state through the process's
 /// existing coordinator connection with `blocking_global_rpc`, and a request

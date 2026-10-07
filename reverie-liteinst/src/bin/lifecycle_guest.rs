@@ -674,6 +674,133 @@ fn reserve_tool_output_fd(path: &std::ffi::OsStr) -> (libc::c_int, libc::c_int) 
     (reserved, peer)
 }
 
+/// The last creation the runtime reported to the hook, and how many it reported.
+static CREATION_RESULT: AtomicI64 = AtomicI64::new(0);
+static CREATION_IDENTITY: AtomicU64 = AtomicU64::new(0);
+static CREATIONS: AtomicU64 = AtomicU64::new(0);
+
+fn record_creation(creation: reverie_liteinst::PhysicalCreation) -> std::io::Result<()> {
+    CREATION_RESULT.store(creation.result, Ordering::Relaxed);
+    CREATION_IDENTITY.store(creation.birth_identity.unwrap_or(0), Ordering::Relaxed);
+    CREATIONS.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+/// The descriptors of this process that are pidfds.
+fn pidfd_count() -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .filter_map(|entry| std::fs::read_link(entry.unwrap().path()).ok())
+        .filter(|target| target.to_string_lossy().contains("pidfd"))
+        .count()
+}
+
+/// With a creation hook registered, every creation form reaches it once, in
+/// the parent, with the child's pid and the pidfs inode of the child: the
+/// same inode a pidfd opened on the not-yet-reaped child reports. No
+/// transient pidfd is left in the parent's table, and legacy clone's
+/// CLONE_PARENT_SETTID output still reaches the guest.
+fn creation_identity() {
+    let check = |form: &str, child: libc::pid_t, before: u64| {
+        assert!(child > 0, "{form}: {}", std::io::Error::last_os_error());
+        assert_eq!(
+            CREATIONS.load(Ordering::Relaxed),
+            before + 1,
+            "{form}: one report"
+        );
+        assert_eq!(
+            CREATION_RESULT.load(Ordering::Relaxed),
+            i64::from(child),
+            "{form}"
+        );
+        assert_eq!(
+            pidfd_count(),
+            0,
+            "{form}: a transient pidfd was left behind"
+        );
+        // The child has exited but is not reaped yet (its SIGCHLD is default),
+        // so a pidfd opened now names the same process.
+        let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, child, 0) } as libc::c_int;
+        assert!(
+            pidfd >= 0,
+            "{form}: pidfd_open: {}",
+            std::io::Error::last_os_error()
+        );
+        let mut metadata: libc::stat = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::fstat(pidfd, &mut metadata) }, 0);
+        assert_eq!(
+            CREATION_IDENTITY.load(Ordering::Relaxed),
+            metadata.st_ino,
+            "{form}: the reported birth identity"
+        );
+        unsafe { libc::close(pidfd) };
+        // waitid, not wait4: this fixture's Tool answers wait4 itself.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::waitid(libc::P_PID, child as libc::id_t, &mut info, libc::WEXITED) },
+            0,
+            "{form}: {}",
+            std::io::Error::last_os_error()
+        );
+        assert_eq!(unsafe { info.si_status() }, 0, "{form}");
+    };
+    let exit_child = || unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+
+    let before = CREATIONS.load(Ordering::Relaxed);
+    let child = unsafe { libc::syscall(libc::SYS_fork) } as libc::pid_t;
+    if child == 0 {
+        exit_child();
+    }
+    // Let the child reach its exit before the pidfd_open check.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    check("fork", child, before);
+
+    let before = CREATIONS.load(Ordering::Relaxed);
+    let child = unsafe { libc::syscall(libc::SYS_vfork) } as libc::pid_t;
+    if child == 0 {
+        exit_child();
+    }
+    check("vfork", child, before);
+
+    let before = CREATIONS.load(Ordering::Relaxed);
+    let mut parent_tid: libc::pid_t = 0;
+    let flags = (libc::SIGCHLD | libc::CLONE_PARENT_SETTID) as u64;
+    let child = unsafe {
+        libc::syscall(
+            libc::SYS_clone,
+            flags,
+            0u64,
+            &raw mut parent_tid,
+            0u64,
+            0u64,
+        )
+    } as libc::pid_t;
+    if child == 0 {
+        exit_child();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(parent_tid, child, "clone: CLONE_PARENT_SETTID");
+    check("clone", child, before);
+
+    let before = CREATIONS.load(Ordering::Relaxed);
+    let mut clone_args = [0u64; 8];
+    clone_args[4] = libc::SIGCHLD as u64;
+    let child = unsafe {
+        libc::syscall(
+            libc::SYS_clone3,
+            clone_args.as_mut_ptr(),
+            std::mem::size_of_val(&clone_args),
+        )
+    } as libc::pid_t;
+    if child == 0 {
+        exit_child();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    check("clone3", child, before);
+
+    println!("creation identity: ok");
+}
+
 /// Synchronous Tool code inside a callback, outside the callback's own
 /// send_rpc, reaches the coordinator through the process's connection with
 /// `blocking_global_rpc`; a global state that is not the installed Tool's is
@@ -1009,6 +1136,24 @@ fn main() {
     let mode = arguments.next().expect("missing lifecycle fixture mode");
     if mode == "fallback-fork-stats" {
         fallback_fork_stats();
+        return;
+    }
+    if mode == "creation-hook-fails" {
+        reverie_liteinst::set_physical_creation_hook(|_| Err(std::io::Error::other("refused")))
+            .expect("one creation hook");
+        install_tool();
+        let child = unsafe { libc::syscall(libc::SYS_fork) };
+        if child == 0 {
+            unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+        }
+        // The runtime ends this process before the fork returns here.
+        println!("creation hook failure did not end the process");
+        return;
+    }
+    if mode == "creation-identity" {
+        reverie_liteinst::set_physical_creation_hook(record_creation).expect("one creation hook");
+        install_tool();
+        creation_identity();
         return;
     }
     if mode == "blocking-global-rpc" {
