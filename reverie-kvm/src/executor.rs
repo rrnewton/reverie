@@ -90,6 +90,28 @@ const MAX_CAPTURED_OUTPUT: usize = 64 * 1024 * 1024;
 const PAGE_SIZE: u64 = 4096;
 const MAX_RW_COUNT: usize = (i32::MAX as usize) & !(PAGE_SIZE as usize - 1);
 const X86_64_GUEST_USER_LIMIT: u64 = (1_u64 << 47) - PAGE_SIZE;
+/// Diagnostic carried by this backend's typed refusal of an exec from a thread
+/// that is not its group's leader.
+pub(crate) const NONLEADER_EXEC_REFUSAL: &str = "KVM nonleader exec is unsupported";
+
+/// The typed refusal, if any, that an exec result from thread `tid` of
+/// process `pid` carries.
+///
+/// Linux's execve never fails with ENOSYS, so every ENOSYS this backend
+/// returns to a non-leader exec is its own refusal. That covers the explicit
+/// refusal after image preflight and an ENOSYS from a host syscall the
+/// preflight makes, such as the host `faccessat2` permission check on a
+/// kernel or sandbox that lacks it. Every other result, and every result for
+/// a group leader, carries none.
+fn nonleader_exec_refusal(result: i64, tid: i32, pid: i32) -> Option<reverie::UnsupportedRefusal> {
+    (result == negative_errno(libc::ENOSYS) && tid != pid).then(|| {
+        reverie::UnsupportedRefusal::new(
+            reverie::UnsupportedOperation::NonLeaderExec,
+            reverie::Errno::ENOSYS,
+            NONLEADER_EXEC_REFUSAL,
+        )
+    })
+}
 
 #[cfg(test)]
 mod backend_capability_tests {
@@ -1536,6 +1558,10 @@ pub(crate) struct ElfExecutor {
     parked_signals: Option<ParkedSignalState>,
     completed_signal_effects: Vec<reverie::SignalDequeue>,
     signal_effect_raw_result: Option<i64>,
+    // The typed refusal of the last exec this executor declined because it
+    // cannot perform the operation. The injecting runtime takes it after each
+    // execution, so a stale refusal never describes a later syscall.
+    unsupported_refusal: Option<reverie::UnsupportedRefusal>,
 }
 
 /// Private authority staged by the first original-call preflight. The guest
@@ -3412,6 +3438,7 @@ impl ElfExecutor {
             parked_signals: None,
             completed_signal_effects: Vec::new(),
             signal_effect_raw_result: None,
+            unsupported_refusal: None,
             address_space,
             file_table,
             file_table_task_owner: Some(Arc::new(())),
@@ -3690,6 +3717,17 @@ impl ElfExecutor {
         request: &SyscallRequest,
         retained: Option<ResolvedExecutable>,
     ) -> i64 {
+        let result = self.prepare_exec_image(memory, request, retained);
+        self.unsupported_refusal = nonleader_exec_refusal(result, self.state.tid, self.state.pid);
+        result
+    }
+
+    fn prepare_exec_image(
+        &mut self,
+        memory: &GuestMemory,
+        request: &SyscallRequest,
+        retained: Option<ResolvedExecutable>,
+    ) -> i64 {
         let args = request.args();
         let (path_address, argv_address, envp_address, dirfd, flags) =
             if request.number() == libc::SYS_execve as u64 {
@@ -3802,6 +3840,7 @@ impl ElfExecutor {
         // tears down every sibling. The KVM backend does not yet implement that
         // promotion. Refuse after safe preflight but before publishing a
         // ProcessAction, so a worker cannot clear the shared address space.
+        // prepare_exec records the typed refusal for this ENOSYS.
         if self.state.tid != self.state.pid {
             return negative_errno(libc::ENOSYS);
         }
@@ -3942,6 +3981,7 @@ impl ElfExecutor {
             parked_signals: None,
             completed_signal_effects: Vec::new(),
             signal_effect_raw_result: None,
+            unsupported_refusal: None,
             address_space,
             file_table,
             file_table_task_owner: Some(Arc::new(())),
@@ -4080,6 +4120,7 @@ impl ElfExecutor {
             parked_signals: None,
             completed_signal_effects: Vec::new(),
             signal_effect_raw_result: None,
+            unsupported_refusal: None,
             address_space: self.address_space.clone(),
             file_table: self.file_table.clone(),
             file_table_task_owner: self.file_table_task_owner.clone(),
@@ -6573,6 +6614,12 @@ impl ElfExecutor {
 
     pub(crate) fn retain_signal_effect_result(&mut self, raw: Option<i64>) {
         self.signal_effect_raw_result = raw;
+    }
+
+    /// Takes the typed refusal recorded by the last syscall this executor
+    /// declined as unsupported, clearing it.
+    pub(crate) fn take_unsupported_refusal(&mut self) -> Option<reverie::UnsupportedRefusal> {
+        self.unsupported_refusal.take()
     }
 
     pub(crate) fn finish_parked_delivery(&mut self) {
@@ -57308,6 +57355,162 @@ mod tests {
         );
     }
 
+    fn nonleader_exec_refusal_record() -> reverie::UnsupportedRefusal {
+        reverie::UnsupportedRefusal::new(
+            reverie::UnsupportedOperation::NonLeaderExec,
+            reverie::Errno::ENOSYS,
+            NONLEADER_EXEC_REFUSAL,
+        )
+    }
+
+    #[test]
+    fn nonleader_exec_refusal_types_every_worker_enosys_and_nothing_else() {
+        let enosys = negative_errno(libc::ENOSYS);
+        assert_eq!(
+            nonleader_exec_refusal(enosys, 8, 7),
+            Some(nonleader_exec_refusal_record())
+        );
+        assert_eq!(nonleader_exec_refusal(enosys, 7, 7), None);
+        for result in [
+            0,
+            negative_errno(libc::EFAULT),
+            negative_errno(libc::ENOENT),
+            negative_errno(libc::EACCES),
+            negative_errno(libc::ENOEXEC),
+            negative_errno(libc::EBUSY),
+            negative_errno(libc::ENOTSUP),
+            negative_errno(libc::ENOMEM),
+        ] {
+            assert_eq!(nonleader_exec_refusal(result, 8, 7), None, "{result}");
+            assert_eq!(nonleader_exec_refusal(result, 7, 7), None, "{result}");
+        }
+    }
+
+    /// A host syscall that the exec preflight makes can itself fail with
+    /// ENOSYS (here the host `faccessat2` permission check, refused by a
+    /// seccomp filter as an old kernel or a sandbox would). A worker's exec
+    /// that fails that way is still this backend's refusal, never an errno
+    /// Linux would return, so it carries the typed refusal. A leader's does
+    /// not.
+    #[test]
+    fn worker_exec_host_enosys_during_preflight_is_the_typed_refusal() {
+        const CHILD_ENV: &str = "REVERIE_KVM_NONLEADER_EXEC_HOST_ENOSYS_CHILD";
+        const PATH_ADDRESS: u64 = 0x200;
+        const ARGV_ADDRESS: u64 = 0x400;
+        const ENVP_ADDRESS: u64 = 0x500;
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            state.executable_file = Some(Arc::new(
+                std::fs::File::open(std::env::current_exe().unwrap()).unwrap(),
+            ));
+            let mut leader = ElfExecutor::new(state, false);
+            let mut worker = leader.thread_child(7).unwrap();
+            assert_ne!(worker.state.pid, worker.state.tid);
+            let mut memory = GuestMemory::new(0, 16 * 1024 * 1024).unwrap();
+            memory.write(PATH_ADDRESS, b"/proc/self/exe\0").unwrap();
+            memory
+                .write(ARGV_ADDRESS, &PATH_ADDRESS.to_le_bytes())
+                .unwrap();
+            memory
+                .write(ARGV_ADDRESS + 8, &0_u64.to_le_bytes())
+                .unwrap();
+            memory.write(ENVP_ADDRESS, &0_u64.to_le_bytes()).unwrap();
+            let request = SyscallRequest::new(
+                libc::SYS_execve as u64,
+                [PATH_ADDRESS, ARGV_ADDRESS, ENVP_ADDRESS, 0, 0, 0],
+            );
+
+            // Every faccessat2 on this thread now fails with ENOSYS.
+            let filter = [
+                // SAFETY: BPF_STMT and BPF_JUMP only build instructions.
+                unsafe {
+                    libc::BPF_STMT(
+                        (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+                        std::mem::offset_of!(libc::seccomp_data, nr) as u32,
+                    )
+                },
+                unsafe {
+                    libc::BPF_JUMP(
+                        (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+                        libc::SYS_faccessat2 as u32,
+                        0,
+                        1,
+                    )
+                },
+                unsafe {
+                    libc::BPF_STMT(
+                        (libc::BPF_RET | libc::BPF_K) as u16,
+                        libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32,
+                    )
+                },
+                unsafe {
+                    libc::BPF_STMT(
+                        (libc::BPF_RET | libc::BPF_K) as u16,
+                        libc::SECCOMP_RET_ALLOW,
+                    )
+                },
+            ];
+            let program = libc::sock_fprog {
+                len: filter.len() as u16,
+                filter: filter.as_ptr().cast_mut(),
+            };
+            // SAFETY: plain prctl and seccomp calls; `program` outlives them.
+            unsafe {
+                assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+                assert_eq!(
+                    libc::syscall(
+                        libc::SYS_seccomp,
+                        libc::SECCOMP_SET_MODE_FILTER,
+                        0,
+                        &program as *const libc::sock_fprog,
+                    ),
+                    0
+                );
+            }
+            // SAFETY: faccessat2 with a NUL-terminated path; the filter refuses it.
+            let probe =
+                unsafe { libc::syscall(libc::SYS_faccessat2, libc::AT_FDCWD, c"/".as_ptr(), 0, 0) };
+            assert_eq!(
+                (probe, std::io::Error::last_os_error().raw_os_error()),
+                (-1, Some(libc::ENOSYS))
+            );
+
+            assert_eq!(
+                worker.execute_process_action(&request, &memory),
+                Some(negative_errno(libc::ENOSYS))
+            );
+            assert_eq!(
+                worker.take_unsupported_refusal(),
+                Some(nonleader_exec_refusal_record())
+            );
+            assert!(worker.take_process_action().is_none());
+
+            assert_eq!(
+                leader.execute_process_action(&request, &memory),
+                Some(negative_errno(libc::ENOSYS))
+            );
+            assert_eq!(leader.take_unsupported_refusal(), None);
+            assert!(leader.take_process_action().is_none());
+            return;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("executor::tests::worker_exec_host_enosys_during_preflight_is_the_typed_refusal")
+            .arg("--exact")
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("failed to run the isolated host-ENOSYS exec check");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "isolated host-ENOSYS exec check failed with {}\nstdout:\n{stdout}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn worker_exec_preserves_preflight_errors_without_publishing_action() {
         const SENTINEL_ADDRESS: u64 = 0x30_0000;
@@ -57386,6 +57589,7 @@ mod tests {
                 let request = SyscallRequest::new(number as u64, args);
                 if case == "valid" {
                     assert_eq!(leader.execute_process_action(&request, &memory), Some(0));
+                    assert_eq!(leader.take_unsupported_refusal(), None);
                     assert!(matches!(
                         leader.take_process_action(),
                         Some(ProcessAction::Exec { .. })
@@ -57395,6 +57599,14 @@ mod tests {
                 eprintln!("syscall={number} case={case} result={result:?} expected=-{errno}");
                 results.push(result);
                 expected_results.push(Some(negative_errno(errno)));
+                // Only the refusal itself is typed; an ordinary preflight
+                // error is the guest's errno.
+                assert_eq!(
+                    worker.take_unsupported_refusal(),
+                    (errno == libc::ENOSYS).then(nonleader_exec_refusal_record),
+                    "syscall={number} case={case}"
+                );
+                assert_eq!(worker.take_unsupported_refusal(), None);
                 assert!(
                     worker.take_process_action().is_none(),
                     "worker exec published a process-image replacement"

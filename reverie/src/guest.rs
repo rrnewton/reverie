@@ -580,6 +580,22 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     fn detlog_memory_regions(&self) -> Option<Vec<DetlogMemoryRegion>> {
         None
     }
+
+    /// Takes the backend's typed refusal of the most recent syscall that this
+    /// handler injected, if the backend refused it as an operation it cannot
+    /// perform.
+    ///
+    /// A refused injection returns the errno named in the refusal, which can
+    /// also be an ordinary Linux failure of the same syscall. This query is how
+    /// a tool tells the two apart without knowing which backend it runs on.
+    ///
+    /// Every injection through this guest replaces the record, whether or not
+    /// it was refused, and taking it clears it, so a second call returns
+    /// `None`. Call it before injecting anything else. Backends that perform
+    /// every operation they accept always return `None`, which is the default.
+    fn take_unsupported_refusal(&mut self) -> Option<crate::UnsupportedRefusal> {
+        None
+    }
 }
 
 /// Wraps a `Guest<T>` such that it implements `Guest<U>`.
@@ -802,5 +818,9 @@ where
 
     fn detlog_memory_regions(&self) -> Option<Vec<DetlogMemoryRegion>> {
         self.inner.detlog_memory_regions()
+    }
+
+    fn take_unsupported_refusal(&mut self) -> Option<crate::UnsupportedRefusal> {
+        self.inner.take_unsupported_refusal()
     }
 }

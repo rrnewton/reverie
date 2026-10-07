@@ -74,6 +74,7 @@ mod subscription;
 pub mod task_ids;
 mod timer;
 mod tool;
+mod unsupported;
 pub mod vdso;
 
 pub use auxv::*;
@@ -97,6 +98,7 @@ pub use stack::*;
 pub use subscription::*;
 pub use timer::*;
 pub use tool::*;
+pub use unsupported::*;
 
 /// The identifier for a specific thread, corresponding to the output of gettid.
 /// In many cases, Linux blurs the Pid/Tid distinction, but Reverie should
