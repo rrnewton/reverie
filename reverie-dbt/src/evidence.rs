@@ -159,23 +159,25 @@ pub struct DbtEvidence {
 }
 
 impl DbtEvidence {
-    /// Comparable tracing-callback records in authenticated arrival order.
+    /// Comparable tracing-callback records in authenticated stream order.
     ///
     /// Process image initialization records remain authenticated in the
     /// artifact but are represented by [`Self::initialization_records`]
-    /// instead. [`Self::all_records`] keeps them at their arrival positions.
+    /// instead. [`Self::all_records`] keeps them at their stream positions.
     pub fn records(&self) -> &[Vec<u8>] {
         &self.records
     }
 
-    /// Every authenticated record in arrival order, with each process image
-    /// initialization record at the position where it arrived.
+    /// Every authenticated record in stream order, with each process image
+    /// initialization record at its position in the artifact.
     ///
     /// The decoder admits only initialization records that are byte-for-byte
     /// the protocol constant, so this returns the authenticated bytes and
-    /// invents no record or position. Across process images, positions follow
-    /// the order in which the host accepted their frames, so comparing this
-    /// stream between runs also compares that order.
+    /// invents no record or position. The collector that wrote the artifact
+    /// placed each initialization record immediately before the first
+    /// comparable record of its process image, or at the end of the stream
+    /// when that image wrote none, so its position does not depend on when
+    /// the host accepted the frame that carried it.
     ///
     /// Initialization records prove that the transport started, not that the
     /// guest did anything. A stream holding only initialization records is
@@ -185,7 +187,7 @@ impl DbtEvidence {
         let mut all = Vec::with_capacity(self.records.len() + self.initialization_positions.len());
         let mut records = self.records.iter().map(Vec::as_slice);
         for &position in &self.initialization_positions {
-            // The comparable records that arrived before this initialization.
+            // The comparable records that precede this initialization.
             all.extend(records.by_ref().take(position - all.len()));
             all.push(INITIALIZATION_RECORD);
         }
@@ -577,6 +579,9 @@ struct ImageState {
     next_sequence: u64,
     pending_exec: bool,
     initialized: bool,
+    /// The image's initialization record was accepted but not yet placed in
+    /// the stream, because the image has written no comparable record.
+    initialization_unplaced: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -593,11 +598,26 @@ struct CollectedEvidence {
     hash: u64,
 }
 
+/// Collects the run's evidence stream.
+///
+/// Guest and coordinator records enter the stream in the order they are
+/// absorbed. A process image's initialization record is the exception: the
+/// image's runtime emits it when it starts, and nothing orders that moment
+/// against the records other images are writing, so the host can accept it
+/// anywhere among them. The collector holds it back and places it immediately
+/// before the image's first comparable record, which the run's own ordering
+/// positions. An image that ends, or execs, without writing a
+/// comparable record has its initialization record placed at the end of the
+/// stream. Every such record is the same protocol constant, so their order
+/// there carries nothing.
 struct Collector {
     images: BTreeMap<ProcessKey, ImageState>,
     expected_processes: BTreeSet<ProcessKey>,
     terminal_processes: BTreeSet<ProcessKey>,
     last_receipts: BTreeMap<ProcessKey, FrameReceipt>,
+    /// Initialization records of images that ended without writing a
+    /// comparable record; [`Collector::finish`] places them at the end.
+    trailing_initializations: u64,
     encoded_records: Vec<u8>,
     record_count: u64,
     payload_bytes: u64,
@@ -613,6 +633,7 @@ impl Collector {
             expected_processes: BTreeSet::new(),
             terminal_processes: BTreeSet::new(),
             last_receipts: BTreeMap::new(),
+            trailing_initializations: 0,
             encoded_records: Vec::new(),
             record_count: 0,
             payload_bytes: 0,
@@ -646,18 +667,24 @@ impl Collector {
                         "DBT evidence exceeded its process/image state bound",
                     ));
                 }
-                let epoch = match self.images.get(&process) {
-                    Some(previous) if previous.pending_exec => previous
-                        .epoch
-                        .checked_add(1)
-                        .ok_or_else(|| invalid_data("DBT evidence image epoch overflowed"))?,
+                let (epoch, replaced_unplaced) = match self.images.get(&process) {
+                    Some(previous) if previous.pending_exec => (
+                        previous
+                            .epoch
+                            .checked_add(1)
+                            .ok_or_else(|| invalid_data("DBT evidence image epoch overflowed"))?,
+                        previous.initialization_unplaced,
+                    ),
                     Some(_) => {
                         return Err(invalid_data(
                             "DBT evidence image restarted without a pending exec",
                         ));
                     }
-                    None => 0,
+                    None => (0, false),
                 };
+                if replaced_unplaced {
+                    self.defer_to_end()?;
+                }
                 self.images.insert(
                     process,
                     ImageState {
@@ -665,6 +692,7 @@ impl Collector {
                         next_sequence: 1,
                         pending_exec: false,
                         initialized: false,
+                        initialization_unplaced: false,
                     },
                 );
                 self.saw_start = true;
@@ -717,7 +745,13 @@ impl Collector {
                 if image.pending_exec {
                     return Err(invalid_data("DBT evidence finalized with exec pending"));
                 }
-                self.images.remove(&process);
+                let image = self
+                    .images
+                    .remove(&process)
+                    .expect("validated image remains live");
+                if image.initialization_unplaced {
+                    self.defer_to_end()?;
+                }
                 self.terminal_processes.insert(process);
                 self.backend_failure |= outcome == FinalOutcome::BackendFailure;
             }
@@ -834,16 +868,29 @@ impl Collector {
         }
     }
 
+    /// Counts one held-back initialization record for the end of the stream.
+    fn defer_to_end(&mut self) -> io::Result<()> {
+        self.trailing_initializations = self
+            .trailing_initializations
+            .checked_add(1)
+            .ok_or_else(|| invalid_data("DBT evidence record count overflowed"))?;
+        Ok(())
+    }
+
     fn absorb_records(&mut self, process: ProcessKey, payload: &[u8]) -> io::Result<()> {
         if payload.is_empty() {
             return Err(invalid_data("DBT DATA frame carried no records"));
         }
         let mut cursor = 0;
-        let mut initialized = self
+        let image = self
             .images
             .get(&process)
-            .expect("DATA sequence validation requires a live image")
-            .initialized;
+            .expect("DATA sequence validation requires a live image");
+        let mut initialized = image.initialized;
+        let mut unplaced = image.initialization_unplaced;
+        // The frame's records as they enter the stream: an initialization
+        // record is held back until the image's first comparable record.
+        let mut placed = Vec::with_capacity(payload.len());
         let mut record_count = 0_u64;
         let mut payload_bytes = 0_u64;
         while cursor < payload.len() {
@@ -868,7 +915,10 @@ impl Collector {
                         "DBT evidence process image repeated its initialization record",
                     ));
                 }
-                InitializationRecord::Exact => initialized = true,
+                InitializationRecord::Exact => {
+                    initialized = true;
+                    unplaced = true;
+                }
                 InitializationRecord::Lookalike => {
                     return Err(invalid_data(
                         "DBT evidence contains a malformed initialization record",
@@ -879,24 +929,38 @@ impl Collector {
                         "DBT evidence process image data preceded its initialization record",
                     ));
                 }
-                InitializationRecord::Other => {}
+                InitializationRecord::Other => {
+                    if unplaced {
+                        unplaced = false;
+                        encode_initialization_record(&mut placed);
+                        record_count = record_count
+                            .checked_add(1)
+                            .ok_or_else(|| invalid_data("DBT evidence record count overflowed"))?;
+                        payload_bytes = payload_bytes
+                            .checked_add(INITIALIZATION_RECORD.len() as u64)
+                            .ok_or_else(|| {
+                                invalid_data("DBT evidence payload length overflowed")
+                            })?;
+                    }
+                    placed.extend_from_slice(&payload[cursor..record_end]);
+                    record_count = record_count
+                        .checked_add(1)
+                        .ok_or_else(|| invalid_data("DBT evidence record count overflowed"))?;
+                    payload_bytes = payload_bytes
+                        .checked_add(length as u64)
+                        .ok_or_else(|| invalid_data("DBT evidence payload length overflowed"))?;
+                }
             }
-            record_count = record_count
-                .checked_add(1)
-                .ok_or_else(|| invalid_data("DBT evidence record count overflowed"))?;
-            payload_bytes = payload_bytes
-                .checked_add(length as u64)
-                .ok_or_else(|| invalid_data("DBT evidence payload length overflowed"))?;
             cursor = record_end;
         }
 
-        self.append_encoded(payload, record_count, payload_bytes)?;
-        if initialized {
-            self.images
-                .get_mut(&process)
-                .expect("validated DATA process remains live")
-                .initialized = true;
-        }
+        self.append_encoded(&placed, record_count, payload_bytes)?;
+        let image = self
+            .images
+            .get_mut(&process)
+            .expect("validated DATA process remains live");
+        image.initialized = initialized;
+        image.initialization_unplaced = unplaced;
         Ok(())
     }
 
@@ -950,7 +1014,7 @@ impl Collector {
         Ok(())
     }
 
-    fn finish(self) -> io::Result<CollectedEvidence> {
+    fn finish(mut self) -> io::Result<CollectedEvidence> {
         if !self.saw_start {
             return Err(invalid_data("DBT evidence received no image START"));
         }
@@ -976,6 +1040,15 @@ impl Collector {
                 "DBT evidence is missing a child process START or FINAL frame",
             ));
         }
+        let mut trailing = Vec::new();
+        for _ in 0..self.trailing_initializations {
+            encode_initialization_record(&mut trailing);
+        }
+        let trailing_bytes = self
+            .trailing_initializations
+            .checked_mul(INITIALIZATION_RECORD.len() as u64)
+            .ok_or_else(|| invalid_data("DBT evidence payload length overflowed"))?;
+        self.append_encoded(&trailing, self.trailing_initializations, trailing_bytes)?;
         Ok(CollectedEvidence {
             encoded_records: self.encoded_records,
             record_count: self.record_count,
@@ -983,6 +1056,12 @@ impl Collector {
             hash: self.hash,
         })
     }
+}
+
+/// Appends the length-prefixed initialization record to a collected stream.
+fn encode_initialization_record(stream: &mut Vec<u8>) {
+    stream.extend_from_slice(&(INITIALIZATION_RECORD.len() as u32).to_le_bytes());
+    stream.extend_from_slice(INITIALIZATION_RECORD);
 }
 
 fn serve(
@@ -1748,7 +1827,7 @@ mod tests {
     }
 
     #[test]
-    fn all_records_keeps_each_initialization_record_at_its_arrival_position() {
+    fn all_records_keeps_each_initialization_record_at_its_stream_position() {
         let streams: [&[&[u8]]; 5] = [
             &[INITIALIZATION_RECORD, FIRST_RECORD, SECOND_RECORD],
             &[
@@ -1826,9 +1905,37 @@ mod tests {
         assert_ne!(early, late);
     }
 
-    #[test]
-    fn all_records_keeps_the_collector_accept_order_across_parent_and_child_images() {
-        const CHILD_RECORD: &[u8] = b"1970-01-01T00:00:00.000000Z INFO detcore: child\n";
+    fn published_artifact(collector: Collector) -> Vec<u8> {
+        let collected = collector.finish().unwrap();
+        let mut output = tempfile::tempfile().unwrap();
+        publish(&mut output, collected).unwrap();
+        output.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        output.read_to_end(&mut bytes).unwrap();
+        bytes
+    }
+
+    /// Where the host accepts a child's initialization frame among the
+    /// parent's records, in the parent-and-child run below.
+    #[derive(Clone, Copy, Debug)]
+    enum ChildInitialization {
+        /// Alone, right after the parent announces the child.
+        AfterAnnouncement,
+        /// Alone, after the parent's next record.
+        AfterParentRecord,
+        /// In the same frame as the child's first comparable record.
+        WithFirstChildRecord,
+    }
+
+    const CHILD_RECORD: &[u8] = b"1970-01-01T00:00:00.000000Z INFO detcore: child\n";
+
+    /// A parent writes FIRST, forks a child, and writes SECOND; then the child
+    /// writes CHILD_RECORD (or, when `child_first`, before SECOND). Only the
+    /// point where the host accepts the child's initialization varies.
+    fn parent_and_child_artifact(
+        initialization: ChildInitialization,
+        child_first: bool,
+    ) -> Vec<u8> {
         let parent = ProcessKey {
             pid: 41,
             start_time: 43,
@@ -1848,43 +1955,144 @@ mod tests {
         collector
             .absorb(FRAME_CHILD, parent, 3, &child_payload)
             .unwrap();
-        start_and_initialize(&mut collector, child);
+        let mut child_sequence = 1;
+        let mut child_data = |collector: &mut Collector, records: &[&[u8]]| {
+            collector
+                .absorb(FRAME_DATA, child, child_sequence, &encode_records(records))
+                .unwrap();
+            child_sequence += 1;
+        };
+        if matches!(initialization, ChildInitialization::AfterAnnouncement) {
+            collector.absorb(FRAME_START, child, 0, &[]).unwrap();
+            child_data(&mut collector, &[INITIALIZATION_RECORD]);
+        }
+        let parent_second = |collector: &mut Collector| {
+            collector
+                .absorb(FRAME_DATA, parent, 4, &encode_records(&[SECOND_RECORD]))
+                .unwrap();
+        };
+        if !child_first {
+            parent_second(&mut collector);
+        }
+        match initialization {
+            ChildInitialization::AfterAnnouncement => {}
+            ChildInitialization::AfterParentRecord => {
+                collector.absorb(FRAME_START, child, 0, &[]).unwrap();
+                child_data(&mut collector, &[INITIALIZATION_RECORD]);
+            }
+            ChildInitialization::WithFirstChildRecord => {
+                collector.absorb(FRAME_START, child, 0, &[]).unwrap();
+            }
+        }
+        if matches!(initialization, ChildInitialization::WithFirstChildRecord) {
+            child_data(&mut collector, &[INITIALIZATION_RECORD, CHILD_RECORD]);
+        } else {
+            child_data(&mut collector, &[CHILD_RECORD]);
+        }
+        if child_first {
+            parent_second(&mut collector);
+        }
         collector
-            .absorb(FRAME_DATA, parent, 4, &encode_records(&[SECOND_RECORD]))
-            .unwrap();
-        collector
-            .absorb(FRAME_DATA, child, 2, &encode_records(&[CHILD_RECORD]))
-            .unwrap();
-        collector
-            .absorb(FRAME_FINAL, child, 3, &[FINAL_GUEST_COMPLETED])
+            .absorb(FRAME_FINAL, child, child_sequence, &[FINAL_GUEST_COMPLETED])
             .unwrap();
         collector
             .absorb(FRAME_FINAL, parent, 5, &[FINAL_GUEST_COMPLETED])
             .unwrap();
+        published_artifact(collector)
+    }
 
-        let collected = collector.finish().unwrap();
-        let mut output = tempfile::tempfile().unwrap();
-        publish(&mut output, collected).unwrap();
-        output.seek(SeekFrom::Start(0)).unwrap();
-        let mut bytes = Vec::new();
-        output.read_to_end(&mut bytes).unwrap();
-        let evidence = decode_evidence(&bytes).unwrap();
+    #[test]
+    fn collector_places_a_child_initialization_wherever_the_host_accepted_it() {
+        // Two runs of one guest differ only in where the host accepted the
+        // child's initialization frame; see
+        // https://github.com/rrnewton/hermit/issues/3838. The artifacts must
+        // be identical, with the child's initialization record immediately
+        // before the child's first comparable record.
+        let canonical = parent_and_child_artifact(ChildInitialization::AfterAnnouncement, false);
+        for initialization in [
+            ChildInitialization::AfterParentRecord,
+            ChildInitialization::WithFirstChildRecord,
+        ] {
+            assert_eq!(
+                parent_and_child_artifact(initialization, false),
+                canonical,
+                "{initialization:?}"
+            );
+        }
+        let evidence = decode_evidence(&canonical).unwrap();
+        assert_eq!(
+            evidence.all_records(),
+            [
+                INITIALIZATION_RECORD,
+                FIRST_RECORD,
+                SECOND_RECORD,
+                INITIALIZATION_RECORD,
+                CHILD_RECORD,
+            ]
+        );
+        assert_eq!(evidence.initialization_records(), 2);
+    }
 
+    #[test]
+    fn collector_keeps_the_order_of_comparable_records_across_images() {
+        // Placing initialization records does not hide where the comparable
+        // records were written: the child writing before the parent's second
+        // record is a different stream.
+        let parent_first = parent_and_child_artifact(ChildInitialization::AfterAnnouncement, false);
+        let child_first = parent_and_child_artifact(ChildInitialization::AfterAnnouncement, true);
+        assert_ne!(parent_first, child_first);
+        assert_eq!(
+            decode_evidence(&child_first).unwrap().all_records(),
+            [
+                INITIALIZATION_RECORD,
+                FIRST_RECORD,
+                INITIALIZATION_RECORD,
+                CHILD_RECORD,
+                SECOND_RECORD,
+            ]
+        );
+    }
+
+    #[test]
+    fn collector_places_initializations_of_images_with_no_comparable_record_at_the_end() {
+        let process = ProcessKey {
+            pid: 59,
+            start_time: 61,
+        };
+        let silent = ProcessKey {
+            pid: 67,
+            start_time: 71,
+        };
+        let mut collector = Collector::new();
+        // An image that execs before writing a comparable record, then a
+        // second image of the same process that writes one.
+        start_and_initialize(&mut collector, process);
+        collector.absorb(FRAME_EXEC, process, 2, &[]).unwrap();
+        start_and_initialize(&mut collector, process);
+        // A process that ends without writing a comparable record.
+        start_and_initialize(&mut collector, silent);
+        collector
+            .absorb(FRAME_FINAL, silent, 2, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
+        collector
+            .absorb(FRAME_DATA, process, 2, &encode_records(&[FIRST_RECORD]))
+            .unwrap();
+        collector
+            .absorb(FRAME_FINAL, process, 3, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
+
+        let evidence = decode_evidence(&published_artifact(collector)).unwrap();
         assert_eq!(
             evidence.all_records(),
             [
                 INITIALIZATION_RECORD,
                 FIRST_RECORD,
                 INITIALIZATION_RECORD,
-                SECOND_RECORD,
-                CHILD_RECORD,
+                INITIALIZATION_RECORD,
             ]
         );
-        assert_eq!(
-            evidence.records(),
-            [FIRST_RECORD, SECOND_RECORD, CHILD_RECORD]
-        );
-        assert_eq!(evidence.initialization_records(), 2);
+        // Every initialization record is still counted.
+        assert_eq!(evidence.initialization_records(), 3);
     }
 
     #[test]
