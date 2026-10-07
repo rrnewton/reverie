@@ -657,36 +657,41 @@ enum ChildWait {
     Output(Output),
 }
 
-async fn serve_rpc_until<G, F, T>(
+async fn serve_rpc_until<G, F, T, B>(
     server: RpcServer<G>,
     stats_server: Option<RpcServer<crate::stats::LiteinstStatsGlobal>>,
     connection_monitors: Vec<ConnectionMonitor>,
     completion: F,
+    failure: B,
 ) -> io::Result<T>
 where
     G: GlobalTool + 'static,
     F: Future<Output = io::Result<T>>,
+    B: Future<Output = ()>,
 {
     serve_rpc_until_with_timeout(
         server,
         stats_server,
         connection_monitors,
         completion,
+        failure,
         RPC_CONNECTION_DRAIN_TIMEOUT,
     )
     .await
 }
 
-async fn serve_rpc_until_with_timeout<G, F, T>(
+async fn serve_rpc_until_with_timeout<G, F, T, B>(
     server: RpcServer<G>,
     stats_server: Option<RpcServer<crate::stats::LiteinstStatsGlobal>>,
     connection_monitors: Vec<ConnectionMonitor>,
     completion: F,
+    failure: B,
     drain_timeout: Duration,
 ) -> io::Result<T>
 where
     G: GlobalTool + 'static,
     F: Future<Output = io::Result<T>>,
+    B: Future<Output = ()>,
 {
     // JoinSet aborts the server if this future is cancelled. RpcServer::serve
     // owns the per-connection JoinSet, so aborting it also releases every
@@ -697,8 +702,22 @@ where
         serving.spawn(stats_server.serve());
     }
 
-    serve_rpc_tasks_until_with_timeout(serving, connection_monitors, completion, drain_timeout)
-        .await
+    serve_rpc_tasks_until_with_timeout(
+        serving,
+        connection_monitors,
+        completion,
+        failure,
+        drain_timeout,
+    )
+    .await
+}
+
+/// The error a launch returns when the coordinator's tool reported a backend
+/// failure (`GlobalTool::report_backend_failure`).
+fn backend_failure_error() -> io::Error {
+    io::Error::other(
+        "the coordinator's tool reported a backend failure; the run cannot continue faithfully",
+    )
 }
 
 fn rpc_server_stopped(
@@ -713,19 +732,29 @@ fn rpc_server_stopped(
     io::Error::other(message)
 }
 
-async fn serve_rpc_tasks_until_with_timeout<F, T>(
+/// Serves the coordinator until `completion` (the root guest's wait) and the
+/// drain of every connection, or until `failure` completes: the tool reported
+/// a backend failure. A failure ends the run at once with an error, before or
+/// during the drain, and wins over a completion that is ready at the same time.
+/// Returning drops the servers and so every guest connection; the caller kills
+/// any guest that remains.
+async fn serve_rpc_tasks_until_with_timeout<F, T, B>(
     mut serving: tokio::task::JoinSet<Result<(), RpcError>>,
     connection_monitors: Vec<ConnectionMonitor>,
     completion: F,
+    failure: B,
     drain_timeout: Duration,
 ) -> io::Result<T>
 where
     F: Future<Output = io::Result<T>>,
+    B: Future<Output = ()>,
 {
     tokio::pin!(completion);
+    tokio::pin!(failure);
 
     let mut result = tokio::select! {
         biased;
+        () = &mut failure => return Err(backend_failure_error()),
         result = &mut completion => result,
         result = serving.join_next() => return Err(rpc_server_stopped(result)),
     };
@@ -742,12 +771,32 @@ where
         }
     };
     tokio::pin!(drain);
+    let mut failed = false;
     let drain_result = tokio::select! {
         biased;
+        () = &mut failure => {
+            failed = true;
+            Ok(())
+        }
         result = serving.join_next() => return Err(rpc_server_stopped(result)),
         result = tokio::time::timeout(drain_timeout, &mut drain) => result,
     };
-    if drain_result.is_err() {
+    // A failure published in the same instant the drain ended still fails the
+    // run. `failure` has not completed here unless `failed` is set, so it is
+    // polled at most once more.
+    if !failed {
+        failed = std::future::poll_fn(|context| {
+            std::task::Poll::Ready(failure.as_mut().poll(context).is_ready())
+        })
+        .await;
+    }
+    if failed {
+        if result.is_ok() {
+            result = Err(backend_failure_error());
+        } else {
+            tracing::warn!("a backend failure was reported; preserving guest completion error");
+        }
+    } else if drain_result.is_err() {
         let active_connections = connection_monitors
             .iter()
             .map(ConnectionMonitor::active_connections)
@@ -767,6 +816,9 @@ where
     while let Some(server_result) = serving.join_next().await {
         match server_result {
             Err(error) if error.is_cancelled() => {}
+            // A selected backend failure is the run's terminal error; a server
+            // that also stopped while the loop shut down does not replace it.
+            _ if failed => {}
             Ok(Ok(())) => {
                 return Err(io::Error::other(
                     "LiteInst coordinator stopped unexpectedly",
@@ -914,10 +966,16 @@ where
                     child.wait().map(ChildWait::Status)
                 }
             });
-            serve_rpc_until(server, stats_server, connection_monitors, async move {
-                wait.await
-                    .map_err(|error| io::Error::other(error.to_string()))?
-            })
+            serve_rpc_until(
+                server,
+                stats_server,
+                connection_monitors,
+                async move {
+                    wait.await
+                        .map_err(|error| io::Error::other(error.to_string()))?
+                },
+                backend_failure(&global),
+            )
             .await?
         }
         None => {
@@ -936,10 +994,16 @@ where
                     child.wait().map(ChildWait::Status)
                 }
             });
-            serve_rpc_until(server, stats_server, connection_monitors, async move {
-                wait.await
-                    .map_err(|error| io::Error::other(error.to_string()))?
-            })
+            serve_rpc_until(
+                server,
+                stats_server,
+                connection_monitors,
+                async move {
+                    wait.await
+                        .map_err(|error| io::Error::other(error.to_string()))?
+                },
+                backend_failure(&global),
+            )
             .await?
         }
     };
@@ -956,6 +1020,14 @@ where
         None => None,
     };
     Ok((wait, global, stats))
+}
+
+/// Completes when the coordinator's tool reports a backend failure. It holds
+/// the global state only until the serve loop that polls it returns, so the
+/// launch can still reclaim the state by value afterwards.
+fn backend_failure<G: GlobalTool + 'static>(global: &Arc<G>) -> impl Future<Output = ()> + use<G> {
+    let global = Arc::clone(global);
+    async move { global.wait_for_backend_failure().await }
 }
 
 fn tool_preload_path() -> io::Result<PathBuf> {
@@ -1064,6 +1136,7 @@ mod tests {
             None,
             vec![monitor.clone()],
             completion,
+            std::future::pending(),
         ));
 
         let initial_poll =
@@ -1127,7 +1200,13 @@ mod tests {
 
         tokio::time::timeout(
             Duration::from_secs(5),
-            serve_rpc_until(server, None, connection_monitors, completion),
+            serve_rpc_until(
+                server,
+                None,
+                connection_monitors,
+                completion,
+                std::future::pending(),
+            ),
         )
         .await
         .expect("the second local RPC connection blocked at its config handshake")
@@ -1190,6 +1269,7 @@ mod tests {
             Some(stats_server),
             connection_monitors,
             completion,
+            std::future::pending(),
             Duration::from_secs(1),
         ));
 
@@ -1262,6 +1342,7 @@ mod tests {
             server_tasks,
             vec![monitor.clone()],
             completion,
+            std::future::pending(),
             Duration::from_secs(1),
         ));
 
@@ -1287,6 +1368,195 @@ mod tests {
 
         release_client_tx.send(()).unwrap();
         client.await.unwrap();
+    }
+
+    /// A connected client that holds its connection until told to drop it,
+    /// a serve loop over it, and the senders that complete the guest's wait
+    /// and publish a backend failure.
+    struct FailureCase {
+        serving: std::pin::Pin<Box<dyn Future<Output = io::Result<()>>>>,
+        complete: tokio::sync::oneshot::Sender<()>,
+        fail: tokio::sync::oneshot::Sender<()>,
+        release_client: tokio::sync::oneshot::Sender<()>,
+        client: tokio::task::JoinHandle<()>,
+        monitor: ConnectionMonitor,
+    }
+
+    async fn failure_case() -> FailureCase {
+        let directory = short_socket_tempdir();
+        let socket = directory.path().join("coordinator.sock");
+        let server = RpcServer::bind(&socket, Arc::new(MultiClientGlobal::default()), 41).unwrap();
+        let monitor = server.connection_monitor();
+        let (connected_tx, connected_rx) = tokio::sync::oneshot::channel();
+        let (release_client, release_client_rx) = tokio::sync::oneshot::channel();
+        let (complete, complete_rx) = tokio::sync::oneshot::channel::<()>();
+        let (fail, fail_rx) = tokio::sync::oneshot::channel::<()>();
+        let client = tokio::spawn(async move {
+            let client = reverie_rpc_transport::RpcClient::<MultiClientGlobal>::connect(
+                &socket,
+                Tid::from_raw(606),
+            )
+            .await
+            .unwrap();
+            connected_tx.send(()).unwrap();
+            let _ = release_client_rx.await;
+            drop(client);
+            drop(directory);
+        });
+        let mut server_tasks = tokio::task::JoinSet::new();
+        server_tasks.spawn(server.serve());
+        let completion = async move {
+            complete_rx
+                .await
+                .map_err(|error| io::Error::other(error.to_string()))
+        };
+        let failure = async move {
+            let _ = fail_rx.await;
+        };
+        let serving = Box::pin(serve_rpc_tasks_until_with_timeout(
+            server_tasks,
+            vec![monitor.clone()],
+            completion,
+            failure,
+            Duration::from_secs(30),
+        ));
+        connected_rx.await.unwrap();
+        FailureCase {
+            serving,
+            complete,
+            fail,
+            release_client,
+            client,
+            monitor,
+        }
+    }
+
+    async fn poll_once(
+        serving: &mut std::pin::Pin<Box<dyn Future<Output = io::Result<()>>>>,
+    ) -> bool {
+        std::future::poll_fn(|context| std::task::Poll::Ready(serving.as_mut().poll(context)))
+            .await
+            .is_pending()
+    }
+
+    fn assert_backend_failure(result: io::Result<()>) {
+        let error = result.unwrap_err();
+        assert_eq!(error.to_string(), backend_failure_error().to_string());
+    }
+
+    /// A backend failure while the root guest still runs ends the serve loop
+    /// at once, with the failure, although a connection is still open.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_backend_failure_ends_the_run_while_the_guest_runs() {
+        let mut case = failure_case().await;
+        assert!(poll_once(&mut case.serving).await);
+        case.fail.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), case.serving)
+            .await
+            .expect("a backend failure did not end the serve loop");
+        assert_backend_failure(result);
+        let _ = case.complete.send(());
+        let _ = case.release_client.send(());
+        case.client.await.unwrap();
+    }
+
+    /// A backend failure during the drain ends it at once, instead of waiting
+    /// for the drain's 30-second bound.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_backend_failure_ends_the_drain() {
+        let mut case = failure_case().await;
+        case.complete.send(()).unwrap();
+        assert!(poll_once(&mut case.serving).await);
+        assert_eq!(case.monitor.active_connections(), 1);
+        case.fail.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), case.serving)
+            .await
+            .expect("a backend failure did not end the drain");
+        assert_backend_failure(result);
+        let _ = case.release_client.send(());
+        case.client.await.unwrap();
+    }
+
+    /// A failure published with the guest's completion wins over it, and one
+    /// published in the instant the drain ends still fails the run.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_backend_failure_wins_over_a_simultaneous_completion() {
+        let case = failure_case().await;
+        case.fail.send(()).unwrap();
+        case.complete.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), case.serving)
+            .await
+            .expect("the serve loop hung");
+        assert_backend_failure(result);
+        let _ = case.release_client.send(());
+        case.client.await.unwrap();
+
+        let mut case = failure_case().await;
+        case.complete.send(()).unwrap();
+        assert!(poll_once(&mut case.serving).await);
+        // The drain's end and the failure become ready together.
+        case.release_client.send(()).unwrap();
+        case.fail.send(()).unwrap();
+        case.client.await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), case.serving)
+            .await
+            .expect("the serve loop hung");
+        assert_backend_failure(result);
+    }
+
+    /// A failure that becomes ready only after the drain has ended (the drain
+    /// arm completes in the same poll in which the failure arm was still
+    /// pending) is caught by the one extra poll after the drain.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_backend_failure_published_as_the_drain_ends_still_fails_the_run() {
+        let directory = short_socket_tempdir();
+        let socket = directory.path().join("coordinator.sock");
+        let server = RpcServer::bind(&socket, Arc::new(MultiClientGlobal::default()), 41).unwrap();
+        let monitor = server.connection_monitor();
+        let (connected_tx, connected_rx) = tokio::sync::oneshot::channel();
+        let (release_client, release_client_rx) = tokio::sync::oneshot::channel::<()>();
+        let client = tokio::spawn(async move {
+            let client = reverie_rpc_transport::RpcClient::<MultiClientGlobal>::connect(
+                &socket,
+                Tid::from_raw(607),
+            )
+            .await
+            .unwrap();
+            connected_tx.send(()).unwrap();
+            let _ = release_client_rx.await;
+            drop(client);
+        });
+        let mut server_tasks = tokio::task::JoinSet::new();
+        server_tasks.spawn(server.serve());
+        // Pending until it has seen the connections idle once, then ready: so
+        // in the poll that ends the drain it is still pending, and ready at
+        // the next poll.
+        let idle = monitor.clone();
+        let mut seen_idle = false;
+        let failure = std::future::poll_fn(move |_| {
+            if idle.active_connections() == 0 {
+                if seen_idle {
+                    return std::task::Poll::Ready(());
+                }
+                seen_idle = true;
+            }
+            std::task::Poll::Pending
+        });
+        let serving = serve_rpc_tasks_until_with_timeout(
+            server_tasks,
+            vec![monitor.clone()],
+            async { Ok(()) },
+            failure,
+            Duration::from_secs(30),
+        );
+        connected_rx.await.unwrap();
+        release_client.send(()).unwrap();
+        client.await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), serving)
+            .await
+            .expect("the serve loop hung");
+        assert_backend_failure(result);
+        drop(directory);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1321,6 +1591,7 @@ mod tests {
                 None,
                 connection_monitors,
                 completion,
+                std::future::pending(),
                 Duration::from_millis(25),
             ),
         )
@@ -1381,6 +1652,7 @@ mod tests {
                 None,
                 connection_monitors,
                 completion,
+                std::future::pending(),
                 Duration::from_millis(25),
             ),
         )

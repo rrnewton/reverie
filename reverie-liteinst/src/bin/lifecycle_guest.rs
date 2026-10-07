@@ -26,6 +26,15 @@ const RPC_GETTIMEOFDAY: u64 = 3;
 const RPC_FORK: u64 = 4;
 const RPC_CLOSE_RANGE: u64 = 5;
 const RPC_BLOCKING: u64 = 6;
+/// Parks the sending process: the coordinator never answers it.
+const RPC_PARK: u64 = 7;
+/// Makes the coordinator's tool report a backend failure, once a process is
+/// parked.
+const RPC_FAIL: u64 = 8;
+/// Set by the `backend-failure` mode: the next getppid callback sends
+/// `RPC_PARK`, and the next getpid callback sends `RPC_FAIL`.
+static PARK_ON_GETPPID: AtomicBool = AtomicBool::new(false);
+static FAIL_ON_GETPID: AtomicBool = AtomicBool::new(false);
 /// Set by the `blocking-global-rpc` mode: the next getpid callback probes
 /// `blocking_global_rpc` from inside the callback, outside its own send_rpc.
 static PROBE_BLOCKING_RPC: AtomicBool = AtomicBool::new(false);
@@ -213,6 +222,13 @@ impl Tool for LifecycleTool {
         CALLBACKS.fetch_add(1, Ordering::Relaxed);
         if syscall.number() == Sysno::getpid && PROBE_BLOCKING_RPC.swap(false, Ordering::Relaxed) {
             probe_blocking_global_rpc();
+        }
+        if syscall.number() == Sysno::getppid && PARK_ON_GETPPID.swap(false, Ordering::Relaxed) {
+            // Never answered: this process stays parked until the run ends.
+            guest.send_rpc(RPC_PARK).await;
+        }
+        if syscall.number() == Sysno::getpid && FAIL_ON_GETPID.swap(false, Ordering::Relaxed) {
+            guest.send_rpc(RPC_FAIL).await;
         }
         if syscall.number() == Sysno::wait4 {
             if FORCE_WAIT_RESTART.swap(false, Ordering::Relaxed) {
@@ -968,6 +984,21 @@ fn creation_identity() {
 /// send_rpc, reaches the coordinator through the process's connection with
 /// `blocking_global_rpc`; a global state that is not the installed Tool's is
 /// refused without sending. The getpid callback runs the probe.
+/// A child makes the coordinator's tool report a backend failure while its
+/// parent is parked in a request the tool never answers. The run must end
+/// with that failure; without it, the parent would wait forever.
+fn backend_failure() {
+    let child = unsafe { libc::syscall(libc::SYS_fork) };
+    if child == 0 {
+        FAIL_ON_GETPID.store(true, Ordering::Relaxed);
+        unsafe { libc::syscall(libc::SYS_getpid) };
+        unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+    }
+    PARK_ON_GETPPID.store(true, Ordering::Relaxed);
+    unsafe { libc::syscall(libc::SYS_getppid) };
+    println!("the parked request was answered");
+}
+
 fn blocking_global_rpc() {
     PROBE_BLOCKING_RPC.store(true, Ordering::Relaxed);
     unsafe { libc::getpid() };
@@ -1366,6 +1397,11 @@ fn main() {
     if mode == "blocking-global-rpc" {
         install_tool();
         blocking_global_rpc();
+        return;
+    }
+    if mode == "backend-failure" {
+        install_tool();
+        backend_failure();
         return;
     }
     if mode == "close-range-through-tool" {
