@@ -5015,6 +5015,11 @@ static void thread_exit(void* drcontext) {
 #define STATS_WIRE_RECORD_LEN 144
 #define STATS_WIRE_VERSION 1
 #define STATS_WIRE_FLAG_DR_STATS_PRESENT 1u
+// Set when this image ended through exit_runtime_tree. Without an isolated
+// process group that path ends only this process, so the record is how the
+// launcher's caller learns a child failed (backend_stats.rs,
+// WIRE_FLAG_BACKEND_FAILURE).
+#define STATS_WIRE_FLAG_BACKEND_FAILURE 2u
 
 static void stats_put_u64_le(unsigned char* out, uint64_t value) {
   for (int byte = 0; byte < 8; ++byte)
@@ -5027,20 +5032,26 @@ static void stats_put_u64_le(unsigned char* out, uint64_t value) {
 // per-image in append mode and the whole record is written by a single
 // dr_write_file, so concurrent images append their 144-byte records atomically
 // without interleaving.
-static void emit_stats_record(void) {
+// Appends this image's record to the run's stats file. A copied (pre-exec)
+// runtime passes include_counters=false: its counters were copied from the
+// parent, so it records only its identity and flags, which keeps a terminal
+// failure in a forked child visible without counting the parent's work twice.
+static void emit_stats_record(bool include_counters) {
   uint64_t branches = 0;
   uint64_t syscalls = 0;
   uint64_t rewritten = 0;
   uint64_t memory_hash = 0;
-  reverie_dbt_runtime_totals(&branches, &syscalls, &rewritten, &memory_hash);
-  uint64_t stdin_reads =
-      atomic_load_explicit(&stdin_read_count, memory_order_relaxed);
+  uint64_t stdin_reads = 0;
+  if (include_counters) {
+    reverie_dbt_runtime_totals(&branches, &syscalls, &rewritten, &memory_hash);
+    stdin_reads = atomic_load_explicit(&stdin_read_count, memory_order_relaxed);
+  }
   uint64_t generation =
       atomic_load_explicit(&image_generation, memory_order_acquire);
 
   dr_stats_t dr_stats;
   dr_stats.size = sizeof(dr_stats);
-  bool dr_stats_present = dr_get_stats(&dr_stats);
+  bool dr_stats_present = include_counters && dr_get_stats(&dr_stats);
 
   unsigned char record[STATS_WIRE_RECORD_LEN];
   memset(record, 0, sizeof(record));
@@ -5050,6 +5061,8 @@ static void emit_stats_record(void) {
   record[10] = (unsigned char)(STATS_WIRE_RECORD_LEN & 0xff);
   record[11] = (unsigned char)((STATS_WIRE_RECORD_LEN >> 8) & 0xff);
   uint32_t flags = dr_stats_present ? STATS_WIRE_FLAG_DR_STATS_PRESENT : 0u;
+  if (atomic_load_explicit(&runtime_backend_failure, memory_order_acquire))
+    flags |= STATS_WIRE_FLAG_BACKEND_FAILURE;
   record[12] = (unsigned char)(flags & 0xff);
   record[13] = (unsigned char)((flags >> 8) & 0xff);
   record[14] = (unsigned char)((flags >> 16) & 0xff);
@@ -5105,7 +5118,20 @@ static void emit_stats_record(void) {
         diagnostic_file, "reverie-dbt: failed to open stats sink for append\n");
     return;
   }
-  dr_write_file(stats_file, record, sizeof(record));
+  // One append keeps the record whole among other images' appends; a retry
+  // could interleave with them. A short or failed write is reported, because
+  // a missing record can hide this image's backend failure from the launcher's
+  // caller (a partial record makes the whole stream undecodable instead).
+  ssize_t written = dr_write_file(stats_file, record, sizeof(record));
+  if (written != (ssize_t)sizeof(record))
+    dr_fprintf(
+        diagnostic_file,
+        "reverie-dbt: could not append the stats record (%d of %d bytes)%s\n",
+        (int)written,
+        (int)sizeof(record),
+        atomic_load_explicit(&runtime_backend_failure, memory_order_acquire)
+            ? "; this process ended on a backend failure"
+            : "");
   dr_close_file(stats_file);
 }
 
@@ -5138,8 +5164,13 @@ static void event_exit(void) {
         stdin_reads,
         memory_hash);
   }
-  if (stats_path[0] != 0 && !has_copied_runtime())
-    emit_stats_record();
+  if (stats_path[0] != 0) {
+    if (!has_copied_runtime())
+      emit_stats_record(true);
+    else if (atomic_load_explicit(
+                 &runtime_backend_failure, memory_order_acquire))
+      emit_stats_record(false);
+  }
   if (unsupported_report_file != INVALID_FILE) {
     dr_close_file(unsupported_report_file);
     unsupported_report_file = INVALID_FILE;

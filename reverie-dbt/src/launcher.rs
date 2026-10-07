@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::fmt;
 use std::fs::File;
 use std::future::Future;
 use std::io;
@@ -28,6 +29,7 @@ use std::process::Output;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
 use reverie::BackendStatsRequest;
@@ -731,8 +733,16 @@ impl DbtRunner {
         Ok(child)
     }
 
-    fn wait_for_status(&self, mut child: Child) -> io::Result<ExitStatus> {
-        let status = if !self.manages_process_group() {
+    fn wait_for_status(&self, child: Child) -> io::Result<ExitStatus> {
+        let status = self.reap_tree(child);
+        self.finish_status(status)
+    }
+
+    /// Waits for the guest's root and, when this runner manages the process
+    /// group, empties the group, then reaps the root. An error here means the
+    /// tree may still hold the guest's output pipes open.
+    fn reap_tree(&self, mut child: Child) -> io::Result<ExitStatus> {
+        if !self.manages_process_group() {
             child.wait()
         } else {
             let process_group = child.id() as i32;
@@ -751,7 +761,12 @@ impl DbtRunner {
                 (Ok(()), status) => status,
                 (Err(error), _) => Err(error),
             }
-        };
+        }
+    }
+
+    /// Finishes protected evidence for a reaped tree and folds its result into
+    /// the tree's status.
+    fn finish_status(&self, status: io::Result<ExitStatus>) -> io::Result<ExitStatus> {
         if self.defer_evidence_finish
             && let Some(evidence) = &self.evidence
         {
@@ -790,16 +805,31 @@ impl DbtRunner {
         }
 
         std::thread::scope(|scope| {
-            let cancelled = Arc::new(AtomicBool::new(false));
-            let stdout_cancelled = Arc::clone(&cancelled);
-            let stderr_cancelled = Arc::clone(&cancelled);
-            let stdout_reader =
-                scope.spawn(move || read_cancellable(&mut stdout, &stdout_cancelled));
-            let stderr_reader =
-                scope.spawn(move || read_cancellable(&mut stderr, &stderr_cancelled));
-            let status = self.wait_for_status(child);
-            if status.is_err() {
-                cancelled.store(true, Ordering::Release);
+            let stop = Arc::new(AtomicU8::new(READ_ON));
+            let stdout_stop = Arc::clone(&stop);
+            let stderr_stop = Arc::clone(&stop);
+            let stdout_reader = scope.spawn(move || read_cancellable(&mut stdout, &stdout_stop));
+            let stderr_reader = scope.spawn(move || read_cancellable(&mut stderr, &stderr_stop));
+            let reaped = self.reap_tree(child);
+            let reap_failed = reaped.is_err();
+            if reap_failed {
+                // A tree member may still hold the pipes; what was read so far
+                // is not the run's output.
+                stop.store(READ_DISCARD, Ordering::Release);
+            }
+            let status = self.finish_status(reaped);
+            if status.is_err() && !reap_failed {
+                // The tree was reaped, so its members have closed the pipes,
+                // and the readers normally reach end of file at once. A guest
+                // may still have handed a pipe to a process outside the tree;
+                // do not let that hold the error back. Keep what was read.
+                let deadline = std::time::Instant::now() + FAILED_RUN_OUTPUT_DRAIN;
+                while !(stdout_reader.is_finished() && stderr_reader.is_finished())
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                stop.store(READ_KEEP, Ordering::Release);
             }
             let stdout = stdout_reader
                 .join()
@@ -808,11 +838,19 @@ impl DbtRunner {
                 .join()
                 .map_err(|_| io::Error::other("DBT stderr reader thread panicked"));
 
-            Ok(Output {
-                status: status?,
-                stdout: stdout??,
-                stderr: stderr??,
-            })
+            match status {
+                Ok(status) => Ok(Output {
+                    status,
+                    stdout: stdout??,
+                    stderr: stderr??,
+                }),
+                Err(error) => Err(match (stdout, stderr) {
+                    (Ok(Ok(stdout)), Ok(Ok(stderr))) => {
+                        DbtFailedRunOutput::attach(error, stdout, stderr)
+                    }
+                    _ => error,
+                }),
+            }
         })
     }
 
@@ -987,6 +1025,56 @@ impl DbtRunner {
 /// not an `io::ErrorKind` any caller should branch on. The underlying error is
 /// preserved verbatim in the message, which is where the cause has always been
 /// read.
+/// The output a DBT run captured before its status or its protected evidence
+/// failed.
+///
+/// The output methods of [`DbtRunner`] return an [`io::Error`] that carries
+/// this value, with the original error's kind and message, when the guest tree
+/// was reaped. A run that ends on a backend or Tool failure usually wrote the
+/// reason to its stderr just before, so a caller can still show it. Read it
+/// with [`failed_run_output`]. The streams hold everything the tree wrote,
+/// unless a guest handed a pipe to a process outside the tree: the readers
+/// then stop after a bounded drain, and the streams end there.
+#[derive(Debug)]
+pub struct DbtFailedRunOutput {
+    /// Everything the guest tree wrote to stdout.
+    pub stdout: Vec<u8>,
+    /// Everything the guest tree wrote to stderr.
+    pub stderr: Vec<u8>,
+    error: io::Error,
+}
+
+impl DbtFailedRunOutput {
+    fn attach(error: io::Error, stdout: Vec<u8>, stderr: Vec<u8>) -> io::Error {
+        io::Error::new(
+            error.kind(),
+            Self {
+                stdout,
+                stderr,
+                error,
+            },
+        )
+    }
+}
+
+impl fmt::Display for DbtFailedRunOutput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for DbtFailedRunOutput {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+/// The output that a failed DBT run captured, when `error` came from one of
+/// [`DbtRunner`]'s output methods and the output was read in full.
+pub fn failed_run_output(error: &io::Error) -> Option<&DbtFailedRunOutput> {
+    error.get_ref()?.downcast_ref()
+}
+
 fn combine_status_and_evidence(
     status: io::Result<ExitStatus>,
     evidence: io::Result<()>,
@@ -1186,26 +1274,41 @@ fn set_nonblocking(stream: &impl AsRawFd) -> io::Result<()> {
     Ok(())
 }
 
-fn read_cancellable(reader: &mut impl Read, cancelled: &AtomicBool) -> io::Result<Vec<u8>> {
+/// The output readers keep reading.
+const READ_ON: u8 = 0;
+/// Process-group cleanup failed: the readers stop and return an error.
+const READ_DISCARD: u8 = 1;
+/// The run failed after its tree was reaped: the readers stop and return what
+/// they have read.
+const READ_KEEP: u8 = 2;
+
+/// How long the output readers may keep draining after a run that was reaped
+/// has failed. A reaped tree has closed its pipes, so this bounds only a pipe
+/// that a guest handed to a process outside the tree.
+const FAILED_RUN_OUTPUT_DRAIN: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn read_cancellable(reader: &mut impl Read, stop: &AtomicU8) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 8192];
+    let stopped = |bytes: &mut Vec<u8>| match stop.load(Ordering::Acquire) {
+        READ_DISCARD => Some(Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "DBT output capture cancelled after process-group cleanup failed",
+        ))),
+        READ_KEEP => Some(Ok(std::mem::take(bytes))),
+        _ => None,
+    };
     loop {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "DBT output capture cancelled after process-group cleanup failed",
-            ));
+        if let Some(result) = stopped(&mut bytes) {
+            return result;
         }
         match reader.read(&mut buffer) {
             Ok(0) => return Ok(bytes),
             Ok(read) => bytes.extend_from_slice(&buffer[..read]),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if cancelled.load(Ordering::Acquire) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "DBT output capture cancelled after process-group cleanup failed",
-                    ));
+                if let Some(result) = stopped(&mut bytes) {
+                    return result;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
@@ -1833,17 +1936,42 @@ mod tests {
 
         let (mut reader, mut writer) = UnixStream::pair().unwrap();
         set_nonblocking(&reader).unwrap();
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicU8::new(READ_ON));
         std::thread::scope(|scope| {
             let writer = scope.spawn(move || while writer.write_all(&[b'x'; 4096]).is_ok() {});
-            let reader_cancelled = Arc::clone(&cancelled);
-            let handle = scope.spawn(move || read_cancellable(&mut reader, &reader_cancelled));
+            let reader_stop = Arc::clone(&stop);
+            let handle = scope.spawn(move || read_cancellable(&mut reader, &reader_stop));
             std::thread::sleep(std::time::Duration::from_millis(5));
-            cancelled.store(true, Ordering::Release);
+            stop.store(READ_DISCARD, Ordering::Release);
             let error = handle.join().unwrap().unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::Interrupted);
             writer.join().unwrap();
         });
+    }
+
+    #[test]
+    fn a_kept_output_reader_returns_what_it_read_while_a_writer_still_holds_the_pipe() {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixStream;
+
+        let (mut reader, mut writer) = UnixStream::pair().unwrap();
+        set_nonblocking(&reader).unwrap();
+        writer.write_all(b"the reason the run failed\n").unwrap();
+        let stop = Arc::new(AtomicU8::new(READ_ON));
+        std::thread::scope(|scope| {
+            let reader_stop = Arc::clone(&stop);
+            let handle = scope.spawn(move || read_cancellable(&mut reader, &reader_stop));
+            // `writer` stays open, as a pipe held outside the reaped tree
+            // would, so the reader never sees end of file.
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            assert!(!handle.is_finished());
+            stop.store(READ_KEEP, Ordering::Release);
+            assert_eq!(
+                handle.join().unwrap().unwrap(),
+                b"the reason the run failed\n"
+            );
+        });
+        drop(writer);
     }
 
     #[test]
@@ -2123,6 +2251,73 @@ mod tests {
                 .windows(b"requested backend failure for testing".len())
                 .any(|window| window == b"requested backend failure for testing")
         );
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn a_backend_failure_under_protected_evidence_keeps_the_captured_stderr() {
+        let file = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap()
+            .client_argument("-test-backend-failure");
+
+        let error = runner.output(&Command::new("/bin/true")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("DBT backend or Tool reported an internal failure"),
+            "backend failure was reported as the wrong error: {error}"
+        );
+        // Without a diagnostic file the client writes its diagnostics to the
+        // guest's stderr, which the runner captured before evidence failed.
+        let output = failed_run_output(&error)
+            .unwrap_or_else(|| panic!("the error dropped the captured output: {error:?}"));
+        assert!(
+            output
+                .stderr
+                .windows(b"requested backend failure for testing".len())
+                .any(|window| window == b"requested backend failure for testing"),
+            "captured stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn a_terminal_exit_marks_its_stats_record_as_a_backend_failure() {
+        for (test_failure, expected_code, expected_failures) in
+            [(false, Some(0), 0), (true, Some(101), 1)]
+        {
+            let sink = StatsSink::new().unwrap();
+            let [flag, path] = sink.client_arguments();
+            let mut runner = DbtRunner::from_env()
+                .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+                .client_argument(flag)
+                .client_argument(path);
+            if test_failure {
+                runner = runner.client_argument("-test-backend-failure");
+            }
+
+            let output = runner.output(&Command::new("/bin/true")).unwrap();
+            assert_eq!(output.status.code(), expected_code, "{output:?}");
+            let snapshot = sink.drain().unwrap().snapshot().clone();
+            assert_eq!(snapshot.process_images(), 1, "{snapshot}");
+            assert_eq!(snapshot.backend_failures(), expected_failures, "{snapshot}");
+        }
+    }
+
+    #[test]
+    fn a_failed_run_keeps_its_error_and_carries_its_output() {
+        let original = io::Error::new(io::ErrorKind::InvalidData, "evidence failed");
+        let error = DbtFailedRunOutput::attach(original, b"out".to_vec(), b"why\n".to_vec());
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "evidence failed");
+        let output = failed_run_output(&error).expect("captured output");
+        assert_eq!(output.stdout, b"out");
+        assert_eq!(output.stderr, b"why\n");
+        assert!(failed_run_output(&io::Error::other("plain")).is_none());
     }
 
     #[test]
