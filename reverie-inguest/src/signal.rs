@@ -208,7 +208,7 @@ pub unsafe fn install_alt_stack() -> io::Result<*mut libc::c_void> {
         ss_size: size,
     };
     // The raw syscall, not libc's interposable sigaltstack.
-    crate::guest::support::raw_result(unsafe {
+    crate::guest::support::raw_zero_result(unsafe {
         crate::trap::raw_syscall6(
             libc::SYS_sigaltstack,
             [(&raw const stack) as u64, 0, 0, 0, 0, 0],

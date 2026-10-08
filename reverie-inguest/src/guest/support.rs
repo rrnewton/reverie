@@ -443,6 +443,19 @@ pub fn raw_result(result: i64) -> std::io::Result<u64> {
     }
 }
 
+/// The result of a raw syscall whose only success value is 0 (`prctl` with
+/// a setting, `fstat`, `mprotect`, `sigaltstack`, ...): any other value is
+/// refused, a negative one as the error it names. [`raw_result`] would take a
+/// positive return as success, which for such a call the kernel never gives.
+pub fn raw_zero_result(result: i64) -> std::io::Result<()> {
+    match raw_result(result)? {
+        0 => Ok(()),
+        other => Err(std::io::Error::other(format!(
+            "a syscall that returns 0 on success returned {other}"
+        ))),
+    }
+}
+
 /// `AT_PAGESZ`, the auxiliary-vector key of the page size.
 const AT_PAGESZ: u64 = 6;
 
@@ -598,6 +611,9 @@ pub unsafe fn scan_proc_lines_checked<R>(
                 ],
             )
         };
+        if read == -i64::from(libc::EINTR) {
+            continue;
+        }
         let Ok(read) = usize::try_from(read) else {
             found = Err(read);
             break;
