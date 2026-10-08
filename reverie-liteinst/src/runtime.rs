@@ -521,10 +521,55 @@ pub(crate) fn initialize_reverie_tool(
         }
     };
     set_process_forks_allowed(process_forks_allowed);
+    let sigalrm_handlers =
+        sigalrm_handlers_from_env_value(std::env::var_os(SIGALRM_HANDLERS_ENV).as_deref())?;
     debug_assert!(site_patching || vdso_sites.is_empty());
     SITE_PATCHING_ENABLED.store(site_patching, Ordering::Release);
     TOOL_MODE.store(TOOL_REVERIE, Ordering::Release);
-    install_runtime(stats, publication, instructions, vdso_sites)
+    // Design section 6: phase 1 runs handlers in fallback-only processes.
+    // A seccomp filter inherited from before the runtime could make the
+    // runtime's own signal calls report success without running; with
+    // handlers admitted the guest cannot add one later (see
+    // record_filter_baseline). So admit handlers only in a process with none.
+    // And only in a process whose memory all has protection key 0, whose
+    // rights the runtime applies itself; from then on no other key can be
+    // assigned (see injected_syscall_guard). A key the process allocated but
+    // has not assigned can no longer be assigned either.
+    let admitted = sigalrm_handlers
+        && !site_patching
+        && unsafe { reverie_inguest::guest::sigalrm::seccomp_filter_count() } == Some(0)
+        && unsafe { reverie_inguest::guest::sigalrm::protection_keys_in_use() } == Some(false);
+    if admitted {
+        // In ordinary context, before any guest call: the restorer check
+        // compares against this.
+        reverie_inguest::guest::restorer::record_libc_identity()?;
+    }
+    reverie_inguest::guest::sigalrm::set_admitted(admitted);
+    install_runtime(stats, publication, instructions, vdso_sites)?;
+    if admitted {
+        // Once the runtime's own filter is in place: see
+        // record_filter_baseline.
+        reverie_inguest::guest::sigalrm::record_filter_baseline()?;
+    }
+    Ok(())
+}
+
+/// Opts the Tool mode into guest SIGALRM handlers (signal phase 1), `1` or
+/// `0`. Off by default: until the runtime delivers a SIGALRM to an admitted
+/// handler (step I4), a run that installs one ends at its first SIGALRM.
+pub const SIGALRM_HANDLERS_ENV: &str = "REVERIE_LITEINST_SIGALRM_HANDLERS";
+
+/// Parse [`SIGALRM_HANDLERS_ENV`]: absent or `0` is off, `1` is on.
+pub fn sigalrm_handlers_from_env_value(value: Option<&OsStr>) -> io::Result<bool> {
+    match value {
+        None => Ok(false),
+        Some(value) if value == OsStr::new("0") => Ok(false),
+        Some(value) if value == OsStr::new("1") => Ok(true),
+        Some(value) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unsupported {SIGALRM_HANDLERS_ENV} value {value:?}"),
+        )),
+    }
 }
 
 fn install_runtime(

@@ -75,6 +75,30 @@ pub trait HostRuntime: Send + Sync + 'static {
     fn reserved_signal_mask(&self) -> u64;
 }
 
+/// Decide a guest signal call through the runtime's virtual SIGALRM state;
+/// `Some` is its result and it must not be forwarded.
+fn virtual_signal_call(
+    runtime: &impl HostRuntime,
+    guest_pkru: Option<u32>,
+    original_args: [u64; 6],
+    number: i64,
+    args: [u64; 6],
+) -> Option<i64> {
+    let rights = super::sigalrm::GuestRights {
+        pkru: guest_pkru,
+        original_args,
+    };
+    if super::sigalrm::original_input_denied(rights, number, args) {
+        return Some(-i64::from(libc::EFAULT));
+    }
+    let policy = super::sigalrm::Policy {
+        reserved: runtime.reserved_signal_mask(),
+        rights,
+    };
+    // SAFETY: called only while forwarding the guest's own call, in its turn.
+    unsafe { super::sigalrm::intercept(&policy, number, args) }
+}
+
 const STACK_CAPACITY: usize = 4096;
 
 static COMMITTED_STACKS: SpinMutex<Vec<Box<[u8]>>> = SpinMutex::new(Vec::new());
@@ -229,6 +253,7 @@ where
         if !self.subscriptions.contains(&number) {
             let number = guest.event.number;
             let args = guest.event.args;
+            let guest_pkru = guest.event.guest_pkru;
             if is_plain_fork(number, args) {
                 guest.prepare_fork_parent_state();
                 let result = forward_plain_fork(number, args, Some(&mut guest.event.guest_pkru));
@@ -274,6 +299,11 @@ where
             {
                 // A close or close_range the runtime left for dispatch, of a
                 // Tool that does not subscribe to it: protected here instead.
+                event.result = result;
+                return;
+            }
+            if let Some(result) = virtual_signal_call(&self.runtime, guest_pkru, args, number, args)
+            {
                 event.result = result;
                 return;
             }
@@ -952,11 +982,34 @@ fn installs_seccomp_filter(number: i64, args: [u64; 6]) -> bool {
             && args[1] == u64::from(libc::SECCOMP_MODE_FILTER))
 }
 
+/// Whether a guest call would give memory a protection key other than 0: an
+/// execute-only mapping (protection exactly `PROT_EXEC` once Linux has
+/// dropped the `PROT_GROWSDOWN`/`PROT_GROWSUP` modifiers), which Linux backs
+/// with an implicit key, or `pkey_mprotect` naming a key other than 0 or -1
+/// (-1 is plain `mprotect`).
+fn assigns_protection_key(number: i64, args: [u64; 6]) -> bool {
+    let prot = match number {
+        libc::SYS_mmap | libc::SYS_mprotect => args[2],
+        libc::SYS_pkey_mprotect => {
+            if !matches!(args[3] as i32, 0 | -1) {
+                return true;
+            }
+            args[2]
+        }
+        _ => return false,
+    };
+    prot as i32 & !(libc::PROT_GROWSDOWN | libc::PROT_GROWSUP) == libc::PROT_EXEC
+}
+
 /// A guest call that installs a seccomp filter is refused once a creation
-/// hook is registered (see [`set_physical_creation_hook`]).
+/// hook is registered (see [`set_physical_creation_hook`]), and in a process
+/// that admits guest SIGALRM handlers: a guest filter could make the
+/// runtime's own signal calls report success without running
+/// ([`super::sigalrm::record_filter_baseline`]).
 fn guest_seccomp_filter_policy(number: i64, args: [u64; 6]) -> Option<Errno> {
-    (installs_seccomp_filter(number, args) && CREATION_HOOK.get().is_some())
-        .then_some(Errno::EOPNOTSUPP)
+    (installs_seccomp_filter(number, args)
+        && (CREATION_HOOK.get().is_some() || super::sigalrm::admitted()))
+    .then_some(Errno::EOPNOTSUPP)
 }
 
 /// The birth identity of `pidfd`: its inode number, if it is a pidfs inode.
@@ -1436,6 +1489,17 @@ fn injected_syscall_guard(
     if let Some(error) = guest_seccomp_filter_policy(number, args) {
         return Some(error);
     }
+    // Signal phase 1: the runtime's virtual signal calls copy guest memory
+    // with every protection key open, so a process that admits SIGALRM
+    // handlers allocates none: Linux's answer when no key is left.
+    if number == libc::SYS_pkey_alloc && super::sigalrm::admitted() {
+        return Some(Errno::ENOSPC);
+    }
+    // Nor gives memory any key but 0: Linux backs an execute-only mapping
+    // with an implicit key of its own.
+    if super::sigalrm::admitted() && assigns_protection_key(number, args) {
+        return Some(Errno::EPERM);
+    }
     // Signal phase 1: an accepted SIGALRM restorer's page stays mapped,
     // unchanged, for the rest of the process's life.
     if super::restorer::mapping_change_refused(number, args) {
@@ -1450,7 +1514,8 @@ fn injected_syscall_guard(
     let protected_signal =
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-133): Review fail-closed guest signal-handler policy.
-        !runtime.signal_action_supported(number, args)
+        (!runtime.signal_action_supported(number, args)
+            && !super::sigalrm::decides_action(number, args))
         // AUTONOMOUS-BOT-IMPLEMENTED
         || (number == libc::SYS_sigaltstack && args[0] != 0);
 
@@ -1715,6 +1780,15 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             self.tail.set_exit(number, raw_args);
             return std::future::pending().await;
         }
+        if let Some(result) = virtual_signal_call(
+            self.runtime,
+            self.event.guest_pkru,
+            self.event.args,
+            number,
+            raw_args,
+        ) {
+            return Errno::from_ret(result as usize).map(|value| value as i64);
+        }
         let kernel_signal_mask = stripped_signal_mask(self.runtime, number, raw_args)?;
         if let Some(mask) = kernel_signal_mask.as_ref() {
             raw_args[1] = mask as *const u64 as u64;
@@ -1758,6 +1832,14 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             self.tail.set_result(result);
         } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
+        } else if let Some(result) = virtual_signal_call(
+            self.runtime,
+            self.event.guest_pkru,
+            self.event.args,
+            number,
+            args,
+        ) {
+            self.tail.set_result(result);
         } else {
             let value = match stripped_signal_mask(self.runtime, number, args) {
                 Err(error) => -i64::from(error.into_raw()),
@@ -1908,6 +1990,39 @@ fn fatal(status: i32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_key_zero_memory_is_admitted_for_signal_phase_one() {
+        let exec = libc::PROT_EXEC as u64;
+        let grows = (libc::PROT_EXEC | libc::PROT_GROWSDOWN) as u64;
+        let grows_up = (libc::PROT_EXEC | libc::PROT_GROWSUP) as u64;
+        let read_exec = (libc::PROT_READ | libc::PROT_EXEC) as u64;
+        for number in [libc::SYS_mmap, libc::SYS_mprotect] {
+            assert!(assigns_protection_key(number, [0, 4096, exec, 0, 0, 0]));
+            assert!(assigns_protection_key(number, [0, 4096, grows, 0, 0, 0]));
+            assert!(assigns_protection_key(number, [0, 4096, grows_up, 0, 0, 0]));
+            assert!(!assigns_protection_key(
+                number,
+                [0, 4096, read_exec, 0, 0, 0]
+            ));
+            assert!(!assigns_protection_key(number, [0, 4096, 0, 0, 0, 0]));
+        }
+        let pkey = libc::SYS_pkey_mprotect;
+        assert!(assigns_protection_key(pkey, [0, 4096, read_exec, 1, 0, 0]));
+        assert!(!assigns_protection_key(pkey, [0, 4096, read_exec, 0, 0, 0]));
+        assert!(!assigns_protection_key(
+            pkey,
+            [0, 4096, read_exec, u32::MAX as u64, 0, 0]
+        ));
+        assert!(assigns_protection_key(
+            pkey,
+            [0, 4096, exec, u32::MAX as u64, 0, 0]
+        ));
+        assert!(!assigns_protection_key(
+            libc::SYS_munmap,
+            [0, 4096, exec, 0, 0, 0]
+        ));
+    }
 
     #[test]
     fn reserve_zeroes_aligned_storage_for_types_without_a_zero_value() {

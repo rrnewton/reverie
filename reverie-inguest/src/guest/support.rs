@@ -350,8 +350,24 @@ pub unsafe fn scan_own_maps<R>(line_result: impl FnMut(&[u8]) -> Option<R>) -> O
 /// As [`scan_own_maps`].
 pub unsafe fn scan_proc_lines<R>(
     path: &core::ffi::CStr,
-    mut line_result: impl FnMut(&[u8]) -> Option<R>,
+    line_result: impl FnMut(&[u8]) -> Option<R>,
 ) -> Option<R> {
+    unsafe { scan_proc_lines_checked(path, line_result) }
+        .ok()
+        .flatten()
+}
+
+/// [`scan_proc_lines`], telling a scan that read the whole file without a
+/// result (`Ok(None)`) from one that could not open or read it (`Err` with
+/// the negated errno).
+///
+/// # Safety
+///
+/// As [`scan_own_maps`].
+pub unsafe fn scan_proc_lines_checked<R>(
+    path: &core::ffi::CStr,
+    mut line_result: impl FnMut(&[u8]) -> Option<R>,
+) -> Result<Option<R>, i64> {
     let fd = unsafe {
         raw_syscall6(
             libc::SYS_openat,
@@ -366,12 +382,12 @@ pub unsafe fn scan_proc_lines<R>(
         )
     };
     if fd < 0 {
-        return None;
+        return Err(fd);
     }
     let mut chunk = [0_u8; 1024];
     let mut line = [0_u8; 512];
     let mut line_len = 0;
-    let mut found = None;
+    let mut found = Ok(None);
     'read: loop {
         let read = unsafe {
             raw_syscall6(
@@ -387,6 +403,7 @@ pub unsafe fn scan_proc_lines<R>(
             )
         };
         let Ok(read) = usize::try_from(read) else {
+            found = Err(read);
             break;
         };
         if read == 0 {
@@ -401,7 +418,7 @@ pub unsafe fn scan_proc_lines<R>(
                 continue;
             }
             if let Some(result) = line_result(&line[..line_len]) {
-                found = Some(result);
+                found = Ok(Some(result));
                 break 'read;
             }
             line_len = 0;

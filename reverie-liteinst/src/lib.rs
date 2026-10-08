@@ -53,6 +53,7 @@ pub use reverie_inguest::guest::host::set_physical_creation_hook;
 pub use runtime::ALT_STACK_ENV;
 pub use runtime::IN_GUEST_STAGE_STREAM_ENV;
 pub use runtime::PROCESS_FORK_ENV;
+pub use runtime::SIGALRM_HANDLERS_ENV;
 pub use runtime::SITE_PATCHING_ENV;
 /// `REVERIE_LITEINST_TOOL` values and parser for shared built-in selection.
 pub use runtime::TOOL_PASSTHROUGH;
