@@ -75,6 +75,16 @@ pub trait HostRuntime: Send + Sync + 'static {
     fn reserved_signal_mask(&self) -> u64;
 }
 
+/// Decide a guest signal call through the runtime's virtual SIGALRM state;
+/// `Some` is its result and it must not be forwarded.
+fn virtual_signal_call(runtime: &impl HostRuntime, number: i64, args: [u64; 6]) -> Option<i64> {
+    let policy = super::sigalrm::Policy {
+        reserved: runtime.reserved_signal_mask(),
+    };
+    // SAFETY: called only while forwarding the guest's own call, in its turn.
+    unsafe { super::sigalrm::intercept(&policy, number, args) }
+}
+
 const STACK_CAPACITY: usize = 4096;
 
 static COMMITTED_STACKS: SpinMutex<Vec<Box<[u8]>>> = SpinMutex::new(Vec::new());
@@ -274,6 +284,10 @@ where
             {
                 // A close or close_range the runtime left for dispatch, of a
                 // Tool that does not subscribe to it: protected here instead.
+                event.result = result;
+                return;
+            }
+            if let Some(result) = virtual_signal_call(&self.runtime, number, args) {
                 event.result = result;
                 return;
             }
@@ -953,10 +967,14 @@ fn installs_seccomp_filter(number: i64, args: [u64; 6]) -> bool {
 }
 
 /// A guest call that installs a seccomp filter is refused once a creation
-/// hook is registered (see [`set_physical_creation_hook`]).
+/// hook is registered (see [`set_physical_creation_hook`]), and in a process
+/// that admits guest SIGALRM handlers: a guest filter could make the
+/// runtime's own signal calls report success without running
+/// ([`super::sigalrm::record_filter_baseline`]).
 fn guest_seccomp_filter_policy(number: i64, args: [u64; 6]) -> Option<Errno> {
-    (installs_seccomp_filter(number, args) && CREATION_HOOK.get().is_some())
-        .then_some(Errno::EOPNOTSUPP)
+    (installs_seccomp_filter(number, args)
+        && (CREATION_HOOK.get().is_some() || super::sigalrm::admitted()))
+    .then_some(Errno::EOPNOTSUPP)
 }
 
 /// The birth identity of `pidfd`: its inode number, if it is a pidfs inode.
@@ -1450,7 +1468,8 @@ fn injected_syscall_guard(
     let protected_signal =
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-133): Review fail-closed guest signal-handler policy.
-        !runtime.signal_action_supported(number, args)
+        (!runtime.signal_action_supported(number, args)
+            && !super::sigalrm::decides_action(number, args))
         // AUTONOMOUS-BOT-IMPLEMENTED
         || (number == libc::SYS_sigaltstack && args[0] != 0);
 
@@ -1715,6 +1734,9 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             self.tail.set_exit(number, raw_args);
             return std::future::pending().await;
         }
+        if let Some(result) = virtual_signal_call(self.runtime, number, raw_args) {
+            return Errno::from_ret(result as usize).map(|value| value as i64);
+        }
         let kernel_signal_mask = stripped_signal_mask(self.runtime, number, raw_args)?;
         if let Some(mask) = kernel_signal_mask.as_ref() {
             raw_args[1] = mask as *const u64 as u64;
@@ -1758,6 +1780,8 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             self.tail.set_result(result);
         } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
+        } else if let Some(result) = virtual_signal_call(self.runtime, number, args) {
+            self.tail.set_result(result);
         } else {
             let value = match stripped_signal_mask(self.runtime, number, args) {
                 Err(error) => -i64::from(error.into_raw()),
