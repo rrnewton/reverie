@@ -523,6 +523,9 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     let delivery = admitted("sigalrm-delivery", true);
     assert!(delivery.status.success(), "{delivery:?}");
     assert_eq!(delivery.stdout, b"sigalrm-delivery-ok\n");
+    let entry_delivery = admitted("sigalrm-entry-delivery", true);
+    assert!(entry_delivery.status.success(), "{entry_delivery:?}");
+    assert_eq!(entry_delivery.stdout, b"sigalrm-entry-delivery-ok\n");
     let stack_edit = admitted("sigalrm-stack-edit", true);
     assert_eq!(
         stack_edit.status.code(),

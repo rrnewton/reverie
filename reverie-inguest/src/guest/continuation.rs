@@ -507,6 +507,9 @@ unsafe extern "C" fn dispatch(pointer: *mut Continuation) {
     let errno = unsafe { libc::__errno_location() };
     let saved_errno = unsafe { *errno };
     let mut pkru = unsafe { (*pointer).saved.pkru() };
+    // The registers the syscall dispatch writes, for a syscall that is to
+    // start again (signal phase 1's delivery at syscall entry).
+    let entry = unsafe { ((*pointer).context.rax, (*pointer).context.rcx, (*pointer).context.r11) };
     unsafe {
         let context = core::ptr::addr_of_mut!((*pointer).context);
         match pending.kind {
@@ -518,9 +521,20 @@ unsafe extern "C" fn dispatch(pointer: *mut Continuation) {
         *errno = saved_errno;
     }
     let owner = unsafe { &mut *pointer };
+    let mut length = pending.kind.length();
+    if super::sigalrm::take_entry_delivery() {
+        // The syscall did not run: resume at its `syscall` instruction with
+        // its number and the guest's registers, so it runs from the start
+        // after the delivered handler returns. Only a syscall can ask.
+        if !matches!(pending.kind, PendingKind::Syscall) {
+            fatal()
+        }
+        (owner.context.rax, owner.context.rcx, owner.context.r11) = entry;
+        length = 0;
+    }
     if owner.owner_tid != current_tid()
         || owner.saved.set_pkru(pkru).is_err()
-        || commit_context(owner, pending.kind.length()).is_err()
+        || commit_context(owner, length).is_err()
     {
         fatal()
     }
