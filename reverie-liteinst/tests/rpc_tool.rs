@@ -520,6 +520,9 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     let pkey_before = admitted("sigalrm-pkey-before-install", true);
     assert!(pkey_before.status.success(), "{pkey_before:?}");
     assert_eq!(pkey_before.stdout, b"sigalrm-pkey-before-install-ok\n");
+    let delivery = admitted("sigalrm-delivery", true);
+    assert!(delivery.status.success(), "{delivery:?}");
+    assert_eq!(delivery.stdout, b"sigalrm-delivery-ok\n");
     let not_admitted = admitted("sigalrm-unprepared", false);
     assert!(!not_admitted.status.success(), "{not_admitted:?}");
     assert!(not_admitted.stdout.is_empty(), "{not_admitted:?}");

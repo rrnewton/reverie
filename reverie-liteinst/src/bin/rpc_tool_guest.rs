@@ -143,6 +143,10 @@ struct CounterTool;
 /// on its own buffer.
 const PRIVATE_MASK_QUERY_MARKER: usize = 0x5157;
 
+/// The `getppid` argument that asks [`CounterTool`] to deliver a SIGALRM as
+/// the call completes (`Guest::defer_signal_delivery`).
+const DELIVER_SIGALRM_MARKER: usize = 0x5158;
+
 /// [`CounterTool`]'s exit status if a guest `rt_sigreturn` ever reaches it.
 const TOOL_SAW_SIGRETURN_STATUS: i32 = 118;
 
@@ -160,6 +164,27 @@ impl Tool for CounterTool {
             // The runtime refuses the guest's own rt_sigreturn before any
             // Tool sees it (tool-sigreturn-trap, tool-sigreturn-hook).
             unsafe { reverie_inguest::guest::support::exit_now(TOOL_SAW_SIGRETURN_STATUS) };
+        }
+        if syscall.number() == Sysno::getppid
+            && syscall.into_parts().1.arg0 == DELIVER_SIGALRM_MARKER
+        {
+            // A Tool-committed SIGALRM, delivered as this call completes.
+            let mut info = [0_u8; 128];
+            info[0..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
+            info[8..12].copy_from_slice(&0x80_i32.to_ne_bytes());
+            let event = reverie::SignalEvent::new(
+                libc::SIGALRM,
+                info,
+                reverie::SignalTarget::Process {
+                    pid: reverie::Pid::from_raw(unsafe { libc::getpid() }),
+                },
+            )
+            .unwrap();
+            return Ok(match guest.defer_signal_delivery(event).await {
+                Ok(()) => 0,
+                Err(reverie::Error::Errno(errno)) => -i64::from(errno.into_raw()),
+                Err(_) => -i64::from(libc::EIO),
+            });
         }
         if syscall.number() == Sysno::getppid
             && syscall.into_parts().1.arg0 == PRIVATE_MASK_QUERY_MARKER
@@ -1952,6 +1977,73 @@ fn sigalrm_pkey_before_install_guest(path: &Path) {
     println!("sigalrm-pkey-before-install-ok");
 }
 
+static DELIVERED: AtomicU64 = AtomicU64::new(0);
+static DELIVERED_CODE: AtomicI64 = AtomicI64::new(0);
+static DELIVERED_SAVED_MASK: AtomicU64 = AtomicU64::new(0);
+static DELIVERED_ACTIVE_MASK: AtomicU64 = AtomicU64::new(0);
+
+unsafe extern "C" fn recording_sigalrm_handler(
+    _signal: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+) {
+    DELIVERED.fetch_add(1, Ordering::SeqCst);
+    DELIVERED_CODE.store(i64::from(unsafe { (*info).si_code }), Ordering::SeqCst);
+    let saved = unsafe { context.cast::<u8>().add(296).cast::<u64>().read_unaligned() };
+    DELIVERED_SAVED_MASK.store(saved, Ordering::SeqCst);
+    // The guest's mask inside its handler, as it queries it.
+    let mut active = 0_u64;
+    unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigprocmask,
+            libc::SIG_BLOCK,
+            core::ptr::null::<u64>(),
+            &mut active as *mut u64,
+            8,
+        )
+    };
+    DELIVERED_ACTIVE_MASK.store(active, Ordering::SeqCst);
+}
+
+/// Signal phase 1, step I4: a SIGALRM the Tool commits is delivered to the
+/// guest's handler as the committing call completes, as Linux would show it:
+/// SI_KERNEL siginfo, the pre-delivery mask in uc_sigmask, the activation mask
+/// (saved, sa_mask, SIGALRM) inside the handler; afterwards the guest's mask
+/// is back and SIGALRM is physically blocked again. A second delivery works
+/// the same way, and with no handler installed the Tool's request is refused.
+fn sigalrm_delivery_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let alarm = 1_u64 << (libc::SIGALRM - 1);
+    let usr1 = 1_u64 << (libc::SIGUSR1 - 1);
+    let usr2 = 1_u64 << (libc::SIGUSR2 - 1);
+    let deliver = || unsafe { libc::syscall(libc::SYS_getppid, DELIVER_SIGALRM_MARKER) };
+    // No handler: nothing to deliver to.
+    assert_eq!(deliver(), -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ENOSYS)
+    );
+    let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+    action.sa_sigaction = recording_sigalrm_handler as *const () as usize;
+    action.sa_flags = libc::SA_SIGINFO;
+    unsafe { libc::sigaddset(&mut action.sa_mask, libc::SIGUSR2) };
+    sigalrm_sigaction(&action).unwrap();
+    guest_mask_call(libc::SIG_SETMASK, Some(usr1));
+    for round in 1..=2_u64 {
+        assert_eq!(deliver(), 0);
+        assert_eq!(DELIVERED.load(Ordering::SeqCst), round);
+        assert_eq!(DELIVERED_CODE.load(Ordering::SeqCst), 0x80);
+        assert_eq!(DELIVERED_SAVED_MASK.load(Ordering::SeqCst), usr1);
+        assert_eq!(
+            DELIVERED_ACTIVE_MASK.load(Ordering::SeqCst),
+            usr1 | usr2 | alarm
+        );
+        assert_eq!(guest_mask_call(libc::SIG_BLOCK, None), usr1);
+        assert_ne!(physical_mask() & alarm, 0);
+    }
+    println!("sigalrm-delivery-ok");
+}
+
 fn spoof_sigsys_guest(path: &Path) -> ! {
     unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
     unsafe { reverie_liteinst_rpc_raise_sigsys() };
@@ -2715,6 +2807,7 @@ fn main() {
         Some("sigalrm-extra-filter") => sigalrm_extra_filter_guest(Path::new(&path)),
         Some("sigalrm-inherited-filter") => sigalrm_inherited_filter_guest(Path::new(&path)),
         Some("sigalrm-pkey-before-install") => sigalrm_pkey_before_install_guest(Path::new(&path)),
+        Some("sigalrm-delivery") => sigalrm_delivery_guest(Path::new(&path)),
         Some("tool-sigreturn-trap") => tool_guest_sigreturn_guest(Path::new(&path), false, false),
         Some("tool-sigreturn-hook") => tool_guest_sigreturn_guest(Path::new(&path), true, false),
         Some("tool-sigreturn-trap-alias") => {

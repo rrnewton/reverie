@@ -18,6 +18,7 @@ use std::sync::OnceLock;
 const CONTEXT_BYTES: usize = 304;
 const GREG_OFFSET: usize = 40;
 const FP_POINTER_OFFSET: usize = 224;
+const SIGMASK_OFFSET: usize = 296;
 const LEGACY_BYTES: usize = 512;
 const SW_OFFSET: usize = 464;
 const HEADER_OFFSET: usize = 512;
@@ -309,6 +310,27 @@ impl<'signal> SignalFrame<'signal> {
                 .cast::<i64>()
                 .write_unaligned(value)
         };
+    }
+
+    /// Set the frame's `uc_sigmask`: the mask Linux installs when the frame
+    /// returns.
+    pub fn set_signal_mask(&mut self, mask: u64) {
+        unsafe {
+            self.context
+                .add(SIGMASK_OFFSET)
+                .cast::<u64>()
+                .write_unaligned(mask)
+        };
+    }
+
+    /// The frame's `uc_sigmask`.
+    pub fn signal_mask(&self) -> u64 {
+        unsafe {
+            self.context
+                .add(SIGMASK_OFFSET)
+                .cast::<u64>()
+                .read_unaligned()
+        }
     }
 
     /// Interrupted rights from the actual frame, including init-state PKRU.

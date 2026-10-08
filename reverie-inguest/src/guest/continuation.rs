@@ -556,6 +556,12 @@ pub fn complete(frame: &mut SignalFrame<'_>) -> Result<bool, FrameError> {
     }
     let owner = unsafe { &mut *pointer };
     frame.restore(&owner.saved)?;
+    // Signal phase 1: a prepared SIGALRM delivery opens its window here, so
+    // the queued instance arrives as this frame returns, before any guest
+    // instruction.
+    if let Some(window) = super::sigalrm::take_window() {
+        frame.set_signal_mask(window);
+    }
     owner.completions += 1;
     owner.phase = Phase::Idle;
     PENDING.set(None);
