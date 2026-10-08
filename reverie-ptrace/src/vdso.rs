@@ -12,7 +12,6 @@ use std::sync::LazyLock;
 use std::sync::Mutex;
 
 use nix::sys::mman::ProtFlags;
-use nix::unistd;
 use reverie::Errno;
 use reverie::Error;
 use reverie::Guest;
@@ -249,8 +248,9 @@ fn rewrite_current_vdso(
     if replacements.is_empty() {
         return Ok(Vec::new());
     }
-    let process =
-        procfs::process::Process::new(unistd::getpid().as_raw()).map_err(|_| Errno::ENOENT)?;
+    // `/proc/self`, not the C library's interposable `getpid`: this runs
+    // inside the guest for in-guest runtimes.
+    let process = procfs::process::Process::myself().map_err(|_| Errno::ENOENT)?;
     let maps = process.maps().map_err(|_| Errno::EIO)?;
     let Some(vdso) = maps
         .iter()
@@ -632,7 +632,7 @@ mod tests {
     #[test]
     fn can_find_vdso() {
         assert!(
-            procfs::process::Process::new(unistd::getpid().as_raw())
+            procfs::process::Process::myself()
                 .map_or_else(
                     |_| Vec::new(),
                     |p| match p.maps() {
