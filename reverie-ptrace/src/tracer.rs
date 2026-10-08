@@ -9919,12 +9919,24 @@ mod tests {
         RECORDED_UNREPORTED.lock().unwrap().clear();
         let mut command = Command::new("/bin/true");
         // SAFETY: the callback only forks; the child closes the descriptors
-        // it inherited (the spawn's close-on-exec status pipe among them,
-        // which it would otherwise hold open, never exec'ing) and waits.
+        // it inherited and waits. It must close the spawn's close-on-exec
+        // status pipe, which it would otherwise hold open, never exec'ing,
+        // and the spawn would wait on it forever: where `close_range` fails,
+        // it closes each descriptor up to its limit.
         unsafe {
             command.pre_exec(|| {
                 if libc::fork() == 0 {
-                    libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32);
+                    if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) != 0 {
+                        let mut limit: libc::rlimit = std::mem::zeroed();
+                        let max = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 {
+                            limit.rlim_cur.min(1 << 20) as libc::c_int
+                        } else {
+                            1 << 20
+                        };
+                        for fd in 3..max {
+                            libc::close(fd);
+                        }
+                    }
                     loop {
                         libc::pause();
                     }

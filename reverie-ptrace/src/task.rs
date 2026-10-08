@@ -4907,10 +4907,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             stats.record_signal_stop(&task, sig);
         }
         tracing::debug!("[{}] handle_signal: received signal {}", task.pid(), sig);
-        if sig != Signal::SIGSTOP
-            && !report_group_stop
-            && is_group_stop_unless_filtered(&task, sig)?
-        {
+        let group_stop = sig != Signal::SIGSTOP && is_group_stop_unless_filtered(&task, sig)?;
+        if group_stop && !report_group_stop {
             // A group stop follows a stop signal's delivery, which reported
             // it to the Tool on the thread that took it, unless that thread
             // resumed it held and unreported (`report_group_stop`). Reporting
@@ -4929,6 +4927,18 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .resume_stopped(task, None)?
                 .next_state_with_owner(&self.ptracer_waits)
                 .await;
+        }
+        // A signal-delivery stop took `sig` from the kernel's queue. If a
+        // reported, requeued instance of `sig` was there, this is it, as for a
+        // hold (`hold_pending_signal`), and its count ends here: before the
+        // backend's own handling below, which can suppress it (a SIGSEGV that
+        // is an emulated instruction's fault, Reverie's own trap or timer
+        // signal), and whether the Tool then delivers or suppresses it. A
+        // resume that requeues it again counts it again
+        // (`resume_with_signal`). A group stop, reported or not, takes
+        // nothing from the queue.
+        if !group_stop {
+            self.take_reported_requeue(sig);
         }
         let result = match sig {
             Signal::SIGSEGV => self.handle_sigsegv(task).await?,
@@ -4952,13 +4962,6 @@ impl<L: Tool + 'static> TracedTask<L> {
         match result {
             HandleSignalResult::SignalSuppressed(wait) => Ok(wait),
             HandleSignalResult::SignalToDeliver(task, sig) => {
-                // This stop took `sig` from the kernel's queue for the guest.
-                // If a reported, requeued instance of `sig` was there, this is
-                // it, as for a hold (`hold_pending_signal`): its count ends
-                // here, whether the Tool then delivers or suppresses it. A
-                // resume that requeues it again counts it again
-                // (`resume_with_signal`).
-                self.take_reported_requeue(sig);
                 let taken = TakenSignal::at_stop(&task, sig);
                 let verdict = self
                     .report_signal(sig, false, taken.map(|taken| taken.bytes))

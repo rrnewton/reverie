@@ -9489,6 +9489,160 @@ fn a_reported_signal_kept_by_a_fallback_is_not_reported_again() {
     );
 }
 
+/// The set `BlockSigsegvInFirstHook` blocks. A static, so the forked guest
+/// has it at the same address.
+static SIGSEGV_SET: u64 = 1 << (libc::SIGSEGV - 1);
+
+/// Like `ReplaceMarker`, with RDTSC intercepted and reported, and the first
+/// SIGSEGV hook on each thread injecting `rt_sigprocmask(SIG_BLOCK,
+/// {SIGSEGV})`, reported, before passing its signal through.
+#[derive(Clone, Copy, Debug, Default)]
+struct BlockSigsegvInFirstHook;
+
+#[reverie::tool]
+impl Tool for BlockSigsegvInFirstHook {
+    type GlobalState = Log;
+    /// Whether a SIGSEGV hook has run on this thread.
+    type ThreadState = bool;
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        #[cfg(target_arch = "x86_64")]
+        subscription.rdtsc();
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        replace_marker(guest, syscall).await
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn handle_rdtsc_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        request: reverie::Rdtsc,
+    ) -> Result<reverie::RdtscResult, Errno> {
+        guest.send_rpc(Report::Rdtsc).await;
+        Ok(reverie::RdtscResult::new(request))
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        if signal == Signal::SIGSEGV && !std::mem::replace(guest.thread_state_mut(), true) {
+            let set = Addr::from_raw(&SIGSEGV_SET as *const u64 as usize);
+            let result = guest
+                .inject(
+                    RtSigprocmask::new()
+                        .with_how(libc::SIG_BLOCK)
+                        .with_set(set)
+                        .with_oldset(None)
+                        .with_sigsetsize(8),
+                )
+                .await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+        }
+        Ok(Some(signal))
+    }
+}
+
+/// A reported instance that the backend consumes itself does not lend its
+/// count to a later instance. The first hook of a queued SIGSEGV (P) blocks
+/// it and passes it through, so Linux requeues P. The guest then executes
+/// RDTSC, which the Tool intercepts: Linux forces a SIGSEGV, which unblocks
+/// SIGSEGV, resets its handler and coalesces into the pending P, and the
+/// backend emulates the RDTSC and suppresses that delivery, P with it. The
+/// guest reinstalls its handler and queues a fresh SIGSEGV (R), which the
+/// unblock marker's `getpid` holds: the Tool has not seen it, so it is
+/// reported, and its handler runs once. Before, the suppressed delivery left
+/// P's count, R took it and went unreported.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn a_reported_signal_the_backend_suppresses_lends_no_count() {
+    let (output, log) = test_fn_bounded::<BlockSigsegvInFirstHook, _>(
+        || unsafe {
+            install_recorder(libc::SIGSEGV);
+            queue_value_to_self(libc::SIGSEGV, libc::SI_QUEUE);
+            let pending = is_pending(libc::SIGSEGV);
+            let low: u64;
+            let high: u64;
+            std::arch::asm!("rdtsc", out("rax") low, out("rdx") high);
+            let counted = (high << 32 | low) != 0;
+            let after = (
+                is_pending(libc::SIGSEGV),
+                RECORDED_CALLS.load(Ordering::Relaxed),
+            );
+            install_recorder(libc::SIGSEGV);
+            block(&[libc::SIGSEGV]);
+            queue_value_to_self(libc::SIGSEGV, libc::SI_QUEUE);
+            let ret = libc::syscall(
+                libc::SYS_write,
+                UNBLOCK_THEN_GETPID_FD,
+                &SIGSEGV_SET as *const u64,
+                0usize,
+            );
+            let errno = *libc::__errno_location();
+            println!("{pending} {counted} {} {}", after.0, after.1);
+            print_recorded(ret, errno, libc::SIGSEGV);
+        },
+        "reported signal the backend suppresses",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE segv-rdtsc guest={:?} injected={:?} signals={:?} rdtscs={}",
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.signals.lock().unwrap(),
+        log.rdtscs.load(Ordering::Relaxed)
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (before, recorded) = stdout.trim().split_once('\n').expect("two lines");
+    assert_eq!(
+        before, "1 true 0 0",
+        "P pending after the hook; RDTSC emulated; P consumed with it, no handler run"
+    );
+    let (fields, pid) = recorded.rsplit_once(' ').expect("guest pid");
+    assert_eq!(
+        fields,
+        format!(
+            "-1 {} 1 {} {pid} {QUEUED_VALUE} 0 0 1",
+            libc::EINTR,
+            libc::SI_QUEUE
+        ),
+        "R interrupts the getpid and runs the handler once, with its queued siginfo"
+    );
+    assert_eq!(
+        *log.signals.lock().unwrap(),
+        vec![libc::SIGSEGV, libc::SIGSEGV],
+        "P at its hook, and R"
+    );
+    assert_eq!(
+        log.rdtscs.load(Ordering::Relaxed),
+        1,
+        "the RDTSC is emulated"
+    );
+    assert_eq!(
+        *log.injected.lock().unwrap(),
+        vec![Ok(0), Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
+        "the hook's block, the unblock marker, and the getpid R interrupts"
+    );
+}
+
 /// Like `InjectInSigusr1Hook`, but the signal hook of SIGUSR1 first queues
 /// SIGUSR2 to the guest's thread from the tracer, with `SI_QUEUE`, the
 /// guest's PID and `QUEUED_VALUE`, as a signal that arrives while the hook
