@@ -26,6 +26,7 @@ pub mod event;
 pub mod host;
 pub mod instruction;
 pub mod protect;
+pub mod restorer;
 #[cfg(feature = "coordinator-rpc")]
 pub mod rpc;
 pub mod signal;
