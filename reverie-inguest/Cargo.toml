@@ -52,6 +52,10 @@ name = "pkeys"
 path = "tests/pkeys.rs"
 
 [[test]]
+name = "libc_identity"
+path = "tests/libc_identity.rs"
+
+[[test]]
 name = "libc_identity_allocations"
 path = "tests/libc_identity_allocations.rs"
 
