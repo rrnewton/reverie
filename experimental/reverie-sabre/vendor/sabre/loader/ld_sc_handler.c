@@ -463,7 +463,57 @@ long ld_sc_handler(long sc_no, long arg1, long arg2, long arg3, long arg4,
   return ret;
 }
 
-// TODO(andronat): Do router for rdtsc
+#if defined(__NX_INTERCEPT_RDTSC) && defined(__x86_64__)
+static long native_rdtsc(void) {
+  uint32_t low, high;
+  __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+  return (long)(((uint64_t)high << 32) | low);
+}
+
+// A guest RDTSC that runs before the plugin exists, such as one in a guest
+// .preinit_array function (premain appends the plugin's entry after the
+// guest's own), has no virtual value to return, and the host counter would
+// leak host time into the guest. Refuse instead.
+__attribute__((noreturn)) static void rdtsc_before_plugin(void) {
+  static const char message[] =
+      "SaBRe: guest RDTSC before the plugin was initialized (for example in a "
+      ".preinit_array function); it has no deterministic value\n";
+  real_syscall(SYS_write, STDERR_FILENO, (long)message, sizeof(message) - 1, 0, 0,
+               0);
+  real_syscall(SYS_exit_group, 127, 0, 0, 0, 0, 0);
+  __builtin_unreachable();
+}
+
+// The RDTSC counterpart of route_syscall's recursion boundary, entered from the
+// rewritten-site trampolines and the SIGILL marker. A guest RDTSC reaches the
+// plugin between enter_plugin and exit_plugin, so the syscalls the plugin makes
+// while handling it run natively. Calling the handler directly left that flag
+// clear: those syscalls came back into the plugin as guest syscalls, and the
+// guest hung (on the tool's own construction for a first-event RDTSC,
+// otherwise on the thread state the RDTSC handler already held).
+//
+// Only rewritten client code reaches this router. With the flag already set,
+// that is a guest signal handler the plugin is delivering (such handlers run
+// inside the boundary; see https://github.com/rrnewton/hermit/issues/3900), so
+// it gets the virtual value as well, without entering the boundary twice. The
+// one native case is the plugin's own construction, before it has installed
+// its handler.
+long runtime_rdtsc_router(void) {
+  if (calling_from_plugin == NULL)
+    rdtsc_before_plugin();
+  if (calling_from_plugin()) {
+    if (plugin_rdtsc_handler == NULL)
+      return native_rdtsc();
+    return plugin_rdtsc_handler();
+  }
+  if (plugin_rdtsc_handler == NULL)
+    rdtsc_before_plugin();
+  enter_plugin();
+  long tsc = plugin_rdtsc_handler();
+  exit_plugin();
+  return tsc;
+}
+#endif
 
 static void_void_fn plugin_clock_gettime = NULL;
 static void_void_fn plugin_getcpu = NULL;
