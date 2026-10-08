@@ -71,6 +71,11 @@ fn decimal(bytes: &[u8]) -> Option<u64> {
 /// Parse one `/proc/self/maps` line; when its range contains `address`,
 /// return the mapping's identity.
 pub fn maps_line_identity(line: &[u8], address: u64) -> Option<MappingIdentity> {
+    maps_line_mapping(line).filter(|mapping| mapping.start <= address && address < mapping.end)
+}
+
+/// Parse one `/proc/self/maps` line into its mapping's identity.
+pub fn maps_line_mapping(line: &[u8]) -> Option<MappingIdentity> {
     let mut fields = line
         .split(|byte| *byte == b' ')
         .filter(|field| !field.is_empty());
@@ -82,9 +87,6 @@ pub fn maps_line_identity(line: &[u8], address: u64) -> Option<MappingIdentity> 
     let dash = range.iter().position(|byte| *byte == b'-')?;
     let start = hex(&range[..dash])?;
     let end = hex(&range[dash + 1..])?;
-    if address < start || address >= end {
-        return None;
-    }
     let colon = device.iter().position(|byte| *byte == b':')?;
     let major = hex(&device[..colon])?;
     let minor = hex(&device[colon + 1..])?;
@@ -154,139 +156,252 @@ fn read_own_16(address: u64) -> ([u8; 16], usize) {
     (bytes, 8 + second)
 }
 
-/// Whether the loaded object `info` describes has the dynamic-section
-/// `DT_SONAME` `expected` (NUL included). Reads the object's `PT_DYNAMIC`
-/// entries and its string table from memory, fault-free, and only inside the
-/// object's own readable `PT_LOAD` segments; allocates nothing.
-fn object_soname_is(info: &libc::dl_phdr_info, expected: &[u8]) -> bool {
-    if info.dlpi_phdr.is_null() || expected.len() > 16 {
-        return false;
-    }
-    // SAFETY: dlpi_phdr points at dlpi_phnum program headers.
-    let headers =
-        unsafe { core::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) };
-    let inside = |address: u64, length: u64| {
-        headers.iter().any(|header| {
-            let start = info.dlpi_addr.wrapping_add(header.p_vaddr);
-            header.p_type == libc::PT_LOAD
-                && header.p_flags & libc::PF_R != 0
-                && address >= start
-                && address
-                    .checked_add(length)
-                    .zip(start.checked_add(header.p_memsz))
-                    .is_some_and(|(end, segment_end)| end <= segment_end)
-        })
-    };
-    let Some(dynamic) = headers
-        .iter()
-        .find(|header| header.p_type == libc::PT_DYNAMIC)
-    else {
-        return false;
-    };
-    let base = info.dlpi_addr.wrapping_add(dynamic.p_vaddr);
-    let (mut strtab, mut soname) = (None, None);
-    for index in 0..(dynamic.p_memsz / 16).min(4096) {
-        let entry = base.wrapping_add(index * 16);
-        if !inside(entry, 16) {
-            return false;
+/// The 8-byte word of this process's memory at `address`, read without
+/// faulting.
+fn read_own_word(address: u64) -> Option<u64> {
+    let mut word = [0_u8; 8];
+    // SAFETY: as in read_own_16.
+    (unsafe { read_own_bytes(address, &mut word) } == 8).then(|| u64::from_le_bytes(word))
+}
+
+/// The value of the first `tag` entry of the dynamic section at `dynamic`,
+/// read without faulting; `None` if the section ends (`DT_NULL`) first or
+/// cannot be read.
+fn dynamic_entry(dynamic: u64, tag: u64) -> Option<u64> {
+    for index in 0..4096_u64 {
+        let entry = dynamic.checked_add(index * 16)?;
+        let found = read_own_word(entry)?;
+        if found == 0 {
+            return None; // DT_NULL
         }
-        let (bytes, readable) = read_own_16(entry);
-        if readable < 16 {
-            return false;
-        }
-        let tag = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-        let value = u64::from_le_bytes(bytes[8..].try_into().unwrap());
-        match tag {
-            0 => break,                 // DT_NULL
-            5 => strtab = Some(value),  // DT_STRTAB
-            14 => soname = Some(value), // DT_SONAME
-            _ => {}
+        if found == tag {
+            return read_own_word(entry.checked_add(8)?);
         }
     }
-    let (Some(strtab), Some(offset)) = (strtab, soname) else {
+    None
+}
+
+const DT_STRTAB: u64 = 5;
+const DT_SONAME: u64 = 14;
+const DT_DEBUG: u64 = 21;
+const AT_PHDR: u64 = 3;
+const AT_PHNUM: u64 = 5;
+
+/// Whether the loaded object whose load bias is `l_addr` and whose dynamic
+/// section is at `l_ld` has the `DT_SONAME` `expected` (NUL included). The
+/// loader relocates `DT_STRTAB` in place in a writable dynamic section; a
+/// read-only one (the vDSO's) keeps the link-time address, below the bias.
+fn object_soname_is(l_addr: u64, l_ld: u64, expected: &[u8]) -> bool {
+    let (Some(strtab), Some(offset)) = (
+        dynamic_entry(l_ld, DT_STRTAB),
+        dynamic_entry(l_ld, DT_SONAME),
+    ) else {
         return false;
     };
-    // The loader relocates DT_STRTAB in place in a writable dynamic section;
-    // a read-only one (the vDSO's) keeps the link-time address.
-    let Some(table) = [strtab, strtab.wrapping_add(info.dlpi_addr)]
-        .into_iter()
-        .find(|address| inside(*address, 1))
-    else {
-        return false;
+    let table = if strtab < l_addr {
+        strtab.wrapping_add(l_addr)
+    } else {
+        strtab
     };
     let Some(name) = table.checked_add(offset) else {
         return false;
     };
-    if !inside(name, expected.len() as u64) {
-        return false;
-    }
     let (bytes, readable) = read_own_16(name);
-    readable >= expected.len() && bytes[..expected.len()] == *expected
+    expected.len() <= 16 && readable >= expected.len() && bytes[..expected.len()] == *expected
 }
 
-/// Record which file is this process's C library: the executable segment of
-/// the one loaded object whose `DT_SONAME` is `libc.so.6`, found by walking
-/// the dynamic loader's object list with `dl_iterate_phdr`. The loader
-/// satisfies every `libc.so.6` dependency, the runtime's own included, with
-/// the loaded object of that `DT_SONAME` whatever its file is named, so this is
-/// the C library the runtime and the guest run on; a file merely named
-/// `libc.so.6` is not. More than one such object is refused. Call once, at
-/// runtime initialization, in ordinary context.
-///
-/// This must not allocate through the C library's malloc, which inside the
-/// guest is the guest's own heap: the runtime's private allocation scope
-/// redirects only Rust allocations. `dlopen` does (even with `RTLD_NOLOAD`,
-/// glibc builds the object's search list on its first direct open), so it is
-/// not used. `dl_iterate_phdr` takes the loader's lock and fills one
-/// `dl_phdr_info` on its stack per object, and each object's dynamic section
-/// and string table are read from memory with fault-free raw reads; nothing
-/// allocates.
-pub fn record_libc_identity() -> std::io::Result<()> {
-    struct Found {
-        anchor: u64,
-        matches: usize,
+/// This process's auxiliary vector entry `key`, read from `/proc/self/auxv`
+/// with raw syscalls (not `getauxval`, which a guest can interpose).
+fn auxv_entry(key: u64) -> Option<u64> {
+    let mut auxv = [0_u8; 4096];
+    let fd = unsafe {
+        raw_syscall6(
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                c"/proc/self/auxv".as_ptr() as u64,
+                (libc::O_RDONLY | libc::O_CLOEXEC) as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if fd < 0 {
+        return None;
     }
-    unsafe extern "C" fn visit(
-        info: *mut libc::dl_phdr_info,
-        _size: libc::size_t,
-        data: *mut libc::c_void,
-    ) -> libc::c_int {
-        // SAFETY: dl_iterate_phdr passes a valid info for each object and the
-        // `Found` this function was given.
-        let (info, found) = unsafe { (&*info, &mut *data.cast::<Found>()) };
-        if !object_soname_is(info, LIBC_SONAME) {
-            return 0;
+    let mut filled = 0_usize;
+    while filled < auxv.len() {
+        let count = unsafe {
+            raw_syscall6(
+                libc::SYS_read,
+                [
+                    fd as u64,
+                    auxv[filled..].as_mut_ptr() as u64,
+                    (auxv.len() - filled) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if count == -i64::from(libc::EINTR) {
+            continue;
         }
-        found.matches += 1;
-        for index in 0..usize::from(info.dlpi_phnum) {
-            // SAFETY: dlpi_phdr points at dlpi_phnum program headers.
-            let header = unsafe { &*info.dlpi_phdr.add(index) };
-            if header.p_type == libc::PT_LOAD && header.p_flags & libc::PF_X != 0 {
-                found.anchor = info.dlpi_addr.wrapping_add(header.p_vaddr);
-                break;
+        if count <= 0 {
+            break;
+        }
+        filled += count as usize;
+    }
+    unsafe { raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
+    auxv[..filled]
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .map(|pair| {
+            (
+                u64::from_le_bytes(pair[..8].try_into().unwrap()),
+                u64::from_le_bytes(pair[8..].try_into().unwrap()),
+            )
+        })
+        .take_while(|(found, _)| *found != 0)
+        .find(|(found, _)| *found == key)
+        .map(|(_, value)| value)
+}
+
+/// The dynamic loader's `r_debug` for the base namespace: the address the
+/// loader wrote into the main executable's `DT_DEBUG` entry, found through the
+/// program headers the kernel names in the auxiliary vector.
+fn loader_debug_record() -> std::io::Result<u64> {
+    let refuse = |what: &'static str| std::io::Error::other(what);
+    let phdr = auxv_entry(AT_PHDR).ok_or_else(|| refuse("the auxiliary vector has no AT_PHDR"))?;
+    let phnum = auxv_entry(AT_PHNUM)
+        .ok_or_else(|| refuse("the auxiliary vector has no AT_PHNUM"))?
+        .min(256);
+    let header = |index: u64| {
+        let address = phdr.checked_add(index * 56)?;
+        let type_and_flags = read_own_word(address)?;
+        let vaddr = read_own_word(address.checked_add(16)?)?;
+        Some((type_and_flags as u32, vaddr))
+    };
+    let (mut bias, mut dynamic) = (0_u64, None);
+    for index in 0..phnum {
+        match header(index) {
+            Some((libc::PT_PHDR, vaddr)) => bias = phdr.wrapping_sub(vaddr),
+            Some((libc::PT_DYNAMIC, vaddr)) => dynamic = Some(vaddr),
+            Some(_) => {}
+            None => {
+                return Err(refuse(
+                    "the main executable's program headers are unreadable",
+                ));
             }
         }
-        0
     }
-    let mut found = Found {
-        anchor: 0,
-        matches: 0,
-    };
-    // SAFETY: `visit` only reads the infos it is given and writes `found`.
-    unsafe { libc::dl_iterate_phdr(Some(visit), (&raw mut found).cast()) };
-    if found.matches != 1 {
+    let dynamic = dynamic
+        .ok_or_else(|| refuse("the main executable has no dynamic section"))?
+        .wrapping_add(bias);
+    match dynamic_entry(dynamic, DT_DEBUG) {
+        Some(record) if record != 0 => Ok(record),
+        _ => Err(refuse(
+            "the main executable's DT_DEBUG names no loader debug record",
+        )),
+    }
+}
+
+/// Record which file is this process's C library: the executable mapping of
+/// the file of the one loaded object, in the dynamic loader's base namespace,
+/// whose `DT_SONAME` is `libc.so.6`. The loader satisfies every `libc.so.6`
+/// dependency, the runtime's own included, with the loaded object of that
+/// `DT_SONAME`, whatever its file is named, so this is the C library the
+/// runtime and the guest run on. Call once, at runtime initialization, in
+/// ordinary context, while the process is single-threaded (no `dlopen` can
+/// change the loader's list meanwhile).
+///
+/// It calls no function the guest could interpose or that allocates through
+/// the C library's malloc (inside the guest, the guest's own heap; the
+/// runtime's private allocation scope redirects only Rust allocations). In
+/// particular not `dlopen` (which allocates even with `RTLD_NOLOAD`),
+/// `dl_iterate_phdr` or `getauxval` (an application or preloaded library may
+/// define either, allocate inside it, and report objects of its choosing).
+/// Instead it reads, with raw syscalls and fault-free raw memory reads:
+/// the auxiliary vector from `/proc/self/auxv` (the kernel's), the main
+/// executable's program headers and dynamic section there, the `r_debug`
+/// record the loader wrote into its `DT_DEBUG` entry, the loader's own
+/// `link_map` list from it (`l_addr`, `l_ld`, `l_next`), and each object's
+/// `DT_SONAME` from its dynamic section. The base namespace's list is the one
+/// the program and the runtime were loaded in; objects in other `dlmopen`
+/// namespaces (glibc 2.35's `r_debug_extended::r_next`) carry their own C
+/// library and are not considered. No match, or more than one, is refused.
+/// A main executable without `DT_DEBUG` is refused too.
+pub fn record_libc_identity() -> std::io::Result<()> {
+    let record = loader_debug_record()?;
+    // struct r_debug { int r_version; struct link_map *r_map; ... }
+    let version = read_own_word(record).map(|word| word as u32);
+    if !matches!(version, Some(1 | 2)) {
+        return Err(std::io::Error::other(
+            "the loader debug record has an unknown version",
+        ));
+    }
+    let mut map = read_own_word(record + 8).unwrap_or(0);
+    let (mut matches, mut libc_dynamic) = (0_usize, 0_u64);
+    // struct link_map { l_addr; l_name; l_ld; l_next; l_prev; ... }
+    for _ in 0..4096 {
+        if map == 0 {
+            break;
+        }
+        let (Some(l_addr), Some(l_ld), Some(l_next)) = (
+            read_own_word(map),
+            read_own_word(map + 16),
+            read_own_word(map + 24),
+        ) else {
+            return Err(std::io::Error::other(
+                "the loader's object list is unreadable",
+            ));
+        };
+        if l_ld != 0 && object_soname_is(l_addr, l_ld, LIBC_SONAME) {
+            matches += 1;
+            libc_dynamic = l_ld;
+        }
+        map = l_next;
+    }
+    if map != 0 {
+        return Err(std::io::Error::other(
+            "the loader's object list does not end",
+        ));
+    }
+    if matches != 1 {
         return Err(std::io::Error::other(format!(
-            "{} loaded objects have the DT_SONAME libc.so.6",
-            found.matches
+            "{matches} loaded objects have the DT_SONAME libc.so.6"
         )));
     }
-    if found.anchor == 0 {
-        return Err(std::io::Error::other("libc.so.6 has no executable segment"));
-    }
-    let anchor = found.anchor;
-    let identity = unsafe { scan_own_maps(|line| maps_line_identity(line, anchor)) }
-        .filter(|identity| identity.inode != 0 && identity.executable)
-        .ok_or_else(|| std::io::Error::other("libc.so.6's code is in no file mapping"))?;
+    // The C library's file: the one its dynamic section is mapped from.
+    let file = unsafe { scan_own_maps(|line| maps_line_identity(line, libc_dynamic)) }
+        .filter(|mapping| mapping.inode != 0)
+        .ok_or_else(|| {
+            std::io::Error::other("libc.so.6's dynamic section is in no file mapping")
+        })?;
+    let (mut executable, mut count) = (None, 0_usize);
+    let _ = unsafe {
+        scan_own_maps(|line| {
+            if let Some(mapping) = maps_line_mapping(line)
+                && mapping.executable
+                && mapping.device == file.device
+                && mapping.inode == file.inode
+            {
+                count += 1;
+                executable = Some(mapping);
+            }
+            None::<()>
+        })
+    };
+    let identity = match (count, executable) {
+        (1, Some(mapping)) => mapping,
+        _ => {
+            return Err(std::io::Error::other(format!(
+                "libc.so.6's file has {count} executable mappings"
+            )));
+        }
+    };
     LIBC_DEVICE.store(identity.device, Ordering::Release);
     LIBC_START.store(identity.start, Ordering::Release);
     LIBC_END.store(identity.end, Ordering::Release);
