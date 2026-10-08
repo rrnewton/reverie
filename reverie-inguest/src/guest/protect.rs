@@ -204,7 +204,8 @@ pub fn protect_runtime_control(event: &mut SyscallEvent) -> bool {
     let protected_signal =
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-133): Review fail-closed guest signal-handler policy.
-        !signal_action_supported(event.number, event.args)
+        (!signal_action_supported(event.number, event.args)
+            && !crate::guest::sigalrm::decides_action(event.number, event.args))
         // AUTONOMOUS-BOT-IMPLEMENTED
         || (event.number == libc::SYS_sigaltstack && event.args[0] != 0);
 
