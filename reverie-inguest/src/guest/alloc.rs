@@ -234,6 +234,7 @@ unsafe impl GlobalAlloc for GuestAllocator {
         if dispatch_active() {
             TOOL_HEAP.allocate(layout)
         } else {
+            heap31_debug(1, layout.size());
             // SAFETY: forwarded to the process system allocator.
             unsafe { System.alloc(layout) }
         }
@@ -256,6 +257,7 @@ unsafe impl GlobalAlloc for GuestAllocator {
             // A tool may drop state allocated before the filter was installed.
             // Leaking it is preferable to reentering an interrupted allocator.
         } else {
+            heap31_debug(3, layout.size());
             // SAFETY: other pointers came from System with this layout.
             unsafe { System.dealloc(pointer, layout) };
         }
@@ -277,6 +279,7 @@ unsafe impl GlobalAlloc for GuestAllocator {
             return replacement;
         }
         if !dispatch_active() {
+            heap31_debug(2, new_size);
             // SAFETY: other pointers came from System with this layout.
             return unsafe { System.realloc(pointer, old, new_size) };
         }
@@ -309,6 +312,36 @@ fn align_up(value: usize, alignment: usize) -> Option<usize> {
 }
 
 static TOOL_HEAP: ToolHeap = ToolHeap::new();
+
+#[inline(never)]
+fn heap31_debug(kind: u8, size: usize) {
+    struct Buf { b: [u8; 1024], n: usize }
+    impl core::fmt::Write for Buf { fn write_str(&mut self, s: &str) -> core::fmt::Result { for &c in s.as_bytes() { if self.n < 1024 { self.b[self.n] = c; self.n += 1; } } Ok(()) } }
+    let sp: usize;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) sp) };
+    let anchor = heap31_debug as usize;
+    let pid = unsafe { crate::trap::raw_syscall6(libc::SYS_getpid, [0; 6]) };
+    let mut buf = Buf { b: [0; 1024], n: 0 };
+    let _ = core::fmt::write(&mut buf, format_args!("HEAP31 pid={pid} kind={kind} size={size} anchor={anchor:x} cb={} :", crate::guest::support::tool_callback_active()));
+    let mut count = 0;
+    for i in 0..512 {
+        let w = unsafe { core::ptr::read_volatile((sp as *const usize).add(i)) };
+        if w > anchor.saturating_sub(0x100_0000) && w < anchor + 0x100_0000 {
+            let _ = core::fmt::write(&mut buf, format_args!(" {w:x}"));
+            count += 1;
+            if count >= 24 { break; }
+        }
+    }
+    let _ = core::fmt::write(&mut buf, format_args!("\n"));
+    let path = c"/home/newton/work/dev-hermit/worktrees/slots/liteinst-lane-20260927-scorecard/ignored/lc/heap31/sysalloc.log";
+    unsafe {
+        let fd = crate::trap::raw_syscall6(libc::SYS_openat, [libc::AT_FDCWD as u64, path.as_ptr() as u64, (libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT | libc::O_CLOEXEC) as u64, 0o644, 0, 0]);
+        if fd >= 0 {
+            crate::trap::raw_syscall6(libc::SYS_write, [fd as u64, buf.b.as_ptr() as u64, buf.n as u64, 0, 0, 0]);
+            crate::trap::raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
