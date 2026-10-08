@@ -318,16 +318,52 @@ fn overlaps_in(table: &[AtomicU64], start: u64, length: u64) -> bool {
 /// Whether the guest call `number(args)` could unmap, replace, reprotect or
 /// advise a protected restorer page, and so must be refused (EPERM) before
 /// the kernel. The inventory follows design section 4 and closure 3:
-/// `munmap`, `mprotect`, `pkey_mprotect`, `madvise`; `mremap` of an
-/// overlapping source, or with `MREMAP_FIXED` to an overlapping destination;
-/// `mmap` with `MAP_FIXED` or `MAP_FIXED_NOREPLACE` over one; and `shmat`
-/// with `SHM_REMAP` whose attachment, at its effective address (rounded
-/// down to `SHMLBA` under `SHM_RND`) for the segment's size, covers one. A
-/// `shmat` whose segment cannot be read (`IPC_STAT`) is left to the kernel,
-/// which refuses an attach it cannot perform. `brk` cannot reach a protected
-/// page: [`glibc_restorer_accepted`] admits only a mapping above the break.
+/// `munmap`, `mprotect`, `pkey_mprotect`, `madvise`, and `remap_file_pages`
+/// over one; `mremap` of an overlapping source, or with `MREMAP_FIXED` to an
+/// overlapping destination; `mmap` with `MAP_FIXED` or `MAP_FIXED_NOREPLACE`
+/// over one; and `shmat` with `SHM_REMAP` whose attachment covers one.
+///
+/// Ranges are the kernel's effective ones. A huge-page mapping replaces whole
+/// huge pages: `MAP_HUGETLB`, or a file on hugetlbfs, is checked rounded out
+/// to 1 GiB (the largest huge page on x86-64), and an `mremap` whose source is
+/// a huge-page mapping is checked rounded out to that mapping's page size (from
+/// `/proc/self/smaps`; refused when it cannot be read). An `shmat` is checked
+/// at its effective address (rounded down under `SHM_RND`) for the segment's
+/// size (`IPC_STAT`) rounded up to 1 GiB, since a `SHM_HUGETLB` segment
+/// attaches whole huge pages; it is refused when the size cannot be read.
+/// `brk` cannot reach a protected page: [`glibc_restorer_accepted`] admits
+/// only a mapping above the break.
 pub fn mapping_change_refused(number: i64, args: [u64; 6]) -> bool {
-    mapping_change_refused_in(&PROTECTED_PAGES, number, args, shm_segment_size)
+    let facts = MappingFacts {
+        segment_size: &shm_segment_size,
+        fd_is_hugetlbfs: &fd_is_hugetlbfs,
+        page_size_at: &|address| unsafe { kernel_page_size_at(address) },
+    };
+    mapping_change_refused_in(&PROTECTED_PAGES, number, args, &facts)
+}
+
+/// What [`mapping_change_refused`] asks the kernel, separated for tests.
+struct MappingFacts<'a> {
+    /// The size of a System V shared memory segment, or `None`.
+    segment_size: &'a dyn Fn(u64) -> Option<u64>,
+    /// Whether a descriptor is a file on hugetlbfs.
+    fd_is_hugetlbfs: &'a dyn Fn(u64) -> bool,
+    /// The kernel page size of the mapping containing an address, or `None`.
+    page_size_at: &'a dyn Fn(u64) -> Option<u64>,
+}
+
+/// The largest huge page on x86-64.
+const LARGEST_PAGE: u64 = 1 << 30;
+
+/// `[start, start + length)` rounded out to multiples of `unit`, as
+/// (start, length); the end saturates at the top of the address space.
+fn round_out(start: u64, length: u64, unit: u64) -> (u64, u64) {
+    let first = start & !(unit - 1);
+    let end = start.saturating_add(length);
+    let last = end
+        .checked_add(unit - 1)
+        .map_or(u64::MAX, |end| end & !(unit - 1));
+    (first, last - first)
 }
 
 /// The size of System V shared memory segment `id`, or `None`.
@@ -342,35 +378,117 @@ fn shm_segment_size(id: u64) -> Option<u64> {
     (result >= 0).then_some(status.shm_segsz as u64)
 }
 
+/// hugetlbfs's file-system magic.
+const HUGETLBFS_MAGIC: i64 = 0x9584_58f6;
+
+/// Whether descriptor `fd` is a file on hugetlbfs.
+fn fd_is_hugetlbfs(fd: u64) -> bool {
+    let mut status: libc::statfs = unsafe { core::mem::zeroed() };
+    let result = unsafe {
+        raw_syscall6(
+            libc::SYS_fstatfs,
+            [fd, (&raw mut status) as u64, 0, 0, 0, 0],
+        )
+    };
+    // `f_type`'s width differs between targets.
+    #[allow(clippy::unnecessary_cast)]
+    let magic = status.f_type as i64;
+    result == 0 && magic == HUGETLBFS_MAGIC
+}
+
+/// Parse a `/proc/self/smaps` `KernelPageSize:` line into bytes.
+pub fn kernel_page_size_line(line: &[u8]) -> Option<u64> {
+    let rest = line.strip_prefix(b"KernelPageSize:")?;
+    let digits: Vec<u8> = rest
+        .iter()
+        .copied()
+        .skip_while(|byte| *byte == b' ' || *byte == b'\t')
+        .take_while(u8::is_ascii_digit)
+        .collect();
+    let kilobytes = core::str::from_utf8(&digits).ok()?.parse::<u64>().ok()?;
+    kilobytes.checked_mul(1024)
+}
+
+/// The kernel page size of the mapping containing `address`, from
+/// `/proc/self/smaps`; `None` if it cannot be read.
+unsafe fn kernel_page_size_at(address: u64) -> Option<u64> {
+    let mut inside = false;
+    unsafe {
+        scan_proc_lines(c"/proc/self/smaps", |line| {
+            if line.starts_with(b"KernelPageSize:") {
+                if inside {
+                    return kernel_page_size_line(line);
+                }
+            } else if line.first().is_some_and(u8::is_ascii_hexdigit)
+                && line
+                    .iter()
+                    .take_while(|byte| **byte != b' ')
+                    .any(|byte| *byte == b'-')
+            {
+                inside = maps_line_identity(line, address).is_some();
+            }
+            None
+        })
+    }
+}
+
 fn mapping_change_refused_in(
     table: &[AtomicU64],
     number: i64,
     args: [u64; 6],
-    segment_size: impl FnOnce(u64) -> Option<u64>,
+    facts: &MappingFacts<'_>,
 ) -> bool {
+    if !table.iter().any(|slot| slot.load(Ordering::Acquire) != 0) {
+        return false;
+    }
     let overlaps = |start, length| overlaps_in(table, start, length);
+    let overlaps_rounded = |start, length, unit| {
+        let (start, length) = round_out(start, length, unit);
+        overlaps_in(table, start, length)
+    };
     match number {
-        libc::SYS_munmap | libc::SYS_mprotect | libc::SYS_pkey_mprotect | libc::SYS_madvise => {
-            overlaps(args[0], args[1])
-        }
+        libc::SYS_munmap
+        | libc::SYS_mprotect
+        | libc::SYS_pkey_mprotect
+        | libc::SYS_madvise
+        | libc::SYS_remap_file_pages => overlaps(args[0], args[1]),
         libc::SYS_mremap => {
             let flags = args[3] as i32;
-            overlaps(args[0], args[1].max(1))
-                || (flags & libc::MREMAP_FIXED != 0 && overlaps(args[4], args[2]))
+            let fixed = flags & libc::MREMAP_FIXED != 0;
+            let reaches = |unit| {
+                overlaps_rounded(args[0], args[1].max(1), unit)
+                    || (fixed && overlaps_rounded(args[4], args[2], unit))
+            };
+            if !reaches(LARGEST_PAGE) {
+                return false;
+            }
+            // Close enough that a huge-page source could reach: check at
+            // the source's own page size.
+            match (facts.page_size_at)(args[0]) {
+                Some(unit) if unit.is_power_of_two() && unit >= PAGE_SIZE => reaches(unit),
+                _ => true,
+            }
         }
         libc::SYS_mmap => {
             let flags = args[3] as i32;
-            flags & (libc::MAP_FIXED | libc::MAP_FIXED_NOREPLACE) != 0 && overlaps(args[0], args[1])
+            if flags & (libc::MAP_FIXED | libc::MAP_FIXED_NOREPLACE) == 0 {
+                return false;
+            }
+            let huge = flags & libc::MAP_HUGETLB != 0
+                || (flags & libc::MAP_ANONYMOUS == 0 && (facts.fd_is_hugetlbfs)(args[4]));
+            overlaps_rounded(
+                args[0],
+                args[1],
+                if huge { LARGEST_PAGE } else { PAGE_SIZE },
+            )
         }
         libc::SYS_shmat => {
             let flags = args[2] as i32;
-            if flags & libc::SHM_REMAP == 0
-                || !table.iter().any(|slot| slot.load(Ordering::Acquire) != 0)
-            {
+            if flags & libc::SHM_REMAP == 0 {
                 return false;
             }
-            let Some(size) = segment_size(args[0]) else {
-                return false;
+            let Some(size) = (facts.segment_size)(args[0]) else {
+                return true;
             };
             // SHMLBA is the page size on x86-64.
             let start = if flags & libc::SHM_RND != 0 {
@@ -378,7 +496,7 @@ fn mapping_change_refused_in(
             } else {
                 args[1]
             };
-            overlaps(start, size.max(1))
+            overlaps_rounded(start, size.max(1), LARGEST_PAGE)
         }
         _ => false,
     }
@@ -554,15 +672,29 @@ mod tests {
     fn every_mapping_change_over_a_protected_page_is_refused() {
         let pages = table();
         let page = 0x7000_1000_u64;
-        // Segment 1 has 8192 bytes; segment 2 cannot be read.
+        // Segment 1 has 8192 bytes; segment 2 cannot be read. Descriptor 7 is
+        // on hugetlbfs. The mapping at 0x8000_0000 has 2-MiB pages, the one at
+        // 0x5555_0000 an unreadable page size, every other one 4-KiB pages.
         let segment = |id: u64| (id == 1).then_some(8192);
+        let hugetlbfs = |fd: u64| fd == 7;
+        let page_size = |address: u64| match address {
+            0x8000_0000 => Some(2 << 20),
+            0x5555_0000 => None,
+            _ => Some(4096),
+        };
+        let facts = MappingFacts {
+            segment_size: &segment,
+            fd_is_hugetlbfs: &hugetlbfs,
+            page_size_at: &page_size,
+        };
         let call =
-            |number: i64, args: [u64; 6]| mapping_change_refused_in(&pages, number, args, segment);
-        // Nothing protected: nothing refused.
+            |number: i64, args: [u64; 6]| mapping_change_refused_in(&pages, number, args, &facts);
+        let far = 0x1_0000_0000_u64;
+        // Nothing protected: nothing refused, not even an unknown segment.
         assert!(!call(libc::SYS_munmap, [page, 4096, 0, 0, 0, 0]));
         assert!(!call(
             libc::SYS_shmat,
-            [1, page, libc::SHM_REMAP as u64, 0, 0, 0]
+            [2, page, libc::SHM_REMAP as u64, 0, 0, 0]
         ));
         assert!(protect_in(&pages, page + 0x10));
         for number in [
@@ -570,6 +702,7 @@ mod tests {
             libc::SYS_mprotect,
             libc::SYS_pkey_mprotect,
             libc::SYS_madvise,
+            libc::SYS_remap_file_pages,
         ] {
             assert!(call(number, [page, 4096, 0, 0, 0, 0]), "{number}");
             // A range that only reaches into the page by one byte.
@@ -586,55 +719,94 @@ mod tests {
                 "{number}"
             );
         }
-        let fixed = libc::MREMAP_MAYMOVE as u64 | libc::MREMAP_FIXED as u64;
+        let maymove = libc::MREMAP_MAYMOVE as u64;
+        let fixed = maymove | libc::MREMAP_FIXED as u64;
+        // An overlapping source, at any page size.
         assert!(call(libc::SYS_mremap, [page, 4096, 8192, 0, 0, 0]));
-        assert!(call(
-            libc::SYS_mremap,
-            [page, 0, 4096, libc::MREMAP_MAYMOVE as u64, 0, 0]
-        ));
+        assert!(call(libc::SYS_mremap, [page, 0, 4096, maymove, 0, 0]));
+        // A fixed destination over the page; not without MREMAP_FIXED, and
+        // not beside it from a 4-KiB source.
         assert!(call(
             libc::SYS_mremap,
             [0x9000_0000, 4096, 4096, fixed, page, 0]
         ));
         assert!(!call(
             libc::SYS_mremap,
-            [
-                0x9000_0000,
-                4096,
-                4096,
-                libc::MREMAP_MAYMOVE as u64,
-                page,
-                0
-            ]
+            [0x9000_0000, 4096, 4096, maymove, page, 0]
         ));
         assert!(!call(
             libc::SYS_mremap,
             [0x9000_0000, 4096, 4096, fixed, page + 4096, 0]
         ));
+        assert!(!call(
+            libc::SYS_mremap,
+            [0x9000_0000, 4096, 4096, fixed, page - 4096, 0]
+        ));
+        // From a 2-MiB source, the destination below the page is rounded
+        // over it.
+        assert!(call(
+            libc::SYS_mremap,
+            [0x8000_0000, 4096, 4096, fixed, page - 4096, 0]
+        ));
+        // A source near enough to matter whose page size cannot be read.
+        assert!(call(
+            libc::SYS_mremap,
+            [0x5555_0000, 4096, 8192, maymove, 0, 0]
+        ));
+        // Far away: decided without asking.
+        assert!(!call(libc::SYS_mremap, [far, 4096, 8192, maymove, 0, 0]));
+        let private = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
         for flags in [libc::MAP_FIXED, libc::MAP_FIXED_NOREPLACE] {
-            let flags = (flags | libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
+            let flags = flags as u64 | private;
             assert!(call(libc::SYS_mmap, [page, 4096, 0, flags, u64::MAX, 0]));
             assert!(!call(
                 libc::SYS_mmap,
                 [page + 4096, 4096, 0, flags, u64::MAX, 0]
             ));
+            // MAP_HUGETLB below the page replaces whole huge pages.
+            let huge = flags | libc::MAP_HUGETLB as u64;
+            assert!(call(
+                libc::SYS_mmap,
+                [page - 4096, 4096, 0, huge, u64::MAX, 0]
+            ));
+            assert!(!call(libc::SYS_mmap, [far, 2 << 20, 0, huge, u64::MAX, 0]));
+            // So does a file on hugetlbfs, but not an ordinary file.
+            let file = flags & !(libc::MAP_ANONYMOUS as u64);
+            assert!(call(libc::SYS_mmap, [page - 4096, 4096, 0, file, 7, 0]));
+            assert!(!call(libc::SYS_mmap, [page - 4096, 4096, 0, file, 3, 0]));
         }
-        let hint = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
-        assert!(!call(libc::SYS_mmap, [page, 4096, 0, hint, u64::MAX, 0]));
+        assert!(!call(libc::SYS_mmap, [page, 4096, 0, private, u64::MAX, 0]));
         let remap = libc::SHM_REMAP as u64;
         let rounded = remap | libc::SHM_RND as u64;
-        // An attachment whose 8192 bytes reach the page, from below or at it.
+        // An attachment reaching the page from below, at it, or rounded
+        // onto it; a huge-page segment would round up to 1 GiB, so anything
+        // within that reach is refused.
         assert!(call(libc::SYS_shmat, [1, page - 4096, remap, 0, 0, 0]));
         assert!(call(libc::SYS_shmat, [1, page, remap, 0, 0, 0]));
-        // SHM_RND rounds an unaligned address down onto the page.
         assert!(call(libc::SYS_shmat, [1, page + 0x123, rounded, 0, 0, 0]));
-        // Disjoint attachments, one ending just below the page.
-        assert!(!call(libc::SYS_shmat, [1, page - 8192, remap, 0, 0, 0]));
-        assert!(!call(libc::SYS_shmat, [1, page + 4096, remap, 0, 0, 0]));
-        // Without SHM_REMAP, or with an unreadable segment, the kernel decides.
+        assert!(call(libc::SYS_shmat, [1, page - 8192, remap, 0, 0, 0]));
+        // A disjoint attachment beyond that reach; without SHM_REMAP the
+        // kernel decides.
+        assert!(!call(libc::SYS_shmat, [1, far, remap, 0, 0, 0]));
         assert!(!call(libc::SYS_shmat, [1, page, 0, 0, 0, 0]));
-        assert!(!call(libc::SYS_shmat, [2, page, remap, 0, 0, 0]));
+        // A segment whose size cannot be read is refused.
+        assert!(call(libc::SYS_shmat, [2, far, remap, 0, 0, 0]));
         assert!(!call(libc::SYS_brk, [page, 0, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn kernel_page_size_lines_are_parsed() {
+        assert_eq!(
+            kernel_page_size_line(b"KernelPageSize:        4 kB"),
+            Some(4096)
+        );
+        assert_eq!(
+            kernel_page_size_line(b"KernelPageSize:     2048 kB"),
+            Some(2 << 20)
+        );
+        assert_eq!(kernel_page_size_line(b"MMUPageSize:        4 kB"), None);
+        assert_eq!(round_out(0x7000_1000, 1, 1 << 30), (0x4000_0000, 1 << 30));
+        assert_eq!(round_out(0x1000, 0x2000, 0x1000), (0x1000, 0x2000));
     }
 
     /// glibc's own restorer, as `sigaction` installs it, is accepted; its
