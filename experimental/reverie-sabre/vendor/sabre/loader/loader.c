@@ -193,7 +193,7 @@ static void sigill_handler(int sig __unused, siginfo_t *info, void *ucontext) {
                                            ? SBR_SLOW_RDTSC_SIGILL_DISPATCH
                                            : SBR_SLOW_RDTSCP_SIGILL_DISPATCH);
     greg_t *regs = ctx->uc_mcontext.gregs;
-    uint64_t tsc = (uint64_t)plugin_rdtsc_handler();
+    uint64_t tsc = (uint64_t)runtime_rdtsc_router();
     regs[REG_RAX] = (uint32_t)tsc;
     regs[REG_RDX] = (uint32_t)(tsc >> 32);
     if (faulting_insn == 0x0C0F) {

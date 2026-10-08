@@ -492,7 +492,17 @@ where
         let tid = current_tid();
         let pid = current_pid();
         let state = self.thread_state(tid).map_err(remote_rpc_error)?;
-        let mut state = state.lock();
+        // Only this thread takes its own state, so a held lock means this RDTSC
+        // re-entered a tool call already in progress on this thread: client
+        // code that the plugin itself reached, for example a guest-exported
+        // function the coordinator RPC resolved to. Waiting would deadlock, and
+        // there is no virtual value to give without the state, so refuse.
+        let Some(mut state) = state.try_lock() else {
+            crate::eprintln!(
+                "reverie-sabre: an RDTSC re-entered a tool call already in progress on thread {tid}; it has no deterministic value"
+            );
+            return Err(Errno::EDEADLK);
+        };
         let RemoteThreadState {
             thread_state,
             rpc,
