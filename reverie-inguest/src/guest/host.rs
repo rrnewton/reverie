@@ -80,12 +80,20 @@ pub trait HostRuntime: Send + Sync + 'static {
 fn virtual_signal_call(
     runtime: &impl HostRuntime,
     guest_pkru: Option<u32>,
+    original_args: [u64; 6],
     number: i64,
     args: [u64; 6],
 ) -> Option<i64> {
+    let rights = super::sigalrm::GuestRights {
+        pkru: guest_pkru,
+        original_args,
+    };
+    if super::sigalrm::original_input_denied(rights, number, args) {
+        return Some(-i64::from(libc::EFAULT));
+    }
     let policy = super::sigalrm::Policy {
         reserved: runtime.reserved_signal_mask(),
-        rights: super::sigalrm::GuestRights { pkru: guest_pkru },
+        rights,
     };
     // SAFETY: called only while forwarding the guest's own call, in its turn.
     unsafe { super::sigalrm::intercept(&policy, number, args) }
@@ -294,7 +302,8 @@ where
                 event.result = result;
                 return;
             }
-            if let Some(result) = virtual_signal_call(&self.runtime, guest_pkru, number, args) {
+            if let Some(result) = virtual_signal_call(&self.runtime, guest_pkru, args, number, args)
+            {
                 event.result = result;
                 return;
             }
@@ -973,6 +982,17 @@ fn installs_seccomp_filter(number: i64, args: [u64; 6]) -> bool {
             && args[1] == u64::from(libc::SECCOMP_MODE_FILTER))
 }
 
+/// Whether a guest call asks for an execute-only mapping (protection exactly
+/// `PROT_EXEC`), which Linux backs with an implicit protection key.
+fn execute_only_mapping(number: i64, args: [u64; 6]) -> bool {
+    let prot = match number {
+        libc::SYS_mmap => args[2],
+        libc::SYS_mprotect | libc::SYS_pkey_mprotect => args[2],
+        _ => return false,
+    };
+    prot as i32 == libc::PROT_EXEC
+}
+
 /// A guest call that installs a seccomp filter is refused once a creation
 /// hook is registered (see [`set_physical_creation_hook`]), and in a process
 /// that admits guest SIGALRM handlers: a guest filter could make the
@@ -1467,6 +1487,11 @@ fn injected_syscall_guard(
     if number == libc::SYS_pkey_alloc && super::sigalrm::admitted() {
         return Some(Errno::ENOSPC);
     }
+    // Nor an implicit one: Linux gives an execute-only mapping (exactly
+    // PROT_EXEC) a protection key of its own.
+    if super::sigalrm::admitted() && execute_only_mapping(number, args) {
+        return Some(Errno::EPERM);
+    }
     // Signal phase 1: an accepted SIGALRM restorer's page stays mapped,
     // unchanged, for the rest of the process's life.
     if super::restorer::mapping_change_refused(number, args) {
@@ -1747,9 +1772,13 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             self.tail.set_exit(number, raw_args);
             return std::future::pending().await;
         }
-        if let Some(result) =
-            virtual_signal_call(self.runtime, self.event.guest_pkru, number, raw_args)
-        {
+        if let Some(result) = virtual_signal_call(
+            self.runtime,
+            self.event.guest_pkru,
+            self.event.args,
+            number,
+            raw_args,
+        ) {
             return Errno::from_ret(result as usize).map(|value| value as i64);
         }
         let kernel_signal_mask = stripped_signal_mask(self.runtime, number, raw_args)?;
@@ -1795,9 +1824,13 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             self.tail.set_result(result);
         } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
-        } else if let Some(result) =
-            virtual_signal_call(self.runtime, self.event.guest_pkru, number, args)
-        {
+        } else if let Some(result) = virtual_signal_call(
+            self.runtime,
+            self.event.guest_pkru,
+            self.event.args,
+            number,
+            args,
+        ) {
             self.tail.set_result(result);
         } else {
             let value = match stripped_signal_mask(self.runtime, number, args) {

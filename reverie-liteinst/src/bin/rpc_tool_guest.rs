@@ -139,6 +139,10 @@ impl GlobalTool for CounterGlobal {
 #[derive(Default)]
 struct CounterTool;
 
+/// The `getppid` argument that asks [`CounterTool`] for a private mask query
+/// on its own buffer.
+const PRIVATE_MASK_QUERY_MARKER: usize = 0x5157;
+
 /// [`CounterTool`]'s exit status if a guest `rt_sigreturn` ever reaches it.
 const TOOL_SAW_SIGRETURN_STATUS: i32 = 118;
 
@@ -156,6 +160,15 @@ impl Tool for CounterTool {
             // The runtime refuses the guest's own rt_sigreturn before any
             // Tool sees it (tool-sigreturn-trap, tool-sigreturn-hook).
             unsafe { reverie_inguest::guest::support::exit_now(TOOL_SAW_SIGRETURN_STATUS) };
+        }
+        if syscall.number() == Sysno::getppid
+            && syscall.into_parts().1.arg0 == PRIVATE_MASK_QUERY_MARKER
+        {
+            // A private call on the Tool's own buffer: the guest's rights
+            // never apply to it.
+            let mut old = 0_u64;
+            let query = signal_mask_call(libc::SIG_BLOCK, 0, (&raw mut old) as usize);
+            return Ok(errno_result(guest.inject(query).await));
         }
         if syscall.number() == Sysno::getpid {
             let uid = unsafe { reverie_liteinst_rpc_getuid() };
@@ -1343,6 +1356,50 @@ fn sigalrm_query_with_key_zero_write_denied() -> Option<i64> {
     Some(result)
 }
 
+/// A raw syscall `number(arg0, arg1, arg2, arg3)` made while the guest's PKRU
+/// adds `bits` for key 0 (1 access-disable, 2 write-disable), restoring the
+/// PKRU right after; `None` when the processor has no protection keys
+/// enabled. The asm touches no memory between the two PKRU writes.
+fn syscall_with_key_zero_denied(bits: u32, number: i64, arguments: [u64; 4]) -> Option<i64> {
+    let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+    if leaf7.ecx & (1 << 4) == 0 {
+        return None;
+    }
+    let result: i64;
+    unsafe {
+        core::arch::asm!(
+            "xor ecx, ecx",
+            "rdpkru",
+            "mov r13d, eax",
+            "xor ecx, ecx",
+            "xor edx, edx",
+            "mov eax, r13d",
+            "or eax, r14d",
+            "wrpkru",
+            "mov rax, r15",
+            "mov rdx, r12",
+            "syscall",
+            "mov r12, rax",
+            "xor ecx, ecx",
+            "xor edx, edx",
+            "mov eax, r13d",
+            "wrpkru",
+            in("r14") bits,
+            in("r15") number,
+            in("rdi") arguments[0],
+            in("rsi") arguments[1],
+            inout("r12") arguments[2] => result,
+            in("r10") arguments[3],
+            out("r13") _,
+            out("rax") _,
+            out("rcx") _,
+            out("rdx") _,
+            out("r11") _,
+        );
+    }
+    Some(result)
+}
+
 fn alternate_stack_is_disabled() -> bool {
     // Every byte, padding included, must be Linux's image of a disabled
     // stack; the buffer starts as all ones so an unwritten byte shows.
@@ -1638,11 +1695,60 @@ fn sigalrm_virtual_guest(path: &Path) {
         "{status:#x}"
     );
 
-    // The guest's own protection-key rights apply to the runtime's copies:
-    // with key 0 write-denied the query cannot copy the old action out.
+    // The guest's own protection-key rights apply to the runtime's copies of
+    // the guest's buffers: with key 0 write-denied the query cannot copy the
+    // old action out, while a new action is still read and installed (Linux
+    // only reads it). A Tool's private call on its own buffer, made while the
+    // guest denies key 0 writes, keeps the Tool's rights. (Access-disable
+    // cannot be exercised here: the kernel cannot deliver the SIGSYS that
+    // traps such a call, and the process dies of SIGSEGV.)
     if let Some(result) = sigalrm_query_with_key_zero_write_denied() {
         assert_eq!(result, -i64::from(libc::EFAULT));
+        let replacement = reverie_inguest::signal::KernelSigaction {
+            handler: other_guest_sigalrm_handler as *const () as u64,
+            flags: reverie_inguest::signal::SA_RESTORER as u64,
+            restorer: glibc_restorer,
+            mask: 0,
+        };
+        let installed = syscall_with_key_zero_denied(
+            2,
+            libc::SYS_rt_sigaction,
+            [libc::SIGALRM as u64, (&raw const replacement) as u64, 0, 8],
+        );
+        assert_eq!(installed, Some(0));
+        let mut current: libc::sigaction = unsafe { core::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::sigaction(libc::SIGALRM, core::ptr::null(), &mut current) },
+            0
+        );
+        assert_eq!(
+            current.sa_sigaction,
+            other_guest_sigalrm_handler as *const () as usize
+        );
+        sigalrm_sigaction(&action).unwrap();
+        let private = syscall_with_key_zero_denied(
+            2,
+            libc::SYS_getppid,
+            [PRIVATE_MASK_QUERY_MARKER as u64, 0, 0, 0],
+        );
+        assert_eq!(private, Some(0));
     }
+    // No execute-only mapping (it would carry a protection key of its own).
+    let execute_only = unsafe {
+        libc::mmap(
+            core::ptr::null_mut(),
+            4096,
+            libc::PROT_EXEC,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_eq!(execute_only, libc::MAP_FAILED);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EPERM)
+    );
 
     // A disabled alternate stack, never the runtime's.
     let mut stack: libc::stack_t = unsafe { core::mem::zeroed() };

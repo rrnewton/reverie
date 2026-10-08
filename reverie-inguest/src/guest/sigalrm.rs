@@ -272,32 +272,54 @@ fn copy_within_process(from: u64, to: u64, len: usize) -> Result<(), i32> {
 /// The guest's protection-key rights for a call, from the PKRU its trap
 /// saved (`None`: no saved value, so no key is enforced: the processor has
 /// no protection keys enabled, or the call did not arrive through a trap,
-/// where the calling thread's own rights apply to the kernel's copies).
+/// where the calling thread's own rights apply to the kernel's copies), and
+/// the arguments of the guest's original call.
 ///
-/// A process that admits handlers allocates no protection key (`pkey_alloc`
-/// is refused from initialization), so all of its memory has key 0, and Linux
+/// A process that admits handlers has no protection key but key 0: it
+/// allocates none (`pkey_alloc` is refused from initialization) and gets no
+/// implicit execute-only key (an execute-only mapping is refused). So Linux
 /// would answer EFAULT for any copy that the guest's rights for key 0 deny.
-/// The runtime's copies run with every key open (the fallback path's rights),
-/// so they apply key 0's bits here: access-disable refuses every copy,
-/// write-disable refuses a copy out.
+/// The runtime's copies run with every key open (the fallback path's
+/// rights), so they apply key 0's bits themselves, to the guest's own
+/// buffers only: an address that is one of the original call's arguments.
+/// A buffer a Tool supplies (its own scratch for a private call) keeps the
+/// caller's rights: access-disable refuses every copy, write-disable refuses a
+/// copy out.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GuestRights {
     /// The guest's saved PKRU.
     pub pkru: Option<u32>,
+    /// The arguments of the guest's original call.
+    pub original_args: [u64; 6],
 }
 
 impl GuestRights {
-    fn may_read(self) -> bool {
-        self.pkru.is_none_or(|pkru| pkru & 1 == 0)
+    fn applies(self, address: u64) -> bool {
+        address != 0 && self.original_args.contains(&address)
     }
 
-    fn may_write(self) -> bool {
-        self.pkru.is_none_or(|pkru| pkru & 0b11 == 0)
+    fn may_read(self, address: u64) -> bool {
+        !self.applies(address) || self.pkru.is_none_or(|pkru| pkru & 1 == 0)
+    }
+
+    fn may_write(self, address: u64) -> bool {
+        !self.applies(address) || self.pkru.is_none_or(|pkru| pkru & 0b11 == 0)
     }
 }
 
+/// Whether the call reads a guest buffer, one of the original call's own,
+/// that the guest's key-0 rights deny: Linux fails such a call with EFAULT
+/// before it changes anything. This covers the calls a Tool forwards to read
+/// a guest's set or action (Detcore's validation probes) as well as the
+/// virtualized ones.
+pub fn original_input_denied(rights: GuestRights, number: i64, args: [u64; 6]) -> bool {
+    admitted()
+        && matches!(number, libc::SYS_rt_sigaction | libc::SYS_rt_sigprocmask)
+        && !rights.may_read(args[1])
+}
+
 fn read_guest<T: Default>(rights: GuestRights, address: u64) -> Result<T, i32> {
-    if !rights.may_read() {
+    if !rights.may_read(address) {
         return Err(libc::EFAULT);
     }
     let mut value = T::default();
@@ -306,7 +328,7 @@ fn read_guest<T: Default>(rights: GuestRights, address: u64) -> Result<T, i32> {
 }
 
 fn write_guest<T>(rights: GuestRights, address: u64, value: &T) -> Result<(), i32> {
-    if !rights.may_write() {
+    if !rights.may_write(address) {
         return Err(libc::EFAULT);
     }
     copy_within_process(
@@ -565,7 +587,7 @@ fn sigpending(policy: &Policy, args: [u64; 6]) -> Result<i64, i32> {
     // Linux reports pending ∩ blocked; the guest's blocked set is virtual.
     let visible = pending & !SIGALRM_BIT & virtual_mask();
     if size != 0 {
-        if !policy.rights.may_write() {
+        if !policy.rights.may_write(args[0]) {
             return Err(libc::EFAULT);
         }
         // The set is little-endian: its first `size` bytes are the prefix.
@@ -741,26 +763,59 @@ mod tests {
     }
 
     #[test]
-    fn key_zero_rights_follow_the_guests_pkru() {
-        let none = GuestRights { pkru: None };
-        assert!(none.may_read() && none.may_write());
-        let open = GuestRights {
-            pkru: Some(0x5555_5554),
+    fn key_zero_rights_apply_to_the_guests_own_buffers_only() {
+        let original = [0, 0x5000, 0x6000, 8, 0, 0];
+        let rights = |pkru| GuestRights {
+            pkru,
+            original_args: original,
         };
-        assert!(open.may_read() && open.may_write());
-        let write_disabled = GuestRights { pkru: Some(0b10) };
-        assert!(write_disabled.may_read() && !write_disabled.may_write());
-        let access_disabled = GuestRights { pkru: Some(0b01) };
-        assert!(!access_disabled.may_read() && !access_disabled.may_write());
+        let none = rights(None);
+        assert!(none.may_read(0x5000) && none.may_write(0x6000));
+        let open = rights(Some(0x5555_5554));
+        assert!(open.may_read(0x5000) && open.may_write(0x6000));
+        let write_disabled = rights(Some(0b10));
+        assert!(write_disabled.may_read(0x5000) && !write_disabled.may_write(0x6000));
+        let access_disabled = rights(Some(0b01));
+        assert!(!access_disabled.may_read(0x5000) && !access_disabled.may_write(0x6000));
+        // A Tool's own scratch keeps the caller's rights; so does NULL.
+        assert!(access_disabled.may_read(0x7000) && access_disabled.may_write(0x7000));
+        assert!(access_disabled.may_read(0));
         assert_eq!(
-            read_guest::<u64>(access_disabled, 0x1000),
+            read_guest::<u64>(access_disabled, 0x5000),
             Err(libc::EFAULT)
         );
         let value = 7_u64;
+        let local = (&raw const value) as u64;
+        let local_original = GuestRights {
+            pkru: Some(0b10),
+            original_args: [0, 0, local, 0, 0, 0],
+        };
         assert_eq!(
-            write_guest(write_disabled, (&raw const value) as u64, &value),
+            write_guest(local_original, local, &value),
             Err(libc::EFAULT)
         );
+        set_admitted(true);
+        assert!(original_input_denied(
+            access_disabled,
+            libc::SYS_rt_sigaction,
+            [libc::SIGKILL as u64, 0x5000, 0, 8, 0, 0]
+        ));
+        assert!(!original_input_denied(
+            access_disabled,
+            libc::SYS_rt_sigaction,
+            [libc::SIGKILL as u64, 0x7000, 0, 8, 0, 0]
+        ));
+        assert!(!original_input_denied(
+            write_disabled,
+            libc::SYS_rt_sigprocmask,
+            [0, 0x5000, 0, 8, 0, 0]
+        ));
+        set_admitted(false);
+        assert!(!original_input_denied(
+            access_disabled,
+            libc::SYS_rt_sigaction,
+            [libc::SIGKILL as u64, 0x5000, 0, 8, 0, 0]
+        ));
     }
 
     #[test]
