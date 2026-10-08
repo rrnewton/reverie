@@ -821,6 +821,29 @@ alternate stack the runtime did not set; the process ends\n";
     }
 }
 
+/// Set by [`prepare_delivery_before_syscall`]: the current fallback syscall
+/// is not run, and its continuation resumes at the `syscall` instruction.
+static ENTRY_DELIVERY: AtomicBool = AtomicBool::new(false);
+
+/// [`prepare_delivery`] from a syscall's entry (the I4 addendum's point c):
+/// the delivery happens before the syscall, which then starts from the
+/// beginning once the handler returns.
+///
+/// # Safety
+///
+/// As [`prepare_delivery`]; the caller must not run the syscall.
+pub unsafe fn prepare_delivery_before_syscall(reserved: u64) -> Result<(), i32> {
+    unsafe { prepare_delivery(reserved) }?;
+    ENTRY_DELIVERY.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// Whether the syscall whose callback just returned is to start again from
+/// its `syscall` instruction (its entry delivery was prepared), taken once.
+pub fn take_entry_delivery() -> bool {
+    ENTRY_DELIVERY.swap(false, Ordering::AcqRel)
+}
+
 /// The delivery window for the completion marker's fresh frame, taken once.
 pub fn take_window() -> Option<u64> {
     WINDOW_OPEN
