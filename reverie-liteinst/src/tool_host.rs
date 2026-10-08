@@ -208,6 +208,16 @@ unsafe fn install_tool_inner<T>(
 where
     T: Tool + 'static,
 {
+    // Everything installation allocates (the coordinator's configuration,
+    // the Tool, the runtime's /proc/self/maps snapshots and site tables)
+    // lives in the runtime's private Tool heap, never in the guest's own
+    // malloc heap, where it would stay before `main` runs. Its sizes follow
+    // host state, such as the number of mounts the configuration lists, so
+    // the guest's heap layout, and every heap address its syscalls pass,
+    // would otherwise differ between two runs of one program. The Tool heap
+    // is anonymous memory, so the entry census of the object that links this
+    // runtime does not read the Tool's state as code addresses either.
+    let _private_allocations = reverie_inguest::guest::alloc::enter_dispatch();
     crate::syscall_fallback::initialize()?;
     let rpc =
         CoordinatorRpc::<T::GlobalState>::connect(coordinator, runtime::replace_coordinator_fd)?;
