@@ -337,7 +337,8 @@ fn overlaps_in(table: &[AtomicU64], start: u64, length: u64) -> bool {
 /// `munmap`, `mprotect`, `pkey_mprotect`, `madvise`, and `remap_file_pages`
 /// over one; `mremap` of an overlapping source, or with `MREMAP_FIXED` to an
 /// overlapping destination; `mmap` with `MAP_FIXED` or `MAP_FIXED_NOREPLACE`
-/// over one; and every `shmat` with `SHM_REMAP`.
+/// over one; every `shmat` with `SHM_REMAP`; and every `process_madvise`
+/// (its target may be this process, and its ranges are in a vector).
 ///
 /// Ranges are the kernel's effective ones. A huge-page mapping replaces whole
 /// pages of its size: `MAP_HUGETLB` is checked rounded out to its
@@ -479,6 +480,10 @@ fn mapping_change_refused_in(
         | libc::SYS_pkey_mprotect
         | libc::SYS_madvise
         | libc::SYS_remap_file_pages => overlaps(args[0], args[1]),
+        // Its ranges are in a vector, and its target may be this process:
+        // refused while any page is protected (signal phase 1 takes the
+        // refusal, msg1635).
+        libc::SYS_process_madvise => true,
         libc::SYS_mremap => {
             let flags = args[3] as i32;
             let fixed = flags & libc::MREMAP_FIXED != 0;
@@ -899,6 +904,8 @@ mod tests {
         ));
         assert!(!call(libc::SYS_shmat, [1, page, 0, 0, 0, 0]));
         assert!(!call(libc::SYS_brk, [page, 0, 0, 0, 0, 0]));
+        // process_madvise is refused whatever its vector names.
+        assert!(call(libc::SYS_process_madvise, [3, 0x9000, 1, 0, 0, 0]));
     }
 
     #[test]
