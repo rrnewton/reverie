@@ -16,6 +16,7 @@ members = [
     "reverie-dbt",
     "reverie-inguest",
     "reverie-e9patch",
+    "reverie-elf-loader",
     "reverie-examples",
     "reverie-kvm",
     "reverie-liteinst",
