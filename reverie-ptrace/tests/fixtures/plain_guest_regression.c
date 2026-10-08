@@ -686,9 +686,10 @@ static void mode_foreign_int80(void) {
   if (child < 0)
     die("fork");
   if (child == 0) {
-    /* No core file in the working directory; core dumping stays host
-     * policy either way, and both backends see the same limit. */
-    struct rlimit none = {0, 0};
+    /* No core anywhere: a limit of 1 stops a core file and, unlike 0, a
+     * pipe core_pattern helper too. Under a hard limit of 0 the call fails
+     * and the limit stays 0. Both backends see the same limit. */
+    struct rlimit none = {1, 1};
     setrlimit(RLIMIT_CORE, &none);
     install(SIGSYS, 0, handler);
     sigset_t set;
@@ -1618,7 +1619,8 @@ static void mode_late_timer(int foreign) {
   if (child < 0)
     die("fork");
   if (child == 0) {
-    struct rlimit none = {0, 0};
+    /* A limit of 1, as above. */
+    struct rlimit none = {1, 1};
     setrlimit(RLIMIT_CORE, &none);
     install(SIGSYS, 0, handler);
     sigset_t set;
