@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <linux/sched.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/time.h>
@@ -463,7 +464,53 @@ long ld_sc_handler(long sc_no, long arg1, long arg2, long arg3, long arg4,
   return ret;
 }
 
-// TODO(andronat): Do router for rdtsc
+#if defined(__NX_INTERCEPT_RDTSC) && defined(__x86_64__)
+// A guest RDTSC with no plugin handler to answer it has no deterministic
+// value, and the host counter would leak host time into the guest. This
+// happens in a guest .preinit_array function (premain appends the plugin's
+// entry after the guest's own), or in a guest signal handler delivered while
+// the plugin is still being constructed. Refuse instead.
+__attribute__((noreturn)) static void rdtsc_without_plugin(void) {
+  static const char message[] =
+      "SaBRe: guest RDTSC before the plugin was initialized (for example in a "
+      ".preinit_array function); it has no deterministic value\n";
+  // The diagnostic must not keep a refused guest alive: a guest can leave a
+  // full, blocking pipe on fd 2. Write it only if stderr can take it now; the
+  // message is shorter than a pipe page, so a writable pipe accepts it whole.
+  struct pollfd out = {.fd = STDERR_FILENO, .events = POLLOUT};
+  if (real_syscall(SYS_poll, (long)&out, 1, 0, 0, 0, 0) == 1 &&
+      (out.revents & POLLOUT))
+    real_syscall(SYS_write, STDERR_FILENO, (long)message, sizeof(message) - 1, 0,
+                 0, 0);
+  real_syscall(SYS_exit_group, 127, 0, 0, 0, 0, 0);
+  __builtin_unreachable();
+}
+
+// The RDTSC counterpart of route_syscall's recursion boundary, entered from the
+// rewritten-site trampolines and the SIGILL marker. A guest RDTSC reaches the
+// plugin between enter_plugin and exit_plugin, so the syscalls the plugin makes
+// while handling it run natively. Calling the handler directly left that flag
+// clear: those syscalls came back into the plugin as guest syscalls, and the
+// guest hung (on the tool's own construction for a first-event RDTSC,
+// otherwise on the thread state the RDTSC handler already held).
+//
+// Only rewritten client code reaches this router, so it never reads the host
+// counter. With the flag already set, the RDTSC is client code running inside
+// the plugin's boundary: usually a guest signal handler the plugin is
+// delivering (see https://github.com/rrnewton/hermit/issues/3900). It gets the
+// virtual value without entering the boundary twice; the plugin refuses, rather
+// than deadlocks, if that re-enters a tool call already in progress.
+long runtime_rdtsc_router(void) {
+  if (calling_from_plugin == NULL || plugin_rdtsc_handler == NULL)
+    rdtsc_without_plugin();
+  if (calling_from_plugin())
+    return plugin_rdtsc_handler();
+  enter_plugin();
+  long tsc = plugin_rdtsc_handler();
+  exit_plugin();
+  return tsc;
+}
+#endif
 
 static void_void_fn plugin_clock_gettime = NULL;
 static void_void_fn plugin_getcpu = NULL;
