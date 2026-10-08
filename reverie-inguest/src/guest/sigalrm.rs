@@ -269,13 +269,46 @@ fn copy_within_process(from: u64, to: u64, len: usize) -> Result<(), i32> {
     }
 }
 
-fn read_guest<T: Default>(address: u64) -> Result<T, i32> {
+/// The guest's protection-key rights for a call, from the PKRU its trap
+/// saved (`None`: no saved value, so no key is enforced: the processor has
+/// no protection keys enabled, or the call did not arrive through a trap,
+/// where the calling thread's own rights apply to the kernel's copies).
+///
+/// A process that admits handlers allocates no protection key (`pkey_alloc`
+/// is refused from initialization), so all of its memory has key 0, and Linux
+/// would answer EFAULT for any copy that the guest's rights for key 0 deny.
+/// The runtime's copies run with every key open (the fallback path's rights),
+/// so they apply key 0's bits here: access-disable refuses every copy,
+/// write-disable refuses a copy out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GuestRights {
+    /// The guest's saved PKRU.
+    pub pkru: Option<u32>,
+}
+
+impl GuestRights {
+    fn may_read(self) -> bool {
+        self.pkru.is_none_or(|pkru| pkru & 1 == 0)
+    }
+
+    fn may_write(self) -> bool {
+        self.pkru.is_none_or(|pkru| pkru & 0b11 == 0)
+    }
+}
+
+fn read_guest<T: Default>(rights: GuestRights, address: u64) -> Result<T, i32> {
+    if !rights.may_read() {
+        return Err(libc::EFAULT);
+    }
     let mut value = T::default();
     copy_within_process(address, (&raw mut value) as u64, core::mem::size_of::<T>())?;
     Ok(value)
 }
 
-fn write_guest<T>(address: u64, value: &T) -> Result<(), i32> {
+fn write_guest<T>(rights: GuestRights, address: u64, value: &T) -> Result<(), i32> {
+    if !rights.may_write() {
+        return Err(libc::EFAULT);
+    }
     copy_within_process(
         (value as *const T) as u64,
         address,
@@ -339,6 +372,8 @@ fn install_physical_action(action: &KernelSigaction) -> Result<(), i32> {
 pub struct Policy {
     /// Signals the runtime keeps unblocked for itself.
     pub reserved: u64,
+    /// The guest's protection-key rights for this call.
+    pub rights: GuestRights,
 }
 
 /// Decide a guest signal call Detcore forwards. `Some(result)` is the call's
@@ -363,10 +398,10 @@ pub unsafe fn intercept(policy: &Policy, number: i64, args: [u64; 6]) -> Option<
             }
             sigprocmask(policy, args)
         }
-        libc::SYS_rt_sigpending if handled() => sigpending(args),
+        libc::SYS_rt_sigpending if handled() => sigpending(policy, args),
         // The guest's alternate stack is virtual, and always disabled, in
         // every process that admits handlers: before, during and after one.
-        libc::SYS_sigaltstack if admitted() && args[0] == 0 => sigaltstack_query(args),
+        libc::SYS_sigaltstack if admitted() && args[0] == 0 => sigaltstack_query(policy, args),
         _ => return None,
     };
     Some(match result {
@@ -380,7 +415,7 @@ fn sigaction(policy: &Policy, args: [u64; 6]) -> Result<i64, i32> {
     let new = if args[1] == 0 {
         None
     } else {
-        Some(read_guest::<KernelSigaction>(args[1])?)
+        Some(read_guest::<KernelSigaction>(policy.rights, args[1])?)
     };
     let old = match new {
         None if !was_handled => {
@@ -394,7 +429,7 @@ fn sigaction(policy: &Policy, args: [u64; 6]) -> Result<i64, i32> {
     };
     if args[2] != 0 {
         // After the change, as Linux copies the old action out last.
-        write_guest(args[2], &old)?;
+        write_guest(policy.rights, args[2], &old)?;
     }
     Ok(0)
 }
@@ -499,18 +534,18 @@ physical SIGALRM state; the process ends\n";
 fn sigprocmask(policy: &Policy, args: [u64; 6]) -> Result<i64, i32> {
     let old = virtual_mask();
     if args[1] != 0 {
-        let set = read_guest::<u64>(args[1])?;
+        let set = read_guest::<u64>(policy.rights, args[1])?;
         let next = next_mask(old, args[0] as i32, set)?;
         install_physical_mask(next, true, policy.reserved)?;
         VIRTUAL_MASK.store(next, Ordering::Release);
     }
     if args[2] != 0 {
-        write_guest(args[2], &old)?;
+        write_guest(policy.rights, args[2], &old)?;
     }
     Ok(0)
 }
 
-fn sigpending(args: [u64; 6]) -> Result<i64, i32> {
+fn sigpending(policy: &Policy, args: [u64; 6]) -> Result<i64, i32> {
     // Linux accepts any size up to its set's and copies that many bytes; a
     // size of 0 copies nothing and never touches the destination.
     let size = args[1];
@@ -530,6 +565,9 @@ fn sigpending(args: [u64; 6]) -> Result<i64, i32> {
     // Linux reports pending ∩ blocked; the guest's blocked set is virtual.
     let visible = pending & !SIGALRM_BIT & virtual_mask();
     if size != 0 {
+        if !policy.rights.may_write() {
+            return Err(libc::EFAULT);
+        }
         // The set is little-endian: its first `size` bytes are the prefix.
         copy_within_process((&raw const visible) as u64, args[0], size as usize)?;
     }
@@ -544,9 +582,9 @@ pub fn disabled_stack_bytes() -> [u8; 24] {
     bytes
 }
 
-fn sigaltstack_query(args: [u64; 6]) -> Result<i64, i32> {
+fn sigaltstack_query(policy: &Policy, args: [u64; 6]) -> Result<i64, i32> {
     if args[1] != 0 {
-        write_guest(args[1], &disabled_stack_bytes())?;
+        write_guest(policy.rights, args[1], &disabled_stack_bytes())?;
     }
     Ok(0)
 }
@@ -700,6 +738,29 @@ mod tests {
         assert_eq!(core::mem::offset_of!(libc::stack_t, ss_size), 16);
         assert_eq!(&bytes[8..12], &libc::SS_DISABLE.to_ne_bytes());
         assert!(bytes[..8].iter().chain(&bytes[12..]).all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn key_zero_rights_follow_the_guests_pkru() {
+        let none = GuestRights { pkru: None };
+        assert!(none.may_read() && none.may_write());
+        let open = GuestRights {
+            pkru: Some(0x5555_5554),
+        };
+        assert!(open.may_read() && open.may_write());
+        let write_disabled = GuestRights { pkru: Some(0b10) };
+        assert!(write_disabled.may_read() && !write_disabled.may_write());
+        let access_disabled = GuestRights { pkru: Some(0b01) };
+        assert!(!access_disabled.may_read() && !access_disabled.may_write());
+        assert_eq!(
+            read_guest::<u64>(access_disabled, 0x1000),
+            Err(libc::EFAULT)
+        );
+        let value = 7_u64;
+        assert_eq!(
+            write_guest(write_disabled, (&raw const value) as u64, &value),
+            Err(libc::EFAULT)
+        );
     }
 
     #[test]

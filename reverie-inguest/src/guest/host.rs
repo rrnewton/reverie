@@ -77,9 +77,15 @@ pub trait HostRuntime: Send + Sync + 'static {
 
 /// Decide a guest signal call through the runtime's virtual SIGALRM state;
 /// `Some` is its result and it must not be forwarded.
-fn virtual_signal_call(runtime: &impl HostRuntime, number: i64, args: [u64; 6]) -> Option<i64> {
+fn virtual_signal_call(
+    runtime: &impl HostRuntime,
+    guest_pkru: Option<u32>,
+    number: i64,
+    args: [u64; 6],
+) -> Option<i64> {
     let policy = super::sigalrm::Policy {
         reserved: runtime.reserved_signal_mask(),
+        rights: super::sigalrm::GuestRights { pkru: guest_pkru },
     };
     // SAFETY: called only while forwarding the guest's own call, in its turn.
     unsafe { super::sigalrm::intercept(&policy, number, args) }
@@ -239,6 +245,7 @@ where
         if !self.subscriptions.contains(&number) {
             let number = guest.event.number;
             let args = guest.event.args;
+            let guest_pkru = guest.event.guest_pkru;
             if is_plain_fork(number, args) {
                 guest.prepare_fork_parent_state();
                 let result = forward_plain_fork(number, args, Some(&mut guest.event.guest_pkru));
@@ -287,7 +294,7 @@ where
                 event.result = result;
                 return;
             }
-            if let Some(result) = virtual_signal_call(&self.runtime, number, args) {
+            if let Some(result) = virtual_signal_call(&self.runtime, guest_pkru, number, args) {
                 event.result = result;
                 return;
             }
@@ -1740,7 +1747,9 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             self.tail.set_exit(number, raw_args);
             return std::future::pending().await;
         }
-        if let Some(result) = virtual_signal_call(self.runtime, number, raw_args) {
+        if let Some(result) =
+            virtual_signal_call(self.runtime, self.event.guest_pkru, number, raw_args)
+        {
             return Errno::from_ret(result as usize).map(|value| value as i64);
         }
         let kernel_signal_mask = stripped_signal_mask(self.runtime, number, raw_args)?;
@@ -1786,7 +1795,9 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             self.tail.set_result(result);
         } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
-        } else if let Some(result) = virtual_signal_call(self.runtime, number, args) {
+        } else if let Some(result) =
+            virtual_signal_call(self.runtime, self.event.guest_pkru, number, args)
+        {
             self.tail.set_result(result);
         } else {
             let value = match stripped_signal_mask(self.runtime, number, args) {

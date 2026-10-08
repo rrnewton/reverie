@@ -1296,6 +1296,53 @@ fn allow_all_filter() -> ([libc::sock_filter; 1], libc::sock_fprog) {
     (program, fprog)
 }
 
+/// A raw `rt_sigaction(SIGALRM, NULL, &old)` made while the guest's PKRU
+/// denies writes to key 0 (all of this process's memory), restoring the PKRU
+/// right after; `None` when the processor has no protection keys enabled.
+/// Linux answers EFAULT: it cannot copy the old action out.
+fn sigalrm_query_with_key_zero_write_denied() -> Option<i64> {
+    let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+    if leaf7.ecx & (1 << 4) == 0 {
+        return None;
+    }
+    let mut old = reverie_inguest::signal::KernelSigaction::default();
+    let result: i64;
+    unsafe {
+        core::arch::asm!(
+            "xor ecx, ecx",
+            "rdpkru",
+            "mov r13d, eax",
+            "xor ecx, ecx",
+            "xor edx, edx",
+            "mov eax, r13d",
+            "or eax, 2",
+            "wrpkru",
+            "mov eax, 13",
+            "mov edi, 14",
+            "xor esi, esi",
+            "mov rdx, r9",
+            "mov r10d, 8",
+            "syscall",
+            "mov r12, rax",
+            "xor ecx, ecx",
+            "xor edx, edx",
+            "mov eax, r13d",
+            "wrpkru",
+            in("r9") &raw mut old,
+            out("r12") result,
+            out("r13") _,
+            out("rax") _,
+            out("rcx") _,
+            out("rdx") _,
+            out("rdi") _,
+            out("rsi") _,
+            out("r10") _,
+            out("r11") _,
+        );
+    }
+    Some(result)
+}
+
 fn alternate_stack_is_disabled() -> bool {
     // Every byte, padding included, must be Linux's image of a disabled
     // stack; the buffer starts as all ones so an unwritten byte shows.
@@ -1590,6 +1637,12 @@ fn sigalrm_virtual_guest(path: &Path) {
         libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
         "{status:#x}"
     );
+
+    // The guest's own protection-key rights apply to the runtime's copies:
+    // with key 0 write-denied the query cannot copy the old action out.
+    if let Some(result) = sigalrm_query_with_key_zero_write_denied() {
+        assert_eq!(result, -i64::from(libc::EFAULT));
+    }
 
     // A disabled alternate stack, never the runtime's.
     let mut stack: libc::stack_t = unsafe { core::mem::zeroed() };
