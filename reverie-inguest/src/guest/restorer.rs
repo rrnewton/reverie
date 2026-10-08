@@ -24,6 +24,8 @@ use core::sync::atomic::Ordering;
 
 use crate::guest::support::read_own_bytes;
 use crate::guest::support::scan_own_maps;
+use crate::guest::support::scan_proc_lines;
+use crate::trap::raw_syscall6;
 
 /// glibc's x86-64 `__restore_rt`: `mov $15,%rax; syscall`.
 pub const GLIBC_RESTORER_BYTES: [u8; 9] = [0x48, 0xc7, 0xc0, 0x0f, 0x00, 0x00, 0x00, 0x0f, 0x05];
@@ -110,16 +112,94 @@ pub fn restorer_mapping_accepted(
             .is_some_and(|end| end <= mapping.end)
 }
 
-/// An address inside this process's C library: the runtime runs in the
-/// guest's own process, so it is the guest's C library too.
-fn libc_anchor() -> u64 {
-    libc::sigaction as *const () as u64
+/// The C library's file, as `major << 32 | minor` and inode, recorded once in
+/// ordinary context by [`record_libc_identity`]; 0 before.
+static LIBC_DEVICE: AtomicU64 = AtomicU64::new(0);
+static LIBC_INODE: AtomicU64 = AtomicU64::new(0);
+
+/// Record which file is this process's C library, from glibc's own
+/// `sigaction` as `libc.so.6` defines it (looked up in that object, so an
+/// interposed `sigaction`, for example from an `LD_PRELOAD` library, does
+/// not count). The runtime runs in the guest's own process, so it is the
+/// guest's C library too. Call once, at runtime initialization, in ordinary
+/// context: it uses the dynamic loader.
+pub fn record_libc_identity() -> std::io::Result<()> {
+    let handle =
+        unsafe { libc::dlopen(c"libc.so.6".as_ptr(), libc::RTLD_NOLOAD | libc::RTLD_LAZY) };
+    if handle.is_null() {
+        return Err(std::io::Error::other("libc.so.6 is not loaded"));
+    }
+    let anchor = unsafe { libc::dlsym(handle, c"sigaction".as_ptr()) } as u64;
+    unsafe { libc::dlclose(handle) };
+    if anchor == 0 {
+        return Err(std::io::Error::other("libc.so.6 defines no sigaction"));
+    }
+    let identity = unsafe { scan_own_maps(|line| maps_line_identity(line, anchor)) }
+        .filter(|identity| identity.inode != 0)
+        .ok_or_else(|| std::io::Error::other("libc.so.6's sigaction is in no file mapping"))?;
+    LIBC_DEVICE.store(identity.device, Ordering::Release);
+    LIBC_INODE.store(identity.inode, Ordering::Release);
+    Ok(())
+}
+
+fn recorded_libc() -> Option<MappingIdentity> {
+    let inode = LIBC_INODE.load(Ordering::Acquire);
+    (inode != 0).then(|| MappingIdentity {
+        start: 0,
+        end: 0,
+        executable: true,
+        device: LIBC_DEVICE.load(Ordering::Acquire),
+        inode,
+    })
+}
+
+/// Whether a `/proc/self/smaps` `VmFlags:` line names an attribute that would
+/// keep the mapping from a fork child as-is: `dc` (`MADV_DONTFORK`) or `wf`
+/// (`MADV_WIPEONFORK`). A child inherits the action and the protection, so
+/// it must inherit the restorer too.
+pub fn vm_flags_change_on_fork(flags: &[u8]) -> bool {
+    flags.strip_prefix(b"VmFlags:").is_some_and(|rest| {
+        rest.split(|byte| *byte == b' ')
+            .any(|flag| flag == b"dc" || flag == b"wf")
+    })
+}
+
+/// Whether the smaps entry of the mapping containing `address` keeps it from
+/// a fork child as-is; `None` if the entry cannot be read.
+unsafe fn changes_on_fork(address: u64) -> Option<bool> {
+    let mut inside = false;
+    unsafe {
+        scan_proc_lines(c"/proc/self/smaps", |line| {
+            if line.starts_with(b"VmFlags:") {
+                if inside {
+                    return Some(vm_flags_change_on_fork(line));
+                }
+            } else if line.first().is_some_and(u8::is_ascii_hexdigit)
+                && line
+                    .iter()
+                    .take_while(|byte| **byte != b' ')
+                    .any(|byte| *byte == b'-')
+            {
+                // A mapping's header line.
+                inside = maps_line_identity(line, address).is_some();
+            }
+            None
+        })
+    }
+}
+
+/// The current program break.
+fn program_break() -> u64 {
+    unsafe { raw_syscall6(libc::SYS_brk, [0; 6]) as u64 }
 }
 
 /// Whether `restorer` is glibc's `__restore_rt` in this process's C library:
 /// its bytes are [`GLIBC_RESTORER_BYTES`], read without faulting, and they
 /// lie in an executable, file-backed mapping of the same file (device and
-/// inode) as the C library.
+/// inode) as the C library ([`record_libc_identity`]). That mapping must also
+/// pass to a fork child as-is (no `MADV_DONTFORK` or `MADV_WIPEONFORK`), and
+/// lie above the program break, so that no `brk` shrink can reach it (a
+/// growing break cannot cover an existing mapping).
 ///
 /// # Safety
 ///
@@ -137,15 +217,16 @@ pub unsafe fn glibc_restorer_accepted(restorer: u64) -> bool {
     {
         return false;
     }
-    let anchor = libc_anchor();
+    let Some(libc) = recorded_libc() else {
+        return false;
+    };
     let Some(mapping) = (unsafe { scan_own_maps(|line| maps_line_identity(line, restorer)) })
     else {
         return false;
     };
-    let Some(libc) = (unsafe { scan_own_maps(|line| maps_line_identity(line, anchor)) }) else {
-        return false;
-    };
     restorer_mapping_accepted(restorer, mapping, libc)
+        && mapping.start >= program_break()
+        && unsafe { changes_on_fork(restorer) } == Some(false)
 }
 
 const PAGE_SIZE: u64 = 4096;
@@ -167,31 +248,43 @@ pub fn protect_restorer(restorer: u64) -> bool {
     protect_in(&PROTECTED_PAGES, restorer)
 }
 
-fn protect_in(table: &[AtomicU64], restorer: u64) -> bool {
-    let Some(last) = restorer.checked_add(GLIBC_RESTORER_BYTES.len() as u64 - 1) else {
-        return false;
-    };
+/// Whether [`protect_restorer`] would succeed for `restorer` now, without
+/// protecting anything.
+pub fn can_protect_restorer(restorer: u64) -> bool {
+    room_in(&PROTECTED_PAGES, restorer).is_some()
+}
+
+/// The pages the restorer's bytes touch (one or two, with their count), if
+/// the table has room for those it does not already hold.
+fn room_in(table: &[AtomicU64], restorer: u64) -> Option<([u64; 2], usize)> {
+    let last = restorer.checked_add(GLIBC_RESTORER_BYTES.len() as u64 - 1)?;
     let first_page = restorer & !(PAGE_SIZE - 1);
     let last_page = last & !(PAGE_SIZE - 1);
-    let needed = [first_page, last_page];
-    let pages = if first_page == last_page {
-        &needed[..1]
-    } else {
-        &needed[..]
-    };
-    let held = |page: u64| {
-        table
-            .iter()
-            .any(|slot| slot.load(Ordering::Acquire) == page)
-    };
-    let missing = pages.iter().filter(|page| !held(**page)).count();
+    let count = if first_page == last_page { 1 } else { 2 };
+    let pages = [first_page, last_page];
+    let missing = pages[..count]
+        .iter()
+        .filter(|page| !held_in(table, **page))
+        .count();
     let free = table
         .iter()
         .filter(|slot| slot.load(Ordering::Acquire) == 0)
         .count();
-    if missing > free {
+    (missing <= free).then_some((pages, count))
+}
+
+fn held_in(table: &[AtomicU64], page: u64) -> bool {
+    table
+        .iter()
+        .any(|slot| slot.load(Ordering::Acquire) == page)
+}
+
+fn protect_in(table: &[AtomicU64], restorer: u64) -> bool {
+    let Some((needed, count)) = room_in(table, restorer) else {
         return false;
-    }
+    };
+    let pages = &needed[..count];
+    let held = |page: u64| held_in(table, page);
     // Changed only inside a guest call's turn, so no two threads add pages at
     // once; compare_exchange keeps each slot sound regardless.
     pages.iter().all(|page| {
@@ -228,13 +321,33 @@ fn overlaps_in(table: &[AtomicU64], start: u64, length: u64) -> bool {
 /// `munmap`, `mprotect`, `pkey_mprotect`, `madvise`; `mremap` of an
 /// overlapping source, or with `MREMAP_FIXED` to an overlapping destination;
 /// `mmap` with `MAP_FIXED` or `MAP_FIXED_NOREPLACE` over one; and `shmat`
-/// with `SHM_REMAP`, refused whenever any page is protected because the
-/// segment's size is not in the call.
+/// with `SHM_REMAP` whose attachment, at its effective address (rounded
+/// down to `SHMLBA` under `SHM_RND`) for the segment's size, covers one. A
+/// `shmat` whose segment cannot be read (`IPC_STAT`) is left to the kernel,
+/// which refuses an attach it cannot perform. `brk` cannot reach a protected
+/// page: [`glibc_restorer_accepted`] admits only a mapping above the break.
 pub fn mapping_change_refused(number: i64, args: [u64; 6]) -> bool {
-    mapping_change_refused_in(&PROTECTED_PAGES, number, args)
+    mapping_change_refused_in(&PROTECTED_PAGES, number, args, shm_segment_size)
 }
 
-fn mapping_change_refused_in(table: &[AtomicU64], number: i64, args: [u64; 6]) -> bool {
+/// The size of System V shared memory segment `id`, or `None`.
+fn shm_segment_size(id: u64) -> Option<u64> {
+    let mut status: libc::shmid_ds = unsafe { core::mem::zeroed() };
+    let result = unsafe {
+        raw_syscall6(
+            libc::SYS_shmctl,
+            [id, libc::IPC_STAT as u64, (&raw mut status) as u64, 0, 0, 0],
+        )
+    };
+    (result >= 0).then_some(status.shm_segsz as u64)
+}
+
+fn mapping_change_refused_in(
+    table: &[AtomicU64],
+    number: i64,
+    args: [u64; 6],
+    segment_size: impl FnOnce(u64) -> Option<u64>,
+) -> bool {
     let overlaps = |start, length| overlaps_in(table, start, length);
     match number {
         libc::SYS_munmap | libc::SYS_mprotect | libc::SYS_pkey_mprotect | libc::SYS_madvise => {
@@ -250,8 +363,22 @@ fn mapping_change_refused_in(table: &[AtomicU64], number: i64, args: [u64; 6]) -
             flags & (libc::MAP_FIXED | libc::MAP_FIXED_NOREPLACE) != 0 && overlaps(args[0], args[1])
         }
         libc::SYS_shmat => {
-            args[2] as i32 & libc::SHM_REMAP != 0
-                && table.iter().any(|slot| slot.load(Ordering::Acquire) != 0)
+            let flags = args[2] as i32;
+            if flags & libc::SHM_REMAP == 0
+                || !table.iter().any(|slot| slot.load(Ordering::Acquire) != 0)
+            {
+                return false;
+            }
+            let Some(size) = segment_size(args[0]) else {
+                return false;
+            };
+            // SHMLBA is the page size on x86-64.
+            let start = if flags & libc::SHM_RND != 0 {
+                args[1] & !(PAGE_SIZE - 1)
+            } else {
+                args[1]
+            };
+            overlaps(start, size.max(1))
         }
         _ => false,
     }
@@ -260,6 +387,82 @@ fn mapping_change_refused_in(table: &[AtomicU64], number: i64, args: [u64; 6]) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vm_flags_that_change_a_mapping_on_fork_are_recognized() {
+        assert!(!vm_flags_change_on_fork(b"VmFlags: rd ex mr mw me sd"));
+        assert!(vm_flags_change_on_fork(b"VmFlags: rd ex mr mw me dc sd"));
+        assert!(vm_flags_change_on_fork(b"VmFlags: rd ex wf"));
+        assert!(!vm_flags_change_on_fork(b"VmFlags: rd ex dd"));
+        assert!(!vm_flags_change_on_fork(b"Rss: 4 kB"));
+    }
+
+    /// An executable alias of the C library's file holding glibc's restorer
+    /// is accepted like the original; after `MADV_DONTFORK` on it (a fork
+    /// child would lose it), it is refused.
+    #[test]
+    fn a_restorer_mapping_a_fork_child_would_lose_is_refused() {
+        record_libc_identity().unwrap();
+        let restorer = unsafe {
+            let mut installed: libc::sigaction = core::mem::zeroed();
+            let mut action: libc::sigaction = core::mem::zeroed();
+            action.sa_sigaction = libc::SIG_IGN;
+            let mut previous: libc::sigaction = core::mem::zeroed();
+            assert_eq!(libc::sigaction(libc::SIGURG, &action, &mut previous), 0);
+            assert_eq!(
+                libc::sigaction(libc::SIGURG, core::ptr::null(), &mut installed),
+                0
+            );
+            assert_eq!(
+                libc::sigaction(libc::SIGURG, &previous, core::ptr::null_mut()),
+                0
+            );
+            installed.sa_restorer.unwrap() as usize as u64
+        };
+        // Where the restorer lies in the C library's file.
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        let (start, offset, path) = maps
+            .lines()
+            .find_map(|line| {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                let (low, high) = fields[0].split_once('-')?;
+                let low = u64::from_str_radix(low, 16).ok()?;
+                let high = u64::from_str_radix(high, 16).ok()?;
+                (low <= restorer && restorer < high).then(|| {
+                    (
+                        low,
+                        u64::from_str_radix(fields[2], 16).unwrap(),
+                        fields[5].to_owned(),
+                    )
+                })
+            })
+            .unwrap();
+        let file_offset = restorer - start + offset;
+        let page_offset = file_offset & !4095;
+        let path = std::ffi::CString::new(path).unwrap();
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        assert!(fd >= 0);
+        let alias = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                8192,
+                libc::PROT_READ | libc::PROT_EXEC,
+                libc::MAP_PRIVATE,
+                fd,
+                page_offset as libc::off_t,
+            )
+        };
+        assert_ne!(alias, libc::MAP_FAILED);
+        unsafe { libc::close(fd) };
+        let aliased = alias as u64 + (file_offset - page_offset);
+        assert!(unsafe { glibc_restorer_accepted(aliased) });
+        assert_eq!(
+            unsafe { libc::madvise(alias, 8192, libc::MADV_DONTFORK) },
+            0
+        );
+        assert!(!unsafe { glibc_restorer_accepted(aliased) });
+        assert_eq!(unsafe { libc::munmap(alias, 8192) }, 0);
+    }
 
     #[test]
     fn maps_lines_give_the_containing_mapping_identity() {
@@ -351,7 +554,10 @@ mod tests {
     fn every_mapping_change_over_a_protected_page_is_refused() {
         let pages = table();
         let page = 0x7000_1000_u64;
-        let call = |number: i64, args: [u64; 6]| mapping_change_refused_in(&pages, number, args);
+        // Segment 1 has 8192 bytes; segment 2 cannot be read.
+        let segment = |id: u64| (id == 1).then_some(8192);
+        let call =
+            |number: i64, args: [u64; 6]| mapping_change_refused_in(&pages, number, args, segment);
         // Nothing protected: nothing refused.
         assert!(!call(libc::SYS_munmap, [page, 4096, 0, 0, 0, 0]));
         assert!(!call(
@@ -415,11 +621,19 @@ mod tests {
         }
         let hint = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
         assert!(!call(libc::SYS_mmap, [page, 4096, 0, hint, u64::MAX, 0]));
-        assert!(call(
-            libc::SYS_shmat,
-            [1, 0x9000_0000, libc::SHM_REMAP as u64, 0, 0, 0]
-        ));
-        assert!(!call(libc::SYS_shmat, [1, 0x9000_0000, 0, 0, 0, 0]));
+        let remap = libc::SHM_REMAP as u64;
+        let rounded = remap | libc::SHM_RND as u64;
+        // An attachment whose 8192 bytes reach the page, from below or at it.
+        assert!(call(libc::SYS_shmat, [1, page - 4096, remap, 0, 0, 0]));
+        assert!(call(libc::SYS_shmat, [1, page, remap, 0, 0, 0]));
+        // SHM_RND rounds an unaligned address down onto the page.
+        assert!(call(libc::SYS_shmat, [1, page + 0x123, rounded, 0, 0, 0]));
+        // Disjoint attachments, one ending just below the page.
+        assert!(!call(libc::SYS_shmat, [1, page - 8192, remap, 0, 0, 0]));
+        assert!(!call(libc::SYS_shmat, [1, page + 4096, remap, 0, 0, 0]));
+        // Without SHM_REMAP, or with an unreadable segment, the kernel decides.
+        assert!(!call(libc::SYS_shmat, [1, page, 0, 0, 0, 0]));
+        assert!(!call(libc::SYS_shmat, [2, page, remap, 0, 0, 0]));
         assert!(!call(libc::SYS_brk, [page, 0, 0, 0, 0, 0]));
     }
 
@@ -429,6 +643,7 @@ mod tests {
     /// are each refused.
     #[test]
     fn only_glibc_restorer_in_the_c_library_is_accepted() {
+        record_libc_identity().unwrap();
         let restorer = unsafe {
             let mut action: libc::sigaction = core::mem::zeroed();
             action.sa_sigaction = libc::SIG_IGN;
@@ -472,7 +687,7 @@ mod tests {
         assert_eq!(unsafe { libc::munmap(executable, 4096) }, 0);
 
         assert!(!unsafe { glibc_restorer_accepted(crate::signal::signal_restorer()) });
-        assert!(!unsafe { glibc_restorer_accepted(libc_anchor()) });
+        assert!(!unsafe { glibc_restorer_accepted(restorer + 1) });
         assert!(!unsafe { glibc_restorer_accepted(0) });
         assert!(!unsafe { glibc_restorer_accepted(u64::MAX - 3) });
     }
