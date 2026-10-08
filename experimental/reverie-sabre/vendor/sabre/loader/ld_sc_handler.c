@@ -463,7 +463,29 @@ long ld_sc_handler(long sc_no, long arg1, long arg2, long arg3, long arg4,
   return ret;
 }
 
-// TODO(andronat): Do router for rdtsc
+#if defined(__NX_INTERCEPT_RDTSC) && defined(__x86_64__)
+// The RDTSC counterpart of route_syscall's recursion boundary, entered from the
+// rewritten-site trampolines and the SIGILL marker. An RDTSC executed by plugin
+// code, or before the plugin is initialized, is not a guest request and reads
+// the counter natively. A guest RDTSC reaches the plugin between enter_plugin
+// and exit_plugin, so the syscalls the plugin makes while handling it run
+// natively. Calling the handler directly left that flag clear: those syscalls
+// came back into the plugin as guest syscalls, and the guest hung (on the
+// tool's own construction for a first-event RDTSC, otherwise on the thread
+// state the RDTSC handler already held).
+long runtime_rdtsc_router(void) {
+  if (plugin_rdtsc_handler == NULL || calling_from_plugin == NULL ||
+      calling_from_plugin()) {
+    uint32_t low, high;
+    __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+    return (long)(((uint64_t)high << 32) | low);
+  }
+  enter_plugin();
+  long tsc = plugin_rdtsc_handler();
+  exit_plugin();
+  return tsc;
+}
+#endif
 
 static void_void_fn plugin_clock_gettime = NULL;
 static void_void_fn plugin_getcpu = NULL;
