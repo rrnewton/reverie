@@ -1454,6 +1454,12 @@ fn injected_syscall_guard(
     if let Some(error) = guest_seccomp_filter_policy(number, args) {
         return Some(error);
     }
+    // Signal phase 1: the runtime's virtual signal calls copy guest memory
+    // with every protection key open, so a process that admits SIGALRM
+    // handlers allocates none: Linux's answer when no key is left.
+    if number == libc::SYS_pkey_alloc && super::sigalrm::admitted() {
+        return Some(Errno::ENOSPC);
+    }
     // Signal phase 1: an accepted SIGALRM restorer's page stays mapped,
     // unchanged, for the rest of the process's life.
     if super::restorer::mapping_change_refused(number, args) {

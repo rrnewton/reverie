@@ -1436,6 +1436,15 @@ fn sigalrm_virtual_guest(path: &Path) {
         Some(libc::EOPNOTSUPP)
     );
 
+    // No protection key can be allocated while handlers are admitted (the
+    // runtime's virtual calls copy guest memory with every key open).
+    let key = unsafe { libc::syscall(libc::SYS_pkey_alloc, 0, 0) };
+    assert_eq!(key, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ENOSPC)
+    );
+
     // Admission: the guest's action is virtual, the physical one the runtime's.
     let mut blocked: libc::sigset_t = unsafe { core::mem::zeroed() };
     unsafe { libc::sigaddset(&mut blocked, libc::SIGUSR2) };
