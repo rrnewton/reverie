@@ -5281,6 +5281,27 @@ static void ensure_runtime_background(void) {
   }
 }
 
+extern char** environ;
+
+// DynamoRIO removes its own variables and the launcher's HERMIT_DBT_* ones from
+// the application's initial environment once this client is initialized, so a
+// guest sees the environment it was given (its private libc's `environ` was the
+// application's array). The runtime reads some of them later (the coordinator
+// socket, Detcore's configuration), also in fork children, so it keeps a copy.
+static void keep_private_environment(void) {
+  size_t count = 0;
+  while (environ[count] != NULL)
+    ++count;
+  char** copy = (char**)dr_global_alloc(sizeof(char*) * (count + 1));
+  for (size_t i = 0; i < count; ++i) {
+    size_t size = strlen(environ[i]) + 1;
+    copy[i] = (char*)dr_global_alloc(size);
+    memcpy(copy[i], environ[i], size);
+  }
+  copy[count] = NULL;
+  environ = copy;
+}
+
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char* argv[]) {
   drreg_options_t register_options = {sizeof(register_options), 1, false};
   bool external_global = false;
@@ -5291,6 +5312,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char* argv[]) {
   unsigned char evidence_address[EVIDENCE_ADDRESS_LEN] = {0};
   unsigned char evidence_token[EVIDENCE_TOKEN_LEN] = {0};
 
+  keep_private_environment();
   diagnostic_file = STDERR;
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "-external-global") == 0)

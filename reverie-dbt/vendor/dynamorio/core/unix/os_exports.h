@@ -321,6 +321,21 @@ bool
 is_our_environ_followed_by_auxv(void);
 void
 dynamorio_set_envp(char **envp);
+/* Environment variables that early injection removes from the application's
+ * initial environment. The launcher names extra prefixes, ':'-separated, in
+ * DYNAMORIO_VAR_HIDE_ENV_PREFIXES; DYNAMORIO_VAR_PREFIX is always hidden.
+ */
+#define DYNAMORIO_VAR_PREFIX "DYNAMORIO_"
+/* What disable_env() leaves of a DR variable: a name-only entry in DR's own
+ * namespace, so it is hidden like one and cannot be confused with an
+ * application's entry.
+ */
+#define DYNAMORIO_DISABLED_ENV "DYNAMORIO_DISABLED"
+#define DYNAMORIO_VAR_HIDE_ENV_PREFIXES "DYNAMORIO_HIDE_ENV_PREFIXES"
+bool
+env_entry_hidden_from_app(const char *entry, const char *extra_prefixes);
+/* Set once early injection has hidden variables from the application. */
+extern bool app_env_hidden;
 #if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
 /* drinjectlib wants the libc version while the core wants the private version */
 #    define getenv our_getenv

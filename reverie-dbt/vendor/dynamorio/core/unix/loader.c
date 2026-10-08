@@ -2213,6 +2213,167 @@ reload_dynamorio(void **init_sp, app_pc conflict_start, app_pc conflict_end)
     ASSERT_NOT_REACHED();
 }
 
+/* Removes DR's and the launcher's private variables from the application's
+ * initial environment, so the application sees the environment it was given
+ * rather than the injector's (its configuration directory, its exe path, and
+ * the launcher's prefixed variables named in DYNAMORIO_VAR_HIDE_ENV_PREFIXES).
+ *
+ * DR reads its environment through our_environ, which is the application's
+ * array: at a followed execve it re-reads DYNAMORIO_CONFIGDIR from it, and
+ * os_page_size_init() reads the auxv that follows it. So DR first switches to
+ * a private copy of the array and the auxv, with its own copy of each hidden
+ * string. Then the application's array is compacted, moving the complete auxv
+ * down with the remaining entries, and each hidden string is erased, since the
+ * kernel's /proc/self/environ range still covers it. The stack pointer, argv,
+ * and the remaining strings do not move.
+ *
+ * privload_setup_auxv() pointed AT_EXECFN into DYNAMORIO_EXE_PATH's value. The
+ * path moves to kernel_execfn, the exec filename the kernel's own AT_EXECFN
+ * named (on the stack, just above the environment strings): the kernel exec'd
+ * DR's library, whose path is usually longer than the application's. A longer
+ * path goes into a private anonymous mapping DR does not track instead (this
+ * runs on the application's initial stack, so the stack cannot be grown here).
+ * If even that cannot be mapped, it goes into the erased DYNAMORIO_EXE_PATH
+ * entry's own storage, which /proc/self/environ then shows. The storage is
+ * chosen before anything is changed.
+ * Either way the string stays outside the kernel's /proc/self/environ range
+ * and outside DR's heap: DR's heap is freed at detach, and DR's execve cleanup
+ * frees DR-heap entries of a failed execve's environment, which the
+ * application could have passed this string as.
+ *
+ * Whether an entry is hidden is decided once, while copying: a hidden entry is
+ * exactly one whose copy is DR's own string. If the environment names the
+ * prefix list more than once, the first one is used, as getenv() would.
+ *
+ * This runs after the client is initialized; a client that needs a hidden
+ * variable after that keeps its own copy.
+ */
+static void
+privload_hide_app_env(void **sp, char *kernel_execfn)
+{
+    ptr_int_t argc = *(ptr_int_t *)sp;
+    char **envp = (char **)sp + 1 + argc + 1;
+    const char *prefixes = NULL;
+    size_t prefix_var_len = strlen(DYNAMORIO_VAR_HIDE_ENV_PREFIXES);
+    size_t num_env = 0, num_auxv = 0, hidden_chars = 0, i, j;
+    ELF_AUXV_TYPE *auxv, *copy_auxv;
+    char **copy, **dst, *strings;
+    const char *execfn = NULL, *execfn_copy = NULL;
+    char *execfn_target = NULL, *execfn_entry = NULL;
+    size_t size, execfn_len = 0;
+
+    for (i = 0; envp[i] != NULL; i++) {
+        if (prefixes == NULL &&
+            strncmp(envp[i], DYNAMORIO_VAR_HIDE_ENV_PREFIXES, prefix_var_len) == 0 &&
+            envp[i][prefix_var_len] == '=')
+            prefixes = envp[i] + prefix_var_len + 1;
+    }
+    num_env = i;
+    for (i = 0; i < num_env; i++) {
+        if (env_entry_hidden_from_app(envp[i], prefixes))
+            hidden_chars += strlen(envp[i]) + 1;
+    }
+    if (hidden_chars == 0)
+        return;
+    auxv = (ELF_AUXV_TYPE *)(envp + num_env + 1);
+    while (auxv[num_auxv].a_type != AT_NULL) {
+        if (auxv[num_auxv].a_type == AT_EXECFN)
+            execfn = (const char *)auxv[num_auxv].a_un.a_val;
+        num_auxv++;
+    }
+    num_auxv++; /* AT_NULL */
+
+    size = sizeof(char *) * (num_env + 1) + sizeof(ELF_AUXV_TYPE) * num_auxv +
+        hidden_chars;
+    {
+        /* A plain mapping rather than DR's heap: our_environ must stay valid
+         * across a detach and a later re-attach, which free the heap.
+         * Without memory, nothing is hidden.
+         */
+        heap_error_code_t error;
+        copy = (char **)os_raw_mem_alloc(NULL, ALIGN_FORWARD(size, PAGE_SIZE),
+                                         MEMPROT_READ | MEMPROT_WRITE, 0, &error);
+        if (copy == NULL)
+            return;
+    }
+
+    /* Choose AT_EXECFN's new storage before changing anything, if it is in a
+     * hidden entry.
+     */
+    for (i = 0; execfn != NULL && i < num_env; i++) {
+        if (env_entry_hidden_from_app(envp[i], prefixes) && execfn >= envp[i] &&
+            execfn <= envp[i] + strlen(envp[i])) {
+            execfn_entry = envp[i];
+            execfn_len = strlen(execfn) + 1;
+        }
+    }
+    if (execfn_len > 0) {
+        if (kernel_execfn != NULL && strlen(kernel_execfn) + 1 >= execfn_len)
+            execfn_target = kernel_execfn;
+        else {
+            /* A plain mapping, not added to DR's areas. */
+            heap_error_code_t error;
+            execfn_target =
+                (char *)os_raw_mem_alloc(NULL, ALIGN_FORWARD(execfn_len, PAGE_SIZE),
+                                         MEMPROT_READ | MEMPROT_WRITE, 0, &error);
+            /* The entry holds its name, '=' and the path, so the path fits. */
+            if (execfn_target == NULL)
+                execfn_target = execfn_entry;
+        }
+    }
+
+    copy_auxv = (ELF_AUXV_TYPE *)(copy + num_env + 1);
+    memcpy(copy_auxv, auxv, sizeof(ELF_AUXV_TYPE) * num_auxv);
+    strings = (char *)(copy_auxv + num_auxv);
+    for (i = 0; i < num_env; i++) {
+        if (env_entry_hidden_from_app(envp[i], prefixes)) {
+            size_t len = strlen(envp[i]) + 1;
+            memcpy(strings, envp[i], len);
+            copy[i] = strings;
+            if (execfn_len > 0 && execfn >= envp[i] && execfn < envp[i] + len)
+                execfn_copy = strings + (execfn - envp[i]);
+            strings += len;
+        } else
+            copy[i] = envp[i];
+    }
+    copy[num_env] = NULL;
+    our_environ = copy;
+    /* The private loader cached a pointer into the application's environment;
+     * the variable may be about to be erased.
+     */
+    ld_library_path = getenv(SYSTEM_LIBRARY_PATH_VAR);
+
+    dst = envp;
+    for (i = 0; i < num_env; i++) {
+        if (copy[i] != envp[i])
+            memset(envp[i], 0, strlen(envp[i]));
+        else
+            *dst++ = envp[i];
+    }
+    *dst = NULL;
+    memmove(dst + 1, auxv, sizeof(ELF_AUXV_TYPE) * num_auxv);
+    /* Clear the words the move vacated above the new AT_NULL. */
+    memset((byte *)(dst + 1) + sizeof(ELF_AUXV_TYPE) * num_auxv, 0,
+           (byte *)(auxv + num_auxv) -
+               ((byte *)(dst + 1) + sizeof(ELF_AUXV_TYPE) * num_auxv));
+    if (execfn_target != NULL) {
+        ELF_AUXV_TYPE *moved = (ELF_AUXV_TYPE *)(dst + 1);
+        /* The kernel's exec filename names DR's library; erase it whether or
+         * not it receives the application's path.
+         */
+        if (kernel_execfn != NULL)
+            memset(kernel_execfn, 0, strlen(kernel_execfn));
+        memcpy(execfn_target, execfn_copy, execfn_len);
+        for (j = 0; j < num_auxv; j++) {
+            if (moved[j].a_type == AT_EXECFN) {
+                moved[j].a_un.a_val = (ptr_uint_t)execfn_target;
+                copy_auxv[j].a_un.a_val = (ptr_uint_t)execfn_target;
+            }
+        }
+    }
+    app_env_hidden = true;
+}
+
 /* Called from _start in x86.asm.  sp is the initial app stack pointer that the
  * kernel set up for us, and it points to the usual argc, argv, envp, and auxv
  * that the kernel puts on the stack.  The 2nd & 3rd args must be 0 in
@@ -2237,6 +2398,7 @@ privload_early_inject(void **sp, byte *old_libdr_base, size_t old_libdr_size)
     bool success;
     memquery_iter_t iter;
     app_pc interp_map;
+    char *kernel_execfn = NULL;
 
     if (*argc == ARGC_PTRACE_SENTINEL) {
         /* XXX: Teach the injector to look up takeover_ptrace() and call it
@@ -2421,6 +2583,20 @@ privload_early_inject(void **sp, byte *old_libdr_base, size_t old_libdr_size)
         entry = (app_pc)exe_ld.ehdr->e_entry + exe_ld.load_delta;
     }
 
+    /* The kernel's exec filename, before privload_setup_auxv() repoints
+     * AT_EXECFN; privload_hide_app_env() reuses its storage.
+     */
+    {
+        char **env_end = envp;
+        ELF_AUXV_TYPE *entry;
+        while (*env_end != NULL)
+            env_end++;
+        for (entry = (ELF_AUXV_TYPE *)(env_end + 1); entry->a_type != AT_NULL;
+             entry++) {
+            if (entry->a_type == AT_EXECFN)
+                kernel_execfn = (char *)entry->a_un.a_val;
+        }
+    }
     privload_setup_auxv(envp, exe_map, exe_ld.load_delta, interp_map, exe_path);
 
     elf_loader_destroy(&exe_ld);
@@ -2443,6 +2619,8 @@ privload_early_inject(void **sp, byte *old_libdr_base, size_t old_libdr_size)
         }
         LOG(GLOBAL, LOG_TOP, 1, "\n");
     });
+
+    privload_hide_app_env(sp, kernel_execfn);
 
     if (RUNNING_WITHOUT_CODE_CACHE()) {
         /* Reset the stack pointer back to the beginning and jump to the entry

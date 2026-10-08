@@ -49,7 +49,8 @@ use crate::SyscallInvoker;
 
 /// Environment variable naming the coordinator's Unix-domain socket path. Set
 /// by the coordinator (which hosts the [`reverie_rpc_transport::RpcServer`])
-/// before launching the guest; inherited across `fork`/`exec`.
+/// before launching the guest. DynamoRIO hides it from the guest and passes it
+/// to followed exec children; the client keeps its own copy across `fork`.
 pub const RPC_SOCKET_ENV: &str = "HERMIT_DBT_RPC_SOCKET";
 
 /// Mirror of [`reverie_rpc_transport::codec::DEFAULT_MAX_FRAME_LEN`] (16 MiB).

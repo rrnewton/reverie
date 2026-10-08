@@ -46,6 +46,15 @@ const DYNAMORIO_ENV: &str = "DYNAMORIO_HOME";
 const DYNAMORIO_DIR_ENV: &str = "DynamoRIO_DIR";
 const SUMMARY_ENV: &str = "REVERIE_DBT_SUMMARY";
 const PATH_ENV: &str = "PATH";
+/// Names, for the bundled DynamoRIO, the variable prefixes it removes from the
+/// guest's initial environment (with its own `DYNAMORIO_*` variables) and passes
+/// on to the children it follows.
+const HIDE_ENV_PREFIXES_ENV: &str = "DYNAMORIO_HIDE_ENV_PREFIXES";
+/// The prefix of the runtime's private environment variables, such as
+/// [`crate::sync_rpc::RPC_SOCKET_ENV`] and Hermit's Detcore configuration. The
+/// launcher has DynamoRIO hide every variable with this prefix from the guest,
+/// so a guest sees only the environment it was given.
+pub const PRIVATE_ENV_PREFIX: &str = "HERMIT_DBT_";
 const BINPRM_BUF_SIZE: usize = 256;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#90): Confirm the reserved descriptor across followed execs.
@@ -964,6 +973,7 @@ impl DbtRunner {
                 }
             }
         }
+        command.env(HIDE_ENV_PREFIXES_ENV, PRIVATE_ENV_PREFIX);
         if self.manages_process_group() {
             command.process_group(0);
         }
@@ -1920,9 +1930,18 @@ mod tests {
         let environment = BTreeMap::from([(OsString::from("ONLY"), OsString::from("guest"))]);
 
         let wrapped = runner().command(&guest, Some(&environment));
+        // drrun also receives the bundled DynamoRIO's prefix list, a
+        // `DYNAMORIO_*` variable DynamoRIO removes from the guest's environment
+        // with the prefixed ones (tests/guest_environment_live.rs).
         assert_eq!(
             wrapped.get_envs().collect::<Vec<_>>(),
-            [(OsStr::new("ONLY"), Some(OsStr::new("guest")))]
+            [
+                (
+                    OsStr::new(HIDE_ENV_PREFIXES_ENV),
+                    Some(OsStr::new(PRIVATE_ENV_PREFIX))
+                ),
+                (OsStr::new("ONLY"), Some(OsStr::new("guest")))
+            ]
         );
     }
 

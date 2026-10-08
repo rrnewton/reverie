@@ -686,8 +686,11 @@ disable_env(const char *name)
              * up access to auxv, which is after the env block, so we instead
              * disable the env var by changing its name.
              * We keep going to handle later matches.
+             * Erase the rest of the entry too: the application can read it.
              */
-            snprintf(*env, name_len, "__disabled__");
+            size_t entry_len = strlen(*env);
+            snprintf(*env, name_len, DYNAMORIO_DISABLED_ENV);
+            memset(*env + strlen(*env), 0, entry_len - strlen(*env));
         }
         env++;
     }
@@ -718,6 +721,44 @@ our_getenv(const char *name)
         }
     }
     return NULL;
+}
+
+/* True if early injection hides the "NAME=value" entry from the application:
+ * every DR variable (including what disable_env() leaves of one), plus every
+ * variable whose name starts with one of the ':'-separated extra_prefixes (NULL
+ * for none).
+ */
+bool
+env_entry_hidden_from_app(const char *entry, const char *extra_prefixes)
+{
+    const char *prefix = extra_prefixes;
+    if (strncmp(entry, DYNAMORIO_VAR_PREFIX, strlen(DYNAMORIO_VAR_PREFIX)) == 0)
+        return true;
+    while (prefix != NULL && *prefix != '\0') {
+        const char *end = strchr(prefix, ':');
+        size_t len = end == NULL ? strlen(prefix) : (size_t)(end - prefix);
+        if (len > 0 && strncmp(entry, prefix, len) == 0)
+            return true;
+        prefix = end == NULL ? NULL : end + 1;
+    }
+    return false;
+}
+
+/* Set by privload_hide_app_env(). */
+bool app_env_hidden;
+
+/* Index of the entry in envp[0..num) naming the same variable as entry, or -1. */
+static int
+find_env_entry(char **envp, int num, const char *entry)
+{
+    const char *eq = strchr(entry, '=');
+    size_t name_len = eq == NULL ? strlen(entry) : (size_t)(eq - entry);
+    int i;
+    for (i = 0; i < num; i++) {
+        if (strncmp(envp[i], entry, name_len) == 0 && envp[i][name_len] == '=')
+            return i;
+    }
+    return -1;
 }
 
 bool
@@ -6090,6 +6131,45 @@ static const char *const env_to_propagate[] = {
 };
 #define NUM_ENV_TO_PROPAGATE (sizeof(env_to_propagate) / sizeof(env_to_propagate[0]))
 
+/* Whether add_dr_env_vars() itself sets entry's variable in a followed child's
+ * environment, given its need_var[] decisions.
+ */
+static bool
+dr_sets_env_at_execve(const char *entry, const bool *need_var)
+{
+    size_t len = strlen(DYNAMORIO_VAR_EXECVE);
+    int j;
+    if (strncmp(entry, DYNAMORIO_VAR_EXECVE, len) == 0 && entry[len] == '=')
+        return true;
+    for (j = 0; j < NUM_ENV_TO_PROPAGATE; j++) {
+        len = strlen(env_to_propagate[j]);
+        if (strncmp(entry, env_to_propagate[j], len) == 0 && entry[len] == '=') {
+            return need_var[j] &&
+                (DYNAMO_OPTION(follow_children) || j == ENV_PROP_EXE_PATH);
+        }
+    }
+    return false;
+}
+
+/* Whether an injected child's environment also gets source[index], one of the
+ * variables early injection hid from this application. The application's
+ * environment no longer carries them, so DR passes on each one it does not set
+ * itself (its configuration directory and other controls, the launcher's
+ * prefixed variables and the prefix list), the first entry of each name only,
+ * and the child's DR hides them again. An entry with no '=' (such as what
+ * disable_env() leaves of a variable) stays behind.
+ */
+static bool
+is_hidden_env_to_propagate(char **source, int index, const char *prefixes,
+                           const bool *need_var)
+{
+    const char *entry = source[index];
+    return app_env_hidden && strchr(entry, '=') != NULL &&
+        env_entry_hidden_from_app(entry, prefixes) &&
+        !dr_sets_env_at_execve(entry, need_var) &&
+        find_env_entry(source, index, entry) < 0;
+}
+
 /* Called at pre-SYS_execve to append DR vars in the target process env vars list.
  * For late injection via libdrpreload, we call this for *all children, because
  * even if -no_follow_children is specified, a allowlist will still ask for takeover
@@ -6100,7 +6180,8 @@ static const char *const env_to_propagate[] = {
  * config dir takes precedence (if the child clears the HOME env var, e.g.).
  */
 static void
-add_dr_env_vars(dcontext_t *dcontext, char *inject_library_path, const char *app_path)
+add_dr_env_vars(dcontext_t *dcontext, char *inject_library_path, const char *app_path,
+                bool injects)
 {
     char **envp = (char **)sys_param(dcontext, 2);
     int idx, j, preload = -1, ldpath = -1;
@@ -6109,6 +6190,15 @@ add_dr_env_vars(dcontext_t *dcontext, char *inject_library_path, const char *app
     int prop_idx[NUM_ENV_TO_PROPAGATE];
     bool ldpath_us = false, preload_us = false;
     char **new_envp, *var, *old;
+    const char *hide_prefixes;
+    /* Per our_environ entry: HIDDEN_SKIP, HIDDEN_APPEND, or the application
+     * slot it replaces. Decided once, so the count and the fill agree even if
+     * the application changes its environment meanwhile.
+     */
+    int *hidden_slot = NULL;
+    int num_private = 0;
+#define HIDDEN_SKIP -2
+#define HIDDEN_APPEND -1
 
     /* check if any var needs to be propagated */
     for (j = 0; j < NUM_ENV_TO_PROPAGATE; j++) {
@@ -6138,7 +6228,12 @@ add_dr_env_vars(dcontext_t *dcontext, char *inject_library_path, const char *app
             /* execve env vars should never be set here */
             ASSERT(strstr(envp[idx], DYNAMORIO_VAR_EXECVE) != envp[idx]);
             for (j = 0; j < NUM_ENV_TO_PROPAGATE; j++) {
-                if (strstr(envp[idx], env_to_propagate[j]) == envp[idx]) {
+                /* Match the whole name: a longer variable sharing the prefix
+                 * (DYNAMORIO_EXE_PATH_X) is not this one.
+                 */
+                size_t name_len = strlen(env_to_propagate[j]);
+                if (strncmp(envp[idx], env_to_propagate[j], name_len) == 0 &&
+                    envp[idx][name_len] == '=') {
                     /* If conflict between env and cfg, we assume those env vars
                      * are for DR usage only, and replace them with cfg value.
                      */
@@ -6175,6 +6270,36 @@ add_dr_env_vars(dcontext_t *dcontext, char *inject_library_path, const char *app
         (DYNAMO_OPTION(early_inject)
              ? 0
              : (((preload < 0) ? 1 : 0) + ((ldpath < 0) ? 1 : 0)));
+    hide_prefixes = getenv(DYNAMORIO_VAR_HIDE_ENV_PREFIXES);
+    if (injects && app_env_hidden) {
+        while (our_environ[num_private] != NULL)
+            num_private++;
+        hidden_slot = (int *)heap_alloc(
+            dcontext, sizeof(int) * (num_private + 1) HEAPACCT(ACCT_OTHER));
+        for (j = 0; j < num_private; j++) {
+            int slot, k;
+            if (!is_hidden_env_to_propagate(our_environ, j, hide_prefixes, need_var)) {
+                hidden_slot[j] = HIDDEN_SKIP;
+                continue;
+            }
+            slot = envp == NULL ? -1 : find_env_entry(envp, num_old, our_environ[j]);
+            /* Never a slot DR's own variables replace, nor one an earlier
+             * hidden variable already took.
+             */
+            for (k = 0; slot >= 0 && k < NUM_ENV_TO_PROPAGATE; k++) {
+                if (prop_idx[k] == slot && need_var[k] &&
+                    (DYNAMO_OPTION(follow_children) || k == ENV_PROP_EXE_PATH))
+                    slot = -1;
+            }
+            for (k = 0; slot >= 0 && k < j; k++) {
+                if (hidden_slot[k] == slot)
+                    slot = -1;
+            }
+            hidden_slot[j] = slot < 0 ? HIDDEN_APPEND : slot;
+            if (slot < 0)
+                num_new++;
+        }
+    }
 
     for (j = 0; j < NUM_ENV_TO_PROPAGATE; j++) {
         if ((DYNAMO_OPTION(follow_children) || j == ENV_PROP_EXE_PATH) && need_var[j] &&
@@ -6299,6 +6424,30 @@ add_dr_env_vars(dcontext_t *dcontext, char *inject_library_path, const char *app
             new_envp[prop_idx[ENV_PROP_RUNUNDER]][0] = 'X';
         }
     }
+
+    /* Propagate the variables early injection hid from this application, only
+     * to a child DR injects (by -follow_children or by its own registration).
+     * The application's own environment no longer carries them. A child DR
+     * expects to fail to inject runs natively and must not see them.
+     */
+    for (j = 0; hidden_slot != NULL && j < num_private; j++) {
+        int slot = hidden_slot[j];
+        if (slot == HIDDEN_SKIP)
+            continue;
+        if (slot == HIDDEN_APPEND)
+            slot = idx++;
+        sz = strlen(our_environ[j]) + 1;
+        var = heap_alloc(dcontext, sizeof(char) * sz HEAPACCT(ACCT_OTHER));
+        memcpy(var, our_environ[j], sz);
+        new_envp[slot] = var;
+        LOG(THREAD, LOG_SYSCALLS, 2, "\tnew env %d: %s\n", slot, new_envp[slot]);
+    }
+    if (hidden_slot != NULL) {
+        heap_free(dcontext, hidden_slot,
+                  sizeof(int) * (num_private + 1) HEAPACCT(ACCT_OTHER));
+    }
+#undef HIDDEN_SKIP
+#undef HIDDEN_APPEND
 
     sz = strlen(DYNAMORIO_VAR_EXECVE) + 4;
     /* we always pass this var to indicate "post-execve" */
@@ -6555,7 +6704,7 @@ handle_execve(dcontext_t *dcontext)
     }
 
     if (should_inject)
-        add_dr_env_vars(dcontext, inject_library_path, fname);
+        add_dr_env_vars(dcontext, inject_library_path, fname, !expect_to_fail);
     else {
         dcontext->sys_param0 = 0;
         dcontext->sys_param1 = 0;
@@ -6569,14 +6718,40 @@ handle_execve(dcontext_t *dcontext)
         /* i#909: change the target image to libdynamorio.so */
         const char *drpath = IF_X64_ELSE(x64, !x64) ? dynamorio_library_filepath
                                                     : dynamorio_alt_arch_filepath;
+        dcontext->sys_param3 = 0;
         TRY_EXCEPT(
             dcontext, /* try */
             {
-                if (symlink_is_self_exe(argv[0])) {
-                    /* we're out of sys_param entries so we assume argv[0] == fname
+                /* Linux accepts a NULL or empty argv; there is no argv[0] to
+                 * fix up then, and the child must still be redirected to DR
+                 * (it has been given DR's and the hidden variables).
+                 */
+                if (argv != NULL && argv[0] != NULL && symlink_is_self_exe(argv[0])) {
+                    /* Fix argv[0] up in a private copy: the application's
+                     * array may be read-only, and a fault here would leave
+                     * the child unredirected, running natively with DR's and
+                     * the hidden variables. The block starts with the copy's
+                     * length and the application's array, for
+                     * handle_execve_post(); it is owned (sys_param3) before
+                     * the application's array is read again, and the copy is
+                     * terminated here, whatever the application's array holds
+                     * by then.
                      */
-                    dcontext->sys_param3 = (reg_t)argv;
-                    argv[0] = fname; /* XXX: handle readable but not writable! */
+                    ptr_uint_t num_args = 0;
+                    const char **block;
+                    const char **copy;
+                    while (argv[num_args] != NULL)
+                        num_args++;
+                    block = (const char **)heap_alloc(
+                        dcontext, sizeof(char *) * (num_args + 3) HEAPACCT(ACCT_OTHER));
+                    block[0] = (const char *)num_args;
+                    block[1] = (const char *)argv;
+                    dcontext->sys_param3 = (reg_t)block;
+                    copy = block + 2;
+                    memcpy(copy, argv, sizeof(char *) * num_args);
+                    copy[0] = fname;
+                    copy[num_args] = NULL;
+                    *sys_param_addr(dcontext, 1) = (reg_t)copy;
                 } else
                     dcontext->sys_param3 = 0;        /* no restore in post */
                 dcontext->sys_param4 = (reg_t)fname; /* store for restore in post */
@@ -6586,6 +6761,13 @@ handle_execve(dcontext_t *dcontext)
             },
             /* except */
             {
+                if (dcontext->sys_param3 != 0) {
+                    /* The copy was allocated but not installed. */
+                    const char **block = (const char **)dcontext->sys_param3;
+                    heap_free(dcontext, (void *)block,
+                              sizeof(char *) *
+                                  ((ptr_uint_t)block[0] + 3) HEAPACCT(ACCT_OTHER));
+                }
                 dcontext->sys_param3 = 0; /* no restore in post */
                 dcontext->sys_param4 = 0; /* no restore in post */
                 LOG(THREAD, LOG_SYSCALLS, 2,
@@ -6623,9 +6805,11 @@ handle_execve_post(dcontext_t *dcontext)
         /* restore original /proc/.../exe */
         *sys_param_addr(dcontext, 0) = dcontext->sys_param4;
         if (dcontext->sys_param3 != 0) {
-            /* restore original argv[0] */
-            const char **argv = (const char **)dcontext->sys_param3;
-            argv[0] = (const char *)dcontext->sys_param4;
+            /* restore the application's argv and free the private copy */
+            const char **block = (const char **)dcontext->sys_param3;
+            *sys_param_addr(dcontext, 1) = (reg_t)block[1];
+            heap_free(dcontext, (void *)block,
+                      sizeof(char *) * ((ptr_uint_t)block[0] + 3) HEAPACCT(ACCT_OTHER));
         }
     }
 #endif
