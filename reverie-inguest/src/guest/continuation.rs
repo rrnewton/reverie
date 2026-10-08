@@ -161,19 +161,21 @@ impl CallbackStack {
                     .ok_or_else(|| io::Error::other("stack size overflow"))?,
             )
             .ok_or_else(|| io::Error::other("stack size overflow"))?;
-        let mapping = unsafe {
-            libc::mmap(
-                core::ptr::null_mut(),
-                bytes,
-                libc::PROT_NONE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_STACK,
-                -1,
-                0,
+        // Raw syscalls, not libc's interposable wrappers: this runs inside
+        // the guest, where the program or a preloaded library may define them.
+        let mapping = crate::guest::support::raw_result(unsafe {
+            raw_syscall6(
+                libc::SYS_mmap,
+                [
+                    0,
+                    bytes as u64,
+                    libc::PROT_NONE as u64,
+                    (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_STACK) as u64,
+                    u64::MAX,
+                    0,
+                ],
             )
-        };
-        if mapping == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
+        })? as *mut libc::c_void;
         // mmap supplied a range of `bytes`; compute the usable end without
         // unchecked pointer-sized arithmetic before publishing any owner.
         let top = (mapping as usize).checked_add(bytes - page);
@@ -185,16 +187,19 @@ impl CallbackStack {
         if top.is_none() {
             return Err(io::Error::other("stack address overflow"));
         }
-        if unsafe {
-            libc::mprotect(
-                mapping.cast::<u8>().add(page).cast(),
-                CALLBACK_STACK_BYTES,
-                libc::PROT_READ | libc::PROT_WRITE,
+        crate::guest::support::raw_result(unsafe {
+            raw_syscall6(
+                libc::SYS_mprotect,
+                [
+                    mapping as u64 + page as u64,
+                    CALLBACK_STACK_BYTES as u64,
+                    (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                    0,
+                    0,
+                    0,
+                ],
             )
-        } != 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        })?;
         Ok(stack)
     }
 }
@@ -203,7 +208,12 @@ impl Drop for CallbackStack {
     fn drop(&mut self) {
         // Only unpublished preparation owns a destructor. Published owners
         // are retained through process teardown, never freed on this stack.
-        unsafe { libc::munmap(self.mapping, self.bytes) };
+        unsafe {
+            raw_syscall6(
+                libc::SYS_munmap,
+                [self.mapping as u64, self.bytes as u64, 0, 0, 0, 0],
+            )
+        };
     }
 }
 

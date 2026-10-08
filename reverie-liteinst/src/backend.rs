@@ -70,15 +70,9 @@ pub struct PreloadBootstrap {
 /// inherited descriptors and consumes only a sealed, protocol-matching memfd.
 pub unsafe fn take_preload_bootstrap() -> io::Result<Option<PreloadBootstrap>> {
     let mut found = Vec::new();
-    for entry in std::fs::read_dir("/proc/self/fd")? {
-        let entry = entry?;
-        let Some(fd) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<libc::c_int>().ok())
-        else {
-            continue;
-        };
+    // Listed with raw syscalls: read_dir's opendir would allocate through the
+    // guest's malloc.
+    for fd in reverie_inguest::guest::support::open_descriptors()? {
         if fd <= libc::STDERR_FILENO {
             continue;
         }
@@ -109,13 +103,27 @@ pub unsafe fn take_preload_bootstrap() -> io::Result<Option<PreloadBootstrap>> {
 fn read_preload_bootstrap(fd: libc::c_int) -> io::Result<Option<PreloadBootstrap>> {
     let required_seals =
         libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
-    let seals = unsafe { libc::fcntl(fd, libc::F_GET_SEALS) };
-    if seals == -1 || seals & required_seals != required_seals {
+    // This runs inside the guest: raw syscalls, not libc's interposable
+    // wrappers.
+    use reverie_inguest::trap::raw_syscall6;
+    let seals = unsafe {
+        raw_syscall6(
+            libc::SYS_fcntl,
+            [fd as u64, libc::F_GET_SEALS as u64, 0, 0, 0, 0],
+        )
+    } as libc::c_int;
+    if seals < 0 || seals & required_seals != required_seals {
         return Ok(None);
     }
 
     let mut stat = MaybeUninit::<libc::stat>::uninit();
-    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } == -1 {
+    if unsafe {
+        raw_syscall6(
+            libc::SYS_fstat,
+            [fd as u64, stat.as_mut_ptr() as u64, 0, 0, 0, 0],
+        )
+    } != 0
+    {
         return Ok(None);
     }
     let size = match usize::try_from(unsafe { stat.assume_init() }.st_size) {
@@ -127,8 +135,20 @@ fn read_preload_bootstrap(fd: libc::c_int) -> io::Result<Option<PreloadBootstrap
         _ => return Ok(None),
     };
     let mut packet = vec![0_u8; size];
-    let read = unsafe { libc::pread(fd, packet.as_mut_ptr().cast(), packet.len(), 0) };
-    if read != size as isize
+    let read = unsafe {
+        raw_syscall6(
+            libc::SYS_pread64,
+            [
+                fd as u64,
+                packet.as_mut_ptr() as u64,
+                packet.len() as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if read != size as i64
         || packet.get(..PRELOAD_BOOTSTRAP_MAGIC.len()) != Some(PRELOAD_BOOTSTRAP_MAGIC)
     {
         return Ok(None);

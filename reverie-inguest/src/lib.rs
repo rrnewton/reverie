@@ -255,8 +255,9 @@ pub unsafe extern "C" fn reverie_inguest_initialize() {
             crate::guest::support::describe_io_error(&error)
         );
         unsafe {
-            libc::_exit(127);
+            crate::trap::raw_syscall6(libc::SYS_exit_group, [127, 0, 0, 0, 0, 0]);
         }
+        unreachable!("exit_group returned");
     }
 }
 

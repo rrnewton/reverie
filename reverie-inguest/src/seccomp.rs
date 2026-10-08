@@ -182,25 +182,31 @@ impl SeccompFilter {
     /// before untrusted application threads start, after the SIGSYS handler is
     /// in place.
     pub unsafe fn install(&mut self) -> io::Result<()> {
-        if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        // Raw syscalls, not libc's interposable prctl and syscall wrappers.
+        crate::guest::support::raw_result(unsafe {
+            crate::trap::raw_syscall6(
+                libc::SYS_prctl,
+                [libc::PR_SET_NO_NEW_PRIVS as u64, 1, 0, 0, 0, 0],
+            )
+        })?;
         let program = libc::sock_fprog {
             len: u16::try_from(self.program.len())
                 .map_err(|_| io::Error::other("seccomp filter too long"))?,
             filter: self.program.as_mut_ptr(),
         };
-        let result = unsafe {
-            libc::syscall(
+        crate::guest::support::raw_result(unsafe {
+            crate::trap::raw_syscall6(
                 libc::SYS_seccomp,
-                libc::SECCOMP_SET_MODE_FILTER,
-                libc::SECCOMP_FILTER_FLAG_TSYNC,
-                ptr::addr_of!(program),
+                [
+                    u64::from(libc::SECCOMP_SET_MODE_FILTER),
+                    libc::SECCOMP_FILTER_FLAG_TSYNC,
+                    ptr::addr_of!(program) as u64,
+                    0,
+                    0,
+                    0,
+                ],
             )
-        };
-        if result != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        })?;
         // Recorded without a syscall, so that nothing changes for a process
         // that never registers a creation hook.
         RUNTIME_FILTER_INSTALLED.store(true, core::sync::atomic::Ordering::Relaxed);

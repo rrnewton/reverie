@@ -232,7 +232,8 @@ where
             crate::stats::GuestStatsHooks::DISABLED
         };
     runtime::initialize_rcb_clock()?;
-    let pid = Pid::from_raw(unsafe { libc::getpid() });
+    // The raw syscall, not libc's interposable getpid.
+    let pid = Pid::from_raw(unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) } as i32);
     let subscriptions = T::subscriptions(rpc.config());
     let instruction_subscriptions = runtime::InstructionSubscriptions {
         cpuid: subscriptions.has_cpuid(),

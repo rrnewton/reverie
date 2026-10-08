@@ -19,7 +19,6 @@
 //! the single place that decides which signals are runtime-private.
 
 use std::io;
-use std::ptr;
 
 use crate::trap::raw_syscall6;
 
@@ -208,9 +207,13 @@ pub unsafe fn install_alt_stack() -> io::Result<*mut libc::c_void> {
         ss_flags: 0,
         ss_size: size,
     };
-    if unsafe { libc::sigaltstack(&stack, ptr::null_mut()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    // The raw syscall, not libc's interposable sigaltstack.
+    crate::guest::support::raw_result(unsafe {
+        crate::trap::raw_syscall6(
+            libc::SYS_sigaltstack,
+            [(&raw const stack) as u64, 0, 0, 0, 0, 0],
+        )
+    })?;
     Ok(base)
 }
 
