@@ -115,7 +115,7 @@ pub unsafe fn reserve_tool_output_fd(
     // Raw syscalls throughout: this runs inside the guest, whose program or
     // preloaded libraries may define libc's wrappers.
     let mut metadata: libc::stat = unsafe { core::mem::zeroed() };
-    crate::guest::support::raw_result(unsafe {
+    crate::guest::support::raw_zero_result(unsafe {
         raw_syscall6(
             libc::SYS_fstat,
             [fd as u64, (&raw mut metadata) as u64, 0, 0, 0, 0],
