@@ -60,6 +60,11 @@ name = "libc_identity_allocations"
 path = "tests/libc_identity_allocations.rs"
 
 [[test]]
+name = "seccomp_tsync"
+path = "tests/seccomp_tsync.rs"
+harness = false
+
+[[test]]
 name = "clock_allocations"
 path = "tests/clock_allocations.rs"
 required-features = ["rcb-clock"]

@@ -183,7 +183,7 @@ impl SeccompFilter {
     /// in place.
     pub unsafe fn install(&mut self) -> io::Result<()> {
         // Raw syscalls, not libc's interposable prctl and syscall wrappers.
-        crate::guest::support::raw_result(unsafe {
+        crate::guest::support::raw_zero_result(unsafe {
             crate::trap::raw_syscall6(
                 libc::SYS_prctl,
                 [libc::PR_SET_NO_NEW_PRIVS as u64, 1, 0, 0, 0, 0],
@@ -194,7 +194,7 @@ impl SeccompFilter {
                 .map_err(|_| io::Error::other("seccomp filter too long"))?,
             filter: self.program.as_mut_ptr(),
         };
-        crate::guest::support::raw_result(unsafe {
+        tsync_filter_outcome(unsafe {
             crate::trap::raw_syscall6(
                 libc::SYS_seccomp,
                 [
@@ -212,6 +212,24 @@ impl SeccompFilter {
         RUNTIME_FILTER_INSTALLED.store(true, core::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
+}
+
+/// What `seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, ...)`
+/// returned, as the installation's outcome. Only 0 means the filter is
+/// installed on every thread. A negative value is the error it names. A
+/// positive value is the id of a thread the kernel could not synchronize
+/// (one with a filter of its own that does not descend from the caller's):
+/// the filter was installed on no thread, so that is refused too, naming the
+/// thread, rather than taken as success.
+fn tsync_filter_outcome(result: i64) -> io::Result<()> {
+    if result > 0 {
+        return Err(io::Error::other(format!(
+            "seccomp filter not installed: SECCOMP_FILTER_FLAG_TSYNC could not \
+             synchronize thread {result}, whose own filter does not descend from \
+             this thread's"
+        )));
+    }
+    crate::guest::support::raw_zero_result(result)
 }
 
 static RUNTIME_FILTER_INSTALLED: core::sync::atomic::AtomicBool =
@@ -245,6 +263,24 @@ const fn jump(code: u16, value: u32, jump_true: u8, jump_false: u8) -> libc::soc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a 0 return installs the filter: a negative one is its error, and
+    /// a positive one (the thread TSYNC could not synchronize) is refused by
+    /// that thread's id.
+    #[test]
+    fn only_a_zero_tsync_return_counts_as_installed() {
+        assert!(tsync_filter_outcome(0).is_ok());
+        let error = tsync_filter_outcome(-i64::from(libc::EINVAL)).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EINVAL));
+        let error = tsync_filter_outcome(4242).unwrap_err();
+        assert_eq!(error.raw_os_error(), None);
+        assert!(
+            error
+                .to_string()
+                .contains("could not synchronize thread 4242"),
+            "{error}"
+        );
+    }
 
     fn evaluate(filter: &SeccompFilter, arch: u32, number: i64, ip: u64) -> u32 {
         let mut accumulator = 0;
