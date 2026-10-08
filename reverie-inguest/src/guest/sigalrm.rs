@@ -46,6 +46,31 @@ pub const SIGALRM_BIT: u64 = 1 << (libc::SIGALRM - 1);
 /// Linux never blocks these; every mask the runtime records drops them.
 const UNBLOCKABLE: u64 = (1 << (libc::SIGKILL - 1)) | (1 << (libc::SIGSTOP - 1));
 
+/// The kernel's `SA_EXPOSE_TAGBITS` (part of `UAPI_SA_FLAGS` on every
+/// architecture; the libc crate does not export it).
+const SA_EXPOSE_TAGBITS: u32 = 0x0000_0800;
+
+/// The action flags Linux keeps (`UAPI_SA_FLAGS` with x86-64's
+/// `SA_RESTORER`); it clears every other bit of a new action, so a guest can
+/// probe for an unsupported flag. Built from unsigned values: `SA_RESETHAND`
+/// is negative as a C `int`.
+pub const UAPI_SA_FLAGS: u64 = (libc::SA_NOCLDSTOP as u32
+    | libc::SA_NOCLDWAIT as u32
+    | libc::SA_SIGINFO as u32
+    | libc::SA_ONSTACK as u32
+    | libc::SA_RESTART as u32
+    | libc::SA_NODEFER as u32
+    | libc::SA_RESETHAND as u32
+    | SA_EXPOSE_TAGBITS
+    | SA_RESTORER as u32) as u64;
+
+/// The flags phase 1 refuses on a SIGALRM handler.
+const REFUSED_SA_FLAGS: u64 = (libc::SA_RESETHAND as u32 | libc::SA_NODEFER as u32) as u64;
+
+/// The exit status when the runtime cannot undo a half-made change to the
+/// physical SIGALRM state (a guest seccomp filter refused the undo).
+pub const SIGNAL_STATE_LOST_STATUS: i32 = 116;
+
 /// The exit status when a SIGALRM reaches the trampoline without a delivery
 /// the runtime prepared.
 pub const UNPREPARED_SIGALRM_STATUS: i32 = 117;
@@ -68,7 +93,8 @@ pub fn admitted() -> bool {
 /// Whether `rt_sigaction(args)` installs a SIGALRM action this module
 /// decides: the runtime's guards must let it through to [`intercept`].
 pub fn decides_action(number: i64, args: [u64; 6]) -> bool {
-    number == libc::SYS_rt_sigaction && args[0] == libc::SIGALRM as u64 && admitted()
+    // Linux reads the signal argument as a C int.
+    number == libc::SYS_rt_sigaction && args[0] as i32 == libc::SIGALRM && admitted()
 }
 static VIRTUAL_HANDLER: AtomicU64 = AtomicU64::new(0);
 static VIRTUAL_FLAGS: AtomicU64 = AtomicU64::new(0);
@@ -137,7 +163,7 @@ pub fn handler_refusal(
     action: &KernelSigaction,
     restorer_accepted: impl FnOnce(u64) -> bool,
 ) -> Option<HandlerRefusal> {
-    if action.flags & (libc::SA_RESETHAND | libc::SA_NODEFER) as u64 != 0 {
+    if action.flags & REFUSED_SA_FLAGS != 0 {
         return Some(HandlerRefusal::UnsupportedFlags);
     }
     if action.flags & SA_RESTORER as u64 == 0 || !restorer_accepted(action.restorer) {
@@ -305,22 +331,29 @@ fn change_action(
     mut new: KernelSigaction,
     was_handled: bool,
 ) -> Result<KernelSigaction, i32> {
+    let mut old_physical = KernelSigaction::default();
+    unsafe { raw_sigaction(libc::SIGALRM, None, Some(&mut old_physical)) }?;
     let old = if was_handled {
         virtual_action()
     } else {
-        let mut old = KernelSigaction::default();
-        unsafe { raw_sigaction(libc::SIGALRM, None, Some(&mut old)) }?;
-        old
+        old_physical
     };
+    new.flags &= UAPI_SA_FLAGS;
     new.mask &= !UNBLOCKABLE;
     let to_handler = new.handler != libc::SIG_DFL as u64 && new.handler != libc::SIG_IGN as u64;
+    // Every change below is transactional: nothing the guest can see, and no
+    // runtime state, changes unless every physical step succeeded. A step can
+    // fail if a guest seccomp filter refuses the runtime's own call.
     if !to_handler {
         // Detcore refuses a change to SIG_DFL while an entry is pending; an
         // entry that becomes ignored is discarded by the scheduler.
         unsafe { raw_sigaction(libc::SIGALRM, Some(&new), None) }?;
         if was_handled {
+            if let Err(error) = install_physical_mask(virtual_mask(), false, policy.reserved) {
+                restore_physical_action(&old_physical);
+                return Err(error);
+            }
             HANDLED.store(false, Ordering::Release);
-            install_physical_mask(virtual_mask(), false, policy.reserved)?;
         }
         return Ok(old);
     }
@@ -328,30 +361,65 @@ fn change_action(
         restorer::glibc_restorer_accepted(address)
     })
     .is_some()
+        || !restorer::can_protect_restorer(new.restorer)
     {
         return Err(libc::EPERM);
     }
-    if !was_handled {
+    let next_mask = if was_handled {
+        virtual_mask()
+    } else {
         // Installation preflight: no physical SIGALRM may be stranded
         // behind the handler.
         if physical_sigalrm_pending()? {
             return Err(libc::EPERM);
         }
-        VIRTUAL_MASK.store(current_physical_mask()? & !UNBLOCKABLE, Ordering::Release);
-    }
-    if !restorer::protect_restorer(new.restorer) {
-        return Err(libc::EPERM);
-    }
+        current_physical_mask()? & !UNBLOCKABLE
+    };
     let physical = physical_action(
         &new,
         sigalrm_trampoline as *const () as u64,
         policy.reserved,
     );
     unsafe { raw_sigaction(libc::SIGALRM, Some(&physical), None) }?;
+    if let Err(error) = install_physical_mask(next_mask, true, policy.reserved) {
+        restore_physical_action(&old_physical);
+        return Err(error);
+    }
+    if !restorer::protect_restorer(new.restorer) {
+        // can_protect_restorer said there was room, and nothing else runs.
+        lose_signal_state();
+    }
+    VIRTUAL_MASK.store(next_mask, Ordering::Release);
     set_virtual_action(&new);
     HANDLED.store(true, Ordering::Release);
-    install_physical_mask(virtual_mask(), true, policy.reserved)?;
     Ok(old)
+}
+
+/// Put back the physical SIGALRM action a failed change replaced, or end the
+/// process if even that is refused.
+fn restore_physical_action(old: &KernelSigaction) {
+    if unsafe { raw_sigaction(libc::SIGALRM, Some(old), None) }.is_err() {
+        lose_signal_state();
+    }
+}
+
+fn lose_signal_state() -> ! {
+    const MESSAGE: &[u8] = b"reverie-inguest: the runtime could not undo a failed change to the \
+physical SIGALRM state; the process ends\n";
+    unsafe {
+        let _ = raw_syscall6(
+            libc::SYS_write,
+            [
+                libc::STDERR_FILENO as u64,
+                MESSAGE.as_ptr() as u64,
+                MESSAGE.len() as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        crate::guest::support::exit_now(SIGNAL_STATE_LOST_STATUS)
+    }
 }
 
 fn sigprocmask(policy: &Policy, args: [u64; 6]) -> Result<i64, i32> {
@@ -369,7 +437,10 @@ fn sigprocmask(policy: &Policy, args: [u64; 6]) -> Result<i64, i32> {
 }
 
 fn sigpending(args: [u64; 6]) -> Result<i64, i32> {
-    if args[1] != SIGSET_SIZE {
+    // Linux accepts any size up to its set's and copies that many bytes; a
+    // size of 0 copies nothing and never touches the destination.
+    let size = args[1];
+    if size > SIGSET_SIZE {
         return Err(libc::EINVAL);
     }
     let mut pending = 0_u64;
@@ -384,7 +455,10 @@ fn sigpending(args: [u64; 6]) -> Result<i64, i32> {
     }
     // Linux reports pending ∩ blocked; the guest's blocked set is virtual.
     let visible = pending & !SIGALRM_BIT & virtual_mask();
-    write_guest(args[0], &visible)?;
+    if size != 0 {
+        // The set is little-endian: its first `size` bytes are the prefix.
+        copy_within_process((&raw const visible) as u64, args[0], size as usize)?;
+    }
     Ok(0)
 }
 
@@ -508,6 +582,37 @@ mod tests {
             ..base
         };
         assert_eq!(handler_refusal(&restart, |_| true), None);
+    }
+
+    #[test]
+    fn flag_masks_are_built_without_sign_extension() {
+        // SA_RESETHAND | SA_NODEFER, as the kernel's unsigned flags.
+        assert_eq!(REFUSED_SA_FLAGS, 0xc000_0000);
+        assert_eq!(UAPI_SA_FLAGS, 0xdc00_0807);
+        // SA_UNSUPPORTED and every high bit are cleared.
+        assert_eq!(UAPI_SA_FLAGS & 0x400, 0);
+        assert_eq!(UAPI_SA_FLAGS >> 32, 0);
+        // High flag bits are not mistaken for refused flags.
+        let high = KernelSigaction {
+            handler: 0x1000,
+            flags: 0xffff_ffff_0000_0000 | SA_RESTORER as u64,
+            restorer: 0x2000,
+            mask: 0,
+        };
+        assert_eq!(handler_refusal(&high, |_| true), None);
+    }
+
+    #[test]
+    fn the_signal_argument_is_a_c_int() {
+        set_admitted(true);
+        let alias = [0x1_0000_0000 | libc::SIGALRM as u64, 0, 0, 8, 0, 0];
+        assert!(decides_action(libc::SYS_rt_sigaction, alias));
+        assert!(!decides_action(
+            libc::SYS_rt_sigaction,
+            [libc::SIGUSR1 as u64, 0, 0, 8, 0, 0]
+        ));
+        set_admitted(false);
+        assert!(!decides_action(libc::SYS_rt_sigaction, alias));
     }
 
     #[test]

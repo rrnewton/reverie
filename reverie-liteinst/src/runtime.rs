@@ -527,7 +527,13 @@ pub(crate) fn initialize_reverie_tool(
     SITE_PATCHING_ENABLED.store(site_patching, Ordering::Release);
     TOOL_MODE.store(TOOL_REVERIE, Ordering::Release);
     // Design section 6: phase 1 runs handlers in fallback-only processes.
-    reverie_inguest::guest::sigalrm::set_admitted(sigalrm_handlers && !site_patching);
+    let admitted = sigalrm_handlers && !site_patching;
+    if admitted {
+        // In ordinary context, before any guest call: the restorer check
+        // compares against this.
+        reverie_inguest::guest::restorer::record_libc_identity()?;
+    }
+    reverie_inguest::guest::sigalrm::set_admitted(admitted);
     install_runtime(stats, publication, instructions, vdso_sites)
 }
 
