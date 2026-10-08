@@ -130,10 +130,107 @@ static LIBC_INODE: AtomicU64 = AtomicU64::new(0);
 static LIBC_START: AtomicU64 = AtomicU64::new(0);
 static LIBC_END: AtomicU64 = AtomicU64::new(0);
 
+/// The C library's `DT_SONAME`, with its terminating NUL.
+const LIBC_SONAME: &[u8] = b"libc.so.6\0";
+
+/// Up to 16 bytes of this process's memory at `address`, read without
+/// faulting, and how many leading bytes were readable.
+fn read_own_16(address: u64) -> ([u8; 16], usize) {
+    let mut bytes = [0_u8; 16];
+    let mut head = [0_u8; 8];
+    let mut tail = [0_u8; 8];
+    // SAFETY: read_own_bytes reads through process_vm_readv, which reports an
+    // unreadable address instead of faulting.
+    let first = unsafe { read_own_bytes(address, &mut head) };
+    bytes[..8].copy_from_slice(&head);
+    if first < 8 {
+        return (bytes, first);
+    }
+    let Some(next) = address.checked_add(8) else {
+        return (bytes, 8);
+    };
+    let second = unsafe { read_own_bytes(next, &mut tail) };
+    bytes[8..].copy_from_slice(&tail);
+    (bytes, 8 + second)
+}
+
+/// Whether the loaded object `info` describes has the dynamic-section
+/// `DT_SONAME` `expected` (NUL included). Reads the object's `PT_DYNAMIC`
+/// entries and its string table from memory, fault-free, and only inside the
+/// object's own readable `PT_LOAD` segments; allocates nothing.
+fn object_soname_is(info: &libc::dl_phdr_info, expected: &[u8]) -> bool {
+    if info.dlpi_phdr.is_null() || expected.len() > 16 {
+        return false;
+    }
+    // SAFETY: dlpi_phdr points at dlpi_phnum program headers.
+    let headers =
+        unsafe { core::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) };
+    let inside = |address: u64, length: u64| {
+        headers.iter().any(|header| {
+            let start = info.dlpi_addr.wrapping_add(header.p_vaddr);
+            header.p_type == libc::PT_LOAD
+                && header.p_flags & libc::PF_R != 0
+                && address >= start
+                && address
+                    .checked_add(length)
+                    .zip(start.checked_add(header.p_memsz))
+                    .is_some_and(|(end, segment_end)| end <= segment_end)
+        })
+    };
+    let Some(dynamic) = headers
+        .iter()
+        .find(|header| header.p_type == libc::PT_DYNAMIC)
+    else {
+        return false;
+    };
+    let base = info.dlpi_addr.wrapping_add(dynamic.p_vaddr);
+    let (mut strtab, mut soname) = (None, None);
+    for index in 0..(dynamic.p_memsz / 16).min(4096) {
+        let entry = base.wrapping_add(index * 16);
+        if !inside(entry, 16) {
+            return false;
+        }
+        let (bytes, readable) = read_own_16(entry);
+        if readable < 16 {
+            return false;
+        }
+        let tag = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+        let value = u64::from_le_bytes(bytes[8..].try_into().unwrap());
+        match tag {
+            0 => break,                 // DT_NULL
+            5 => strtab = Some(value),  // DT_STRTAB
+            14 => soname = Some(value), // DT_SONAME
+            _ => {}
+        }
+    }
+    let (Some(strtab), Some(offset)) = (strtab, soname) else {
+        return false;
+    };
+    // The loader relocates DT_STRTAB in place in a writable dynamic section;
+    // a read-only one (the vDSO's) keeps the link-time address.
+    let Some(table) = [strtab, strtab.wrapping_add(info.dlpi_addr)]
+        .into_iter()
+        .find(|address| inside(*address, 1))
+    else {
+        return false;
+    };
+    let Some(name) = table.checked_add(offset) else {
+        return false;
+    };
+    if !inside(name, expected.len() as u64) {
+        return false;
+    }
+    let (bytes, readable) = read_own_16(name);
+    readable >= expected.len() && bytes[..expected.len()] == *expected
+}
+
 /// Record which file is this process's C library: the executable segment of
-/// the one loaded object whose path names `libc.so.6`, found by walking the
-/// dynamic loader's object list with `dl_iterate_phdr`. The runtime runs in
-/// the guest's own process, so it is the guest's C library too. Call once, at
+/// the one loaded object whose `DT_SONAME` is `libc.so.6`, found by walking
+/// the dynamic loader's object list with `dl_iterate_phdr`. The loader
+/// satisfies every `libc.so.6` dependency, the runtime's own included, with
+/// the loaded object of that `DT_SONAME` whatever its file is named, so this is
+/// the C library the runtime and the guest run on; a file merely named
+/// `libc.so.6` is not. More than one such object is refused. Call once, at
 /// runtime initialization, in ordinary context.
 ///
 /// This must not allocate through the C library's malloc, which inside the
@@ -141,7 +238,9 @@ static LIBC_END: AtomicU64 = AtomicU64::new(0);
 /// redirects only Rust allocations. `dlopen` does (even with `RTLD_NOLOAD`,
 /// glibc builds the object's search list on its first direct open), so it is
 /// not used. `dl_iterate_phdr` takes the loader's lock and fills one
-/// `dl_phdr_info` on its stack per object; it allocates nothing.
+/// `dl_phdr_info` on its stack per object, and each object's dynamic section
+/// and string table are read from memory with fault-free raw reads; nothing
+/// allocates.
 pub fn record_libc_identity() -> std::io::Result<()> {
     struct Found {
         anchor: u64,
@@ -155,12 +254,7 @@ pub fn record_libc_identity() -> std::io::Result<()> {
         // SAFETY: dl_iterate_phdr passes a valid info for each object and the
         // `Found` this function was given.
         let (info, found) = unsafe { (&*info, &mut *data.cast::<Found>()) };
-        if info.dlpi_name.is_null() {
-            return 0;
-        }
-        // SAFETY: a loaded object's name is a NUL-terminated string.
-        let name = unsafe { core::ffi::CStr::from_ptr(info.dlpi_name) }.to_bytes();
-        if name.rsplit(|byte| *byte == b'/').next() != Some(b"libc.so.6".as_slice()) {
+        if !object_soname_is(info, LIBC_SONAME) {
             return 0;
         }
         found.matches += 1;
@@ -182,7 +276,7 @@ pub fn record_libc_identity() -> std::io::Result<()> {
     unsafe { libc::dl_iterate_phdr(Some(visit), (&raw mut found).cast()) };
     if found.matches != 1 {
         return Err(std::io::Error::other(format!(
-            "{} loaded objects are named libc.so.6",
+            "{} loaded objects have the DT_SONAME libc.so.6",
             found.matches
         )));
     }
