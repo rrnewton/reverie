@@ -39,6 +39,13 @@ pub fn initialize_rcb_clock() -> io::Result<()> {
 fn initialize_rcb_clock_with(
     create: impl FnOnce() -> Result<reverie_ptrace::InGuestRcbCounter, reverie::Errno>,
 ) -> io::Result<()> {
+    // Whatever binding allocates (the counter's box, and the PMU builder's
+    // and environment overrides' own buffers) comes from the private Tool
+    // heap, never the guest's malloc: a fork child binds its counter from the
+    // syscall hook's exit path, outside any Tool callback, and whether binding
+    // succeeds depends on the host's PMU, so an allocation through the guest's
+    // malloc there would make the child's heap layout depend on the host.
+    let _private_allocations = crate::guest::alloc::enter_dispatch();
     let owner = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) } as libc::pid_t;
     if owner <= 0 {
         return Err(io::Error::last_os_error());
