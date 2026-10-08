@@ -9643,6 +9643,181 @@ fn a_reported_signal_the_backend_suppresses_lends_no_count() {
     );
 }
 
+/// The set `QueueAndBlockSigtstpInFirstHook` blocks. A static, so the forked
+/// guest has it at the same address.
+static SIGTSTP_SET: u64 = 1 << (libc::SIGTSTP - 1);
+
+/// Like `ReplaceMarker`, but the first SIGTSTP hook on each thread queues
+/// another SIGTSTP to the thread from the tracer (`SI_QUEUE`), injects a
+/// `getpid`, which that second SIGTSTP stops and which holds it, then
+/// injects `rt_sigprocmask(SIG_BLOCK, {SIGTSTP})`, and passes the first
+/// through; the second SIGTSTP hook injects a `getpid`. Each injection is
+/// reported, and each SIGTSTP report as `Filtered` with its `si_code`, or 0
+/// where it has no siginfo (a group stop).
+#[derive(Clone, Copy, Debug, Default)]
+struct QueueAndBlockSigtstpInFirstHook;
+
+#[reverie::tool]
+impl Tool for QueueAndBlockSigtstpInFirstHook {
+    type GlobalState = Log;
+    /// SIGTSTP hooks run on this thread so far.
+    type ThreadState = u64;
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        replace_marker(guest, syscall).await
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        if signal != Signal::SIGTSTP {
+            return Ok(Some(signal));
+        }
+        let si_code = guest.signal_info().map_or(0, |info| {
+            i32::from_ne_bytes(info[8..12].try_into().unwrap())
+        });
+        guest
+            .send_rpc(Report::Filtered(signal as i32, si_code))
+            .await;
+        *guest.thread_state_mut() += 1;
+        let hooks = *guest.thread_state();
+        if hooks == 1 {
+            // SAFETY: a zeroed siginfo is valid; the fields written open its
+            // union after the three ints, as in `queue_value_to_self`.
+            let queued = unsafe {
+                let mut info: libc::siginfo_t = std::mem::zeroed();
+                info.si_signo = libc::SIGTSTP;
+                info.si_code = libc::SI_QUEUE;
+                let fields = (&mut info as *mut libc::siginfo_t).cast::<u8>().add(16);
+                fields.cast::<libc::pid_t>().write(guest.pid().as_raw());
+                libc::syscall(
+                    libc::SYS_rt_tgsigqueueinfo,
+                    guest.pid().as_raw(),
+                    guest.tid().as_raw(),
+                    libc::SIGTSTP,
+                    &mut info as *mut libc::siginfo_t,
+                )
+            };
+            assert_eq!(queued, 0, "queue a second SIGTSTP to the guest");
+        }
+        if hooks <= 2 {
+            let result = guest.inject(Getpid::new()).await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+        }
+        if hooks == 1 {
+            let set = Addr::from_raw(&SIGTSTP_SET as *const u64 as usize);
+            let result = guest
+                .inject(
+                    RtSigprocmask::new()
+                        .with_how(libc::SIG_BLOCK)
+                        .with_set(set)
+                        .with_oldset(None)
+                        .with_sigsetsize(8),
+                )
+                .await;
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+        }
+        Ok(Some(signal))
+    }
+}
+
+/// A reported group stop does not end a reported instance's count. The
+/// first hook of a tgkill'd SIGTSTP (P) queues a second SIGTSTP (Q), whose
+/// stop holds the hook's `getpid`, blocks SIGTSTP and passes P through, so
+/// Linux requeues P, counted as reported. The guest's unblock marker
+/// resumes Q, passed on unreported while P is pending, and Q's delivery
+/// starts a group stop, which is reported in its place. That callback's
+/// `getpid` holds P, which waits in the hold slot until the guest's next
+/// marker (`getppid`, whose injection ends at a signal-delivery stop, so
+/// the held signal is not passed on early): the Tool has seen P, so it is
+/// passed on unreported, and its delivery starts a group stop of its own,
+/// which is reported. The Tool sees P, Q's group stop and P's group stop.
+/// Before, the reported group stop of Q ended P's count, and P was
+/// reported a second time.
+#[test]
+fn a_reported_group_stop_keeps_a_reported_instances_count() {
+    let (output, log) = test_fn_bounded::<QueueAndBlockSigtstpInFirstHook, _>(
+        || unsafe {
+            // As in `guest`: a stop signal is discarded in an orphaned group.
+            assert_eq!(libc::setpgid(0, 0), 0);
+            assert_eq!(
+                libc::syscall(
+                    libc::SYS_tgkill,
+                    libc::getpid(),
+                    libc::syscall(libc::SYS_gettid),
+                    libc::SIGTSTP
+                ),
+                0
+            );
+            libc::syscall(
+                libc::SYS_write,
+                UNBLOCK_FD,
+                &SIGTSTP_SET as *const u64,
+                0usize,
+            );
+            let ppid = libc::syscall(libc::SYS_write, GETPPID_FD, std::ptr::null::<u8>(), 0usize);
+            println!(
+                "{} {}",
+                ppid == libc::getppid() as libc::c_long,
+                is_blocked(libc::SIGTSTP)
+            );
+        },
+        "reported group stop",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "PROBE group-stop-count guest={:?} injected={:?} reports={:?}",
+        stdout.trim(),
+        *log.injected.lock().unwrap(),
+        *log.filtered.lock().unwrap()
+    );
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        stdout.trim(),
+        "true 0",
+        "the getppid marker runs; SIGTSTP is unblocked"
+    );
+    assert_eq!(
+        *log.filtered.lock().unwrap(),
+        vec![
+            (libc::SIGTSTP, libc::SI_TKILL),
+            (libc::SIGTSTP, 0),
+            (libc::SIGTSTP, 0),
+        ],
+        "P at its own stop, then Q's group stop and P's, each without siginfo; P is not reported again"
+    );
+    let restart = Err(Errno::ERESTARTSYS.into_raw());
+    let injected = log.injected.lock().unwrap();
+    assert_eq!(
+        injected[..4],
+        [restart, Ok(0), Ok(0), restart],
+        "the first hook's getpid (Q) and block, the unblock marker, and the group-stop hook's getpid (P)"
+    );
+    assert_eq!(injected.len(), 5, "and the getppid marker: {injected:?}");
+}
+
 /// Like `InjectInSigusr1Hook`, but the signal hook of SIGUSR1 first queues
 /// SIGUSR2 to the guest's thread from the tracer, with `SI_QUEUE`, the
 /// guest's PID and `QUEUED_VALUE`, as a signal that arrives while the hook
