@@ -38,6 +38,8 @@ enum sbr_bootstrap_operation {
   SBR_BOOTSTRAP_IMAGE = 1,
   SBR_BOOTSTRAP_GETRANDOM = 2,
   SBR_BOOTSTRAP_TAKE_STATE = 3,
+  SBR_BOOTSTRAP_PRLIMIT = 4,
+  SBR_BOOTSTRAP_GETRLIMIT = 5,
 };
 
 typedef long (*sbr_bootstrap_take_fn)(void *, size_t);
@@ -65,6 +67,9 @@ long sbr_bootstrap_getrandom(long buffer, long length, long flags,
  * atomically claims the transfer: concurrent or retired takes return EPROTO,
  * and a failed transfer releases its claim without retiring the state.
  */
+long sbr_bootstrap_prlimit(long pid, long resource, long old_limit,
+                           void *wrapper_sp);
+long sbr_bootstrap_getrlimit(long resource, long limit, void *wrapper_sp);
 int sbr_bootstrap_install_continuation(sbr_bootstrap_install_fn install);
 long sbr_bootstrap_take_state(void *buffer, size_t capacity);
 
