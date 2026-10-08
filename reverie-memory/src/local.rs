@@ -60,10 +60,17 @@ fn copy(
     // returns the actual transferred prefix. In particular, do not preflight
     // later remote addresses or retry a short copy: either would change its
     // side effects. No guest pointee becomes a Rust reference here.
+    //
+    // The process id comes from the raw syscall rather than
+    // `std::process::id`, which calls the C library's `getpid`: inside an
+    // in-guest runtime that is a dynamic symbol the guest program or a
+    // preloaded library may define, and such a definition runs guest code
+    // (and may allocate in the guest's heap) on every memory access.
     unsafe {
+        let pid = syscalls::syscall0(syscalls::Sysno::getpid)?;
         syscalls::syscall6(
             syscall,
-            std::process::id() as usize,
+            pid,
             local as usize,
             local_count,
             remote as usize,
