@@ -33,6 +33,12 @@ use crate::signal;
 pub mod frame;
 mod panic_report;
 mod pkru;
+
+/// Whether the runtime's installation found OSPKE enabled (RDPKRU and WRPKRU
+/// run); false before installation.
+pub fn pkru_present() -> bool {
+    pkru::present()
+}
 const SYS_SECCOMP_CODE: libc::c_int = 1;
 
 core::arch::global_asm!(

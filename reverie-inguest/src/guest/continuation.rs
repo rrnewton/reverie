@@ -376,6 +376,11 @@ fn prepare_signal_for(
     if owner.phase != Phase::Idle || owner.owner_tid != current_tid() {
         return Err(FrameError);
     }
+    // Signal phase 1: the frame invariant, before this call can commit a
+    // delivery (the process ends on a mismatch).
+    if super::sigalrm::handled() {
+        super::sigalrm::check_entry_frame(frame.signal_mask(), frame.signal_stack());
+    }
     owner.generation = owner.generation.checked_add(1).ok_or(FrameError)?;
     frame.capture(&mut owner.saved)?;
     let resume = instruction
@@ -556,6 +561,12 @@ pub fn complete(frame: &mut SignalFrame<'_>) -> Result<bool, FrameError> {
     }
     let owner = unsafe { &mut *pointer };
     frame.restore(&owner.saved)?;
+    // Signal phase 1: a prepared SIGALRM delivery opens its window here, so
+    // the queued instance arrives as this frame returns, before any guest
+    // instruction.
+    if let Some(window) = super::sigalrm::take_window() {
+        frame.set_signal_mask(window);
+    }
     owner.completions += 1;
     owner.phase = Phase::Idle;
     PENDING.set(None);

@@ -550,6 +550,8 @@ pub(crate) fn initialize_reverie_tool(
         // Once the runtime's own filter is in place: see
         // record_filter_baseline.
         reverie_inguest::guest::sigalrm::record_filter_baseline()?;
+        // And its alternate stack: see check_entry_frame.
+        reverie_inguest::guest::sigalrm::record_runtime_stack()?;
     }
     Ok(())
 }

@@ -520,6 +520,41 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     let pkey_before = admitted("sigalrm-pkey-before-install", true);
     assert!(pkey_before.status.success(), "{pkey_before:?}");
     assert_eq!(pkey_before.stdout, b"sigalrm-pkey-before-install-ok\n");
+    let delivery = admitted("sigalrm-delivery", true);
+    assert!(delivery.status.success(), "{delivery:?}");
+    assert_eq!(delivery.stdout, b"sigalrm-delivery-ok\n");
+    let stack_edit = admitted("sigalrm-stack-edit", true);
+    assert_eq!(
+        stack_edit.status.code(),
+        Some(reverie_inguest::guest::sigalrm::DELIVERY_LOST_STATUS),
+        "{stack_edit:?}"
+    );
+    assert_eq!(stack_edit.stdout, b"sigalrm-stack-edit-armed\n");
+    assert!(
+        String::from_utf8_lossy(&stack_edit.stderr).contains("changed uc_stack"),
+        "{stack_edit:?}"
+    );
+    for mode in ["sigalrm-entry-mask", "sigalrm-entry-stack"] {
+        let entry = admitted(mode, true);
+        assert_eq!(
+            entry.status.code(),
+            Some(reverie_inguest::guest::sigalrm::SIGNAL_STATE_LOST_STATUS),
+            "{mode} {entry:?}"
+        );
+        assert_eq!(entry.stdout, b"sigalrm-entry-frame-armed\n", "{mode}");
+        assert!(
+            String::from_utf8_lossy(&entry.stderr)
+                .contains("frame shows a signal mask or alternate stack the runtime did not set"),
+            "{mode} {entry:?}"
+        );
+    }
+    let pkru = admitted("sigalrm-handler-pkru", true);
+    assert!(pkru.status.success(), "{pkru:?}");
+    if pkru.stdout == b"sigalrm-handler-pkru: OSPKE unavailable\n" {
+        eprintln!("SIGALRM handler PKRU return unmeasured: OSPKE unavailable");
+    } else {
+        assert_eq!(pkru.stdout, b"sigalrm-handler-pkru-ok\n");
+    }
     let not_admitted = admitted("sigalrm-unprepared", false);
     assert!(!not_admitted.status.success(), "{not_admitted:?}");
     assert!(not_admitted.stdout.is_empty(), "{not_admitted:?}");
