@@ -112,32 +112,45 @@ pub unsafe fn reserve_tool_output_fd(
     fd: libc::c_int,
     retirement: &'static [u8],
 ) -> io::Result<libc::c_int> {
+    // Raw syscalls throughout: this runs inside the guest, whose program or
+    // preloaded libraries may define libc's wrappers.
     let mut metadata: libc::stat = unsafe { core::mem::zeroed() };
-    if unsafe { libc::fstat(fd, &raw mut metadata) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    crate::guest::support::raw_result(unsafe {
+        raw_syscall6(
+            libc::SYS_fstat,
+            [fd as u64, (&raw mut metadata) as u64, 0, 0, 0, 0],
+        )
+    })?;
     if metadata.st_mode & libc::S_IFMT != libc::S_IFSOCK {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "a Tool output descriptor must be a socket",
         ));
     }
-    let reserved =
-        unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, TOOL_OUTPUT_FD_MIN as libc::c_int) };
-    if reserved < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let reserved = crate::guest::support::raw_result(unsafe {
+        raw_syscall6(
+            libc::SYS_fcntl,
+            [
+                fd as u64,
+                libc::F_DUPFD_CLOEXEC as u64,
+                TOOL_OUTPUT_FD_MIN,
+                0,
+                0,
+                0,
+            ],
+        )
+    })? as libc::c_int;
     if let Err(actual) =
         TOOL_OUTPUT_FD.compare_exchange(-1, reserved, Ordering::AcqRel, Ordering::Acquire)
     {
-        unsafe { libc::close(reserved) };
+        unsafe { raw_syscall6(libc::SYS_close, [reserved as u64, 0, 0, 0, 0, 0]) };
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("a Tool output descriptor is already reserved ({actual})"),
         ));
     }
     let _ = TOOL_OUTPUT_RETIREMENT.set(retirement);
-    unsafe { libc::close(fd) };
+    unsafe { raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
     Ok(reserved)
 }
 

@@ -339,6 +339,110 @@ pub fn auxv_entry(key: u64) -> Option<u64> {
         .map(|(_, value)| value)
 }
 
+/// The value of the environment variable `name` (without `=`), read from the
+/// process's environment block (`environ`) itself rather than through libc's
+/// `getenv`, which the program or a preloaded library may define. Call only
+/// while no other thread changes the environment.
+pub fn environment_value(name: &[u8]) -> Option<&'static [u8]> {
+    unsafe extern "C" {
+        static environ: *const *const libc::c_char;
+    }
+    // SAFETY: environ is a NULL-terminated array of NUL-terminated strings,
+    // and the caller rules out concurrent changes.
+    unsafe {
+        let mut slot = environ;
+        while !slot.is_null() && !(*slot).is_null() {
+            let entry = core::ffi::CStr::from_ptr(*slot).to_bytes();
+            if let Some(value) = entry
+                .strip_prefix(name)
+                .and_then(|rest| rest.strip_prefix(b"="))
+            {
+                return Some(value);
+            }
+            slot = slot.add(1);
+        }
+    }
+    None
+}
+
+/// This process's open descriptors, listed from `/proc/self/fd` with raw
+/// `openat`, `getdents64` and `close` into a stack buffer: not through
+/// `std::fs::read_dir`, whose `opendir` allocates its buffer through the C
+/// library's malloc (inside a guest, the guest's own heap). The listing's own
+/// descriptor is left out. The returned `Vec` is a Rust allocation.
+pub fn open_descriptors() -> std::io::Result<Vec<i32>> {
+    let directory = raw_result(unsafe {
+        raw_syscall6(
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                c"/proc/self/fd".as_ptr() as u64,
+                (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    })? as i32;
+    let mut descriptors = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let listed = loop {
+        let count = unsafe {
+            raw_syscall6(
+                libc::SYS_getdents64,
+                [
+                    directory as u64,
+                    buffer.as_mut_ptr() as u64,
+                    buffer.len() as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if count == 0 {
+            break Ok(());
+        }
+        if let Err(error) = raw_result(count) {
+            break Err(error);
+        }
+        // struct linux_dirent64 { u64 ino; i64 off; u16 reclen; u8 type; char name[]; }
+        let mut offset = 0_usize;
+        while offset + 19 <= count as usize {
+            let reclen = u16::from_ne_bytes([buffer[offset + 16], buffer[offset + 17]]) as usize;
+            if reclen == 0 || offset + reclen > count as usize {
+                break;
+            }
+            let name = &buffer[offset + 19..offset + reclen];
+            let name = &name[..name
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(name.len())];
+            if let Some(fd) = core::str::from_utf8(name)
+                .ok()
+                .and_then(|name| name.parse::<i32>().ok())
+                .filter(|fd| *fd != directory)
+            {
+                descriptors.push(fd);
+            }
+            offset += reclen;
+        }
+    };
+    unsafe { raw_syscall6(libc::SYS_close, [directory as u64, 0, 0, 0, 0, 0]) };
+    listed.map(|()| descriptors)
+}
+
+/// The result of a raw syscall ([`raw_syscall6`]): its value, or the error
+/// its negative return names. Raw syscalls leave libc's `errno` untouched,
+/// so `io::Error::last_os_error` would not describe them.
+pub fn raw_result(result: i64) -> std::io::Result<u64> {
+    if result < 0 && result > -4096 {
+        Err(std::io::Error::from_raw_os_error(-result as i32))
+    } else {
+        Ok(result as u64)
+    }
+}
+
 /// `AT_PAGESZ`, the auxiliary-vector key of the page size.
 const AT_PAGESZ: u64 = 6;
 

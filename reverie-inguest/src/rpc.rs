@@ -83,16 +83,20 @@ impl CoordinatorClient {
     /// handshake frame.
     pub fn connect<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let mut stream = UnixStream::connect(path)?;
-        let reserved_fd = unsafe {
-            libc::fcntl(
-                stream.as_raw_fd(),
-                libc::F_DUPFD_CLOEXEC,
-                1024 as libc::c_int,
+        // The raw syscall, not libc's interposable fcntl.
+        let reserved_fd = crate::guest::support::raw_result(unsafe {
+            crate::trap::raw_syscall6(
+                libc::SYS_fcntl,
+                [
+                    stream.as_raw_fd() as u64,
+                    libc::F_DUPFD_CLOEXEC as u64,
+                    1024,
+                    0,
+                    0,
+                    0,
+                ],
             )
-        };
-        if reserved_fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        })? as libc::c_int;
         // SAFETY: fcntl returned a new owned descriptor on success.
         let reserved_stream = unsafe { UnixStream::from_raw_fd(reserved_fd) };
         drop(stream);
