@@ -498,6 +498,17 @@ fn enabled_record_inherited_entry(
 #[cfg(test)]
 static ENABLED_STATS_PROBES: AtomicU64 = AtomicU64::new(0);
 
+/// Whether this process image's runtime collects the statistics it reports at
+/// exit: true once the in-guest Tool host found the statistics coordinator
+/// ([`crate::STATS_COORDINATOR_ENV`]) in the environment during installation
+/// and started collecting. A Tool host whose coordinator asked for statistics
+/// can check this after installation returns: the variable is read from the
+/// guest environment, which guest code that ran before the runtime could have
+/// changed, and an image that collects nothing reports nothing at exit.
+pub fn guest_stats_enabled() -> bool {
+    GUEST_STATS.get().is_some()
+}
+
 pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<GuestStatsHooks> {
     GUEST_STATS
         .set(GuestStatsCollector {
@@ -675,6 +686,14 @@ mod tests {
     use reverie::PatchShapeCollector;
 
     use super::*;
+
+    #[test]
+    fn guest_stats_enabled_reports_whether_collection_started() {
+        // Collection starts once per process image; another test of this
+        // process may have started it first, which reads the same.
+        let _ = initialize_guest_stats(Path::new("/nonexistent/stats.sock"));
+        assert!(guest_stats_enabled());
+    }
 
     #[test]
     fn display_is_deterministic_and_contains_no_raw_identity() {
