@@ -4032,7 +4032,12 @@ fn try_consume_legacy_status(
     match result {
         Ok(Some(status)) => {
             if terminal {
-                debug_assert_eq!(status, observed, "reaped a different terminal status");
+                // Terminal, but not necessarily `observed`: see
+                // `reaped_status_follows_a_later_group_exit`.
+                debug_assert!(
+                    libc::WIFEXITED(status) || libc::WIFSIGNALED(status),
+                    "reaped a nonterminal status after a terminal observation"
+                );
             } else {
                 debug_assert!(libc::WIFSTOPPED(status), "stop-only wait reaped a task");
             }
@@ -4085,7 +4090,12 @@ fn wait_thread_consuming(pid: Pid, handle: &ThreadHandle, event: &Event) -> Resu
             loop {
                 return match handle.wait_status(reap) {
                     Ok(Some(reaped)) => {
-                        debug_assert_eq!(reaped, status, "reaped a different terminal status");
+                        // Terminal, but not necessarily `status`: see
+                        // `reaped_status_follows_a_later_group_exit`.
+                        debug_assert!(
+                            libc::WIFEXITED(reaped) || libc::WIFSIGNALED(reaped),
+                            "reaped a nonterminal status after a terminal observation"
+                        );
                         Ok(reaped)
                     }
                     Ok(None) => unreachable!("observed terminal status is not reapable"),
@@ -7688,6 +7698,7 @@ mod test {
     include!("ptracer_thread_tests.rs");
     include!("attachment_generation_tests.rs");
     include!("stop_observation_tests.rs");
+    include!("group_exit_status_tests.rs");
     include!("retirement_ack_tests.rs");
     include!("completion_wakeup_tests.rs");
     include!("native_final_wait_tests.rs");
