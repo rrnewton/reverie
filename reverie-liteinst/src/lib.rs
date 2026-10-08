@@ -61,6 +61,7 @@ pub use runtime::TOOL_SPOOF_GETPID;
 pub use runtime::alt_stack_from_env_value;
 pub use runtime::builtin_tool_from_env_value;
 pub use runtime::reserve_tool_output_fd;
+pub use runtime::site_patching_enabled;
 pub use runtime::site_patching_from_env_value;
 pub use runtime::tool_output_fd;
 pub use straddler::STRADDLER_STALENESS_TICKS_ENV;

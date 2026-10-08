@@ -367,6 +367,21 @@ pub fn site_patching_from_env_value(value: Option<&OsStr>) -> io::Result<bool> {
     }
 }
 
+/// Whether this process image's runtime patches syscall sites: the value
+/// [`SITE_PATCHING_ENV`] held when the in-guest Tool host read it during
+/// installation (the `install_tool` family), which is what every later
+/// patching decision in this image loads. It is the runtime's captured
+/// setting, not the environment now: guest code can change the environment
+/// after the runtime read it, but not this.
+///
+/// Meaningful once the Tool's installation has returned. Before that it is the
+/// default, `true`, which is also what a runtime installed without an in-guest
+/// Tool (the built-in, `strace` and `compat` runtimes, which never take the
+/// selector) reports.
+pub fn site_patching_enabled() -> bool {
+    SITE_PATCHING_ENABLED.load(Ordering::Acquire)
+}
+
 /// Refuses to start a runtime that does not take [`SITE_PATCHING_ENV`] when the
 /// variable holds anything but the default `1`. Reads with `getenv` so the
 /// accepted case does not allocate before the constructor window.
@@ -2923,9 +2938,24 @@ fn emit_instruction_refusal_stage(
 
 #[cfg(test)]
 mod tests {
+
     use core::sync::atomic::Ordering;
     use std::ffi::OsStr;
 
+    use super::SITE_PATCHING_ENABLED;
+    use super::site_patching_enabled;
+
+    #[test]
+    fn site_patching_enabled_reports_the_captured_setting() {
+        let previous = SITE_PATCHING_ENABLED.load(Ordering::Acquire);
+        // What the installation stored is what the getter reports, whatever
+        // the environment holds afterwards (it is not read again).
+        SITE_PATCHING_ENABLED.store(false, Ordering::Release);
+        assert!(!site_patching_enabled());
+        SITE_PATCHING_ENABLED.store(true, Ordering::Release);
+        assert!(site_patching_enabled());
+        SITE_PATCHING_ENABLED.store(previous, Ordering::Release);
+    }
     use reverie_inguest::BuiltinTool;
 
     use super::ALT_STACK_ENV;
