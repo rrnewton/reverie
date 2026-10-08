@@ -1,0 +1,84 @@
+# Kernel start parity fixtures
+
+`layout.c` links with libc, as PIE and as a fixed-address executable.
+`layout_entry.S` replaces the ELF entry point and copies the original stack
+to BSS without writing to that stack, then jumps to the ordinary CRT `_start`.
+The copy covers original RSP through the end of the page containing the
+AT_EXECFN terminating NUL, including
+the entire auxv, stack padding, and the AT_RANDOM bytes. The dynamic linker has
+already run at that entry, so the separate observer covers original registers
+and the region below the kernel's entry RSP.
+
+Layout output consists of `KEY=VALUE` lines. Addresses have a `0x` prefix,
+counts and `/proc/self/stat` fields are decimal, and byte strings use lower
+case hexadecimal without a prefix. `argv.N.hex`, `env.N.hex`, and
+`execfn.hex` omit their terminating NUL; the raw stack and proc files retain
+every byte. `auxc` includes the terminating AT_NULL pair. `program.base` is
+the ELF load bias (zero for ET_EXEC). `maps` contains the entire proc file,
+including VMA addresses, permissions, offsets, devices, inodes, and names.
+
+The heap probe grows brk one page at a time, captures the first failed request
+and its actual returned brk, then reduces the heap to one page so that there
+is a `[heap]` mapping to compare. The default probe bound is 16 pages;
+`ELF_LOADER_HEAP_PAGES=N` sets a bound from 1 through 4096. `data.baseline_kib`
+and `data.peak_kib` are the fixture's observed VmData before and during this
+probe. They do not describe the loader's earlier peak; the test runner must
+observe that independently at syscall stops.
+
+`observer.S` is a freestanding static PIE used as the dummy program's
+PT_INTERP. It records general and extended registers before using CPUID or
+modifying any SIMD register. RIP-relative stores save all GPRs first;
+PUSHFQ runs on a separate BSS stack. The observer never writes to the original
+stack. Its binary stdout record is little endian:
+
+| Offset | Size | Contents |
+| --- | --- | --- |
+| 0 | 8 | ASCII `ELFOBS01` |
+| 8 | 8 | Header size, 2368 |
+| 16 | 128 | u64 rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8 through r15 |
+| 144 | 8 | RFLAGS |
+| 152 | 4 | MXCSR |
+| 156 | 2 | x87 control word |
+| 160 | 8 | Feature mask: bit 0 YMM, bit 1 ZMM, bit 2 PKRU, bit 3 64-bit opmask |
+| 168 | 8 | XCR0, zero if OSXSAVE is absent |
+| 176 | 8 | Original RSP minus 1024, the snapshot start |
+| 184 | 8 | Snapshot length |
+| 192 | 256 | xmm0 through xmm15 |
+| 448 | 256 | Upper 128 bits of ymm0 through ymm15, when supported |
+| 704 | 512 | Upper 256 bits of zmm0 through zmm15, when supported |
+| 1216 | 1024 | Full zmm16 through zmm31, when supported |
+| 2240 | 64 | k0 through k7, each in a zero-padded u64 slot |
+| 2304 | 4 | PKRU, when supported |
+| 2368 | variable | Original stack from RSP minus 1024 through the end of the AT_EXECFN page |
+
+Reserved bytes and unsupported feature fields remain zero. AVX needs the
+CPUID AVX/OSXSAVE bits and XCR0 SSE/AVX enablement. AVX512 needs AVX512F and
+XCR0 SSE/AVX/opmask/ZMM enablement. Opmask reads use KMOVQ only with AVX512BW;
+AVX512F alone uses KMOVW. PKRU needs both CPUID PKU and OSPKE.
+
+`observer_dummy.S` exits with status 99 if its own entry is reached, which
+would mean the PT_INTERP observer did not take control. The observer exits 97
+on a failed stdout write and 98 on an absent or oversized initial stack.
+The stack snapshot capacity is 256 KiB, comfortably above these fixtures'
+fixed argv/envp; it is a fixture bound, not a loader admission constraint.
+
+Example generation commands (the actual build records hashes and its exact
+commands under `target/`):
+
+```sh
+cc -O1 -Wall -Wextra -Werror -fno-stack-protector -fPIE -pie \
+  -Wl,-e,fixture_start layout.c layout_entry.S -o layout-pie
+cc -O1 -Wall -Wextra -Werror -fno-stack-protector -fno-pie -no-pie \
+  -Wl,-e,fixture_start layout.c layout_entry.S -o layout-nonpie
+cc -nostdlib -static-pie -Wl,--build-id=none observer.S -o observer
+cc -nostdlib -fPIE -pie -Wl,--build-id=none \
+  -Wl,--dynamic-linker=/absolute/target/path/observer \
+  observer_dummy.S -o entry-pie
+cc -nostdlib -fPIE -pie -Wl,-Ttext-segment=0x400000 -Wl,--build-id=none \
+  -Wl,--dynamic-linker=/absolute/target/path/observer \
+  observer_dummy.S -o entry-nonpie
+```
+
+GNU ld's `-Ttext-segment=0x400000` emits ET_EXEC even with `-pie`. Using the
+PIE link mode preserves PT_INTERP in a program without shared dependencies;
+plain `-no-pie` would omit that interpreter segment.
