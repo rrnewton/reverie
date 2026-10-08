@@ -54,6 +54,7 @@ path = "tests/pkeys.rs"
 [[test]]
 name = "libc_identity"
 path = "tests/libc_identity.rs"
+required-features = ["rcb-clock"]
 
 [[test]]
 name = "libc_identity_allocations"

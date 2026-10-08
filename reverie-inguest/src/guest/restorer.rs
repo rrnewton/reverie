@@ -26,6 +26,7 @@ use crate::guest::support::auxv_entry;
 use crate::guest::support::read_own_bytes;
 use crate::guest::support::scan_own_maps;
 use crate::guest::support::scan_proc_lines;
+use crate::guest::support::scan_proc_lines_checked;
 use crate::trap::raw_syscall6;
 
 /// glibc's x86-64 `__restore_rt`: `mov $15,%rax; syscall`.
@@ -217,9 +218,12 @@ fn object_soname_is(l_addr: u64, l_ld: u64, expected: &[u8]) -> bool {
 fn loader_debug_record() -> std::io::Result<u64> {
     let refuse = |what: &'static str| std::io::Error::other(what);
     let phdr = auxv_entry(AT_PHDR).ok_or_else(|| refuse("the auxiliary vector has no AT_PHDR"))?;
-    let phnum = auxv_entry(AT_PHNUM)
-        .ok_or_else(|| refuse("the auxiliary vector has no AT_PHNUM"))?
-        .min(256);
+    let phnum =
+        auxv_entry(AT_PHNUM).ok_or_else(|| refuse("the auxiliary vector has no AT_PHNUM"))?;
+    // ELF's e_phnum is 16 bits; the kernel admits no larger table.
+    if phnum > 0xffff {
+        return Err(refuse("the main executable's AT_PHNUM exceeds 65535"));
+    }
     let header = |index: u64| {
         let address = phdr.checked_add(index * 56)?;
         let type_and_flags = read_own_word(address)?;
@@ -250,9 +254,11 @@ fn loader_debug_record() -> std::io::Result<u64> {
     }
 }
 
-/// Record which file is this process's C library: the executable mapping of
-/// the file of the one loaded object, in the dynamic loader's base namespace,
-/// whose `DT_SONAME` is `libc.so.6`. The loader satisfies every `libc.so.6`
+/// Record which file is this process's C library: the mapping of the
+/// executable segment of the one loaded object, in the dynamic loader's base
+/// namespace, whose `DT_SONAME` is `libc.so.6`, located through that object's
+/// own load bias and program headers (so another mapping of the same file, an
+/// alias or a copy in another namespace, is not taken for it). The loader satisfies every `libc.so.6`
 /// dependency, the runtime's own included, with the loaded object of that
 /// `DT_SONAME`, whatever its file is named, so this is the C library the
 /// runtime and the guest run on. Call once, at runtime initialization, in
@@ -270,7 +276,10 @@ fn loader_debug_record() -> std::io::Result<u64> {
 /// executable's program headers and dynamic section there, the `r_debug`
 /// record the loader wrote into its `DT_DEBUG` entry, the loader's own
 /// `link_map` list from it (`l_addr`, `l_ld`, `l_next`), and each object's
-/// `DT_SONAME` from its dynamic section. The base namespace's list is the one
+/// `DT_SONAME` from its dynamic section, then the identified object's ELF
+/// and program headers at its load bias; `/proc/self/maps` is read with the
+/// checked scanner, so an incomplete read is refused rather than taken as a
+/// missing mapping. The base namespace's list is the one
 /// the program and the runtime were loaded in; objects in other `dlmopen`
 /// namespaces (glibc 2.35's `r_debug_extended::r_next`) carry their own C
 /// library and are not considered. No match, or more than one, is refused.
@@ -285,7 +294,7 @@ pub fn record_libc_identity() -> std::io::Result<()> {
         ));
     }
     let mut map = read_own_word(record + 8).unwrap_or(0);
-    let (mut matches, mut libc_dynamic) = (0_usize, 0_u64);
+    let (mut matches, mut libc_dynamic, mut libc_bias) = (0_usize, 0_u64, 0_u64);
     // struct link_map { l_addr; l_name; l_ld; l_next; l_prev; ... }
     for _ in 0..4096 {
         if map == 0 {
@@ -303,6 +312,7 @@ pub fn record_libc_identity() -> std::io::Result<()> {
         if l_ld != 0 && object_soname_is(l_addr, l_ld, LIBC_SONAME) {
             matches += 1;
             libc_dynamic = l_ld;
+            libc_bias = l_addr;
         }
         map = l_next;
     }
@@ -316,34 +326,67 @@ pub fn record_libc_identity() -> std::io::Result<()> {
             "{matches} loaded objects have the DT_SONAME libc.so.6"
         )));
     }
-    // The C library's file: the one its dynamic section is mapped from.
-    let file = unsafe { scan_own_maps(|line| maps_line_identity(line, libc_dynamic)) }
-        .filter(|mapping| mapping.inode != 0)
-        .ok_or_else(|| {
-            std::io::Error::other("libc.so.6's dynamic section is in no file mapping")
-        })?;
-    let (mut executable, mut count) = (None, 0_usize);
-    let _ = unsafe {
-        scan_own_maps(|line| {
-            if let Some(mapping) = maps_line_mapping(line)
-                && mapping.executable
-                && mapping.device == file.device
-                && mapping.inode == file.inode
-            {
-                count += 1;
-                executable = Some(mapping);
-            }
-            None::<()>
+    // The identified object's own code: its executable PT_LOAD segment, from
+    // its program headers. A shared library's first segment maps file offset
+    // 0 at address 0, so its ELF header is at its load bias.
+    let refuse = |what: &'static str| std::io::Error::other(what);
+    if libc_bias == 0 || read_own_word(libc_bias).map(|word| word as u32) != Some(0x464c_457f) {
+        return Err(refuse("libc.so.6's ELF header is not at its load bias"));
+    }
+    let header_word = |offset: u64| read_own_word(libc_bias.checked_add(offset)?);
+    let (Some(phoff), Some(phnum)) = (header_word(0x20), header_word(0x38)) else {
+        return Err(refuse("libc.so.6's ELF header is unreadable"));
+    };
+    let phnum = phnum & 0xffff;
+    let mut text = None;
+    for index in 0..phnum {
+        let Some(header) = libc_bias
+            .checked_add(phoff)
+            .and_then(|table| table.checked_add(index * 56))
+        else {
+            break;
+        };
+        let (Some(type_and_flags), Some(vaddr), Some(memsz)) = (
+            read_own_word(header),
+            read_own_word(header + 16),
+            read_own_word(header + 40),
+        ) else {
+            return Err(refuse("libc.so.6's program headers are unreadable"));
+        };
+        let (p_type, p_flags) = (type_and_flags as u32, (type_and_flags >> 32) as u32);
+        if p_type == libc::PT_LOAD && p_flags & libc::PF_X != 0 {
+            text = Some((libc_bias.wrapping_add(vaddr), memsz));
+            break;
+        }
+    }
+    let Some((text_start, _)) = text else {
+        return Err(refuse("libc.so.6 has no executable segment"));
+    };
+    // Each mapping is read with the checked scanner: a scan that could not
+    // read all of /proc/self/maps is refused, never taken as "not found".
+    let mapping_at = |address: u64| -> std::io::Result<Option<MappingIdentity>> {
+        unsafe {
+            scan_proc_lines_checked(c"/proc/self/maps", |line| maps_line_identity(line, address))
+        }
+        .map_err(|errno| {
+            std::io::Error::other(format!(
+                "/proc/self/maps could not be read completely (errno {})",
+                -errno
+            ))
         })
     };
-    let identity = match (count, executable) {
-        (1, Some(mapping)) => mapping,
-        _ => {
-            return Err(std::io::Error::other(format!(
-                "libc.so.6's file has {count} executable mappings"
-            )));
-        }
-    };
+    // The C library's file: the one its dynamic section is mapped from.
+    let file = mapping_at(libc_dynamic)?
+        .filter(|mapping| mapping.inode != 0)
+        .ok_or_else(|| refuse("libc.so.6's dynamic section is in no file mapping"))?;
+    // Its code: the mapping holding the start of its executable segment,
+    // which must be an executable mapping of that same file. Other mappings of
+    // the file (an alias, a copy loaded into another namespace) are not it.
+    let identity = mapping_at(text_start)?
+        .filter(|mapping| {
+            mapping.executable && mapping.device == file.device && mapping.inode == file.inode
+        })
+        .ok_or_else(|| refuse("libc.so.6's executable segment is not mapped from its file"))?;
     LIBC_DEVICE.store(identity.device, Ordering::Release);
     LIBC_START.store(identity.start, Ordering::Release);
     LIBC_END.store(identity.end, Ordering::Release);

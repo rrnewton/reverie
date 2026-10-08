@@ -22,13 +22,24 @@
 //! - a preloaded `dl_iterate_phdr` that allocates and delegates;
 //! - a preloaded `dl_iterate_phdr` that reports a fake C library (an object
 //!   named `libc.so.6` with `DT_SONAME` `libc.so.6` whose code is its own) and
-//!   hides the real one.
+//!   hides the real one;
+//! - a preloaded `sysconf` that allocates and delegates (the run also takes
+//!   the page size and binds an in-guest branch counter, the other start-up
+//!   steps that once asked `sysconf`);
+//! - a second copy of the C library loaded into a `dlmopen` namespace;
+//! - an executable alias mapping of the C library's file.
+//!
+//! The report also counts the executable mappings of the C library's file,
+//! so the last two cases prove their setup took effect.
 
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
 const CHILD: &str = "REVERIE_TEST_LIBC_IDENTITY_CHILD";
+/// What the re-run process sets up first: `dlmopen:<library>` or
+/// `alias:<file>`.
+const SETUP: &str = "REVERIE_TEST_LIBC_IDENTITY_SETUP";
 const TEST: &str = "libc_identity_follows_the_loader_not_file_names_or_interposers";
 
 extern "C" fn ignore(_signal: libc::c_int) {}
@@ -61,25 +72,38 @@ fn glibc_restorer() -> u64 {
     installed.restorer
 }
 
-/// In the re-run process: record the identity and report.
+/// In the re-run process: set up, record the identity and report.
 fn child_report() {
-    // SAFETY: mallinfo2 only reads the allocator's statistics.
-    let before = unsafe { libc::mallinfo2() };
-    let recorded = reverie_inguest::guest::restorer::record_libc_identity();
-    let after = unsafe { libc::mallinfo2() };
-    let heap_unchanged = (before.arena, before.uordblks, before.hblkhd)
-        == (after.arena, after.uordblks, after.hblkhd);
-    let restorer = glibc_restorer();
-    let accepted = unsafe { reverie_inguest::guest::restorer::glibc_restorer_accepted(restorer) };
-    let (libc_file, _) = mapping_file(restorer).unwrap_or_default();
-    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
-    let preloaded = std::env::var("LD_PRELOAD").unwrap_or_default();
-    let mapped = preloaded
-        .split(' ')
-        .filter(|path| !path.is_empty())
-        .map(|path| maps.contains(path))
-        .collect::<Vec<_>>();
-    // How often a preloaded dl_iterate_phdr ran (read after the measurement).
+    match std::env::var(SETUP)
+        .ok()
+        .as_deref()
+        .and_then(|setup| setup.split_once(':'))
+    {
+        Some(("dlmopen", library)) => {
+            let library = std::ffi::CString::new(library).unwrap();
+            let handle =
+                unsafe { libc::dlmopen(libc::LM_ID_NEWLM, library.as_ptr(), libc::RTLD_NOW) };
+            assert!(!handle.is_null(), "dlmopen failed");
+        }
+        Some(("alias", file)) => {
+            let file = std::fs::File::open(file).unwrap();
+            let length = file.metadata().unwrap().len() as usize;
+            let alias = unsafe {
+                libc::mmap(
+                    core::ptr::null_mut(),
+                    length,
+                    libc::PROT_READ | libc::PROT_EXEC,
+                    libc::MAP_PRIVATE,
+                    std::os::fd::AsRawFd::as_raw_fd(&file),
+                    0,
+                )
+            };
+            assert_ne!(alias, libc::MAP_FAILED);
+        }
+        Some(other) => panic!("unknown setup {other:?}"),
+        None => {}
+    }
+    // How often a preloaded wrapper ran, counted around the start-up steps.
     let counter = unsafe {
         libc::dlsym(
             libc::RTLD_DEFAULT,
@@ -87,22 +111,62 @@ fn child_report() {
         )
     }
     .cast::<u32>();
-    let interposer_calls = if counter.is_null() {
-        0
-    } else {
-        unsafe { counter.read() }
+    let calls = || {
+        if counter.is_null() {
+            0
+        } else {
+            unsafe { counter.read_volatile() }
+        }
     };
+    let calls_before = calls();
+    // SAFETY: mallinfo2 only reads the allocator's statistics.
+    let before = unsafe { libc::mallinfo2() };
+    let recorded = reverie_inguest::guest::restorer::record_libc_identity();
+    let after = unsafe { libc::mallinfo2() };
+    let heap_unchanged = (before.arena, before.uordblks, before.hblkhd)
+        == (after.arena, after.uordblks, after.hblkhd);
+    // The other start-up steps that asked sysconf. Their own Rust allocations
+    // use this test binary's ordinary allocator, so the heap is not compared
+    // across them; the wrapper's call count is.
+    reverie_inguest::guest::support::page_size().unwrap();
+    reverie_inguest::guest::clock::initialize_rcb_clock().unwrap();
+    let interposer_calls = calls() - calls_before;
+    let restorer = glibc_restorer();
+    let accepted = unsafe { reverie_inguest::guest::restorer::glibc_restorer_accepted(restorer) };
+    let (libc_file, libc_identity) = mapping_file(restorer).unwrap_or_default();
+    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+    let preloaded = std::env::var("LD_PRELOAD").unwrap_or_default();
+    let mapped = preloaded
+        .split(' ')
+        .filter(|path| !path.is_empty())
+        .map(|path| maps.contains(path))
+        .collect::<Vec<_>>();
+    // Executable mappings of the C library's file (device and inode).
+    let libc_executable_mappings = maps
+        .lines()
+        .filter(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            fields.len() >= 5
+                && fields[1].as_bytes().get(2) == Some(&b'x')
+                && format!("{} {}", fields[3], fields[4]) == libc_identity
+        })
+        .count();
     let recorded = match recorded {
         Ok(()) => "recorded".to_owned(),
         Err(error) => format!("refused ({error})"),
     };
     println!(
         "identity: {recorded} accepted={accepted} heap_unchanged={heap_unchanged} \
-         interposer_calls={interposer_calls} preloads_mapped={mapped:?} libc_file={libc_file}"
+         interposer_calls={interposer_calls} preloads_mapped={mapped:?} \
+         libc_executable_mappings={libc_executable_mappings} libc_file={libc_file}"
     );
 }
 
 fn run_child(preload: &[&Path]) -> String {
+    run_child_with(preload, None)
+}
+
+fn run_child_with(preload: &[&Path], setup: Option<String>) -> String {
     let preload = preload
         .iter()
         .map(|path| path.to_str().unwrap())
@@ -115,6 +179,7 @@ fn run_child(preload: &[&Path]) -> String {
         // One malloc arena, so mallinfo2 (which reports the main arena)
         // sees allocations made on the harness's test thread too.
         .env("MALLOC_ARENA_MAX", "1")
+        .env(SETUP, setup.unwrap_or_default())
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -211,6 +276,20 @@ int dl_iterate_phdr(callback_t callback, void *data) {
 }
 "#;
 
+/// Allocates through the C library's malloc on every call, then delegates.
+const ALLOCATING_SYSCONF: &str = r#"
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdlib.h>
+void *reverie_test_kept[64];
+unsigned reverie_test_interposer_calls;
+long sysconf(int name) {
+    reverie_test_kept[reverie_test_interposer_calls++ % 64] = malloc(4096);
+    long (*real)(int) = (long (*)(int))dlsym(RTLD_NEXT, "sysconf");
+    return real(name);
+}
+"#;
+
 #[test]
 fn libc_identity_follows_the_loader_not_file_names_or_interposers() {
     if std::env::var_os(CHILD).is_some() {
@@ -262,13 +341,16 @@ fn libc_identity_follows_the_loader_not_file_names_or_interposers() {
     compile_library(ALLOCATING_WRAPPER, &allocating);
     let fake = directory.join("fake-libc-dl-iterate-phdr.so");
     compile_library(FAKE_IDENTITY_WRAPPER, &fake);
+    let sysconf = directory.join("allocating-sysconf.so");
+    compile_library(ALLOCATING_SYSCONF, &sysconf);
 
-    let expect = |preloads: &str, file: &dyn std::fmt::Display| {
+    let expect_mappings = |preloads: &str, mappings: usize, file: &dyn std::fmt::Display| {
         format!(
             "identity: recorded accepted=true heap_unchanged=true interposer_calls=0 \
-             preloads_mapped={preloads} libc_file={file}"
+             preloads_mapped={preloads} libc_executable_mappings={mappings} libc_file={file}"
         )
     };
+    let expect = |preloads: &str, file: &dyn std::fmt::Display| expect_mappings(preloads, 1, file);
     assert_eq!(run_child(&[]), expect("[]", &libc));
     assert_eq!(
         run_child(&[&renamed]),
@@ -282,4 +364,15 @@ fn libc_identity_follows_the_loader_not_file_names_or_interposers() {
     );
     assert_eq!(run_child(&[&allocating]), expect("[true]", &libc));
     assert_eq!(run_child(&[&fake]), expect("[true]", &libc));
+    assert_eq!(run_child(&[&sysconf]), expect("[true]", &libc));
+    assert_eq!(
+        run_child_with(&[], Some(format!("dlmopen:{other}"))),
+        expect_mappings("[]", 2, &libc),
+        "a copy of {libc} in a dlmopen namespace"
+    );
+    assert_eq!(
+        run_child_with(&[], Some(format!("alias:{libc}"))),
+        expect_mappings("[]", 2, &libc),
+        "an executable alias of {libc}"
+    );
 }
