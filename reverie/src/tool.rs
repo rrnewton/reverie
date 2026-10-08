@@ -787,6 +787,45 @@ pub trait Tool: Send + Sync + Default {
         Ok(Some(signal))
     }
 
+    /// Decides whether a signal that the backend passes to the guest without
+    /// reporting it to [`Tool::handle_signal_event`] reaches the guest at all.
+    ///
+    /// A backend may pass a signal on unreported where reporting it could
+    /// change what the guest observes: the ptrace backend does so for many
+    /// signals it held while a Tool injection ran, and for signals that arrive
+    /// while it steps the guest through its own setup. Such a signal is
+    /// otherwise invisible to the Tool, so a Tool that must keep exactly one
+    /// copy of a signal (for example, its own copy of one the kernel also
+    /// sent) needs to see it here. Every such signal is shown, whatever its
+    /// number, siginfo or sender, including the backend's own, which Linux
+    /// does not tell apart from a guest's signal of the same number (the
+    /// ptrace backend's: a SIGSTOP of a gdb freeze or of a group-stop request,
+    /// and its timer's signal, SIGSTKFLT). Dropping one of those breaks the
+    /// backend, so keep every signal you do not own. The hook can be called
+    /// before the guest's first exec, while the backend initializes it; a
+    /// failed GlobalTool ends a hook still waiting on its RPC then as at any
+    /// other time.
+    ///
+    /// The hook can only decide: it gets the signal's read-only description
+    /// and a handle that can send RPCs to the global tool, and no access to
+    /// the guest, so it cannot inject a syscall or change the guest's
+    /// registers or memory. Drop only a signal identified by its siginfo; a
+    /// signal shown without one is one the backend could not record.
+    ///
+    /// # Return value
+    ///  - `true`: the signal is passed on as before.
+    ///  - `false`: the signal is dropped and never delivered to the guest.
+    ///
+    /// The default keeps every signal. A backend that never passes a signal
+    /// on unreported never calls it.
+    async fn filter_unreported_signal<R: GlobalRPC<Self::GlobalState>>(
+        &self,
+        _rpc: &R,
+        _signal: crate::UnreportedSignal,
+    ) -> bool {
+        true
+    }
+
     /// Admits acknowledgment of real KVM pending removals before thread start.
     /// Other Tools retain their existing pending-state behavior by default.
     ///

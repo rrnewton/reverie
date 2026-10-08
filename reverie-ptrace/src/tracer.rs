@@ -86,6 +86,7 @@ use crate::task::Child;
 use crate::task::FatalSession;
 use crate::task::InjectedSyscallProvenance;
 use crate::task::InjectedSyscallTrap;
+use crate::task::PostspawnPreinit;
 use crate::task::PreinitOutcome;
 use crate::task::TracedTask;
 use crate::task::TracedTaskOptions;
@@ -3443,7 +3444,12 @@ fn from_nix_error(err: nix::Error) -> Errno {
 #[derive(Debug)]
 enum PostspawnError {
     Trace(TraceError),
-    Exited { pid: Pid, exit_status: ExitStatus },
+    Exited {
+        pid: Pid,
+        exit_status: ExitStatus,
+    },
+    /// The GlobalTool reported a failed run during initialization.
+    GlobalToolFailed,
 }
 
 impl From<TraceError> for PostspawnError {
@@ -3519,6 +3525,10 @@ async fn postspawn_error(pid: Pid, error: PostspawnError, owner: &Arc<PtracerWai
         },
         PostspawnError::Trace(error) => initialization_error(pid, error).await,
         PostspawnError::Exited { pid, exit_status } => initialization_exit_error(pid, exit_status),
+        PostspawnError::GlobalToolFailed => anyhow::anyhow!(
+            "GlobalTool reported a failed ptrace run during ptrace initialization of tracee {pid}"
+        )
+        .into(),
     }
 }
 
@@ -3815,10 +3825,11 @@ async fn postspawn<L: Tool + 'static>(
     ordinary_session.capture_root(&child);
     if !ordinary_session.is_failed() {
         child = match tracer.postspawn_preinit(child).await? {
-            PreinitOutcome::Ready(child) => child,
-            PreinitOutcome::Exited(pid, exit_status) => {
+            PostspawnPreinit::Outcome(PreinitOutcome::Ready(child)) => child,
+            PostspawnPreinit::Outcome(PreinitOutcome::Exited(pid, exit_status)) => {
                 return Err(PostspawnError::Exited { pid, exit_status });
             }
+            PostspawnPreinit::GlobalToolFailed => return Err(PostspawnError::GlobalToolFailed),
         };
     }
 
@@ -9745,6 +9756,227 @@ mod tests {
         exec_preinit_kill_code_read_esrch_at_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(CodeRead, EsrchAtExitStop);
         exec_preinit_kill_mmap_returned_esrch_at_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(MmapReturned, EsrchAtExitStop);
         exec_preinit_kill_page_populated_esrch_at_exit_stop: exec_preinit_killed_at::<AllSyscallsTool>(PagePopulated, EsrchAtExitStop);
+    }
+
+    /// How many times `FilterAwaitingAFailedGlobal`'s filter has run.
+    static FAILED_GLOBAL_FILTER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    /// A GlobalTool that reports a failed run once an RPC reaches it, and
+    /// never answers that RPC.
+    #[derive(Default)]
+    struct FailedGlobal {
+        failed: AtomicBool,
+        failure: tokio::sync::Notify,
+    }
+
+    #[reverie::global_tool]
+    impl GlobalTool for FailedGlobal {
+        type Config = ();
+        type Request = ();
+        type Response = ();
+
+        async fn receive_rpc(&self, _from: Pid, _request: ()) {
+            self.failed.store(true, Ordering::SeqCst);
+            self.failure.notify_waiters();
+            future::pending::<()>().await
+        }
+
+        async fn wait_for_backend_failure(&self) {
+            loop {
+                let notified = self.failure.notified();
+                if self.failed.load(Ordering::SeqCst) {
+                    return;
+                }
+                notified.await;
+            }
+        }
+    }
+
+    /// A Tool whose `filter_unreported_signal` counts its calls and then
+    /// awaits an RPC to `FailedGlobal`, which never answers.
+    #[derive(Default)]
+    struct FilterAwaitingAFailedGlobal;
+
+    #[reverie::tool]
+    impl Tool for FilterAwaitingAFailedGlobal {
+        type GlobalState = FailedGlobal;
+        type ThreadState = ();
+
+        async fn filter_unreported_signal<R: reverie::GlobalRPC<Self::GlobalState>>(
+            &self,
+            rpc: &R,
+            _signal: reverie::UnreportedSignal,
+        ) -> bool {
+            FAILED_GLOBAL_FILTER_CALLS.fetch_add(1, Ordering::SeqCst);
+            rpc.send_rpc(()).await;
+            true
+        }
+    }
+
+    /// A preinit hook that, as the root's registers are saved in its first
+    /// initialization, runs `act` once on the root's pid.
+    fn at_first_regs_saved(
+        act: impl Fn(Pid) + Send + Sync + 'static,
+    ) -> (crate::task::PreinitPointForTest, Arc<StdMutex<Option<Pid>>>) {
+        let acted: Arc<StdMutex<Option<Pid>>> = Arc::default();
+        let state = Arc::clone(&acted);
+        let hook: crate::task::PreinitPointForTest = Arc::new(move |pid, _terminal, point| {
+            let mut acted = state.lock().unwrap();
+            if point != crate::task::PreinitPoint::RegsSaved || acted.is_some() {
+                return;
+            }
+            act(pid);
+            *acted = Some(pid);
+        });
+        (hook, acted)
+    }
+
+    /// A signal the root takes during its first initialization, before its
+    /// exec, is shown to `Tool::filter_unreported_signal`, whose RPC can then
+    /// outlast a GlobalTool failure: the spawn watches for that failure, as
+    /// the run loop does. The hook sends the root SIGWINCH as its registers
+    /// are saved, so the special-page mmap's step stops for it; the filter's
+    /// RPC makes the GlobalTool report a failed run and is never answered.
+    /// The spawn ends within 5 s, failing on the GlobalTool's failure, instead
+    /// of hanging with the root stopped.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_global_tool_failure_during_first_initialization_ends_the_spawn() {
+        FAILED_GLOBAL_FILTER_CALLS.store(0, Ordering::SeqCst);
+        let (hook, signalled) = at_first_regs_saved(|pid| {
+            // SAFETY: sends a signal to the stopped tracee.
+            let sent = unsafe {
+                libc::syscall(libc::SYS_tgkill, pid.as_raw(), pid.as_raw(), libc::SIGWINCH)
+            };
+            assert_eq!(sent, 0, "SIGWINCH {pid}: {}", Errno::last());
+        });
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            TracerBuilder::<FilterAwaitingAFailedGlobal>::new(Command::new("/bin/true"))
+                .preinit_point_for_test(hook)
+                .spawn(),
+        )
+        .await
+        .expect("spawn ends within 5 s")
+        .err()
+        .expect("the spawn fails");
+        let pid = signalled
+            .lock()
+            .unwrap()
+            .expect("the hook signalled the root");
+        assert_eq!(
+            FAILED_GLOBAL_FILTER_CALLS.load(Ordering::SeqCst),
+            1,
+            "the root's SIGWINCH is shown to the filter"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "GlobalTool reported a failed ptrace run during ptrace initialization of tracee {pid}"
+            ),
+        );
+        assert_eventually_reaped("GlobalTool failure in preinit", pid);
+    }
+
+    /// The signals `RecordUnreported`'s filter was shown, as (signal,
+    /// `si_code`).
+    static RECORDED_UNREPORTED: StdMutex<Vec<(i32, i32)>> = StdMutex::new(Vec::new());
+
+    /// A Tool whose `filter_unreported_signal` records each signal and keeps
+    /// it.
+    #[derive(Default)]
+    struct RecordUnreported;
+
+    #[reverie::tool]
+    impl Tool for RecordUnreported {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        async fn filter_unreported_signal<R: reverie::GlobalRPC<Self::GlobalState>>(
+            &self,
+            _rpc: &R,
+            signal: reverie::UnreportedSignal,
+        ) -> bool {
+            let code = signal.siginfo().map_or(0, |info| {
+                i32::from_ne_bytes(info[8..12].try_into().unwrap())
+            });
+            RECORDED_UNREPORTED
+                .lock()
+                .unwrap()
+                .push((signal.signal() as i32, code));
+            true
+        }
+    }
+
+    /// The root can have a child during its first initialization: a caller's
+    /// `pre_exec` callback runs before Reverie's and can fork. That child's
+    /// exit SIGCHLD, taken while the root sets up its special page, is shown
+    /// to `Tool::filter_unreported_signal` like any other. The `pre_exec`
+    /// callback forks a child that waits; as the root's registers are saved,
+    /// the hook kills it and waits until it is a zombie, so the root's SIGCHLD
+    /// is pending when the special-page mmap's step runs.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_pre_exec_childs_exit_during_first_initialization_is_filtered() {
+        RECORDED_UNREPORTED.lock().unwrap().clear();
+        let mut command = Command::new("/bin/true");
+        // SAFETY: the callback only forks; the child closes the descriptors
+        // it inherited (the spawn's close-on-exec status pipe among them,
+        // which it would otherwise hold open, never exec'ing) and waits.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::fork() == 0 {
+                    libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32);
+                    loop {
+                        libc::pause();
+                    }
+                }
+                Ok(())
+            });
+        }
+        let (hook, acted) = at_first_regs_saved(|pid| {
+            // The root's one child, by its parent in /proc/<pid>/stat (the
+            // kernel need not provide /proc/<pid>/task/<tid>/children).
+            let parent_of = |stat: &str| {
+                stat.rsplit_once(") ")
+                    .and_then(|(_, rest)| rest.split(' ').nth(1))
+                    .and_then(|ppid| ppid.parse::<i32>().ok())
+            };
+            let child: i32 = std::fs::read_dir("/proc")
+                .unwrap()
+                .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<i32>().ok())
+                .find(|candidate| {
+                    std::fs::read_to_string(format!("/proc/{candidate}/stat"))
+                        .is_ok_and(|stat| parent_of(&stat) == Some(pid.as_raw()))
+                })
+                .expect("the pre_exec child");
+            // SAFETY: kills the root's own waiting child.
+            assert_eq!(unsafe { libc::kill(child, libc::SIGKILL) }, 0);
+            wait_for_test_condition(&format!("{pid}'s child {child} is a zombie"), || {
+                std::fs::read_to_string(format!("/proc/{child}/stat")).is_ok_and(|stat| {
+                    stat.rsplit_once(") ")
+                        .is_some_and(|(_, rest)| rest.starts_with('Z'))
+                })
+            });
+        });
+        let tracer = tokio::time::timeout(
+            Duration::from_secs(5),
+            TracerBuilder::<RecordUnreported>::new(command)
+                .preinit_point_for_test(hook)
+                .spawn(),
+        )
+        .await
+        .expect("spawn ends within 5 s")
+        .expect("spawn");
+        assert!(acted.lock().unwrap().is_some(), "the hook killed the child");
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+            .await
+            .expect("the run ends within 5 s")
+            .expect("the run");
+        assert_eq!(status, ExitStatus::Exited(0));
+        assert_eq!(
+            *RECORDED_UNREPORTED.lock().unwrap(),
+            vec![(libc::SIGCHLD, libc::CLD_KILLED)],
+            "the pre_exec child's exit SIGCHLD is shown to the filter once"
+        );
     }
 
     /// Selects the inner run of [`preinit_page_population_never_writes_a_replacement`].

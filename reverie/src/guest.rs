@@ -363,6 +363,29 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         }
     }
 
+    /// The siginfo of the signal [`Tool::handle_signal_event`] is reporting,
+    /// while that callback runs: the Linux `siginfo_t` bytes the kernel
+    /// delivered with it, as in [`crate::SignalEvent`]. `None` outside that
+    /// callback, and where the backend cannot read it.
+    fn signal_info(&self) -> Option<[u8; crate::SIGNAL_INFO_SIZE]> {
+        None
+    }
+
+    /// From inside [`Tool::handle_signal_event`], replaces the siginfo that the
+    /// reported signal is delivered with, if the callback returns it to be
+    /// delivered. A later call replaces an earlier one. Fails, and changes
+    /// nothing, with `EINVAL` outside that callback or for a siginfo whose
+    /// `si_signo` is not the reported signal's, with `ENOSYS` where the
+    /// backend cannot set a siginfo, and with the backend's error where it
+    /// cannot set this one now (the ptrace backend: `EBUSY` after an
+    /// injection left the thread at a stop other than a signal-delivery stop,
+    /// or `PTRACE_SETSIGINFO`'s error). The backend fails the guest's resume,
+    /// rather than deliver another siginfo, if an injection after a successful
+    /// call makes the replacement impossible.
+    fn set_signal_info(&mut self, _info: [u8; crate::SIGNAL_INFO_SIZE]) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+
     /// Backend process/task lifetime identity, including at thread start.
     fn signal_task_identity(&self) -> Option<crate::SignalTaskIdentity> {
         None
@@ -813,6 +836,12 @@ where
         self.inner.queue_process_alarm_signal(event).await
     }
 
+    fn signal_info(&self) -> Option<[u8; crate::SIGNAL_INFO_SIZE]> {
+        self.inner.signal_info()
+    }
+    fn set_signal_info(&mut self, info: [u8; crate::SIGNAL_INFO_SIZE]) -> Result<(), Errno> {
+        self.inner.set_signal_info(info)
+    }
     fn signal_task_identity(&self) -> Option<crate::SignalTaskIdentity> {
         self.inner.signal_task_identity()
     }

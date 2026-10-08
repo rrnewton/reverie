@@ -1351,6 +1351,42 @@ impl Stopped {
             .map_err(|err| self.map_err(err))
     }
 
+    /// The bytes of the siginfo of the signal that stopped the tracee
+    /// (`PTRACE_GETSIGINFO`), exactly as the kernel wrote them, into storage
+    /// that is initialized before the request. Unlike [`Stopped::getsiginfo`],
+    /// whose `siginfo_t` a typed move may leave with undefined padding (64-bit
+    /// musl's has four bytes after `si_code`), every byte is defined.
+    pub fn getsiginfo_bytes(&self) -> Result<[u8; SIGINFO_BYTES], Error> {
+        let mut bytes = [0u8; SIGINFO_BYTES];
+        self.1
+            .on_held_tid(|| {
+                Errno::result(unsafe {
+                    libc::ptrace(
+                        libc::PTRACE_GETSIGINFO,
+                        self.0.as_raw(),
+                        0,
+                        bytes.as_mut_ptr(),
+                    )
+                })
+            })
+            .map_err(|err| self.map_err(err))?;
+        Ok(bytes)
+    }
+
+    /// Sets the siginfo of the signal that stopped the tracee
+    /// (`PTRACE_SETSIGINFO`) from `bytes`, the kernel's layout, without
+    /// building a `siginfo_t`.
+    pub fn setsiginfo_bytes(&self, bytes: &[u8; SIGINFO_BYTES]) -> Result<(), Error> {
+        self.1
+            .on_held_tid(|| {
+                Errno::result(unsafe {
+                    libc::ptrace(libc::PTRACE_SETSIGINFO, self.0.as_raw(), 0, bytes.as_ptr())
+                })
+            })
+            .map_err(|err| self.map_err(err))
+            .map(drop)
+    }
+
     /// Gets the tracee's blocked signal mask (`PTRACE_GETSIGMASK`). Bit `n - 1`
     /// is set when signal `n` is blocked.
     pub fn getsigmask(&self) -> Result<u64, Error> {
@@ -1988,6 +2024,10 @@ pub fn traceme_and_stop() -> Result<(), Errno> {
         .map_err(|e| Errno::new(e as i32))?;
     Ok(())
 }
+
+/// The size of Linux's `siginfo_t`, the unit of [`Stopped::getsiginfo_bytes`]
+/// and [`Stopped::setsiginfo_bytes`].
+pub const SIGINFO_BYTES: usize = 128;
 
 /// These tests are meant to test this API but also to show how ptrace works.
 #[cfg(test)]
