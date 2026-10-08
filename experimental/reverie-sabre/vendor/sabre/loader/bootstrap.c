@@ -16,19 +16,17 @@ static bool image_bound;
 static bool state_taken;
 static bool continuation_enabled;
 
-/* A protocol violation is not a getrandom errno that guest libc may ignore
- * or handle by trying another entropy path. This can run before client TLS
- * and libc initialization, so use only raw syscalls and constant storage.
+/* A protocol violation is not an errno that guest libc may ignore or handle
+ * by trying another path. This can run before client TLS and libc
+ * initialization, so use only raw syscalls and constant storage.
  */
-__attribute__((noreturn)) static void invalid_random_phase(void) {
+__attribute__((noreturn)) static void invalid_phase(const char *message,
+                                                    unsigned long length) {
 #ifdef __x86_64__
-  static const char message[] =
-      "SaBRe: getrandom outside initialized loader bootstrap phase\n";
   long ignored;
   __asm__ volatile("syscall"
                    : "=a"(ignored)
-                   : "0"(SYS_write), "D"(2), "S"(message),
-                     "d"(sizeof(message) - 1)
+                   : "0"(SYS_write), "D"(2), "S"(message), "d"(length)
                    : "rcx", "r11", "memory");
   __asm__ volatile("syscall"
                    : "=a"(ignored)
@@ -36,8 +34,22 @@ __attribute__((noreturn)) static void invalid_random_phase(void) {
                    : "rcx", "r11", "memory");
   __builtin_unreachable();
 #else
+  (void)message;
+  (void)length;
   abort();
 #endif
+}
+
+__attribute__((noreturn)) static void invalid_random_phase(void) {
+  static const char message[] =
+      "SaBRe: getrandom outside initialized loader bootstrap phase\n";
+  invalid_phase(message, sizeof(message) - 1);
+}
+
+__attribute__((noreturn)) static void invalid_limit_phase(void) {
+  static const char message[] =
+      "SaBRe: resource-limit read outside initialized loader bootstrap phase\n";
+  invalid_phase(message, sizeof(message) - 1);
 }
 
 void sbr_bootstrap_configure(void) {
@@ -141,6 +153,31 @@ long sbr_bootstrap_getrandom(long buffer, long length, long flags,
     invalid_random_phase();
   return sbr_bootstrap_request_v1(SBR_BOOTSTRAP_GETRANDOM, buffer, length,
                                   flags, (unsigned long)wrapper_sp);
+}
+
+/* The guest's dynamic loader and libc startup read resource limits before
+ * the plugin exists; libc sizes default thread stacks from RLIMIT_STACK. The
+ * supervisor answers such a read from Detcore's table, as Detcore answers it
+ * once running, instead of letting the host's limit reach the guest. Only a
+ * read is forwarded: the caller refuses a pre-plugin change itself.
+ */
+long sbr_bootstrap_prlimit(long pid, long resource, long old_limit,
+                           void *wrapper_sp) {
+  if (!requested)
+    return -EPROTO;
+  if (!image_bound || __atomic_load_n(&state_taken, __ATOMIC_ACQUIRE))
+    invalid_limit_phase();
+  return sbr_bootstrap_request_v1(SBR_BOOTSTRAP_PRLIMIT, pid, resource,
+                                  old_limit, (unsigned long)wrapper_sp);
+}
+
+long sbr_bootstrap_getrlimit(long resource, long limit, void *wrapper_sp) {
+  if (!requested)
+    return -EPROTO;
+  if (!image_bound || __atomic_load_n(&state_taken, __ATOMIC_ACQUIRE))
+    invalid_limit_phase();
+  return sbr_bootstrap_request_v1(SBR_BOOTSTRAP_GETRLIMIT, resource, limit, 0,
+                                  (unsigned long)wrapper_sp);
 }
 
 int sbr_bootstrap_install_continuation(sbr_bootstrap_install_fn install) {

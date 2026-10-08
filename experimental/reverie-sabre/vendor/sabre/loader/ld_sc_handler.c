@@ -610,6 +610,24 @@ void setup_plugin_vdso(sbr_icept_vdso_callback_fn plugin_vdso_callback) {
 #endif // __x86_64__
 }
 
+// A guest that changes a resource limit before the plugin exists, such as in
+// a .preinit_array function, would change the host's limit while Detcore's
+// table, which the guest later reads, stays the same. Refuse instead. As in
+// rdtsc_without_plugin, the message is written only if stderr can take it now.
+__attribute__((noreturn)) static void limit_change_before_plugin(void) {
+  static const char message[] =
+      "SaBRe: guest changed a resource limit before the plugin was initialized "
+      "(for example in a .preinit_array function); it has no deterministic "
+      "effect\n";
+  struct pollfd out = {.fd = STDERR_FILENO, .events = POLLOUT};
+  if (real_syscall(SYS_poll, (long)&out, 1, 0, 0, 0, 0) == 1 &&
+      (out.revents & POLLOUT))
+    real_syscall(SYS_write, STDERR_FILENO, (long)message, sizeof(message) - 1, 0,
+                 0, 0);
+  real_syscall(SYS_exit_group, 127, 0, 0, 0, 0, 0);
+  __builtin_unreachable();
+}
+
 static long route_syscall(enum sbr_dispatch_route route, long sc_no, long arg1,
                           long arg2, long arg3, long arg4, long arg5, long arg6,
                           void *wrapper_sp) {
@@ -628,6 +646,22 @@ static long route_syscall(enum sbr_dispatch_route route, long sc_no, long arg1,
      * Keep its original frame so the supervisor can authenticate provenance.
      */
     return sbr_bootstrap_getrandom(arg1, arg2, arg3, wrapper_sp);
+  }
+  if (calling_from_plugin == NULL && sbr_bootstrap_enabled() &&
+      sc_no == SYS_setrlimit)
+    limit_change_before_plugin();
+  if (calling_from_plugin == NULL && sbr_bootstrap_enabled() &&
+      (sc_no == SYS_prlimit64 || sc_no == SYS_getrlimit)) {
+    /* A rewritten client read of a resource limit before plugin
+     * initialization; libc's startup reads RLIMIT_STACK. The supervisor
+     * answers it from Detcore's table. A change has no deterministic state to
+     * update yet, so it is refused rather than applied to the host.
+     */
+    if (sc_no == SYS_getrlimit)
+      return sbr_bootstrap_getrlimit(arg1, arg2, wrapper_sp);
+    if (arg3 != 0)
+      limit_change_before_plugin();
+    return sbr_bootstrap_prlimit(arg1, arg2, arg4, wrapper_sp);
   }
   if (calling_from_plugin == NULL || calling_from_plugin()) {
     if (sc_no == SYS_clone && arg2 != 0) { // clone
