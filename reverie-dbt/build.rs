@@ -45,6 +45,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CMAKE_GENERATOR");
     println!("cargo:rerun-if-env-changed=CI");
     println!("cargo:rerun-if-env-changed=REVERIE_DBT_MAX_BUILD_SECONDS");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux")
         || env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64")
@@ -80,11 +81,13 @@ fn main() {
     let out_dir = PathBuf::from(required_env("OUT_DIR"));
     let cmake = env::var_os("CMAKE").unwrap_or_else(|| OsString::from("cmake"));
     let generator = env::var_os("CMAKE_GENERATOR");
+    let source_date_epoch = dynamorio_source_date_epoch(env::var_os("SOURCE_DATE_EPOCH"));
     let source_key = source_recipe_key(
         &source_dir,
         &manifest_dir.join("build.rs"),
         &cmake,
         generator.as_deref(),
+        &source_date_epoch,
     );
     let cache_root = cache_root_for_out_dir(&out_dir);
     let install_dir = cache_root.join(format!("dynamorio-install-{source_key}"));
@@ -118,6 +121,7 @@ fn main() {
             &staged_install,
             &cmake,
             generator.as_deref(),
+            &source_date_epoch,
         );
         write_install_attestation(&staged_install, &source_key);
         assert!(
@@ -472,6 +476,7 @@ fn source_recipe_key(
     build_script: &Path,
     cmake: &std::ffi::OsStr,
     generator: Option<&std::ffi::OsStr>,
+    source_date_epoch: &std::ffi::OsStr,
 ) -> String {
     let mut hasher = Sha256::new();
     hash_tree(&mut hasher, source_dir, source_dir);
@@ -481,6 +486,11 @@ fn source_recipe_key(
         &mut hasher,
         b"CMAKE_GENERATOR",
         generator.map_or(b"<unset>", std::ffi::OsStr::as_encoded_bytes),
+    );
+    hash_value(
+        &mut hasher,
+        b"SOURCE_DATE_EPOCH",
+        source_date_epoch.as_encoded_bytes(),
     );
     format!("{:x}", hasher.finalize())
 }
@@ -536,15 +546,90 @@ fn hash_name(hasher: &mut Sha256, path: &Path) {
     hasher.update(name);
 }
 
+/// Used when the caller sets no SOURCE_DATE_EPOCH, so DynamoRIO's
+/// __DATE__/__TIME__ never depend on when the cache was first filled. The value
+/// is hashed into the cache key either way.
+const DEFAULT_SOURCE_DATE_EPOCH: &str = "0";
+
+fn dynamorio_source_date_epoch(caller: Option<OsString>) -> OsString {
+    caller
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| OsString::from(DEFAULT_SOURCE_DATE_EPOCH))
+}
+
+/// The GCC path maps that make a DynamoRIO build independent of where it ran:
+/// the staging directory and the source directory, each also by its
+/// canonical path when that differs (a symlinked target directory, or a
+/// generator that resolves paths, still reaches the real one). Refused when a
+/// path cannot travel through CFLAGS: CMake splits CFLAGS on whitespace, and
+/// GCC splits a map at its first '='.
+fn dynamorio_prefix_maps(staging_root: &Path, source_dir: &Path) -> Result<String, String> {
+    let mut maps = Vec::new();
+    for (path, to) in [
+        (staging_root, "/dynamorio-build"),
+        (source_dir, "/dynamorio-src"),
+    ] {
+        let mut spellings = vec![path.to_path_buf()];
+        if let Ok(canonical) = fs::canonicalize(path)
+            && canonical != path
+        {
+            spellings.push(canonical);
+        }
+        for spelling in spellings {
+            let text = spelling
+                .to_str()
+                .ok_or_else(|| format!("{} is not UTF-8", spelling.display()))?;
+            if text.chars().any(|c| c.is_whitespace() || c == '=') {
+                return Err(format!(
+                    "{text} contains whitespace or '=', which CFLAGS cannot carry"
+                ));
+            }
+            maps.push(format!("-ffile-prefix-map={text}={to}"));
+            maps.push(format!("-fdebug-prefix-map={text}={to}"));
+        }
+    }
+    Ok(maps.join(" "))
+}
+
 fn build_dynamorio(
     source_dir: &Path,
     build_dir: &Path,
     install_dir: &Path,
     cmake: &std::ffi::OsStr,
     generator: Option<&std::ffi::OsStr>,
+    source_date_epoch: &std::ffi::OsStr,
 ) {
     let started = Instant::now();
     let mut configure = Command::new(cmake);
+    // Reproducible artifacts: the build runs in a per-build staging directory
+    // (`.staging-<key>-<pid>-<nonce>-<attempt>`) and reads the source from
+    // wherever Cargo checked Reverie out. Both paths reach DWARF (DW_AT_comp_dir
+    // and file names), and through the split .debug files they reach each
+    // library's GNU build-id and .gnu_debuglink CRC, so two builds of the same
+    // source differed in exactly those bytes. Map both to fixed names.
+    // DynamoRIO's CMakeLists sets CMAKE_C_FLAGS/CMAKE_CXX_FLAGS itself and
+    // appends $ENV{CFLAGS}/$ENV{CXXFLAGS}, so the maps go there, after any
+    // flags the caller already set. __FILE__ in DynamoRIO's assert messages
+    // then reads /dynamorio-src/... instead of the checkout path.
+    let staging_root = build_dir
+        .parent()
+        .expect("the DynamoRIO build directory has a staging parent");
+    match dynamorio_prefix_maps(staging_root, source_dir) {
+        Ok(maps) => {
+            for flags in ["CFLAGS", "CXXFLAGS"] {
+                let mut value = env::var_os(flags).unwrap_or_default();
+                if !value.is_empty() {
+                    value.push(" ");
+                }
+                value.push(&maps);
+                configure.env(flags, value);
+            }
+        }
+        Err(reason) => println!(
+            "cargo:warning=DynamoRIO is built without path maps ({reason}); its binaries embed this build's paths and differ between builds"
+        ),
+    }
+    configure.env("SOURCE_DATE_EPOCH", source_date_epoch);
     configure
         .arg("-S")
         .arg(source_dir)
@@ -566,6 +651,9 @@ fn build_dynamorio(
     run(&mut configure, "configure DynamoRIO");
 
     let mut build = Command::new(cmake);
+    // __DATE__/__TIME__ (DynamoRIO's version banner) are evaluated while
+    // compiling, so the build step needs the epoch as well as the configure.
+    build.env("SOURCE_DATE_EPOCH", source_date_epoch);
     build.arg("--build").arg(build_dir).args([
         "--config",
         "Release",
@@ -652,21 +740,29 @@ mod tests {
         fs::write(source.join("nested/input.c"), "first\n").unwrap();
         let recipe = directory.path().join("build.rs");
         fs::write(&recipe, "recipe one\n").unwrap();
-        let initial = source_recipe_key(&source, &recipe, "cmake".as_ref(), None);
+        let initial = source_recipe_key(&source, &recipe, "cmake".as_ref(), None, "0".as_ref());
         assert_eq!(
             initial,
-            source_recipe_key(&source, &recipe, "cmake".as_ref(), None)
+            source_recipe_key(&source, &recipe, "cmake".as_ref(), None, "0".as_ref())
         );
 
         fs::write(source.join("nested/input.c"), "second\n").unwrap();
-        let source_changed = source_recipe_key(&source, &recipe, "cmake".as_ref(), None);
+        let source_changed =
+            source_recipe_key(&source, &recipe, "cmake".as_ref(), None, "0".as_ref());
         assert_ne!(initial, source_changed);
 
         fs::write(&recipe, "recipe two\n").unwrap();
-        let recipe_changed = source_recipe_key(&source, &recipe, "cmake".as_ref(), None);
+        let recipe_changed =
+            source_recipe_key(&source, &recipe, "cmake".as_ref(), None, "0".as_ref());
         assert_ne!(source_changed, recipe_changed);
 
-        let cmake_changed = source_recipe_key(&source, &recipe, "custom-cmake".as_ref(), None);
+        let cmake_changed = source_recipe_key(
+            &source,
+            &recipe,
+            "custom-cmake".as_ref(),
+            None,
+            "0".as_ref(),
+        );
         assert_ne!(recipe_changed, cmake_changed);
 
         let generator_changed = source_recipe_key(
@@ -674,8 +770,80 @@ mod tests {
             &recipe,
             "custom-cmake".as_ref(),
             Some("Ninja".as_ref()),
+            "0".as_ref(),
         );
         assert_ne!(cmake_changed, generator_changed);
+
+        // A cache filled under one SOURCE_DATE_EPOCH must not answer another:
+        // the epoch is in DynamoRIO's __DATE__/__TIME__ banner.
+        let epoch_changed = source_recipe_key(
+            &source,
+            &recipe,
+            "custom-cmake".as_ref(),
+            Some("Ninja".as_ref()),
+            "1791400000".as_ref(),
+        );
+        assert_ne!(generator_changed, epoch_changed);
+    }
+
+    #[test]
+    fn source_date_epoch_defaults_when_unset_or_empty() {
+        assert_eq!(dynamorio_source_date_epoch(None), "0");
+        assert_eq!(dynamorio_source_date_epoch(Some(OsString::new())), "0");
+        assert_eq!(
+            dynamorio_source_date_epoch(Some(OsString::from("1791400000"))),
+            "1791400000"
+        );
+    }
+
+    #[test]
+    fn prefix_maps_cover_both_directories_and_their_canonical_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let real = directory.path().join("real");
+        let staging = real.join(".staging-key-1-2-0");
+        let source = directory.path().join("src");
+        fs::create_dir_all(&staging).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        let canonical_staging = fs::canonicalize(&staging).unwrap();
+        let canonical_source = fs::canonicalize(&source).unwrap();
+        let maps = dynamorio_prefix_maps(&canonical_staging, &canonical_source).unwrap();
+        assert_eq!(
+            maps,
+            format!(
+                "-ffile-prefix-map={0}=/dynamorio-build -fdebug-prefix-map={0}=/dynamorio-build \
+                 -ffile-prefix-map={1}=/dynamorio-src -fdebug-prefix-map={1}=/dynamorio-src",
+                canonical_staging.display(),
+                canonical_source.display()
+            )
+        );
+
+        // Reached through a symlink, both spellings are mapped.
+        let alias = directory.path().join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let through_alias = alias.join(".staging-key-1-2-0");
+        let maps = dynamorio_prefix_maps(&through_alias, &canonical_source).unwrap();
+        for spelling in [&through_alias, &canonical_staging] {
+            assert!(
+                maps.contains(&format!(
+                    "-ffile-prefix-map={}=/dynamorio-build",
+                    spelling.display()
+                )),
+                "{maps}"
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_maps_refuse_paths_cflags_cannot_carry() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["with space", "with=equals", "with\ttab"] {
+            let path = directory.path().join(name);
+            fs::create_dir_all(&path).unwrap();
+            let error = dynamorio_prefix_maps(&path, directory.path()).unwrap_err();
+            assert!(error.contains("whitespace or '='"), "{name}: {error}");
+            let error = dynamorio_prefix_maps(directory.path(), &path).unwrap_err();
+            assert!(error.contains("whitespace or '='"), "{name}: {error}");
+        }
     }
 
     #[test]
