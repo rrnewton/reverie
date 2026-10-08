@@ -2002,8 +2002,32 @@ impl Stack for LocalStack {
     }
 }
 
+/// Describes a Reverie error without the C library's errno messages (see
+/// [`crate::guest::support::describe_io_error`]): an I/O error, alone or in a
+/// Tool error's chain of causes, by its kind and number; an errno by its name
+/// and description (the `syscalls` crate's own table); anything else by its
+/// `Display`.
+pub fn describe_reverie_error(error: &Error) -> String {
+    use crate::guest::support::describe_io_error;
+    match error {
+        Error::Io(inner) => describe_io_error(inner),
+        Error::Errno(errno) => errno.to_string(),
+        Error::Tool(tool) => tool
+            .chain()
+            .map(|cause| match cause.downcast_ref::<std::io::Error>() {
+                Some(inner) => describe_io_error(inner),
+                None => cause.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(": "),
+    }
+}
+
 fn tool_fatal(status: i32, error: &Error) -> ! {
-    let message = format!("reverie-liteinst tool error: {error:?}\n");
+    let message = format!(
+        "reverie-liteinst tool error: {}\n",
+        describe_reverie_error(error)
+    );
     unsafe {
         let _ = raw_syscall6(
             libc::SYS_write,
@@ -2032,6 +2056,23 @@ fn fatal(status: i32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Reverie error that carries an operating-system error, directly or in
+    /// a Tool error's causes, is described by kind and number, never by the C
+    /// library's message, which its `Debug` (what tool_fatal printed) fetches.
+    #[test]
+    fn reverie_errors_are_described_without_the_c_library_message() {
+        let io = Error::Io(std::io::Error::from_raw_os_error(libc::EACCES));
+        assert!(format!("{io:?}").contains("Permission denied"), "{io:?}");
+        assert_eq!(describe_reverie_error(&io), "PermissionDenied (errno 13)");
+        let tool = Error::Tool(
+            std::io::Error::other(std::io::Error::from_raw_os_error(libc::ENOENT)).into(),
+        );
+        assert!(format!("{tool:?}").contains("No such file"), "{tool:?}");
+        assert_eq!(describe_reverie_error(&tool), "NotFound (errno 2)");
+        let errno = Error::Errno(reverie::Errno::EPERM);
+        assert!(describe_reverie_error(&errno).contains("EPERM"));
+    }
 
     #[test]
     fn only_key_zero_memory_is_admitted_for_signal_phase_one() {

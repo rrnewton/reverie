@@ -250,10 +250,7 @@ where
         reverie_ptrace::patch_current_vdso_trapping(&subscriptions).map(|()| Vec::new())
     }
     .map_err(|error| {
-        io::Error::other(match &error {
-            reverie::Error::Io(inner) => reverie_inguest::guest::support::describe_io_error(inner),
-            other => other.to_string(),
-        })
+        io::Error::other(reverie_inguest::guest::host::describe_reverie_error(&error))
     })?;
     let _signal_state = runtime::prepare_guest_signal_state(instruction_subscriptions)?;
     let syscall_subscriptions = subscriptions.iter_syscalls().collect();
