@@ -103,12 +103,14 @@ pub fn maps_line_mapping(line: &[u8]) -> Option<MappingIdentity> {
 }
 
 /// Whether a restorer whose `GLIBC_RESTORER_BYTES.len()` bytes start at
-/// `restorer`, inside `mapping`, lies in the C library's own executable
-/// mapping `libc`: the same file, and the same range (not an alias of the
-/// file mapped elsewhere, which the guest owns and could rewrite, for example
-/// through `/proc/self/mem`, without touching the C library the runtime runs;
-/// rewriting the C library itself attacks the runtime, which the design's
-/// threat model excludes).
+/// `restorer`, inside `mapping`, lies in one of the C library's own
+/// executable segments `libc` (its page-aligned range, and its file): the
+/// mapping must be an executable, read-only mapping of that file lying inside
+/// the segment's range (a segment may be split into several mappings), not an
+/// alias of the file mapped elsewhere, which the guest owns and could rewrite,
+/// for example through `/proc/self/mem`, without touching the C library the
+/// runtime runs; rewriting the C library itself attacks the runtime, which the
+/// design's threat model excludes.
 pub fn restorer_mapping_accepted(
     restorer: u64,
     mapping: MappingIdentity,
@@ -119,20 +121,25 @@ pub fn restorer_mapping_accepted(
         && mapping.inode != 0
         && mapping.device == libc.device
         && mapping.inode == libc.inode
-        && mapping.start == libc.start
-        && mapping.end == libc.end
+        && mapping.start >= libc.start
+        && mapping.end <= libc.end
         && restorer
             .checked_add(GLIBC_RESTORER_BYTES.len() as u64)
             .is_some_and(|end| end <= mapping.end)
 }
 
-/// The C library's executable mapping: its file, as `major << 32 | minor` and
-/// inode, and its range, recorded once in ordinary context by
-/// [`record_libc_identity`]; 0 before.
+/// How many executable segments of the C library are recorded at most.
+const MAX_LIBC_SEGMENTS: usize = 4;
+
+/// The C library's executable segments: its file, as `major << 32 | minor`
+/// and inode, and each segment's page-aligned range, recorded once in
+/// ordinary context by [`record_libc_identity`]; 0 before.
 static LIBC_DEVICE: AtomicU64 = AtomicU64::new(0);
 static LIBC_INODE: AtomicU64 = AtomicU64::new(0);
-static LIBC_START: AtomicU64 = AtomicU64::new(0);
-static LIBC_END: AtomicU64 = AtomicU64::new(0);
+static LIBC_SEGMENT_STARTS: [AtomicU64; MAX_LIBC_SEGMENTS] =
+    [const { AtomicU64::new(0) }; MAX_LIBC_SEGMENTS];
+static LIBC_SEGMENT_ENDS: [AtomicU64; MAX_LIBC_SEGMENTS] =
+    [const { AtomicU64::new(0) }; MAX_LIBC_SEGMENTS];
 
 /// The C library's `DT_SONAME`, with its terminating NUL.
 const LIBC_SONAME: &[u8] = b"libc.so.6\0";
@@ -326,83 +333,183 @@ pub fn record_libc_identity() -> std::io::Result<()> {
             "{matches} loaded objects have the DT_SONAME libc.so.6"
         )));
     }
-    // The identified object's own code: its executable PT_LOAD segment, from
-    // its program headers. A shared library's first segment maps file offset
-    // 0 at address 0, so its ELF header is at its load bias.
-    let refuse = |what: &'static str| std::io::Error::other(what);
-    if libc_bias == 0 || read_own_word(libc_bias).map(|word| word as u32) != Some(0x464c_457f) {
-        return Err(refuse("libc.so.6's ELF header is not at its load bias"));
-    }
-    let header_word = |offset: u64| read_own_word(libc_bias.checked_add(offset)?);
-    let (Some(phoff), Some(phnum)) = (header_word(0x20), header_word(0x38)) else {
-        return Err(refuse("libc.so.6's ELF header is unreadable"));
+    let maps = |visit: &mut dyn FnMut(&[u8]) -> Option<()>| unsafe {
+        scan_proc_lines_checked(c"/proc/self/maps", visit)
     };
-    let phnum = phnum & 0xffff;
-    let mut text = None;
-    for index in 0..phnum {
-        let Some(header) = libc_bias
-            .checked_add(phoff)
-            .and_then(|table| table.checked_add(index * 56))
-        else {
-            break;
-        };
-        let (Some(type_and_flags), Some(vaddr), Some(memsz)) = (
-            read_own_word(header),
-            read_own_word(header + 16),
-            read_own_word(header + 40),
-        ) else {
-            return Err(refuse("libc.so.6's program headers are unreadable"));
-        };
-        let (p_type, p_flags) = (type_and_flags as u32, (type_and_flags >> 32) as u32);
-        if p_type == libc::PT_LOAD && p_flags & libc::PF_X != 0 {
-            text = Some((libc_bias.wrapping_add(vaddr), memsz));
-            break;
-        }
-    }
-    let Some((text_start, _)) = text else {
-        return Err(refuse("libc.so.6 has no executable segment"));
-    };
-    // Each mapping is read with the checked scanner: a scan that could not
-    // read all of /proc/self/maps is refused, never taken as "not found".
-    let mapping_at = |address: u64| -> std::io::Result<Option<MappingIdentity>> {
-        unsafe {
-            scan_proc_lines_checked(c"/proc/self/maps", |line| maps_line_identity(line, address))
-        }
-        .map_err(|errno| {
-            std::io::Error::other(format!(
-                "/proc/self/maps could not be read completely (errno {})",
-                -errno
-            ))
-        })
-    };
-    // The C library's file: the one its dynamic section is mapped from.
-    let file = mapping_at(libc_dynamic)?
-        .filter(|mapping| mapping.inode != 0)
-        .ok_or_else(|| refuse("libc.so.6's dynamic section is in no file mapping"))?;
-    // Its code: the mapping holding the start of its executable segment,
-    // which must be an executable mapping of that same file. Other mappings of
-    // the file (an alias, a copy loaded into another namespace) are not it.
-    let identity = mapping_at(text_start)?
-        .filter(|mapping| {
-            mapping.executable && mapping.device == file.device && mapping.inode == file.inode
-        })
-        .ok_or_else(|| refuse("libc.so.6's executable segment is not mapped from its file"))?;
+    let identity = locate_object_code(
+        libc_bias,
+        libc_dynamic,
+        &read_own_word,
+        &maps,
+        crate::guest::support::page_size()?,
+    )?;
     LIBC_DEVICE.store(identity.device, Ordering::Release);
-    LIBC_START.store(identity.start, Ordering::Release);
-    LIBC_END.store(identity.end, Ordering::Release);
+    for (index, (start, end)) in identity.segments[..identity.count].iter().enumerate() {
+        LIBC_SEGMENT_STARTS[index].store(*start, Ordering::Release);
+        LIBC_SEGMENT_ENDS[index].store(*end, Ordering::Release);
+    }
     LIBC_INODE.store(identity.inode, Ordering::Release);
     Ok(())
 }
 
-fn recorded_libc() -> Option<MappingIdentity> {
+/// A `/proc/self/maps` scan: visits lines until the visitor returns `Some`,
+/// and fails with a negative errno when the file cannot be read that far.
+type MapsScan<'a> = &'a dyn Fn(&mut dyn FnMut(&[u8]) -> Option<()>) -> Result<Option<()>, i64>;
+
+/// The identified C library's file and executable segments.
+#[derive(Debug, PartialEq, Eq)]
+struct ObjectCode {
+    device: u64,
+    inode: u64,
+    segments: [(u64, u64); MAX_LIBC_SEGMENTS],
+    count: usize,
+}
+
+/// The offset field of a `/proc/self/maps` line.
+fn maps_line_offset(line: &[u8]) -> Option<u64> {
+    let field = line
+        .split(|byte| *byte == b' ')
+        .filter(|field| !field.is_empty())
+        .nth(2)?;
+    hex(field)
+}
+
+/// Locates the code of the loaded object whose load bias is `bias` and whose
+/// dynamic section is at `dynamic`: the file its dynamic section is mapped
+/// from; its ELF header, which is at the start of that file's offset-0
+/// mapping in the object's own address range (the last such mapping before
+/// the dynamic section, since the loader maps an object's segments in one
+/// reservation; it is not at the bias itself unless the object's first segment
+/// is linked at address 0); its program headers there, whose offset-0
+/// `PT_LOAD` must give back exactly `bias` (so the header is this object's,
+/// and a prelinked object loaded at its link address has bias 0); and every
+/// executable `PT_LOAD` segment, page-aligned. `read_word` reads 8 bytes of
+/// memory and `maps` scans `/proc/self/maps` line by line, failing when the
+/// file cannot be read to the line its visitor stops at; they are parameters
+/// so that tests can supply an address space.
+fn locate_object_code(
+    bias: u64,
+    dynamic: u64,
+    read_word: &dyn Fn(u64) -> Option<u64>,
+    maps: MapsScan<'_>,
+    page_size: u64,
+) -> std::io::Result<ObjectCode> {
+    let refuse = |what: &'static str| std::io::Error::other(what);
+    let unreadable = |errno: i64| {
+        std::io::Error::other(format!(
+            "/proc/self/maps could not be read (errno {})",
+            -errno
+        ))
+    };
+    // The file: the mapping that holds the dynamic section. A failed read
+    // before that line is refused, never taken as "not found".
+    let mut file = None;
+    maps(&mut |line| {
+        file = maps_line_identity(line, dynamic);
+        file.map(|_| ())
+    })
+    .map_err(unreadable)?;
+    let file = file
+        .filter(|mapping| mapping.inode != 0)
+        .ok_or_else(|| refuse("libc.so.6's dynamic section is in no file mapping"))?;
+    // The header: the last offset-0 mapping of that file before the dynamic
+    // section's mapping.
+    let mut header = None;
+    let found = maps(&mut |line| {
+        let mapping = maps_line_mapping(line)?;
+        if mapping.start <= dynamic && dynamic < mapping.end {
+            return Some(());
+        }
+        if mapping.start < dynamic
+            && mapping.device == file.device
+            && mapping.inode == file.inode
+            && maps_line_offset(line) == Some(0)
+        {
+            header = Some(mapping.start);
+        }
+        None
+    })
+    .map_err(unreadable)?;
+    let Some(header) = header.filter(|_| found.is_some()) else {
+        return Err(refuse("libc.so.6's ELF header mapping was not found"));
+    };
+    if read_word(header).map(|word| word as u32) != Some(0x464c_457f) {
+        return Err(refuse("libc.so.6's header mapping holds no ELF header"));
+    }
+    let header_word = |offset: u64| read_word(header.checked_add(offset)?);
+    let (Some(phoff), Some(phnum)) = (header_word(0x20), header_word(0x38)) else {
+        return Err(refuse("libc.so.6's ELF header is unreadable"));
+    };
+    let mut code = ObjectCode {
+        device: file.device,
+        inode: file.inode,
+        segments: [(0, 0); MAX_LIBC_SEGMENTS],
+        count: 0,
+    };
+    let mut header_bias = None;
+    for index in 0..(phnum & 0xffff) {
+        let entry = header
+            .checked_add(phoff)
+            .and_then(|table| table.checked_add(index * 56))
+            .ok_or_else(|| refuse("libc.so.6's program headers are out of range"))?;
+        let (Some(type_and_flags), Some(offset), Some(vaddr), Some(memsz)) = (
+            read_word(entry),
+            read_word(entry + 8),
+            read_word(entry + 16),
+            read_word(entry + 40),
+        ) else {
+            return Err(refuse("libc.so.6's program headers are unreadable"));
+        };
+        let (p_type, p_flags) = (type_and_flags as u32, (type_and_flags >> 32) as u32);
+        if p_type != libc::PT_LOAD {
+            continue;
+        }
+        if offset == 0 && header_bias.is_none() {
+            header_bias = Some(header.wrapping_sub(vaddr));
+        }
+        if p_flags & libc::PF_X != 0 {
+            if code.count == MAX_LIBC_SEGMENTS {
+                return Err(refuse(
+                    "libc.so.6 has more executable segments than recorded",
+                ));
+            }
+            let start = bias.wrapping_add(vaddr) & !(page_size - 1);
+            let end = bias
+                .wrapping_add(vaddr)
+                .checked_add(memsz)
+                .and_then(|end| end.checked_add(page_size - 1))
+                .map(|end| end & !(page_size - 1))
+                .ok_or_else(|| refuse("libc.so.6's executable segment is out of range"))?;
+            code.segments[code.count] = (start, end);
+            code.count += 1;
+        }
+    }
+    if header_bias != Some(bias) {
+        return Err(refuse(
+            "libc.so.6's ELF header does not belong to the loaded object",
+        ));
+    }
+    if code.count == 0 {
+        return Err(refuse("libc.so.6 has no executable segment"));
+    }
+    Ok(code)
+}
+
+/// The recorded executable segments of the C library, each as a mapping
+/// identity of its range; none before [`record_libc_identity`].
+fn recorded_libc_segments() -> impl Iterator<Item = MappingIdentity> {
     let inode = LIBC_INODE.load(Ordering::Acquire);
-    (inode != 0).then(|| MappingIdentity {
-        start: LIBC_START.load(Ordering::Acquire),
-        end: LIBC_END.load(Ordering::Acquire),
-        executable: true,
-        writable: false,
-        device: LIBC_DEVICE.load(Ordering::Acquire),
-        inode,
+    let device = LIBC_DEVICE.load(Ordering::Acquire);
+    (0..MAX_LIBC_SEGMENTS).filter_map(move |index| {
+        let end = LIBC_SEGMENT_ENDS[index].load(Ordering::Acquire);
+        (inode != 0 && end != 0).then(|| MappingIdentity {
+            start: LIBC_SEGMENT_STARTS[index].load(Ordering::Acquire),
+            end,
+            executable: true,
+            writable: false,
+            device,
+            inode,
+        })
     })
 }
 
@@ -470,14 +577,11 @@ pub unsafe fn glibc_restorer_accepted(restorer: u64) -> bool {
     {
         return false;
     }
-    let Some(libc) = recorded_libc() else {
-        return false;
-    };
     let Some(mapping) = (unsafe { scan_own_maps(|line| maps_line_identity(line, restorer)) })
     else {
         return false;
     };
-    restorer_mapping_accepted(restorer, mapping, libc)
+    recorded_libc_segments().any(|libc| restorer_mapping_accepted(restorer, mapping, libc))
         && mapping.start >= program_break()
         && unsafe { changes_on_fork(restorer) } == Some(false)
 }
@@ -904,6 +1008,176 @@ mod tests {
         assert!(!heap.executable);
         assert_eq!(heap.inode, 0);
         assert_eq!(maps_line_identity(b"garbage", 0), None);
+    }
+
+    /// A synthetic address space for [`locate_object_code`]: 8-byte words and
+    /// `/proc/self/maps` lines, optionally failing to read at one line.
+    struct FakeSpace {
+        words: std::collections::HashMap<u64, u64>,
+        lines: Vec<String>,
+        fail_at: Option<usize>,
+    }
+
+    impl FakeSpace {
+        /// An ELF object whose header is at `header`, linked with its offset-0
+        /// segment at `first_vaddr`: the header (r--p), executable segments
+        /// at `first_vaddr` + 0x1000 (0x2000 bytes) and + 0x5000 (0x800
+        /// bytes), and a data mapping at + 0x8000 holding the dynamic section.
+        fn object(header: u64, first_vaddr: u64) -> (Self, u64, u64) {
+            let bias = header.wrapping_sub(first_vaddr);
+            let mut words = std::collections::HashMap::new();
+            words.insert(header, 0x0102_0002_464c_457f); // \x7fELF, class 64
+            words.insert(header + 0x20, 64); // e_phoff
+            words.insert(header + 0x38, 3); // e_phnum
+            let mut phdr = |index: u64, flags: u32, offset: u64, vaddr: u64, memsz: u64| {
+                let entry = header + 64 + index * 56;
+                words.insert(entry, (u64::from(flags) << 32) | u64::from(libc::PT_LOAD));
+                words.insert(entry + 8, offset);
+                words.insert(entry + 16, vaddr);
+                words.insert(entry + 40, memsz);
+            };
+            phdr(0, libc::PF_R, 0, first_vaddr, 0x1000);
+            phdr(
+                1,
+                libc::PF_R | libc::PF_X,
+                0x1000,
+                first_vaddr + 0x1000,
+                0x2000,
+            );
+            phdr(
+                2,
+                libc::PF_R | libc::PF_X,
+                0x5000,
+                first_vaddr + 0x5000,
+                0x800,
+            );
+            let line = |start: u64, end: u64, permissions: &str, offset: u64| {
+                format!("{start:x}-{end:x} {permissions} {offset:08x} 08:01 77 /lib64/libc.so.6")
+            };
+            let lines = vec![
+                "1000-2000 r--p 00000000 08:01 12 /bin/program".to_owned(),
+                line(header, header + 0x1000, "r--p", 0),
+                line(header + 0x1000, header + 0x3000, "r-xp", 0x1000),
+                line(header + 0x5000, header + 0x6000, "r-xp", 0x5000),
+                line(header + 0x8000, header + 0x9000, "rw-p", 0x8000),
+            ];
+            let dynamic = header + 0x8100;
+            (
+                Self {
+                    words,
+                    lines,
+                    fail_at: None,
+                },
+                bias,
+                dynamic,
+            )
+        }
+
+        fn locate(&self, bias: u64, dynamic: u64) -> std::io::Result<ObjectCode> {
+            let read = |address: u64| self.words.get(&address).copied();
+            let maps = |visit: &mut dyn FnMut(&[u8]) -> Option<()>| {
+                for (index, line) in self.lines.iter().enumerate() {
+                    if self.fail_at == Some(index) {
+                        return Err(-i64::from(libc::EIO));
+                    }
+                    if let Some(found) = visit(line.as_bytes()) {
+                        return Ok(Some(found));
+                    }
+                }
+                Ok(None)
+            };
+            locate_object_code(bias, dynamic, &read, &maps, 4096)
+        }
+    }
+
+    fn segments(code: &ObjectCode) -> Vec<(u64, u64)> {
+        code.segments[..code.count].to_vec()
+    }
+
+    /// The ELF header is found through the offset-0 mapping of the object's
+    /// file, not at the load bias: an object whose first segment is linked
+    /// at a nonzero address has its header at bias + that address.
+    #[test]
+    fn the_header_of_an_object_linked_above_address_zero_is_found() {
+        let header = 0x7f00_0040_0000;
+        let (space, bias, dynamic) = FakeSpace::object(header, 0x40_0000);
+        assert_eq!(bias, 0x7f00_0000_0000);
+        let code = space.locate(bias, dynamic).unwrap();
+        assert_eq!(
+            segments(&code),
+            [
+                (header + 0x1000, header + 0x3000),
+                (header + 0x5000, header + 0x6000)
+            ]
+        );
+        assert_eq!((code.device, code.inode), ((8 << 32) | 1, 77));
+        // The header must give back the loader's bias.
+        assert!(space.locate(bias + 0x1000, dynamic).is_err());
+    }
+
+    /// A prelinked object loaded at its link address has bias 0.
+    #[test]
+    fn the_header_of_a_prelinked_object_at_bias_zero_is_found() {
+        let (space, bias, dynamic) = FakeSpace::object(0x40_0000, 0x40_0000);
+        assert_eq!(bias, 0);
+        let code = space.locate(bias, dynamic).unwrap();
+        assert_eq!(code.count, 2);
+    }
+
+    /// A read of /proc/self/maps that fails before the lines the search needs
+    /// is refused; the same prefix followed by those lines succeeds.
+    #[test]
+    fn a_failed_maps_read_is_refused_not_taken_as_not_found() {
+        let (mut space, bias, dynamic) = FakeSpace::object(0x7f00_0000_0000, 0);
+        assert!(space.locate(bias, dynamic).is_ok());
+        space.fail_at = Some(3);
+        let error = space.locate(bias, dynamic).unwrap_err().to_string();
+        assert!(error.contains("could not be read (errno 5)"), "{error}");
+    }
+
+    /// Every executable segment is recorded, and a restorer in the second one,
+    /// or in a later mapping of a segment the kernel split, is accepted; the
+    /// same file mapped elsewhere is not.
+    #[test]
+    fn restorers_in_any_executable_segment_or_split_mapping_are_accepted() {
+        let header = 0x7f00_0000_0000;
+        let (space, bias, dynamic) = FakeSpace::object(header, 0);
+        let code = space.locate(bias, dynamic).unwrap();
+        let identities = || {
+            segments(&code)
+                .into_iter()
+                .map(|(start, end)| MappingIdentity {
+                    start,
+                    end,
+                    executable: true,
+                    writable: false,
+                    device: code.device,
+                    inode: code.inode,
+                })
+        };
+        let mapping = |start: u64, end: u64| MappingIdentity {
+            start,
+            end,
+            executable: true,
+            writable: false,
+            device: code.device,
+            inode: code.inode,
+        };
+        let accepted = |restorer: u64, vma: MappingIdentity| {
+            identities().any(|segment| restorer_mapping_accepted(restorer, vma, segment))
+        };
+        // The second executable segment.
+        assert!(accepted(
+            header + 0x5010,
+            mapping(header + 0x5000, header + 0x6000)
+        ));
+        // The second half of the first segment, split into two mappings.
+        assert!(accepted(
+            header + 0x2010,
+            mapping(header + 0x2000, header + 0x3000)
+        ));
+        // The same file mapped outside the object's segments.
+        assert!(!accepted(0x9000_0010, mapping(0x9000_0000, 0x9000_2000)));
     }
 
     #[test]

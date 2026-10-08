@@ -129,6 +129,9 @@ fn child_report() {
     // use this test binary's ordinary allocator, so the heap is not compared
     // across them; the wrapper's call count is.
     reverie_inguest::guest::support::page_size().unwrap();
+    // The branch counter exists only with the rcb-clock feature; every other
+    // case runs without it.
+    #[cfg(feature = "rcb-clock")]
     reverie_inguest::guest::clock::initialize_rcb_clock().unwrap();
     let interposer_calls = calls() - calls_before;
     let restorer = glibc_restorer();
