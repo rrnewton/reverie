@@ -29,6 +29,7 @@ pub mod protect;
 pub mod restorer;
 #[cfg(feature = "coordinator-rpc")]
 pub mod rpc;
+pub mod sigalrm;
 pub mod signal;
 pub mod support;
 pub mod trap_dispatch;
