@@ -259,6 +259,26 @@ impl Drop for ToolCallbackGuard {
     }
 }
 
+/// Describes `error` without asking the C library for an errno message.
+///
+/// `std::io::Error`'s `Display` and `Debug` render an operating-system error
+/// through `strerror_r`, which can call `gettext` and allocate through the C
+/// library's malloc: inside a guest, the guest's own heap. An operating-system
+/// error is described by its kind and number instead; any other error, or an
+/// I/O error wrapping one, as before.
+pub fn describe_io_error(error: &std::io::Error) -> String {
+    if let Some(code) = error.raw_os_error() {
+        return format!("{:?} (errno {code})", error.kind());
+    }
+    match error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<std::io::Error>())
+    {
+        Some(inner) => describe_io_error(inner),
+        None => error.to_string(),
+    }
+}
+
 /// Whether the calling thread is running a Tool callback. Syscalls and faulting
 /// instructions reached from inside one bypass the Tool (they are the Tool's
 /// own) and must not allocate or patch.
@@ -468,6 +488,20 @@ pub fn maps_line_name(line: &[u8], address: u64, name: &mut [u8]) -> Option<usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An operating-system error is described by its kind and number, never
+    /// by the C library's message (which `std::io::Error`'s own `Display`
+    /// fetches through `strerror_r`), also when another I/O error wraps it.
+    #[test]
+    fn io_errors_are_described_without_the_c_library_message() {
+        let os = std::io::Error::from_raw_os_error(libc::EACCES);
+        assert!(os.to_string().contains("Permission denied"), "{os}");
+        assert_eq!(describe_io_error(&os), "PermissionDenied (errno 13)");
+        let wrapped = std::io::Error::other(std::io::Error::from_raw_os_error(libc::ENOENT));
+        assert_eq!(describe_io_error(&wrapped), "NotFound (errno 2)");
+        let custom = std::io::Error::other("no such descriptor");
+        assert_eq!(describe_io_error(&custom), "no such descriptor");
+    }
 
     #[test]
     fn stack_line_formats_signed_and_hex_values() {
