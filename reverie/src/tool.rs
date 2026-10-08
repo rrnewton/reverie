@@ -787,6 +787,39 @@ pub trait Tool: Send + Sync + Default {
         Ok(Some(signal))
     }
 
+    /// Decides whether a signal that the backend passes to the guest without
+    /// reporting it to [`Tool::handle_signal_event`] reaches the guest at all.
+    ///
+    /// A backend may pass a signal on unreported where reporting it could
+    /// change what the guest observes: the ptrace backend does so for many
+    /// signals it held while a Tool injection ran. Such a signal is otherwise
+    /// invisible to the Tool, so a Tool that must keep exactly one copy of a
+    /// signal (for example, its own copy of one the kernel also sent) needs
+    /// to see it here. `info` is the siginfo the signal arrived with (Linux's
+    /// `siginfo_t` bytes, as in [`crate::SignalEvent`]), when the backend
+    /// recorded one.
+    ///
+    /// # Return value
+    ///  - `true`: the signal is passed on as before.
+    ///  - `false`: the signal is dropped and never delivered to the guest.
+    ///
+    /// # Contract
+    /// The hook may only decide. It must not inject a syscall, change the
+    /// guest's registers or memory, or end the thread: the backend passes the
+    /// signal on unreported precisely because the guest must resume as it
+    /// stands. It may read guest state and send RPCs to the global tool.
+    ///
+    /// The default keeps every signal. A backend that never passes a signal
+    /// on unreported never calls it.
+    async fn filter_unreported_signal<T: Guest<Self>>(
+        &self,
+        _guest: &mut T,
+        _signal: Signal,
+        _info: Option<[u8; crate::SIGNAL_INFO_SIZE]>,
+    ) -> bool {
+        true
+    }
+
     /// Admits acknowledgment of real KVM pending removals before thread start.
     /// Other Tools retain their existing pending-state behavior by default.
     ///

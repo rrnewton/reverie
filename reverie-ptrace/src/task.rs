@@ -520,12 +520,35 @@ impl TakenSignal {
 struct SignalResume {
     signal: Option<Signal>,
     reported: Option<TakenSignal>,
+    /// The siginfo the reporting callback chose for the signal
+    /// (`Guest::set_signal_info`), written when the signal is resumed from a
+    /// signal-delivery stop (`resume_with_signal`).
+    replacement: Option<StoredSiginfo>,
 }
 
 /// What `Tool::handle_signal_event` left for a signal (`report_signal`).
 struct SignalVerdict {
     /// The signal to resume with, `None` if the callback suppressed it.
     signal: Option<Signal>,
+    /// The siginfo the callback chose for it (`Guest::set_signal_info`).
+    replacement: Option<StoredSiginfo>,
+}
+
+/// The Linux `siginfo_t` bytes of `info`, as Reverie's API carries them.
+fn siginfo_bytes(info: StoredSiginfo) -> [u8; reverie::SIGNAL_INFO_SIZE] {
+    // SAFETY: `siginfo_t` is `SIGNAL_INFO_SIZE` bytes of plain data on the
+    // supported targets (checked at compile time by `transmute`); the pointer
+    // fields are guest addresses, copied and never dereferenced.
+    unsafe { std::mem::transmute::<libc::siginfo_t, [u8; reverie::SIGNAL_INFO_SIZE]>(info.0) }
+}
+
+/// The `siginfo_t` whose bytes are `bytes` (`siginfo_bytes`).
+fn siginfo_from_bytes(bytes: [u8; reverie::SIGNAL_INFO_SIZE]) -> StoredSiginfo {
+    // SAFETY: as `siginfo_bytes`; any bytes are a valid `siginfo_t` to copy
+    // and hand to the kernel, which validates what it uses.
+    StoredSiginfo(unsafe {
+        std::mem::transmute::<[u8; reverie::SIGNAL_INFO_SIZE], libc::siginfo_t>(bytes)
+    })
 }
 
 /// The signal mask the kernel dequeues under for the stopped thread `tid`
@@ -2316,6 +2339,14 @@ pub struct TracedTask<L: Tool> {
     /// Whether `Tool::handle_signal_event` is running (`report_signal`).
     in_signal_callback: bool,
 
+    /// The signal the running `Tool::handle_signal_event` reports, and its
+    /// siginfo when its stop recorded one (`Guest::signal_info`).
+    reported_signal: Option<(Signal, Option<StoredSiginfo>)>,
+
+    /// The siginfo the running `Tool::handle_signal_event` chose for its
+    /// signal (`Guest::set_signal_info`).
+    replacement_signal_info: Option<StoredSiginfo>,
+
     /// Whether a syscall the running held-signal callback
     /// (`in_held_signal_callback`) injected, other than `restart_syscall`,
     /// returned
@@ -2556,6 +2587,8 @@ impl<L: Tool> TracedTask<L> {
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
             pending_signal_taken: None,
+            reported_signal: None,
+            replacement_signal_info: None,
             stale_private_step_trap: false,
             ptracer_waits: Arc::new(PtracerWaitOwner::default()),
             preinit_generation: None,
@@ -2630,6 +2663,8 @@ impl<L: Tool> TracedTask<L> {
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
             pending_signal_taken: None,
+            reported_signal: None,
+            replacement_signal_info: None,
             stale_private_step_trap: false,
             ptracer_waits,
             preinit_generation: None,
@@ -2701,6 +2736,8 @@ impl<L: Tool> TracedTask<L> {
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
             pending_signal_taken: None,
+            reported_signal: None,
+            replacement_signal_info: None,
             stale_private_step_trap: false,
             ptracer_waits,
             preinit_generation: None,
@@ -4352,7 +4389,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         stop_signal: Option<Signal>,
         signal: Option<Signal>,
     ) -> Result<SignalResume, TraceError> {
-        let taken = self.pending_signal_taken.take();
+        let record = self.pending_signal_taken.take();
+        let taken = record;
         let Some(sig) = signal else {
             return Ok(self.pass_held_signal_unreported(None));
         };
@@ -4361,7 +4399,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             || self.latest_injection_stop.unwrap_or(stop_signal).is_none()
             || self.sigtrap_may_be_claimed()
         {
-            return Ok(self.pass_held_signal_unreported(signal));
+            return self
+                .pass_held_signal_unreported_unless_filtered(signal, record)
+                .await;
         }
         // `resume_with_signal` writes the siginfo back with
         // `PTRACE_SETSIGINFO`, which a seccomp filter of the tracer can make
@@ -4372,18 +4412,24 @@ impl<L: Tool + 'static> TracedTask<L> {
         // (`TakenSignal::at_stop`), and a filter is never removed, so no
         // later held signal is reported.
         if thread_may_be_seccomp_filtered() {
-            return Ok(self.pass_held_signal_unreported(signal));
+            return self
+                .pass_held_signal_unreported_unless_filtered(signal, record)
+                .await;
         }
         // A procfs or register read that fails passes the signal on
         // unreported, as main resumes every held signal, rather than failing
         // a resume main makes.
         let Ok(blocked) = blocked_signal_mask(task.pid()) else {
-            return Ok(self.pass_held_signal_unreported(signal));
+            return self
+                .pass_held_signal_unreported_unless_filtered(signal, record)
+                .await;
         };
         if blocked & signal_mask_bit(sig) != 0
             || !task.getsigmask().is_ok_and(|saved| saved == blocked)
         {
-            return Ok(self.pass_held_signal_unreported(signal));
+            return self
+                .pass_held_signal_unreported_unless_filtered(signal, record)
+                .await;
         }
         // The guest's syscall is to restart through its own restart block.
         // A callback injection can replace that block, and the guest would
@@ -4394,21 +4440,27 @@ impl<L: Tool + 'static> TracedTask<L> {
             (regs.orig_syscall() as i64) < 0
                 || Errno::from_ret(regs.ret() as usize) != Err(Errno::ERESTART_RESTARTBLOCK)
         }) {
-            return Ok(self.pass_held_signal_unreported(signal));
+            return self
+                .pass_held_signal_unreported_unless_filtered(signal, record)
+                .await;
         }
         if let Some(count) = self.reported_requeued_signals.get_mut(&sig) {
             *count -= 1;
             if *count == 0 {
                 self.reported_requeued_signals.remove(&sig);
             }
-            return Ok(self.pass_held_signal_unreported(signal));
+            return self
+                .pass_held_signal_unreported_unless_filtered(signal, record)
+                .await;
         }
         // Without its record the siginfo cannot be written back after the
         // callback's injections, and the guest would get one Linux makes up.
         // The capture can fail where this check passes: a procfs open the
         // capture made can fail (EMFILE) and a later one succeed.
         let Some(taken) = taken.filter(|taken| taken.signal == sig) else {
-            return Ok(self.pass_held_signal_unreported(signal));
+            return self
+                .pass_held_signal_unreported_unless_filtered(signal, record)
+                .await;
         };
         let stale_step_trap = if self.stale_private_step_trap {
             signal_mask_bit(Signal::SIGTRAP)
@@ -4416,17 +4468,20 @@ impl<L: Tool + 'static> TracedTask<L> {
             0
         };
         if pending_signal_mask(task.pid()).map_or(true, |pending| pending & !stale_step_trap != 0) {
-            return Ok(self.pass_held_signal_unreported(signal));
+            return self
+                .pass_held_signal_unreported_unless_filtered(signal, record)
+                .await;
         }
         tracing::debug!(
             "[{}] reporting held signal {} before resuming",
             self.tid(),
             sig
         );
-        let verdict = self.report_signal(sig, true).await?;
+        let verdict = self.report_signal(sig, true, Some(taken.siginfo)).await?;
         Ok(SignalResume {
             signal: verdict.signal,
             reported: Some(taken),
+            replacement: verdict.replacement,
         })
     }
 
@@ -4454,7 +4509,42 @@ impl<L: Tool + 'static> TracedTask<L> {
         SignalResume {
             signal,
             reported: None,
+            replacement: None,
         }
+    }
+
+    /// `pass_held_signal_unreported`, after `Tool::filter_unreported_signal`
+    /// keeps the signal; a signal it drops is resumed as none. The hook sees
+    /// every held signal passed on unreported except SIGSTOP and the timer
+    /// signal, which are Reverie's own. `taken` is the held signal's record,
+    /// whose siginfo the hook gets when it is this signal's.
+    async fn pass_held_signal_unreported_unless_filtered(
+        &mut self,
+        signal: Option<Signal>,
+        taken: Option<TakenSignal>,
+    ) -> Result<SignalResume, TraceError> {
+        if let Some(sig) = signal
+            && sig != Signal::SIGSTOP
+            && sig != Timer::signal_type()
+        {
+            let info = taken
+                .filter(|taken| taken.signal == sig)
+                .map(|taken| siginfo_bytes(taken.siginfo));
+            if !self
+                .process_state
+                .clone()
+                .filter_unreported_signal(self, sig, info)
+                .await
+            {
+                tracing::debug!(
+                    "[{}] the tool dropped held signal {} passed on unreported",
+                    self.tid(),
+                    sig
+                );
+                return Ok(self.pass_held_signal_unreported(None));
+            }
+        }
+        Ok(self.pass_held_signal_unreported(signal))
     }
 
     /// Resumes `task` with `resume.signal` and waits for its next stop.
@@ -4490,7 +4580,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         resume: SignalResume,
     ) -> Result<Wait, TraceError> {
-        let SignalResume { signal, reported } = resume;
+        let SignalResume {
+            signal,
+            reported,
+            replacement,
+        } = resume;
         if let (Some(sig), Some(taken), Some(stop)) = (signal, reported, self.latest_injection_stop)
             && sig == taken.signal
         {
@@ -4514,6 +4608,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                 *count = count.saturating_add(1);
             }
         }
+        // A siginfo the reporting callback chose (`Guest::set_signal_info`)
+        // replaces the signal's own when it is resumed from a signal-delivery
+        // stop: its own, when no injection ran, or the latest injection's.
+        // From any other stop Linux makes up a siginfo for a resumed signal,
+        // so the choice cannot apply. A failed write does not fail the resume.
+        if let (Some(sig), Some(info)) = (signal, replacement)
+            && self.latest_injection_stop.is_none_or(|stop| stop.is_some())
+            && let Err(err) = task.setsiginfo(&info.0)
+        {
+            tracing::debug!("could not set the chosen siginfo of {sig:?}: {err}");
+        }
         self.resume_stopped(task, signal)?
             .next_state_with_owner(&self.ptracer_waits)
             .await
@@ -4534,8 +4639,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         sig: Signal,
         held: bool,
+        info: Option<StoredSiginfo>,
     ) -> Result<SignalVerdict, TraceError> {
         let outer = std::mem::replace(&mut self.in_signal_callback, true);
+        let outer_reported = self.reported_signal.replace((sig, info));
+        let outer_replacement = self.replacement_signal_info.take();
         let outer_replaced =
             std::mem::replace(&mut self.signal_callback_replaced_restart_block, false);
         let outer_guest_block =
@@ -4567,6 +4675,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await
         };
         self.in_signal_callback = outer;
+        self.reported_signal = outer_reported;
+        let replacement = std::mem::replace(&mut self.replacement_signal_info, outer_replacement);
         self.in_held_signal_callback = outer_held;
         self.signal_callback_replaced_restart_block = outer_replaced;
         self.signal_callback_guest_restart_block = outer_guest_block;
@@ -4575,7 +4685,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             .await?;
         self.ordinary_trace_continuation()?;
         self.timer.finalize_requests();
-        Ok(SignalVerdict { signal })
+        Ok(SignalVerdict {
+            signal,
+            replacement,
+        })
     }
 
     /// The guest's return register `ret`, saved in `context`, that a
@@ -4688,11 +4801,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             HandleSignalResult::SignalSuppressed(wait) => Ok(wait),
             HandleSignalResult::SignalToDeliver(task, sig) => {
                 let taken = TakenSignal::at_stop(&task, sig);
-                let verdict = self.report_signal(sig, false).await?;
+                let verdict = self
+                    .report_signal(sig, false, taken.map(|taken| taken.siginfo))
+                    .await?;
                 let signal = verdict.signal;
                 let resume = SignalResume {
                     signal,
                     reported: taken,
+                    replacement: verdict.replacement,
                 };
                 self.resume_with_signal(task, resume).await
             }
@@ -4707,6 +4823,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         // callbacks' injections: a held callback's injections keep the
         // guest's return register.
         self.in_signal_callback = false;
+        self.reported_signal = None;
+        self.replacement_signal_info = None;
         self.in_held_signal_callback = false;
         self.signal_callback_replaced_restart_block = false;
         self.signal_callback_guest_restart_block = false;
@@ -8056,6 +8174,25 @@ impl<L: Tool + 'static> TracedTask<L> {
 impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     type Memory = Stopped;
     type Stack = GuestStack;
+
+    fn signal_info(&self) -> Option<[u8; reverie::SIGNAL_INFO_SIZE]> {
+        self.reported_signal
+            .and_then(|(_, info)| info)
+            .map(siginfo_bytes)
+    }
+
+    fn set_signal_info(&mut self, info: [u8; reverie::SIGNAL_INFO_SIZE]) -> Result<(), Errno> {
+        let Some((signal, _)) = self.reported_signal else {
+            return Err(Errno::EINVAL);
+        };
+        // Linux replaces a siginfo whose `si_signo` is not the resumed
+        // signal's, so a mismatched one could never be delivered.
+        if i32::from_ne_bytes(info[0..4].try_into().expect("four bytes")) != signal as i32 {
+            return Err(Errno::EINVAL);
+        }
+        self.replacement_signal_info = Some(siginfo_from_bytes(info));
+        Ok(())
+    }
 
     #[inline]
     fn tid(&self) -> Pid {
