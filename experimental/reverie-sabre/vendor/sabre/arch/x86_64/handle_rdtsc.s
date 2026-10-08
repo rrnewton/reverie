@@ -52,7 +52,7 @@ rdtsc_entrypoint:
   and $0xfffffffffffffff0, %rsp
 
   # Call the actual handler
-  call *plugin_rdtsc_handler(%rip)
+  call *runtime_rdtsc_router@GOTPCREL(%rip)
 
   # Move high part of rax to rdx
   mov %rax, %rdx
@@ -138,7 +138,7 @@ rdtscp_entrypoint:
   and $0xfffffffffffffff0, %rsp
 
   # Call the actual handler
-  call *plugin_rdtsc_handler(%rip)
+  call *runtime_rdtsc_router@GOTPCREL(%rip)
 
   # Move high part of rax to rdx
   mov %rax, %rdx
