@@ -187,7 +187,7 @@ impl CallbackStack {
         if top.is_none() {
             return Err(io::Error::other("stack address overflow"));
         }
-        crate::guest::support::raw_result(unsafe {
+        crate::guest::support::raw_zero_result(unsafe {
             raw_syscall6(
                 libc::SYS_mprotect,
                 [
