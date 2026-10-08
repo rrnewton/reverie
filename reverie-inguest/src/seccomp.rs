@@ -106,14 +106,43 @@ impl SeccompFilter {
     /// gates. Each pair is checked independently, including its full high word;
     /// no address range or low-word alias is implicitly trusted.
     pub fn for_trusted_gates(first: TrustedGate, second: TrustedGate) -> io::Result<Self> {
+        Self::for_trusted_gates_with_signal_return(first, second, None)
+    }
+
+    /// [`Self::for_trusted_gates`], optionally admitting `rt_sigreturn` only
+    /// when Linux reports `signal_return` as its instruction pointer (the
+    /// runtime's private restorer, `signal::signal_restorer_return_ip`),
+    /// compared over the full 64 bits. That check comes first, so neither gate
+    /// admits `rt_sigreturn`; any other `rt_sigreturn` traps. Without it,
+    /// `rt_sigreturn` is admitted from anywhere, as before.
+    pub fn for_trusted_gates_with_signal_return(
+        first: TrustedGate,
+        second: TrustedGate,
+        signal_return: Option<u64>,
+    ) -> io::Result<Self> {
         first.validate()?;
         second.validate()?;
-        let program = vec![
+        let mut program = vec![
             stmt(BPF_LD_W_ABS, SECCOMP_DATA_ARCH_OFFSET),
             jump(BPF_JMP_JEQ_K, AUDIT_ARCH_X86_64, 1, 0),
             stmt(BPF_RET_K, SECCOMP_RET_KILL_PROCESS),
             stmt(BPF_LD_W_ABS, SECCOMP_DATA_NR_OFFSET),
-            jump(BPF_JMP_JEQ_K, libc::SYS_rt_sigreturn as u32, 11, 0),
+        ];
+        if let Some(address) = signal_return {
+            program.extend([
+                // rt_sigreturn: the six instructions below, else the gates.
+                jump(BPF_JMP_JEQ_K, libc::SYS_rt_sigreturn as u32, 0, 6),
+                stmt(BPF_LD_W_ABS, SECCOMP_DATA_IP_HIGH_OFFSET),
+                jump(BPF_JMP_JEQ_K, (address >> 32) as u32, 0, 3),
+                stmt(BPF_LD_W_ABS, SECCOMP_DATA_IP_LOW_OFFSET),
+                jump(BPF_JMP_JEQ_K, address as u32, 0, 1),
+                stmt(BPF_RET_K, SECCOMP_RET_ALLOW),
+                stmt(BPF_RET_K, SECCOMP_RET_TRAP),
+            ]);
+        } else {
+            program.push(jump(BPF_JMP_JEQ_K, libc::SYS_rt_sigreturn as u32, 11, 0));
+        }
+        program.extend([
             stmt(BPF_LD_W_ABS, SECCOMP_DATA_IP_HIGH_OFFSET),
             jump(BPF_JMP_JEQ_K, (first.syscall_ip >> 32) as u32, 0, 3),
             stmt(BPF_LD_W_ABS, SECCOMP_DATA_IP_LOW_OFFSET),
@@ -126,7 +155,7 @@ impl SeccompFilter {
             jump(BPF_JMP_JEQ_K, second.return_ip as u32, 1, 0),
             stmt(BPF_RET_K, SECCOMP_RET_TRAP),
             stmt(BPF_RET_K, SECCOMP_RET_ALLOW),
-        ];
+        ]);
         Ok(Self { program })
     }
 
@@ -238,6 +267,72 @@ mod tests {
             }
             pc += 1;
         }
+    }
+
+    /// With the runtime's restorer named, `rt_sigreturn` is admitted only at
+    /// its exact full address: not at either gate, not at an address sharing
+    /// its low or high word, not anywhere else. Every other syscall is filtered
+    /// exactly as without it.
+    #[test]
+    fn signal_return_is_admitted_only_at_the_restorer() {
+        let first = TrustedGate {
+            syscall_ip: 0x1234_0000_1000,
+            return_ip: 0x1234_0000_1002,
+        };
+        let second = TrustedGate {
+            syscall_ip: 0x5678_0000_2000,
+            return_ip: 0x5678_0000_2002,
+        };
+        let restorer = 0x9abc_0000_3007;
+        let filter =
+            SeccompFilter::for_trusted_gates_with_signal_return(first, second, Some(restorer))
+                .unwrap();
+        assert_eq!(filter.len(), 23);
+        let sigreturn = libc::SYS_rt_sigreturn;
+        assert_eq!(
+            evaluate(&filter, AUDIT_ARCH_X86_64, sigreturn, restorer),
+            SECCOMP_RET_ALLOW
+        );
+        for elsewhere in [
+            first.syscall_ip,
+            first.return_ip,
+            second.syscall_ip,
+            second.return_ip,
+            restorer + 1,
+            (restorer & 0xffff_ffff) | (0x1234 << 32),
+            (restorer & !0xffff_ffff) | 0x3008,
+            0x7fff_dead_beef,
+        ] {
+            assert_eq!(
+                evaluate(&filter, AUDIT_ARCH_X86_64, sigreturn, elsewhere),
+                SECCOMP_RET_TRAP,
+                "{elsewhere:#x}"
+            );
+        }
+        let plain = SeccompFilter::for_trusted_gates(first, second).unwrap();
+        for number in [libc::SYS_write, libc::SYS_openat, libc::SYS_rt_sigaction] {
+            for address in [
+                first.syscall_ip,
+                second.return_ip,
+                restorer,
+                0x7fff_dead_beef,
+            ] {
+                assert_eq!(
+                    evaluate(&filter, AUDIT_ARCH_X86_64, number, address),
+                    evaluate(&plain, AUDIT_ARCH_X86_64, number, address),
+                    "{number} at {address:#x}"
+                );
+            }
+        }
+        assert_eq!(
+            evaluate(&filter, 0x4000_0003, libc::SYS_write, first.syscall_ip),
+            SECCOMP_RET_KILL_PROCESS
+        );
+        // Without a restorer, rt_sigreturn is admitted anywhere, as before.
+        assert_eq!(
+            evaluate(&plain, AUDIT_ARCH_X86_64, sigreturn, 0x7fff_dead_beef),
+            SECCOMP_RET_ALLOW
+        );
     }
 
     #[test]

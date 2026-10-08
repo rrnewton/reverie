@@ -448,6 +448,38 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         "{spoofed_sigsys:?}"
     );
 
+    let signal_runtime = Command::new(binary)
+        .arg("tool-signal-runtime")
+        .arg(&socket)
+        .output()
+        .unwrap();
+    assert!(signal_runtime.status.success(), "{signal_runtime:?}");
+    assert_eq!(signal_runtime.stdout, b"tool-signal-runtime-ok\n");
+
+    for (mode, reached) in [
+        ("tool-sigreturn-trap", "sigreturn-site-fresh\n"),
+        ("tool-sigreturn-hook", "numbered-site-hooked\n"),
+    ] {
+        let output = Command::new(binary)
+            .arg(mode)
+            .arg(&socket)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(reverie_inguest::trap::GUEST_SIGNAL_RETURN_STATUS),
+            "{mode} {output:?}"
+        );
+        assert_eq!(output.stdout, reached.as_bytes(), "{mode} {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).ends_with(
+                "reverie-inguest: the guest made its own rt_sigreturn; only the runtime's \
+                 signal restorer may return from a signal, so the process ends\n"
+            ),
+            "{mode} {output:?}"
+        );
+    }
+
     let mut instruction_positives = 0;
     let mut instruction_refusals = 0;
     for (mode, concurrent) in [

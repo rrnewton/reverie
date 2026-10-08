@@ -666,16 +666,14 @@ pub unsafe fn install_instruction_signal_handler(
     }
     INSTRUCTION_FAULT_SEAM.store(ptr::from_ref(seam).cast_mut(), Ordering::Release);
 
-    let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
-    action.sa_flags = libc::SA_SIGINFO | if on_alt_stack { libc::SA_ONSTACK } else { 0 };
-    action.sa_sigaction = instruction_sigsegv_handler as *const () as usize;
-    if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0 {
-        return Err(io::Error::last_os_error());
+    // Through the runtime's private restorer, like the SIGSYS handler.
+    unsafe {
+        crate::signal::install_runtime_handler(
+            libc::SIGSEGV,
+            instruction_sigsegv_handler,
+            if on_alt_stack { libc::SA_ONSTACK } else { 0 },
+        )
     }
-    if unsafe { libc::sigaction(libc::SIGSEGV, &action, ptr::null_mut()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
 }
 
 unsafe extern "C" fn instruction_sigsegv_handler(
