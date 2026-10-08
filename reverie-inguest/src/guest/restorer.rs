@@ -130,26 +130,69 @@ static LIBC_INODE: AtomicU64 = AtomicU64::new(0);
 static LIBC_START: AtomicU64 = AtomicU64::new(0);
 static LIBC_END: AtomicU64 = AtomicU64::new(0);
 
-/// Record which file is this process's C library, from glibc's own
-/// `sigaction` as `libc.so.6` defines it (looked up in that object, so an
-/// interposed `sigaction`, for example from an `LD_PRELOAD` library, does
-/// not count). The runtime runs in the guest's own process, so it is the
-/// guest's C library too. Call once, at runtime initialization, in ordinary
-/// context: it uses the dynamic loader.
+/// Record which file is this process's C library: the executable segment of
+/// the one loaded object whose path names `libc.so.6`, found by walking the
+/// dynamic loader's object list with `dl_iterate_phdr`. The runtime runs in
+/// the guest's own process, so it is the guest's C library too. Call once, at
+/// runtime initialization, in ordinary context.
+///
+/// This must not allocate through the C library's malloc, which inside the
+/// guest is the guest's own heap: the runtime's private allocation scope
+/// redirects only Rust allocations. `dlopen` does (even with `RTLD_NOLOAD`,
+/// glibc builds the object's search list on its first direct open), so it is
+/// not used. `dl_iterate_phdr` takes the loader's lock and fills one
+/// `dl_phdr_info` on its stack per object; it allocates nothing.
 pub fn record_libc_identity() -> std::io::Result<()> {
-    let handle =
-        unsafe { libc::dlopen(c"libc.so.6".as_ptr(), libc::RTLD_NOLOAD | libc::RTLD_LAZY) };
-    if handle.is_null() {
-        return Err(std::io::Error::other("libc.so.6 is not loaded"));
+    struct Found {
+        anchor: u64,
+        matches: usize,
     }
-    let anchor = unsafe { libc::dlsym(handle, c"sigaction".as_ptr()) } as u64;
-    unsafe { libc::dlclose(handle) };
-    if anchor == 0 {
-        return Err(std::io::Error::other("libc.so.6 defines no sigaction"));
+    unsafe extern "C" fn visit(
+        info: *mut libc::dl_phdr_info,
+        _size: libc::size_t,
+        data: *mut libc::c_void,
+    ) -> libc::c_int {
+        // SAFETY: dl_iterate_phdr passes a valid info for each object and the
+        // `Found` this function was given.
+        let (info, found) = unsafe { (&*info, &mut *data.cast::<Found>()) };
+        if info.dlpi_name.is_null() {
+            return 0;
+        }
+        // SAFETY: a loaded object's name is a NUL-terminated string.
+        let name = unsafe { core::ffi::CStr::from_ptr(info.dlpi_name) }.to_bytes();
+        if name.rsplit(|byte| *byte == b'/').next() != Some(b"libc.so.6".as_slice()) {
+            return 0;
+        }
+        found.matches += 1;
+        for index in 0..usize::from(info.dlpi_phnum) {
+            // SAFETY: dlpi_phdr points at dlpi_phnum program headers.
+            let header = unsafe { &*info.dlpi_phdr.add(index) };
+            if header.p_type == libc::PT_LOAD && header.p_flags & libc::PF_X != 0 {
+                found.anchor = info.dlpi_addr.wrapping_add(header.p_vaddr);
+                break;
+            }
+        }
+        0
     }
+    let mut found = Found {
+        anchor: 0,
+        matches: 0,
+    };
+    // SAFETY: `visit` only reads the infos it is given and writes `found`.
+    unsafe { libc::dl_iterate_phdr(Some(visit), (&raw mut found).cast()) };
+    if found.matches != 1 {
+        return Err(std::io::Error::other(format!(
+            "{} loaded objects are named libc.so.6",
+            found.matches
+        )));
+    }
+    if found.anchor == 0 {
+        return Err(std::io::Error::other("libc.so.6 has no executable segment"));
+    }
+    let anchor = found.anchor;
     let identity = unsafe { scan_own_maps(|line| maps_line_identity(line, anchor)) }
-        .filter(|identity| identity.inode != 0)
-        .ok_or_else(|| std::io::Error::other("libc.so.6's sigaction is in no file mapping"))?;
+        .filter(|identity| identity.inode != 0 && identity.executable)
+        .ok_or_else(|| std::io::Error::other("libc.so.6's code is in no file mapping"))?;
     LIBC_DEVICE.store(identity.device, Ordering::Release);
     LIBC_START.store(identity.start, Ordering::Release);
     LIBC_END.store(identity.end, Ordering::Release);
