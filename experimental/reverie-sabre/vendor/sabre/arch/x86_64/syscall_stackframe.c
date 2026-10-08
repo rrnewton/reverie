@@ -50,6 +50,24 @@ const uint64_t sbr_bootstrap_frame_layout_v1[9] = {
     9,
 };
 
+/* Version 2 appends r10, the fourth syscall argument, so the supervisor can
+ * authenticate a forwarded prlimit64's output pointer. Version 1 stays for
+ * supervisors that predate it.
+ */
+__attribute__((used, visibility("default")))
+const uint64_t sbr_bootstrap_frame_layout_v2[10] = {
+    2,
+    sizeof(struct syscall_stackframe),
+    offsetof(struct syscall_stackframe, rdi),
+    offsetof(struct syscall_stackframe, rsi),
+    offsetof(struct syscall_stackframe, rdx),
+    offsetof(struct syscall_stackframe, fake_ret),
+    offsetof(struct syscall_stackframe, ret),
+    sizeof(uintptr_t),
+    10,
+    offsetof(struct syscall_stackframe, r10),
+};
+
 void *get_syscall_return_address(struct syscall_stackframe *stack_frame) {
   return stack_frame->ret;
 }
