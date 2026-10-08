@@ -250,7 +250,10 @@ pub fn configure_command(command: &mut Command, tool: BuiltinTool) -> io::Result
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_inguest_initialize() {
     if let Err(error) = initialize_from_environment() {
-        eprintln!("reverie-inguest initialization failed: {error}");
+        eprintln!(
+            "reverie-inguest initialization failed: {}",
+            crate::guest::support::describe_io_error(&error)
+        );
         unsafe {
             libc::_exit(127);
         }
