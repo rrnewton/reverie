@@ -934,11 +934,7 @@ unsafe fn restore_guard_default_action(
 }
 
 fn prepare_instrumentation_state() -> io::Result<()> {
-    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    let page_size = u64::try_from(page_size)
-        .ok()
-        .filter(|size| size.is_power_of_two())
-        .ok_or_else(|| io::Error::other("invalid operating-system page size"))?;
+    let page_size = reverie_inguest::guest::support::page_size()?;
     PAGE_SIZE.store(page_size, Ordering::Release);
 
     let sites = (0..MAX_PATCH_SITES)

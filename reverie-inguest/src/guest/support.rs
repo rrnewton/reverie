@@ -279,6 +279,78 @@ pub fn describe_io_error(error: &std::io::Error) -> String {
     }
 }
 
+/// This process's auxiliary vector entry `key`, read from `/proc/self/auxv`
+/// with raw syscalls (not `getauxval`, which a guest can interpose), into a
+/// stack buffer; allocates nothing.
+pub fn auxv_entry(key: u64) -> Option<u64> {
+    let mut auxv = [0_u8; 4096];
+    let fd = unsafe {
+        raw_syscall6(
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                c"/proc/self/auxv".as_ptr() as u64,
+                (libc::O_RDONLY | libc::O_CLOEXEC) as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if fd < 0 {
+        return None;
+    }
+    let mut filled = 0_usize;
+    while filled < auxv.len() {
+        let count = unsafe {
+            raw_syscall6(
+                libc::SYS_read,
+                [
+                    fd as u64,
+                    auxv[filled..].as_mut_ptr() as u64,
+                    (auxv.len() - filled) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if count == -i64::from(libc::EINTR) {
+            continue;
+        }
+        if count <= 0 {
+            break;
+        }
+        filled += count as usize;
+    }
+    unsafe { raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
+    auxv[..filled]
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .map(|pair| {
+            (
+                u64::from_le_bytes(pair[..8].try_into().unwrap()),
+                u64::from_le_bytes(pair[8..].try_into().unwrap()),
+            )
+        })
+        .take_while(|(found, _)| *found != 0)
+        .find(|(found, _)| *found == key)
+        .map(|(_, value)| value)
+}
+
+/// `AT_PAGESZ`, the auxiliary-vector key of the page size.
+const AT_PAGESZ: u64 = 6;
+
+/// The page size, from the kernel's auxiliary vector ([`auxv_entry`]). Not
+/// `sysconf`, which is a dynamic symbol the program or a preloaded library may
+/// define, and which the runtime would then run inside the guest.
+pub fn page_size() -> std::io::Result<u64> {
+    auxv_entry(AT_PAGESZ)
+        .filter(|size| size.is_power_of_two())
+        .ok_or_else(|| std::io::Error::other("the auxiliary vector has no valid AT_PAGESZ"))
+}
+
 /// Whether the calling thread is running a Tool callback. Syscalls and faulting
 /// instructions reached from inside one bypass the Tool (they are the Tool's
 /// own) and must not allocate or patch.
