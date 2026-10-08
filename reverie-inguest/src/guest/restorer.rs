@@ -99,8 +99,12 @@ pub fn maps_line_identity(line: &[u8], address: u64) -> Option<MappingIdentity> 
 }
 
 /// Whether a restorer whose `GLIBC_RESTORER_BYTES.len()` bytes start at
-/// `restorer`, inside `mapping`, lies in an executable mapping of the C
-/// library's file `libc`.
+/// `restorer`, inside `mapping`, lies in the C library's own executable
+/// mapping `libc`: the same file, and the same range (not an alias of the
+/// file mapped elsewhere, which the guest owns and could rewrite, for example
+/// through `/proc/self/mem`, without touching the C library the runtime runs;
+/// rewriting the C library itself attacks the runtime, which the design's
+/// threat model excludes).
 pub fn restorer_mapping_accepted(
     restorer: u64,
     mapping: MappingIdentity,
@@ -111,15 +115,20 @@ pub fn restorer_mapping_accepted(
         && mapping.inode != 0
         && mapping.device == libc.device
         && mapping.inode == libc.inode
+        && mapping.start == libc.start
+        && mapping.end == libc.end
         && restorer
             .checked_add(GLIBC_RESTORER_BYTES.len() as u64)
             .is_some_and(|end| end <= mapping.end)
 }
 
-/// The C library's file, as `major << 32 | minor` and inode, recorded once in
-/// ordinary context by [`record_libc_identity`]; 0 before.
+/// The C library's executable mapping: its file, as `major << 32 | minor` and
+/// inode, and its range, recorded once in ordinary context by
+/// [`record_libc_identity`]; 0 before.
 static LIBC_DEVICE: AtomicU64 = AtomicU64::new(0);
 static LIBC_INODE: AtomicU64 = AtomicU64::new(0);
+static LIBC_START: AtomicU64 = AtomicU64::new(0);
+static LIBC_END: AtomicU64 = AtomicU64::new(0);
 
 /// Record which file is this process's C library, from glibc's own
 /// `sigaction` as `libc.so.6` defines it (looked up in that object, so an
@@ -142,6 +151,8 @@ pub fn record_libc_identity() -> std::io::Result<()> {
         .filter(|identity| identity.inode != 0)
         .ok_or_else(|| std::io::Error::other("libc.so.6's sigaction is in no file mapping"))?;
     LIBC_DEVICE.store(identity.device, Ordering::Release);
+    LIBC_START.store(identity.start, Ordering::Release);
+    LIBC_END.store(identity.end, Ordering::Release);
     LIBC_INODE.store(identity.inode, Ordering::Release);
     Ok(())
 }
@@ -149,8 +160,8 @@ pub fn record_libc_identity() -> std::io::Result<()> {
 fn recorded_libc() -> Option<MappingIdentity> {
     let inode = LIBC_INODE.load(Ordering::Acquire);
     (inode != 0).then(|| MappingIdentity {
-        start: 0,
-        end: 0,
+        start: LIBC_START.load(Ordering::Acquire),
+        end: LIBC_END.load(Ordering::Acquire),
         executable: true,
         writable: false,
         device: LIBC_DEVICE.load(Ordering::Acquire),
@@ -533,11 +544,13 @@ mod tests {
         assert!(!vm_flags_change_on_fork(b"Rss: 4 kB"));
     }
 
-    /// An executable alias of the C library's file holding glibc's restorer
-    /// is accepted like the original; after `MADV_DONTFORK` on it (a fork
-    /// child would lose it), it is refused.
+    /// Only the C library's own mapping qualifies: an executable alias of its
+    /// file holding the same bytes is refused, read-only or writable. And the
+    /// C library's own mapping is refused once `MADV_DONTFORK` marks it (a
+    /// fork child would lose it), checked in a child process so this test
+    /// process keeps its C library across later forks.
     #[test]
-    fn a_restorer_mapping_a_fork_child_would_lose_is_refused() {
+    fn only_the_c_librarys_own_mapping_qualifies() {
         record_libc_identity().unwrap();
         let restorer = unsafe {
             let mut installed: libc::sigaction = core::mem::zeroed();
@@ -591,13 +604,23 @@ mod tests {
         assert_ne!(alias, libc::MAP_FAILED);
         unsafe { libc::close(fd) };
         let aliased = alias as u64 + (file_offset - page_offset);
-        assert!(unsafe { glibc_restorer_accepted(aliased) });
-        assert_eq!(
-            unsafe { libc::madvise(alias, 8192, libc::MADV_DONTFORK) },
-            0
-        );
+        assert!(unsafe { glibc_restorer_accepted(restorer) });
         assert!(!unsafe { glibc_restorer_accepted(aliased) });
         assert_eq!(unsafe { libc::munmap(alias, 8192) }, 0);
+        let child = unsafe { libc::fork() };
+        if child == 0 {
+            let page = restorer & !4095;
+            let marked =
+                unsafe { libc::madvise(page as *mut libc::c_void, 4096, libc::MADV_DONTFORK) } == 0;
+            let refused = !unsafe { glibc_restorer_accepted(restorer) };
+            unsafe { libc::_exit(if marked && refused { 0 } else { 1 }) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "{status:#x}"
+        );
         // A writable executable alias of the same file: ordinary stores could
         // change the bytes, so it is refused.
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
@@ -673,6 +696,13 @@ mod tests {
             anonymous,
             anonymous
         ));
+        // The same file mapped elsewhere (an alias the guest owns).
+        let alias = MappingIdentity {
+            start: 0x9000_0000,
+            end: 0x9010_0000,
+            ..libc
+        };
+        assert!(!restorer_mapping_accepted(0x9000_1000, alias, libc));
         let other_file = MappingIdentity { inode: 100, ..libc };
         assert!(!restorer_mapping_accepted(0x7000_1000, other_file, libc));
         let other_device = MappingIdentity { device: 8, ..libc };
