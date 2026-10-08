@@ -129,12 +129,12 @@ pub fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
     if number != libc::SYS_rt_sigaction || args[1] == 0 {
         return true;
     }
-    if args[0] == libc::SIGKILL as u64 || args[0] == libc::SIGSTOP as u64 {
+    if args[0] as i32 == libc::SIGKILL || args[0] as i32 == libc::SIGSTOP {
         return true;
     }
-    if args[0] == libc::SIGSYS as u64
-        || (args[0] == libc::SIGSEGV as u64 && any_instruction_subscribed())
-    {
+    // Linux reads the signal argument as a C int.
+    let signal = args[0] as i32;
+    if signal == libc::SIGSYS || (signal == libc::SIGSEGV && any_instruction_subscribed()) {
         return false;
     }
 
