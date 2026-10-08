@@ -254,10 +254,12 @@ pub unsafe extern "C" fn reverie_inguest_initialize() {
             "reverie-inguest initialization failed: {}",
             crate::guest::support::describe_io_error(&error)
         );
-        unsafe {
-            crate::trap::raw_syscall6(libc::SYS_exit_group, [127, 0, 0, 0, 0, 0]);
-        }
-        unreachable!("exit_group returned");
+        // libc's _exit, not a raw exit_group from this library: an exit_group
+        // issued from the runtime's own code bypasses the runtime's exit path,
+        // so an installed runtime would not report the process's statistics
+        // to the coordinator. The process ends here, so an interposed _exit
+        // can change only a heap that is about to disappear.
+        unsafe { libc::_exit(127) };
     }
 }
 
