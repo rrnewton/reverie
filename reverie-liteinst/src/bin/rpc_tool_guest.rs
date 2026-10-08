@@ -1277,6 +1277,416 @@ fn tool_sigtrap_default_guest(path: &Path) -> ! {
     panic!("a non-guard SIGTRAP did not take the default action");
 }
 
+unsafe extern "C" fn guest_sigalrm_handler(_signal: libc::c_int) {}
+
+unsafe extern "C" fn other_guest_sigalrm_handler(_signal: libc::c_int) {}
+
+/// An allow-everything classic BPF program for a seccomp filter.
+fn allow_all_filter() -> ([libc::sock_filter; 1], libc::sock_fprog) {
+    let program = [libc::sock_filter {
+        code: (libc::BPF_RET | libc::BPF_K) as u16,
+        jt: 0,
+        jf: 0,
+        k: libc::SECCOMP_RET_ALLOW,
+    }];
+    let fprog = libc::sock_fprog {
+        len: 1,
+        filter: core::ptr::null_mut(),
+    };
+    (program, fprog)
+}
+
+fn alternate_stack_is_disabled() -> bool {
+    let mut stack: libc::stack_t = unsafe { core::mem::zeroed() };
+    let queried = unsafe { libc::sigaltstack(core::ptr::null(), &mut stack) };
+    queried == 0 && stack.ss_flags == libc::SS_DISABLE && stack.ss_sp.is_null()
+}
+
+fn sigalrm_sigaction(action: &libc::sigaction) -> Result<(), i32> {
+    if unsafe { libc::sigaction(libc::SIGALRM, action, core::ptr::null_mut()) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().raw_os_error().unwrap())
+    }
+}
+
+fn guest_handler_action(flags: libc::c_int) -> libc::sigaction {
+    let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+    action.sa_sigaction = guest_sigalrm_handler as *const () as usize;
+    action.sa_flags = flags;
+    action
+}
+
+fn physical_sigalrm_action() -> reverie_inguest::signal::KernelSigaction {
+    let mut action = reverie_inguest::signal::KernelSigaction::default();
+    unsafe { reverie_inguest::signal::raw_sigaction(libc::SIGALRM, None, Some(&mut action)) }
+        .unwrap();
+    action
+}
+
+fn physical_mask() -> u64 {
+    let mut mask = 0;
+    unsafe { reverie_inguest::signal::raw_sigprocmask(libc::SIG_BLOCK, None, Some(&mut mask)) }
+        .unwrap();
+    mask
+}
+
+fn guest_mask_call(how: libc::c_int, set: Option<u64>) -> u64 {
+    let mut old = 0_u64;
+    let set_pointer = set
+        .as_ref()
+        .map_or(core::ptr::null(), |set| set as *const u64);
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigprocmask,
+            how,
+            set_pointer,
+            &mut old as *mut u64,
+            8,
+        )
+    };
+    assert_eq!(result, 0);
+    old
+}
+
+/// Signal phase 1, step I3b, in the Tool mode with handlers admitted: the
+/// guest's SIGALRM action, signal mask, pending set and alternate stack are
+/// virtual, the physical state is the runtime's, refusals change nothing,
+/// and the accepted restorer's page is protected.
+fn sigalrm_virtual_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let alarm = 1_u64 << (libc::SIGALRM - 1);
+    let usr1 = 1_u64 << (libc::SIGUSR1 - 1);
+
+    // Refusals first: each EPERM, nothing installed.
+    assert_eq!(
+        sigalrm_sigaction(&guest_handler_action(libc::SA_RESETHAND)),
+        Err(libc::EPERM)
+    );
+    assert_eq!(
+        sigalrm_sigaction(&guest_handler_action(libc::SA_NODEFER)),
+        Err(libc::EPERM)
+    );
+    // A hand-written restorer: glibc's bytes in a heap copy.
+    let copy = Box::new(reverie_inguest::guest::restorer::GLIBC_RESTORER_BYTES);
+    let forged = reverie_inguest::signal::KernelSigaction {
+        handler: guest_sigalrm_handler as *const () as u64,
+        flags: reverie_inguest::signal::SA_RESTORER as u64,
+        restorer: copy.as_ptr() as u64,
+        mask: 0,
+    };
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigaction,
+            libc::SIGALRM,
+            &forged as *const _,
+            core::ptr::null_mut::<u8>(),
+            8,
+        )
+    };
+    assert_eq!(result, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EPERM)
+    );
+    // No SA_RESTORER at all.
+    let bare = reverie_inguest::signal::KernelSigaction {
+        flags: 0,
+        restorer: 0,
+        ..forged
+    };
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigaction,
+            libc::SIGALRM,
+            &bare as *const _,
+            core::ptr::null_mut::<u8>(),
+            8,
+        )
+    };
+    assert_eq!(result, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EPERM)
+    );
+    assert_eq!(physical_sigalrm_action().handler, libc::SIG_DFL as u64);
+
+    // With handlers admitted the alternate stack is always virtual and
+    // disabled, before any handler too; and the guest cannot add a seccomp
+    // filter (one could fake the runtime's own calls).
+    assert!(alternate_stack_is_disabled());
+    let (mut program, mut fprog) = allow_all_filter();
+    fprog.filter = program.as_mut_ptr();
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+        0
+    );
+    let added = unsafe {
+        libc::prctl(
+            libc::PR_SET_SECCOMP,
+            libc::SECCOMP_MODE_FILTER,
+            &fprog as *const libc::sock_fprog,
+        )
+    };
+    assert_eq!(added, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EOPNOTSUPP)
+    );
+
+    // Admission: the guest's action is virtual, the physical one the runtime's.
+    let mut blocked: libc::sigset_t = unsafe { core::mem::zeroed() };
+    unsafe { libc::sigaddset(&mut blocked, libc::SIGUSR2) };
+    let mut action = guest_handler_action(libc::SA_RESTART | libc::SA_ONSTACK);
+    action.sa_mask = blocked;
+    sigalrm_sigaction(&action).unwrap();
+    let mut queried: libc::sigaction = unsafe { core::mem::zeroed() };
+    assert_eq!(
+        unsafe { libc::sigaction(libc::SIGALRM, core::ptr::null(), &mut queried) },
+        0
+    );
+    assert_eq!(
+        queried.sa_sigaction,
+        guest_sigalrm_handler as *const () as usize
+    );
+    assert_eq!(queried.sa_flags & libc::SA_ONSTACK, libc::SA_ONSTACK);
+    let glibc_restorer = queried.sa_restorer.unwrap() as usize as u64;
+    let physical = physical_sigalrm_action();
+    assert_ne!(physical.handler, guest_sigalrm_handler as *const () as u64);
+    assert_eq!(
+        physical.restorer,
+        reverie_inguest::signal::signal_restorer()
+    );
+    assert_eq!(physical.flags & libc::SA_ONSTACK as u64, 0);
+    assert_ne!(physical.flags & libc::SA_RESTART as u64, 0);
+    assert_eq!(physical.mask, (1 << (libc::SIGUSR2 - 1)) | alarm);
+
+    // The mask: the guest sees its own; the physical one always blocks SIGALRM.
+    let old = guest_mask_call(libc::SIG_BLOCK, Some(usr1));
+    assert_eq!(old & alarm, 0);
+    assert_eq!(guest_mask_call(libc::SIG_BLOCK, None), usr1);
+    assert_eq!(physical_mask() & (usr1 | alarm), usr1 | alarm);
+    guest_mask_call(libc::SIG_SETMASK, Some(0));
+    assert_eq!(guest_mask_call(libc::SIG_BLOCK, None), 0);
+    assert_eq!(physical_mask() & (usr1 | alarm), alarm);
+    let bad_how = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigprocmask,
+            99,
+            &usr1 as *const u64,
+            core::ptr::null_mut::<u64>(),
+            8,
+        )
+    };
+    assert_eq!(bad_how, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EINVAL)
+    );
+
+    // A physical SIGALRM stays blocked and hidden from rt_sigpending, even
+    // while the guest blocks SIGALRM itself; another blocked pending signal
+    // stays visible.
+    guest_mask_call(libc::SIG_SETMASK, Some(usr1 | alarm));
+    unsafe { reverie_inguest::signal::raw_raise(libc::SIGALRM) }.unwrap();
+    unsafe { reverie_inguest::signal::raw_raise(libc::SIGUSR1) }.unwrap();
+    let mut pending: libc::sigset_t = unsafe { core::mem::zeroed() };
+    assert_eq!(unsafe { libc::sigpending(&mut pending) }, 0);
+    assert_eq!(unsafe { libc::sigismember(&pending, libc::SIGALRM) }, 0);
+    assert_eq!(unsafe { libc::sigismember(&pending, libc::SIGUSR1) }, 1);
+    // Linux's sizes: 0 copies nothing (even to NULL), 4 copies a prefix, 9
+    // is EINVAL.
+    let raw_pending =
+        |set: *mut u64, size: usize| unsafe { libc::syscall(libc::SYS_rt_sigpending, set, size) };
+    assert_eq!(raw_pending(core::ptr::null_mut(), 0), 0);
+    let mut prefix = u64::MAX;
+    assert_eq!(raw_pending(&mut prefix, 4), 0);
+    assert_eq!(prefix, 0xffff_ffff_0000_0000 | usr1);
+    assert_eq!(raw_pending(&mut prefix, 9), -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EINVAL)
+    );
+    guest_mask_call(libc::SIG_SETMASK, Some(usr1));
+
+    // The signal argument is a C int: 0x1_0000_000e is SIGALRM, and its query
+    // is the virtual action.
+    let mut aliased = reverie_inguest::signal::KernelSigaction::default();
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigaction,
+            0x1_0000_0000_i64 | libc::SIGALRM as i64,
+            core::ptr::null::<u8>(),
+            &mut aliased as *mut _,
+            8,
+        )
+    };
+    assert_eq!(result, 0);
+    assert_eq!(aliased.handler, guest_sigalrm_handler as *const () as u64);
+
+    // Linux clears flag bits it does not know (here SA_UNSUPPORTED, 0x400),
+    // so a guest can probe for one; and the old action is copied out after
+    // the change, so an unwritable old pointer is EFAULT with the new action
+    // in place.
+    let probing = reverie_inguest::signal::KernelSigaction {
+        handler: other_guest_sigalrm_handler as *const () as u64,
+        flags: 0x400 | reverie_inguest::signal::SA_RESTORER as u64,
+        restorer: glibc_restorer,
+        mask: 0,
+    };
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigaction,
+            libc::SIGALRM,
+            &probing as *const _,
+            8_usize as *mut u8,
+            8,
+        )
+    };
+    assert_eq!(result, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EFAULT)
+    );
+    let mut probed: libc::sigaction = unsafe { core::mem::zeroed() };
+    assert_eq!(
+        unsafe { libc::sigaction(libc::SIGALRM, core::ptr::null(), &mut probed) },
+        0
+    );
+    // The new handler is in place although copying the old action out
+    // failed: Linux changes the action first.
+    assert_eq!(probed.sa_flags & 0x400, 0);
+    assert_eq!(
+        probed.sa_sigaction,
+        other_guest_sigalrm_handler as *const () as usize
+    );
+    sigalrm_sigaction(&action).unwrap();
+
+    // A fork child inherits the virtual action and mask.
+    let child = unsafe { libc::fork() };
+    if child == 0 {
+        let mut inherited: libc::sigaction = unsafe { core::mem::zeroed() };
+        let ok = unsafe { libc::sigaction(libc::SIGALRM, core::ptr::null(), &mut inherited) } == 0
+            && inherited.sa_sigaction == guest_sigalrm_handler as *const () as usize
+            && guest_mask_call(libc::SIG_BLOCK, None) == usr1
+            && physical_sigalrm_action().handler != guest_sigalrm_handler as *const () as u64
+            && physical_mask() & alarm != 0;
+        unsafe { libc::_exit(if ok { 0 } else { 1 }) };
+    }
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+    assert!(
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+        "{status:#x}"
+    );
+
+    // A disabled alternate stack, never the runtime's.
+    let mut stack: libc::stack_t = unsafe { core::mem::zeroed() };
+    assert_eq!(
+        unsafe { libc::sigaltstack(core::ptr::null(), &mut stack) },
+        0
+    );
+    assert_eq!(stack.ss_flags, libc::SS_DISABLE);
+    assert!(stack.ss_sp.is_null());
+
+    // The accepted restorer's page is protected.
+    let page = glibc_restorer & !4095;
+    let errno_of = |result: libc::c_int| {
+        (result == -1).then(|| std::io::Error::last_os_error().raw_os_error())
+    };
+    assert_eq!(
+        errno_of(unsafe {
+            libc::mprotect(
+                page as *mut libc::c_void,
+                4096,
+                libc::PROT_READ | libc::PROT_EXEC,
+            )
+        }),
+        Some(Some(libc::EPERM))
+    );
+    assert_eq!(
+        errno_of(unsafe { libc::madvise(page as *mut libc::c_void, 4096, libc::MADV_NORMAL) }),
+        Some(Some(libc::EPERM))
+    );
+
+    // SIG_IGN: physical too, and the pending physical SIGALRM is discarded.
+    let mut ignore: libc::sigaction = unsafe { core::mem::zeroed() };
+    ignore.sa_sigaction = libc::SIG_IGN;
+    sigalrm_sigaction(&ignore).unwrap();
+    assert_eq!(physical_sigalrm_action().handler, libc::SIG_IGN as u64);
+    assert_eq!(physical_mask() & alarm, 0);
+    // The alternate stack stays disabled after the handler is gone.
+    assert!(alternate_stack_is_disabled());
+    // The page stays protected after the handler is gone.
+    assert_eq!(
+        unsafe { libc::madvise(page as *mut libc::c_void, 4096, libc::MADV_NORMAL) },
+        -1
+    );
+    println!("sigalrm-virtual-ok");
+}
+
+/// A SIGALRM the runtime did not prepare that reaches the trampoline ends
+/// the process before any guest code runs.
+fn sigalrm_unprepared_guest(path: &Path) -> ! {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    sigalrm_sigaction(&guest_handler_action(0)).unwrap();
+    println!("sigalrm-handler-installed");
+    unsafe { reverie_inguest::signal::raw_raise(libc::SIGALRM) }.unwrap();
+    // Unblock it physically, behind the runtime's back.
+    let alarm = 1_u64 << (libc::SIGALRM - 1);
+    unsafe { reverie_inguest::signal::raw_sigprocmask(libc::SIG_UNBLOCK, Some(&alarm), None) }
+        .unwrap();
+    panic!("an unprepared SIGALRM reached guest code");
+}
+
+/// Installing a handler while SIGALRM is physically pending is refused, and
+/// so is any handler while handlers are not admitted.
+fn sigalrm_refused_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let mut blocked: libc::sigset_t = unsafe { core::mem::zeroed() };
+    unsafe { libc::sigaddset(&mut blocked, libc::SIGALRM) };
+    assert_eq!(
+        unsafe { libc::sigprocmask(libc::SIG_BLOCK, &blocked, core::ptr::null_mut()) },
+        0
+    );
+    assert_eq!(unsafe { libc::raise(libc::SIGALRM) }, 0);
+    assert_eq!(
+        sigalrm_sigaction(&guest_handler_action(0)),
+        Err(libc::EPERM)
+    );
+    assert_eq!(physical_sigalrm_action().handler, libc::SIG_DFL as u64);
+    println!("sigalrm-refused-ok");
+}
+
+/// A seccomp filter the runtime did not install (here added through the
+/// runtime's own gate, behind its back) keeps any handler from being admitted:
+/// it could fabricate the result of the runtime's own signal calls.
+fn sigalrm_extra_filter_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let (mut program, mut fprog) = allow_all_filter();
+    fprog.filter = program.as_mut_ptr();
+    let added = unsafe {
+        reverie_inguest::trap::raw_syscall6(
+            libc::SYS_seccomp,
+            [
+                libc::SECCOMP_SET_MODE_FILTER as u64,
+                0,
+                (&fprog as *const libc::sock_fprog) as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    assert_eq!(added, 0);
+    assert_eq!(
+        sigalrm_sigaction(&guest_handler_action(0)),
+        Err(libc::EPERM)
+    );
+    assert_eq!(physical_sigalrm_action().handler, libc::SIG_DFL as u64);
+    println!("sigalrm-extra-filter-ok");
+}
+
 fn spoof_sigsys_guest(path: &Path) -> ! {
     unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
     unsafe { reverie_liteinst_rpc_raise_sigsys() };
@@ -2034,6 +2444,10 @@ fn main() {
         Some("preblocked-sigsys") => preblocked_sigsys_guest(Path::new(&path)),
         Some("spoof-sigsys") => spoof_sigsys_guest(Path::new(&path)),
         Some("tool-signal-runtime") => tool_signal_runtime_guest(Path::new(&path)),
+        Some("sigalrm-virtual") => sigalrm_virtual_guest(Path::new(&path)),
+        Some("sigalrm-unprepared") => sigalrm_unprepared_guest(Path::new(&path)),
+        Some("sigalrm-refused") => sigalrm_refused_guest(Path::new(&path)),
+        Some("sigalrm-extra-filter") => sigalrm_extra_filter_guest(Path::new(&path)),
         Some("tool-sigreturn-trap") => tool_guest_sigreturn_guest(Path::new(&path), false, false),
         Some("tool-sigreturn-hook") => tool_guest_sigreturn_guest(Path::new(&path), true, false),
         Some("tool-sigreturn-trap-alias") => {
