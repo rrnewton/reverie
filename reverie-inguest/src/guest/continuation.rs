@@ -153,11 +153,8 @@ struct CallbackStack {
 
 impl CallbackStack {
     fn new() -> io::Result<Self> {
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-        if page <= 0 {
-            return Err(io::Error::other("invalid page size"));
-        }
-        let page = page as usize;
+        let page = usize::try_from(crate::guest::support::page_size()?)
+            .map_err(|_| io::Error::other("invalid page size"))?;
         let bytes = CALLBACK_STACK_BYTES
             .checked_add(
                 page.checked_mul(2)
