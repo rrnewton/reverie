@@ -129,12 +129,12 @@ pub fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
     if number != libc::SYS_rt_sigaction || args[1] == 0 {
         return true;
     }
-    if args[0] == libc::SIGKILL as u64 || args[0] == libc::SIGSTOP as u64 {
+    if args[0] as i32 == libc::SIGKILL || args[0] as i32 == libc::SIGSTOP {
         return true;
     }
-    if args[0] == libc::SIGSYS as u64
-        || (args[0] == libc::SIGSEGV as u64 && any_instruction_subscribed())
-    {
+    // Linux reads the signal argument as a C int.
+    let signal = args[0] as i32;
+    if signal == libc::SIGSYS || (signal == libc::SIGSEGV && any_instruction_subscribed()) {
         return false;
     }
 
@@ -218,6 +218,29 @@ mod tests {
                 [signal as u64, 8, 0, 8, 0, 0]
             ));
         }
+    }
+
+    /// The signal argument is read as a C int, as Linux reads it, whether or
+    /// not SIGALRM handlers are admitted: an alias with high bits set is that
+    /// signal. (Before, a SIGKILL alias with a handler got EPERM where Linux
+    /// returns EINVAL, and a SIGSYS alias passed the guard.)
+    #[test]
+    fn the_guard_reads_the_signal_as_a_c_int() {
+        let handler = [0x1000_u64, 0, 0, 0];
+        let args = |signal: u64| [signal, handler.as_ptr() as u64, 0, 8, 0, 0];
+        let high = 0x1_0000_0000_u64;
+        assert!(signal_action_supported(
+            libc::SYS_rt_sigaction,
+            args(high | libc::SIGKILL as u64)
+        ));
+        assert!(!signal_action_supported(
+            libc::SYS_rt_sigaction,
+            args(high | libc::SIGSYS as u64)
+        ));
+        assert!(!signal_action_supported(
+            libc::SYS_rt_sigaction,
+            args(high | libc::SIGUSR1 as u64)
+        ));
     }
 
     /// The kernel's answer the guest sees for the SIGKILL and SIGSTOP calls
