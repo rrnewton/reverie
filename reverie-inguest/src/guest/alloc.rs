@@ -12,6 +12,12 @@
 //! can interrupt the guest allocator itself. Its temporary and persistent
 //! allocations are therefore isolated from libc until they are released or
 //! the process exits.
+//!
+//! The arena is zero-initialized and page-aligned, so the loader places it in
+//! anonymous memory (`.bss`) rather than in a mapping of the file that holds
+//! it. A backend that reads an object's file mappings for code addresses
+//! (LiteInst's entry census) therefore never finds the runtime's own state
+//! there, wherever the runtime is linked.
 
 use core::alloc::GlobalAlloc;
 use core::alloc::Layout;
@@ -26,9 +32,11 @@ use std::alloc::System;
 use std::cell::Cell;
 
 const TOOL_HEAP_BYTES: usize = 32 * 1024 * 1024;
-const FREE_LIST_END: usize = usize::MAX;
+/// Ends a free list. No block starts at offset 0 (the bump cursor starts past
+/// it), so this can be 0 and the whole heap's initial value is zero.
+const FREE_LIST_END: usize = 0;
 
-#[repr(align(64))]
+#[repr(align(4096))]
 struct ToolHeapBytes([u8; TOOL_HEAP_BYTES]);
 
 #[repr(C)]
@@ -123,7 +131,8 @@ impl ToolHeap {
 
         // SAFETY: the heap lock serializes bump-cursor access.
         let cursor = unsafe { *self.next.get() };
-        let Some(block_offset) = align_up(cursor, align_of::<ToolHeapBlock>()) else {
+        // Offset 0 stays unused: it is FREE_LIST_END.
+        let Some(block_offset) = align_up(cursor.max(1), align_of::<ToolHeapBlock>()) else {
             return ptr::null_mut();
         };
         let Some((pointer, end)) = self.layout_end(block_offset, layout) else {
@@ -314,6 +323,37 @@ mod tests {
         TEST_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// The heap must be anonymous memory, not part of any mapping of the file
+    /// that holds it: a census of that file's mappings would otherwise read the
+    /// runtime's own state (saved instruction pointers, function pointers) as
+    /// code addresses of the object.
+    #[test]
+    fn tool_heap_is_anonymous_memory() {
+        let start = TOOL_HEAP.base() as u64;
+        assert_eq!(start % 4096, 0, "the Tool heap is not page-aligned");
+        let last = start + TOOL_HEAP_BYTES as u64 - 1;
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        for address in [start, last] {
+            let line = maps
+                .lines()
+                .find(|line| {
+                    let (start, end) = line
+                        .split_whitespace()
+                        .next()
+                        .and_then(|range| range.split_once('-'))
+                        .unwrap();
+                    (u64::from_str_radix(start, 16).unwrap()..u64::from_str_radix(end, 16).unwrap())
+                        .contains(&address)
+                })
+                .unwrap_or_else(|| panic!("{address:#x} is in no mapping:\n{maps}"));
+            let inode = line.split_whitespace().nth(4).unwrap();
+            assert_eq!(
+                inode, "0",
+                "the Tool heap at {address:#x} is file-backed: {line}"
+            );
+        }
     }
 
     #[test]
