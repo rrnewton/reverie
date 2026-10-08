@@ -346,6 +346,23 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         }
     }
 
+    /// The siginfo of the signal [`Tool::handle_signal_event`] is reporting,
+    /// while that callback runs: the Linux `siginfo_t` bytes the kernel
+    /// delivered with it, as in [`crate::SignalEvent`]. `None` outside that
+    /// callback, and where the backend cannot read it.
+    fn signal_info(&self) -> Option<[u8; crate::SIGNAL_INFO_SIZE]> {
+        None
+    }
+
+    /// From inside [`Tool::handle_signal_event`], replaces the siginfo that the
+    /// reported signal is delivered with, if the callback returns it to be
+    /// delivered. A later call replaces an earlier one. Fails with `EINVAL`
+    /// outside that callback and with `ENOSYS` where the backend cannot set a
+    /// siginfo; the signal is then delivered with the one it arrived with.
+    fn set_signal_info(&mut self, _info: [u8; crate::SIGNAL_INFO_SIZE]) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+
     /// Backend process/task lifetime identity, including at thread start.
     fn signal_task_identity(&self) -> Option<crate::SignalTaskIdentity> {
         None
@@ -796,6 +813,12 @@ where
         self.inner.queue_process_alarm_signal(event).await
     }
 
+    fn signal_info(&self) -> Option<[u8; crate::SIGNAL_INFO_SIZE]> {
+        self.inner.signal_info()
+    }
+    fn set_signal_info(&mut self, info: [u8; crate::SIGNAL_INFO_SIZE]) -> Result<(), Errno> {
+        self.inner.set_signal_info(info)
+    }
     fn signal_task_identity(&self) -> Option<crate::SignalTaskIdentity> {
         self.inner.signal_task_identity()
     }

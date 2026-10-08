@@ -138,6 +138,11 @@ enum Report {
     Rdtsc,
     /// The guest's original syscall number and return register at a stop.
     Regs(i64, i64),
+    /// A signal shown to `Tool::filter_unreported_signal`, with its
+    /// siginfo's `si_code` (or 0 without one).
+    Filtered(i32, i32),
+    /// A `Guest::set_signal_info` result, as 0 or the errno.
+    SetInfo(i32),
 }
 
 #[derive(Default)]
@@ -145,6 +150,8 @@ struct Log {
     injected: Mutex<Vec<Result<i64, i32>>>,
     signals: Mutex<Vec<i32>>,
     regs: Mutex<Vec<(i64, i64)>>,
+    filtered: Mutex<Vec<(i32, i32)>>,
+    set_info: Mutex<Vec<i32>>,
     timers: AtomicUsize,
     rdtscs: AtomicUsize,
 }
@@ -166,6 +173,10 @@ impl GlobalTool for Log {
                 self.rdtscs.fetch_add(1, Ordering::Relaxed);
             }
             Report::Regs(orig_syscall, ret) => self.regs.lock().unwrap().push((orig_syscall, ret)),
+            Report::Filtered(signal, si_code) => {
+                self.filtered.lock().unwrap().push((signal, si_code))
+            }
+            Report::SetInfo(result) => self.set_info.lock().unwrap().push(result),
         }
     }
 }
@@ -198,6 +209,129 @@ impl Tool for ReplaceMarker {
         signal: Signal,
     ) -> Result<Option<Signal>, Errno> {
         guest.send_rpc(Report::Signal(signal as i32)).await;
+        Ok(Some(signal))
+    }
+}
+
+/// `ReplaceMarker`, and drops every SIGCHLD that the backend would pass to
+/// the guest unreported (`Tool::filter_unreported_signal`), recording each
+/// signal shown to that hook.
+#[derive(Clone, Copy, Debug, Default)]
+struct DropUnreportedSigchld;
+
+#[reverie::tool]
+impl Tool for DropUnreportedSigchld {
+    type GlobalState = Log;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        replace_marker(guest, syscall).await
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        Ok(Some(signal))
+    }
+
+    async fn filter_unreported_signal<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+        info: Option<[u8; reverie::SIGNAL_INFO_SIZE]>,
+    ) -> bool {
+        // `si_code` follows `si_signo` and `si_errno` in `siginfo_t`.
+        let si_code = info.map_or(0, |info| {
+            i32::from_ne_bytes(info[8..12].try_into().unwrap())
+        });
+        guest
+            .send_rpc(Report::Filtered(signal as i32, si_code))
+            .await;
+        signal != Signal::SIGCHLD
+    }
+}
+
+/// The `si_code` and `si_pid` that `ReplaceSiginfo` gives a reported SIGUSR1.
+const REPLACED_SI_CODE: i32 = 42;
+const REPLACED_SI_PID: i32 = 4242;
+
+/// `ReplaceMarker`, whose signal hook reads a reported SIGUSR1's siginfo
+/// (`Guest::signal_info`, recorded as `Filtered`) and replaces it
+/// (`Guest::set_signal_info`) with `REPLACED_SI_CODE` and `REPLACED_SI_PID`,
+/// after a replacement naming another signal is refused. Outside a signal
+/// hook, at every write the guest makes to stdout, it records what
+/// `set_signal_info` returns.
+#[derive(Clone, Copy, Debug, Default)]
+struct ReplaceSiginfo;
+
+/// The errno of `result`, or 0 for success.
+fn errno_of(result: Result<(), Errno>) -> i32 {
+    result.err().map_or(0, Errno::into_raw)
+}
+
+#[reverie::tool]
+impl Tool for ReplaceSiginfo {
+    type GlobalState = Log;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::write);
+        subscription
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        if let Syscall::Write(write) = syscall
+            && write.fd() == libc::STDOUT_FILENO
+        {
+            let result = guest.set_signal_info([0; reverie::SIGNAL_INFO_SIZE]);
+            guest.send_rpc(Report::SetInfo(errno_of(result))).await;
+        }
+        replace_marker(guest, syscall).await
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(Report::Signal(signal as i32)).await;
+        if signal == Signal::SIGUSR1 {
+            let mut info = guest
+                .signal_info()
+                .expect("a reported signal has its siginfo");
+            let si_code = i32::from_ne_bytes(info[8..12].try_into().unwrap());
+            guest
+                .send_rpc(Report::Filtered(signal as i32, si_code))
+                .await;
+            info[0..4].copy_from_slice(&libc::SIGUSR2.to_ne_bytes());
+            let mismatched = guest.set_signal_info(info);
+            guest.send_rpc(Report::SetInfo(errno_of(mismatched))).await;
+            info[0..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
+            info[8..12].copy_from_slice(&REPLACED_SI_CODE.to_ne_bytes());
+            // `si_pid` is the first field of the union after the three ints
+            // and their padding.
+            info[16..20].copy_from_slice(&REPLACED_SI_PID.to_ne_bytes());
+            let replaced = guest.set_signal_info(info);
+            guest.send_rpc(Report::SetInfo(errno_of(replaced))).await;
+        }
         Ok(Some(signal))
     }
 }
@@ -791,6 +925,31 @@ fn injected_syscall_completed_before_group_stop_reports_its_result_once() {
 }
 
 static SIGSYS_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+static SIGCHLD_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+static SIGURG_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn count_sigchld(_signal: libc::c_int) {
+    SIGCHLD_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+extern "C" fn count_sigurg(_signal: libc::c_int) {
+    SIGURG_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+static SIGUSR1_SI_CODE: AtomicUsize = AtomicUsize::new(0);
+static SIGUSR1_SI_PID: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn record_sigusr1_siginfo(
+    _signal: libc::c_int,
+    info: *mut libc::siginfo_t,
+    _context: *mut libc::c_void,
+) {
+    // SAFETY: the kernel passes a valid siginfo to an SA_SIGINFO handler.
+    unsafe {
+        SIGUSR1_SI_CODE.store((*info).si_code as usize, Ordering::Relaxed);
+        SIGUSR1_SI_PID.store((*info).si_pid() as usize, Ordering::Relaxed);
+    }
+}
 
 extern "C" fn count_sigsys(_signal: libc::c_int) {
     SIGSYS_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -1063,6 +1222,133 @@ fn signal_pending_before_injected_syscall_interrupts_it() {
         *signals,
         vec![libc::SIGUSR1],
         "the held signal is reported to the tool once before it is delivered"
+    );
+}
+
+/// As `signal_pending_before_injected_syscall_interrupts_it`, with SIGCHLD
+/// (queued with `si_code` CLD_EXITED) and SIGURG pending. The injected
+/// `getpid` stops before its `syscall` on SIGCHLD, the lower-numbered, which
+/// is held while SIGURG stays queued, and a held signal is passed on
+/// unreported while another is pending
+/// (https://github.com/rrnewton/reverie/issues/845). The tool's
+/// `filter_unreported_signal` is shown that SIGCHLD, with its siginfo, and
+/// drops it: it never reaches the guest, whose SIGCHLD handler does not run,
+/// while SIGURG is reported and delivered as before. Without the hook the
+/// held SIGCHLD reached the guest with no Tool seeing it.
+#[test]
+fn a_held_sigchld_the_tool_drops_never_reaches_the_guest() {
+    let (output, log) = test_fn::<DropUnreportedSigchld, _>(|| unsafe {
+        SIGCHLD_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        SIGURG_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGCHLD, count_sigchld);
+        install_counter(libc::SIGURG, count_sigurg);
+        let set = block(&[libc::SIGCHLD, libc::SIGURG]);
+        queue_to_self(libc::SIGCHLD, libc::CLD_EXITED);
+        queue_to_self(libc::SIGURG, libc::SI_QUEUE);
+        let ret = libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_THEN_GETPID_FD,
+            &set as *const libc::sigset_t,
+            0usize,
+        );
+        let errno = *libc::__errno_location();
+        println!(
+            "{ret} {errno} {} {}",
+            SIGCHLD_HANDLER_CALLS.load(Ordering::Relaxed),
+            SIGURG_HANDLER_CALLS.load(Ordering::Relaxed),
+        );
+    })
+    .expect("run dropped-held-SIGCHLD guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    let filtered = log.filtered.lock().unwrap();
+    eprintln!(
+        "PROBE dropped-held-sigchld guest={} injected={:?} signals={:?} filtered={:?}",
+        stdout.trim(),
+        *injected,
+        *signals,
+        *filtered
+    );
+    assert_eq!(
+        *injected,
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
+        "the unblock completes; SIGCHLD interrupts getpid before it runs"
+    );
+    assert_eq!(
+        *filtered,
+        vec![(libc::SIGCHLD, libc::CLD_EXITED)],
+        "the held SIGCHLD is shown to the hook once, with its siginfo"
+    );
+    assert_eq!(
+        stdout.trim(),
+        format!("-1 {} 0 1", libc::EINTR),
+        "EINTR, the dropped SIGCHLD's handler never runs, SIGURG's runs once"
+    );
+    assert_eq!(*signals, vec![libc::SIGURG], "SIGURG is reported");
+}
+
+/// A tool that reports a signal can read the siginfo it arrived with
+/// (`Guest::signal_info`) and replace the one it is delivered with
+/// (`Guest::set_signal_info`). The guest sends itself SIGUSR1 (`si_code`
+/// SI_TKILL), its SA_SIGINFO handler sees the tool's `si_code` and `si_pid`
+/// instead, a replacement naming another signal is refused with EINVAL, and so
+/// is a replacement outside a signal hook.
+#[test]
+fn a_reporting_tool_reads_and_replaces_a_signals_siginfo() {
+    let (output, log) = test_fn::<ReplaceSiginfo, _>(|| unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = record_sigusr1_siginfo as *const () as usize;
+        action.sa_flags = libc::SA_SIGINFO;
+        libc::sigemptyset(&mut action.sa_mask);
+        assert_eq!(
+            libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut()),
+            0
+        );
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_tgkill,
+                libc::getpid(),
+                libc::syscall(libc::SYS_gettid),
+                libc::SIGUSR1
+            ),
+            0
+        );
+        println!(
+            "{} {}",
+            SIGUSR1_SI_CODE.load(Ordering::Relaxed) as i32,
+            SIGUSR1_SI_PID.load(Ordering::Relaxed) as i32
+        );
+    })
+    .expect("run siginfo-replacing guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        format!("{REPLACED_SI_CODE} {REPLACED_SI_PID}"),
+        "the handler sees the tool's siginfo"
+    );
+    assert_eq!(*log.signals.lock().unwrap(), vec![libc::SIGUSR1]);
+    assert_eq!(
+        *log.filtered.lock().unwrap(),
+        vec![(libc::SIGUSR1, libc::SI_TKILL)],
+        "the hook reads the siginfo the signal arrived with"
+    );
+    assert_eq!(
+        *log.set_info.lock().unwrap(),
+        vec![libc::EINVAL, 0, libc::EINVAL],
+        "another signal's siginfo is refused, its own is taken, none outside a hook"
     );
 }
 
