@@ -18,6 +18,57 @@ use crate::error::Errno;
 /// Size of Linux's userspace `siginfo_t` representation on supported targets.
 pub const SIGNAL_INFO_SIZE: usize = 128;
 
+/// A signal that a backend is about to pass to the guest without reporting it
+/// to [`crate::Tool::handle_signal_event`], as
+/// [`crate::Tool::filter_unreported_signal`] sees it: which thread takes it,
+/// the signal, and the Linux `siginfo_t` bytes it arrived with when the
+/// backend recorded them. It is read-only metadata, so deciding about the
+/// signal cannot change the guest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnreportedSignal {
+    pid: Pid,
+    tid: Tid,
+    signal: crate::Signal,
+    siginfo: Option<[u8; SIGNAL_INFO_SIZE]>,
+}
+
+impl UnreportedSignal {
+    /// Describes `signal` taken by thread `tid` of process `pid`.
+    pub const fn new(
+        pid: Pid,
+        tid: Tid,
+        signal: crate::Signal,
+        siginfo: Option<[u8; SIGNAL_INFO_SIZE]>,
+    ) -> Self {
+        Self {
+            pid,
+            tid,
+            signal,
+            siginfo,
+        }
+    }
+
+    /// The process of the thread that takes the signal.
+    pub const fn pid(&self) -> Pid {
+        self.pid
+    }
+
+    /// The thread that takes the signal.
+    pub const fn tid(&self) -> Tid {
+        self.tid
+    }
+
+    /// The signal.
+    pub const fn signal(&self) -> crate::Signal {
+        self.signal
+    }
+
+    /// The Linux `siginfo_t` bytes the signal arrived with, when recorded.
+    pub const fn siginfo(&self) -> Option<[u8; SIGNAL_INFO_SIZE]> {
+        self.siginfo
+    }
+}
+
 /// Receiver state after accepting one process-directed child-exit event.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ChildExitSignalDisposition {

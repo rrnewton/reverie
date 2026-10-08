@@ -3191,11 +3191,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
 
         /// Helper function for tracee_preinit that does the core work.
-        async fn setup_special_mmap_page(
+        async fn setup_special_mmap_page<L: Tool + 'static>(
             task: Stopped,
             waits: &Arc<PtracerWaitOwner>,
             saved_regs: &libc::user_regs_struct,
             held_root_stop: &Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+            // Only to show a signal skipped here to
+            // `Tool::filter_unreported_signal`.
+            owner: &TracedTask<L>,
             #[cfg(test)] hooks: PreinitTestHooks<'_>,
         ) -> Result<PreinitOutcome, TraceError> {
             #[cfg(test)]
@@ -3253,6 +3256,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             task.pid(),
                             event
                         );
+                        let sig = owner.filter_direct_unreported(&task, sig).await;
                         running = RootStopLease::new(task, held_root_stop.clone()).resume(sig)?;
                     }
                     Event::Seccomp => {
@@ -3376,6 +3380,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             &self.ptracer_waits,
             &regs,
             &held_root_stop,
+            &*self,
             #[cfg(test)]
             PreinitTestHooks {
                 preinit_point: &preinit_point,
@@ -4514,37 +4519,82 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     /// `pass_held_signal_unreported`, after `Tool::filter_unreported_signal`
-    /// keeps the signal; a signal it drops is resumed as none. The hook sees
-    /// every held signal passed on unreported except SIGSTOP and the timer
-    /// signal, which are Reverie's own. `taken` is the held signal's record,
-    /// whose siginfo the hook gets when it is this signal's.
+    /// keeps the signal (`keeps_unreported_signal`); a signal it drops is
+    /// resumed as none. `taken` is the held signal's record, whose siginfo
+    /// the hook gets when it is this signal's.
     async fn pass_held_signal_unreported_unless_filtered(
         &mut self,
         signal: Option<Signal>,
         taken: Option<TakenSignal>,
     ) -> Result<SignalResume, TraceError> {
-        if let Some(sig) = signal
-            && sig != Signal::SIGSTOP
-            && sig != Timer::signal_type()
-        {
+        if let Some(sig) = signal {
             let info = taken
                 .filter(|taken| taken.signal == sig)
-                .map(|taken| siginfo_bytes(taken.siginfo));
-            if !self
-                .process_state
-                .clone()
-                .filter_unreported_signal(self, sig, info)
-                .await
-            {
-                tracing::debug!(
-                    "[{}] the tool dropped held signal {} passed on unreported",
-                    self.tid(),
-                    sig
-                );
+                .map(|taken| taken.siginfo);
+            if !self.keeps_unreported_signal(sig, info).await {
                 return Ok(self.pass_held_signal_unreported(None));
             }
         }
         Ok(self.pass_held_signal_unreported(signal))
+    }
+
+    /// The signal `sig`, which stop `task` took and Reverie is about to pass
+    /// to the guest without reporting it to `Tool::handle_signal_event`, or
+    /// `None` if `Tool::filter_unreported_signal` drops it
+    /// (`keeps_unreported_signal`). The caller resumes `task` with the result
+    /// exactly as it would have resumed it with `sig`.
+    async fn filter_direct_unreported(&self, task: &Stopped, sig: Signal) -> Option<Signal> {
+        let info = TakenSignal::at_stop(task, sig).map(|taken| taken.siginfo);
+        self.keeps_unreported_signal(sig, info).await.then_some(sig)
+    }
+
+    /// Whether a signal that Reverie passes to the guest unreported reaches it:
+    /// Reverie's own notifications always do, being Reverie's to consume
+    /// (`reverie_owns_signal`); any other signal does if
+    /// `Tool::filter_unreported_signal` keeps it. The hook gets only the
+    /// signal's description and an RPC handle, so it cannot change the guest.
+    async fn keeps_unreported_signal(&self, sig: Signal, info: Option<StoredSiginfo>) -> bool {
+        if self.reverie_owns_signal(sig, info) {
+            return true;
+        }
+        let unreported =
+            reverie::UnreportedSignal::new(self.pid(), self.tid(), sig, info.map(siginfo_bytes));
+        let keep = self
+            .process_state
+            .clone()
+            .filter_unreported_signal(self, unreported)
+            .await;
+        if !keep {
+            tracing::debug!(
+                "[{}] the tool dropped signal {} passed on unreported",
+                self.tid(),
+                sig
+            );
+        }
+        keep
+    }
+
+    /// Whether `sig`, with siginfo `info`, is Reverie's own notification, told
+    /// apart by its siginfo rather than its number: the timer's overflow or
+    /// controller signal (`Timer::owns_signal`), or a SIGSTOP the tracer sent
+    /// (a gdb freeze or a group-stop request: SI_TKILL or SI_USER from the
+    /// tracer, which another PID namespace sees as sender 0). A signal without
+    /// a recorded siginfo cannot be shown to be Reverie's.
+    fn reverie_owns_signal(&self, sig: Signal, info: Option<StoredSiginfo>) -> bool {
+        let Some(StoredSiginfo(info)) = info else {
+            return false;
+        };
+        if sig == Timer::signal_type() {
+            return self.timer.owns_signal(&info);
+        }
+        if sig == Signal::SIGSTOP {
+            // SAFETY: SI_TKILL and SI_USER carry a sender in `si_pid`.
+            return matches!(info.si_code, libc::SI_TKILL | libc::SI_USER) && {
+                let sender = unsafe { info.si_pid() };
+                sender == 0 || sender == unsafe { libc::getpid() }
+            };
+        }
+        false
     }
 
     /// Resumes `task` with `resume.signal` and waits for its next stop.
@@ -4611,13 +4661,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         // A siginfo the reporting callback chose (`Guest::set_signal_info`)
         // replaces the signal's own when it is resumed from a signal-delivery
         // stop: its own, when no injection ran, or the latest injection's.
-        // From any other stop Linux makes up a siginfo for a resumed signal,
-        // so the choice cannot apply. A failed write does not fail the resume.
-        if let (Some(sig), Some(info)) = (signal, replacement)
-            && self.latest_injection_stop.is_none_or(|stop| stop.is_some())
-            && let Err(err) = task.setsiginfo(&info.0)
-        {
-            tracing::debug!("could not set the chosen siginfo of {sig:?}: {err}");
+        // `set_signal_info` wrote it already; it is written again for a later
+        // injection. Unlike the best-effort restore above, an explicit choice
+        // that cannot be delivered fails the resume rather than letting the
+        // guest see another siginfo: from a stop that is not a signal-delivery
+        // stop, Linux would make one up.
+        if let (Some(_), Some(info)) = (signal, replacement) {
+            if !self.latest_injection_stop.is_none_or(|stop| stop.is_some()) {
+                return Err(Errno::EBUSY.into());
+            }
+            task.setsiginfo(&info.0)?;
         }
         self.resume_stopped(task, signal)?
             .next_state_with_owner(&self.ptracer_waits)
@@ -4886,7 +4939,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Wait::Stopped(task, event) => {
                     self.arm_liteinst_root_stop(&task, &event);
                     let signal = match event {
-                        Event::Signal(signal) => Some(signal),
+                        Event::Signal(signal) => self.filter_direct_unreported(&task, signal).await,
                         _ => None,
                     };
                     running = self.resume_stopped(task, signal)?;
@@ -6843,6 +6896,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Wait::Stopped(task, Event::Signal(sig)) => {
                     // We can get a spurious signal here, such as SIGWINCH. Skip
                     // past them until the tracee eventually arrives at SIGTRAP.
+                    let sig = self.filter_direct_unreported(&task, sig).await;
                     running = self.step_stopped(task, sig)?;
                 }
                 Wait::Stopped(task, event) => {
@@ -7984,7 +8038,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 // TODO: combine with handle_signal!
                 Event::Signal(Signal::SIGCHLD) => {
-                    let running = self.step_stopped(task, Signal::SIGCHLD)?;
+                    let sig = self.filter_direct_unreported(&task, Signal::SIGCHLD).await;
+                    let running = self.step_stopped(task, sig)?;
                     let wait = running
                         .next_state_with_owner(&self.ptracer_waits)
                         .await?
@@ -8190,7 +8245,22 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         if i32::from_ne_bytes(info[0..4].try_into().expect("four bytes")) != signal as i32 {
             return Err(Errno::EINVAL);
         }
-        self.replacement_signal_info = Some(siginfo_from_bytes(info));
+        // Written now, from the signal-delivery stop the thread is at, so a
+        // refusal reaches the caller; the resume writes it again after any
+        // later injection (`resume_with_signal`). After an injection whose
+        // stop is not a signal-delivery stop, Linux would make up the
+        // resumed signal's siginfo, so the replacement cannot apply.
+        if !self.latest_injection_stop.is_none_or(|stop| stop.is_some()) {
+            return Err(Errno::EBUSY);
+        }
+        let replacement = siginfo_from_bytes(info);
+        self.assume_stopped()
+            .setsiginfo(&replacement.0)
+            .map_err(|error| match error {
+                TraceError::Errno(errno) => errno,
+                TraceError::Died(_) => Errno::ESRCH,
+            })?;
+        self.replacement_signal_info = Some(replacement);
         Ok(())
     }
 

@@ -356,9 +356,15 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
 
     /// From inside [`Tool::handle_signal_event`], replaces the siginfo that the
     /// reported signal is delivered with, if the callback returns it to be
-    /// delivered. A later call replaces an earlier one. Fails with `EINVAL`
-    /// outside that callback and with `ENOSYS` where the backend cannot set a
-    /// siginfo; the signal is then delivered with the one it arrived with.
+    /// delivered. A later call replaces an earlier one. Fails, and changes
+    /// nothing, with `EINVAL` outside that callback or for a siginfo whose
+    /// `si_signo` is not the reported signal's, with `ENOSYS` where the
+    /// backend cannot set a siginfo, and with the backend's error where it
+    /// cannot set this one now (the ptrace backend: `EBUSY` after an
+    /// injection left the thread at a stop other than a signal-delivery stop,
+    /// or `PTRACE_SETSIGINFO`'s error). The backend fails the guest's resume,
+    /// rather than deliver another siginfo, if an injection after a successful
+    /// call makes the replacement impossible.
     fn set_signal_info(&mut self, _info: [u8; crate::SIGNAL_INFO_SIZE]) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
