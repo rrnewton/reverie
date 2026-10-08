@@ -23,6 +23,7 @@ mod slot_map;
 pub mod stats;
 mod thread;
 mod tool;
+mod tool_output;
 mod utils;
 pub mod vdso;
 
@@ -31,6 +32,13 @@ pub use paths::*;
 pub use reverie_adapter::*;
 pub use reverie_sabre_macros::tool;
 pub use tool::*;
+pub use tool_output::TOOL_OUTPUT_ENV;
+pub use tool_output::TOOL_OUTPUT_FD_MIN;
+pub use tool_output::set_retirement_message;
+pub use tool_output::tool_output_env_value;
+pub use tool_output::tool_output_fd;
+pub use tool_output::tool_output_requested;
+pub use tool_output::with_tool_output;
 
 /// The static facts about how a SaBRe plugin runs a guest that a tool may need,
 /// in the same form [`reverie::Backend::capabilities`] reports them for backends

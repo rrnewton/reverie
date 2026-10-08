@@ -143,9 +143,19 @@ pub fn sys_execve(
     // Preserve reserved tool settings even when the guest deliberately
     // supplies an empty environment. Individual tools consume their own
     // settings before the replacement guest observes them.
+    // The tool-output socket's entry carries its current number, which a guest
+    // dup onto it can have changed since the settings were cached.
     let tool_environment = paths::tool_env();
-    let mut new_env = Vec::with_capacity(environment.len() + tool_environment.len() + 1);
-    new_env.extend(tool_environment.iter().map(|entry| entry.as_ptr()));
+    let tool_output = crate::tool_output::exec_env_entry();
+    let tool_output_prefix = format!("{}=", crate::tool_output::TOOL_OUTPUT_ENV);
+    let mut new_env = Vec::with_capacity(environment.len() + tool_environment.len() + 2);
+    new_env.extend(
+        tool_environment
+            .iter()
+            .filter(|entry| !entry.to_bytes().starts_with(tool_output_prefix.as_bytes()))
+            .map(|entry| entry.as_ptr()),
+    );
+    new_env.extend(tool_output.as_ref().map(|entry| entry.as_ptr()));
     new_env.extend(environment);
     new_env.push(core::ptr::null());
 
