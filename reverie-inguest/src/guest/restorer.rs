@@ -22,6 +22,7 @@
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 
+use crate::guest::support::auxv_entry;
 use crate::guest::support::read_own_bytes;
 use crate::guest::support::scan_own_maps;
 use crate::guest::support::scan_proc_lines;
@@ -208,65 +209,6 @@ fn object_soname_is(l_addr: u64, l_ld: u64, expected: &[u8]) -> bool {
     };
     let (bytes, readable) = read_own_16(name);
     expected.len() <= 16 && readable >= expected.len() && bytes[..expected.len()] == *expected
-}
-
-/// This process's auxiliary vector entry `key`, read from `/proc/self/auxv`
-/// with raw syscalls (not `getauxval`, which a guest can interpose).
-fn auxv_entry(key: u64) -> Option<u64> {
-    let mut auxv = [0_u8; 4096];
-    let fd = unsafe {
-        raw_syscall6(
-            libc::SYS_openat,
-            [
-                libc::AT_FDCWD as u64,
-                c"/proc/self/auxv".as_ptr() as u64,
-                (libc::O_RDONLY | libc::O_CLOEXEC) as u64,
-                0,
-                0,
-                0,
-            ],
-        )
-    };
-    if fd < 0 {
-        return None;
-    }
-    let mut filled = 0_usize;
-    while filled < auxv.len() {
-        let count = unsafe {
-            raw_syscall6(
-                libc::SYS_read,
-                [
-                    fd as u64,
-                    auxv[filled..].as_mut_ptr() as u64,
-                    (auxv.len() - filled) as u64,
-                    0,
-                    0,
-                    0,
-                ],
-            )
-        };
-        if count == -i64::from(libc::EINTR) {
-            continue;
-        }
-        if count <= 0 {
-            break;
-        }
-        filled += count as usize;
-    }
-    unsafe { raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
-    auxv[..filled]
-        .as_chunks::<16>()
-        .0
-        .iter()
-        .map(|pair| {
-            (
-                u64::from_le_bytes(pair[..8].try_into().unwrap()),
-                u64::from_le_bytes(pair[8..].try_into().unwrap()),
-            )
-        })
-        .take_while(|(found, _)| *found != 0)
-        .find(|(found, _)| *found == key)
-        .map(|(_, value)| value)
 }
 
 /// The dynamic loader's `r_debug` for the base namespace: the address the

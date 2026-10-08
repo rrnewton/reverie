@@ -28,7 +28,9 @@ use std::compile_error;
 use std::sync::LazyLock;
 
 use nix::sys::signal::Signal;
+#[cfg(not(target_arch = "x86_64"))]
 use nix::unistd::SysconfVar;
+#[cfg(not(target_arch = "x86_64"))]
 use nix::unistd::sysconf;
 use perf_event_open_sys::bindings as perf;
 use perf_event_open_sys::ioctls;
@@ -1191,22 +1193,32 @@ impl Drop for PerfCounter {
 unsafe impl std::marker::Send for PerfCounter {}
 unsafe impl std::marker::Sync for PerfCounter {}
 
+/// The system page size. On x86-64 Linux it is the architectural 4 KiB and is
+/// not asked of `sysconf`: in-guest backends create counters inside the guest,
+/// where `sysconf` is a dynamic symbol the program or a preloaded library may
+/// define (and allocate in).
+#[cfg(target_arch = "x86_64")]
+fn system_page_size() -> Result<usize, Errno> {
+    Ok(4096)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn system_page_size() -> Result<usize, Errno> {
+    let size = sysconf(SysconfVar::PAGE_SIZE)
+        .map_err(|error| Errno::new(error as i32))?
+        .ok_or(Errno::EINVAL)?;
+    usize::try_from(size).map_err(|_| Errno::EOVERFLOW)
+}
+
 fn get_mmap_size() -> usize {
     // Use a single page; we only want the perf metadata
-    sysconf(SysconfVar::PAGE_SIZE)
-        .expect("failed to query the system page size")
-        .expect("the system did not report a page size")
-        .try_into()
-        .expect("the system page size must fit in usize")
+    system_page_size().expect("failed to query the system page size")
 }
 
 // Terminal cleanup must also retain a page-size query failure instead of
 // entering get_mmap_size's ordinary invariant panics before closing the fd.
 fn terminal_mmap_size() -> Result<usize, Errno> {
-    let size = sysconf(SysconfVar::PAGE_SIZE)
-        .map_err(|error| Errno::new(error as i32))?
-        .ok_or(Errno::EINVAL)?;
-    usize::try_from(size).map_err(|_| Errno::EOVERFLOW)
+    system_page_size()
 }
 
 /// Force a relaxed atomic load. Like Linux's READ_ONCE.
