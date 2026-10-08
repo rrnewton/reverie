@@ -1057,6 +1057,18 @@ impl Timer {
         }
     }
 
+    /// Whether `signal` is one of this timer's own: a counter overflow
+    /// notification ([`Timer::consume_overflow_signal`]'s test) or the
+    /// controller's artificial signal. Unlike those it changes nothing. A
+    /// sender check that cannot complete counts the signal as the timer's, as
+    /// the timer's own handling refuses a signal it cannot place.
+    pub(crate) fn owns_signal(&self, signal: &libc::siginfo_t) -> bool {
+        self.inner_noinit().is_some_and(|timer| {
+            timer.owns_overflow_signal(signal)
+                || timer.controller_artificial_signal(signal).unwrap_or(true)
+        })
+    }
+
     /// Takes this thread's own overflow notification `signal` at a stop inside
     /// an injected syscall, which must never reach the guest.
     ///

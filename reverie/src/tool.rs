@@ -792,30 +792,31 @@ pub trait Tool: Send + Sync + Default {
     ///
     /// A backend may pass a signal on unreported where reporting it could
     /// change what the guest observes: the ptrace backend does so for many
-    /// signals it held while a Tool injection ran. Such a signal is otherwise
-    /// invisible to the Tool, so a Tool that must keep exactly one copy of a
-    /// signal (for example, its own copy of one the kernel also sent) needs
-    /// to see it here. `info` is the siginfo the signal arrived with (Linux's
-    /// `siginfo_t` bytes, as in [`crate::SignalEvent`]), when the backend
-    /// recorded one.
+    /// signals it held while a Tool injection ran, and for signals that arrive
+    /// while it steps the guest through its own setup. Such a signal is
+    /// otherwise invisible to the Tool, so a Tool that must keep exactly one
+    /// copy of a signal (for example, its own copy of one the kernel also
+    /// sent) needs to see it here. A backend's own notifications (the ptrace
+    /// backend's timer signal and the stops it requests) are recognized by
+    /// their siginfo and never shown; every other signal is, whatever its
+    /// number.
+    ///
+    /// The hook can only decide: it gets the signal's read-only description
+    /// and a handle that can send RPCs to the global tool, and no access to
+    /// the guest, so it cannot inject a syscall or change the guest's
+    /// registers or memory. Drop only a signal identified by its siginfo; a
+    /// signal shown without one is one the backend could not record.
     ///
     /// # Return value
     ///  - `true`: the signal is passed on as before.
     ///  - `false`: the signal is dropped and never delivered to the guest.
     ///
-    /// # Contract
-    /// The hook may only decide. It must not inject a syscall, change the
-    /// guest's registers or memory, or end the thread: the backend passes the
-    /// signal on unreported precisely because the guest must resume as it
-    /// stands. It may read guest state and send RPCs to the global tool.
-    ///
     /// The default keeps every signal. A backend that never passes a signal
     /// on unreported never calls it.
-    async fn filter_unreported_signal<T: Guest<Self>>(
+    async fn filter_unreported_signal<R: GlobalRPC<Self::GlobalState>>(
         &self,
-        _guest: &mut T,
-        _signal: Signal,
-        _info: Option<[u8; crate::SIGNAL_INFO_SIZE]>,
+        _rpc: &R,
+        _signal: crate::UnreportedSignal,
     ) -> bool {
         true
     }
