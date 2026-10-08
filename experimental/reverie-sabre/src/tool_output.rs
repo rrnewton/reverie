@@ -111,13 +111,11 @@ static RETIREMENT: OnceLock<&'static [u8]> = OnceLock::new();
 /// before any guest code runs. A forked child inherits the adoption.
 fn init_tool_output() {
     INITIALIZED.get_or_init(|| {
-        if let Some(fd) = adopt() {
-            if let Some((dev, ino)) = socket_identity(fd) {
-                IDENTITY_DEV.store(dev, SeqCst);
-                IDENTITY_INO.store(ino, SeqCst);
-                IN_FLIGHT_PID.store(getpid(), SeqCst);
-                TOOL_OUTPUT.store(fd, SeqCst);
-            }
+        if let Some((fd, (dev, ino))) = adopt() {
+            IDENTITY_DEV.store(dev, SeqCst);
+            IDENTITY_INO.store(ino, SeqCst);
+            IN_FLIGHT_PID.store(getpid(), SeqCst);
+            TOOL_OUTPUT.store(fd, SeqCst);
         }
     });
 }
@@ -189,17 +187,34 @@ fn own_in_flight_count() {
 const KCMP_VM: libc::c_int = 1;
 const KCMP_FILES: libc::c_int = 2;
 
-fn adopt() -> Option<RawFd> {
+/// The adopted socket's number and the identity the coordinator passed for it.
+fn adopt() -> Option<(RawFd, (u64, u64))> {
     std::env::var_os(TOOL_OUTPUT_ENV)?;
     REQUESTED.store(true, SeqCst);
     paths::cache_tool_env();
     // SAFETY: plugin initialization runs before guest threads exist.
     let value = unsafe { paths::take_private_env(TOOL_OUTPUT_ENV) }?;
     let (fd, identity) = parse_tool_output_env_value(value.as_os_str().as_bytes())?;
-    // Not the coordinator's socket any more (closed, or replaced by one of the
-    // guest's own): adopting it would send the tool's records to the guest.
+    // No signal handler (one the guest installed before the plugin ran, or
+    // one that runs plugin-native) can replace the number between the checks
+    // and the protection below.
+    let blocked = block_signals();
+    let adopted = adopt_checked(fd, identity);
+    restore_signals(&blocked);
+    adopted.map(|fd| (fd, identity))
+}
+
+/// Adopts `fd` only if it, and the reserved copy of it, are the socket with
+/// `identity`: a number that is no longer the coordinator's socket (closed, or
+/// replaced by one of the guest's own) would send the tool's records to the
+/// guest.
+fn adopt_checked(fd: RawFd, identity: (u64, u64)) -> Option<RawFd> {
     if socket_identity(fd) != Some(identity) {
         return None;
+    }
+    #[cfg(test)]
+    if let Some(hook) = *tests::ADOPTION_WINDOW.lock().unwrap() {
+        hook(fd);
     }
     if fd >= TOOL_OUTPUT_FD_MIN {
         // A new image of a guest whose earlier image already moved it.
@@ -208,6 +223,12 @@ fn adopt() -> Option<RawFd> {
     }
     let moved = dup_reserved(fd);
     if moved < 0 {
+        return None;
+    }
+    // The copy is what is kept, so it is what must be the socket.
+    if socket_identity(moved) != Some(identity) {
+        // SAFETY: `moved` is this function's own duplicate.
+        unsafe { libc::close(moved) };
         return None;
     }
     protected_files::protect_inherited_raw_fd(moved);
@@ -343,8 +364,33 @@ pub(crate) fn before_guest_dup_onto(source: RawFd, target: RawFd, flags: usize) 
     if dup3_flags_are_invalid(flags) || unsafe { libc::fcntl(source, libc::F_GETFD) } < 0 {
         return GuestDup::Native;
     }
+    // From the check that the number still names the socket until the move or
+    // the retirement message is done, no signal handler can replace it.
+    let blocked = block_signals();
+    let outcome = move_before_guest_dup(current);
+    restore_signals(&blocked);
+    outcome
+}
+
+fn move_before_guest_dup(current: RawFd) -> GuestDup {
     let pid = getpid();
     let owner = IN_FLIGHT_PID.load(SeqCst);
+    if !names_the_socket(current) {
+        // Another process sharing this descriptor table (CLONE_FILES without
+        // CLONE_VM) moved the socket, or something replaced the number: it is
+        // not the socket here, so neither move nor retire it (either would
+        // write to whatever is there). Stop this process sending (only this
+        // one, when it shares the memory with the owner), unprotect the
+        // number, and let the guest's call replace it. Its records are then
+        // counted and missing, so the run is refused.
+        protected_files::unprotect_inherited_raw_fd(current);
+        if owner != pid && shares(owner, pid, KCMP_VM) {
+            DETACHED_PID.store(pid, SeqCst);
+        } else {
+            TOOL_OUTPUT.store(-1, SeqCst);
+        }
+        return GuestDup::Native;
+    }
     if owner != pid && shares(owner, pid, KCMP_VM) && !shares(owner, pid, KCMP_FILES) {
         // A vfork-style child with its own copy of the table: moving the socket
         // here would change the number its parent's table does not have. Let
@@ -477,6 +523,61 @@ mod tests {
             "7:000000000000001d:0000000012345678:0",
         ] {
             assert_eq!(parse_tool_output_env_value(bad.as_bytes()), None, "{bad}");
+        }
+    }
+
+    /// Runs inside adoption, between the identity check and the reservation:
+    /// what a signal handler would do there if one could run.
+    pub(super) static ADOPTION_WINDOW: std::sync::Mutex<Option<fn(RawFd)>> =
+        std::sync::Mutex::new(None);
+    static HANDLER_RAN: AtomicBool = AtomicBool::new(false);
+
+    /// No signal handler runs inside adoption (signals are blocked), and if
+    /// one had replaced the number there, the reserved copy would not be the
+    /// passed socket and is refused. Fresh processes: adoption happens once.
+    #[test]
+    fn adoption_survives_a_signal_and_refuses_a_replacement_inside_its_window() {
+        const CHILD: &str = "REVERIE_SABRE_TOOL_OUTPUT_TEST_WINDOW";
+        let name = "tool_output::tests::adoption_survives_a_signal_and_refuses_a_replacement_inside_its_window";
+        match std::env::var(CHILD).as_deref() {
+            Err(_) => {
+                for mode in ["signal", "replace"] {
+                    let status = std::process::Command::new(std::env::current_exe().unwrap())
+                        .args(["--exact", name])
+                        .env(CHILD, mode)
+                        .status()
+                        .unwrap();
+                    assert!(status.success(), "{mode} child failed with {status}");
+                }
+            }
+            Ok("signal") => {
+                extern "C" fn record(_: libc::c_int) {
+                    HANDLER_RAN.store(true, SeqCst);
+                }
+                unsafe { libc::signal(libc::SIGUSR1, record as libc::sighandler_t) };
+                *ADOPTION_WINDOW.lock().unwrap() = Some(|_| {
+                    unsafe { libc::raise(libc::SIGUSR1) };
+                    assert!(!HANDLER_RAN.load(SeqCst), "a handler ran inside adoption");
+                });
+                let (passed, _peer) = socket_pair();
+                unsafe { std::env::set_var(TOOL_OUTPUT_ENV, env_value(passed)) };
+                assert!(tool_output_fd().is_some(), "the passed socket is adopted");
+                assert!(
+                    HANDLER_RAN.load(SeqCst),
+                    "the signal is delivered after adoption"
+                );
+            }
+            Ok("replace") => {
+                *ADOPTION_WINDOW.lock().unwrap() = Some(|fd| {
+                    let (guests, _) = socket_pair();
+                    assert_eq!(unsafe { libc::dup2(guests, fd) }, fd);
+                });
+                let (passed, _peer) = socket_pair();
+                unsafe { std::env::set_var(TOOL_OUTPUT_ENV, env_value(passed)) };
+                assert_eq!(tool_output_fd(), None, "a replaced number is not adopted");
+                assert!(tool_output_requested());
+            }
+            Ok(other) => panic!("unknown mode {other}"),
         }
     }
 
@@ -631,9 +732,39 @@ mod tests {
                 && dup_reserved(moved) >= TOOL_OUTPUT_FD_MIN
         });
 
+        // A number that no longer names the socket in this process's table
+        // (a CLONE_FILES sibling moved it, or something replaced it) is neither
+        // moved nor retired: nothing is written to whatever is there, even when
+        // a move would have to retire (the hard limit is 1025), and the guest's
+        // call runs natively.
+        set_retirement_message(b"retired");
+        in_child(|| {
+            let mut probe = [0; 2];
+            if unsafe { libc::pipe(probe.as_mut_ptr()) } != 0 {
+                return false;
+            }
+            unsafe { libc::fcntl(probe[0], libc::F_SETFL, libc::O_NONBLOCK) };
+            let lowered = libc::rlimit {
+                rlim_cur: TOOL_OUTPUT_FD_MIN as libc::rlim_t,
+                rlim_max: TOOL_OUTPUT_FD_MIN as libc::rlim_t,
+            };
+            let mut byte = 0u8;
+            // Replace the number behind the plugin's back, then leave no room
+            // to move to.
+            let replaced = unsafe { libc::dup2(probe[1], moved) } == moved;
+            let limited = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lowered) } == 0;
+            let native = before_guest_dup_onto(fork_pipe[1], moved, 0) == GuestDup::Native;
+            let nothing_written = unsafe { libc::read(probe[0], (&raw mut byte).cast(), 1) } == -1;
+            limited
+                && replaced
+                && native
+                && tool_output_fd().is_none()
+                && nothing_written
+                && !protected_files::is_protected(&moved)
+        });
+
         // With no free number to move to (the hard limit too is 1025), the
         // socket is given up with the tool's message.
-        set_retirement_message(b"retired");
         in_child(|| {
             let lowered = libc::rlimit {
                 rlim_cur: TOOL_OUTPUT_FD_MIN as libc::rlim_t,
