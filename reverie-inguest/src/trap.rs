@@ -19,6 +19,7 @@
 //!    Runtime-private calls use [`raw_syscall6`]. Neither site re-traps.
 //! 5. The handler writes the result into `RAX` and returns, resuming the guest.
 
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering;
 use std::cell::Cell;
@@ -344,6 +345,61 @@ unsafe fn exit_now(code: i32) -> ! {
     }
 }
 
+/// The exit status when the guest performs its own `rt_sigreturn` while the
+/// filter admits it only at the runtime's private restorer
+/// ([`crate::lifecycle::RuntimeConfig::restrict_signal_return`]).
+pub const GUEST_SIGNAL_RETURN_STATUS: i32 = 119;
+
+static SIGNAL_RETURN_RESTRICTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether a syscall-number register asks Linux for `rt_sigreturn`. Linux
+/// reads only the register's low 32 bits as the number (as the seccomp
+/// filter does), so `0x1_0000_000f` is `rt_sigreturn` too.
+pub fn is_rt_sigreturn(number: i64) -> bool {
+    number as u32 == libc::SYS_rt_sigreturn as u32
+}
+
+/// Record that the installed filter admits `rt_sigreturn` only at the
+/// runtime's private restorer.
+pub(crate) fn set_signal_return_restricted() {
+    SIGNAL_RETURN_RESTRICTED.store(true, Ordering::Release);
+}
+
+/// Whether the installed filter admits `rt_sigreturn` only at the runtime's
+/// private restorer. A backend that reaches the dispatcher without a trap
+/// (a patched site's hook) must then refuse a guest `rt_sigreturn` itself,
+/// with [`refuse_guest_signal_return`].
+pub fn signal_return_restricted() -> bool {
+    SIGNAL_RETURN_RESTRICTED.load(Ordering::Acquire)
+}
+
+/// End the process for a guest `rt_sigreturn` while
+/// [`signal_return_restricted`]. The runtime never performs that return: the
+/// frame it would restore (and the signal mask in it) is one the runtime did
+/// not build, so the run is no longer one the runtime can follow.
+///
+/// # Safety
+///
+/// Ends the process at once; no destructor runs.
+pub unsafe fn refuse_guest_signal_return() -> ! {
+    const MESSAGE: &[u8] = b"reverie-inguest: the guest made its own rt_sigreturn; \
+only the runtime's signal restorer may return from a signal, so the process ends\n";
+    let _ = unsafe {
+        raw_syscall6(
+            libc::SYS_write,
+            [
+                libc::STDERR_FILENO as u64,
+                MESSAGE.as_ptr() as u64,
+                MESSAGE.len() as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    unsafe { exit_now(GUEST_SIGNAL_RETURN_STATUS) }
+}
+
 /// The `SA_SIGINFO` handler for `SIGSYS`.
 ///
 /// # Safety
@@ -375,6 +431,11 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
         Ok(frame) => frame,
         Err(_) => unsafe { exit_now(126) },
     };
+    // The filter traps `rt_sigreturn` only when it admits it at the
+    // runtime's restorer alone, so a trapped one is never the runtime's.
+    if is_rt_sigreturn(frame.register(libc::REG_RAX as usize)) {
+        unsafe { refuse_guest_signal_return() };
+    }
     if dispatcher().is_some_and(|dispatcher| dispatcher.dispatch_private_signal(&mut frame)) {
         IN_HANDLER.set(false);
         return;
@@ -505,6 +566,15 @@ mod tests {
     }
 
     #[test]
+    fn rt_sigreturn_is_recognized_by_its_low_32_bits() {
+        assert!(is_rt_sigreturn(libc::SYS_rt_sigreturn));
+        assert!(is_rt_sigreturn(0x1_0000_0000 | libc::SYS_rt_sigreturn));
+        assert!(is_rt_sigreturn(-0x1_0000_0000 | libc::SYS_rt_sigreturn));
+        assert!(!is_rt_sigreturn(libc::SYS_rt_sigaction));
+        assert!(!is_rt_sigreturn(0x4000_0000 | libc::SYS_rt_sigreturn));
+    }
+
+    #[test]
     fn sigsys_rejects_user_generated_signals_on_both_stacks() {
         const CHILD: &str = "REVERIE_TEST_SIGSYS_PROVENANCE";
         if let Some(value) = std::env::var_os(CHILD) {
@@ -558,6 +628,7 @@ mod tests {
             assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) }, 0);
             let config = crate::lifecycle::RuntimeConfig {
                 use_alt_stack: value == "1",
+                restrict_signal_return: false,
             };
             unsafe {
                 crate::install(
@@ -611,6 +682,7 @@ mod tests {
             );
             let config = crate::lifecycle::RuntimeConfig {
                 use_alt_stack: false,
+                restrict_signal_return: false,
             };
             unsafe {
                 crate::install(
@@ -643,6 +715,249 @@ mod tests {
         assert_eq!(output.status.signal(), Some(libc::SIGABRT), "{output:?}");
     }
 
+    static RESTRICTED_HANDLER_RAN: AtomicBool = AtomicBool::new(false);
+
+    unsafe extern "C" fn note_restricted_signal(
+        _signal: libc::c_int,
+        _info: *mut libc::siginfo_t,
+        _context: *mut libc::c_void,
+    ) {
+        RESTRICTED_HANDLER_RAN.store(true, Ordering::SeqCst);
+    }
+
+    /// A signal frame captured from a real delivery, copied out of the
+    /// kernel's frame by [`capture_signal_frame`].
+    struct CapturedFrame(core::cell::UnsafeCell<core::mem::MaybeUninit<libc::ucontext_t>>);
+    // SAFETY: written once by the capturing handler, then read by the same
+    // single-threaded child process.
+    unsafe impl Sync for CapturedFrame {}
+    static CAPTURED_FRAME: CapturedFrame =
+        CapturedFrame(core::cell::UnsafeCell::new(core::mem::MaybeUninit::uninit()));
+
+    unsafe extern "C" fn capture_signal_frame(
+        _signal: libc::c_int,
+        _info: *mut libc::siginfo_t,
+        context: *mut libc::c_void,
+    ) {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                context.cast::<libc::ucontext_t>(),
+                (*CAPTURED_FRAME.0.get()).as_mut_ptr(),
+                1,
+            )
+        };
+    }
+
+    /// Where a performed forged return lands: it reports and exits 0.
+    extern "C" fn forged_return_target() -> ! {
+        let marker = b"forged return performed\n";
+        unsafe {
+            libc::write(1, marker.as_ptr().cast(), marker.len());
+            libc::_exit(0)
+        }
+    }
+
+    #[repr(C, align(16))]
+    struct ForgeryStack([u8; 256 * 1024]);
+    struct ForgeryArea(core::cell::UnsafeCell<ForgeryStack>);
+    // SAFETY: used only by the single-threaded child process.
+    unsafe impl Sync for ForgeryArea {}
+    static FORGERY_AREA: ForgeryArea =
+        ForgeryArea(core::cell::UnsafeCell::new(ForgeryStack([0; 256 * 1024])));
+
+    /// The coordinator's check of the Tool-mode rule (msg1683): a forged
+    /// signal frame, valid enough that Linux performs it when the filter
+    /// admits `rt_sigreturn` from anywhere (the control: the process jumps to
+    /// [`forged_return_target`] and exits 0), is never performed from any
+    /// address but the restorer under `restrict_signal_return`: the process
+    /// ends with [`GUEST_SIGNAL_RETURN_STATUS`] and the target never runs, on
+    /// either signal stack.
+    #[test]
+    fn a_forged_signal_return_from_another_address_is_never_performed() {
+        const CHILD: &str = "REVERIE_TEST_FORGED_SIGNAL_RETURN";
+        if let Some(value) = std::env::var_os(CHILD) {
+            let value = value.into_string().unwrap();
+            let (policy, stack) = value.split_once(':').unwrap();
+            let config = crate::lifecycle::RuntimeConfig {
+                use_alt_stack: stack == "alt",
+                restrict_signal_return: policy == "restricted",
+            };
+            unsafe {
+                crate::install(
+                    Box::new(crate::dispatch::PassthroughDispatcher::new()),
+                    &crate::lifecycle::InProcessSeccomp,
+                    &config,
+                )
+                .unwrap();
+                // A genuine frame from a runtime handler's delivery.
+                signal::install_runtime_handler(libc::SIGURG, capture_signal_frame, 0).unwrap();
+                signal::raw_raise(libc::SIGURG).unwrap();
+                let area = (*FORGERY_AREA.0.get()).0.as_mut_ptr();
+                let area_len = 256 * 1024;
+                let mut frame = (*CAPTURED_FRAME.0.get()).assume_init_read();
+                // Resume at the target, on a fresh stack top as at a call.
+                frame.uc_mcontext.gregs[libc::REG_RIP as usize] =
+                    forged_return_target as *const () as i64;
+                frame.uc_mcontext.gregs[libc::REG_RSP as usize] = area.add(area_len / 2 - 8) as i64;
+                // No saved FPU state: Linux then resets it.
+                frame.uc_mcontext.fpregs = core::ptr::null_mut();
+                // The frame sits near the area's top; Linux reads it at the
+                // stack pointer plus 8 (after the restorer's return slot), so
+                // the stack pointer at rt_sigreturn is the frame's address.
+                let frame_at = area.add(area_len - 8192).cast::<libc::ucontext_t>();
+                frame_at.write(frame);
+                let marker = b"forging\n";
+                assert_eq!(
+                    libc::write(1, marker.as_ptr().cast(), marker.len()),
+                    marker.len() as isize
+                );
+                core::arch::asm!(
+                    "mov rsp, {frame}",
+                    "mov eax, 15",
+                    "syscall",
+                    "ud2",
+                    frame = in(reg) frame_at,
+                    options(noreturn),
+                );
+            }
+        }
+        let expected = "reverie-inguest: the guest made its own rt_sigreturn; \
+                        only the runtime's signal restorer may return from a signal, \
+                        so the process ends\n";
+        for value in ["unrestricted:main", "restricted:main", "restricted:alt"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "trap::tests::a_forged_signal_return_from_another_address_is_never_performed",
+                    "--nocapture",
+                ])
+                .env(CHILD, value)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(stdout.contains("forging\n"), "{value} {output:?}");
+            if value == "unrestricted:main" {
+                // The forged frame is one Linux performs.
+                assert_eq!(output.status.code(), Some(0), "{value} {output:?}");
+                assert!(
+                    stdout.contains("forged return performed\n"),
+                    "{value} {output:?}"
+                );
+            } else {
+                assert_eq!(
+                    output.status.code(),
+                    Some(GUEST_SIGNAL_RETURN_STATUS),
+                    "{value} {output:?}"
+                );
+                assert!(
+                    !stdout.contains("forged return performed"),
+                    "{value} {output:?}"
+                );
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).ends_with(expected),
+                    "{value} {output:?}"
+                );
+            }
+        }
+    }
+
+    /// With `restrict_signal_return`, the SIGSYS handler and any runtime
+    /// handler return through the private restorer and the process runs on,
+    /// on either stack; a signal return from anywhere else, by a handler
+    /// glibc installed or by a raw `rt_sigreturn`, ends the process with
+    /// [`GUEST_SIGNAL_RETURN_STATUS`] and never performs the return.
+    #[test]
+    fn a_restricted_signal_return_admits_only_the_runtime_restorer() {
+        const CHILD: &str = "REVERIE_TEST_RESTRICTED_SIGNAL_RETURN";
+        if let Some(value) = std::env::var_os(CHILD) {
+            let value = value.into_string().unwrap();
+            let (stack, foreign) = value.split_once(':').unwrap();
+            let config = crate::lifecycle::RuntimeConfig {
+                use_alt_stack: stack == "alt",
+                restrict_signal_return: true,
+            };
+            unsafe {
+                crate::install(
+                    Box::new(crate::dispatch::PassthroughDispatcher::new()),
+                    &crate::lifecycle::InProcessSeccomp,
+                    &config,
+                )
+                .unwrap();
+                // Trapped syscalls: each SIGSYS frame returns through the
+                // restorer.
+                for _ in 0..100 {
+                    assert!(libc::syscall(libc::SYS_getppid) > 0);
+                }
+                signal::install_runtime_handler(libc::SIGURG, note_restricted_signal, 0).unwrap();
+                signal::raw_raise(libc::SIGURG).unwrap();
+                assert!(RESTRICTED_HANDLER_RAN.load(Ordering::SeqCst));
+                let marker = b"runtime returns ran\n";
+                assert_eq!(
+                    libc::write(1, marker.as_ptr().cast(), marker.len()),
+                    marker.len() as isize
+                );
+                match foreign {
+                    "glibc" => {
+                        // glibc's sigaction installs its own restorer.
+                        RESTRICTED_HANDLER_RAN.store(false, Ordering::SeqCst);
+                        let mut action: libc::sigaction = std::mem::zeroed();
+                        action.sa_sigaction = note_restricted_signal as *const () as usize;
+                        action.sa_flags = libc::SA_SIGINFO;
+                        assert_eq!(
+                            libc::sigaction(libc::SIGUSR2, &action, std::ptr::null_mut()),
+                            0
+                        );
+                        // Sent through the trusted gate, so it arrives in
+                        // ordinary context; glibc's raise() would unblock it
+                        // inside the SIGSYS handler, where SIGSYS is blocked
+                        // and the trapped return is a fatal forced SIGSYS.
+                        signal::raw_raise(libc::SIGUSR2).unwrap();
+                        // The handler ran; its return through glibc's
+                        // restorer is what ends the process.
+                    }
+                    "raw" => {
+                        libc::syscall(libc::SYS_rt_sigreturn);
+                    }
+                    "alias" => {
+                        // Linux takes the number's low 32 bits.
+                        libc::syscall(0x1_0000_0000 | libc::SYS_rt_sigreturn);
+                    }
+                    other => panic!("unknown mode {other}"),
+                }
+            }
+            panic!("a foreign signal return was performed");
+        }
+        let expected = "reverie-inguest: the guest made its own rt_sigreturn; \
+                        only the runtime's signal restorer may return from a signal, \
+                        so the process ends\n";
+        for stack in ["alt", "main"] {
+            for foreign in ["glibc", "raw", "alias"] {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "trap::tests::a_restricted_signal_return_admits_only_the_runtime_restorer",
+                        "--nocapture",
+                    ])
+                    .env(CHILD, format!("{stack}:{foreign}"))
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    output.status.code(),
+                    Some(GUEST_SIGNAL_RETURN_STATUS),
+                    "{stack}:{foreign} {output:?}"
+                );
+                assert!(
+                    String::from_utf8_lossy(&output.stdout).contains("runtime returns ran\n"),
+                    "{stack}:{foreign} {output:?}"
+                );
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).ends_with(expected),
+                    "{stack}:{foreign} {output:?}"
+                );
+            }
+        }
+    }
+
     /// The line of the `panic!` in [`deliberate_panic_outside_the_handler`].
     const OUTSIDE_PANIC_LINE: u32 = line!() + 2;
     fn deliberate_panic_outside_the_handler() -> ! {
@@ -655,6 +970,7 @@ mod tests {
         if std::env::var_os(CHILD).is_some() {
             let config = crate::lifecycle::RuntimeConfig {
                 use_alt_stack: false,
+                restrict_signal_return: false,
             };
             unsafe {
                 crate::install(

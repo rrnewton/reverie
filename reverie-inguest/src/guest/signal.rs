@@ -121,9 +121,15 @@ pub fn prepare_guest_signal_state(
 /// for any other signal only `SIG_DFL` and `SIG_IGN` are, because a guest
 /// handler would run outside the Tool's view. The handler is read from the
 /// guest's `struct sigaction` with `process_vm_readv`, so an unreadable
-/// pointer is refused rather than faulting.
+/// pointer is refused rather than faulting. A new action for SIGKILL or
+/// SIGSTOP is supported whatever it holds: Linux refuses it (EINVAL, or
+/// EFAULT for an unreadable action) without changing anything, and a program
+/// may make that call to validate its signal handling.
 pub fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
     if number != libc::SYS_rt_sigaction || args[1] == 0 {
+        return true;
+    }
+    if args[0] == libc::SIGKILL as u64 || args[0] == libc::SIGSTOP as u64 {
         return true;
     }
     if args[0] == libc::SIGSYS as u64
@@ -200,5 +206,49 @@ mod tests {
             libc::SYS_rt_sigaction,
             [libc::SIGUSR1 as u64, 8, 0, 8, 0, 0]
         ));
+        // Linux refuses any new action for SIGKILL and SIGSTOP itself, so the
+        // call runs and the guest sees the kernel's error.
+        for signal in [libc::SIGKILL, libc::SIGSTOP] {
+            assert!(signal_action_supported(
+                libc::SYS_rt_sigaction,
+                args(signal, &handler)
+            ));
+            assert!(signal_action_supported(
+                libc::SYS_rt_sigaction,
+                [signal as u64, 8, 0, 8, 0, 0]
+            ));
+        }
+    }
+
+    /// The kernel's answer the guest sees for the SIGKILL and SIGSTOP calls
+    /// the guard admits: EINVAL for a readable action, EFAULT for an
+    /// unreadable one, and the action is unchanged.
+    #[test]
+    fn linux_refuses_a_new_sigkill_or_sigstop_action_itself() {
+        let handler = KernelSigaction {
+            handler: 0x1000,
+            ..KernelSigaction::default()
+        };
+        for signal in [libc::SIGKILL, libc::SIGSTOP] {
+            let readable = unsafe {
+                raw_syscall6(
+                    libc::SYS_rt_sigaction,
+                    [signal as u64, (&raw const handler) as u64, 0, 8, 0, 0],
+                )
+            };
+            assert_eq!(readable, -i64::from(libc::EINVAL));
+            let unreadable =
+                unsafe { raw_syscall6(libc::SYS_rt_sigaction, [signal as u64, 8, 0, 8, 0, 0]) };
+            assert_eq!(unreadable, -i64::from(libc::EFAULT));
+            let mut current = KernelSigaction::default();
+            let query = unsafe {
+                raw_syscall6(
+                    libc::SYS_rt_sigaction,
+                    [signal as u64, 0, (&raw mut current) as u64, 8, 0, 0],
+                )
+            };
+            assert_eq!(query, 0);
+            assert_eq!(current.handler, libc::SIG_DFL as u64);
+        }
     }
 }

@@ -11,8 +11,11 @@ use std::io;
 use std::ptr;
 use std::sync::OnceLock;
 
+use liteinst2::patcher::GuardSignalAction;
+use liteinst2::patcher::GuardSignalHandler;
+use liteinst2::patcher::GuardSignalRuntime;
 use liteinst2::patcher::PatchError;
-use liteinst2::patcher::prepare_live_patching;
+use liteinst2::patcher::prepare_live_patching_with_signal_runtime;
 use liteinst2::scanner::InstructionScanner;
 use liteinst2::trampoline::HookContext;
 use liteinst2::trampoline::HookSite;
@@ -421,7 +424,13 @@ pub fn alt_stack_from_env_value(value: Option<&OsStr>) -> io::Result<bool> {
 /// [`alt_stack_from_env_value`].
 fn runtime_config_from_env() -> io::Result<RuntimeConfig> {
     let use_alt_stack = alt_stack_from_env_value(std::env::var_os(ALT_STACK_ENV).as_deref())?;
-    Ok(RuntimeConfig { use_alt_stack })
+    // Signal phase 1: in the Tool mode every signal handler in the process is
+    // the runtime's own and returns through its private restorer, so the
+    // filter admits `rt_sigreturn` there alone.
+    Ok(RuntimeConfig {
+        use_alt_stack,
+        restrict_signal_return: TOOL_MODE.load(Ordering::Acquire) == TOOL_REVERIE,
+    })
 }
 
 pub(crate) fn initialize_from_environment() -> io::Result<()> {
@@ -757,9 +766,109 @@ fn discover_arena_aliases(
 fn prepare_instrumentation() -> io::Result<()> {
     crate::straddler::initialize_from_environment()?;
     // Initialization retains the guard router for modes that may publish
-    // concurrently.
-    prepare_live_patching().map_err(|error| io::Error::other(error.to_string()))?;
+    // concurrently. Its SIGTRAP handler is installed through the runtime's
+    // raw signal operations so that it, like the SIGSYS and SIGSEGV handlers,
+    // returns through the runtime's private restorer.
+    // SAFETY: preparation runs single-threaded, before the syscall filter is
+    // installed, and the callbacks below meet `GuardSignalRuntime`'s contract.
+    unsafe { prepare_live_patching_with_signal_runtime(GUARD_SIGNAL_RUNTIME) }
+        .map_err(|error| io::Error::other(error.to_string()))?;
     prepare_instrumentation_state()
+}
+
+/// LiteInst2's guard-router signal operations, done with the runtime's raw
+/// signal syscalls and its private restorer.
+const GUARD_SIGNAL_RUNTIME: GuardSignalRuntime = GuardSignalRuntime {
+    install_blocked: install_guard_handler_blocked,
+    restore_mask: restore_guard_signal_mask,
+    restore_default: restore_guard_default_action,
+};
+
+/// The calling thread's mask before [`install_guard_handler_blocked`] blocked
+/// SIGTRAP, held until [`restore_guard_signal_mask`] puts it back.
+static GUARD_PRIOR_MASK: AtomicU64 = AtomicU64::new(0);
+static GUARD_PRIOR_MASK_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Block SIGTRAP, refuse a prior custom handler, report the prior action, and
+/// install the guard router returning through the runtime's restorer; SIGTRAP
+/// stays blocked until [`restore_guard_signal_mask`].
+unsafe fn install_guard_handler_blocked(
+    signal: libc::c_int,
+    handler: GuardSignalHandler,
+    flags: libc::c_int,
+    previous: *mut GuardSignalAction,
+) -> Result<(), i32> {
+    use reverie_inguest::signal::KernelSigaction;
+    use reverie_inguest::signal::raw_sigaction;
+    use reverie_inguest::signal::raw_sigprocmask;
+
+    if signal != libc::SIGTRAP || previous.is_null() {
+        return Err(libc::EINVAL);
+    }
+    if GUARD_PRIOR_MASK_HELD.load(Ordering::Acquire) {
+        return Err(libc::EALREADY);
+    }
+    let blocked = 1_u64 << (signal - 1);
+    let mut prior_mask = 0_u64;
+    unsafe { raw_sigprocmask(libc::SIG_BLOCK, Some(&blocked), Some(&mut prior_mask)) }?;
+    let restore = |error: i32| {
+        let _ = unsafe { raw_sigprocmask(libc::SIG_SETMASK, Some(&prior_mask), None) };
+        Err(error)
+    };
+    let mut prior = KernelSigaction::default();
+    if let Err(error) = unsafe { raw_sigaction(signal, None, Some(&mut prior)) } {
+        return restore(error);
+    }
+    if prior.handler != libc::SIG_DFL as u64 && prior.handler != libc::SIG_IGN as u64 {
+        return restore(libc::EPERM);
+    }
+    let action = KernelSigaction {
+        handler: handler as *const () as u64,
+        flags: (flags | reverie_inguest::signal::SA_RESTORER) as u64,
+        restorer: reverie_inguest::signal::signal_restorer(),
+        mask: 0,
+    };
+    if let Err(error) = unsafe { raw_sigaction(signal, Some(&action), None) } {
+        return restore(error);
+    }
+    GUARD_PRIOR_MASK.store(prior_mask, Ordering::Relaxed);
+    GUARD_PRIOR_MASK_HELD.store(true, Ordering::Release);
+    // SAFETY: the caller passed a non-null output, written once on success.
+    unsafe {
+        previous.write(GuardSignalAction {
+            handler: prior.handler as usize,
+            flags: prior.flags,
+            restorer: prior.restorer as usize,
+            mask: prior.mask,
+        })
+    };
+    Ok(())
+}
+
+/// Put back the mask [`install_guard_handler_blocked`] held.
+unsafe fn restore_guard_signal_mask(signal: libc::c_int) -> Result<(), i32> {
+    if signal != libc::SIGTRAP || !GUARD_PRIOR_MASK_HELD.swap(false, Ordering::AcqRel) {
+        return Err(libc::EINVAL);
+    }
+    let prior_mask = GUARD_PRIOR_MASK.load(Ordering::Relaxed);
+    unsafe { reverie_inguest::signal::raw_sigprocmask(libc::SIG_SETMASK, Some(&prior_mask), None) }
+}
+
+/// From the guard router's signal context: restore the prior default action
+/// and send the signal again, with raw syscalls only. It stays pending until
+/// the router returns.
+unsafe fn restore_guard_default_action(
+    signal: libc::c_int,
+    previous: &GuardSignalAction,
+) -> Result<(), i32> {
+    let action = reverie_inguest::signal::KernelSigaction {
+        handler: previous.handler as u64,
+        flags: previous.flags,
+        restorer: previous.restorer as u64,
+        mask: previous.mask,
+    };
+    unsafe { reverie_inguest::signal::raw_sigaction(signal, Some(&action), None) }?;
+    unsafe { reverie_inguest::signal::raw_raise(signal) }
 }
 
 fn prepare_instrumentation_state() -> io::Result<()> {
@@ -2085,6 +2194,14 @@ unsafe fn dispatch_syscall_context(
         // need independent provenance; never borrow a stale signal's rights.
         guest_pkru: guest_pkru.as_ref().and_then(|value| **value),
     };
+    // A site patched for another syscall (glibc's `syscall()` wrapper) can
+    // carry the guest's own `rt_sigreturn` here without a trap; refuse it as
+    // the SIGSYS handler does a trapped one.
+    if reverie_inguest::trap::is_rt_sigreturn(event.number)
+        && reverie_inguest::trap::signal_return_restricted()
+    {
+        unsafe { reverie_inguest::trap::refuse_guest_signal_return() };
+    }
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review guarded installed-hook bypass for Tool-internal syscalls.
     if tool_callback_active() {

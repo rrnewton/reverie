@@ -154,6 +154,7 @@ fn protected_buffers_child() {
             InProcessSeccomp
                 .install(&RuntimeConfig {
                     use_alt_stack: mode == "alt-stack",
+                    restrict_signal_return: false,
                 })
                 .unwrap();
         }

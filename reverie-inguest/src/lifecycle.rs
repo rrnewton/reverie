@@ -37,12 +37,18 @@ use crate::trap;
 pub struct RuntimeConfig {
     /// Run the SIGSYS handler on an alternate signal stack.
     pub use_alt_stack: bool,
+    /// Admit `rt_sigreturn` only at the runtime's private signal restorer
+    /// (`signal::signal_restorer_return_ip`): signal phase 1's rule for the
+    /// Tool mode, where every signal handler is the runtime's own. Off, the
+    /// filter admits `rt_sigreturn` from anywhere.
+    pub restrict_signal_return: bool,
 }
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             use_alt_stack: true,
+            restrict_signal_return: false,
         }
     }
 }
@@ -85,8 +91,14 @@ impl LifecycleController for InProcessSeccomp {
 ///
 /// Kept separate from [`install_in_process_trap`] so the buildable precondition
 /// is unit-testable without installing irreversible process-global state.
-fn build_trap_filter() -> io::Result<SeccompFilter> {
-    SeccompFilter::for_trusted_gates(trap::trusted_gate(), trap::guest_syscall_gate())
+fn build_trap_filter(config: &RuntimeConfig) -> io::Result<SeccompFilter> {
+    SeccompFilter::for_trusted_gates_with_signal_return(
+        trap::trusted_gate(),
+        trap::guest_syscall_gate(),
+        config
+            .restrict_signal_return
+            .then(crate::signal::signal_restorer_return_ip),
+    )
 }
 
 /// Install the shared **guest-half** in-process syscall trap: the `SIGSYS`
@@ -106,8 +118,12 @@ fn build_trap_filter() -> io::Result<SeccompFilter> {
 /// and the filter must whitelist the trusted gate.
 unsafe fn install_in_process_trap(config: &RuntimeConfig) -> io::Result<()> {
     unsafe { trap::install_handler(config.use_alt_stack)? };
-    let mut filter = build_trap_filter()?;
-    unsafe { filter.install() }
+    let mut filter = build_trap_filter(config)?;
+    unsafe { filter.install() }?;
+    if config.restrict_signal_return {
+        trap::set_signal_return_restricted();
+    }
+    Ok(())
 }
 
 /// The guest half of a hybrid in-process-trap + ptrace-lifecycle arrangement.
@@ -175,8 +191,15 @@ mod tests {
         // both controllers install builds for the live trusted gate and is
         // non-empty. When HybridPtrace was a stub this path returned
         // io::ErrorKind::Unsupported and built nothing.
-        let filter = build_trap_filter().expect("shared trap filter builds for the live gate");
+        let filter = build_trap_filter(&RuntimeConfig::default())
+            .expect("shared trap filter builds for the live gate");
         assert!(!filter.is_empty());
+        let restricted = build_trap_filter(&RuntimeConfig {
+            restrict_signal_return: true,
+            ..RuntimeConfig::default()
+        })
+        .expect("the trap filter with the restorer rule builds for the live gate");
+        assert_eq!(restricted.len(), filter.len() + 6);
     }
 
     #[test]

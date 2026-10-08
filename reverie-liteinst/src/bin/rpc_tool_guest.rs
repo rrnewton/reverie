@@ -139,6 +139,9 @@ impl GlobalTool for CounterGlobal {
 #[derive(Default)]
 struct CounterTool;
 
+/// [`CounterTool`]'s exit status if a guest `rt_sigreturn` ever reaches it.
+const TOOL_SAW_SIGRETURN_STATUS: i32 = 118;
+
 #[reverie::tool]
 impl Tool for CounterTool {
     type GlobalState = CounterGlobal;
@@ -149,6 +152,11 @@ impl Tool for CounterTool {
         guest: &mut G,
         syscall: Syscall,
     ) -> Result<i64, Error> {
+        if syscall.number() == Sysno::rt_sigreturn {
+            // The runtime refuses the guest's own rt_sigreturn before any
+            // Tool sees it (tool-sigreturn-trap, tool-sigreturn-hook).
+            unsafe { reverie_inguest::guest::support::exit_now(TOOL_SAW_SIGRETURN_STATUS) };
+        }
         if syscall.number() == Sysno::getpid {
             let uid = unsafe { reverie_liteinst_rpc_getuid() };
             LAST_NESTED_UID.store(uid, Ordering::Relaxed);
@@ -653,6 +661,58 @@ reverie_liteinst_rpc_getuid_site:
     .cfi_endproc
     .size reverie_liteinst_rpc_getuid, .-reverie_liteinst_rpc_getuid
 
+    # One syscall site for any number (the first argument), like glibc's
+    # syscall() wrapper: patched for one number, its hook carries the next.
+    .p2align 4
+    .global reverie_liteinst_rpc_numbered
+    .hidden reverie_liteinst_rpc_numbered
+    .type reverie_liteinst_rpc_numbered,@function
+reverie_liteinst_rpc_numbered:
+    .cfi_startproc
+    mov rax, rdi
+    .global reverie_liteinst_rpc_numbered_site
+    .hidden reverie_liteinst_rpc_numbered_site
+reverie_liteinst_rpc_numbered_site:
+    syscall
+    nop
+    nop
+    nop
+    ret
+    .cfi_endproc
+    .size reverie_liteinst_rpc_numbered, .-reverie_liteinst_rpc_numbered
+
+    # The same for a site no other syscall reaches, so its first call traps.
+    .p2align 4
+    .global reverie_liteinst_rpc_fresh_numbered
+    .hidden reverie_liteinst_rpc_fresh_numbered
+    .type reverie_liteinst_rpc_fresh_numbered,@function
+reverie_liteinst_rpc_fresh_numbered:
+    .cfi_startproc
+    mov rax, rdi
+    syscall
+    nop
+    nop
+    nop
+    ret
+    .cfi_endproc
+    .size reverie_liteinst_rpc_fresh_numbered, .-reverie_liteinst_rpc_fresh_numbered
+
+    # A site reached only by the guest's own rt_sigreturn, so it traps.
+    .p2align 4
+    .global reverie_liteinst_rpc_sigreturn
+    .hidden reverie_liteinst_rpc_sigreturn
+    .type reverie_liteinst_rpc_sigreturn,@function
+reverie_liteinst_rpc_sigreturn:
+    .cfi_startproc
+    mov eax, 15
+    syscall
+    nop
+    nop
+    nop
+    ret
+    .cfi_endproc
+    .size reverie_liteinst_rpc_sigreturn, .-reverie_liteinst_rpc_sigreturn
+
     .p2align 4
     .global reverie_liteinst_rpc_sigprocmask
     .hidden reverie_liteinst_rpc_sigprocmask
@@ -919,6 +979,9 @@ reverie_liteinst_straddling_rdtsc:
 unsafe extern "C" {
     fn reverie_liteinst_rpc_getpid() -> i64;
     fn reverie_liteinst_rpc_getuid() -> i64;
+    fn reverie_liteinst_rpc_numbered(number: i64) -> i64;
+    fn reverie_liteinst_rpc_fresh_numbered(number: i64) -> i64;
+    fn reverie_liteinst_rpc_sigreturn() -> i64;
     fn reverie_liteinst_rpc_execve(
         path: *const u8,
         argv: *const *const u8,
@@ -961,6 +1024,7 @@ unsafe extern "C" {
     ) -> i64;
     static reverie_liteinst_rpc_getpid_site: u8;
     static reverie_liteinst_rpc_getuid_site: u8;
+    static reverie_liteinst_rpc_numbered_site: u8;
     static reverie_liteinst_rpc_sigprocmask_site: u8;
     static reverie_liteinst_rpc_sigprocmask_first_site: u8;
     static reverie_liteinst_rpc_mask_rdtsc_site: u8;
@@ -1133,6 +1197,84 @@ fn preblocked_sigsys_guest(path: &Path) {
     assert_eq!(query, 0);
     assert_eq!(current & sigsys, 0);
     println!("inherited-sigsys-unblocked");
+}
+
+/// Signal phase 1 in the Tool mode: the runtime's SIGSYS handler and the
+/// LiteInst2 guard's SIGTRAP handler return through the private restorer, the
+/// filter admits `rt_sigreturn` there alone, and a guest's new SIGKILL or
+/// SIGSTOP action reaches Linux, which refuses it with EINVAL.
+fn tool_signal_runtime_guest(path: &Path) {
+    use reverie_inguest::signal::KernelSigaction;
+    use reverie_inguest::signal::SA_RESTORER;
+    use reverie_inguest::signal::raw_sigaction;
+    use reverie_inguest::signal::signal_restorer;
+
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    assert!(reverie_inguest::trap::signal_return_restricted());
+    for signal in [libc::SIGSYS, libc::SIGTRAP] {
+        let mut action = KernelSigaction::default();
+        unsafe { raw_sigaction(signal, None, Some(&mut action)) }.unwrap();
+        assert_ne!(action.handler, libc::SIG_DFL as u64, "signal {signal}");
+        assert_ne!(action.flags & SA_RESTORER as u64, 0, "signal {signal}");
+        assert_eq!(action.restorer, signal_restorer(), "signal {signal}");
+    }
+    for signal in [libc::SIGKILL, libc::SIGSTOP] {
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = forbidden_signal_handler as *const () as usize;
+        let result = unsafe { libc::sigaction(signal, &action, std::ptr::null_mut()) };
+        assert_eq!(result, -1, "signal {signal}");
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EINVAL),
+            "signal {signal}"
+        );
+    }
+    println!("tool-signal-runtime-ok");
+}
+
+/// The guest's own `rt_sigreturn` in the Tool mode ends the process, whether
+/// it traps at a fresh site or reaches a site's hook installed for another
+/// syscall, and whether its number register holds 15 or an alias with high
+/// bits set (Linux reads the low 32 bits).
+fn tool_guest_sigreturn_guest(path: &Path, through_hook: bool, alias: bool) -> ! {
+    let number = if alias {
+        0x1_0000_0000 | libc::SYS_rt_sigreturn
+    } else {
+        libc::SYS_rt_sigreturn
+    };
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    if through_hook {
+        let parent = unsafe { libc::getppid() };
+        for _ in 0..2 {
+            assert_eq!(
+                unsafe { reverie_liteinst_rpc_numbered(libc::SYS_getppid) },
+                i64::from(parent)
+            );
+        }
+        let site = core::ptr::addr_of!(reverie_liteinst_rpc_numbered_site) as usize as u64;
+        assert!(reverie_liteinst::reverie_liteinst_site_hook_count(site) >= 1);
+        println!("numbered-site-hooked");
+        unsafe { reverie_liteinst_rpc_numbered(number) };
+    } else if alias {
+        println!("sigreturn-site-fresh");
+        unsafe { reverie_liteinst_rpc_fresh_numbered(number) };
+    } else {
+        println!("sigreturn-site-fresh");
+        unsafe { reverie_liteinst_rpc_sigreturn() };
+    }
+    panic!("the guest's rt_sigreturn returned");
+}
+
+/// A SIGTRAP that is not a guard trap is passed by LiteInst2's router to the
+/// prior default action through the runtime's raw callback: the process dies
+/// of SIGTRAP after the router returns through the private restorer.
+fn tool_sigtrap_default_guest(path: &Path) -> ! {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    // Non-dumpable, so the default action writes no core.
+    assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) }, 0);
+    println!("raising-sigtrap");
+    unsafe { reverie_inguest::signal::raw_raise(libc::SIGTRAP) }.unwrap();
+    panic!("a non-guard SIGTRAP did not take the default action");
 }
 
 fn spoof_sigsys_guest(path: &Path) -> ! {
@@ -1891,6 +2033,16 @@ fn main() {
         Some("pending-sigsys") => pending_sigsys_guest(Path::new(&path)),
         Some("preblocked-sigsys") => preblocked_sigsys_guest(Path::new(&path)),
         Some("spoof-sigsys") => spoof_sigsys_guest(Path::new(&path)),
+        Some("tool-signal-runtime") => tool_signal_runtime_guest(Path::new(&path)),
+        Some("tool-sigreturn-trap") => tool_guest_sigreturn_guest(Path::new(&path), false, false),
+        Some("tool-sigreturn-hook") => tool_guest_sigreturn_guest(Path::new(&path), true, false),
+        Some("tool-sigreturn-trap-alias") => {
+            tool_guest_sigreturn_guest(Path::new(&path), false, true)
+        }
+        Some("tool-sigreturn-hook-alias") => {
+            tool_guest_sigreturn_guest(Path::new(&path), true, true)
+        }
+        Some("tool-sigtrap-default") => tool_sigtrap_default_guest(Path::new(&path)),
         Some("instruction-guest") => {
             instruction_guest(Path::new(&path), InstructionPublication::Concurrent)
         }

@@ -159,7 +159,10 @@ pub fn alt_stack_from_env_value(value: Option<&OsStr>) -> io::Result<bool> {
 pub(crate) fn runtime_config_from_env() -> io::Result<RuntimeConfig> {
     // AUTONOMOUS-BOT-IMPLEMENTED
     let use_alt_stack = alt_stack_from_env_value(env::var_os(ALT_STACK_ENV).as_deref())?;
-    Ok(RuntimeConfig { use_alt_stack })
+    Ok(RuntimeConfig {
+        use_alt_stack,
+        ..RuntimeConfig::default()
+    })
 }
 
 /// Which shared `reverie-inguest` lifecycle controller the in-guest runtime
