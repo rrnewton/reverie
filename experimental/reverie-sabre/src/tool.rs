@@ -16,6 +16,7 @@ use syscalls::Sysno;
 use syscalls::syscall;
 
 use super::protected_files;
+use super::tool_output;
 use super::utils;
 use super::vdso;
 use crate::ffi::fn_icept;
@@ -260,7 +261,7 @@ impl SyscallExt for Syscall {
             Ok(0)
         } else if sysno == Sysno::close_range {
             protected_files::sys_close_range(args.arg0, args.arg1, args.arg2)
-        } else if protected_files::uses_protected_fd(sysno, args.arg0, args.arg1) {
+        } else if uses_protected_fd(sysno, args.arg0, args.arg1, args.arg2) {
             // If this syscall operates on a protected file descriptor, we
             // should return EBADF to indicate that the file descriptor isn't
             // opened (even if it really is).
@@ -271,4 +272,20 @@ impl SyscallExt for Syscall {
             )
         }
     }
+}
+
+/// Whether a guest syscall reaches a protected descriptor, and so fails with
+/// `EBADF`. A `dup2`/`dup3` onto the tool-output socket's number first moves
+/// the socket, so the guest's call runs as it would on a free number; one the
+/// kernel fails anyway runs natively, without touching the socket.
+fn uses_protected_fd(sysno: Sysno, arg0: usize, arg1: usize, arg2: usize) -> bool {
+    if sysno == Sysno::dup2 || sysno == Sysno::dup3 {
+        let flags = if sysno == Sysno::dup3 { arg2 } else { 0 };
+        if tool_output::before_guest_dup_onto(arg0 as i32, arg1 as i32, flags)
+            == tool_output::GuestDup::Native
+        {
+            return false;
+        }
+    }
+    protected_files::uses_protected_fd(sysno, arg0, arg1)
 }
