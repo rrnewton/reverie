@@ -54,6 +54,15 @@ impl PmuProfile {
                 // 10 COND_NTAKEN, 11 COND), and rr gives both the same profile,
                 // so this repeats Sapphire Rapids' entry.
                 0xCF => (0x5101c4, 125),
+                // Intel Ice Lake, Sunny Cove: server (Linux INTEL_ICELAKE_X 0x6A,
+                // INTEL_ICELAKE_D 0x6C) and client (INTEL_ICELAKE 0x7D,
+                // INTEL_ICELAKE_L 0x7E). Intel's perfmon icelakex_core.json v1.31
+                // and icelake_core.json v1.25 encode BR_INST_RETIRED as Sapphire
+                // Rapids does (event C4, umask 01 COND_TAKEN, 10 COND_NTAKEN,
+                // 11 COND), and rr's Ice Lake profile (models 0x6A and 0x7E) has
+                // a margin of 100. The umask (01 here, 11 in rr) is
+                // https://github.com/rrnewton/reverie/issues/965.
+                0x6A | 0x6C | 0x7D | 0x7E => (0x5101c4, 100),
                 _ => return None,
             },
             // Turin EPYC family 1Ah model 11h has p99 skid of 384 RCBs. A 1K

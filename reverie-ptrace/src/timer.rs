@@ -5179,6 +5179,18 @@ mod tests {
         assert_eq!(emerald.skid_margin(), 125);
     }
 
+    // Ice Lake server and client parts, Azure's common Ice Lake-SP among
+    // them, use rr's Ice Lake profile with the same event as Sapphire Rapids.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn ice_lake_models_have_a_profile() {
+        for model in [0x6A, 0x6C, 0x7D, 0x7E] {
+            let config = PmuConfig::from_family_model(0x06, model);
+            assert_eq!(config.raw_rcb_event(), 0x5101c4, "model {model:#x}");
+            assert_eq!(config.skid_margin(), 100, "model {model:#x}");
+        }
+    }
+
     // A CPU with no profile is a typed refusal that names it, not a panic.
     #[cfg(target_arch = "x86_64")]
     #[test]
