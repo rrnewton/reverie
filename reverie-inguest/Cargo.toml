@@ -51,6 +51,11 @@ path = "tests/smoke.rs"
 name = "pkeys"
 path = "tests/pkeys.rs"
 
+[[test]]
+name = "clock_allocations"
+path = "tests/clock_allocations.rs"
+required-features = ["rcb-clock"]
+
 [[bin]]
 name = "reverie-inguest-pkey-buffers"
 path = "src/bin/pkey_buffers.rs"
