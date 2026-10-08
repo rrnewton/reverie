@@ -482,6 +482,48 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         );
     }
 
+    let admitted = |mode: &str, on: bool| {
+        let mut command = Command::new(binary);
+        command
+            .arg(mode)
+            .arg(&socket)
+            .env(reverie_liteinst::SITE_PATCHING_ENV, "0")
+            .env(
+                reverie_liteinst::SIGALRM_HANDLERS_ENV,
+                if on { "1" } else { "0" },
+            );
+        command.output().unwrap()
+    };
+    let virtual_state = admitted("sigalrm-virtual", true);
+    assert!(virtual_state.status.success(), "{virtual_state:?}");
+    assert_eq!(virtual_state.stdout, b"sigalrm-virtual-ok\n");
+    let unprepared = admitted("sigalrm-unprepared", true);
+    assert_eq!(
+        unprepared.status.code(),
+        Some(reverie_inguest::guest::sigalrm::UNPREPARED_SIGALRM_STATUS),
+        "{unprepared:?}"
+    );
+    assert_eq!(unprepared.stdout, b"sigalrm-handler-installed\n");
+    // The pending-at-installation refusal, admitted; and with handlers not
+    // admitted, the refusal of every handler (the same guest, same answer).
+    for on in [true, false] {
+        let refused = admitted("sigalrm-refused", on);
+        assert!(refused.status.success(), "{on} {refused:?}");
+        assert_eq!(refused.stdout, b"sigalrm-refused-ok\n");
+    }
+    let extra_filter = admitted("sigalrm-extra-filter", true);
+    assert!(extra_filter.status.success(), "{extra_filter:?}");
+    assert_eq!(extra_filter.stdout, b"sigalrm-extra-filter-ok\n");
+    let inherited_filter = admitted("sigalrm-inherited-filter", true);
+    assert!(inherited_filter.status.success(), "{inherited_filter:?}");
+    assert_eq!(inherited_filter.stdout, b"sigalrm-inherited-filter-ok\n");
+    let pkey_before = admitted("sigalrm-pkey-before-install", true);
+    assert!(pkey_before.status.success(), "{pkey_before:?}");
+    assert_eq!(pkey_before.stdout, b"sigalrm-pkey-before-install-ok\n");
+    let not_admitted = admitted("sigalrm-unprepared", false);
+    assert!(!not_admitted.status.success(), "{not_admitted:?}");
+    assert!(not_admitted.stdout.is_empty(), "{not_admitted:?}");
+
     let sigtrap_default = Command::new(binary)
         .arg("tool-sigtrap-default")
         .arg(&socket)
