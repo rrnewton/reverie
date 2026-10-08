@@ -260,13 +260,11 @@ fn rewrite_current_vdso(
     };
     let start = vdso.address.0 as usize;
     let len = (vdso.address.1 - vdso.address.0) as usize;
-    Errno::result(unsafe {
-        libc::mprotect(
-            start as *mut libc::c_void,
-            len,
-            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-        )
-    })?;
+    own_mprotect(
+        start,
+        len,
+        libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+    )?;
 
     let mut syscall_sites = Vec::new();
     for (entry, bytes) in replacements {
@@ -334,14 +332,41 @@ fn rewrite_current_vdso(
         debug!("patched vDSO entry point {}", entry.describe());
     }
 
-    Errno::result(unsafe {
-        libc::mprotect(
-            start as *mut libc::c_void,
-            len,
-            libc::PROT_READ | libc::PROT_EXEC,
-        )
-    })?;
+    own_mprotect(start, len, libc::PROT_READ | libc::PROT_EXEC)?;
     Ok(syscall_sites)
+}
+
+/// `mprotect` of this process's own memory. In-guest backends rewrite their
+/// vDSO inside the guest, where libc's `mprotect` is a dynamic symbol the
+/// program or a preloaded library may define (and allocate in), so on x86-64
+/// this issues the syscall instruction itself.
+fn own_mprotect(address: usize, len: usize, protection: libc::c_int) -> Result<(), Errno> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let result: i64;
+        // SAFETY: mprotect takes no pointers it dereferences; the caller
+        // passes a range of this process's own vDSO.
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                inlateout("rax") libc::SYS_mprotect => result,
+                in("rdi") address,
+                in("rsi") len,
+                in("rdx") protection as i64,
+                lateout("rcx") _,
+                lateout("r11") _,
+                options(nostack),
+            );
+        }
+        if result < 0 {
+            Err(Errno::new(-result as i32))
+        } else {
+            Ok(())
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    Errno::result(unsafe { libc::mprotect(address as *mut libc::c_void, len, protection) })
+        .map(drop)
 }
 
 /// Describes a procfs error without the C library's errno message: an I/O

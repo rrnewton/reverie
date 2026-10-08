@@ -234,8 +234,9 @@ pub unsafe extern "C" fn reverie_liteinst_initialize() {
     if let Err(error) = runtime::initialize_from_environment() {
         eprintln!("reverie-liteinst initialization failed: {error}");
         unsafe {
-            libc::_exit(127);
+            reverie_inguest::trap::raw_syscall6(libc::SYS_exit_group, [127, 0, 0, 0, 0, 0]);
         }
+        unreachable!("exit_group returned");
     }
 }
 
