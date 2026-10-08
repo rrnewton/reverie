@@ -177,7 +177,7 @@ impl StackLine {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-133): Review nested Tool syscall guards and raw forwarding.
 #[repr(C)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 /// The kernel's `struct sigaction` for `rt_sigaction` on x86_64 with a 64-bit
 /// signal mask, as raw syscalls pass it (not libc's layout).
 pub struct KernelSigaction {
@@ -338,8 +338,20 @@ pub unsafe fn mapping_name_at(address: u64, name: &mut [u8]) -> Option<usize> {
 /// Issues raw syscalls through the trusted gate. Called from signal context,
 /// `line_result` must itself be async-signal-safe (not allocate or take
 /// locks).
-pub unsafe fn scan_own_maps<R>(mut line_result: impl FnMut(&[u8]) -> Option<R>) -> Option<R> {
-    let path = c"/proc/self/maps";
+pub unsafe fn scan_own_maps<R>(line_result: impl FnMut(&[u8]) -> Option<R>) -> Option<R> {
+    unsafe { scan_proc_lines(c"/proc/self/maps", line_result) }
+}
+
+/// [`scan_own_maps`] over another line-oriented procfs file, such as
+/// `/proc/self/smaps`.
+///
+/// # Safety
+///
+/// As [`scan_own_maps`].
+pub unsafe fn scan_proc_lines<R>(
+    path: &core::ffi::CStr,
+    mut line_result: impl FnMut(&[u8]) -> Option<R>,
+) -> Option<R> {
     let fd = unsafe {
         raw_syscall6(
             libc::SYS_openat,
