@@ -90,6 +90,47 @@ pub fn admitted() -> bool {
     ADMITTED.load(Ordering::Acquire)
 }
 
+/// The process's seccomp filter count once the runtime's own filter is in
+/// place; 0 until recorded.
+static FILTER_BASELINE: AtomicU64 = AtomicU64::new(0);
+
+/// Record the process's seccomp filter count right after the runtime
+/// installed its own filter. While handlers are admitted the guest cannot add
+/// a filter (the runtime refuses it), and a handler is admitted only while
+/// the count still equals this: so no guest filter can fabricate the result
+/// of the runtime's own signal calls (a `SECCOMP_RET_ERRNO` of 0 reports
+/// success without running the call).
+pub fn record_filter_baseline() -> std::io::Result<()> {
+    let count = unsafe { seccomp_filter_count() }
+        .ok_or_else(|| std::io::Error::other("cannot read Seccomp_filters"))?;
+    FILTER_BASELINE.store(count, Ordering::Release);
+    Ok(())
+}
+
+/// Parse a `/proc/self/status` `Seccomp_filters:` line.
+pub fn seccomp_filters_line(line: &[u8]) -> Option<u64> {
+    let rest = line.strip_prefix(b"Seccomp_filters:")?;
+    let digits: Vec<u8> = rest
+        .iter()
+        .copied()
+        .skip_while(|byte| *byte == b' ' || *byte == b'\t')
+        .take_while(u8::is_ascii_digit)
+        .collect();
+    core::str::from_utf8(&digits).ok()?.parse().ok()
+}
+
+/// This process's seccomp filter count, from `/proc/self/status`.
+unsafe fn seccomp_filter_count() -> Option<u64> {
+    unsafe { crate::guest::support::scan_proc_lines(c"/proc/self/status", seccomp_filters_line) }
+}
+
+/// Whether the process still has only the filters it had when the runtime
+/// recorded its baseline.
+fn filters_are_the_runtimes() -> bool {
+    let baseline = FILTER_BASELINE.load(Ordering::Acquire);
+    baseline != 0 && unsafe { seccomp_filter_count() } == Some(baseline)
+}
+
 /// Whether `rt_sigaction(args)` installs a SIGALRM action this module
 /// decides: the runtime's guards must let it through to [`intercept`].
 pub fn decides_action(number: i64, args: [u64; 6]) -> bool {
@@ -293,7 +334,9 @@ pub unsafe fn intercept(policy: &Policy, number: i64, args: [u64; 6]) -> Option<
             sigprocmask(policy, args)
         }
         libc::SYS_rt_sigpending if handled() => sigpending(args),
-        libc::SYS_sigaltstack if handled() && args[0] == 0 => sigaltstack_query(args),
+        // The guest's alternate stack is virtual, and always disabled, in
+        // every process that admits handlers: before, during and after one.
+        libc::SYS_sigaltstack if admitted() && args[0] == 0 => sigaltstack_query(args),
         _ => return None,
     };
     Some(match result {
@@ -362,6 +405,7 @@ fn change_action(
     })
     .is_some()
         || !restorer::can_protect_restorer(new.restorer)
+        || !filters_are_the_runtimes()
     {
         return Err(libc::EPERM);
     }
@@ -613,6 +657,13 @@ mod tests {
         ));
         set_admitted(false);
         assert!(!decides_action(libc::SYS_rt_sigaction, alias));
+    }
+
+    #[test]
+    fn seccomp_filter_lines_are_parsed() {
+        assert_eq!(seccomp_filters_line(b"Seccomp_filters:\t1"), Some(1));
+        assert_eq!(seccomp_filters_line(b"Seccomp_filters:\t12"), Some(12));
+        assert_eq!(seccomp_filters_line(b"Seccomp:\t2"), None);
     }
 
     #[test]

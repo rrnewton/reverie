@@ -220,6 +220,29 @@ mod tests {
         }
     }
 
+    /// The signal argument is read as a C int, as Linux reads it, whether or
+    /// not SIGALRM handlers are admitted: an alias with high bits set is that
+    /// signal. (Before, a SIGKILL alias with a handler got EPERM where Linux
+    /// returns EINVAL, and a SIGSYS alias passed the guard.)
+    #[test]
+    fn the_guard_reads_the_signal_as_a_c_int() {
+        let handler = [0x1000_u64, 0, 0, 0];
+        let args = |signal: u64| [signal, handler.as_ptr() as u64, 0, 8, 0, 0];
+        let high = 0x1_0000_0000_u64;
+        assert!(signal_action_supported(
+            libc::SYS_rt_sigaction,
+            args(high | libc::SIGKILL as u64)
+        ));
+        assert!(!signal_action_supported(
+            libc::SYS_rt_sigaction,
+            args(high | libc::SIGSYS as u64)
+        ));
+        assert!(!signal_action_supported(
+            libc::SYS_rt_sigaction,
+            args(high | libc::SIGUSR1 as u64)
+        ));
+    }
+
     /// The kernel's answer the guest sees for the SIGKILL and SIGSTOP calls
     /// the guard admits: EINVAL for a readable action, EFAULT for an
     /// unreadable one, and the action is unchanged.

@@ -534,7 +534,13 @@ pub(crate) fn initialize_reverie_tool(
         reverie_inguest::guest::restorer::record_libc_identity()?;
     }
     reverie_inguest::guest::sigalrm::set_admitted(admitted);
-    install_runtime(stats, publication, instructions, vdso_sites)
+    install_runtime(stats, publication, instructions, vdso_sites)?;
+    if admitted {
+        // Once the runtime's own filter is in place: see
+        // record_filter_baseline.
+        reverie_inguest::guest::sigalrm::record_filter_baseline()?;
+    }
+    Ok(())
 }
 
 /// Opts the Tool mode into guest SIGALRM handlers (signal phase 1), `1` or

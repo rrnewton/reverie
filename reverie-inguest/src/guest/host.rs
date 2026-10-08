@@ -967,10 +967,14 @@ fn installs_seccomp_filter(number: i64, args: [u64; 6]) -> bool {
 }
 
 /// A guest call that installs a seccomp filter is refused once a creation
-/// hook is registered (see [`set_physical_creation_hook`]).
+/// hook is registered (see [`set_physical_creation_hook`]), and in a process
+/// that admits guest SIGALRM handlers: a guest filter could make the
+/// runtime's own signal calls report success without running
+/// ([`super::sigalrm::record_filter_baseline`]).
 fn guest_seccomp_filter_policy(number: i64, args: [u64; 6]) -> Option<Errno> {
-    (installs_seccomp_filter(number, args) && CREATION_HOOK.get().is_some())
-        .then_some(Errno::EOPNOTSUPP)
+    (installs_seccomp_filter(number, args)
+        && (CREATION_HOOK.get().is_some() || super::sigalrm::admitted()))
+    .then_some(Errno::EOPNOTSUPP)
 }
 
 /// The birth identity of `pidfd`: its inode number, if it is a pidfs inode.

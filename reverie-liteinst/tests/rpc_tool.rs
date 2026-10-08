@@ -511,6 +511,9 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         assert!(refused.status.success(), "{on} {refused:?}");
         assert_eq!(refused.stdout, b"sigalrm-refused-ok\n");
     }
+    let extra_filter = admitted("sigalrm-extra-filter", true);
+    assert!(extra_filter.status.success(), "{extra_filter:?}");
+    assert_eq!(extra_filter.stdout, b"sigalrm-extra-filter-ok\n");
     let not_admitted = admitted("sigalrm-unprepared", false);
     assert!(!not_admitted.status.success(), "{not_admitted:?}");
     assert!(not_admitted.stdout.is_empty(), "{not_admitted:?}");
