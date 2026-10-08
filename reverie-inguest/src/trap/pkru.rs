@@ -72,6 +72,11 @@ fn detect() -> io::Result<Option<Layout>> {
     }))
 }
 
+/// Whether installation found OSPKE enabled, so RDPKRU and WRPKRU run.
+pub(super) fn present() -> bool {
+    matches!(LAYOUT.get(), Some(Some(_)))
+}
+
 /// Decode only a real kernel-created x86-64 signal frame, after provenance
 /// checks and after the entry prefix has made the whole signal stack readable.
 /// The original image remains untouched for the kernel's rt_sigreturn.

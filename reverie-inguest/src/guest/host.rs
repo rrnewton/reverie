@@ -1798,6 +1798,19 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
         Errno::from_ret(result as usize).map(|value| value as i64)
     }
 
+    /// Signal phase 1, step I4: deliver a SIGALRM the Tool has committed (the
+    /// ledger entry is already taken) as this fallback syscall completes. Only
+    /// a guest SIGALRM handler kept virtual by this runtime can be the target;
+    /// everything else keeps the default refusal.
+    async fn defer_signal_delivery(&mut self, event: reverie::SignalEvent) -> Result<(), Error> {
+        if event.signal() != libc::SIGALRM || !super::sigalrm::handled() {
+            return Err(Errno::ENOSYS.into());
+        }
+        // SAFETY: inside the guest call's own turn, in its dispatch.
+        unsafe { super::sigalrm::prepare_delivery(self.runtime.reserved_signal_mask()) }
+            .map_err(|errno| Error::Errno(Errno::new(errno)))
+    }
+
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
         let (number, syscall_args) = syscall.into_parts();
         let args = [

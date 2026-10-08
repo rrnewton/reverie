@@ -68,7 +68,9 @@ pub const UAPI_SA_FLAGS: u64 = (libc::SA_NOCLDSTOP as u32
 const REFUSED_SA_FLAGS: u64 = (libc::SA_RESETHAND as u32 | libc::SA_NODEFER as u32) as u64;
 
 /// The exit status when the runtime cannot undo a half-made change to the
-/// physical SIGALRM state (a guest seccomp filter refused the undo).
+/// physical SIGALRM state (a guest seccomp filter refused the undo), or a
+/// guest call's frame shows physical signal state the runtime did not set
+/// ([`check_entry_frame`]).
 pub const SIGNAL_STATE_LOST_STATUS: i32 = 116;
 
 /// The exit status when a SIGALRM reaches the trampoline without a delivery
@@ -553,6 +555,7 @@ fn change_action(
     }
     VIRTUAL_MASK.store(next_mask, Ordering::Release);
     set_virtual_action(&new);
+    RESERVED.store(policy.reserved, Ordering::Release);
     HANDLED.store(true, Ordering::Release);
     Ok(old)
 }
@@ -642,15 +645,406 @@ fn sigaltstack_query(policy: &Policy, args: [u64; 6]) -> Result<i64, i32> {
     Ok(0)
 }
 
-/// The physical SIGALRM handler while a guest handler is installed. Until the
-/// runtime prepares deliveries (phase 1 step I4), no SIGALRM is expected
-/// here: one that arrives is not the runtime's, so the process ends before
-/// any guest code runs.
+// Signal phase 1, step I4: delivery (design section 4, "The commit" steps 4
+// to 8, and "The trampoline").
+
+/// The exit status when a SIGALRM delivery cannot be completed as Linux
+/// would (a physical SIGALRM already pending, the instance cannot be queued,
+/// or the guest changed its alternate stack in the frame): a determinism loss.
+pub const DELIVERY_LOST_STATUS: i32 = 115;
+
+static PREPARED: AtomicBool = AtomicBool::new(false);
+static PREPARED_NONCE: AtomicU64 = AtomicU64::new(0);
+static PREPARED_HANDLER: AtomicU64 = AtomicU64::new(0);
+static PREPARED_FLAGS: AtomicU64 = AtomicU64::new(0);
+static PREPARED_ACTION_MASK: AtomicU64 = AtomicU64::new(0);
+static PREPARED_SAVED_MASK: AtomicU64 = AtomicU64::new(0);
+static PREPARED_ACTIVATION_BASE: AtomicU64 = AtomicU64::new(0);
+static NEXT_NONCE: AtomicU64 = AtomicU64::new(1);
+/// The mask the next completion marker installs in its fresh frame (the
+/// delivery window), while `WINDOW_OPEN`.
+static WINDOW_MASK: AtomicU64 = AtomicU64::new(0);
+static WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// `SI_QUEUE` and `SI_KERNEL` from Linux's siginfo codes.
+const SI_QUEUE: i32 = -1;
+const SI_KERNEL: i32 = 0x80;
+
+/// The window mask for a thread whose virtual mask is `virtual_mask`: the
+/// physical mask without SIGALRM, so the queued instance is delivered as soon
+/// as the completion marker's frame returns.
+pub fn window_mask(virtual_mask: u64, reserved: u64) -> u64 {
+    physical_mask(virtual_mask, true, reserved) & !SIGALRM_BIT
+}
+
+/// The guest's mask while its handler runs, as Linux computes it without
+/// `SA_NODEFER`: the activation base, the action's mask, and SIGALRM.
+pub fn activation_mask(base: u64, action_mask: u64) -> u64 {
+    (base | action_mask | SIGALRM_BIT) & !UNBLOCKABLE
+}
+
+/// Prepare one SIGALRM delivery at the current syscall's completion (design
+/// section 4, steps 4 to 7): snapshot the virtual action and masks, check that
+/// no physical SIGALRM is pending, queue the runtime's own instance (blocked
+/// by the physical mask, so only queued), and open the window the completion
+/// marker installs. EINVAL when no guest handler is installed or a delivery is
+/// already prepared; EIO when the instance cannot be made (the caller must
+/// then record a loss: the ledger entry is already taken).
+///
+/// # Safety
+///
+/// Only from a guest call's own turn, in a fallback dispatch whose completion
+/// marker will follow.
+pub unsafe fn prepare_delivery(reserved: u64) -> Result<(), i32> {
+    if !handled() || PREPARED.load(Ordering::Acquire) || WINDOW_OPEN.load(Ordering::Acquire) {
+        return Err(libc::EINVAL);
+    }
+    if physical_sigalrm_pending()? {
+        return Err(libc::EIO);
+    }
+    let action = virtual_action();
+    let current = virtual_mask();
+    let nonce = NEXT_NONCE.fetch_add(1, Ordering::AcqRel);
+    PREPARED_HANDLER.store(action.handler, Ordering::Release);
+    PREPARED_FLAGS.store(action.flags, Ordering::Release);
+    PREPARED_ACTION_MASK.store(action.mask, Ordering::Release);
+    PREPARED_SAVED_MASK.store(current, Ordering::Release);
+    PREPARED_ACTIVATION_BASE.store(current, Ordering::Release);
+    PREPARED_NONCE.store(nonce, Ordering::Release);
+    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
+    let uid = unsafe { raw_syscall6(libc::SYS_getuid, [0; 6]) };
+    let mut info = [0_u8; 128];
+    info[0..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
+    info[8..12].copy_from_slice(&SI_QUEUE.to_ne_bytes());
+    info[16..20].copy_from_slice(&(pid as i32).to_ne_bytes());
+    info[20..24].copy_from_slice(&(uid as u32).to_ne_bytes());
+    info[24..32].copy_from_slice(&nonce.to_ne_bytes());
+    PREPARED.store(true, Ordering::Release);
+    let queued = unsafe {
+        raw_syscall6(
+            libc::SYS_rt_sigqueueinfo,
+            [
+                pid as u64,
+                libc::SIGALRM as u64,
+                info.as_ptr() as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if queued < 0 {
+        PREPARED.store(false, Ordering::Release);
+        return Err(libc::EIO);
+    }
+    WINDOW_MASK.store(window_mask(current, reserved), Ordering::Release);
+    WINDOW_OPEN.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// The runtime's own alternate stack, recorded at admission: `ss_sp`,
+/// `ss_flags` and `ss_size`.
+static RUNTIME_STACK_POINTER: AtomicU64 = AtomicU64::new(0);
+static RUNTIME_STACK_FLAGS: AtomicU64 = AtomicU64::new(0);
+static RUNTIME_STACK_SIZE: AtomicU64 = AtomicU64::new(0);
+static RUNTIME_STACK_RECORDED: AtomicBool = AtomicBool::new(false);
+
+/// Record the thread's physical alternate stack, the runtime's own, once the
+/// runtime is installed. The guest's stack is virtual from then on, so a
+/// guest call's frame must always show this one.
+pub fn record_runtime_stack() -> std::io::Result<()> {
+    let mut stack = [0_u8; 24];
+    let result = unsafe {
+        raw_syscall6(
+            libc::SYS_sigaltstack,
+            [0, stack.as_mut_ptr() as u64, 0, 0, 0, 0],
+        )
+    };
+    if result < 0 {
+        return Err(std::io::Error::from_raw_os_error(-result as i32));
+    }
+    let (pointer, flags, size) = stack_fields(&stack);
+    RUNTIME_STACK_POINTER.store(pointer, Ordering::Release);
+    RUNTIME_STACK_FLAGS.store(flags, Ordering::Release);
+    RUNTIME_STACK_SIZE.store(size, Ordering::Release);
+    RUNTIME_STACK_RECORDED.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// A `stack_t` image's `ss_sp`, `ss_flags` and `ss_size`, without its
+/// padding (the kernel writes the fields, not the padding).
+fn stack_fields(stack: &[u8; 24]) -> (u64, u64, u64) {
+    let pointer = u64::from_ne_bytes(stack[0..8].try_into().unwrap());
+    let flags = u64::from(u32::from_ne_bytes(stack[8..12].try_into().unwrap()));
+    let size = u64::from_ne_bytes(stack[16..24].try_into().unwrap());
+    (pointer, flags, size)
+}
+
+/// The frame invariant (design section 3), from a guest call's entry frame
+/// in a process with SIGALRM handled: its `uc_sigmask` is the physical mask
+/// derived from the virtual state, and its `uc_stack` is the runtime's own
+/// alternate stack.
+pub fn entry_frame_matches(mask: u64, stack: &[u8; 24]) -> bool {
+    let reserved = RESERVED.load(Ordering::Acquire);
+    RUNTIME_STACK_RECORDED.load(Ordering::Acquire)
+        && mask == physical_mask(virtual_mask(), true, reserved)
+        && stack_fields(stack)
+            == (
+                RUNTIME_STACK_POINTER.load(Ordering::Acquire),
+                RUNTIME_STACK_FLAGS.load(Ordering::Acquire),
+                RUNTIME_STACK_SIZE.load(Ordering::Acquire),
+            )
+}
+
+/// Check the frame invariant at a guest call's entry; on a mismatch the
+/// physical signal state was changed by a path the runtime does not own, and
+/// the process ends before the call can commit a delivery.
+pub fn check_entry_frame(mask: u64, stack: [u8; 24]) {
+    if entry_frame_matches(mask, &stack) {
+        return;
+    }
+    const MESSAGE: &[u8] = b"reverie-inguest: a guest call's frame shows a signal mask or \
+alternate stack the runtime did not set; the process ends\n";
+    unsafe {
+        let _ = raw_syscall6(
+            libc::SYS_write,
+            [
+                libc::STDERR_FILENO as u64,
+                MESSAGE.as_ptr() as u64,
+                MESSAGE.len() as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        crate::guest::support::exit_now(SIGNAL_STATE_LOST_STATUS)
+    }
+}
+
+/// The delivery window for the completion marker's fresh frame, taken once.
+pub fn take_window() -> Option<u64> {
+    WINDOW_OPEN
+        .swap(false, Ordering::AcqRel)
+        .then(|| WINDOW_MASK.load(Ordering::Acquire))
+}
+
+/// Offsets in Linux's x86-64 `ucontext_t` prefix.
+const UC_STACK_OFFSET: usize = 16;
+const UC_SIGMASK_OFFSET: usize = 296;
+/// `uc_mcontext.gregs[REG_OLDMASK]` (Linux's `sigcontext.oldmask`): the
+/// kernel stores the first word of the pre-delivery mask there too.
+const UC_OLDMASK_OFFSET: usize = 40 + 8 * libc::REG_OLDMASK as usize;
+
+fn delivery_lost(message: &[u8]) -> ! {
+    unsafe {
+        let _ = raw_syscall6(
+            libc::SYS_write,
+            [
+                libc::STDERR_FILENO as u64,
+                message.as_ptr() as u64,
+                message.len() as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        crate::guest::support::exit_now(DELIVERY_LOST_STATUS)
+    }
+}
+
+// Calls the guest's SIGALRM handler (rcx) with the trampoline's three
+// arguments (rdi, rsi, rdx; Linux passes all three whatever SA_SIGINFO says),
+// and on its return restores the rights in r8d before any memory write when
+// r9 is nonzero (OSPKE). A handler may deny writes to key 0, this very stack
+// included, with WRPKRU and return: Linux's restorer writes no memory before
+// rt_sigreturn restores the frame's PKRU, so the runtime must not either.
+// The pops only read.
+core::arch::global_asm!(
+    r#"
+    .text
+    .p2align 4
+    .type reverie_inguest_sigalrm_call_handler, @function
+    .hidden reverie_inguest_sigalrm_call_handler
+reverie_inguest_sigalrm_call_handler:
+    push rbx
+    push r12
+    push r13
+    mov ebx, r8d
+    mov r12, r9
+    call rcx
+    test r12, r12
+    jz 1f
+    mov eax, ebx
+    xor ecx, ecx
+    xor edx, edx
+    wrpkru
+    lfence
+1:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+    .size reverie_inguest_sigalrm_call_handler, .-reverie_inguest_sigalrm_call_handler
+"#
+);
+
+unsafe extern "C" {
+    fn reverie_inguest_sigalrm_call_handler(
+        signal: libc::c_int,
+        info: *mut libc::siginfo_t,
+        context: *mut libc::c_void,
+        handler: u64,
+        rights: u32,
+        ospke: u64,
+    );
+}
+
+/// The current PKRU; only with OSPKE.
+fn read_pkru() -> u32 {
+    let rights: u32;
+    unsafe {
+        core::arch::asm!(
+            "rdpkru",
+            in("ecx") 0_u32,
+            out("eax") rights,
+            out("edx") _,
+            options(nomem, nostack, preserves_flags),
+        )
+    };
+    rights
+}
+
+/// The physical SIGALRM handler while a guest handler is installed.
+///
+/// It runs only the delivery the runtime prepared: the instance must carry
+/// `SI_QUEUE`, this process's pid and the prepared nonce, or the process
+/// ends before any guest code runs. It then shows the guest Linux's view:
+/// `SI_KERNEL` siginfo, the saved-return mask in `uc_sigmask`, a disabled
+/// alternate stack in `uc_stack`, and the activation mask as its virtual mask;
+/// calls the guest's handler; and on its return takes `uc_sigmask` (which the
+/// guest may have edited) as the virtual mask, puts the physical mask and the
+/// runtime's own alternate stack back in the frame, and returns through the
+/// runtime's restorer. The frame's saved PKRU is never touched, so
+/// rt_sigreturn restores it (or the guest's edit of it) as Linux would.
 unsafe extern "C" fn sigalrm_trampoline(
-    _signal: libc::c_int,
-    _info: *mut libc::siginfo_t,
-    _context: *mut libc::c_void,
+    signal: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
 ) {
+    let prepared = PREPARED.swap(false, Ordering::AcqRel);
+    let nonce = PREPARED_NONCE.load(Ordering::Acquire);
+    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) } as i32;
+    let authentic = prepared
+        && signal == libc::SIGALRM
+        && !info.is_null()
+        && !context.is_null()
+        && unsafe {
+            let bytes = info.cast::<u8>();
+            bytes.add(8).cast::<i32>().read_unaligned() == SI_QUEUE
+                && bytes.add(16).cast::<i32>().read_unaligned() == pid
+                && bytes.add(24).cast::<u64>().read_unaligned() == nonce
+        };
+    if !authentic {
+        unsafe { sigalrm_unprepared() }
+    }
+    // Move the snapshot into this activation before any guest code runs: a
+    // nested delivery prepares its own.
+    let handler = PREPARED_HANDLER.load(Ordering::Acquire);
+    let flags = PREPARED_FLAGS.load(Ordering::Acquire);
+    let action_mask = PREPARED_ACTION_MASK.load(Ordering::Acquire);
+    let saved = PREPARED_SAVED_MASK.load(Ordering::Acquire);
+    let base = PREPARED_ACTIVATION_BASE.load(Ordering::Acquire);
+    // The rights the kernel entered this handler with; restored when the
+    // guest's handler returns.
+    let ospke = crate::trap::pkru_present();
+    let rights = if ospke { read_pkru() } else { 0 };
+    let context = context.cast::<u8>();
+    unsafe {
+        // Linux's siginfo for an expired ITIMER_REAL: SI_KERNEL, all else 0.
+        let bytes = info.cast::<u8>();
+        core::ptr::write_bytes(bytes.add(4), 0, 128 - 4);
+        bytes.add(8).cast::<i32>().write_unaligned(SI_KERNEL);
+    }
+    let runtime_stack =
+        unsafe { core::ptr::read_unaligned(context.add(UC_STACK_OFFSET).cast::<[u8; 24]>()) };
+    let physical_oldmask = unsafe {
+        context
+            .add(UC_OLDMASK_OFFSET)
+            .cast::<u64>()
+            .read_unaligned()
+    };
+    unsafe {
+        context
+            .add(UC_SIGMASK_OFFSET)
+            .cast::<u64>()
+            .write_unaligned(saved);
+        // Linux also stores the saved mask in sigcontext.oldmask.
+        context
+            .add(UC_OLDMASK_OFFSET)
+            .cast::<u64>()
+            .write_unaligned(saved);
+        core::ptr::write_unaligned(
+            context.add(UC_STACK_OFFSET).cast::<[u8; 24]>(),
+            disabled_stack_bytes(),
+        );
+    }
+    VIRTUAL_MASK.store(activation_mask(base, action_mask), Ordering::Release);
+    if flags & libc::SA_SIGINFO as u64 == 0 {
+        // Linux copies siginfo to the frame only for SA_SIGINFO.
+        unsafe { core::ptr::write_bytes(info.cast::<u8>(), 0, 128) };
+    }
+    unsafe {
+        reverie_inguest_sigalrm_call_handler(
+            libc::SIGALRM,
+            info,
+            context.cast(),
+            handler,
+            rights,
+            u64::from(ospke),
+        )
+    };
+    let edited = unsafe {
+        context
+            .add(UC_SIGMASK_OFFSET)
+            .cast::<u64>()
+            .read_unaligned()
+    };
+    let stack =
+        unsafe { core::ptr::read_unaligned(context.add(UC_STACK_OFFSET).cast::<[u8; 24]>()) };
+    // By its fields: Linux ignores the padding after ss_flags.
+    if stack_fields(&stack) != stack_fields(&disabled_stack_bytes()) {
+        delivery_lost(
+            b"reverie-inguest: a SIGALRM handler changed uc_stack, which phase 1 does \
+not support; the process ends\n",
+        );
+    }
+    let next = edited & !UNBLOCKABLE;
+    VIRTUAL_MASK.store(next, Ordering::Release);
+    let reserved = RESERVED.load(Ordering::Acquire);
+    unsafe {
+        context
+            .add(UC_SIGMASK_OFFSET)
+            .cast::<u64>()
+            .write_unaligned(physical_mask(next, handled(), reserved));
+        core::ptr::write_unaligned(
+            context.add(UC_STACK_OFFSET).cast::<[u8; 24]>(),
+            runtime_stack,
+        );
+        // rt_sigreturn ignores oldmask; put back what the kernel wrote.
+        context
+            .add(UC_OLDMASK_OFFSET)
+            .cast::<u64>()
+            .write_unaligned(physical_oldmask);
+    }
+}
+
+/// The runtime's reserved signals, recorded at admission for the trampoline,
+/// which runs outside any guest call.
+static RESERVED: AtomicU64 = AtomicU64::new(0);
+
+/// A SIGALRM the runtime did not prepare: the process ends before any guest
+/// code runs.
+unsafe fn sigalrm_unprepared() -> ! {
     const MESSAGE: &[u8] = b"reverie-inguest: a SIGALRM the runtime did not prepare reached the \
 guest's handler; the process ends\n";
     unsafe {
@@ -902,6 +1296,21 @@ mod tests {
         assert_eq!(seccomp_filters_line(b"Seccomp_filters:\t1"), Some(1));
         assert_eq!(seccomp_filters_line(b"Seccomp_filters:\t12"), Some(12));
         assert_eq!(seccomp_filters_line(b"Seccomp:\t2"), None);
+    }
+
+    #[test]
+    fn a_stack_image_is_compared_by_its_fields_not_its_padding() {
+        let mut stack = [0_u8; 24];
+        stack[0..8].copy_from_slice(&0x7000_u64.to_ne_bytes());
+        stack[8..12].copy_from_slice(&2_u32.to_ne_bytes());
+        stack[16..24].copy_from_slice(&0x1_0000_u64.to_ne_bytes());
+        let mut padded = stack;
+        padded[12..16].copy_from_slice(&[0xff; 4]);
+        assert_eq!(stack_fields(&stack), (0x7000, 2, 0x1_0000));
+        assert_eq!(stack_fields(&padded), stack_fields(&stack));
+        let mut other = stack;
+        other[18] = 0;
+        assert_ne!(stack_fields(&other), stack_fields(&stack));
     }
 
     #[test]

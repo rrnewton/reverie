@@ -143,6 +143,14 @@ struct CounterTool;
 /// on its own buffer.
 const PRIVATE_MASK_QUERY_MARKER: usize = 0x5157;
 
+/// The `getppid` argument that asks [`CounterTool`] to deliver a SIGALRM as
+/// the call completes (`Guest::defer_signal_delivery`).
+const DELIVER_SIGALRM_MARKER: usize = 0x5158;
+
+/// The `getppid` argument that asks [`CounterTool`] to request two SIGALRM
+/// deliveries in one call; it returns the second request's result.
+const DELIVER_SIGALRM_TWICE_MARKER: usize = 0x5159;
+
 /// [`CounterTool`]'s exit status if a guest `rt_sigreturn` ever reaches it.
 const TOOL_SAW_SIGRETURN_STATUS: i32 = 118;
 
@@ -160,6 +168,31 @@ impl Tool for CounterTool {
             // The runtime refuses the guest's own rt_sigreturn before any
             // Tool sees it (tool-sigreturn-trap, tool-sigreturn-hook).
             unsafe { reverie_inguest::guest::support::exit_now(TOOL_SAW_SIGRETURN_STATUS) };
+        }
+        let marker = syscall.into_parts().1.arg0;
+        if syscall.number() == Sysno::getppid
+            && (marker == DELIVER_SIGALRM_MARKER || marker == DELIVER_SIGALRM_TWICE_MARKER)
+        {
+            // A Tool-committed SIGALRM, delivered as this call completes.
+            let mut info = [0_u8; 128];
+            info[0..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
+            info[8..12].copy_from_slice(&0x80_i32.to_ne_bytes());
+            let event = reverie::SignalEvent::new(
+                libc::SIGALRM,
+                info,
+                reverie::SignalTarget::Process {
+                    pid: reverie::Pid::from_raw(unsafe { libc::getpid() }),
+                },
+            )
+            .unwrap();
+            if marker == DELIVER_SIGALRM_TWICE_MARKER {
+                assert!(guest.defer_signal_delivery(event).await.is_ok());
+            }
+            return Ok(match guest.defer_signal_delivery(event).await {
+                Ok(()) => 0,
+                Err(reverie::Error::Errno(errno)) => -i64::from(errno.into_raw()),
+                Err(_) => -i64::from(libc::EIO),
+            });
         }
         if syscall.number() == Sysno::getppid
             && syscall.into_parts().1.arg0 == PRIVATE_MASK_QUERY_MARKER
@@ -1952,6 +1985,299 @@ fn sigalrm_pkey_before_install_guest(path: &Path) {
     println!("sigalrm-pkey-before-install-ok");
 }
 
+static DELIVERED: AtomicU64 = AtomicU64::new(0);
+static DELIVERED_CODE: AtomicI64 = AtomicI64::new(0);
+static DELIVERED_SAVED_MASK: AtomicU64 = AtomicU64::new(0);
+static DELIVERED_ACTIVE_MASK: AtomicU64 = AtomicU64::new(0);
+/// The handler frame's `uc_mcontext.gregs[REG_OLDMASK]`.
+static DELIVERED_OLDMASK: AtomicU64 = AtomicU64::new(0);
+/// Whether the delivered siginfo was SIGALRM, errno 0, SI_KERNEL and zero
+/// everywhere else (no runtime pid, uid or nonce left in it).
+static DELIVERED_INFO_SCRUBBED: AtomicBool = AtomicBool::new(false);
+/// When nonzero, the handler stores it in its frame's uc_sigmask.
+static EDITED_RETURN_MASK: AtomicU64 = AtomicU64::new(0);
+/// When set, the handler writes an enabled stack into its frame's uc_stack.
+static EDIT_RETURN_STACK: AtomicBool = AtomicBool::new(false);
+/// When set, the handler writes only the padding bytes of its frame's
+/// uc_stack, which Linux ignores.
+static EDIT_RETURN_STACK_PADDING: AtomicBool = AtomicBool::new(false);
+static ONE_ARGUMENT_DELIVERED: AtomicU64 = AtomicU64::new(0);
+
+unsafe extern "C" fn recording_sigalrm_handler(
+    _signal: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+) {
+    DELIVERED.fetch_add(1, Ordering::SeqCst);
+    DELIVERED_CODE.store(i64::from(unsafe { (*info).si_code }), Ordering::SeqCst);
+    let bytes = unsafe { core::slice::from_raw_parts(info.cast::<u8>(), 128) };
+    let mut expected = [0_u8; 128];
+    expected[0..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
+    expected[8..12].copy_from_slice(&0x80_i32.to_ne_bytes());
+    DELIVERED_INFO_SCRUBBED.store(bytes == expected, Ordering::SeqCst);
+    let saved = unsafe { context.cast::<u8>().add(296).cast::<u64>().read_unaligned() };
+    DELIVERED_SAVED_MASK.store(saved, Ordering::SeqCst);
+    let oldmask = unsafe {
+        (*context.cast::<libc::ucontext_t>()).uc_mcontext.gregs[libc::REG_OLDMASK as usize]
+    };
+    DELIVERED_OLDMASK.store(oldmask as u64, Ordering::SeqCst);
+    let edited = EDITED_RETURN_MASK.load(Ordering::SeqCst);
+    if edited != 0 {
+        unsafe {
+            context
+                .cast::<u8>()
+                .add(296)
+                .cast::<u64>()
+                .write_unaligned(edited)
+        };
+    }
+    if EDIT_RETURN_STACK_PADDING.load(Ordering::SeqCst) {
+        unsafe {
+            core::ptr::write_unaligned(
+                context.cast::<u8>().add(16 + 12).cast::<[u8; 4]>(),
+                [0xff; 4],
+            )
+        };
+    }
+    if EDIT_RETURN_STACK.load(Ordering::SeqCst) {
+        let stack = Box::leak(vec![0_u8; 64 * 1024].into_boxed_slice());
+        let mut image = [0_u8; 24];
+        image[0..8].copy_from_slice(&(stack.as_ptr() as u64).to_ne_bytes());
+        image[16..24].copy_from_slice(&(stack.len() as u64).to_ne_bytes());
+        unsafe {
+            core::ptr::write_unaligned(context.cast::<u8>().add(16).cast::<[u8; 24]>(), image)
+        };
+    }
+    // The guest's mask inside its handler, as it queries it.
+    let mut active = 0_u64;
+    unsafe {
+        libc::syscall(
+            libc::SYS_rt_sigprocmask,
+            libc::SIG_BLOCK,
+            core::ptr::null::<u64>(),
+            &mut active as *mut u64,
+            8,
+        )
+    };
+    DELIVERED_ACTIVE_MASK.store(active, Ordering::SeqCst);
+}
+
+unsafe extern "C" fn one_argument_sigalrm_handler(_signal: libc::c_int) {
+    ONE_ARGUMENT_DELIVERED.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Signal phase 1, step I4: a SIGALRM the Tool commits is delivered to the
+/// guest's handler as the committing call completes, as Linux would show it:
+/// SI_KERNEL siginfo with nothing else in it, the pre-delivery mask in
+/// uc_sigmask, the activation mask (saved, sa_mask, SIGALRM) inside the
+/// handler; afterwards the guest's mask is back and the physical mask is
+/// exactly the derived one. A second delivery works the same way. A handler
+/// that edits uc_sigmask returns to that mask (SIGKILL dropped). A
+/// one-argument handler runs. With no handler installed the Tool's request is
+/// refused; a second request in one call is refused (EINVAL), and with a
+/// physical SIGALRM already pending the request fails (EIO) and nothing runs.
+fn sigalrm_delivery_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let alarm = 1_u64 << (libc::SIGALRM - 1);
+    let usr1 = 1_u64 << (libc::SIGUSR1 - 1);
+    let usr2 = 1_u64 << (libc::SIGUSR2 - 1);
+    let deliver = || unsafe { libc::syscall(libc::SYS_getppid, DELIVER_SIGALRM_MARKER) };
+    // No handler: nothing to deliver to.
+    assert_eq!(deliver(), -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ENOSYS)
+    );
+    let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+    action.sa_sigaction = recording_sigalrm_handler as *const () as usize;
+    action.sa_flags = libc::SA_SIGINFO;
+    unsafe { libc::sigaddset(&mut action.sa_mask, libc::SIGUSR2) };
+    sigalrm_sigaction(&action).unwrap();
+    guest_mask_call(libc::SIG_SETMASK, Some(usr1));
+    for round in 1..=2_u64 {
+        assert_eq!(deliver(), 0);
+        assert_eq!(DELIVERED.load(Ordering::SeqCst), round);
+        assert_eq!(DELIVERED_CODE.load(Ordering::SeqCst), 0x80);
+        assert_eq!(DELIVERED_SAVED_MASK.load(Ordering::SeqCst), usr1);
+        // Linux stores the saved mask in sigcontext.oldmask as well.
+        assert_eq!(DELIVERED_OLDMASK.load(Ordering::SeqCst), usr1);
+        assert_eq!(
+            DELIVERED_ACTIVE_MASK.load(Ordering::SeqCst),
+            usr1 | usr2 | alarm
+        );
+        assert!(DELIVERED_INFO_SCRUBBED.load(Ordering::SeqCst));
+        assert_eq!(guest_mask_call(libc::SIG_BLOCK, None), usr1);
+        assert_eq!(physical_mask(), usr1 | alarm);
+    }
+    // With a runtime-reserved signal (SIGSYS) in the guest's mask, the
+    // physical window lacks it, but both saved masks the handler sees carry
+    // it, as on Linux.
+    let sys = 1_u64 << (libc::SIGSYS - 1);
+    guest_mask_call(libc::SIG_SETMASK, Some(usr1 | sys));
+    assert_eq!(deliver(), 0);
+    assert_eq!(DELIVERED_SAVED_MASK.load(Ordering::SeqCst), usr1 | sys);
+    assert_eq!(DELIVERED_OLDMASK.load(Ordering::SeqCst), usr1 | sys);
+    assert_eq!(guest_mask_call(libc::SIG_SETMASK, Some(usr1)), usr1 | sys);
+    // An edited return mask is taken, normalized as Linux does.
+    let kill = 1_u64 << (libc::SIGKILL - 1);
+    EDITED_RETURN_MASK.store(usr1 | usr2 | kill, Ordering::SeqCst);
+    assert_eq!(deliver(), 0);
+    EDITED_RETURN_MASK.store(0, Ordering::SeqCst);
+    assert_eq!(DELIVERED.load(Ordering::SeqCst), 4);
+    assert_eq!(guest_mask_call(libc::SIG_SETMASK, Some(usr1)), usr1 | usr2);
+    assert_eq!(physical_mask(), usr1 | alarm);
+    // A padding-only edit of uc_stack is no stack request: the return works.
+    EDIT_RETURN_STACK_PADDING.store(true, Ordering::SeqCst);
+    assert_eq!(deliver(), 0);
+    EDIT_RETURN_STACK_PADDING.store(false, Ordering::SeqCst);
+    assert_eq!(DELIVERED.load(Ordering::SeqCst), 5);
+    assert_eq!(guest_mask_call(libc::SIG_BLOCK, None), usr1);
+    // Two requests in one call: the second is refused, one delivery runs.
+    let twice = unsafe { libc::syscall(libc::SYS_getppid, DELIVER_SIGALRM_TWICE_MARKER) };
+    assert_eq!(twice, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EINVAL)
+    );
+    assert_eq!(DELIVERED.load(Ordering::SeqCst), 6);
+    // A one-argument handler.
+    let mut plain: libc::sigaction = unsafe { core::mem::zeroed() };
+    plain.sa_sigaction = one_argument_sigalrm_handler as *const () as usize;
+    sigalrm_sigaction(&plain).unwrap();
+    assert_eq!(deliver(), 0);
+    assert_eq!(ONE_ARGUMENT_DELIVERED.load(Ordering::SeqCst), 1);
+    assert_eq!(guest_mask_call(libc::SIG_BLOCK, None), usr1);
+    assert_eq!(physical_mask(), usr1 | alarm);
+    // A physical SIGALRM already pending: the request fails, nothing runs.
+    let tid = unsafe { reverie_inguest::trap::raw_syscall6(libc::SYS_gettid, [0; 6]) };
+    let pid = unsafe { reverie_inguest::trap::raw_syscall6(libc::SYS_getpid, [0; 6]) };
+    let sent = unsafe {
+        reverie_inguest::trap::raw_syscall6(
+            libc::SYS_tgkill,
+            [pid as u64, tid as u64, libc::SIGALRM as u64, 0, 0, 0],
+        )
+    };
+    assert_eq!(sent, 0);
+    assert_eq!(deliver(), -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EIO)
+    );
+    assert_eq!(ONE_ARGUMENT_DELIVERED.load(Ordering::SeqCst), 1);
+    println!("sigalrm-delivery-ok");
+}
+
+/// Signal phase 1, step I4: a handler that changes uc_stack in its frame
+/// ends the process (phase 1 supports no guest stack).
+fn sigalrm_stack_edit_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+    action.sa_sigaction = recording_sigalrm_handler as *const () as usize;
+    action.sa_flags = libc::SA_SIGINFO;
+    sigalrm_sigaction(&action).unwrap();
+    EDIT_RETURN_STACK.store(true, Ordering::SeqCst);
+    println!("sigalrm-stack-edit-armed");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    unsafe { libc::syscall(libc::SYS_getppid, DELIVER_SIGALRM_MARKER) };
+    println!("sigalrm-stack-edit-returned");
+}
+
+/// Signal phase 1, the frame invariant: once a physical mask or alternate
+/// stack the runtime did not set shows in a guest call's frame, that call
+/// ends the process.
+fn sigalrm_entry_frame_guest(path: &Path, stack: bool) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+    action.sa_sigaction = recording_sigalrm_handler as *const () as usize;
+    action.sa_flags = libc::SA_SIGINFO;
+    sigalrm_sigaction(&action).unwrap();
+    // The control: an ordinary call passes the check.
+    assert!(unsafe { libc::getppid() } > 0);
+    println!("sigalrm-entry-frame-armed");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    if stack {
+        let other = Box::leak(vec![0_u8; 64 * 1024].into_boxed_slice());
+        let mut image = [0_u8; 24];
+        image[0..8].copy_from_slice(&(other.as_ptr() as u64).to_ne_bytes());
+        image[16..24].copy_from_slice(&(other.len() as u64).to_ne_bytes());
+        let changed = unsafe {
+            reverie_inguest::trap::raw_syscall6(
+                libc::SYS_sigaltstack,
+                [image.as_ptr() as u64, 0, 0, 0, 0, 0],
+            )
+        };
+        assert_eq!(changed, 0);
+    } else {
+        let usr2 = 1_u64 << (libc::SIGUSR2 - 1);
+        unsafe { reverie_inguest::signal::raw_sigprocmask(libc::SIG_BLOCK, Some(&usr2), None) }
+            .unwrap();
+    }
+    unsafe { libc::getppid() };
+    println!("sigalrm-entry-frame-passed");
+}
+
+static PKRU_HANDLER_RAN: AtomicU64 = AtomicU64::new(0);
+
+// A SIGALRM handler that denies writes to key 0 (PKRU bit 1) and returns,
+// as a guest may: Linux's restorer writes no memory before rt_sigreturn
+// restores the frame's PKRU.
+global_asm!(
+    r#"
+    .text
+    .p2align 4
+    .type rpc_tool_write_denying_sigalrm_handler, @function
+rpc_tool_write_denying_sigalrm_handler:
+    mov qword ptr [rip + {ran}], 1
+    xor ecx, ecx
+    rdpkru
+    or eax, 2
+    xor edx, edx
+    wrpkru
+    ret
+    .size rpc_tool_write_denying_sigalrm_handler, .-rpc_tool_write_denying_sigalrm_handler
+"#,
+    ran = sym PKRU_HANDLER_RAN,
+);
+
+unsafe extern "C" {
+    fn rpc_tool_write_denying_sigalrm_handler(signal: libc::c_int);
+}
+
+fn current_pkru() -> u32 {
+    let rights: u32;
+    unsafe {
+        core::arch::asm!(
+            "rdpkru",
+            in("ecx") 0_u32,
+            out("eax") rights,
+            out("edx") _,
+            options(nomem, nostack, preserves_flags),
+        )
+    };
+    rights
+}
+
+/// Signal phase 1, step I4: a handler that leaves key 0 write-denied returns
+/// like any other, and the guest resumes with its own rights (the frame's).
+fn sigalrm_handler_pkru_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    if !reverie_inguest::trap::pkru_present() {
+        println!("sigalrm-handler-pkru: OSPKE unavailable");
+        return;
+    }
+    let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+    action.sa_sigaction = rpc_tool_write_denying_sigalrm_handler as *const () as usize;
+    sigalrm_sigaction(&action).unwrap();
+    let before = current_pkru();
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_getppid, DELIVER_SIGALRM_MARKER) },
+        0
+    );
+    assert_eq!(PKRU_HANDLER_RAN.load(Ordering::SeqCst), 1);
+    assert_eq!(current_pkru(), before);
+    println!("sigalrm-handler-pkru-ok");
+}
+
 fn spoof_sigsys_guest(path: &Path) -> ! {
     unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
     unsafe { reverie_liteinst_rpc_raise_sigsys() };
@@ -2715,6 +3041,11 @@ fn main() {
         Some("sigalrm-extra-filter") => sigalrm_extra_filter_guest(Path::new(&path)),
         Some("sigalrm-inherited-filter") => sigalrm_inherited_filter_guest(Path::new(&path)),
         Some("sigalrm-pkey-before-install") => sigalrm_pkey_before_install_guest(Path::new(&path)),
+        Some("sigalrm-delivery") => sigalrm_delivery_guest(Path::new(&path)),
+        Some("sigalrm-stack-edit") => sigalrm_stack_edit_guest(Path::new(&path)),
+        Some("sigalrm-entry-mask") => sigalrm_entry_frame_guest(Path::new(&path), false),
+        Some("sigalrm-entry-stack") => sigalrm_entry_frame_guest(Path::new(&path), true),
+        Some("sigalrm-handler-pkru") => sigalrm_handler_pkru_guest(Path::new(&path)),
         Some("tool-sigreturn-trap") => tool_guest_sigreturn_guest(Path::new(&path), false, false),
         Some("tool-sigreturn-hook") => tool_guest_sigreturn_guest(Path::new(&path), true, false),
         Some("tool-sigreturn-trap-alias") => {
