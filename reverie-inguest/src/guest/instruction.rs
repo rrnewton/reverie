@@ -271,7 +271,10 @@ fn instruction_control_unavailable(control: &str, result: i64) -> io::Error {
     let error = io::Error::from_raw_os_error((-result) as i32);
     io::Error::new(
         io::ErrorKind::Unsupported,
-        format!("{control} is unavailable: {error}"),
+        format!(
+            "{control} is unavailable: {}",
+            crate::guest::support::describe_io_error(&error)
+        ),
     )
 }
 

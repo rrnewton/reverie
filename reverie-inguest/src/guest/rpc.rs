@@ -94,7 +94,7 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
         let pid = current_id(libc::SYS_getpid)?;
         let tid = current_id(libc::SYS_gettid)?;
         let client: BlockingRpcClient<G> = BlockingRpcClient::connect(&path, tid)
-            .map_err(|error| io::Error::other(error.to_string()))?;
+            .map_err(|error| io::Error::other(describe_rpc_error(&error)))?;
         let config = client.config().clone();
         let fd = client.as_raw_fd();
         Ok(Self {
@@ -165,6 +165,18 @@ impl<G: GlobalTool> GlobalRPC<G> for CoordinatorRpc<G> {
 
     fn config(&self) -> &G::Config {
         &self.config
+    }
+}
+
+/// Describes `error` without asking the C library for an errno message; see
+/// [`crate::guest::support::describe_io_error`].
+pub fn describe_rpc_error(error: &reverie_rpc_transport::RpcError) -> String {
+    match error {
+        reverie_rpc_transport::RpcError::Io(inner) => format!(
+            "rpc i/o error: {}",
+            crate::guest::support::describe_io_error(inner)
+        ),
+        other => other.to_string(),
     }
 }
 

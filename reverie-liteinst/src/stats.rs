@@ -30,6 +30,7 @@ use reverie::PatchShapeCollector;
 use reverie::PatchShapeStats;
 use reverie::SiteCounters;
 use reverie::Tid;
+use reverie_inguest::guest::rpc::describe_rpc_error;
 use reverie_rpc_transport::BlockingRpcClient;
 use serde::Deserialize;
 use serde::Serialize;
@@ -438,14 +439,14 @@ impl GuestStatsHooks {
         let paths = stats.snapshot(direct_hooks);
         let inherited = stats.inherited_entries();
         let client = BlockingRpcClient::<LiteinstStatsGlobal>::connect(&stats.coordinator, tid)
-            .map_err(|error| io::Error::other(error.to_string()))?;
+            .map_err(|error| io::Error::other(describe_rpc_error(&error)))?;
         client
             .try_send_rpc(LiteinstProcessStats {
                 paths,
                 sites,
                 inherited,
             })
-            .map_err(|error| io::Error::other(error.to_string()))
+            .map_err(|error| io::Error::other(describe_rpc_error(&error)))
     }
 }
 
