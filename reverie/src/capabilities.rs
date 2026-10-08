@@ -190,6 +190,17 @@ pub struct BackendCapabilities {
     /// reports its final CPU time, and only terminal events (exits and the
     /// terminal subset of `WUNTRACED`) are waitable.
     pub emulates_child_waits: bool,
+
+    /// While a guest installs a SIGALRM handler, the backend keeps the
+    /// guest's SIGALRM action and signal mask virtual (signal phase 1): the
+    /// physical action is the backend's own, the physical mask always blocks
+    /// SIGALRM, and the tool owns the process's pending SIGALRM. A tool must
+    /// then publish the disposition and the guest's SIGALRM blocked bit to
+    /// its scheduler, and deliver pending SIGALRMs through the backend rather
+    /// than by sending host signals. A backend reports this only when it can
+    /// admit a handler at all; when it does not admit one in a given process,
+    /// the guest's `rt_sigaction` fails and nothing is published.
+    pub virtualizes_guest_sigalrm: bool,
 }
 
 impl BackendCapabilities {
@@ -218,6 +229,7 @@ impl BackendCapabilities {
         reports_child_exit_publication: true,
         provides_process_signal_control: false,
         emulates_child_waits: false,
+        virtualizes_guest_sigalrm: false,
     };
 
     /// `reverie-e9patch`: the guest is rewritten ahead of time and then run
@@ -232,6 +244,7 @@ impl BackendCapabilities {
         runs_exit_robust_list: false,
         supports_parked_write_signal_interruption: false,
         reports_child_exit_publication: false,
+        virtualizes_guest_sigalrm: true,
         ..Self::PTRACE
     };
 
@@ -318,6 +331,7 @@ mod tests {
             "reports_child_exit_publication": true,
             "provides_process_signal_control": false,
             "emulates_child_waits": false,
+            "virtualizes_guest_sigalrm": false,
         })
     }
 
@@ -355,6 +369,7 @@ mod tests {
                 "runs_exit_robust_list": false,
                 "supports_parked_write_signal_interruption": false,
                 "reports_child_exit_publication": false,
+                "virtualizes_guest_sigalrm": true,
             }))
         );
     }
