@@ -388,9 +388,10 @@ pub fn site_patching_enabled() -> bool {
 fn require_site_patching(runtime: &str) -> io::Result<()> {
     // SAFETY: the loader runs constructors before application threads start,
     // so nothing mutates the environment concurrently; the name is NUL-terminated.
-    let value = unsafe { libc::getenv(SITE_PATCHING_ENV_C.as_ptr()) };
-    // SAFETY: a non-null getenv result is a NUL-terminated environment value.
-    if value.is_null() || unsafe { CStr::from_ptr(value) }.to_bytes() == b"1" {
+    // Read from the environment block itself, not through libc's
+    // interposable getenv.
+    let value = reverie_inguest::guest::support::environment_value(SITE_PATCHING_ENV_C.to_bytes());
+    if value.is_none_or(|value| value == b"1") {
         return Ok(());
     }
     Err(io::Error::new(
@@ -660,7 +661,14 @@ fn compatibility_event_channel() -> io::Result<Option<CompatibilityEventChannel>
     let flags = if fd < 0 {
         -1
     } else {
-        unsafe { libc::fcntl(fd, libc::F_GETFL) }
+        // Raw syscalls here and below, not libc's interposable wrappers.
+        let flags = unsafe {
+            raw_syscall6(
+                libc::SYS_fcntl,
+                [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+            )
+        };
+        flags as libc::c_int
     };
     if flags < 0 {
         return Err(io::Error::new(
@@ -696,7 +704,13 @@ fn compatibility_event_channel() -> io::Result<Option<CompatibilityEventChannel>
     }
 
     let mut metadata: libc::stat = unsafe { core::mem::zeroed() };
-    if unsafe { libc::fstat(fd, &mut metadata) } != 0 {
+    if unsafe {
+        raw_syscall6(
+            libc::SYS_fstat,
+            [fd as u64, (&raw mut metadata) as u64, 0, 0, 0, 0],
+        )
+    } != 0
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("{COMPAT_EVENT_FD_ENV} metadata could not be read"),
@@ -708,7 +722,20 @@ fn compatibility_event_channel() -> io::Result<Option<CompatibilityEventChannel>
             format!("{COMPAT_EVENT_FD_ENV} must name a pipe"),
         ));
     }
-    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+    if unsafe {
+        raw_syscall6(
+            libc::SYS_fcntl,
+            [
+                fd as u64,
+                libc::F_SETFL as u64,
+                (flags | libc::O_NONBLOCK) as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    } < 0
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("{COMPAT_EVENT_FD_ENV} could not be made nonblocking"),
