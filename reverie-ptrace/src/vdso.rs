@@ -52,7 +52,12 @@ fn classify_this_vdso() -> Result<Option<VdsoTable>, String> {
         let _open = crate::launch_window::TransientOpen::begin();
         procfs::process::Process::myself().and_then(|process| process.maps())
     }
-    .map_err(|error| format!("cannot read this process's mappings: {error}"))?;
+    .map_err(|error| {
+        format!(
+            "cannot read this process's mappings: {}",
+            describe_proc_error(&error)
+        )
+    })?;
     let Some(vdso) = maps
         .iter()
         .find(|map| map.pathname == procfs::process::MMapPath::Vdso)
@@ -337,6 +342,34 @@ fn rewrite_current_vdso(
         )
     })?;
     Ok(syscall_sites)
+}
+
+/// Describes a procfs error without the C library's errno message: an I/O
+/// error by its kind and number, not through `io::Error`'s `Display`, which
+/// fetches the message with `strerror_r` (and so may allocate through the C
+/// library's malloc, which in-guest backends run this inside the guest with).
+fn describe_proc_error(error: &procfs::ProcError) -> String {
+    match error {
+        procfs::ProcError::Io(inner, path) => match inner.raw_os_error() {
+            Some(code) => format!("{:?} (errno {code}) reading {path:?}", inner.kind()),
+            None => error.to_string(),
+        },
+        other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod proc_error_tests {
+    /// The standard rendering of an I/O procfs error carries the C library's
+    /// message; the description keeps only the kind and errno number.
+    #[test]
+    fn procfs_io_errors_are_described_without_the_c_library_message() {
+        let error = procfs::ProcError::Io(std::io::Error::from_raw_os_error(libc::EMFILE), None);
+        assert!(error.to_string().contains("Too many open files"), "{error}");
+        let described = super::describe_proc_error(&error);
+        assert!(described.contains("(errno 24)"), "{described}");
+        assert!(!described.contains("Too many open files"), "{described}");
+    }
 }
 
 /// Test-only: a hook for the tracee with the given raw PID.
