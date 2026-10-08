@@ -9161,24 +9161,26 @@ mod tests {
     fn a_fatal_signal_exit_offered_after_the_run_failed_carries_the_cleanup_deadline() {
         use nix::unistd::ForkResult;
 
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) }, 0);
+        // A core limit of one byte makes the kernel run its dump step without
+        // writing a host core. Under a hard limit of 0 the child cannot raise
+        // its limit to 1, and whether it dumps then depends on core_pattern.
+        let refuses_core = limit.rlim_max >= 1;
         let pid = match unsafe { nix::unistd::fork() }.expect("fork crashing child") {
             ForkResult::Child => {
                 safeptrace::traceme_and_stop().expect("TRACEME crashing child");
-                // A core limit of one byte makes the kernel run its dump step
-                // without writing a host core.
-                let mut limit = libc::rlimit {
-                    rlim_cur: 0,
-                    rlim_max: 0,
-                };
                 // The test harness's inherited SIGSEGV handler would
                 // otherwise catch the signal.
                 unsafe {
-                    if libc::getrlimit(libc::RLIMIT_CORE, &mut limit) != 0 {
-                        libc::_exit(1);
-                    }
-                    limit.rlim_cur = 1;
-                    if libc::setrlimit(libc::RLIMIT_CORE, &limit) != 0 {
-                        libc::_exit(1);
+                    if refuses_core {
+                        limit.rlim_cur = 1;
+                        if libc::setrlimit(libc::RLIMIT_CORE, &limit) != 0 {
+                            libc::_exit(1);
+                        }
                     }
                     libc::signal(libc::SIGSEGV, libc::SIG_DFL);
                     libc::raise(libc::SIGSEGV);
@@ -9207,7 +9209,12 @@ mod tests {
             .assume_stopped();
         assert_eq!(event, Event::Exit);
         let status = ExitStatus::from_raw(stopped.getevent().expect("exit status") as i32);
-        assert_eq!(status, ExitStatus::Signaled(Signal::SIGSEGV, false));
+        match status {
+            ExitStatus::Signaled(Signal::SIGSEGV, dumped) => {
+                assert!(!(refuses_core && dumped), "dumped core at limit 1");
+            }
+            _ => panic!("expected death by SIGSEGV, got {status:?}"),
+        }
 
         let offers = Arc::new(StdMutex::new(Vec::new()));
         let record = offers.clone();
@@ -9245,9 +9252,6 @@ mod tests {
             .expect("finish exit")
             .wait()
             .expect("wait");
-        assert_eq!(
-            exited.assume_exited().1,
-            ExitStatus::Signaled(Signal::SIGSEGV, false)
-        );
+        assert_eq!(exited.assume_exited().1, status);
     }
 }

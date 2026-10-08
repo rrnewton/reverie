@@ -13,10 +13,13 @@
 //! held guest's memory, so the hook here expects to read it; a real consumer
 //! must tolerate a failed or short read.
 //!
-//! Every guest sets its soft `RLIMIT_CORE` to 1 first. The kernel refuses to
-//! write a core at that limit, whether `core_pattern` names a file or a pipe,
-//! so no guest leaves a core on the host and every core-dumped flag is false
-//! wherever the test runs. The kernel still runs its core dump step.
+//! Every guest sets its soft `RLIMIT_CORE` to 1 first, when its hard limit
+//! allows. The kernel refuses to write a core at that limit, whether
+//! `core_pattern` names a file or a pipe, so no guest leaves a core on the host
+//! and every core-dumped flag is false. Under a hard limit of 0 the guest
+//! cannot raise its soft limit, and the flag then depends on `core_pattern` (a
+//! pipe helper still receives the core), so the tests check the flag only when
+//! the limit was 1. The kernel runs its core dump step at either limit.
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;
@@ -41,15 +44,41 @@ fn shared_page() -> usize {
     page.as_ptr() as usize
 }
 
-/// Keeps the kernel from writing a core for this guest; see the module doc.
-fn refuse_host_core() {
+/// The hard `RLIMIT_CORE` of this process, which a forked guest inherits.
+fn hard_core_limit() -> libc::rlim_t {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
     };
     assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) }, 0);
-    limit.rlim_cur = 1;
-    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) }, 0);
+    limit.rlim_max
+}
+
+/// Keeps the kernel from writing a core for this guest, when the hard limit
+/// allows; see the module doc.
+fn refuse_host_core() {
+    let hard = hard_core_limit();
+    if hard >= 1 {
+        let limit = libc::rlimit {
+            rlim_cur: 1,
+            rlim_max: hard,
+        };
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) }, 0);
+    }
+}
+
+/// Asserts that `status` is death by `signal`, with the core-dumped flag
+/// clear whenever the guest could refuse a core.
+fn assert_killed_by(status: ExitStatus, signal: Signal) {
+    match status {
+        ExitStatus::Signaled(actual, dumped) => {
+            assert_eq!(actual, signal, "{status:?}");
+            if hard_core_limit() >= 1 {
+                assert!(!dumped, "the guest dumped core at limit 1: {status:?}");
+            }
+        }
+        _ => panic!("expected death by {signal:?}, got {status:?}"),
+    }
 }
 
 /// Writes `bytes` to the start of the shared page, for the hook to read back.
@@ -155,7 +184,7 @@ fn a_segfault_is_offered_once_with_its_memory_still_mapped() {
         unsafe { mark(page, DYING) };
         segfault()
     });
-    assert_eq!(status, ExitStatus::Signaled(Signal::SIGSEGV, false));
+    assert_killed_by(status, Signal::SIGSEGV);
     assert_eq!(seen.len(), 1, "{seen:?}");
     let seen = &seen[0];
     assert_eq!(seen.signal, Signal::SIGSEGV);
@@ -175,7 +204,7 @@ fn a_segfault_is_offered_once_with_its_memory_still_mapped() {
 #[test]
 fn an_abort_is_offered() {
     let (status, seen) = run(|_| std::process::abort());
-    assert_eq!(status, ExitStatus::Signaled(Signal::SIGABRT, false));
+    assert_killed_by(status, Signal::SIGABRT);
     assert_eq!(seen.len(), 1, "{seen:?}");
     assert_eq!(seen[0].signal, Signal::SIGABRT);
     assert!(seen[0].dumping);
@@ -213,7 +242,7 @@ fn every_thread_of_a_multithreaded_crash_is_offered_and_one_is_dumping() {
         unsafe { mark(page, &tid_mark()) };
         segfault()
     });
-    assert_eq!(status, ExitStatus::Signaled(Signal::SIGSEGV, false));
+    assert_killed_by(status, Signal::SIGSEGV);
     assert_eq!(seen.len(), 4, "{seen:#?}");
     let mut tids: Vec<_> = seen.iter().map(|seen| seen.tid).collect();
     tids.sort();
@@ -221,11 +250,16 @@ fn every_thread_of_a_multithreaded_crash_is_offered_and_one_is_dumping() {
     assert_eq!(tids.len(), 4, "a thread was offered twice: {seen:#?}");
     for seen in &seen {
         assert_eq!(seen.signal, Signal::SIGSEGV);
-        assert_eq!(seen.status, ExitStatus::Signaled(Signal::SIGSEGV, false));
         assert!(!seen.failed_run);
+        if !seen.dumping {
+            // A thread the dump step held reaches its exit stop with the
+            // signal it was sent, never with the core-dumped flag.
+            assert_eq!(seen.status, ExitStatus::Signaled(Signal::SIGSEGV, false));
+        }
     }
     let dumping: Vec<_> = seen.iter().filter(|seen| seen.dumping).collect();
     assert_eq!(dumping.len(), 1, "{seen:#?}");
+    assert_eq!(dumping[0].status, status, "{seen:#?}");
     assert_eq!(
         dumping[0].tid.as_raw(),
         dumping[0].marked_tid(),
@@ -250,7 +284,7 @@ fn a_forked_child_crash_is_offered_with_its_own_memory() {
     });
     assert_eq!(status, ExitStatus::Exited(0));
     assert_eq!(seen.len(), 1, "{seen:#?}");
-    assert_eq!(seen[0].status, ExitStatus::Signaled(Signal::SIGSEGV, false));
+    assert_killed_by(seen[0].status, Signal::SIGSEGV);
     assert!(seen[0].dumping);
     assert_eq!(
         seen[0].tid.as_raw(),
