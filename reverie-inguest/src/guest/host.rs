@@ -1436,6 +1436,11 @@ fn injected_syscall_guard(
     if let Some(error) = guest_seccomp_filter_policy(number, args) {
         return Some(error);
     }
+    // Signal phase 1: an accepted SIGALRM restorer's page stays mapped,
+    // unchanged, for the rest of the process's life.
+    if super::restorer::mapping_change_refused(number, args) {
+        return Some(Errno::EPERM);
+    }
     let unsupported_process =
         // AUTONOMOUS-BOT-IMPLEMENTED
         (matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_vfork)
