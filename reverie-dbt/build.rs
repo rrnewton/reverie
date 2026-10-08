@@ -557,12 +557,18 @@ fn dynamorio_source_date_epoch(caller: Option<OsString>) -> OsString {
         .unwrap_or_else(|| OsString::from(DEFAULT_SOURCE_DATE_EPOCH))
 }
 
+/// Characters a path may contain and still reach GCC unchanged through
+/// CFLAGS: CMake splits CFLAGS on whitespace, GCC splits a map at its first
+/// '=', and Make expands '$'. Anything else is refused rather than escaped.
+fn path_char_survives_cflags(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '+' | '-')
+}
+
 /// The GCC path maps that make a DynamoRIO build independent of where it ran:
 /// the staging directory and the source directory, each also by its
 /// canonical path when that differs (a symlinked target directory, or a
 /// generator that resolves paths, still reaches the real one). Refused when a
-/// path cannot travel through CFLAGS: CMake splits CFLAGS on whitespace, and
-/// GCC splits a map at its first '='.
+/// path cannot travel through CFLAGS (see `path_char_survives_cflags`).
 fn dynamorio_prefix_maps(staging_root: &Path, source_dir: &Path) -> Result<String, String> {
     let mut maps = Vec::new();
     for (path, to) in [
@@ -579,9 +585,9 @@ fn dynamorio_prefix_maps(staging_root: &Path, source_dir: &Path) -> Result<Strin
             let text = spelling
                 .to_str()
                 .ok_or_else(|| format!("{} is not UTF-8", spelling.display()))?;
-            if text.chars().any(|c| c.is_whitespace() || c == '=') {
+            if let Some(bad) = text.chars().find(|&c| !path_char_survives_cflags(c)) {
                 return Err(format!(
-                    "{text} contains whitespace or '=', which CFLAGS cannot carry"
+                    "{text} contains {bad:?}; only [A-Za-z0-9/._+-] survive CFLAGS intact"
                 ));
             }
             maps.push(format!("-ffile-prefix-map={text}={to}"));
@@ -591,15 +597,17 @@ fn dynamorio_prefix_maps(staging_root: &Path, source_dir: &Path) -> Result<Strin
     Ok(maps.join(" "))
 }
 
-fn build_dynamorio(
+/// The DynamoRIO configure command, and the reason the path maps were left
+/// out when they had to be. `inherited` reads the caller's environment.
+fn dynamorio_configure_command(
     source_dir: &Path,
     build_dir: &Path,
     install_dir: &Path,
     cmake: &std::ffi::OsStr,
     generator: Option<&std::ffi::OsStr>,
     source_date_epoch: &std::ffi::OsStr,
-) {
-    let started = Instant::now();
+    inherited: impl Fn(&str) -> Option<OsString>,
+) -> (Command, Option<String>) {
     let mut configure = Command::new(cmake);
     // Reproducible artifacts: the build runs in a per-build staging directory
     // (`.staging-<key>-<pid>-<nonce>-<attempt>`) and reads the source from
@@ -614,21 +622,20 @@ fn build_dynamorio(
     let staging_root = build_dir
         .parent()
         .expect("the DynamoRIO build directory has a staging parent");
-    match dynamorio_prefix_maps(staging_root, source_dir) {
+    let unmapped = match dynamorio_prefix_maps(staging_root, source_dir) {
         Ok(maps) => {
             for flags in ["CFLAGS", "CXXFLAGS"] {
-                let mut value = env::var_os(flags).unwrap_or_default();
+                let mut value = inherited(flags).unwrap_or_default();
                 if !value.is_empty() {
                     value.push(" ");
                 }
                 value.push(&maps);
                 configure.env(flags, value);
             }
+            None
         }
-        Err(reason) => println!(
-            "cargo:warning=DynamoRIO is built without path maps ({reason}); its binaries embed this build's paths and differ between builds"
-        ),
-    }
+        Err(reason) => Some(reason),
+    };
     configure.env("SOURCE_DATE_EPOCH", source_date_epoch);
     configure
         .arg("-S")
@@ -648,11 +655,19 @@ fn build_dynamorio(
     if let Some(generator) = generator {
         configure.arg("-G").arg(generator);
     }
-    run(&mut configure, "configure DynamoRIO");
+    (configure, unmapped)
+}
 
+/// The DynamoRIO build-and-install command. __DATE__/__TIME__ (DynamoRIO's
+/// version banner) are evaluated while compiling, so this step needs the
+/// epoch as well as the configure.
+fn dynamorio_build_command(
+    cmake: &std::ffi::OsStr,
+    build_dir: &Path,
+    jobs: usize,
+    source_date_epoch: &std::ffi::OsStr,
+) -> Command {
     let mut build = Command::new(cmake);
-    // __DATE__/__TIME__ (DynamoRIO's version banner) are evaluated while
-    // compiling, so the build step needs the epoch as well as the configure.
     build.env("SOURCE_DATE_EPOCH", source_date_epoch);
     build.arg("--build").arg(build_dir).args([
         "--config",
@@ -661,11 +676,40 @@ fn build_dynamorio(
         "install",
         "--parallel",
     ]);
+    build.arg(jobs.to_string());
+    build
+}
+
+fn build_dynamorio(
+    source_dir: &Path,
+    build_dir: &Path,
+    install_dir: &Path,
+    cmake: &std::ffi::OsStr,
+    generator: Option<&std::ffi::OsStr>,
+    source_date_epoch: &std::ffi::OsStr,
+) {
+    let started = Instant::now();
+    let (mut configure, unmapped) = dynamorio_configure_command(
+        source_dir,
+        build_dir,
+        install_dir,
+        cmake,
+        generator,
+        source_date_epoch,
+        |name| env::var_os(name),
+    );
+    if let Some(reason) = unmapped {
+        println!(
+            "cargo:warning=DynamoRIO is built without path maps ({reason}); its binaries embed this build's paths and differ between builds"
+        );
+    }
+    run(&mut configure, "configure DynamoRIO");
+
     let requested_jobs = env::var("NUM_JOBS").ok();
     let available_cpus =
         std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let jobs = dynamorio_build_jobs(requested_jobs.as_deref(), available_cpus);
-    build.arg(jobs.to_string());
+    let mut build = dynamorio_build_command(cmake, build_dir, jobs, source_date_epoch);
     run(&mut build, "build and install DynamoRIO");
 
     let seconds = started.elapsed().as_secs_f64();
@@ -836,14 +880,100 @@ mod tests {
     #[test]
     fn prefix_maps_refuse_paths_cflags_cannot_carry() {
         let directory = tempfile::tempdir().unwrap();
-        for name in ["with space", "with=equals", "with\ttab"] {
+        for name in [
+            "with space",
+            "with=equals",
+            "with\ttab",
+            "with$dollar",
+            "with\"quote",
+        ] {
             let path = directory.path().join(name);
             fs::create_dir_all(&path).unwrap();
             let error = dynamorio_prefix_maps(&path, directory.path()).unwrap_err();
-            assert!(error.contains("whitespace or '='"), "{name}: {error}");
+            assert!(error.contains("survive CFLAGS"), "{name}: {error}");
             let error = dynamorio_prefix_maps(directory.path(), &path).unwrap_err();
-            assert!(error.contains("whitespace or '='"), "{name}: {error}");
+            assert!(error.contains("survive CFLAGS"), "{name}: {error}");
         }
+        let plain = directory.path().join("plain_dir-1.2+x");
+        fs::create_dir_all(&plain).unwrap();
+        dynamorio_prefix_maps(&plain, &plain).unwrap();
+    }
+
+    fn command_env(command: &Command, name: &str) -> Option<OsString> {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .and_then(|(_, value)| value.map(OsStr::to_os_string))
+    }
+
+    #[test]
+    fn configure_and_build_carry_the_epoch_and_the_maps() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = fs::canonicalize(directory.path()).unwrap().join("staging");
+        let build_dir = staging.join("build");
+        let source = staging.join("src");
+        fs::create_dir_all(&build_dir).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        let (configure, unmapped) = dynamorio_configure_command(
+            &source,
+            &build_dir,
+            &staging.join("install"),
+            "cmake".as_ref(),
+            None,
+            "1791400000".as_ref(),
+            |name| (name == "CFLAGS").then(|| OsString::from("-O1")),
+        );
+        assert_eq!(unmapped, None);
+        assert_eq!(
+            command_env(&configure, "SOURCE_DATE_EPOCH"),
+            Some(OsString::from("1791400000"))
+        );
+        let cflags = command_env(&configure, "CFLAGS").unwrap();
+        let cflags = cflags.to_str().unwrap();
+        assert!(cflags.starts_with("-O1 "), "{cflags}");
+        assert!(
+            cflags.contains(&format!(
+                "-ffile-prefix-map={}=/dynamorio-build",
+                staging.display()
+            )),
+            "{cflags}"
+        );
+        let cxxflags = command_env(&configure, "CXXFLAGS").unwrap();
+        assert!(
+            cxxflags.to_str().unwrap().starts_with("-ffile-prefix-map="),
+            "{cxxflags:?}"
+        );
+
+        // The build step compiles, so it needs the epoch too; without it the
+        // banner takes the wall clock.
+        let build = dynamorio_build_command("cmake".as_ref(), &build_dir, 8, "1791400000".as_ref());
+        assert_eq!(
+            command_env(&build, "SOURCE_DATE_EPOCH"),
+            Some(OsString::from("1791400000"))
+        );
+    }
+
+    #[test]
+    fn configure_without_maps_still_carries_the_epoch() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join("with space");
+        let build_dir = staging.join("build");
+        fs::create_dir_all(&build_dir).unwrap();
+        let (configure, unmapped) = dynamorio_configure_command(
+            directory.path(),
+            &build_dir,
+            &staging.join("install"),
+            "cmake".as_ref(),
+            None,
+            "0".as_ref(),
+            |_| None,
+        );
+        assert!(unmapped.unwrap().contains("survive CFLAGS"));
+        assert_eq!(command_env(&configure, "CFLAGS"), None);
+        assert_eq!(
+            command_env(&configure, "SOURCE_DATE_EPOCH"),
+            Some(OsString::from("0"))
+        );
     }
 
     #[test]
