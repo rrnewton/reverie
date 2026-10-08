@@ -545,6 +545,35 @@ fn build_dynamorio(
 ) {
     let started = Instant::now();
     let mut configure = Command::new(cmake);
+    // Reproducible artifacts: the build runs in a per-build staging directory
+    // (`.staging-<key>-<pid>-<nonce>-<attempt>`) and reads the source from
+    // wherever Cargo checked Reverie out. Both paths reach DWARF (DW_AT_comp_dir
+    // and file names), and through the split .debug files they reach each
+    // library's GNU build-id and .gnu_debuglink CRC, so two builds of the same
+    // source differed in exactly those bytes. Map both to fixed names.
+    // DynamoRIO's CMakeLists sets CMAKE_C_FLAGS/CMAKE_CXX_FLAGS itself and
+    // appends $ENV{CFLAGS}/$ENV{CXXFLAGS}, so the maps go there, after any
+    // flags the caller already set.
+    let staging_root = build_dir
+        .parent()
+        .expect("the DynamoRIO build directory has a staging parent");
+    let prefix_maps = [
+        (staging_root, "/dynamorio-build"),
+        (source_dir, "/dynamorio-src"),
+    ]
+    .iter()
+    .flat_map(|(from, to)| {
+        [
+            format!("-ffile-prefix-map={}={to}", from.display()),
+            format!("-fdebug-prefix-map={}={to}", from.display()),
+        ]
+    })
+    .collect::<Vec<_>>()
+    .join(" ");
+    for flags in ["CFLAGS", "CXXFLAGS"] {
+        let inherited = env::var(flags).unwrap_or_default();
+        configure.env(flags, format!("{inherited} {prefix_maps}").trim_start());
+    }
     configure
         .arg("-S")
         .arg(source_dir)
