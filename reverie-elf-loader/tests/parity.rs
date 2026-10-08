@@ -1,0 +1,176 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! These are ordinary Linux tests; no Hermit or Reverie backend is involved.
+//! Both starts require ADDR_NO_RANDOMIZE. At the ptrace exec stop we replace
+//! the 16 AT_RANDOM bytes with the same witness bytes before any instruction
+//! executes. Nothing else in the compared stack is normalized.
+
+mod support;
+
+use support::Fixture;
+use support::Mutation;
+use support::Naming;
+use support::TestResult;
+
+macro_rules! layout_test {
+    ($name:ident, $fixture:ident, $naming:ident) => {
+        #[test]
+        fn $name() {
+            support::test(stringify!($name), || {
+                support::layout_case(stringify!($name), Fixture::$fixture, Naming::$naming, None)
+            });
+        }
+    };
+}
+
+layout_test!(pie_absolute, Pie, Absolute);
+layout_test!(nonpie_absolute, NonPie, Absolute);
+layout_test!(pie_relative, Pie, Relative);
+layout_test!(nonpie_relative, NonPie, Relative);
+layout_test!(pie_directory_descriptor, Pie, DirectoryDescriptor);
+layout_test!(nonpie_directory_descriptor, NonPie, DirectoryDescriptor);
+layout_test!(pie_empty_path_descriptor, Pie, EmptyPath);
+layout_test!(nonpie_empty_path_descriptor, NonPie, EmptyPath);
+layout_test!(pie_deleted_file, Pie, Deleted);
+layout_test!(nonpie_deleted_file, NonPie, Deleted);
+layout_test!(pie_memfd, Pie, Memfd);
+layout_test!(nonpie_memfd, NonPie, Memfd);
+
+#[test]
+fn bin_true() {
+    support::test("bin_true", || {
+        support::layout_case("bin_true", Fixture::True, Naming::Absolute, None)
+    });
+}
+
+#[test]
+fn observed_initial_register_and_segment_state() {
+    support::test("observed_initial_register_and_segment_state", || {
+        for fixture in [Fixture::EntryPie, Fixture::EntryNonPie] {
+            support::observer_case(
+                "observed_initial_register_and_segment_state",
+                fixture,
+                Mutation::None,
+            )?;
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn finite_data_limit() {
+    support::test("finite_data_limit", || {
+        for fixture in [Fixture::Pie, Fixture::NonPie] {
+            // This reaches a real brk failure well before the 1024-page probe
+            // cap. The comparator requires the failure request and result to
+            // match, and observes VmData after every traced syscall.
+            support::layout_case(
+                "finite_data_limit",
+                fixture,
+                Naming::Absolute,
+                Some(2 * 1024 * 1024),
+            )?;
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn finite_data_startup_admission_boundary() {
+    support::test("finite_data_startup_admission_boundary", || {
+        support::finite_startup_boundary()
+    });
+}
+
+#[test]
+fn path_max_relative_and_directory_descriptor() {
+    support::test("path_max_relative_and_directory_descriptor", || {
+        support::path_boundary()
+    });
+}
+
+#[test]
+fn mutation_controls() {
+    support::test("mutation_controls", || -> TestResult {
+        for (mutation, assertion) in [
+            (Mutation::OmitPlaceholder, "heap_metadata"),
+            (Mutation::SkipVdsoRelocation, "mapping_parity"),
+            (Mutation::DirtyRegisters, "entry_registers"),
+            (Mutation::DirtyX87Status, "entry_registers"),
+            (Mutation::DirtyX87Tag, "entry_registers"),
+            (Mutation::DirtySelectors, "entry_registers"),
+            (Mutation::DirtySegmentBases, "entry_registers"),
+        ] {
+            support::mutation_case(mutation, assertion)?;
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn et_exec_main_preserves_et_dyn_interpreter_hint() {
+    support::test("et_exec_main_preserves_et_dyn_interpreter_hint", || {
+        support::interpreter_address_hint(
+            "et_exec_main_preserves_et_dyn_interpreter_hint",
+            Fixture::EntryNonPie,
+        )
+    });
+}
+
+#[test]
+fn pie_main_discards_et_dyn_interpreter_hint() {
+    support::test("pie_main_discards_et_dyn_interpreter_hint", || {
+        support::interpreter_address_hint(
+            "pie_main_discards_et_dyn_interpreter_hint",
+            Fixture::EntryPie,
+        )
+    });
+}
+
+#[test]
+fn last_header_mapping_matches_native_at_phdr() {
+    support::test("last_header_mapping_matches_native_at_phdr", || {
+        support::duplicate_header_mapping()
+    });
+}
+
+#[test]
+fn interpreter_load_span_zero_and_positive_controls() {
+    support::test("interpreter_load_span_zero_and_positive_controls", || {
+        support::interpreter_load_span()
+    });
+}
+
+#[test]
+fn interpreter_hint_reserved_range() {
+    support::test("interpreter_hint_reserved_range", || {
+        support::interpreter_hint_reserved_range()
+    });
+}
+
+#[test]
+fn interpreter_hint_exceptions() {
+    support::test("interpreter_hint_exceptions", || {
+        support::interpreter_hint_exceptions()
+    });
+}
+
+#[test]
+fn mdwe_executable_bss_controls() {
+    support::test("mdwe_executable_bss_controls", || {
+        support::mdwe_executable_bss_controls()
+    });
+}
+
+#[test]
+fn mdwe_supported_bss_controls() {
+    support::test("mdwe_supported_bss_controls", || {
+        support::mdwe_supported_bss_controls()
+    });
+}
