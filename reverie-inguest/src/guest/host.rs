@@ -602,6 +602,17 @@ fn raw_pid(number: i64) -> Pid {
 
 /// The [`Guest`] a Tool callback receives: the calling thread's identity and
 /// state, the event being handled, and the coordinator connection.
+impl<T: Tool, R: HostRuntime> InGuest<'_, T, R> {
+    /// Whether this callback can deliver `event`: a SIGALRM to a guest handler
+    /// this runtime keeps virtual, from a fallback syscall, whose completion
+    /// marker opens the delivery window.
+    fn delivers_sigalrm(&self, event: &reverie::SignalEvent) -> bool {
+        event.signal() == libc::SIGALRM
+            && super::sigalrm::handled()
+            && matches!(self.event.dispatch, SyscallDispatch::Fallback)
+    }
+}
+
 struct InGuest<'a, T: Tool, R: HostRuntime> {
     event: &'a mut SyscallEvent,
     tid: Pid,
@@ -1803,12 +1814,30 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
     /// a guest SIGALRM handler kept virtual by this runtime can be the target;
     /// everything else keeps the default refusal.
     async fn defer_signal_delivery(&mut self, event: reverie::SignalEvent) -> Result<(), Error> {
-        if event.signal() != libc::SIGALRM || !super::sigalrm::handled() {
+        if !self.delivers_sigalrm(&event) {
             return Err(Errno::ENOSYS.into());
         }
         // SAFETY: inside the guest call's own turn, in its dispatch.
         unsafe { super::sigalrm::prepare_delivery(self.runtime.reserved_signal_mask()) }
             .map_err(|errno| Error::Errno(Errno::new(errno)))
+    }
+
+    /// Signal phase 1, the I4 addendum's point c: deliver a SIGALRM the Tool
+    /// has committed at this fallback syscall's entry; the syscall then runs
+    /// from the start once the handler returns.
+    async fn defer_signal_delivery_before_syscall(
+        &mut self,
+        event: reverie::SignalEvent,
+    ) -> Result<(), Error> {
+        if !self.delivers_sigalrm(&event) {
+            return Err(Errno::ENOSYS.into());
+        }
+        // SAFETY: inside the guest call's own turn, in its dispatch; the Tool
+        // does not run the syscall.
+        unsafe {
+            super::sigalrm::prepare_delivery_before_syscall(self.runtime.reserved_signal_mask())
+        }
+        .map_err(|errno| Error::Errno(Errno::new(errno)))
     }
 
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {

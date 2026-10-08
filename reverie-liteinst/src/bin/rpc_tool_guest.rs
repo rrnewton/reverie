@@ -151,6 +151,17 @@ const DELIVER_SIGALRM_MARKER: usize = 0x5158;
 /// deliveries in one call; it returns the second request's result.
 const DELIVER_SIGALRM_TWICE_MARKER: usize = 0x5159;
 
+/// The `getppid` argument that, while [`ENTRY_DELIVERY_ARMED`] is set, asks
+/// [`CounterTool`] to deliver a SIGALRM at the call's entry, without running
+/// it (`Guest::defer_signal_delivery_before_syscall`); the call then runs
+/// from the start. Disarmed by that first sighting.
+const DELIVER_SIGALRM_BEFORE_MARKER: usize = 0x515a;
+static ENTRY_DELIVERY_ARMED: AtomicBool = AtomicBool::new(false);
+/// How many times [`CounterTool`] ran the marked call (injected it).
+static BEFORE_MARKER_RUNS: AtomicU64 = AtomicU64::new(0);
+/// The entry delivery's result, as the Tool saw it (0 or a negative errno).
+static ENTRY_DELIVERY_RESULT: AtomicI64 = AtomicI64::new(1);
+
 /// [`CounterTool`]'s exit status if a guest `rt_sigreturn` ever reaches it.
 const TOOL_SAW_SIGRETURN_STATUS: i32 = 118;
 
@@ -170,6 +181,33 @@ impl Tool for CounterTool {
             unsafe { reverie_inguest::guest::support::exit_now(TOOL_SAW_SIGRETURN_STATUS) };
         }
         let marker = syscall.into_parts().1.arg0;
+        if syscall.number() == Sysno::getppid && marker == DELIVER_SIGALRM_BEFORE_MARKER {
+            if ENTRY_DELIVERY_ARMED.swap(false, Ordering::SeqCst) {
+                let mut info = [0_u8; 128];
+                info[0..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
+                info[8..12].copy_from_slice(&0x80_i32.to_ne_bytes());
+                let event = reverie::SignalEvent::new(
+                    libc::SIGALRM,
+                    info,
+                    reverie::SignalTarget::Process {
+                        pid: reverie::Pid::from_raw(unsafe { libc::getpid() }),
+                    },
+                )
+                .unwrap();
+                let result = match guest.defer_signal_delivery_before_syscall(event).await {
+                    Ok(()) => 0,
+                    Err(reverie::Error::Errno(errno)) => -i64::from(errno.into_raw()),
+                    Err(_) => -i64::from(libc::EIO),
+                };
+                ENTRY_DELIVERY_RESULT.store(result, Ordering::SeqCst);
+                if result == 0 {
+                    // Discarded: the call starts again after the handler.
+                    return Ok(-i64::from(libc::EHWPOISON));
+                }
+            }
+            BEFORE_MARKER_RUNS.fetch_add(1, Ordering::SeqCst);
+            return Ok(guest.inject(syscall).await?);
+        }
         if syscall.number() == Sysno::getppid
             && (marker == DELIVER_SIGALRM_MARKER || marker == DELIVER_SIGALRM_TWICE_MARKER)
         {
@@ -2062,6 +2100,43 @@ unsafe extern "C" fn recording_sigalrm_handler(
     DELIVERED_ACTIVE_MASK.store(active, Ordering::SeqCst);
 }
 
+static RUNS_SEEN_BY_HANDLER: AtomicU64 = AtomicU64::new(u64::MAX);
+
+unsafe extern "C" fn entry_sigalrm_handler(_signal: libc::c_int) {
+    RUNS_SEEN_BY_HANDLER.store(BEFORE_MARKER_RUNS.load(Ordering::SeqCst), Ordering::SeqCst);
+}
+
+/// Signal phase 1, the I4 addendum's point c: a SIGALRM the Tool commits at a
+/// call's entry runs the guest's handler before the call, which then runs
+/// once from the start with its own number and arguments and returns its own
+/// result. With no handler installed the Tool's request is refused and the
+/// call runs as usual.
+fn sigalrm_entry_delivery_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let ppid = i64::from(unsafe { libc::getppid() });
+    let marked = || unsafe { libc::syscall(libc::SYS_getppid, DELIVER_SIGALRM_BEFORE_MARKER) };
+    // No handler: refused, and the call runs once.
+    ENTRY_DELIVERY_ARMED.store(true, Ordering::SeqCst);
+    assert_eq!(marked(), ppid);
+    assert_eq!(
+        ENTRY_DELIVERY_RESULT.load(Ordering::SeqCst),
+        -i64::from(libc::ENOSYS)
+    );
+    assert_eq!(BEFORE_MARKER_RUNS.load(Ordering::SeqCst), 1);
+    let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+    action.sa_sigaction = entry_sigalrm_handler as *const () as usize;
+    sigalrm_sigaction(&action).unwrap();
+    ENTRY_DELIVERY_ARMED.store(true, Ordering::SeqCst);
+    assert_eq!(marked(), ppid);
+    assert_eq!(ENTRY_DELIVERY_RESULT.load(Ordering::SeqCst), 0);
+    // The handler ran before the call, which then ran exactly once.
+    assert_eq!(RUNS_SEEN_BY_HANDLER.load(Ordering::SeqCst), 1);
+    assert_eq!(BEFORE_MARKER_RUNS.load(Ordering::SeqCst), 2);
+    assert_eq!(guest_mask_call(libc::SIG_BLOCK, None), 0);
+    assert_eq!(physical_mask(), 1_u64 << (libc::SIGALRM - 1));
+    println!("sigalrm-entry-delivery-ok");
+}
+
 unsafe extern "C" fn one_argument_sigalrm_handler(_signal: libc::c_int) {
     ONE_ARGUMENT_DELIVERED.fetch_add(1, Ordering::SeqCst);
 }
@@ -3043,6 +3118,7 @@ fn main() {
         Some("sigalrm-pkey-before-install") => sigalrm_pkey_before_install_guest(Path::new(&path)),
         Some("sigalrm-delivery") => sigalrm_delivery_guest(Path::new(&path)),
         Some("sigalrm-stack-edit") => sigalrm_stack_edit_guest(Path::new(&path)),
+        Some("sigalrm-entry-delivery") => sigalrm_entry_delivery_guest(Path::new(&path)),
         Some("sigalrm-entry-mask") => sigalrm_entry_frame_guest(Path::new(&path), false),
         Some("sigalrm-entry-stack") => sigalrm_entry_frame_guest(Path::new(&path), true),
         Some("sigalrm-handler-pkru") => sigalrm_handler_pkru_guest(Path::new(&path)),

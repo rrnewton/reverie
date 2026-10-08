@@ -507,6 +507,15 @@ unsafe extern "C" fn dispatch(pointer: *mut Continuation) {
     let errno = unsafe { libc::__errno_location() };
     let saved_errno = unsafe { *errno };
     let mut pkru = unsafe { (*pointer).saved.pkru() };
+    // The registers the syscall dispatch writes, for a syscall that is to
+    // start again (signal phase 1's delivery at syscall entry).
+    let entry = unsafe {
+        (
+            (*pointer).context.rax,
+            (*pointer).context.rcx,
+            (*pointer).context.r11,
+        )
+    };
     unsafe {
         let context = core::ptr::addr_of_mut!((*pointer).context);
         match pending.kind {
@@ -518,9 +527,31 @@ unsafe extern "C" fn dispatch(pointer: *mut Continuation) {
         *errno = saved_errno;
     }
     let owner = unsafe { &mut *pointer };
+    let mut length = pending.kind.length();
+    if super::sigalrm::take_entry_delivery() {
+        // The syscall did not run: resume at its `syscall` instruction with
+        // its number and the guest's registers, so it runs from the start
+        // after the delivered handler returns. Only a syscall can ask.
+        //
+        // A stated limitation: rcx and r11 are the values the SIGSYS frame
+        // holds, which the hardware `syscall` instruction already wrote (the
+        // return address and rflags) before it trapped; their values just
+        // before the instruction are gone. So the handler's ucontext shows
+        // those two as the instruction left them, where Linux, delivering at
+        // the previous handler's rt_sigreturn, would show whatever the guest
+        // had there. Only a handler that reads rcx or r11 from its ucontext
+        // can see it; this is the I4 addendum's stated difference (guest
+        // instructions between that return and this syscall run before the
+        // handler here), extended to the `syscall` instruction itself.
+        if !matches!(pending.kind, PendingKind::Syscall) {
+            fatal()
+        }
+        (owner.context.rax, owner.context.rcx, owner.context.r11) = entry;
+        length = 0;
+    }
     if owner.owner_tid != current_tid()
         || owner.saved.set_pkru(pkru).is_err()
-        || commit_context(owner, pending.kind.length()).is_err()
+        || commit_context(owner, length).is_err()
     {
         fatal()
     }

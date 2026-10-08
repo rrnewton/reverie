@@ -291,6 +291,23 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         Err(Errno::ENOSYS.into())
     }
 
+    /// Like [`Guest::defer_signal_delivery`], but from a syscall's entry: the
+    /// current syscall has not run and the Tool must not run it. The backend
+    /// delivers the signal first and the syscall then starts from the
+    /// beginning, with its registers as the guest left them; whatever the
+    /// callback returns is discarded.
+    ///
+    /// This is a pending signal that became deliverable without passing a
+    /// delivery point: Linux delivers it before the next guest instruction,
+    /// so before this syscall. Backends without a virtual guest signal frame
+    /// keep the default `ENOSYS`, and the Tool then runs the syscall as usual.
+    async fn defer_signal_delivery_before_syscall(
+        &mut self,
+        _event: SignalEvent,
+    ) -> Result<(), Error> {
+        Err(Errno::ENOSYS.into())
+    }
+
     /// Queues a Tool-selected terminal child event for the current process.
     ///
     /// The caller supplies a complete process-directed `SIGCHLD` event with
