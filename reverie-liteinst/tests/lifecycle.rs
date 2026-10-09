@@ -31,10 +31,23 @@ const RPC_PARK: u64 = 7;
 const RPC_FAIL: u64 = 8;
 /// Tags a process's exit-time count of its Tool callbacks.
 const RPC_CALLBACK_COUNT: u64 = 1 << 32;
-/// Tags a signal a process's Tool was shown by `handle_signal_event`.
-const RPC_SIGNAL_EVENT: u64 = 1 << 33;
-/// Tags the signal that ended a process, from its Tool's `on_exit_process`.
-const RPC_EXIT_SIGNALED: u64 = 1 << 34;
+/// The lifecycle observations the fixture Tool sends (`lifecycle_event` in
+/// `src/bin/lifecycle_guest.rs`: tag in the top byte, id in bits 16 to 47,
+/// value in the low 16 bits), and the physical exits the coordinator reports,
+/// recorded in one stream in the order the global state received them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Observed {
+    /// `handle_signal_event` was shown this signal.
+    Signal(u16),
+    /// `on_exit_thread` reported a signal death with this raw wait status.
+    ExitThread(u16),
+    /// `on_exit_process` reported a signal death with this raw wait status.
+    ExitProcess(u16),
+    /// The tgkill handler went on after its injection, which returned this.
+    TgkillReturned(u16),
+    /// `on_backend_process_exited`: the process is physically gone.
+    PhysicallyExited,
+}
 const BACKEND_OUTPUT_CHILD_ENV: &str = "REVERIE_LITEINST_BACKEND_OUTPUT_TEST_CHILD";
 
 #[derive(Debug, Default)]
@@ -53,11 +66,9 @@ struct LifecycleGlobal {
     callbacks: AtomicU64,
     /// Pids reported through `on_backend_process_exited`.
     exited: std::sync::Mutex<Vec<i32>>,
-    /// Signals guest Tools reported from `handle_signal_event`, in order.
-    signal_events: std::sync::Mutex<Vec<u64>>,
-    /// Signals guest Tools reported from `on_exit_process` as having ended
-    /// their process, in order.
-    signaled_exits: std::sync::Mutex<Vec<u64>>,
+    /// Lifecycle observations with the process or thread id they name, in
+    /// the order received.
+    observed: std::sync::Mutex<Vec<(i32, Observed)>>,
     /// Calls of `report_backend_failure`.
     backend_failures: AtomicU64,
     /// Processes parked by `RPC_PARK`.
@@ -97,18 +108,17 @@ impl GlobalTool for LifecycleGlobal {
             self.published_failures.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        if event & RPC_SIGNAL_EVENT != 0 {
-            self.signal_events
-                .lock()
-                .unwrap()
-                .push(event & !RPC_SIGNAL_EVENT);
-            return;
-        }
-        if event & RPC_EXIT_SIGNALED != 0 {
-            self.signaled_exits
-                .lock()
-                .unwrap()
-                .push(event & !RPC_EXIT_SIGNALED);
+        if event >> 56 != 0 {
+            let id = (event >> 16) as u32 as i32;
+            let value = event as u16;
+            let observed = match event >> 56 {
+                1 => Observed::Signal(value),
+                2 => Observed::ExitThread(value),
+                3 => Observed::ExitProcess(value),
+                4 => Observed::TgkillReturned(value),
+                tag => panic!("unknown lifecycle observation tag {tag}"),
+            };
+            self.observed.lock().unwrap().push((id, observed));
             return;
         }
         if event & RPC_CALLBACK_COUNT != 0 {
@@ -130,6 +140,10 @@ impl GlobalTool for LifecycleGlobal {
 
     fn on_backend_process_exited(&self, pid: i32) {
         self.exited.lock().unwrap().push(pid);
+        self.observed
+            .lock()
+            .unwrap()
+            .push((pid, Observed::PhysicallyExited));
     }
 
     fn backend_pending_process_exits(&self) -> Vec<i32> {
@@ -596,37 +610,177 @@ async fn a_backend_failure_ends_the_run_while_a_process_is_parked() {
     assert!(error.to_string().contains("backend failure"), "{error}");
 }
 
-/// A process that ends itself with a signal it sends itself (`abort`, whose
-/// `tgkill` the Tool subscribes to, and `kill` of its own pid, which it does
-/// not) dies at a point of its own program order. The in-guest host reports
-/// the signal's delivery to the Tool and then the process's exit, with the
-/// signal as its status, before it sends the signal. Before, the process died
-/// without either callback: an in-guest Tool such as Detcore never learned of
-/// the exit, so the process never deregistered.
+/// Admits every guest connection and reports each admitted process's
+/// physical exit, observed on its pidfd, through the launcher's exit reporter.
+#[derive(Default)]
+struct ExitObservingAdmission {
+    reporter: std::sync::Mutex<Option<std::sync::Arc<dyn reverie_rpc_transport::ExitReporter>>>,
+}
+
+impl reverie_rpc_transport::ConnectionAdmission for ExitObservingAdmission {
+    fn attach_exit_reporter(
+        &self,
+        reporter: std::sync::Arc<dyn reverie_rpc_transport::ExitReporter>,
+    ) {
+        *self.reporter.lock().unwrap() = Some(reporter);
+    }
+
+    fn admit(
+        &self,
+        peer: std::os::fd::OwnedFd,
+    ) -> std::io::Result<reverie_rpc_transport::Admitted> {
+        use std::os::fd::AsRawFd;
+        let fdinfo = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", peer.as_raw_fd()))?;
+        let pid: i32 = fdinfo
+            .lines()
+            .find_map(|line| line.strip_prefix("Pid:"))
+            .and_then(|pid| pid.trim().parse().ok())
+            .ok_or_else(|| std::io::Error::other("pidfd names no pid"))?;
+        let reporter = self.reporter.lock().unwrap().clone();
+        std::thread::spawn(move || {
+            let mut poll = libc::pollfd {
+                fd: peer.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // A pidfd polls readable once its process has exited.
+            while unsafe { libc::poll(&mut poll, 1, -1) } != 1 {}
+            if let Some(reporter) = reporter {
+                reporter.process_exited(pid);
+            }
+        });
+        Ok(reverie_rpc_transport::Admitted { process_id: pid })
+    }
+}
+
+/// A process that sends itself a signal that would end it dies at a point of
+/// its own program order, so the in-guest host reports it as it reports an
+/// exit, before it happens: one ordered stream per process shows, for an
+/// abort (a `tgkill` the Tool subscribes to), that the Tool's tgkill handler
+/// runs to its end after its injection, then the signal callback, then
+/// `on_exit_thread` and `on_exit_process` with the complete status the
+/// parent's wait returns (including the core-dump bit, with and without a
+/// core limit), then the physical exit. A `kill` of its own pid, which the
+/// Tool does not subscribe to, is reported the same way; a SIGKILL is never
+/// shown to the signal callback. Where the signal callback ignores, blocks or
+/// suppresses the signal, the process goes on and exits with its own code,
+/// with no exit callback: the host decides the death after the callback.
+///
+/// Before, such a process died without any callback, and the in-guest Tool
+/// (Detcore) never learned of the exit.
 #[tokio::test(flavor = "current_thread")]
 async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first() {
     let (_preload_directory, preload) = compile_noop_preload();
+    let admission = std::sync::Arc::new(ExitObservingAdmission::default());
     let (result, global) = tokio::time::timeout(
-        Duration::from_secs(10),
-        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
-            guest_command("self-signal-deaths"),
-            (),
-            preload,
+        Duration::from_secs(30),
+        LiteinstBackend::with_connection_admission(
+            admission,
+            LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+                guest_command("self-signal-deaths"),
+                (),
+                preload,
+            ),
         ),
     )
     .await
     .expect("in-guest run hung")
     .unwrap();
+    let stdout = String::from_utf8_lossy(&result.stdout).into_owned();
     assert_eq!(result.status.code(), Some(0), "{result:?}");
+    let children: Vec<(String, i32, u16)> = stdout
+        .lines()
+        .map(|line| {
+            let mut words = line.split(' ');
+            let label = words.next().unwrap().to_owned();
+            let pid = words.next().unwrap().strip_prefix("pid=").unwrap();
+            let status = words.next().unwrap().strip_prefix("status=0x").unwrap();
+            (
+                label,
+                pid.parse().unwrap(),
+                u16::from_str_radix(status, 16).unwrap(),
+            )
+        })
+        .collect();
+    let labels: Vec<&str> = children.iter().map(|(label, ..)| label.as_str()).collect();
     assert_eq!(
-        String::from_utf8_lossy(&result.stdout),
-        "abort: signal 6\nkill: signal 15\n",
-        "{result:?}"
+        labels,
+        [
+            "abort",
+            "abort-core-limit-1",
+            "kill-sigterm",
+            "kill-sigkill",
+            "raise-sigusr1",
+            "raise-sigusr2",
+            "raise-sighup",
+        ],
+        "{stdout}"
     );
-    let abrt = libc::SIGABRT as u64;
-    let term = libc::SIGTERM as u64;
-    assert_eq!(*global.signal_events.lock().unwrap(), [abrt, term]);
-    assert_eq!(*global.signaled_exits.lock().unwrap(), [abrt, term]);
+    let observed = global.observed.lock().unwrap().clone();
+    eprintln!("guest stdout:\n{stdout}observed: {observed:?}");
+    use Observed::*;
+    for (label, pid, status) in &children {
+        let of_child: Vec<Observed> = observed
+            .iter()
+            .filter(|(id, _)| id == pid)
+            .map(|(_, what)| *what)
+            .collect();
+        let status = *status;
+        let expected = match label.as_str() {
+            "abort" | "abort-core-limit-1" => {
+                assert_eq!(status & 0x7f, libc::SIGABRT as u16, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGABRT as u16),
+                    ExitThread(status),
+                    ExitProcess(status),
+                    PhysicallyExited,
+                ]
+            }
+            "kill-sigterm" => {
+                assert_eq!(status, libc::SIGTERM as u16, "{label}");
+                vec![
+                    Signal(libc::SIGTERM as u16),
+                    ExitThread(status),
+                    ExitProcess(status),
+                    PhysicallyExited,
+                ]
+            }
+            "kill-sigkill" => {
+                assert_eq!(status, libc::SIGKILL as u16, "{label}");
+                vec![ExitThread(status), ExitProcess(status), PhysicallyExited]
+            }
+            "raise-sigusr1" => {
+                assert_eq!(status, 41 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGUSR1 as u16),
+                    PhysicallyExited,
+                ]
+            }
+            "raise-sigusr2" => {
+                assert_eq!(status, 42 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGUSR2 as u16),
+                    PhysicallyExited,
+                ]
+            }
+            "raise-sighup" => {
+                assert_eq!(status, 43 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGHUP as u16),
+                    PhysicallyExited,
+                ]
+            }
+            other => panic!("unexpected case {other}"),
+        };
+        assert_eq!(of_child, expected, "{label} (pid {pid}): {observed:?}");
+    }
+    // With a core limit of 1 the kernel writes no core, and the reported
+    // status says so.
+    assert_eq!(children[1].2 & 0x80, 0, "{stdout}");
 }
 
 /// Synchronous Tool code inside a callback, outside the callback's own
