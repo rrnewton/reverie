@@ -7,14 +7,20 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use reverie::CpuIdResult;
 use reverie::Errno;
 use reverie::Error;
+use reverie::ExitStatus;
+use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Guest;
+use reverie::Pid;
+use reverie::Signal;
 use reverie::Subscription;
 use reverie::Tid;
 use reverie::TimerSchedule;
 use reverie::Tool;
+use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
@@ -44,10 +50,64 @@ static BLOCKING_RPC_OK: AtomicU64 = AtomicU64::new(0);
 /// descriptor-closing calls; the Tool then subscribes to `close` and
 /// `close_range` too.
 static SUBSCRIBE_CLOSES: AtomicBool = AtomicBool::new(false);
+/// Set before `install_tool` by the `self-signal-deaths` mode: the Tool then
+/// subscribes to CPUID too.
+static SUBSCRIBE_CPUID: AtomicBool = AtomicBool::new(false);
+/// The next CPUID callback sends the guest SIGTERM.
+static FATAL_CPUID: AtomicBool = AtomicBool::new(false);
+/// A thread start sends the starting thread SIGTERM (set across a fork, so
+/// the child's start sends it).
+static FATAL_THREAD_START: AtomicBool = AtomicBool::new(false);
+/// The post-exec callback records that it ran and ignores SIGTERM (the
+/// `root-startup-signal` mode).
+static IGNORE_SIGTERM_AT_POST_EXEC: AtomicBool = AtomicBool::new(false);
+/// The SIGTERM signal callback replaces SIGTERM with SIGALRM (the
+/// `sigalrm-replacement` mode).
+/// Filter probes: 1/2 install from syscall inject/tail; 3/4 from signal inject/tail.
+static FILTER_PROBE_CONTEXT: AtomicU64 = AtomicU64::new(0);
+static REPLACE_SIGTERM_WITH_SIGALRM: AtomicBool = AtomicBool::new(false);
+/// The SIGALRM signal callback installs the guest's SIGALRM handler, with
+/// the handler, flags and restorer in `CALLBACK_ALARM_ACTION`, and records
+/// the injection's result in `CALLBACK_ALARM_INSTALL` (the
+/// `sigalrm-installed-by-callback` mode).
+static INSTALL_SIGALRM_IN_CALLBACK: AtomicBool = AtomicBool::new(false);
+static CALLBACK_ALARM_ACTION: [AtomicU64; 3] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static CALLBACK_ALARM_INSTALL: AtomicI64 = AtomicI64::new(i64::MIN);
+/// Set by the `self-signal-deaths` mode: the SIGFPE and SIGBUS signal
+/// callbacks abandon a SIGKILL injection and then try an effect.
+static ABANDONED_EFFECTS: AtomicBool = AtomicBool::new(false);
+/// The `raise-sigbus` case's page, mapped shared before the child forks, so
+/// the parent sees what the child's Tool wrote: word 0 is what the SIGBUS
+/// callback wrote through guest memory, and words 1 and 2 the errno of its
+/// two writes after it abandoned a SIGKILL injection (0 if made).
+static SHARED_PAGE: AtomicUsize = AtomicUsize::new(0);
+/// The `clone3-flip` mode's shared page: words 0 to 10 are a clone3 record
+/// that a flipper process keeps switching between a plain fork and the same
+/// record with `set_tid_size` 1 (which Linux refuses with EINVAL); word 64
+/// counts the children the SIGFPE callback's injected clone3 created; word
+/// 65 stops the flipper.
+static FLIP_PAGE: AtomicUsize = AtomicUsize::new(0);
+const FLIP_CREATED_WORD: usize = 64;
+const FLIP_STOP_WORD: usize = 65;
 /// Tags the one RPC a process sends at `exit_group` with its count of Tool
 /// callbacks, so the host can compare the backend's dispatch counts with the
 /// callbacks the Tool actually made.
 const RPC_CALLBACK_COUNT: u64 = 1 << 32;
+/// Lifecycle observations, one RPC each, recorded in one ordered stream by
+/// the host: `lifecycle_event(tag, pid, value)` puts the tag in the top byte,
+/// the process or thread id in bits 16 to 47, and the value in the low 16
+/// bits. The other RPCs of this fixture never set the top byte.
+const EVENT_SIGNAL: u64 = 1; // handle_signal_event: the signal shown
+const EVENT_EXIT_THREAD: u64 = 2; // on_exit_thread, signal deaths: raw wait status
+const EVENT_EXIT_PROCESS: u64 = 3; // on_exit_process, signal deaths: raw wait status
+const EVENT_TGKILL_RETURNED: u64 = 4; // the tgkill handler after its injection: the result
+const EVENT_POST_EXEC: u64 = 5; // handle_post_exec ran (root-startup mode)
+const EVENT_AFTER_SIGKILL: u64 = 6; // Tool code after its own SIGKILL injection: must never run
+
+fn lifecycle_event(tag: u64, pid: i32, value: u64) -> u64 {
+    (tag << 56) | ((pid as u32 as u64) << 16) | (value & 0xffff)
+}
 static FORCE_WAIT_RESTART: AtomicBool = AtomicBool::new(true);
 static READ_CALLS: AtomicUsize = AtomicUsize::new(0);
 /// This process's Tool callbacks, one per guest entry: a callback that asks
@@ -191,7 +251,7 @@ impl Tool for LifecycleTool {
     type ThreadState = ();
 
     fn subscriptions(_config: &()) -> Subscription {
-        [
+        let mut subscriptions: Subscription = [
             Sysno::getpid,
             Sysno::getppid,
             Sysno::clock_gettime,
@@ -202,6 +262,7 @@ impl Tool for LifecycleTool {
             Sysno::read,
             Sysno::exit,
             Sysno::exit_group,
+            Sysno::tgkill,
         ]
         .into_iter()
         .chain(
@@ -211,7 +272,60 @@ impl Tool for LifecycleTool {
                 .into_iter()
                 .flatten(),
         )
-        .collect()
+        .collect();
+        if SUBSCRIBE_CPUID.load(Ordering::Relaxed) {
+            subscriptions.cpuid();
+        }
+        subscriptions
+    }
+
+    /// Sends the starting thread SIGTERM when `FATAL_THREAD_START` is set.
+    async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+        if FATAL_THREAD_START.load(Ordering::Relaxed) {
+            send_self(guest, libc::SIGTERM).await;
+        }
+        Ok(())
+    }
+
+    /// Records that it ran and ignores SIGTERM, when
+    /// `IGNORE_SIGTERM_AT_POST_EXEC` is set.
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        if IGNORE_SIGTERM_AT_POST_EXEC.load(Ordering::Relaxed) {
+            let pid = guest.pid().as_raw();
+            guest
+                .send_rpc(lifecycle_event(EVENT_POST_EXEC, pid, 0))
+                .await;
+            let ignore = [libc::SIG_IGN as u64, 0, 0, 0];
+            let result = unsafe {
+                reverie_inguest::trap::raw_syscall6(
+                    libc::SYS_rt_sigaction,
+                    [libc::SIGTERM as u64, ignore.as_ptr() as u64, 0, 8, 0, 0],
+                )
+            };
+            assert_eq!(result, 0);
+        }
+        Ok(())
+    }
+
+    /// Answers with the processor's own CPUID, after sending the guest
+    /// SIGTERM when `FATAL_CPUID` is set.
+    async fn handle_cpuid_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        eax: u32,
+        ecx: u32,
+    ) -> Result<CpuIdResult, Errno> {
+        if FATAL_CPUID.swap(false, Ordering::Relaxed) {
+            send_self(guest, libc::SIGTERM).await;
+        }
+        // Inside a Tool callback the instruction runs natively.
+        let native = core::arch::x86_64::__cpuid_count(eax, ecx);
+        Ok(CpuIdResult {
+            eax: native.eax,
+            ebx: native.ebx,
+            ecx: native.ecx,
+            edx: native.edx,
+        })
     }
 
     async fn handle_syscall_event<G: Guest<Self>>(
@@ -220,6 +334,12 @@ impl Tool for LifecycleTool {
         syscall: Syscall,
     ) -> Result<i64, Error> {
         CALLBACKS.fetch_add(1, Ordering::Relaxed);
+        let filter_context = FILTER_PROBE_CONTEXT.load(Ordering::Relaxed);
+        if syscall.number() == Sysno::getpid && matches!(filter_context, 1 | 2) {
+            send_self(guest, libc::SIGTERM).await;
+            inject_exit_killing_filter(guest, filter_context == 2).await?;
+            panic!("staged filter installation returned");
+        }
         if syscall.number() == Sysno::getpid && PROBE_BLOCKING_RPC.swap(false, Ordering::Relaxed) {
             probe_blocking_global_rpc();
         }
@@ -275,7 +395,7 @@ impl Tool for LifecycleTool {
             Sysno::fork | Sysno::clone => RPC_FORK,
             Sysno::wait4 => unreachable!("wait4 is handled before event classification"),
             Sysno::close_range => RPC_CLOSE_RANGE,
-            Sysno::getppid | Sysno::close | Sysno::exit | Sysno::exit_group => 0,
+            Sysno::getppid | Sysno::close | Sysno::exit | Sysno::exit_group | Sysno::tgkill => 0,
             number => panic!("unexpected lifecycle fixture syscall {number}"),
         };
         if event != 0 {
@@ -297,9 +417,284 @@ impl Tool for LifecycleTool {
             Syscall::Clone(clone) if clone.flags().bits() & libc::CLONE_VM == 0 => {
                 Ok(inject_fork(guest, syscall).await?)
             }
+            Syscall::Tgkill(tgkill) if tgkill.sig() == libc::SIGIO => {
+                // Stages a SIGKILL in a future it abandons after one poll,
+                // then returns: the staged SIGKILL must still end the guest.
+                poll_once(send_self(guest, libc::SIGKILL));
+                Ok(0)
+            }
+            Syscall::Tgkill(tgkill) => {
+                // Records that the handler goes on after its injection. For
+                // SIGPROF it also sends the guest SIGKILL after forwarding the
+                // guest's own signal, then tries a fork and returns an error:
+                // neither may happen, because the SIGKILL ends the guest. For
+                // SIGXFSZ it also sends SIGUSR1, which the SIGXFSZ signal
+                // callback sends again while the first is still waiting.
+                let result = guest.inject(syscall).await;
+                if tgkill.sig() == libc::SIGPROF {
+                    send_self(guest, libc::SIGKILL).await;
+                    let pid = guest.pid().as_raw();
+                    guest
+                        .send_rpc(lifecycle_event(EVENT_AFTER_SIGKILL, pid, 0))
+                        .await;
+                    let _ = inject_fork(guest, Syscall::Fork(reverie::syscalls::Fork::new())).await;
+                    return Err(Errno::EPERM.into());
+                }
+                if tgkill.sig() == libc::SIGXFSZ {
+                    send_self(guest, libc::SIGUSR1).await;
+                }
+                let value = result.unwrap_or_else(|errno| -i64::from(errno.into_raw()));
+                let pid = guest.pid().as_raw();
+                guest
+                    .send_rpc(lifecycle_event(EVENT_TGKILL_RETURNED, pid, value as u64))
+                    .await;
+                Ok(result?)
+            }
             _ => Ok(guest.inject(syscall).await?),
         }
     }
+
+    /// Records the signal, then, to show that the host decides a death only
+    /// after this callback: ignores SIGUSR1 and blocks SIGUSR2 before letting
+    /// either be delivered, and suppresses SIGHUP.
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        let pid = guest.pid().as_raw();
+        guest
+            .send_rpc(lifecycle_event(EVENT_SIGNAL, pid, signal as u64))
+            .await;
+        let filter_context = FILTER_PROBE_CONTEXT.load(Ordering::Relaxed);
+        if signal == Signal::SIGTERM && matches!(filter_context, 3 | 4) {
+            inject_exit_killing_filter(guest, filter_context == 4).await?;
+            panic!("signal callback filter installation returned");
+        }
+        match signal {
+            Signal::SIGUSR1 => {
+                let ignore = [libc::SIG_IGN as u64, 0, 0, 0];
+                let result = unsafe {
+                    reverie_inguest::trap::raw_syscall6(
+                        libc::SYS_rt_sigaction,
+                        [signal as u64, ignore.as_ptr() as u64, 0, 8, 0, 0],
+                    )
+                };
+                assert_eq!(result, 0);
+            }
+            Signal::SIGUSR2 => {
+                let bit = 1_u64 << (libc::SIGUSR2 - 1);
+                let result = unsafe {
+                    reverie_inguest::trap::raw_syscall6(
+                        libc::SYS_rt_sigprocmask,
+                        [libc::SIG_BLOCK as u64, (&raw const bit) as u64, 0, 8, 0, 0],
+                    )
+                };
+                assert_eq!(result, 0);
+            }
+            Signal::SIGHUP => return Ok(None),
+            Signal::SIGVTALRM => {
+                // Sends SIGKILL from the callback; the rest of the callback
+                // (recording, then suppressing this signal) must never run.
+                send_self(guest, libc::SIGKILL).await;
+                guest
+                    .send_rpc(lifecycle_event(EVENT_AFTER_SIGKILL, pid, 0))
+                    .await;
+                return Ok(None);
+            }
+            Signal::SIGSTKFLT => {
+                // Ends the callback with a tail injection of SIGKILL.
+                guest
+                    .tail_inject(
+                        reverie::syscalls::Tgkill::new()
+                            .with_tgid(pid)
+                            .with_tid(guest.tid().as_raw())
+                            .with_sig(libc::SIGKILL),
+                    )
+                    .await;
+            }
+            Signal::SIGPWR => {
+                // A tail injection of a call that does not end the guest:
+                // there is no guest syscall for it to resolve.
+                guest.tail_inject(reverie::syscalls::Getpid::new()).await;
+            }
+            Signal::SIGXFSZ => {
+                // Sends SIGUSR1 again while the handler's is still waiting,
+                // then suppresses SIGXFSZ.
+                send_self(guest, libc::SIGUSR1).await;
+                return Ok(None);
+            }
+            Signal::SIGINT => {
+                // Stages a SIGKILL in a future it abandons, then tries a
+                // write: the write must never be made.
+                poll_once(send_self(guest, libc::SIGKILL));
+                let message = b"after-abandoned-sigkill\n";
+                let _ = guest
+                    .inject(
+                        reverie::syscalls::Write::new()
+                            .with_fd(libc::STDERR_FILENO)
+                            .with_buf(reverie::syscalls::Addr::from_ptr(message.as_ptr()))
+                            .with_len(message.len()),
+                    )
+                    .await;
+                return Ok(None);
+            }
+            Signal::SIGQUIT => {
+                // Stages a SIGKILL in a future it abandons, then suppresses
+                // SIGQUIT: the staged SIGKILL must still end the guest.
+                poll_once(send_self(guest, libc::SIGKILL));
+                return Ok(None);
+            }
+            Signal::SIGXCPU => {
+                // A plain fork from a signal callback: refused before it is
+                // made.
+                let _ = inject_fork(guest, Syscall::Fork(reverie::syscalls::Fork::new())).await;
+            }
+            Signal::SIGTERM if REPLACE_SIGTERM_WITH_SIGALRM.load(Ordering::Relaxed) => {
+                return Ok(Some(Signal::SIGALRM));
+            }
+            Signal::SIGFPE if ABANDONED_EFFECTS.load(Ordering::Relaxed) => {
+                // Stages a SIGKILL in a future it abandons, then awaits a
+                // coordinator request the coordinator never answers
+                // (RPC_PARK): the request must never be sent, and the
+                // staged SIGKILL must still end the guest.
+                poll_once(send_self(guest, libc::SIGKILL));
+                guest.send_rpc(RPC_PARK).await;
+                return Ok(None);
+            }
+            Signal::SIGBUS if ABANDONED_EFFECTS.load(Ordering::Relaxed) => {
+                // Writes the shared page through a memory handle, abandons a
+                // SIGKILL injection, then writes again through that handle
+                // and through a new one: neither later write may be made.
+                let page = SHARED_PAGE.load(Ordering::Relaxed);
+                let word = reverie::syscalls::AddrMut::<u64>::from_raw(page).unwrap();
+                let mut before = guest.memory();
+                before
+                    .write_value(word, &1_u64)
+                    .expect("a write before the injection");
+                poll_once(send_self(guest, libc::SIGKILL));
+                let old_handle = before.write_value(word, &2_u64);
+                let new_handle = guest.memory().write_value(word, &3_u64);
+                // Reported by direct stores, outside the guest interface.
+                let errno = |result: Result<(), Errno>| {
+                    result.err().map_or(0, |errno| errno.into_raw() as u64)
+                };
+                let words = page as *mut u64;
+                unsafe {
+                    words.add(1).write_volatile(errno(old_handle));
+                    words.add(2).write_volatile(errno(new_handle));
+                }
+                return Ok(None);
+            }
+            Signal::SIGFPE if FLIP_PAGE.load(Ordering::Relaxed) != 0 => {
+                // The changing record must not be read: process creation
+                // outside a syscall handler is refused by syscall number.
+                let page = FLIP_PAGE.load(Ordering::Relaxed);
+                let created = unsafe { &*((page as *const AtomicU64).add(FLIP_CREATED_WORD)) };
+                let clone3 = Syscall::from_raw(
+                    Sysno::clone3,
+                    reverie::syscalls::SyscallArgs::new(page, 88, 0, 0, 0, 0),
+                );
+                if let Ok(child) = guest.inject(clone3).await
+                    && child > 0
+                {
+                    created.fetch_add(1, Ordering::SeqCst);
+                }
+                return Ok(None);
+            }
+            Signal::SIGALRM if INSTALL_SIGALRM_IN_CALLBACK.load(Ordering::Relaxed) => {
+                // Installs the guest's SIGALRM handler (kept virtual), then
+                // lets the guest's own SIGALRM be delivered: refused by name
+                // before anything is sent. If the installation failed, the
+                // signal is suppressed, so the guest goes on and reports it.
+                let action = [
+                    CALLBACK_ALARM_ACTION[0].load(Ordering::Relaxed),
+                    CALLBACK_ALARM_ACTION[1].load(Ordering::Relaxed),
+                    CALLBACK_ALARM_ACTION[2].load(Ordering::Relaxed),
+                    0,
+                ];
+                let installed = guest
+                    .inject(Syscall::from_raw(
+                        Sysno::rt_sigaction,
+                        reverie::syscalls::SyscallArgs::new(
+                            libc::SIGALRM as usize,
+                            action.as_ptr() as usize,
+                            0,
+                            8,
+                            0,
+                            0,
+                        ),
+                    ))
+                    .await;
+                let result = installed.unwrap_or_else(|errno| -i64::from(errno.into_raw()));
+                CALLBACK_ALARM_INSTALL.store(result, Ordering::Relaxed);
+                if result != 0 {
+                    return Ok(None);
+                }
+            }
+            _ => {}
+        }
+        Ok(Some(signal))
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        tid: Tid,
+        global_state: &G,
+        _thread_state: (),
+        exit_status: ExitStatus,
+    ) -> Result<(), Error> {
+        if matches!(exit_status, ExitStatus::Signaled(..)) {
+            global_state
+                .send_rpc(lifecycle_event(
+                    EVENT_EXIT_THREAD,
+                    tid.as_raw(),
+                    exit_status.into_raw() as u64,
+                ))
+                .await;
+        }
+        Ok(())
+    }
+
+    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
+        self,
+        pid: Pid,
+        global_state: &G,
+        exit_status: ExitStatus,
+    ) -> Result<(), Error> {
+        if matches!(exit_status, ExitStatus::Signaled(..)) {
+            global_state
+                .send_rpc(lifecycle_event(
+                    EVENT_EXIT_PROCESS,
+                    pid.as_raw(),
+                    exit_status.into_raw() as u64,
+                ))
+                .await;
+        }
+        Ok(())
+    }
+}
+
+/// Polls `future` once with a no-op waker and drops it: a Tool abandoning an
+/// injection's future after its first poll.
+fn poll_once<F: core::future::Future>(future: F) {
+    let mut future = core::pin::pin!(future);
+    let mut context = core::task::Context::from_waker(core::task::Waker::noop());
+    let _ = future.as_mut().poll(&mut context);
+}
+
+/// Sends `signal` to the calling thread through a Tool injection; the
+/// injection must report success.
+async fn send_self<G: Guest<LifecycleTool>>(guest: &mut G, signal: libc::c_int) {
+    let sent = guest
+        .inject(
+            reverie::syscalls::Tgkill::new()
+                .with_tgid(guest.pid().as_raw())
+                .with_tid(guest.tid().as_raw())
+                .with_sig(signal),
+        )
+        .await;
+    assert_eq!(sent, Ok(0), "the Tool's tgkill of signal {signal}");
 }
 
 /// Asks the driver to re-run this callback for the same guest entry, which the
@@ -408,6 +803,494 @@ fn signaled_descendant(pid_file: &Path) -> ! {
         }
     }
     unsafe { libc::_exit(29) }
+}
+
+/// Each child sends itself a signal and the parent prints how it ended
+/// (`<label> pid=<pid> status=<raw wait status>`):
+/// - `abort` (a `tgkill`, which the Tool subscribes to) with this process's
+///   core limit, and with a core limit of 1 (no core);
+/// - `kill` of the child's own pid, which the Tool does not subscribe to,
+///   with SIGTERM and SIGKILL;
+/// - `raise` of SIGUSR1, SIGUSR2 and SIGHUP, whose deaths the Tool's signal
+///   callback undoes (ignored, blocked, suppressed), so each of those
+///   children exits with its own code: 41, 42 (SIGUSR2 then pending) and 43
+///   (SIGHUP not pending);
+/// - `raise` of SIGVTALRM, whose signal callback sends SIGKILL and suppresses
+///   SIGVTALRM, and of SIGPROF, whose tgkill handler forwards it and then
+///   sends SIGKILL: both children die by SIGKILL;
+/// - a CPUID whose instruction callback sends SIGTERM, and a fork child
+///   whose thread-start callback sends SIGTERM: both die by SIGTERM;
+/// - an `abort` in a child whose admitted seccomp filter refuses
+///   `rt_sigpending`: this excluded case takes the raw path and dies by
+///   SIGABRT without signal or exit callbacks.
+fn self_signal_deaths() {
+    SUBSCRIBE_CPUID.store(true, Ordering::Relaxed);
+    install_tool();
+    fn pending(signal: libc::c_int) -> bool {
+        let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+        unsafe { libc::sigpending(&mut set) == 0 && libc::sigismember(&set, signal) == 1 }
+    }
+    ABANDONED_EFFECTS.store(true, Ordering::Relaxed);
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(page, libc::MAP_FAILED);
+    SHARED_PAGE.store(page as usize, Ordering::Relaxed);
+    let cases: [(&str, fn()); 23] = [
+        ("abort", || unsafe { libc::abort() }),
+        ("abort-core-limit-1", || unsafe {
+            let one = libc::rlimit {
+                rlim_cur: 1,
+                rlim_max: 1,
+            };
+            assert_eq!(libc::setrlimit(libc::RLIMIT_CORE, &one), 0);
+            libc::abort()
+        }),
+        ("kill-sigterm", || unsafe {
+            libc::kill(libc::getpid(), libc::SIGTERM);
+        }),
+        ("kill-sigkill", || unsafe {
+            libc::kill(libc::getpid(), libc::SIGKILL);
+        }),
+        ("raise-sigusr1", || unsafe {
+            let sent = libc::raise(libc::SIGUSR1);
+            libc::_exit(if sent == 0 { 41 } else { 40 });
+        }),
+        ("raise-sigusr2", || unsafe {
+            let sent = libc::raise(libc::SIGUSR2);
+            libc::_exit(if sent == 0 && pending(libc::SIGUSR2) {
+                42
+            } else {
+                40
+            });
+        }),
+        ("raise-sighup", || unsafe {
+            let sent = libc::raise(libc::SIGHUP);
+            libc::_exit(if sent == 0 && !pending(libc::SIGHUP) {
+                43
+            } else {
+                40
+            });
+        }),
+        ("raise-sigvtalrm", || unsafe {
+            libc::raise(libc::SIGVTALRM);
+        }),
+        ("raise-sigprof", || unsafe {
+            libc::raise(libc::SIGPROF);
+        }),
+        ("cpuid-sigterm", || {
+            FATAL_CPUID.store(true, Ordering::Relaxed);
+            std::hint::black_box(core::arch::x86_64::__cpuid(std::hint::black_box(0)));
+        }),
+        // FATAL_THREAD_START is set around this child's fork, below.
+        ("thread-start-sigterm", || {}),
+        ("abort-pending-unreadable", || unsafe {
+            deny_rt_sigpending();
+            libc::abort()
+        }),
+        ("raise-sigstkflt", || unsafe {
+            libc::raise(libc::SIGSTKFLT);
+        }),
+        ("raise-sigpwr", || unsafe {
+            libc::raise(libc::SIGPWR);
+        }),
+        ("raise-sigxfsz", || unsafe {
+            let sent = libc::raise(libc::SIGXFSZ);
+            libc::_exit(if sent == 0 { 48 } else { 40 });
+        }),
+        ("raise-sigint", || unsafe {
+            libc::raise(libc::SIGINT);
+        }),
+        ("raise-sigquit", || unsafe {
+            libc::raise(libc::SIGQUIT);
+        }),
+        ("raise-sigio", || unsafe {
+            libc::raise(libc::SIGIO);
+        }),
+        ("raise-sigxcpu", || unsafe {
+            libc::raise(libc::SIGXCPU);
+        }),
+        ("raise-sigfpe", || unsafe {
+            libc::raise(libc::SIGFPE);
+        }),
+        ("raise-sigbus", || unsafe {
+            libc::raise(libc::SIGBUS);
+        }),
+        // SIGTRAP's kernel action is LiteInst's guard router, which gives
+        // every SIGTRAP but the runtime's own breakpoints the guest's action:
+        // here SIG_DFL, so the raise ends the process.
+        ("raise-sigtrap", || unsafe {
+            libc::raise(libc::SIGTRAP);
+        }),
+        // The guest ignores SIGTRAP itself (its action replaces the router):
+        // the raise is discarded and the child goes on.
+        ("raise-sigtrap-ignored", || unsafe {
+            assert_ne!(libc::signal(libc::SIGTRAP, libc::SIG_IGN), libc::SIG_ERR);
+            let sent = libc::raise(libc::SIGTRAP);
+            libc::_exit(if sent == 0 { 45 } else { 40 });
+        }),
+    ];
+    for (label, end) in cases {
+        let thread_start = label == "thread-start-sigterm";
+        FATAL_THREAD_START.store(thread_start, Ordering::Relaxed);
+        let child = fork_or_panic();
+        if child == 0 {
+            end();
+            unsafe { libc::_exit(99) };
+        }
+        FATAL_THREAD_START.store(false, Ordering::Relaxed);
+        // The wait4 callback returns a fixture value; wait through the
+        // trusted gate instead.
+        let mut status = -1i32;
+        loop {
+            let waited = unsafe {
+                reverie_inguest::trap::raw_syscall6(
+                    libc::SYS_wait4,
+                    [child as u64, (&mut status as *mut i32) as u64, 0, 0, 0, 0],
+                )
+            };
+            if waited == -i64::from(libc::EINTR) {
+                continue;
+            }
+            assert_eq!(waited, i64::from(child));
+            break;
+        }
+        if label == "raise-sigbus" {
+            // What reached the shared page, and the errno of each write the
+            // SIGBUS callback tried after it abandoned its SIGKILL.
+            let words = page as *const u64;
+            let [written, old_handle, new_handle] =
+                [0, 1, 2].map(|index| unsafe { words.add(index).read_volatile() });
+            println!(
+                "{label} pid={child} status={status:#x} shared={written} refused={old_handle},{new_handle}"
+            );
+            continue;
+        }
+        println!("{label} pid={child} status={status:#x}");
+    }
+}
+
+/// The root installs a guest SIGALRM handler (kept virtual: the run admits
+/// SIGALRM handlers), then raises SIGTERM, which the signal callback
+/// replaces with SIGALRM: refused as a Tool error before anything is sent,
+/// so the handler never runs. Prints the `sigaction` result, and a line from
+/// the handler or after `raise` only if they happen.
+fn sigalrm_replacement() {
+    install_tool();
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = on_alarm as *const () as usize;
+    let installed = unsafe { libc::sigaction(libc::SIGALRM, &action, std::ptr::null_mut()) };
+    println!("sigaction={installed}");
+    REPLACE_SIGTERM_WITH_SIGALRM.store(true, Ordering::Relaxed);
+    unsafe { libc::raise(libc::SIGTERM) };
+    println!("raise returned");
+}
+
+/// The guest SIGALRM handler of the SIGALRM modes: prints that it ran.
+extern "C" fn on_alarm(_: libc::c_int) {
+    let message = b"alarm-handler-ran\n";
+    unsafe { libc::write(libc::STDOUT_FILENO, message.as_ptr().cast(), message.len()) };
+}
+
+/// The root installs a guest SIGALRM handler (kept virtual: the run admits
+/// SIGALRM handlers) and resets SIGALRM to its default, which reports the
+/// accepted handler's flags and restorer; then it raises SIGALRM, which the
+/// default action would make fatal. The SIGALRM signal callback installs the
+/// same handler again and lets the guest's SIGALRM be delivered: refused as a
+/// Tool error before anything is sent, so the handler never runs. Prints the
+/// two `sigaction` results, and a line from the handler or after `raise`
+/// only if they happen.
+fn sigalrm_installed_by_callback() {
+    install_tool();
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = on_alarm as *const () as usize;
+    let installed = unsafe { libc::sigaction(libc::SIGALRM, &action, std::ptr::null_mut()) };
+    let default: libc::sigaction = unsafe { std::mem::zeroed() };
+    let mut accepted: libc::sigaction = unsafe { std::mem::zeroed() };
+    let reset = unsafe { libc::sigaction(libc::SIGALRM, &default, &mut accepted) };
+    println!("sigaction={installed} reset={reset}");
+    CALLBACK_ALARM_ACTION[0].store(accepted.sa_sigaction as u64, Ordering::Relaxed);
+    CALLBACK_ALARM_ACTION[1].store(accepted.sa_flags as u64, Ordering::Relaxed);
+    CALLBACK_ALARM_ACTION[2].store(
+        accepted
+            .sa_restorer
+            .map_or(0, |restorer| restorer as usize as u64),
+        Ordering::Relaxed,
+    );
+    INSTALL_SIGALRM_IN_CALLBACK.store(true, Ordering::Relaxed);
+    unsafe { libc::raise(libc::SIGALRM) };
+    println!(
+        "raise returned install={}",
+        CALLBACK_ALARM_INSTALL.load(Ordering::Relaxed)
+    );
+}
+
+/// The clone3 trials of the `clone3-flip` mode.
+const FLIP_TRIALS: usize = 64;
+
+/// Waits for `child` through the trusted gate (the wait4 callback returns a
+/// fixture value) and returns its raw wait status.
+fn wait_raw(child: libc::pid_t) -> i32 {
+    let mut status = -1i32;
+    loop {
+        let waited = unsafe {
+            reverie_inguest::trap::raw_syscall6(
+                libc::SYS_wait4,
+                [child as u64, (&mut status as *mut i32) as u64, 0, 0, 0, 0],
+            )
+        };
+        if waited == -i64::from(libc::EINTR) {
+            continue;
+        }
+        assert_eq!(waited, i64::from(child));
+        return status;
+    }
+}
+
+/// A shared clone3 record kept changing by a peer. Each trial's signal
+/// callback injects clone3 outside a syscall handler: refused by number
+/// before reading the record or creating a child. Guest clone3 races remain
+/// main's behavior and are deliberately not exercised as a fixed capability.
+fn clone3_flip() {
+    install_tool();
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(page, libc::MAP_FAILED);
+    let words = page.cast::<AtomicU64>();
+    let word = |index: usize| unsafe { &*words.add(index) };
+    word(4).store(libc::SIGCHLD as u64, Ordering::SeqCst);
+    let flipper = fork_or_panic();
+    if flipper == 0 {
+        while word(FLIP_STOP_WORD).load(Ordering::Relaxed) == 0 {
+            word(9).fetch_xor(1, Ordering::Relaxed);
+        }
+        unsafe { libc::_exit(0) };
+    }
+    FLIP_PAGE.store(page as usize, Ordering::Relaxed);
+    let mut statuses = std::collections::BTreeMap::<i32, usize>::new();
+    for _ in 0..FLIP_TRIALS {
+        let child = fork_or_panic();
+        if child == 0 {
+            unsafe {
+                libc::raise(libc::SIGFPE);
+                libc::_exit(99);
+            }
+        }
+        *statuses.entry(wait_raw(child)).or_default() += 1;
+    }
+    FLIP_PAGE.store(0, Ordering::Relaxed);
+    let created = word(FLIP_CREATED_WORD).load(Ordering::SeqCst);
+    word(FLIP_STOP_WORD).store(1, Ordering::SeqCst);
+    assert_eq!(wait_raw(flipper), 0);
+    let statuses: Vec<String> = statuses
+        .iter()
+        .map(|(status, count)| format!("{status:#x}x{count}"))
+        .collect();
+    println!(
+        "trials={FLIP_TRIALS} statuses={} created={created}",
+        statuses.join(",")
+    );
+}
+
+/// A filter which kills on exit_group; status 125 from the refusal proves
+/// this filter was never installed. The control mode installs the same
+/// filter and dies by SIGSYS when it tries exit_group.
+fn exit_killing_filter() -> [libc::sock_filter; 4] {
+    [
+        libc::sock_filter {
+            code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        libc::sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 1,
+            k: libc::SYS_exit_group as u32,
+        },
+        libc::sock_filter {
+            code: (libc::BPF_RET | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_KILL_PROCESS,
+        },
+        libc::sock_filter {
+            code: (libc::BPF_RET | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_ALLOW,
+        },
+    ]
+}
+
+async fn inject_exit_killing_filter<G: Guest<LifecycleTool>>(
+    guest: &mut G,
+    tail: bool,
+) -> Result<(), Errno> {
+    let mut filter = exit_killing_filter();
+    // x86-64 sock_fprog: u16 length with padding, then a pointer. Keep
+    // pointer bits in integers so the fixture future remains Send.
+    let program = [filter.len() as u64, filter.as_mut_ptr() as u64];
+    let call = Syscall::from_raw(
+        Sysno::seccomp,
+        reverie::syscalls::SyscallArgs::new(
+            libc::SECCOMP_SET_MODE_FILTER as usize,
+            0,
+            (&raw const program) as usize,
+            0,
+            0,
+            0,
+        ),
+    );
+    if tail {
+        guest.tail_inject(call).await;
+    }
+    guest.inject(call).await?;
+    Ok(())
+}
+
+/// Guest-filter paths admitted only without a creation hook or virtual
+/// SIGALRM-handler admission. Hermit may refuse guest filters independently.
+fn self_signal_filter_probe(mode: &str) {
+    install_tool();
+    // Establish initial lifecycle state before installing a filter.
+    unsafe { reverie_liteinst_lifecycle_getpid() };
+    unsafe { assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0) };
+    match mode {
+        "filter-denied-self-kill" => {
+            unsafe { deny_syscall(libc::SYS_kill, libc::EPERM) };
+            let result = unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            println!("kill={result} errno={errno} survived");
+        }
+        "filter-permissive-self-death" => {
+            assert_eq!(allow_all_seccomp_filter(), 0);
+            unsafe { libc::raise(libc::SIGTERM) };
+            panic!("filtered SIGTERM survived");
+        }
+        "filter-exit-control" => {
+            let mut filter = exit_killing_filter();
+            let program = libc::sock_fprog {
+                len: filter.len() as u16,
+                filter: filter.as_mut_ptr(),
+            };
+            unsafe {
+                assert_eq!(
+                    libc::syscall(
+                        libc::SYS_seccomp,
+                        libc::SECCOMP_SET_MODE_FILTER,
+                        0,
+                        &program
+                    ),
+                    0
+                );
+                libc::syscall(libc::SYS_exit_group, 0);
+            }
+            panic!("exit-killing filter did not kill");
+        }
+        "filter-after-staged-inject" | "filter-after-staged-tail" => {
+            FILTER_PROBE_CONTEXT.store(
+                if mode.ends_with("tail") { 2 } else { 1 },
+                Ordering::Relaxed,
+            );
+            unsafe { reverie_liteinst_lifecycle_getpid() };
+            panic!("staged filter probe survived");
+        }
+        "filter-in-signal-inject" | "filter-in-signal-tail" => {
+            FILTER_PROBE_CONTEXT.store(
+                if mode.ends_with("tail") { 4 } else { 3 },
+                Ordering::Relaxed,
+            );
+            unsafe { libc::raise(libc::SIGTERM) };
+            panic!("signal filter probe survived");
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// The root process's thread-start callback sends it SIGTERM, and its
+/// post-exec callback would ignore SIGTERM: the SIGTERM must end the process
+/// before the post-exec callback runs, as a tracer delivers it when the thread
+/// resumes from its start. Prints a line only if it survives.
+fn root_startup_signal() {
+    FATAL_THREAD_START.store(true, Ordering::Relaxed);
+    IGNORE_SIGTERM_AT_POST_EXEC.store(true, Ordering::Relaxed);
+    install_tool();
+    // The first syscall after the install starts the root thread in the Tool.
+    unsafe { reverie_liteinst_lifecycle_getpid() };
+    println!("root-startup-signal survived");
+}
+
+/// Installs a seccomp filter that makes `rt_sigpending` fail with EPERM and
+/// allows every other call.
+unsafe fn deny_rt_sigpending() {
+    unsafe { deny_syscall(libc::SYS_rt_sigpending, libc::EPERM) }
+}
+
+/// Installs a seccomp filter that makes the call `number` fail with `errno`
+/// and allows every other call, as a guest would.
+unsafe fn deny_syscall(number: i64, errno: i32) {
+    let filter = [
+        // A = seccomp_data.nr
+        libc::sock_filter {
+            code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        libc::sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 1,
+            k: number as u32,
+        },
+        libc::sock_filter {
+            code: (libc::BPF_RET | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_ERRNO | errno as u32,
+        },
+        libc::sock_filter {
+            code: (libc::BPF_RET | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_ALLOW,
+        },
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_ptr() as *mut libc::sock_filter,
+    };
+    unsafe {
+        assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_seccomp,
+                libc::SECCOMP_SET_MODE_FILTER,
+                0,
+                &program as *const libc::sock_fprog,
+            ),
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+    }
 }
 
 fn fast_path() {
@@ -755,6 +1638,10 @@ fn print_refusal(creation: reverie_liteinst::PhysicalCreation) -> std::io::Resul
             refusal: CreationRefusal::ArgumentsUnreadable,
             child: None,
         } => b"refused: arguments unreadable, no child\n",
+        PhysicalCreation::Refused {
+            refusal: CreationRefusal::ArgumentsUnreadable,
+            child: Some(reverie_liteinst::RefusedChild { killed: false, .. }),
+        } => b"refused: arguments unreadable, child not killed\n",
         PhysicalCreation::Refused { .. } => b"refused: another refusal\n",
         _ => b"not refused\n",
     };
@@ -1328,6 +2215,41 @@ fn main() {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
     let mode = arguments.next().expect("missing lifecycle fixture mode");
+    if let Some(mode) = mode.to_str()
+        && matches!(
+            mode,
+            "filter-denied-self-kill"
+                | "filter-permissive-self-death"
+                | "filter-exit-control"
+                | "filter-after-staged-inject"
+                | "filter-after-staged-tail"
+                | "filter-in-signal-inject"
+                | "filter-in-signal-tail"
+        )
+    {
+        self_signal_filter_probe(mode);
+        return;
+    }
+    if mode == "self-signal-deaths" {
+        self_signal_deaths();
+        return;
+    }
+    if mode == "root-startup-signal" {
+        root_startup_signal();
+        return;
+    }
+    if mode == "sigalrm-replacement" {
+        sigalrm_replacement();
+        return;
+    }
+    if mode == "sigalrm-installed-by-callback" {
+        sigalrm_installed_by_callback();
+        return;
+    }
+    if mode == "clone3-flip" {
+        clone3_flip();
+        return;
+    }
     if mode == "fallback-fork-stats" {
         fallback_fork_stats();
         return;

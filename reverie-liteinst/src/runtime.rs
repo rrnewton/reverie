@@ -920,6 +920,12 @@ unsafe fn install_guard_handler_blocked(
     if let Err(error) = unsafe { raw_sigaction(signal, Some(&action), None) } {
         return restore(error);
     }
+    // The router gives every SIGTRAP that is not one of the runtime's own
+    // breakpoints the action it replaced (`prior`, reported below and kept by
+    // LiteInst2 as the action it chains to), so that is the guest's own action
+    // while the router is installed: a guest's `raise(SIGTRAP)` under SIG_DFL
+    // ends the process, and the in-guest host must judge it so.
+    reverie_inguest::guest::signal::register_routing_handler(signal, action.handler, prior.handler);
     GUARD_PRIOR_MASK.store(prior_mask, Ordering::Relaxed);
     GUARD_PRIOR_MASK_HELD.store(true, Ordering::Release);
     // SAFETY: the caller passed a non-null output, written once on success.

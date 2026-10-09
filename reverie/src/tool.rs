@@ -915,6 +915,103 @@ pub trait Tool: Send + Sync + Default {
     /// errors or cancellation, including states whose `handle_thread_start`
     /// was never entered or completed. No further guest event is started to
     /// perform this cleanup. Panic unwinding may bypass the hook.
+    ///
+    /// # Exit status: exact, or predicted
+    ///
+    /// A backend that observes the death from outside the guest (ptrace)
+    /// passes the kernel's status. A backend that runs the Tool inside the
+    /// guest reports a death before it happens, because the Tool dies with
+    /// the guest; then only part of the status is known. For an exit, the
+    /// code is exact. For a death by a signal the guest sends itself (the
+    /// in-guest host's `deliver_staged_signals`), the signal is exact, and the
+    /// core-dump flag of [`ExitStatus::Signaled`] is a prediction from the
+    /// inputs Linux checks before it writes a core (the signal's default
+    /// action, the dumpable mode, `RLIMIT_CORE` and `core_pattern`); the
+    /// kernel's own flag differs when its write of the core fails. A Tool must
+    /// not rely on that flag from such a backend. The same holds for
+    /// [`Tool::on_exit_process`].
+    ///
+    /// # Signals a Tool sends its own guest, under an in-guest backend
+    ///
+    /// The in-guest host holds a signal a Tool's injection sends the guest
+    /// itself, when it would end the process, until the callback that sent
+    /// it returns, and then delivers it as a tracer delivers a held signal.
+    /// An injection that ends the guest (an exit, or a SIGKILL of the guest
+    /// itself) ends the callback that made it there, as under a tracer; the
+    /// callback does not resume. That ending is latched when the injection
+    /// is made, and the guest ends even if the callback then returns. A Tool
+    /// that abandons the injection's future and goes on gets no further
+    /// effect on the guest through its [`Guest`]:
+    ///
+    /// - `inject`, `tail_inject`, `set_regs`, the signal deliveries
+    ///   (`defer_signal_delivery`, `defer_signal_delivery_before_syscall`)
+    ///   and `send_rpc` never complete: the callback stays parked until the
+    ///   host ends the process, so a request that could block on the
+    ///   coordinator is never sent;
+    /// - every read and write through a `memory()` handle, one obtained
+    ///   before the injection included, fails with ESRCH and copies nothing,
+    ///   as a tracer's access to a tracee its injection killed fails;
+    /// - the backend's blocking coordinator request for synchronous Tool
+    ///   code (LiteInst's `blocking_global_rpc`) fails with ESRCH, unsent.
+    ///
+    /// The rest of the interface has no effect on the guest (`regs`, `pid`,
+    /// `thread_state` and the other reads; `stack`, whose storage is the
+    /// host's; `set_timer`, which the in-guest host refuses). The exit
+    /// callbacks run afterwards with their own coordinator connection and no
+    /// [`Guest`], and may use both the connection and the blocking request.
+    /// Effects a Tool makes outside these interfaces (its own system calls,
+    /// direct stores to guest memory, a `LocalMemory` it constructs itself)
+    /// are not seen by the host, and remain the Tool's responsibility, as
+    /// every such effect is.
+    ///
+    /// These cases are unsupported, and the host ends the process as a Tool
+    /// error that names the case (exit status 125) before anything is made
+    /// for it: a `tail_inject` of a call that does not end the guest outside
+    /// a syscall handler (in a start-up, instruction or signal callback); a
+    /// process creation (fork, vfork, clone or clone3, refused by syscall
+    /// number without reading guest memory) injected outside a syscall
+    /// handler; and a signal callback that has SIGALRM
+    /// delivered while the guest's SIGALRM handler is kept virtual (signal
+    /// phase 1), which only the backend's own delivery can reach: in place of
+    /// another signal, or as the guest's own SIGALRM, held while the Tool
+    /// installed the guest's handler; and installing a seccomp filter after a
+    /// self-signal has been staged, including during its signal callback or
+    /// while the delivery drain owns pending signals. The filter installation
+    /// is refused before it executes, through both `inject` and `tail_inject`.
+    ///
+    /// # Supported self-signal deaths
+    ///
+    /// Staging covers `kill`, `tkill`, and `tgkill` aimed at the calling
+    /// process or thread, for unblocked standard signals 1 through 31 with
+    /// a terminating default action and no admitted guest seccomp filter.
+    /// SIGTRAP uses the guest's action behind the runtime's routing handler.
+    /// Explicit self-kill with SIGPIPE is included; SIGPIPE raised by a failed
+    /// write is a different source and is excluded. Real-time signals cannot
+    /// be named by the Tool's `Signal` and are excluded. Process-group and
+    /// broadcast kill targets are excluded as well.
+    ///
+    /// # Self-signal deaths that remain a recorded loss
+    ///
+    /// The in-guest host stages a guest's self-directed fatal signal (and
+    /// runs the exit callbacks before it) only when the signal's action is
+    /// the guest's own default. Two cases keep the earlier behaviour, where
+    /// the process dies without its exit callbacks and the Tool records that
+    /// it exited without deregistering (an explicit determinism loss, never a
+    /// silent pass): a signal the runtime itself handles for the guest
+    /// (SIGSEGV while LiteInst routes instruction subscriptions through it,
+    /// and SIGSYS, the runtime's seccomp trap), and any self-directed signal
+    /// once a guest seccomp filter has been admitted, where the call runs as
+    /// the guest's own, so a filter's errno is honoured. Filter admission is
+    /// possible only without a creation hook and without virtual SIGALRM
+    /// handler admission; a Tool such as Hermit may refuse guest filters
+    /// independently. Installing the runtime before any seccomp filter is
+    /// active remains the backend's unsafe launch precondition.
+    ///
+    /// Hardware faults, signals from another process or the scheduler, and
+    /// syscall-generated SIGPIPE also retain their existing recorded loss.
+    /// A standalone Tool must arrange to detect missing exit callbacks;
+    /// Hermit's coordinator records the deregistration loss and strict
+    /// verification refuses it.
     async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
         &self,
         _tid: Tid,
@@ -935,6 +1032,9 @@ pub trait Tool: Send + Sync + Default {
     /// initial thread starts, after the thread states have been consumed. It
     /// must support cleanup after fatal failure without ordinary guest RPC
     /// progress. Panic unwinding may bypass the hook.
+    ///
+    /// The status is exact or predicted as described for
+    /// [`Tool::on_exit_thread`].
     async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
         self,
         _pid: Pid,

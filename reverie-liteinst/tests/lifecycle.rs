@@ -31,6 +31,31 @@ const RPC_PARK: u64 = 7;
 const RPC_FAIL: u64 = 8;
 /// Tags a process's exit-time count of its Tool callbacks.
 const RPC_CALLBACK_COUNT: u64 = 1 << 32;
+/// The lifecycle observations the fixture Tool sends (`lifecycle_event` in
+/// `src/bin/lifecycle_guest.rs`: tag in the top byte, id in bits 16 to 47,
+/// value in the low 16 bits), and the physical exits an admission observes,
+/// each numbered from [`OBSERVATION_SEQUENCE`] when it is recorded, so the
+/// two sources merge into one ordered stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Observed {
+    /// `handle_signal_event` was shown this signal.
+    Signal(u16),
+    /// `on_exit_thread` reported a signal death with this raw wait status.
+    ExitThread(u16),
+    /// `on_exit_process` reported a signal death with this raw wait status.
+    ExitProcess(u16),
+    /// The tgkill handler went on after its injection, which returned this.
+    TgkillReturned(u16),
+    /// `handle_post_exec` ran.
+    PostExec,
+    /// Tool code ran after the Tool's own SIGKILL injection (never expected).
+    AfterSigkill,
+    /// The process's pidfd polled readable: it is physically gone.
+    PhysicallyExited,
+}
+
+/// Numbers every lifecycle observation in the order it is recorded.
+static OBSERVATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const BACKEND_OUTPUT_CHILD_ENV: &str = "REVERIE_LITEINST_BACKEND_OUTPUT_TEST_CHILD";
 
 #[derive(Debug, Default)]
@@ -49,6 +74,9 @@ struct LifecycleGlobal {
     callbacks: AtomicU64,
     /// Pids reported through `on_backend_process_exited`.
     exited: std::sync::Mutex<Vec<i32>>,
+    /// Lifecycle observations: sequence number, the process or thread id
+    /// they name, and what was observed.
+    observed: std::sync::Mutex<Vec<(u64, i32, Observed)>>,
     /// Calls of `report_backend_failure`.
     backend_failures: AtomicU64,
     /// Processes parked by `RPC_PARK`.
@@ -86,6 +114,22 @@ impl GlobalTool for LifecycleGlobal {
                 phase: "lifecycle fixture refusal",
             });
             self.published_failures.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if event >> 56 != 0 {
+            let id = (event >> 16) as u32 as i32;
+            let value = event as u16;
+            let observed = match event >> 56 {
+                1 => Observed::Signal(value),
+                2 => Observed::ExitThread(value),
+                3 => Observed::ExitProcess(value),
+                4 => Observed::TgkillReturned(value),
+                5 => Observed::PostExec,
+                6 => Observed::AfterSigkill,
+                tag => panic!("unknown lifecycle observation tag {tag}"),
+            };
+            let sequence = OBSERVATION_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+            self.observed.lock().unwrap().push((sequence, id, observed));
             return;
         }
         if event & RPC_CALLBACK_COUNT != 0 {
@@ -571,6 +615,613 @@ async fn a_backend_failure_ends_the_run_while_a_process_is_parked() {
     .expect("a backend failure left the run hanging")
     .unwrap_err();
     assert!(error.to_string().contains("backend failure"), "{error}");
+}
+
+/// Admits every guest connection and records each admitted process's
+/// physical exit, observed on its pidfd by a thread the test joins after the
+/// run, so no observation can arrive after the test reads them.
+#[derive(Default)]
+struct ExitObservingAdmission {
+    physical: std::sync::Arc<std::sync::Mutex<Vec<(u64, i32, Observed)>>>,
+    observers: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
+impl ExitObservingAdmission {
+    /// Waits for every observer and returns what they recorded.
+    fn finish(&self) -> Vec<(u64, i32, Observed)> {
+        for observer in self.observers.lock().unwrap().drain(..) {
+            observer.join().unwrap();
+        }
+        self.physical.lock().unwrap().clone()
+    }
+}
+
+impl reverie_rpc_transport::ConnectionAdmission for ExitObservingAdmission {
+    fn admit(
+        &self,
+        peer: std::os::fd::OwnedFd,
+    ) -> std::io::Result<reverie_rpc_transport::Admitted> {
+        use std::os::fd::AsRawFd;
+        let fdinfo = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", peer.as_raw_fd()))?;
+        let pid: i32 = fdinfo
+            .lines()
+            .find_map(|line| line.strip_prefix("Pid:"))
+            .and_then(|pid| pid.trim().parse().ok())
+            .ok_or_else(|| std::io::Error::other("pidfd names no pid"))?;
+        let physical = self.physical.clone();
+        self.observers
+            .lock()
+            .unwrap()
+            .push(std::thread::spawn(move || {
+                let mut poll = libc::pollfd {
+                    fd: peer.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // A pidfd polls readable once its process has exited.
+                while unsafe { libc::poll(&mut poll, 1, -1) } != 1 {}
+                let sequence = OBSERVATION_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+                physical
+                    .lock()
+                    .unwrap()
+                    .push((sequence, pid, Observed::PhysicallyExited));
+            }));
+        Ok(reverie_rpc_transport::Admitted { process_id: pid })
+    }
+}
+
+/// A process that sends itself a signal that would end it dies at a point of
+/// its own program order, so the in-guest host reports it as it reports an
+/// exit, before it happens: one ordered stream per process shows, for an
+/// abort (a `tgkill` the Tool subscribes to), that the Tool's tgkill handler
+/// runs to its end after its injection, then the signal callback, then
+/// `on_exit_thread` and `on_exit_process` with the complete status the
+/// parent's wait returns (including the core-dump bit, with and without a
+/// core limit), then the physical exit. A `kill` of its own pid, which the
+/// Tool does not subscribe to, is reported the same way; a SIGKILL is never
+/// shown to the signal callback. Where the signal callback ignores, blocks or
+/// suppresses the signal, the process goes on and exits with its own code,
+/// with no exit callback: the host decides the death after the callback.
+///
+/// A `raise(SIGTRAP)` is judged by the guest's own SIGTRAP action
+/// (SIG_DFL, so a death), not by LiteInst's guard router, which the kernel
+/// has as its action and which hands such a SIGTRAP back to the guest's
+/// action; a guest that ignores SIGTRAP is not killed.
+///
+/// Before, such a process died without any callback, and the in-guest Tool
+/// (Detcore) never learned of the exit. A `raise(SIGTRAP)` still did, after
+/// the rest was fixed: the router made SIGTRAP look caught.
+#[tokio::test(flavor = "current_thread")]
+async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let admission = std::sync::Arc::new(ExitObservingAdmission::default());
+    let (result, global) = tokio::time::timeout(
+        Duration::from_secs(30),
+        LiteinstBackend::with_connection_admission(
+            admission.clone(),
+            LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+                guest_command("self-signal-deaths"),
+                (),
+                preload,
+            ),
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    let stdout = String::from_utf8_lossy(&result.stdout).into_owned();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    let children: Vec<(String, i32, u16)> = stdout
+        .lines()
+        .map(|line| {
+            let mut words = line.split(' ');
+            let label = words.next().unwrap().to_owned();
+            let pid = words.next().unwrap().strip_prefix("pid=").unwrap();
+            let status = words.next().unwrap().strip_prefix("status=0x").unwrap();
+            (
+                label,
+                pid.parse().unwrap(),
+                u16::from_str_radix(status, 16).unwrap(),
+            )
+        })
+        .collect();
+    let labels: Vec<&str> = children.iter().map(|(label, ..)| label.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "abort",
+            "abort-core-limit-1",
+            "kill-sigterm",
+            "kill-sigkill",
+            "raise-sigusr1",
+            "raise-sigusr2",
+            "raise-sighup",
+            "raise-sigvtalrm",
+            "raise-sigprof",
+            "cpuid-sigterm",
+            "thread-start-sigterm",
+            "abort-pending-unreadable",
+            "raise-sigstkflt",
+            "raise-sigpwr",
+            "raise-sigxfsz",
+            "raise-sigint",
+            "raise-sigquit",
+            "raise-sigio",
+            "raise-sigxcpu",
+            "raise-sigfpe",
+            "raise-sigbus",
+            "raise-sigtrap",
+            "raise-sigtrap-ignored",
+        ],
+        "{stdout}"
+    );
+    // Every guest process has exited by now (the run ends when they have),
+    // so every observer finishes.
+    let mut observed = global.observed.lock().unwrap().clone();
+    observed.extend(admission.finish());
+    observed.sort_by_key(|(sequence, ..)| *sequence);
+    eprintln!("guest stdout:\n{stdout}observed: {observed:?}");
+    use Observed::*;
+    let term = libc::SIGTERM as u16;
+    let kill = libc::SIGKILL as u16;
+    for (label, pid, status) in &children {
+        let of_child: Vec<Observed> = observed
+            .iter()
+            .filter(|(_, id, _)| id == pid)
+            .map(|(.., what)| *what)
+            .collect();
+        let status = *status;
+        let expected = match label.as_str() {
+            "abort" | "abort-core-limit-1" => {
+                assert_eq!(status & 0x7f, libc::SIGABRT as u16, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGABRT as u16),
+                    ExitThread(status),
+                    ExitProcess(status),
+                    PhysicallyExited,
+                ]
+            }
+            // The guest's SIGTRAP action is SIG_DFL, though the kernel's is
+            // LiteInst's guard router: a death, reported first like abort's.
+            "raise-sigtrap" => {
+                assert_eq!(status & 0x7f, libc::SIGTRAP as u16, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGTRAP as u16),
+                    ExitThread(status),
+                    ExitProcess(status),
+                    PhysicallyExited,
+                ]
+            }
+            // The guest ignores SIGTRAP: not a death, nothing to report.
+            "raise-sigtrap-ignored" => {
+                assert_eq!(status, 45 << 8, "{label}");
+                vec![TgkillReturned(0), PhysicallyExited]
+            }
+            "kill-sigterm" => {
+                assert_eq!(status, libc::SIGTERM as u16, "{label}");
+                vec![
+                    Signal(libc::SIGTERM as u16),
+                    ExitThread(status),
+                    ExitProcess(status),
+                    PhysicallyExited,
+                ]
+            }
+            "kill-sigkill" => {
+                assert_eq!(status, libc::SIGKILL as u16, "{label}");
+                vec![ExitThread(status), ExitProcess(status), PhysicallyExited]
+            }
+            "raise-sigusr1" => {
+                assert_eq!(status, 41 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGUSR1 as u16),
+                    PhysicallyExited,
+                ]
+            }
+            "raise-sigusr2" => {
+                assert_eq!(status, 42 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGUSR2 as u16),
+                    PhysicallyExited,
+                ]
+            }
+            "raise-sighup" => {
+                assert_eq!(status, 43 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGHUP as u16),
+                    PhysicallyExited,
+                ]
+            }
+            // The signal callback sent SIGKILL, then suppressed SIGVTALRM.
+            "raise-sigvtalrm" => {
+                assert_eq!(status, kill, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGVTALRM as u16),
+                    ExitThread(kill),
+                    ExitProcess(kill),
+                    PhysicallyExited,
+                ]
+            }
+            // The handler forwarded SIGPROF, then sent SIGKILL: SIGKILL
+            // ends the process there, so the handler's fork, error and
+            // record never happen and SIGPROF is never delivered.
+            "raise-sigprof" => {
+                assert_eq!(status, kill, "{label}");
+                vec![ExitThread(kill), ExitProcess(kill), PhysicallyExited]
+            }
+            // The signal callback ended itself with a tail injection of
+            // SIGKILL.
+            "raise-sigstkflt" => {
+                assert_eq!(status, kill, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGSTKFLT as u16),
+                    ExitThread(kill),
+                    ExitProcess(kill),
+                    PhysicallyExited,
+                ]
+            }
+            // The signal callback tail-injected getpid: refused by name as
+            // a Tool error (exit 125), with no exit callback.
+            "raise-sigpwr" => {
+                assert_eq!(status, 125 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGPWR as u16),
+                    PhysicallyExited,
+                ]
+            }
+            // The signal callback staged a SIGKILL in a future it abandoned:
+            // its later write (SIGINT) is never made, and its return
+            // (SIGQUIT) does not save the guest.
+            "raise-sigint" | "raise-sigquit" => {
+                let signal = if label == "raise-sigint" {
+                    libc::SIGINT
+                } else {
+                    libc::SIGQUIT
+                };
+                assert_eq!(status, kill, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(signal as u16),
+                    ExitThread(kill),
+                    ExitProcess(kill),
+                    PhysicallyExited,
+                ]
+            }
+            // The tgkill handler staged a SIGKILL in a future it abandoned,
+            // then returned 0: the guest still dies by SIGKILL.
+            "raise-sigio" => {
+                assert_eq!(status, kill, "{label}");
+                vec![ExitThread(kill), ExitProcess(kill), PhysicallyExited]
+            }
+            // The signal callback staged a SIGKILL in a future it abandoned,
+            // then awaited a coordinator request (SIGFPE) or wrote guest
+            // memory (SIGBUS): the request is never sent, the writes are
+            // never made, and the guest dies by SIGKILL.
+            "raise-sigfpe" | "raise-sigbus" => {
+                let signal = if label == "raise-sigfpe" {
+                    libc::SIGFPE
+                } else {
+                    libc::SIGBUS
+                };
+                assert_eq!(status, kill, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(signal as u16),
+                    ExitThread(kill),
+                    ExitProcess(kill),
+                    PhysicallyExited,
+                ]
+            }
+            // The signal callback injected a plain fork: refused as a Tool
+            // error before the fork is made (no other process appears).
+            "raise-sigxcpu" => {
+                assert_eq!(status, 125 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGXCPU as u16),
+                    PhysicallyExited,
+                ]
+            }
+            // SIGXFSZ and SIGUSR1 held; the SIGXFSZ callback sent SIGUSR1
+            // again while it was still waiting, so SIGUSR1 is delivered
+            // once (its callback ignores it), and the child goes on.
+            "raise-sigxfsz" => {
+                assert_eq!(status, 48 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGXFSZ as u16),
+                    Signal(libc::SIGUSR1 as u16),
+                    PhysicallyExited,
+                ]
+            }
+            // Sent by the CPUID callback, and by the thread-start callback.
+            "cpuid-sigterm" | "thread-start-sigterm" => {
+                assert_eq!(status, term, "{label}");
+                vec![
+                    Signal(term),
+                    ExitThread(term),
+                    ExitProcess(term),
+                    PhysicallyExited,
+                ]
+            }
+            // An admitted guest filter excludes self-death staging even when
+            // it only denies rt_sigpending. SIGABRT is a raw death without
+            // signal/exit callbacks, which Hermit records as a loss.
+            "abort-pending-unreadable" => {
+                assert_eq!(status & 0x7f, libc::SIGABRT as u16, "{label}");
+                vec![PhysicallyExited]
+            }
+            other => panic!("unexpected case {other}"),
+        };
+        assert_eq!(of_child, expected, "{label} (pid {pid}): {observed:?}");
+    }
+    // With a core limit of 1 the kernel writes no core, and the reported
+    // status says so.
+    assert_eq!(children[1].2 & 0x80, 0, "{stdout}");
+    // The admitted-filter child no longer enters the staging confirmation
+    // path: its raw SIGABRT death remains excluded, rather than a Tool error.
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        !stderr.contains("SIGABRT, which ends this process, could not be made pending"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "tail_inject of syscall 39, a call that does not end the guest, outside a syscall handler is unsupported"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        !observed.iter().any(|(.., what)| *what == AfterSigkill),
+        "{observed:?}"
+    );
+    assert!(!stderr.contains("after-abandoned-sigkill"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "a process creation (syscall 57) injected outside a syscall handler is unsupported"
+        ),
+        "{stderr}"
+    );
+    // Only the root and its listed children ever connected: the refused
+    // fork made no process.
+    let mut pids: Vec<i32> = observed.iter().map(|(_, pid, _)| *pid).collect();
+    pids.sort_unstable();
+    pids.dedup();
+    assert_eq!(pids.len(), children.len() + 1, "{observed:?}");
+    // The SIGFPE callback's request, made after it abandoned its SIGKILL,
+    // never reached the coordinator.
+    assert_eq!(global.parked.load(Ordering::Relaxed), 0);
+    // The SIGBUS callback's write before its SIGKILL reached the shared
+    // page; both writes after it, through the handle obtained before and a
+    // new one, failed with ESRCH and changed nothing.
+    let sigbus = stdout
+        .lines()
+        .find(|line| line.starts_with("raise-sigbus "))
+        .unwrap();
+    assert!(
+        sigbus.ends_with(&format!(" shared=1 refused={0},{0}", libc::ESRCH)),
+        "{sigbus}"
+    );
+}
+
+/// A Tool-injected clone3 outside a syscall handler is refused by number
+/// before reading its changing record or creating a child. The guest's own
+/// clone3 classifier is unchanged from main and is not claimed repaired.
+#[tokio::test(flavor = "current_thread")]
+async fn a_changing_clone3_record_is_not_read_for_an_outside_handler_refusal() {
+    let (result, stdout) = run_lifecycle_mode("clone3-flip").await;
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert_eq!(
+        stdout, "trials=64 statuses=0x7d00x64 created=0\n",
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr
+            .matches(
+                "a process creation (syscall 435) injected outside a syscall handler is unsupported"
+            )
+            .count(),
+        64,
+        "{stderr}"
+    );
+}
+
+/// Runs the filter boundary probes with the coordinator's lifecycle stream.
+async fn run_filter_probe(mode: &str) -> (std::process::Output, LifecycleGlobal) {
+    let (_preload_directory, preload) = compile_noop_preload();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command(mode),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("filter boundary probe hung")
+    .unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_admitted_guest_filter_keeps_denied_self_kill_errno_and_survival() {
+    let (result, global) = run_filter_probe("filter-denied-self-kill").await;
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert_eq!(
+        result.stdout,
+        format!("kill=-1 errno={} survived\n", libc::EPERM).as_bytes(),
+        "{result:?}"
+    );
+    assert!(global.observed.lock().unwrap().is_empty(), "{global:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_admitted_permissive_filter_keeps_self_death_without_exit_callbacks() {
+    use std::os::unix::process::ExitStatusExt;
+    let (result, global) = run_filter_probe("filter-permissive-self-death").await;
+    assert_eq!(result.status.signal(), Some(libc::SIGTERM), "{result:?}");
+    assert!(result.stdout.is_empty(), "{result:?}");
+    assert!(global.observed.lock().unwrap().is_empty(), "{global:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_filter_install_during_staging_or_delivery_is_refused_before_installation() {
+    use std::os::unix::process::ExitStatusExt;
+    // If installed, this exact filter kills on the refusal's exit_group.
+    let (control, _) = run_filter_probe("filter-exit-control").await;
+    assert_eq!(control.status.signal(), Some(libc::SIGSYS), "{control:?}");
+    for mode in [
+        "filter-after-staged-inject",
+        "filter-after-staged-tail",
+        "filter-in-signal-inject",
+        "filter-in-signal-tail",
+    ] {
+        let (result, global) = run_filter_probe(mode).await;
+        assert_eq!(result.status.code(), Some(125), "{mode}: {result:?}");
+        assert!(result.stdout.is_empty(), "{mode}: {result:?}");
+        assert!(String::from_utf8_lossy(&result.stderr).contains("a seccomp filter installation while a self-signal is staged or being delivered is unsupported"), "{mode}: {result:?}");
+        let events: Vec<Observed> = global
+            .observed
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(.., event)| *event)
+            .collect();
+        if mode.starts_with("filter-in-signal") {
+            assert_eq!(
+                events,
+                vec![
+                    Observed::TgkillReturned(0),
+                    Observed::Signal(libc::SIGTERM as u16)
+                ],
+                "{mode}"
+            );
+        } else {
+            assert!(events.is_empty(), "{mode}: {events:?}");
+        }
+    }
+}
+
+/// A signal callback that replaces the guest's own fatal signal with
+/// SIGALRM, while the guest's SIGALRM handler is kept virtual (admitted
+/// SIGALRM handlers, site patching off), is refused by name as a Tool error
+/// before anything is sent: a raw SIGALRM would stay physically blocked and
+/// the handler would never run. The handler is observed not to run, and the
+/// guest does not go on past its `raise`.
+#[tokio::test(flavor = "current_thread")]
+async fn replacing_a_signal_with_a_virtual_sigalrm_is_refused_by_name() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let mut command = guest_command("sigalrm-replacement");
+    command
+        .env(reverie_liteinst::SIGALRM_HANDLERS_ENV, "1")
+        .env(SITE_PATCHING_ENV, "0");
+    let (result, _global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(command, (), preload),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.code(), Some(125), "{result:?}");
+    // The handler was admitted, and neither it nor the code after `raise`
+    // ran.
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout),
+        "sigaction=0\n",
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "replacing SIGTERM with SIGALRM while the guest's SIGALRM handler is virtual is unsupported"
+        ),
+        "{stderr}"
+    );
+}
+
+/// The guest raises SIGALRM while it has no handler, so the default action
+/// would end it; its signal callback installs the guest's SIGALRM handler
+/// (kept virtual: admitted SIGALRM handlers, site patching off) and lets the
+/// SIGALRM be delivered. That is refused by name as a Tool error before
+/// anything is sent: a raw SIGALRM would stay physically blocked behind the
+/// virtual handler, which would never run. (Before, the same signal number
+/// went out raw, and the guest went on past its `raise` with SIGALRM
+/// pending.) The handler is observed not to run, and the guest does not go on
+/// past its `raise`.
+#[tokio::test(flavor = "current_thread")]
+async fn a_sigalrm_whose_handler_its_signal_callback_installed_is_refused_by_name() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let mut command = guest_command("sigalrm-installed-by-callback");
+    command
+        .env(reverie_liteinst::SIGALRM_HANDLERS_ENV, "1")
+        .env(SITE_PATCHING_ENV, "0");
+    let (result, _global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(command, (), preload),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.code(), Some(125), "{result:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout),
+        "sigaction=0 reset=0\n",
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "delivering the guest's own SIGALRM after the Tool made the guest's SIGALRM handler virtual is unsupported"
+        ),
+        "{stderr}"
+    );
+}
+
+/// The root process's thread-start callback sends it SIGTERM, and its
+/// post-exec callback would ignore SIGTERM: the SIGTERM ends the process
+/// before the post-exec callback runs, as a tracer delivers it when the
+/// thread resumes from its start. Before, the held signal was delivered only
+/// after both callbacks, found ignored, and the process survived.
+#[tokio::test(flavor = "current_thread")]
+async fn a_signal_from_a_thread_start_callback_is_delivered_before_post_exec() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (result, global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("root-startup-signal"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(result.status.signal(), Some(libc::SIGTERM), "{result:?}");
+    assert_eq!(result.stdout, b"", "{result:?}");
+    let observed: Vec<Observed> = global
+        .observed
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(.., what)| *what)
+        .collect();
+    let term = libc::SIGTERM as u16;
+    assert_eq!(
+        observed,
+        [
+            Observed::Signal(term),
+            Observed::ExitThread(term),
+            Observed::ExitProcess(term),
+        ]
+    );
 }
 
 /// Synchronous Tool code inside a callback, outside the callback's own

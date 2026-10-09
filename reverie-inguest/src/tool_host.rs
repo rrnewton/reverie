@@ -141,7 +141,17 @@ where
     let mut context = Context::from_waker(waker);
     loop {
         match future.as_mut().poll(&mut context) {
-            Poll::Ready(value) => return SyscallOutcome::Return(value),
+            // An exit or self-SIGKILL the handler staged ends the guest even
+            // if the handler then returned (it can stage one in a future it
+            // abandons): the staged ending wins over the returned value.
+            Poll::Ready(value) => {
+                return match tail.take() {
+                    Some(TailAction::Exit { number, args }) => {
+                        SyscallOutcome::Exit { number, args }
+                    }
+                    _ => SyscallOutcome::Return(value),
+                };
+            }
             Poll::Pending => match tail.take() {
                 Some(TailAction::Result(value)) => {
                     return SyscallOutcome::Return(Ok(value));
@@ -161,6 +171,68 @@ where
                         child_tid,
                         child_pid,
                     };
+                }
+                None => core::hint::spin_loop(),
+            },
+        }
+    }
+}
+
+/// How a Tool callback other than a syscall handler (a start-up, instruction
+/// or signal callback) ended, when driven by [`drive_callback`].
+pub enum CallbackOutcome<V> {
+    /// The callback returned `V`.
+    Ready(V),
+    /// The callback injected a call that ends its thread or process (an
+    /// exit, or a signal the guest cannot survive): the host must run the
+    /// exit lifecycle and perform `number(args)`; the callback does not
+    /// resume, as under a tracer, where such an injection ends the guest at
+    /// once.
+    Exit { number: i64, args: [u64; 6] },
+    /// The callback used a transition only a syscall handler can complete:
+    /// a `tail_inject` of an ordinary call (which resolves a guest syscall
+    /// there is none of), or a plain fork returning in the child. Named, so
+    /// the host can refuse it.
+    Unsupported(&'static str),
+}
+
+/// Polls a Tool callback other than a syscall handler to completion with a
+/// no-op waker, like [`drive_ready`], but also reads `tail` when the
+/// callback parks, as [`drive_syscall`] does, so an injection that ends the
+/// guest stops the callback instead of leaving it parked forever.
+pub fn drive_callback<F, V>(future: F, tail: &TailResult) -> CallbackOutcome<V>
+where
+    F: Future<Output = V>,
+{
+    let mut future = core::pin::pin!(future);
+    let waker = Waker::noop();
+    let mut context = Context::from_waker(waker);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            // As in `drive_syscall`: a staged ending wins over a return.
+            Poll::Ready(value) => {
+                return match tail.take() {
+                    Some(TailAction::Exit { number, args }) => {
+                        CallbackOutcome::Exit { number, args }
+                    }
+                    _ => CallbackOutcome::Ready(value),
+                };
+            }
+            Poll::Pending => match tail.take() {
+                Some(TailAction::Exit { number, args }) => {
+                    return CallbackOutcome::Exit { number, args };
+                }
+                Some(TailAction::Result(_)) => {
+                    return CallbackOutcome::Unsupported(
+                        "tail_inject of a call that does not end the guest, outside a syscall handler",
+                    );
+                }
+                // The in-guest host refuses a fork outside a syscall handler
+                // before it is made; reaching this is a host defect.
+                Some(TailAction::ForkChild { .. }) => {
+                    return CallbackOutcome::Unsupported(
+                        "a plain fork injected outside a syscall handler",
+                    );
                 }
                 None => core::hint::spin_loop(),
             },
@@ -269,6 +341,9 @@ fn classify_outcome(outcome: SyscallOutcome) -> Option<DrivenSyscall> {
 /// async-signal context as the rest of the in-guest host.
 #[derive(Default)]
 pub struct TailResult {
+    /// Latched by [`TailResult::set_exit`] and never cleared: the guest is
+    /// ending, so no further guest effect may be made.
+    ending: core::sync::atomic::AtomicBool,
     action: AtomicU8,
     value: AtomicI64,
     number: AtomicI64,
@@ -284,6 +359,7 @@ impl TailResult {
 
     /// Stage a tail-injected process/thread exit (`number(args)`).
     pub fn set_exit(&self, number: i64, args: [u64; 6]) {
+        self.ending.store(true, Ordering::Release);
         self.number.store(number, Ordering::Relaxed);
         for (destination, value) in self.args.iter().zip(args) {
             destination.store(value, Ordering::Relaxed);
@@ -300,6 +376,13 @@ impl TailResult {
         self.args[0].store(child_tid.as_raw() as u64, Ordering::Relaxed);
         self.args[1].store(child_pid.as_raw() as u64, Ordering::Relaxed);
         self.action.store(TAIL_FORK_CHILD, Ordering::Release);
+    }
+
+    /// Whether an exit (or another call that ends the guest) has been staged
+    /// with [`TailResult::set_exit`] in this rendezvous's lifetime, consumed
+    /// or not. A host refuses every later guest effect once it is set.
+    pub fn ending(&self) -> bool {
+        self.ending.load(Ordering::Acquire)
     }
 
     /// Consume any staged action, resetting the rendezvous to empty.
