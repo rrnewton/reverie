@@ -9,8 +9,12 @@ use std::time::Duration;
 
 use reverie::Errno;
 use reverie::Error;
+use reverie::ExitStatus;
+use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Guest;
+use reverie::Pid;
+use reverie::Signal;
 use reverie::Subscription;
 use reverie::Tid;
 use reverie::TimerSchedule;
@@ -48,6 +52,12 @@ static SUBSCRIBE_CLOSES: AtomicBool = AtomicBool::new(false);
 /// callbacks, so the host can compare the backend's dispatch counts with the
 /// callbacks the Tool actually made.
 const RPC_CALLBACK_COUNT: u64 = 1 << 32;
+/// Tags the RPC `Tool::handle_signal_event` sends with the signal it was
+/// shown.
+const RPC_SIGNAL_EVENT: u64 = 1 << 33;
+/// Tags the RPC `Tool::on_exit_process` sends with the signal that ended the
+/// process, when a signal did.
+const RPC_EXIT_SIGNALED: u64 = 1 << 34;
 static FORCE_WAIT_RESTART: AtomicBool = AtomicBool::new(true);
 static READ_CALLS: AtomicUsize = AtomicUsize::new(0);
 /// This process's Tool callbacks, one per guest entry: a callback that asks
@@ -202,6 +212,7 @@ impl Tool for LifecycleTool {
             Sysno::read,
             Sysno::exit,
             Sysno::exit_group,
+            Sysno::tgkill,
         ]
         .into_iter()
         .chain(
@@ -275,7 +286,7 @@ impl Tool for LifecycleTool {
             Sysno::fork | Sysno::clone => RPC_FORK,
             Sysno::wait4 => unreachable!("wait4 is handled before event classification"),
             Sysno::close_range => RPC_CLOSE_RANGE,
-            Sysno::getppid | Sysno::close | Sysno::exit | Sysno::exit_group => 0,
+            Sysno::getppid | Sysno::close | Sysno::exit | Sysno::exit_group | Sysno::tgkill => 0,
             number => panic!("unexpected lifecycle fixture syscall {number}"),
         };
         if event != 0 {
@@ -299,6 +310,29 @@ impl Tool for LifecycleTool {
             }
             _ => Ok(guest.inject(syscall).await?),
         }
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        guest.send_rpc(RPC_SIGNAL_EVENT | signal as u64).await;
+        Ok(Some(signal))
+    }
+
+    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
+        self,
+        _pid: Pid,
+        global_state: &G,
+        exit_status: ExitStatus,
+    ) -> Result<(), Error> {
+        if let ExitStatus::Signaled(signal, _) = exit_status {
+            global_state
+                .send_rpc(RPC_EXIT_SIGNALED | signal as u64)
+                .await;
+        }
+        Ok(())
     }
 }
 
@@ -408,6 +442,48 @@ fn signaled_descendant(pid_file: &Path) -> ! {
         }
     }
     unsafe { libc::_exit(29) }
+}
+
+/// Each child ends itself with a signal it sends itself, and the parent
+/// prints how it ended: `abort()` sends SIGABRT with `tgkill`, a call the
+/// Tool subscribes to, and `kill(getpid(), SIGTERM)` uses `kill`, which it
+/// does not.
+fn self_signal_deaths() {
+    install_tool();
+    let cases: [(&str, fn()); 2] = [
+        ("abort", || unsafe { libc::abort() }),
+        ("kill", || unsafe {
+            libc::kill(libc::getpid(), libc::SIGTERM);
+        }),
+    ];
+    for (label, end) in cases {
+        let child = fork_or_panic();
+        if child == 0 {
+            end();
+            unsafe { libc::_exit(99) };
+        }
+        // The wait4 callback returns a fixture value; wait through the
+        // trusted gate instead.
+        let mut status = -1i32;
+        loop {
+            let waited = unsafe {
+                reverie_inguest::trap::raw_syscall6(
+                    libc::SYS_wait4,
+                    [child as u64, (&mut status as *mut i32) as u64, 0, 0, 0, 0],
+                )
+            };
+            if waited == -i64::from(libc::EINTR) {
+                continue;
+            }
+            assert_eq!(waited, i64::from(child));
+            break;
+        }
+        if libc::WIFSIGNALED(status) {
+            println!("{label}: signal {}", libc::WTERMSIG(status));
+        } else {
+            println!("{label}: status {status:#x}");
+        }
+    }
 }
 
 fn fast_path() {
@@ -1328,6 +1404,10 @@ fn main() {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
     let mode = arguments.next().expect("missing lifecycle fixture mode");
+    if mode == "self-signal-deaths" {
+        self_signal_deaths();
+        return;
+    }
     if mode == "fallback-fork-stats" {
         fallback_fork_stats();
         return;
