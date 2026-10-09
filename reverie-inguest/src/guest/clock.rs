@@ -25,6 +25,20 @@ thread_local! {
     static RCB_HANDLER_ENTRY: Cell<u64> = const { Cell::new(0) };
     static RCB_HANDLER_DEDUCTION: Cell<u64> = const { Cell::new(0) };
     static RCB_HANDLER_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static RCB_COUNTER_ORIGIN: Cell<u64> = const { Cell::new(0) };
+    static RCB_CLOCK_OFFSET: Cell<u64> = const { Cell::new(0) };
+    static RCB_CLOCK_RESTORED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The guest counter value at a saved accounting boundary.
+///
+/// This is only the runtime counter portion of a continuation. Its owner must
+/// separately carry logical time and every other Tool state field. No runtime
+/// exec path consumes this snapshot today.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RcbClockSnapshot {
+    /// Count returned by the actual guest clock at the saved boundary.
+    pub guest_count: u64,
 }
 
 /// Install the current thread's in-guest RCB clock before seccomp is active.
@@ -34,6 +48,23 @@ pub fn initialize_rcb_clock() -> io::Result<()> {
     initialize_rcb_clock_with(|| unsafe {
         reverie_ptrace::InGuestRcbCounter::current_thread_with_syscall_gate(raw_syscall6)
     })
+}
+
+/// Bind an already-created counter to the current thread's clock.
+///
+/// This narrow input seam lets a caller retain the counter's actual reader and
+/// syscall gate; it does not install instrumentation or admit an exec mode.
+/// There is no production caller. The usual initializer remains unchanged.
+///
+/// # Safety
+///
+/// The counter must belong to this calling thread and its syscall gate must
+/// remain valid. The caller must exclude guest execution and reentrant clock
+/// reads while replacing the binding.
+pub unsafe fn initialize_rcb_clock_with_counter(
+    counter: reverie_ptrace::InGuestRcbCounter,
+) -> io::Result<()> {
+    initialize_rcb_clock_with(|| Ok(counter))
 }
 
 fn initialize_rcb_clock_with(
@@ -66,6 +97,9 @@ fn initialize_rcb_clock_with(
     RCB_HANDLER_ENTRY.set(0);
     RCB_HANDLER_DEDUCTION.set(0);
     RCB_HANDLER_DEPTH.set(active_depth);
+    RCB_COUNTER_ORIGIN.set(0);
+    RCB_CLOCK_OFFSET.set(0);
+    RCB_CLOCK_RESTORED.set(false);
     let clock = match create() {
         Ok(clock) => clock,
         // The in-guest clock is optional. CPU discovery, perf-event setup,
@@ -87,6 +121,54 @@ fn initialize_rcb_clock_with(
     RCB_HANDLER_DEDUCTION.set(0);
     RCB_HANDLER_DEPTH.set(active_depth);
     Ok(())
+}
+
+/// Capture the actual guest-only counter value for an inactive continuation.
+pub fn snapshot_rcb_clock() -> io::Result<RcbClockSnapshot> {
+    Ok(RcbClockSnapshot {
+        guest_count: read_guest_rcb_clock()?,
+    })
+}
+
+/// Continue a saved count using the newly bound counter's current origin.
+///
+/// The caller must run this at its accounting boundary before resuming guest
+/// work, after binding a fresh counter. Restoration is allowed once per binding
+/// and neither resets nor reprograms the perf event. If a Tool callback is
+/// active, its remaining branches are still excluded by the existing handler
+/// accounting. Subsequent guest branches advance one tick at a time from the
+/// saved count. Tool logical-time restoration remains the owner's obligation.
+/// No production exec path calls this function.
+pub fn restore_rcb_clock(snapshot: RcbClockSnapshot) -> io::Result<()> {
+    let Some(clock) = rcb_clock()? else {
+        return Err(unavailable_clock());
+    };
+    if RCB_CLOCK_RESTORED.get() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "LiteInst RCB clock was already restored for this binding",
+        ));
+    }
+    let sample = clock
+        .read()
+        .map_err(|error| io::Error::from_raw_os_error(error.into_raw()))?;
+    RCB_COUNTER_ORIGIN.set(sample);
+    RCB_CLOCK_OFFSET.set(snapshot.guest_count);
+    RCB_HANDLER_ENTRY.set(if RCB_HANDLER_DEPTH.get() == 0 {
+        0
+    } else {
+        sample
+    });
+    RCB_HANDLER_DEDUCTION.set(0);
+    RCB_CLOCK_RESTORED.set(true);
+    Ok(())
+}
+
+fn unavailable_clock() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "LiteInst in-guest RCB clock is unavailable on this host",
+    )
 }
 
 fn rcb_clock() -> io::Result<Option<&'static reverie_ptrace::InGuestRcbCounter>> {
@@ -157,10 +239,7 @@ pub fn leave_rcb_handler() -> io::Result<()> {
 /// LiteInst handler branches.
 pub fn read_guest_rcb_clock() -> io::Result<u64> {
     let Some(clock) = rcb_clock()? else {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "LiteInst in-guest RCB clock is unavailable on this host",
-        ));
+        return Err(unavailable_clock());
     };
     let sample = clock
         .read()
@@ -170,9 +249,12 @@ pub fn read_guest_rcb_clock() -> io::Result<u64> {
     } else {
         sample.saturating_sub(RCB_HANDLER_ENTRY.get())
     };
-    Ok(sample
+    sample
+        .saturating_sub(RCB_COUNTER_ORIGIN.get())
         .saturating_sub(RCB_HANDLER_DEDUCTION.get())
-        .saturating_sub(active))
+        .saturating_sub(active)
+        .checked_add(RCB_CLOCK_OFFSET.get())
+        .ok_or_else(|| io::Error::other("LiteInst continued RCB clock overflow"))
 }
 
 #[cfg(test)]
@@ -198,6 +280,19 @@ mod tests {
             assert!(RCB_CLOCK.get().is_null());
             assert!(RCB_CLOCK_UNAVAILABLE.get());
             assert_eq!(RCB_CLOCK_OWNER.get(), owner);
+            assert_eq!(RCB_COUNTER_ORIGIN.get(), 0);
+            assert_eq!(RCB_CLOCK_OFFSET.get(), 0);
+            assert!(!RCB_CLOCK_RESTORED.get());
+            assert_eq!(
+                snapshot_rcb_clock().unwrap_err().kind(),
+                io::ErrorKind::Unsupported
+            );
+            assert_eq!(
+                restore_rcb_clock(RcbClockSnapshot { guest_count: 73 })
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::Unsupported
+            );
         }
     }
 }
