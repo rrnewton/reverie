@@ -31,6 +31,10 @@ const RPC_PARK: u64 = 7;
 const RPC_FAIL: u64 = 8;
 /// Tags a process's exit-time count of its Tool callbacks.
 const RPC_CALLBACK_COUNT: u64 = 1 << 32;
+/// Tags a signal a process's Tool was shown by `handle_signal_event`.
+const RPC_SIGNAL_EVENT: u64 = 1 << 33;
+/// Tags the signal that ended a process, from its Tool's `on_exit_process`.
+const RPC_EXIT_SIGNALED: u64 = 1 << 34;
 const BACKEND_OUTPUT_CHILD_ENV: &str = "REVERIE_LITEINST_BACKEND_OUTPUT_TEST_CHILD";
 
 #[derive(Debug, Default)]
@@ -49,6 +53,11 @@ struct LifecycleGlobal {
     callbacks: AtomicU64,
     /// Pids reported through `on_backend_process_exited`.
     exited: std::sync::Mutex<Vec<i32>>,
+    /// Signals guest Tools reported from `handle_signal_event`, in order.
+    signal_events: std::sync::Mutex<Vec<u64>>,
+    /// Signals guest Tools reported from `on_exit_process` as having ended
+    /// their process, in order.
+    signaled_exits: std::sync::Mutex<Vec<u64>>,
     /// Calls of `report_backend_failure`.
     backend_failures: AtomicU64,
     /// Processes parked by `RPC_PARK`.
@@ -86,6 +95,20 @@ impl GlobalTool for LifecycleGlobal {
                 phase: "lifecycle fixture refusal",
             });
             self.published_failures.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if event & RPC_SIGNAL_EVENT != 0 {
+            self.signal_events
+                .lock()
+                .unwrap()
+                .push(event & !RPC_SIGNAL_EVENT);
+            return;
+        }
+        if event & RPC_EXIT_SIGNALED != 0 {
+            self.signaled_exits
+                .lock()
+                .unwrap()
+                .push(event & !RPC_EXIT_SIGNALED);
             return;
         }
         if event & RPC_CALLBACK_COUNT != 0 {
@@ -571,6 +594,39 @@ async fn a_backend_failure_ends_the_run_while_a_process_is_parked() {
     .expect("a backend failure left the run hanging")
     .unwrap_err();
     assert!(error.to_string().contains("backend failure"), "{error}");
+}
+
+/// A process that ends itself with a signal it sends itself (`abort`, whose
+/// `tgkill` the Tool subscribes to, and `kill` of its own pid, which it does
+/// not) dies at a point of its own program order. The in-guest host reports
+/// the signal's delivery to the Tool and then the process's exit, with the
+/// signal as its status, before it sends the signal. Before, the process died
+/// without either callback: an in-guest Tool such as Detcore never learned of
+/// the exit, so the process never deregistered.
+#[tokio::test(flavor = "current_thread")]
+async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (result, global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("self-signal-deaths"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout),
+        "abort: signal 6\nkill: signal 15\n",
+        "{result:?}"
+    );
+    let abrt = libc::SIGABRT as u64;
+    let term = libc::SIGTERM as u64;
+    assert_eq!(*global.signal_events.lock().unwrap(), [abrt, term]);
+    assert_eq!(*global.signaled_exits.lock().unwrap(), [abrt, term]);
 }
 
 /// Synchronous Tool code inside a callback, outside the callback's own

@@ -41,6 +41,7 @@ use super::event::InstructionEventKind;
 use super::event::SyscallDispatch;
 use super::event::SyscallEvent;
 use super::rpc::CoordinatorRpc;
+use super::signal::self_directed_fatal_signal;
 use crate::sync::SpinMutex;
 use crate::tool_host::DrivenSyscall;
 use crate::tool_host::TailResult;
@@ -309,13 +310,26 @@ where
                     &mut states,
                     &self.rpc,
                     &self.runtime,
-                    ToolExitContext {
-                        tid,
-                        pid,
-                        number,
-                        args,
-                    },
+                    ToolExitContext::exit_syscall(tid, pid, number, args),
                 );
+            } else if let Some(signal) = unsafe { self_directed_fatal_signal(number, args) } {
+                // The guest is about to end its own process with a signal (an
+                // abort or raise the Tool does not subscribe to): its signal
+                // and exit callbacks run first, as for an exit.
+                let Some(status) = signal_death_status(tool, &mut guest, signal) else {
+                    // The Tool suppressed the signal: it is never sent.
+                    event.result = 0;
+                    return;
+                };
+                finish_tool_exit(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    &self.runtime,
+                    ToolExitContext::signal_death(tid, pid, status),
+                );
+                event.result = unsafe { event.forward() };
+                signal_death_survived(number, event.result);
             } else if let Some(error) = injected_syscall_guard(&self.runtime, number, args) {
                 event.result = -i64::from(error.into_raw());
                 return;
@@ -363,20 +377,37 @@ where
             DrivenSyscall::Result(value) => {
                 guest.event.result = value;
             }
-            DrivenSyscall::Exit { number, args } => {
+            DrivenSyscall::Exit { number, args } if is_exit_syscall(number) => {
                 finish_tool_exit(
                     &mut tool_slot,
                     &mut states,
                     &self.rpc,
                     &self.runtime,
-                    ToolExitContext {
-                        tid,
-                        pid,
-                        number,
-                        args,
-                    },
+                    ToolExitContext::exit_syscall(tid, pid, number, args),
                 );
                 event.result = unsafe { raw_syscall6(number, args) };
+            }
+            DrivenSyscall::Exit { number, args } => {
+                // The Tool sent a signal that ends this process as the call
+                // returns (`InGuest::inject` staged it instead of sending it;
+                // see `self_directed_fatal_signal`). Report the delivery and
+                // the exit to the Tool first, then send it.
+                let signal = crate::guest::signal::kill_family_signal(number, args)
+                    .unwrap_or_else(|| fatal(126));
+                let Some(status) = signal_death_status(tool, &mut guest, signal) else {
+                    // The Tool suppressed the signal: it is never sent.
+                    event.result = 0;
+                    return;
+                };
+                finish_tool_exit(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    &self.runtime,
+                    ToolExitContext::signal_death(tid, pid, status),
+                );
+                event.result = unsafe { raw_syscall6(number, args) };
+                signal_death_survived(number, event.result);
             }
             DrivenSyscall::ForkChild {
                 parent_tid,
@@ -576,18 +607,17 @@ fn finish_tool_exit<T: Tool, R: HostRuntime>(
     let ToolExitContext {
         tid,
         pid,
-        number,
-        args,
+        status,
+        process_exit,
     } = context;
     let state = states
         .remove(&tid.as_raw())
         .expect("LiteInst thread state disappeared before exit");
-    let status = reverie::ExitStatus::Exited((args[0] & 0xff) as i32);
     let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
     if let Err(error) = drive_ready(tool.on_exit_thread(tid, rpc, state, status)) {
         tool_fatal(125, &error);
     }
-    if is_process_exit(number, tid, pid) {
+    if process_exit {
         let tool = tool_slot.take().unwrap_or_else(|| fatal(126));
         if let Err(error) = drive_ready(tool.on_exit_process(pid, rpc, status)) {
             tool_fatal(125, &error);
@@ -601,8 +631,99 @@ fn finish_tool_exit<T: Tool, R: HostRuntime>(
 struct ToolExitContext {
     tid: Pid,
     pid: Pid,
-    number: i64,
-    args: [u64; 6],
+    /// The status the exit callbacks report.
+    status: reverie::ExitStatus,
+    /// Whether the whole process ends, so `on_exit_process` runs too.
+    process_exit: bool,
+}
+
+impl ToolExitContext {
+    /// The exit of `tid` (of process `pid`) by its `exit` or `exit_group`
+    /// call `number(args)`.
+    fn exit_syscall(tid: Pid, pid: Pid, number: i64, args: [u64; 6]) -> Self {
+        Self {
+            tid,
+            pid,
+            status: reverie::ExitStatus::Exited((args[0] & 0xff) as i32),
+            process_exit: is_process_exit(number, tid, pid),
+        }
+    }
+
+    /// The end of `tid`'s process `pid` by a signal it sent itself. A fatal
+    /// signal ends every thread of the process.
+    fn signal_death(tid: Pid, pid: Pid, status: reverie::ExitStatus) -> Self {
+        Self {
+            tid,
+            pid,
+            status,
+            process_exit: true,
+        }
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(liteinst-self-signal-death): Review the signal-death
+// lifecycle.
+/// Report to the Tool the delivery of `signal`, which the guest is sending
+/// itself and which ends its process ([`self_directed_fatal_signal`]), and
+/// return the exit status its exit callbacks then report, or `None` if the
+/// Tool suppresses the signal.
+///
+/// This is the order the ptrace backend reports such a death in: the sending
+/// call, then [`Tool::handle_signal_event`] at the signal's delivery, then the
+/// exit callbacks. SIGKILL is never reported to the signal callback, as a
+/// tracer never sees its delivery. The status cannot say whether the kernel
+/// will dump core (that is the host's `RLIMIT_CORE` and `core_pattern`), so it
+/// says no core; a Tool reads the signal from it.
+fn signal_death_status<T: Tool, G: Guest<T>>(
+    tool: &T,
+    guest: &mut G,
+    signal: i32,
+) -> Option<reverie::ExitStatus> {
+    let signal = reverie::Signal::try_from(signal).unwrap_or_else(|_| fatal(126));
+    if signal != reverie::Signal::SIGKILL {
+        match drive_ready(tool.handle_signal_event(guest, signal)) {
+            Ok(Some(delivered)) if delivered == signal => {}
+            Ok(None) => return None,
+            Ok(Some(other)) => tool_fatal(
+                125,
+                &Error::Tool(
+                    io::Error::other(format!(
+                        "the Tool replaced {signal}, which the guest sent itself, with {other}; \
+                         the in-guest host can only deliver the signal the guest sent"
+                    ))
+                    .into(),
+                ),
+            ),
+            Err(errno) => tool_fatal(125, &Error::from(errno)),
+        }
+    }
+    Some(reverie::ExitStatus::Signaled(signal, false))
+}
+
+/// The guest's call `number`, which was to end its process with a signal
+/// after the Tool's exit callbacks ran, returned `result` instead. The Tool
+/// already retired the process, so it cannot go on: end it with status 126,
+/// naming why.
+fn signal_death_survived(number: i64, result: i64) -> ! {
+    let message = format!(
+        "reverie-liteinst: syscall {number}, which was to end this process with a signal \
+         after its exit was reported, returned {result}\n"
+    );
+    unsafe {
+        let _ = raw_syscall6(
+            libc::SYS_write,
+            [
+                libc::STDERR_FILENO as u64,
+                message.as_ptr() as u64,
+                message.len() as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+    }
+    fatal(126)
 }
 
 // TODO-HUMAN-REVIEW(PR-143): Review exit syscall lifecycle classification.
@@ -1812,7 +1933,12 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
         {
             return Errno::from_ret(result as usize).map(|value| value as i64);
         }
-        if is_exit_syscall(number) {
+        // An exit, or a signal the guest sends itself that ends its process
+        // as this call returns: the host runs the Tool's callbacks before it
+        // (see `self_directed_fatal_signal`).
+        if is_exit_syscall(number)
+            || unsafe { self_directed_fatal_signal(number, raw_args) }.is_some()
+        {
             self.tail.set_exit(number, raw_args);
             return std::future::pending().await;
         }
@@ -1897,7 +2023,9 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             unsafe { super::protect::protect_forwarded_descriptor_change(number, args) }
         {
             self.tail.set_result(result);
-        } else if is_exit_syscall(number) {
+        } else if is_exit_syscall(number)
+            || unsafe { self_directed_fatal_signal(number, args) }.is_some()
+        {
             self.tail.set_exit(number, args);
         } else if let Some(result) = virtual_signal_call(
             self.runtime,
