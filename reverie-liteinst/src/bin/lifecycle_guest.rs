@@ -778,7 +778,7 @@ fn install_tool() {
 /// ignored disposition survives exec: a parent started by Python ignores
 /// SIGPIPE and SIGXFSZ (ci-hub's validation is), and a shell may ignore SIGINT
 /// or SIGQUIT for the jobs it starts. Inherited, SIGXFSZ's raise delivered
-/// nothing (https://github.com/rrnewton/reverie/issues/987). A case that wants
+/// nothing (<https://github.com/rrnewton/reverie/issues/987>). A case that wants
 /// a signal ignored sets that itself; handlers are left alone.
 fn undo_inherited_ignores() {
     for signal in 1..32 {
