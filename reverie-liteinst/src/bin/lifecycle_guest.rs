@@ -2235,10 +2235,592 @@ fn address_randomization() {
     );
 }
 
+/// Selects the pkey fixture's explicit injection (1), tail injection (2), or
+/// unsubscribed original-call forwarding (0). Other lifecycle modes never use it.
+static PKEY_PROBE_ROUTE: AtomicU64 = AtomicU64::new(0);
+static PKEY_COMPOSE_ENABLED: AtomicBool = AtomicBool::new(false);
+static PKEY_COMPOSE_KEYS: [AtomicI64; 2] = [AtomicI64::new(-1), AtomicI64::new(-1)];
+static PKEY_INSTRUCTION_RESULT: AtomicI64 = AtomicI64::new(i64::MIN);
+
+#[derive(Default)]
+struct PkeyProbeTool;
+
+#[reverie::tool]
+impl Tool for PkeyProbeTool {
+    type GlobalState = LifecycleGlobal;
+    type ThreadState = u64;
+
+    fn init_thread_state(&self, _child: Tid, parent: Option<(Tid, &u64)>) -> u64 {
+        // Injected fork never returns zero into the old callback: the backend
+        // constructs this child state and attributes its fork entry to it.
+        // Count that entry once, without inheriting the parent's history.
+        u64::from(parent.is_some())
+    }
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscriptions: Subscription =
+            [Sysno::getpid, Sysno::fork, Sysno::wait4, Sysno::exit_group]
+                .into_iter()
+                .collect();
+        if PKEY_PROBE_ROUTE.load(Ordering::Relaxed) != 0 {
+            for number in [Sysno::pkey_alloc, Sysno::pkey_free, Sysno::pkey_mprotect] {
+                subscriptions.syscall(number);
+            }
+        }
+        if PKEY_PROBE_ROUTE.load(Ordering::Relaxed) == 4 {
+            subscriptions.cpuid();
+        }
+        subscriptions
+    }
+
+    async fn handle_cpuid_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        eax: u32,
+        ecx: u32,
+    ) -> Result<CpuIdResult, Errno> {
+        let result = guest.inject(reverie::syscalls::PkeyAlloc::new()).await;
+        PKEY_INSTRUCTION_RESULT.store(
+            result.unwrap_or_else(|errno| -i64::from(errno.into_raw())),
+            Ordering::Relaxed,
+        );
+        let native = core::arch::x86_64::__cpuid_count(eax, ecx);
+        Ok(CpuIdResult {
+            eax: native.eax,
+            ebx: native.ebx,
+            ecx: native.ecx,
+            edx: native.edx,
+        })
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        *guest.thread_state_mut() += 1;
+        match syscall.number() {
+            Sysno::pkey_alloc if PKEY_COMPOSE_ENABLED.swap(false, Ordering::Relaxed) => {
+                // Rewrite the guest's invalid original call, allocate two keys
+                // with different rights, interleave errors, then override only
+                // the final scalar result. All allocation effects must persist.
+                let first = guest
+                    .inject(reverie::syscalls::PkeyAlloc::new().with_access_rights(2))
+                    .await?;
+                PKEY_COMPOSE_KEYS[0].store(first, Ordering::Relaxed);
+                assert_eq!(
+                    guest
+                        .inject(reverie::syscalls::PkeyAlloc::new().with_flags(1))
+                        .await,
+                    Err(Errno::EINVAL)
+                );
+                let second = guest
+                    .inject(reverie::syscalls::PkeyAlloc::new().with_access_rights(3))
+                    .await?;
+                PKEY_COMPOSE_KEYS[1].store(second, Ordering::Relaxed);
+                assert_eq!(
+                    guest
+                        .inject(reverie::syscalls::PkeyAlloc::new().with_access_rights(4))
+                        .await,
+                    Err(Errno::EINVAL)
+                );
+                assert!(guest.inject(reverie::syscalls::Getpid::new()).await? > 0);
+                Ok(424242)
+            }
+            Sysno::pkey_alloc | Sysno::pkey_free | Sysno::pkey_mprotect => {
+                match PKEY_PROBE_ROUTE.load(Ordering::Relaxed) {
+                    1 | 3 | 4 => Ok(guest.inject(syscall).await?),
+                    2 => guest.tail_inject(syscall).await,
+                    _ => unreachable!("forward-control pkey calls are not subscribed"),
+                }
+            }
+            Sysno::getpid => {
+                guest.send_rpc(RPC_GETPID).await;
+                Ok(guest.inject(syscall).await?)
+            }
+            Sysno::fork => Ok(guest.inject(syscall).await?),
+            Sysno::wait4 => Ok(guest.inject(syscall).await?),
+            Sysno::exit_group => {
+                let callbacks = *guest.thread_state_mut();
+                guest.send_rpc(RPC_CALLBACK_COUNT | callbacks).await;
+                guest.tail_inject(syscall).await
+            }
+            number => unreachable!("unexpected pkey fixture syscall {number}"),
+        }
+    }
+}
+
+global_asm!(
+    r#"
+    .text
+    .p2align 6
+    .global reverie_liteinst_pkey_probe_call
+    .hidden reverie_liteinst_pkey_probe_call
+    .type reverie_liteinst_pkey_probe_call,@function
+reverie_liteinst_pkey_probe_call:
+    .cfi_startproc
+    mov rax, rdi
+    mov rdi, rsi
+    mov rsi, rdx
+    mov rdx, rcx
+    mov r10, r8
+    xor r8d, r8d
+    xor r9d, r9d
+    .global reverie_liteinst_pkey_probe_site
+    .hidden reverie_liteinst_pkey_probe_site
+reverie_liteinst_pkey_probe_site:
+    syscall
+    nop
+    nop
+    nop
+    ret
+    .cfi_endproc
+    .size reverie_liteinst_pkey_probe_call, .-reverie_liteinst_pkey_probe_call
+"#
+);
+
+unsafe extern "C" {
+    fn reverie_liteinst_pkey_probe_call(
+        number: i64,
+        arg0: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+    ) -> i64;
+    static reverie_liteinst_pkey_probe_site: u8;
+}
+
+fn pkey_probe_pkru() -> u32 {
+    let value: u32;
+    unsafe {
+        core::arch::asm!("rdpkru", in("ecx") 0_u32, out("eax") value, out("edx") _, options(nostack, nomem, preserves_flags));
+    }
+    value
+}
+
+fn pkey_probe_set_pkru(value: u32) {
+    unsafe {
+        core::arch::asm!("wrpkru", "lfence", in("eax") value, in("ecx") 0_u32, in("edx") 0_u32, options(nostack, preserves_flags));
+    }
+}
+
+fn pkey_probe_call(number: i64, args: [u64; 4]) -> i64 {
+    unsafe { reverie_liteinst_pkey_probe_call(number, args[0], args[1], args[2], args[3]) }
+}
+
+fn pkey_probe_hardware() -> u32 {
+    let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+    println!(
+        "pkey hardware: leaf7_ecx={:#x} ospke={}",
+        leaf7.ecx,
+        leaf7.ecx & 16 != 0
+    );
+    if leaf7.ecx & 16 == 0 {
+        println!("pkey hardware unmeasured: OSPKE unavailable");
+        std::process::exit(77);
+    }
+    let xcr0 = unsafe { core::arch::x86_64::_xgetbv(0) };
+    assert_ne!(xcr0 & 512, 0, "XCR0 has no PKRU component");
+    let original = pkey_probe_pkru();
+    println!("pkey hardware: xcr0={xcr0:#x} initial_pkru={original:#x}");
+    original
+}
+
+/// The same scalar observations before installation and under each Tool route.
+/// Failed comparisons are counted, so a failing allocation does not erase the
+/// remaining predeclared rows. The first keyed access has its own real wait status.
+fn pkey_permission_effects(mode: &str) {
+    use std::io::Write;
+
+    let original = pkey_probe_hardware();
+    let core_limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    assert_eq!(
+        unsafe { libc::setrlimit(libc::RLIMIT_CORE, &core_limit) },
+        0
+    );
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(page, libc::MAP_FAILED);
+    unsafe { page.cast::<u64>().write_volatile(0x1234) };
+
+    if mode != "pkey-native" {
+        let route = match mode {
+            "pkey-forward" => 0,
+            "pkey-inject" => 1,
+            "pkey-tail" => 2,
+            _ => unreachable!(),
+        };
+        PKEY_PROBE_ROUTE.store(route, Ordering::Relaxed);
+        let coordinator = std::env::var_os(reverie_liteinst::COORDINATOR_ENV)
+            .expect("pkey Tool fixture requires a coordinator");
+        unsafe {
+            reverie_liteinst::install_tool_quiescent::<PkeyProbeTool>(std::path::PathBuf::from(
+                coordinator,
+            ))
+        }
+        .unwrap();
+        for _ in 0..FAST_CALLS {
+            assert!(unsafe { reverie_liteinst_lifecycle_getpid() } > 0);
+        }
+    }
+
+    let mut failures = 0;
+    let mut invalid = |label: &str, number: i64, args: [u64; 4]| {
+        let before = pkey_probe_pkru();
+        let result = pkey_probe_call(number, args);
+        let after = pkey_probe_pkru();
+        let ok = result == -i64::from(libc::EINVAL) && before == after;
+        println!("invalid {label}: result={result} before={before:#x} after={after:#x} ok={ok}");
+        failures += usize::from(!ok);
+    };
+    // An error primes the marked site before any successful allocation, so a
+    // patching-on run tests allocations on a genuinely installed hook.
+    invalid("flags", libc::SYS_pkey_alloc, [1, 0, 0, 0]);
+    invalid("rights", libc::SYS_pkey_alloc, [0, 4, 0, 0]);
+    invalid("free", libc::SYS_pkey_free, [u64::MAX, 0, 0, 0]);
+
+    for rights in 0..4_u64 {
+        // Setup before the tested call: only key0 carries fixture/runtime data.
+        // There is no compensating WRPKRU after the allocation.
+        pkey_probe_set_pkru(0x5555_5554);
+        let before = pkey_probe_pkru();
+        let key = pkey_probe_call(libc::SYS_pkey_alloc, [0, rights, 0, 0]);
+        let after = pkey_probe_pkru();
+        assert!((1..16).contains(&key), "pkey allocation unavailable: {key}");
+        let shift = 2 * key as u32;
+        let key_mask = 3_u32 << shift;
+        let expected = (before & !key_mask) | ((rights as u32) << shift);
+        let other_bits_equal = before & !key_mask == after & !key_mask;
+        let ok = after == expected;
+        println!(
+            "allocation rights={rights} key={key} before={before:#x} after={after:#x} expected={expected:#x} other_bits_equal={other_bits_equal} ok={ok}"
+        );
+        failures += usize::from(!ok);
+        let freed = pkey_probe_call(libc::SYS_pkey_free, [key as u64, 0, 0, 0]);
+        let after_free = pkey_probe_pkru();
+        let ok = freed == 0 && after_free == after;
+        println!(
+            "free rights={rights} result={freed} before={after:#x} after={after_free:#x} ok={ok}"
+        );
+        failures += usize::from(!ok);
+    }
+
+    pkey_probe_set_pkru(0x5555_5554);
+    let before = pkey_probe_pkru();
+    let key = pkey_probe_call(libc::SYS_pkey_alloc, [0, 0, 0, 0]);
+    let after = pkey_probe_pkru();
+    assert!(
+        (1..16).contains(&key),
+        "first-access key unavailable: {key}"
+    );
+    let expected = before & !(3 << (2 * key as u32));
+    failures += usize::from(after != expected);
+    let assigned = pkey_probe_call(
+        libc::SYS_pkey_mprotect,
+        [
+            page as u64,
+            4096,
+            (libc::PROT_READ | libc::PROT_WRITE) as u64,
+            key as u64,
+        ],
+    );
+    let after_mprotect = pkey_probe_pkru();
+    println!(
+        "first_access key={key} before={before:#x} after_alloc={after:#x} expected={expected:#x} mprotect={assigned} after_mprotect={after_mprotect:#x}"
+    );
+    assert_eq!(assigned, 0);
+    failures += usize::from(after_mprotect != after);
+    std::io::stdout().flush().unwrap();
+    let child = unsafe { libc::syscall(libc::SYS_fork) };
+    assert!(child >= 0, "first-access fork failed");
+    if child == 0 {
+        // The first read/write of the keyed mapping, with actual resumed rights.
+        let child_pkru = pkey_probe_pkru();
+        println!("first_access child_pkru={child_pkru:#x} inherited_pkru={after_mprotect:#x}");
+        std::io::stdout().flush().unwrap();
+        let value = unsafe { page.cast::<u64>().read_volatile() };
+        unsafe { page.cast::<u64>().write_volatile(value + 1) };
+        let status = if child_pkru != after_mprotect {
+            88
+        } else if value == 0x1234 {
+            0
+        } else {
+            87
+        };
+        unsafe { libc::syscall(libc::SYS_exit_group, status) };
+        unreachable!();
+    }
+    let mut status = -1;
+    loop {
+        let waited = unsafe { libc::syscall(libc::SYS_wait4, child, &mut status, 0, 0) };
+        if waited == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        assert_eq!(waited, child, "first-access wait failed");
+        break;
+    }
+    println!(
+        "first_access status={status:#x} signal={} exit={}",
+        if libc::WIFSIGNALED(status) {
+            libc::WTERMSIG(status)
+        } else {
+            0
+        },
+        if libc::WIFEXITED(status) {
+            libc::WEXITSTATUS(status)
+        } else {
+            -1
+        }
+    );
+    failures += usize::from(status != 0);
+    assert_eq!(
+        pkey_probe_call(libc::SYS_pkey_free, [key as u64, 0, 0, 0]),
+        0
+    );
+    assert_eq!(unsafe { libc::munmap(page, 4096) }, 0);
+    if mode != "pkey-native" {
+        let site = std::ptr::addr_of!(reverie_liteinst_pkey_probe_site) as u64;
+        println!(
+            "pkey marked_site traps={} hooks={}",
+            reverie_liteinst::reverie_liteinst_site_trap_count(site),
+            reverie_liteinst::reverie_liteinst_site_hook_count(site)
+        );
+    }
+    println!(
+        "pkey complete mode={mode} allocations=4 invalid=3 first_access=1 failures={failures}"
+    );
+    pkey_probe_set_pkru(original);
+    std::process::exit(if failures == 0 { 0 } else { 86 });
+}
+
+/// A syscall at the last three bytes of a private executable mapping cannot
+/// install an eight-byte patch. Its actual syscall event owns saved guest PKRU.
+struct PkeyOwnedCall {
+    mapping: *mut libc::c_void,
+    call: unsafe extern "C" fn(i64, u64, u64) -> i64,
+    site: u64,
+}
+
+impl PkeyOwnedCall {
+    fn new() -> Self {
+        let code: &[u8] = &[
+            0x48, 0x89, 0xf8, // mov rax, rdi
+            0x48, 0x89, 0xf7, // mov rdi, rsi
+            0x48, 0x89, 0xd6, // mov rsi, rdx
+            0x31, 0xd2, // xor edx, edx
+            0x45, 0x31, 0xd2, // xor r10d, r10d
+            0x45, 0x31, 0xc0, // xor r8d, r8d
+            0x45, 0x31, 0xc9, // xor r9d, r9d
+            0x0f, 0x05, 0xc3, // syscall; ret at mapping end
+        ];
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                4096,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let entry = unsafe { mapping.cast::<u8>().add(4096 - code.len()) };
+        unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), entry, code.len()) };
+        assert_eq!(
+            unsafe { libc::mprotect(mapping, 4096, libc::PROT_READ | libc::PROT_EXEC) },
+            0
+        );
+        Self {
+            mapping,
+            call: unsafe {
+                std::mem::transmute::<*mut u8, unsafe extern "C" fn(i64, u64, u64) -> i64>(entry)
+            },
+            site: unsafe { mapping.cast::<u8>().add(4093) } as u64,
+        }
+    }
+
+    fn call(&self, number: i64, first: u64, second: u64) -> i64 {
+        unsafe { (self.call)(number, first, second) }
+    }
+}
+
+impl Drop for PkeyOwnedCall {
+    fn drop(&mut self) {
+        assert_eq!(unsafe { libc::munmap(self.mapping, 4096) }, 0);
+    }
+}
+
+fn install_pkey_probe(route: u64) {
+    PKEY_PROBE_ROUTE.store(route, Ordering::Relaxed);
+    let coordinator = std::env::var_os(reverie_liteinst::COORDINATOR_ENV)
+        .expect("pkey Tool fixture requires a coordinator");
+    unsafe {
+        reverie_liteinst::install_tool_quiescent::<PkeyProbeTool>(std::path::PathBuf::from(
+            coordinator,
+        ))
+    }
+    .unwrap();
+    for _ in 0..FAST_CALLS {
+        assert!(unsafe { reverie_liteinst_lifecycle_getpid() } > 0);
+    }
+}
+
+fn pkey_alloc_boundary(mode: &str) {
+    let original = pkey_probe_hardware();
+    let owned = PkeyOwnedCall::new();
+    let expected_key = owned.call(libc::SYS_pkey_alloc, 0, 0);
+    assert!((1..16).contains(&expected_key));
+    assert_eq!(owned.call(libc::SYS_pkey_free, expected_key as u64, 0), 0);
+    pkey_probe_set_pkru(original);
+    let route = match mode {
+        "pkey-refusal-forward" => 0,
+        "pkey-refusal-inject" => 1,
+        "pkey-refusal-tail" => 2,
+        "pkey-instruction-refusal" => 4,
+        _ => unreachable!(),
+    };
+    install_pkey_probe(route);
+    let before = pkey_probe_pkru();
+    if route == 4 {
+        std::hint::black_box(core::arch::x86_64::__cpuid_count(0, 0));
+        let result = PKEY_INSTRUCTION_RESULT.load(Ordering::Relaxed);
+        let after = pkey_probe_pkru();
+        println!("instruction inject: result={result} before={before:#x} after={after:#x}");
+        assert_eq!(result, -i64::from(libc::EOPNOTSUPP));
+        assert_eq!(after, before);
+    } else {
+        // Harmless warmup installs this exact shared site before pkey_alloc.
+        assert!(pkey_probe_call(libc::SYS_getppid, [0; 4]) > 0);
+        let site = std::ptr::addr_of!(reverie_liteinst_pkey_probe_site) as u64;
+        assert_eq!(reverie_liteinst::reverie_liteinst_site_trap_count(site), 1);
+        assert_eq!(reverie_liteinst::reverie_liteinst_site_hook_count(site), 1);
+        for rights in 0..4 {
+            let result = pkey_probe_call(libc::SYS_pkey_alloc, [0, rights, 0, 0]);
+            let after = pkey_probe_pkru();
+            println!(
+                "installed refusal rights={rights} result={result} before={before:#x} after={after:#x}"
+            );
+            assert_eq!(result, -i64::from(libc::EOPNOTSUPP));
+            assert_eq!(after, before);
+        }
+        println!(
+            "refusal marked_site traps={} hooks={}",
+            reverie_liteinst::reverie_liteinst_site_trap_count(site),
+            reverie_liteinst::reverie_liteinst_site_hook_count(site)
+        );
+        assert_eq!(reverie_liteinst::reverie_liteinst_site_hook_count(site), 5);
+    }
+    // A separate actual owned-PKRU event observes the kernel's next free key.
+    // If any refused allocation consumed a key, it cannot return expected_key.
+    let observed_key = owned.call(libc::SYS_pkey_alloc, 0, 0);
+    let after_control = pkey_probe_pkru();
+    assert!(
+        (1..16).contains(&observed_key),
+        "owned allocation unavailable: {observed_key}"
+    );
+    let expected_pkru = before & !(3 << (2 * observed_key as u32));
+    println!(
+        "no key consumed: expected={expected_key} observed={observed_key} pkru={after_control:#x} expected_pkru={expected_pkru:#x}"
+    );
+    assert_eq!(observed_key, expected_key);
+    assert_eq!(after_control, expected_pkru);
+    assert_eq!(owned.call(libc::SYS_pkey_free, observed_key as u64, 0), 0);
+    println!(
+        "owned control_site traps={} hooks={}",
+        reverie_liteinst::reverie_liteinst_site_trap_count(owned.site),
+        reverie_liteinst::reverie_liteinst_site_hook_count(owned.site)
+    );
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_site_hook_count(owned.site),
+        0
+    );
+    if route != 4 {
+        assert_eq!(
+            reverie_liteinst::reverie_liteinst_site_trap_count(owned.site),
+            2
+        );
+    }
+    pkey_probe_set_pkru(original);
+    println!(
+        "pkey boundary complete mode={mode}: refusal measured; native installed parity remains unsupported"
+    );
+}
+
+fn pkey_alloc_composition() {
+    let original = pkey_probe_hardware();
+    install_pkey_probe(3);
+    let before = pkey_probe_pkru();
+    PKEY_COMPOSE_ENABLED.store(true, Ordering::Relaxed);
+    let result = pkey_probe_call(libc::SYS_pkey_alloc, [1, 4, 0, 0]);
+    let after = pkey_probe_pkru();
+    let first = PKEY_COMPOSE_KEYS[0].load(Ordering::Relaxed);
+    let second = PKEY_COMPOSE_KEYS[1].load(Ordering::Relaxed);
+    assert!((1..16).contains(&first));
+    assert!((1..16).contains(&second));
+    assert_ne!(first, second);
+    let first_shift = 2 * first as u32;
+    let second_shift = 2 * second as u32;
+    let mask = (3 << first_shift) | (3 << second_shift);
+    let expected = (before & !mask) | (2 << first_shift) | (3 << second_shift);
+    println!(
+        "composition scalar={result} first={first} second={second} before={before:#x} after={after:#x} expected={expected:#x} other_bits_equal={}",
+        before & !mask == after & !mask
+    );
+    assert_eq!(result, 424242);
+    assert_eq!(after, expected);
+    for key in [first, second] {
+        assert_eq!(
+            pkey_probe_call(libc::SYS_pkey_free, [key as u64, 0, 0, 0]),
+            0
+        );
+        assert_eq!(pkey_probe_pkru(), after);
+    }
+    pkey_probe_set_pkru(original);
+    println!(
+        "pkey composition complete: two rewritten allocations, two errors, final scalar override; rights preserved"
+    );
+}
+
 fn main() {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
     let mode = arguments.next().expect("missing lifecycle fixture mode");
+    if let Some(mode) = mode.to_str() {
+        if matches!(
+            mode,
+            "pkey-refusal-forward"
+                | "pkey-refusal-inject"
+                | "pkey-refusal-tail"
+                | "pkey-instruction-refusal"
+        ) {
+            pkey_alloc_boundary(mode);
+            return;
+        }
+        if mode == "pkey-composition" {
+            pkey_alloc_composition();
+            return;
+        }
+    }
+    if let Some(mode) = mode.to_str()
+        && matches!(
+            mode,
+            "pkey-native" | "pkey-forward" | "pkey-inject" | "pkey-tail"
+        )
+    {
+        pkey_permission_effects(mode);
+        return;
+    }
     if let Some(mode) = mode.to_str()
         && matches!(
             mode,

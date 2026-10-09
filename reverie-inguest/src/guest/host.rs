@@ -106,6 +106,32 @@ fn virtual_signal_call(
     unsafe { super::sigalrm::intercept(&policy, number, args) }
 }
 
+/// Retain allocation's native permission effect in this event's return image.
+/// Existing admission guards must run first. Scalar allocation operands need
+/// no private-buffer permission policy; other injections keep caller rights.
+fn perform_pkey_alloc(event: &mut SyscallEvent, number: i64, args: [u64; 6]) -> Option<i64> {
+    if number != libc::SYS_pkey_alloc {
+        return None;
+    }
+    if !crate::trap::pkru_present() {
+        // Installation established that PKRU instructions are unavailable.
+        // Keep Linux's allocation answer through the ordinary scalar gate.
+        return Some(unsafe { raw_syscall6(number, args) });
+    }
+    let Some(guest_pkru) = event.guest_pkru else {
+        // A hook or instruction placeholder has no owned permission image.
+        // Refuse before allocating a key whose rights cannot be retained.
+        return Some(-i64::from(libc::EOPNOTSUPP));
+    };
+    // SAFETY: installation established OSPKE, and this live event owns the
+    // guest's saved PKRU. Allocation has scalar operands and preserves the
+    // helper's storage; the gate restores callback rights before Rust resumes.
+    let result = unsafe { crate::trap::raw_syscall6_with_result(number, args, Some(guest_pkru)) };
+    // Retain the actual effect before scalar errno or Tool result handling.
+    event.guest_pkru = result.pkru;
+    Some(result.result)
+}
+
 const STACK_CAPACITY: usize = 4096;
 
 static COMMITTED_STACKS: SpinMutex<Vec<Box<[u8]>>> = SpinMutex::new(Vec::new());
@@ -411,8 +437,13 @@ where
                 event.result = result;
                 return;
             }
+            if let Some(result) = perform_pkey_alloc(event, number, args) {
+                event.result = result;
+                return;
+            }
             // This is the original unsubscribed guest operation. Private
-            // inject/tail_inject below deliberately keep caller rights.
+            // inject/tail_inject below keep caller rights except for the
+            // scalar pkey allocation handled above.
             match stripped_signal_mask(&self.runtime, number, args) {
                 Err(error) => event.result = -i64::from(error.into_raw()),
                 Ok(None) => event.result = unsafe { event.forward() },
@@ -2637,6 +2668,9 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
         ) {
             return Errno::from_ret(result as usize).map(|value| value as i64);
         }
+        if let Some(result) = perform_pkey_alloc(self.event, number, raw_args) {
+            return Errno::from_ret(result as usize).map(|value| value as i64);
+        }
         let kernel_signal_mask = stripped_signal_mask(self.runtime, number, raw_args)?;
         if let Some(mask) = kernel_signal_mask.as_ref() {
             raw_args[1] = mask as *const u64 as u64;
@@ -2762,6 +2796,8 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
             number,
             args,
         ) {
+            self.tail.set_result(result);
+        } else if let Some(result) = perform_pkey_alloc(self.event, number, args) {
             self.tail.set_result(result);
         } else {
             let value = match stripped_signal_mask(self.runtime, number, args) {

@@ -199,6 +199,24 @@ its return stack. Runtime-private syscalls keep their original gate. Nested Tool
 signals carry the nested interrupted rights, so RPC buffers are not treated as
 buffers belonging to an earlier outer guest call.
 
+The shared typed Tool host retains `pkey_alloc` permission effects when the
+current event owns a saved guest PKRU value. Its original unsubscribed forwarding,
+`Guest::inject` and `tail_inject` use that same authority, including callbacks
+sharing the owned syscall event. Allocation runs under those guest rights;
+Linux's actual returned PKRU is retained even on errno, and callback rights are
+restored before private runtime storage is accessed. Other private injections
+keep their existing gate. On OSPKE systems, this host refuses `pkey_alloc` with
+EOPNOTSUPP before allocation when no saved guest PKRU is available, including
+installed hooks and instruction callbacks without an owned rights image. This
+reduces support for both valid and invalid allocation arguments at those
+locations; refusal does not establish native allocation semantics there. Without
+OSPKE, Linux supplies the allocation result without PKRU instructions. The
+existing SIGALRM-handler admission restriction still returns ENOSPC first.
+This applies only to the shared typed Tool host: LiteInst's direct strace/compat
+forwarding and nested Tool forwarding bypass it and retain their existing gaps.
+It does not repair installed-hook XSAVE ownership or establish permission-effect
+parity for `pkey_free`, `mprotect`, `pkey_mprotect` or execute-only `mmap`.
+
 The shared preload protection-key test compares native execution with both
 signal-stack modes: 12 read/write cases, four actual partial transfers, and 24
 clock/time/signal-action buffer cases. It checks raw errno, unchanged refused
@@ -209,8 +227,9 @@ still need their own permission provenance and are outside this measurement.
 These cases do not establish complete backend PKRU parity.
 Deferred typed callbacks already run with runtime PKRU zero: their `LocalMemory`
 C-string reads and writes can access a key-denied guest buffer that a native
-syscall rejects. The protection-key behavior of Tool injection, indirect policy
-reads and the separate CPUID/RDTSC SIGSEGV entry also remains unqualified.
+syscall rejects. Beyond the bounded `pkey_alloc` support above, protection-key
+effects of Tool injection, indirect policy reads and the separate CPUID/RDTSC
+SIGSEGV entry remain unqualified.
 
 ## Patch publication modes
 

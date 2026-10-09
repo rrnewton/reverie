@@ -220,6 +220,352 @@ fn guest_command(mode: &str) -> Command {
     command
 }
 
+/// Only the precise CPU capability absence is unmeasured. Syscall errors,
+/// missing rows and failed allocation/access assertions never take this branch.
+fn pkey_hardware_unmeasured(output: &std::process::Output) -> bool {
+    if output.status.code() != Some(77) {
+        return false;
+    }
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{output:?}");
+    assert!(
+        lines[0].starts_with("pkey hardware: leaf7_ecx=0x") && lines[0].ends_with(" ospke=false"),
+        "{output:?}"
+    );
+    assert_eq!(lines[1], "pkey hardware unmeasured: OSPKE unavailable");
+    eprintln!("OSPKE unavailable; pkey hardware cases were not measured");
+    true
+}
+
+fn assert_pkey_permission_rows(stdout: &str) {
+    assert!(
+        stdout.contains("ospke=true\n"),
+        "OSPKE hardware was not measured: {stdout}"
+    );
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("allocation rights="))
+            .count(),
+        4,
+        "{stdout}"
+    );
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("free rights="))
+            .count(),
+        4,
+        "{stdout}"
+    );
+    for rights in 0..4 {
+        assert!(
+            stdout.lines().any(
+                |line| line.starts_with(&format!("allocation rights={rights} "))
+                    && line.ends_with("other_bits_equal=true ok=true")
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.starts_with(&format!("free rights={rights} "))
+                    && line.ends_with("ok=true")),
+            "{stdout}"
+        );
+    }
+    for label in ["flags", "rights", "free"] {
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.starts_with(&format!("invalid {label}: "))
+                    && line.ends_with("ok=true")),
+            "{stdout}"
+        );
+    }
+    assert!(
+        stdout.contains("first_access status=0x0 signal=0 exit=0\n"),
+        "first keyed access must succeed without compensating WRPKRU: {stdout}"
+    );
+    assert!(
+        stdout.ends_with("allocations=4 invalid=3 first_access=1 failures=0\n"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn pkey_permission_effects_native_control() {
+    use std::process::Stdio;
+    use std::time::Instant;
+
+    let mut child =
+        std::process::Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-lifecycle-guest"))
+            .arg("pkey-native")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!("native pkey control timed out: {output:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "native pkey stdout:\n{stdout}stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if pkey_hardware_unmeasured(&output) {
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "native pkey control failed: {output:?}"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_pkey_permission_rows(&stdout);
+}
+
+async fn pkey_permission_effects_in_guest(mode: &str, patching: bool) {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let mut command = guest_command(mode);
+    command.env(SITE_PATCHING_ENV, if patching { "1" } else { "0" });
+    command.env(reverie_liteinst::SIGALRM_HANDLERS_ENV, "0");
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload_and_stats::<CoordinatorOnlyTool>(
+            command,
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("pkey permission-effect admission hung")
+    .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "pkey mode={mode} patching={patching} status={:?}\nstdout:\n{stdout}stderr:\n{}\nstats:\n{stats}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if pkey_hardware_unmeasured(&output) {
+        return;
+    }
+    // An explicit refusal elsewhere never satisfies this native-semantic
+    // permission and first-access oracle.
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_pkey_permission_rows(&stdout);
+    assert_eq!(
+        global.getpid.load(Ordering::Relaxed),
+        8,
+        "the guest Tool must receive the warmup calls"
+    );
+    let snapshot = stats.snapshot();
+    let record = snapshot
+        .dispatch_stats()
+        .expect("pkey admission must report actual paths");
+    assert_eq!(record.inconsistencies(), Vec::<String>::new(), "{record}");
+    let paths = stats.dispatch_path_counts();
+    if patching {
+        assert!(
+            stdout.contains("pkey marked_site traps=1 hooks=14\n"),
+            "scalar allocations must run after installation of their actual site: {stdout}"
+        );
+        assert!(
+            paths.count(&LiteinstDispatchPath::DirectHook) >= 14,
+            "{stats}"
+        );
+    } else {
+        assert!(
+            stdout.contains("pkey marked_site traps=0 hooks=0\n"),
+            "{stdout}"
+        );
+        assert_eq!(snapshot.patch_shapes().patched_rips(), 0, "{stats}");
+        assert_eq!(paths.count(&LiteinstDispatchPath::DirectHook), 0, "{stats}");
+        assert_eq!(
+            paths.count(&LiteinstDispatchPath::PtraceInstallation),
+            0,
+            "{stats}"
+        );
+        assert!(
+            paths.count(&LiteinstDispatchPath::PatchingDisabledFallback) >= 14,
+            "{stats}"
+        );
+    }
+    assert_physical_signals_agree(&stats, &record);
+    assert_tool_callbacks_were_delivered(&global, &stats);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pkey_permission_effects_forward_fallback() {
+    pkey_permission_effects_in_guest("pkey-forward", false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pkey_permission_effects_inject_fallback() {
+    pkey_permission_effects_in_guest("pkey-inject", false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pkey_permission_effects_tail_fallback() {
+    pkey_permission_effects_in_guest("pkey-tail", false).await;
+}
+
+// Installed syscall hooks do not own saved guest PKRU. These tests measure
+// their explicit pre-effect refusal boundary, not native allocation equivalence.
+// The native/fallback tests separately require full permission and access effects.
+async fn pkey_alloc_boundary_in_guest(mode: &str, patching: bool) {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let mut command = guest_command(mode);
+    command.env(SITE_PATCHING_ENV, if patching { "1" } else { "0" });
+    command.env(reverie_liteinst::SIGALRM_HANDLERS_ENV, "0");
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload_and_stats::<CoordinatorOnlyTool>(
+            command,
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("pkey boundary admission hung")
+    .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "pkey boundary mode={mode} patching={patching} status={:?}\nstdout:\n{stdout}stderr:\n{}\nstats:\n{stats}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if pkey_hardware_unmeasured(&output) {
+        return;
+    }
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert!(stdout.contains("ospke=true\n"), "{stdout}");
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
+    let snapshot = stats.snapshot();
+    let record = snapshot
+        .dispatch_stats()
+        .expect("pkey boundary must report actual paths");
+    assert_eq!(record.inconsistencies(), Vec::<String>::new(), "{record}");
+    let paths = stats.dispatch_path_counts();
+    assert_eq!(
+        paths.count(&LiteinstDispatchPath::PtraceInstallation),
+        0,
+        "{stats}"
+    );
+    if patching {
+        assert!(
+            stdout.contains("refusal marked_site traps=1 hooks=5\n"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("owned control_site traps=2 hooks=0\n"),
+            "{stdout}"
+        );
+        for rights in 0..4 {
+            assert!(
+                stdout.lines().any(|line| line
+                    .starts_with(&format!("installed refusal rights={rights} result=-95 "))),
+                "{stdout}"
+            );
+        }
+        assert!(
+            paths.count(&LiteinstDispatchPath::DirectHook) >= 5,
+            "{stats}"
+        );
+        assert_eq!(
+            paths.count(&LiteinstDispatchPath::PatchingDisabledFallback),
+            0,
+            "{stats}"
+        );
+        assert!(
+            paths.count(&LiteinstDispatchPath::UnpatchableOrOtherFallback) >= 2,
+            "{stats}"
+        );
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.starts_with("no key consumed: expected=")
+                    && line.contains(" observed=")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.ends_with("refusal measured; native installed parity remains unsupported\n"),
+            "{stdout}"
+        );
+    } else {
+        assert_eq!(snapshot.patch_shapes().patched_rips(), 0, "{stats}");
+        assert_eq!(paths.count(&LiteinstDispatchPath::DirectHook), 0, "{stats}");
+        if mode == "pkey-composition" {
+            assert!(
+                stdout
+                    .lines()
+                    .any(|line| line.starts_with("composition scalar=424242 ")
+                        && line.ends_with("other_bits_equal=true")),
+                "{stdout}"
+            );
+            assert!(stdout.ends_with("two rewritten allocations, two errors, final scalar override; rights preserved\n"), "{stdout}");
+        } else {
+            assert!(
+                stdout
+                    .lines()
+                    .any(|line| line.starts_with("instruction inject: result=-95 ")),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains("owned control_site traps=0 hooks=0\n"),
+                "{stdout}"
+            );
+            assert!(
+                stdout
+                    .lines()
+                    .any(|line| line.starts_with("no key consumed: expected=")),
+                "{stdout}"
+            );
+            assert!(
+                stdout.ends_with("refusal measured; native installed parity remains unsupported\n"),
+                "{stdout}"
+            );
+        }
+    }
+    assert_physical_signals_agree(&stats, &record);
+    assert_tool_callbacks_were_delivered(&global, &stats);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pkey_alloc_installed_pre_effect_refusal_forward() {
+    pkey_alloc_boundary_in_guest("pkey-refusal-forward", true).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pkey_alloc_installed_pre_effect_refusal_inject() {
+    pkey_alloc_boundary_in_guest("pkey-refusal-inject", true).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pkey_alloc_installed_pre_effect_refusal_tail() {
+    pkey_alloc_boundary_in_guest("pkey-refusal-tail", true).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pkey_alloc_owned_event_composes_rewrites_errors_and_scalar_override() {
+    pkey_alloc_boundary_in_guest("pkey-composition", false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pkey_alloc_instruction_without_owned_pkru_refuses_before_effect() {
+    pkey_alloc_boundary_in_guest("pkey-instruction-refusal", false).await;
+}
+
 /// A guest for a `*_preload_data` launcher: it fails unless its coordinator
 /// came through the bootstrap descriptor rather than the environment.
 fn bootstrap_guest_command(mode: &str) -> Command {
