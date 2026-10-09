@@ -810,45 +810,39 @@ mod tests {
     #[test]
     fn the_core_prediction_reads_this_processs_core_limit() {
         assert!(!unsafe { core_dump_expected(libc::SIGTERM) });
+        let prlimit = |new: Option<&libc::rlimit64>, old: Option<&mut libc::rlimit64>| unsafe {
+            raw_syscall6(
+                libc::SYS_prlimit64,
+                [
+                    0,
+                    libc::RLIMIT_CORE as u64,
+                    new.map_or(0, |limit| limit as *const libc::rlimit64 as u64),
+                    old.map_or(0, |limit| limit as *mut libc::rlimit64 as u64),
+                    0,
+                    0,
+                ],
+            )
+        };
         let mut previous = libc::rlimit64 {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        let one = libc::rlimit64 {
-            rlim_cur: 1,
-            rlim_max: libc::RLIM64_INFINITY,
-        };
-        let set = unsafe {
-            raw_syscall6(
-                libc::SYS_prlimit64,
-                [
-                    0,
-                    libc::RLIMIT_CORE as u64,
-                    (&raw const one) as u64,
-                    (&raw mut previous) as u64,
-                    0,
-                    0,
-                ],
-            )
-        };
-        if set != 0 {
-            // A hard limit below 1 cannot be raised; nothing to check here.
+        assert_eq!(prlimit(None, Some(&mut previous)), 0);
+        if previous.rlim_max == 0 {
+            // A hard limit of 0 forbids a soft limit of 1 (and cannot be
+            // raised unprivileged), so this process cannot take the opt-out
+            // this test checks.
             return;
         }
-        let predicted = unsafe { core_dump_expected(libc::SIGABRT) };
-        let _ = unsafe {
-            raw_syscall6(
-                libc::SYS_prlimit64,
-                [
-                    0,
-                    libc::RLIMIT_CORE as u64,
-                    (&raw const previous) as u64,
-                    0,
-                    0,
-                    0,
-                ],
-            )
+        // A soft limit of 1 under the existing hard limit, which needs no
+        // privilege.
+        let one = libc::rlimit64 {
+            rlim_cur: 1,
+            rlim_max: previous.rlim_max,
         };
+        assert_eq!(prlimit(Some(&one), None), 0);
+        let predicted = unsafe { core_dump_expected(libc::SIGABRT) };
+        assert_eq!(prlimit(Some(&previous), None), 0);
         assert!(!predicted);
     }
 
