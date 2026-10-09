@@ -742,6 +742,8 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
             "raise-sigquit",
             "raise-sigio",
             "raise-sigxcpu",
+            "raise-sigfpe",
+            "raise-sigbus",
         ],
         "{stdout}"
     );
@@ -873,6 +875,25 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
                 assert_eq!(status, kill, "{label}");
                 vec![ExitThread(kill), ExitProcess(kill), PhysicallyExited]
             }
+            // The signal callback staged a SIGKILL in a future it abandoned,
+            // then awaited a coordinator request (SIGFPE) or wrote guest
+            // memory (SIGBUS): the request is never sent, the writes are
+            // never made, and the guest dies by SIGKILL.
+            "raise-sigfpe" | "raise-sigbus" => {
+                let signal = if label == "raise-sigfpe" {
+                    libc::SIGFPE
+                } else {
+                    libc::SIGBUS
+                };
+                assert_eq!(status, kill, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(signal as u16),
+                    ExitThread(kill),
+                    ExitProcess(kill),
+                    PhysicallyExited,
+                ]
+            }
             // The signal callback injected a plain fork: refused as a Tool
             // error before the fork is made (no other process appears).
             "raise-sigxcpu" => {
@@ -950,6 +971,83 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
     pids.sort_unstable();
     pids.dedup();
     assert_eq!(pids.len(), children.len() + 1, "{observed:?}");
+    // The SIGFPE callback's request, made after it abandoned its SIGKILL,
+    // never reached the coordinator.
+    assert_eq!(global.parked.load(Ordering::Relaxed), 0);
+    // The SIGBUS callback's write before its SIGKILL reached the shared
+    // page; both writes after it, through the handle obtained before and a
+    // new one, failed with ESRCH and changed nothing.
+    let sigbus = stdout
+        .lines()
+        .find(|line| line.starts_with("raise-sigbus "))
+        .unwrap();
+    assert!(
+        sigbus.ends_with(&format!(" shared=1 refused={0},{0}", libc::ESRCH)),
+        "{sigbus}"
+    );
+}
+
+/// A clone3 record that a peer process keeps changing, between a plain fork
+/// and a record Linux refuses (`set_tid_size` 1), is classified once per
+/// call, and that one reading decides everything about the call.
+///
+/// From a signal callback, an injected clone3 is either refused by name as
+/// a plain fork outside a syscall handler, before anything is made, or
+/// returns EOPNOTSUPP as not a plain fork; it never makes a child. (Before,
+/// the refusal and the creation each read the record, so a record seen as
+/// not a plain fork by the first and as one by the second made a child.)
+/// The guest's own clone3 of the record either makes a child, from the
+/// record classified, or returns EOPNOTSUPP; it never fails with EINVAL,
+/// which only a record other than the one classified can return. (Before,
+/// Linux read the guest's record again.)
+#[tokio::test(flavor = "current_thread")]
+async fn a_clone3_record_a_peer_keeps_changing_is_classified_once() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (result, _global) = tokio::time::timeout(
+        Duration::from_secs(60),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("clone3-flip"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    let stdout = String::from_utf8_lossy(&result.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+    eprintln!("guest stdout:\n{stdout}");
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    // Every trial child was refused by name (status 125), and no callback
+    // made a child.
+    assert_eq!(
+        lines[0], "trials=64 statuses=0x7d00x64 created=0",
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr
+            .matches("a plain fork injected outside a syscall handler is unsupported")
+            .count(),
+        64,
+        "{stderr}"
+    );
+    let count = |name: &str| -> usize {
+        lines[1]
+            .split(' ')
+            .find_map(|field| field.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("{name} in {stdout}"))
+            .parse()
+            .unwrap()
+    };
+    assert_eq!(count("attempts"), 256, "{stdout}");
+    assert_eq!(count("einval"), 0, "{stdout}");
+    assert_eq!(count("other"), 0, "{stdout}");
+    assert_eq!(count("children") + count("eopnotsupp"), 256, "{stdout}");
+    // The record was a plain fork for part of the time: some calls made a
+    // child.
+    assert!(count("children") > 0, "{stdout}");
 }
 
 /// A signal callback that replaces the guest's own fatal signal with
@@ -984,6 +1082,44 @@ async fn replacing_a_signal_with_a_virtual_sigalrm_is_refused_by_name() {
     assert!(
         stderr.contains(
             "replacing SIGTERM with SIGALRM while the guest's SIGALRM handler is virtual is unsupported"
+        ),
+        "{stderr}"
+    );
+}
+
+/// The guest raises SIGALRM while it has no handler, so the default action
+/// would end it; its signal callback installs the guest's SIGALRM handler
+/// (kept virtual: admitted SIGALRM handlers, site patching off) and lets the
+/// SIGALRM be delivered. That is refused by name as a Tool error before
+/// anything is sent: a raw SIGALRM would stay physically blocked behind the
+/// virtual handler, which would never run. (Before, the same signal number
+/// went out raw, and the guest went on past its `raise` with SIGALRM
+/// pending.) The handler is observed not to run, and the guest does not go on
+/// past its `raise`.
+#[tokio::test(flavor = "current_thread")]
+async fn a_sigalrm_whose_handler_its_signal_callback_installed_is_refused_by_name() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let mut command = guest_command("sigalrm-installed-by-callback");
+    command
+        .env(reverie_liteinst::SIGALRM_HANDLERS_ENV, "1")
+        .env(SITE_PATCHING_ENV, "0");
+    let (result, _global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(command, (), preload),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.code(), Some(125), "{result:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout),
+        "sigaction=0 reset=0\n",
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "delivering the guest's own SIGALRM after the Tool made the guest's SIGALRM handler virtual is unsupported"
         ),
         "{stderr}"
     );

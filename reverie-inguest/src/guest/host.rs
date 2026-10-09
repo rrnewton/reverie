@@ -31,6 +31,7 @@ use reverie::syscalls::Addr;
 use reverie::syscalls::AddrMut;
 use reverie::syscalls::Errno;
 use reverie::syscalls::LocalMemory;
+use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
@@ -305,9 +306,17 @@ where
             let number = guest.event.number;
             let args = guest.event.args;
             let guest_pkru = guest.event.guest_pkru;
-            if is_plain_fork(number, args) {
+            // Classified once: the refusal of an unsupported creation below
+            // and the creation itself both use this one reading.
+            let creation = classify_creation(number, args, guest_pkru);
+            if let Creation::Unperformed(unperformed) = creation {
+                event.result = unperformed_creation(unperformed);
+                return;
+            }
+            let unsupported_creation = matches!(creation, Creation::Unsupported);
+            if let Creation::PlainFork(fork) = creation {
                 guest.prepare_fork_parent_state();
-                let result = forward_plain_fork(number, args, Some(&mut guest.event.guest_pkru));
+                let result = forward_plain_fork(&fork, Some(&mut guest.event.guest_pkru));
                 if result == 0 {
                     let parent_state = guest.take_fork_parent_state();
                     drop(guest);
@@ -361,7 +370,9 @@ where
                     );
                 }
                 return;
-            } else if let Some(error) = injected_syscall_guard(&self.runtime, number, args) {
+            } else if let Some(error) =
+                injected_syscall_guard(&self.runtime, number, args, unsupported_creation)
+            {
                 event.result = -i64::from(error.into_raw());
                 return;
             } else if let Some(result) =
@@ -752,6 +763,9 @@ fn finish_tool_exit<T: Tool, R: HostRuntime>(
         status,
         process_exit,
     } = context;
+    // The exit callbacks run from here: an ending a callback staged has
+    // reached the host, and these callbacks may reach the coordinator.
+    ENDING_STAGED.store(false, core::sync::atomic::Ordering::Release);
     let state = states
         .remove(&tid.as_raw())
         .expect("LiteInst thread state disappeared before exit");
@@ -961,22 +975,27 @@ fn deliver_staged_signals<T: Tool, R: HostRuntime>(
         if deliver == libc::SIGKILL {
             return Some(Ending::Death(SignalDeath::KILL));
         }
-        if deliver != staged.signal && deliver == libc::SIGALRM && super::sigalrm::handled() {
+        // Decided on SIGALRM's disposition now, after the callback: a staged
+        // SIGALRM was fatal when it was sent, so the guest had no handler
+        // then, but the Tool (this callback, or the handler that held the
+        // signal) can have installed one since.
+        if deliver == libc::SIGALRM && super::sigalrm::handled() {
             // A guest SIGALRM handler kept virtual by this runtime receives
             // SIGALRM only through a delivery the runtime prepares in the
             // guest call's own turn (signal phase 1); a raw SIGALRM would
             // stay physically blocked and the handler would never run.
             // Refused by name before anything is sent.
-            tool_fatal(
-                125,
-                &Error::Tool(
-                    io::Error::other(format!(
-                        "replacing {shown} with SIGALRM while the guest's SIGALRM handler \
-                         is virtual is unsupported"
-                    ))
-                    .into(),
-                ),
-            );
+            let what = if deliver == staged.signal {
+                "delivering the guest's own SIGALRM after the Tool made the guest's SIGALRM \
+                 handler virtual is unsupported"
+                    .to_owned()
+            } else {
+                format!(
+                    "replacing {shown} with SIGALRM while the guest's SIGALRM handler is \
+                     virtual is unsupported"
+                )
+            };
+            tool_fatal(125, &Error::Tool(io::Error::other(what).into()));
         }
         if unsafe { signal_ends_process_now(deliver) } {
             ending = Some((staged, deliver));
@@ -1227,6 +1246,14 @@ impl<T: Tool, R: HostRuntime> GlobalRPC<T::GlobalState> for InGuest<'_, T, R> {
         &self,
         message: <T::GlobalState as GlobalTool>::Request,
     ) -> <T::GlobalState as GlobalTool>::Response {
+        if self.tail.ending() {
+            // The guest is ending (see `inject`): the exchange is not entered,
+            // since a request can block until the coordinator answers, and
+            // the callback stays parked until the host ends the process. The
+            // exit callbacks reach the coordinator through the connection
+            // they are passed, which this does not gate.
+            return std::future::pending().await;
+        }
         self.rpc.send_rpc(message).await
     }
 
@@ -1235,30 +1262,114 @@ impl<T: Tool, R: HostRuntime> GlobalRPC<T::GlobalState> for InGuest<'_, T, R> {
     }
 }
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-326): Review the plain-fork injection boundary.
-fn is_plain_fork(number: i64, args: [u64; 6]) -> bool {
-    if number == libc::SYS_fork {
-        return true;
-    }
-    if number == libc::SYS_vfork {
-        return true;
-    }
-    if number == libc::SYS_clone3 {
-        return clone3_is_plain_fork(args[0], args[1]);
-    }
-    if number != libc::SYS_clone {
-        return false;
-    }
-    const SIGNAL_MASK: u64 = 0xff;
-    let allowed_flags =
-        (libc::CLONE_CHILD_CLEARTID | libc::CLONE_CHILD_SETTID | libc::CLONE_PARENT_SETTID) as u64;
-    args[1] == 0
-        && args[0] & SIGNAL_MASK == libc::SIGCHLD as u64
-        && args[0] & !(SIGNAL_MASK | allowed_flags) == 0
+/// Set while a Tool callback of this process has staged an injection that
+/// ends the guest (an exit, or a SIGKILL of the guest itself) that the host
+/// has not taken yet: Tool code that runs then runs after an injection it
+/// abandoned. Cleared when the exit callbacks begin (`finish_tool_exit`).
+/// Process-wide, because a process's guest code is single-threaded (thread
+/// creation is refused), so one callback runs at a time.
+static ENDING_STAGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Whether the Tool callback running in this process has staged an
+/// injection that ends the guest, which the host has not taken yet (see
+/// [`reverie::Tool::on_exit_thread`] for what a Tool may still do then).
+/// Tool-facing entry points outside the [`Guest`] interface, such as a
+/// backend's blocking coordinator request, refuse to act while it is true;
+/// the exit callbacks run after it is cleared.
+pub fn callback_ending_staged() -> bool {
+    ENDING_STAGED.load(core::sync::atomic::Ordering::Acquire)
 }
 
-fn clone3_is_plain_fork(address: u64, size: u64) -> bool {
+impl<T: Tool, R: HostRuntime> InGuest<'_, T, R> {
+    /// Stages the call `number(args)`, which ends the guest, for the host to
+    /// take when the callback parks or returns, and latches the ending: from
+    /// here no effect of this callback reaches the guest (see `inject`).
+    fn stage_ending(&self, number: i64, args: [u64; 6]) {
+        ENDING_STAGED.store(true, core::sync::atomic::Ordering::Release);
+        self.tail.set_exit(number, args);
+    }
+}
+
+/// A guest process-creation call (fork, vfork, clone or clone3), classified
+/// once. The refusal of a creation the runtime does not perform, the
+/// creation it does perform, and its report to the creation hook all use
+/// this one classification; for clone3 the record that runs is the copy
+/// classified, so a peer that shares the guest's record and changes it later
+/// changes nothing.
+enum Creation {
+    /// Not a process-creation call.
+    Other,
+    /// The plain-fork subset the runtime performs.
+    PlainFork(PlainFork),
+    /// A creation outside the plain-fork subset, refused with EOPNOTSUPP.
+    Unsupported,
+    /// A clone3 whose record Linux's own reading fails (the guest receives
+    /// the errno and nothing is created), or whose reading the runtime cannot
+    /// reproduce (refused).
+    Unperformed(Unperformed),
+}
+
+/// A plain-fork creation, as classified (see [`Creation`]).
+struct PlainFork {
+    number: i64,
+    args: [u64; 6],
+    /// For clone3: the runtime's copy of the guest's record, which is what
+    /// runs, and the guest's size.
+    clone3: Option<(Box<[u64; CLONE_ARGS_SIZE_LIMIT / 8]>, usize)>,
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-326): Review the plain-fork injection boundary.
+/// Classifies the guest's call `number(args)` (see [`Creation`]). A clone3
+/// record is first checked with one plain read of its first 88 bytes, so a
+/// record that is not a plain fork costs no more than before; one that is is
+/// then copied as Linux reads it ([`copy_guest_clone_args`], under the
+/// guest's protection-key `permissions`), and that copy alone decides. If a
+/// peer changed the record between the two reads, the copy is what Linux
+/// would read at that point, so deciding on it alone is still one reading.
+fn classify_creation(number: i64, args: [u64; 6], permissions: Option<u32>) -> Creation {
+    let plain = |clone3| {
+        Creation::PlainFork(PlainFork {
+            number,
+            args,
+            clone3,
+        })
+    };
+    match number {
+        libc::SYS_fork | libc::SYS_vfork => plain(None),
+        libc::SYS_clone => {
+            const SIGNAL_MASK: u64 = 0xff;
+            let allowed_flags = (libc::CLONE_CHILD_CLEARTID
+                | libc::CLONE_CHILD_SETTID
+                | libc::CLONE_PARENT_SETTID) as u64;
+            if args[1] == 0
+                && args[0] & SIGNAL_MASK == libc::SIGCHLD as u64
+                && args[0] & !(SIGNAL_MASK | allowed_flags) == 0
+            {
+                plain(None)
+            } else {
+                Creation::Unsupported
+            }
+        }
+        libc::SYS_clone3 => {
+            if !clone3_head_is_plain_fork(args[0], args[1]) {
+                return Creation::Unsupported;
+            }
+            let mut record = Box::new([0_u64; CLONE_ARGS_SIZE_LIMIT / 8]);
+            match copy_guest_clone_args(args[0], args[1], permissions, &mut record) {
+                Ok(size) if clone_args_are_plain_fork(&record[..]) => plain(Some((record, size))),
+                Ok(_) => Creation::Unsupported,
+                Err(unperformed) => Creation::Unperformed(unperformed),
+            }
+        }
+        _ => Creation::Other,
+    }
+}
+
+/// Whether the first 88 bytes of the clone3 record of `size` bytes at
+/// `address` (copied without the guest's protection keys) are a plain fork.
+/// A pre-check only: [`classify_creation`] decides on its own copy.
+fn clone3_head_is_plain_fork(address: u64, size: u64) -> bool {
     const CLONE_ARGS_SIZE_VER0: usize = 64;
     const CLONE_ARGS_SIZE_VER2: usize = 88;
     if address == 0 || size < CLONE_ARGS_SIZE_VER0 as u64 {
@@ -1375,10 +1486,6 @@ pub enum CreationRefusal {
     /// for the substituted call, and an overlapping one would corrupt the
     /// descriptor number, while the guest's own call would succeed.
     OutputAliased,
-    /// The guest's clone_args changed between the runtime's classification of
-    /// the call and its copy (another process sharing that memory), and the
-    /// copy is no longer a plain fork. Nothing was created.
-    ArgumentsChanged,
     /// The child exists, but its pidfd is not a pidfs inode or cannot be
     /// read, so it has no birth identity.
     IdentityUnavailable,
@@ -1454,7 +1561,11 @@ pub enum CreationHookError {
 /// With a hook registered,
 /// the runtime performs every process creation as `clone3` with a
 /// runtime-owned `CLONE_PIDFD` output, to report the child's birth identity;
-/// without one, creations run exactly as before. Fails if a hook is already
+/// without one, each creation runs as the guest's own call, except that a
+/// clone3 runs from the runtime's copy of its record, as with a hook (a
+/// record whose reading the runtime cannot reproduce, or that the guest's
+/// protection keys would deny in the runtime's copy, is then refused as a
+/// Tool error that names it, status 125). Fails if a hook is already
 /// registered, or if the kernel's pidfds are not pidfs inodes.
 pub fn set_physical_creation_hook(hook: PhysicalCreationHook) -> Result<(), CreationHookError> {
     if !crate::seccomp::runtime_filter_installed() {
@@ -1660,20 +1771,18 @@ fn guest_keys_deny_runtime_memory(permissions: Option<u32>) -> bool {
 }
 
 /// Fills `record` with the `clone3` arguments that perform the plain-fork
-/// creation `number`/`args` with a `CLONE_PIDFD` output at `pidfd`, and
-/// returns their size. Callers have already accepted the call with
-/// [`is_plain_fork`].
+/// creation `fork` with a `CLONE_PIDFD` output at `pidfd`, and returns their
+/// size.
 fn clone3_record_for(
-    number: i64,
-    args: [u64; 6],
+    fork: &PlainFork,
     pidfd: u64,
-    permissions: Option<u32>,
     record: &mut [u64; CLONE_ARGS_SIZE_LIMIT / 8],
-) -> Result<usize, Unperformed> {
+) -> usize {
     const PIDFD: u64 = libc::CLONE_PIDFD as u64;
     const SIGNAL_MASK: u64 = 0xff;
     const SIZE_VER0: usize = 64;
-    let fields: [u64; 8] = match number {
+    let args = fork.args;
+    let fields: [u64; 8] = match fork.number {
         // The copying vfork stays a COW fork with the parent waiting: no
         // CLONE_VM or CLONE_VFORK is applied physically.
         libc::SYS_fork | libc::SYS_vfork => [PIDFD, pidfd, 0, 0, libc::SIGCHLD as u64, 0, 0, 0],
@@ -1705,25 +1814,23 @@ fn clone3_record_for(
                 0,
             ]
         }
-        // The guest's whole record at its own size, so Linux checks the size
-        // and the tail on the same bytes, plus the runtime's CLONE_PIDFD
-        // output.
+        // The guest's whole record at its own size, as classified, so Linux
+        // checks the size and the tail on the same bytes, plus the runtime's
+        // CLONE_PIDFD output.
         libc::SYS_clone3 => {
-            let size = copy_guest_clone_args(args[0], args[1], permissions, record)?;
-            // The copy is what runs, and the guest's memory may have changed
-            // since the call was classified (a peer sharing it): check the
-            // copy itself before adding the runtime's output.
-            if !clone_args_are_plain_fork(&record[..]) {
-                return Err(Unperformed::Refused(CreationRefusal::ArgumentsChanged));
-            }
+            let (copy, size) = fork
+                .clone3
+                .as_ref()
+                .unwrap_or_else(|| unreachable!("a classified clone3 carries its record"));
+            record.copy_from_slice(&copy[..]);
             record[0] |= PIDFD;
             record[1] = pidfd;
-            return Ok(size);
+            return *size;
         }
-        _ => unreachable!("is_plain_fork accepts only fork, vfork, clone and clone3"),
+        _ => unreachable!("only fork, vfork, clone and clone3 are classified as plain forks"),
     };
     record[..fields.len()].copy_from_slice(&fields);
-    Ok(SIZE_VER0)
+    SIZE_VER0
 }
 
 /// Copies the guest's `clone_args` (`size` bytes at `address`) into `record`,
@@ -1911,10 +2018,10 @@ fn report_creation(hook: PhysicalCreationHook, creation: PhysicalCreation) {
 /// output, and reports it to `hook`. Never runs the guest's call another way.
 fn reported_creation(
     hook: PhysicalCreationHook,
-    number: i64,
-    args: [u64; 6],
+    fork: &PlainFork,
     guest_pkru: Option<&mut Option<u32>>,
 ) -> i64 {
+    let number = fork.number;
     let permissions = guest_pkru.as_ref().and_then(|value| **value);
     let refuse = |refusal, child| {
         report_creation(hook, PhysicalCreation::Refused { refusal, child });
@@ -1934,22 +2041,10 @@ fn reported_creation(
     let pidfd_word = pidfd_output as *mut libc::c_int;
     unsafe { pidfd_word.write_volatile(-1) };
     let mut record = [0_u64; CLONE_ARGS_SIZE_LIMIT / 8];
-    let size = match clone3_record_for(number, args, pidfd_output, permissions, &mut record) {
-        Ok(size) if parent_tid_aliases_pidfd(&record) => {
-            let _ = size;
-            refuse(CreationRefusal::OutputAliased, None);
-            unreachable!();
-        }
-        Ok(size) => size,
-        Err(Unperformed::Failed(errno)) => {
-            report_creation(hook, PhysicalCreation::Failed { errno });
-            return -i64::from(errno);
-        }
-        Err(Unperformed::Refused(refusal)) => {
-            refuse(refusal, None);
-            unreachable!();
-        }
-    };
+    let size = clone3_record_for(fork, pidfd_output, &mut record);
+    if parent_tid_aliases_pidfd(&record) {
+        refuse(CreationRefusal::OutputAliased, None);
+    }
     let physical = unsafe {
         crate::trap::raw_syscall6_with_result(
             libc::SYS_clone3,
@@ -2012,19 +2107,41 @@ fn reported_creation(
     result
 }
 
-fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Option<u32>>) -> i64 {
+/// Performs the plain-fork creation `fork`, as classified: reported to the
+/// creation hook when one is registered ([`reported_creation`]), and
+/// otherwise made directly. Either way a clone3 runs from the runtime's copy
+/// of the guest's record, the one classified.
+fn forward_plain_fork(fork: &PlainFork, guest_pkru: Option<&mut Option<u32>>) -> i64 {
+    let number = fork.number;
     let result = if let Some(hook) = CREATION_HOOK.get().copied() {
-        reported_creation(hook, number, args, guest_pkru)
+        reported_creation(hook, fork, guest_pkru)
     } else {
         let permissions = guest_pkru.as_ref().and_then(|value| **value);
-        let physical = if number == libc::SYS_vfork {
+        let physical = match &fork.clone3 {
             // A real vfork child would run the instrumentation callback on the
             // parent's shared stack. Use a COW fork and preserve vfork's parent
             // suspension until the child exits. Exec remains fail-closed, so exit
             // is the only supported vfork completion boundary for now.
-            unsafe { crate::trap::raw_syscall6_with_result(libc::SYS_fork, [0; 6], permissions) }
-        } else {
-            unsafe { crate::trap::raw_syscall6_with_result(number, args, permissions) }
+            _ if number == libc::SYS_vfork => unsafe {
+                crate::trap::raw_syscall6_with_result(libc::SYS_fork, [0; 6], permissions)
+            },
+            Some((record, size)) => {
+                // The copy carries key 0, and the kernel reads it under the
+                // guest's protection keys.
+                if guest_keys_deny_runtime_memory(permissions) {
+                    refuse_unhooked(CreationRefusal::ProtectionKeyDenied);
+                }
+                unsafe {
+                    crate::trap::raw_syscall6_with_result(
+                        libc::SYS_clone3,
+                        [record.as_ptr() as u64, *size as u64, 0, 0, 0, 0],
+                        permissions,
+                    )
+                }
+            }
+            None => unsafe {
+                crate::trap::raw_syscall6_with_result(number, fork.args, permissions)
+            },
         };
         if let Some(output) = guest_pkru {
             *output = physical.pkru;
@@ -2059,11 +2176,63 @@ fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Optio
     result
 }
 
+/// The guest's result for a creation the runtime did not perform
+/// ([`Creation::Unperformed`]): the errno Linux's own reading of the clone3
+/// record fails with, reported to the creation hook if one is registered;
+/// or, for a refusal, the end of the process, by the hook's report or, with
+/// no hook, as a Tool error that names the refusal (status 125).
+fn unperformed_creation(unperformed: Unperformed) -> i64 {
+    let hook = CREATION_HOOK.get().copied();
+    match unperformed {
+        Unperformed::Failed(errno) => {
+            if let Some(hook) = hook {
+                report_creation(hook, PhysicalCreation::Failed { errno });
+            }
+            -i64::from(errno)
+        }
+        Unperformed::Refused(refusal) => {
+            if let Some(hook) = hook {
+                report_creation(
+                    hook,
+                    PhysicalCreation::Refused {
+                        refusal,
+                        child: None,
+                    },
+                );
+            }
+            refuse_unhooked(refusal)
+        }
+    }
+}
+
+/// Ends the process as a Tool error that names `refusal` (status 125), for
+/// a creation refused, before anything was created, with no creation hook
+/// registered.
+fn refuse_unhooked(refusal: CreationRefusal) -> ! {
+    let why = match refusal {
+        CreationRefusal::ProtectionKeyDenied => {
+            "the guest's protection keys deny the runtime's own clone3 record".to_owned()
+        }
+        CreationRefusal::ArgumentsUnreadable => {
+            "the runtime cannot tell what Linux's own reading of the clone3 record would return"
+                .to_owned()
+        }
+        other => format!("{other:?}"),
+    };
+    tool_fatal(
+        125,
+        &Error::Tool(io::Error::other(format!("a process creation was refused: {why}")).into()),
+    )
+}
+
 // TODO-HUMAN-REVIEW(PR-127): Review injected process/signal safety policy.
+/// `unsupported_creation`: the call is a process creation outside the
+/// plain-fork subset, as [`classify_creation`] classified it.
 fn injected_syscall_guard(
     runtime: &impl HostRuntime,
     number: i64,
     args: [u64; 6],
+    unsupported_creation: bool,
 ) -> Option<Errno> {
     // Every forwarded guest call passes here, so this is where a guest's own
     // seccomp filter is noticed or refused.
@@ -2086,10 +2255,7 @@ fn injected_syscall_guard(
     if super::restorer::mapping_change_refused(number, args) {
         return Some(Errno::EPERM);
     }
-    let unsupported_process =
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        (matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_vfork)
-            && !is_plain_fork(number, args))
+    let unsupported_process = unsupported_creation
         // AUTONOMOUS-BOT-IMPLEMENTED
         || matches!(number, libc::SYS_execve | libc::SYS_execveat);
     let protected_signal =
@@ -2200,9 +2366,74 @@ fn stripped_signal_mask(
     }
 }
 
+/// The guest memory a Tool callback reaches through [`Guest::memory`]: this
+/// process's own memory ([`LocalMemory`]), until the guest is ending.
+///
+/// Every handle carries its dispatch's [`TailResult`], so once a callback has
+/// staged an injection that ends the guest (an exit, or a SIGKILL of the
+/// guest itself), every read and write through any handle of that dispatch,
+/// one obtained before the injection included, fails with ESRCH, as a
+/// tracer's access to a tracee its injection killed fails, and copies
+/// nothing. A handle cannot outlive its dispatch, so the exit callbacks,
+/// which have no [`Guest`], never hold one.
+pub struct GuestMemory<'a> {
+    local: LocalMemory,
+    tail: &'a TailResult,
+}
+
+impl GuestMemory<'_> {
+    fn check(&self) -> Result<(), Errno> {
+        if self.tail.ending() {
+            Err(Errno::ESRCH)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+// Every other `MemoryAccess` method is built on these, so each passes the
+// same check; the native-user write keeps its default refusal.
+impl MemoryAccess for GuestMemory<'_> {
+    fn read_vectored(
+        &self,
+        read_from: &[io::IoSlice],
+        write_to: &mut [io::IoSliceMut],
+    ) -> Result<usize, Errno> {
+        self.check()?;
+        self.local.read_vectored(read_from, write_to)
+    }
+
+    fn write_vectored(
+        &mut self,
+        read_from: &[io::IoSlice],
+        write_to: &mut [io::IoSliceMut],
+    ) -> Result<usize, Errno> {
+        self.check()?;
+        self.local.write_vectored(read_from, write_to)
+    }
+
+    fn read<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<usize, Errno>
+    where
+        A: Into<Addr<'a, u8>>,
+    {
+        self.check()?;
+        self.local.read(addr, buf)
+    }
+
+    fn write(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        self.check()?;
+        self.local.write(addr, buf)
+    }
+
+    fn write_with_user_access(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        self.check()?;
+        self.local.write_with_user_access(addr, buf)
+    }
+}
+
 #[reverie::tool]
-impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
-    type Memory = LocalMemory;
+impl<'a, T: Tool, R: HostRuntime> Guest<T> for InGuest<'a, T, R> {
+    type Memory = GuestMemory<'a>;
     type Stack = LocalStack;
 
     fn tid(&self) -> Pid {
@@ -2226,7 +2457,10 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
     }
 
     fn memory(&self) -> Self::Memory {
-        LocalMemory::new()
+        GuestMemory {
+            local: LocalMemory::new(),
+            tail: self.tail,
+        }
     }
 
     fn thread_state_mut(&mut self) -> &mut T::ThreadState {
@@ -2327,25 +2561,28 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             args.arg5 as u64,
         ];
 
-        if is_plain_fork(number, raw_args) && !self.in_syscall_handler {
-            // Only a syscall handler's fork can complete in the child, and
-            // the fork itself would be guest-visible (a child, its exit
-            // status, SIGCHLD): refused by name before it is made.
-            tool_fatal(
-                125,
-                &Error::Tool(
-                    io::Error::other(
-                        "a plain fork injected outside a syscall handler is unsupported",
-                    )
-                    .into(),
-                ),
-            );
-        }
-        if is_plain_fork(number, raw_args) {
+        // Classified once: the refusal outside a syscall handler, the fork,
+        // and the refusal of an unsupported creation all use this reading.
+        let creation = classify_creation(number, raw_args, None);
+        if let Creation::PlainFork(fork) = &creation {
+            if !self.in_syscall_handler {
+                // Only a syscall handler's fork can complete in the child, and
+                // the fork itself would be guest-visible (a child, its exit
+                // status, SIGCHLD): refused by name before it is made.
+                tool_fatal(
+                    125,
+                    &Error::Tool(
+                        io::Error::other(
+                            "a plain fork injected outside a syscall handler is unsupported",
+                        )
+                        .into(),
+                    ),
+                );
+            }
             let parent_tid = self.tid;
             let parent_pid = self.pid;
             self.prepare_fork_parent_state();
-            let result = forward_plain_fork(number, raw_args, None);
+            let result = forward_plain_fork(fork, None);
             if result == 0 {
                 let child_tid = raw_pid(libc::SYS_gettid);
                 let child_pid = raw_pid(libc::SYS_getpid);
@@ -2355,9 +2592,13 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             }
             return Errno::from_ret(result as usize).map(|value| value as i64);
         }
+        if let Creation::Unperformed(unperformed) = creation {
+            let result = unperformed_creation(unperformed);
+            return Errno::from_ret(result as usize).map(|value| value as i64);
+        }
 
         // AUTONOMOUS-BOT-IMPLEMENTED
-        if matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_vfork) {
+        if matches!(creation, Creation::Unsupported) {
             const MESSAGE: &[u8] = b"reverie-liteinst: clone injection requires ptrace fallback\n";
             unsafe {
                 let _ = raw_syscall6(
@@ -2374,7 +2615,7 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             }
             return Err(Errno::EOPNOTSUPP);
         }
-        if let Some(error) = injected_syscall_guard(self.runtime, number, raw_args) {
+        if let Some(error) = injected_syscall_guard(self.runtime, number, raw_args, false) {
             return Err(error);
         }
         if let Some(result) =
@@ -2383,7 +2624,7 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             return Errno::from_ret(result as usize).map(|value| value as i64);
         }
         if is_exit_syscall(number) {
-            self.tail.set_exit(number, raw_args);
+            self.stage_ending(number, raw_args);
             return std::future::pending().await;
         }
         // A signal to the calling thread or process that would end it as
@@ -2396,7 +2637,7 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
                 // A SIGKILL ends the guest at once under a tracer: the Tool's
                 // callback does not resume, and nothing after it runs. The
                 // host runs the exit lifecycle and sends it.
-                self.tail.set_exit(number, raw_args);
+                self.stage_ending(number, raw_args);
                 return std::future::pending().await;
             }
             self.stage_signal(StagedSignal {
@@ -2493,11 +2734,14 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
                 ),
             );
         }
-        if is_plain_fork(number, args) {
+        // Classified once, as in `inject`.
+        let creation = classify_creation(number, args, None);
+        let unsupported_creation = matches!(creation, Creation::Unsupported);
+        if let Creation::PlainFork(fork) = creation {
             let parent_tid = self.tid;
             let parent_pid = self.pid;
             self.prepare_fork_parent_state();
-            let result = forward_plain_fork(number, args, None);
+            let result = forward_plain_fork(&fork, None);
             if result == 0 {
                 self.tail.set_fork_child(
                     parent_tid,
@@ -2508,18 +2752,22 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             } else {
                 self.tail.set_result(result);
             }
-        } else if let Some(error) = injected_syscall_guard(self.runtime, number, args) {
+        } else if let Creation::Unperformed(unperformed) = creation {
+            self.tail.set_result(unperformed_creation(unperformed));
+        } else if let Some(error) =
+            injected_syscall_guard(self.runtime, number, args, unsupported_creation)
+        {
             self.tail.set_result(-i64::from(error.into_raw()));
         } else if let Some(result) =
             unsafe { super::protect::protect_forwarded_descriptor_change(number, args) }
         {
             self.tail.set_result(result);
         } else if is_exit_syscall(number) {
-            self.tail.set_exit(number, args);
+            self.stage_ending(number, args);
         } else if let Some(signal) = unsafe { self_directed_fatal_signal(number, args) } {
             if signal == libc::SIGKILL {
                 // As in `inject`: the guest ends here.
-                self.tail.set_exit(number, args);
+                self.stage_ending(number, args);
             } else {
                 // Staged as in `inject`; the guest's call returns 0.
                 self.stage_signal(StagedSignal {
@@ -2922,9 +3170,10 @@ mod tests {
         assert!(fields.len() == 5 || fields[5].starts_with('['), "{line}");
     }
 
-    /// The copied clone3 record is checked as a plain fork itself: a copy that
-    /// asks for CLONE_PIDFD, CLONE_FILES, a stack, another exit signal or a
-    /// set_tid is not, whatever the earlier classification saw.
+    /// The copied clone3 record is checked as a plain fork itself (the copy
+    /// alone decides; see `classify_creation`): a copy that asks for
+    /// CLONE_PIDFD, CLONE_FILES, a stack, another exit signal or a set_tid is
+    /// not, whatever the pre-check of the guest's record saw.
     #[test]
     fn a_copied_clone3_record_must_still_be_a_plain_fork() {
         let mut plain = [0_u64; 11];
@@ -2951,6 +3200,66 @@ mod tests {
             }
             assert!(!clone_args_are_plain_fork(&changed), "{field} {value:#x}");
         }
+    }
+
+    /// A clone3 is classified from one copy of its record, and that copy is
+    /// what runs: a change to the guest's record after the classification
+    /// (a peer sharing it) changes neither the classification nor the record
+    /// the runtime would pass to Linux. A record that is not a plain fork is
+    /// classified as unsupported.
+    #[test]
+    fn a_clone3_is_classified_and_performed_from_one_copy() {
+        let mut guest = [0_u64; 11];
+        guest[4] = libc::SIGCHLD as u64;
+        let args = [guest.as_ptr() as u64, 88, 0, 0, 0, 0];
+        let Creation::PlainFork(fork) = classify_creation(libc::SYS_clone3, args, None) else {
+            panic!("a plain clone3 record is a plain fork");
+        };
+        // The guest's record changes after the classification.
+        guest[9] = 1;
+        let (copy, size) = fork.clone3.as_ref().unwrap();
+        assert_eq!(*size, 88);
+        assert_eq!(copy[4], libc::SIGCHLD as u64);
+        assert_eq!(copy[9], 0);
+        let mut record = [0_u64; CLONE_ARGS_SIZE_LIMIT / 8];
+        assert_eq!(clone3_record_for(&fork, 0x7000, &mut record), 88);
+        assert_eq!(record[9], 0, "the copy classified is the record that runs");
+        assert_eq!(record[0], libc::CLONE_PIDFD as u64);
+        assert_eq!(record[1], 0x7000);
+        let args = [guest.as_ptr() as u64, 88, 0, 0, 0, 0];
+        assert!(matches!(
+            classify_creation(libc::SYS_clone3, args, None),
+            Creation::Unsupported
+        ));
+    }
+
+    /// A guest memory handle reads and writes this process's memory until its
+    /// dispatch stages an injection that ends the guest; from then on every
+    /// read and write fails with ESRCH and copies nothing, through a handle
+    /// obtained before as through a new one.
+    #[test]
+    fn guest_memory_is_refused_once_the_guest_is_ending() {
+        let tail = TailResult::default();
+        let mut before = GuestMemory {
+            local: LocalMemory::new(),
+            tail: &tail,
+        };
+        let mut word = 0_u64;
+        let address = AddrMut::from_raw(&raw mut word as usize).unwrap();
+        before.write_value(address, &1_u64).unwrap();
+        assert_eq!(word, 1);
+        tail.set_exit(libc::SYS_exit_group, [0; 6]);
+        assert_eq!(before.write_value(address, &2_u64), Err(Errno::ESRCH));
+        let mut after = GuestMemory {
+            local: LocalMemory::new(),
+            tail: &tail,
+        };
+        assert_eq!(after.write_value(address, &3_u64), Err(Errno::ESRCH));
+        assert_eq!(
+            before.read_value::<_, u64>(Addr::from_raw(&raw const word as usize).unwrap()),
+            Err(Errno::ESRCH)
+        );
+        assert_eq!(word, 1);
     }
 
     /// A hook cannot be registered before the runtime's own filter is
