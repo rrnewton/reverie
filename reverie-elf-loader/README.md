@@ -2,8 +2,131 @@
 
 A standalone building block for starting an ELF image inside its new process.
 It is **unwired**: no Reverie backend or Hermit runtime calls it. It implements
-the LA row of the launcher design approved in coordinator message 1817, not
-the authorization, syscall mediation, or runtime handover stages.
+LA ELF start preparation and the inactive LB precommit exec building blocks.
+The in-guest production exec gate continues to refuse exec. LB includes an
+actual runtime clock restoration fixture; host activation remains unqualified.
+Runtime takeover and the dynamic manifest consumer belong to later stages.
+
+## Inactive exec preparation (LB)
+
+`unsafe prepare_exec(&ExecRequest, &PrepareExecOptions)` accepts the original
+`dirfd`, literal path, argv, envp and flags. It returns
+`ExecCheckOutcome::{NativeErrno, Refuse, Prepared}`. Native errors include their
+source stage. Refusals expose stable names through `ExecRefusal::name()`.
+`prepare_exec_raw` also accepts invalid user addresses. It qualifies the
+filename before sending the original pointers to CHECK, then copies argument
+vectors after success. A failed remote filename copy requires a kernel
+user-copy certificate through invalid-FD `fgetxattr`, which cannot traverse a
+pathname; otherwise preparation refuses. Owned requests use stable Rust buffers.
+
+The caller must use an isolated ordinary preparation process with exclusive
+descriptor-table allocation and a genuinely frozen namespace, credential,
+security, integrity, binfmt, watch, resource and executable-content contract.
+`HostQualification::collect_current()` refuses before opening an endpoint.
+`collect_current_from` reads only retained, already-qualified genuine proc
+descriptors. Their PID, mount and user namespaces, task identity and lifetime
+must match the complete frozen mount snapshot. Collection still cannot prove
+security/binfmt/watch lifetimes. The unsafe external-attestation constructor
+documents its required provenance and lifetime. `EvidenceOrigin::Modeled` is reserved for
+declared inactive tests. Model receipts do not qualify a host for activation.
+The real launcher caller must separately prove the preserved thread-group
+leader, signal-context, installed SIGALRM handler and foreign-seccomp exclusions.
+Modeled preparation on ordinary libtest workers does not qualify those contexts.
+
+Preparation establishes capacity for 16 private descriptors before target
+lookup. It releases its temporary placeholders for lookup qualification and
+the original path CHECK, then reacquires the same numbers before ordinary
+pinning. This preserves originally
+invalid low dirfds and absent procfd names; exclusive allocation makes the
+reacquisition deterministic. Native exec can work with a full user FD table,
+so private exhaustion is `LauncherFdCapacity`. Guest descriptors 100, 102 and
+numbers above 1024 retain their numbers, contents, OFDs and flags.
+
+Absolute lookup uses retained admitted mount roots; relative interpreter
+lookup qualifies the current CWD before each script rewrite and PT_INTERP
+lookup. A constrained O_PATH `openat2` probe uses NO_XDEV and NO_MAGICLINKS
+before original CHECK or interpreter pinning, preventing aliases from walking
+generic proc objects or referring to new private descriptors. The original
+probe is closed before CHECK. Exact retained leaf mount roots need no probe.
+Unverifiable mount crossings or magic-link aliases receive named refusals.
+Before a failed mount-relative interpreter probe can supply a native errno,
+preparation proves the original absolute prefixes in order. A successful
+original CHECK supplies search evidence for its shared absolute prefix;
+remaining mount boundaries require constrained parent `/.` lookups. This
+preserves ancestor EACCES before a missing interpreter's ENOENT. An unqualified
+prefix yields a named refusal. Successful probes retain the original-path pin.
+
+Targets, script interpreters and PT_INTERP objects are pinned with O_PATH and
+classified before any readable reopen. Readable files come from the pinned
+retained genuine proc FD directory and must match device, inode, mount ID,
+size and timestamps. No absolute proc pathname is opened by preparation.
+Execute-authorized unreadable objects get `ExecutableReadRequired`. Anonymous
+memfds require a receipt binding the exact inode and immutable seals, followed
+by seal verification on the readable descriptor. Generic interpreter lookup
+through proc/sys/dev gets `LookupMountUnverified`; individually audited helper
+endpoints permit original genuine `/proc/self/exe` and guest `/proc/self/fd/N`
+requests, with namespace evidence and lookup-base qualification. Helper-owned
+retained descriptor numbers and generic aliases are refused. These exceptions
+do not authorize guest interpreter names or private FD aliases.
+Complete mount qualification remains required before other traversal.
+
+`AT_EXECVE_CHECK` supplies executable-open authorization and original argument
+errors. Preparation separately ports the x86-64 precommit ELF and script
+checks. CHECK success alone cannot establish ELF acceptance. Extra pinned
+target denials get `PinnedAuthorizationChanged`; extra interpreter policy
+denials get `InterpreterCheckStronger` unless the native denial source is
+proved. Unexpected extra read/resource errors remain refusals. Existing LA
+geometry and resource restrictions keep their original named refusals.
+
+`ArgumentPlan` retains the original argc/envc pointer allowance, original F,
+empty argv normalization, optional argument and nested script rewrites. Native
+E2BIG remains E2BIG; the recomputed rewritten launcher band may instead refuse
+`LauncherArgumentBudget`. `ArgumentPages` independently replays argument VMA
+growth against RLIMIT_STACK, including the retained high-water pages after
+removing argv0. A rewrite that needs a new page can return native E2BIG after
+the original CHECK fits, before opening the interpreter. CHECK E2BIG carries its classification, including
+the observed case where both size models pass and kernel stack growth fails.
+
+`PinnedStart` owns final ELF T, pinned interpreter I, script pins, rewritten
+arguments, original invocation, LA start plan and preparation evidence.
+`prepare_start_from_files` supports caller-proved T/I bindings without resolving
+the interpreter pathname. `transfer_files` and descriptor transactions support
+explicit CLOEXEC transfer/rollback; undo failures are reported. The bounded,
+versioned `StartManifest` describes the future private descriptor protocol.
+The existing freestanding consumer still uses its LA protocol below.
+
+The proc building blocks use actual pinned proc identities and sealed auxv
+OFD snapshots. Dup shares the kernel cursor; old descriptors retain their old
+snapshot. Later exec with inherited virtual state currently gets
+`InheritedVirtualProcStateUnsupported` before commit. `ClockStateCarrier` is a
+sealed memfd carrying a nonzero runtime RCB snapshot and opaque owner bytes.
+The LB7 native successor fixture restores that count under a changed raw
+counter origin and reads through Reverie's actual in-guest counter reader.
+Omitting the serialized offset must fail the same trajectory comparator.
+Small unused snapshot/restore/counter-binding APIs live in `reverie-inguest`;
+the fixture controls perf metadata and requires no host PMU. The fixture Tool's
+nonzero logical time and committed RCB boundary are restored into ToolHost's
+actual ThreadState, then read and advanced through dispatch and Guest access.
+Omitting only logical time fails the same owner trajectory assertion. The
+carrier keeps those bytes opaque, and no production exec consumes it. See
+[CLOCK-STATE.md](CLOCK-STATE.md) for the fixture's scope and owner read path.
+
+LB tests start bounded ordinary native/preparation children. Fixtures, trace
+logs and evidence stay under `target/`. Target exec, CHECK and CWD setup run
+after spawn in a fresh helper under its parent's timeout; `pre_exec` only
+changes inherited descriptor flags. Timeout failure is independent of reaping:
+cleanup polls asynchronously for at most 250 ms. Atomic directory creation
+gives each invocation its own fixtures. Public libc open/statx instrumentation
+has live positive controls and read-open/statx-first mutations. Mandatory
+syscall tracing separately observes the direct constrained lookup probes,
+including guard-omission/flag/readable-open mutations; kernel-internal CHECK
+ordering remains source audited. Genuine proc fixtures retain complete,
+unfiltered private mount namespaces and compare CHECK/preparation with bounded
+actual exec in that same namespace. Security/binfmt/unsafe-filesystem
+and privileged-context fixtures are explicitly modeled. Privileged policy,
+namespace-init, noexec/idmapped/watch qualification remains an activation gate.
+The production inactivity test calls the real in-guest dispatcher and requires
+`-EOPNOTSUPP` for execve and execveat, including CHECK.
 
 ## Build
 
