@@ -90,6 +90,7 @@ fn main() {
         "tests/fixtures/observer.S",
         "tests/fixtures/observer_dummy.S",
         "tests/fixtures/pkey_probe.S",
+        "tests/fixtures/open_trace.c",
     ] {
         println!("cargo:rerun-if-changed={source}");
         let hash = Command::new("sha256sum")
@@ -125,6 +126,29 @@ fn main() {
     println!(
         "cargo:rustc-env=ELF_LOADER_STACK_GUARD_CONTROL={}",
         stack_guard_control.display()
+    );
+    let open_trace = output.join("open-trace.so");
+    build(
+        &cc,
+        &root,
+        &open_trace,
+        &args(&[
+            "-std=c11",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-fPIC",
+            "-shared",
+            "-fno-builtin",
+            "-Wl,--build-id=none",
+            "tests/fixtures/open_trace.c",
+        ]),
+        &mut provenance,
+    );
+    println!(
+        "cargo:rustc-env=ELF_LOADER_OPEN_TRACE={}",
+        open_trace.display()
     );
     let loader_args = args(&[
         "-std=c11",

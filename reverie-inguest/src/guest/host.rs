@@ -142,6 +142,31 @@ impl<T: Tool, R: HostRuntime> ToolHost<T, R> {
     pub fn rpc(&self) -> &CoordinatorRpc<T::GlobalState> {
         &self.rpc
     }
+
+    /// Install an already-admitted continuation's Tool state for this thread.
+    ///
+    /// The owner must restore every field of its `ThreadState`, including its
+    /// logical time, before the first dispatch. The saved state must already
+    /// have completed the Tool's thread-start and post-exec callbacks; restoring
+    /// it does not repeat those callbacks. A thread with existing state, or a
+    /// dispatch currently holding the state lock, is refused without replacing
+    /// anything. No production backend calls this inactive input seam.
+    pub fn restore_current_thread_state(&self, state: T::ThreadState) -> io::Result<()> {
+        let _allocation_scope = super::alloc::enter_dispatch();
+        let tid = raw_pid(libc::SYS_gettid).as_raw();
+        let mut states = self.states.try_lock().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::WouldBlock, "Tool state dispatch is active")
+        })?;
+        if let std::collections::hash_map::Entry::Vacant(entry) = states.entry(tid) {
+            entry.insert(state);
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Tool state already exists for this thread",
+            ))
+        }
+    }
 }
 
 impl<T, R> ToolHost<T, R>

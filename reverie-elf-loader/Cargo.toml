@@ -18,3 +18,6 @@ libc = "0.2.186"
 
 [dev-dependencies]
 sha2 = "0.10.9"
+reverie-inguest = { path = "../reverie-inguest", default-features = false, features = ["rcb-clock", "coordinator-rpc"] }
+reverie-ptrace = { path = "../reverie-ptrace" }
+reverie = { package = "reverie-core", path = "../reverie" }

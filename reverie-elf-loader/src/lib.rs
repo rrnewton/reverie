@@ -14,8 +14,10 @@
 //! 102. The loader reuses the kernel's initial stack, replaces its ELF-specific
 //! auxv values, and transfers control to the target's PT_INTERP.
 //!
-//! This is a layout building block, not an exec authorization implementation.
-//! The caller must use `ADDR_NO_RANDOMIZE`, keep the pinned files immutable,
+//! The LA layout API and the LB exec preparation API are both unwired.
+//! [`prepare_exec`] checks authorization and precommit format/argument errors;
+//! CHECK alone never establishes that an ELF can load. The caller must use
+//! `ADDR_NO_RANDOMIZE`, keep the pinned files immutable,
 //! preserve descriptor numbers, arrange the native argv/envp, and authorize
 //! direct ELF exec with identical resulting credentials and secureexec state.
 //! No Reverie backend calls this crate. See the crate README for the admitted
@@ -23,6 +25,15 @@
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 compile_error!("reverie-elf-loader supports x86-64 Linux only");
+
+pub mod arguments;
+pub mod descriptors;
+pub mod exec;
+pub mod host;
+pub mod proc_state;
+pub mod protocol;
+#[cfg(test)]
+mod test_support;
 
 use std::ffi::CString;
 use std::ffi::OsStr;
@@ -40,6 +51,16 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+
+pub use exec::ExecCheckOutcome;
+pub use exec::ExecRefusal;
+pub use exec::ExecRequest;
+pub use exec::NativeExecError;
+pub use exec::PinnedStart;
+pub use exec::PrepareExecOptions;
+pub use exec::prepare_exec;
+pub use exec::prepare_exec_raw;
+pub use exec::prepare_start_from_files;
 
 /// Linux's path buffer includes its terminating NUL.
 pub const PATH_MAX: usize = 4096;
@@ -375,6 +396,26 @@ pub struct Limits {
     pub address_space: u64,
 }
 
+/// Loader host facts captured before descriptor transfer. They avoid new
+/// pathname opens when all remaining descriptor slots are occupied.
+/// The caller must keep these facts and the execution context stable.
+#[derive(Clone, Debug)]
+pub struct LoaderHostFacts {
+    pub cmdline: Vec<u8>,
+    pub mmap_min_addr: u64,
+    pub mdwe_inherited: bool,
+}
+
+impl LoaderHostFacts {
+    pub fn current() -> Result<Self, Error> {
+        Ok(Self {
+            cmdline: std::fs::read("/proc/cmdline")?,
+            mmap_min_addr: parse_mmap_min_addr(&std::fs::read("/proc/sys/vm/mmap_min_addr")?)?,
+            mdwe_inherited: mdwe_inherited_on_exec()?,
+        })
+    }
+}
+
 impl Limits {
     pub fn current() -> Result<Self, Error> {
         fn limit(resource: libc::__rlimit_resource_t) -> io::Result<u64> {
@@ -544,6 +585,19 @@ pub fn prepare_start_with_limits(
     launcher_link: &Path,
     limits: Limits,
 ) -> Result<PreparedStart, Error> {
+    prepare_start_with_files(target, None, invocation, launcher_link, limits, None)
+}
+
+// Both APIs use exactly the same LA admission and layout computations. The
+// supplied-interpreter path never resolves or reopens its PT_INTERP pathname.
+pub(crate) fn prepare_start_with_files(
+    target: &File,
+    interpreter: Option<&File>,
+    invocation: &Invocation,
+    launcher_link: &Path,
+    limits: Limits,
+    host: Option<&LoaderHostFacts>,
+) -> Result<PreparedStart, Error> {
     let native_execfn = invocation.native_execfn();
     let padded_path = pad_launcher_path(launcher_link, native_execfn.as_bytes().len())?;
     if limits.address_space != libc::RLIM_INFINITY {
@@ -552,26 +606,34 @@ pub fn prepare_start_with_limits(
         });
     }
     check_exec_credentials(target)?;
-    check_stack_guard_cmdline(&std::fs::read("/proc/cmdline")?)?;
-    temporary_special_start(parse_mmap_min_addr(&std::fs::read(
-        "/proc/sys/vm/mmap_min_addr",
-    )?)?)?;
+    let current_host;
+    let host = if let Some(host) = host {
+        host
+    } else {
+        current_host = LoaderHostFacts::current()?;
+        &current_host
+    };
+    check_stack_guard_cmdline(&host.cmdline)?;
+    temporary_special_start(host.mmap_min_addr)?;
     let elf = Elf::read(target, false)?;
     let mut layout = elf.layout()?;
     // Classify without running a device open method or waiting on a FIFO,
     // then read the pinned object rather than repeating its path lookup.
-    let interp_path = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_PATH)
-        .open(&layout.interpreter)?;
-    if !interp_path.metadata()?.is_file() {
-        return Err(Error::UnsupportedElf("interpreter is not a regular file"));
-    }
-    let interp = File::open(format!(
-        "/proc/self/fd/{}",
-        std::os::fd::AsRawFd::as_raw_fd(&interp_path)
-    ))?;
-    let interp_elf = Elf::read(&interp, true)?;
+    let opened_interpreter;
+    let interp = if let Some(interpreter) = interpreter {
+        interpreter
+    } else {
+        let interp_path = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH)
+            .open(&layout.interpreter)?;
+        if !interp_path.metadata()?.is_file() {
+            return Err(Error::UnsupportedElf("interpreter is not a regular file"));
+        }
+        opened_interpreter = File::open(format!("/proc/self/fd/{}", interp_path.as_raw_fd()))?;
+        &opened_interpreter
+    };
+    let interp_elf = Elf::read(interp, true)?;
     interp_elf.check_raw_top_page(true)?;
     let interp_span = interp_elf.total_mapping_size()?;
     if interp_span == 0 {
@@ -599,7 +661,7 @@ pub fn prepare_start_with_limits(
         // cross-image contacts against the BSS it has mapped.
         interp_elf.check_bss_merges(0, true, true, &mut Vec::new())?;
     }
-    if mdwe_inherited_on_exec()? {
+    if host.mdwe_inherited {
         elf.check_mdwe_bss(false)?;
         interp_elf.check_mdwe_bss(true)?;
     }
