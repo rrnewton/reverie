@@ -294,10 +294,16 @@ where
 /// Fails, without sending, when no Tool is installed in this process, when
 /// `G` is not the installed Tool's global state, or when another request of
 /// this process is in flight on the connection (re-entry, which waiting would
-/// deadlock).
+/// deadlock). It also fails, with ESRCH, while the running callback has
+/// staged an injection that ends the guest (an exit, or a SIGKILL of the
+/// guest itself) and goes on regardless, as every effect of such a callback
+/// is refused; the exit callbacks that follow can use it.
 pub fn blocking_global_rpc<G: reverie::GlobalTool + 'static>(
     request: G::Request,
 ) -> io::Result<G::Response> {
+    if reverie_inguest::guest::host::callback_ending_staged() {
+        return Err(io::Error::from_raw_os_error(libc::ESRCH));
+    }
     let handler = HANDLER
         .get()
         .ok_or_else(|| io::Error::other("no in-guest Tool is installed in this process"))?;

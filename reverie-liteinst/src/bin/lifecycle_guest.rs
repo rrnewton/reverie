@@ -20,6 +20,7 @@ use reverie::Subscription;
 use reverie::Tid;
 use reverie::TimerSchedule;
 use reverie::Tool;
+use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
@@ -63,6 +64,30 @@ static IGNORE_SIGTERM_AT_POST_EXEC: AtomicBool = AtomicBool::new(false);
 /// The SIGTERM signal callback replaces SIGTERM with SIGALRM (the
 /// `sigalrm-replacement` mode).
 static REPLACE_SIGTERM_WITH_SIGALRM: AtomicBool = AtomicBool::new(false);
+/// The SIGALRM signal callback installs the guest's SIGALRM handler, with
+/// the handler, flags and restorer in `CALLBACK_ALARM_ACTION`, and records
+/// the injection's result in `CALLBACK_ALARM_INSTALL` (the
+/// `sigalrm-installed-by-callback` mode).
+static INSTALL_SIGALRM_IN_CALLBACK: AtomicBool = AtomicBool::new(false);
+static CALLBACK_ALARM_ACTION: [AtomicU64; 3] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static CALLBACK_ALARM_INSTALL: AtomicI64 = AtomicI64::new(i64::MIN);
+/// Set by the `self-signal-deaths` mode: the SIGFPE and SIGBUS signal
+/// callbacks abandon a SIGKILL injection and then try an effect.
+static ABANDONED_EFFECTS: AtomicBool = AtomicBool::new(false);
+/// The `raise-sigbus` case's page, mapped shared before the child forks, so
+/// the parent sees what the child's Tool wrote: word 0 is what the SIGBUS
+/// callback wrote through guest memory, and words 1 and 2 the errno of its
+/// two writes after it abandoned a SIGKILL injection (0 if made).
+static SHARED_PAGE: AtomicUsize = AtomicUsize::new(0);
+/// The `clone3-flip` mode's shared page: words 0 to 10 are a clone3 record
+/// that a flipper process keeps switching between a plain fork and the same
+/// record with `set_tid_size` 1 (which Linux refuses with EINVAL); word 64
+/// counts the children the SIGFPE callback's injected clone3 created; word
+/// 65 stops the flipper.
+static FLIP_PAGE: AtomicUsize = AtomicUsize::new(0);
+const FLIP_CREATED_WORD: usize = 64;
+const FLIP_STOP_WORD: usize = 65;
 /// Tags the one RPC a process sends at `exit_group` with its count of Tool
 /// callbacks, so the host can compare the backend's dispatch counts with the
 /// callbacks the Tool actually made.
@@ -515,6 +540,92 @@ impl Tool for LifecycleTool {
             Signal::SIGTERM if REPLACE_SIGTERM_WITH_SIGALRM.load(Ordering::Relaxed) => {
                 return Ok(Some(Signal::SIGALRM));
             }
+            Signal::SIGFPE if ABANDONED_EFFECTS.load(Ordering::Relaxed) => {
+                // Stages a SIGKILL in a future it abandons, then awaits a
+                // coordinator request the coordinator never answers
+                // (RPC_PARK): the request must never be sent, and the
+                // staged SIGKILL must still end the guest.
+                poll_once(send_self(guest, libc::SIGKILL));
+                guest.send_rpc(RPC_PARK).await;
+                return Ok(None);
+            }
+            Signal::SIGBUS if ABANDONED_EFFECTS.load(Ordering::Relaxed) => {
+                // Writes the shared page through a memory handle, abandons a
+                // SIGKILL injection, then writes again through that handle
+                // and through a new one: neither later write may be made.
+                let page = SHARED_PAGE.load(Ordering::Relaxed);
+                let word = reverie::syscalls::AddrMut::<u64>::from_raw(page).unwrap();
+                let mut before = guest.memory();
+                before
+                    .write_value(word, &1_u64)
+                    .expect("a write before the injection");
+                poll_once(send_self(guest, libc::SIGKILL));
+                let old_handle = before.write_value(word, &2_u64);
+                let new_handle = guest.memory().write_value(word, &3_u64);
+                // Reported by direct stores, outside the guest interface.
+                let errno = |result: Result<(), Errno>| {
+                    result.err().map_or(0, |errno| errno.into_raw() as u64)
+                };
+                let words = page as *mut u64;
+                unsafe {
+                    words.add(1).write_volatile(errno(old_handle));
+                    words.add(2).write_volatile(errno(new_handle));
+                }
+                return Ok(None);
+            }
+            Signal::SIGFPE if FLIP_PAGE.load(Ordering::Relaxed) != 0 => {
+                // Injects a clone3 of the record a flipper process keeps
+                // changing, from a signal callback, until it is refused by
+                // name or makes a child: a plain fork is refused before it
+                // is made, whatever the record says when it is read again;
+                // one that is not a plain fork returns EOPNOTSUPP, and the
+                // callback tries again.
+                let page = FLIP_PAGE.load(Ordering::Relaxed);
+                let created = unsafe { &*((page as *const AtomicU64).add(FLIP_CREATED_WORD)) };
+                for _ in 0..100_000 {
+                    let clone3 = Syscall::from_raw(
+                        Sysno::clone3,
+                        reverie::syscalls::SyscallArgs::new(page, 88, 0, 0, 0, 0),
+                    );
+                    if let Ok(child) = guest.inject(clone3).await
+                        && child > 0
+                    {
+                        created.fetch_add(1, Ordering::SeqCst);
+                        break;
+                    }
+                }
+                return Ok(None);
+            }
+            Signal::SIGALRM if INSTALL_SIGALRM_IN_CALLBACK.load(Ordering::Relaxed) => {
+                // Installs the guest's SIGALRM handler (kept virtual), then
+                // lets the guest's own SIGALRM be delivered: refused by name
+                // before anything is sent. If the installation failed, the
+                // signal is suppressed, so the guest goes on and reports it.
+                let action = [
+                    CALLBACK_ALARM_ACTION[0].load(Ordering::Relaxed),
+                    CALLBACK_ALARM_ACTION[1].load(Ordering::Relaxed),
+                    CALLBACK_ALARM_ACTION[2].load(Ordering::Relaxed),
+                    0,
+                ];
+                let installed = guest
+                    .inject(Syscall::from_raw(
+                        Sysno::rt_sigaction,
+                        reverie::syscalls::SyscallArgs::new(
+                            libc::SIGALRM as usize,
+                            action.as_ptr() as usize,
+                            0,
+                            8,
+                            0,
+                            0,
+                        ),
+                    ))
+                    .await;
+                let result = installed.unwrap_or_else(|errno| -i64::from(errno.into_raw()));
+                CALLBACK_ALARM_INSTALL.store(result, Ordering::Relaxed);
+                if result != 0 {
+                    return Ok(None);
+                }
+            }
             _ => {}
         }
         Ok(Some(signal))
@@ -713,7 +824,20 @@ fn self_signal_deaths() {
         let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
         unsafe { libc::sigpending(&mut set) == 0 && libc::sigismember(&set, signal) == 1 }
     }
-    let cases: [(&str, fn()); 19] = [
+    ABANDONED_EFFECTS.store(true, Ordering::Relaxed);
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(page, libc::MAP_FAILED);
+    SHARED_PAGE.store(page as usize, Ordering::Relaxed);
+    let cases: [(&str, fn()); 21] = [
         ("abort", || unsafe { libc::abort() }),
         ("abort-core-limit-1", || unsafe {
             let one = libc::rlimit {
@@ -787,6 +911,12 @@ fn self_signal_deaths() {
         ("raise-sigxcpu", || unsafe {
             libc::raise(libc::SIGXCPU);
         }),
+        ("raise-sigfpe", || unsafe {
+            libc::raise(libc::SIGFPE);
+        }),
+        ("raise-sigbus", || unsafe {
+            libc::raise(libc::SIGBUS);
+        }),
     ];
     for (label, end) in cases {
         let thread_start = label == "thread-start-sigterm";
@@ -813,24 +943,27 @@ fn self_signal_deaths() {
             assert_eq!(waited, i64::from(child));
             break;
         }
+        if label == "raise-sigbus" {
+            // What reached the shared page, and the errno of each write the
+            // SIGBUS callback tried after it abandoned its SIGKILL.
+            let words = page as *const u64;
+            let [written, old_handle, new_handle] =
+                [0, 1, 2].map(|index| unsafe { words.add(index).read_volatile() });
+            println!(
+                "{label} pid={child} status={status:#x} shared={written} refused={old_handle},{new_handle}"
+            );
+            continue;
+        }
         println!("{label} pid={child} status={status:#x}");
     }
 }
 
-/// The root process's thread-start callback sends it SIGTERM, and its
-/// post-exec callback would ignore SIGTERM: the SIGTERM must end the process
-/// before the post-exec callback runs, as a tracer delivers it when the thread
-/// resumes from its start. Prints a line only if it survives.
 /// The root installs a guest SIGALRM handler (kept virtual: the run admits
 /// SIGALRM handlers), then raises SIGTERM, which the signal callback
 /// replaces with SIGALRM: refused as a Tool error before anything is sent,
 /// so the handler never runs. Prints the `sigaction` result, and a line from
 /// the handler or after `raise` only if they happen.
 fn sigalrm_replacement() {
-    extern "C" fn on_alarm(_: libc::c_int) {
-        let message = b"alarm-handler-ran\n";
-        unsafe { libc::write(libc::STDOUT_FILENO, message.as_ptr().cast(), message.len()) };
-    }
     install_tool();
     let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
     action.sa_sigaction = on_alarm as *const () as usize;
@@ -841,6 +974,158 @@ fn sigalrm_replacement() {
     println!("raise returned");
 }
 
+/// The guest SIGALRM handler of the SIGALRM modes: prints that it ran.
+extern "C" fn on_alarm(_: libc::c_int) {
+    let message = b"alarm-handler-ran\n";
+    unsafe { libc::write(libc::STDOUT_FILENO, message.as_ptr().cast(), message.len()) };
+}
+
+/// The root installs a guest SIGALRM handler (kept virtual: the run admits
+/// SIGALRM handlers) and resets SIGALRM to its default, which reports the
+/// accepted handler's flags and restorer; then it raises SIGALRM, which the
+/// default action would make fatal. The SIGALRM signal callback installs the
+/// same handler again and lets the guest's SIGALRM be delivered: refused as a
+/// Tool error before anything is sent, so the handler never runs. Prints the
+/// two `sigaction` results, and a line from the handler or after `raise`
+/// only if they happen.
+fn sigalrm_installed_by_callback() {
+    install_tool();
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = on_alarm as *const () as usize;
+    let installed = unsafe { libc::sigaction(libc::SIGALRM, &action, std::ptr::null_mut()) };
+    let default: libc::sigaction = unsafe { std::mem::zeroed() };
+    let mut accepted: libc::sigaction = unsafe { std::mem::zeroed() };
+    let reset = unsafe { libc::sigaction(libc::SIGALRM, &default, &mut accepted) };
+    println!("sigaction={installed} reset={reset}");
+    CALLBACK_ALARM_ACTION[0].store(accepted.sa_sigaction as u64, Ordering::Relaxed);
+    CALLBACK_ALARM_ACTION[1].store(accepted.sa_flags as u64, Ordering::Relaxed);
+    CALLBACK_ALARM_ACTION[2].store(
+        accepted
+            .sa_restorer
+            .map_or(0, |restorer| restorer as usize as u64),
+        Ordering::Relaxed,
+    );
+    INSTALL_SIGALRM_IN_CALLBACK.store(true, Ordering::Relaxed);
+    unsafe { libc::raise(libc::SIGALRM) };
+    println!(
+        "raise returned install={}",
+        CALLBACK_ALARM_INSTALL.load(Ordering::Relaxed)
+    );
+}
+
+/// The clone3 trials of the `clone3-flip` mode.
+const FLIP_TRIALS: usize = 64;
+/// The guest's own clone3 attempts of the `clone3-flip` mode.
+const FLIP_ATTEMPTS: usize = 256;
+
+/// Waits for `child` through the trusted gate (the wait4 callback returns a
+/// fixture value) and returns its raw wait status.
+fn wait_raw(child: libc::pid_t) -> i32 {
+    let mut status = -1i32;
+    loop {
+        let waited = unsafe {
+            reverie_inguest::trap::raw_syscall6(
+                libc::SYS_wait4,
+                [child as u64, (&mut status as *mut i32) as u64, 0, 0, 0, 0],
+            )
+        };
+        if waited == -i64::from(libc::EINTR) {
+            continue;
+        }
+        assert_eq!(waited, i64::from(child));
+        return status;
+    }
+}
+
+/// A clone3 record in a shared page, which a flipper process keeps switching
+/// between a plain fork and the same record with `set_tid_size` 1 (Linux
+/// refuses that with EINVAL): every decision about one call must come from
+/// one reading of it.
+///
+/// First, `FLIP_TRIALS` children each raise SIGFPE, whose signal callback
+/// injects clone3 of the record until it is refused by name (a plain fork
+/// outside a syscall handler) or makes a child; prints each child's status
+/// and the children the callbacks made. Then the root makes the guest's own
+/// clone3 of the record `FLIP_ATTEMPTS` times; prints how many made a child
+/// (each child exits 0), failed with EINVAL (Linux read a record that was not
+/// the one classified), or EOPNOTSUPP (classified as not a plain fork), and
+/// anything else.
+fn clone3_flip() {
+    install_tool();
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(page, libc::MAP_FAILED);
+    let words = page.cast::<AtomicU64>();
+    let word = |index: usize| unsafe { &*words.add(index) };
+    word(4).store(libc::SIGCHLD as u64, Ordering::SeqCst);
+    let flipper = fork_or_panic();
+    if flipper == 0 {
+        while word(FLIP_STOP_WORD).load(Ordering::Relaxed) == 0 {
+            word(9).fetch_xor(1, Ordering::Relaxed);
+        }
+        unsafe { libc::_exit(0) };
+    }
+    FLIP_PAGE.store(page as usize, Ordering::Relaxed);
+    let mut statuses = std::collections::BTreeMap::<i32, usize>::new();
+    for _ in 0..FLIP_TRIALS {
+        let child = fork_or_panic();
+        if child == 0 {
+            unsafe {
+                libc::raise(libc::SIGFPE);
+                libc::_exit(99);
+            }
+        }
+        *statuses.entry(wait_raw(child)).or_default() += 1;
+    }
+    FLIP_PAGE.store(0, Ordering::Relaxed);
+    let created = word(FLIP_CREATED_WORD).load(Ordering::SeqCst);
+    let (mut children, mut einval, mut eopnotsupp, mut other) = (0, 0, 0, 0);
+    for _ in 0..FLIP_ATTEMPTS {
+        let result = raw_clone3(page.cast::<u8>(), 88);
+        if result == 0 {
+            unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+        }
+        if result > 0 {
+            if wait_raw(result as libc::pid_t) == 0 {
+                children += 1;
+            } else {
+                other += 1;
+            }
+            continue;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EINVAL) => einval += 1,
+            Some(libc::EOPNOTSUPP) => eopnotsupp += 1,
+            _ => other += 1,
+        }
+    }
+    word(FLIP_STOP_WORD).store(1, Ordering::SeqCst);
+    assert_eq!(wait_raw(flipper), 0);
+    let statuses: Vec<String> = statuses
+        .iter()
+        .map(|(status, count)| format!("{status:#x}x{count}"))
+        .collect();
+    println!(
+        "trials={FLIP_TRIALS} statuses={} created={created}",
+        statuses.join(",")
+    );
+    println!(
+        "attempts={FLIP_ATTEMPTS} children={children} einval={einval} eopnotsupp={eopnotsupp} other={other}"
+    );
+}
+
+/// The root process's thread-start callback sends it SIGTERM, and its
+/// post-exec callback would ignore SIGTERM: the SIGTERM must end the process
+/// before the post-exec callback runs, as a tracer delivers it when the thread
+/// resumes from its start. Prints a line only if it survives.
 fn root_startup_signal() {
     FATAL_THREAD_START.store(true, Ordering::Relaxed);
     IGNORE_SIGTERM_AT_POST_EXEC.store(true, Ordering::Relaxed);
@@ -1828,6 +2113,14 @@ fn main() {
     }
     if mode == "sigalrm-replacement" {
         sigalrm_replacement();
+        return;
+    }
+    if mode == "sigalrm-installed-by-callback" {
+        sigalrm_installed_by_callback();
+        return;
+    }
+    if mode == "clone3-flip" {
+        clone3_flip();
         return;
     }
     if mode == "fallback-fork-stats" {
