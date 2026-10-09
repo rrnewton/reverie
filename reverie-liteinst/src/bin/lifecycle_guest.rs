@@ -773,6 +773,29 @@ fn install_tool() {
     unsafe { reverie_liteinst::install_tool_quiescent::<LifecycleTool>(coordinator) }.unwrap();
 }
 
+/// Sets every standard signal this process inherited as ignored back to its
+/// default action. The self-signal cases are signals' default actions, but an
+/// ignored disposition survives exec: a parent started by Python ignores
+/// SIGPIPE and SIGXFSZ (ci-hub's validation is), and a shell may ignore SIGINT
+/// or SIGQUIT for the jobs it starts. Inherited, SIGXFSZ's raise delivered
+/// nothing (https://github.com/rrnewton/reverie/issues/987). A case that wants
+/// a signal ignored sets that itself; handlers are left alone.
+fn undo_inherited_ignores() {
+    for signal in 1..32 {
+        if signal == libc::SIGKILL || signal == libc::SIGSTOP {
+            continue;
+        }
+        let mut current: libc::sigaction = unsafe { std::mem::zeroed() };
+        let queried = unsafe { libc::sigaction(signal, std::ptr::null(), &mut current) };
+        if queried == 0 && current.sa_sigaction == libc::SIG_IGN {
+            assert_ne!(
+                unsafe { libc::signal(signal, libc::SIG_DFL) },
+                libc::SIG_ERR
+            );
+        }
+    }
+}
+
 fn fork_or_panic() -> libc::pid_t {
     let child = unsafe { libc::fork() };
     assert_ne!(
@@ -942,6 +965,7 @@ fn self_signal_deaths() {
         FATAL_THREAD_START.store(thread_start, Ordering::Relaxed);
         let child = fork_or_panic();
         if child == 0 {
+            undo_inherited_ignores();
             end();
             unsafe { libc::_exit(99) };
         }
