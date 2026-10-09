@@ -738,6 +738,10 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
             "raise-sigstkflt",
             "raise-sigpwr",
             "raise-sigxfsz",
+            "raise-sigint",
+            "raise-sigquit",
+            "raise-sigio",
+            "raise-sigxcpu",
         ],
         "{stdout}"
     );
@@ -845,6 +849,40 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
                     PhysicallyExited,
                 ]
             }
+            // The signal callback staged a SIGKILL in a future it abandoned:
+            // its later write (SIGINT) is never made, and its return
+            // (SIGQUIT) does not save the guest.
+            "raise-sigint" | "raise-sigquit" => {
+                let signal = if label == "raise-sigint" {
+                    libc::SIGINT
+                } else {
+                    libc::SIGQUIT
+                };
+                assert_eq!(status, kill, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(signal as u16),
+                    ExitThread(kill),
+                    ExitProcess(kill),
+                    PhysicallyExited,
+                ]
+            }
+            // The tgkill handler staged a SIGKILL in a future it abandoned,
+            // then returned 0: the guest still dies by SIGKILL.
+            "raise-sigio" => {
+                assert_eq!(status, kill, "{label}");
+                vec![ExitThread(kill), ExitProcess(kill), PhysicallyExited]
+            }
+            // The signal callback injected a plain fork: refused as a Tool
+            // error before the fork is made (no other process appears).
+            "raise-sigxcpu" => {
+                assert_eq!(status, 125 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGXCPU as u16),
+                    PhysicallyExited,
+                ]
+            }
             // SIGXFSZ and SIGUSR1 held; the SIGXFSZ callback sent SIGUSR1
             // again while it was still waiting, so SIGUSR1 is delivered
             // once (its callback ignores it), and the child goes on.
@@ -900,6 +938,54 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
     assert!(
         !observed.iter().any(|(.., what)| *what == AfterSigkill),
         "{observed:?}"
+    );
+    assert!(!stderr.contains("after-abandoned-sigkill"), "{stderr}");
+    assert!(
+        stderr.contains("a plain fork injected outside a syscall handler is unsupported"),
+        "{stderr}"
+    );
+    // Only the root and its listed children ever connected: the refused
+    // fork made no process.
+    let mut pids: Vec<i32> = observed.iter().map(|(_, pid, _)| *pid).collect();
+    pids.sort_unstable();
+    pids.dedup();
+    assert_eq!(pids.len(), children.len() + 1, "{observed:?}");
+}
+
+/// A signal callback that replaces the guest's own fatal signal with
+/// SIGALRM, while the guest's SIGALRM handler is kept virtual (admitted
+/// SIGALRM handlers, site patching off), is refused by name as a Tool error
+/// before anything is sent: a raw SIGALRM would stay physically blocked and
+/// the handler would never run. The handler is observed not to run, and the
+/// guest does not go on past its `raise`.
+#[tokio::test(flavor = "current_thread")]
+async fn replacing_a_signal_with_a_virtual_sigalrm_is_refused_by_name() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let mut command = guest_command("sigalrm-replacement");
+    command
+        .env(reverie_liteinst::SIGALRM_HANDLERS_ENV, "1")
+        .env(SITE_PATCHING_ENV, "0");
+    let (result, _global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(command, (), preload),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.code(), Some(125), "{result:?}");
+    // The handler was admitted, and neither it nor the code after `raise`
+    // ran.
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout),
+        "sigaction=0\n",
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "replacing SIGTERM with SIGALRM while the guest's SIGALRM handler is virtual is unsupported"
+        ),
+        "{stderr}"
     );
 }
 
