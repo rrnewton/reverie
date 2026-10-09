@@ -7094,16 +7094,16 @@ impl<L: Tool + 'static> TracedTask<L> {
             .await?;
         // A SIGTRAP the guest or another process sent can stop the step
         // before the `syscall` ran; a stale step SIGTRAP was discarded there
-        // already (`step_private_syscall`). `status_to_result` would take it
-        // for the step's report, and the injection would return its own
-        // syscall number. It is discarded instead, as the main loop discards
-        // an unclaimed SIGTRAP (`handle_sigtrap`), and the step runs the
-        // syscall. A held signal is not reported while the trap could be
-        // claimed (`sigtrap_may_be_claimed`). A frame-mode injection holds
-        // the trap for the resume instead (`status_to_result`). Under a
-        // tracer filter the trap is not discarded, as on main: the retried
-        // step can stop again at requests that filter may refuse or kill the
-        // tracer at (`thread_may_be_seccomp_filtered`).
+        // already (`step_private_syscall`). `status_to_result` would report
+        // that the syscall did not run (`-ERESTARTSYS`). The trap is
+        // discarded instead, as the main loop discards an unclaimed SIGTRAP
+        // (`handle_sigtrap`), and the step runs the syscall. A held signal is
+        // not reported while the trap could be claimed
+        // (`sigtrap_may_be_claimed`). A frame-mode injection holds the trap
+        // for the resume instead (`status_to_result`). Under a tracer filter
+        // the trap is not discarded, as on main: the retried step can stop
+        // again at requests that filter may refuse or kill the tracer at
+        // (`thread_may_be_seccomp_filtered`).
         while child_context.is_none()
             && is_sigtrap_before_private_syscall(&wait)?
             && !thread_may_be_seccomp_filtered()
@@ -7604,9 +7604,20 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.note_injection_stop(&wait_status)?;
         match wait_status {
             Wait::Stopped(stopped, event) => match event {
-                Event::Signal(_sig) if context.is_none() => {
-                    let regs = stopped.getregs()?;
-                    Ok(Ok(regs.ret() as i64))
+                Event::Signal(sig) if context.is_none() => {
+                    // The guest's own pending syscall, resumed from its
+                    // syscall stop to its exit (`inner_inject`). Linux reports
+                    // the exit stop before any signal-delivery stop for a
+                    // syscall it ran, so this one did not run, and RAX holds
+                    // no result of it. Report that it did not run, holding the
+                    // signal for the resume as for a private-page step that a
+                    // signal stopped before its `syscall`. An unclaimed
+                    // SIGTRAP is not held: the main loop does not deliver one
+                    // (`handle_sigtrap`).
+                    if sig != Signal::SIGTRAP {
+                        self.hold_pending_signal(&stopped, sig);
+                    }
+                    Ok(Err(Errno::ERESTARTSYS))
                 }
                 Event::Signal(sig) => {
                     let mut regs = stopped.getregs()?;
@@ -7661,6 +7672,16 @@ impl<L: Tool + 'static> TracedTask<L> {
                             *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
                         }
                         self.hold_pending_signal(&stopped, sig);
+                    } else if regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET {
+                        // A SIGTRAP the guest or another process sent stopped
+                        // the step before the `syscall` ran, and
+                        // `untraced_syscall_with` did not discard it and step
+                        // again (see there). RAX still holds the syscall
+                        // number, which is no result: report that the syscall
+                        // did not run. The trap is not held, as the main loop
+                        // does not deliver an unclaimed SIGTRAP
+                        // (`handle_sigtrap`).
+                        *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
                     }
                     let result = Errno::from_ret(regs.ret() as usize).map(|x| x as i64);
                     if let Some(context) = context {
