@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use reverie::CpuIdResult;
 use reverie::Errno;
 use reverie::Error;
 use reverie::ExitStatus;
@@ -48,6 +49,14 @@ static BLOCKING_RPC_OK: AtomicU64 = AtomicU64::new(0);
 /// descriptor-closing calls; the Tool then subscribes to `close` and
 /// `close_range` too.
 static SUBSCRIBE_CLOSES: AtomicBool = AtomicBool::new(false);
+/// Set before `install_tool` by the `self-signal-deaths` mode: the Tool then
+/// subscribes to CPUID too.
+static SUBSCRIBE_CPUID: AtomicBool = AtomicBool::new(false);
+/// The next CPUID callback sends the guest SIGTERM.
+static FATAL_CPUID: AtomicBool = AtomicBool::new(false);
+/// A thread start sends the starting thread SIGTERM (set across a fork, so
+/// the child's start sends it).
+static FATAL_THREAD_START: AtomicBool = AtomicBool::new(false);
 /// Tags the one RPC a process sends at `exit_group` with its count of Tool
 /// callbacks, so the host can compare the backend's dispatch counts with the
 /// callbacks the Tool actually made.
@@ -207,7 +216,7 @@ impl Tool for LifecycleTool {
     type ThreadState = ();
 
     fn subscriptions(_config: &()) -> Subscription {
-        [
+        let mut subscriptions: Subscription = [
             Sysno::getpid,
             Sysno::getppid,
             Sysno::clock_gettime,
@@ -228,7 +237,40 @@ impl Tool for LifecycleTool {
                 .into_iter()
                 .flatten(),
         )
-        .collect()
+        .collect();
+        if SUBSCRIBE_CPUID.load(Ordering::Relaxed) {
+            subscriptions.cpuid();
+        }
+        subscriptions
+    }
+
+    /// Sends the starting thread SIGTERM when `FATAL_THREAD_START` is set.
+    async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+        if FATAL_THREAD_START.load(Ordering::Relaxed) {
+            send_self(guest, libc::SIGTERM).await;
+        }
+        Ok(())
+    }
+
+    /// Answers with the processor's own CPUID, after sending the guest
+    /// SIGTERM when `FATAL_CPUID` is set.
+    async fn handle_cpuid_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        eax: u32,
+        ecx: u32,
+    ) -> Result<CpuIdResult, Errno> {
+        if FATAL_CPUID.swap(false, Ordering::Relaxed) {
+            send_self(guest, libc::SIGTERM).await;
+        }
+        // Inside a Tool callback the instruction runs natively.
+        let native = core::arch::x86_64::__cpuid_count(eax, ecx);
+        Ok(CpuIdResult {
+            eax: native.eax,
+            ebx: native.ebx,
+            ecx: native.ecx,
+            edx: native.edx,
+        })
     }
 
     async fn handle_syscall_event<G: Guest<Self>>(
@@ -314,9 +356,14 @@ impl Tool for LifecycleTool {
             Syscall::Clone(clone) if clone.flags().bits() & libc::CLONE_VM == 0 => {
                 Ok(inject_fork(guest, syscall).await?)
             }
-            Syscall::Tgkill(_) => {
-                // Records that the handler goes on after its injection.
+            Syscall::Tgkill(tgkill) => {
+                // Records that the handler goes on after its injection. For
+                // SIGPROF it also sends the guest SIGKILL after forwarding the
+                // guest's own signal.
                 let result = guest.inject(syscall).await;
+                if tgkill.sig() == libc::SIGPROF {
+                    send_self(guest, libc::SIGKILL).await;
+                }
                 let value = result.unwrap_or_else(|errno| -i64::from(errno.into_raw()));
                 let pid = guest.pid().as_raw();
                 guest
@@ -362,6 +409,11 @@ impl Tool for LifecycleTool {
                 assert_eq!(result, 0);
             }
             Signal::SIGHUP => return Ok(None),
+            Signal::SIGVTALRM => {
+                // Sends SIGKILL from the callback, then suppresses this one.
+                send_self(guest, libc::SIGKILL).await;
+                return Ok(None);
+            }
             _ => {}
         }
         Ok(Some(signal))
@@ -403,6 +455,20 @@ impl Tool for LifecycleTool {
         }
         Ok(())
     }
+}
+
+/// Sends `signal` to the calling thread through a Tool injection; the
+/// injection must report success.
+async fn send_self<G: Guest<LifecycleTool>>(guest: &mut G, signal: libc::c_int) {
+    let sent = guest
+        .inject(
+            reverie::syscalls::Tgkill::new()
+                .with_tgid(guest.pid().as_raw())
+                .with_tid(guest.tid().as_raw())
+                .with_sig(signal),
+        )
+        .await;
+    assert_eq!(sent, Ok(0), "the Tool's tgkill of signal {signal}");
 }
 
 /// Asks the driver to re-run this callback for the same guest entry, which the
@@ -514,20 +580,31 @@ fn signaled_descendant(pid_file: &Path) -> ! {
 }
 
 /// Each child sends itself a signal and the parent prints how it ended
-/// (`<label> pid=<pid> status=<raw wait status>`). `abort` (a `tgkill`,
-/// which the Tool subscribes to) with this process's core limit, and with a
-/// core limit of 1 (no core); `kill` of the child's own pid, which the Tool
-/// does not subscribe to, with SIGTERM and SIGKILL; and `raise` of SIGUSR1,
-/// SIGUSR2 and SIGHUP, whose deaths the Tool's signal callback undoes
-/// (ignored, blocked, suppressed), so each of those children exits with its
-/// own code: 41, 42 (SIGUSR2 then pending) and 43 (SIGHUP not pending).
+/// (`<label> pid=<pid> status=<raw wait status>`):
+/// - `abort` (a `tgkill`, which the Tool subscribes to) with this process's
+///   core limit, and with a core limit of 1 (no core);
+/// - `kill` of the child's own pid, which the Tool does not subscribe to,
+///   with SIGTERM and SIGKILL;
+/// - `raise` of SIGUSR1, SIGUSR2 and SIGHUP, whose deaths the Tool's signal
+///   callback undoes (ignored, blocked, suppressed), so each of those
+///   children exits with its own code: 41, 42 (SIGUSR2 then pending) and 43
+///   (SIGHUP not pending);
+/// - `raise` of SIGVTALRM, whose signal callback sends SIGKILL and suppresses
+///   SIGVTALRM, and of SIGPROF, whose tgkill handler forwards it and then
+///   sends SIGKILL: both children die by SIGKILL;
+/// - a CPUID whose instruction callback sends SIGTERM, and a fork child
+///   whose thread-start callback sends SIGTERM: both die by SIGTERM;
+/// - an `abort` in a child whose seccomp filter refuses `rt_sigpending`, so
+///   the runtime cannot confirm the signal pending: it ends the child with
+///   status 125, before any exit callback.
 fn self_signal_deaths() {
+    SUBSCRIBE_CPUID.store(true, Ordering::Relaxed);
     install_tool();
     fn pending(signal: libc::c_int) -> bool {
         let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
         unsafe { libc::sigpending(&mut set) == 0 && libc::sigismember(&set, signal) == 1 }
     }
-    let cases: [(&str, fn()); 7] = [
+    let cases: [(&str, fn()); 12] = [
         ("abort", || unsafe { libc::abort() }),
         ("abort-core-limit-1", || unsafe {
             let one = libc::rlimit {
@@ -563,13 +640,32 @@ fn self_signal_deaths() {
                 40
             });
         }),
+        ("raise-sigvtalrm", || unsafe {
+            libc::raise(libc::SIGVTALRM);
+        }),
+        ("raise-sigprof", || unsafe {
+            libc::raise(libc::SIGPROF);
+        }),
+        ("cpuid-sigterm", || {
+            FATAL_CPUID.store(true, Ordering::Relaxed);
+            std::hint::black_box(core::arch::x86_64::__cpuid(std::hint::black_box(0)));
+        }),
+        // FATAL_THREAD_START is set around this child's fork, below.
+        ("thread-start-sigterm", || {}),
+        ("abort-pending-unreadable", || unsafe {
+            deny_rt_sigpending();
+            libc::abort()
+        }),
     ];
     for (label, end) in cases {
+        let thread_start = label == "thread-start-sigterm";
+        FATAL_THREAD_START.store(thread_start, Ordering::Relaxed);
         let child = fork_or_panic();
         if child == 0 {
             end();
             unsafe { libc::_exit(99) };
         }
+        FATAL_THREAD_START.store(false, Ordering::Relaxed);
         // The wait4 callback returns a fixture value; wait through the
         // trusted gate instead.
         let mut status = -1i32;
@@ -588,8 +684,56 @@ fn self_signal_deaths() {
         }
         println!("{label} pid={child} status={status:#x}");
     }
-    // Give the coordinator's exit observer time to report the last child.
-    std::thread::sleep(Duration::from_millis(200));
+}
+
+/// Installs a seccomp filter that makes `rt_sigpending` fail with EPERM and
+/// allows every other call.
+unsafe fn deny_rt_sigpending() {
+    let filter = [
+        // A = seccomp_data.nr
+        libc::sock_filter {
+            code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        libc::sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 1,
+            k: libc::SYS_rt_sigpending as u32,
+        },
+        libc::sock_filter {
+            code: (libc::BPF_RET | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_ERRNO | libc::EPERM as u32,
+        },
+        libc::sock_filter {
+            code: (libc::BPF_RET | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_ALLOW,
+        },
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_ptr() as *mut libc::sock_filter,
+    };
+    unsafe {
+        assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_seccomp,
+                libc::SECCOMP_SET_MODE_FILTER,
+                0,
+                &program as *const libc::sock_fprog,
+            ),
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+    }
 }
 
 fn fast_path() {
