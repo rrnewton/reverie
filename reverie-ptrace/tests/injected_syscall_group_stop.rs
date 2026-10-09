@@ -5979,10 +5979,23 @@ fn tracer_without_descriptors() {
     *SAVED_NOFILE.lock().unwrap() = Some(limit);
 }
 
+/// A marker's result from its injection's: `EINTR` where the injection
+/// reports that a signal stopped its syscall before it ran (`ERESTARTSYS`),
+/// as for a syscall a handler without `SA_RESTART` interrupts. Returned
+/// as is, `ERESTARTSYS` would have Linux restart the marker, and the tool
+/// would send its SIGTRAP again for the restarted one.
+fn without_restart(result: Result<i64, Errno>) -> Result<i64, Error> {
+    match result {
+        Err(Errno::ERESTARTSYS) => Err(Errno::EINTR.into()),
+        result => Ok(result?),
+    }
+}
+
 /// `ReplaceMarker`, whose hook for `GETPPID_FD` first injects `getpid`, then
 /// sends SIGTRAP to the guest's thread from the tracer, then SIGTSTP when
 /// `TSTP_AFTER_TRAP` is set. Linux dequeues the SIGTRAP when the injected `getppid` is stepped,
-/// before its `syscall` runs.
+/// before its `syscall` runs. The marker gets the `getppid`'s result
+/// (`without_restart`).
 #[derive(Clone, Copy, Debug, Default)]
 struct TrapBeforeGetppid;
 
@@ -6030,19 +6043,20 @@ impl Tool for TrapBeforeGetppid {
                 };
                 assert_eq!(sent, 0, "send signal {signal} to the guest");
             }
-            if GETPPID_WITHOUT_DESCRIPTORS.load(Ordering::Relaxed) {
-                if SAVED_NOFILE.lock().unwrap().is_none() {
-                    tracer_without_descriptors();
-                }
-                let result = guest.inject(Getppid::new()).await;
+            let limited = GETPPID_WITHOUT_DESCRIPTORS.load(Ordering::Relaxed);
+            if limited && SAVED_NOFILE.lock().unwrap().is_none() {
+                tracer_without_descriptors();
+            }
+            let result = guest.inject(Getppid::new()).await;
+            if limited {
                 let limit = SAVED_NOFILE.lock().unwrap().take().unwrap();
                 // SAFETY: restores the limit `tracer_without_descriptors` read.
                 unsafe { assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0) };
-                guest
-                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
-                    .await;
-                return Ok(result?);
             }
+            guest
+                .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                .await;
+            return without_restart(result);
         }
         replace_marker(guest, syscall).await
     }
@@ -6232,15 +6246,15 @@ fn sigtrap_before_an_injected_syscall_is_taken_as_on_main_with_no_descriptor_fro
 /// guest filter's SIGSYS, the `PTRACE_GETSIGMASK` that checks it; at the
 /// SIGTSTP, the `PTRACE_GETSIGINFO` that tells its delivery from a group
 /// stop. Under a tracer filter the trap is taken for the step's report
-/// instead, as on main, and the guest runs as on main: the `getppid` does
-/// not run, and the injection returns the syscall number left in RAX (110),
-/// a known gap (https://github.com/rrnewton/reverie/issues/845). A pending
-/// SIGTSTP is then reported, and its handler runs once. With `prctl` set,
-/// no descriptor can be opened during the injected `getppid`, so procfs
-/// cannot report the tracer thread's mode, and every `prctl` of the tracer
-/// gets that action from then on. With `from_first_sigsys` also set, that
-/// starts before the guest's first SIGSYS, whose delivery stop is then the
-/// first at which the tracer could open procfs to read its mode.
+/// instead, as on main: the `getppid` does not run, and the injection
+/// reports that (`ERESTARTSYS`) rather than the syscall number left in RAX
+/// (110). A pending SIGTSTP is then reported, and its handler runs once.
+/// With `prctl` set, no descriptor can be opened during the injected
+/// `getppid`, so procfs cannot report the tracer thread's mode, and every
+/// `prctl` of the tracer gets that action from then on. With
+/// `from_first_sigsys` also set, that starts before the guest's first
+/// SIGSYS, whose delivery stop is then the first at which the tracer could
+/// open procfs to read its mode.
 #[cfg(target_arch = "x86_64")]
 fn sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
     request: u32,
@@ -6261,10 +6275,11 @@ fn sigtrap_before_an_injected_syscall_runs_as_on_main_under_a_tracer_filter(
     check_trap_before_getppid_taken_as_on_main(&output, &log, tstp, probe);
 }
 
-/// Checks main's outcome for `trap_before_getppid_guest(tstp)`: the SIGTRAP
-/// is taken for the step's report, so the injected `getppid` does not run
-/// and returns the syscall number left in RAX (110), and a SIGTSTP handler
-/// runs once.
+/// Checks the outcome for `trap_before_getppid_guest(tstp)` when the SIGTRAP
+/// is taken for the step's report, as on main: the injected `getppid` does
+/// not run, the injection reports that (`ERESTARTSYS`) rather than the
+/// syscall number left in RAX (110), the marker fails with `EINTR`
+/// (`without_restart`), and a SIGTSTP handler runs once.
 #[cfg(target_arch = "x86_64")]
 fn check_trap_before_getppid_taken_as_on_main(
     output: &reverie::process::Output,
@@ -6288,23 +6303,18 @@ fn check_trap_before_getppid_taken_as_on_main(
     );
     assert_eq!(
         *log.injected.lock().unwrap(),
-        vec![Ok(libc::SYS_getppid)],
-        "the SIGTRAP is taken for the step's report, as on main"
+        vec![Err(Errno::ERESTARTSYS.into_raw())],
+        "the SIGTRAP is taken for the step's report, as on main, which reports that the getppid did not run"
     );
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(
         lines,
         [
             format!("4242 1 1 {} {}", libc::SYS_getppid, libc::SYS_getppid),
-            format!(
-                "{} 1 1 {} {}",
-                libc::SYS_getppid,
-                libc::SYS_getppid,
-                libc::SYS_getppid
-            ),
+            format!("-1 1 1 {} {}", libc::SYS_getppid, libc::SYS_getppid),
             usize::from(tstp).to_string(),
         ],
-        "the injected getppid does not run, and a SIGTSTP handler runs once"
+        "the injected getppid does not run, the marker fails, and a SIGTSTP handler runs once"
     );
     let mut signals = vec![libc::SIGSYS];
     if tstp {
@@ -6621,6 +6631,10 @@ const FILTER: u32 = 2;
 const RESTORE: u32 = 4;
 /// `GETPPID_FD` markers `TrapBeforeEachGetppid` has handled.
 static EACH_GETPPID_MARKERS: AtomicUsize = AtomicUsize::new(0);
+/// Whether `TrapBeforeEachGetppid` returns each injection's result to the
+/// guest unchanged, `ERESTARTSYS` included, rather than through
+/// `without_restart`.
+static EACH_GETPPID_FORWARD: AtomicBool = AtomicBool::new(false);
 
 /// Sets the tracer's soft `RLIMIT_NOFILE` to 0, so no descriptor can be
 /// opened, and returns the limit to restore.
@@ -6756,7 +6770,10 @@ impl Tool for TrapBeforeEachGetppid {
         guest
             .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
             .await;
-        Ok(result?)
+        if EACH_GETPPID_FORWARD.load(Ordering::Relaxed) {
+            return Ok(result?);
+        }
+        without_restart(result)
     }
 
     async fn handle_signal_event<G: Guest<Self>>(
@@ -6775,12 +6792,15 @@ impl Tool for TrapBeforeEachGetppid {
 /// each marker, checks whether the step is retried (`true`: the trap is
 /// discarded, and the guest's filter traps the `getppid`, which returns
 /// `ENOSYS` to the tool, and whose SIGSYS the guest handles) or the trap is
-/// taken for the step's report, as on main (`false`: the injection returns
-/// the syscall number left in RAX, and nothing runs in the guest).
+/// taken for the step's report, as on main (`false`: the injection reports
+/// that the `getppid` did not run, `ERESTARTSYS` rather than the syscall
+/// number left in RAX, nothing runs in the guest, and the marker fails with
+/// `EINTR`).
 #[cfg(target_arch = "x86_64")]
 fn sigtrap_before_each_injected_syscall(script: [u32; 2], retried: [bool; 2], probe: &str) {
     assert_tracer_unfiltered();
     EACH_GETPPID_MARKERS.store(0, Ordering::Relaxed);
+    EACH_GETPPID_FORWARD.store(false, Ordering::Relaxed);
     for (entry, value) in EACH_GETPPID_SCRIPT.iter().zip(script) {
         entry.store(value, Ordering::Relaxed);
     }
@@ -6820,8 +6840,8 @@ fn sigtrap_before_each_injected_syscall(script: [u32; 2], retried: [bool; 2], pr
             injected.push(Err(libc::ENOSYS));
             signals.push(libc::SIGSYS);
         } else {
-            lines.push(format!("{getppid} {traps} 1 {getppid} {rax}"));
-            injected.push(Ok(getppid));
+            lines.push(format!("-1 {traps} 1 {getppid} {rax}"));
+            injected.push(Err(Errno::ERESTARTSYS.into_raw()));
         }
     }
     let got: Vec<&str> = stdout.trim().lines().collect();
@@ -6947,6 +6967,74 @@ fn sigtrap_before_an_injected_syscall_is_discarded_until_a_filter_is_added_with_
             [true, false],
             "trap-each-late-filter-emfile",
         )
+    });
+}
+
+/// A handler that returns an injection's `ERESTARTSYS`, as `?` does, has
+/// Linux restart the guest's syscall, which the tool then handles again. The
+/// trap before the first injected `getppid` is taken as on main, with no
+/// descriptor left to read the tracer thread's mode, and the tool returns
+/// the injection's `ERESTARTSYS` unchanged (`EACH_GETPPID_FORWARD`). The
+/// marker is restarted rather than failed: the tool handles it a second
+/// time, with descriptors, so that trap is discarded and the `getppid` runs,
+/// which the guest's filter traps, and whose SIGSYS the guest handles.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn guest_syscall_is_restarted_when_its_handler_returns_an_injection_that_did_not_run() {
+    const NAME: &str =
+        "guest_syscall_is_restarted_when_its_handler_returns_an_injection_that_did_not_run";
+    in_child_process(NAME, || {
+        assert_tracer_unfiltered();
+        EACH_GETPPID_MARKERS.store(0, Ordering::Relaxed);
+        EACH_GETPPID_FORWARD.store(true, Ordering::Relaxed);
+        for (entry, value) in EACH_GETPPID_SCRIPT.iter().zip([LOWER | RESTORE, 0]) {
+            entry.store(value, Ordering::Relaxed);
+        }
+        let (output, log) = test_fn::<TrapBeforeEachGetppid, _>(|| unsafe {
+            trap_getppid();
+            print_seccomp_trap(libc::syscall(libc::SYS_getppid));
+            let ret = libc::syscall(libc::SYS_write, GETPPID_FD, std::ptr::null::<u8>(), 0usize);
+            print_seccomp_trap(ret);
+        })
+        .expect("run restarted-getppid guest");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        eprintln!(
+            "PROBE trap-restart status={:?} guest={:?} injected={:?} signals={:?}",
+            output.status,
+            stdout.trim(),
+            *log.injected.lock().unwrap(),
+            *log.signals.lock().unwrap()
+        );
+        assert_eq!(
+            output.status,
+            ExitStatus::Exited(0),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            EACH_GETPPID_MARKERS.load(Ordering::Relaxed),
+            2,
+            "the tool handles the marker, then the restarted marker"
+        );
+        assert_eq!(
+            *log.injected.lock().unwrap(),
+            vec![Err(Errno::ERESTARTSYS.into_raw()), Err(libc::ENOSYS)],
+            "the first getppid does not run, and the second is trapped by the guest's filter"
+        );
+        let getppid = libc::SYS_getppid;
+        let lines: Vec<&str> = stdout.trim().lines().collect();
+        assert_eq!(
+            lines,
+            [
+                format!("4242 1 1 {getppid} {getppid}"),
+                format!("4242 2 1 {getppid} {}", -libc::ENOSYS),
+            ],
+            "the guest's SIGSYS handler emulates the restarted marker's getppid once"
+        );
+        assert_eq!(
+            *log.signals.lock().unwrap(),
+            vec![libc::SIGSYS, libc::SIGSYS]
+        );
     });
 }
 
