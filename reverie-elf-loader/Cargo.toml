@@ -18,3 +18,4 @@ libc = "0.2.186"
 
 [dev-dependencies]
 sha2 = "0.10.9"
+reverie-inguest = { path = "../reverie-inguest", default-features = false }

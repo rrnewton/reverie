@@ -13,6 +13,36 @@ argument copying and stack alignment/randomization. Linux 6.17 has no live
 operations are per-segment `vm_brk_flags` at line 439 and final mm brk
 assignment at line 1313. Those computations are audited separately.
 
+## LB precommit source audit
+
+LB adds the inactive Rust modules `exec`, `arguments`, `descriptors`, `host`,
+`protocol` and `proc_state`. The original 168-row LA ledger below retains its
+numeric Rust/C references at `d9f0affc97430885ca79d02dffa7611419a07129`.
+LB references use function names. Native comparisons run on
+`7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf`; the source reference remains Linux 6.17.
+Qualification for another kernel/security environment remains the caller's
+explicit obligation. All LB production paths remain unwired.
+
+| Check | Reference source | LB implementation / evidence boundary |
+| --- | --- | --- |
+| Original path/flags/fault/authorization errors | `fs/exec.c:764–802,1372–1470,1730–1860`; `fs/namei.c:218–224` | `prepare_exec[_raw]` sends the original request to execveat with CHECK. Original errors retain the returned errno. Capacity is established first, then the private pool is released for this original lookup and reacquired before pinning, preserving invalid low dirfds/procfd names. Combined invalid flags/path precedence is compared to the running kernel rather than inferred from the source revision. |
+| CHECK boundary | `fs/exec.c:1451–1464,1750–1754` | `check_exec` always ORs CHECK, including malformed flags; unsupported CHECK cannot accidentally execute. Original CHECK and extra FD CHECK are authorization witnesses. The format port and LA admission run separately. Omitted security hooks require qualification. |
+| Regularity before open methods | `fs/namei.c:3439–3466,3885–3887`; `fs/exec.c:764–802` | CHECK rejects nonregular main objects before `vfs_open`; `pin` uses O_PATH for T/I/scripts and EMPTY_PATH. `classify_pinned` precedes `reopen`. Public-libc tracing and bounded FIFO/device controls supplement this kernel-internal source fact. Generic proc/sys/dev interpreter spellings are refused before lookup. |
+| Descriptor binding/read permission | `fs/open.c:942–965`; `fs/exec.c:786–800` | `reopen` opens only the owned pinned procfd. Full device/inode/mount/size/mtime/ctime equality is required throughout preparation. Execute-only files get `ExecutableReadRequired`. Replacement/unlink controls mmap the retained I; path-reopen selects a different object and fails the identity guard. Strict metadata stability still refuses changed inputs. |
+| Main native format checks | `fs/binfmt_elf.c:840–895`; `load_elf_phdrs:505–541` | `native_main_interpreter` checks magic/type, supported architecture, native phdr width/size/read and the first PT_INTERP length/NUL/read. Native short phdr reads give ENOEXEC; short PT_INTERP reads give EIO. Extra preflight read errors are typed preparation refusals. Foreign/compat handlers remain explicitly unsupported. |
+| Interpreter source order | `fs/binfmt_elf.c:892–918,942–995` | I is opened before LA load geometry checks. Short I header gives EIO; invalid magic/arch/phdr gives ELIBBAD. Native interpreter type/load geometry occurs after `begin_new_exec`, so LA exclusions retain named refusals. Extra FD CHECK policy denials get `InterpreterCheckStronger`; ETXTBSY requires a real writable same-inode FD and qualified absent watches. Mode/noexec EACCES sources are explicit. |
+| ELF read granularity | `fs/binfmt_elf.c:465–473,530`; `fs/exec.c:prepare_binprm` | `native_single_read` makes one pread for each corresponding kernel read. It does not retry a successful short read into an invented native success. |
+| Native string/pointer budget | `fs/exec.c:398–445,1784–1858` | `ArgumentPlan` uses max(128 KiB,min(6 MiB,stack/4)); pointer allowance is 8*(max(original argc,1)+original envc), retained through script rewriting. F is copied separately, empty argv is normalized, and equality at the byte limit is admitted. The final launcher pointer count is recomputed and may refuse `LauncherArgumentBudget`. |
+| Additional E2BIG source | `fs/exec.c:get_arg_page`; `mm/vma.c:acct_stack_growth` | A real 64 KiB stack with approximately 96 KiB arguments gives E2BIG despite both size models passing. Original CHECK errno stays E2BIG with `BothModelsPass`; it is not relabelled as augmentation failure. |
+| Script parsing/rewriting/order | `fs/binfmt_script.c:19–147`; `fs/exec.c:1691–1726` | `parse_script` includes byte255 termination; one optional argument preserves embedded spaces. `rewrite_script` removes argv0 then pushes current script name, optional argument and interpreter. Original F is retained. Five rewrites can reach ELF; the sixth interpreter open may fail before ELOOP. Native/preparation companions and pointer-budget mutation cover these orders. |
+| CLOEXEC script accessibility | `fs/exec.c:1435–1448`; `fs/binfmt_script.c:87–95` | Synthesized relative/EMPTY_PATH script names backed by CLOEXEC fds yield ENOENT after script parse and before rewrite/open. Literal procfd paths are separately controlled. |
+| Lookup/binfmt authority | `fs/binfmt_misc.c`; `fs/exec.c:search_binary_handler` | `HostQualification` requires complete frozen admitted mounts, inherited lookup mount IDs and authoritative nearest-ancestor registry/status. `check_interpreter_stage` matches current bprm interp at each script and final ELF stage. Unsafe/unknown mounts, detached bases, unverifiable authority and matching handlers receive named refusals. These adversarial authority fixtures are declared models; real unsafe filesystems are not activated. |
+| Security/credentials/watches | `fs/exec.c:1451–1464`; `security/integrity/ima/ima_main.c:603–615`; `security/commoncap.c` | Unknown/unreadable LSM/integrity, unqualified BPF, appraisal, unstable policy/watch receipts, setid/filecap and unsafe contexts refuse. BPF attestation includes file-open/file-permission, bprm and mmap hooks plus native/preflight subject equivalence. Root capability personality clearing is checked before NNP clipping. Privileged policy/watch/noexec/idmapped fixtures remain missing activation qualifications; model passes cannot establish them. |
+| Private descriptor transactions | `fs/file.c:alloc_fd`; `fs/open.c:do_sys_openat2` | `DescriptorReservation`, `OrdinaryOpenSlot`, private file transfer and bounded `StartManifest` preserve guest descriptors/OFDs/flags. Full native exec versus LauncherFdCapacity, post-reservation full-table T/I/scratch/connection/rollback and injected allocation/flag/undo failures have actual controls. Original consumer remains LA-only; LC must consume the new manifest. |
+| Proc aliases and auxv OFDs | `fs/proc/base.c:auxv_open,auxv_read`; `fs/proc/array.c`; task/mm lifetime source | `ProcAliasResolver` consumes already pinned real proc identities plus task generation. `AuxvSnapshot` uses a sealed kernel memfd and real OFDs: new open has a new cursor, dup shares it, old snapshots survive replacement. Native children preserve old parent/own-child auxv after exec; final script T and original F are observed separately. |
+| Clock/counter continuation | Approved design Part1 timers/counters and LB7 | `InheritedVirtualProcStateUnsupported` remains the precommit boundary. Actual nonzero clock/committed-count carrier, changed-origin restoration/read and offset-omission fixture are a missing gate; proc snapshot tests do not establish that gate. Actual runtime initialization/read APIs currently provide fresh counters without exec origin restoration. |
+| Production inactivity | `reverie-inguest/src/dispatch.rs:apply_guards`; `guest/host.rs:injected_syscall_guard` | Source is unchanged. Ordinary children call the actual PassthroughDispatcher/direct dispatch seam and observe EOPNOTSUPP for execve/execveat/CHECK while image, auxv, descriptors, memory and seccomp state persist. No loader or Hermit is invoked by those tests. |
+
 ## Reading the ledger
 
 - **168 computation rows:** 48 main ELF/allocator rows (L), 48 mapping/helper
@@ -24,8 +54,8 @@ assignment at line 1313. Those computations are audited separately.
   `arch/x86/include/asm/`. `C:` means
   `reverie-elf-loader/loader/loader.c`; `R:` means
   `reverie-elf-loader/src/lib.rs`. Loader assembly/linker paths are relative
-  to `reverie-elf-loader/loader/`. All numeric references describe the final
-  tested working source.
+  to `reverie-elf-loader/loader/`. These numeric references describe the LA
+  revision named above; LB uses function references in its separate table.
 - Short kernel basenames are qualified by their subsection: `x86 mm/mmap.c`
   is `arch/x86/mm/mmap.c`; `process_64.c`, `process.c` and `sys_x86_64.c`
   are under `arch/x86/kernel/`; `page_types.h` is under the x86 `asm/` tree;
