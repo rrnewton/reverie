@@ -60,6 +60,24 @@
 #ifndef CLOSE_RANGE_CLOEXEC
 #define CLOSE_RANGE_CLOEXEC (1U << 2)
 #endif
+#ifndef F_SETOWN_EX
+#define F_SETOWN_EX 15
+#endif
+#ifndef F_GETOWN_EX
+#define F_GETOWN_EX 16
+#endif
+#ifndef FIOSETOWN
+#define FIOSETOWN 0x8901
+#endif
+#ifndef SIOCSPGRP
+#define SIOCSPGRP 0x8902
+#endif
+#ifndef FIOGETOWN
+#define FIOGETOWN 0x8903
+#endif
+#ifndef SIOCGPGRP
+#define SIOCGPGRP 0x8904
+#endif
 
 typedef int64_t (*syscall_invoker_t)(uintptr_t, int64_t, const uint64_t*);
 typedef int32_t (*register_reader_t)(uintptr_t, struct user_regs_struct*);
@@ -2055,6 +2073,179 @@ static dr_emit_flags_t instrument_instruction(
   return DR_EMIT_DEFAULT;
 }
 
+static int64_t
+invoke_raw_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args);
+
+/* Whether this syscall sets or reports an asynchronous-I/O owner: the process,
+ * thread or process group Linux signals (SIGIO, or the F_SETSIG signal) when
+ * the descriptor becomes ready. The socket ioctls carry F_SETOWN's encoding
+ * through an int pointer; Linux hands them to the same f_setown/f_getown. */
+static bool is_owner_syscall(int sysnum, uint32_t cmd) {
+  if (sysnum == SYS_fcntl)
+    return cmd == F_SETOWN || cmd == F_SETOWN_EX || cmd == F_GETOWN ||
+        cmd == F_GETOWN_EX;
+  if (sysnum == SYS_ioctl)
+    return cmd == FIOSETOWN || cmd == SIOCSPGRP || cmd == FIOGETOWN ||
+        cmd == SIOCGPGRP;
+  return false;
+}
+
+static int64_t owner_raw_syscall(
+    uintptr_t context,
+    int64_t sysnum,
+    uint64_t a0,
+    uint64_t a1,
+    uint64_t a2) {
+  const uint64_t args[6] = {a0, a1, a2, 0, 0, 0};
+  return invoke_raw_syscall(context, sysnum, args);
+}
+
+/* The calling process's host process group, which owner translation treats
+ * as the group getpgrp shows the guest. */
+static fcntl_group_view_t caller_group_view(uintptr_t context) {
+  int64_t caller_group = owner_raw_syscall(context, SYS_getpgid, 0, 0, 0);
+  fcntl_group_view_t groups = {
+      .caller_group = caller_group > 0 ? (int32_t)caller_group : 0,
+  };
+  return groups;
+}
+
+/* Translate an owner value the guest wrote (`F_SETOWN`'s encoding, or an
+ * `F_SETOWN_EX` owner of kind `type` when `type` is not negative). */
+static bool translate_owner_value(
+    uintptr_t context,
+    int32_t type,
+    int32_t* value) {
+  bool translated;
+  fcntl_group_view_t groups = caller_group_view(context);
+  virtual_identity_lock();
+  translated = type < 0
+      ? translate_fcntl_setown_entries(
+            virtual_identity_state->identities,
+            virtual_identity_state->count,
+            &groups,
+            value)
+      : translate_fcntl_owner_entries(
+            virtual_identity_state->identities,
+            virtual_identity_state->count,
+            &groups,
+            type,
+            value);
+  virtual_identity_unlock();
+  return translated;
+}
+
+/* A host owner as the guest sees it, in `F_SETOWN_EX` form (`type` not
+ * negative) or `F_SETOWN`'s encoding (`type` negative); see
+ * `guest_owner_for_host_entries`, which makes a read-back owner set again
+ * name the same task or group. */
+static int32_t virtual_owner(uintptr_t context, int32_t type, int32_t host) {
+  int32_t guest;
+  fcntl_group_view_t groups = caller_group_view(context);
+  virtual_identity_lock();
+  guest = type < 0 ? guest_setown_for_host_entries(
+                         virtual_identity_state->identities,
+                         virtual_identity_state->count,
+                         &groups,
+                         host)
+                   : guest_owner_for_host_entries(
+                         virtual_identity_state->identities,
+                         virtual_identity_state->count,
+                         &groups,
+                         type,
+                         host);
+  virtual_identity_unlock();
+  return guest;
+}
+
+/* Whether a raw `F_GETOWN` result in [-4095, -1] is a negated process group
+ * rather than an error. Linux returns a group owner as its negated ID through
+ * the same register as an errno, so a host group below 4096 (common in a PID
+ * namespace) is indistinguishable by value. `F_GETOWN_EX` names the owner's
+ * kind and ID; a second `F_GETOWN` confirms that the owner did not change in
+ * between. The only error `F_GETOWN` itself returns is EBADF, which
+ * `F_GETOWN_EX` repeats; what remains is a security policy refusing
+ * `F_GETOWN` while allowing `F_GETOWN_EX` on a descriptor a group with that
+ * very number owns. */
+static bool
+owner_result_is_group(uintptr_t context, uint64_t fd, int64_t result) {
+  fcntl_owner_ex_t owner = {0};
+  if (owner_raw_syscall(
+          context, SYS_fcntl, fd, F_GETOWN_EX, (uint64_t)(uintptr_t)&owner) !=
+      0)
+    return false;
+  if (owner.type != FCNTL_OWNER_PGRP || (int64_t)owner.pid != -result)
+    return false;
+  return owner_raw_syscall(context, SYS_fcntl, fd, F_GETOWN, 0) == result;
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(hermit-3955): Review DBT fcntl/ioctl owner translation.
+/* Run an owner syscall (see `is_owner_syscall`) with guest IDs translated to
+ * host IDs and the reported owner translated back. The guest names owners by
+ * its own IDs while Linux resolves them in the host PID space, so passing them
+ * through either fails with ESRCH or makes an unrelated host task the owner.
+ *
+ * Both routes to the kernel come here: syscalls a Tool injects, and the
+ * guest's own syscalls, which `prepare_original_identity_syscall` executes
+ * here and skips. The translated owner lives in this frame's copy, so the
+ * guest's registers and memory are never rewritten and no state outlives the
+ * call; none of these commands blocks. An owner that cannot be read is passed
+ * through so the kernel reports EFAULT. */
+static int64_t
+execute_owner_syscall(uintptr_t context, int sysnum, const uint64_t* args) {
+  uint64_t translated[6];
+  uint32_t cmd = (uint32_t)args[1];
+  void* guest_owner = (void*)(uintptr_t)args[2];
+  fcntl_owner_ex_t owner;
+  int32_t who;
+  int64_t result;
+
+  memcpy(translated, args, sizeof(translated));
+  if (sysnum == SYS_fcntl && cmd == F_SETOWN) {
+    who = (int32_t)args[2];
+    if (translate_owner_value(context, -1, &who))
+      translated[2] = (uint64_t)(int64_t)who;
+  } else if (sysnum == SYS_fcntl && cmd == F_SETOWN_EX) {
+    if (read_app(guest_owner, &owner, sizeof(owner)) &&
+        translate_owner_value(context, owner.type, &owner.pid))
+      translated[2] = (uint64_t)(uintptr_t)&owner;
+  } else if (sysnum == SYS_ioctl && (cmd == FIOSETOWN || cmd == SIOCSPGRP)) {
+    if (read_app(guest_owner, &who, sizeof(who)) &&
+        translate_owner_value(context, -1, &who))
+      translated[2] = (uint64_t)(uintptr_t)&who;
+  }
+  result = invoke_raw_syscall(context, sysnum, translated);
+
+  if (sysnum == SYS_fcntl && cmd == F_GETOWN) {
+    if (result > 0 || (result < -4095 && result > INT32_MIN))
+      return virtual_owner(context, -1, (int32_t)result);
+    if (result < 0 && result >= -4095 &&
+        owner_result_is_group(context, args[0], result))
+      return virtual_owner(context, -1, (int32_t)result);
+    return result;
+  }
+  if (sysnum == SYS_fcntl && cmd == F_GETOWN_EX && result == 0) {
+    if (read_app(guest_owner, &owner, sizeof(owner))) {
+      int32_t guest = virtual_owner(context, owner.type, owner.pid);
+      if (guest != owner.pid) {
+        owner.pid = guest;
+        write_app(guest_owner, &owner, sizeof(owner));
+      }
+    }
+    return result;
+  }
+  if (sysnum == SYS_ioctl && (cmd == FIOGETOWN || cmd == SIOCGPGRP) &&
+      result == 0) {
+    if (read_app(guest_owner, &who, sizeof(who))) {
+      int32_t guest = virtual_owner(context, -1, who);
+      if (guest != who)
+        write_app(guest_owner, &guest, sizeof(guest));
+    }
+  }
+  return result;
+}
+
 static bool translate_identity_argument(uint64_t* argument) {
   int32_t identity = (int32_t)*argument;
   int32_t host;
@@ -2922,6 +3113,8 @@ invoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {
   memcpy(translated, args, sizeof(translated));
   if (!translate_identity_arguments((int)sysnum, translated))
     return unknown_identity_error(context, (int)sysnum, args);
+  if (is_owner_syscall((int)sysnum, (uint32_t)args[1]))
+    return execute_owner_syscall(context, (int)sysnum, args);
 
   if (sysnum == SYS_getpid)
     return pending_identity_is_process(counters)
@@ -3946,6 +4139,12 @@ static bool prepare_original_identity_syscall(
     dr_syscall_set_result(
         drcontext,
         (reg_t)unknown_identity_error((uintptr_t)drcontext, sysnum, args));
+    return false;
+  }
+  if (is_owner_syscall(sysnum, (uint32_t)args[1])) {
+    dr_syscall_set_result(
+        drcontext,
+        (reg_t)execute_owner_syscall((uintptr_t)drcontext, sysnum, args));
     return false;
   }
   if (wait_target_argument >= 0 &&

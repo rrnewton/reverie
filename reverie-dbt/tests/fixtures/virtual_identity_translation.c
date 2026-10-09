@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -57,6 +58,104 @@ static int expect_wait_translation(
   return 1;
 }
 
+static int expect_setown(
+    const virtual_identity_t* identities,
+    size_t count,
+    const fcntl_group_view_t* groups,
+    int32_t guest,
+    int32_t expected,
+    bool should_translate) {
+  int32_t actual = guest;
+  bool did_translate =
+      translate_fcntl_setown_entries(identities, count, groups, &actual);
+  if (did_translate == should_translate && actual == expected)
+    return 0;
+
+  fprintf(
+      stderr,
+      "F_SETOWN %d (caller group %d) translated=%d to %d, expected "
+      "translated=%d to %d\n",
+      guest,
+      groups->caller_group,
+      did_translate,
+      actual,
+      should_translate,
+      expected);
+  return 1;
+}
+
+static int expect_owner_ex(
+    const virtual_identity_t* identities,
+    size_t count,
+    const fcntl_group_view_t* groups,
+    int32_t type,
+    int32_t guest,
+    int32_t expected,
+    bool should_translate) {
+  int32_t actual = guest;
+  bool did_translate =
+      translate_fcntl_owner_entries(identities, count, groups, type, &actual);
+  if (did_translate == should_translate && actual == expected)
+    return 0;
+
+  fprintf(
+      stderr,
+      "F_SETOWN_EX type %d pid %d (caller group %d) translated=%d to %d, "
+      "expected translated=%d to %d\n",
+      type,
+      guest,
+      groups->caller_group,
+      did_translate,
+      actual,
+      should_translate,
+      expected);
+  return 1;
+}
+
+static int expect_readback(
+    const virtual_identity_t* identities,
+    size_t count,
+    const fcntl_group_view_t* groups,
+    int32_t host_who,
+    int32_t expected) {
+  int32_t actual =
+      guest_setown_for_host_entries(identities, count, groups, host_who);
+  if (actual == expected)
+    return 0;
+
+  fprintf(
+      stderr,
+      "F_GETOWN host %d (caller group %d) read back as %d, expected %d\n",
+      host_who,
+      groups->caller_group,
+      actual,
+      expected);
+  return 1;
+}
+
+/* An owner read back and set again must name the same host task or group. */
+static int expect_round_trip(
+    const virtual_identity_t* identities,
+    size_t count,
+    const fcntl_group_view_t* groups,
+    int32_t host_who) {
+  int32_t guest =
+      guest_setown_for_host_entries(identities, count, groups, host_who);
+  int32_t again = guest;
+  translate_fcntl_setown_entries(identities, count, groups, &again);
+  if (again == host_who)
+    return 0;
+
+  fprintf(
+      stderr,
+      "host owner %d (caller group %d) read back as %d, which sets %d\n",
+      host_who,
+      groups->caller_group,
+      guest,
+      again);
+  return 1;
+}
+
 int main(void) {
   const virtual_identity_t identities[] = {
       {.host = 4, .virtual_id = 3},
@@ -102,6 +201,143 @@ int main(void) {
   if (expect_wait_translation(&wait, 61, 100, 100, 0) != 0 ||
       expect_wait_translation(&wait, 247, 4, 4, 0) != 0 || !wait.pending)
     return 10;
+
+  /* fcntl owners, with host IDs that do not collide with virtual IDs. A thread
+   * or process must be a virtual ID: anything else, including 1100, which is
+   * only some task's host ID, becomes an ID outside Linux's PID range so the
+   * kernel reports ESRCH whatever host tasks exist. Zero, INT32_MIN, negative
+   * pids and invalid owner kinds reach the kernel unchanged so it rejects or
+   * clears them itself. */
+  const virtual_identity_t owners[] = {
+      {.host = 1004, .virtual_id = 3},
+      {.host = 1100, .virtual_id = 4},
+  };
+  const size_t owner_count = sizeof(owners) / sizeof(owners[0]);
+  const int32_t impossible = FCNTL_OWNER_IMPOSSIBLE_PID;
+  /* The caller is in the group virtual task 3 (host 1004) leads. */
+  fcntl_group_view_t own = {1004};
+  if (expect_setown(owners, owner_count, &own, 3, 1004, true) != 0 ||
+      expect_setown(owners, owner_count, &own, 4, 1100, true) != 0 ||
+      expect_setown(owners, owner_count, &own, 1100, impossible, true) != 0 ||
+      expect_setown(owners, owner_count, &own, 200, impossible, true) != 0 ||
+      expect_setown(owners, owner_count, &own, -3, -1004, true) != 0 ||
+      expect_setown(owners, owner_count, &own, 0, 0, false) != 0 ||
+      expect_setown(owners, owner_count, &own, INT32_MIN, INT32_MIN, false) !=
+          0)
+    return 11;
+  if (expect_owner_ex(
+          owners, owner_count, &own, FCNTL_OWNER_TID, 4, 1100, true) != 0 ||
+      expect_owner_ex(
+          owners, owner_count, &own, FCNTL_OWNER_PID, 3, 1004, true) != 0 ||
+      expect_owner_ex(
+          owners, owner_count, &own, FCNTL_OWNER_PGRP, 3, 1004, true) != 0 ||
+      expect_owner_ex(
+          owners, owner_count, &own, FCNTL_OWNER_PID, 1100, impossible, true) !=
+          0 ||
+      expect_owner_ex(
+          owners, owner_count, &own, FCNTL_OWNER_TID, 200, impossible, true) !=
+          0 ||
+      expect_owner_ex(
+          owners, owner_count, &own, FCNTL_OWNER_PID, 0, 0, false) != 0 ||
+      expect_owner_ex(
+          owners, owner_count, &own, FCNTL_OWNER_PID, -3, -3, false) != 0 ||
+      expect_owner_ex(owners, owner_count, &own, 7, 3, 3, false) != 0)
+    return 12;
+
+  /* A group is named the way Linux's find_vpid resolves it: any ID in use. The
+   * PID of virtual task 4 (host 1100) is translated even though task 4 leads
+   * no group (Linux accepts it and later reports no owner), as is the ID of a
+   * leader that has exited, whose entry stays in the table. 200 is no ID the
+   * guest has, so it is ESRCH. */
+  if (expect_setown(owners, owner_count, &own, -4, -1100, true) != 0 ||
+      expect_setown(owners, owner_count, &own, -200, -impossible, true) != 0 ||
+      expect_owner_ex(
+          owners, owner_count, &own, FCNTL_OWNER_PGRP, 200, impossible, true) !=
+          0)
+    return 13;
+
+  /* The caller's group is led from outside the guest (host group 500, not a
+   * guest task), so getpgrp shows it raw as 500: naming 500 reaches that
+   * group, any other unknown number stays ESRCH, and virtual task 3 is still
+   * translated. */
+  fcntl_group_view_t inherited = {500};
+  if (expect_setown(owners, owner_count, &inherited, -500, -500, true) != 0 ||
+      expect_setown(
+          owners, owner_count, &inherited, -600, -impossible, true) != 0 ||
+      expect_setown(owners, owner_count, &inherited, -3, -1004, true) != 0 ||
+      expect_owner_ex(
+          owners, owner_count, &inherited, FCNTL_OWNER_PGRP, 500, 500, true) !=
+          0)
+    return 14;
+
+  /* Collision: the launcher's group is host 3, numerically also the guest's
+   * virtual ID 3 (host 1004). getpgrp shows the caller's group raw as 3, so -3
+   * must reach host group 3, not host 1004; the process 3 is still task 3. */
+  fcntl_group_view_t collision = {3};
+  if (expect_setown(owners, owner_count, &collision, -3, -3, true) != 0 ||
+      expect_owner_ex(
+          owners, owner_count, &collision, FCNTL_OWNER_PGRP, 3, 3, true) != 0 ||
+      expect_setown(owners, owner_count, &collision, 3, 1004, true) != 0)
+    return 15;
+
+  /* A guest-led group whose host ID collides with a virtual ID. In the first
+   * table host 4 (virtual task 3) leads a group, but 4 is also virtual task
+   * 4's ID, so getpgrp shows that group as 4: the caller in it names it -4
+   * and reaches host group 4, not task 4's host 100. Task 3's own number
+   * still names task 3's host ID. */
+  fcntl_group_view_t shown_raw = {4};
+  if (guest_view_of_host_entries(identities, count, 4) != 4 ||
+      guest_view_of_host_entries(identities, count, 100) != 4 ||
+      guest_view_of_host_entries(identities, count, 500) != 500 ||
+      expect_setown(identities, count, &shown_raw, -4, -4, true) != 0 ||
+      expect_setown(identities, count, &shown_raw, -3, -4, true) != 0)
+    return 16;
+
+  /* Read-back inverts the setter. Host and virtual IDs overlap here: virtual
+   * 3 is host 4 and virtual 4 is host 5, both leading groups, and the caller
+   * is in host group 5, which getpgrp shows as 4. Group host 4 reads back as
+   * -3 (not -4, which getpgrp's view would give and which names the caller's
+   * group), and every owner survives being read back and set again. */
+  const virtual_identity_t overlap[] = {
+      {.host = 4, .virtual_id = 3},
+      {.host = 5, .virtual_id = 4},
+  };
+  fcntl_group_view_t in_5 = {5};
+  if (expect_setown(overlap, 2, &in_5, -3, -4, true) != 0 ||
+      expect_readback(overlap, 2, &in_5, -4, -3) != 0 ||
+      expect_readback(overlap, 2, &in_5, -5, -4) != 0 ||
+      expect_readback(overlap, 2, &in_5, 4, 3) != 0 ||
+      expect_readback(overlap, 2, &in_5, 5, 4) != 0 ||
+      expect_round_trip(overlap, 2, &in_5, -4) != 0 ||
+      expect_round_trip(overlap, 2, &in_5, -5) != 0 ||
+      expect_round_trip(overlap, 2, &in_5, 4) != 0 ||
+      expect_round_trip(overlap, 2, &in_5, 5) != 0)
+    return 17;
+
+  /* The other tables round-trip too: the caller's own group, other tasks and
+   * groups, a group led from outside the guest, the launcher's group shown
+   * raw on a collision with virtual ID 3, and no owner at all. */
+  if (expect_round_trip(owners, owner_count, &own, -1004) != 0 ||
+      expect_round_trip(owners, owner_count, &own, -1100) != 0 ||
+      expect_round_trip(owners, owner_count, &own, 1100) != 0 ||
+      expect_round_trip(owners, owner_count, &inherited, -500) != 0 ||
+      expect_round_trip(owners, owner_count, &inherited, -1004) != 0 ||
+      expect_round_trip(owners, owner_count, &collision, -3) != 0 ||
+      expect_round_trip(owners, owner_count, &collision, 1004) != 0 ||
+      expect_readback(owners, owner_count, &collision, -3, -3) != 0 ||
+      expect_readback(owners, owner_count, &own, 0, 0) != 0)
+    return 18;
+
+  /* The documented residual: getpgrp shows the caller's group under a number
+   * that is also another task's virtual ID, so that task's group has no
+   * number of its own in the guest's view and its read-back names the
+   * caller's group. Here the caller's group (host 4) shows as 4, task 4's ID
+   * (host 100); and on the launcher collision the caller's group (host 3)
+   * shows as 3, task 3's ID (host 1004). */
+  if (expect_readback(identities, count, &shown_raw, -100, -4) != 0 ||
+      expect_round_trip(identities, count, &shown_raw, -4) != 0 ||
+      expect_readback(owners, owner_count, &collision, -1004, -3) != 0)
+    return 19;
 
   return 0;
 }
