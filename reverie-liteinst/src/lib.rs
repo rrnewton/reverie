@@ -10,6 +10,8 @@ use std::process::Command;
 compile_error!("reverie-liteinst requires Linux x86-64");
 
 mod backend;
+#[cfg(all(target_env = "gnu", feature = "preload-constructor"))]
+mod glibc_compat;
 mod interior_entry;
 mod patch_alloc;
 mod stats;
