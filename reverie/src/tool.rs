@@ -930,6 +930,20 @@ pub trait Tool: Send + Sync + Default {
     /// kernel's own flag differs when its write of the core fails. A Tool must
     /// not rely on that flag from such a backend. The same holds for
     /// [`Tool::on_exit_process`].
+    ///
+    /// # Signals a Tool sends its own guest, under an in-guest backend
+    ///
+    /// The in-guest host holds a signal a Tool's injection sends the guest
+    /// itself, when it would end the process, until the callback that sent
+    /// it returns, and then delivers it as a tracer delivers a held signal.
+    /// An injection that ends the guest (an exit, or a SIGKILL of the guest
+    /// itself) ends the callback that made it there, as under a tracer; the
+    /// callback does not resume. A `tail_inject` of any other call outside a
+    /// syscall handler (in a start-up, instruction or signal callback) is
+    /// unsupported: the host ends the process as a Tool error that names the
+    /// case (exit status 125), before the call is made, rather than leave the
+    /// callback parked forever. So is a plain fork injected outside a syscall
+    /// handler, in the child it creates.
     async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
         &self,
         _tid: Tid,
