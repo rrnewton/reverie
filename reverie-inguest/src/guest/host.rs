@@ -986,6 +986,23 @@ fn deliver_staged_signals<T: Tool, R: HostRuntime>(
         if deliver == libc::SIGKILL {
             return Some(Ending::Death(SignalDeath::KILL));
         }
+        if deliver != staged.signal && deliver == libc::SIGALRM && super::sigalrm::handled() {
+            // A guest SIGALRM handler kept virtual by this runtime receives
+            // SIGALRM only through a delivery the runtime prepares in the
+            // guest call's own turn (signal phase 1); a raw SIGALRM would
+            // stay physically blocked and the handler would never run.
+            // Refused by name before anything is sent.
+            tool_fatal(
+                125,
+                &Error::Tool(
+                    io::Error::other(format!(
+                        "replacing {shown} with SIGALRM while the guest's SIGALRM handler \
+                         is virtual is unsupported"
+                    ))
+                    .into(),
+                ),
+            );
+        }
         if unsafe { signal_ends_process_now(deliver) } {
             ending = Some((staged, deliver));
         } else {
@@ -2282,6 +2299,10 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
         regs
     }
     async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), Error> {
+        if self.tail.ending() {
+            // The guest is ending: no further guest effect (see `inject`).
+            return std::future::pending().await;
+        }
         self.event.number = regs.rax as i64;
         self.event.args = [regs.rdi, regs.rsi, regs.rdx, regs.r10, regs.r8, regs.r9];
         if self.event.context != 0 {
@@ -2313,6 +2334,13 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
     async fn daemonize(&mut self) {}
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
+        if self.tail.ending() {
+            // The guest is ending (an exit or a SIGKILL of itself was staged,
+            // perhaps in a future the Tool abandoned): no further call is
+            // made, and the callback stays parked until the host ends the
+            // process.
+            return std::future::pending().await;
+        }
         let (number, args) = syscall.into_parts();
         let number = number.id() as i64;
         let mut raw_args = [
@@ -2324,6 +2352,20 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             args.arg5 as u64,
         ];
 
+        if is_plain_fork(number, raw_args) && !self.in_syscall_handler {
+            // Only a syscall handler's fork can complete in the child, and
+            // the fork itself would be guest-visible (a child, its exit
+            // status, SIGCHLD): refused by name before it is made.
+            tool_fatal(
+                125,
+                &Error::Tool(
+                    io::Error::other(
+                        "a plain fork injected outside a syscall handler is unsupported",
+                    )
+                    .into(),
+                ),
+            );
+        }
         if is_plain_fork(number, raw_args) {
             let parent_tid = self.tid;
             let parent_pid = self.pid;
@@ -2412,6 +2454,9 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
     /// a guest SIGALRM handler kept virtual by this runtime can be the target;
     /// everything else keeps the default refusal.
     async fn defer_signal_delivery(&mut self, event: reverie::SignalEvent) -> Result<(), Error> {
+        if self.tail.ending() {
+            return std::future::pending().await;
+        }
         if !self.delivers_sigalrm(&event) {
             return Err(Errno::ENOSYS.into());
         }
@@ -2427,6 +2472,9 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
         &mut self,
         event: reverie::SignalEvent,
     ) -> Result<(), Error> {
+        if self.tail.ending() {
+            return std::future::pending().await;
+        }
         if !self.delivers_sigalrm(&event) {
             return Err(Errno::ENOSYS.into());
         }
@@ -2439,6 +2487,10 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
     }
 
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
+        if self.tail.ending() {
+            // As in `inject`: the guest is ending, so nothing is made.
+            return std::future::pending().await;
+        }
         let (number, syscall_args) = syscall.into_parts();
         let args = [
             syscall_args.arg0 as u64,
