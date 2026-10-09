@@ -938,12 +938,19 @@ pub trait Tool: Send + Sync + Default {
     /// it returns, and then delivers it as a tracer delivers a held signal.
     /// An injection that ends the guest (an exit, or a SIGKILL of the guest
     /// itself) ends the callback that made it there, as under a tracer; the
-    /// callback does not resume. A `tail_inject` of any other call outside a
-    /// syscall handler (in a start-up, instruction or signal callback) is
-    /// unsupported: the host ends the process as a Tool error that names the
-    /// case (exit status 125), before the call is made, rather than leave the
-    /// callback parked forever. So is a plain fork injected outside a syscall
-    /// handler, in the child it creates.
+    /// callback does not resume. That ending is latched when the injection
+    /// is made: if the Tool abandons the injection's future and goes on, no
+    /// later injection, register write or signal delivery takes effect, and
+    /// the guest ends even if the callback then returns.
+    ///
+    /// Three cases are unsupported, and the host ends the process as a Tool
+    /// error that names the case (exit status 125) before anything is made
+    /// for it: a `tail_inject` of a call that does not end the guest outside
+    /// a syscall handler (in a start-up, instruction or signal callback); a
+    /// plain fork injected outside a syscall handler; and a signal callback
+    /// replacing a signal with SIGALRM while the guest's SIGALRM handler is
+    /// kept virtual (signal phase 1), which only the backend's own delivery
+    /// can reach.
     async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
         &self,
         _tid: Tid,

@@ -60,6 +60,9 @@ static FATAL_THREAD_START: AtomicBool = AtomicBool::new(false);
 /// The post-exec callback records that it ran and ignores SIGTERM (the
 /// `root-startup-signal` mode).
 static IGNORE_SIGTERM_AT_POST_EXEC: AtomicBool = AtomicBool::new(false);
+/// The SIGTERM signal callback replaces SIGTERM with SIGALRM (the
+/// `sigalrm-replacement` mode).
+static REPLACE_SIGTERM_WITH_SIGALRM: AtomicBool = AtomicBool::new(false);
 /// Tags the one RPC a process sends at `exit_group` with its count of Tool
 /// callbacks, so the host can compare the backend's dispatch counts with the
 /// callbacks the Tool actually made.
@@ -381,6 +384,12 @@ impl Tool for LifecycleTool {
             Syscall::Clone(clone) if clone.flags().bits() & libc::CLONE_VM == 0 => {
                 Ok(inject_fork(guest, syscall).await?)
             }
+            Syscall::Tgkill(tgkill) if tgkill.sig() == libc::SIGIO => {
+                // Stages a SIGKILL in a future it abandons after one poll,
+                // then returns: the staged SIGKILL must still end the guest.
+                poll_once(send_self(guest, libc::SIGKILL));
+                Ok(0)
+            }
             Syscall::Tgkill(tgkill) => {
                 // Records that the handler goes on after its injection. For
                 // SIGPROF it also sends the guest SIGKILL after forwarding the
@@ -477,6 +486,35 @@ impl Tool for LifecycleTool {
                 send_self(guest, libc::SIGUSR1).await;
                 return Ok(None);
             }
+            Signal::SIGINT => {
+                // Stages a SIGKILL in a future it abandons, then tries a
+                // write: the write must never be made.
+                poll_once(send_self(guest, libc::SIGKILL));
+                let message = b"after-abandoned-sigkill\n";
+                let _ = guest
+                    .inject(
+                        reverie::syscalls::Write::new()
+                            .with_fd(libc::STDERR_FILENO)
+                            .with_buf(reverie::syscalls::Addr::from_ptr(message.as_ptr()))
+                            .with_len(message.len()),
+                    )
+                    .await;
+                return Ok(None);
+            }
+            Signal::SIGQUIT => {
+                // Stages a SIGKILL in a future it abandons, then suppresses
+                // SIGQUIT: the staged SIGKILL must still end the guest.
+                poll_once(send_self(guest, libc::SIGKILL));
+                return Ok(None);
+            }
+            Signal::SIGXCPU => {
+                // A plain fork from a signal callback: refused before it is
+                // made.
+                let _ = inject_fork(guest, Syscall::Fork(reverie::syscalls::Fork::new())).await;
+            }
+            Signal::SIGTERM if REPLACE_SIGTERM_WITH_SIGALRM.load(Ordering::Relaxed) => {
+                return Ok(Some(Signal::SIGALRM));
+            }
             _ => {}
         }
         Ok(Some(signal))
@@ -518,6 +556,14 @@ impl Tool for LifecycleTool {
         }
         Ok(())
     }
+}
+
+/// Polls `future` once with a no-op waker and drops it: a Tool abandoning an
+/// injection's future after its first poll.
+fn poll_once<F: core::future::Future>(future: F) {
+    let mut future = core::pin::pin!(future);
+    let mut context = core::task::Context::from_waker(core::task::Waker::noop());
+    let _ = future.as_mut().poll(&mut context);
 }
 
 /// Sends `signal` to the calling thread through a Tool injection; the
@@ -667,7 +713,7 @@ fn self_signal_deaths() {
         let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
         unsafe { libc::sigpending(&mut set) == 0 && libc::sigismember(&set, signal) == 1 }
     }
-    let cases: [(&str, fn()); 15] = [
+    let cases: [(&str, fn()); 19] = [
         ("abort", || unsafe { libc::abort() }),
         ("abort-core-limit-1", || unsafe {
             let one = libc::rlimit {
@@ -729,6 +775,18 @@ fn self_signal_deaths() {
             let sent = libc::raise(libc::SIGXFSZ);
             libc::_exit(if sent == 0 { 48 } else { 40 });
         }),
+        ("raise-sigint", || unsafe {
+            libc::raise(libc::SIGINT);
+        }),
+        ("raise-sigquit", || unsafe {
+            libc::raise(libc::SIGQUIT);
+        }),
+        ("raise-sigio", || unsafe {
+            libc::raise(libc::SIGIO);
+        }),
+        ("raise-sigxcpu", || unsafe {
+            libc::raise(libc::SIGXCPU);
+        }),
     ];
     for (label, end) in cases {
         let thread_start = label == "thread-start-sigterm";
@@ -763,6 +821,26 @@ fn self_signal_deaths() {
 /// post-exec callback would ignore SIGTERM: the SIGTERM must end the process
 /// before the post-exec callback runs, as a tracer delivers it when the thread
 /// resumes from its start. Prints a line only if it survives.
+/// The root installs a guest SIGALRM handler (kept virtual: the run admits
+/// SIGALRM handlers), then raises SIGTERM, which the signal callback
+/// replaces with SIGALRM: refused as a Tool error before anything is sent,
+/// so the handler never runs. Prints the `sigaction` result, and a line from
+/// the handler or after `raise` only if they happen.
+fn sigalrm_replacement() {
+    extern "C" fn on_alarm(_: libc::c_int) {
+        let message = b"alarm-handler-ran\n";
+        unsafe { libc::write(libc::STDOUT_FILENO, message.as_ptr().cast(), message.len()) };
+    }
+    install_tool();
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = on_alarm as *const () as usize;
+    let installed = unsafe { libc::sigaction(libc::SIGALRM, &action, std::ptr::null_mut()) };
+    println!("sigaction={installed}");
+    REPLACE_SIGTERM_WITH_SIGALRM.store(true, Ordering::Relaxed);
+    unsafe { libc::raise(libc::SIGTERM) };
+    println!("raise returned");
+}
+
 fn root_startup_signal() {
     FATAL_THREAD_START.store(true, Ordering::Relaxed);
     IGNORE_SIGTERM_AT_POST_EXEC.store(true, Ordering::Relaxed);
@@ -1746,6 +1824,10 @@ fn main() {
     }
     if mode == "root-startup-signal" {
         root_startup_signal();
+        return;
+    }
+    if mode == "sigalrm-replacement" {
+        sigalrm_replacement();
         return;
     }
     if mode == "fallback-fork-stats" {
