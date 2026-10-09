@@ -49,6 +49,11 @@ fn main() {
     // `unwind` crate.
     println!("cargo:rustc-link-lib=static:-bundle=gcc_eh");
     println!("cargo:rustc-link-arg-cdylib=-Wl,-u,_Unwind_RaiseException");
+    // The glibc_compat test guest: non-PIE, so its executable holds libc
+    // functions' canonical PLT entries, with the preload's static unwinder.
+    for flag in ["-no-pie", "-Wl,-u,_Unwind_RaiseException"] {
+        println!("cargo:rustc-link-arg-bin=reverie-liteinst-glibc-compat-guest={flag}");
+    }
     let target = env::var("TARGET").unwrap_or_default().replace('-', "_");
     println!("cargo:rustc-env=NIX_DONT_SET_RPATH_{target}=1");
 }

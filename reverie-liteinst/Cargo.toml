@@ -71,6 +71,16 @@ path = "src/bin/rpc_tool_guest.rs"
 name = "reverie-liteinst-spoof-guest"
 path = "src/bin/spoof_guest.rs"
 
+[[bin]]
+name = "reverie-liteinst-glibc-compat-guest"
+path = "src/bin/glibc_compat_guest.rs"
+required-features = ["preload-constructor"]
+
+[[test]]
+name = "glibc_compat"
+path = "tests/glibc_compat.rs"
+required-features = ["preload-constructor"]
+
 [[test]]
 name = "rpc_tool"
 path = "tests/rpc_tool.rs"
