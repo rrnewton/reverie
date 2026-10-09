@@ -15,8 +15,10 @@
 //! initializer, and without changing the caller's `dlerror` state.
 //! `dlsym`/`dlvsym` take the loader's `dl_load_lock`, which `dlopen` holds
 //! while it runs constructors, and they set or clear `dlerror`. This module
-//! uses only `dl_iterate_phdr`, which takes the loader's recursive
-//! `dl_load_write_lock` and never touches `dlerror`. glibc holds that lock
+//! calls only libc's `gnu_get_libc_version`, which returns a constant, and
+//! `dl_iterate_phdr`, which takes the loader's recursive `dl_load_write_lock`;
+//! neither touches `dlerror` (an interposer of the first may: see the end of
+//! this documentation). glibc holds that lock
 //! only while it appends to or removes from its list of loaded objects
 //! (`_dl_add_to_namespace_list`, and `dlclose` after destructors have run) and
 //! while `dl_iterate_phdr` calls its callback. No constructor or destructor
@@ -44,7 +46,12 @@
 //! libc is found: a preload that defines `gnu_get_libc_version` itself and
 //! returns a string of its own makes the lookup read that preload's dynamic
 //! section and refuse it by soname, so the answer is `None`, and a fault if
-//! that preload had made its own dynamic section unreadable.
+//! that preload had made its own dynamic section unreadable. And any preload
+//! that interposes `gnu_get_libc_version`, even one that forwards it to libc
+//! truthfully, runs on the lookup's path, so its own side effects apply: a
+//! wrapper that finds libc's function with `dlsym` on each call clears the
+//! caller's pending `dlerror` and takes the loader lock that `dlopen` holds
+//! while it runs constructors.
 
 use std::ffi::c_int;
 use std::ffi::c_void;
@@ -115,8 +122,9 @@ fn find(name: &[u8], version: &[u8], tables: &[HashTable]) -> Option<usize> {
 /// canonical address still calls libc's code through it. So the object found
 /// is the libc this process uses, whatever path it was loaded from. (The
 /// address of a libc function would be neither: it is the interposer's
-/// definition, or the executable's PLT entry.) The call takes no lock and
-/// leaves `dlerror` alone.
+/// definition, or the executable's PLT entry.) libc's function takes no lock
+/// and leaves `dlerror` alone; an interposer's need not (see the module
+/// documentation).
 ///
 /// Finding the object reads only the program-header array `dl_iterate_phdr`
 /// passes for each object, as libgcc's unwinder did for every object before
