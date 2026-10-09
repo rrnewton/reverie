@@ -46,6 +46,10 @@ enum Observed {
     ExitProcess(u16),
     /// The tgkill handler went on after its injection, which returned this.
     TgkillReturned(u16),
+    /// `handle_post_exec` ran.
+    PostExec,
+    /// Tool code ran after the Tool's own SIGKILL injection (never expected).
+    AfterSigkill,
     /// The process's pidfd polled readable: it is physically gone.
     PhysicallyExited,
 }
@@ -120,6 +124,8 @@ impl GlobalTool for LifecycleGlobal {
                 2 => Observed::ExitThread(value),
                 3 => Observed::ExitProcess(value),
                 4 => Observed::TgkillReturned(value),
+                5 => Observed::PostExec,
+                6 => Observed::AfterSigkill,
                 tag => panic!("unknown lifecycle observation tag {tag}"),
             };
             let sequence = OBSERVATION_SEQUENCE.fetch_add(1, Ordering::SeqCst);
@@ -729,6 +735,9 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
             "cpuid-sigterm",
             "thread-start-sigterm",
             "abort-pending-unreadable",
+            "raise-sigstkflt",
+            "raise-sigpwr",
+            "raise-sigxfsz",
         ],
         "{stdout}"
     );
@@ -808,13 +817,43 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
                 ]
             }
             // The handler forwarded SIGPROF, then sent SIGKILL: SIGKILL
-            // ends the process, and SIGPROF is never delivered.
+            // ends the process there, so the handler's fork, error and
+            // record never happen and SIGPROF is never delivered.
             "raise-sigprof" => {
+                assert_eq!(status, kill, "{label}");
+                vec![ExitThread(kill), ExitProcess(kill), PhysicallyExited]
+            }
+            // The signal callback ended itself with a tail injection of
+            // SIGKILL.
+            "raise-sigstkflt" => {
                 assert_eq!(status, kill, "{label}");
                 vec![
                     TgkillReturned(0),
+                    Signal(libc::SIGSTKFLT as u16),
                     ExitThread(kill),
                     ExitProcess(kill),
+                    PhysicallyExited,
+                ]
+            }
+            // The signal callback tail-injected getpid: refused by name as
+            // a Tool error (exit 125), with no exit callback.
+            "raise-sigpwr" => {
+                assert_eq!(status, 125 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGPWR as u16),
+                    PhysicallyExited,
+                ]
+            }
+            // SIGXFSZ and SIGUSR1 held; the SIGXFSZ callback sent SIGUSR1
+            // again while it was still waiting, so SIGUSR1 is delivered
+            // once (its callback ignores it), and the child goes on.
+            "raise-sigxfsz" => {
+                assert_eq!(status, 48 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGXFSZ as u16),
+                    Signal(libc::SIGUSR1 as u16),
                     PhysicallyExited,
                 ]
             }
@@ -851,6 +890,56 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
     assert!(
         stderr.contains("SIGABRT, which ends this process, could not be made pending: the pending set could not be read after it was sent; it stays blocked"),
         "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "tail_inject of syscall 39, a call that does not end the guest, outside a syscall handler is unsupported"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        !observed.iter().any(|(.., what)| *what == AfterSigkill),
+        "{observed:?}"
+    );
+}
+
+/// The root process's thread-start callback sends it SIGTERM, and its
+/// post-exec callback would ignore SIGTERM: the SIGTERM ends the process
+/// before the post-exec callback runs, as a tracer delivers it when the
+/// thread resumes from its start. Before, the held signal was delivered only
+/// after both callbacks, found ignored, and the process survived.
+#[tokio::test(flavor = "current_thread")]
+async fn a_signal_from_a_thread_start_callback_is_delivered_before_post_exec() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (result, global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("root-startup-signal"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("in-guest run hung")
+    .unwrap();
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(result.status.signal(), Some(libc::SIGTERM), "{result:?}");
+    assert_eq!(result.stdout, b"", "{result:?}");
+    let observed: Vec<Observed> = global
+        .observed
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(.., what)| *what)
+        .collect();
+    let term = libc::SIGTERM as u16;
+    assert_eq!(
+        observed,
+        [
+            Observed::Signal(term),
+            Observed::ExitThread(term),
+            Observed::ExitProcess(term),
+        ]
     );
 }
 

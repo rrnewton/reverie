@@ -168,6 +168,58 @@ where
     }
 }
 
+/// How a Tool callback other than a syscall handler (a start-up, instruction
+/// or signal callback) ended, when driven by [`drive_callback`].
+pub enum CallbackOutcome<V> {
+    /// The callback returned `V`.
+    Ready(V),
+    /// The callback injected a call that ends its thread or process (an
+    /// exit, or a signal the guest cannot survive): the host must run the
+    /// exit lifecycle and perform `number(args)`; the callback does not
+    /// resume, as under a tracer, where such an injection ends the guest at
+    /// once.
+    Exit { number: i64, args: [u64; 6] },
+    /// The callback used a transition only a syscall handler can complete:
+    /// a `tail_inject` of an ordinary call (which resolves a guest syscall
+    /// there is none of), or a plain fork returning in the child. Named, so
+    /// the host can refuse it.
+    Unsupported(&'static str),
+}
+
+/// Polls a Tool callback other than a syscall handler to completion with a
+/// no-op waker, like [`drive_ready`], but also reads `tail` when the
+/// callback parks, as [`drive_syscall`] does, so an injection that ends the
+/// guest stops the callback instead of leaving it parked forever.
+pub fn drive_callback<F, V>(future: F, tail: &TailResult) -> CallbackOutcome<V>
+where
+    F: Future<Output = V>,
+{
+    let mut future = core::pin::pin!(future);
+    let waker = Waker::noop();
+    let mut context = Context::from_waker(waker);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => return CallbackOutcome::Ready(value),
+            Poll::Pending => match tail.take() {
+                Some(TailAction::Exit { number, args }) => {
+                    return CallbackOutcome::Exit { number, args };
+                }
+                Some(TailAction::Result(_)) => {
+                    return CallbackOutcome::Unsupported(
+                        "tail_inject of a call that does not end the guest, outside a syscall handler",
+                    );
+                }
+                Some(TailAction::ForkChild { .. }) => {
+                    return CallbackOutcome::Unsupported(
+                        "a plain fork injected outside a syscall handler",
+                    );
+                }
+                None => core::hint::spin_loop(),
+            },
+        }
+    }
+}
+
 /// The resolved outcome of driving a subscribed syscall through the Tool,
 /// after the shared restart protocol has been applied.
 ///
