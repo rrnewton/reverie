@@ -57,6 +57,9 @@ static FATAL_CPUID: AtomicBool = AtomicBool::new(false);
 /// A thread start sends the starting thread SIGTERM (set across a fork, so
 /// the child's start sends it).
 static FATAL_THREAD_START: AtomicBool = AtomicBool::new(false);
+/// The post-exec callback records that it ran and ignores SIGTERM (the
+/// `root-startup-signal` mode).
+static IGNORE_SIGTERM_AT_POST_EXEC: AtomicBool = AtomicBool::new(false);
 /// Tags the one RPC a process sends at `exit_group` with its count of Tool
 /// callbacks, so the host can compare the backend's dispatch counts with the
 /// callbacks the Tool actually made.
@@ -69,6 +72,8 @@ const EVENT_SIGNAL: u64 = 1; // handle_signal_event: the signal shown
 const EVENT_EXIT_THREAD: u64 = 2; // on_exit_thread, signal deaths: raw wait status
 const EVENT_EXIT_PROCESS: u64 = 3; // on_exit_process, signal deaths: raw wait status
 const EVENT_TGKILL_RETURNED: u64 = 4; // the tgkill handler after its injection: the result
+const EVENT_POST_EXEC: u64 = 5; // handle_post_exec ran (root-startup mode)
+const EVENT_AFTER_SIGKILL: u64 = 6; // Tool code after its own SIGKILL injection: must never run
 
 fn lifecycle_event(tag: u64, pid: i32, value: u64) -> u64 {
     (tag << 56) | ((pid as u32 as u64) << 16) | (value & 0xffff)
@@ -252,6 +257,26 @@ impl Tool for LifecycleTool {
         Ok(())
     }
 
+    /// Records that it ran and ignores SIGTERM, when
+    /// `IGNORE_SIGTERM_AT_POST_EXEC` is set.
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        if IGNORE_SIGTERM_AT_POST_EXEC.load(Ordering::Relaxed) {
+            let pid = guest.pid().as_raw();
+            guest
+                .send_rpc(lifecycle_event(EVENT_POST_EXEC, pid, 0))
+                .await;
+            let ignore = [libc::SIG_IGN as u64, 0, 0, 0];
+            let result = unsafe {
+                reverie_inguest::trap::raw_syscall6(
+                    libc::SYS_rt_sigaction,
+                    [libc::SIGTERM as u64, ignore.as_ptr() as u64, 0, 8, 0, 0],
+                )
+            };
+            assert_eq!(result, 0);
+        }
+        Ok(())
+    }
+
     /// Answers with the processor's own CPUID, after sending the guest
     /// SIGTERM when `FATAL_CPUID` is set.
     async fn handle_cpuid_event<G: Guest<Self>>(
@@ -359,10 +384,22 @@ impl Tool for LifecycleTool {
             Syscall::Tgkill(tgkill) => {
                 // Records that the handler goes on after its injection. For
                 // SIGPROF it also sends the guest SIGKILL after forwarding the
-                // guest's own signal.
+                // guest's own signal, then tries a fork and returns an error:
+                // neither may happen, because the SIGKILL ends the guest. For
+                // SIGXFSZ it also sends SIGUSR1, which the SIGXFSZ signal
+                // callback sends again while the first is still waiting.
                 let result = guest.inject(syscall).await;
                 if tgkill.sig() == libc::SIGPROF {
                     send_self(guest, libc::SIGKILL).await;
+                    let pid = guest.pid().as_raw();
+                    guest
+                        .send_rpc(lifecycle_event(EVENT_AFTER_SIGKILL, pid, 0))
+                        .await;
+                    let _ = inject_fork(guest, Syscall::Fork(reverie::syscalls::Fork::new())).await;
+                    return Err(Errno::EPERM.into());
+                }
+                if tgkill.sig() == libc::SIGXFSZ {
+                    send_self(guest, libc::SIGUSR1).await;
                 }
                 let value = result.unwrap_or_else(|errno| -i64::from(errno.into_raw()));
                 let pid = guest.pid().as_raw();
@@ -410,8 +447,34 @@ impl Tool for LifecycleTool {
             }
             Signal::SIGHUP => return Ok(None),
             Signal::SIGVTALRM => {
-                // Sends SIGKILL from the callback, then suppresses this one.
+                // Sends SIGKILL from the callback; the rest of the callback
+                // (recording, then suppressing this signal) must never run.
                 send_self(guest, libc::SIGKILL).await;
+                guest
+                    .send_rpc(lifecycle_event(EVENT_AFTER_SIGKILL, pid, 0))
+                    .await;
+                return Ok(None);
+            }
+            Signal::SIGSTKFLT => {
+                // Ends the callback with a tail injection of SIGKILL.
+                guest
+                    .tail_inject(
+                        reverie::syscalls::Tgkill::new()
+                            .with_tgid(pid)
+                            .with_tid(guest.tid().as_raw())
+                            .with_sig(libc::SIGKILL),
+                    )
+                    .await;
+            }
+            Signal::SIGPWR => {
+                // A tail injection of a call that does not end the guest:
+                // there is no guest syscall for it to resolve.
+                guest.tail_inject(reverie::syscalls::Getpid::new()).await;
+            }
+            Signal::SIGXFSZ => {
+                // Sends SIGUSR1 again while the handler's is still waiting,
+                // then suppresses SIGXFSZ.
+                send_self(guest, libc::SIGUSR1).await;
                 return Ok(None);
             }
             _ => {}
@@ -604,7 +667,7 @@ fn self_signal_deaths() {
         let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
         unsafe { libc::sigpending(&mut set) == 0 && libc::sigismember(&set, signal) == 1 }
     }
-    let cases: [(&str, fn()); 12] = [
+    let cases: [(&str, fn()); 15] = [
         ("abort", || unsafe { libc::abort() }),
         ("abort-core-limit-1", || unsafe {
             let one = libc::rlimit {
@@ -656,6 +719,16 @@ fn self_signal_deaths() {
             deny_rt_sigpending();
             libc::abort()
         }),
+        ("raise-sigstkflt", || unsafe {
+            libc::raise(libc::SIGSTKFLT);
+        }),
+        ("raise-sigpwr", || unsafe {
+            libc::raise(libc::SIGPWR);
+        }),
+        ("raise-sigxfsz", || unsafe {
+            let sent = libc::raise(libc::SIGXFSZ);
+            libc::_exit(if sent == 0 { 48 } else { 40 });
+        }),
     ];
     for (label, end) in cases {
         let thread_start = label == "thread-start-sigterm";
@@ -684,6 +757,19 @@ fn self_signal_deaths() {
         }
         println!("{label} pid={child} status={status:#x}");
     }
+}
+
+/// The root process's thread-start callback sends it SIGTERM, and its
+/// post-exec callback would ignore SIGTERM: the SIGTERM must end the process
+/// before the post-exec callback runs, as a tracer delivers it when the thread
+/// resumes from its start. Prints a line only if it survives.
+fn root_startup_signal() {
+    FATAL_THREAD_START.store(true, Ordering::Relaxed);
+    IGNORE_SIGTERM_AT_POST_EXEC.store(true, Ordering::Relaxed);
+    install_tool();
+    // The first syscall after the install starts the root thread in the Tool.
+    unsafe { reverie_liteinst_lifecycle_getpid() };
+    println!("root-startup-signal survived");
 }
 
 /// Installs a seccomp filter that makes `rt_sigpending` fail with EPERM and
@@ -1656,6 +1742,10 @@ fn main() {
     let mode = arguments.next().expect("missing lifecycle fixture mode");
     if mode == "self-signal-deaths" {
         self_signal_deaths();
+        return;
+    }
+    if mode == "root-startup-signal" {
+        root_startup_signal();
         return;
     }
     if mode == "fallback-fork-stats" {

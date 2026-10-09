@@ -46,8 +46,10 @@ use super::signal::current_pending_set;
 use super::signal::self_directed_fatal_signal;
 use super::signal::signal_ends_process_now;
 use crate::sync::SpinMutex;
+use crate::tool_host::CallbackOutcome;
 use crate::tool_host::DrivenSyscall;
 use crate::tool_host::TailResult;
+use crate::tool_host::drive_callback;
 use crate::tool_host::drive_ready;
 use crate::tool_host::drive_tool_syscall;
 use crate::trap::raw_syscall6;
@@ -222,10 +224,35 @@ where
             fork_parent_state: None,
             runtime: &self.runtime,
             staged_signals: Vec::new(),
+            in_syscall_handler: false,
         };
 
-        if is_new && let Err(error) = drive_ready(tool.handle_thread_start(&mut guest)) {
-            tool_fatal(124, &error);
+        if is_new {
+            match callback_result(drive_callback(tool.handle_thread_start(&mut guest), &tail)) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tool_fatal(124, &error),
+                Err(ending) => finish_ending(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    &self.runtime,
+                    (tid, pid),
+                    ending,
+                ),
+            }
+            // A signal the thread-start callback sent is delivered before the
+            // next callback runs, as a tracer delivers it when the thread
+            // resumes.
+            if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
+                finish_ending(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    &self.runtime,
+                    (tid, pid),
+                    ending,
+                );
+            }
         }
 
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -240,22 +267,30 @@ where
         // once for the root process's main thread restores contract parity. It
         // is intentionally not emitted for child threads (there is none in the
         // current single-process/thread tool mode) nor re-emitted per dispatch.
-        if is_new
-            && tid.as_raw() == self.root_pid.as_raw()
-            && let Err(error) = drive_ready(tool.handle_post_exec(&mut guest))
-        {
-            // handle_post_exec returns Errno; tool_fatal expects reverie::Error.
-            tool_fatal(124, &Error::from(error));
+        if is_new && tid.as_raw() == self.root_pid.as_raw() {
+            match callback_result(drive_callback(tool.handle_post_exec(&mut guest), &tail)) {
+                Ok(Ok(())) => {}
+                // handle_post_exec returns Errno; tool_fatal expects reverie::Error.
+                Ok(Err(error)) => tool_fatal(124, &Error::from(error)),
+                Err(ending) => finish_ending(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    &self.runtime,
+                    (tid, pid),
+                    ending,
+                ),
+            }
         }
-        // A start-up callback can send the guest a signal that ends it.
-        if let Some(death) = deliver_staged_signals(tool, &mut guest) {
-            retire_and_die(
+        // A signal the post-exec callback sent.
+        if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
+            finish_ending(
                 &mut tool_slot,
                 &mut states,
                 &self.rpc,
                 &self.runtime,
                 (tid, pid),
-                death,
+                ending,
             );
         }
 
@@ -315,14 +350,14 @@ where
                     args,
                     signal,
                 });
-                if let Some(death) = deliver_staged_signals(tool, &mut guest) {
-                    retire_and_die(
+                if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
+                    finish_ending(
                         &mut tool_slot,
                         &mut states,
                         &self.rpc,
                         &self.runtime,
                         (tid, pid),
-                        death,
+                        ending,
                     );
                 }
                 return;
@@ -369,43 +404,44 @@ where
         // the ERESTARTSYS restart protocol (Reverie #362) so it cannot
         // drift between the in-guest backends; this host maps each terminal
         // outcome onto its own per-thread lifecycle (exit/fork-child) state.
-        match drive_tool_syscall(tool, &mut guest, syscall, &tail) {
+        guest.in_syscall_handler = true;
+        let driven = drive_tool_syscall(tool, &mut guest, syscall, &tail);
+        guest.in_syscall_handler = false;
+        match driven {
             DrivenSyscall::Result(value) => {
                 guest.event.result = value;
                 // Signals the Tool's handler sent the guest itself that would
                 // end its process (`InGuest::inject` staged them), now that
                 // the handler has run to its end, as a tracer delivers a
                 // signal held during an injection when the handler returns.
-                if let Some(death) = deliver_staged_signals(tool, &mut guest) {
-                    retire_and_die(
+                if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
+                    finish_ending(
                         &mut tool_slot,
                         &mut states,
                         &self.rpc,
                         &self.runtime,
                         (tid, pid),
-                        death,
+                        ending,
                     );
                 }
             }
+            DrivenSyscall::Exit { number, .. } if !is_exit_syscall(number) => {
+                // The handler injected a SIGKILL of the guest itself
+                // (`InGuest::inject`), which ended the handler there, as a
+                // tracer's injection of it ends the guest at once. Signals it
+                // held before are never delivered.
+                finish_ending(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    &self.runtime,
+                    (tid, pid),
+                    Ending::Death(SignalDeath::KILL),
+                );
+            }
             DrivenSyscall::Exit { number, args } => {
-                // A SIGKILL the handler sent itself before its exit has
-                // already ended the process, as it would under a tracer,
-                // where its injection kills at once. Any other signal it
-                // staged is not delivered: the exit ends the process first.
-                if guest
-                    .staged_signals
-                    .iter()
-                    .any(|staged| staged.signal == libc::SIGKILL)
-                {
-                    retire_and_die(
-                        &mut tool_slot,
-                        &mut states,
-                        &self.rpc,
-                        &self.runtime,
-                        (tid, pid),
-                        SignalDeath::KILL,
-                    );
-                }
+                // A signal the handler held before its exit is not delivered:
+                // the exit ends the process first.
                 finish_tool_exit(
                     &mut tool_slot,
                     &mut states,
@@ -493,35 +529,76 @@ where
             fork_parent_state: None,
             runtime: &self.runtime,
             staged_signals: Vec::new(),
+            in_syscall_handler: false,
         };
-        if is_new && let Err(error) = drive_ready(tool.handle_thread_start(&mut guest)) {
-            tool_fatal(124, &error);
+        if is_new {
+            match callback_result(drive_callback(tool.handle_thread_start(&mut guest), &tail)) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tool_fatal(124, &error),
+                Err(ending) => finish_ending(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    &self.runtime,
+                    (tid, pid),
+                    ending,
+                ),
+            }
+            if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
+                finish_ending(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    &self.runtime,
+                    (tid, pid),
+                    ending,
+                );
+            }
         }
-        if is_new
-            && tid.as_raw() == self.root_pid.as_raw()
-            && let Err(error) = drive_ready(tool.handle_post_exec(&mut guest))
-        {
-            tool_fatal(124, &Error::from(error));
+        if is_new && tid.as_raw() == self.root_pid.as_raw() {
+            match callback_result(drive_callback(tool.handle_post_exec(&mut guest), &tail)) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tool_fatal(124, &Error::from(error)),
+                Err(ending) => finish_ending(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    &self.runtime,
+                    (tid, pid),
+                    ending,
+                ),
+            }
         }
-        if let Some(death) = deliver_staged_signals(tool, &mut guest) {
-            retire_and_die(
+        if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
+            finish_ending(
                 &mut tool_slot,
                 &mut states,
                 &self.rpc,
                 &self.runtime,
                 (tid, pid),
-                death,
+                ending,
             );
         }
 
         match kind {
             InstructionEventKind::Cpuid => {
-                let result = drive_ready(tool.handle_cpuid_event(
-                    &mut guest,
-                    context.rax as u32,
-                    context.rcx as u32,
-                ))
-                .unwrap_or_else(|error| tool_fatal(125, &Error::from(error)));
+                let outcome = drive_callback(
+                    tool.handle_cpuid_event(&mut guest, context.rax as u32, context.rcx as u32),
+                    &tail,
+                );
+                let result = match callback_result(outcome) {
+                    Ok(result) => {
+                        result.unwrap_or_else(|error| tool_fatal(125, &Error::from(error)))
+                    }
+                    Err(ending) => finish_ending(
+                        &mut tool_slot,
+                        &mut states,
+                        &self.rpc,
+                        &self.runtime,
+                        (tid, pid),
+                        ending,
+                    ),
+                };
                 context.rax = u64::from(result.eax);
                 context.rbx = u64::from(result.ebx);
                 context.rcx = u64::from(result.ecx);
@@ -533,8 +610,20 @@ where
                 } else {
                     Rdtsc::Tsc
                 };
-                let result = drive_ready(tool.handle_rdtsc_event(&mut guest, request))
-                    .unwrap_or_else(|error| tool_fatal(125, &Error::from(error)));
+                let outcome = drive_callback(tool.handle_rdtsc_event(&mut guest, request), &tail);
+                let result = match callback_result(outcome) {
+                    Ok(result) => {
+                        result.unwrap_or_else(|error| tool_fatal(125, &Error::from(error)))
+                    }
+                    Err(ending) => finish_ending(
+                        &mut tool_slot,
+                        &mut states,
+                        &self.rpc,
+                        &self.runtime,
+                        (tid, pid),
+                        ending,
+                    ),
+                };
                 context.rax = result.tsc as u32 as u64;
                 context.rdx = result.tsc.checked_shr(32).unwrap_or(0);
                 if let Some(aux) = result.aux {
@@ -544,14 +633,14 @@ where
         }
         // The instruction callback can send the guest a signal that ends it;
         // it then ends before the instruction completes.
-        if let Some(death) = deliver_staged_signals(tool, &mut guest) {
-            retire_and_die(
+        if let Some(ending) = deliver_staged_signals(tool, &mut guest) {
+            finish_ending(
                 &mut tool_slot,
                 &mut states,
                 &self.rpc,
                 &self.runtime,
                 (tid, pid),
-                death,
+                ending,
             );
         }
     }
@@ -611,18 +700,31 @@ fn finish_fork_child<T: Tool, R: HostRuntime>(
         fork_parent_state: None,
         runtime,
         staged_signals: Vec::new(),
+        in_syscall_handler: false,
     };
-    if let Err(error) = drive_ready(tool.handle_thread_start(&mut child_guest)) {
-        tool_fatal(124, &error);
-    }
-    if let Some(death) = deliver_staged_signals(tool, &mut child_guest) {
-        retire_and_die(
+    match callback_result(drive_callback(
+        tool.handle_thread_start(&mut child_guest),
+        &child_tail,
+    )) {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tool_fatal(124, &error),
+        Err(ending) => finish_ending(
             tool_slot,
             states,
             rpc,
             runtime,
             (child_tid, child_pid),
-            death,
+            ending,
+        ),
+    }
+    if let Some(ending) = deliver_staged_signals(tool, &mut child_guest) {
+        finish_ending(
+            tool_slot,
+            states,
+            rpc,
+            runtime,
+            (child_tid, child_pid),
+            ending,
         );
     }
     runtime.emit_stage(b"fork-child-thread-start-complete");
@@ -730,16 +832,58 @@ impl SignalDeath {
     };
 }
 
-/// Runs the exit callbacks of thread `tid` of process `pid` for `death`, and
-/// ends the process with it ([`die_by_pending_signal`]).
-fn retire_and_die<T: Tool, R: HostRuntime>(
+/// How a process ends at a callback boundary.
+enum Ending {
+    /// By a signal ([`SignalDeath`]).
+    Death(SignalDeath),
+    /// By the call `number(args)` a non-handler callback injected: an exit,
+    /// or a SIGKILL of the guest itself ([`drive_callback`]).
+    Call { number: i64, args: [u64; 6] },
+}
+
+/// What a Tool callback other than a syscall handler returned, or how it
+/// ended the process. A transition only a syscall handler can complete ends
+/// the process as a Tool error, named, before it has any guest-visible
+/// effect (the callback is not resumed).
+fn callback_result<V>(outcome: CallbackOutcome<V>) -> Result<V, Ending> {
+    match outcome {
+        CallbackOutcome::Ready(value) => Ok(value),
+        CallbackOutcome::Exit { number, args } => Err(Ending::Call { number, args }),
+        CallbackOutcome::Unsupported(what) => tool_fatal(
+            125,
+            &Error::Tool(io::Error::other(format!("{what} is unsupported")).into()),
+        ),
+    }
+}
+
+/// Runs the exit callbacks of thread `tid` of process `pid` for `ending`,
+/// and ends the process: by its signal ([`die_by_pending_signal`]), or by
+/// the exit a callback injected.
+fn finish_ending<T: Tool, R: HostRuntime>(
     tool_slot: &mut Option<T>,
     states: &mut HashMap<i32, T::ThreadState>,
     rpc: &CoordinatorRpc<T::GlobalState>,
     runtime: &R,
     (tid, pid): (Pid, Pid),
-    death: SignalDeath,
+    ending: Ending,
 ) -> ! {
+    let death = match ending {
+        Ending::Death(death) => death,
+        Ending::Call { number, args } if is_exit_syscall(number) => {
+            finish_tool_exit(
+                tool_slot,
+                states,
+                rpc,
+                runtime,
+                ToolExitContext::exit_syscall(tid, pid, number, args),
+            );
+            let _ = unsafe { raw_syscall6(number, args) };
+            fatal(126)
+        }
+        // `InGuest::inject` ends a callback this way only for a SIGKILL of
+        // the guest itself.
+        Ending::Call { .. } => SignalDeath::KILL,
+    };
     finish_tool_exit(
         tool_slot,
         states,
@@ -761,7 +905,9 @@ fn retire_and_die<T: Tool, R: HostRuntime>(
 ///
 /// Signals are taken in the order they were sent, and the queue is refilled
 /// after every signal callback, so a signal a callback sends is delivered
-/// too. Each signal other than SIGKILL is reported to
+/// too; a standard signal already waiting in the queue is not queued again,
+/// as Linux keeps one pending instance of it. Each signal other than SIGKILL
+/// is reported to
 /// [`Tool::handle_signal_event`], and then sent unless the Tool suppressed
 /// it. Whether it ends the process is decided after the callback, from the
 /// kernel's state then ([`signal_ends_process_now`]), because the callback
@@ -770,11 +916,12 @@ fn retire_and_die<T: Tool, R: HostRuntime>(
 /// guest asked, and Linux discards or holds it as it would have.
 ///
 /// The first signal that ends the process makes the process die by it,
-/// except that a SIGKILL sent at any point before the drain ends takes its
-/// place: SIGKILL cannot be caught, blocked or ignored, and under a tracer
-/// its injection ends the process at once, before any held signal is
-/// delivered. It is never shown to the signal callback, as a tracer never
-/// sees its delivery. Signals after the one that ends the process are never
+/// except that a SIGKILL takes its place: SIGKILL cannot be caught, blocked
+/// or ignored, and under a tracer its injection ends the process at once,
+/// before any held signal is delivered. A Tool's injection of it ends the
+/// callback that made it (`InGuest::inject`); the guest's own, held here,
+/// wins over everything held with it. It is never shown to the signal
+/// callback, as a tracer never sees its delivery. Signals after the one that ends the process are never
 /// delivered and are not shown. The death is returned with its signal
 /// pending and blocked ([`send_blocked`]; SIGKILL is sent by
 /// [`die_by_pending_signal`]), so the caller can run the exit callbacks with
@@ -782,13 +929,18 @@ fn retire_and_die<T: Tool, R: HostRuntime>(
 fn deliver_staged_signals<T: Tool, R: HostRuntime>(
     tool: &T,
     guest: &mut InGuest<'_, T, R>,
-) -> Option<SignalDeath> {
-    let mut queue = std::collections::VecDeque::new();
+) -> Option<Ending> {
+    let mut queue: std::collections::VecDeque<StagedSignal> = std::collections::VecDeque::new();
     let mut ending: Option<(StagedSignal, i32)> = None;
+    let tail = guest.tail;
     loop {
-        queue.extend(core::mem::take(&mut guest.staged_signals));
+        for staged in core::mem::take(&mut guest.staged_signals) {
+            if !queue.iter().any(|waiting| waiting.signal == staged.signal) {
+                queue.push_back(staged);
+            }
+        }
         if queue.iter().any(|staged| staged.signal == libc::SIGKILL) {
-            return Some(SignalDeath::KILL);
+            return Some(Ending::Death(SignalDeath::KILL));
         }
         let Some(staged) = queue.pop_front() else {
             break;
@@ -797,14 +949,17 @@ fn deliver_staged_signals<T: Tool, R: HostRuntime>(
             continue;
         }
         let shown = reverie::Signal::try_from(staged.signal).unwrap_or_else(|_| fatal(126));
-        let deliver = match drive_ready(tool.handle_signal_event(guest, shown)) {
-            // Suppressed: never sent.
-            Ok(None) => continue,
-            Ok(Some(chosen)) => chosen as i32,
-            Err(errno) => tool_fatal(125, &Error::from(errno)),
-        };
+        let deliver =
+            match callback_result(drive_callback(tool.handle_signal_event(guest, shown), tail)) {
+                // Suppressed: never sent.
+                Ok(Ok(None)) => continue,
+                Ok(Ok(Some(chosen))) => chosen as i32,
+                Ok(Err(errno)) => tool_fatal(125, &Error::from(errno)),
+                // The callback injected an exit or a SIGKILL of the guest.
+                Err(ending) => return Some(ending),
+            };
         if deliver == libc::SIGKILL {
-            return Some(SignalDeath::KILL);
+            return Some(Ending::Death(SignalDeath::KILL));
         }
         if unsafe { signal_ends_process_now(deliver) } {
             ending = Some((staged, deliver));
@@ -827,10 +982,10 @@ fn deliver_staged_signals<T: Tool, R: HostRuntime>(
         );
     }
     let core = unsafe { core_dump_expected(deliver) };
-    Some(SignalDeath {
+    Some(Ending::Death(SignalDeath {
         signal: deliver,
         status: reverie::ExitStatus::Signaled(shown, core),
-    })
+    }))
 }
 
 /// Sends `deliver` to the calling thread: the guest's own call
@@ -1005,6 +1160,9 @@ struct InGuest<'a, T: Tool, R: HostRuntime> {
     /// Signals sent to the caller itself that would end its process, held
     /// until the handler returns (`InGuest::inject`).
     staged_signals: Vec<StagedSignal>,
+    /// Whether the Tool callback running is a syscall handler, the only
+    /// callback whose `tail_inject` resolves a guest syscall.
+    in_syscall_handler: bool,
 }
 
 impl<T: Tool, R: HostRuntime> InGuest<'_, T, R> {
@@ -2192,6 +2350,13 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
         // call reports what Linux reports for a valid signal to the caller
         // itself, success, and the handler goes on.
         if let Some(signal) = unsafe { self_directed_fatal_signal(number, raw_args) } {
+            if signal == libc::SIGKILL {
+                // A SIGKILL ends the guest at once under a tracer: the Tool's
+                // callback does not resume, and nothing after it runs. The
+                // host runs the exit lifecycle and sends it.
+                self.tail.set_exit(number, raw_args);
+                return std::future::pending().await;
+            }
             self.stage_signal(StagedSignal {
                 number,
                 args: raw_args,
@@ -2259,6 +2424,23 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
             syscall_args.arg5 as u64,
         ];
         let number = number.id() as i64;
+        let ends_guest = is_exit_syscall(number)
+            || unsafe { self_directed_fatal_signal(number, args) } == Some(libc::SIGKILL);
+        if !self.in_syscall_handler && !ends_guest {
+            // There is no guest syscall for the call to resolve, and the
+            // callback could only stay parked: refused by name, before the
+            // call is made.
+            tool_fatal(
+                125,
+                &Error::Tool(
+                    io::Error::other(format!(
+                        "tail_inject of syscall {number}, a call that does not end the guest, \
+                         outside a syscall handler is unsupported"
+                    ))
+                    .into(),
+                ),
+            );
+        }
         if is_plain_fork(number, args) {
             let parent_tid = self.tid;
             let parent_pid = self.pid;
@@ -2283,13 +2465,18 @@ impl<T: Tool, R: HostRuntime> Guest<T> for InGuest<'_, T, R> {
         } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
         } else if let Some(signal) = unsafe { self_directed_fatal_signal(number, args) } {
-            // Staged as in `inject`; the guest's call returns 0.
-            self.stage_signal(StagedSignal {
-                number,
-                args,
-                signal,
-            });
-            self.tail.set_result(0);
+            if signal == libc::SIGKILL {
+                // As in `inject`: the guest ends here.
+                self.tail.set_exit(number, args);
+            } else {
+                // Staged as in `inject`; the guest's call returns 0.
+                self.stage_signal(StagedSignal {
+                    number,
+                    args,
+                    signal,
+                });
+                self.tail.set_result(0);
+            }
         } else if let Some(result) = virtual_signal_call(
             self.runtime,
             self.event.guest_pkru,
