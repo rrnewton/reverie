@@ -60,6 +60,8 @@ mod backtrace;
 mod capabilities;
 mod dispatch_stats;
 mod error;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub mod glibc_symbol;
 mod guest;
 #[cfg(target_arch = "x86_64")]
 pub mod pmu;
