@@ -52,12 +52,18 @@ static SUBSCRIBE_CLOSES: AtomicBool = AtomicBool::new(false);
 /// callbacks, so the host can compare the backend's dispatch counts with the
 /// callbacks the Tool actually made.
 const RPC_CALLBACK_COUNT: u64 = 1 << 32;
-/// Tags the RPC `Tool::handle_signal_event` sends with the signal it was
-/// shown.
-const RPC_SIGNAL_EVENT: u64 = 1 << 33;
-/// Tags the RPC `Tool::on_exit_process` sends with the signal that ended the
-/// process, when a signal did.
-const RPC_EXIT_SIGNALED: u64 = 1 << 34;
+/// Lifecycle observations, one RPC each, recorded in one ordered stream by
+/// the host: `lifecycle_event(tag, pid, value)` puts the tag in the top byte,
+/// the process or thread id in bits 16 to 47, and the value in the low 16
+/// bits. The other RPCs of this fixture never set the top byte.
+const EVENT_SIGNAL: u64 = 1; // handle_signal_event: the signal shown
+const EVENT_EXIT_THREAD: u64 = 2; // on_exit_thread, signal deaths: raw wait status
+const EVENT_EXIT_PROCESS: u64 = 3; // on_exit_process, signal deaths: raw wait status
+const EVENT_TGKILL_RETURNED: u64 = 4; // the tgkill handler after its injection: the result
+
+fn lifecycle_event(tag: u64, pid: i32, value: u64) -> u64 {
+    (tag << 56) | ((pid as u32 as u64) << 16) | (value & 0xffff)
+}
 static FORCE_WAIT_RESTART: AtomicBool = AtomicBool::new(true);
 static READ_CALLS: AtomicUsize = AtomicUsize::new(0);
 /// This process's Tool callbacks, one per guest entry: a callback that asks
@@ -308,28 +314,91 @@ impl Tool for LifecycleTool {
             Syscall::Clone(clone) if clone.flags().bits() & libc::CLONE_VM == 0 => {
                 Ok(inject_fork(guest, syscall).await?)
             }
+            Syscall::Tgkill(_) => {
+                // Records that the handler goes on after its injection.
+                let result = guest.inject(syscall).await;
+                let value = result.unwrap_or_else(|errno| -i64::from(errno.into_raw()));
+                let pid = guest.pid().as_raw();
+                guest
+                    .send_rpc(lifecycle_event(EVENT_TGKILL_RETURNED, pid, value as u64))
+                    .await;
+                Ok(result?)
+            }
             _ => Ok(guest.inject(syscall).await?),
         }
     }
 
+    /// Records the signal, then, to show that the host decides a death only
+    /// after this callback: ignores SIGUSR1 and blocks SIGUSR2 before letting
+    /// either be delivered, and suppresses SIGHUP.
     async fn handle_signal_event<G: Guest<Self>>(
         &self,
         guest: &mut G,
         signal: Signal,
     ) -> Result<Option<Signal>, Errno> {
-        guest.send_rpc(RPC_SIGNAL_EVENT | signal as u64).await;
+        let pid = guest.pid().as_raw();
+        guest
+            .send_rpc(lifecycle_event(EVENT_SIGNAL, pid, signal as u64))
+            .await;
+        match signal {
+            Signal::SIGUSR1 => {
+                let ignore = [libc::SIG_IGN as u64, 0, 0, 0];
+                let result = unsafe {
+                    reverie_inguest::trap::raw_syscall6(
+                        libc::SYS_rt_sigaction,
+                        [signal as u64, ignore.as_ptr() as u64, 0, 8, 0, 0],
+                    )
+                };
+                assert_eq!(result, 0);
+            }
+            Signal::SIGUSR2 => {
+                let bit = 1_u64 << (libc::SIGUSR2 - 1);
+                let result = unsafe {
+                    reverie_inguest::trap::raw_syscall6(
+                        libc::SYS_rt_sigprocmask,
+                        [libc::SIG_BLOCK as u64, (&raw const bit) as u64, 0, 8, 0, 0],
+                    )
+                };
+                assert_eq!(result, 0);
+            }
+            Signal::SIGHUP => return Ok(None),
+            _ => {}
+        }
         Ok(Some(signal))
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        tid: Tid,
+        global_state: &G,
+        _thread_state: (),
+        exit_status: ExitStatus,
+    ) -> Result<(), Error> {
+        if matches!(exit_status, ExitStatus::Signaled(..)) {
+            global_state
+                .send_rpc(lifecycle_event(
+                    EVENT_EXIT_THREAD,
+                    tid.as_raw(),
+                    exit_status.into_raw() as u64,
+                ))
+                .await;
+        }
+        Ok(())
     }
 
     async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
         self,
-        _pid: Pid,
+        pid: Pid,
         global_state: &G,
         exit_status: ExitStatus,
     ) -> Result<(), Error> {
-        if let ExitStatus::Signaled(signal, _) = exit_status {
+        if matches!(exit_status, ExitStatus::Signaled(..)) {
             global_state
-                .send_rpc(RPC_EXIT_SIGNALED | signal as u64)
+                .send_rpc(lifecycle_event(
+                    EVENT_EXIT_PROCESS,
+                    pid.as_raw(),
+                    exit_status.into_raw() as u64,
+                ))
                 .await;
         }
         Ok(())
@@ -444,16 +513,55 @@ fn signaled_descendant(pid_file: &Path) -> ! {
     unsafe { libc::_exit(29) }
 }
 
-/// Each child ends itself with a signal it sends itself, and the parent
-/// prints how it ended: `abort()` sends SIGABRT with `tgkill`, a call the
-/// Tool subscribes to, and `kill(getpid(), SIGTERM)` uses `kill`, which it
-/// does not.
+/// Each child sends itself a signal and the parent prints how it ended
+/// (`<label> pid=<pid> status=<raw wait status>`). `abort` (a `tgkill`,
+/// which the Tool subscribes to) with this process's core limit, and with a
+/// core limit of 1 (no core); `kill` of the child's own pid, which the Tool
+/// does not subscribe to, with SIGTERM and SIGKILL; and `raise` of SIGUSR1,
+/// SIGUSR2 and SIGHUP, whose deaths the Tool's signal callback undoes
+/// (ignored, blocked, suppressed), so each of those children exits with its
+/// own code: 41, 42 (SIGUSR2 then pending) and 43 (SIGHUP not pending).
 fn self_signal_deaths() {
     install_tool();
-    let cases: [(&str, fn()); 2] = [
+    fn pending(signal: libc::c_int) -> bool {
+        let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+        unsafe { libc::sigpending(&mut set) == 0 && libc::sigismember(&set, signal) == 1 }
+    }
+    let cases: [(&str, fn()); 7] = [
         ("abort", || unsafe { libc::abort() }),
-        ("kill", || unsafe {
+        ("abort-core-limit-1", || unsafe {
+            let one = libc::rlimit {
+                rlim_cur: 1,
+                rlim_max: 1,
+            };
+            assert_eq!(libc::setrlimit(libc::RLIMIT_CORE, &one), 0);
+            libc::abort()
+        }),
+        ("kill-sigterm", || unsafe {
             libc::kill(libc::getpid(), libc::SIGTERM);
+        }),
+        ("kill-sigkill", || unsafe {
+            libc::kill(libc::getpid(), libc::SIGKILL);
+        }),
+        ("raise-sigusr1", || unsafe {
+            let sent = libc::raise(libc::SIGUSR1);
+            libc::_exit(if sent == 0 { 41 } else { 40 });
+        }),
+        ("raise-sigusr2", || unsafe {
+            let sent = libc::raise(libc::SIGUSR2);
+            libc::_exit(if sent == 0 && pending(libc::SIGUSR2) {
+                42
+            } else {
+                40
+            });
+        }),
+        ("raise-sighup", || unsafe {
+            let sent = libc::raise(libc::SIGHUP);
+            libc::_exit(if sent == 0 && !pending(libc::SIGHUP) {
+                43
+            } else {
+                40
+            });
         }),
     ];
     for (label, end) in cases {
@@ -478,12 +586,10 @@ fn self_signal_deaths() {
             assert_eq!(waited, i64::from(child));
             break;
         }
-        if libc::WIFSIGNALED(status) {
-            println!("{label}: signal {}", libc::WTERMSIG(status));
-        } else {
-            println!("{label}: status {status:#x}");
-        }
+        println!("{label} pid={child} status={status:#x}");
     }
+    // Give the coordinator's exit observer time to report the last child.
+    std::thread::sleep(Duration::from_millis(200));
 }
 
 fn fast_path() {

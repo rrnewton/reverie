@@ -205,16 +205,6 @@ pub fn signal_sent_to_caller(number: i64, args: [u64; 6], pid: i32, tid: i32) ->
     (targets_caller && signal != 0).then_some(signal)
 }
 
-/// The signal a `kill`, `tkill` or `tgkill` call is sending, from its
-/// arguments, or `None` for any other call.
-pub fn kill_family_signal(number: i64, args: [u64; 6]) -> Option<i32> {
-    match number {
-        libc::SYS_tgkill => Some(args[2] as i32),
-        libc::SYS_tkill | libc::SYS_kill => Some(args[1] as i32),
-        _ => None,
-    }
-}
-
 /// Whether `signal`, sent to the calling thread now, is delivered as the
 /// sending call returns and ends the process, given the calling thread's
 /// blocked set `blocked` and the process's action for `signal`, `handler`
@@ -242,29 +232,27 @@ pub fn self_signal_ends_process(signal: i32, blocked: u64, handler: u64) -> bool
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(liteinst-self-signal-death): Review the prediction that a
 // self-directed signal ends the process.
-/// The signal with which the guest's `number(args)` is about to end its own
-/// process, if it is one: a `kill`, `tkill` or `tgkill` naming the calling
-/// thread or process ([`signal_sent_to_caller`]) with a signal Linux delivers
-/// as the call returns and whose action ends the process
-/// ([`self_signal_ends_process`]). This is what `abort(3)`, `raise(3)` and
+/// The signal with which the guest's `number(args)` would end its own
+/// process as the call returns, if it is one: a `kill`, `tkill` or `tgkill`
+/// naming the calling thread or process ([`signal_sent_to_caller`]) with a
+/// signal whose delivery now ends the process
+/// ([`signal_ends_process_now`]). This is what `abort(3)`, `raise(3)` and
 /// `assert(3)` do.
 ///
 /// Such a death happens at a point of the guest's own program order, in its
-/// own turn, so the runtime can run the Tool's signal and exit callbacks
-/// before it, as for `exit_group`, instead of leaving the process to die
-/// without deregistering. Linux delivers a signal the caller sends itself
-/// before the sending call returns to user space when the caller does not
-/// block it: the signal is pending on the caller (or, for `kill`, on its
-/// process, where `complete_signal` picks the caller first because it wants
-/// the signal), and the return path delivers it. A fatal default action then
-/// ends every thread of the group.
+/// own turn, so the runtime can report it to the Tool before it happens, as
+/// it reports an `exit_group`, instead of leaving the process to die without
+/// deregistering. Linux delivers a signal the caller sends itself before the
+/// sending call returns to user space when the caller does not block it: the
+/// signal is pending on the caller (or, for `kill`, on its process, where
+/// `complete_signal` picks the caller first because it wants the signal),
+/// and the return path delivers it. A fatal default action then ends every
+/// thread of the group.
 ///
-/// The thread's current blocked set and the signal's current action are read
-/// from the kernel. On the installed-hook path the runtime runs with the
-/// guest's own mask. On the SIGSYS path the handler mask adds only SIGSYS,
-/// which this never classifies, and with the virtual SIGALRM of signal phase 1
-/// a handled SIGALRM's physical action is the runtime's trampoline, so it is
-/// not `SIG_DFL` and not classified. A failed read classifies nothing.
+/// This classification is made when the call is made. The runtime makes the
+/// final decision only after the Tool has seen the signal, by reading the
+/// state again (see `ToolHost::dispatch`), because the Tool's own callbacks
+/// can change the action or the mask.
 ///
 /// # Safety
 ///
@@ -280,29 +268,33 @@ pub unsafe fn self_directed_fatal_signal(number: i64, args: [u64; 6]) -> Option<
         return None;
     }
     let signal = signal_sent_to_caller(number, args, pid as i32, tid as i32)?;
+    unsafe { signal_ends_process_now(signal) }.then_some(signal)
+}
+
+/// Whether `signal`, sent to the calling thread now, would be delivered at
+/// once and end the process ([`self_signal_ends_process`]), read from the
+/// kernel: the thread's current blocked set and the signal's current action.
+///
+/// On the installed-hook path the runtime runs with the guest's own mask. On
+/// the SIGSYS path the handler mask adds only SIGSYS, which this never
+/// classifies, and with the virtual SIGALRM of signal phase 1 a handled
+/// SIGALRM's physical action is the runtime's trampoline, so it is not
+/// `SIG_DFL` and not classified. A failed read classifies nothing.
+///
+/// # Safety
+///
+/// Issues raw syscalls through the trusted gate, so it must run on the guest
+/// thread's own syscall path.
+pub unsafe fn signal_ends_process_now(signal: i32) -> bool {
     if signal == libc::SIGKILL {
-        return Some(signal);
+        return true;
     }
     if !default_action_ends_process(signal) || crate::signal::is_reserved(signal) {
-        return None;
+        return false;
     }
-    let mut blocked = 0_u64;
-    let result = unsafe {
-        raw_syscall6(
-            libc::SYS_rt_sigprocmask,
-            [
-                libc::SIG_BLOCK as u64,
-                0,
-                (&raw mut blocked) as u64,
-                core::mem::size_of::<u64>() as u64,
-                0,
-                0,
-            ],
-        )
+    let Some(blocked) = (unsafe { current_blocked_set() }) else {
+        return false;
     };
-    if result != 0 {
-        return None;
-    }
     let mut action = KernelSigaction::default();
     let result = unsafe {
         raw_syscall6(
@@ -317,10 +309,214 @@ pub unsafe fn self_directed_fatal_signal(number: i64, args: [u64; 6]) -> Option<
             ],
         )
     };
+    result == 0 && self_signal_ends_process(signal, blocked, action.handler)
+}
+
+/// The calling thread's blocked set, through the trusted gate.
+unsafe fn current_blocked_set() -> Option<u64> {
+    let mut blocked = 0_u64;
+    let result = unsafe {
+        raw_syscall6(
+            libc::SYS_rt_sigprocmask,
+            [
+                libc::SIG_BLOCK as u64,
+                0,
+                (&raw mut blocked) as u64,
+                core::mem::size_of::<u64>() as u64,
+                0,
+                0,
+            ],
+        )
+    };
+    (result == 0).then_some(blocked)
+}
+
+/// The signals pending for the calling thread (its own and its process's),
+/// through the trusted gate.
+///
+/// # Safety
+///
+/// Issues a raw syscall through the trusted gate, so it must run on the guest
+/// thread's own syscall path.
+pub unsafe fn current_pending_set() -> Option<u64> {
+    let mut pending = 0_u64;
+    let result = unsafe {
+        raw_syscall6(
+            libc::SYS_rt_sigpending,
+            [
+                (&raw mut pending) as u64,
+                core::mem::size_of::<u64>() as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    (result == 0).then_some(pending)
+}
+
+/// Whether Linux's default action for `signal` is "core" in signal(7):
+/// terminate and dump core.
+pub fn default_action_dumps_core(signal: i32) -> bool {
+    matches!(
+        signal,
+        libc::SIGQUIT
+            | libc::SIGILL
+            | libc::SIGTRAP
+            | libc::SIGABRT
+            | libc::SIGBUS
+            | libc::SIGFPE
+            | libc::SIGSEGV
+            | libc::SIGXCPU
+            | libc::SIGXFSZ
+            | libc::SIGSYS
+    )
+}
+
+/// The kind of destination `/proc/sys/kernel/core_pattern` names, by its
+/// first byte.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CorePattern {
+    /// `|program`: the kernel pipes the core to a helper.
+    Pipe,
+    /// `/path`: an absolute file name.
+    AbsolutePath,
+    /// Any other file name, relative to the dying process's directory.
+    RelativePath,
+    /// Unreadable, empty, or a form this does not model (such as a leading
+    /// `@`, a socket on newer kernels).
+    Unknown,
+}
+
+impl CorePattern {
+    /// Classifies a pattern by its first byte.
+    pub fn from_first_byte(byte: Option<u8>) -> Self {
+        match byte {
+            Some(b'|') => Self::Pipe,
+            Some(b'/') => Self::AbsolutePath,
+            Some(b'@') | Some(b'\n') | None => Self::Unknown,
+            Some(_) => Self::RelativePath,
+        }
+    }
+}
+
+/// `SUID_DUMP_ROOT`, the `PR_GET_DUMPABLE` value with which Linux dumps only
+/// to a pipe or an absolute path.
+const SUID_DUMP_ROOT: i64 = 2;
+
+/// Whether Linux's `do_coredump` would write a core when `signal` ends a
+/// process whose dumpable mode (`PR_GET_DUMPABLE`) is `dumpable`, whose soft
+/// `RLIMIT_CORE` is `core_limit`, under `pattern`, on a system with page size
+/// `page_size`. These are the checks `fs/coredump.c` makes before it writes
+/// anything: the signal's default action must be "core"; the process must be
+/// dumpable; a `SUID_DUMP_ROOT` process dumps only to a pipe or an absolute
+/// path; a pipe dumps unless the limit is exactly 1 (the kernel's documented
+/// opt-out for pipes); a file needs a limit of at least one page (the ELF
+/// format's `min_coredump`). An `Unknown` pattern predicts no core.
+pub fn core_dump_attempted(
+    signal: i32,
+    dumpable: i64,
+    core_limit: u64,
+    pattern: CorePattern,
+    page_size: u64,
+) -> bool {
+    if !default_action_dumps_core(signal) || dumpable <= 0 {
+        return false;
+    }
+    match pattern {
+        CorePattern::Pipe => core_limit != 1,
+        CorePattern::AbsolutePath => core_limit >= page_size,
+        CorePattern::RelativePath => dumpable != SUID_DUMP_ROOT && core_limit >= page_size,
+        CorePattern::Unknown => false,
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(liteinst-self-signal-death): Review the core-dump
+// prediction reported to the Tool's exit callbacks.
+/// The core-dump flag to report with a death by `signal` that has not
+/// happened yet ([`core_dump_attempted`], from this process's dumpable mode,
+/// its soft `RLIMIT_CORE`, the system's `core_pattern` and page size, all read
+/// now).
+///
+/// This is a prediction, and the one input it cannot see is whether the
+/// kernel's write then succeeds (a pipe helper that is gone, a full disk, an
+/// unwritable directory). The in-guest runtime reports the exit callbacks
+/// before the death because the Tool runs inside the dying process, so no
+/// authoritative status exists yet; a backend that observes the death from
+/// outside reports the kernel's status instead.
+///
+/// # Safety
+///
+/// Issues raw syscalls through the trusted gate, so it must run on the guest
+/// thread's own syscall path.
+pub unsafe fn core_dump_expected(signal: i32) -> bool {
+    if !default_action_dumps_core(signal) {
+        return false;
+    }
+    let dumpable = unsafe {
+        raw_syscall6(
+            libc::SYS_prctl,
+            [libc::PR_GET_DUMPABLE as u64, 0, 0, 0, 0, 0],
+        )
+    };
+    let mut limit = libc::rlimit64 {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    let result = unsafe {
+        raw_syscall6(
+            libc::SYS_prlimit64,
+            [
+                0,
+                libc::RLIMIT_CORE as u64,
+                0,
+                (&raw mut limit) as u64,
+                0,
+                0,
+            ],
+        )
+    };
     if result != 0 {
+        return false;
+    }
+    let Ok(page_size) = crate::guest::support::page_size() else {
+        return false;
+    };
+    let pattern = CorePattern::from_first_byte(unsafe { core_pattern_first_byte() });
+    core_dump_attempted(signal, dumpable, limit.rlim_cur, pattern, page_size)
+}
+
+/// The first byte of `/proc/sys/kernel/core_pattern`, read through the
+/// trusted gate into a stack buffer, or `None` if it cannot be read.
+unsafe fn core_pattern_first_byte() -> Option<u8> {
+    let path = c"/proc/sys/kernel/core_pattern";
+    let fd = unsafe {
+        raw_syscall6(
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                path.as_ptr() as u64,
+                (libc::O_RDONLY | libc::O_CLOEXEC) as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if fd < 0 {
         return None;
     }
-    self_signal_ends_process(signal, blocked, action.handler).then_some(signal)
+    let mut byte = 0_u8;
+    let read = unsafe {
+        raw_syscall6(
+            libc::SYS_read,
+            [fd as u64, (&raw mut byte) as u64, 1, 0, 0, 0],
+        )
+    };
+    let _ = unsafe { raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
+    (read == 1).then_some(byte)
 }
 
 #[cfg(test)]
@@ -495,6 +691,170 @@ mod tests {
         unsafe { crate::signal::raw_sigaction(libc::SIGUSR2, Some(&previous), None) }.unwrap();
         unsafe { crate::signal::raw_sigprocmask(libc::SIG_SETMASK, Some(&old_mask), None) }
             .unwrap();
+    }
+
+    #[test]
+    fn the_core_pattern_is_classified_by_its_first_byte() {
+        assert_eq!(CorePattern::from_first_byte(Some(b'|')), CorePattern::Pipe);
+        assert_eq!(
+            CorePattern::from_first_byte(Some(b'/')),
+            CorePattern::AbsolutePath
+        );
+        assert_eq!(
+            CorePattern::from_first_byte(Some(b'c')),
+            CorePattern::RelativePath
+        );
+        for unknown in [Some(b'@'), Some(b'\n'), None] {
+            assert_eq!(CorePattern::from_first_byte(unknown), CorePattern::Unknown);
+        }
+    }
+
+    /// The checks `fs/coredump.c` makes before writing a core.
+    #[test]
+    fn a_core_is_predicted_only_where_the_kernel_would_write_one() {
+        let page = 4096;
+        let abrt = libc::SIGABRT;
+        // Only "core" default actions dump.
+        assert!(!core_dump_attempted(
+            libc::SIGTERM,
+            1,
+            u64::MAX,
+            CorePattern::Pipe,
+            page
+        ));
+        assert!(!core_dump_attempted(
+            libc::SIGKILL,
+            1,
+            u64::MAX,
+            CorePattern::Pipe,
+            page
+        ));
+        for signal in [libc::SIGQUIT, libc::SIGSEGV, libc::SIGFPE, libc::SIGILL] {
+            assert!(core_dump_attempted(
+                signal,
+                1,
+                u64::MAX,
+                CorePattern::Pipe,
+                page
+            ));
+        }
+        // Not dumpable: no core.
+        assert!(!core_dump_attempted(
+            abrt,
+            0,
+            u64::MAX,
+            CorePattern::Pipe,
+            page
+        ));
+        // A pipe dumps whatever the limit, except exactly 1.
+        assert!(core_dump_attempted(abrt, 1, 0, CorePattern::Pipe, page));
+        assert!(!core_dump_attempted(abrt, 1, 1, CorePattern::Pipe, page));
+        // A file needs at least one page.
+        assert!(!core_dump_attempted(
+            abrt,
+            1,
+            0,
+            CorePattern::RelativePath,
+            page
+        ));
+        assert!(!core_dump_attempted(
+            abrt,
+            1,
+            page - 1,
+            CorePattern::AbsolutePath,
+            page
+        ));
+        assert!(core_dump_attempted(
+            abrt,
+            1,
+            page,
+            CorePattern::AbsolutePath,
+            page
+        ));
+        assert!(core_dump_attempted(
+            abrt,
+            1,
+            page,
+            CorePattern::RelativePath,
+            page
+        ));
+        // SUID_DUMP_ROOT dumps only to a pipe or an absolute path.
+        assert!(core_dump_attempted(
+            abrt,
+            2,
+            page,
+            CorePattern::AbsolutePath,
+            page
+        ));
+        assert!(core_dump_attempted(abrt, 2, 0, CorePattern::Pipe, page));
+        assert!(!core_dump_attempted(
+            abrt,
+            2,
+            page,
+            CorePattern::RelativePath,
+            page
+        ));
+        // An unknown pattern predicts no core.
+        assert!(!core_dump_attempted(
+            abrt,
+            1,
+            u64::MAX,
+            CorePattern::Unknown,
+            page
+        ));
+    }
+
+    /// With RLIMIT_CORE set to 1, which disables cores for every pattern,
+    /// the prediction reads that and predicts none; a signal whose default
+    /// action does not dump never predicts one.
+    #[test]
+    fn the_core_prediction_reads_this_processs_core_limit() {
+        assert!(!unsafe { core_dump_expected(libc::SIGTERM) });
+        let mut previous = libc::rlimit64 {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        let one = libc::rlimit64 {
+            rlim_cur: 1,
+            rlim_max: libc::RLIM64_INFINITY,
+        };
+        let set = unsafe {
+            raw_syscall6(
+                libc::SYS_prlimit64,
+                [
+                    0,
+                    libc::RLIMIT_CORE as u64,
+                    (&raw const one) as u64,
+                    (&raw mut previous) as u64,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if set != 0 {
+            // A hard limit below 1 cannot be raised; nothing to check here.
+            return;
+        }
+        let predicted = unsafe { core_dump_expected(libc::SIGABRT) };
+        let _ = unsafe {
+            raw_syscall6(
+                libc::SYS_prlimit64,
+                [
+                    0,
+                    libc::RLIMIT_CORE as u64,
+                    (&raw const previous) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        assert!(!predicted);
+    }
+
+    #[test]
+    fn the_pending_set_is_read_from_the_kernel() {
+        assert!(unsafe { current_pending_set() }.is_some());
     }
 
     #[test]
