@@ -33,8 +33,9 @@ const RPC_FAIL: u64 = 8;
 const RPC_CALLBACK_COUNT: u64 = 1 << 32;
 /// The lifecycle observations the fixture Tool sends (`lifecycle_event` in
 /// `src/bin/lifecycle_guest.rs`: tag in the top byte, id in bits 16 to 47,
-/// value in the low 16 bits), and the physical exits the coordinator reports,
-/// recorded in one stream in the order the global state received them.
+/// value in the low 16 bits), and the physical exits an admission observes,
+/// each numbered from [`OBSERVATION_SEQUENCE`] when it is recorded, so the
+/// two sources merge into one ordered stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Observed {
     /// `handle_signal_event` was shown this signal.
@@ -45,9 +46,12 @@ enum Observed {
     ExitProcess(u16),
     /// The tgkill handler went on after its injection, which returned this.
     TgkillReturned(u16),
-    /// `on_backend_process_exited`: the process is physically gone.
+    /// The process's pidfd polled readable: it is physically gone.
     PhysicallyExited,
 }
+
+/// Numbers every lifecycle observation in the order it is recorded.
+static OBSERVATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const BACKEND_OUTPUT_CHILD_ENV: &str = "REVERIE_LITEINST_BACKEND_OUTPUT_TEST_CHILD";
 
 #[derive(Debug, Default)]
@@ -66,9 +70,9 @@ struct LifecycleGlobal {
     callbacks: AtomicU64,
     /// Pids reported through `on_backend_process_exited`.
     exited: std::sync::Mutex<Vec<i32>>,
-    /// Lifecycle observations with the process or thread id they name, in
-    /// the order received.
-    observed: std::sync::Mutex<Vec<(i32, Observed)>>,
+    /// Lifecycle observations: sequence number, the process or thread id
+    /// they name, and what was observed.
+    observed: std::sync::Mutex<Vec<(u64, i32, Observed)>>,
     /// Calls of `report_backend_failure`.
     backend_failures: AtomicU64,
     /// Processes parked by `RPC_PARK`.
@@ -118,7 +122,8 @@ impl GlobalTool for LifecycleGlobal {
                 4 => Observed::TgkillReturned(value),
                 tag => panic!("unknown lifecycle observation tag {tag}"),
             };
-            self.observed.lock().unwrap().push((id, observed));
+            let sequence = OBSERVATION_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+            self.observed.lock().unwrap().push((sequence, id, observed));
             return;
         }
         if event & RPC_CALLBACK_COUNT != 0 {
@@ -140,10 +145,6 @@ impl GlobalTool for LifecycleGlobal {
 
     fn on_backend_process_exited(&self, pid: i32) {
         self.exited.lock().unwrap().push(pid);
-        self.observed
-            .lock()
-            .unwrap()
-            .push((pid, Observed::PhysicallyExited));
     }
 
     fn backend_pending_process_exits(&self) -> Vec<i32> {
@@ -610,21 +611,26 @@ async fn a_backend_failure_ends_the_run_while_a_process_is_parked() {
     assert!(error.to_string().contains("backend failure"), "{error}");
 }
 
-/// Admits every guest connection and reports each admitted process's
-/// physical exit, observed on its pidfd, through the launcher's exit reporter.
+/// Admits every guest connection and records each admitted process's
+/// physical exit, observed on its pidfd by a thread the test joins after the
+/// run, so no observation can arrive after the test reads them.
 #[derive(Default)]
 struct ExitObservingAdmission {
-    reporter: std::sync::Mutex<Option<std::sync::Arc<dyn reverie_rpc_transport::ExitReporter>>>,
+    physical: std::sync::Arc<std::sync::Mutex<Vec<(u64, i32, Observed)>>>,
+    observers: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
+impl ExitObservingAdmission {
+    /// Waits for every observer and returns what they recorded.
+    fn finish(&self) -> Vec<(u64, i32, Observed)> {
+        for observer in self.observers.lock().unwrap().drain(..) {
+            observer.join().unwrap();
+        }
+        self.physical.lock().unwrap().clone()
+    }
 }
 
 impl reverie_rpc_transport::ConnectionAdmission for ExitObservingAdmission {
-    fn attach_exit_reporter(
-        &self,
-        reporter: std::sync::Arc<dyn reverie_rpc_transport::ExitReporter>,
-    ) {
-        *self.reporter.lock().unwrap() = Some(reporter);
-    }
-
     fn admit(
         &self,
         peer: std::os::fd::OwnedFd,
@@ -636,19 +642,24 @@ impl reverie_rpc_transport::ConnectionAdmission for ExitObservingAdmission {
             .find_map(|line| line.strip_prefix("Pid:"))
             .and_then(|pid| pid.trim().parse().ok())
             .ok_or_else(|| std::io::Error::other("pidfd names no pid"))?;
-        let reporter = self.reporter.lock().unwrap().clone();
-        std::thread::spawn(move || {
-            let mut poll = libc::pollfd {
-                fd: peer.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // A pidfd polls readable once its process has exited.
-            while unsafe { libc::poll(&mut poll, 1, -1) } != 1 {}
-            if let Some(reporter) = reporter {
-                reporter.process_exited(pid);
-            }
-        });
+        let physical = self.physical.clone();
+        self.observers
+            .lock()
+            .unwrap()
+            .push(std::thread::spawn(move || {
+                let mut poll = libc::pollfd {
+                    fd: peer.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // A pidfd polls readable once its process has exited.
+                while unsafe { libc::poll(&mut poll, 1, -1) } != 1 {}
+                let sequence = OBSERVATION_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+                physical
+                    .lock()
+                    .unwrap()
+                    .push((sequence, pid, Observed::PhysicallyExited));
+            }));
         Ok(reverie_rpc_transport::Admitted { process_id: pid })
     }
 }
@@ -675,7 +686,7 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
     let (result, global) = tokio::time::timeout(
         Duration::from_secs(30),
         LiteinstBackend::with_connection_admission(
-            admission,
+            admission.clone(),
             LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
                 guest_command("self-signal-deaths"),
                 (),
@@ -713,17 +724,28 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
             "raise-sigusr1",
             "raise-sigusr2",
             "raise-sighup",
+            "raise-sigvtalrm",
+            "raise-sigprof",
+            "cpuid-sigterm",
+            "thread-start-sigterm",
+            "abort-pending-unreadable",
         ],
         "{stdout}"
     );
-    let observed = global.observed.lock().unwrap().clone();
+    // Every guest process has exited by now (the run ends when they have),
+    // so every observer finishes.
+    let mut observed = global.observed.lock().unwrap().clone();
+    observed.extend(admission.finish());
+    observed.sort_by_key(|(sequence, ..)| *sequence);
     eprintln!("guest stdout:\n{stdout}observed: {observed:?}");
     use Observed::*;
+    let term = libc::SIGTERM as u16;
+    let kill = libc::SIGKILL as u16;
     for (label, pid, status) in &children {
         let of_child: Vec<Observed> = observed
             .iter()
-            .filter(|(id, _)| id == pid)
-            .map(|(_, what)| *what)
+            .filter(|(_, id, _)| id == pid)
+            .map(|(.., what)| *what)
             .collect();
         let status = *status;
         let expected = match label.as_str() {
@@ -774,6 +796,49 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
                     PhysicallyExited,
                 ]
             }
+            // The signal callback sent SIGKILL, then suppressed SIGVTALRM.
+            "raise-sigvtalrm" => {
+                assert_eq!(status, kill, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGVTALRM as u16),
+                    ExitThread(kill),
+                    ExitProcess(kill),
+                    PhysicallyExited,
+                ]
+            }
+            // The handler forwarded SIGPROF, then sent SIGKILL: SIGKILL
+            // ends the process, and SIGPROF is never delivered.
+            "raise-sigprof" => {
+                assert_eq!(status, kill, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    ExitThread(kill),
+                    ExitProcess(kill),
+                    PhysicallyExited,
+                ]
+            }
+            // Sent by the CPUID callback, and by the thread-start callback.
+            "cpuid-sigterm" | "thread-start-sigterm" => {
+                assert_eq!(status, term, "{label}");
+                vec![
+                    Signal(term),
+                    ExitThread(term),
+                    ExitProcess(term),
+                    PhysicallyExited,
+                ]
+            }
+            // The runtime could not confirm SIGABRT pending, so it ended the
+            // process as a Tool error, with no exit callback, and SIGABRT
+            // still blocked.
+            "abort-pending-unreadable" => {
+                assert_eq!(status, 125 << 8, "{label}");
+                vec![
+                    TgkillReturned(0),
+                    Signal(libc::SIGABRT as u16),
+                    PhysicallyExited,
+                ]
+            }
             other => panic!("unexpected case {other}"),
         };
         assert_eq!(of_child, expected, "{label} (pid {pid}): {observed:?}");
@@ -781,6 +846,12 @@ async fn a_process_that_ends_itself_with_a_signal_reports_it_and_its_exit_first(
     // With a core limit of 1 the kernel writes no core, and the reported
     // status says so.
     assert_eq!(children[1].2 & 0x80, 0, "{stdout}");
+    // The Tool error is named on the child's standard error.
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("SIGABRT, which ends this process, could not be made pending: the pending set could not be read after it was sent; it stays blocked"),
+        "{stderr}"
+    );
 }
 
 /// Synchronous Tool code inside a callback, outside the callback's own
