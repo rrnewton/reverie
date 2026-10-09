@@ -939,18 +939,40 @@ pub trait Tool: Send + Sync + Default {
     /// An injection that ends the guest (an exit, or a SIGKILL of the guest
     /// itself) ends the callback that made it there, as under a tracer; the
     /// callback does not resume. That ending is latched when the injection
-    /// is made: if the Tool abandons the injection's future and goes on, no
-    /// later injection, register write or signal delivery takes effect, and
-    /// the guest ends even if the callback then returns.
+    /// is made, and the guest ends even if the callback then returns. A Tool
+    /// that abandons the injection's future and goes on gets no further
+    /// effect on the guest through its [`Guest`]:
+    ///
+    /// - `inject`, `tail_inject`, `set_regs`, the signal deliveries
+    ///   (`defer_signal_delivery`, `defer_signal_delivery_before_syscall`)
+    ///   and `send_rpc` never complete: the callback stays parked until the
+    ///   host ends the process, so a request that could block on the
+    ///   coordinator is never sent;
+    /// - every read and write through a `memory()` handle, one obtained
+    ///   before the injection included, fails with ESRCH and copies nothing,
+    ///   as a tracer's access to a tracee its injection killed fails;
+    /// - the backend's blocking coordinator request for synchronous Tool
+    ///   code (LiteInst's `blocking_global_rpc`) fails with ESRCH, unsent.
+    ///
+    /// The rest of the interface has no effect on the guest (`regs`, `pid`,
+    /// `thread_state` and the other reads; `stack`, whose storage is the
+    /// host's; `set_timer`, which the in-guest host refuses). The exit
+    /// callbacks run afterwards with their own coordinator connection and no
+    /// [`Guest`], and may use both the connection and the blocking request.
+    /// Effects a Tool makes outside these interfaces (its own system calls,
+    /// direct stores to guest memory, a `LocalMemory` it constructs itself)
+    /// are not seen by the host, and remain the Tool's responsibility, as
+    /// every such effect is.
     ///
     /// Three cases are unsupported, and the host ends the process as a Tool
     /// error that names the case (exit status 125) before anything is made
     /// for it: a `tail_inject` of a call that does not end the guest outside
     /// a syscall handler (in a start-up, instruction or signal callback); a
     /// plain fork injected outside a syscall handler; and a signal callback
-    /// replacing a signal with SIGALRM while the guest's SIGALRM handler is
-    /// kept virtual (signal phase 1), which only the backend's own delivery
-    /// can reach.
+    /// that has SIGALRM delivered while the guest's SIGALRM handler is kept
+    /// virtual (signal phase 1), which only the backend's own delivery can
+    /// reach: in place of another signal, or as the guest's own SIGALRM,
+    /// held while the Tool installed the guest's handler.
     async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
         &self,
         _tid: Tid,
