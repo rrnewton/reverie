@@ -199,6 +199,11 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     ///    handle successful calls to `execve`, use [`Tool::handle_post_exec`].
     ///    Failed calls to `execve` will still return, however. Thus, it is safe to
     ///    use [`Result::unwrap_err`] on the result of the `inject`.
+    ///
+    /// A signal can stop the injected syscall before it runs. The call then
+    /// returns `Err(ERESTARTSYS)` rather than a value read from the register
+    /// file, and the syscall has had no effect; [`Guest::inject_with_retry`]
+    /// injects it again.
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno>;
 
     /// Similar to [`Guest::inject`], except that it never returns. Since it does
