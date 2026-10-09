@@ -915,6 +915,21 @@ pub trait Tool: Send + Sync + Default {
     /// errors or cancellation, including states whose `handle_thread_start`
     /// was never entered or completed. No further guest event is started to
     /// perform this cleanup. Panic unwinding may bypass the hook.
+    ///
+    /// # Exit status: exact, or predicted
+    ///
+    /// A backend that observes the death from outside the guest (ptrace)
+    /// passes the kernel's status. A backend that runs the Tool inside the
+    /// guest reports a death before it happens, because the Tool dies with
+    /// the guest; then only part of the status is known. For an exit, the
+    /// code is exact. For a death by a signal the guest sends itself (the
+    /// in-guest host's `deliver_staged_signals`), the signal is exact, and the
+    /// core-dump flag of [`ExitStatus::Signaled`] is a prediction from the
+    /// inputs Linux checks before it writes a core (the signal's default
+    /// action, the dumpable mode, `RLIMIT_CORE` and `core_pattern`); the
+    /// kernel's own flag differs when its write of the core fails. A Tool must
+    /// not rely on that flag from such a backend. The same holds for
+    /// [`Tool::on_exit_process`].
     async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
         &self,
         _tid: Tid,
@@ -935,6 +950,9 @@ pub trait Tool: Send + Sync + Default {
     /// initial thread starts, after the thread states have been consumed. It
     /// must support cleanup after fatal failure without ordinary guest RPC
     /// progress. Panic unwinding may bypass the hook.
+    ///
+    /// The status is exact or predicted as described for
+    /// [`Tool::on_exit_thread`].
     async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
         self,
         _pid: Pid,
