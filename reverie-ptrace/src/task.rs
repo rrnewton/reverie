@@ -5456,10 +5456,19 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         }
 
-        let mut child_task = match op {
-            ChildOp::Clone => self.cloned(child.pid()),
-            ChildOp::Fork => self.forked(child.pid()),
-            ChildOp::Vfork => self.forked(child.pid()),
+        // A clone without CLONE_THREAD but with a non-SIGCHLD exit signal is
+        // also reported as a clone event. It is a process, with its own pid,
+        // and its creator's exit must not wait for it as for a thread. A
+        // failed read is reported only after the child is owned, below.
+        let own_thread_group = match op {
+            ChildOp::Clone => crate::tracer::newborn_leads_own_thread_group(child.pid()),
+            ChildOp::Fork | ChildOp::Vfork => Ok(true),
+        };
+        let is_thread = op == ChildOp::Clone && !matches!(own_thread_group, Ok(true));
+        let mut child_task = if is_thread {
+            self.cloned(child.pid())
+        } else {
+            self.forked(child.pid())
         };
         child_task.ptracer_waits.bind_running(&child);
 
@@ -5553,7 +5562,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             .push(handle);
         let task = ChildCompletion::Owned(receiver);
 
-        if op == ChildOp::Clone {
+        if is_thread {
             let mut child_threads = self.child_threads.lock().await;
             child_threads.push(Child {
                 id,
@@ -5578,6 +5587,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         // Even a failed parent restoration leaves the initialized child owned
         // by the registered task before the error crosses the callback boundary.
         parent_restore?;
+        // The child is owned either way; a clone whose thread group could not
+        // be read was kept on the thread path, and the session hears why.
+        own_thread_group.map_err(|error| {
+            TraceError::from(Errno::new(error.raw_os_error().unwrap_or(libc::EIO)))
+        })?;
         let parent_regs = parent.getregs()?;
         if self.attached_by_gdb {
             // NB: We report T05;create event (for clone). However gdbserver

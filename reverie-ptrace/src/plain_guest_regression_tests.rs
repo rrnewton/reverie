@@ -2530,6 +2530,18 @@ async fn the_fork_family_runs_through_the_site() {
     assert_eq!(vfork_done, ["VforkDone rax=-38"], "{:#?}", tail.stops);
 }
 
+/// A clone without CLONE_THREAD, with exit signal 0, is reported as a clone
+/// event but is its own process
+/// (https://github.com/rrnewton/hermit/issues/4012). The Tool signals the
+/// child's parked call with `tgkill(guest.pid(), guest.tid())`, which fails,
+/// and fails the run, if the child is given its creator's process id.
+#[tokio::test(flavor = "current_thread")]
+async fn a_clone_without_clone_thread_is_its_own_process() {
+    let run = run_guest("raw_clone_process", false).await;
+    assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+    assert_report_has(&run, &["raw clone child status exited=1 code=7"]);
+}
+
 /// A real IA-32 `int 0x80` in a forked child kills it with SIGSYS, without a
 /// seccomp stop, without returning and without any Tool event naming SIGSYS.
 /// This needs no perf counters.
