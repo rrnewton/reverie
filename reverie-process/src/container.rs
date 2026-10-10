@@ -636,6 +636,14 @@ impl Container {
         self
     }
 
+    pub(super) fn validate_pinned_clone(&self) -> Result<(), Errno> {
+        let shared = libc::CLONE_VM | libc::CLONE_FILES | libc::CLONE_VFORK | libc::CLONE_THREAD;
+        if self.namespace.bits() & shared != 0 && self.mounts.iter().any(Mount::has_pinned_source) {
+            return Err(Errno::EINVAL);
+        }
+        Ok(())
+    }
+
     /// Called by the child process after `clone` to get itself set up for either
     /// `execve` or running an arbitrary function.
     ///
@@ -829,6 +837,7 @@ impl Container {
         F: FnMut() -> T,
         T: Serialize + DeserializeOwned,
     {
+        self.validate_pinned_clone()?;
         let clone_flags = self.namespace.bits() | libc::SIGCHLD;
 
         let uid_map = &make_id_map(&self.uid_map);
@@ -974,6 +983,8 @@ impl Container {
         F: FnMut(S) -> (T, D),
         T: Serialize + DeserializeOwned,
     {
+        self.validate_pinned_clone()
+            .map_err(|error| StartupRunError::BeforeClone(error.into()))?;
         let deadline = std::time::Instant::now()
             .checked_add(timeout)
             .filter(|_| !timeout.is_zero())
@@ -1227,6 +1238,8 @@ impl Container {
     {
         use std::os::fd::AsFd;
         let before = |cause| StartupOwnedFailure::BeforeClone { cause };
+        self.validate_pinned_clone()
+            .map_err(|error| before(error.into()))?;
         let deadline = std::time::Instant::now()
             .checked_add(timeout)
             .filter(|_| !timeout.is_zero())
@@ -1349,6 +1362,8 @@ impl Container {
         T: Serialize,
     {
         let before = |cause| StartupOwnedFailure::BeforeClone { cause };
+        self.validate_pinned_clone()
+            .map_err(|error| before(error.into()))?;
         let mut disposition: libc::sigaction = unsafe { std::mem::zeroed() };
         Errno::result(unsafe {
             libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut disposition)
@@ -1449,6 +1464,7 @@ impl Container {
         F: FnMut() -> (T, D),
         T: Serialize + DeserializeOwned,
     {
+        self.validate_pinned_clone()?;
         let clone_flags = self.namespace.bits() | libc::SIGCHLD;
         let uid_map = &make_id_map(&self.uid_map);
         let gid_map = &make_id_map(&self.gid_map);
