@@ -49,20 +49,30 @@ core::arch::global_asm!(
     .hidden reverie_inguest_trusted_syscall
     .type reverie_inguest_trusted_syscall,@function
 reverie_inguest_trusted_syscall:
+    // Ordinary seven-scalar SysV entry: preserve the caller's R12 and frame.
+    push r12
+    lea r12, [rip + .Lreverie_inguest_trusted_return]
     mov rax, rdi
     mov rdi, rsi
     mov rsi, rdx
     mov rdx, rcx
     mov r10, r8
     mov r8, r9
-    mov r9, [rsp + 8]
+    mov r9, [rsp + 16]
     .global reverie_inguest_trusted_syscall_ip
     .hidden reverie_inguest_trusted_syscall_ip
 reverie_inguest_trusted_syscall_ip:
+    // Native assembly entry: Linux syscall registers, R12 = continuation.
+    // This interval neither reads nor writes caller memory. Native callers
+    // own R12 preservation; this entry is NOT a C function or unwind frame.
     syscall
     .global reverie_inguest_trusted_syscall_return_ip
     .hidden reverie_inguest_trusted_syscall_return_ip
 reverie_inguest_trusted_syscall_return_ip:
+    jmp r12
+.Lreverie_inguest_trusted_return:
+    endbr64
+    pop r12
     ret
     .size reverie_inguest_trusted_syscall, .-reverie_inguest_trusted_syscall
 
@@ -182,6 +192,8 @@ thread_local! {
 /// # Safety
 ///
 /// Issues a raw syscall with caller-supplied arguments.
+/// The call must return through its original stack; this is not an ordinary
+/// wrapper for `rt_sigreturn` or `clone` with a replaced child stack.
 pub unsafe fn raw_syscall6(number: i64, args: [u64; 6]) -> i64 {
     unsafe {
         reverie_inguest_trusted_syscall(
