@@ -748,11 +748,34 @@ readonly -a REGULAR_TEST_SKIP_ARGS=(
     --skip tests::uid_namespace
 )
 
+# These inputs belong to the required producer for this validation generation.
+# Empty values after a failed prebuild cannot reuse an inherited/stale fixture.
+REVERIE_LITEINST_PRELOAD=
+REVERIE_LITEINST_TEST_RUNTIME_MANIFEST=
+REVERIE_LITEINST_ALLOCATOR_GUEST=
+REVERIE_LITEINST_ALLOCATOR_GUEST_MANIFEST=
+
+build_liteinst_allocator_fixtures() {
+    local parent generation
+    mkdir -p "$ROOT_DIR/target/m1-validation" || return
+    parent=$(mktemp -d "$ROOT_DIR/target/m1-validation/run.XXXXXXXX") || return
+    generation="$parent/fixtures"
+    "$ROOT_DIR/scripts/build-liteinst-test-runtime.rs" --for-ci "$generation" || return
+    # The producer writes these four quoted paths only after both receipts pass.
+    source "$generation/bundle/fixture.env"
+}
+
 run_check "Cross-client skill discovery" "$ROOT_DIR/scripts/check-skill-discovery.rs"
 run_check "Build workspace" cargo build --workspace --all-features
+run_check "LiteInst allocator fixtures" build_liteinst_allocator_fixtures
 run_check "DBT virtual identity and pidfd_open policy" \
     "$ROOT_DIR/reverie-dbt/scripts/test-identity-policy.sh"
-run_test_check "Test regular workspace cases" cargo test --workspace --all-features \
+run_test_check "Test regular workspace cases" env \
+    REVERIE_LITEINST_PRELOAD="$REVERIE_LITEINST_PRELOAD" \
+    REVERIE_LITEINST_TEST_RUNTIME_MANIFEST="$REVERIE_LITEINST_TEST_RUNTIME_MANIFEST" \
+    REVERIE_LITEINST_ALLOCATOR_GUEST="$REVERIE_LITEINST_ALLOCATOR_GUEST" \
+    REVERIE_LITEINST_ALLOCATOR_GUEST_MANIFEST="$REVERIE_LITEINST_ALLOCATOR_GUEST_MANIFEST" \
+    cargo test --workspace --all-features \
     -- --test-threads=1 "${REGULAR_TEST_SKIP_ARGS[@]}"
 run_test_check "Documentation tests" cargo test --workspace --doc
 run_check "Clippy" cargo clippy --workspace --all-targets --all-features -- -D warnings

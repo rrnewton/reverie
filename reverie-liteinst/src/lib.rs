@@ -9,9 +9,10 @@ use std::process::Command;
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 compile_error!("reverie-liteinst requires Linux x86-64");
 
+#[cfg(feature = "allocator-fixture")]
+#[doc(hidden)]
+pub mod allocator_fixture;
 mod backend;
-#[cfg(all(target_env = "gnu", feature = "preload-constructor"))]
-mod glibc_compat;
 mod interior_entry;
 mod patch_alloc;
 mod stats;
@@ -36,6 +37,8 @@ mod tool_host;
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-252): Review shared reverie-inguest built-in re-exports.
+pub use patch_alloc::PatchAllocator as ScopedToolAllocator;
+pub use patch_alloc::PrivatePatchAllocator as PrivateToolAllocator;
 /// Shared `reverie-inguest` built-in tool enum and getpid spoof constant.
 ///
 /// These are re-exported verbatim so LiteInst and e9patch present the same
@@ -73,9 +76,6 @@ pub use tool_host::blocking_global_rpc;
 pub use tool_host::install_tool;
 pub use tool_host::install_tool_from_bootstrap;
 pub use tool_host::install_tool_quiescent;
-
-#[global_allocator]
-static PATCH_ALLOCATOR: patch_alloc::PatchAllocator = patch_alloc::PatchAllocator;
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-87): Review the inherited compatibility event channel.
@@ -122,17 +122,23 @@ pub fn preload_library_path() -> io::Result<PathBuf> {
         });
     }
 
-    let executable = env::current_exe()?;
+    preload_library_beside(&env::current_exe()?)
+}
+
+fn preload_library_beside(executable: &std::path::Path) -> io::Result<PathBuf> {
     let parent = executable.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "current executable has no parent")
     })?;
     [
-        parent.join("libreverie_liteinst.so"),
-        parent.join("deps/libreverie_liteinst.so"),
+        parent.join("libreverie_liteinst_preload.so"),
+        parent.join("deps/libreverie_liteinst_preload.so"),
         parent
             .parent()
             .unwrap_or(parent)
-            .join("libreverie_liteinst.so"),
+            .join("libreverie_liteinst_preload.so"),
+        // A warm pre-split Cargo tree may retain the old core cdylib under this
+        // canonical installed name. Prefer every new leaf before that fallback.
+        parent.join("libreverie_liteinst.so"),
     ]
     .into_iter()
     .find(|path| path.is_file())
@@ -227,13 +233,24 @@ pub fn set_guest_site_patching(command: &mut Command, enabled: bool) {
 // TODO-HUMAN-REVIEW(#61): this constructor installs process-wide signal and seccomp state.
 /// Initializes the preload runtime when selected by the launcher environment.
 ///
+/// The actual preload leaf owns the constructor and declares
+/// [`PrivateToolAllocator`]. An embedded legacy root must explicitly declare
+/// [`ScopedToolAllocator`]. The core installs neither an allocator nor its own
+/// LiteInst constructor. The independent legacy `reverie-inguest` constructor
+/// can still be enabled by that dependency's `preload-constructor` feature.
+/// A caller whose allocator does not own the dispatch preflight allocation is
+/// refused before runtime activation.
+///
 /// # Safety
 ///
 /// The dynamic loader must call this exactly once before application threads
 /// start. Calling it again would stack an irreversible seccomp filter.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_liteinst_initialize() {
-    if let Err(error) = runtime::initialize_from_environment() {
+    let _scope = reverie_inguest::guest::alloc::enter_dispatch();
+    let result =
+        patch_alloc::preflight_allocator().and_then(|()| runtime::initialize_from_environment());
+    if let Err(error) = result {
         eprintln!("reverie-liteinst initialization failed: {error}");
         // libc's _exit, not a raw exit_group from this library: an exit_group
         // issued from the runtime's own code bypasses the runtime's exit path,
@@ -297,11 +314,6 @@ pub extern "C" fn reverie_liteinst_fallback_syscall_refusal_count(number: i64) -
     runtime::fallback_syscall_refusal_count(number)
 }
 
-#[cfg(feature = "preload-constructor")]
-#[used]
-#[unsafe(link_section = ".init_array")]
-static REVERIE_LITEINST_INIT: unsafe extern "C" fn() = reverie_liteinst_initialize;
-
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
@@ -313,6 +325,41 @@ mod tests {
     use super::set_guest_alt_stack;
     use super::set_guest_site_patching;
     use super::site_patching_from_env_value;
+
+    #[test]
+    fn generated_preload_leaves_precede_a_stale_canonical_artifact() {
+        let root = tempfile::tempdir().unwrap();
+        let debug = root.path().join("debug");
+        let deps = debug.join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let executable = debug.join("reverie-liteinst-strace");
+        let installed = debug.join("libreverie_liteinst.so");
+        std::fs::write(&installed, b"old core artifact or installed runtime").unwrap();
+        // Canonical installation still works when there is no generated leaf.
+        assert_eq!(
+            super::preload_library_beside(&executable).unwrap(),
+            installed
+        );
+        // Reproduce a warm Cargo tree after the package split: the old core
+        // artifact must not hide the newly produced private-allocator leaf.
+        let generated = deps.join("libreverie_liteinst_preload.so");
+        std::fs::write(&generated, b"fresh preload leaf").unwrap();
+        assert_eq!(
+            super::preload_library_beside(&executable).unwrap(),
+            generated
+        );
+        std::fs::remove_file(&generated).unwrap();
+        // A test executable under deps must also prefer the new parent leaf
+        // over a legacy artifact beside that executable.
+        let test_executable = deps.join("strace-test");
+        std::fs::write(deps.join("libreverie_liteinst.so"), b"stale core").unwrap();
+        let parent_leaf = debug.join("libreverie_liteinst_preload.so");
+        std::fs::write(&parent_leaf, b"fresh preload leaf").unwrap();
+        assert_eq!(
+            super::preload_library_beside(&test_executable).unwrap(),
+            parent_leaf
+        );
+    }
 
     /// The value the launcher writes must parse back to the same boolean it
     /// selected, for both polarities. This closes the loop between the setter

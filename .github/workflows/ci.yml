@@ -83,6 +83,14 @@ jobs:
         key: dynamorio-${{ runner.os }}-${{ hashFiles('reverie-dbt/vendor/dynamorio/**', 'reverie-dbt/build.rs') }}
     - name: Build
       run: cargo build --workspace --all-features
+    - name: LiteInst allocator fixtures
+      timeout-minutes: 10
+      run: |
+        set -euo pipefail
+        cargo install --locked rust-script
+        generation="$RUNNER_TEMP/liteinst-allocator-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        scripts/build-liteinst-test-runtime.rs --for-ci "$generation"
+        cat "$generation/bundle/github.env" >> "$GITHUB_ENV"
     - name: DBT virtual identity and pidfd_open policy
       run: reverie-dbt/scripts/test-identity-policy.sh
     - name: Test regular workspace cases
@@ -221,6 +229,16 @@ jobs:
         fi
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@nightly
+    - name: Build
+      run: cargo build --workspace --all-features
+    - name: LiteInst allocator fixtures
+      timeout-minutes: 10
+      run: |
+        set -euo pipefail
+        cargo install --locked rust-script
+        generation="$RUNNER_TEMP/liteinst-allocator-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        scripts/build-liteinst-test-runtime.rs --for-ci "$generation"
+        cat "$generation/bundle/github.env" >> "$GITHUB_ENV"
     - name: Host-dependent workspace tests
       env:
         REVERIE_REQUIRE_KVM: "1"

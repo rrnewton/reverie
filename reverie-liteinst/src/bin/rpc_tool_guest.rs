@@ -1,3 +1,7 @@
+// Legacy embedded Tool root: intentionally retains scoped allocation behavior.
+#[global_allocator]
+static ALLOCATOR: reverie_liteinst::ScopedToolAllocator = reverie_liteinst::ScopedToolAllocator;
+
 use core::arch::global_asm;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicI64;

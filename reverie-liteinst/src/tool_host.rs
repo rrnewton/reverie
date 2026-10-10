@@ -136,6 +136,11 @@ static HANDLER: std::sync::OnceLock<Box<dyn ToolHandler>> = std::sync::OnceLock:
 ///
 /// The caller is normally a tool-specific preload DSO. It must invoke this
 /// before application threads start and before any seccomp filter is active.
+/// Declare [`crate::PrivateToolAllocator`] in a true preload root, or explicitly
+/// use [`crate::ScopedToolAllocator`] for a legacy embedded Tool. The shared core
+/// is allocator neutral. A compiler-selected allocator that does not own the
+/// dispatch preflight allocation is refused with `EOPNOTSUPP` before any Tool,
+/// coordinator connection or filter is installed; exhaustion returns `ENOMEM`.
 ///
 /// # Safety
 ///
@@ -160,6 +165,9 @@ where
 /// concurrent instruction-tearing and straddler protocol when publishing a new
 /// site. The caller must keep every other application thread from fetching
 /// guest text for the full lifetime of the installed tool.
+/// The root must explicitly select [`crate::PrivateToolAllocator`] or legacy
+/// [`crate::ScopedToolAllocator`]; the same pre-activation allocator check and
+/// errors as [`install_tool`] apply.
 ///
 /// # Safety
 ///
@@ -183,6 +191,9 @@ where
 ///
 /// Unlike the legacy install entry point, this does not remove its coordinator
 /// environment variable because the bootstrap path did not introduce one.
+/// The root must explicitly select [`crate::PrivateToolAllocator`] or legacy
+/// [`crate::ScopedToolAllocator`]; the same pre-activation allocator check and
+/// errors as [`install_tool`] apply.
 ///
 /// # Safety
 ///
@@ -218,6 +229,7 @@ where
     // is anonymous memory, so the entry census of the object that links this
     // runtime does not read the Tool's state as code addresses either.
     let _private_allocations = reverie_inguest::guest::alloc::enter_dispatch();
+    crate::patch_alloc::preflight_allocator()?;
     crate::syscall_fallback::initialize()?;
     let rpc =
         CoordinatorRpc::<T::GlobalState>::connect(coordinator, runtime::replace_coordinator_fd)?;

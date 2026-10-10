@@ -3,9 +3,10 @@
 //! A seccomp SIGSYS handler cannot let the system allocator issue brk or mmap.
 //! During a bounded installation scope, allocations from liteinst2 and
 //! iced-x86 therefore come from this prepublished process-lifetime buffer.
-//! Objects that survive registration are intentionally never reclaimed. Every
-//! other allocation goes to reverie-inguest's [`GuestAllocator`], which keeps
-//! Tool callbacks on their own heap.
+//! Objects that survive registration are intentionally never reclaimed. Preload
+//! leaves use [`PrivatePatchAllocator`], whose other allocations always use the
+//! reusable Tool arena. Embedded legacy Tools may explicitly use [`PatchAllocator`]
+//! to preserve their scoped allocation behavior.
 
 use core::alloc::GlobalAlloc;
 use core::alloc::Layout;
@@ -16,6 +17,8 @@ use core::sync::atomic::Ordering;
 use std::cell::Cell;
 
 use reverie_inguest::guest::alloc::GuestAllocator;
+use reverie_inguest::guest::alloc::PrivateToolAllocator;
+use reverie_inguest::guest::alloc::tool_heap_contains;
 
 const PATCH_HEAP_BYTES: usize = 32 * 1024 * 1024;
 
@@ -93,7 +96,103 @@ fn installation_active() -> bool {
     INSTALLATION_DEPTH.get() != 0
 }
 
-pub(crate) struct PatchAllocator;
+#[cfg(feature = "allocator-fixture")]
+pub(crate) fn fixture_installation_depth() -> usize {
+    INSTALLATION_DEPTH.get()
+}
+
+#[cfg(feature = "allocator-fixture")]
+pub(crate) fn fixture_patch_heap_bounds() -> (usize, usize) {
+    let base = PATCH_HEAP.bytes.get().cast::<u8>() as usize;
+    (base, base + PATCH_HEAP_BYTES)
+}
+
+/// Legacy allocator for embedded Tools: private during installation/dispatch,
+/// System outside those scopes. It is not the isolated preload allocator.
+pub struct PatchAllocator;
+
+/// Allocator for a real preload: every Rust allocation uses one of the two
+/// Tool-owned arenas, independent of dispatch depth. Installation storage has
+/// process lifetime; other allocations can be reused after deallocation.
+pub struct PrivatePatchAllocator;
+
+impl PrivatePatchAllocator {
+    /// Check arbitrary-address backing-store ownership without dereferencing it.
+    /// A mismatch exits through the trusted gate with status 127. This is only
+    /// a range check, not proof that the address names a live allocation.
+    #[doc(hidden)]
+    pub fn require_owned_address(address: usize) {
+        if !PATCH_HEAP.contains(address as *mut u8) {
+            PrivateToolAllocator::require_owned_address(address);
+        }
+    }
+}
+
+/// Check the caller's compiler-selected allocator before any Tool installation
+/// effects. The caller holds a dispatch allocation scope for legacy roots.
+pub(crate) fn preflight_allocator() -> std::io::Result<()> {
+    let layout = Layout::new::<u64>();
+    // SAFETY: a nonzero valid layout; freed below through the same allocator.
+    let pointer = unsafe { std::alloc::alloc(layout) };
+    if pointer.is_null() {
+        return Err(std::io::Error::from_raw_os_error(libc::ENOMEM));
+    }
+    let owned = PATCH_HEAP.contains(pointer) || tool_heap_contains(pointer);
+    // SAFETY: pointer is the live allocation just returned by std::alloc.
+    unsafe { std::alloc::dealloc(pointer, layout) };
+    if owned {
+        Ok(())
+    } else {
+        Err(std::io::Error::from_raw_os_error(libc::EOPNOTSUPP))
+    }
+}
+
+// SAFETY: allocations honor Layout within disjoint owned arenas. Reallocation
+// and deallocation follow pointer ownership even after allocation scopes end.
+unsafe impl GlobalAlloc for PrivatePatchAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if installation_active() {
+            PATCH_HEAP.allocate(layout)
+        } else {
+            // SAFETY: forwarded with the caller's valid layout.
+            unsafe { PrivateToolAllocator.alloc(layout) }
+        }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let pointer = unsafe { self.alloc(layout) };
+        if !pointer.is_null() {
+            // SAFETY: the allocation holds layout.size writable bytes.
+            unsafe { pointer.write_bytes(0, layout.size()) };
+        }
+        pointer
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        Self::require_owned_address(pointer as usize);
+        if !PATCH_HEAP.contains(pointer) {
+            // SAFETY: the caller supplies a live allocation from the Tool heap.
+            unsafe { PrivateToolAllocator.dealloc(pointer, layout) };
+        }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, old: Layout, new_size: usize) -> *mut u8 {
+        Self::require_owned_address(pointer as usize);
+        if !PATCH_HEAP.contains(pointer) {
+            // SAFETY: the live pointer belongs to the reusable Tool heap.
+            return unsafe { PrivateToolAllocator.realloc(pointer, old, new_size) };
+        }
+        let Ok(layout) = Layout::from_size_align(new_size, old.align()) else {
+            return ptr::null_mut();
+        };
+        let replacement = PATCH_HEAP.allocate(layout);
+        if !replacement.is_null() {
+            // SAFETY: the fresh patch reservation cannot overlap the source.
+            unsafe { ptr::copy_nonoverlapping(pointer, replacement, old.size().min(new_size)) };
+        }
+        replacement
+    }
+}
 
 // SAFETY: installation allocations use process-lifetime storage that is never
 // freed; everything else is GuestAllocator's.
@@ -240,5 +339,68 @@ mod tests {
         assert!(!PATCH_HEAP.contains(grown) && !tool_heap_contains(grown));
         // SAFETY: grown is live and was allocated with this layout.
         unsafe { allocator.dealloc(grown, Layout::from_size_align(128, 16).unwrap()) };
+    }
+
+    #[test]
+    fn private_allocations_keep_their_owner_across_scope_changes() {
+        let _test_guard = test_guard();
+        let allocator = PrivatePatchAllocator;
+        let layout = Layout::from_size_align(73, 4096).unwrap();
+        // SAFETY: nonzero valid layouts, then only the returned live pointers.
+        unsafe {
+            let pointer = allocator.alloc_zeroed(layout);
+            assert!(!pointer.is_null());
+            assert!(tool_heap_contains(pointer));
+            assert_eq!(pointer as usize % layout.align(), 0);
+            assert_eq!(std::slice::from_raw_parts(pointer, layout.size()), &[0; 73]);
+            pointer.write_bytes(0x5a, layout.size());
+            let grown = {
+                let _dispatch = enter_dispatch();
+                let _installation = enter();
+                // Pointer ownership wins even while a patch scope is active.
+                allocator.realloc(pointer, layout, 8192)
+            };
+            assert!(!grown.is_null());
+            assert!(tool_heap_contains(grown));
+            assert_eq!(grown as usize % layout.align(), 0);
+            assert_eq!(
+                std::slice::from_raw_parts(grown, layout.size()),
+                &[0x5a; 73]
+            );
+            allocator.dealloc(grown, Layout::from_size_align(8192, 4096).unwrap());
+
+            let patch = {
+                let _installation = enter();
+                allocator.alloc(layout)
+            };
+            assert!(PATCH_HEAP.contains(patch));
+            patch.write_bytes(0x3c, layout.size());
+            let patch_grown = allocator.realloc(patch, layout, 128);
+            assert!(!patch_grown.is_null());
+            assert!(PATCH_HEAP.contains(patch_grown));
+            assert_eq!(std::slice::from_raw_parts(patch_grown, 73), &[0x3c; 73]);
+            allocator.dealloc(patch_grown, Layout::from_size_align(128, 4096).unwrap());
+        }
+    }
+
+    #[test]
+    fn private_exhaustion_has_no_system_fallback() {
+        let _test_guard = test_guard();
+        let allocator = PrivatePatchAllocator;
+        let huge = Layout::from_size_align(64 * 1024 * 1024 + 4096, 4096).unwrap();
+        let small = Layout::from_size_align(64, 16).unwrap();
+        // SAFETY: valid layouts and only live pointers are reallocated/freed.
+        unsafe {
+            assert!(allocator.alloc(huge).is_null());
+            assert!(allocator.alloc_zeroed(huge).is_null());
+            let pointer = allocator.alloc(small);
+            assert!(!pointer.is_null());
+            pointer.write_bytes(0xa5, small.size());
+            assert!(allocator.realloc(pointer, small, huge.size()).is_null());
+            assert_eq!(std::slice::from_raw_parts(pointer, 64), &[0xa5; 64]);
+            allocator.dealloc(pointer, small);
+            let _installation = enter();
+            assert!(allocator.alloc(huge).is_null());
+        }
     }
 }

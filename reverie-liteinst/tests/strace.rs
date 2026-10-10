@@ -24,6 +24,10 @@ use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
 use reverie_liteinst::configure_command;
 use reverie_liteinst::configure_command_builtin;
 
+#[allow(dead_code)]
+#[path = "support/liteinst_runtime.rs"]
+mod liteinst_runtime;
+
 const TEST_EVENT_COOKIE: u64 = 7_915_913_731_959_187_131;
 const TEST_EVENT_FD_ENV: &str = "REVERIE_LITEINST_TEST_EVENT_FD";
 const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
@@ -221,15 +225,9 @@ fn run_compat_guest_with_event_pipe_within(
 }
 
 fn preload_path() -> PathBuf {
-    let launcher = PathBuf::from(env!("CARGO_BIN_EXE_reverie-liteinst-strace"));
-    let target = launcher.parent().unwrap();
-    [
-        target.join("libreverie_liteinst.so"),
-        target.join("deps/libreverie_liteinst.so"),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
-    .expect("cargo did not build the preload cdylib")
+    liteinst_runtime::required_preload_path().unwrap_or_else(|error| {
+        panic!("strace integration requires the qualified standalone producer inputs: {error}")
+    })
 }
 
 #[test]

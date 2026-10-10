@@ -216,8 +216,96 @@ pub fn tool_heap_contains(pointer: *const u8) -> bool {
     TOOL_HEAP.contains(pointer.cast_mut())
 }
 
+/// Actual dispatch nesting for the preload allocation regression.
+#[cfg(feature = "allocator-fixture")]
+#[doc(hidden)]
+pub fn fixture_dispatch_depth() -> usize {
+    DISPATCH_DEPTH.get()
+}
+
+/// Half-open bounds of the backing storage used by the actual Tool allocator.
+#[cfg(feature = "allocator-fixture")]
+#[doc(hidden)]
+pub fn fixture_tool_heap_bounds() -> (usize, usize) {
+    let base = TOOL_HEAP.base() as usize;
+    (base, base + TOOL_HEAP_BYTES)
+}
+
 fn dispatch_active() -> bool {
     DISPATCH_DEPTH.get() != 0
+}
+
+/// An allocator for a preload whose Rust allocations always belong to the Tool.
+///
+/// All operations use the reusable 32 MiB Tool arena, even outside dispatch.
+/// Exhaustion returns null; there is no System allocation or arena growth.
+/// This covers compiler-selected Rust allocation, not allocations made inside
+/// foreign libraries, thread-local storage, or the guest's own allocator.
+pub struct PrivateToolAllocator;
+
+impl PrivateToolAllocator {
+    /// Require an address within this allocator's backing storage.
+    ///
+    /// Accepts arbitrary addresses without dereferencing them. A mismatch exits
+    /// with status 127 through the trusted syscall gate. Passing this check does
+    /// not prove that an address names a live allocation: callers of GlobalAlloc
+    /// must still satisfy its pointer and layout requirements.
+    #[doc(hidden)]
+    pub fn require_owned_address(address: usize) {
+        if !TOOL_HEAP.contains(address as *mut u8) {
+            refuse_foreign_allocation();
+        }
+    }
+}
+
+/// Terminate without allocating, invoking libc, or reading a foreign header.
+fn refuse_foreign_allocation() -> ! {
+    // SAFETY: exit_group consumes only the scalar exit status. If an outer
+    // filter refuses it, UD2 terminates instead of returning or spinning.
+    unsafe {
+        crate::trap::raw_syscall6(libc::SYS_exit_group, [127, 0, 0, 0, 0, 0]);
+        core::arch::asm!("ud2", options(noreturn, nostack));
+    }
+}
+
+// SAFETY: the arena serializes metadata and honors Layout. Ownership is checked
+// before any header access; valid-pointer obligations remain the caller's.
+unsafe impl GlobalAlloc for PrivateToolAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        TOOL_HEAP.allocate(layout)
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let pointer = TOOL_HEAP.allocate(layout);
+        if !pointer.is_null() {
+            // SAFETY: the allocation holds layout.size writable bytes.
+            unsafe { pointer.write_bytes(0, layout.size()) };
+        }
+        pointer
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, _layout: Layout) {
+        Self::require_owned_address(pointer as usize);
+        // SAFETY: the caller supplies a live allocation from this arena.
+        unsafe { TOOL_HEAP.deallocate(pointer) };
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, old: Layout, new_size: usize) -> *mut u8 {
+        Self::require_owned_address(pointer as usize);
+        let Ok(new_layout) = Layout::from_size_align(new_size, old.align()) else {
+            return ptr::null_mut();
+        };
+        let replacement = TOOL_HEAP.allocate(new_layout);
+        if !replacement.is_null() {
+            // SAFETY: the live allocations do not overlap. A failed allocation
+            // leaves the original live as GlobalAlloc requires.
+            unsafe {
+                ptr::copy_nonoverlapping(pointer, replacement, old.size().min(new_size));
+                TOOL_HEAP.deallocate(pointer);
+            }
+        }
+        replacement
+    }
 }
 
 /// The allocator for a library that hosts an in-guest Tool. Inside a

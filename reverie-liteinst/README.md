@@ -10,6 +10,47 @@ Hermit's `liteinst` feature is optional and off by default.
 standalone `liteinst2` patching library, the shared `reverie-inguest` runtime,
 and `reverie-rpc-transport`.
 
+## Preload and allocator ownership
+
+The `reverie-liteinst` core is an allocator-neutral rlib. The standalone runtime
+is the separate cdylib-only `reverie-liteinst-preload` package:
+
+```sh
+cargo build -p reverie-liteinst-preload
+```
+
+Cargo produces `libreverie_liteinst_preload.so`; Hermit installs that artifact
+under its existing resource name `libreverie_liteinst.so`. The leaf owns its
+constructor, glibc compatibility code, static unwinder and unconditional
+`PrivateToolAllocator`. The old core `preload-constructor` feature is a deprecated
+no-op, including in workspace feature unions. Linking the core into a host
+program does not replace that program's allocator or add a LiteInst constructor.
+The independent legacy `reverie-inguest/preload-constructor` feature still owns
+its own constructor if another dependency enables it; the core disables that
+dependency's default features.
+
+A Tool-specific preload must declare `reverie_liteinst::PrivateToolAllocator` as
+its root `#[global_allocator]`. Ordinary Rust allocation uses only the reusable
+32 MiB Tool arena and the process-lifetime 32 MiB installation arena, before,
+during and after callbacks. Exhaustion returns null through `GlobalAlloc` and
+never falls back to the guest allocator. Reallocation and deallocation preserve
+the original arena's ownership across scope changes. A foreign-address ownership
+mismatch terminates through the trusted syscall gate before reading a header.
+
+Legacy embedded Tools may explicitly declare `ScopedToolAllocator` to retain the
+prior dispatch/installation-scoped policy. The RPC and lifecycle fixtures and
+example preload do so; this also preserves the examples rlib's existing allocator
+propagation into its host binaries. These legacy roots are not isolated preloads.
+Every `install_tool` variant checks a fallible compiler-selected allocation in a
+dispatch scope before creating a Tool, opening RPC or installing a filter. A
+System-only root is refused with `EOPNOTSUPP`; exhaustion returns `ENOMEM`.
+
+This boundary covers compiler-selected Rust allocation. It does not isolate
+allocations inside libc or the loader, guest TLS, callback stacks, mapping
+placement or memory permissions. Those require separate barriers; the arenas
+remain bounded storage, not a security sandbox or a claim of complete Tool
+memory isolation.
+
 ## Event path
 
 1. A tool-specific DSO calls `install_tool::<T>` from its preload constructor.

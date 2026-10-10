@@ -12,6 +12,11 @@
 // The reused production tool sources each declare the same test-only KVM helper.
 #![allow(clippy::duplicate_mod)]
 
+// This legacy example cdylib also exports an rlib. Preserve its prior scoped
+// allocation policy explicitly, including example binaries that link the rlib.
+#[global_allocator]
+static ALLOCATOR: reverie_liteinst::ScopedToolAllocator = reverie_liteinst::ScopedToolAllocator;
+
 use std::ffi::CStr;
 use std::ffi::OsStr;
 use std::mem::MaybeUninit;

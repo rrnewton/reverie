@@ -20,6 +20,9 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["preload-constructor"]
+# Allocation diagnostics for the real-preload ownership regression. This does
+# not select or alter the allocator.
+allocator-fixture = []
 # Install the runtime from a `.init_array` constructor the moment the dynamic
 # loader maps the cdylib. Disable to embed the runtime and drive it manually
 # (for example from a backend that installs it after its own bootstrap).

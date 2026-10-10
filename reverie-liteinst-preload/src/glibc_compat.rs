@@ -29,11 +29,11 @@
 //!
 //! The assembly defines the name WEAK and hidden. Hidden: the static link
 //! binds libgcc_eh.a's reference here, and the name stays out of the dynamic
-//! symbol table, so the guest's own references still bind to its libc. Weak:
-//! this crate is also an rlib, linked into other preloads that define the same
-//! name for their own unwinder (Hermit's libdetcore_liteinst.so compiles
-//! detcore-sabre/src/glibc_compat.rs). A strong definition there takes
-//! precedence over this one instead of colliding with it.
+//! symbol table, so the guest's own references still bind to its libc. The
+//! definition retains its weak linkage so a strong definition can take
+//! precedence if this compatibility module is composed with another unwinder.
+//! This cdylib-only leaf and its non-PIE fixture compile the module directly;
+//! the allocator-neutral core does not propagate it to other preloads.
 
 use std::ffi::c_int;
 use std::ffi::c_void;

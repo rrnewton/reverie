@@ -23,9 +23,16 @@
 //! - caught: a panic through a frame of the bridge, loaded with
 //!   `dlmopen(LM_ID_NEWLM)`, is caught.
 
-// Links the library, and with it glibc_compat and the static unwinder it
-// brings, as the guest preload does; nothing here calls it.
-extern crate reverie_liteinst;
+// Compile the same compatibility implementation as the preload leaf. The
+// allocator-neutral core does not propagate this module or its linker policy.
+#[path = "../glibc_compat.rs"]
+mod glibc_compat;
+
+// The cdylib's native archive dependency does not propagate to this binary.
+// Bind it here too; build.rs forces extraction before std's dynamic unwinder.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[link(name = "gcc_eh", kind = "static", modifiers = "-bundle")]
+unsafe extern "C" {}
 
 use std::ffi::CStr;
 use std::ffi::CString;

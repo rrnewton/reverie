@@ -24,13 +24,9 @@
 //! src/glibc_compat.rs defines `_dl_find_object`, which gcc 15's libgcc_eh.a
 //! imports at GLIBC_2.35.
 //!
-//! All of this applies only with the `preload-constructor` feature, the one
-//! that makes this library a guest preload. Cargo hands a build script's
-//! `rustc-link-lib` to every crate that links this one as an rlib, so without
-//! the condition the Hermit binary (which depends on this crate with default
-//! features off) and the in-guest Detcore runtime would get the static
-//! unwinder too. Hermit's liteinst-runtime-build enables the feature to build
-//! libreverie_liteinst.so.
+//! This package is the actual cdylib leaf. The shared reverie-liteinst rlib
+//! has no build script or static unwinder under any feature union. Its explicit
+//! non-PIE compatibility fixture uses this same linker policy.
 
 use std::env;
 
@@ -38,10 +34,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-    if target_os != "linux"
-        || target_env != "gnu"
-        || env::var_os("CARGO_FEATURE_PRELOAD_CONSTRUCTOR").is_none()
-    {
+    if target_os != "linux" || target_env != "gnu" {
         return;
     }
     // `-bundle`: the archive is found by the C compiler driver at link time,

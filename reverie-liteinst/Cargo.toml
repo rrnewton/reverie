@@ -13,11 +13,19 @@ categories = ["development-tools::debugging", "os::linux-apis"]
 description = "Experimental in-process syscall instrumentation for Reverie"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [features]
-default = ["preload-constructor"]
+default = []
+# Deprecated no-op: the constructor and linker policy belong to the preload leaf.
 preload-constructor = []
+# Exposes a fixed test ABI in the actual runtime without changing its allocator.
+allocator-fixture = ["reverie-inguest/allocator-fixture"]
+
+[[bin]]
+name = "reverie-liteinst-allocator-host-control"
+path = "src/bin/allocator_host_control.rs"
+required-features = ["allocator-fixture"]
 
 [[bin]]
 name = "reverie-liteinst-strace"
@@ -46,8 +54,10 @@ tempfile = "3.27.0"
 tracing = "0.1.41"
 
 [dev-dependencies]
+goblin = "=0.10.7"
 safeptrace = { version = "0.4.1", path = "../safeptrace" }
 sha2 = "0.10.9"
+serde_json = "1"
 tokio = { version = "1.52.4", features = ["test-util"] }
 tracing-subscriber = "0.3.23"
 
@@ -58,6 +68,11 @@ path = "src/bin/trap_count_guest.rs"
 [[test]]
 name = "strace"
 path = "tests/strace.rs"
+
+[[test]]
+name = "allocator_contract"
+path = "tests/allocator_contract.rs"
+required-features = ["allocator-fixture"]
 
 [[bin]]
 name = "reverie-liteinst-exec-guest"
@@ -71,16 +86,6 @@ path = "src/bin/rpc_tool_guest.rs"
 name = "reverie-liteinst-spoof-guest"
 path = "src/bin/spoof_guest.rs"
 
-[[bin]]
-name = "reverie-liteinst-glibc-compat-guest"
-path = "src/bin/glibc_compat_guest.rs"
-required-features = ["preload-constructor"]
-
-[[test]]
-name = "glibc_compat"
-path = "tests/glibc_compat.rs"
-required-features = ["preload-constructor"]
-
 [[test]]
 name = "rpc_tool"
 path = "tests/rpc_tool.rs"
@@ -88,3 +93,13 @@ path = "tests/rpc_tool.rs"
 [[test]]
 name = "lifecycle"
 path = "tests/lifecycle.rs"
+
+[[bin]]
+name = "reverie-liteinst-allocator-install-control"
+path = "src/bin/allocator_install_control.rs"
+required-features = ["allocator-fixture"]
+
+[[bin]]
+name = "reverie-liteinst-allocator-private-control"
+path = "src/bin/allocator_private_control.rs"
+required-features = ["allocator-fixture"]
