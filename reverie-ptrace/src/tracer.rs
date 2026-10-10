@@ -2523,6 +2523,22 @@ fn tracee_snapshot(tid: Pid) -> std::io::Result<TraceeSnapshot> {
     Ok(snapshot)
 }
 
+/// For a newborn reported by `PTRACE_EVENT_CLONE` that leads its own thread
+/// group, its real parent process; `None` for a thread of its creator.
+/// Linux reports every clone whose exit signal is not `SIGCHLD` as
+/// `PTRACE_EVENT_CLONE`, whether or not it passed `CLONE_THREAD`, so the
+/// event alone does not say thread. The kernel's own record does: a child
+/// created without `CLONE_THREAD` is its own `Tgid`, and its `PPid` is its
+/// parent, which `CLONE_PARENT` makes the creator's parent rather than the
+/// creator.
+pub(crate) fn newborn_own_process_parent(child: Pid) -> std::io::Result<Option<Pid>> {
+    let status = crate::launch_window::read_to_string(format!("/proc/{child}/status"))?;
+    if status_pid(&status, "Tgid:")? != child {
+        return Ok(None);
+    }
+    Ok(Some(status_pid(&status, "PPid:")?))
+}
+
 fn tracer_is_current(tracer_tid: Pid) -> bool {
     tracer_tid.as_raw() > 0
         && std::path::Path::new(&format!("/proc/self/task/{tracer_tid}")).exists()
