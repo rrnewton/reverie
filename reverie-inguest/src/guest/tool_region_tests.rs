@@ -13,6 +13,9 @@
 //! descendants perform only bounded memory/syscall controls and raw exit; they
 //! never unwind, allocate through libc, or call the test harness.
 
+#[path = "tool_region_constructor_tests.rs"]
+mod constructor;
+
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::process::Command;

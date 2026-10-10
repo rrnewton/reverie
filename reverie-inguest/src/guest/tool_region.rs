@@ -42,6 +42,10 @@ const BITMAP_WORDS: usize = BYTES / PAGE / 64;
 // The publication locator is deliberately outside the fixed-region claim.
 // Only a successfully reserved, initialized region is published here.
 static REGION: OnceLock<Result<ToolRegion, i32>> = OnceLock::new();
+// Every path which can initialize REGION first owns this nonwaiting gate.
+// OnceLock::get is nonblocking; set is uncontended under this gate. A handler
+// interrupting ordinary initialization gets EAGAIN rather than waiting on it.
+static INITIALIZING: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 struct Control {
@@ -65,6 +69,7 @@ pub enum StackBacking {
 #[derive(Debug)]
 pub struct ToolRegion {
     control: *mut Control,
+    bootstrap: Option<usize>,
 }
 
 // SAFETY: the mapping lives until process exit. Every bitmap access holds its
@@ -79,9 +84,20 @@ impl ToolRegion {
     /// A colliding independent instance is refused; it never attaches to an
     /// unrecognized mapping. Errors are retained, without relocated/heap
     /// fallback. Inert compatibility loads must not call this function.
+    /// An interrupted or concurrent initialization returns EAGAIN without
+    /// waiting. Successfully published owners and retained errors are reused.
     pub fn reserve() -> io::Result<&'static Self> {
+        if REGION.get().is_none() {
+            let _initializing = InitializationGuard::acquire()?;
+            if REGION.get().is_none() {
+                REGION
+                    .set(Self::reserve_inner())
+                    .map_err(|_| io::Error::from_raw_os_error(libc::EAGAIN))?;
+            }
+        }
         REGION
-            .get_or_init(Self::reserve_inner)
+            .get()
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EAGAIN))?
             .as_ref()
             .map_err(|errno| io::Error::from_raw_os_error(*errno))
     }
@@ -131,7 +147,10 @@ impl ToolRegion {
         // OnceLock publishes this owner. Control/outer guards are excluded
         // from the allocator's searchable interval rather than marked free.
         unsafe { core::ptr::addr_of_mut!((*control).held).write(AtomicBool::new(false)) };
-        Ok(Self { control })
+        Ok(Self {
+            control,
+            bootstrap: None,
+        })
     }
 
     fn lock(&self) -> io::Result<ControlGuard<'_>> {
@@ -245,6 +264,33 @@ impl ToolRegion {
         }
     }
 }
+
+struct InitializationGuard;
+
+impl InitializationGuard {
+    fn acquire() -> io::Result<Self> {
+        INITIALIZING
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .map_err(|_| io::Error::from_raw_os_error(libc::EAGAIN))?;
+        Ok(Self)
+    }
+}
+
+impl Drop for InitializationGuard {
+    fn drop(&mut self) {
+        INITIALIZING.store(false, Ordering::Release);
+    }
+}
+
+#[path = "tool_region_constructor.rs"]
+mod constructor;
+pub use constructor::ConstructorStack;
+#[cfg(feature = "allocator-fixture")]
+pub use constructor::ConstructorStackRecord;
+pub use constructor::constructor_entry;
+pub use constructor::constructor_stack;
+#[cfg(feature = "allocator-fixture")]
+pub use constructor::reverie_inguest_constructor_stack_query;
 
 fn validate_reservation(mapping: usize) -> Result<(), i32> {
     if mapping == BASE {
