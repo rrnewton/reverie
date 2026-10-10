@@ -350,6 +350,38 @@ static void mode_sig_pending(void) {
   dump("sig_pending_tail");
 }
 
+/* A clone without CLONE_THREAD and with exit signal 0 is reported as a clone
+ * event, but it is its own process. The Tool signals a parked call by its
+ * process and thread id, so the signal reaches this child only if the Tool
+ * sees the child's own process id. */
+static int raw_clone_process_child(void* arg) {
+  (void)arg;
+  int before = nrec;
+  long r = SITEM(SYS_getpid, 0, 0, 0, 0, 0, SHAPE_INJECT | SEND_SIGUSR1);
+  int got = nrec == before + 1 && recs[before].sig == SIGUSR1;
+  return r == getpid() && got ? 7 : 1;
+}
+
+static char raw_clone_stack[64 * 1024] __attribute__((aligned(16)));
+
+static void mode_raw_clone_process(void) {
+  install(SIGUSR1, 0, handler);
+  warm();
+  int c = clone(
+      raw_clone_process_child,
+      raw_clone_stack + sizeof raw_clone_stack,
+      0,
+      NULL);
+  if (c < 0)
+    die("clone without CLONE_THREAD");
+  int status;
+  if (waitpid(c, &status, __WCLONE) != c)
+    die("waitpid raw clone");
+  say("raw clone child status exited=%d code=%d\n",
+      WIFEXITED(status),
+      WEXITSTATUS(status));
+}
+
 /* Queued thread- and process-directed signals (standard signals only; see
  * the Rust side). */
 static void mode_rt_queue(void) {
@@ -2512,6 +2544,8 @@ int main(int argc, char** argv) {
     mode_sigtrap_profile();
   else if (!strcmp(m, "restart"))
     mode_restart();
+  else if (!strcmp(m, "raw_clone_process"))
+    mode_raw_clone_process();
   else if (!strcmp(m, "fork_family"))
     mode_fork_family();
   else if (!strcmp(m, "foreign_int80"))
