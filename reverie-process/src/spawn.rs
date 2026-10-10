@@ -41,6 +41,7 @@ impl Command {
     ///
     /// By default, stdin, stdout and stderr are inherited from the parent.
     pub fn spawn(&mut self) -> Result<Child, Error> {
+        self.container.validate_pinned_clone()?;
         let prepared = self.prepare();
 
         // Every descriptor the child may inherit is made under the launch
@@ -75,6 +76,7 @@ impl Command {
     where
         F: FnMut(Error) -> i32,
     {
+        self.container.validate_pinned_clone()?;
         let prepared = self.prepare();
         self.spawn_launched(prepared, Launch::begin(), onfail)
     }
