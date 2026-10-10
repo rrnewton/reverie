@@ -46,8 +46,8 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// Static, per-run facts about a backend that a tool may need to model the
-/// guest correctly. See the [module documentation](self) for scope and
-/// ownership.
+/// guest correctly. The documentation at the top of
+/// `reverie/src/capabilities.rs` gives their scope and ownership.
 ///
 /// Field names describe what the backend does, never which backend it is.
 #[non_exhaustive]
