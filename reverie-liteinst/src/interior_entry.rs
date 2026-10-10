@@ -30,6 +30,16 @@ impl ObjectImage {
         Self { header, ranges }
     }
 
+    /// Whether a mapping change overlaps any retained census input, including
+    /// non-executable ELF metadata. This inspects addresses, never stale bytes.
+    pub(crate) fn overlaps(&self, start: u64, end: u64) -> bool {
+        start < end
+            && self
+                .ranges
+                .iter()
+                .any(|&(first, last, _)| start < last && first < end)
+    }
+
     /// Builds the census of the executable mapping `text` from the object's
     /// current bytes.
     ///
@@ -309,6 +319,20 @@ mod tests {
             prove(&object, &census(&object), 0x40 + MADVISE_SITE),
             madvise_refusal()
         );
+    }
+
+    #[test]
+    fn object_overlap_includes_metadata_but_not_gaps_or_empty_ranges() {
+        let image = ObjectImage::new(
+            0x1000,
+            vec![(0x1000, 0x2000, false), (0x3000, 0x4000, true)].into_boxed_slice(),
+        );
+        assert!(image.overlaps(0x1100, 0x1200));
+        assert!(image.overlaps(0x3100, 0x3200));
+        assert!(image.overlaps(0x1fff, 0x3001));
+        assert!(!image.overlaps(0x2000, 0x3000));
+        assert!(!image.overlaps(0x3100, 0x3100));
+        assert!(!image.overlaps(0x4000, 0x5000));
     }
 
     #[test]

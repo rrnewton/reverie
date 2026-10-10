@@ -50,7 +50,7 @@ pub enum TrapPath {
 
 /// What the backend did with a trap's syscall site.
 pub enum SitePatch {
-    /// The site has a hook: defer the trap to this entry.
+    /// The site has a hook or unpublished adapter: defer to this entry.
     Defer(u64),
     /// No hook: run the trap through the fallback continuation.
     NotPatched,
@@ -110,6 +110,19 @@ pub unsafe trait TrapSeam: Send + Sync {
         SitePatch::NotPatched
     }
 
+    /// Selects a site's hook or unpublished adapter for this actual syscall.
+    /// A backend with number-specific admission must check every trap, even
+    /// when an earlier syscall at this address already created an adapter.
+    ///
+    /// # Safety
+    ///
+    /// The address has the same genuine-trap provenance as [`Self::patch_site`].
+    /// `number` is the number of that trap, before any guest syscall ran.
+    unsafe fn patch_syscall_site(&self, instruction_pointer: u64, _number: i64) -> SitePatch {
+        // SAFETY: this method preserves patch_site's address provenance.
+        unsafe { self.patch_site(instruction_pointer) }
+    }
+
     /// Whether the fallback continuation may run an unpatched trap.
     fn continuation_allowed(&self) -> bool {
         true
@@ -156,6 +169,7 @@ impl<S: TrapSeam> InGuestDispatcher<S> {
         // Taken on arrival, before the backend's intercept can change the event.
         let trapped = event.source() == SyscallEventSource::SignalTrap;
         let resume_address = event.instruction_pointer();
+        let trapped_number = event.number();
         if tool_callback_active() {
             continuation::enable_nested_runtime_access();
             self.seam.record_path(TrapPath::NestedSigsys);
@@ -195,7 +209,10 @@ impl<S: TrapSeam> InGuestDispatcher<S> {
             // trait's contract), with its arrival resume address; patch_site
             // gets what syscall_site returned for it.
             let instruction_pointer = unsafe { self.seam.syscall_site(resume_address) };
-            match unsafe { self.seam.patch_site(instruction_pointer) } {
+            match unsafe {
+                self.seam
+                    .patch_syscall_site(instruction_pointer, trapped_number)
+            } {
                 SitePatch::Defer(entry) => {
                     event.defer_to(entry);
                     return;
@@ -411,6 +428,79 @@ mod tests {
 
     fn calls(dispatcher: &InGuestDispatcher<Recording>) -> Vec<String> {
         dispatcher.seam.calls.lock().unwrap().clone()
+    }
+
+    struct NumberAdmission {
+        seen: Mutex<Vec<(u64, i64)>>,
+        replace: bool,
+    }
+
+    // SAFETY: these methods only observe and edit test events; no syscall or
+    // memory access at a supplied instruction address is performed.
+    unsafe impl TrapSeam for NumberAdmission {
+        fn intercept(&self, event: &mut TrapEvent) -> bool {
+            if self.replace {
+                *event = TrapEvent::new(libc::SYS_getpid, [0; 6], 0x9002);
+            }
+            false
+        }
+
+        unsafe fn patch_syscall_site(&self, address: u64, number: i64) -> SitePatch {
+            self.seen.lock().unwrap().push((address, number));
+            if matches!(number, libc::SYS_read | libc::SYS_write) {
+                SitePatch::Defer(0x5000)
+            } else {
+                SitePatch::Refuse
+            }
+        }
+    }
+
+    #[test]
+    fn number_admission_runs_for_every_trap_at_the_same_site() {
+        // SAFETY: the test seam neither dereferences nor executes the address.
+        let dispatcher = unsafe {
+            InGuestDispatcher::new(NumberAdmission {
+                seen: Mutex::new(Vec::new()),
+                replace: false,
+            })
+        };
+        for number in [libc::SYS_read, libc::SYS_getpid, libc::SYS_write] {
+            let mut event = TrapEvent::new(number, [0; 6], 0x1002);
+            dispatcher.dispatch(&mut event);
+            if number == libc::SYS_getpid {
+                assert_eq!(event.result(), Some(-i64::from(libc::EOPNOTSUPP)));
+                assert_eq!(event.resume_address(), None);
+            } else {
+                assert_eq!(event.result(), None);
+                assert_eq!(event.resume_address(), Some(0x5000));
+            }
+        }
+        assert_eq!(
+            *dispatcher.seam.seen.lock().unwrap(),
+            [
+                (0x1000, libc::SYS_read),
+                (0x1000, libc::SYS_getpid),
+                (0x1000, libc::SYS_write)
+            ]
+        );
+    }
+
+    #[test]
+    fn number_admission_uses_the_arrival_number_and_address() {
+        // SAFETY: the test seam neither dereferences nor executes the address.
+        let dispatcher = unsafe {
+            InGuestDispatcher::new(NumberAdmission {
+                seen: Mutex::new(Vec::new()),
+                replace: true,
+            })
+        };
+        let mut event = TrapEvent::new(libc::SYS_read, [0; 6], 0x1002);
+        dispatcher.dispatch(&mut event);
+        assert_eq!(
+            *dispatcher.seam.seen.lock().unwrap(),
+            [(0x1000, libc::SYS_read)]
+        );
+        assert_eq!(event.resume_address(), Some(0x5000));
     }
 
     #[test]

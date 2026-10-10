@@ -14,14 +14,18 @@ use std::sync::OnceLock;
 use liteinst2::patcher::GuardSignalAction;
 use liteinst2::patcher::GuardSignalHandler;
 use liteinst2::patcher::GuardSignalRuntime;
+use liteinst2::patcher::JumpPatchPlan;
 use liteinst2::patcher::PatchError;
 use liteinst2::patcher::prepare_live_patching_with_signal_runtime;
 use liteinst2::scanner::InstructionScanner;
+use liteinst2::scanner::ScanResult;
+use liteinst2::trampoline::ExecutableTrampoline;
 use liteinst2::trampoline::HookContext;
 use liteinst2::trampoline::HookSite;
 use liteinst2::trampoline::InstalledHook;
 use liteinst2::trampoline::TrampolineArena;
 use liteinst2::trampoline::TrampolineError;
+use liteinst2::trampoline::TrampolinePlan;
 use reverie_inguest::BuiltinTool;
 use reverie_inguest::dispatch::SyscallEvent as PreloadSyscallEvent;
 use reverie_inguest::dispatch::is_fork_like;
@@ -83,6 +87,9 @@ const SITE_STALE: u8 = 4;
 /// instruction-fault path records this state; every other caller records
 /// `SITE_FALLBACK` for any refusal.
 const SITE_UNPATCHABLE: u8 = 5;
+/// A signal-deferred exact-syscall adapter. No source jump was published;
+/// every entry must recheck its number and retained source admission.
+const SITE_UNPUBLISHED: u8 = 6;
 
 static TOOL_MODE: AtomicU8 = AtomicU8::new(0);
 static EVENT_FD: AtomicI32 = AtomicI32::new(libc::STDERR_FILENO);
@@ -173,6 +180,9 @@ struct RuntimeArena {
     image: Option<ObjectImage>,
     /// Built by the first installation that needs it; see [`Self::census`].
     census: OnceLock<Result<Census, CensusError>>,
+    /// An adapter may never use this load-time object's census after a
+    /// mapping change overlaps its retained inputs, even at another site.
+    adapter_mapping_replaced: AtomicBool,
 }
 
 impl RuntimeArena {
@@ -213,6 +223,12 @@ enum EntryProof {
     NotListed,
 }
 
+struct SiteHookPolicy {
+    publication: PatchPublication,
+    entry_proof: EntryProof,
+    unpublished_read_write: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeMap {
     start: u64,
@@ -230,6 +246,7 @@ struct SiteSlot {
     address: AtomicU64,
     state: AtomicU8,
     hook: AtomicPtr<InstalledHook>,
+    adapter: AtomicPtr<UnpublishedSyscall>,
     mapping_end: AtomicU64,
     trap_count: AtomicU64,
     hook_count: AtomicU64,
@@ -253,6 +270,7 @@ impl SiteSlot {
             address: AtomicU64::new(0),
             state: AtomicU8::new(0),
             hook: AtomicPtr::new(ptr::null_mut()),
+            adapter: AtomicPtr::new(ptr::null_mut()),
             mapping_end: AtomicU64::new(0),
             trap_count: AtomicU64::new(0),
             hook_count: AtomicU64::new(0),
@@ -264,6 +282,14 @@ impl SiteSlot {
             words_recorded: AtomicBool::new(false),
         }
     }
+}
+
+/// Retained for process lifetime, including after mapping invalidation and
+/// across in-flight guest signal handlers. The source snapshot controls only
+/// future admission; the trampoline always returns to the live source + 2.
+struct UnpublishedSyscall {
+    trampoline: ExecutableTrampoline,
+    source: Box<[u8]>,
 }
 
 pub(crate) use reverie_inguest::guest::event::SyscallDispatch;
@@ -877,6 +903,10 @@ const GUARD_SIGNAL_RUNTIME: GuardSignalRuntime = GuardSignalRuntime {
 /// SIGTRAP, held until [`restore_guard_signal_mask`] puts it back.
 static GUARD_PRIOR_MASK: AtomicU64 = AtomicU64::new(0);
 static GUARD_PRIOR_MASK_HELD: AtomicBool = AtomicBool::new(false);
+/// False also covers uninitialized/failed installation. An ignored SIGTRAP
+/// routed through a returning caught handler can interrupt timeout I/O, so
+/// only a successfully captured default profile admits the new adapter.
+static GUARD_PRIOR_DEFAULT: AtomicBool = AtomicBool::new(false);
 
 /// Block SIGTRAP, refuse a prior custom handler, report the prior action, and
 /// install the guard router returning through the runtime's restorer; SIGTRAP
@@ -920,6 +950,7 @@ unsafe fn install_guard_handler_blocked(
     if let Err(error) = unsafe { raw_sigaction(signal, Some(&action), None) } {
         return restore(error);
     }
+    GUARD_PRIOR_DEFAULT.store(prior.handler == libc::SIG_DFL as u64, Ordering::Release);
     // The router gives every SIGTRAP that is not one of the runtime's own
     // breakpoints the action it replaced (`prior`, reported below and kept by
     // LiteInst2 as the action it chains to), so that is the guest's own action
@@ -1031,6 +1062,7 @@ fn prepare_instrumentation_state() -> io::Result<()> {
             arena,
             image: object_image(&objects, mapping_start, mapping_end),
             census: OnceLock::new(),
+            adapter_mapping_replaced: AtomicBool::new(false),
         });
     }
     if arenas.is_empty() {
@@ -1113,6 +1145,7 @@ fn mark_site_range_stale(start: u64, len: u64, replacement_end: u64) {
     let Some(end) = start.checked_add(len) else {
         return;
     };
+    invalidate_adapter_mappings(start, end);
     let Some(sites) = SITES.get() else {
         return;
     };
@@ -1121,13 +1154,32 @@ fn mark_site_range_stale(start: u64, len: u64, replacement_end: u64) {
         if start <= address && address < end {
             site.mapping_end.store(replacement_end, Ordering::Release);
             let state = site.state.load(Ordering::Acquire);
-            // SITE_UNPATCHABLE stays: an invalidation (even a no-op mremap)
-            // must not lift the reservation that keeps neighbouring patches
-            // off a site threads still run through the continuation. If the
-            // code really was replaced, a CPUID/RDTSC there is still decoded
-            // at the fault and emulated, only never patched.
+            // SITE_UNPATCHABLE and SITE_UNPUBLISHED keep their reservation:
+            // existing in-flight activations still return to original code.
+            // An unpublished adapter separately loses admission when any of
+            // its object's retained census inputs was replaced.
             if matches!(state, SITE_ACTIVE | SITE_FALLBACK) {
                 site.state.store(SITE_STALE, Ordering::Release);
+            }
+        }
+    }
+}
+
+fn invalidate_adapter_mappings(start: u64, end: u64) {
+    if start >= end {
+        return;
+    }
+    if let Some(arenas) = ARENAS.get() {
+        for arena in arenas {
+            if (start < arena.mapping_end && arena.mapping_start < end)
+                || arena
+                    .image
+                    .as_ref()
+                    .is_some_and(|image| image.overlaps(start, end))
+            {
+                arena
+                    .adapter_mapping_replaced
+                    .store(true, Ordering::Release);
             }
         }
     }
@@ -1151,6 +1203,17 @@ fn observe_mapping_generation(event: &SyscallEvent) {
             mark_site_range_stale(event.args[0], event.args[1], 0);
             let start = event.result as u64;
             mark_site_range_stale(start, event.args[2], start.saturating_add(event.args[2]));
+        }
+        // A later census must not dereference object metadata whose read
+        // access was revoked. Restoring permission does not revive its proof.
+        libc::SYS_mprotect if event.args[2] & libc::PROT_READ as u64 == 0 => {
+            invalidate_adapter_mappings(event.args[0], event.args[0].saturating_add(event.args[1]));
+        }
+        // PROT_READ alone does not establish access through a newly assigned
+        // protection key. Conservatively discard the retained admission on
+        // every successful key assignment, including a return to key zero.
+        libc::SYS_pkey_mprotect => {
+            invalidate_adapter_mappings(event.args[0], event.args[0].saturating_add(event.args[1]));
         }
         _ => {}
     }
@@ -1537,7 +1600,7 @@ fn neighbour_conflict(
     // FALLBACK.
     if matches!(
         state,
-        SITE_INSTALLING | SITE_UNPATCHABLE | SITE_STALE | SITE_FALLBACK
+        SITE_INSTALLING | SITE_UNPATCHABLE | SITE_STALE | SITE_FALLBACK | SITE_UNPUBLISHED
     ) {
         let other_len = if other_len == 0 { 3 } else { other_len };
         // Starting exactly at the other site's resume point is safe.
@@ -1741,14 +1804,109 @@ impl Drop for AsyncSignalsBlocked {
     }
 }
 
+fn unpublished_read_write_allowed(number: i64) -> bool {
+    TOOL_MODE.load(Ordering::Acquire) == TOOL_STRACE
+        && GUARD_PRIOR_DEFAULT.load(Ordering::Acquire)
+        && matches!(number, libc::SYS_read | libc::SYS_write)
+}
+
+/// The caller holds the installation lock and blocks asynchronous signals.
+/// All ordinary source admission has passed except the missing split-word
+/// calibration. Preserve the later bind validator too, without binding a
+/// source patch or changing its protection.
+fn install_unpublished_syscall(
+    address: u64,
+    slot: &'static SiteSlot,
+    arena: &'static RuntimeArena,
+    scanner: &InstructionScanner,
+    scan: &ScanResult,
+) -> Result<(), InstallFailure> {
+    let failure =
+        |error: TrampolineError| InstallFailure::untouched(io::Error::other(error.to_string()));
+    let reference =
+        TrampolinePlan::from_scan_replacing_first(scan, address, unpublished_syscall_hook)
+            .map_err(failure)?;
+    let plan =
+        TrampolinePlan::from_scan_replacing_exact_syscall(scan, address, unpublished_syscall_hook)
+            .map_err(failure)?;
+    let trampoline = arena.arena.allocate(&plan).map_err(failure)?;
+    let patch = JumpPatchPlan::from_scan(
+        scanner,
+        scan,
+        scan.snapshot(),
+        address,
+        address,
+        trampoline.address(),
+    )
+    .map_err(|error| failure(error.into()))?;
+    if patch.displaced_len() != reference.displaced_len() {
+        return Err(failure(PatchError::RegionMismatch { address }.into()));
+    }
+    let adapter = Box::new(UnpublishedSyscall {
+        trampoline,
+        source: scan.snapshot().into(),
+    });
+    adapter.trampoline.publish_program_counter_mappings();
+    slot.adapter
+        .store(Box::into_raw(adapter), Ordering::Release);
+    slot.state.store(SITE_UNPUBLISHED, Ordering::Release);
+    Ok(())
+}
+
+/// Revalidate each genuine trap, including a polymorphic site's number. No
+/// copied tail is executed: the retained bytes authenticate current admission
+/// only, and a later guest handler's tail changes are seen at original + 2.
+fn unpublished_syscall_entry(address: u64, slot: &SiteSlot, number: i64) -> Option<u64> {
+    if !unpublished_read_write_allowed(number) {
+        return None;
+    }
+    let _signals_blocked = AsyncSignalsBlocked::new().ok()?;
+    let _install_guard = lock_installation().ok()?;
+    if slot.state.load(Ordering::Acquire) != SITE_UNPUBLISHED {
+        return None;
+    }
+    let arena = arena_for(address)?;
+    if arena.adapter_mapping_replaced.load(Ordering::Acquire)
+        || slot_patch_survives(slot, address)
+        || check_neighbours(address, 2).is_err()
+    {
+        return None;
+    }
+    let pointer = slot.adapter.load(Ordering::Acquire);
+    // SAFETY: the release-published adapter and its arena are never reclaimed.
+    let adapter = unsafe { pointer.as_ref() }?;
+    let len = adapter.source.len();
+    if len == 0 || len > PATCH_SNAPSHOT_BYTES {
+        return None;
+    }
+    let last = address.checked_add(len as u64 - 1)?;
+    // SAFETY: maps are read through the bounded runtime reader, not through
+    // a possibly unmapped code pointer.
+    let protection = unsafe { private_span_protection(address, last) }?;
+    if protection & libc::PROT_EXEC == 0 {
+        return None;
+    }
+    for (index, expected) in adapter.source.chunks(8).enumerate() {
+        let mut current = [0_u8; 8];
+        let chunk_address = address.checked_add((index * 8) as u64)?;
+        // SAFETY: read_own_bytes reports a failed/partial read without a guest
+        // fault. The last chunk need only cover the saved source prefix.
+        if unsafe { read_own_bytes(chunk_address, &mut current) } < expected.len()
+            || current[..expected.len()] != *expected
+        {
+            return None;
+        }
+    }
+    Some(adapter.trampoline.address())
+}
+
 unsafe fn install_site_hook(
     address: u64,
     slot: &'static SiteSlot,
     callback: liteinst2::trampoline::HookCallback,
-    publication: PatchPublication,
+    policy: SiteHookPolicy,
     expected_instruction: &[u8],
     manage_protection: bool,
-    entry_proof: EntryProof,
 ) -> Result<(), InstallFailure> {
     // No guest code may run from the first check below to the completed
     // publication, whatever signal arrives; see AsyncSignalsBlocked.
@@ -1760,6 +1918,12 @@ unsafe fn install_site_hook(
     let arena = arena_for(address)
         .ok_or_else(|| io::Error::other("no reachable LiteInst arena for syscall site"))
         .map_err(InstallFailure::touched)?;
+    if policy.unpublished_read_write && arena.adapter_mapping_replaced.load(Ordering::Acquire) {
+        // The original bytes and any older publication are not yet checked.
+        return Err(InstallFailure::touched(io::Error::other(
+            "unpublished syscall admission lost its original object mapping",
+        )));
+    }
     let mut mapping_end = slot.mapping_end.load(Ordering::Acquire);
     if mapping_end <= address {
         mapping_end = arena.mapping_end;
@@ -1809,7 +1973,7 @@ unsafe fn install_site_hook(
     let scan = scanner
         .scan_prefix(candidate, address, liteinst2::patcher::WORD_PATCH_BYTES)
         .map_err(|error| InstallFailure::untouched(io::Error::other(error.to_string())))?;
-    let proof = match entry_proof {
+    let proof = match policy.entry_proof {
         EntryProof::Required => arena
             .census()
             .and_then(|census| prove(census, address, scan.instructions())),
@@ -1833,12 +1997,19 @@ unsafe fn install_site_hook(
         .store(instruction_len as u8, Ordering::Release);
     slot.straddle_prefix
         .store(straddle_prefix as u8, Ordering::Release);
-    let staleness = match publication {
+    let staleness = match policy.publication {
         PatchPublication::Quiescent => None,
-        PatchPublication::Concurrent => Some(
-            crate::straddler::budget_for_patch(address as usize, scanner.cache_line_size())
-                .map_err(InstallFailure::untouched)?,
-        ),
+        PatchPublication::Concurrent => {
+            match crate::straddler::budget_for_patch(address as usize, scanner.cache_line_size()) {
+                Ok(budget) => Some(budget),
+                Err(crate::straddler::BudgetRefusal::UncalibratedSplit)
+                    if policy.unpublished_read_write =>
+                {
+                    return install_unpublished_syscall(address, slot, arena, &scanner, &scan);
+                }
+                Err(refusal) => return Err(InstallFailure::untouched(refusal.into())),
+            }
+        }
     };
     let code = scan.snapshot();
     // `available` is at least WORD_PATCH_BYTES here, and the bytes were just
@@ -1885,7 +2056,7 @@ unsafe fn install_site_hook(
             address,
             address as usize as *mut u8,
         );
-        let candidate = match publication {
+        let candidate = match policy.publication {
             PatchPublication::Quiescent => unsafe {
                 InstalledHook::install_replacing_first_in_arena_quiescent(
                     site,
@@ -1919,7 +2090,7 @@ unsafe fn install_site_hook(
             return Err(published_failure(io::Error::other(error.to_string())));
         }
     };
-    let activation = match publication {
+    let activation = match policy.publication {
         PatchPublication::Concurrent => installed.activate(),
         // SAFETY: quiescent publication is selected only at initialization,
         // before application threads start, or by `install_tool_quiescent`,
@@ -1974,10 +2145,13 @@ fn install_vdso_sites(sites: &[reverie_ptrace::VdsoSyscallSite]) -> io::Result<(
                 address,
                 site,
                 vdso_callback(site_info.number)?,
-                PatchPublication::Quiescent,
+                SiteHookPolicy {
+                    publication: PatchPublication::Quiescent,
+                    entry_proof: EntryProof::NotListed,
+                    unpublished_read_write: false,
+                },
                 &[0x0f, 0x05],
                 false,
-                EntryProof::NotListed,
             )
         }
         .map_err(|failure| {
@@ -2101,10 +2275,13 @@ unsafe fn patch_instruction_fault(
                 address,
                 site,
                 instruction_callback(kind),
-                patch_publication(),
+                SiteHookPolicy {
+                    publication: patch_publication(),
+                    entry_proof: EntryProof::NotListed,
+                    unpublished_read_write: false,
+                },
                 encoding,
                 true,
-                EntryProof::NotListed,
             )
         }
     {
@@ -2333,6 +2510,57 @@ unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, None) }
 }
 
+/// Ordinary context after genuine SIGSYS return, with guest mask and PKRU
+/// restored. Unlike an installed Tool hook, this callback must not mark guest
+/// handlers as Tool-internal while the kernel read/write can block.
+unsafe extern "C" fn unpublished_syscall_hook(context: *mut HookContext) {
+    if context.is_null() || enter_rcb_handler().is_err() {
+        unsafe { exit_now(122) };
+    }
+    // SAFETY: the exact-syscall trampoline owns this live saved frame.
+    let context_pointer = context as usize;
+    let context = unsafe { &mut *context };
+    let mut event = SyscallEvent {
+        number: context.rax as i64,
+        args: [
+            context.rdi,
+            context.rsi,
+            context.rdx,
+            context.r10,
+            context.r8,
+            context.r9,
+        ],
+        instruction_pointer: context.instruction_pointer,
+        result: UNSET_RESULT,
+        context: context_pointer,
+        dispatch: SyscallDispatch::Fallback,
+        // The real sigreturn restored the guest's live permissions; do not
+        // open a key or borrow a saved permission value for the operation.
+        guest_pkru: None,
+    };
+    // Classification is after the RCB exclusion sample. This is an unpatched
+    // signal entry, never an installed-hook count.
+    record_fallback_dispatch(event.number);
+    let stats = crate::stats::GuestStatsHooks::current();
+    if stats.is_enabled() {
+        record_enabled_fallback_stats(stats, event.instruction_pointer);
+    }
+    if unpublished_read_write_allowed(event.number) {
+        // No ToolCallbackGuard or CURRENT_EVENT spans guest I/O: a nested
+        // guest handler's own syscalls must still traverse their guest path.
+        unsafe { process_syscall(&mut event) };
+    } else {
+        FALLBACK_REFUSALS.record(event.number);
+        event.result = -i64::from(libc::EOPNOTSUPP);
+    }
+    context.rax = event.result as u64;
+    context.rcx = context.instruction_pointer.saturating_add(2);
+    context.r11 = context.rflags;
+    if leave_rcb_handler().is_err() {
+        unsafe { exit_now(122) };
+    }
+}
+
 unsafe extern "C" fn installed_vdso_time_hook(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_time)) }
 }
@@ -2459,7 +2687,7 @@ unsafe impl TrapSeam for LiteinstSeam {
         unsafe { locate_syscall_site(resume_address) }.unwrap_or(resume_address.saturating_sub(2))
     }
 
-    unsafe fn patch_site(&self, instruction_pointer: u64) -> SitePatch {
+    unsafe fn patch_syscall_site(&self, instruction_pointer: u64, number: i64) -> SitePatch {
         if SITE_PATCHING_ENABLED.load(Ordering::Relaxed)
             && let Some((site, claimed)) = claim_site(instruction_pointer)
         {
@@ -2480,10 +2708,13 @@ unsafe impl TrapSeam for LiteinstSeam {
                             instruction_pointer,
                             site,
                             installed_syscall_hook,
-                            self.publication,
+                            SiteHookPolicy {
+                                publication: self.publication,
+                                entry_proof: EntryProof::Required,
+                                unpublished_read_write: unpublished_read_write_allowed(number),
+                            },
                             &[0x0f, 0x05],
                             true,
-                            EntryProof::Required,
                         )
                     }
                     .map_err(io::Error::from)
@@ -2506,6 +2737,10 @@ unsafe impl TrapSeam for LiteinstSeam {
                     // SAFETY: active sites retain their InstalledHook for process lifetime.
                     return SitePatch::Defer(unsafe { (*hook).trampoline().address() });
                 }
+            }
+            if site.state.load(Ordering::Acquire) == SITE_UNPUBLISHED {
+                return unpublished_syscall_entry(instruction_pointer, site, number)
+                    .map_or(SitePatch::Refuse, SitePatch::Defer);
             }
         }
         SitePatch::NotPatched
@@ -3001,6 +3236,7 @@ mod tests {
     use super::SITE_INSTALLING;
     use super::SITE_STALE;
     use super::SITE_UNPATCHABLE;
+    use super::SITE_UNPUBLISHED;
     use super::SITES;
     use super::SiteSlot;
     use super::TOOL_PASSTHROUGH;
@@ -3402,6 +3638,11 @@ mod tests {
             (A + 4, SITE_UNPATCHABLE, 2, Some(Covers)),
             (A + 7, SITE_INSTALLING, 0, Some(Covers)),
             (A + 8, SITE_UNPATCHABLE, 2, None),
+            // Unpublished adapters reserve the original instruction too.
+            (A + 4, SITE_UNPUBLISHED, 2, Some(Covers)),
+            (A + 8, SITE_UNPUBLISHED, 2, None),
+            (A - 1, SITE_UNPUBLISHED, 2, Some(Covers)),
+            (A - 2, SITE_UNPUBLISHED, 2, None),
             // The proposed patch may start exactly at its resume point...
             (A - 2, SITE_UNPATCHABLE, 2, None),
             (A - 3, SITE_UNPATCHABLE, 3, None),

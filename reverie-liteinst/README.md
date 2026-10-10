@@ -291,6 +291,30 @@ installed with `install_tool_quiescent`, under the caller assertion above.
 vDSO sites are also published quiescently, during initialization and before
 any application thread starts.
 
+Native `strace` can run `read` and `write` at an otherwise admitted site whose
+split-word publication lacks calibration. It leaves the source bytes and page
+permissions unchanged and returns from the genuine SIGSYS frame to an ordinary
+callback. That callback runs the kernel operation with the guest's restored
+signal mask and live PKRU, then returns directly to the original syscall's next
+instruction. No following guest instruction is copied. These entries are
+unpatched signal entries, not direct installed hooks.
+
+This admission requires the guard router's successfully recorded prior
+`SIG_DFL` profile. Prior `SIG_IGN` and unknown profiles remain refused: routing
+an ignored SIGTRAP through a returning caught handler can interrupt timeout
+I/O. Every trap rechecks its syscall number and retained source admission.
+Interior entries, overlapping or possibly partial patches, missing arenas and
+other installation failures keep their refusals. Replacing a retained object
+mapping, revoking read access to its census inputs, or assigning them a
+protection key permanently invalidates the adapter's admission. Other native
+syscalls, compatibility mode and Tool
+dispatch retain their existing paths.
+
+The new adapter does not repair the older native installed-hook PKRU policy:
+an aligned native `pkey_alloc` hook can still undo the kernel's permission
+change when restoring its saved extended state. Native protection-key parity,
+owned Tool stacks and protected Tool memory are not established by this path.
+
 ## Current boundaries
 
 - Dynamically linked, non-`AT_SECURE` Linux x86-64 guests only.

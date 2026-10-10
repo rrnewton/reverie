@@ -21,6 +21,31 @@ pub const STRADDLER_STALENESS_TICKS_ENV: &str = "REVERIE_LITEINST_STRADDLER_STAL
 
 static CALIBRATED_STALENESS: OnceLock<Option<StalenessBudget>> = OnceLock::new();
 
+/// The only budget refusal eligible for an unpublished syscall adapter is
+/// `UncalibratedSplit`. An uninitialized runtime is never that admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BudgetRefusal {
+    Uninitialized,
+    UncalibratedSplit,
+}
+
+impl From<BudgetRefusal> for io::Error {
+    fn from(refusal: BudgetRefusal) -> Self {
+        match refusal {
+            BudgetRefusal::Uninitialized => {
+                io::Error::other("LiteInst straddler policy was not initialized")
+            }
+            BudgetRefusal::UncalibratedSplit => io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "cross-cache-line LiteInst publication is disabled; set \
+                     {STRADDLER_STALENESS_TICKS_ENV} to a delay measured above this machine's Tmax"
+                ),
+            ),
+        }
+    }
+}
+
 /// Parses the calibrated straddler delay selected for this machine.
 ///
 /// `None` disables guarded cross-line publication. A configured value must be
@@ -67,11 +92,11 @@ pub(crate) fn initialize(staleness: Option<StalenessBudget>) -> io::Result<()> {
 pub(crate) fn budget_for_patch(
     address: usize,
     cache_line: CacheLineSize,
-) -> io::Result<StalenessBudget> {
+) -> Result<StalenessBudget, BudgetRefusal> {
     let calibrated = CALIBRATED_STALENESS
         .get()
         .copied()
-        .ok_or_else(|| io::Error::other("LiteInst straddler policy was not initialized"))?;
+        .ok_or(BudgetRefusal::Uninitialized)?;
     budget_for_patch_with(address, cache_line, calibrated)
 }
 
@@ -79,18 +104,10 @@ fn budget_for_patch_with(
     address: usize,
     cache_line: CacheLineSize,
     calibrated: Option<StalenessBudget>,
-) -> io::Result<StalenessBudget> {
+) -> Result<StalenessBudget, BudgetRefusal> {
     match classify_word_patch(address, cache_line) {
         PatchStrategy::AtomicWord => Ok(StalenessBudget::new(1).expect("one is nonzero")),
-        PatchStrategy::GuardedSplit { .. } => calibrated.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!(
-                    "cross-cache-line LiteInst publication is disabled; set \
-                     {STRADDLER_STALENESS_TICKS_ENV} to a delay measured above this machine's Tmax"
-                ),
-            )
-        }),
+        PatchStrategy::GuardedSplit { .. } => calibrated.ok_or(BudgetRefusal::UncalibratedSplit),
     }
 }
 
@@ -101,6 +118,7 @@ mod tests {
     use liteinst2::cache_line::CacheLineSize;
     use liteinst2::patcher::StalenessBudget;
 
+    use super::BudgetRefusal;
     use super::STRADDLER_STALENESS_TICKS_ENV;
     use super::budget_for_patch_with;
     use super::straddler_staleness_from_env_value;
@@ -111,8 +129,9 @@ mod tests {
     fn unset_staleness_disables_guarded_publication() {
         assert_eq!(straddler_staleness_from_env_value(None).unwrap(), None);
         for offset in 57..64 {
-            assert!(
-                budget_for_patch_with(offset, LINE, None).is_err(),
+            assert_eq!(
+                budget_for_patch_with(offset, LINE, None),
+                Err(BudgetRefusal::UncalibratedSplit),
                 "offset {offset} must require calibrated opt-in"
             );
         }
