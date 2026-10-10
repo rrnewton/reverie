@@ -45,6 +45,11 @@ struct ToolHeapBlock {
     next: usize,
 }
 
+// A remainder must hold a header, the payload's back-pointer and at least
+// one byte, with its end aligned for the next block header.
+const MIN_FREE_SPAN: usize = (size_of::<ToolHeapBlock>() + size_of::<usize>() + 1)
+    .next_multiple_of(align_of::<ToolHeapBlock>());
+
 /// Reusable storage for allocations made while the guest allocator is interrupted.
 struct ToolHeap {
     bytes: UnsafeCell<ToolHeapBytes>,
@@ -90,7 +95,8 @@ impl ToolHeap {
             .checked_add(size_of::<usize>())?;
         let payload_address = align_up(payload_start, layout.align().max(align_of::<usize>()))?;
         let payload_end = payload_address.checked_add(layout.size().max(1))?;
-        Some((payload_address as *mut u8, payload_end - base))
+        let block_end = align_up(payload_end - base, align_of::<ToolHeapBlock>())?;
+        Some((payload_address as *mut u8, block_end))
     }
 
     fn block(&self, offset: usize) -> *mut ToolHeapBlock {
@@ -107,16 +113,32 @@ impl ToolHeap {
             let block = self.block(current);
             // SAFETY: free-list offsets always point at initialized headers.
             let (span, next) = unsafe { ((*block).span, (*block).next) };
-            let fits = self
-                .layout_end(current, layout)
-                .filter(|(_, end)| *end <= current.saturating_add(span));
-            if let Some((pointer, _)) = fits {
-                // SAFETY: the heap lock serializes free-list mutation.
+            let fits = current.checked_add(span).and_then(|block_end| {
+                self.layout_end(current, layout)
+                    .filter(|(_, end)| *end <= block_end)
+                    .map(|(pointer, end)| (pointer, end, block_end))
+            });
+            if let Some((pointer, end, block_end)) = fits {
+                // SAFETY: the heap lock serializes free-list mutation. The
+                // aligned remainder starts beyond the live payload and has
+                // enough room for its own header and minimum allocation.
                 unsafe {
-                    if previous == FREE_LIST_END {
-                        *self.free_head.get() = next;
+                    let replacement = if block_end - end >= MIN_FREE_SPAN {
+                        self.block(end).write(ToolHeapBlock {
+                            span: block_end - end,
+                            next,
+                        });
+                        (*block).span = end - current;
+                        end
                     } else {
-                        (*self.block(previous)).next = next;
+                        // Retain an unusably short tail in the live span; it
+                        // becomes reusable when this allocation is freed.
+                        next
+                    };
+                    if previous == FREE_LIST_END {
+                        *self.free_head.get() = replacement;
+                    } else {
+                        (*self.block(previous)).next = replacement;
                     }
                     pointer
                         .sub(size_of::<usize>())
@@ -161,10 +183,43 @@ impl ToolHeap {
         // SAFETY: each tool-heap allocation records its block offset here.
         let block_offset = unsafe { pointer.sub(size_of::<usize>()).cast::<usize>().read() };
         let _guard = self.lock();
-        // SAFETY: the block header remains reserved until this allocation is freed.
+        // SAFETY: the block header remains reserved until this allocation is
+        // freed. All list accesses are locked. Address ordering lets us merge
+        // only the immediate free neighbors, never across a live allocation.
         unsafe {
-            (*self.block(block_offset)).next = *self.free_head.get();
-            *self.free_head.get() = block_offset;
+            let mut previous = FREE_LIST_END;
+            let mut next = *self.free_head.get();
+            while next != FREE_LIST_END && next < block_offset {
+                previous = next;
+                next = (*self.block(next)).next;
+            }
+            let block = self.block(block_offset);
+            (*block).next = next;
+            if previous == FREE_LIST_END {
+                *self.free_head.get() = block_offset;
+            } else {
+                (*self.block(previous)).next = block_offset;
+            }
+
+            let mut merged_offset = block_offset;
+            if previous != FREE_LIST_END {
+                let predecessor = self.block(previous);
+                if previous.checked_add((*predecessor).span) == Some(block_offset)
+                    && let Some(span) = (*predecessor).span.checked_add((*block).span)
+                {
+                    (*predecessor).span = span;
+                    (*predecessor).next = next;
+                    merged_offset = previous;
+                }
+            }
+            let merged = self.block(merged_offset);
+            if next != FREE_LIST_END && merged_offset.checked_add((*merged).span) == Some(next) {
+                let successor = self.block(next);
+                if let Some(span) = (*merged).span.checked_add((*successor).span) {
+                    (*merged).span = span;
+                    (*merged).next = (*successor).next;
+                }
+            }
         }
     }
 
@@ -397,6 +452,10 @@ fn align_up(value: usize, alignment: usize) -> Option<usize> {
 }
 
 static TOOL_HEAP: ToolHeap = ToolHeap::new();
+
+#[cfg(test)]
+#[path = "alloc_fragmentation_tests.rs"]
+mod fragmentation_tests;
 
 #[cfg(test)]
 mod tests {
