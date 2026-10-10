@@ -618,12 +618,12 @@ impl DbtRunner {
             .tempdir_in("/tmp")?;
         let socket = directory.path().join("coordinator.sock");
         let mut global = Arc::new(G::init_global_state(&config).await);
-        let connected = Arc::new(AtomicBool::new(false));
-        let server = RpcServer::bind_with_connection_readiness(
+        let requested = Arc::new(AtomicBool::new(false));
+        let server = RpcServer::bind_with_readiness(
             &socket,
             Arc::clone(&global),
             config,
-            Arc::clone(&connected),
+            Arc::clone(&requested),
         )
         .map_err(|error| io::Error::other(error.to_string()))?;
 
@@ -675,10 +675,10 @@ impl DbtRunner {
                 .map_err(|error| io::Error::other(error.to_string()))?
         })
         .await?;
-        if missing_coordinator_connection_is_error(connected.load(Ordering::Acquire), &wait) {
+        if missing_coordinator_request_is_error(requested.load(Ordering::Acquire), &wait) {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
-                "DBT guest exited successfully without connecting to the global-state coordinator",
+                "DBT guest exited successfully without sending a request to the global-state coordinator",
             ));
         }
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -1171,8 +1171,8 @@ impl ChildWait {
     }
 }
 
-fn missing_coordinator_connection_is_error(connected: bool, wait: &ChildWait) -> bool {
-    !connected && wait.status().success()
+fn missing_coordinator_request_is_error(requested: bool, wait: &ChildWait) -> bool {
+    !requested && wait.status().success()
 }
 
 enum CoordinatedInput {
@@ -1587,21 +1587,69 @@ mod tests {
     const TEST_DRRUN_DIAGNOSTIC: &str = "REVERIE_DBT_TEST_DRRUN_DIAGNOSTIC";
 
     #[test]
-    fn failed_guest_status_is_preserved_before_coordinator_connection() {
+    fn failed_guest_status_is_preserved_before_coordinator_request() {
         let bootstrap_failure = ChildWait::Status(ExitStatus::from_raw(125 << 8));
         let other_failure = ChildWait::Status(ExitStatus::from_raw(1 << 8));
         let success = ChildWait::Status(ExitStatus::from_raw(0));
 
-        assert!(!missing_coordinator_connection_is_error(
+        assert!(!missing_coordinator_request_is_error(
             false,
             &bootstrap_failure
         ));
-        assert!(!missing_coordinator_connection_is_error(
+        assert!(!missing_coordinator_request_is_error(false, &other_failure));
+        assert!(missing_coordinator_request_is_error(false, &success));
+        assert!(!missing_coordinator_request_is_error(true, &success));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn config_only_bootstrap_cannot_satisfy_the_application_request_guard() {
+        use reverie::GlobalRPC as _;
+        use reverie::Tid;
+        use reverie_rpc_transport::BlockingRpcClient;
+
+        use crate::Counter2Global;
+        use crate::counter2_global::Counter2Request;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("coordinator.sock");
+        let global = Arc::new(Counter2Global::default());
+        let requested = Arc::new(AtomicBool::new(false));
+        let server =
+            RpcServer::bind_with_readiness(&path, Arc::clone(&global), (), Arc::clone(&requested))
+                .unwrap();
+        let serving = tokio::spawn(server.serve());
+        let bootstrap_path = path.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::sync_rpc::read_initial_config::<()>(&bootstrap_path).unwrap();
+        })
+        .await
+        .unwrap();
+        assert!(!requested.load(Ordering::Acquire));
+        assert_eq!(global.snapshot(), (0, 0, 0));
+        assert!(missing_coordinator_request_is_error(
             false,
-            &other_failure
+            &ChildWait::Status(ExitStatus::from_raw(0)),
         ));
-        assert!(missing_coordinator_connection_is_error(false, &success));
-        assert!(!missing_coordinator_connection_is_error(true, &success));
+
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let client =
+                BlockingRpcClient::<Counter2Global>::connect(&path, Tid::from_raw(17)).unwrap();
+            runtime.block_on(client.send_rpc(Counter2Request {
+                syscalls: 5,
+                threads: 2,
+            }));
+        })
+        .await
+        .unwrap();
+        assert!(requested.load(Ordering::Acquire));
+        assert_eq!(global.snapshot(), (5, 1, 2));
+        assert!(!missing_coordinator_request_is_error(
+            true,
+            &ChildWait::Status(ExitStatus::from_raw(0)),
+        ));
+        serving.abort();
+        assert!(serving.await.unwrap_err().is_cancelled());
     }
 
     fn runner() -> DbtRunner {

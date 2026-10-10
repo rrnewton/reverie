@@ -2880,9 +2880,16 @@ mod tests {
             .find("evidence_emit_image_initialization();")
             .unwrap();
         let background_runtime = background
-            .find("reverie_dbt_runtime_background_init_v2(&runtime_callbacks_page.value);")
+            .find("reverie_dbt_runtime_background_init_v3(\n      &runtime_callbacks_page.value, native_mode);")
             .unwrap();
-        let background_callback_leave = background.find("evidence_callback_leave();").unwrap();
+        let background_callback_leave = background_runtime
+            + background[background_runtime..]
+                .find("evidence_callback_leave();")
+                .unwrap();
+        let mode_validation = background
+            .find("virtual_identity_state->magic != VIRTUAL_IDENTITY_MAGIC")
+            .unwrap();
+        let startup_refusal = background.find("if (startup_status != 0)").unwrap();
         let background_final = background
             .find("require_evidence_flush(EVIDENCE_FRAME_FINAL);")
             .unwrap();
@@ -2890,7 +2897,15 @@ mod tests {
             .find("atomic_store_explicit(&runtime_background_state, 3")
             .unwrap();
         assert!(background_initialization < background_runtime);
+        assert!(mode_validation < background_runtime);
+        assert!(background.contains("uint32_t native_mode = runtime_uses_external_global()"));
         assert!(background_runtime < background_callback_leave);
+        assert!(background_callback_leave < startup_refusal);
+        assert!(startup_refusal < background_final);
+        assert!(
+            background[startup_refusal..background_final]
+                .contains("exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);")
+        );
         assert!(background_callback_leave < background_final);
         assert!(background_final < background_quiescent);
         assert!(event_exit.contains("finalize_runtime_process();"));
@@ -2929,7 +2944,7 @@ mod tests {
         let first_runtime_callback = main.find("reverie_dbt_runtime_image_init()").unwrap();
         assert!(version_check < first_runtime_callback);
         assert!(source.contains("reverie_dbt_runtime_thread_created_v2("));
-        assert!(source.contains("reverie_dbt_runtime_background_init_v2("));
+        assert!(source.contains("reverie_dbt_runtime_background_init_v3("));
     }
 
     #[test]
@@ -3114,7 +3129,7 @@ mod tests {
         ));
         assert!(
             source
-                .contains("reverie_dbt_runtime_background_init_v2(&runtime_callbacks_page.value);")
+                .contains("reverie_dbt_runtime_background_init_v3(\n      &runtime_callbacks_page.value, native_mode);")
         );
 
         let main = source

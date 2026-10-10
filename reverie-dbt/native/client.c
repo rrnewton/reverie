@@ -242,7 +242,9 @@ static const cpuid_result_t extended_cpuid[] = {
 // exit, and app-level writes re-enter the syscall interception path.
 typedef void (*reverie_emit_fn_t)(const char* buf, size_t len);
 typedef void (*reverie_idle_fn_t)(void);
-#define REVERIE_DBT_RUNTIME_ABI_VERSION 5u
+#define REVERIE_DBT_RUNTIME_ABI_VERSION 6u
+#define REVERIE_DBT_STARTUP_STANDALONE 1u
+#define REVERIE_DBT_STARTUP_COORDINATED 2u
 // TODO-HUMAN-REVIEW(PR-162): Review the additive stdout-emit runtime callback
 // ABI.
 typedef struct {
@@ -335,7 +337,9 @@ extern int32_t reverie_dbt_runtime_process_clone_result(
     syscall_invoker_t invoke_syscall,
     register_reader_t read_registers,
     register_writer_t write_registers);
-extern void reverie_dbt_runtime_background_init_v2(void* argument);
+extern int32_t reverie_dbt_runtime_background_init_v3(
+    void* argument,
+    uint32_t native_mode);
 extern int32_t reverie_dbt_runtime_ready(uint64_t image_generation);
 extern void reverie_dbt_runtime_process_exit(void);
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -5447,8 +5451,26 @@ static void runtime_background_init(void* argument) {
   atomic_store_explicit(&runtime_background_state, 2, memory_order_release);
   evidence_callback_enter();
   evidence_emit_image_initialization();
-  reverie_dbt_runtime_background_init_v2(&runtime_callbacks_page.value);
+  // Only the initialized, inherited per-image state supplies mode authority.
+  // An absent or invalid mapping must not become standalone by default.
+  if (virtual_identity_state == NULL ||
+      virtual_identity_state->magic != VIRTUAL_IDENTITY_MAGIC) {
+    evidence_callback_leave();
+    dr_fprintf(diagnostic_file, "reverie-dbt: native startup mode is uninitialized\n");
+    exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
+    return;
+  }
+  uint32_t native_mode = runtime_uses_external_global()
+      ? REVERIE_DBT_STARTUP_COORDINATED
+      : REVERIE_DBT_STARTUP_STANDALONE;
+  int32_t startup_status = reverie_dbt_runtime_background_init_v3(
+      &runtime_callbacks_page.value, native_mode);
   evidence_callback_leave();
+  if (startup_status != 0) {
+    dr_fprintf(diagnostic_file, "reverie-dbt: runtime startup was refused\n");
+    exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
+    return;
+  }
   // DynamoRIO implements a client thread as a distinct process sharing the
   // application address space. Protected evidence emitted by the external
   // scheduler is therefore admitted under this process's SO_PEERCRED identity,
