@@ -5297,6 +5297,186 @@ mod tests {
     }
 
     #[test]
+    fn recursive_seal_preserves_nested_mount_attributes() {
+        use crate::mount::MountFlags;
+
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("source");
+        let view = fixture.path().join("view");
+        let mut view_with_slash = view.as_os_str().to_owned();
+        view_with_slash.push("/");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&view).unwrap();
+        let parent_mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
+        let flags = |path: &Path| {
+            let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+            let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+            Errno::result(unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) }).unwrap();
+            unsafe { stat.assume_init() }.f_flag
+        };
+        let handle = Container::new()
+            .map_root()
+            .mount(Mount::new("/").rprivate())
+            .mount(
+                Mount::tmpfs(&source)
+                    .flags(MountFlags::MS_NOATIME | MountFlags::MS_NODIRATIME)
+                    .data("mode=0755,size=1048576"),
+            )
+            .run_with_deferred_drop_owned(&mut || {
+                let child = source.join("child");
+                std::fs::create_dir(&child).unwrap();
+                Mount::tmpfs(&child)
+                    .flags(MountFlags::MS_RELATIME | MountFlags::MS_NODEV)
+                    .data("mode=0755,size=1048576")
+                    .mount()
+                    .unwrap();
+                let leaf = child.join("leaf");
+                std::fs::create_dir(&leaf).unwrap();
+                Mount::tmpfs(&leaf)
+                    .flags(MountFlags::MS_STRICTATIME | MountFlags::MS_NOEXEC)
+                    .data("mode=0755,size=1048576")
+                    .mount()
+                    .unwrap();
+                let sources = [&source, &child, &leaf];
+                for path in sources {
+                    std::fs::write(path.join("marker"), b"before seal\n").unwrap();
+                }
+                let before = sources.map(|path| flags(path));
+                let source_mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
+                let targets = [view.clone(), view.join("child"), view.join("child/leaf")];
+                let seal = Mount::seal_recursive_readonly(fixture.path().join("unselected"))
+                    .target(&view_with_slash);
+                assert_eq!(seal.get_target().as_os_str(), view_with_slash.as_os_str());
+                let inner = Container::new()
+                    .mount(Mount::bind(&source, &view).recursive())
+                    .mount(seal)
+                    .run_with_deferred_drop_owned(&mut || {
+                        let after = targets.each_ref().map(|path| flags(path));
+                        let errors = targets.each_ref().map(|path| {
+                            assert_eq!(
+                                std::fs::read(path.join("marker")).unwrap(),
+                                b"before seal\n"
+                            );
+                            std::fs::write(path.join("must-refuse"), b"no\n")
+                                .unwrap_err()
+                                .raw_os_error()
+                                .unwrap()
+                        });
+                        let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
+                        ((after, errors, mountinfo), ())
+                    })
+                    .unwrap();
+                let inner_pid = inner.cleanup().child_pid();
+                let result = owned_complete(inner);
+                assert_eq!(result.status(), ExitStatus::Exited(0));
+                let (after, errors, sealed_mountinfo) = result.decode().unwrap();
+                assert_reaped(inner_pid);
+                let added = libc::ST_RDONLY | libc::ST_NOSUID | libc::ST_NODEV | libc::ST_NOEXEC;
+                assert_eq!(after, before.map(|value| value | added));
+                assert_eq!(errors, [libc::EROFS; 3]);
+                assert_eq!(sources.map(|path| flags(path)), before);
+                for path in sources {
+                    std::fs::write(path.join("source-still-writable"), b"yes\n").unwrap();
+                }
+                eprintln!(
+                    "recursive seal fixture={} before={before:?} after={after:?} write_errno={errors:?} inner={inner_pid} inner_wait=0 inner_ECHILD=true rebased_target={}",
+                    fixture.path().display(),
+                    Path::new(&view_with_slash).display()
+                );
+                eprintln!("source mountinfo:\n{source_mountinfo}");
+                eprintln!("sealed mountinfo:\n{sealed_mountinfo}");
+                ((), ())
+            })
+            .unwrap();
+        let child = handle.cleanup().child_pid();
+        let result = owned_complete(handle);
+        assert_eq!(result.status(), ExitStatus::Exited(0));
+        let () = result.decode().unwrap();
+        assert_reaped(child);
+        assert_eq!(
+            std::fs::read_to_string("/proc/self/mountinfo").unwrap(),
+            parent_mountinfo
+        );
+        assert!(!source.join("marker").exists());
+        assert!(!view.join("marker").exists());
+        eprintln!("recursive seal outer={child} outer_wait=0 outer_ECHILD=true");
+        eprintln!("unchanged parent mountinfo:\n{parent_mountinfo}");
+    }
+
+    #[test]
+    fn recursive_seal_target_errors_keep_mount_context() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("directory");
+        let file = fixture.path().join("file");
+        let link = fixture.path().join("link");
+        let mut link_with_slash = link.as_os_str().to_owned();
+        link_with_slash.push("/");
+        let loop_link = fixture.path().join("loop");
+        let missing = fixture.path().join("missing");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(&file, b"unchanged\n").unwrap();
+        std::os::unix::fs::symlink("directory", &link).unwrap();
+        std::os::unix::fs::symlink("loop", &loop_link).unwrap();
+        let parent_mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
+        for (name, target, expected) in [
+            ("missing", missing.clone(), Errno::ENOENT),
+            ("file", file.clone(), Errno::ENOTDIR),
+            ("final-link", link.clone(), Errno::ENOTDIR),
+            (
+                "final-link-slash",
+                std::path::PathBuf::from(link_with_slash),
+                Errno::ENOTDIR,
+            ),
+            ("file-parent", file.join("child"), Errno::ENOTDIR),
+            ("loop-parent", loop_link.join("child"), Errno::ELOOP),
+        ] {
+            let handle = Container::new()
+                .map_root()
+                .mount(Mount::new("/").rprivate())
+                .mount(Mount::seal_recursive_readonly(&target))
+                .run_with_deferred_drop_owned(&mut || (7_u8, ()))
+                .unwrap();
+            let child = handle.cleanup().child_pid();
+            let result = owned_complete(handle);
+            assert_eq!(result.status(), ExitStatus::Exited(0));
+            let refusal = result.decode().unwrap_err();
+            assert_eq!(
+                refusal.cause(),
+                OwnedRunFailure::Startup(StartupError::Setup(Error::new(expected, Context::Mount))),
+                "target={target:?}"
+            );
+            assert_eq!(refusal.detail(), None);
+            assert_eq!(refusal.status(), ExitStatus::Exited(0));
+            assert!(!refusal.encoded_bytes().is_empty());
+            assert_reaped(child);
+            eprintln!(
+                "recursive seal refused name={name} target={} errno={expected:?} context=Mount child={child} wait=0 ECHILD=true workload_not_run=true",
+                target.display()
+            );
+        }
+        assert_eq!(std::fs::read(&file).unwrap(), b"unchanged\n");
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("directory"));
+        assert_eq!(std::fs::read_link(&loop_link).unwrap(), Path::new("loop"));
+        assert_eq!(
+            std::fs::symlink_metadata(&missing)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        assert_eq!(
+            std::fs::read_to_string("/proc/self/mountinfo").unwrap(),
+            parent_mountinfo
+        );
+        eprintln!("unchanged target-error parent mountinfo:\n{parent_mountinfo}");
+    }
+
+    #[test]
     fn test_directory_is_available_after_mount() {
         if crate::test_runs_in_own_process() {
             return;

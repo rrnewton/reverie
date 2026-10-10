@@ -20,6 +20,7 @@ use std::path::Path;
 
 pub use nix::mount::MsFlags as MountFlags;
 use syscalls::Errno;
+use syscalls::Sysno;
 
 use super::fd::Fd;
 use super::fd::FileType;
@@ -28,9 +29,16 @@ use super::fd::touch_path;
 use super::pinned_mount::PinnedMountSource;
 use super::pinned_mount::descriptor_path;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum MountOperation {
+    Mount,
+    SealRecursiveReadonly { final_component: CString },
+}
+
 /// A mount.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Mount {
+    operation: MountOperation,
     source: Option<CString>,
     target: CString,
     fstype: Option<CString>,
@@ -85,11 +93,24 @@ fn checked_cstring<S: AsRef<OsStr>>(s: S) -> (CString, bool) {
     }
 }
 
+// lstat follows a final directory symlink when the path ends in a slash.
+// Prepare this separate probe before clone without changing the syscall path
+// or the lookup rules for any parent component. All-slash root stays "/".
+fn seal_final_component_probe(target: &CString) -> CString {
+    let bytes = target.as_bytes();
+    let mut end = bytes.len();
+    while end > 1 && bytes[end - 1] == b'/' {
+        end -= 1;
+    }
+    CString::new(&bytes[..end]).expect("a CString prefix contains no NUL")
+}
+
 impl Mount {
     /// Creates a new mount at the path `target`.
     pub fn new<S: AsRef<OsStr>>(target: S) -> Self {
         let (t, ok) = checked_cstring(target);
         Self {
+            operation: MountOperation::Mount,
             unrepresentable: !ok,
             source: None,
             target: t,
@@ -100,6 +121,24 @@ impl Mount {
             allow_readonly_fallback: false,
             pinned_source: None,
         }
+    }
+
+    /// Recursively adds readonly, nosuid, nodev and noexec to an existing mount tree.
+    ///
+    /// Place this after the operations that construct the tree. The final target
+    /// must be an existing directory, not a symlink; lookup errors are preserved.
+    /// This operation clears no attributes, including the existing atime policy.
+    /// A kernel refusal is returned without a remount or writable fallback.
+    ///
+    /// Only [`Self::target`] may decorate this fixed operation. Source, filesystem
+    /// type, data, ordinary flags, target creation, pinned source and readonly
+    /// fallback decorations refuse with `EINVAL` before an effect.
+    pub fn seal_recursive_readonly<S: AsRef<OsStr>>(target: S) -> Self {
+        let mut mount = Self::new(target);
+        mount.operation = MountOperation::SealRecursiveReadonly {
+            final_component: seal_final_component_probe(&mount.target),
+        };
+        mount
     }
 
     /// Creates a bind mount. This effectively creates hardlink of a directory,
@@ -229,6 +268,9 @@ impl Mount {
         let (t, ok) = checked_cstring(target);
         self.target = t;
         self.unrepresentable |= !ok;
+        if let MountOperation::SealRecursiveReadonly { final_component } = &mut self.operation {
+            *final_component = seal_final_component_probe(&self.target);
+        }
         self
     }
 
@@ -584,6 +626,50 @@ impl Mount {
         Ok(())
     }
 
+    fn seal_recursive_readonly_mount(&self, final_component: &CString) -> Result<(), Errno> {
+        if self.source.is_some()
+            || self.fstype.is_some()
+            || self.data.is_some()
+            || !self.flags.is_empty()
+            || self.touch_target
+            || self.pinned_source.is_some()
+            || self.allow_readonly_fallback
+        {
+            return Err(Errno::EINVAL);
+        }
+        if !FileType::new(self.target_ptr())?.is_dir() {
+            return Err(Errno::ENOTDIR);
+        }
+        // Keep the original lookup's error before checking the final object
+        // without its terminal slashes. Parent symlinks retain Linux lookup.
+        if !FileType::new(final_component.as_ptr())?.is_dir() {
+            return Err(Errno::ENOTDIR);
+        }
+        let attributes = libc::mount_attr {
+            attr_set: libc::MOUNT_ATTR_RDONLY
+                | libc::MOUNT_ATTR_NOSUID
+                | libc::MOUNT_ATTR_NODEV
+                | libc::MOUNT_ATTR_NOEXEC,
+            attr_clr: 0,
+            propagation: 0,
+            userns_fd: 0,
+        };
+        // SAFETY: target is a live CString prepared before clone. The kernel
+        // only reads the version-0 stack value during this call. No descriptor,
+        // allocation, attribute clearing or fallback operation is involved.
+        unsafe {
+            syscalls::syscall5(
+                Sysno::mount_setattr,
+                libc::AT_FDCWD as isize as usize,
+                self.target_ptr() as usize,
+                libc::AT_RECURSIVE as usize,
+                &attributes as *const libc::mount_attr as usize,
+                libc::MOUNT_ATTR_SIZE_VER0 as usize,
+            )
+        }
+        .map(|_| ())
+    }
+
     pub(super) fn mount(&mut self) -> Result<(), Errno> {
         // ⚠️ REFUSE, DO NOT PANIC. A path/fstype/data string that is not a valid
         // C string was recorded at build time (see `unrepresentable`). This is
@@ -593,6 +679,9 @@ impl Mount {
         // the caller's existing error path already knows what to do with it.
         if self.unrepresentable {
             return Err(Errno::EINVAL);
+        }
+        if let MountOperation::SealRecursiveReadonly { final_component } = &self.operation {
+            return self.seal_recursive_readonly_mount(final_component);
         }
         if let Some(source) = &self.pinned_source {
             return self.mount_pinned(source);
@@ -675,6 +764,7 @@ impl From<Bind> for Mount {
         let src_empty = b.source.as_bytes().is_empty();
         let tgt_empty = b.target.as_bytes().is_empty();
         Self {
+            operation: MountOperation::Mount,
             source: Some(b.source),
             target: b.target,
             fstype: None,
@@ -851,6 +941,31 @@ impl FromStr for Mount {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recursive_seal_refuses_ordinary_decorations_before_lookup() {
+        let seal = Mount::seal_recursive_readonly("/proc/self/fd/-1");
+        let pin = PinnedMountSource::open("/").unwrap();
+        let mut pinned = seal.clone();
+        pinned.pinned_source = Some(pin.clone());
+        for (name, mut mount) in [
+            ("source", seal.clone().source("")),
+            ("fstype", seal.clone().fstype("")),
+            ("data", seal.clone().data("")),
+            ("readonly", seal.clone().readonly()),
+            ("recursive", seal.clone().recursive()),
+            ("bind", seal.clone().flags(MountFlags::MS_BIND)),
+            ("remount", seal.clone().flags(MountFlags::MS_REMOUNT)),
+            ("touch", seal.clone().touch_target()),
+            ("fallback", seal.clone().allow_readonly_fallback()),
+            ("pinned", pinned),
+            ("nul", seal.target(OsStr::from_bytes(b"bad\0target"))),
+        ] {
+            assert_eq!(mount.mount(), Err(Errno::EINVAL), "decoration={name}");
+            eprintln!("recursive seal invalid decoration={name} errno=EINVAL");
+        }
+        pin.retire().unwrap();
+    }
 
     #[test]
     fn getters_and_setters() {
