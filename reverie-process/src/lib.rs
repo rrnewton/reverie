@@ -42,6 +42,8 @@ use std::io;
 pub use child::Child;
 pub use child::Output;
 pub use container::ChildCleanupObservation;
+pub use container::ChildFdBoundary;
+pub use container::ChildFdKeep;
 pub use container::ChildStartContext;
 pub use container::Container;
 pub use container::DeferredContainerRun;

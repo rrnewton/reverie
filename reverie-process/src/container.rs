@@ -13,11 +13,15 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io::Read;
 use std::io::Write;
+use std::marker::PhantomData;
+use std::os::fd::AsFd;
+use std::os::fd::BorrowedFd;
 #[cfg(test)]
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
+use std::rc::Rc;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 
@@ -72,6 +76,105 @@ pub struct Container {
     /// The core number to which the new process, and descendents, will be
     /// pinned.
     affinity: Option<usize>,
+}
+
+/// A keeper borrowed from an actual descriptor owner for a child FD boundary.
+///
+/// This neither duplicates nor transfers the descriptor. Its lifetime is the
+/// owner's borrow, independent of the boundary borrow. It supplies no proof
+/// that the owner has a lawful purpose or that all other owners are accounted
+/// for. Only [`ChildFdBoundary::keep`] constructs it.
+pub struct ChildFdKeep<'fd> {
+    fd: BorrowedFd<'fd>,
+}
+
+/// A one-shot FD boundary in the opt-in owned Container child.
+///
+/// The result writer is borrowed privately from its unique child owner and is
+/// always preserved by sealing. The boundary cannot be sent or shared between
+/// threads. Sealing preserves current numeric 0/1/2; it has no original-stdio
+/// ledger and cannot know whether those slots were originally Closed.
+pub struct ChildFdBoundary<'child> {
+    result_writer: &'child Fd,
+    attempted: bool,
+    _private_thread: PhantomData<Rc<()>>,
+}
+
+impl ChildFdBoundary<'_> {
+    /// Borrows a keeper from its actual owner without allocating or duplicating.
+    ///
+    /// The token can coexist with other keepers and a mutable seal call because
+    /// its lifetime is tied to `owner`, not to the borrow of this boundary.
+    pub fn keep<'fd, O: AsFd + ?Sized>(&self, owner: &'fd O) -> ChildFdKeep<'fd> {
+        ChildFdKeep { fd: owner.as_fd() }
+    }
+
+    /// Closes the keeper complement from descriptor 3 through `UINT_MAX`.
+    ///
+    /// The private result writer is kept internally. Each range uses flags-zero
+    /// `close_range`; there is no scanner, fixed ceiling, CLOEXEC substitution
+    /// or fallback. The attempt is consumed before any syscall, so a repeated
+    /// call returns EBUSY even after partial failure. Actual errors propagate.
+    /// This is Linux's range operation, not a per-descriptor close-error audit.
+    ///
+    /// # Safety
+    ///
+    /// The caller must account for every live Rust/C descriptor owner and active
+    /// borrow at or above 3: each must be kept here or already retired through
+    /// its real owning slot. An unlisted live owner would become stale and its
+    /// later Drop could close a reused descriptor. Retired slots must consume
+    /// their close once, including EINTR, without later cleanup or unlink of
+    /// a parent-retained backing path.
+    ///
+    /// The dedicated child must be quiescent with private VM and FD table. No
+    /// worker, handler or foreign callback may allocate, close, duplicate or
+    /// replace slots during the operation. Keepers must remain valid throughout
+    /// the call. This utility does not discover owners or certify completeness.
+    pub unsafe fn seal_inherited<'fd>(
+        &mut self,
+        keepers: &[ChildFdKeep<'fd>],
+    ) -> Result<(), Errno> {
+        if std::mem::replace(&mut self.attempted, true) {
+            return Err(Errno::EBUSY);
+        }
+        let mut fds = Vec::with_capacity(keepers.len() + 1);
+        fds.push(self.result_writer.as_raw_fd() as u32);
+        fds.extend(
+            keepers
+                .iter()
+                .map(|keeper| keeper.fd.as_raw_fd())
+                .filter(|fd| *fd >= 3)
+                .map(|fd| fd as u32),
+        );
+        fds.sort_unstable();
+        fds.dedup();
+        let mut first = 3;
+        for fd in fds {
+            if first < fd {
+                close_fd_range(first, fd - 1)?;
+            }
+            first = fd + 1;
+        }
+        close_fd_range(first, u32::MAX)
+    }
+}
+
+fn close_fd_range(first: u32, last: u32) -> Result<(), Errno> {
+    Errno::result(unsafe { libc::syscall(libc::SYS_close_range, first, last, 0_u32) })?;
+    Ok(())
+}
+
+// Consumes a low endpoint's old owning slot before its one close attempt.
+// The duplicate is private and CLOEXEC; a close error refuses preparation.
+fn promote_result_fd(fd: Fd) -> Result<Fd, Errno> {
+    if fd.as_raw_fd() >= 3 {
+        return Ok(fd);
+    }
+    let promoted = Fd::new(Errno::result(unsafe {
+        libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3)
+    })?);
+    fd.close()?;
+    Ok(promoted)
 }
 
 impl Default for Container {
@@ -1425,6 +1528,123 @@ impl Container {
         // original wait owner after clone has succeeded.
         let mut owned = OwnedFinalization::new(child, reader);
         drop(writer);
+        #[cfg(test)]
+        owned_deferred_before_drain(&mut owned);
+        if let Err(error) = owned.drain() {
+            return Err(owned.refuse(error));
+        }
+        if owned.cleanup().pidfd.is_none() {
+            return Err(owned.refuse(OwnedRunFailure::Startup(StartupError::Protocol)));
+        }
+        Ok(OwnedDeferredContainerRun { inner: owned })
+    }
+
+    /// Runs an owned deferred workload with an opt-in child FD boundary.
+    ///
+    /// The original [`Self::run_with_deferred_drop_owned`] remains unchanged.
+    /// This entry unconditionally rejects CLONE_VM/FILES/VFORK/THREAD, promotes
+    /// its result-pipe endpoints above 2 before clone, and consumes the child's
+    /// actual reader owner while moving its unique writer into publication.
+    /// Current numeric stdio is inherited; no original-stdio state is inferred.
+    ///
+    /// The callback may choose when to seal, under
+    /// [`ChildFdBoundary::seal_inherited`]'s safety requirements, before starting
+    /// workers. Sealing is not automatic. The higher-ranked boundary borrow
+    /// cannot escape in the fixed return types `T` or `D`. The child publishes,
+    /// flushes and closes its result before dropping `D`, including an encoded
+    /// setup failure. Genuine parent wait/decoding and retained error ownership
+    /// have the same contract as the original owned entry, including its
+    /// blocking initial drain and lack of implicit failure cleanup.
+    ///
+    /// Call before starting threads, with no other child reaper. Keep the
+    /// borrowed factory and external parent resources alive through all returned
+    /// owners. A callback return exits only its thread; join workers or provide
+    /// the same explicit group-completion policy in `D` when needed. NoNamespace
+    /// is a dedicated process here too and has the same owner requirements.
+    pub fn run_with_deferred_drop_owned_fds<F, T, D>(
+        &mut self,
+        run: &mut F,
+    ) -> Result<OwnedDeferredContainerRun<T>, StartupOwnedFailure<T>>
+    where
+        F: for<'child> FnMut(&mut ChildFdBoundary<'child>) -> (T, D),
+        T: Serialize,
+    {
+        let before = |cause| StartupOwnedFailure::BeforeClone { cause };
+        let shared = libc::CLONE_VM | libc::CLONE_FILES | libc::CLONE_VFORK | libc::CLONE_THREAD;
+        if self.namespace.bits() & shared != 0 {
+            return Err(before(StartupError::Io(Errno::EINVAL)));
+        }
+        let mut disposition: libc::sigaction = unsafe { std::mem::zeroed() };
+        Errno::result(unsafe {
+            libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut disposition)
+        })
+        .map_err(|error| before(error.into()))?;
+        if disposition.sa_sigaction == libc::SIG_IGN
+            || disposition.sa_flags & libc::SA_NOCLDWAIT != 0
+        {
+            return Err(before(StartupError::Io(Errno::ECHILD)));
+        }
+        let uid_map = &make_id_map(&self.uid_map);
+        let gid_map = &make_id_map(&self.gid_map);
+        let context = ChildContext {
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            uid_map,
+            gid_map,
+            seccomp_fd: None,
+        };
+        let (reader, writer) = pipe().map_err(|error| before(error.into()))?;
+        let reader = promote_result_fd(reader).map_err(|error| before(error.into()))?;
+        let writer = promote_result_fd(writer).map_err(|error| before(error.into()))?;
+        let mut reader = Some(reader);
+        let mut writer = Some(writer);
+        let mut stack = child_stack().map_err(|error| before(error.into()))?;
+        #[cfg(feature = "nightly")]
+        let output_capture = std::io::set_output_capture(None);
+        let namespace = self.namespace;
+        let result = super::clone::clone_with_stack_owned(
+            || {
+                // These are the actual COW child slots, not new wrappers over
+                // descriptors still owned elsewhere. Parent slots stay intact.
+                let child_writer = writer.take().unwrap();
+                let child_reader = reader.take().unwrap();
+                let setup = child_reader
+                    .close()
+                    .map_err(StartupError::Io)
+                    .and_then(|()| self.setup(&context, &mut []).map_err(StartupError::Setup));
+                let (value, deferred) = match setup {
+                    Ok(()) => {
+                        let mut boundary = ChildFdBoundary {
+                            result_writer: &child_writer,
+                            attempted: false,
+                            _private_thread: PhantomData,
+                        };
+                        let (value, deferred) = run(&mut boundary);
+                        (Ok(value), Some(deferred))
+                    }
+                    Err(error) => (Err(error), None),
+                };
+                let mut publication = std::io::BufWriter::new(child_writer);
+                bincode::serde::encode_into_std_write(
+                    &value,
+                    &mut publication,
+                    bincode::config::legacy(),
+                )
+                .expect("Failed to serialize return value");
+                publication.flush().expect("Failed to flush return value");
+                drop(publication);
+                drop(deferred);
+                0
+            },
+            namespace,
+            &mut stack,
+        );
+        #[cfg(feature = "nightly")]
+        std::io::set_output_capture(output_capture);
+        let child = OwnedContainerCleanup::new(result.map_err(|error| before(error.into()))?);
+        let mut owned = OwnedFinalization::new(child, reader.take().unwrap());
+        drop(writer.take());
         #[cfg(test)]
         owned_deferred_before_drain(&mut owned);
         if let Err(error) = owned.drain() {
