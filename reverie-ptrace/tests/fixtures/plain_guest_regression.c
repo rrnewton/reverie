@@ -70,6 +70,7 @@
 #define ARM_TIMER 0x1000
 /* The Tool sends SIGSTOP to the calling thread at this stop. */
 #define SEND_SIGSTOP 0x2000
+#define CHECK_KERNEL_PPID 0x8000
 
 long tp_site_fn(long nr, long a1, long a2, long a3, long a4, long a5, long a6);
 extern char tp_site[], tp_site_end[];
@@ -348,6 +349,90 @@ static void mode_sig_pending(void) {
   r = SITEM(SYS_getpid, 0, 0, 0, 0, 0, SHAPE_TAIL | SEND_SIGUSR1);
   say("tail getpid returned pid=%d\n", r == getpid());
   dump("sig_pending_tail");
+}
+
+/* A clone without CLONE_THREAD and with exit signal 0 is reported as a clone
+ * event, but it is its own process. The Tool signals a parked call by its
+ * process and thread id, so the signal reaches this child only if the Tool
+ * sees the child's own process id. */
+static int raw_clone_process_child(void* arg) {
+  (void)arg;
+  int before = nrec;
+  long r = SITEM(SYS_getpid, 0, 0, 0, 0, 0, SHAPE_INJECT | SEND_SIGUSR1);
+  int got = nrec == before + 1 && recs[before].sig == SIGUSR1;
+  return r == getpid() && got ? 7 : 1;
+}
+
+static char raw_clone_stack[64 * 1024] __attribute__((aligned(16)));
+
+static void mode_raw_clone_process(void) {
+  install(SIGUSR1, 0, handler);
+  warm();
+  int c = clone(
+      raw_clone_process_child,
+      raw_clone_stack + sizeof raw_clone_stack,
+      0,
+      NULL);
+  if (c < 0)
+    die("clone without CLONE_THREAD");
+  int status;
+  if (waitpid(c, &status, __WCLONE) != c)
+    die("waitpid raw clone");
+  say("raw clone child status exited=%d code=%d\n",
+      WIFEXITED(status),
+      WEXITSTATUS(status));
+}
+
+/* A CLONE_PARENT raw clone whose Tool-side parent must be the root, as the
+ * kernel's getppid says, not its creator. The creator stays alive on a pipe
+ * until the tagged child's getppid completes, so no timing is involved. */
+static int clone_parent_ppid_child(void* arg) {
+  int fd = (int)(intptr_t)arg;
+  long actual = SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_INJECT | CHECK_KERNEL_PPID);
+  if (actual <= 0 || write(fd, "x", 1) != 1)
+    return 92;
+  close(fd);
+  return 7;
+}
+
+static char clone_parent_ppid_stack[64 * 1024] __attribute__((aligned(16)));
+
+static void mode_raw_clone_parent_ppid(void) {
+  warm();
+  int release[2];
+  if (pipe(release) != 0)
+    die("clone parent pipe");
+  pid_t creator = fork();
+  if (creator < 0)
+    die("clone parent fork");
+  if (creator == 0) {
+    int child = clone(clone_parent_ppid_child,
+        clone_parent_ppid_stack + sizeof clone_parent_ppid_stack,
+        CLONE_PARENT | SIGUSR1, (void*)(intptr_t)release[1]);
+    if (child <= 0)
+      _exit(93);
+    close(release[1]);
+    char byte = 0;
+    int got = read(release[0], &byte, 1) == 1 && byte == 'x';
+    _exit(got ? 11 : 94);
+  }
+  close(release[0]);
+  close(release[1]);
+  int checked_child = 0;
+  int checked_creator = 0;
+  for (int i = 0; i < 2; i++) {
+    int status = 0;
+    pid_t got = waitpid(-1, &status, __WALL);
+    if (got <= 0 || !WIFEXITED(status))
+      die("clone parent wait");
+    if (got == creator && WEXITSTATUS(status) == 11)
+      checked_creator++;
+    else if (got != creator && WEXITSTATUS(status) == 7)
+      checked_child++;
+    else
+      _exit(95);
+  }
+  say("clone parent checked child=%d creator=%d\n", checked_child, checked_creator);
 }
 
 /* Queued thread- and process-directed signals (standard signals only; see
@@ -2512,6 +2597,10 @@ int main(int argc, char** argv) {
     mode_sigtrap_profile();
   else if (!strcmp(m, "restart"))
     mode_restart();
+  else if (!strcmp(m, "raw_clone_parent_ppid"))
+    mode_raw_clone_parent_ppid();
+  else if (!strcmp(m, "raw_clone_process"))
+    mode_raw_clone_process();
   else if (!strcmp(m, "fork_family"))
     mode_fork_family();
   else if (!strcmp(m, "foreign_int80"))

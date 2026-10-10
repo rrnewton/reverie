@@ -545,6 +545,9 @@ const SEND_RESUME: u64 = 0x800;
 const ARM_TIMER: u64 = 0x1000;
 /// The Tool sends SIGSTOP to the calling thread while it is parked.
 const SEND_SIGSTOP: u64 = 0x2000;
+/// The Tool checks that `Guest::ppid` equals the tagged `getppid`'s kernel
+/// result.
+const CHECK_KERNEL_PPID: u64 = 0x8000;
 /// The Tool notifies the guest's parent again (SIGUSR2) when the kernel
 /// restarts the call.
 const NOTIFY_AGAIN: u64 = 0x4000;
@@ -1070,6 +1073,17 @@ impl Tool for GuestTool {
             _ => {
                 assert_eq!(shape, SHAPE_INJECT, "unknown shape");
                 let result = guest.inject(call).await;
+                if tagged && regs.r9 & CHECK_KERNEL_PPID != 0 {
+                    assert_eq!(name, reverie::syscalls::Sysno::getppid);
+                    let actual = *result.as_ref().expect("tagged kernel getppid failed");
+                    assert!(actual > 0, "kernel getppid must be positive");
+                    assert_eq!(
+                        guest.ppid().map(|parent| i64::from(parent.as_raw())),
+                        Some(actual),
+                        "Tool Guest::ppid disagrees with the actual kernel getppid"
+                    );
+                    guest.send_rpc("checked kernel PPid".to_owned()).await;
+                }
                 if tagged && regs.r9 & TOOL_AFTER_CONT != 0 {
                     park_for(pid, tid, libc::SIGCONT).await;
                     // Shaped like a re-raise (SI_QUEUE), with a value that
@@ -2528,6 +2542,31 @@ async fn the_fork_family_runs_through_the_site() {
         .filter(|stop| stop.starts_with("VforkDone"))
         .collect();
     assert_eq!(vfork_done, ["VforkDone rax=-38"], "{:#?}", tail.stops);
+}
+
+/// A clone without CLONE_THREAD, with exit signal 0, is reported as a clone
+/// event but is its own process
+/// (https://github.com/rrnewton/hermit/issues/4012). The Tool signals the
+/// child's parked call with `tgkill(guest.pid(), guest.tid())`, which fails,
+/// and fails the run, if the child is given its creator's process id.
+#[tokio::test(flavor = "current_thread")]
+async fn a_clone_without_clone_thread_is_its_own_process() {
+    let run = run_guest("raw_clone_process", false).await;
+    assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+    assert_report_has(&run, &["raw clone child status exited=1 code=7"]);
+}
+
+/// A clone with `CLONE_PARENT` and exit signal SIGUSR1, without
+/// `CLONE_THREAD`, is a process whose parent is its creator's parent: the
+/// Tool's `Guest::ppid` must name that parent, as the kernel's `getppid` does
+/// (<https://github.com/rrnewton/hermit/issues/4012>). The creator stays
+/// alive on a pipe until the child has checked.
+#[tokio::test(flavor = "current_thread")]
+async fn a_clone_parent_child_exposes_its_kernel_parent_to_the_tool() {
+    let run = run_guest("raw_clone_parent_ppid", false).await;
+    assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+    assert_report_has(&run, &["clone parent checked child=1 creator=1"]);
+    assert_eq!(run.count_events("checked kernel PPid"), 1);
 }
 
 /// A real IA-32 `int 0x80` in a forked child kills it with SIGSYS, without a
