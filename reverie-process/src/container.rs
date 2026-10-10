@@ -64,6 +64,7 @@ pub struct Container {
     pub(super) gid_map: Vec<(libc::uid_t, libc::uid_t, u32)>,
     mounts: Vec<Mount>,
     local_networking_only: bool,
+    local_networking_sysfs: bool,
     hostname: Option<OsString>,
     domainname: Option<OsString>,
     pub(super) seccomp: Option<seccomp::Filter>,
@@ -88,6 +89,7 @@ impl Default for Container {
             gid_map: Vec::new(),
             mounts: Vec::new(),
             local_networking_only: false,
+            local_networking_sysfs: false,
             hostname: None,
             domainname: None,
             seccomp: None,
@@ -116,6 +118,7 @@ impl Container {
             gid_map,
             mounts,
             local_networking_only,
+            local_networking_sysfs,
             hostname,
             domainname,
             seccomp,
@@ -141,7 +144,7 @@ impl Container {
         if !mounts.is_empty() {
             blockers.push("mounts");
         }
-        if *local_networking_only {
+        if *local_networking_only || *local_networking_sysfs {
             blockers.push("local-only networking");
         }
         if hostname.is_some() {
@@ -586,11 +589,22 @@ impl Container {
     /// This also causes a fresh `/sys` to be mounted to avoid seeing the host
     /// network interfaces in `/sys/class/net`.
     pub fn local_networking_only(&mut self) -> &mut Self {
-        if !self.local_networking_only {
-            self.local_networking_only = true;
-            self.namespace |= Namespace::NETWORK;
+        self.local_networking_only_without_sysfs();
+        if !self.local_networking_sysfs {
+            self.local_networking_sysfs = true;
             self.mount(Mount::sysfs("/sys"));
         }
+        self
+    }
+
+    /// Creates a private network namespace and brings its loopback interface up.
+    ///
+    /// Implies [`Namespace::NETWORK`]. This adds no mounts and does not imply
+    /// [`Namespace::MOUNT`]. The caller owns the sysfs view and any inherited
+    /// network descriptors.
+    pub fn local_networking_only_without_sysfs(&mut self) -> &mut Self {
+        self.local_networking_only = true;
+        self.namespace |= Namespace::NETWORK;
         self
     }
 
@@ -745,7 +759,7 @@ impl Container {
 
             let loopback = IfName::LOOPBACK;
 
-            // Bring up the loopback interface in the newly mounted sysfs.
+            // Bring up the loopback interface in the current network namespace.
             let flags = loopback.get_flags(&sock).context(Context::Network)?;
             let flags = flags | libc::IFF_UP as i16;
             loopback.set_flags(&sock, flags).context(Context::Network)?;
@@ -5363,6 +5377,106 @@ mod tests {
             }),
             Ok(vec![42; 10 * 1024 * 1024])
         );
+    }
+
+    #[test]
+    fn local_networking_sysfs_mount_ownership() {
+        let orders: &[&[bool]] = &[
+            &[false, false],
+            &[true, true],
+            &[false, true],
+            &[true, false],
+            &[false, true, false, true],
+        ];
+        for &order in orders {
+            for caller_sysfs in [false, true] {
+                let mut container = Container::new();
+                let mut expected = Vec::new();
+                if caller_sysfs {
+                    let mount = Mount::sysfs("/sys").readonly();
+                    container.mount(mount.clone());
+                    expected.push(mount);
+                }
+                for &legacy in order {
+                    if legacy {
+                        container.local_networking_only();
+                    } else {
+                        container.local_networking_only_without_sysfs();
+                    }
+                }
+                if order.contains(&true) {
+                    expected.push(Mount::sysfs("/sys"));
+                }
+                assert_eq!(container.mounts, expected, "order={order:?}");
+                let expected_namespaces = if expected.is_empty() {
+                    Namespace::NETWORK
+                } else {
+                    Namespace::NETWORK | Namespace::MOUNT
+                };
+                assert_eq!(container.namespace, expected_namespaces);
+                eprintln!(
+                    "network mount ownership: order={order:?} caller_sysfs={caller_sysfs} namespaces={:?} mounts={:?}",
+                    container.namespace, container.mounts
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn local_networking_without_sysfs_preserves_mount_namespace() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        use std::os::unix::fs::MetadataExt;
+
+        let identity = |path: &str| {
+            let metadata = std::fs::metadata(path).unwrap();
+            (metadata.dev(), metadata.ino())
+        };
+        let parent_net = identity("/proc/self/ns/net");
+        let parent_mount = identity("/proc/self/ns/mnt");
+        let parent_sysfs = identity("/sys");
+        let parent_mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
+        let mut container = Container::new();
+        container
+            .map_root()
+            .local_networking_only_without_sysfs()
+            .local_networking_only_without_sysfs();
+        assert_eq!(container.namespace, Namespace::USER | Namespace::NETWORK);
+        assert!(container.mounts.is_empty());
+        let handle = container
+            .run_with_deferred_drop_owned(&mut || {
+                let socket = Fd::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_IP).unwrap();
+                let flags = IfName::LOOPBACK.get_flags(&socket).unwrap();
+                let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                let value = (
+                    Pid::this(),
+                    identity("/proc/self/ns/net"),
+                    identity("/proc/self/ns/mnt"),
+                    identity("/sys"),
+                    flags,
+                    listener.local_addr().unwrap().port(),
+                    std::fs::read_to_string("/proc/self/mountinfo").unwrap(),
+                );
+                (value, ())
+            })
+            .unwrap();
+        let child = handle.cleanup().child_pid();
+        let result = owned_complete(handle);
+        assert_eq!(result.status(), ExitStatus::Exited(0));
+        let (pid, net, mount, sysfs, flags, port, mountinfo) = result.decode().unwrap();
+        assert_eq!(pid, child);
+        assert_ne!(net, parent_net);
+        assert_eq!(mount, parent_mount);
+        assert_eq!(sysfs, parent_sysfs);
+        assert_ne!(flags & libc::IFF_UP as i16, 0);
+        assert_ne!(port, 0);
+        assert_reaped(child);
+        eprintln!(
+            "network without sysfs: parent_net={parent_net:?} child_net={net:?} parent_mnt={parent_mount:?} child_mnt={mount:?} parent_sysfs={parent_sysfs:?} child_sysfs={sysfs:?} loopback_flags={flags} loopback_port={port} child={child} reaped=true"
+        );
+        eprintln!("parent mountinfo:\n{parent_mountinfo}");
+        eprintln!("child mountinfo:\n{mountinfo}");
     }
 
     #[test]

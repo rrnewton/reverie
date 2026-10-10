@@ -652,6 +652,16 @@ impl Command {
         self
     }
 
+    /// Creates a private network namespace and brings its loopback interface up.
+    ///
+    /// Implies [`Namespace::NETWORK`]. This adds no mounts and does not imply
+    /// [`Namespace::MOUNT`]. The caller owns the sysfs view and any inherited
+    /// network descriptors.
+    pub fn local_networking_only_without_sysfs(&mut self) -> &mut Self {
+        self.container.local_networking_only_without_sysfs();
+        self
+    }
+
     /// Sets the seccomp filter. The filter is loaded immediately before `execve`
     /// and *after* all `pre_exec` callbacks have been executed. Thus, you will
     /// still be able to call filtered syscalls from `pre_exec` callbacks.
@@ -750,6 +760,29 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_networking_without_sysfs_cannot_become_std_command() {
+        let mut command = Command::new("true");
+        command.local_networking_only_without_sysfs();
+        let error = command.try_into_std().unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "cannot convert to std::process::Command without losing: Linux namespaces, local-only networking"
+        );
+
+        let mut command = Command::new("true");
+        command
+            .local_networking_only_without_sysfs()
+            .local_networking_only();
+        let error = command.try_into_std().unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "cannot convert to std::process::Command without losing: Linux namespaces, mounts, local-only networking"
+        );
+    }
 
     #[test]
     fn find_program() {
