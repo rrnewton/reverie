@@ -116,11 +116,51 @@ pub type RuntimeIdler = unsafe extern "C" fn();
 /// `reverie_dbt_runtime_abi_version`, `reverie_dbt_runtime_callbacks_size`,
 /// `reverie_dbt_runtime_thread_created_v2`,
 /// `reverie_dbt_runtime_process_clone_result`,
-/// `reverie_dbt_runtime_background_init_v2`, and (from version 5)
+/// `reverie_dbt_runtime_background_init_v3`, and (from version 5)
 /// `reverie_dbt_runtime_rdtsc`. Advancing a consumer's Reverie revision without
 /// those matching exports is an incomplete cross-repository update and fails at
 /// link or at the pre-callback ABI check.
-pub const DBT_RUNTIME_ABI_VERSION: u32 = 5;
+/// Version 6 retains the 48-byte callback layout and requires the initialized
+/// native mode and a returned startup status; the no-mode V1/V2 entries are not
+/// admitted initialization routes.
+pub const DBT_RUNTIME_ABI_VERSION: u32 = 6;
+
+/// Initialized native execution mode supplied by the version-6 startup bridge.
+///
+/// This describes the retained per-image native state, not the presence of an
+/// environment variable. Unknown (wire value 0) is never standalone authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum DbtStartupMode {
+    /// Native state was initialized without the external-global capability.
+    Standalone = 1,
+    /// Native state retains the external-global capability.
+    Coordinated = 2,
+}
+
+/// A startup bridge supplied unknown or unsupported native mode authority.
+#[derive(Debug)]
+pub struct InvalidDbtStartupMode;
+
+impl std::fmt::Display for InvalidDbtStartupMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("unknown or unsupported native startup mode")
+    }
+}
+
+impl std::error::Error for InvalidDbtStartupMode {}
+
+impl TryFrom<u32> for DbtStartupMode {
+    type Error = InvalidDbtStartupMode;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Standalone),
+            2 => Ok(Self::Coordinated),
+            _ => Err(InvalidDbtStartupMode),
+        }
+    }
+}
 
 #[cfg(feature = "prototype-runtime")]
 #[repr(C)]
@@ -2184,7 +2224,7 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
     handled.unwrap_or_default()
 }
 
-/// Initializes the built-in prototype runtime on a native client thread.
+/// Initializes the built-in prototype runtime through the admitted startup bridge.
 ///
 /// The `argument` is a `*const DbtRuntimeCallbacks` (the native
 /// `runtime_callbacks_t`). It records the re-entrancy-safe stdout emitter. The
@@ -2194,26 +2234,77 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
 ///
 /// # Safety
 ///
-/// `argument` must point to a valid `DbtRuntimeCallbacks` for the call.
+/// `argument` must be null or point to a valid `DbtRuntimeCallbacks` for the call.
+/// `native_mode` must be the initialized native state admitted by ABI version 6.
+/// A nonzero result requires the native owner's existing tree-failure path.
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-162): Review the stdout-emitter init delivery.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn reverie_dbt_runtime_background_init_v2(argument: *mut c_void) {
-    if !argument.is_null() {
-        let callbacks = unsafe { &*(argument as *const DbtRuntimeCallbacks) };
-        tools::set_stdout_emitter(callbacks.emit_stdout);
-        PROCESS_CLONE_RESULT_PROBE.store(
-            std::env::var_os("REVERIE_DBT_TEST_PROCESS_CLONE_RESULTS").is_some(),
-            Ordering::Release,
-        );
+pub unsafe extern "C" fn reverie_dbt_runtime_background_init_v3(
+    argument: *mut c_void,
+    native_mode: u32,
+) -> i32 {
+    if argument.is_null() {
+        return 1;
     }
+    let callbacks = unsafe { &*(argument as *const DbtRuntimeCallbacks) };
+    let control = std::env::var_os(sync_rpc::RPC_SOCKET_ENV);
+    if let Err(error) = prototype_initial_config(native_mode, control.as_deref()) {
+        let message = format!("reverie-dbt: startup refused: {error}\n");
+        unsafe { (callbacks.emit)(message.as_ptr(), message.len()) };
+        return 1;
+    }
+    tools::set_stdout_emitter(callbacks.emit_stdout);
+    PROCESS_CLONE_RESULT_PROBE.store(
+        std::env::var_os("REVERIE_DBT_TEST_PROCESS_CLONE_RESULTS").is_some(),
+        Ordering::Release,
+    );
+    0
+}
+
+#[cfg(feature = "prototype-runtime")]
+fn prototype_initial_config(
+    native_mode: u32,
+    control: Option<&std::ffi::OsStr>,
+) -> Result<(), String> {
+    let mode = DbtStartupMode::try_from(native_mode).map_err(|error| error.to_string())?;
+    match control {
+        Some(path) => {
+            sync_rpc::read_initial_config::<()>(Path::new(path)).map_err(|error| error.to_string())
+        }
+        None if mode == DbtStartupMode::Coordinated => {
+            Err("coordinated startup requires a coordinator socket".into())
+        }
+        None => Ok(()),
+    }
+}
+
+/// Retained version-2 symbol, unadmitted without native mode and startup status.
+///
+/// Direct no-mode calls fatally refuse before prototype state initialization.
+/// This process-local refusal does not certify cleanup of a DynamoRIO tree.
+///
+/// # Safety
+///
+/// `argument` must be null or point to a valid `DbtRuntimeCallbacks` for the call.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_dbt_runtime_background_init_v2(argument: *mut c_void) {
+    let emitter = if argument.is_null() {
+        None
+    } else {
+        Some(unsafe { &*(argument as *const DbtRuntimeCallbacks) }.emit)
+    };
+    refuse_legacy_background_init(emitter);
 }
 
 /// Compatibility entry point for native clients using ABI version 1.
 ///
 /// The version-1 callback structure ends after `emit_stdout`; this function
 /// must not read the protected-evidence fields added by ABI version 2.
+/// It retains that layout but fatally refuses initialization without mode and
+/// status. This is a process-local refusal, not proof of native tree cleanup.
 ///
 /// # Safety
 ///
@@ -2221,10 +2312,21 @@ pub unsafe extern "C" fn reverie_dbt_runtime_background_init_v2(argument: *mut c
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_dbt_runtime_background_init(argument: *mut c_void) {
-    if !argument.is_null() {
-        let callbacks = unsafe { &*(argument as *const DbtRuntimeCallbacksV1) };
-        tools::set_stdout_emitter(callbacks.emit_stdout);
+    let emitter = if argument.is_null() {
+        None
+    } else {
+        Some(unsafe { &*(argument as *const DbtRuntimeCallbacksV1) }.emit)
+    };
+    refuse_legacy_background_init(emitter);
+}
+
+#[cfg(feature = "prototype-runtime")]
+fn refuse_legacy_background_init(emitter: Option<RuntimeEmitter>) -> ! {
+    if let Some(emit) = emitter {
+        let message = b"reverie-dbt: initialization requires the ABI-6 native mode/status bridge\n";
+        unsafe { emit(message.as_ptr(), message.len()) };
     }
+    std::process::abort()
 }
 
 // TODO-HUMAN-REVIEW(PR-66): Confirm process-exit callback ownership semantics.
@@ -2317,6 +2419,66 @@ pub unsafe extern "C" fn reverie_dbt_runtime_totals(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_abi_preserves_layout_and_requires_initialized_native_mode() {
+        assert_eq!(reverie_dbt_runtime_abi_version(), 6);
+        assert_eq!(reverie_dbt_runtime_callbacks_size(), 48);
+        assert_eq!(std::mem::size_of::<DbtRuntimeCallbacks>(), 48);
+        assert_eq!(
+            DbtStartupMode::try_from(1).unwrap(),
+            DbtStartupMode::Standalone
+        );
+        assert_eq!(
+            DbtStartupMode::try_from(2).unwrap(),
+            DbtStartupMode::Coordinated
+        );
+        for unknown in [0, 3, u32::MAX] {
+            assert!(DbtStartupMode::try_from(unknown).is_err());
+        }
+        #[cfg(feature = "prototype-runtime")]
+        assert_ne!(
+            unsafe { reverie_dbt_runtime_background_init_v3(std::ptr::null_mut(), 1) },
+            0
+        );
+    }
+
+    #[cfg(feature = "prototype-runtime")]
+    #[test]
+    fn prototype_startup_preserves_positive_control_and_refuses_missing_authority() {
+        use std::io::Read as _;
+        use std::io::Write as _;
+        use std::os::unix::net::UnixListener;
+
+        assert!(prototype_initial_config(1, None).is_ok());
+        assert!(prototype_initial_config(2, None).is_err());
+        assert!(prototype_initial_config(1, Some(std::ffi::OsStr::new(""))).is_err());
+        assert!(prototype_initial_config(2, Some(std::ffi::OsStr::new(""))).is_err());
+        for mode in [0, 3, u32::MAX] {
+            assert_eq!(
+                prototype_initial_config(mode, Some(std::ffi::OsStr::new("missing.sock")))
+                    .unwrap_err(),
+                "unknown or unsupported native startup mode",
+            );
+        }
+        for mode in [1, 2] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("config.sock");
+            let listener = UnixListener::bind(&path).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                // All current prototype GlobalTools have Config = (). Its
+                // existing legacy-bincode frame has an empty payload.
+                stream.write_all(&0_u32.to_be_bytes()).unwrap();
+                assert_eq!(stream.read(&mut [0_u8; 1]).unwrap(), 0);
+            });
+            assert!(prototype_initial_config(mode, Some(path.as_os_str())).is_ok());
+            server.join().unwrap();
+        }
+    }
 
     const PORT_TEST_CHILD: &str = "REVERIE_DBT_PORT_TEST_CHILD";
     const PORT_TEST_ADDRESS: &str = "REVERIE_DBT_PORT_TEST_ADDRESS";
