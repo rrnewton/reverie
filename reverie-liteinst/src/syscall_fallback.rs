@@ -20,6 +20,7 @@ static REGISTRATION: OnceLock<Result<(), io::ErrorKind>> = OnceLock::new();
 /// Registers LiteInst's dispatch functions as the continuation's handlers
 /// (once per process) and prepares this thread's continuation.
 pub(crate) fn initialize() -> io::Result<()> {
+    let region = reverie_inguest::guest::tool_region::ToolRegion::reserve()?;
     let registration = REGISTRATION.get_or_init(|| {
         // SAFETY: both handlers only pass the continuation's register block
         // on to the runtime's dispatch, which uses it for the call and keeps
@@ -38,7 +39,9 @@ pub(crate) fn initialize() -> io::Result<()> {
             "the in-guest continuation's handlers are registered by another backend",
         ));
     }
-    continuation::initialize()
+    continuation::initialize_with_stack_backing(
+        reverie_inguest::guest::tool_region::StackBacking::ToolRegion(region),
+    )
 }
 
 // HookContext and RegisterContext have the same layout (checked in

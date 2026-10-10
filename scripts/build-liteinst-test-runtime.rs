@@ -1,5 +1,6 @@
 #!/usr/bin/env -S rust-script --force
-//! Explicit producer for the actual standalone M1 diagnostic preload leaf.
+//! Explicit producer for the actual standalone diagnostic preload leaf.
+//! M1 allocation and M2 stack guests have separate source-bound receipts.
 //!
 //! ```cargo
 //! [dependencies]
@@ -129,7 +130,79 @@ fn ci_config(generation: PathBuf) -> Result<Config> {
     Ok(config)
 }
 
-fn produce(config: Config) -> Result<(PathBuf, PathBuf)> {
+fn produce_stack_guest(
+    root: &std::path::Path,
+    bundle: &std::path::Path,
+    runner: &mut Runner,
+) -> Result<(PathBuf, PathBuf)> {
+    const SOURCE: &[u8] = include_bytes!("../reverie-liteinst/tests/fixtures/m2_stack_guest.c");
+    let source =
+        FileIdentity::read(&root.join("reverie-liteinst/tests/fixtures/m2_stack_guest.c"))?;
+    check(
+        source.sha256 == m1_artifact::sha256(SOURCE),
+        "M2 compiled/current C source differs",
+    )?;
+    let binary_path = bundle.join("m2_stack_guest");
+    check(!binary_path.exists(), "M2 C guest output already exists")?;
+    let compiler = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
+    let compiler_version = runner.text(&compiler, &["--version"], root)?;
+    // Keep the existing source-bound guest recipe unchanged. This additional
+    // syntax check makes warnings fatal for the new fixture alone.
+    runner.run(
+        &compiler,
+        &[
+            "-std=c11".to_owned(),
+            "-Wall".to_owned(),
+            "-Wextra".to_owned(),
+            "-Werror".to_owned(),
+            "-fsyntax-only".to_owned(),
+            source.path.to_string_lossy().into_owned(),
+        ],
+        root,
+    )?;
+    runner.run(
+        &compiler,
+        &[
+            "-std=c11".to_owned(),
+            "-O0".to_owned(),
+            "-fno-builtin".to_owned(),
+            "-fno-lto".to_owned(),
+            "-Wl,--export-dynamic".to_owned(),
+            "-Wl,-z,now".to_owned(),
+            source.path.to_string_lossy().into_owned(),
+            "-o".to_owned(),
+            binary_path.to_string_lossy().into_owned(),
+            "-ldl".to_owned(),
+        ],
+        root,
+    )?;
+    let guest = GuestReceipt {
+        schema_version: 1,
+        source,
+        binary: FileIdentity::read(&binary_path)?,
+        compiler_version,
+        command: runner
+            .commands
+            .last()
+            .ok_or("M2 C compiler command missing")?
+            .clone(),
+        executed_tests: 0,
+    };
+    let receipt_path = bundle.join("stack-guest.json");
+    m1_artifact::write_new(
+        &receipt_path,
+        &serde_json::to_vec_pretty(&guest).map_err(|e| e.to_string())?,
+    )?;
+    m1_artifact::verify_guest_receipt(
+        &receipt_path,
+        &binary_path,
+        &guest.source.path,
+        &m1_artifact::sha256(SOURCE),
+    )?;
+    Ok((binary_path, receipt_path))
+}
+
+fn produce(config: Config) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf)> {
     check(
         config.workspace_root.is_absolute()
             && config.target_directory.is_absolute()
@@ -313,6 +386,8 @@ fn produce(config: Config) -> Result<(PathBuf, PathBuf)> {
             .clone(),
         executed_tests: 0,
     };
+    let (stack_guest_path, stack_guest_receipt_path) =
+        produce_stack_guest(&root, &bundle, &mut runner)?;
     let after =
         m1_artifact::source_identity(&root, &root.join("Cargo.lock"), &oracles, &mut runner)?;
     check(
@@ -390,6 +465,11 @@ fn produce(config: Config) -> Result<(PathBuf, PathBuf)> {
             "REVERIE_LITEINST_ALLOCATOR_GUEST_MANIFEST",
             guest_receipt_path.as_path(),
         ),
+        ("REVERIE_LITEINST_STACK_GUEST", stack_guest_path.as_path()),
+        (
+            "REVERIE_LITEINST_STACK_GUEST_MANIFEST",
+            stack_guest_receipt_path.as_path(),
+        ),
     ]);
     let mut shell = String::new();
     let mut github = String::new();
@@ -407,7 +487,12 @@ fn produce(config: Config) -> Result<(PathBuf, PathBuf)> {
     }
     m1_artifact::write_new(&bundle.join("fixture.env"), shell.as_bytes())?;
     m1_artifact::write_new(&bundle.join("github.env"), github.as_bytes())?;
-    Ok((receipt_path, guest_receipt_path))
+    Ok((
+        receipt_path,
+        guest_receipt_path,
+        stack_guest_path,
+        stack_guest_receipt_path,
+    ))
 }
 
 fn run() -> Result<()> {
@@ -433,7 +518,8 @@ fn run() -> Result<()> {
         serde_json::from_slice(&fs::read(&path).map_err(|e| format!("read config: {e}"))?)
             .map_err(|e| format!("producer config: {e}"))?
     };
-    let (receipt_path, guest_receipt_path) = produce(config)?;
+    let (receipt_path, guest_receipt_path, stack_guest_path, stack_guest_receipt_path) =
+        produce(config)?;
     // JSON output is data, never a shell `export` snippet with quote ambiguity.
     let receipt: RuntimeReceipt =
         serde_json::from_slice(&fs::read(&receipt_path).map_err(|e| e.to_string())?)
@@ -448,6 +534,8 @@ fn run() -> Result<()> {
             "REVERIE_LITEINST_TEST_RUNTIME_MANIFEST": receipt_path,
             "REVERIE_LITEINST_ALLOCATOR_GUEST": guest.binary.path,
             "REVERIE_LITEINST_ALLOCATOR_GUEST_MANIFEST": guest_receipt_path,
+            "REVERIE_LITEINST_STACK_GUEST": stack_guest_path,
+            "REVERIE_LITEINST_STACK_GUEST_MANIFEST": stack_guest_receipt_path,
             "artifact_sha256": receipt.artifact.sha256,
             "guest_sha256": guest.binary.sha256,
             "executed_tests": 0,

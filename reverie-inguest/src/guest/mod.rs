@@ -32,4 +32,5 @@ pub mod rpc;
 pub mod sigalrm;
 pub mod signal;
 pub mod support;
+pub mod tool_region;
 pub mod trap_dispatch;

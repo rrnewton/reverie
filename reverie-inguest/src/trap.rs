@@ -551,6 +551,23 @@ unsafe extern "C" {
 /// Installs process-global signal disposition; call once during init while
 /// CPUID is available, before enabling instruction faulting.
 pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
+    unsafe {
+        install_handler_with_backing(
+            use_alt_stack,
+            crate::guest::tool_region::StackBacking::Legacy,
+        )
+    }
+}
+
+/// Install the same trap with explicitly selected alternate-stack backing.
+/// Signal actions, feature qualification and permissions are unchanged.
+///
+/// # Safety
+/// See [`install_handler`]; the selected region must already be reserved.
+pub unsafe fn install_handler_with_backing(
+    use_alt_stack: bool,
+    backing: crate::guest::tool_region::StackBacking,
+) -> io::Result<()> {
     panic_report::install();
     frame::initialize()?;
     let ospke = pkru::initialize()?;
@@ -560,7 +577,7 @@ pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
         sigsys_handler
     };
     if use_alt_stack {
-        unsafe { signal::install_alt_stack()? };
+        unsafe { signal::install_alt_stack_with_backing(backing)? };
     }
     unsafe { signal::install_sigsys_handler(handler, use_alt_stack) }
 }

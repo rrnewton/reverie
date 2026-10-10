@@ -29,6 +29,7 @@
 
 use std::io;
 
+use crate::guest::tool_region::StackBacking;
 use crate::seccomp::SeccompFilter;
 use crate::trap;
 
@@ -82,7 +83,30 @@ impl LifecycleController for InProcessSeccomp {
         // SAFETY: forwarded to the caller's once-after-dispatcher-registered
         // contract; this controller adds no launcher, so the in-process trap is
         // the whole mechanism.
-        unsafe { install_in_process_trap(config) }
+        unsafe { install_in_process_trap(config, StackBacking::Legacy) }
+    }
+}
+
+impl InProcessSeccomp {
+    /// Select storage for this installation without changing generic callers,
+    /// runtime signal policy or the shared seccomp mechanism.
+    pub fn with_stack_backing(backing: StackBacking) -> impl LifecycleController {
+        StackBackedSeccomp { backing }
+    }
+}
+
+struct StackBackedSeccomp {
+    backing: StackBacking,
+}
+
+impl LifecycleController for StackBackedSeccomp {
+    fn name(&self) -> &'static str {
+        "in-process-seccomp"
+    }
+
+    unsafe fn install(&self, config: &RuntimeConfig) -> io::Result<()> {
+        // SAFETY: the caller supplies the same once-after-dispatcher contract.
+        unsafe { install_in_process_trap(config, self.backing) }
     }
 }
 
@@ -116,8 +140,8 @@ fn build_trap_filter(config: &RuntimeConfig) -> io::Result<SeccompFilter> {
 /// filter). Call exactly once, after the dispatcher is registered. Ordering is
 /// load-bearing: the handler must be in place before the filter starts trapping,
 /// and the filter must whitelist the trusted gate.
-unsafe fn install_in_process_trap(config: &RuntimeConfig) -> io::Result<()> {
-    unsafe { trap::install_handler(config.use_alt_stack)? };
+unsafe fn install_in_process_trap(config: &RuntimeConfig, backing: StackBacking) -> io::Result<()> {
+    unsafe { trap::install_handler_with_backing(config.use_alt_stack, backing)? };
     let mut filter = build_trap_filter(config)?;
     unsafe { filter.install() }?;
     if config.restrict_signal_return {
@@ -166,7 +190,7 @@ impl LifecycleController for HybridPtrace {
         // separate caller responsibilities.
         // SAFETY: forwarded to the caller's once-after-dispatcher-registered
         // contract.
-        unsafe { install_in_process_trap(config) }
+        unsafe { install_in_process_trap(config, StackBacking::Legacy) }
     }
 }
 

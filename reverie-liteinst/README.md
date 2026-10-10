@@ -51,6 +51,10 @@ placement or memory permissions. Those require separate barriers; the arenas
 remain bounded storage, not a security sandbox or a claim of complete Tool
 memory isolation.
 
+The alternate signal stack and the typed Tool continuation use explicit fixed
+region backing. See [the stack storage contract](STACK_MEMORY.md) for the exact
+range, guards, lifetime and remaining isolation work.
+
 ## Event path
 
 1. A tool-specific DSO calls `install_tool::<T>` from its preload constructor.
@@ -84,52 +88,37 @@ same Tool driver as installed syscall hooks, including six arguments, error
 results, tail injection, retries, and coordinator RPC. It retains no pointer
 into the expired kernel signal frame and does not rewrite guest text.
 
-The entry saves registers below the guest's 128-byte red-zone, aligns its
-extended-state area to 64 bytes, and sizes that area from CPUID leaf 0xD. XSAVE
-and XRSTOR use every user-state component enabled in XCR0; there is no fixed
-component mask. Machines without OS-enabled XSAVE use FXSAVE64/FXRSTOR64.
-The XSAVE header is zeroed before saving. On OS-enabled PKU systems the entry
-saves the original PKRU in a register, opens runtime memory access before any
-global or TLS read, and puts the original PKRU back in the saved image with its
-correct initial-state bit. Nested Tool syscall traps reopen runtime access;
-their real signal return restores the interrupted permissions. The callback
-receives an empty x87 stack, default FP controls and a cleared direction flag;
-the guest's FP state, permissions, flags and libc errno are restored afterward.
-After the final XRSTOR, only registers and the guest-accessible frame are read.
-Future runtime or clock boundaries must finish before that restore. The syscall outputs remain RAX
-(result), RCX (continuation PC), and R11 (saved flags).
+The SIGSYS handler captures the guest registers and extended state from the
+real kernel signal frame into a preallocated owner. The first genuine
+`sigreturn` resumes the callback on its separate 8 MiB stack with runtime memory
+access open. The callback receives an empty x87 stack, default FP controls and
+a cleared direction flag. Its completion syscall produces a second genuine
+signal frame; the runtime verifies the pending phase, thread, cookie and
+generation before restoring the saved guest image with the Tool's results.
+With the alternate stack disabled, the kernel's signal frames still
+use the interrupted stack; that option has no alternate-stack isolation claim.
 
-The installing thread initializes and touches its continuation TLS before
-seccomp installation. A supported COW fork inherits that initialized state.
-Each such thread owns one pending continuation; a second preparation while it
-is occupied refuses without replacing it. Future thread support must initialize
-these TLS keys in ordinary child-thread startup before its first trap, rather
-than first touching dynamic TLS in a signal handler. After dispatch, the saved
-RCX owns the return address and return reads no mutable TLS continuation.
-Nested Tool-internal syscalls use the existing trusted gate and do not acquire
-another continuation. Callable guest signal handlers remain unsupported;
-this guard does not add asynchronous callback support. Callbacks must obey the
-ordinary no-unwind ABI and preserve TLS bases. HookContext IP/SP fields retain
-the existing register API's metadata semantics.
+The saved image preserves the kernel-reported extended-state layout. Setup
+checks the actual enabled XCR0 mask, CPUID state size and PKRU component bounds;
+it does not substitute a smaller fixed component list. Signal-frame validation
+and genuine completion own restoration, including the guest's permissions and
+flags. The syscall outputs retain the existing RAX, RCX and R11 semantics.
+AMX/XFD execution has not been measured on the current test machine; preserving
+the CPU-provided layout is not measured AMX coverage.
 
-The guest stack must accommodate the callback stack plus at most
-`335 + round_up(CPUID.0D.0:EBX, 64)` bytes below the original RSP. This includes
-the 128-byte red-zone, 144-byte register frame, at most 63 alignment bytes and
-the full state area. The FXSAVE case needs at most 847 bytes plus the callback
-stack. Initialization checks size arithmetic and rejects an area smaller than
-the XSAVE header or larger than the signed stack-adjustment bound. The actual
-CPUID size describes the complete standard layout for the actual XCR0 mask;
-there is no smaller fixed allocation that could omit a high component.
+The installing thread initializes its continuation TLS and saved-state owner
+before seccomp installation. A supported COW fork inherits the live image and
+stack and rebinds the child owner. Each thread has one pending activation; a
+second preparation refuses without overwriting it. Future thread creation must
+initialize this state before its first trap. Nested Tool-internal syscalls use
+the existing trusted gate and do not acquire another continuation. Callbacks
+must obey the ordinary no-unwind ABI and preserve TLS bases. HookContext IP/SP
+fields retain their existing register API semantics.
 
-This may require more stack than the installed-hook path on an AMX host:
-a 11008-byte enabled state area needs at most 11343 bytes before the callback
-stack. The full mask preserves state that an AMX-permitted guest can use.
-XFD gates use of permission-controlled state; XSAVE records the initial-state
-status of disabled components, and XRSTOR initializes components whose saved
-XSTATE_BV bits are clear. The entry preserves those CPU-provided bits for all
-components other than the explicitly restored PKRU. AMX/XFD execution has not
-been tested on the current AMD host; preserving the full mask is not a claim
-of measured AMX coverage.
+The fixed region changes only the backing of these existing stacks. The
+saved-state owner and TLS are not moved into it, and installed hooks and cold
+initialization still need their own entry-stack isolation. See the
+[storage contract](STACK_MEMORY.md) for the precise protection limits.
 
 `tests/rpc_tool.rs` covers an RX page ending in `syscall; ret`, with six traps,
 zero installed hooks, exact original bytes, Tool results distinct from native,

@@ -78,6 +78,11 @@ name = "allocator_contract"
 path = "tests/allocator_contract.rs"
 required-features = ["allocator-fixture"]
 
+[[test]]
+name = "region_stacks"
+path = "tests/region_stacks.rs"
+required-features = ["allocator-fixture"]
+
 [[bin]]
 name = "reverie-liteinst-exec-guest"
 path = "src/bin/exec_guest.rs"

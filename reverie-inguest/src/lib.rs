@@ -174,6 +174,20 @@ pub unsafe fn install_builtin(tool: BuiltinTool) -> io::Result<()> {
     unsafe { install(tool.into_dispatcher(), &InProcessSeccomp, &config) }
 }
 
+/// Install a shared built-in with an explicit storage choice. Existing
+/// [`install_builtin`] callers keep the generic controller and old backing.
+///
+/// # Safety
+/// See [`install`].
+pub unsafe fn install_builtin_with_stack_backing(
+    tool: BuiltinTool,
+    backing: crate::guest::tool_region::StackBacking,
+) -> io::Result<()> {
+    let config = RuntimeConfig::default();
+    let controller = InProcessSeccomp::with_stack_backing(backing);
+    unsafe { install(tool.into_dispatcher(), &controller, &config) }
+}
+
 /// Read [`TOOL_ENV`] and, if it names a built-in tool, install the runtime.
 ///
 /// Absent env var → the preload is inert (returns `Ok(())`), so an unrelated

@@ -15,6 +15,9 @@ pub mod allocator_fixture;
 mod backend;
 mod interior_entry;
 mod patch_alloc;
+#[cfg(feature = "allocator-fixture")]
+#[doc(hidden)]
+pub mod stack_fixture;
 mod stats;
 mod straddler;
 mod syscall_fallback;

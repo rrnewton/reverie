@@ -217,6 +217,36 @@ pub unsafe fn install_alt_stack() -> io::Result<*mut libc::c_void> {
     Ok(base)
 }
 
+/// Register a stack from an explicit storage choice, retaining it immediately
+/// after successful kernel registration even if later handler setup fails.
+/// Generic [`install_alt_stack`] callers keep their existing backing.
+///
+/// # Safety
+/// Same thread/setup requirements as [`install_alt_stack`].
+pub unsafe fn install_alt_stack_with_backing(
+    backing: crate::guest::tool_region::StackBacking,
+) -> io::Result<*mut libc::c_void> {
+    let crate::guest::tool_region::StackBacking::ToolRegion(region) = backing else {
+        return unsafe { install_alt_stack() };
+    };
+    let lease = region.stack(libc::SIGSTKSZ.max(64 * 1024))?;
+    let base = lease.base() as *mut libc::c_void;
+    let stack = libc::stack_t {
+        ss_sp: base,
+        ss_flags: 0,
+        ss_size: lease.usable_bytes(),
+    };
+    crate::guest::support::raw_zero_result(unsafe {
+        raw_syscall6(
+            libc::SYS_sigaltstack,
+            [(&raw const stack) as u64, 0, 0, 0, 0, 0],
+        )
+    })?;
+    // The kernel now owns a live pointer. Later setup failure cannot free it.
+    core::mem::forget(lease);
+    Ok(base)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

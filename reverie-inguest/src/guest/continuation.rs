@@ -24,6 +24,8 @@ use std::sync::OnceLock;
 
 use super::context::RegisterContext;
 use super::event::InstructionEventKind;
+use super::tool_region::StackBacking;
+use super::tool_region::StackLease;
 use crate::trap::frame::FrameError;
 use crate::trap::frame::SavedState;
 use crate::trap::frame::SignalFrame;
@@ -149,10 +151,20 @@ struct CallbackStack {
     mapping: *mut libc::c_void,
     bytes: usize,
     top: usize,
+    region: Option<StackLease>,
 }
 
 impl CallbackStack {
-    fn new() -> io::Result<Self> {
+    fn new(backing: StackBacking) -> io::Result<Self> {
+        if let StackBacking::ToolRegion(region) = backing {
+            let lease = region.stack(CALLBACK_STACK_BYTES)?;
+            return Ok(Self {
+                mapping: core::ptr::null_mut(),
+                bytes: 0,
+                top: lease.top(),
+                region: Some(lease),
+            });
+        }
         let page = usize::try_from(crate::guest::support::page_size()?)
             .map_err(|_| io::Error::other("invalid page size"))?;
         let bytes = CALLBACK_STACK_BYTES
@@ -183,6 +195,7 @@ impl CallbackStack {
             mapping,
             bytes,
             top: top.unwrap_or(0),
+            region: None,
         };
         if top.is_none() {
             return Err(io::Error::other("stack address overflow"));
@@ -206,6 +219,11 @@ impl CallbackStack {
 
 impl Drop for CallbackStack {
     fn drop(&mut self) {
+        if self.region.is_some() {
+            // The unique unpublished lease performs protection reset/discard.
+            // Published owners are retained and never reach this destructor.
+            return;
+        }
         // Only unpublished preparation owns a destructor. Published owners
         // are retained through process teardown, never freed on this stack.
         unsafe {
@@ -258,6 +276,14 @@ pub unsafe fn register_handlers(handlers: ContinuationHandlers) -> io::Result<()
 /// reach [`prepare_signal`] or [`prepare_instruction_signal`]; fails if no
 /// handlers are registered or while a captured call is still pending.
 pub fn initialize() -> io::Result<()> {
+    initialize_with_stack_backing(StackBacking::Legacy)
+}
+
+/// Prepare the existing continuation using explicitly selected stack storage.
+/// Generic callers of [`initialize`] retain their previous anonymous backing.
+/// Repeated preparation must select the same backing; a live stack is never
+/// replaced. Like [`initialize`], this is ordinary setup, not a handler API.
+pub fn initialize_with_stack_backing(backing: StackBacking) -> io::Result<()> {
     if HANDLERS.get().is_none() {
         return Err(io::Error::other("no continuation handlers are registered"));
     }
@@ -270,7 +296,7 @@ pub fn initialize() -> io::Result<()> {
     }
     if OWNER.get().is_null() {
         let saved = SavedState::new()?;
-        let stack = CallbackStack::new()?;
+        let stack = CallbackStack::new(backing)?;
         let owner = Box::new(Continuation {
             stack,
             saved,
@@ -285,6 +311,18 @@ pub fn initialize() -> io::Result<()> {
             completions: 0,
         });
         OWNER.set(Box::into_raw(owner));
+    } else {
+        // The current thread exclusively owns the retained continuation. Only
+        // inspect its backing; never reset a live COW-inherited stack/image.
+        let region = unsafe { &(*OWNER.get()).stack.region };
+        let same = match (region.as_ref(), backing) {
+            (None, StackBacking::Legacy) => true,
+            (Some(lease), StackBacking::ToolRegion(owner)) => lease.belongs_to(owner),
+            _ => false,
+        };
+        if !same {
+            return Err(io::Error::from_raw_os_error(libc::EEXIST));
+        }
     }
     READY.set(true);
     Ok(())
@@ -641,6 +679,21 @@ pub fn on_owned_stack(address: usize) -> bool {
     }
 }
 
+/// Read the already prepared stack, without preparing or entering a callback.
+/// This diagnostic is distinct from evidence that execution reached the stack.
+#[cfg(feature = "allocator-fixture")]
+#[doc(hidden)]
+pub fn fixture_stack_descriptor() -> Option<(usize, usize, u32)> {
+    let pointer = OWNER.get();
+    if pointer.is_null() {
+        return None;
+    }
+    // SAFETY: the current thread owns this retained continuation. This query
+    // reads only its immutable stack bounds and current owner identity.
+    let (top, tid) = unsafe { ((*pointer).stack.top, (*pointer).owner_tid) };
+    Some((top - CALLBACK_STACK_BYTES, top, tid as u32))
+}
+
 unsafe extern "C" fn completion_generation() -> u64 {
     let pointer = OWNER.get();
     if pointer.is_null() || unsafe { (*pointer).phase != Phase::ReadyToReturn } {
@@ -811,7 +864,7 @@ mod tests {
         }
 
         let mut owner = Continuation {
-            stack: CallbackStack::new().unwrap(),
+            stack: CallbackStack::new(StackBacking::Legacy).unwrap(),
             saved: SavedState::new().unwrap(),
             context: RegisterContext::default(),
             owner_tid: current_tid(),

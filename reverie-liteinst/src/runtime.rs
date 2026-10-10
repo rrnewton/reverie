@@ -329,7 +329,13 @@ pub fn builtin_tool_from_env_value(value: &OsStr) -> Option<BuiltinTool> {
 /// The dynamic loader must call this exactly once before application threads
 /// start; it installs process-wide, irreversible seccomp state.
 pub(crate) unsafe fn install_builtin_runtime(tool: BuiltinTool) -> io::Result<()> {
-    unsafe { reverie_inguest::install_builtin(tool) }
+    let region = reverie_inguest::guest::tool_region::ToolRegion::reserve()?;
+    unsafe {
+        reverie_inguest::install_builtin_with_stack_backing(
+            tool,
+            reverie_inguest::guest::tool_region::StackBacking::ToolRegion(region),
+        )
+    }
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -622,6 +628,13 @@ fn install_runtime(
     instructions: InstructionSubscriptions,
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
 ) -> io::Result<()> {
+    // Active LiteInst only: inert compatibility loads never reserve this
+    // range, and generic e9patch/SaBRe callers keep their existing backing.
+    // Reserve before any instruction/guard/SIGSYS handler is installed.
+    let region = reverie_inguest::guest::tool_region::ToolRegion::reserve()?;
+    let controller = InProcessSeccomp::with_stack_backing(
+        reverie_inguest::guest::tool_region::StackBacking::ToolRegion(region),
+    );
     PATCH_PUBLICATION.store(publication as u8, Ordering::Release);
     prepare_instrumentation()?;
     install_vdso_sites(vdso_sites)?;
@@ -648,7 +661,7 @@ fn install_runtime(
                 stats,
                 publication,
             ))),
-            &InProcessSeccomp,
+            &controller,
             &config,
         )
     }?;
@@ -2462,6 +2475,15 @@ unsafe fn dispatch_syscall_context(
         // need independent provenance; never borrow a stale signal's rights.
         guest_pkru: guest_pkru.as_ref().and_then(|value| **value),
     };
+    #[cfg(feature = "allocator-fixture")]
+    if matches!(dispatch, SyscallDispatch::Fallback) {
+        // The RCB handler boundary above has already excluded Tool work.
+        // Observe this real dispatch only; the fixture cannot prepare one.
+        crate::stack_fixture::record_fallback(
+            event.number as usize,
+            event.instruction_pointer as usize,
+        );
+    }
     // A site patched for another syscall (glibc's `syscall()` wrapper) can
     // carry the guest's own `rt_sigreturn` here without a trap; refuse it as
     // the SIGSYS handler does a trapped one.
