@@ -20,6 +20,7 @@
 
 use core::cell::UnsafeCell;
 use core::sync::atomic::AtomicBool;
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 use std::io;
 use std::sync::OnceLock;
@@ -51,6 +52,30 @@ static INITIALIZING: AtomicBool = AtomicBool::new(false);
 struct Control {
     held: AtomicBool,
     occupied: UnsafeCell<[u64; BITMAP_WORDS]>,
+    registered_alternate: RegisteredAltStack,
+}
+
+// Base is atomic even while length is still zero: a private reader may race
+// the installing thread's publication. The guard extents are read only after
+// observing nonzero release-published length, and are then immutable.
+#[repr(C)]
+pub(crate) struct RegisteredAltStack {
+    pub(crate) base: AtomicUsize,
+    pub(crate) length: AtomicUsize,
+    extent: UnsafeCell<(usize, usize)>,
+}
+
+/// The exact successfully registered, retained ToolRegion alternate lease.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegisteredAlternateStack {
+    /// First byte of the registered writable interior.
+    pub bottom: usize,
+    /// End of the registered writable interior.
+    pub top: usize,
+    /// First byte of the lower guard.
+    pub extent_start: usize,
+    /// End of the upper guard.
+    pub extent_end: usize,
 }
 
 const _: () = assert!(size_of::<Control>() <= CONTROL_BYTES - PAGE);
@@ -147,10 +172,54 @@ impl ToolRegion {
         // OnceLock publishes this owner. Control/outer guards are excluded
         // from the allocator's searchable interval rather than marked free.
         unsafe { core::ptr::addr_of_mut!((*control).held).write(AtomicBool::new(false)) };
+        // Fresh anonymous storage also provides valid zeroed atomic scalar
+        // representations for registered_alternate. Native constructor setup
+        // obtains the same fresh zeroed control before typed adoption.
         Ok(Self {
             control,
             bootstrap: None,
         })
+    }
+
+    pub(crate) fn registered_altstack(&'static self) -> &'static RegisteredAltStack {
+        // SAFETY: the control mapping is retained for this owner's lifetime.
+        unsafe { &(*self.control).registered_alternate }
+    }
+
+    /// Read a successfully published actual alternate stack without allocating
+    /// or initializing a reservation. An empty descriptor is not ownership.
+    pub fn registered_alternate_stack(&'static self) -> Option<RegisteredAlternateStack> {
+        let descriptor = self.registered_altstack();
+        let length = descriptor.length.load(Ordering::Acquire);
+        if length == 0 {
+            return None;
+        }
+        let bottom = descriptor.base.load(Ordering::Relaxed);
+        // SAFETY: nonzero acquire length observes the sole release publication
+        // of these immutable diagnostic fields. They are never read at zero.
+        let (extent_start, extent_end) = unsafe { *descriptor.extent.get() };
+        Some(RegisteredAlternateStack {
+            bottom,
+            top: bottom + length,
+            extent_start,
+            extent_end,
+        })
+    }
+
+    // Called only after this owner's one successful registration. Replacing a
+    // live process-global descriptor is not a supported thread/stack protocol.
+    // Use values already computed for the kernel stack_t, and wrapping scalar
+    // arithmetic, so this adds only fixed stores after registration succeeds.
+    pub(crate) unsafe fn publish_registered_altstack(&'static self, base: usize, length: usize) {
+        let descriptor = self.registered_altstack();
+        unsafe {
+            descriptor.extent.get().write((
+                base.wrapping_sub(PAGE),
+                base.wrapping_add(length).wrapping_add(PAGE),
+            ));
+        }
+        descriptor.base.store(base, Ordering::Relaxed);
+        descriptor.length.store(length, Ordering::Release);
     }
 
     fn lock(&self) -> io::Result<ControlGuard<'_>> {

@@ -43,6 +43,11 @@ use crate::interior_entry::ObjectImage;
 use crate::interior_entry::Refusal;
 use crate::interior_entry::prove;
 
+#[path = "installed_entries.rs"]
+mod installed_entries;
+pub(crate) use installed_entries::PreparedCallbacks;
+pub(crate) use installed_entries::prepare as prepare_installed_callbacks;
+
 const fn const_bytes_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -535,6 +540,7 @@ pub(crate) fn initialize_from_environment() -> io::Result<()> {
         PatchPublication::Concurrent,
         InstructionSubscriptions::default(),
         &[],
+        None,
     )
 }
 
@@ -544,6 +550,7 @@ pub(crate) fn initialize_reverie_tool(
     instructions: InstructionSubscriptions,
     site_patching: bool,
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
+    prepared_callbacks: PreparedCallbacks,
 ) -> io::Result<()> {
     let stage_stream = match std::env::var_os(IN_GUEST_STAGE_STREAM_ENV).as_deref() {
         None => false,
@@ -593,7 +600,13 @@ pub(crate) fn initialize_reverie_tool(
         reverie_inguest::guest::restorer::record_libc_identity()?;
     }
     reverie_inguest::guest::sigalrm::set_admitted(admitted);
-    install_runtime(stats, publication, instructions, vdso_sites)?;
+    install_runtime(
+        stats,
+        publication,
+        instructions,
+        vdso_sites,
+        Some(prepared_callbacks),
+    )?;
     if admitted {
         // Once the runtime's own filter is in place: see
         // record_filter_baseline.
@@ -627,6 +640,7 @@ fn install_runtime(
     publication: PatchPublication,
     instructions: InstructionSubscriptions,
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
+    _prepared_callbacks: Option<PreparedCallbacks>,
 ) -> io::Result<()> {
     // Active LiteInst only: inert compatibility loads never reserve this
     // range, and generic e9patch/SaBRe callers keep their existing backing.
@@ -2186,13 +2200,14 @@ fn install_vdso_sites(sites: &[reverie_ptrace::VdsoSyscallSite]) -> io::Result<(
 }
 
 fn vdso_callback(number: i64) -> io::Result<liteinst2::trampoline::HookCallback> {
+    let callbacks = installed_entries::selected();
     match number {
-        libc::SYS_time => Ok(installed_vdso_time_hook),
-        libc::SYS_clock_gettime => Ok(installed_vdso_clock_gettime_hook),
-        libc::SYS_getcpu => Ok(installed_vdso_getcpu_hook),
-        libc::SYS_gettimeofday => Ok(installed_vdso_gettimeofday_hook),
-        libc::SYS_clock_getres => Ok(installed_vdso_clock_getres_hook),
-        libc::SYS_getrandom => Ok(installed_vdso_getrandom_hook),
+        libc::SYS_time => Ok(callbacks.time),
+        libc::SYS_clock_gettime => Ok(callbacks.clock_gettime),
+        libc::SYS_getcpu => Ok(callbacks.getcpu),
+        libc::SYS_gettimeofday => Ok(callbacks.gettimeofday),
+        libc::SYS_clock_getres => Ok(callbacks.clock_getres),
+        libc::SYS_getrandom => Ok(callbacks.getrandom),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unsupported LiteInst vDSO syscall number {number}"),
@@ -2213,10 +2228,11 @@ fn instruction_at(address: u64) -> Option<(InstructionEventKind, &'static [u8])>
 }
 
 fn instruction_callback(kind: InstructionEventKind) -> liteinst2::trampoline::HookCallback {
+    let callbacks = installed_entries::selected();
     match kind {
-        InstructionEventKind::Cpuid => installed_cpuid_hook,
-        InstructionEventKind::Rdtsc => installed_rdtsc_hook,
-        InstructionEventKind::Rdtscp => installed_rdtscp_hook,
+        InstructionEventKind::Cpuid => callbacks.cpuid,
+        InstructionEventKind::Rdtsc => callbacks.rdtsc,
+        InstructionEventKind::Rdtscp => callbacks.rdtscp,
     }
 }
 
@@ -2729,7 +2745,7 @@ unsafe impl TrapSeam for LiteinstSeam {
                         install_site_hook(
                             instruction_pointer,
                             site,
-                            installed_syscall_hook,
+                            installed_entries::selected().syscall,
                             SiteHookPolicy {
                                 publication: self.publication,
                                 entry_proof: EntryProof::Required,

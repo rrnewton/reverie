@@ -115,10 +115,13 @@ the existing trusted gate and do not acquire another continuation. Callbacks
 must obey the ordinary no-unwind ABI and preserve TLS bases. HookContext IP/SP
 fields retain their existing register API semantics.
 
-The fixed region changes only the backing of these existing stacks. The
-saved-state owner and TLS are not moved into it, and installed hooks and cold
-initialization still need their own entry-stack isolation. See the
-[storage contract](STACK_MEMORY.md) for the precise protection limits.
+FullTool's ordinary installed callbacks now enter distinct guarded stacks
+before their existing Rust bodies, with the pool prepared before the guest
+branch clock starts. An entry on the actual registered Tool alternate stack
+retains its current position. Native Strace/Compat keep their existing entry
+addresses. The earlier LiteInst register-capture trampoline, saved-state owner,
+TLS and remaining cold entries still need isolation. See the
+[storage contract](STACK_MEMORY.md) for capacity, lifetime and protection limits.
 
 `tests/rpc_tool.rs` covers an RX page ending in `syscall; ret`, with six traps,
 zero installed hooks, exact original bytes, Tool results distinct from native,

@@ -42,6 +42,9 @@ reverie = { version = "0.4.1", path = "../reverie", optional = true, package = "
 reverie-ptrace = { version = "0.4.1", path = "../reverie-ptrace", optional = true }
 reverie-rpc-transport = { version = "0.4.1", path = "../reverie-rpc-transport", optional = true }
 
+[dev-dependencies]
+iced-x86 = { version = "1.21.0", default-features = false, features = ["std", "decoder"] }
+
 [[bin]]
 name = "reverie-inguest-probe"
 path = "src/bin/preload_probe.rs"

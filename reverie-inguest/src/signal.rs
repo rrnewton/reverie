@@ -222,7 +222,13 @@ pub unsafe fn install_alt_stack() -> io::Result<*mut libc::c_void> {
 /// Generic [`install_alt_stack`] callers keep their existing backing.
 ///
 /// # Safety
-/// Same thread/setup requirements as [`install_alt_stack`].
+/// Same thread/setup requirements as [`install_alt_stack`]. For ToolRegion
+/// backing, the caller must additionally perform at most one successful
+/// registration for that runtime owner in the entire process, before its
+/// runtime handlers or filter are enabled. The owner publishes one immutable
+/// process-wide descriptor; registering a replacement or another thread's
+/// stack is not a supported multi-thread stack-ownership protocol. Legacy
+/// backing retains [`install_alt_stack`]'s existing per-thread contract.
 pub unsafe fn install_alt_stack_with_backing(
     backing: crate::guest::tool_region::StackBacking,
 ) -> io::Result<*mut libc::c_void> {
@@ -243,6 +249,9 @@ pub unsafe fn install_alt_stack_with_backing(
         )
     })?;
     // The kernel now owns a live pointer. Later setup failure cannot free it.
+    // Publish its exact usable range/guards, length last. This is the existing
+    // selected ToolRegion branch, with no new allocation, syscall or condition.
+    unsafe { region.publish_registered_altstack(base as usize, stack.ss_size) };
     core::mem::forget(lease);
     Ok(base)
 }

@@ -25,11 +25,39 @@ Its tests report that distinction instead of counting an unused stack as
 an executed callback. Disabling the alternate stack preserves that existing
 option and earns no alternate-stack placement claim.
 
-This change establishes fixed placement and boundary guards for these two
-existing stack paths. Their interiors remain on protection key zero. It
-does not prevent a guest from writing an interior or replacing a mapping,
-and it does not isolate every runtime entry. Cold initialization and patched
-entries still require stack isolation; allocator arenas, saved-state owners,
-other globals, TLS and foreign-library allocation need separate treatment.
-The syscall dispatcher, signal actions, completion protocol and determinism
-comparators are unchanged by the storage selection.
+FullTool installation also prepares 64 guarded 8 MiB callback stacks and
+their guarded ownership metadata before starting the guest branch clock.
+Each ordinary installed syscall, CPUID, RDTSC/RDTSCP or vDSO callback reaches
+a native entry before its existing Rust body. That entry atomically claims
+one exact free stack. Overlapping activations cannot share a claim, including
+when they return out of order. Return restores the incoming stack pointer
+before releasing the claim. An entry already on the actual registered Tool
+alternate stack retains its current position there; it never resets that
+stack to its top. This borrowed path claims no callback-pool slot.
+
+Private fork preserves live claims and frames through COW. A nonlocal escape
+or vanished worker leaves its claim occupied; the runtime does not reset the
+bitmap or infer that a still-occupied stack can be reused. The 65th live or
+escaped pool activation attempts to terminate with status 127, before writing
+an existing frame or modifying the occupied word. Unprepared entry and an
+alternate stack with insufficient native-frame headroom also take this fatal
+path. It writes no diagnostic to stderr, so a full blocking output pipe
+cannot hold it before the exit attempt. An external filter or supervisor
+that denies, fabricates or holds that exit lies outside the termination
+guarantee; the native invalid-instruction fallback is only an attempted
+fail-stop. These resource failures earn no compatibility or parity credit.
+
+Native Strace/Compat retain their original callback entry addresses. The
+unpublished exact-syscall continuation remains a separate path. The new
+ordinary callback entry is after LiteInst's register capture: that earlier
+trampoline still writes to the interrupted stack. The registered alternate
+stack is process-local under the existing thread restrictions; this does
+not admit new guest threads. A Tool root may separately use the native
+constructor bootstrap; that does not establish all cold-entry isolation.
+
+These leases establish placement and boundary guards. Their interiors remain
+on protection key zero. They do not prevent a guest from writing an interior
+or replacing a mapping, and they do not establish whole caller-byte equality.
+Allocator arenas, saved-state owners, other globals, TLS and foreign-library
+allocation still need separate treatment. The syscall dispatcher, signal
+actions, completion protocol and determinism comparators are unchanged.

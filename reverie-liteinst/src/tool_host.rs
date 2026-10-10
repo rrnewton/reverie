@@ -243,6 +243,10 @@ where
         } else {
             crate::stats::GuestStatsHooks::DISABLED
         };
+    // Complete the new fixed callback pool and route publication before the
+    // guest counter starts. Later installation consumes only this proof;
+    // allocating the pool there would charge Tool setup to guest progress.
+    let prepared_callbacks = runtime::prepare_installed_callbacks()?;
     runtime::initialize_rcb_clock()?;
     // The raw syscall, not libc's interposable getpid.
     let pid = Pid::from_raw(unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) } as i32);
@@ -290,6 +294,7 @@ where
         instruction_subscriptions,
         site_patching,
         &vdso_sites,
+        prepared_callbacks,
     )
 }
 
