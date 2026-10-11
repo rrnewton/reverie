@@ -7234,9 +7234,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         // Step to run the syscall instruction.
-        let (mut wait, mut seccomp_trapped) = self
-            .step_private_syscall_discarding_late_timer(task, nr)
-            .await?;
+        let (mut wait, mut seccomp_trapped) =
+            if swaps_signal_mask(nr) && child_context.is_none() && !self.in_held_signal_callback {
+                self.enter_mask_swapping_syscall(task, nr).await?
+            } else {
+                self.step_private_syscall_discarding_late_timer(task, nr)
+                    .await?
+            };
         // A SIGTRAP the guest or another process sent can stop the step
         // before the `syscall` ran; a stale step SIGTRAP was discarded there
         // already (`step_private_syscall`). `status_to_result` would report
@@ -7265,7 +7269,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .step_private_syscall_discarding_late_timer(stopped, nr)
                 .await?;
         }
-        if (original && child_context.is_some()) || self.in_held_signal_callback {
+        // A signal that still stopped a plain injection of a mask-swapping
+        // syscall before its instruction (`enter_mask_swapping_syscall`; a
+        // discarded SIGTRAP steps it again unshielded) is requeued too.
+        if (original && child_context.is_some())
+            || self.in_held_signal_callback
+            || (swaps_signal_mask(nr) && child_context.is_none())
+        {
             (wait, seccomp_trapped) = self
                 .requeue_signals_before_original_syscall(wait, seccomp_trapped, nr)
                 .await?;
@@ -7597,6 +7607,13 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Runs a frame-mode injection of the event's original syscall
     /// that a signal stopped before its private-page `syscall` instruction,
     /// the way plain ptrace runs the original: once, with the signal pending.
+    /// Any injected mask-swapping syscall (`swaps_signal_mask`) runs this way
+    /// as well. The private-page step returns to user space under the
+    /// thread's own mask before the syscall installs its temporary one, so
+    /// a signal that only the temporary mask blocks could otherwise stop the
+    /// step, and the injection would report the call interrupted. The
+    /// guest's own call, entered with the signal pending, would have kept
+    /// waiting with it pending.
     ///
     /// Plain ptrace resumes the original from its seccomp stop, so the kernel
     /// enters the syscall with the signal still pending and delivers it on the
@@ -7661,7 +7678,64 @@ impl<L: Tool + 'static> TracedTask<L> {
             unreachable!("matched a stopped task")
         };
         let original_mask = stopped.getsigmask()?;
-        let mut mask = original_mask;
+        self.requeue_signals_until_syscall_entry(wait, original_mask, original_mask, nr)
+            .await
+    }
+
+    /// Runs an injected mask-swapping syscall (`swaps_signal_mask`) from the
+    /// private page with every signal but the timer's and `SIGTRAP` blocked
+    /// until the syscall-entry stop, where the thread's own mask is restored
+    /// (`requeue_signals_before_original_syscall`, steps 2 and 3).
+    ///
+    /// The private-page step returns to user space under the thread's own
+    /// mask before the syscall installs its temporary one. A signal that
+    /// only the temporary mask blocks would stop the step there, and the
+    /// injection would report the call interrupted, where the guest's own
+    /// call keeps waiting with the signal pending. Requeuing such a signal
+    /// after the stop would keep the answer, but a process-directed signal
+    /// is off the queue while this thread holds it, so another thread that
+    /// would have taken it can run past it. Blocked, it never leaves the
+    /// queue. The timer's own signal and `SIGTRAP` stay unblocked and are
+    /// handled as for any private-page step; a signal stop before the
+    /// instruction is still requeued.
+    async fn enter_mask_swapping_syscall(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+    ) -> Result<(Wait, bool), TraceError> {
+        let original_mask = task.getsigmask()?;
+        let shield = !(signal_mask_bit(Timer::signal_type()) | signal_mask_bit(Signal::SIGTRAP));
+        let mask = original_mask | shield;
+        task.setsigmask(mask)?;
+        let wait = self
+            .syscall_stopped_any(task, None)?
+            .next_state_with_owner(&self.ptracer_waits)
+            .await?;
+        self.arm_liteinst_wait(&wait);
+        self.requeue_signals_until_syscall_entry(wait, original_mask, mask, nr)
+            .await
+    }
+
+    /// The loop of `requeue_signals_before_original_syscall` from `wait`, a
+    /// stop of the private-page step with `mask` installed: it requeues each
+    /// signal stop before the instruction, and at the syscall-entry stop
+    /// restores `original_mask` and steps the syscall.
+    async fn requeue_signals_until_syscall_entry(
+        &mut self,
+        wait: Wait,
+        original_mask: u64,
+        mut mask: u64,
+        nr: Sysno,
+    ) -> Result<(Wait, bool), TraceError> {
+        fn requeueable(sig: AnySignal) -> bool {
+            !matches!(
+                sig.as_nix(),
+                Some(Signal::SIGKILL | Signal::SIGSTOP | Signal::SIGTRAP)
+            )
+        }
+        fn before_instruction(stopped: &Stopped) -> Result<bool, TraceError> {
+            Ok(stopped.getregs()?.ip() as usize == cp::PRIVATE_PAGE_OFFSET)
+        }
         let mut wait = wait;
         loop {
             match wait {
