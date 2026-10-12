@@ -28072,6 +28072,8 @@ mod tests {
 
     #[test]
     fn read_zero_count_descriptor_errors_match_native_ordering() {
+        let directory = TestDir::new();
+        let directory_path = std::ffi::CString::new(directory.0.to_str().unwrap()).unwrap();
         for inherited in [false, true] {
             for flags in [
                 libc::O_RDONLY | libc::O_DIRECTORY,
@@ -28081,7 +28083,7 @@ mod tests {
                 let path = if flags == libc::O_WRONLY {
                     c"/dev/null"
                 } else {
-                    c"."
+                    directory_path.as_c_str()
                 };
                 // SAFETY: path is terminated and successful open returns a new fd.
                 let host = unsafe { libc::open(path.as_ptr(), flags | libc::O_CLOEXEC) };
@@ -28441,6 +28443,7 @@ mod tests {
             (0x0080_0000_0000_0000, false),
             (u64::MAX, false),
         ];
+        let directory = TestDir::new();
         for inherited in [false, true] {
             for with_context in [false, true] {
                 for kind in [
@@ -28486,7 +28489,7 @@ mod tests {
                             Some(unsafe { std::fs::File::from_raw_fd(raw) })
                         }
                         "directory" => {
-                            let file = std::fs::File::open(".").unwrap();
+                            let file = std::fs::File::open(&directory.0).unwrap();
                             assert_read_zero_fixture_filesystem(&file);
                             Some(file)
                         }
