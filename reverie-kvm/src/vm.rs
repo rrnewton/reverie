@@ -2384,7 +2384,7 @@ impl KvmBackend {
             .unwrap_or_else(|| executable_path.to_owned());
         loaded.executable_file = executable_file;
         let thread_name = initial_thread_name(executable_path);
-        loaded.thread_name = thread_name;
+        *loaded.thread_name.lock().unwrap_or_else(|p| p.into_inner()) = thread_name;
         *loaded
             .thread_group_leader_name
             .lock()

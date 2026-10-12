@@ -247,14 +247,15 @@ fn terminal_cleanup_retires_socket_despite_fdinfo_observer_table_pin_body(
     assert_eq!(open_errno, Some(libc::EAGAIN));
 
     let info_fd = fixture.info(regular_fd);
-    let transient_observer =
-        match &fixture.executor.state.fdinfo_files[&(info_fd as i32)].source {
-            SeqProcSource::Fdinfo(target) => {
-                assert_eq!(target.target_fd, regular_fd as i32);
-                target.table.upgrade().expect("live fdinfo target table")
-            }
-            SeqProcSource::Process { .. } => panic!("expected the real fdinfo target"),
-        };
+    let transient_observer = match &fixture.executor.state.fdinfo_files[&(info_fd as i32)].source {
+        SeqProcSource::Fdinfo(target) => {
+            assert_eq!(target.target_fd, regular_fd as i32);
+            target.table.upgrade().expect("live fdinfo target table")
+        }
+        SeqProcSource::Process { .. } | SeqProcSource::Directory(_) | SeqProcSource::Link(_) => {
+            panic!("expected the real fdinfo target")
+        }
+    };
     assert!(Arc::ptr_eq(
         &transient_observer,
         &fixture.executor.file_table

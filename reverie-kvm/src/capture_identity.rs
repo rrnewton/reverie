@@ -136,8 +136,8 @@ impl Drop for CapturedPipeIdentities {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct CaptureMetadata {
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CaptureMetadata {
     stdout: CaptureObjectIdentity,
     stderr: CaptureObjectIdentity,
 }
