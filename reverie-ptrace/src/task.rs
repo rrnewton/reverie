@@ -487,6 +487,43 @@ enum PrivateStep {
 /// `n - 1` for signal `n`).
 const REALTIME_SIGNAL_BITS: u64 = !0u64 << 31;
 
+/// The timer's own signal and SIGTRAP, which an injection never shields: the
+/// private-page step handles them (`step_shielded_injection`).
+const NEVER_SHIELDED: u64 =
+    1 << (reverie::PERF_EVENT_SIGNAL as u64 - 1) | 1 << (Signal::SIGTRAP as u64 - 1);
+
+/// The temporary signal mask that the syscall `nr` with `args` installs, read
+/// from the tracee: ppoll's, pselect6's, epoll_pwait's and epoll_pwait2's
+/// mask argument, or rt_sigsuspend's. `None` when the call installs none (a
+/// NULL mask), names a size other than 8, or names memory the tracer cannot
+/// read; the kernel then installs no mask or fails the call before it waits.
+/// io_pgetevents and io_uring_enter are not read.
+fn temporary_signal_mask(task: &Stopped, nr: Sysno, args: &SyscallArgs) -> Option<u64> {
+    let read =
+        |address: usize| Addr::<u64>::from_raw(address).and_then(|a| task.read_value(a).ok());
+    let (mask, size) = match nr {
+        Sysno::rt_sigsuspend => (args.arg0, args.arg1),
+        Sysno::ppoll => (args.arg3, args.arg4),
+        Sysno::epoll_pwait | Sysno::epoll_pwait2 => (args.arg4, args.arg5),
+        Sysno::pselect6 => {
+            // A `{ const sigset_t *ss; size_t ss_len; }` wrapper.
+            let wrapper = args.arg5;
+            if wrapper == 0 {
+                return None;
+            }
+            (
+                read(wrapper)? as usize,
+                read(wrapper.checked_add(8)?)? as usize,
+            )
+        }
+        _ => return None,
+    };
+    if mask == 0 || size != 8 {
+        return None;
+    }
+    read(mask)
+}
+
 /// Classifies the signal-delivery stop that ended a private-page step.
 fn classify_private_step(
     ip: u64,
@@ -2420,7 +2457,7 @@ pub struct TracedTask<L: Tool> {
     /// being held: the held signal's resume empties `pending_signal` no
     /// more, so a signal held there would wait for a later syscall stop
     /// that a guest about to exit need not make. A realtime signal is not
-    /// taken from the queue at all there (`step_keeping_realtime_queued`):
+    /// taken from the queue at all there (`step_shielded_injection`):
     /// put back, it would go behind later instances of its number.
     in_held_signal_callback: bool,
 
@@ -7280,19 +7317,32 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         // An injection in a held signal's callback, or one that starts with
-        // a signal already held, keeps every realtime signal queued
-        // (`step_keeping_realtime_queued`).
-        let realtime_unblocked = if child_context.is_none()
-            && (self.in_held_signal_callback || self.pending_signal.is_some())
-        {
-            REALTIME_SIGNAL_BITS & !task.getsigmask()?
+        // a signal already held, keeps every realtime signal queued, and a
+        // mask-swapping injection the signals its temporary mask blocks
+        // (`step_shielded_injection`).
+        let mut shield = 0;
+        if child_context.is_none() {
+            if self.in_held_signal_callback || self.pending_signal.is_some() {
+                shield |= REALTIME_SIGNAL_BITS;
+            }
+            if swaps_signal_mask(nr)
+                && let Some(temporary) = temporary_signal_mask(&task, nr, &args)
+            {
+                shield |= temporary & !NEVER_SHIELDED;
+            }
+        }
+        // Only a shielded injection reads the thread's mask: a ptrace query is
+        // a request a tracer filter may refuse (`thread_may_be_seccomp_filtered`).
+        let shield = if shield != 0 {
+            shield & !task.getsigmask()?
         } else {
             0
         };
-        if realtime_unblocked != 0 {
+        if shield != 0 {
             let requeue = self.in_held_signal_callback;
-            let (wait, seccomp_trapped) =
-                self.step_keeping_realtime_queued(task, nr, requeue).await?;
+            let (wait, seccomp_trapped) = self
+                .step_shielded_injection(task, nr, shield, requeue)
+                .await?;
             let result = self
                 .status_to_result(wait, Some(oldregs), child_context)
                 .await?;
@@ -7742,9 +7792,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         .await
     }
 
-    /// Runs an injected syscall with every realtime signal (32 to 64) blocked
-    /// until the syscall's entry, so none is taken from the kernel's queue
-    /// before the `syscall` instruction. Two injections need this:
+    /// Runs an injected syscall with the signals in `shield` blocked until the
+    /// syscall's entry, so none of them is taken from the kernel's queue
+    /// before the `syscall` instruction. Three injections need this; the
+    /// first two shield every realtime signal (32 to 64):
     ///
     /// - One in a held signal's callback (`in_held_signal_callback`, with
     ///   `requeue`). A signal taken before its instruction is put back in the
@@ -7756,10 +7807,23 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///   (`Guest::inject_with_retry`). A signal taken before its instruction
     ///   is held, and a second would replace the first in the single slot,
     ///   losing it and its siginfo.
+    /// - A mask-swapping injection (`swaps_signal_mask`) shields the signals
+    ///   its temporary mask blocks and the thread's own mask admits
+    ///   (`temporary_signal_mask`), except the timer's own and SIGTRAP
+    ///   (`NEVER_SHIELDED`). The private-page step returns to user space
+    ///   under the thread's own mask before the syscall installs its
+    ///   temporary one, so such a signal would stop the step there, and the
+    ///   injection would report the call interrupted, where the guest's own
+    ///   call keeps waiting with the signal pending
+    ///   (<https://github.com/rrnewton/hermit/issues/4149>). Requeuing it
+    ///   after the stop would keep the answer, but a process-directed signal
+    ///   is off the shared queue while this thread holds it, so a sibling
+    ///   that Linux would give it to can run past it.
     ///
-    /// Standard signals, which have at most one pending instance each, stop
-    /// the step as before: requeued with `requeue`, else returned for the
-    /// generic not-run handling (`status_to_result`).
+    /// Other signals stop the step as before: requeued with `requeue`, else
+    /// returned for the generic not-run handling (`status_to_result`). For a
+    /// mask-swapping injection those are signals both masks admit, which the
+    /// call would end with anyway, so the not-run report stays truthful.
     ///
     /// The thread is resumed with `PTRACE_SYSCALL` to the syscall-entry stop,
     /// where its own mask is restored before `step_private_syscall` runs the
@@ -7771,14 +7835,15 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// notification is taken as `step_private_syscall_discarding_late_timer`
     /// takes it, and a SIGTRAP is discarded as `untraced_syscall_with`
     /// discards it.
-    async fn step_keeping_realtime_queued(
+    async fn step_shielded_injection(
         &mut self,
         task: Stopped,
         nr: Sysno,
+        shield: u64,
         requeue: bool,
     ) -> Result<(Wait, bool), TraceError> {
         let original_mask = task.getsigmask()?;
-        let mask = original_mask | REALTIME_SIGNAL_BITS;
+        let mask = original_mask | shield;
         task.setsigmask(mask)?;
         let wait = self
             .syscall_stopped_any(task, None)?
@@ -7790,7 +7855,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     /// The loop of `requeue_signals_before_original_syscall` and
-    /// `step_keeping_realtime_queued`: runs the thread, blocked in `mask`, to
+    /// `step_shielded_injection`: runs the thread, blocked in `mask`, to
     /// its private-page syscall's entry stop, where `original_mask` is
     /// restored and `step_private_syscall` runs the syscall. A signal that
     /// stops it before the `syscall` instruction is requeued with `requeue`,
