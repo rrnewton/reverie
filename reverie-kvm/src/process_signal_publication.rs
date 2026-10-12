@@ -5474,10 +5474,11 @@ mod tests {
         let status = open_proc(&mut child, &mut memory, "/proc/self/status", libc::O_RDONLY);
         assert!(stat >= 0 && status >= 0);
         // As exec_static_elf names the new image before it inherits the process.
-        let mut replacement = native_loaded_state(std::path::Path::new("/"));
-        replacement.thread_name =
+        let replacement = native_loaded_state(std::path::Path::new("/"));
+        *replacement.thread_name.lock().unwrap() =
             crate::elf::initial_thread_name(std::path::Path::new("/bin/exec-image"));
-        *replacement.thread_group_leader_name.lock().unwrap() = replacement.thread_name;
+        let name = *replacement.thread_name.lock().unwrap();
+        *replacement.thread_group_leader_name.lock().unwrap() = name;
         let previous = std::mem::replace(&mut child.state, replacement);
         child.state.inherit_process_state(previous);
         let stat_text = read_proc(&mut child, &memory, stat, 64);
