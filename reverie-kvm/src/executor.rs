@@ -1105,6 +1105,11 @@ fn execute_basic_syscall_inner(
     } else if number == libc::SYS_umask as u64 {
         let previous = state.umask;
         state.umask = args[0] as libc::mode_t & 0o777;
+        state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_proc_umask(state.tid, state.umask);
         i64::from(previous)
     } else if number == libc::SYS_fchmod as u64 {
         fchmod(state, args)
@@ -2579,9 +2584,11 @@ impl ProcessProcFile {
 /// cell and the leader's name are shared with the live process, so a
 /// description opened before reparenting or `PR_SET_NAME` renders the value
 /// current at read time, as Linux does. The umask is sampled at open because
-/// it is not a shared process cell here.
+/// it is not a shared process cell here. Each task also publishes its view in
+/// the lifecycle table, where other processes find it (see
+/// [`crate::elf::TaskLifecycleTable::process_view`]).
 #[derive(Clone, Debug)]
-struct ProcessProcView {
+pub(crate) struct ProcessProcView {
     pid: i32,
     tid: i32,
     ppid: i32,
@@ -2589,10 +2596,12 @@ struct ProcessProcView {
     leader_name: Arc<Mutex<[u8; TASK_COMM_LEN]>>,
     umask: libc::mode_t,
     task: Option<(u64, Arc<Mutex<crate::elf::TaskLifecycleTable>>)>,
+    /// `/proc/<pid>/cmdline` as another process reads it.
+    cmdline: Vec<u8>,
 }
 
 impl ProcessProcView {
-    fn of(state: &LoadedStaticElf) -> Self {
+    pub(crate) fn of(state: &LoadedStaticElf) -> Self {
         Self {
             pid: state.pid,
             tid: state.pid,
@@ -2601,7 +2610,12 @@ impl ProcessProcView {
             leader_name: state.thread_group_leader_name.clone(),
             umask: state.umask,
             task: None,
+            cmdline: proc_self_cmdline_content(state),
         }
+    }
+
+    pub(crate) fn set_umask(&mut self, umask: libc::mode_t) {
+        self.umask = umask;
     }
 
     fn of_thread(state: &LoadedStaticElf, tid: i32) -> Result<Self, i64> {
@@ -3541,6 +3555,7 @@ impl ElfExecutor {
                 &state.thread_name,
                 &file_table,
                 output.as_ref().map(CapturedOutput::metadata),
+                ProcessProcView::of(&state),
             );
         let signal_registry = state.children.registry().unwrap_or_default();
         let signal_binding = signal_registry
@@ -4132,6 +4147,7 @@ impl ElfExecutor {
                 &state.thread_name,
                 &file_table,
                 self.output.as_ref().map(CapturedOutput::metadata),
+                ProcessProcView::of(&state),
             );
         let process_generation = state
             .task_lifecycle
@@ -4324,6 +4340,7 @@ impl ElfExecutor {
                 &state.thread_name,
                 &self.file_table,
                 self.output.as_ref().map(CapturedOutput::metadata),
+                ProcessProcView::of(&state),
             );
         let child = Self {
             state,
@@ -5174,13 +5191,18 @@ impl ElfExecutor {
         let previous = std::mem::replace(&mut self.state, state);
         let retired = self.state.inherit_process_state_locked(previous);
         self.state.file_retirement.retire(retired);
-        let identity = self
-            .state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(self.state.tid)
-            .expect("execing KVM task is absent from its lifecycle table");
+        let identity = {
+            let mut lifecycle = self
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // The new image's argv replaces the command line other processes read.
+            lifecycle.set_proc_view(self.state.tid, ProcessProcView::of(&self.state));
+            lifecycle
+                .get(self.state.tid)
+                .expect("execing KVM task is absent from its lifecycle table")
+        };
         self.task_generation = identity.generation;
         self.process_generation = identity.process_generation;
         if let Some(memory) = &self.address_space {
@@ -10262,7 +10284,10 @@ fn memfd_create(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
 fn lseek(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64 {
     // Linux syscall `int` arguments consume only the low descriptor word.
     let fd = args[0] as libc::c_int;
-    if let Some(description) = state.fdinfo_files.get(&fd) {
+    // A synthetic directory's position is its backing file's host position.
+    if let Some(description) = state.fdinfo_files.get(&fd)
+        && !matches!(description.source, SeqProcSource::Directory(_))
+    {
         return description.seek(args);
     }
     if capture_output && output_alias(state, fd).is_some() {
@@ -10571,6 +10596,11 @@ enum PreparedProcOpen {
         description: Arc<FdinfoDescription>,
         identity_path: Vec<u8>,
     },
+    /// Content rendered at open for another task's file.
+    Snapshot {
+        path: Vec<u8>,
+        content: Vec<u8>,
+    },
 }
 
 fn validate_synthetic_proc_open(
@@ -10676,6 +10706,9 @@ fn prepare_open_file(
                     }),
                     identity_path,
                 })
+            } else if let Some(content) = target.cmdline(&path) {
+                validate_synthetic_proc_open(state, &path, flags)?;
+                Some(PreparedProcOpen::Snapshot { path, content })
             } else if let Some(target_path) = fdinfo_path_target(state, &path) {
                 let fd = match target_path {
                     FdinfoPathTarget::Target { fd, .. } => fd,
@@ -10746,6 +10779,16 @@ fn open_prepared_file(
                 description,
                 flags,
                 flags & libc::O_CLOEXEC as u64 != 0,
+            );
+        }
+        Some(PreparedProcOpen::Snapshot { path, content }) => {
+            return open_synthetic_proc(
+                state,
+                &path,
+                &content,
+                flags & libc::O_CLOEXEC as u64 != 0,
+                path_only,
+                flags as libc::c_int,
             );
         }
         Some(PreparedProcOpen::Path(procfs_path::ProcPath::Directory(directory))) => {
@@ -17757,6 +17800,7 @@ const SYNTHETIC_REGULAR_PROC_PATHS: &[&[u8]] = &[
     b"/proc/self/cmdline",
     b"/proc/vmstat",
     b"/proc/sys/kernel/osrelease",
+    b"/proc/sys/kernel/pid_max",
     b"/proc/self/maps",
 ];
 
@@ -17831,6 +17875,15 @@ fn parse_proc_id(component: &[u8]) -> Option<i32> {
     component.iter().try_fold(0_i32, |value, digit| {
         value.checked_mul(10)?.checked_add(i32::from(*digit - b'0'))
     })
+}
+
+fn live_guest_task(state: &LoadedStaticElf, tid: i32) -> bool {
+    state
+        .task_lifecycle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(tid)
+        .is_some()
 }
 
 fn live_thread_in_process(state: &LoadedStaticElf, tid: i32) -> bool {
@@ -18044,6 +18097,9 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
         // synthetically. The value matches the KVM `uname(2)` release field
         // ("6.0.0", see fn uname) and /proc/version above.
         b"/proc/sys/kernel/osrelease" => b"6.0.0\n".to_vec(),
+        // Linux's PID_MAX_DEFAULT, the value for the one virtual CPU that
+        // /proc/cpuinfo reports.
+        b"/proc/sys/kernel/pid_max" => b"32768\n".to_vec(),
         b"/proc/self/maps" => proc_self_maps_content(state),
         _ => return None,
     };
@@ -18810,15 +18866,17 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
     };
+    if let Some(directory) = procfs_path::directory_of(state, fd) {
+        return match file_status_flags(file) {
+            Ok(flags) if flags & libc::O_PATH != 0 => negative_errno(libc::EBADF),
+            Ok(_) => {
+                procfs_path::getdents64(memory, state, file, &directory, args[1], args[2] as u32)
+            }
+            Err(error) => error,
+        };
+    }
     if let Err(error) = ensure_directory(file) {
         return error;
-    }
-    if state
-        .proc_files
-        .get(&fd)
-        .is_some_and(|inode| is_synthetic_proc_directory_inode(*inode))
-    {
-        return 0;
     }
     // Let the kernel write through a protected shared alias. A snapshot/copyback
     // would clobber concurrent guest writes to untouched padding or the tail,
