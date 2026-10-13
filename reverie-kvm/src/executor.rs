@@ -64703,6 +64703,8 @@ mod child_panic_owner_tests {
             );
         }
     }
+    include!("executor/inotify_read_contract_controls.rs");
+
 }
 
 #[cfg(test)]
