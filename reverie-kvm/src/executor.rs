@@ -19593,9 +19593,8 @@ fn validate_xattr_target_and_name(
         || number == libc::SYS_fsetxattr as u64
         || number == libc::SYS_fremovexattr as u64
     {
-        let Ok(guest_fd) = libc::c_int::try_from(args[0]) else {
-            return Err(negative_errno(libc::EBADF));
-        };
+        // Linux descriptor arguments consume only the low 32-bit word.
+        let guest_fd = args[0] as libc::c_int;
         if host_fd(state, guest_fd).is_none() {
             return Err(negative_errno(libc::EBADF));
         }
@@ -63980,6 +63979,67 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, negative_errno(libc::ELOOP));
+    }
+
+    #[test]
+    fn xattr_fd_arguments_use_the_low_word_and_preserve_error_ordering() {
+        let root = TestDir::new();
+        std::fs::write(root.0.join("file"), b"content").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let fd = open_readonly(&mut memory, &mut state, "file");
+        assert!(fd >= 0);
+        write_c_string(&mut memory, 0x200, "user.reverie_review");
+        memory.write(0x300, b"value").unwrap();
+
+        for (number, expected) in [
+            (libc::SYS_fgetxattr, libc::ENODATA),
+            (libc::SYS_fsetxattr, libc::EOPNOTSUPP),
+            (libc::SYS_fremovexattr, libc::ENODATA),
+        ] {
+            for raw_fd in [fd as u64, fd as u64 | (1 << 32), fd as u64 | (u64::MAX << 32)] {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        number,
+                        [raw_fd, 0x200, 0x300, 5, 0, 0]
+                    ),
+                    negative_errno(expected)
+                );
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        number,
+                        [raw_fd, 0x5000, 0, 0, 0, 0]
+                    ),
+                    negative_errno(libc::EFAULT)
+                );
+            }
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [fd as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        for raw_fd in [fd as u64 | (1 << 32), u64::MAX] {
+            for number in [libc::SYS_fgetxattr, libc::SYS_fsetxattr, libc::SYS_fremovexattr] {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        number,
+                        [raw_fd, 0x5000, 0x5000, 1, 0, 0]
+                    ),
+                    negative_errno(libc::EBADF)
+                );
+            }
+        }
     }
 
     #[test]
