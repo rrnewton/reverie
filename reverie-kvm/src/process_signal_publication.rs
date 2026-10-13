@@ -916,6 +916,30 @@ impl ProcessSignalControl {
         self.publish(target, event, None, true, None)
     }
 
+    /// A Tool-owned POSIX timer's expiration
+    /// ([`reverie::ProcessSignalControl::publish_timer_expiry`]): a
+    /// process-directed standard signal whose siginfo names itself with
+    /// `SI_TIMER`. Everything after validation is the alarm's publication.
+    fn publish_active_timer_expiry(
+        &self,
+        target: SignalProcessId,
+        event: SignalEvent,
+    ) -> ProcessPublication {
+        let signal = event.signal();
+        let info = event.siginfo();
+        let field = |at: usize| i32::from_ne_bytes(info[at..at + 4].try_into().unwrap());
+        if !(1..=31).contains(&signal)
+            || signal == libc::SIGKILL
+            || signal == libc::SIGSTOP
+            || field(0) != signal
+            || field(8) != libc::SI_TIMER
+            || event.target() != (reverie::SignalTarget::Process { pid: target.tgid })
+        {
+            return ProcessPublication::Rejected(PublicationRejection::InvalidEvent);
+        }
+        self.publish(target, event, None, true, None)
+    }
+
     fn publish_child_completion(
         &self,
         completion: reverie::ChildExitCompletion,
@@ -1326,6 +1350,30 @@ impl ProcessSignalRegistry {
     }
 }
 
+/// The public result of a process signal publication (an alarm or a timer
+/// expiration).
+fn public_process_outcome(
+    publication: ProcessPublication,
+) -> reverie::ProcessSignalPublicationResult {
+    use reverie::ProcessSignalPublicationResult as Outcome;
+    match publication {
+        ProcessPublication::Committed(receipt) => Outcome::Committed(public_receipt(&receipt)),
+        ProcessPublication::FailedAfterCommit(failure) => Outcome::FailedAfterCommit {
+            receipt: public_receipt(&failure.receipt),
+            errno: failure.errno,
+        },
+        ProcessPublication::Rejected(reason) => Outcome::RejectedBeforeCommit(match reason {
+            PublicationRejection::Backend(errno) => errno,
+            PublicationRejection::Closed | PublicationRejection::StaleProcess => Errno::ESRCH,
+            PublicationRejection::ChangedImage => Errno::EAGAIN,
+            PublicationRejection::InvalidEvent | PublicationRejection::InvalidCompletion => {
+                Errno::EINVAL
+            }
+            PublicationRejection::Terminal => Errno::EIO,
+        }),
+    }
+}
+
 fn public_receipt(receipt: &PublicationReceipt) -> reverie::ProcessSignalPublication {
     debug_assert!(receipt.child_completion.is_none());
     reverie::ProcessSignalPublication {
@@ -1446,23 +1494,15 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
         process: SignalProcessId,
         event: SignalEvent,
     ) -> reverie::ProcessSignalPublicationResult {
-        use reverie::ProcessSignalPublicationResult as Outcome;
-        match self.publish_active_alarm(process, event) {
-            ProcessPublication::Committed(receipt) => Outcome::Committed(public_receipt(&receipt)),
-            ProcessPublication::FailedAfterCommit(failure) => Outcome::FailedAfterCommit {
-                receipt: public_receipt(&failure.receipt),
-                errno: failure.errno,
-            },
-            ProcessPublication::Rejected(reason) => Outcome::RejectedBeforeCommit(match reason {
-                PublicationRejection::Backend(errno) => errno,
-                PublicationRejection::Closed | PublicationRejection::StaleProcess => Errno::ESRCH,
-                PublicationRejection::ChangedImage => Errno::EAGAIN,
-                PublicationRejection::InvalidEvent | PublicationRejection::InvalidCompletion => {
-                    Errno::EINVAL
-                }
-                PublicationRejection::Terminal => Errno::EIO,
-            }),
-        }
+        public_process_outcome(self.publish_active_alarm(process, event))
+    }
+
+    fn publish_timer_expiry(
+        &self,
+        process: SignalProcessId,
+        event: SignalEvent,
+    ) -> reverie::ProcessSignalPublicationResult {
+        public_process_outcome(self.publish_active_timer_expiry(process, event))
     }
 
     fn publish_child_exit(
