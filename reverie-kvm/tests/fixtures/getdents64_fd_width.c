@@ -369,13 +369,9 @@ static void proc_policy(int guest) {
       for (size_t count = 0; count < 5; ++count) {
         uint64_t raw_fd = upper_words[high] | (uint32_t)descriptors[descriptor];
         rewind_directory(fd);
-        if (guest) {
-          // Synthetic proc is deliberately unenumerable, before pointer and
-          // count validation, including through a dup alias.
-          expect_zero(raw_fd, 0, counts[count]);
-          expect_zero(raw_fd, 1, counts[count]);
-          CHECK(lseek(fd, 0, SEEK_CUR) == 0);
-        } else if (count < 3) {
+        // Synthetic proc enumerates as Linux's /proc does, including through
+        // a dup alias.
+        if (count < 3) {
           expect_error(raw_fd, 0, counts[count], EINVAL);
           expect_error(raw_fd, 1, counts[count], EINVAL);
         } else {
@@ -388,7 +384,7 @@ static void proc_policy(int guest) {
       }
   CHECK(close(alias) == 0 && close(fd) == 0);
   CHECK(calls - before == 100);
-  puts(guest ? "getdents64 policy=synthetic-proc rows=100 zero-before-buffer unchanged"
+  puts(guest ? "getdents64 policy=synthetic-proc rows=100 records-and-errors checked"
              : "getdents64 policy=native-proc rows=100 records-and-errors checked");
 }
 

@@ -793,11 +793,18 @@ int main(int argc, char **argv) {
     }
     CHECK(close(path) == 0 && close(regular) == 0);
     if (guest) {
-        // The backend deliberately exposes synthetic proc directories as empty.
+        // Synthetic proc directories enumerate as Linux's do: a count too
+        // small for the first entry is EINVAL before the buffer is checked,
+        // an unwritable buffer is EFAULT, and the first entry is ".".
         fd = open("/proc", O_RDONLY | O_DIRECTORY);
         CHECK(fd == 0);
-        CHECK(syscall(SYS_getdents64, fd, mapping, 128) == 0);
-        CHECK(syscall(SYS_getdents64, fd, (void *)-1, 0) == 0);
+        errno = 0;
+        CHECK(syscall(SYS_getdents64, fd, mapping, 128) == -1 && errno == EFAULT);
+        errno = 0;
+        CHECK(syscall(SYS_getdents64, fd, (void *)-1, 0) == -1 && errno == EINVAL);
+        unsigned char listing[256];
+        long listed = syscall(SYS_getdents64, fd, listing, sizeof(listing));
+        CHECK(listed >= 24 && !strcmp(((struct entry *)listing)->name, "."));
         CHECK(close(fd) == 0);
     }
     for (int i = 0; i < 8192; ++i) CHECK(mapping[i] == 0xa5);
@@ -3681,11 +3688,12 @@ static int enumeration(int descriptor, int guest) {
     memset(output, 0xa5, sizeof(output));
     memcpy(before, output, sizeof(output));
     long result = syscall(SYS_getdents64, descriptor, output, sizeof(output));
+    CHECK(result > 0);
     if (guest) {
-        CHECK(result == 0);
-        CHECK(memcmp(output, before, sizeof(output)) == 0);
-    } else {
-        CHECK(result > 0);
+        // A received synthetic root lists its entries from ".", and nothing
+        // past them is written.
+        CHECK(!strcmp((const char *)output + 19, "."));
+        CHECK(memcmp(output + result, before + result, sizeof(output) - result) == 0);
     }
     return 0;
 }
@@ -19495,7 +19503,7 @@ fn getdents64_consumes_low_descriptor_words_on_kvm() {
     );
     let guest_expected = format!(
         "{common}getdents64 policy=synthetic-proc-opath open=EINVAL\n\
-         getdents64 policy=synthetic-proc rows=100 zero-before-buffer unchanged\n\
+         getdents64 policy=synthetic-proc rows=100 records-and-errors checked\n\
          getdents64 checked calls=874\n"
     );
     // Retain the exact legacy prefix. The additive raw-count rows contain the
