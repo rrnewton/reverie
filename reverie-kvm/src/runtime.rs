@@ -49,6 +49,7 @@ use crate::VMCALL_SYSCALL_TRANSPORT;
 use crate::bootstrap::TOOL_STACK_SIZE;
 use crate::bootstrap::process_syscall_return_registers;
 use crate::bootstrap::set_user_segment_base;
+use crate::bootstrap::stage_process_signal_return;
 use crate::bootstrap::stage_process_syscall_return;
 use crate::executor::ChildStartCancellation;
 #[cfg(test)]
@@ -5831,7 +5832,7 @@ impl KvmBackend {
                         signal_exit = signal_exit.or_else(|| executor.take_exit());
                         signal_delivered = delivered;
                         if !delivered && signal_exit.is_none() {
-                            stage_process_syscall_return(
+                            stage_process_signal_return(
                                 &mut memory,
                                 &self.vcpu,
                                 frame_address,

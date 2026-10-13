@@ -66,6 +66,7 @@ use crate::bootstrap::exception_from_halt;
 use crate::bootstrap::exception_pushes_error_code;
 use crate::bootstrap::process_syscall_return_registers;
 use crate::bootstrap::set_user_segment_base;
+use crate::bootstrap::stage_process_signal_return;
 use crate::bootstrap::stage_process_syscall_return;
 use crate::bootstrap::syscall_hypercall_address;
 use crate::bootstrap::thread_tool_stack_top;
@@ -5142,7 +5143,7 @@ impl KvmBackend {
                                 restored,
                             )?;
                             if !delivered {
-                                stage_process_syscall_return(
+                                stage_process_signal_return(
                                     &mut self.memory,
                                     &self.vcpu,
                                     frame_address,
@@ -5969,6 +5970,56 @@ mod worker_panic_tests;
 
 #[cfg(test)]
 pub(crate) use tests::minimal_test_elf;
+
+#[cfg(test)]
+mod user_trap_signal_tests {
+    use super::*;
+
+    #[test]
+    fn user_mode_exceptions_raise_the_linux_trap_signal() {
+        let rip = 0x40_1234;
+        assert_eq!(
+            user_trap_signal(0, 0, rip, 0xdead_0000),
+            Some(UserTrapSignal {
+                signal: libc::SIGFPE,
+                code: crate::signal::FPE_INTDIV,
+                address: rip,
+            })
+        );
+        assert_eq!(
+            user_trap_signal(6, 0, rip, 0xdead_0000),
+            Some(UserTrapSignal {
+                signal: libc::SIGILL,
+                code: crate::signal::ILL_ILLOPN,
+                address: rip,
+            })
+        );
+        for (error_code, address) in [(4, 0), (6, 0x18), (20, 0xfff)] {
+            assert_eq!(
+                user_trap_signal(14, error_code, rip, address),
+                Some(UserTrapSignal {
+                    signal: libc::SIGSEGV,
+                    code: crate::signal::SEGV_MAPERR,
+                    address,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn other_exceptions_stay_backend_errors() {
+        let rip = 0x40_1234;
+        // A page fault outside page zero, or with a present/reserved/kernel
+        // error code, names a backend layout gap rather than a guest fault.
+        assert_eq!(user_trap_signal(14, 6, rip, PAGE_SIZE), None);
+        assert_eq!(user_trap_signal(14, 7, rip, 0), None);
+        assert_eq!(user_trap_signal(14, 2, rip, 0), None);
+        // #DB, #BP, #GP and the rest are not translated here.
+        for vector in [1, 3, 4, 5, 7, 8, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 31] {
+            assert_eq!(user_trap_signal(vector, 0, rip, 0), None, "vector {vector}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
