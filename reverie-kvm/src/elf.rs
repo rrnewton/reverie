@@ -893,6 +893,16 @@ impl Drop for StagedFile {
     }
 }
 
+/// The filesystem context actually shared by the admitted CLONE_FS profile.
+/// Process clones without CLONE_FS receive a copy; exec retains this context.
+/// The directory handle pins cwd across rename and never refers to host tasks.
+#[derive(Debug)]
+pub(crate) struct GuestFsContext {
+    pub(crate) umask: libc::mode_t,
+    pub(crate) cwd: PathBuf,
+    pub(crate) cwd_fd: std::sync::Arc<std::fs::File>,
+}
+
 #[derive(Debug)]
 pub(crate) struct LoadedStaticElf {
     pub entry_point: u64,
@@ -914,8 +924,12 @@ pub(crate) struct LoadedStaticElf {
     pub executable_file: Option<std::sync::Arc<std::fs::File>>,
     pub executable_image: std::sync::Arc<[u8]>,
     pub argv0: Vec<u8>,
+    pub(crate) cmdline: Vec<u8>,
     pub cwd: PathBuf,
     pub cwd_fd: std::fs::File,
+    pub(crate) shared_fs: Option<std::sync::Arc<std::sync::Mutex<GuestFsContext>>>,
+    // The held shared cwd already installed in cwd_fd. Pure calls need no dup.
+    pub(crate) fs_cwd: Option<std::sync::Arc<std::fs::File>>,
     pub stdin: Option<std::fs::File>,
     /// Identity of the inherited stdin slot, distinct from its inode/OFD.
     /// Loader setup precedes table publication; fork and exec retain this
@@ -1040,6 +1054,9 @@ pub(crate) struct LoadedStaticElf {
     // destroyed.
     pub task_lifecycle: std::sync::Arc<std::sync::Mutex<TaskLifecycleTable>>,
     pub files: std::collections::BTreeMap<i32, std::fs::File>,
+    /// Logical Linux fdtable slots, retained after close. The current x86_64
+    /// profile starts with BITS_PER_LONG slots and grows in power-of-two tables.
+    pub(crate) fdtable_capacity: usize,
     pub file_retirement: FileRetirement,
     pub(crate) pipe_owners:
         std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::pipe_owner::PipeOwner>>,
@@ -1084,6 +1101,9 @@ pub(crate) struct LoadedStaticElf {
     /// procfs entry, established before this image can execute.
     pub regular_create_directory_policy: RegularCreateDirectoryPolicy,
     pub proc_mounts: std::sync::Arc<crate::proc_mounts::ProcMountSnapshot>,
+    /// Present only after successful run-scoped process registration. Raw
+    /// syscall helpers and previously opened native anchors have no authority.
+    pub(crate) proc_namespace: Option<crate::executor::ProcNamespace>,
     pub fdinfo_files:
         std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::FdinfoDescription>>,
     pub fdinfo_table: std::sync::Weak<std::sync::Mutex<crate::executor::FileTableState>>,
@@ -1096,6 +1116,39 @@ pub(crate) struct LoadedStaticElf {
 }
 
 impl LoadedStaticElf {
+    pub(crate) fn bind_fs_context(&mut self) -> std::io::Result<()> {
+        if self.shared_fs.is_none() {
+            let cwd_fd = std::sync::Arc::new(self.file_retirement.stage_clone(&self.cwd_fd)?.into_file());
+            self.fs_cwd = Some(cwd_fd.clone());
+            self.shared_fs = Some(std::sync::Arc::new(std::sync::Mutex::new(GuestFsContext {
+                umask: self.umask,
+                cwd: self.cwd.clone(),
+                cwd_fd,
+            })));
+        }
+        Ok(())
+    }
+
+    /// Snapshot the actual CLONE_FS context into the existing syscall operands.
+    /// The unchanged held cwd needs no native duplication. No filesystem guard
+    /// spans a fallible duplicate, native I/O, or another table lock.
+    pub(crate) fn refresh_fs_context(&mut self) -> std::io::Result<()> {
+        let Some(shared) = self.shared_fs.as_ref() else { return Ok(()); };
+        let (umask, cwd, directory) = {
+            let fs = shared.lock().unwrap_or_else(|p| p.into_inner());
+            (fs.umask, fs.cwd.clone(), fs.cwd_fd.clone())
+        };
+        if !self.fs_cwd.as_ref().is_some_and(|previous| std::sync::Arc::ptr_eq(previous, &directory)) {
+            let next = self.file_retirement.stage_clone(&directory)?;
+            let old = std::mem::replace(&mut self.cwd_fd, next.into_file());
+            self.file_retirement.retire([old]);
+            let retired = self.fs_cwd.replace(directory);
+            self.file_retirement.retire_shared(retired);
+        }
+        self.umask = umask;
+        self.cwd = cwd;
+        Ok(())
+    }
     /// The value reported by `getppid(2)` and procfs for this process.
     pub(crate) fn guest_parent_pid(&self) -> i32 {
         match self.orphan_reaper_pid.load(Ordering::SeqCst) {
@@ -1108,6 +1161,7 @@ impl LoadedStaticElf {
     /// callers retire them after both the authoritative file-table and
     /// signal-transaction guards are released.
     pub(crate) fn insert_file(&mut self, fd: i32, file: std::fs::File) -> Vec<std::fs::File> {
+        self.fdtable_capacity = Self::capacity_for_fd(self.fdtable_capacity, fd);
         {
             let domain = self.epoll_domain.clone();
             let _proof = domain.lock().expect("KVM epoll provenance lock poisoned");
@@ -1123,6 +1177,18 @@ impl LoadedStaticElf {
         }
         self.fd_entry_ids.insert(fd, std::sync::Arc::new(()));
         retired
+    }
+
+    pub(crate) fn capacity_for_fd(current: usize, fd: i32) -> usize {
+        let wanted = usize::try_from(fd).map_or(0, |fd| fd + 1);
+        if wanted <= current.max(64) { return current.max(64); }
+        wanted.next_power_of_two().max(128)
+    }
+
+    fn copied_fdtable_capacity(&self) -> usize {
+        // dup_fd copies the live descriptor range; a new independent table may
+        // shrink after high slots were closed. CLONE_FILES shares the parent.
+        self.files.keys().next_back().map_or(64, |fd| Self::capacity_for_fd(64, *fd))
     }
 
     pub(crate) fn take_stdin(&mut self) -> Option<std::fs::File> {
@@ -1157,6 +1223,14 @@ impl LoadedStaticElf {
     }
 
     pub(crate) fn try_clone_for_fork_locked(&self, child_pid: i32) -> Result<Self> {
+        self.try_clone_with_fs_locked(child_pid, false)
+    }
+
+    pub(crate) fn try_clone_for_thread_locked(&self, child_tid: i32) -> Result<Self> {
+        self.try_clone_with_fs_locked(child_tid, true)
+    }
+
+    fn try_clone_with_fs_locked(&self, child_pid: i32, share_fs: bool) -> Result<Self> {
         // TODO-HUMAN-REVIEW(PR-136): Review shared file identity inheritance across fork.
         // TODO-HUMAN-REVIEW(PR-119): Review scheduler reset and ioprio fork inheritance.
         let reset_realtime = self.sched_reset_on_fork
@@ -1166,7 +1240,24 @@ impl LoadedStaticElf {
             .iter()
             .map(|(&fd, file)| Ok((fd, self.file_retirement.stage_clone(file)?)))
             .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
-        let cwd_fd = self.file_retirement.stage_clone(&self.cwd_fd)?;
+        let (cwd, umask, held_cwd) = if let Some(shared) = &self.shared_fs {
+            let fs = shared.lock().unwrap_or_else(|p| p.into_inner());
+            (fs.cwd.clone(), fs.umask, Some(fs.cwd_fd.clone()))
+        } else { (self.cwd.clone(), self.umask, None) };
+        // The held Arc pins the path after the FS guard releases. Neither a
+        // native duplicate nor retirement bookkeeping runs under that guard.
+        let cwd_source = held_cwd.as_ref().map_or(&self.cwd_fd, |file| file.as_ref());
+        let cwd_fd = self.file_retirement.stage_clone(cwd_source)?;
+        let shared_fs = if share_fs {
+            self.shared_fs.clone()
+        } else {
+            held_cwd.as_ref().map(|directory| std::sync::Arc::new(std::sync::Mutex::new(GuestFsContext {
+                umask,
+                cwd: cwd.clone(),
+                // copy_fs_struct retains the path; it does not reopen cwd.
+                cwd_fd: directory.clone(),
+            })))
+        };
         let stdin = self
             .stdin
             .as_ref()
@@ -1194,8 +1285,11 @@ impl LoadedStaticElf {
             executable_file: self.executable_file.clone(),
             executable_image: self.executable_image.clone(),
             argv0: self.argv0.clone(),
-            cwd: self.cwd.clone(),
+            cmdline: self.cmdline.clone(),
+            cwd,
             cwd_fd: cwd_fd.into_file(),
+            fs_cwd: held_cwd,
+            shared_fs,
             stdin: stdin.map(StagedFile::into_file),
             stdin_entry_id: self.stdin_entry_id.clone(),
             auxv: self.auxv.clone(),
@@ -1210,7 +1304,7 @@ impl LoadedStaticElf {
             // A guest-created child always has a traced parent: this process.
             is_traced_tree_root: false,
             logical_clock_ns: self.logical_clock_ns,
-            umask: self.umask,
+            umask,
             random_seed: self.random_seed,
             ids_per_task: self.ids_per_task,
             getrandom_offset: 0,
@@ -1249,6 +1343,7 @@ impl LoadedStaticElf {
             thread_signals: self.thread_signals.for_fork(),
             signal_dequeue_failure: None,
             task_lifecycle: self.task_lifecycle.clone(),
+            fdtable_capacity: self.copied_fdtable_capacity(),
             files: files
                 .into_iter()
                 .map(|(fd, file)| (fd, file.into_file()))
@@ -1275,6 +1370,7 @@ impl LoadedStaticElf {
             synthetic_proc_nofollow_fds: self.synthetic_proc_nofollow_fds.clone(),
             regular_create_directory_policy: self.regular_create_directory_policy,
             proc_mounts: self.proc_mounts.clone(),
+            proc_namespace: None,
             fdinfo_files: self.fdinfo_files.clone(),
             fdinfo_table: self.fdinfo_table.clone(),
             fd_object_inodes: self.fd_object_inodes.clone(),
@@ -1452,6 +1548,9 @@ impl LoadedStaticElf {
 
         self.cwd = previous.cwd;
         retired.push(std::mem::replace(&mut self.cwd_fd, previous.cwd_fd));
+        self.shared_fs = previous.shared_fs;
+        self.fs_cwd = previous.fs_cwd;
+        self.fdtable_capacity = previous.fdtable_capacity;
         retired.extend(std::mem::replace(&mut self.stdin, stdin));
         self.stdin_entry_id = stdin_entry_id;
         self.pid = previous.pid;
@@ -1461,6 +1560,7 @@ impl LoadedStaticElf {
         self.orphan_reaper_pid = previous.orphan_reaper_pid;
         // `execve` replaces the image, never the position in the process tree.
         self.is_traced_tree_root = previous.is_traced_tree_root;
+        self.proc_namespace = previous.proc_namespace;
         self.logical_clock_ns = previous.logical_clock_ns;
         self.signal_dequeue_failure = previous.signal_dequeue_failure;
         self.umask = previous.umask;
@@ -1970,6 +2070,7 @@ fn load_executable(
     };
     let thread_name =
         std::sync::Arc::new(std::sync::Mutex::new(initial_thread_name(&executable_path)));
+    let cmdline = argv.iter().flat_map(|argument| argument.as_bytes().iter().copied().chain([0])).collect();
     let argv0 = argv0.as_bytes().to_vec();
 
     memory.set_allocation_cursors(AllocationCursors {
@@ -1992,8 +2093,11 @@ fn load_executable(
         executable_file,
         executable_image: std::sync::Arc::from(image),
         argv0,
+        cmdline,
         cwd: cwd.to_owned(),
         cwd_fd,
+        shared_fs: None,
+        fs_cwd: None,
         stdin: None,
         stdin_entry_id: std::sync::Arc::new(()),
         auxv,
@@ -2039,6 +2143,7 @@ fn load_executable(
             1, 1, 1, true,
         ))),
         files: std::collections::BTreeMap::new(),
+        fdtable_capacity: 64,
         file_retirement: FileRetirement::default(),
         pipe_owners: Default::default(),
         fd_entry_ids: std::collections::BTreeMap::new(),
@@ -2057,6 +2162,7 @@ fn load_executable(
         synthetic_proc_nofollow_fds: std::collections::BTreeSet::new(),
         regular_create_directory_policy: initialize_regular_create_directory_policy()?,
         proc_mounts: std::sync::Arc::new(crate::proc_mounts::ProcMountSnapshot::capture()?),
+        proc_namespace: None,
         fdinfo_files: std::collections::BTreeMap::new(),
         fdinfo_table: std::sync::Weak::new(),
         fd_object_inodes: std::collections::BTreeMap::new(),
