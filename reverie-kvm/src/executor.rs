@@ -1290,6 +1290,9 @@ fn execute_basic_syscall_inner(
     } else if number == libc::SYS_rt_sigtimedwait as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         rt_sigtimedwait(memory, state, args)
+    } else if number == libc::SYS_rt_sigsuspend as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        rt_sigsuspend(memory, state, args)
     } else if number == libc::SYS_kill as u64
         || number == libc::SYS_tkill as u64
         || number == libc::SYS_tgkill as u64
@@ -7066,6 +7069,27 @@ impl ElfExecutor {
         self.state.thread_signals.lock().blocked
     }
 
+    /// The mask a signal frame saves for `rt_sigreturn` (Linux's
+    /// `sigmask_to_save`): the thread's own mask saved by a call that
+    /// installed a temporary one, or else the current mask.
+    pub(crate) fn frame_signal_mask(&self) -> KernelSigset {
+        let thread_signals = self.state.thread_signals.lock();
+        thread_signals
+            .saved_sigmask
+            .unwrap_or(thread_signals.blocked)
+    }
+
+    /// Linux's `restore_saved_sigmask`: a return boundary that runs no handler
+    /// puts back the mask a temporary-mask call saved.
+    pub(crate) fn restore_saved_signal_mask(&mut self) {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        let mut thread_signals = self.state.thread_signals.lock();
+        if let Some(saved) = thread_signals.saved_sigmask.take() {
+            thread_signals.blocked = saved;
+        }
+    }
+
     pub(crate) fn observe_ignored_signals_with_tool(&self) {
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
@@ -7163,6 +7187,10 @@ impl ElfExecutor {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut thread_signals = self.state.thread_signals.lock();
+        // The frame already saved any mask a temporary-mask call saved
+        // (`frame_signal_mask`); the handler runs under the temporary mask
+        // widened by its action, as Linux's `signal_delivered` does.
+        thread_signals.saved_sigmask = None;
         thread_signals.blocked.union_with(action.mask);
         if action.flags & libc::SA_NODEFER as u64 == 0 {
             thread_signals.blocked.insert(signal);
@@ -7187,6 +7215,7 @@ impl ElfExecutor {
         blocked.clear_unmaskable();
         let mut thread_signals = self.state.thread_signals.lock();
         thread_signals.blocked = blocked;
+        thread_signals.saved_sigmask = None;
         if let Ok(restored) =
             validate_altstack_update(thread_signals.altstack, Some(restorer_stack_pointer), stack)
         {
@@ -11839,9 +11868,10 @@ fn has_eligible_pending_signal(state: &LoadedStaticElf) -> bool {
             .any_eligible(blocked, generations)
 }
 
-/// Implements one instantaneous, unmasked, one-word pselect6 readiness probe.
-/// Detcore owns retries and guest time. All other valid execution forms remain
-/// explicitly unsupported, after Linux's original argument-validation order.
+/// Implements one instantaneous, one-word pselect6 readiness probe, with or
+/// without a temporary signal mask. Detcore owns retries and guest time. All
+/// other valid execution forms remain explicitly unsupported, after Linux's
+/// original argument-validation order.
 fn pselect6(
     memory: &GuestMemory,
     state: &LoadedStaticElf,
@@ -11874,7 +11904,7 @@ fn pselect6(
     };
 
     // set_user_sigmask ignores sigsetsize when the inner pointer is NULL.
-    let has_mask = sigmask_argument.is_some_and(|argument| argument.sigmask != 0);
+    let mut temporary_mask = None;
     if let Some(argument) = sigmask_argument
         && argument.sigmask != 0
     {
@@ -11885,6 +11915,9 @@ fn pselect6(
         if memory.user().read(argument.sigmask, &mut mask).is_err() {
             return negative_errno(libc::EFAULT);
         }
+        let mut mask = KernelSigset::from_bytes(mask);
+        mask.clear_unmaskable();
+        temporary_mask = Some(mask);
     }
 
     // The raw syscall argument is an int; Linux observes its signed low word.
@@ -11911,7 +11944,7 @@ fn pselect6(
             }
         }
     }
-    if !zero_timeout || has_mask {
+    if !zero_timeout {
         return negative_errno(libc::ENOSYS);
     }
 
@@ -11984,11 +12017,40 @@ fn pselect6(
         }
     }
     // Linux checks pending signals only after a zero-readiness sample and before
-    // copyout (core_sys_select). Our ordinary success return cannot represent its
-    // restart outcome, so refuse this still-unsupported signal completion without
-    // dequeuing anything. Positive readiness wins even with an eligible signal.
-    if ready_count == 0 && has_eligible_pending_signal(state) {
-        return negative_errno(libc::ENOSYS);
+    // copyout (core_sys_select). Positive readiness wins even with an eligible
+    // signal, and then, as on a zero result, Linux restores the thread's own mask
+    // before the call returns (poll_select_finish), so no temporary mask is
+    // installed here at all.
+    if ready_count == 0 {
+        match temporary_mask {
+            Some(mask) => {
+                // TODO-HUMAN-REVIEW(PR-id)
+                // The call returns ERESTARTNOHAND with the thread's own mask
+                // saved, and the return boundary delivers under the temporary
+                // mask. EINTR is what the caller sees when that delivery runs a
+                // handler or the process dies; a signal Linux would discard or
+                // stop on leaves a restart that a scalar return cannot express.
+                let transaction = state.signal_transaction.clone();
+                let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+                match temporary_mask_signal(state, mask) {
+                    TemporaryMaskSignal::None => {}
+                    TemporaryMaskSignal::Interrupts => {
+                        install_temporary_mask_for_delivery(state, mask);
+                        return negative_errno(libc::EINTR);
+                    }
+                    TemporaryMaskSignal::Unrepresentable => {
+                        return negative_errno(libc::ENOSYS);
+                    }
+                }
+            }
+            // Our ordinary success return cannot represent the unmasked
+            // restart outcome, so refuse this still-unsupported signal
+            // completion without dequeuing anything.
+            None if has_eligible_pending_signal(state) => {
+                return negative_errno(libc::ENOSYS);
+            }
+            None => {}
+        }
     }
     if nfds != 0 {
         for (&address, word) in args[1..4].iter().zip(output) {
@@ -21372,6 +21434,110 @@ fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
         }
     }
     event.signal() as i64
+}
+
+/// What a pending signal does to a call that waits under `mask` and ends
+/// with `ERESTARTNOHAND` when a signal it does not block is pending.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TemporaryMaskSignal {
+    /// No pending signal is eligible under the mask.
+    None,
+    /// Every eligible pending signal is caught or fatal. Linux returns
+    /// `ERESTARTNOHAND`, and the delivery at the return boundary makes that
+    /// `EINTR` (a handler) or ends the process (a fatal default).
+    Interrupts,
+    /// An eligible pending signal would be discarded (ignored) or stop the
+    /// process. Linux would then restart or stop the call, which this
+    /// executor's scalar return cannot represent, so the caller refuses.
+    Unrepresentable,
+}
+
+/// Classifies the pending signals eligible under `mask` without dequeuing
+/// any. The caller holds `signal_transaction`. Lock order is process before
+/// thread, as at the ordinary return-to-user boundary.
+fn temporary_mask_signal(state: &LoadedStaticElf, mask: KernelSigset) -> TemporaryMaskSignal {
+    let mut eligible = {
+        let process_signals = state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generations = &process_signals.pending_generations;
+        let thread_signals = state.thread_signals.lock();
+        let mut eligible = thread_signals.pending.pending_mask(generations);
+        eligible.union_with(process_signals.shared_pending.pending_mask(generations));
+        eligible
+    };
+    eligible.remove_all(mask);
+    let mut any = false;
+    for signal in 1..=64 {
+        if !eligible.contains(signal) {
+            continue;
+        }
+        any = true;
+        if matches!(
+            signal_disposition(state, signal),
+            SignalDisposition::Ignore | SignalDisposition::Stop
+        ) {
+            return TemporaryMaskSignal::Unrepresentable;
+        }
+    }
+    if any {
+        TemporaryMaskSignal::Interrupts
+    } else {
+        TemporaryMaskSignal::None
+    }
+}
+
+/// Installs `mask` as the thread's mask for a delivery at the coming return
+/// boundary and saves the thread's own mask for the signal frame (Linux's
+/// `set_restore_sigmask`). The caller holds `signal_transaction`.
+fn install_temporary_mask_for_delivery(state: &LoadedStaticElf, mut mask: KernelSigset) {
+    mask.clear_unmaskable();
+    let mut thread_signals = state.thread_signals.lock();
+    if thread_signals.saved_sigmask.is_none() {
+        thread_signals.saved_sigmask = Some(thread_signals.blocked);
+    }
+    thread_signals.blocked = mask;
+}
+
+/// Emulates `rt_sigsuspend(mask, sigsetsize)` when a pending signal already
+/// ends it.
+///
+/// Linux installs the temporary mask, sleeps until a signal it does not block
+/// is pending, and returns `ERESTARTNOHAND` with the thread's own mask saved;
+/// the delivery as the call returns runs the handler under the temporary mask
+/// (widened by the action), returns `EINTR` to the caller, and the frame's
+/// saved mask makes `rt_sigreturn` restore the thread's own mask. Detcore
+/// reads the temporary mask in the caller's turn and passes a private copy of
+/// it here. When it finds a signal the copy does not block already pending,
+/// this returns `EINTR` with the temporary mask installed and the own mask
+/// saved, so the return boundary delivers that signal exactly as Linux does.
+/// A wait for a signal that is not yet pending needs the scheduler to readmit
+/// the waiter when a signal arrives, which it does not model on this backend,
+/// so that form stays refused (ENOSYS) rather than parking the vCPU outside
+/// the schedule.
+// TODO-HUMAN-REVIEW(PR-id)
+fn rt_sigsuspend(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if args[1] != KERNEL_SIGSET_SIZE as u64 {
+        return negative_errno(libc::EINVAL);
+    }
+    let mask = match read_guest_bytes::<KERNEL_SIGSET_SIZE>(memory, args[0]) {
+        Ok(mask) => KernelSigset::from_bytes(mask),
+        Err(error) => return error,
+    };
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+    let mut wait_mask = mask;
+    wait_mask.clear_unmaskable();
+    match temporary_mask_signal(state, wait_mask) {
+        TemporaryMaskSignal::Interrupts => {
+            install_temporary_mask_for_delivery(state, wait_mask);
+            negative_errno(libc::EINTR)
+        }
+        TemporaryMaskSignal::None | TemporaryMaskSignal::Unrepresentable => {
+            negative_errno(libc::ENOSYS)
+        }
+    }
 }
 
 fn wait4_options_supported(raw: u64) -> bool {
@@ -34132,19 +34298,22 @@ mod tests {
             [65, BAD_ADDRESS, BAD_ADDRESS, BAD_ADDRESS, TIMEOUT, 0],
         );
 
-        // A fully valid argument set reaches the explicit fail-closed boundary
-        // without changing any guest byte. A NULL timeout (an infinite wait in
-        // Linux) reaches the same boundary immediately and never host-blocks.
+        // A masked zero-timeout probe with nothing pending samples readiness
+        // and leaves the thread's mask exactly as it was (poll_select_finish
+        // restores it before return), changing no guest byte for empty sets.
+        // A NULL timeout (an infinite wait in Linux) reaches the explicit
+        // fail-closed boundary immediately and never host-blocks.
         memory.write(SIGNAL_MASK, &[0; KERNEL_SIGSET_SIZE]).unwrap();
         let valid_mask = Pselect6SigmaskArg {
             sigmask: SIGNAL_MASK,
             sigsetsize: KERNEL_SIGSET_SIZE as u64,
         };
         assert_eq!(write_struct(&mut memory, OUTER, &valid_mask), 0);
-        assert_refused_without_mutation(
+        assert_result_without_mutation(
             &mut memory,
             &mut state,
             [1, READ_SET, WRITE_SET, EXCEPT_SET, TIMEOUT, OUTER],
+            0,
         );
         assert_refused_without_mutation(&mut memory, &mut state, [0, 0, 0, 0, 0, OUTER]);
         assert_refused_without_mutation(&mut memory, &mut state, [0, 0, 0, 0, 0, 0]);
