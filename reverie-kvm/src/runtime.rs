@@ -4898,17 +4898,25 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
-        if fault.is_none() && executor.signal_controlled() && executor.delivery_permit().is_none() {
+        if executor.signal_controlled() && executor.delivery_permit().is_none() {
             let identity = executor.signal_task_identity().ok_or_else(|| {
                 Error::UnexpectedVcpuExit("signal return lost task generation".to_owned())
             })?;
+            // A CPU exception is raised by the running task at its faulting
+            // instruction, which is a deterministic point in that task's own
+            // execution. Its delivery uses the same permit protocol as a
+            // signal taken at a syscall boundary whenever the Tool grants one,
+            // so a fatal fault reaches the Tool as a terminal receipt before
+            // its parent can observe the death. Without a grant the fault is
+            // still synchronous and still delivered: it cannot be deferred.
             let permit = global_state
                 .authorize_backend_signal_boundary(identity)
                 .map_err(Error::Reverie)?;
             if permit.is_none() {
-                return Ok(CallbackOutcome::Completed(None));
-            }
-            if executor.delivery_permit() != permit {
+                if fault.is_none() {
+                    return Ok(CallbackOutcome::Completed(None));
+                }
+            } else if executor.delivery_permit() != permit {
                 return Err(Error::UnexpectedVcpuExit(
                     "unregistered signal return permit".to_owned(),
                 ));
@@ -5712,14 +5720,28 @@ impl KvmBackend {
                         if let Some((segment, address)) = executor.take_segment() {
                             set_user_segment_base(&self.vcpu, segment, address)?;
                         }
+                        let mut delivered = false;
                         if !executor.has_pending_exit() {
                             if let Some(pending) = pending {
-                                self.deliver_user_trap(executor, &fault, pending)?;
+                                delivered = self.deliver_user_trap(executor, &fault, pending)?;
                             } else {
                                 fault.resume_user(self, fault.registers)?;
                             }
                         }
-                        if let Some(exit) = executor.take_exit() {
+                        let mut fault_exit = executor.take_exit();
+                        let outcome = if let Some(exit) = fault_exit {
+                            exit.signal_boundary_outcome()
+                        } else if delivered {
+                            reverie::SignalBoundaryOutcome::Caught
+                        } else {
+                            reverie::SignalBoundaryOutcome::NoHandler
+                        };
+                        // Settles a permit granted for this fault; a permitless
+                        // fault has nothing to settle and returns immediately.
+                        self.finish_signal_boundary(executor, global_state.as_ref(), outcome)
+                            .await?;
+                        fault_exit = fault_exit.or_else(|| executor.take_exit());
+                        if let Some(exit) = fault_exit {
                             self.discard_process_clear_tid_at_signal_return(executor);
                             if exit.group {
                                 self.request_guest_thread_group_exit(exit.status);
