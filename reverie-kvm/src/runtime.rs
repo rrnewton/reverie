@@ -3932,6 +3932,40 @@ impl KvmBackend {
         }
     }
 
+    /// Requests a delivery permit for a CPU exception the Tool has just let
+    /// through, immediately before its frame or default action is committed.
+    ///
+    /// The exception is raised by the running task at its faulting
+    /// instruction, a deterministic point in that task's own execution. The
+    /// permit is requested after the Tool's signal callback, with no further
+    /// Tool request before `finish_signal_boundary` settles it, so the Tool
+    /// does not hold it across a scheduling point where a sibling's exit could
+    /// need one. A fatal fault then reaches the Tool as a terminal receipt
+    /// before its parent can observe the death, as a fatal signal taken at a
+    /// syscall boundary does. When the Tool declines, the fault is still
+    /// synchronous and is still delivered: it cannot be deferred.
+    fn authorize_fault_boundary<G: GlobalTool>(
+        &self,
+        executor: &ElfExecutor,
+        global: &G,
+    ) -> Result<()> {
+        if !executor.signal_controlled() || executor.delivery_permit().is_some() {
+            return Ok(());
+        }
+        let identity = executor.signal_task_identity().ok_or_else(|| {
+            Error::UnexpectedVcpuExit("CPU exception lost task generation".to_owned())
+        })?;
+        let permit = global
+            .authorize_backend_signal_boundary(identity)
+            .map_err(Error::Reverie)?;
+        if permit.is_some() && executor.delivery_permit() != permit {
+            return Err(Error::UnexpectedVcpuExit(
+                "unregistered CPU exception permit".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn finish_signal_boundary<G: GlobalTool>(
         &mut self,
         executor: &mut ElfExecutor,
@@ -4899,25 +4933,17 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
-        if executor.signal_controlled() && executor.delivery_permit().is_none() {
+        if fault.is_none() && executor.signal_controlled() && executor.delivery_permit().is_none() {
             let identity = executor.signal_task_identity().ok_or_else(|| {
                 Error::UnexpectedVcpuExit("signal return lost task generation".to_owned())
             })?;
-            // A CPU exception is raised by the running task at its faulting
-            // instruction, which is a deterministic point in that task's own
-            // execution. Its delivery uses the same permit protocol as a
-            // signal taken at a syscall boundary whenever the Tool grants one,
-            // so a fatal fault reaches the Tool as a terminal receipt before
-            // its parent can observe the death. Without a grant the fault is
-            // still synchronous and still delivered: it cannot be deferred.
             let permit = global_state
                 .authorize_backend_signal_boundary(identity)
                 .map_err(Error::Reverie)?;
             if permit.is_none() {
-                if fault.is_none() {
-                    return Ok(CallbackOutcome::Completed(None));
-                }
-            } else if executor.delivery_permit() != permit {
+                return Ok(CallbackOutcome::Completed(None));
+            }
+            if executor.delivery_permit() != permit {
                 return Err(Error::UnexpectedVcpuExit(
                     "unregistered signal return permit".to_owned(),
                 ));
@@ -5720,6 +5746,9 @@ impl KvmBackend {
                         };
                         if let Some((segment, address)) = executor.take_segment() {
                             set_user_segment_base(&self.vcpu, segment, address)?;
+                        }
+                        if pending.is_some() && !executor.has_pending_exit() {
+                            self.authorize_fault_boundary(executor, global_state.as_ref())?;
                         }
                         let mut delivered = false;
                         if !executor.has_pending_exit() {
