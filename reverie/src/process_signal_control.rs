@@ -340,10 +340,37 @@ pub trait ProcessSignalControl: Debug + Send + Sync {
         signal: i32,
     ) -> Result<Vec<SignalRecipient>, Errno>;
 
-    /// Eligible live recipients, in ascending numeric TID order. The caller
-    /// intersects these with its causally admitted task generations.
-    fn alarm_recipients(&self, process: SignalProcessId) -> Result<Vec<SignalRecipient>, Errno> {
-        self.signal_recipients(process, libc::SIGALRM)
+    /// Every live task of `process` that does not block at least one signal
+    /// currently pending on the process's shared queue, in ascending numeric
+    /// TID order: the tasks a parked observation could deliver some pending
+    /// signal to. The pending signal may have any origin, such as an
+    /// `ITIMER_REAL` or POSIX timer expiration or a `kill(2)` from another
+    /// process, so a caller that wakes parked tasks must not assume
+    /// `SIGALRM`. The caller intersects these with its causally admitted task
+    /// generations.
+    ///
+    /// The default asks [`Self::signal_recipients`] for every standard and
+    /// real-time signal and merges the answers; a backend with a direct view
+    /// of its shared pending set should answer in one pass.
+    // TODO-HUMAN-REVIEW(PR-id): Review the pending-signal recipient query
+    // that replaces the SIGALRM-only alarm_recipients.
+    fn pending_signal_recipients(
+        &self,
+        process: SignalProcessId,
+    ) -> Result<Vec<SignalRecipient>, Errno> {
+        let mut recipients: Vec<SignalRecipient> = Vec::new();
+        for signal in 1..=libc::SIGRTMAX() {
+            if signal == libc::SIGKILL || signal == libc::SIGSTOP {
+                continue;
+            }
+            for recipient in self.signal_recipients(process, signal)? {
+                if !recipients.contains(&recipient) {
+                    recipients.push(recipient);
+                }
+            }
+        }
+        recipients.sort_by_key(|recipient| recipient.task.tid);
+        Ok(recipients)
     }
 
     /// Register one selected task. A second outstanding permit is not a retry.

@@ -1747,7 +1747,7 @@ fn native_signal_setup_refusal_retires_before_hooks_and_preserves_original_cause
             );
             let control = global.control.lock().unwrap().as_ref().unwrap().clone();
             assert_eq!(
-                control.process.alarm_recipients(identity.process),
+                control.process.pending_signal_recipients(identity.process),
                 Err(Errno::ESRCH),
                 "no executor registry remains after refusal"
             );
