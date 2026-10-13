@@ -16498,9 +16498,7 @@ fn fstatat_impl(
         flags & libc::AT_SYMLINK_NOFOLLOW != 0,
     ) {
         Err(error) => return error,
-        Ok(Some(
-            procfs_path::ProcMetadata::Stat(stat) | procfs_path::ProcMetadata::Peer(stat),
-        )) => {
+        Ok(Some(procfs_path::ProcMetadata::Stat(stat) | procfs_path::ProcMetadata::Peer(stat))) => {
             return write_struct(memory, output_address, &stat);
         }
         Ok(Some(procfs_path::ProcMetadata::Path(path))) => Some(path),
@@ -16939,7 +16937,13 @@ fn fstatfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
-    if state.proc_files.contains_key(&guest_fd) {
+    // The root keeps its refusal; the files and directories beneath it are
+    // memfd carriers whose own filesystem must not show through.
+    if state
+        .proc_files
+        .get(&guest_fd)
+        .is_some_and(|inode| !is_synthetic_proc_directory_inode(*inode))
+    {
         return write_struct(memory, args[1], &synthetic_procfs_statfs());
     }
     fstatfs_host(memory, host_fd, args[1])
@@ -17896,6 +17900,7 @@ fn synthetic_proc_pwrite_errno(inode: u64) -> libc::c_int {
     if [
         b"/proc/self/cmdline".as_slice(),
         b"/proc/sys/kernel/osrelease".as_slice(),
+        b"/proc/sys/kernel/pid_max".as_slice(),
     ]
     .iter()
     .any(|path| synthetic_proc_inode(path) == inode)
@@ -27579,15 +27584,25 @@ mod tests {
             "unlisted relative proc path leaked through"
         );
 
+        // The synthetic directory enumerates as Linux's /proc does: `.` and
+        // `..`, its own names, `self` and `thread-self`, then one directory
+        // per live process.
+        let (count, records) =
+            proc_getdents64(&mut memory, &mut state, proc_fd as u64, 0x2000, 0x400);
+        assert!(
+            count > 0,
+            "the synthetic directory must list its entries: {count}"
+        );
+        let entries: Vec<_> = records
+            .iter()
+            .map(|record| (record.name.as_str(), record.kind))
+            .collect();
+        assert_eq!(entries[..2], [(".", libc::DT_DIR), ("..", libc::DT_DIR)]);
+        assert!(entries.contains(&("cpuinfo", libc::DT_REG)));
+        assert!(entries.contains(&("self", libc::DT_LNK)));
         assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_getdents64,
-                [proc_fd as u64, 0x2000, 0x400, 0, 0, 0]
-            ),
-            0,
-            "the intentionally unenumerable synthetic directory must appear empty"
+            entries.last(),
+            Some(&(state.pid.to_string().as_str(), libc::DT_DIR))
         );
     }
 
@@ -48842,7 +48857,7 @@ mod tests {
     }
 
     #[test]
-    fn getdents64_low_words_keep_synthetic_proc_unenumerable() {
+    fn getdents64_low_words_enumerate_synthetic_proc() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
@@ -48894,29 +48909,44 @@ mod tests {
                 state.proc_files.get(&(alias as libc::c_int)),
                 state.proc_files.get(&(fd as libc::c_int))
             );
-            let expected = if flags & libc::O_PATH != 0 {
-                negative_errno(libc::EBADF)
-            } else {
-                0
-            };
-            descriptors.extend([(fd as u64, expected), (alias as u64, expected)]);
+            let path_only = flags & libc::O_PATH != 0;
+            descriptors.extend([(fd as u64, path_only), (alias as u64, path_only)]);
         }
-        for (fd, expected) in descriptors {
+        for (fd, path_only) in descriptors {
             for upper in GETDENTS64_UPPER_WORDS {
                 for address in [0x100, PAGE_SIZE, PAGE_SIZE - 23, u64::MAX] {
                     for length in [0, 1, 23, 24, 1024] {
-                        assert_eq!(
-                            checked_getdents64(
-                                &mut memory,
-                                &mut state,
-                                upper | fd,
-                                address,
-                                length
-                            )
-                            .0,
-                            expected,
+                        // Each call reads from the start, whose first entry is
+                        // `.`: a 24-byte record of which Linux writes 21 bytes.
+                        // As on Linux, a count too small for it is EINVAL
+                        // before the buffer is checked, a buffer that cannot
+                        // take it is EFAULT, and a fault on a later record
+                        // ends the call after the records before it.
+                        if !path_only {
+                            rewind_getdents64(&mut memory, &mut state, fd as libc::c_int);
+                        }
+                        let (result, records) =
+                            proc_getdents64(&mut memory, &mut state, upper | fd, address, length);
+                        let context = format!(
                             "synthetic proc policy: fd={fd}, upper={upper:#x}, pointer={address:#x}, count={length}"
                         );
+                        if path_only {
+                            assert_eq!(result, negative_errno(libc::EBADF), "{context}");
+                        } else if length < 24 {
+                            assert_eq!(result, negative_errno(libc::EINVAL), "{context}");
+                        } else if address == PAGE_SIZE || address == u64::MAX {
+                            assert_eq!(result, negative_errno(libc::EFAULT), "{context}");
+                        } else {
+                            let names: Vec<_> =
+                                records.iter().map(|record| record.name.as_str()).collect();
+                            if length == 24 || address == PAGE_SIZE - 23 {
+                                assert_eq!((result, names), (24, vec!["."]), "{context}");
+                            } else {
+                                assert!(result > 24, "{context}");
+                                assert_eq!(names[..2], [".", ".."], "{context}");
+                                assert_eq!(names.last(), Some(&"1"), "{context}");
+                            }
+                        }
                     }
                 }
             }

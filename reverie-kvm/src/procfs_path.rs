@@ -285,8 +285,7 @@ impl ProcTaskTarget {
         let mut view = self.process_view.clone();
         if same_process {
             view.umask = state.umask;
-        } else if let Some(published) = lifecycle.process_view(self.tgid, self.process_generation)
-        {
+        } else if let Some(published) = lifecycle.process_view(self.tgid, self.process_generation) {
             view.umask = published.umask;
         } else if file == ProcessProcFile::Status {
             return Err(negative_errno(libc::ENOSYS));
@@ -753,6 +752,13 @@ pub(super) fn resolve(
                     .as_ref()
                     .ok_or_else(|| negative_errno(libc::ENOENT))?
                     .live_task()?;
+            } else if components
+                .last()
+                .is_some_and(|component| component == b"task")
+                && target.is_none()
+            {
+                // The synthetic namespace init has no guest tasks.
+                return Err(negative_errno(libc::ENOENT));
             }
             continue;
         }
@@ -771,9 +777,16 @@ pub(super) fn resolve(
         } else {
             false
         };
+        // Another process's exe link, or the synthetic init's, is not served.
+        let foreign = match &target {
+            Some(target) => target.tgid != state.pid,
+            None => components
+                .get(1)
+                .is_some_and(|c| parse_proc_id(c).is_some()),
+        };
         let exists = process_file
             || synthetic_proc_content(state, &canonical).is_some()
-            || guest_proc_exe_path(state, &canonical).is_some()
+            || (!foreign && guest_proc_exe_path(state, &canonical).is_some())
             || matches!(canonical.as_slice(), b"/proc/self/cwd" | b"/proc/self/root")
             || canonical == PROC_SELF_LOGINUID
             || fdinfo_file;
@@ -1114,9 +1127,9 @@ fn entry_inode(state: &LoadedStaticElf, resolved: &ProcPath, path: &[u8]) -> u64
         } if process_file_name(path).is_some() => synthetic_proc_inode(
             &target.identity_path(process_file_name(path).expect("checked process file")),
         ),
-        ProcPath::File { path, .. } => synthetic_proc_inode(
-            &normalize_proc_path(state, path).unwrap_or_else(|| path.clone()),
-        ),
+        ProcPath::File { path, .. } => {
+            synthetic_proc_inode(&normalize_proc_path(state, path).unwrap_or_else(|| path.clone()))
+        }
         _ => synthetic_proc_inode(path),
     }
 }
@@ -1178,7 +1191,8 @@ fn directory_entries(
         }
         [_, pid] | [_, pid, _, _]
             if is_id(pid)
-                && (components.len() == 2 || (components[2] == b"task" && is_id(&components[3]))) =>
+                && (components.len() == 2
+                    || (components[2] == b"task" && is_id(&components[3]))) =>
         {
             let thread = components.len() == 4;
             let mut position = 2;
@@ -1220,22 +1234,17 @@ fn directory_entries(
                 ));
             }
         }
-        [.., last] if last == b"fd" || last == b"fdinfo" => {
+        [.., last] if last == b"fd" => {
             let target = directory
                 .target
                 .as_ref()
                 .ok_or_else(|| negative_errno(libc::ENOENT))?;
-            let kind = if last == b"fd" {
-                libc::DT_LNK
-            } else {
-                libc::DT_REG
-            };
             for fd in target.fds(state)? {
                 let name = fd.to_string().into_bytes();
                 let entry_path = child_path(&path, &name);
                 entries.push(ProcDirent::new(
                     2 + i64::from(fd),
-                    kind,
+                    libc::DT_LNK,
                     name,
                     &entry_path,
                 ));
@@ -1265,12 +1274,13 @@ pub(super) fn getdents64(
     // Serializes one read-and-advance of a shared position, like Linux's
     // f_pos lock.
     static POSITION: Mutex<()> = Mutex::new(());
-    if let Err(error) = validate_guest_iovec_address(address, count as usize) {
-        return error;
-    }
-    // Linux keeps the count in an int; a larger one holds no entry.
+    // Linux checks the buffer only as it copies each entry, after checking
+    // that the entry fits. It keeps the count in an int; a larger one holds
+    // no entry.
     let capacity = i32::try_from(count).map_or(0, |count| count as usize);
-    let _position = POSITION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _position = POSITION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     // SAFETY: file owns a live descriptor; SEEK_CUR with offset 0 only reads.
     let position = unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR) };
     if position < 0 {
@@ -1296,7 +1306,7 @@ pub(super) fn getdents64(
         }
         if memory
             .user()
-            .write(address + copied as u64, &record[..written])
+            .copy_to_user(address.wrapping_add(copied as u64), &record[..written])
             .is_err()
         {
             if copied == 0 {
