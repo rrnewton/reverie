@@ -407,6 +407,23 @@ impl State {
         }
     }
 
+    /// The notification for a transition that only retires activity: a short
+    /// copy ending or a member stopping after its entry. Only a closer waits for
+    /// that (`stopped()`), and a closer exists only once admission has left
+    /// `Open`, under this lock. Every other waiter (`EntryDriverWatch`, blocked
+    /// copies, owners) waits for a failure, a reopening or an owner change,
+    /// which such a transition never makes. So while admission is `Open`, with
+    /// no failure and nothing deferred, nobody can observe it, and swapping the
+    /// change channel would only wake every sibling vCPU thread parked in a
+    /// callback once per guest copy and exit.
+    fn activity_retired(&mut self) -> Option<ChangeSignal> {
+        let observable = self.admission != Admission::Open
+            || self.failure.is_some()
+            || !self.owner_notifications.is_empty()
+            || !self.retired_origins.is_empty();
+        observable.then(|| self.changed())
+    }
+
     fn stopped(&self) -> bool {
         self.copies == 0
             && self
@@ -1092,9 +1109,11 @@ impl Entry<'_> {
         }
         self.acknowledged = true;
         let result = state.check();
-        let sender = state.changed();
+        let sender = state.activity_retired();
         drop(state);
-        notify(sender);
+        if let Some(sender) = sender {
+            notify(sender);
+        }
         result
     }
 }
@@ -1184,13 +1203,13 @@ impl CopyAccess {
     pub(crate) fn retire_deferred(mut self) -> CopyRetirement {
         let change = self.retire();
         CopyRetirement {
-            change: Some(change),
+            change,
             origin: Some(std::mem::take(&mut self.origin)),
             _gate: self.gate.clone(),
         }
     }
 
-    fn retire(&mut self) -> ChangeSignal {
+    fn retire(&mut self) -> Option<ChangeSignal> {
         assert!(!self.retired, "copy retired twice");
         {
             let mut state = self.gate.state.lock().unwrap();
@@ -1199,15 +1218,17 @@ impl CopyAccess {
             }
             state.copies = state.copies.checked_sub(1).expect("copy retired twice");
             self.retired = true;
-            state.changed()
+            state.activity_retired()
         }
     }
 }
 
 impl Drop for CopyAccess {
     fn drop(&mut self) {
-        if !self.retired {
-            notify(self.retire());
+        if !self.retired
+            && let Some(change) = self.retire()
+        {
+            notify(change);
         }
     }
 }
@@ -1795,11 +1816,16 @@ mod tests {
         }
     }
 
+    /// A retirement a closer can observe notifies exactly once, and only after
+    /// the caller releases its external locks. Each retirement runs under a
+    /// pending close, the one waiter a copy's end concerns
+    /// (`State::activity_retired`).
     #[test]
     fn copy_retirement_decrements_now_and_notifies_once_after_external_unlock() {
         for explicit_notify in [false, true] {
             let gate = EntryGate::new();
             let copy = gate.try_copy(None).unwrap().unwrap();
+            let closing = gate.try_close().unwrap().unwrap();
             let observer = Arc::new(PublicationLockWake {
                 gate: gate.clone(),
                 allocation: Arc::new(Mutex::new(())),
@@ -1847,8 +1873,10 @@ mod tests {
                     .is_ready()
             );
             assert_eq!(observer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            drop(block_on(closing.finish()).unwrap());
 
             let ordinary = gate.try_copy(None).unwrap().unwrap();
+            let closing = gate.try_close().unwrap().unwrap();
             let mut next = pin!(gate.subscribe());
             assert!(
                 next.as_mut()
@@ -1864,7 +1892,68 @@ mod tests {
                     .is_ready()
             );
             assert_eq!(observer.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+            drop(block_on(closing.finish()).unwrap());
         }
+    }
+
+    /// With admission open and no failure, a copy ending or a member stopping
+    /// after its entry changes nothing a waiter watches, so subscribers (the
+    /// sibling vCPU threads parked in callbacks) are not woken; before, every
+    /// guest copy and exit woke all of them. A closer that starts afterwards
+    /// still sees the quiescent state at once, and a failure still notifies.
+    #[test]
+    fn open_gate_activity_retirement_wakes_no_subscriber() {
+        let gate = EntryGate::new();
+        let mut participant = gate.register().unwrap();
+        let mut changed = pin!(gate.subscribe());
+        let waker = noop_waker();
+        assert!(
+            changed
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+
+        drop(gate.try_copy(None).unwrap().unwrap());
+        gate.try_copy(None)
+            .unwrap()
+            .unwrap()
+            .retire_deferred()
+            .notify();
+        let mut entry = participant.try_enter().unwrap().unwrap();
+        assert!(entry.activate(|| Ok(())).unwrap());
+        entry.withdraw();
+        entry.acknowledge(Ok(())).unwrap();
+        assert_eq!(gate.test_state().copies, 0);
+        assert!(
+            changed
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending(),
+            "an unobservable retirement woke a subscriber"
+        );
+
+        let closed = block_on(gate.try_close().unwrap().unwrap().finish()).unwrap();
+        assert!(
+            changed
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_ready()
+        );
+        drop(closed);
+
+        let mut failed = pin!(gate.subscribe());
+        let mut entry = participant.try_enter().unwrap().unwrap();
+        assert!(entry.activate(|| Ok(())).unwrap());
+        entry.withdraw();
+        assert!(entry.acknowledge(Err(protocol_failure("cleanup"))).is_err());
+        assert!(
+            failed
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_ready(),
+            "a retirement that records a failure must notify"
+        );
     }
 
     #[test]
