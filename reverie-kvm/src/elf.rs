@@ -372,6 +372,13 @@ pub(crate) struct TaskLifecycleTable {
         i32,
         std::sync::Weak<std::sync::Mutex<crate::signal::ThreadSignalState>>,
     >,
+    task_names:
+        std::collections::BTreeMap<i32, std::sync::Weak<std::sync::Mutex<[u8; TASK_COMM_LEN]>>>,
+    task_files: std::collections::BTreeMap<
+        i32,
+        std::sync::Weak<std::sync::Mutex<crate::executor::FileTableState>>,
+    >,
+    task_captures: std::collections::BTreeMap<i32, crate::executor::CaptureMetadata>,
     process_exits: std::collections::BTreeMap<(i32, u64), ProcessExitState>,
     pub(crate) parent_death: parent_death::ParentDeathState,
 }
@@ -419,6 +426,9 @@ impl TaskLifecycleTable {
         );
         // A reused numeric TID never inherits the old task's signal endpoint.
         self.signal_targets.remove(&tid);
+        self.task_names.remove(&tid);
+        self.task_files.remove(&tid);
+        self.task_captures.remove(&tid);
         generation
     }
 
@@ -457,6 +467,41 @@ impl TaskLifecycleTable {
             .and_then(SharedThreadSignalState::upgrade)
     }
 
+    pub(crate) fn bind_proc_task(
+        &mut self,
+        tid: i32,
+        name: &std::sync::Arc<std::sync::Mutex<[u8; TASK_COMM_LEN]>>,
+        files: &std::sync::Arc<std::sync::Mutex<crate::executor::FileTableState>>,
+        capture: Option<crate::executor::CaptureMetadata>,
+    ) {
+        self.task_names.insert(tid, std::sync::Arc::downgrade(name));
+        self.task_files
+            .insert(tid, std::sync::Arc::downgrade(files));
+        if let Some(capture) = capture {
+            self.task_captures.insert(tid, capture);
+        } else {
+            self.task_captures.remove(&tid);
+        }
+    }
+
+    pub(crate) fn task_name(
+        &self,
+        tid: i32,
+    ) -> Option<std::sync::Arc<std::sync::Mutex<[u8; TASK_COMM_LEN]>>> {
+        self.task_names.get(&tid)?.upgrade()
+    }
+
+    pub(crate) fn task_files(
+        &self,
+        tid: i32,
+    ) -> Option<std::sync::Weak<std::sync::Mutex<crate::executor::FileTableState>>> {
+        self.task_files.get(&tid).cloned()
+    }
+
+    pub(crate) fn task_capture(&self, tid: i32) -> Option<crate::executor::CaptureMetadata> {
+        self.task_captures.get(&tid).copied()
+    }
+
     pub(crate) fn ensure_registered(
         &mut self,
         tid: i32,
@@ -478,6 +523,9 @@ impl TaskLifecycleTable {
         {
             self.tasks.remove(&tid);
             self.signal_targets.remove(&tid);
+            self.task_names.remove(&tid);
+            self.task_files.remove(&tid);
+            self.task_captures.remove(&tid);
         }
     }
 
@@ -949,7 +997,7 @@ pub(crate) struct LoadedStaticElf {
     /// This is per-thread state: fork and clone inherit the caller's value,
     /// later changes affect only the calling thread, and exec initializes it
     /// from the replacement image name.
-    pub thread_name: [u8; TASK_COMM_LEN],
+    pub thread_name: std::sync::Arc<std::sync::Mutex<[u8; TASK_COMM_LEN]>>,
     /// The thread-group leader's name, exposed by process-level procfs files.
     /// Threads share this value while process children receive an independent
     /// copy initialized from the calling thread's name.
@@ -1135,6 +1183,9 @@ impl LoadedStaticElf {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .for_fork();
+        let thread_name = std::sync::Arc::new(std::sync::Mutex::new(
+            *self.thread_name.lock().unwrap_or_else(|p| p.into_inner()),
+        ));
         Ok(Self {
             entry_point: self.entry_point,
             stack_pointer: self.stack_pointer,
@@ -1171,8 +1222,8 @@ impl LoadedStaticElf {
             ids_per_task: self.ids_per_task,
             getrandom_offset: 0,
             host_metadata_timestamps: self.host_metadata_timestamps,
-            thread_name: self.thread_name,
-            thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(self.thread_name)),
+            thread_name: thread_name.clone(),
+            thread_group_leader_name: thread_name,
             thp_disabled: std::sync::Arc::new(AtomicU8::new(
                 self.thp_disabled.load(Ordering::SeqCst),
             )),
@@ -1261,6 +1312,7 @@ impl LoadedStaticElf {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.thread_group_leader_name = thread_group_leader_name;
+        self.thread_name = self.thread_group_leader_name.clone();
         let thp_disabled =
             std::sync::Arc::new(AtomicU8::new(previous.thp_disabled.load(Ordering::SeqCst)));
         let regular_create_directory_policy = previous.regular_create_directory_policy;
@@ -1546,7 +1598,7 @@ pub(crate) fn load_static_elf_file(
         0,
         Some(Arc::new(file)),
     );
-    let mut loaded = match result {
+    let loaded = match result {
         Ok(loaded) => loaded,
         Err(error) => {
             memory.clear_user_access();
@@ -1554,7 +1606,7 @@ pub(crate) fn load_static_elf_file(
         }
     };
     let thread_name = initial_thread_name(&invoked_path);
-    loaded.thread_name = thread_name;
+    *loaded.thread_name.lock().unwrap_or_else(|p| p.into_inner()) = thread_name;
     *loaded
         .thread_group_leader_name
         .lock()
@@ -1924,7 +1976,8 @@ fn load_executable(
     } else {
         resolve_executable_path(argv0, envp, cwd).unwrap_or_else(|_| PathBuf::from(argv0))
     };
-    let thread_name = initial_thread_name(&executable_path);
+    let thread_name =
+        std::sync::Arc::new(std::sync::Mutex::new(initial_thread_name(&executable_path)));
     let argv0 = argv0.as_bytes().to_vec();
 
     memory.set_allocation_cursors(AllocationCursors {
@@ -1971,8 +2024,8 @@ fn load_executable(
         ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
         getrandom_offset: 0,
         host_metadata_timestamps: false,
-        thread_name,
-        thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(thread_name)),
+        thread_name: thread_name.clone(),
+        thread_group_leader_name: thread_name,
         thp_disabled: std::sync::Arc::new(AtomicU8::new(0)),
         keep_capabilities: false,
         capability_effective: GUEST_CAPABILITY_MASK,
