@@ -360,6 +360,49 @@ impl ProcTaskTarget {
         Ok(fds.into_iter().collect())
     }
 
+    /// `stat` of the object behind another table's descriptor. Only ordinary
+    /// host objects are described; a synthetic, captured or virtual-identity
+    /// descriptor keeps the ENOSYS boundary rather than show its carrier.
+    fn fd_stat(&self, state: &LoadedStaticElf, fd: i32) -> Result<libc::stat, i64> {
+        self.with_table(|table| {
+            let host = table_host_fd(table, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
+            let captured = self.capture.is_some()
+                && (table.stdout_alias_fds.contains(&fd)
+                    || table.stderr_alias_fds.contains(&fd)
+                    || ((fd == 1 || fd == 2)
+                        && !table.files.contains_key(&fd)
+                        && !table.closed_standard_fds.contains(&fd)));
+            let virtual_identity = table
+                .fd_object_inodes
+                .get(&fd)
+                .is_some_and(|identity| identity.timestamps != IdentityTimestamps::Host);
+            if captured
+                || virtual_identity
+                || table.proc_files.contains_key(&fd)
+                || table.fdinfo_files.contains_key(&fd)
+                || table.random_device_fds.contains(&fd)
+                || table.signalfd_fds.contains(&fd)
+            {
+                return Err(negative_errno(libc::ENOSYS));
+            }
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+            // SAFETY: stat is writable and the table keeps host live.
+            if unsafe { libc::fstat(host, stat.as_mut_ptr()) } != 0 {
+                return Err(io_error(std::io::Error::last_os_error()));
+            }
+            // SAFETY: fstat initialized stat on success.
+            let mut stat = unsafe { stat.assume_init() };
+            if !matches!(
+                stat.st_mode & libc::S_IFMT,
+                libc::S_IFREG | libc::S_IFDIR | libc::S_IFCHR | libc::S_IFBLK
+            ) {
+                return Err(negative_errno(libc::ENOSYS));
+            }
+            sanitize_host_stat_timestamps(state, &mut stat);
+            Ok(stat)
+        })
+    }
+
     fn fd_exists(&self, state: &LoadedStaticElf, fd: i32) -> Result<(), i64> {
         self.live_task()?;
         if self.is_current_table(state) {
@@ -612,6 +655,13 @@ pub(super) fn resolve(
             && let Some(tid) = parse_proc_id(&component)
         {
             let own = tid == state.pid || live_thread_in_process(state, tid);
+            if !own && tid == NAMESPACE_INIT_PID && synthetic_namespace_init(state) {
+                // A directory of fixed files; nothing beneath it is a task.
+                raw_proc_path = false;
+                target = None;
+                components.push(component);
+                continue;
+            }
             // Preserve the host-procfs isolation guard for a raw absolute name
             // that no guest task owns. After guest lookup, the original
             // pathname can name supervisor tasks/fds, so it must never become
@@ -842,6 +892,8 @@ pub(super) fn open_link(
 pub(super) enum ProcMetadata {
     Path(Vec<u8>),
     Stat(libc::stat),
+    /// Another table's descriptor, named through `/proc/<pid>/fd/<fd>`.
+    Peer(libc::stat),
 }
 
 pub(super) fn metadata(
@@ -899,7 +951,12 @@ pub(super) fn metadata(
         }
         Some(ProcPath::Fd { target, fd }) => {
             if !target.is_current_table(state) {
-                return Err(negative_errno(libc::ENOSYS));
+                return Ok(Some(if nofollow {
+                    target.fd_exists(state, fd)?;
+                    ProcMetadata::Peer(synthetic_guest_fd_symlink_stat(fd))
+                } else {
+                    ProcMetadata::Peer(target.fd_stat(state, fd)?)
+                }));
             }
             return Ok(Some(ProcMetadata::Path(
                 format!("/proc/self/fd/{fd}").into_bytes(),
@@ -1098,13 +1155,16 @@ fn directory_entries(
                     &child_path(&path, name),
                 ));
             }
-            let processes: Vec<i32> = state
+            let mut processes: std::collections::BTreeSet<i32> = state
                 .task_lifecycle
                 .lock()
                 .expect("KVM lifecycle lock poisoned")
                 .processes()
                 .map(|(tgid, _)| tgid)
                 .collect();
+            if synthetic_namespace_init(state) {
+                processes.insert(NAMESPACE_INIT_PID);
+            }
             for tgid in processes {
                 let name = tgid.to_string().into_bytes();
                 let entry_path = child_path(&path, &name);

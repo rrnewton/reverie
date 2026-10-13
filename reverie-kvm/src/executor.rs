@@ -2618,6 +2618,24 @@ impl ProcessProcView {
         self.umask = umask;
     }
 
+    /// The PID-namespace init outside the traced tree, the parent the root
+    /// guest reports (see `vm::root_parent_pid`). Its identity is fixed: it
+    /// is not a guest task, so nothing about it may come from the host.
+    fn namespace_init() -> Self {
+        let mut name = [0; TASK_COMM_LEN];
+        name[..NAMESPACE_INIT_NAME.len()].copy_from_slice(NAMESPACE_INIT_NAME);
+        Self {
+            pid: NAMESPACE_INIT_PID,
+            tid: NAMESPACE_INIT_PID,
+            ppid: 0,
+            orphan_reaper_pid: Arc::new(AtomicI32::new(0)),
+            leader_name: Arc::new(Mutex::new(name)),
+            umask: 0o022,
+            task: None,
+            cmdline: [NAMESPACE_INIT_NAME, b"\0"].concat(),
+        }
+    }
+
     fn of_thread(state: &LoadedStaticElf, tid: i32) -> Result<Self, i64> {
         let lifecycle = state
             .task_lifecycle
@@ -16480,7 +16498,9 @@ fn fstatat_impl(
         flags & libc::AT_SYMLINK_NOFOLLOW != 0,
     ) {
         Err(error) => return error,
-        Ok(Some(procfs_path::ProcMetadata::Stat(stat))) => {
+        Ok(Some(
+            procfs_path::ProcMetadata::Stat(stat) | procfs_path::ProcMetadata::Peer(stat),
+        )) => {
             return write_struct(memory, output_address, &stat);
         }
         Ok(Some(procfs_path::ProcMetadata::Path(path))) => Some(path),
@@ -16692,6 +16712,8 @@ fn statx(
             }
             return write_struct(memory, args[4], &procfs_path::extended(&stat));
         }
+        // Another table's host object has no synthetic statx form yet.
+        Ok(Some(procfs_path::ProcMetadata::Peer(_))) => return negative_errno(libc::ENOSYS),
         Ok(Some(procfs_path::ProcMetadata::Path(path))) => Some(path),
         Ok(None) => None,
     };
@@ -16917,7 +16939,46 @@ fn fstatfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
+    if state.proc_files.contains_key(&guest_fd) {
+        return write_struct(memory, args[1], &synthetic_procfs_statfs());
+    }
     fstatfs_host(memory, host_fd, args[1])
+}
+
+/// Linux x86-64 `struct statfs`, whose `f_flags` the libc crate keeps private.
+#[repr(C)]
+#[derive(Default)]
+struct LinuxStatfs {
+    f_type: i64,
+    f_bsize: i64,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: [i32; 2],
+    f_namelen: i64,
+    f_frsize: i64,
+    f_flags: i64,
+    f_spare: [i64; 4],
+}
+
+/// Linux's `ST_VALID`: `statfs` filled `f_flags`.
+const LINUX_ST_VALID: i64 = 0x0020;
+
+/// What Linux's procfs reports to `statfs`: its magic, a page block size,
+/// no blocks or inodes, and the nosuid, nodev, noexec and relatime flags of
+/// its usual mount. Nothing comes from the host's procfs.
+fn synthetic_procfs_statfs() -> LinuxStatfs {
+    LinuxStatfs {
+        f_type: PROC_SUPER_MAGIC,
+        f_bsize: PAGE_SIZE as i64,
+        f_namelen: 255,
+        f_frsize: PAGE_SIZE as i64,
+        f_flags: (libc::ST_NOSUID | libc::ST_NODEV | libc::ST_NOEXEC | libc::ST_RELATIME) as i64
+            | LINUX_ST_VALID,
+        ..LinuxStatfs::default()
+    }
 }
 
 fn fstatfs_host(memory: &mut GuestMemory, host_fd: RawFd, output: u64) -> i64 {
@@ -17877,6 +17938,30 @@ fn parse_proc_id(component: &[u8]) -> Option<i32> {
     })
 }
 
+/// PID 1 of the guest's PID namespace. When no guest task holds it, it is the
+/// init outside the traced tree that the root guest names as its parent, as
+/// the ptrace backend's Hermit process is.
+const NAMESPACE_INIT_PID: i32 = 1;
+const NAMESPACE_INIT_NAME: &[u8] = b"hermit";
+
+fn synthetic_namespace_init(state: &LoadedStaticElf) -> bool {
+    !live_guest_task(state, NAMESPACE_INIT_PID)
+}
+
+/// `/proc/1/{stat,status,cmdline}` of the synthetic namespace init.
+fn namespace_init_content(state: &LoadedStaticElf, normalized: &[u8]) -> Option<Vec<u8>> {
+    let name = normalized.strip_prefix(format!("/proc/{NAMESPACE_INIT_PID}/").as_bytes())?;
+    if !matches!(name, b"stat" | b"status" | b"cmdline") || !synthetic_namespace_init(state) {
+        return None;
+    }
+    let view = ProcessProcView::namespace_init();
+    Some(match name {
+        b"stat" => view.render(ProcessProcFile::Stat),
+        b"status" => view.render(ProcessProcFile::Status),
+        _ => view.cmdline,
+    })
+}
+
 fn live_guest_task(state: &LoadedStaticElf, tid: i32) -> bool {
     state
         .task_lifecycle
@@ -18004,6 +18089,9 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
             Some(tid) => ProcessProcView::of_thread(state, tid).ok()?.render(file),
             None => ProcessProcView::of(state).render(file),
         });
+    }
+    if let Some(content) = namespace_init_content(state, &normalized) {
+        return Some(content);
     }
     let content = match normalized.as_slice() {
         b"/proc/uptime" => b"0.00 0.00\n".to_vec(),
