@@ -8,6 +8,7 @@
 
 use std::io::Read;
 use std::io::{self};
+use std::os::fd::AsRawFd;
 
 /// The namespace used by the backend's ordinary host filesystem operations.
 /// Namespace-changing guest syscalls are unsupported, so fork and exec retain
@@ -16,6 +17,7 @@ use std::io::{self};
 pub(crate) struct ProcMountSnapshot {
     pub(crate) mountinfo: Vec<u8>,
     pub(crate) mounts: Vec<u8>,
+    pub(crate) proc_fs: ProcFilesystemMetadata,
 }
 
 impl ProcMountSnapshot {
@@ -23,7 +25,62 @@ impl ProcMountSnapshot {
         Ok(Self {
             mountinfo: read_snapshot("/proc/self/mountinfo")?,
             mounts: read_snapshot("/proc/self/mounts")?,
+            proc_fs: ProcFilesystemMetadata::capture()?,
         })
+    }
+}
+
+/// Metadata of the actual proc mount used by the existing backend filesystem
+/// view. This proves mount metadata only; ProcessBinding supplies task authority.
+#[derive(Debug)]
+pub(crate) struct ProcFilesystemMetadata {
+    pub(crate) mount_id: u64,
+    kind: libc::c_long,
+    block_size: libc::c_long,
+    blocks: libc::fsblkcnt_t,
+    free_blocks: libc::fsblkcnt_t,
+    available_blocks: libc::fsblkcnt_t,
+    files: libc::fsfilcnt_t,
+    free_files: libc::fsfilcnt_t,
+    name_length: libc::c_long,
+    fragment_size: libc::c_long,
+    flags: libc::c_long,
+}
+
+impl ProcFilesystemMetadata {
+    fn capture() -> io::Result<Self> {
+        let root = std::fs::File::open("/proc")?;
+        let mut stx = std::mem::MaybeUninit::<libc::statx>::zeroed();
+        let mut stat = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+        // SAFETY: root and both writable output objects are live for the calls.
+        if unsafe { libc::statx(root.as_raw_fd(), c"".as_ptr(), libc::AT_EMPTY_PATH,
+            libc::STATX_TYPE | libc::STATX_MNT_ID, stx.as_mut_ptr()) } != 0
+            || unsafe { libc::fstatfs(root.as_raw_fd(), stat.as_mut_ptr()) } != 0
+        { return Err(io::Error::last_os_error()); }
+        // SAFETY: both successful calls initialized their respective objects.
+        let stx = unsafe { stx.assume_init() };
+        let stat = unsafe { stat.assume_init() };
+        let required = libc::STATX_TYPE | libc::STATX_MNT_ID;
+        if stx.stx_mask & required != required || stx.stx_mode as libc::mode_t & libc::S_IFMT != libc::S_IFDIR
+            || stat.f_type != 0x9fa0 // include/uapi/linux/magic.h: PROC_SUPER_MAGIC
+        { return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP)); }
+        Ok(Self {
+            mount_id: stx.stx_mnt_id, kind: stat.f_type, block_size: stat.f_bsize,
+            blocks: stat.f_blocks, free_blocks: stat.f_bfree, available_blocks: stat.f_bavail,
+            files: stat.f_files, free_files: stat.f_ffree, name_length: stat.f_namelen,
+            fragment_size: stat.f_frsize, flags: stat.f_flags,
+        })
+    }
+
+    pub(crate) fn statfs(&self) -> libc::statfs {
+        // SAFETY: statfs is plain data. Padding/spare fields and fsid are zero;
+        // the existing shared/lower statfs normalizer supplies its same policy.
+        let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+        stat.f_type = self.kind; stat.f_bsize = self.block_size;
+        stat.f_blocks = self.blocks; stat.f_bfree = self.free_blocks; stat.f_bavail = self.available_blocks;
+        stat.f_files = self.files; stat.f_ffree = self.free_files; stat.f_namelen = self.name_length;
+        stat.f_frsize = self.fragment_size; stat.f_flags = self.flags;
+        stat
     }
 }
 

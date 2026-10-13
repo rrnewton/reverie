@@ -57,6 +57,12 @@ pub(crate) use child_wait::TestChildCompletion;
 use child_wait::WaitPhase;
 use child_wait::WaitPublication;
 
+#[path = "proc_namespace.rs"]
+mod proc_namespace;
+pub(crate) use proc_namespace::ProcNamespace;
+pub(crate) use proc_namespace::ProcOwnerSnapshot;
+pub(crate) use proc_namespace::ProcTaskImage;
+
 type ProcessKey = (i32, u64);
 
 fn process_key(process: SignalProcessId) -> ProcessKey {
@@ -101,6 +107,8 @@ pub(super) struct ProcessBinding {
 }
 
 impl ProcessBinding {
+    pub(super) fn identity(&self) -> SignalProcessId { self.identity }
+
     pub(super) fn rebind(&self, state: &LoadedStaticElf, files: &Arc<Mutex<FileTableState>>) {
         // Caller holds the authoritative file table and process transaction.
         state
@@ -198,6 +206,8 @@ enum NamespaceReaper {
 
 #[derive(Default)]
 struct ProcessFamilyState {
+    // Owned metadata projected at the existing process/task transitions.
+    proc_images: BTreeMap<ProcessKey, proc_namespace::ProcOwnerImage>,
     direct_children: BTreeMap<ProcessKey, BTreeMap<ProcessKey, DirectChildState>>,
     terminal: BTreeMap<ProcessKey, ProcessFamilyExit>,
     wait_publications: BTreeMap<ProcessKey, WaitPublication>,
@@ -307,6 +317,7 @@ impl ProcessFamilyState {
 
 #[derive(Default)]
 pub(crate) struct ProcessSignalRegistry {
+    proc_namespace_identity: Arc<()>,
     processes: Mutex<BTreeMap<(i32, u64), Weak<ProcessBinding>>>,
     // Logical process ancestry is independent of host join-handle placement.
     // It is retained by exact generation until a wait consumes a zombie, an
@@ -483,6 +494,7 @@ impl ProcessSignalRegistry {
         process: SignalProcessId,
         status: reverie::ExitStatus,
     ) -> ProcessFamilyExit {
+        let proc_terminal_name = self.proc_terminal_name(process);
         if let Some(exit) = self
             .family
             .lock()
@@ -667,6 +679,9 @@ impl ProcessSignalRegistry {
                 parent: parent_identity.expect("non-root KVM process retains a parent identity"),
             }
         };
+        if let (Some(image), Some(name)) = (family.proc_images.get_mut(&process_key(process)), proc_terminal_name) {
+            image.freeze_terminal(name, status);
+        }
         family.terminal.insert(process_key(process), exit);
         self.wait_changed.notify_all();
         if matches!(exit, ProcessFamilyExit::Root | ProcessFamilyExit::Child(_))

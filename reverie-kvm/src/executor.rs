@@ -66,12 +66,18 @@ use crate::signal::signal_info_user;
 #[path = "procfs_path.rs"]
 mod procfs_path;
 
+#[path = "proc_directory.rs"]
+mod proc_directory;
+
 #[path = "process_signal_publication.rs"]
 mod process_signal_publication;
 pub(crate) use process_signal_publication::ChildWaitContext;
 pub(crate) use process_signal_publication::ChildWaitReceipt;
 use process_signal_publication::ChildWaitSelection;
 pub(crate) use process_signal_publication::ProcessFamilyExit;
+pub(crate) use process_signal_publication::ProcNamespace;
+use process_signal_publication::ProcOwnerSnapshot;
+use process_signal_publication::ProcTaskImage;
 
 #[path = "capture_identity.rs"]
 mod capture_identity;
@@ -1103,9 +1109,7 @@ fn execute_basic_syscall_inner(
         // AUTONOMOUS-BOT-IMPLEMENTED
         fd_xattr_list(state, args[0])
     } else if number == libc::SYS_umask as u64 {
-        let previous = state.umask;
-        state.umask = args[0] as libc::mode_t & 0o777;
-        i64::from(previous)
+        guest_umask(state, args[0] as libc::mode_t & 0o777)
     } else if number == libc::SYS_fchmod as u64 {
         fchmod(state, args)
     } else if number == libc::SYS_chmod as u64 {
@@ -2336,6 +2340,7 @@ impl EpollProof {
 
 #[derive(Debug, Default)]
 pub(crate) struct FileTableState {
+    fdtable_capacity: usize,
     stdin: Option<std::fs::File>,
     stdin_entry_id: Arc<()>,
     files: std::collections::BTreeMap<i32, std::fs::File>,
@@ -2529,7 +2534,11 @@ fn take_proc_transfer(
 enum SeqProcSource {
     Directory(procfs_path::ProcDirectory),
     Link(Vec<u8>),
+    OwnedLink { target: Arc<procfs_path::ProcTaskTarget>, name: Vec<u8> },
+    OwnedContent { target: Arc<procfs_path::ProcTaskTarget>, name: Vec<u8> },
+    NamespaceContent { namespace: ProcNamespace, content: Vec<u8> },
     Fdinfo(FdinfoTarget),
+    OwnedFdinfo { observation: FdinfoTarget, owner: Arc<procfs_path::ProcTaskTarget>, fd: i32 },
     Process {
         file: ProcessProcFile,
         view: ProcessProcView,
@@ -2584,8 +2593,15 @@ struct ProcessProcView {
     ppid: i32,
     orphan_reaper_pid: Arc<AtomicI32>,
     leader_name: Arc<Mutex<[u8; TASK_COMM_LEN]>>,
-    umask: libc::mode_t,
+    umask: Option<libc::mode_t>,
     task: Option<(u64, Arc<Mutex<crate::elf::TaskLifecycleTable>>)>,
+    namespace: Option<ProcNamespace>,
+    process_generation: u64,
+    pgid: i32,
+    zombie: bool,
+    threads: usize,
+    fd_size: usize,
+    terminal_status: Option<ExitStatus>,
 }
 
 impl ProcessProcView {
@@ -2596,9 +2612,66 @@ impl ProcessProcView {
             ppid: state.ppid,
             orphan_reaper_pid: state.orphan_reaper_pid.clone(),
             leader_name: state.thread_group_leader_name.clone(),
-            umask: state.umask,
+            umask: Some(state.umask),
             task: None,
+            namespace: None,
+            process_generation: 0,
+            pgid: state.pgid,
+            zombie: false,
+            threads: 1,
+            fd_size: 64,
+            terminal_status: None,
         }
+    }
+
+    fn owned(namespace: &ProcNamespace, owner: &ProcOwnerSnapshot, tid: i32, thread: bool) -> Result<Self, i64> {
+        let task = owner.tasks.get(&tid);
+        if thread && task.is_none() { return Err(negative_errno(libc::ENOENT)); }
+        let umask = task.and_then(|task| task.fs.as_ref())
+            .map(|fs| fs.lock().unwrap_or_else(|p| p.into_inner()).umask);
+        let mut view = Self {
+            pid: owner.identity.tgid.as_raw(),
+            tid,
+            ppid: owner.ppid,
+            orphan_reaper_pid: owner.orphan_reaper_pid.clone(),
+            leader_name: if thread {
+                task.expect("validated owned proc task").name.clone()
+            } else { owner.leader_name.clone() },
+            umask,
+            task: if thread { task.map(|task| (task.generation, owner.lifecycle.clone())) } else { None },
+            namespace: Some(namespace.clone()),
+            process_generation: owner.identity.generation,
+            pgid: owner.pgid,
+            zombie: owner.zombie,
+            threads: 0,
+            fd_size: 0,
+            terminal_status: owner.terminal_status,
+        };
+        view.refresh_owned(owner)?;
+        Ok(view)
+    }
+
+    fn refresh_owned(&mut self, owner: &ProcOwnerSnapshot) -> Result<(), i64> {
+        let task = owner.tasks.get(&self.tid);
+        if let Some((generation, _)) = &self.task
+            && !task.is_some_and(|task| task.generation == *generation
+                && (!task.exited || self.tid == owner.identity.tgid.as_raw())) {
+            return Err(negative_errno(libc::ESRCH));
+        }
+        self.zombie = owner.zombie || task.is_some_and(|task| task.exited);
+        // The untraced leader retains its PID/thread-list node until the group
+        // is waitable/reaped; an exited nonleader is detached immediately.
+        self.threads = owner.tasks.values().filter(|task|
+            !task.exited || task.tid == owner.identity.tgid.as_raw()).count().max(1);
+        self.pgid = owner.pgid;
+        self.terminal_status = owner.terminal_status;
+        self.leader_name = if self.task.is_some() {
+            task.expect("validated owned proc task").name.clone()
+        } else { owner.leader_name.clone() };
+        self.fd_size = task.and_then(|task| task.files.upgrade())
+            .map_or(0, |table| table.lock().unwrap_or_else(|p| p.into_inner()).proc_capacity());
+        if task.is_none_or(|task| task.exited) { self.umask = None; }
+        Ok(())
     }
 
     fn of_thread(state: &LoadedStaticElf, tid: i32) -> Result<Self, i64> {
@@ -2654,6 +2727,25 @@ impl ProcessProcView {
     }
 
     fn stat(&self) -> Vec<u8> {
+        if self.namespace.is_some() {
+            // Retain the existing virtual accounting profile; publish real
+            // owned state/parent/group/thread/terminal fields, never host PIDs.
+            let mut fields = vec![b"0".to_vec(); 50];
+            fields[0] = if self.zombie { b"Z".to_vec() } else { b"R".to_vec() };
+            fields[1] = self.parent_pid().to_string().into_bytes();
+            fields[2] = self.pgid.to_string().into_bytes();
+            fields[5] = b"-1".to_vec();
+            fields[17] = self.threads.to_string().into_bytes();
+            if let Some(status) = self.terminal_status {
+                fields[49] = status.into_raw().to_string().into_bytes();
+            }
+            let mut line = format!("{} (", self.tid).into_bytes();
+            line.extend_from_slice(&self.comm());
+            line.extend_from_slice(b") ");
+            line.extend_from_slice(&fields.join(&b' '));
+            line.push(b'\n');
+            return line;
+        }
         // pid (comm) state ppid ... The fields after ppid are process-accounting
         // values reported as zero so no nondeterministic host state leaks. The
         // real file has 52 fields; pad with zeros so field-counting parsers are
@@ -2680,10 +2772,12 @@ impl ProcessProcView {
             }
         }
         content.push(b'\n');
+        if let Some(umask) = self.umask {
+            content.extend_from_slice(format!("Umask:\t{umask:04o}\n").as_bytes());
+        }
         content.extend_from_slice(
             format!(
-                "Umask:\t{umask:04o}\n\
-         State:\tR (running)\n\
+                "State:\t{state}\n\
          Tgid:\t{pid}\n\
          Ngid:\t0\n\
          Pid:\t{tid}\n\
@@ -2691,9 +2785,11 @@ impl ProcessProcView {
          TracerPid:\t0\n\
          Uid:\t0\t0\t0\t0\n\
          Gid:\t0\t0\t0\t0\n\
-         FDSize:\t64\n\
-         Threads:\t1\n",
-                umask = self.umask,
+         FDSize:\t{fd_size}\n\
+         Threads:\t{threads}\n",
+                state = if self.zombie { "Z (zombie)" } else { "R (running)" },
+                fd_size = self.fd_size,
+                threads = self.threads,
                 pid = self.pid,
                 tid = self.tid,
                 ppid = self.parent_pid(),
@@ -2705,12 +2801,56 @@ impl ProcessProcView {
 }
 
 impl FdinfoDescription {
+    fn is_fdinfo_entry(&self) -> bool {
+        matches!(&self.source, SeqProcSource::Fdinfo(_) | SeqProcSource::OwnedFdinfo { .. })
+    }
+
+    fn owned_namespace(&self) -> Option<&ProcNamespace> {
+        match &self.source {
+            SeqProcSource::Directory(directory) => directory.namespace.as_ref(),
+            SeqProcSource::OwnedContent { target, .. } | SeqProcSource::OwnedLink { target, .. } => target.namespace(),
+            SeqProcSource::OwnedFdinfo { owner, .. } => owner.namespace(),
+            SeqProcSource::NamespaceContent { namespace, .. } => Some(namespace),
+            SeqProcSource::Process { view, .. } => view.namespace.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn owned_inode(&self) -> Option<u64> {
+        match &self.source {
+            SeqProcSource::Directory(directory) if directory.namespace.is_some() => Some(directory.inode()),
+            SeqProcSource::OwnedContent { target, name } | SeqProcSource::OwnedLink { target, name } => Some(target.inode_for_name(name)),
+            SeqProcSource::OwnedFdinfo { owner, fd, .. } => Some(owner.inode_for_name(format!("fdinfo/{fd}").as_bytes())),
+            SeqProcSource::Process { view, .. } if view.namespace.is_some() => {
+                let generation = view.task.as_ref().map_or(0, |(generation, _)| *generation);
+                let mut identity = self.path.clone();
+                identity.push(0); identity.extend_from_slice(&view.process_generation.to_le_bytes());
+                identity.extend_from_slice(&generation.to_le_bytes());
+                Some(synthetic_proc_inode(&identity))
+            }
+            _ => None,
+        }
+    }
+
     fn observe(&self) -> Result<Vec<u8>, i64> {
         match &self.source {
             SeqProcSource::Directory(_) => Err(negative_errno(libc::EISDIR)),
             SeqProcSource::Link(_) => Err(negative_errno(libc::EBADF)),
+            SeqProcSource::OwnedLink { .. } => Err(negative_errno(libc::EBADF)),
+            SeqProcSource::OwnedContent { target, name } => target.owned_content(name)?
+                .ok_or_else(|| negative_errno(libc::ENOENT)),
+            SeqProcSource::NamespaceContent { content, .. } => Ok(content.clone()),
             SeqProcSource::Fdinfo(target) => target.observe(),
+            SeqProcSource::OwnedFdinfo { observation, .. } => observation.observe(),
             SeqProcSource::Process { file, view } => {
+                if let Some(namespace) = &view.namespace {
+                    let owner = namespace.owner(reverie::SignalProcessId {
+                        tgid: reverie::Pid::from_raw(view.pid), generation: view.process_generation,
+                    }).map_err(|_| negative_errno(libc::ESRCH))?;
+                    let mut observed = view.clone();
+                    observed.refresh_owned(&owner)?;
+                    return Ok(observed.render(*file));
+                }
                 if let Some((generation, lifecycle)) = &view.task
                     && !lifecycle
                         .lock()
@@ -2732,7 +2872,7 @@ impl FdinfoTarget {
             .table
             .upgrade()
             .ok_or_else(|| negative_errno(libc::ENOENT))?;
-        let (file, flags) = {
+        let (file, flags, directory) = {
             // Order: description seq -> ONE file table -> lifecycle. Mutation
             // paths only propagate/drop description Arcs; they never lock seq.
             let table = table.lock().expect("KVM file-table lock poisoned");
@@ -2743,7 +2883,13 @@ impl FdinfoTarget {
             {
                 return Err(negative_errno(libc::ENOENT));
             }
-            if table.proc_files.contains_key(&self.target_fd)
+            let directory = table.fdinfo_files.get(&self.target_fd).and_then(|description| {
+                match &description.source {
+                    SeqProcSource::Directory(directory) if directory.namespace.is_some() => Some(directory.clone()),
+                    _ => None,
+                }
+            });
+            if (table.proc_files.contains_key(&self.target_fd) && directory.is_none())
                 || table.random_device_fds.contains(&self.target_fd)
                 || table.signalfd_fds.contains(&self.target_fd)
                 || (self.capture_output
@@ -2773,7 +2919,7 @@ impl FdinfoTarget {
             // F_GETFL and the descriptor's guest CLOEXEC belong to the same
             // table observation as F_SETFD/F_SETFL. Internal dup CLOEXEC is not
             // a guest flag. Pin the OFD before releasing its table.
-            let flags = fd_status_flags(host)?
+            let flags = fd_status_flags(host)? | directory.as_ref().map_or(0, |directory| directory.status_flags)
                 | if table.cloexec_fds.contains(&self.target_fd) {
                     libc::O_CLOEXEC
                 } else {
@@ -2781,16 +2927,19 @@ impl FdinfoTarget {
                 };
             // SAFETY: the table owns host (or it is an open inherited standard
             // descriptor); fcntl validates the fd and returns a new owned fd.
-            let pinned = unsafe { libc::fcntl(host, libc::F_DUPFD_CLOEXEC, 0) };
-            if pinned < 0 {
-                return Err(io_error(std::io::Error::last_os_error()));
-            }
-            // SAFETY: successful F_DUPFD_CLOEXEC transfers ownership.
-            (unsafe { std::fs::File::from_raw_fd(pinned) }, flags)
+            let file = if directory.is_some() { None } else { Some(pin_host_fd(host)?) };
+            (file, flags, directory)
         };
+        if let Some(directory) = directory {
+            let namespace = directory.namespace.as_ref().expect("owned directory has a mount view");
+            let position = directory.cookie.lock().unwrap_or_else(|p| p.into_inner()).position;
+            return Ok(format!("pos:\t{position}\nflags:\t0{:o}\nmnt_id:\t{}\nino:\t{}\n",
+                flags, namespace.mounts.proc_fs.mount_id, directory.inode()).into_bytes());
+        }
         // Neither table nor lifecycle is held across procfs I/O. Private
         // anonymous carriers (epoll/inotify/eventfd/timerfd/pidfd, etc.) have no
         // ordinary file type and must not expose their supervisor identities.
+        let file = file.expect("ordinary fdinfo snapshot pins the selected file");
         ensure_fdinfo_object(file.as_raw_fd())?;
         let bytes = read_owned_fdinfo(&file)?;
         replace_fdinfo_flags(&bytes, flags)
@@ -2838,6 +2987,11 @@ impl FdinfoDescription {
         if self.path_only {
             return negative_errno(libc::EBADF);
         }
+        if let SeqProcSource::Directory(directory) = &self.source
+            && directory.namespace.is_some()
+        {
+            return proc_directory::seek(self, args[1] as i64, args[2] as libc::c_int);
+        }
         self.sequence
             .lock()
             .expect("KVM fdinfo sequence lock poisoned")
@@ -2858,7 +3012,7 @@ fn fdinfo_private_carrier_error(
         state
             .fdinfo_files
             .get(&(raw as libc::c_int))
-            .is_some_and(|description| matches!(description.source, SeqProcSource::Fdinfo(_)))
+            .is_some_and(|description| description.is_fdinfo_entry())
     };
     // The backing memfd is never a readable payload for kernel transfer or
     // mmap operations. Scalar read/pread/lseek use seq; vectors retain the
@@ -3046,14 +3200,16 @@ fn ensure_fdinfo_content_supported(
     // successful description reads retain the established seq -> table ->
     // lifecycle order, while refused opens allocate no description/seq state.
     let host = host_fd(state, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
-    if state.proc_files.contains_key(&fd)
+    let directory = state.fdinfo_files.get(&fd).is_some_and(|description|
+        matches!(&description.source, SeqProcSource::Directory(directory) if directory.namespace.is_some()));
+    if (state.proc_files.contains_key(&fd) && !directory)
         || state.random_device_fds.contains(&fd)
         || signalfd_mask(state, fd).is_some()
         || (capture_output && output_alias(state, fd).is_some())
     {
         return Err(negative_errno(libc::ENOSYS));
     }
-    ensure_fdinfo_object(host)
+    if directory { Ok(()) } else { ensure_fdinfo_object(host) }
 }
 
 fn validate_fdinfo_open_flags(state: &LoadedStaticElf, flags: u64) -> Result<(), i64> {
@@ -3161,6 +3317,7 @@ fn install_fdinfo(
         };
         let retired = state.insert_file(fd, file);
         state.file_retirement.retire(retired);
+        if let Some(inode) = description.owned_inode() { state.proc_files.insert(fd, inode); }
         state.fdinfo_files.insert(fd, description);
     }
     result
@@ -3219,12 +3376,18 @@ fn install_process_proc(
         flags as libc::c_int,
     );
     if result >= 0 {
+        if let Some(inode) = description.owned_inode() { state.proc_files.insert(result as i32, inode); }
         state.fdinfo_files.insert(result as i32, description);
     }
     result
 }
 
 impl FileTableState {
+    fn proc_capacity(&self) -> usize {
+        self.files.keys().next_back().map_or(self.fdtable_capacity.max(64), |fd|
+            LoadedStaticElf::capacity_for_fd(self.fdtable_capacity, *fd))
+    }
+
     fn retire(self, retirement: &crate::elf::FileRetirement) {
         retirement.retire(self.stdin.into_iter().chain(self.files.into_values()));
     }
@@ -3267,6 +3430,8 @@ impl FileTableState {
             .map(|(&fd, file)| Ok((fd, state.file_retirement.stage_clone(file)?)))
             .collect::<std::io::Result<std::collections::BTreeMap<_, _>>>()?;
         Ok(Self {
+            fdtable_capacity: state.files.keys().next_back().map_or(state.fdtable_capacity.max(64), |fd|
+                LoadedStaticElf::capacity_for_fd(state.fdtable_capacity, *fd)),
             stdin: stdin.map(crate::elf::StagedFile::into_file),
             stdin_entry_id: state.stdin_entry_id.clone(),
             files: files
@@ -3347,6 +3512,7 @@ impl FileTableState {
             )
         };
         state.stdin_entry_id.clone_from(&self.stdin_entry_id);
+        state.fdtable_capacity = self.proc_capacity();
         state.files = installed_files;
         state.file_retirement.retire(
             retired_stdin
@@ -3543,6 +3709,10 @@ impl ElfExecutor {
         let signal_binding = signal_registry
             .register(&state, &file_table, process_generation, None)
             .expect("a traced root has no parent registration to reject");
+        state.bind_fs_context().expect("clone initial KVM filesystem context");
+        state.proc_namespace = Some(signal_registry.bind_proc_namespace(
+            &signal_binding, &state, &file_table,
+        ));
         signal_registry.install_namespace_reaper(&state);
         state.children = ChildWaitContext::bind(
             signal_registry.clone(),
@@ -4162,6 +4332,9 @@ impl ElfExecutor {
                 )));
             }
         };
+        state.proc_namespace = Some(self.signal_registry.bind_proc_namespace(
+            &signal_binding, &state, &file_table,
+        ));
         state.children = ChildWaitContext::bind(
             self.signal_registry.clone(),
             reverie::SignalTaskIdentity {
@@ -4251,7 +4424,7 @@ impl ElfExecutor {
                     .to_owned(),
             ));
         }
-        state = self.state.try_clone_for_fork_locked(child_tid)?;
+        state = self.state.try_clone_for_thread_locked(child_tid)?;
         _child_retirement = state.file_retirement.hold();
         state.pid = self.state.pid;
         state.ppid = self.state.ppid;
@@ -4322,6 +4495,13 @@ impl ElfExecutor {
                 &self.file_table,
                 self.output.as_ref().map(CapturedOutput::metadata),
             );
+        // The thread helper shares CLONE_FS; accepted process clones copy it.
+        // No accepted/rejected clone flag boundary is changed here.
+        state.proc_namespace = self.state.proc_namespace.as_ref().and_then(|parent| {
+            self.signal_registry.register_proc_thread(
+                &self.signal_binding, parent, &state, &self.file_table,
+            )
+        });
         let child = Self {
             state,
             task_generation,
@@ -5168,6 +5348,7 @@ impl ElfExecutor {
         let mut files = file_table.lock().expect("KVM file-table lock poisoned");
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        self.state.refresh_fs_context().expect("clone exec filesystem context");
         let previous = std::mem::replace(&mut self.state, state);
         let retired = self.state.inherit_process_state_locked(previous);
         self.state.file_retirement.retire(retired);
@@ -5187,6 +5368,9 @@ impl ElfExecutor {
             .update_from_elf(&self.state)
             .expect("clone post-exec KVM file table");
         self.signal_binding.rebind(&self.state, &file_table);
+        self.state.proc_namespace = Some(self.signal_registry.rebind_proc_image(
+            &self.signal_binding, &self.state, &file_table,
+        ));
         self.state.children = ChildWaitContext::bind(
             self.signal_registry.clone(),
             self.admitted_signal_identity(),
@@ -7449,6 +7633,7 @@ impl ElfExecutor {
             self.signal_registry
                 .record_process_exit(self.admitted_signal_identity().process, process_status);
         }
+        self.signal_registry.retire_proc_task(self.admitted_signal_identity());
         Some(ProcessExit { status, group })
     }
 
@@ -7955,6 +8140,8 @@ impl Drop for ElfExecutor {
         if self.state.tid == self.state.pid {
             lifecycle.forget_process_exit(self.state.pid, self.process_generation);
         }
+        drop(lifecycle);
+        self.signal_registry.retire_proc_task(self.admitted_signal_identity());
     }
 }
 
@@ -8009,6 +8196,7 @@ impl ElfExecutor {
             });
         }
         self.check_parent_death_failure()?;
+        if let Err(error) = self.state.refresh_fs_context() { return Ok(io_error(error)); }
         self.bind_address_space(memory);
         self.parent_death_injection_preflight(request)?;
         // A fork gets a separate arena/gate and inherits the real shared VMAs.
@@ -10563,6 +10751,7 @@ enum PreparedProcOpen {
     Path(procfs_path::ProcPath),
     Fd(GuestFdOpenSource),
     Fdinfo(Arc<FdinfoDescription>),
+    OwnedLink { target: Arc<procfs_path::ProcTaskTarget>, path: Vec<u8>, name: Vec<u8> },
     Process {
         description: Arc<FdinfoDescription>,
         identity_path: Vec<u8>,
@@ -10649,14 +10838,12 @@ fn prepare_open_file(
     let proc_path = match resolution {
         Some(procfs_path::ProcPath::Fd { target, fd }) => {
             target.live_task()?;
-            if !target.is_current_table(state) {
-                return Err(negative_errno(libc::ENOSYS));
-            }
-            Some(PreparedProcOpen::Fd(GuestFdOpenSource::of(state, fd)?))
+            Some(PreparedProcOpen::Fd(target.open_source(state, fd)?))
         }
         Some(procfs_path::ProcPath::File {
             path,
             target: Some(target),
+            namespace,
         }) => {
             if let Some(file) = process_file_name(&path) {
                 validate_synthetic_proc_open(state, &path, flags)?;
@@ -10672,26 +10859,68 @@ fn prepare_open_file(
                     }),
                     identity_path,
                 })
-            } else if let Some(target_path) = fdinfo_path_target(state, &path) {
-                let fd = match target_path {
-                    FdinfoPathTarget::Target { fd, .. } => fd,
-                    _ => return Err(negative_errno(libc::ENOENT)),
-                };
+            } else if let Some(fd) = procfs_path::fdinfo_file_name(&path) {
                 let bound = target.fdinfo(state, fd, flags, capture_output)?;
-                let path = format!("/proc/{}/fdinfo/{fd}", target.tid).into_bytes();
+                let path = if target.is_owned() { target.owner_path(format!("fdinfo/{fd}").as_bytes()) }
+                    else { format!("/proc/{}/fdinfo/{fd}", target.tid).into_bytes() };
+                let source = if target.is_owned() { SeqProcSource::OwnedFdinfo { observation: bound, owner: target, fd } }
+                    else { SeqProcSource::Fdinfo(bound) };
                 Some(PreparedProcOpen::Fdinfo(Arc::new(FdinfoDescription {
-                    source: SeqProcSource::Fdinfo(bound),
+                    source,
                     path,
                     nofollow_status: flags & libc::O_NOFOLLOW as u64 != 0,
                     path_only: false,
                     sequence: Mutex::default(),
                 })))
+            } else if target.is_owned()
+                && let Some(name) = procfs_path::owner_file_name(&path)
+            {
+                if matches!(name, b"cwd" | b"root" | b"exe") {
+                    if !path_only && flags & (libc::O_CREAT | libc::O_EXCL) as u64
+                        == (libc::O_CREAT | libc::O_EXCL) as u64 {
+                        return Err(negative_errno(libc::EEXIST));
+                    }
+                    if flags & libc::O_NOFOLLOW as u64 != 0 {
+                        if !path_only { return Err(negative_errno(libc::ELOOP)); }
+                        if flags & libc::O_DIRECTORY as u64 != 0 { return Err(negative_errno(libc::ENOTDIR)); }
+                        Some(PreparedProcOpen::OwnedLink { target, name: name.to_vec(), path })
+                    } else {
+                        let file = target.owned_link_file(state, name)?;
+                        Some(PreparedProcOpen::Fd(GuestFdOpenSource::held(state, file)?))
+                    }
+                } else {
+                    validate_synthetic_proc_open(state, &path, flags)?;
+                    // Confirm the selected kind without reading an unrelated
+                    // caller's synthetic content. Read time samples this owner.
+                    if target.owned_content(name)?.is_none() { return Err(negative_errno(libc::ENOENT)); }
+                    let identity_path = path.clone();
+                    Some(PreparedProcOpen::Process {
+                        description: Arc::new(FdinfoDescription {
+                            source: SeqProcSource::OwnedContent { target, name: name.to_vec() },
+                            path, nofollow_status: false, path_only, sequence: Mutex::default(),
+                        }),
+                        identity_path,
+                    })
+                }
             } else {
                 Some(PreparedProcOpen::Path(procfs_path::ProcPath::File {
                     path,
                     target: Some(target),
+                    namespace,
                 }))
             }
+        }
+        Some(procfs_path::ProcPath::File { path, target: None, namespace: Some(namespace) }) => {
+            validate_synthetic_proc_open(state, &path, flags)?;
+            let content = namespace_static_content(state, &namespace, &path)?
+                .ok_or_else(|| negative_errno(libc::ENOENT))?;
+            let identity_path = path.clone();
+            Some(PreparedProcOpen::Process {
+                description: Arc::new(FdinfoDescription {
+                    source: SeqProcSource::NamespaceContent { namespace, content },
+                    path, nofollow_status: false, path_only, sequence: Mutex::default(),
+                }), identity_path,
+            })
         }
         Some(path) => Some(PreparedProcOpen::Path(path)),
         None => guest_fd_path(state, &path)
@@ -10731,6 +10960,9 @@ fn open_prepared_file(
         }
         Some(PreparedProcOpen::Fdinfo(description)) => {
             return install_fdinfo(state, description, flags);
+        }
+        Some(PreparedProcOpen::OwnedLink { target, path, name }) => {
+            return procfs_path::open_owned_link(state, target, path, name, flags);
         }
         Some(PreparedProcOpen::Process {
             description,
@@ -11336,6 +11568,12 @@ struct GuestFdOpenSource {
 }
 
 impl GuestFdOpenSource {
+    fn held(state: &LoadedStaticElf, file: crate::elf::StagedFile) -> Result<Self, i64> {
+        let object_inode = allocate_fd_object_inode(state, file.as_file(), IdentityTimestamps::Host)?;
+        Ok(Self { file, description: None, proc_inode: None, is_random: false,
+            is_signalfd: false, alias: None, object_inode })
+    }
+
     fn of(state: &LoadedStaticElf, fd: i32) -> Result<Self, i64> {
         let host = host_fd(state, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
         Ok(Self {
@@ -15063,6 +15301,9 @@ fn translate_outgoing_rights(
                         SeqProcSource::Process { .. }
                             | SeqProcSource::Directory(_)
                             | SeqProcSource::Link(_)
+                            | SeqProcSource::OwnedContent { .. }
+                            | SeqProcSource::OwnedLink { .. }
+                            | SeqProcSource::NamespaceContent { .. }
                     )
                 })
             {
@@ -16392,7 +16633,11 @@ fn fstatat_impl(
         flags & libc::AT_SYMLINK_NOFOLLOW != 0,
     ) {
         Err(error) => return error,
-        Ok(Some(procfs_path::ProcMetadata::Stat(stat))) => {
+        Ok(Some(procfs_path::ProcMetadata::Stat(stat) | procfs_path::ProcMetadata::OwnedStat { stat, .. })) => {
+            return write_struct(memory, output_address, &stat);
+        }
+        Ok(Some(procfs_path::ProcMetadata::Fd(source))) => {
+            let stat = match source.stat(state) { Ok(stat) => stat, Err(error) => return error };
             return write_struct(memory, output_address, &stat);
         }
         Ok(Some(procfs_path::ProcMetadata::Path(path))) => Some(path),
@@ -16604,6 +16849,25 @@ fn statx(
             }
             return write_struct(memory, args[4], &procfs_path::extended(&stat));
         }
+        Ok(Some(procfs_path::ProcMetadata::OwnedStat { stat, mount_id })) => {
+            if args[3] as u32 & 0x8000_0000 != 0
+                || flags & libc::AT_STATX_SYNC_TYPE == libc::AT_STATX_SYNC_TYPE {
+                return negative_errno(libc::EINVAL);
+            }
+            let mut stat = procfs_path::extended(&stat);
+            stat.stx_mask |= libc::STATX_MNT_ID; stat.stx_mnt_id = mount_id;
+            return write_struct(memory, args[4], &stat);
+        }
+        Ok(Some(procfs_path::ProcMetadata::Fd(source))) => {
+            if args[3] as u32 & 0x8000_0000 != 0
+                || flags & libc::AT_STATX_SYNC_TYPE == libc::AT_STATX_SYNC_TYPE {
+                return negative_errno(libc::EINVAL);
+            }
+            let stat = match source.statx(state, flags, args[3] as u32) {
+                Ok(stat) => stat, Err(error) => return error,
+            };
+            return write_struct(memory, args[4], &stat);
+        }
         Ok(Some(procfs_path::ProcMetadata::Path(path))) => Some(path),
         Ok(None) => None,
     };
@@ -16806,6 +17070,11 @@ fn statfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
         Ok(_) => return negative_errno(libc::ENOENT),
         Err(error) => return read_c_string_errno(error),
     };
+    match procfs_path::filesystem(state, libc::AT_FDCWD, &path) {
+        Ok(Some(mut stat)) => { canonicalize_statfs(&mut stat); return write_struct(memory, args[1], &stat); }
+        Err(error) => return error,
+        Ok(None) => {}
+    }
     let guest_path = match guest_fd_metadata(state, &path, false) {
         Ok(metadata) => metadata,
         Err(error) => return error,
@@ -16829,6 +17098,14 @@ fn fstatfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
+    if state.fdinfo_files.get(&guest_fd).is_some_and(|description| description.is_fdinfo_entry()) {
+        return negative_errno(libc::ENOSYS);
+    }
+    if let Some(namespace) = state.fdinfo_files.get(&guest_fd).and_then(|description| description.owned_namespace()) {
+        let mut stat = namespace.mounts.proc_fs.statfs();
+        canonicalize_statfs(&mut stat);
+        return write_struct(memory, args[1], &stat);
+    }
     fstatfs_host(memory, host_fd, args[1])
 }
 
@@ -17595,6 +17872,15 @@ fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
     };
+    if let Some(description) = state.fdinfo_files.get(&fd)
+        && matches!(&description.source,
+            SeqProcSource::Directory(directory) if directory.namespace.is_some())
+    {
+        // The logical directory belongs to procfs, even though its unique
+        // transfer carrier is a sealed memfd. Preserve open_cwd_directory's
+        // existing procfs cwd refusal and the current O_PATH restriction.
+        return negative_errno(if description.path_only { libc::EBADF } else { libc::EACCES });
+    }
     // Rejects non-directories (ENOTDIR) and O_PATH descriptors (EBADF), matching
     // this backend's current readable-directory restriction, not Linux's
     // O_PATH fchdir behavior.
@@ -17645,12 +17931,48 @@ fn open_cwd_directory(host_dirfd: RawFd, path: &CStr) -> Result<std::fs::File, i
 fn set_cwd(state: &mut LoadedStaticElf, directory: std::fs::File) -> i64 {
     match canonical_fd_path(directory.as_raw_fd()) {
         Ok(path) => {
+            if let Some(shared) = state.shared_fs.as_ref() {
+                let staged = match state.file_retirement.stage_clone(&directory) {
+                    Ok(staged) => staged,
+                    Err(error) => return io_error(error),
+                };
+                let transaction = state.signal_transaction.clone();
+                let guard = transaction.lock().unwrap_or_else(|p| p.into_inner());
+                if state.proc_namespace.as_ref().is_some_and(|view| !view.owns_current_task(state)) {
+                    return negative_errno(libc::ESRCH);
+                }
+                let next = Arc::new(staged.into_file());
+                let retired = {
+                    let mut fs = shared.lock().unwrap_or_else(|p| p.into_inner());
+                    fs.cwd = path.clone();
+                    std::mem::replace(&mut fs.cwd_fd, next.clone())
+                };
+                drop(guard);
+                state.file_retirement.retire_shared([retired]);
+                let retired = state.fs_cwd.replace(next);
+                state.file_retirement.retire_shared(retired);
+            }
             state.cwd = path;
-            state.cwd_fd = directory;
+            let retired = std::mem::replace(&mut state.cwd_fd, directory);
+            state.file_retirement.retire([retired]);
             0
         }
         Err(error) => error,
     }
+}
+
+fn guest_umask(state: &mut LoadedStaticElf, value: libc::mode_t) -> i64 {
+    let previous = if let Some(shared) = state.shared_fs.as_ref() {
+        let transaction = state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        if state.proc_namespace.as_ref().is_some_and(|view| !view.owns_current_task(state)) {
+            return negative_errno(libc::ESRCH);
+        }
+        let mut fs = shared.lock().unwrap_or_else(|p| p.into_inner());
+        std::mem::replace(&mut fs.umask, value)
+    } else { state.umask };
+    state.umask = value;
+    i64::from(previous)
 }
 
 /// Resolve the canonical absolute path a descriptor refers to via the
@@ -17895,6 +18217,35 @@ fn process_proc_identity_path(state: &LoadedStaticElf, path: &[u8]) -> Vec<u8> {
 
 /// Synthesize deterministic content for a recognized /proc path, or `None` when
 /// the path is not part of the supported surface.
+fn namespace_static_content(
+    state: &LoadedStaticElf,
+    namespace: &ProcNamespace,
+    path: &[u8],
+) -> Result<Option<Vec<u8>>, i64> {
+    match path {
+        b"/proc/mounts" => Ok(Some(namespace.mounts.mounts.clone())),
+        b"/proc/locks" => {
+            let mut visited = std::collections::BTreeSet::new();
+            let mut files = Vec::new();
+            for owner in namespace.owners()? {
+                for task in owner.tasks.values().filter(|task| !task.exited) {
+                    let Some(table) = task.files.upgrade() else { continue; };
+                    if !visited.insert(Arc::as_ptr(&table) as usize) { continue; }
+                    let table = table.lock().unwrap_or_else(|p| p.into_inner());
+                    for file in table.files.values() { files.push(pin_host_fd(file.as_raw_fd())?); }
+                }
+            }
+            // Preserve the inherited lock formatter/refusal surface. This is
+            // the captured run's file set, not the receiving task's file set;
+            // it does not repair the pre-existing POSIX/OFD lock-owner model.
+            Ok(Some(proc_locks_from_files(files.iter())))
+        }
+        // All other recognized global files use the unchanged fixed kernel
+        // profile. Per-task paths are selected through their admitted owner.
+        _ => Ok(synthetic_proc_content(state, path)),
+    }
+}
+
 fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8>> {
     let normalized = normalize_proc_path(state, path)?;
     if let Some((file, target)) = process_proc_path(state, path) {
@@ -18003,9 +18354,13 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
 
 // TODO-HUMAN-REVIEW(PR-211): Review guest-owned /proc/locks filtering.
 fn proc_locks_content(state: &LoadedStaticElf) -> Vec<u8> {
+    proc_locks_from_files(state.files.values())
+}
+
+fn proc_locks_from_files<'a>(files: impl Iterator<Item = &'a std::fs::File>) -> Vec<u8> {
     let mut seen = std::collections::BTreeSet::new();
     let mut rows = Vec::new();
-    for file in state.files.values() {
+    for file in files {
         let Ok(fdinfo) = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))
         else {
             continue;
@@ -18387,6 +18742,11 @@ fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: 
                     stat.st_mode = libc::S_IFLNK | 0o777;
                     stat.st_size = link.len() as libc::off_t;
                 }
+                SeqProcSource::OwnedLink { .. } => {
+                    stat.st_mode = libc::S_IFLNK | 0o777;
+                    stat.st_size = 0;
+                    stat.st_blocks = 0;
+                }
                 _ => {}
             }
         }
@@ -18428,7 +18788,16 @@ fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat:
                     stat.stx_mode = (libc::S_IFLNK | 0o777) as u16;
                     stat.stx_size = link.len() as u64;
                 }
+                SeqProcSource::OwnedLink { .. } => {
+                    stat.stx_mode = (libc::S_IFLNK | 0o777) as u16;
+                    stat.stx_size = 0;
+                    stat.stx_blocks = 0;
+                }
                 _ => {}
+            }
+            if let Some(namespace) = description.owned_namespace() {
+                stat.stx_mask |= libc::STATX_MNT_ID;
+                stat.stx_mnt_id = namespace.mounts.proc_fs.mount_id;
             }
         }
         return;
@@ -18761,6 +19130,11 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
     };
+    if let Some(description) = state.fdinfo_files.get(&fd)
+        && matches!(&description.source, SeqProcSource::Directory(directory) if directory.namespace.is_some())
+    {
+        return proc_directory::getdents(description, memory, args[1], length);
+    }
     if let Err(error) = ensure_directory(file) {
         return error;
     }
@@ -21050,11 +21424,15 @@ fn readlink_at_impl(
         return negative_errno(libc::EINVAL);
     }
     let capacity = requested_capacity.min(MAX_HOST_IO);
-    if path.is_empty()
-        && let Some(description) = state.fdinfo_files.get(&guest_dirfd)
-        && let SeqProcSource::Link(link) = &description.source
-    {
-        return write_readlink_target(memory, output_address, capacity, link);
+    if path.is_empty() && let Some(description) = state.fdinfo_files.get(&guest_dirfd) {
+        match &description.source {
+            SeqProcSource::Link(link) => return write_readlink_target(memory, output_address, capacity, link),
+            SeqProcSource::OwnedLink { target, name } => return match target.owned_link(name) {
+                Ok(Some(link)) => write_readlink_target(memory, output_address, capacity, &link),
+                Ok(None) => negative_errno(libc::ENOENT), Err(error) => error,
+            },
+            _ => {}
+        }
     }
 
     let mut owned_proc_file = None;
@@ -21073,6 +21451,13 @@ fn readlink_at_impl(
         Ok(Some(procfs_path::ProcPath::Owned { file, path })) => {
             owned_proc_file = Some(file);
             Some(path)
+        }
+        Ok(Some(procfs_path::ProcPath::File { path, target: Some(target), .. })) if target.is_owned() => {
+            let Some(name) = procfs_path::owner_file_name(&path) else { return negative_errno(libc::EINVAL); };
+            return match target.owned_link(name) {
+                Ok(Some(link)) => write_readlink_target(memory, output_address, capacity, &link),
+                Ok(None) => negative_errno(libc::EINVAL), Err(error) => error,
+            };
         }
         Ok(Some(procfs_path::ProcPath::File { path, .. })) => Some(path),
         Ok(None) => None,
@@ -22508,8 +22893,11 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         executable_file: None,
         executable_image: Arc::from([]),
         argv0: b"test".to_vec(),
+        cmdline: b"test\0".to_vec(),
         cwd: cwd.to_owned(),
         cwd_fd: std::fs::File::open(cwd).unwrap(),
+        shared_fs: None,
+        fs_cwd: None,
         stdin: Some(std::fs::File::open("/dev/null").unwrap()),
         stdin_entry_id: Arc::new(()),
         auxv: Vec::new(),
@@ -22551,6 +22939,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
             crate::elf::TaskLifecycleTable::with_root(1, 1, 1, true),
         )),
         files: std::collections::BTreeMap::new(),
+        fdtable_capacity: 64,
         file_retirement: crate::elf::FileRetirement::default(),
         pipe_owners: Default::default(),
         fd_entry_ids: std::collections::BTreeMap::new(),
@@ -22572,6 +22961,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         fdinfo_files: std::collections::BTreeMap::new(),
         fdinfo_table: std::sync::Weak::new(),
         proc_mounts: Arc::new(crate::proc_mounts::ProcMountSnapshot::capture().unwrap()),
+        proc_namespace: None,
         fd_object_inodes: std::collections::BTreeMap::new(),
         file_identity_table: Arc::new(std::sync::Mutex::new(crate::elf::GuestFileIdentityTable {
             next_inode: 0x2100_0000,
@@ -22597,6 +22987,7 @@ mod tests {
     include!("executor/random_device_stream_tests.rs");
     include!("executor/random_device_carrier_tests.rs");
     include!("executor/procfs_regression_tests.rs");
+    include!("executor/proc_namespace_tests.rs");
     use std::collections::BTreeMap;
     use std::io::Read;
     use std::io::Seek;
