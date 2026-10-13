@@ -396,6 +396,21 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         None
     }
 
+    /// Hold a current ordinary fdinfo source without reading or rendering it.
+    ///
+    /// Positive receipts are scoped to the current registered process and
+    /// authoritative file table. They supply no physical proc namespace,
+    /// foreign-task, or initial-parent authority. Unsupported implementations
+    /// return `None` without injecting a syscall or changing a guest cursor.
+    /// The Tool must independently authenticate its current actor/MM, source
+    /// and target open descriptions, and metadata revision.
+    fn hold_current_fdinfo_source(
+        &mut self,
+        _source_fd: i32,
+    ) -> Result<Option<Box<dyn crate::CurrentFdinfoSource>>, Error> {
+        Ok(None)
+    }
+
     /// The process signal control mode installed for this run: what
     /// [`GlobalTool::install_backend_signal_control`] returned when the
     /// backend offered its control. The answer is fixed before the first
@@ -849,6 +864,12 @@ where
     }
     fn signal_task_identity(&self) -> Option<crate::SignalTaskIdentity> {
         self.inner.signal_task_identity()
+    }
+    fn hold_current_fdinfo_source(
+        &mut self,
+        source_fd: i32,
+    ) -> Result<Option<Box<dyn crate::CurrentFdinfoSource>>, Error> {
+        self.inner.hold_current_fdinfo_source(source_fd)
     }
     fn signal_control_mode(&self) -> crate::BackendSignalControlMode {
         self.inner.signal_control_mode()

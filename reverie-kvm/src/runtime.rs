@@ -365,6 +365,12 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
     fn signal_task_identity(&self) -> Option<reverie::SignalTaskIdentity> {
         None
     }
+    fn hold_current_fdinfo_source(
+        &mut self,
+        _source_fd: i32,
+    ) -> std::result::Result<Option<Box<dyn reverie::CurrentFdinfoSource>>, reverie::Error> {
+        Ok(None)
+    }
     fn begin_signal_callback(&mut self) -> Option<reverie::CallbackSignalSite> {
         None
     }
@@ -857,6 +863,15 @@ where
 
     fn signal_task_identity(&self) -> Option<reverie::SignalTaskIdentity> {
         self.executor.signal_task_identity()
+    }
+    fn hold_current_fdinfo_source(
+        &mut self,
+        source_fd: i32,
+    ) -> std::result::Result<Option<Box<dyn reverie::CurrentFdinfoSource>>, reverie::Error> {
+        if !matches!(self.signal_guard, SignalGuard::Ordinary) {
+            return Ok(None);
+        }
+        self.executor.hold_current_fdinfo_source(source_fd)
     }
     fn begin_signal_callback(&mut self) -> Option<reverie::CallbackSignalSite> {
         // Only the driver's dequeue/structured-signal reborrows supply a site.
@@ -1464,6 +1479,20 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
 
     fn signal_task_identity(&self) -> Option<reverie::SignalTaskIdentity> {
         self.executor.signal_task_identity()
+    }
+    fn hold_current_fdinfo_source(
+        &mut self,
+        source_fd: i32,
+    ) -> std::result::Result<Option<Box<dyn reverie::CurrentFdinfoSource>>, reverie::Error> {
+        if self.notifying_dequeue
+            || self.observation_lease.is_some()
+            || self.stack_checked_out.load(Ordering::Acquire)
+        {
+            return Ok(None);
+        }
+        // No injection, ordinary-operation admission, clock read or turn.
+        // The Tool separately authenticates the currently held serial grant.
+        self.executor.hold_current_fdinfo_source(source_fd)
     }
     fn signal_control_mode(&self) -> reverie::BackendSignalControlMode {
         // The run's shared signal registry records the installed mode. Only

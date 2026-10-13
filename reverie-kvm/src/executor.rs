@@ -12,6 +12,7 @@ use std::future::Future;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
+use std::os::fd::IntoRawFd;
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::ffi::OsStringExt;
@@ -82,6 +83,7 @@ mod entry_host_wait_tests;
 use capture_identity::CaptureMetadata;
 use capture_identity::CaptureObjectIdentity;
 use capture_identity::CapturedPipeIdentities;
+use process_signal_publication::CurrentFdinfoProcessBinding;
 use process_signal_publication::ProcessBinding;
 use process_signal_publication::ProcessSignalRegistry;
 
@@ -2679,20 +2681,20 @@ impl FdinfoDescription {
 }
 
 impl FdinfoTarget {
-    fn observe(&self) -> Result<Vec<u8>, i64> {
+    fn pin_for_show(&self) -> Result<PinnedFdinfoTarget, i64> {
         let table = self
             .table
             .upgrade()
             .ok_or_else(|| negative_errno(libc::ENOENT))?;
-        let (file, flags) = {
+        let pinned = {
             // Order: description seq -> ONE file table -> lifecycle. Mutation
             // paths only propagate/drop description Arcs; they never lock seq.
             let table = table.lock().expect("KVM file-table lock poisoned");
             let lifecycle = self.lifecycle.lock().expect("KVM lifecycle lock poisoned");
-            if !lifecycle
-                .get(self.target_tid)
-                .is_some_and(|task| task.generation == self.target_generation)
-            {
+            let Some(task) = lifecycle.get(self.target_tid) else {
+                return Err(negative_errno(libc::ENOENT));
+            };
+            if task.generation != self.target_generation {
                 return Err(negative_errno(libc::ENOENT));
             }
             if table.proc_files.contains_key(&self.target_fd)
@@ -2725,12 +2727,8 @@ impl FdinfoTarget {
             // F_GETFL and the descriptor's guest CLOEXEC belong to the same
             // table observation as F_SETFD/F_SETFL. Internal dup CLOEXEC is not
             // a guest flag. Pin the OFD before releasing its table.
-            let flags = fd_status_flags(host)?
-                | if table.cloexec_fds.contains(&self.target_fd) {
-                    libc::O_CLOEXEC
-                } else {
-                    0
-                };
+            let status_flags = fd_status_flags(host)?;
+            let target_cloexec = table.cloexec_fds.contains(&self.target_fd);
             // SAFETY: the table owns host (or it is an open inherited standard
             // descriptor); fcntl validates the fd and returns a new owned fd.
             let pinned = unsafe { libc::fcntl(host, libc::F_DUPFD_CLOEXEC, 0) };
@@ -2738,14 +2736,521 @@ impl FdinfoTarget {
                 return Err(io_error(std::io::Error::last_os_error()));
             }
             // SAFETY: successful F_DUPFD_CLOEXEC transfers ownership.
-            (unsafe { std::fs::File::from_raw_fd(pinned) }, flags)
+            PinnedFdinfoTarget {
+                file: unsafe { std::fs::File::from_raw_fd(pinned) },
+                status_flags,
+                target_cloexec,
+                entry_id: table.fd_entry_ids.get(&self.target_fd).cloned(),
+                subject: reverie::SignalTaskIdentity {
+                    process: reverie::SignalProcessId {
+                        tgid: reverie::Pid::from_raw(task.tgid),
+                        generation: task.process_generation,
+                    },
+                    tid: reverie::Pid::from_raw(self.target_tid),
+                    task_generation: task.generation,
+                },
+            }
         };
+        Ok(pinned)
+    }
+
+    fn observe(&self) -> Result<Vec<u8>, i64> {
+        let pinned = self.pin_for_show()?;
         // Neither table nor lifecycle is held across procfs I/O. Private
         // anonymous carriers (epoll/inotify/eventfd/timerfd/pidfd, etc.) have no
         // ordinary file type and must not expose their supervisor identities.
-        ensure_fdinfo_object(file.as_raw_fd())?;
-        let bytes = read_owned_fdinfo(&file)?;
-        replace_fdinfo_flags(&bytes, flags)
+        ensure_fdinfo_object(pinned.file.as_raw_fd())?;
+        let bytes = read_owned_fdinfo(&pinned.file)?;
+        replace_fdinfo_flags(&bytes, pinned.guest_flags())
+    }
+}
+
+/// The very pin whose host fdinfo is rendered, not a later lookup by number.
+struct PinnedFdinfoTarget {
+    file: std::fs::File,
+    status_flags: i32,
+    target_cloexec: bool,
+    entry_id: Option<Arc<()>>,
+    subject: reverie::SignalTaskIdentity,
+}
+
+impl PinnedFdinfoTarget {
+    fn guest_flags(&self) -> i32 {
+        self.status_flags
+            | if self.target_cloexec {
+                libc::O_CLOEXEC
+            } else {
+                0
+            }
+    }
+}
+
+/// Only backend identities live here. The Tool admits its canonical table,
+/// source/target OFDs, revisions, current MM and serialized grant separately.
+struct CurrentFdinfoLease {
+    binding: reverie::CurrentFdinfoSourceBinding,
+    source_fd: i32,
+    table: Arc<Mutex<FileTableState>>,
+    lifecycle: Arc<Mutex<crate::elf::TaskLifecycleTable>>,
+    description: Arc<FdinfoDescription>,
+    source_entry: Arc<()>,
+    target_entry: Arc<()>,
+    source_pin: Option<std::fs::File>,
+    registry: Arc<ProcessSignalRegistry>,
+    process_binding: CurrentFdinfoProcessBinding,
+    mounts: Arc<crate::proc_mounts::ProcMountSnapshot>,
+}
+
+impl CurrentFdinfoLease {
+    fn target(&self) -> &FdinfoTarget {
+        let SeqProcSource::Fdinfo(target) = &self.description.source else {
+            unreachable!("a current fdinfo lease is never a process-file lease")
+        };
+        target
+    }
+
+    fn validate(&self) -> Result<(), reverie::CurrentFdinfoProofGap> {
+        use reverie::CurrentFdinfoProofGap as Gap;
+        if !self.registry.current_fdinfo_binding_is_current(
+            &self.process_binding,
+            self.binding.reader,
+            &self.table,
+            &self.lifecycle,
+        ) {
+            return Err(Gap::ActorChanged);
+        }
+        let target = self.target();
+        if !target
+            .table
+            .upgrade()
+            .is_some_and(|table| Arc::ptr_eq(&table, &self.table))
+            || !Arc::ptr_eq(&target.lifecycle, &self.lifecycle)
+        {
+            return Err(Gap::DifferentTable);
+        }
+        let table = self.table.lock().expect("KVM file-table lock poisoned");
+        let lifecycle = self.lifecycle.lock().expect("KVM lifecycle lock poisoned");
+        let Some(subject) = lifecycle.get(target.target_tid) else {
+            return Err(Gap::RetiredSubject);
+        };
+        if subject.generation != self.binding.subject.task_generation
+            || subject.process_generation != self.binding.subject.process.generation
+            || subject.tgid != self.binding.subject.process.tgid.as_raw()
+        {
+            return Err(Gap::RetiredSubject);
+        }
+        if !table.files.contains_key(&self.source_fd)
+            || !table
+                .fd_entry_ids
+                .get(&self.source_fd)
+                .is_some_and(|entry| Arc::ptr_eq(entry, &self.source_entry))
+            || !table
+                .fdinfo_files
+                .get(&self.source_fd)
+                .is_some_and(|description| Arc::ptr_eq(description, &self.description))
+        {
+            return Err(Gap::SourceChanged);
+        }
+        if !table.files.contains_key(&target.target_fd)
+            || !table
+                .fd_entry_ids
+                .get(&target.target_fd)
+                .is_some_and(|entry| Arc::ptr_eq(entry, &self.target_entry))
+        {
+            return Err(Gap::TargetChanged);
+        }
+        if current_fdinfo_target_is_private(&table, target.target_fd, target.capture_output) {
+            return Err(Gap::UnsupportedObject);
+        }
+        Ok(())
+    }
+
+    fn settle(
+        &mut self,
+        rendered: Option<CurrentFdinfoRender>,
+        fresh_render: bool,
+        complete: bool,
+        reached_eof: bool,
+    ) -> (
+        reverie::CurrentFdinfoSnapshotFacts,
+        Option<Result<reverie::CurrentFdinfoObjectReceipt, reverie::CurrentFdinfoProofGap>>,
+    ) {
+        let (target_cleanup, read_cleanup, receipt) = match rendered {
+            Some(rendered) => (
+                Some(close_current_fdinfo_pin(rendered.pinned.file)),
+                rendered.read_cleanup,
+                Some(rendered.receipt),
+            ),
+            None => (None, None, None),
+        };
+        let source_cleanup = close_current_fdinfo_pin(
+            self.source_pin
+                .take()
+                .expect("a current source lease settles once"),
+        );
+        (
+            reverie::CurrentFdinfoSnapshotFacts {
+                origin: 0,
+                fresh_render,
+                complete,
+                reached_eof,
+                // The sequence guard has already restored its entire state;
+                // paths that never entered it left that state untouched.
+                sequence_restored: true,
+                source_cleanup,
+                target_cleanup,
+                read_cleanup,
+            },
+            receipt,
+        )
+    }
+}
+
+impl reverie::CurrentFdinfoSource for CurrentFdinfoLease {
+    fn binding(&self) -> &reverie::CurrentFdinfoSourceBinding {
+        &self.binding
+    }
+
+    fn discard(mut self: Box<Self>) -> Result<reverie::CurrentFdinfoSnapshotFacts, reverie::Error> {
+        let (facts, _) = self.settle(None, false, false, false);
+        Ok(facts)
+    }
+
+    fn capture(mut self: Box<Self>) -> Result<reverie::CurrentFdinfoRead, reverie::Error> {
+        if let Err(gap) = self.validate() {
+            let (facts, _) = self.settle(None, false, false, false);
+            return Ok(reverie::CurrentFdinfoRead::SnapshotUnavailable { gap, facts });
+        }
+        let mut rendered = None;
+        let mut render_count = 0;
+        let mut repeated_render = false;
+        let drained = {
+            let mut sequence = self
+                .description
+                .sequence
+                .lock()
+                .expect("KVM fdinfo sequence lock poisoned");
+            drain_current_fdinfo_sequence(&mut sequence, || {
+                render_count += 1;
+                if render_count != 1 {
+                    repeated_render = true;
+                    // This internal failure is classified as terminal Tool
+                    // below; it is never returned as a fabricated guest errno.
+                    return Err(negative_errno(libc::EIO));
+                }
+                let (result, observation) = render_current_fdinfo(
+                    self.target(),
+                    self.binding,
+                    &self.target_entry,
+                    &self.mounts.mountinfo,
+                );
+                rendered = observation;
+                result
+            })
+        };
+        // Both successful and declined captures restore sequence before any
+        // Close or Tool return. A later path lookup is not used to render bytes.
+        let validation = self.validate();
+        let complete = matches!(&drained, CurrentFdinfoDrain::Complete(_));
+        let (facts, receipt) = self.settle(rendered, render_count == 1, complete, complete);
+        if repeated_render {
+            return Err(reverie::Error::Tool(anyhow::anyhow!(
+                "current fdinfo capture rendered twice"
+            )));
+        }
+        finish_current_fdinfo_read(drained, receipt, facts, validation)
+    }
+}
+
+struct CurrentFdinfoRender {
+    pinned: PinnedFdinfoTarget,
+    receipt: Result<reverie::CurrentFdinfoObjectReceipt, reverie::CurrentFdinfoProofGap>,
+    read_cleanup: Option<Result<(), reverie::syscalls::Errno>>,
+}
+
+fn current_fdinfo_target_is_private(table: &FileTableState, fd: i32, capture_output: bool) -> bool {
+    table.proc_files.contains_key(&fd)
+        || table.random_device_fds.contains(&fd)
+        || table.signalfd_fds.contains(&fd)
+        || (capture_output
+            && (table.stdout_alias_fds.contains(&fd) || table.stderr_alias_fds.contains(&fd)))
+}
+
+/// Private descriptors are explicitly consumed. Never retry Close after an
+/// errno: Linux has already released its number, so a retry could close reuse.
+fn close_current_fdinfo_pin(file: std::fs::File) -> Result<(), reverie::syscalls::Errno> {
+    let fd = file.into_raw_fd();
+    // SAFETY: into_raw_fd transfers this one owned descriptor exactly once.
+    if unsafe { libc::close(fd) } == 0 {
+        Ok(())
+    } else {
+        // Capture the actual errno before any subsequent operation. libc on
+        // the supported Linux target always supplies a raw errno here.
+        let error = std::io::Error::last_os_error();
+        let errno = error
+            .raw_os_error()
+            .expect("libc Close supplies a raw Linux errno");
+        Err(reverie::syscalls::Errno::new(errno))
+    }
+}
+
+fn read_current_owned_fdinfo(
+    file: &std::fs::File,
+) -> (
+    Result<Vec<u8>, i64>,
+    Option<Result<(), reverie::syscalls::Errno>>,
+) {
+    let mut source = match std::fs::File::open(format!("/proc/self/fdinfo/{}", file.as_raw_fd())) {
+        Ok(source) => source,
+        Err(error) => return (Err(io_error(error)), None),
+    };
+    let bytes = read_fdinfo_bytes(&mut source, 1024 * 1024);
+    let cleanup = close_current_fdinfo_pin(source);
+    (bytes, Some(cleanup))
+}
+
+fn render_current_fdinfo(
+    target: &FdinfoTarget,
+    binding: reverie::CurrentFdinfoSourceBinding,
+    entry: &Arc<()>,
+    mountinfo: &[u8],
+) -> (Result<Vec<u8>, i64>, Option<CurrentFdinfoRender>) {
+    use reverie::CurrentFdinfoProofGap as Gap;
+    let pinned = match target.pin_for_show() {
+        Ok(pinned) => pinned,
+        Err(error) => return (Err(error), None),
+    };
+    let mut observation = CurrentFdinfoRender {
+        pinned,
+        receipt: Err(Gap::ObjectObservationUnavailable),
+        read_cleanup: None,
+    };
+    let result = ensure_fdinfo_object(observation.pinned.file.as_raw_fd()).and_then(|()| {
+        let (result, cleanup) = read_current_owned_fdinfo(&observation.pinned.file);
+        observation.read_cleanup = cleanup;
+        result.and_then(|bytes| replace_fdinfo_flags(&bytes, observation.pinned.guest_flags()))
+    });
+    if let Ok(bytes) = &result {
+        observation.receipt = (|| {
+            if observation.pinned.subject != binding.subject
+                || !observation
+                    .pinned
+                    .entry_id
+                    .as_ref()
+                    .is_some_and(|actual| Arc::ptr_eq(actual, entry))
+            {
+                return Err(Gap::TargetChanged);
+            }
+            let object = current_fdinfo_object(&observation.pinned.file, bytes)?;
+            let mount_identity_order = current_fdinfo_mount_order(mountinfo)?;
+            Ok(reverie::CurrentFdinfoObjectReceipt {
+                binding,
+                object,
+                status_flags: observation.pinned.status_flags,
+                target_cloexec: observation.pinned.target_cloexec,
+                mount_identity_order,
+            })
+        })();
+    }
+    (result, Some(observation))
+}
+
+/// Strict scalar extraction does not modify any rendered field. Full Detcore
+/// normalization still owns its accepted-field/refusal policy.
+fn current_fdinfo_scalar(bytes: &[u8], name: &[u8]) -> Option<u64> {
+    let mut value = None;
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        if let Some(field) = line.strip_prefix(name) {
+            if value.is_some() || !line.ends_with(b"\n") {
+                return None;
+            }
+            let field = std::str::from_utf8(field).ok()?.trim();
+            if field.is_empty() || !field.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            value = Some(field.parse().ok()?);
+        }
+    }
+    value
+}
+
+fn current_fdinfo_object(
+    file: &std::fs::File,
+    bytes: &[u8],
+) -> Result<reverie::OrdinaryFdinfoObject, reverie::CurrentFdinfoProofGap> {
+    use reverie::CurrentFdinfoProofGap as Gap;
+    let mut stat: libc::statx = unsafe { std::mem::zeroed() };
+    let mask = libc::STATX_TYPE | libc::STATX_INO | libc::STATX_MNT_ID;
+    // SAFETY: the very pin that rendered bytes is held; the empty name and
+    // AT_EMPTY_PATH address that owned OFD, never a later path/target lookup.
+    let result = unsafe {
+        libc::statx(
+            file.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH,
+            mask,
+            &mut stat,
+        )
+    };
+    if result != 0 || stat.stx_mask & mask != mask {
+        return Err(Gap::ObjectObservationUnavailable);
+    }
+    if current_fdinfo_scalar(bytes, b"ino:") != Some(stat.stx_ino)
+        || current_fdinfo_scalar(bytes, b"mnt_id:") != Some(stat.stx_mnt_id)
+        || stat.stx_ino == 0
+        || stat.stx_mnt_id == 0
+        || !matches!(
+            u32::from(stat.stx_mode) & libc::S_IFMT,
+            libc::S_IFREG
+                | libc::S_IFDIR
+                | libc::S_IFCHR
+                | libc::S_IFBLK
+                | libc::S_IFIFO
+                | libc::S_IFSOCK
+        )
+    {
+        return Err(Gap::ObjectObservationUnavailable);
+    }
+    Ok(reverie::OrdinaryFdinfoObject {
+        device_major: stat.stx_dev_major,
+        device_minor: stat.stx_dev_minor,
+        inode: stat.stx_ino,
+        file_type: u32::from(stat.stx_mode) & libc::S_IFMT,
+        mount_id: stat.stx_mnt_id,
+    })
+}
+
+fn current_fdinfo_mount_order(bytes: &[u8]) -> Result<Vec<u64>, reverie::CurrentFdinfoProofGap> {
+    use reverie::CurrentFdinfoProofGap as Gap;
+    if bytes.is_empty() || !bytes.ends_with(b"\n") {
+        return Err(Gap::UnsupportedMountView);
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    let mut order = Vec::new();
+    for line in bytes[..bytes.len() - 1].split(|byte| *byte == b'\n') {
+        let fields: Vec<_> = line.split(|byte| *byte == b' ').collect();
+        let separators: Vec<_> = fields
+            .iter()
+            .enumerate()
+            .filter_map(|(index, field)| (*field == b"-").then_some(index))
+            .collect();
+        if fields
+            .iter()
+            .any(|field| field.is_empty() || field.contains(&0))
+            || separators.len() != 1
+            || separators[0] < 6
+            || fields.len() != separators[0] + 4
+        {
+            return Err(Gap::UnsupportedMountView);
+        }
+        let field = fields[0];
+        let id = field
+            .iter()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| std::str::from_utf8(field).ok()?.parse::<u64>().ok())
+            .flatten()
+            .filter(|id| *id != 0);
+        let Some(id) = id else {
+            return Err(Gap::UnsupportedMountView);
+        };
+        if !ids.insert(id) {
+            return Err(Gap::UnsupportedMountView);
+        }
+        order.push(id);
+    }
+    Ok(order)
+}
+
+/// Save all partial-buffer/EOF/read/pread state under the existing seq mutex.
+/// Drop restores even an unwinding private drain, without allocating in Drop.
+struct CurrentFdinfoSequenceRestore<'a> {
+    sequence: &'a mut crate::fdinfo::FdinfoSequence,
+    saved: Option<crate::fdinfo::FdinfoSequence>,
+}
+
+impl<'a> CurrentFdinfoSequenceRestore<'a> {
+    fn new(sequence: &'a mut crate::fdinfo::FdinfoSequence) -> Self {
+        let saved = Some(std::mem::take(sequence));
+        Self { sequence, saved }
+    }
+}
+
+impl Drop for CurrentFdinfoSequenceRestore<'_> {
+    fn drop(&mut self) {
+        *self.sequence = self.saved.take().expect("fdinfo sequence restores once");
+    }
+}
+
+enum CurrentFdinfoDrain {
+    Complete(Vec<u8>),
+    ReadErrno(i64),
+    Incomplete,
+}
+
+fn finish_current_fdinfo_read(
+    drained: CurrentFdinfoDrain,
+    receipt: Option<Result<reverie::CurrentFdinfoObjectReceipt, reverie::CurrentFdinfoProofGap>>,
+    facts: reverie::CurrentFdinfoSnapshotFacts,
+    validation: Result<(), reverie::CurrentFdinfoProofGap>,
+) -> Result<reverie::CurrentFdinfoRead, reverie::Error> {
+    use reverie::CurrentFdinfoProofGap as Gap;
+    if let Err(gap) = validation {
+        return Ok(reverie::CurrentFdinfoRead::SnapshotUnavailable { gap, facts });
+    }
+    match drained {
+        CurrentFdinfoDrain::Complete(bytes) => {
+            let mut receipt = receipt.unwrap_or(Err(Gap::ObjectObservationUnavailable));
+            if !facts.cleanup_succeeded() && receipt.is_ok() {
+                receipt = Err(Gap::CleanupUnavailable);
+            }
+            Ok(reverie::CurrentFdinfoRead::Success {
+                bytes,
+                receipt,
+                facts,
+            })
+        }
+        CurrentFdinfoDrain::ReadErrno(error) => {
+            let errno = error
+                .checked_neg()
+                .and_then(|errno| i32::try_from(errno).ok())
+                .filter(|errno| (1..=4095).contains(errno));
+            let Some(errno) = errno else {
+                return Err(reverie::Error::Tool(anyhow::anyhow!(
+                    "invalid fdinfo raw read result {error}"
+                )));
+            };
+            Ok(reverie::CurrentFdinfoRead::ReadErrno {
+                errno: reverie::syscalls::Errno::new(errno),
+                facts,
+            })
+        }
+        CurrentFdinfoDrain::Incomplete => Ok(reverie::CurrentFdinfoRead::SnapshotUnavailable {
+            gap: Gap::IncompleteOrStaleSnapshot,
+            facts,
+        }),
+    }
+}
+
+fn drain_current_fdinfo_sequence(
+    sequence: &mut crate::fdinfo::FdinfoSequence,
+    mut observe: impl FnMut() -> Result<Vec<u8>, i64>,
+) -> CurrentFdinfoDrain {
+    let restored = CurrentFdinfoSequenceRestore::new(sequence);
+    let mut bytes = Vec::new();
+    loop {
+        let count = restored.sequence.read(None, 4096, &mut observe, |part| {
+            bytes.extend_from_slice(part);
+            Ok(part.len())
+        });
+        if count < 0 {
+            return CurrentFdinfoDrain::ReadErrno(count);
+        }
+        if count == 0 {
+            return CurrentFdinfoDrain::Complete(bytes);
+        }
+        if bytes.len() > 1024 * 1024 {
+            return CurrentFdinfoDrain::Incomplete;
+        }
     }
 }
 
@@ -6759,6 +7264,113 @@ impl ElfExecutor {
                 tid: reverie::Pid::from_raw(self.state.tid),
                 task_generation: task.generation,
             })
+    }
+
+    /// Nonrendering capability probe. An exact registered current process,
+    /// original source description/table and ordinary target slot are needed;
+    /// a foreign/copy-child table or a borrowed standard fd is not authority.
+    pub(crate) fn hold_current_fdinfo_source(
+        &self,
+        source_fd: i32,
+    ) -> Result<Option<Box<dyn reverie::CurrentFdinfoSource>>, reverie::Error> {
+        if self.has_pending_exit() || self.process_action.is_some() {
+            return Ok(None);
+        }
+        let Some(reader) = self.signal_task_identity() else {
+            return Ok(None);
+        };
+        let lifecycle = self.state.task_lifecycle.clone();
+        let Some(process_binding) = self.signal_registry.current_fdinfo_binding(
+            reader,
+            &self.signal_binding,
+            &self.file_table,
+            &lifecycle,
+        ) else {
+            return Ok(None);
+        };
+        let (description, source_entry, target_entry, source_pin, subject) = {
+            let table = self
+                .file_table
+                .lock()
+                .expect("KVM file-table lock poisoned");
+            let Some(description) = table.fdinfo_files.get(&source_fd) else {
+                return Ok(None);
+            };
+            let SeqProcSource::Fdinfo(target) = &description.source else {
+                return Ok(None);
+            };
+            if !target
+                .table
+                .upgrade()
+                .is_some_and(|files| Arc::ptr_eq(&files, &self.file_table))
+                || !Arc::ptr_eq(&target.lifecycle, &lifecycle)
+                || current_fdinfo_target_is_private(&table, target.target_fd, target.capture_output)
+            {
+                return Ok(None);
+            }
+            let Some(source) = table.files.get(&source_fd) else {
+                return Ok(None);
+            };
+            let Some(target_file) = table.files.get(&target.target_fd) else {
+                // Inherited/borrowed stdio is not an owned ordinary target.
+                return Ok(None);
+            };
+            let (Some(source_entry), Some(target_entry)) = (
+                table.fd_entry_ids.get(&source_fd),
+                table.fd_entry_ids.get(&target.target_fd),
+            ) else {
+                return Ok(None);
+            };
+            if ensure_fdinfo_object(target_file.as_raw_fd()).is_err() {
+                return Ok(None);
+            }
+            let tasks = lifecycle.lock().expect("KVM lifecycle lock poisoned");
+            let Some(task) = tasks.get(target.target_tid) else {
+                return Ok(None);
+            };
+            let subject = reverie::SignalTaskIdentity {
+                process: reverie::SignalProcessId {
+                    tgid: reverie::Pid::from_raw(task.tgid),
+                    generation: task.process_generation,
+                },
+                tid: reverie::Pid::from_raw(target.target_tid),
+                task_generation: task.generation,
+            };
+            if task.generation != target.target_generation || subject.process != reader.process {
+                return Ok(None);
+            }
+            // Real dup pins this opened source OFD without reading/resetting
+            // its sequence, consuming a guest descriptor or changing a turn.
+            let source_pin = source.try_clone().map_err(reverie::Error::Io)?;
+            (
+                description.clone(),
+                source_entry.clone(),
+                target_entry.clone(),
+                source_pin,
+                subject,
+            )
+        };
+        let target_fd = match &description.source {
+            SeqProcSource::Fdinfo(target) => target.target_fd,
+            SeqProcSource::Process { .. } => unreachable!("checked above"),
+        };
+        Ok(Some(Box::new(CurrentFdinfoLease {
+            binding: reverie::CurrentFdinfoSourceBinding {
+                reader,
+                subject,
+                target_fd,
+            },
+            source_fd,
+            table: self.file_table.clone(),
+            lifecycle,
+            description,
+            source_entry,
+            target_entry,
+            source_pin: Some(source_pin),
+            registry: self.signal_registry.clone(),
+            process_binding,
+            mounts: self.state.proc_mounts.clone(),
+        })))
     }
 
     /// Retain this process generation through an asynchronous Tool
@@ -39947,6 +40559,401 @@ mod tests {
             }
         }
         direct
+    }
+
+    #[test]
+    fn current_fdinfo_fresh_capture_restores_partial_sequence_and_same_pin_fields() {
+        let mut f = FdinfoFixture::new(false);
+        let target = f.open("a", libc::O_RDWR | libc::O_CLOEXEC);
+        let info = f.info(target);
+        assert_eq!(f.seek(target, 23, libc::SEEK_SET), 23);
+        let description = f.executor.state.fdinfo_files[&(info as i32)].clone();
+        let old = description.observe().unwrap();
+        assert_eq!(f.read(info, 7), old[..7]);
+        let before = format!("{:?}", description.sequence.lock().unwrap());
+        assert_eq!(f.seek(target, 37, libc::SEEK_SET), 37);
+        let lease = f
+            .executor
+            .hold_current_fdinfo_source(info as i32)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            format!("{:?}", description.sequence.lock().unwrap()),
+            before,
+            "probe must not render/reset"
+        );
+        assert_eq!(
+            lease.binding().reader,
+            f.executor.signal_task_identity().unwrap()
+        );
+        let reverie::CurrentFdinfoRead::Success {
+            bytes,
+            receipt,
+            facts,
+        } = lease.capture().unwrap()
+        else {
+            panic!("expected a complete fresh ordinary record")
+        };
+        assert!(facts.is_complete());
+        assert!(facts.cleanup_succeeded());
+        assert_eq!(facts.target_cleanup, Some(Ok(())));
+        assert_eq!(facts.read_cleanup, Some(Ok(())));
+        let receipt = receipt.unwrap();
+        assert_eq!(
+            receipt.object.inode,
+            FdinfoFixture::field(&bytes, "ino:", 10)
+        );
+        assert_eq!(
+            receipt.object.mount_id,
+            FdinfoFixture::field(&bytes, "mnt_id:", 10)
+        );
+        assert_eq!(receipt.object.file_type, libc::S_IFREG);
+        assert!(receipt.target_cloexec);
+        assert_eq!(
+            FdinfoFixture::field(&bytes, "flags:", 8) as i32,
+            receipt.status_flags | libc::O_CLOEXEC
+        );
+        f.check_object(&bytes, target, 37);
+        assert_eq!(
+            format!("{:?}", description.sequence.lock().unwrap()),
+            before,
+            "entire pre-capture backend sequence survives"
+        );
+        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), 7);
+        assert_eq!(
+            f.read(info, 4096),
+            old[7..],
+            "raw fallback retains the old partial buffer"
+        );
+    }
+
+    #[test]
+    fn current_fdinfo_sequence_restore_preserves_pread_error_and_capacity_state() {
+        let mut sequence = crate::fdinfo::FdinfoSequence::default();
+        let old = b"old-partial-record\n";
+        assert_eq!(sequence.read(None, 3, || Ok(old.to_vec()), |_| Ok(3)), 3);
+        assert_eq!(sequence.read(Some(7), 2, || Ok(old.to_vec()), |_| Ok(2)), 2);
+        let before = format!("{sequence:?}");
+        let mut renders = 0;
+        let fresh = drain_current_fdinfo_sequence(&mut sequence, || {
+            renders += 1;
+            Ok(b"fresh-from-zero\n".to_vec())
+        });
+        let CurrentFdinfoDrain::Complete(bytes) = fresh else {
+            panic!("fresh complete drain")
+        };
+        assert_eq!(bytes, b"fresh-from-zero\n");
+        assert_eq!(renders, 1);
+        assert_eq!(format!("{sequence:?}"), before);
+        assert!(matches!(
+            drain_current_fdinfo_sequence(&mut sequence, || Err(negative_errno(libc::EACCES))),
+            CurrentFdinfoDrain::ReadErrno(error) if error == negative_errno(libc::EACCES)
+        ));
+        assert_eq!(format!("{sequence:?}"), before);
+        assert!(matches!(
+            drain_current_fdinfo_sequence(&mut sequence, || Ok(vec![b'x'; 1024 * 1024 + 1])),
+            CurrentFdinfoDrain::Incomplete
+        ));
+        assert_eq!(
+            format!("{sequence:?}"),
+            before,
+            "declined private EOF must not reach fallback"
+        );
+    }
+
+    #[test]
+    fn current_fdinfo_replaced_source_and_same_inode_target_do_not_mint_authority() {
+        let mut f = FdinfoFixture::new(false);
+        let target = f.open("a", libc::O_RDWR);
+        let info = f.info(target);
+        let lease = f
+            .executor
+            .hold_current_fdinfo_source(info as i32)
+            .unwrap()
+            .unwrap();
+        assert_eq!(f.call(libc::SYS_close, [target as u64, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(
+            f.open("a", libc::O_RDWR),
+            target,
+            "same inode, new independent OFD/slot"
+        );
+        assert!(
+            matches!(lease.capture().unwrap(), reverie::CurrentFdinfoRead::SnapshotUnavailable {
+            gap: reverie::CurrentFdinfoProofGap::TargetChanged, facts
+        } if !facts.fresh_render && facts.cleanup_succeeded())
+        );
+        let lease = f
+            .executor
+            .hold_current_fdinfo_source(info as i32)
+            .unwrap()
+            .unwrap();
+        assert_eq!(f.call(libc::SYS_close, [info as u64, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(
+            f.info(target),
+            info,
+            "new proc description at the old source number"
+        );
+        assert!(
+            matches!(lease.capture().unwrap(), reverie::CurrentFdinfoRead::SnapshotUnavailable {
+            gap: reverie::CurrentFdinfoProofGap::SourceChanged, facts
+        } if !facts.fresh_render && facts.cleanup_succeeded())
+        );
+        assert!(
+            !f.read(info, 4096).is_empty(),
+            "ordinary live source still reads normally"
+        );
+    }
+
+    #[test]
+    fn current_fdinfo_registered_image_copy_child_and_retired_subject_refuse() {
+        let mut f = FdinfoFixture::new(false);
+        let target = f.open("a", libc::O_RDWR);
+        let info = f.info(target);
+        let child = f.executor.fork_child(2, false, false).unwrap();
+        assert!(
+            child
+                .hold_current_fdinfo_source(info as i32)
+                .unwrap()
+                .is_none(),
+            "copied child table is not original target table"
+        );
+        let lease = f
+            .executor
+            .hold_current_fdinfo_source(info as i32)
+            .unwrap()
+            .unwrap();
+        f.executor.replace_after_exec(test_state(&f.root.0));
+        assert!(
+            matches!(lease.capture().unwrap(), reverie::CurrentFdinfoRead::SnapshotUnavailable {
+            gap: reverie::CurrentFdinfoProofGap::ActorChanged, facts
+        } if !facts.fresh_render && facts.cleanup_succeeded())
+        );
+        let worker = f.executor.thread_child(3).unwrap();
+        let lease = worker
+            .hold_current_fdinfo_source(info as i32)
+            .unwrap()
+            .unwrap();
+        assert_ne!(lease.binding().reader, lease.binding().subject);
+        f.executor
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap()
+            .remove(f.executor.state.tid, f.executor.task_generation);
+        assert!(
+            matches!(lease.capture().unwrap(), reverie::CurrentFdinfoRead::SnapshotUnavailable {
+            gap: reverie::CurrentFdinfoProofGap::RetiredSubject, facts
+        } if !facts.fresh_render && facts.cleanup_succeeded())
+        );
+    }
+
+    #[test]
+    fn current_fdinfo_discard_is_nonrendering_and_private_or_borrowed_targets_refuse() {
+        let mut f = FdinfoFixture::new(false);
+        let borrowed = f.info(1);
+        assert!(
+            f.executor
+                .hold_current_fdinfo_source(borrowed as i32)
+                .unwrap()
+                .is_none()
+        );
+        let target = f.open("a", libc::O_RDWR);
+        let info = f.info(target);
+        let description = f.executor.state.fdinfo_files[&(info as i32)].clone();
+        let before = format!("{:?}", description.sequence.lock().unwrap());
+        let lease = f
+            .executor
+            .hold_current_fdinfo_source(info as i32)
+            .unwrap()
+            .unwrap();
+        let facts = lease.discard().unwrap();
+        assert_eq!(facts.source_cleanup, Ok(()));
+        assert_eq!((facts.target_cleanup, facts.read_cleanup), (None, None));
+        assert!(facts.sequence_restored);
+        assert!(!facts.fresh_render && !facts.complete && !facts.reached_eof);
+        assert_eq!(
+            format!("{:?}", description.sequence.lock().unwrap()),
+            before
+        );
+        let private = f.call(libc::SYS_eventfd2, [0; 6]);
+        assert!(private >= 0);
+        assert_eq!(
+            f.call(libc::SYS_dup2, [private as u64, target as u64, 0, 0, 0, 0]),
+            target
+        );
+        assert!(
+            f.executor
+                .hold_current_fdinfo_source(info as i32)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            f.call(libc::SYS_read, [info as u64, PAGE_SIZE, 4096, 0, 0, 0]),
+            negative_errno(libc::ENOSYS),
+            "old private-carrier refusal remains exact"
+        );
+        let mut captured = FdinfoFixture::new(true);
+        let target = captured.open("a", libc::O_RDWR);
+        let info = captured.info(target);
+        captured
+            .executor
+            .file_table
+            .lock()
+            .unwrap()
+            .stdout_alias_fds
+            .insert(target as i32);
+        assert!(
+            captured
+                .executor
+                .hold_current_fdinfo_source(info as i32)
+                .unwrap()
+                .is_none()
+        );
+        for fd in 0..=2 {
+            let mut f = FdinfoFixture::new(false);
+            let target = f.open("a", libc::O_RDWR);
+            assert_eq!(
+                f.call(libc::SYS_dup2, [target as u64, fd, 0, 0, 0, 0]),
+                fd as i64
+            );
+            let info = f.info(fd as i64);
+            let facts = f
+                .executor
+                .hold_current_fdinfo_source(info as i32)
+                .unwrap()
+                .unwrap()
+                .discard()
+                .unwrap();
+            assert!(
+                facts.cleanup_succeeded(),
+                "actual owned replacement at std slot {fd}"
+            );
+        }
+    }
+
+    #[test]
+    fn current_fdinfo_byte_and_cleanup_gaps_do_not_become_read_errors() {
+        use reverie::CurrentFdinfoProofGap as Gap;
+        assert_eq!(current_fdinfo_scalar(b"ino:\t9\n", b"ino:"), Some(9));
+        for bytes in [
+            b"ino:\t9\nino:\t9\n".as_slice(),
+            b"ino:\t9",
+            b"ino:\t-1\n",
+            b"ino:\t9x\n",
+        ] {
+            assert_eq!(current_fdinfo_scalar(bytes, b"ino:"), None);
+        }
+        assert_eq!(
+            current_fdinfo_mount_order(
+                b"10 9 0:1 / / rw - tmpfs tmpfs rw\n11 10 0:2 / /x rw - tmpfs tmpfs rw\n"
+            ),
+            Ok(vec![10, 11])
+        );
+        for bytes in [
+            b"".as_slice(),
+            b"10 9 0:1 / / rw - tmpfs tmpfs rw",
+            b"0 9 0:1 / / rw - tmpfs tmpfs rw\n",
+            b"+10 9 0:1 / / rw - tmpfs tmpfs rw\n",
+            b"10 - tmpfs tmpfs rw\n",
+            b"10 9 0:1 / / rw - tmpfs tmpfs rw\n10 9 0:1 / / rw - tmpfs tmpfs rw\n",
+        ] {
+            assert_eq!(
+                current_fdinfo_mount_order(bytes),
+                Err(Gap::UnsupportedMountView)
+            );
+        }
+        let binding = reverie::CurrentFdinfoSourceBinding {
+            reader: reverie::SignalTaskIdentity {
+                process: reverie::SignalProcessId {
+                    tgid: reverie::Pid::from_raw(1),
+                    generation: 1,
+                },
+                tid: reverie::Pid::from_raw(1),
+                task_generation: 1,
+            },
+            subject: reverie::SignalTaskIdentity {
+                process: reverie::SignalProcessId {
+                    tgid: reverie::Pid::from_raw(1),
+                    generation: 1,
+                },
+                tid: reverie::Pid::from_raw(1),
+                task_generation: 1,
+            },
+            target_fd: 7,
+        };
+        let receipt = reverie::CurrentFdinfoObjectReceipt {
+            binding,
+            object: reverie::OrdinaryFdinfoObject {
+                device_major: 0,
+                device_minor: 1,
+                inode: 9,
+                file_type: libc::S_IFREG,
+                mount_id: 10,
+            },
+            status_flags: libc::O_RDONLY,
+            target_cloexec: false,
+            mount_identity_order: vec![10],
+        };
+        let facts = reverie::CurrentFdinfoSnapshotFacts {
+            origin: 0,
+            fresh_render: true,
+            complete: true,
+            reached_eof: true,
+            sequence_restored: true,
+            source_cleanup: Err(reverie::syscalls::Errno::EIO),
+            target_cleanup: Some(Ok(())),
+            read_cleanup: Some(Ok(())),
+        };
+        let raw = b"unknown:\tkept\nino:\t9\nmnt_id:\t10\n";
+        let result = finish_current_fdinfo_read(
+            CurrentFdinfoDrain::Complete(raw.to_vec()),
+            Some(Ok(receipt)),
+            facts,
+            Ok(()),
+        )
+        .unwrap();
+        assert!(
+            matches!(result, reverie::CurrentFdinfoRead::Success { bytes, receipt: Err(Gap::CleanupUnavailable), facts }
+            if bytes == raw && facts.is_complete() && !facts.cleanup_succeeded())
+        );
+        let result = finish_current_fdinfo_read(
+            CurrentFdinfoDrain::Complete(raw.to_vec()),
+            Some(Err(Gap::ObjectObservationUnavailable)),
+            facts,
+            Ok(()),
+        )
+        .unwrap();
+        assert!(
+            matches!(result, reverie::CurrentFdinfoRead::Success { bytes, receipt: Err(Gap::ObjectObservationUnavailable), .. } if bytes == raw)
+        );
+        let result = finish_current_fdinfo_read(
+            CurrentFdinfoDrain::ReadErrno(negative_errno(libc::EACCES)),
+            None,
+            facts,
+            Ok(()),
+        )
+        .unwrap();
+        assert!(matches!(
+            result,
+            reverie::CurrentFdinfoRead::ReadErrno {
+                errno: reverie::syscalls::Errno::EACCES,
+                ..
+            }
+        ));
+        assert!(
+            finish_current_fdinfo_read(
+                CurrentFdinfoDrain::ReadErrno(i64::MIN),
+                None,
+                facts,
+                Ok(())
+            )
+            .is_err(),
+            "malformed internal result is terminal, not a fabricated errno"
+        );
+        assert!(
+            finish_current_fdinfo_read(CurrentFdinfoDrain::ReadErrno(-5000), None, facts, Ok(()))
+                .is_err()
+        );
     }
 
     #[test]

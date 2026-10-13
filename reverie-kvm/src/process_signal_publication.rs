@@ -100,6 +100,13 @@ pub(super) struct ProcessBinding {
     orphan_reaper_pid: Arc<AtomicI32>,
 }
 
+/// Read-only lease of the actual registered process and current image.
+/// Keeping the binding alive does not keep any task or file table live.
+pub(super) struct CurrentFdinfoProcessBinding {
+    binding: Arc<ProcessBinding>,
+    image_revision: ImageRevision,
+}
+
 impl ProcessBinding {
     pub(super) fn rebind(&self, state: &LoadedStaticElf, files: &Arc<Mutex<FileTableState>>) {
         // Caller holds the authoritative file table and process transaction.
@@ -426,6 +433,57 @@ impl ProcessSignalRegistry {
             .unwrap_or_else(|p| p.into_inner())
             .get(&(identity.tgid.as_raw(), identity.generation))?
             .upgrade()
+    }
+
+    /// Observe the registered reader and its actual current-image file table.
+    /// This neither registers a task nor changes a signal/timer state.
+    pub(super) fn current_fdinfo_binding(
+        &self,
+        reader: reverie::SignalTaskIdentity,
+        expected: &Arc<ProcessBinding>,
+        files: &Arc<Mutex<FileTableState>>,
+        lifecycle: &Arc<Mutex<TaskLifecycleTable>>,
+    ) -> Option<CurrentFdinfoProcessBinding> {
+        let binding = self.lookup(reader.process)?;
+        if !Arc::ptr_eq(&binding, expected) || binding.identity != reader.process {
+            return None;
+        }
+        let actual_lifecycle = binding.lifecycle.upgrade()?;
+        if !Arc::ptr_eq(&actual_lifecycle, lifecycle) {
+            return None;
+        }
+        let tasks = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+        let task = tasks.get(reader.tid.as_raw())?;
+        if task.generation != reader.task_generation
+            || task.process_generation != reader.process.generation
+            || task.tgid != reader.process.tgid.as_raw()
+        {
+            return None;
+        }
+        let image_revision = {
+            let image = binding.image.lock().unwrap_or_else(|p| p.into_inner());
+            if !Arc::ptr_eq(&image.files.upgrade()?, files) {
+                return None;
+            }
+            image.revision.clone()
+        };
+        drop(tasks);
+        Some(CurrentFdinfoProcessBinding {
+            binding,
+            image_revision,
+        })
+    }
+
+    /// Recheck the same registered process/image; a numeric task is not a join.
+    pub(super) fn current_fdinfo_binding_is_current(
+        &self,
+        retained: &CurrentFdinfoProcessBinding,
+        reader: reverie::SignalTaskIdentity,
+        files: &Arc<Mutex<FileTableState>>,
+        lifecycle: &Arc<Mutex<TaskLifecycleTable>>,
+    ) -> bool {
+        self.current_fdinfo_binding(reader, &retained.binding, files, lifecycle)
+            .is_some_and(|current| current.image_revision == retained.image_revision)
     }
 
     /// Freeze the exact process generation at its first exact task failure.

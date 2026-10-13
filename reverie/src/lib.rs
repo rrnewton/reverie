@@ -65,6 +65,7 @@ pub mod glibc_symbol;
 mod guest;
 #[cfg(target_arch = "x86_64")]
 pub mod pmu;
+pub mod proc_fdinfo;
 mod process_signal_control;
 #[cfg(target_arch = "x86_64")]
 mod rdtsc;
@@ -88,6 +89,7 @@ pub use capabilities::*;
 pub use dispatch_stats::*;
 pub use error::*;
 pub use guest::*;
+pub use proc_fdinfo::*;
 pub use process::ExitStatus;
 pub use process::Pid;
 #[cfg(target_arch = "x86_64")]
