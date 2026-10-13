@@ -20932,7 +20932,8 @@ pub(crate) enum SignalDisposition {
 }
 
 /// Emulates `kill`/`tkill`/`tgkill` for the bounded virtual process tree and
-/// explicitly refuses delivery that requires cross-process recipient fanout.
+/// explicitly refuses delivery that requires cross-process recipient fanout
+/// (process groups with another member, `kill(-1)`).
 ///
 /// Supported standard signals directed to the current task are queued for the
 /// backend's next return-to-user delivery boundary. This lets a Tool inspect,
@@ -20940,9 +20941,11 @@ pub(crate) enum SignalDisposition {
 /// Blocked signals remain pending. Ignored signals are queued long enough for
 /// the Tool hook to observe them, then discarded at that return boundary; an
 /// unchanged fatal default disposition terminates with the conventional
-/// `128 + signo` status. Stopped-state scheduling, queued real-time siginfo,
-/// and cross-process delivery remain unsupported. Same-process thread-directed
-/// signals use the named receiver's private queue and return boundary.
+/// `128 + signo` status. Stopped-state scheduling and queued real-time siginfo
+/// remain unsupported. Same-process thread-directed signals use the named
+/// receiver's private queue and return boundary. `kill` of another single-
+/// threaded live process queues into that process's shared pending set (see
+/// [`kill_other_process`]).
 // TODO-HUMAN-REVIEW(#95): Review self-signal termination and the default-disposition table.
 fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> SyscallAction {
     let transaction = state.signal_transaction.clone();
@@ -21056,12 +21059,13 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
             _ if !processes.iter().any(|(tgid, _)| *tgid == target) => {
                 return continue_with(negative_errno(libc::ESRCH));
             }
+            _ if signal == 0 => return continue_with(0),
             _ => {
-                return continue_with(if signal == 0 {
-                    0
-                } else {
-                    negative_errno(libc::ENOSYS)
-                });
+                // The recipient's transaction is taken by the publication.
+                // Holding this sender's transaction across it would let two
+                // processes signalling each other deadlock.
+                drop(_transaction);
+                return kill_other_process(state, target, signal);
             }
         }
     };
@@ -21124,6 +21128,67 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
     match queue_signal_event_locked(state, event, is_kill) {
         Ok(()) => continue_with(0),
         Err(error) => continue_with(error),
+    }
+}
+
+/// `kill(pid, signal)` of another live, single-threaded guest process.
+///
+/// Only a Tool-controlled run is admitted: its scheduler is the one authority
+/// that lets the recipient observe the signal, either at its next permitted
+/// return boundary or by selecting it from a parked wait (`alarm_recipients`
+/// reports every task with an eligible shared-pending signal). Both happen at
+/// scheduler-ordered points, so the observation never depends on host timing.
+/// An uncontrolled run has no such wake for a recipient parked in a host wait
+/// and keeps refusing with ENOSYS.
+///
+/// The publication itself applies Linux generation-time semantics under the
+/// recipient's transaction: an ignored, unblocked signal is discarded; any
+/// other is queued (coalescing a pending standard signal) for the recipient's
+/// own mask and disposition to decide at delivery, where a default-fatal
+/// action terminates it with the conventional signaled wait status.
+///
+/// Signals this shared-pending path cannot represent keep failing visibly:
+/// SIGKILL needs cross-process cancellation of a parked owner, job-control
+/// stop/continue needs a stopped-task protocol, SIGCHLD/SIGPIPE are produced
+/// only by their own ledgers here, and real-time signals need queued siginfo.
+/// A multi-threaded recipient needs a deterministic receiving-thread choice.
+fn kill_other_process(
+    state: &LoadedStaticElf,
+    target: libc::pid_t,
+    signal: libc::c_int,
+) -> SyscallAction {
+    if !crate::elf::parent_death::supported_signal(signal)
+        || matches!(signal, libc::SIGCHLD | libc::SIGPIPE)
+    {
+        return continue_with(negative_errno(libc::ENOSYS));
+    }
+    let Some(registry) = state.children.registry() else {
+        return continue_with(negative_errno(libc::ENOSYS));
+    };
+    if !registry.controlled() {
+        return continue_with(negative_errno(libc::ENOSYS));
+    }
+    let process = {
+        let lifecycle = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A process whose leader already exited while a sibling runs is
+        // multi-threaded for this purpose and is refused with the rest.
+        let Some(leader) = lifecycle.get(target).filter(|task| task.tgid == target) else {
+            return continue_with(negative_errno(libc::ENOSYS));
+        };
+        if lifecycle.has_live_sibling(target, target) {
+            return continue_with(negative_errno(libc::ENOSYS));
+        }
+        reverie::SignalProcessId {
+            tgid: reverie::Pid::from_raw(target),
+            generation: leader.process_generation,
+        }
+    };
+    match registry.publish_kill(state.pid, process, signal) {
+        Ok(()) => continue_with(0),
+        Err(errno) => continue_with(negative_errno(errno.into_raw())),
     }
 }
 

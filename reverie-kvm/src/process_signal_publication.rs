@@ -773,6 +773,58 @@ impl ProcessSignalRegistry {
     pub(super) fn control(self: &Arc<Self>) -> ProcessSignalControl {
         ProcessSignalControl(Arc::downgrade(self))
     }
+
+    /// Queue an SI_USER `signal` from process `sender` into the exact live
+    /// process generation `target`, for `kill(2)` between guest processes.
+    ///
+    /// The caller has already refused signal classes this shared-pending
+    /// path cannot represent (KILL, job control, CHLD, PIPE, real-time) and
+    /// multi-threaded recipients, and holds no process signal transaction.
+    /// A committed publication that then fails to refresh signalfd readiness
+    /// is forwarded to the run owner; the signal itself was generated.
+    pub(super) fn publish_kill(
+        self: &Arc<Self>,
+        sender: i32,
+        target: SignalProcessId,
+        signal: i32,
+    ) -> Result<(), Errno> {
+        let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+        info[..4].copy_from_slice(&signal.to_ne_bytes());
+        info[8..12].copy_from_slice(&libc::SI_USER.to_ne_bytes());
+        info[16..20].copy_from_slice(&sender.to_ne_bytes());
+        // The admitted guest credential model is fixed real UID 0, as for
+        // parent-death SI_USER events; never the supervisor's uid.
+        info[20..24].copy_from_slice(&0_u32.to_ne_bytes());
+        let event = SignalEvent::new(
+            signal,
+            info,
+            reverie::SignalTarget::Process { pid: target.tgid },
+        )?;
+        match self.control().publish_user_signal(target, event) {
+            ProcessPublication::Committed(_) => Ok(()),
+            ProcessPublication::FailedAfterCommit(failure) => report_publication_failure(
+                self,
+                target,
+                "kill signal publication",
+                crate::Error::ProcessSignalPublication {
+                    receipt: public_receipt(&failure.receipt),
+                    errno: failure.errno,
+                },
+            ),
+            ProcessPublication::Rejected(reason) => Err(match reason {
+                PublicationRejection::Backend(errno) => errno,
+                PublicationRejection::Closed | PublicationRejection::StaleProcess => Errno::ESRCH,
+                // The recipient replaced its image between lookup and commit.
+                // Under Tool control both happen in serialized turns, so this
+                // is a host race of an uncontrolled run; report it visibly.
+                PublicationRejection::ChangedImage => Errno::EAGAIN,
+                PublicationRejection::InvalidEvent | PublicationRejection::InvalidCompletion => {
+                    Errno::EINVAL
+                }
+                PublicationRejection::Terminal => Errno::EIO,
+            }),
+        }
+    }
 }
 
 /// Retaining a control does not retain executors, descriptors, or GlobalState.
@@ -875,6 +927,56 @@ impl ChildPublicationRecord {
 }
 
 impl ProcessSignalControl {
+    /// Live tasks of `process`, in ascending TID order, that do not block at
+    /// least one current shared-pending signal in `selected`.
+    fn pending_recipients(
+        &self,
+        process: SignalProcessId,
+        selected: crate::signal::KernelSigset,
+    ) -> Result<Vec<reverie::SignalRecipient>, Errno> {
+        let registry = self.0.upgrade().ok_or(Errno::ESRCH)?;
+        let binding = registry.lookup(process).ok_or(Errno::ESRCH)?;
+        let image = binding
+            .image
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let transaction = binding.transaction.upgrade().ok_or(Errno::ESRCH)?;
+        let lifecycle = binding.lifecycle.upgrade().ok_or(Errno::ESRCH)?;
+        let signals = image.signals.upgrade().ok_or(Errno::ESRCH)?;
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        if binding
+            .image
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .revision
+            != image.revision
+        {
+            return Err(Errno::EAGAIN);
+        }
+        let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+        let signals = signals.lock().unwrap_or_else(|p| p.into_inner());
+        let mut pending = signals
+            .shared_pending
+            .pending_mask(&signals.pending_generations);
+        pending.intersect_with(selected);
+        if pending == crate::signal::KernelSigset::default() {
+            return Ok(Vec::new());
+        }
+        let mut recipients = Vec::new();
+        for task in lifecycle.signal_process_tasks(process) {
+            let Some(thread) = lifecycle.signal_target(task.tid.as_raw()) else {
+                continue;
+            };
+            let blocked = thread.lock().blocked;
+            if (1..=64).any(|signal| pending.contains(signal) && !blocked.contains(signal)) {
+                recipients.push(reverie::SignalRecipient { task });
+            }
+        }
+        recipients.sort_by_key(|recipient| recipient.task.tid);
+        Ok(recipients)
+    }
+
     #[cfg_attr(
         not(test),
         expect(
@@ -934,6 +1036,42 @@ impl ProcessSignalControl {
         completion: Option<&reverie::ChildExitCompletion>,
         independent_carriers: bool,
         parent_death: Option<&crate::elf::parent_death::ParentDeathEvent>,
+    ) -> ProcessPublication {
+        self.publish_with_generation_policy(
+            target,
+            event,
+            completion,
+            independent_carriers,
+            parent_death,
+            false,
+        )
+    }
+
+    /// Publish one guest `kill(2)` from another live process of this run.
+    ///
+    /// The recipient's own transaction serializes the effect with its mask
+    /// and disposition changes. The caller must hold no other process's
+    /// signal transaction: two processes signalling each other would
+    /// otherwise acquire their transactions in opposite orders. Linux
+    /// `sig_ignored` discards an ignored, unblocked signal at generation
+    /// (unless the receiver asked to observe ignored events); anything else
+    /// is queued in the shared pending set for the receiver's next permitted
+    /// return boundary or parked observation.
+    fn publish_user_signal(&self, target: SignalProcessId, event: SignalEvent) -> ProcessPublication {
+        if event.target() != (reverie::SignalTarget::Process { pid: target.tgid }) {
+            return ProcessPublication::Rejected(PublicationRejection::InvalidEvent);
+        }
+        self.publish_with_generation_policy(target, event, None, true, None, true)
+    }
+
+    fn publish_with_generation_policy(
+        &self,
+        target: SignalProcessId,
+        event: SignalEvent,
+        completion: Option<&reverie::ChildExitCompletion>,
+        independent_carriers: bool,
+        parent_death: Option<&crate::elf::parent_death::ParentDeathEvent>,
+        user_signal: bool,
     ) -> ProcessPublication {
         use ProcessPublication::Rejected;
         use PublicationRejection::*;
@@ -1104,10 +1242,26 @@ impl ProcessSignalControl {
         // A blocked SIG_IGN event must remain queued; the current disposition
         // alone cannot erase it. A later ignore transition is handled by the
         // pending-generation comparison below, not by resampling SIG_IGN.
-        let discard_at_generation = parent_death.map_or(
-            signal == libc::SIGCHLD && disposition == PublicationDisposition::Ignored,
-            |snapshot| snapshot.ignored,
-        );
+        let discard_at_generation = if user_signal {
+            // Every live task of the exact recipient generation is consulted:
+            // the signal survives generation if any of them blocks it or
+            // observes ignored events, as Linux keeps a blocked ignored signal.
+            crate::executor::signal_disposition_with_action(Some(action), signal)
+                == crate::executor::SignalDisposition::Ignore
+                && lifecycle.signal_process_tasks(target).iter().all(|task| {
+                    lifecycle
+                        .signal_target(task.tid.as_raw())
+                        .is_some_and(|thread| {
+                            let thread = thread.lock();
+                            !thread.blocked.contains(signal) && !thread.observe_ignored
+                        })
+                })
+        } else {
+            parent_death.map_or(
+                signal == libc::SIGCHLD && disposition == PublicationDisposition::Ignored,
+                |snapshot| snapshot.ignored,
+            )
+        };
         if discard_at_generation {
             if let (Some(completion), Some(publications)) =
                 (completion, child_publications.as_mut())
@@ -1498,54 +1652,26 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
         if !(1..=64).contains(&signal) {
             return Err(Errno::EINVAL);
         }
-        let registry = self.0.upgrade().ok_or(Errno::ESRCH)?;
-        let binding = registry.lookup(process).ok_or(Errno::ESRCH)?;
-        let image = binding
-            .image
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        let transaction = binding.transaction.upgrade().ok_or(Errno::ESRCH)?;
-        let lifecycle = binding.lifecycle.upgrade().ok_or(Errno::ESRCH)?;
-        let signals = image.signals.upgrade().ok_or(Errno::ESRCH)?;
-        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-        if binding
-            .image
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .revision
-            != image.revision
-        {
-            return Err(Errno::EAGAIN);
-        }
-        let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
-        let signals = signals.lock().unwrap_or_else(|p| p.into_inner());
-        let mut signal_mask = crate::signal::KernelSigset::default();
-        signal_mask.insert(signal);
-        if !signals
-            .shared_pending
-            .any_matching(signal_mask, &signals.pending_generations)
-        {
-            return Ok(Vec::new());
-        }
-        let mut recipients = Vec::new();
-        for task in lifecycle.signal_process_tasks(process) {
-            let Some(thread) = lifecycle.signal_target(task.tid.as_raw()) else {
-                continue;
-            };
-            if !thread.lock().blocked.contains(signal) {
-                recipients.push(reverie::SignalRecipient { task });
-            }
-        }
-        recipients.sort_by_key(|recipient| recipient.task.tid);
-        Ok(recipients)
+        let mut selected = crate::signal::KernelSigset::default();
+        selected.insert(signal);
+        self.pending_recipients(process, selected)
     }
 
+    /// Every live task that can take at least one pending process-directed
+    /// signal, not only `SIGALRM`: the shared pending set also carries a
+    /// `kill(2)` from another guest process. The parked observation that a
+    /// selected recipient runs takes whichever eligible signal is pending,
+    /// so reporting only an alarm would leave a process parked in `pause`
+    /// or `nanosleep` asleep with another unblocked signal pending.
     fn alarm_recipients(
         &self,
         process: SignalProcessId,
     ) -> Result<Vec<reverie::SignalRecipient>, Errno> {
-        <Self as reverie::ProcessSignalControl>::signal_recipients(self, process, libc::SIGALRM)
+        let mut selected = crate::signal::KernelSigset::default();
+        for signal in 1..=64 {
+            selected.insert(signal);
+        }
+        self.pending_recipients(process, selected)
     }
 
     fn reserve_delivery(&self, permit: reverie::SignalDeliveryPermit) -> Result<(), Errno> {
