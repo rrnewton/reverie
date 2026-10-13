@@ -116,9 +116,9 @@ pub(crate) mod entry_wait_observation {
 }
 use crate::memory::UserMemory;
 use crate::vm::CompletedSyscallBoundary;
-use crate::vm::PageZeroFault;
 use crate::vm::ProcessActionContinuation;
 use crate::vm::ProcessActionOutcome;
+use crate::vm::UserTrap;
 
 const STACK_CAPACITY: usize = TOOL_STACK_SIZE as usize;
 
@@ -514,7 +514,7 @@ enum ProcessExecutionContext {
     Instruction,
     ThreadEntrySignal,
     SignalBoundary(CompletedSyscallBoundary),
-    FaultBoundary(Box<PageZeroFault>),
+    FaultBoundary(Box<UserTrap>),
     SyscallBoundary(CompletedSyscallBoundary),
 }
 
@@ -4889,7 +4889,7 @@ impl KvmBackend {
         config: &<T::GlobalState as GlobalTool>::Config,
         subscriptions: &Subscription,
         stack_checked_out: &Arc<AtomicBool>,
-        fault: Option<&PageZeroFault>,
+        fault: Option<&UserTrap>,
         thread_entry: bool,
     ) -> Result<CallbackOutcome<Option<PendingSignal>>>
     where
@@ -4929,7 +4929,7 @@ impl KvmBackend {
             auxv,
             fault.map_or_else(
                 || kvm_registers(registers, syscall_number),
-                PageZeroFault::user_registers,
+                UserTrap::user_registers,
             ),
             thread_state,
             global_state,
@@ -5001,7 +5001,7 @@ impl KvmBackend {
                 auxv,
                 fault.map_or_else(
                     || kvm_registers(registers, syscall_number),
-                    PageZeroFault::user_registers,
+                    UserTrap::user_registers,
                 ),
                 thread_state,
                 &mut guest_executor,
@@ -5672,10 +5672,10 @@ impl KvmBackend {
                         if self.try_resume_vmware_backdoor_probe()? {
                             continue;
                         }
-                        let Some(fault) = self.capture_page_zero_fault(executor)? else {
+                        let Some(fault) = self.capture_user_trap(executor)? else {
                             return Err(self.static_elf_halt_error()?);
                         };
-                        executor.prepare_captured_page_zero_fault();
+                        executor.prepare_captured_trap(fault.event.signal());
                         executor.set_current_user_stack_pointer(fault.registers.rsp);
                         let pending = self
                             .filter_next_pending_signal_with_tool(
@@ -5714,7 +5714,7 @@ impl KvmBackend {
                         }
                         if !executor.has_pending_exit() {
                             if let Some(pending) = pending {
-                                self.deliver_page_zero_fault(executor, &fault, pending)?;
+                                self.deliver_user_trap(executor, &fault, pending)?;
                             } else {
                                 fault.resume_user(self, fault.registers)?;
                             }
