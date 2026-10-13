@@ -379,6 +379,7 @@ pub(crate) struct TaskLifecycleTable {
         std::sync::Weak<std::sync::Mutex<crate::executor::FileTableState>>,
     >,
     task_captures: std::collections::BTreeMap<i32, crate::executor::CaptureMetadata>,
+    task_views: std::collections::BTreeMap<i32, crate::executor::ProcessProcView>,
     process_exits: std::collections::BTreeMap<(i32, u64), ProcessExitState>,
     pub(crate) parent_death: parent_death::ParentDeathState,
 }
@@ -429,6 +430,7 @@ impl TaskLifecycleTable {
         self.task_names.remove(&tid);
         self.task_files.remove(&tid);
         self.task_captures.remove(&tid);
+        self.task_views.remove(&tid);
         generation
     }
 
@@ -473,7 +475,9 @@ impl TaskLifecycleTable {
         name: &std::sync::Arc<std::sync::Mutex<[u8; TASK_COMM_LEN]>>,
         files: &std::sync::Arc<std::sync::Mutex<crate::executor::FileTableState>>,
         capture: Option<crate::executor::CaptureMetadata>,
+        view: crate::executor::ProcessProcView,
     ) {
+        self.task_views.insert(tid, view);
         self.task_names.insert(tid, std::sync::Arc::downgrade(name));
         self.task_files
             .insert(tid, std::sync::Arc::downgrade(files));
@@ -502,6 +506,45 @@ impl TaskLifecycleTable {
         self.task_captures.get(&tid).copied()
     }
 
+    pub(crate) fn set_proc_view(&mut self, tid: i32, view: crate::executor::ProcessProcView) {
+        if self.tasks.contains_key(&tid) {
+            self.task_views.insert(tid, view);
+        }
+    }
+
+    pub(crate) fn set_proc_umask(&mut self, tid: i32, umask: libc::mode_t) {
+        if let Some(view) = self.task_views.get_mut(&tid) {
+            view.set_umask(umask);
+        }
+    }
+
+    /// The procfs view of one process lifetime as another process sees it:
+    /// its leader's, or a remaining member's once the leader has exited.
+    pub(crate) fn process_view(
+        &self,
+        tgid: i32,
+        process_generation: u64,
+    ) -> Option<crate::executor::ProcessProcView> {
+        let member = |tid: &i32| {
+            self.tasks.get(tid).is_some_and(|task| {
+                task.tgid == tgid && task.process_generation == process_generation
+            })
+        };
+        std::iter::once(tgid)
+            .chain(self.tasks.keys().copied())
+            .filter(member)
+            .find_map(|tid| self.task_views.get(&tid).cloned())
+    }
+
+    /// Live task IDs of one process lifetime, in ascending order.
+    pub(crate) fn process_tids(&self, tgid: i32, process_generation: u64) -> Vec<i32> {
+        self.tasks
+            .iter()
+            .filter(|(_, task)| task.tgid == tgid && task.process_generation == process_generation)
+            .map(|(&tid, _)| tid)
+            .collect()
+    }
+
     pub(crate) fn ensure_registered(
         &mut self,
         tid: i32,
@@ -526,6 +569,7 @@ impl TaskLifecycleTable {
             self.task_names.remove(&tid);
             self.task_files.remove(&tid);
             self.task_captures.remove(&tid);
+            self.task_views.remove(&tid);
         }
     }
 
