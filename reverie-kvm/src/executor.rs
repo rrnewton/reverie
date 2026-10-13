@@ -2954,9 +2954,9 @@ impl reverie::CurrentFdinfoSource for CurrentFdinfoLease {
         let complete = matches!(&drained, CurrentFdinfoDrain::Complete(_));
         let (facts, receipt) = self.settle(rendered, render_count == 1, complete, complete);
         if repeated_render {
-            return Err(reverie::Error::Tool(anyhow::anyhow!(
-                "current fdinfo capture rendered twice"
-            )));
+            return Err(reverie::Error::Tool(
+                std::io::Error::other("current fdinfo capture rendered twice").into(),
+            ));
         }
         finish_current_fdinfo_read(drained, receipt, facts, validation)
     }
@@ -3215,9 +3215,9 @@ fn finish_current_fdinfo_read(
                 .and_then(|errno| i32::try_from(errno).ok())
                 .filter(|errno| (1..=4095).contains(errno));
             let Some(errno) = errno else {
-                return Err(reverie::Error::Tool(anyhow::anyhow!(
-                    "invalid fdinfo raw read result {error}"
-                )));
+                return Err(reverie::Error::Tool(
+                    std::io::Error::other(format!("invalid fdinfo raw read result {error}")).into(),
+                ));
             };
             Ok(reverie::CurrentFdinfoRead::ReadErrno {
                 errno: reverie::syscalls::Errno::new(errno),
