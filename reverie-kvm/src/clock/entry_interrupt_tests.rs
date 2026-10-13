@@ -6,10 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -114,7 +116,7 @@ fn reserved_signal_after_activation_prevents_actual_ioctl_guest_progress() {
         assert!(gate.pending_failure().is_none());
         if tracked {
             assert_eq!(backend.vcpu.read_clock().unwrap(), 0);
-            assert!(!backend.vcpu.clock.binding.as_ref().unwrap().enabled);
+            assert!(backend.vcpu.clock.binding.as_ref().unwrap().enabled);
         }
         let closed = futures::executor::block_on(closing.lock().unwrap().take().unwrap()).unwrap();
         // Guest memory copies correctly wait while closed; observe only after
@@ -202,9 +204,10 @@ fn running_reserved_kick_retains_exact_finite_program_branch_total() {
     let observed = Arc::new(Mutex::new(None));
     let hook_observed = observed.clone();
     *probe.after_interval.lock().unwrap() = Some(Box::new(move |clock| {
-        // This hook is after real disable/read/affinity restoration and before
-        // RunEntry withdraws or acknowledges. No fake perf value or EINTR.
-        assert!(!clock.binding.as_ref().unwrap().enabled);
+        // This hook is after the real closing read and any affinity
+        // restoration, and before RunEntry withdraws or acknowledges. No fake
+        // perf value or EINTR. The guest-only event stays enabled.
+        assert!(clock.binding.as_ref().unwrap().enabled);
         assert!(same_affinity(&affinity().unwrap(), &saved_affinity));
         let count = clock.read().unwrap();
         assert!(count >= 1 && count < u64::from(BRANCHES));
@@ -252,11 +255,89 @@ fn running_reserved_kick_retains_exact_finite_program_branch_total() {
         backend.vcpu.read_clock().unwrap(),
         baseline.vcpu.read_clock().unwrap()
     );
-    assert!(!backend.vcpu.clock.binding.as_ref().unwrap().enabled);
+    assert!(backend.vcpu.clock.binding.as_ref().unwrap().enabled);
     assert!(same_affinity(&affinity().unwrap(), &saved_affinity));
     assert_eq!(
         backend.vcpu.get_regs().unwrap().rip,
         baseline.vcpu.get_regs().unwrap().rip
     );
     assert_eq!(probe.tracked_runs.load(Ordering::SeqCst), 2);
+}
+
+/// The CPU a host task last ran on: field 39 of `/proc/self/task/<tid>/stat`.
+fn last_cpu(tid: libc::pid_t) -> Option<usize> {
+    let stat = std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).ok()?;
+    // Fields after the parenthesised command start at field 3 (state).
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(36)?
+        .parse()
+        .ok()
+}
+
+#[test]
+fn migrating_host_task_keeps_exact_finite_program_branch_total() {
+    const BRANCHES: u32 = 1 << 28;
+    let original = affinity().unwrap();
+    let permitted: Vec<usize> = (0..libc::CPU_SETSIZE as usize)
+        .filter(|&cpu| unsafe { libc::CPU_ISSET(cpu, &original) })
+        .take(4)
+        .collect();
+    let mut backend =
+        crate::KvmBackend::new(16 * 1024 * 1024).expect("counted migration requires /dev/kvm");
+    if backend.vcpu.clock.placement != CounterPlacement::FollowTask || permitted.len() < 2 {
+        println!(
+            "clock migration: NOT EXECUTED; placement {:?}, permitted CPUs {permitted:?}",
+            backend.vcpu.clock.placement
+        );
+        return;
+    }
+    install_counted_program(&mut backend, &finite_program(BRANCHES));
+    let tid = host_tid();
+    let done = AtomicBool::new(false);
+    let observed = Mutex::new(BTreeSet::new());
+    let moves = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            // Move the vCPU task between CPUs while it is inside KVM_RUN. The
+            // event is opened for any CPU, so the kernel carries its count.
+            let mut next = 0;
+            while !done.load(Ordering::SeqCst) {
+                let mut set = unsafe { std::mem::zeroed() };
+                unsafe { libc::CPU_SET(permitted[next % permitted.len()], &mut set) };
+                let moved = unsafe {
+                    libc::sched_setaffinity(tid, std::mem::size_of::<libc::cpu_set_t>(), &set)
+                };
+                assert_eq!(moved, 0, "{}", std::io::Error::last_os_error());
+                moves.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(1));
+                if let Some(cpu) = last_cpu(tid) {
+                    observed.lock().unwrap().insert(cpu);
+                }
+                next += 1;
+            }
+        });
+        // Stop the mover even if the entry panics, so a failure cannot hang.
+        struct StopMover<'a>(&'a AtomicBool);
+        impl Drop for StopMover<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let _stop = StopMover(&done);
+        reaches_getpid(&mut backend.vcpu);
+    });
+    set_affinity(&original).unwrap();
+    let observed = observed.into_inner().unwrap();
+    println!(
+        "clock migration: {} affinity moves; vCPU task observed on CPUs {observed:?}",
+        moves.load(Ordering::SeqCst)
+    );
+    assert!(
+        observed.len() >= 2,
+        "the vCPU task never ran on a second CPU: {observed:?}"
+    );
+    assert_eq!(backend.vcpu.read_clock().unwrap(), u64::from(BRANCHES));
+    assert!(same_affinity(&affinity().unwrap(), &original));
 }

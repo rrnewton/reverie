@@ -8,10 +8,18 @@
 
 //! Retired conditional branches belonging to one guest thread.
 //!
-//! A guest-only perf event belongs to a host task, not to a vCPU. It must be
-//! disabled before returning to a Tool or polling another guest. This module
-//! owns the only mutable VcpuFd and enforces that interval for every entry,
-//! including syscall-return parking. This is a clock, not a precise timer.
+//! A guest-only perf event (`exclude_host`) belongs to a host task, not to a
+//! vCPU. It counts only while that task executes guest user mode, so it stays
+//! enabled across Tool code. A host task can still enter another guest between
+//! two entries of this one, so every entry is bracketed by two reads and only
+//! that delta is added to this guest's clock. This module owns the only
+//! mutable VcpuFd and enforces that interval for every entry, including
+//! syscall-return parking. This is a clock, not a precise timer.
+//!
+//! On a host with one core PMU the event follows its task across CPUs
+//! (`perf_event_open(tid, -1, ..)`); the kernel carries the count across
+//! migrations. Only a hybrid host, where the raw event encoding can differ per
+//! CPU, pins each entry to the CPU whose CPUID selected the encoding.
 
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -331,8 +339,37 @@ fn finish_run<T>(
     }
 }
 
+/// Where a counted entry may run; see the module documentation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CounterPlacement {
+    /// One encoding for every CPU: the per-task event follows migrations.
+    FollowTask,
+    /// Hybrid core PMUs: pin each entry to one CPU and bind the event to it.
+    PinEachEntry,
+}
+
+impl Default for CounterPlacement {
+    fn default() -> Self {
+        static PLACEMENT: std::sync::OnceLock<CounterPlacement> = std::sync::OnceLock::new();
+        *PLACEMENT.get_or_init(|| {
+            // Linux names a single core PMU `cpu`; hybrid hosts expose
+            // `cpu_core` and `cpu_atom` instead. Anything else stays pinned.
+            let pmus = std::path::Path::new("/sys/bus/event_source/devices");
+            if pmus.join("cpu").exists()
+                && !pmus.join("cpu_core").exists()
+                && !pmus.join("cpu_atom").exists()
+            {
+                CounterPlacement::FollowTask
+            } else {
+                CounterPlacement::PinEachEntry
+            }
+        })
+    }
+}
+
 #[derive(Default)]
 struct GuestClock {
+    placement: CounterPlacement,
     tracking: bool,
     ran_untracked: bool,
     total: u64,
@@ -355,8 +392,8 @@ impl GuestClock {
 
     fn poison(&mut self, reason: impl ToString) -> Error {
         let reason = reason.to_string();
-        // Closing is also the last-resort disable if an ioctl failed. Never
-        // leave the event active while an error unwinds into another task.
+        // Closing is the only disable: the event otherwise stays enabled.
+        // Never leave it open while an error unwinds into another task.
         self.binding.take();
         self.poison = Some(reason.clone());
         failure(reason)
@@ -375,28 +412,33 @@ impl GuestClock {
         raw_event: impl FnOnce() -> Result<u64>,
     ) -> Result<CountInterval<'_>> {
         self.read()?;
-        let mut affinity = match CpuAffinity::enter() {
-            Ok(affinity) => affinity,
-            Err(error) => return Err(self.poison(error)),
+        let mut affinity = match self.placement {
+            CounterPlacement::FollowTask => None,
+            CounterPlacement::PinEachEntry => match CpuAffinity::enter() {
+                Ok(affinity) => Some(affinity),
+                Err(error) => return Err(self.poison(error)),
+            },
         };
         let admission = (|| {
             let identity = CounterIdentity {
                 tid: host_tid(),
                 thread: std::thread::current().id(),
-                cpu: affinity.cpu,
+                cpu: affinity
+                    .as_ref()
+                    .map_or(FOLLOWS_TASK, |affinity| affinity.cpu),
                 raw_event: raw_event()?,
             };
             if self.binding.as_ref().map(|b| b.identity) != Some(identity) {
                 self.binding.take();
                 self.binding = Some(CounterBinding::open(identity)?);
             }
-            self.binding.as_mut().unwrap().enable()
+            self.binding.as_mut().unwrap().start_interval()
         })();
         if let Err(error) = admission {
             // No guest instruction ran. Closing even an ambiguously enabled
             // event must precede affinity restoration and error propagation.
             self.binding.take();
-            let reason = match affinity.restore() {
+            let reason = match affinity.as_mut().map_or(Ok(()), CpuAffinity::restore) {
                 Ok(()) => error.to_string(),
                 Err(cleanup) => format!("{error}; cleanup also failed: {cleanup}"),
             };
@@ -423,14 +465,18 @@ struct CounterIdentity {
     raw_event: u64,
 }
 
+/// `CounterIdentity::cpu` of an event that follows its task across CPUs.
+const FOLLOWS_TASK: usize = usize::MAX;
+
 fn host_tid() -> libc::pid_t {
     // SAFETY: gettid has no pointer arguments and returns this Linux task ID.
     unsafe { libc::syscall(libc::SYS_gettid) as libc::pid_t }
 }
 
 fn current_raw_event() -> Result<u64> {
-    // CPUID is supported on x86-64. The calling thread is restricted
-    // to one permitted CPU for this entire counted interval.
+    // CPUID is supported on x86-64. Under PinEachEntry the calling thread is
+    // restricted to one permitted CPU for this entire counted interval; under
+    // FollowTask every CPU has the same core PMU, so any CPU answers for all.
     let vendor = std::arch::x86_64::__cpuid(0);
     let mut bytes = [0; 12];
     bytes[..4].copy_from_slice(&vendor.ebx.to_le_bytes());
@@ -520,14 +566,19 @@ impl CounterBinding {
         attr.set_exclude_user(0);
         attr.set_exclude_hv(1);
         attr.set_inherit(0);
-        // SAFETY: attr describes a non-sampling event for this actual host task
-        // and its enforced CPU. The returned descriptor is newly owned.
+        // SAFETY: attr describes a non-sampling event for this actual host task,
+        // on its enforced CPU or on any CPU. The returned descriptor is newly
+        // owned.
         let fd = unsafe {
             libc::syscall(
                 libc::SYS_perf_event_open,
                 &attr,
                 identity.tid,
-                identity.cpu as libc::c_int,
+                if identity.cpu == FOLLOWS_TASK {
+                    -1
+                } else {
+                    identity.cpu as libc::c_int
+                },
                 -1,
                 perf::PERF_FLAG_FD_CLOEXEC,
             )
@@ -548,21 +599,22 @@ impl CounterBinding {
         Ok(binding)
     }
 
+    /// The event counts only guest user mode, so it stays enabled across Tool
+    /// code after the first entry. The fresh baseline excludes guest work this
+    /// host task ran for another guest since this guest's last entry.
+    fn start_interval(&mut self) -> Result<()> {
+        if !self.enabled {
+            self.enable()?;
+        }
+        self.previous = self.read()?;
+        Ok(())
+    }
+
     fn enable(&mut self) -> Result<()> {
         // Mark before the ioctl so even an ambiguous failure is cleaned up.
         self.enabled = true;
         if unsafe { ioctls::ENABLE(self.fd.as_raw_fd(), 0) } < 0 {
             return Err(host_failure("enable guest counter"));
-        }
-        Ok(())
-    }
-
-    fn disable(&mut self) -> Result<()> {
-        if self.enabled {
-            if unsafe { ioctls::DISABLE(self.fd.as_raw_fd(), 0) } < 0 {
-                return Err(host_failure("disable guest counter"));
-            }
-            self.enabled = false;
         }
         Ok(())
     }
@@ -589,7 +641,6 @@ impl CounterBinding {
     }
 
     fn finish(&mut self, total: u64) -> Result<u64> {
-        self.disable()?;
         let current = self.read()?;
         let delta = current.checked_delta(self.previous)?;
         let total = total
@@ -602,7 +653,8 @@ impl CounterBinding {
 
 struct CountInterval<'a> {
     clock: &'a mut GuestClock,
-    affinity: CpuAffinity,
+    /// Present only under `CounterPlacement::PinEachEntry`.
+    affinity: Option<CpuAffinity>,
     finished: bool,
 }
 
@@ -614,12 +666,12 @@ impl CountInterval<'_> {
             .as_mut()
             .map_or(Ok(self.clock.total), |b| b.finish(self.clock.total));
         if counted.is_err() {
-            // A failed disable may leave the event enabled. Close it while
-            // still pinned, before any affinity restoration can move us.
+            // A failed read leaves no trustworthy baseline. Close the event
+            // while still pinned, before any affinity restoration can move us.
             self.clock.binding.take();
         }
-        let resident = self.affinity.check();
-        let restored = self.affinity.restore();
+        let resident = self.affinity.as_ref().map_or(Ok(()), CpuAffinity::check);
+        let restored = self.affinity.as_mut().map_or(Ok(()), CpuAffinity::restore);
         self.finished = true;
         let mut errors = Vec::new();
         for error in [
@@ -875,6 +927,33 @@ mod tests {
     }
 
     #[test]
+    fn rebaselined_intervals_exclude_counts_between_entries() {
+        // The event stays enabled between entries; another guest entered by
+        // this host task advances it from 15 to 100. Only the two bracketed
+        // deltas (15 - 10 and 103 - 100) belong to this guest.
+        let at = |value, time| CounterRead {
+            value,
+            enabled: time,
+            running: time,
+        };
+        let bytes = [
+            counter_bytes(at(10, 1)),
+            counter_bytes(at(15, 2)),
+            counter_bytes(at(100, 9)),
+            counter_bytes(at(103, 10)),
+        ]
+        .concat();
+        let mut counter = reader(&bytes);
+        counter.enabled = true;
+        counter.start_interval().unwrap();
+        let total = counter.finish(0).unwrap();
+        assert_eq!(total, 5);
+        counter.start_interval().unwrap();
+        assert_eq!(counter.finish(total).unwrap(), 8);
+        assert!(counter.enabled);
+    }
+
+    #[test]
     fn incomplete_reads_and_residency_gaps_are_not_zero_clocks() {
         for bytes in [vec![], vec![0; 8], vec![0; 23]] {
             assert!(
@@ -931,7 +1010,7 @@ mod tests {
         };
         let interval = CountInterval {
             clock: &mut clock,
-            affinity: CpuAffinity::enter().unwrap(),
+            affinity: Some(CpuAffinity::enter().unwrap()),
             finished: false,
         };
         let result = finish_run::<()>(Err(kvm_ioctls::Error::new(libc::EINTR)), interval);
@@ -941,11 +1020,10 @@ mod tests {
     }
 
     #[test]
-    fn read_and_disable_errors_poison_even_when_kvm_returns_eintr() {
-        const TEST: &str =
-            "clock::tests::read_and_disable_errors_poison_even_when_kvm_returns_eintr";
+    fn read_errors_poison_even_when_kvm_returns_eintr() {
+        const TEST: &str = "clock::tests::read_errors_poison_even_when_kvm_returns_eintr";
         const CHILD_ENV: &str = "REVERIE_KVM_CLOCK_CLOSE_CHILD";
-        const COMPLETE: &str = "clock close observation: read and disable errors both passed";
+        const COMPLETE: &str = "clock close observation: enabled and disabled read errors passed";
         if std::env::var(CHILD_ENV).ok().as_deref() != Some(TEST) {
             let output = std::process::Command::new("timeout")
                 .args(["--kill-after=2s", "10s"])
@@ -973,11 +1051,12 @@ mod tests {
         // Allocate after exec: other library tests must not reuse the closed
         // fd number before the real F_GETFD observation in affinity.restore.
         let original = affinity().unwrap();
-        for disable_failure in [false, true] {
+        // An entry no longer disables the event, so the only failure at the end
+        // of an interval is the read. Exercise it with the event marked both
+        // enabled (every entry after the first) and not yet enabled.
+        for enabled in [false, true] {
             let mut binding = reader(&[]);
-            // A perf-disable ioctl on a pipe returns ENOTTY. This exercises the
-            // actual failed-ioctl cleanup, not a hand-written expected branch.
-            binding.enabled = disable_failure;
+            binding.enabled = enabled;
             let mut clock = GuestClock {
                 tracking: true,
                 total: 100,
@@ -987,20 +1066,16 @@ mod tests {
             let fd = clock.binding.as_ref().unwrap().fd.as_raw_fd();
             let mut interval = CountInterval {
                 clock: &mut clock,
-                affinity: CpuAffinity::enter().unwrap(),
+                affinity: Some(CpuAffinity::enter().unwrap()),
                 finished: false,
             };
-            interval.affinity.closed_fd_before_restore = Some(fd);
+            interval.affinity.as_mut().unwrap().closed_fd_before_restore = Some(fd);
             let error =
                 finish_run::<()>(Err(kvm_ioctls::Error::new(libc::EINTR)), interval).unwrap_err();
             assert!(matches!(error, Error::GuestClock(_)));
             let text = error.to_string();
             assert!(text.contains("KVM_RUN also failed"));
-            assert!(text.contains(if disable_failure {
-                "disable guest counter"
-            } else {
-                "expected 24"
-            }));
+            assert!(text.contains("expected 24"));
             assert!(clock.binding.is_none());
             assert_eq!(clock.total, 100);
             assert!(clock.read().is_err());
@@ -1021,7 +1096,7 @@ mod tests {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _interval = CountInterval {
                 clock: &mut clock,
-                affinity: CpuAffinity::enter().unwrap(),
+                affinity: Some(CpuAffinity::enter().unwrap()),
                 finished: false,
             };
             panic!("simulated vCPU unwinding");
@@ -1039,13 +1114,15 @@ mod tests {
         allocation.check().unwrap();
         let singleton = affinity().unwrap();
         let mut clock = GuestClock {
+            placement: CounterPlacement::PinEachEntry,
             tracking: true,
             ..Default::default()
         };
         let interval = clock.begin().unwrap();
-        assert_eq!(interval.affinity.cpu, cpu);
-        assert!(same_affinity(&interval.affinity.saved, &singleton));
-        interval.affinity.check().unwrap();
+        let pinned = interval.affinity.as_ref().unwrap();
+        assert_eq!(pinned.cpu, cpu);
+        assert!(same_affinity(&pinned.saved, &singleton));
+        pinned.check().unwrap();
         for value in 0..1_000_000 {
             std::hint::black_box(value);
         }
@@ -1053,12 +1130,40 @@ mod tests {
         assert_eq!(clock.total, 0);
         assert_eq!(clock.read().unwrap(), 0);
         assert_eq!(clock.read().unwrap(), 0);
-        assert!(!clock.binding.as_ref().unwrap().enabled);
+        // The event stays enabled across host work and still counted none.
+        assert!(clock.binding.as_ref().unwrap().enabled);
         assert!(same_affinity(&affinity().unwrap(), &singleton));
         allocation.check().unwrap();
         allocation.restore().unwrap();
         assert!(same_affinity(&affinity().unwrap(), original));
         cpu
+    }
+
+    #[test]
+    fn following_intervals_count_no_host_work_and_leave_affinity_alone() {
+        if CounterPlacement::default() != CounterPlacement::FollowTask {
+            println!("clock placement: FollowTask NOT EXECUTED; this host pins each entry");
+            return;
+        }
+        let original = affinity().unwrap();
+        let mut clock = GuestClock {
+            tracking: true,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            let interval = clock.begin().unwrap();
+            assert!(interval.affinity.is_none());
+            assert!(same_affinity(&affinity().unwrap(), &original));
+            for value in 0..1_000_000 {
+                std::hint::black_box(value);
+            }
+            interval.finish().unwrap();
+        }
+        let binding = clock.binding.as_ref().unwrap();
+        assert_eq!(binding.identity.cpu, FOLLOWS_TASK);
+        assert!(binding.enabled);
+        assert_eq!(clock.read().unwrap(), 0);
+        assert!(same_affinity(&affinity().unwrap(), &original));
     }
 
     #[test]
@@ -1088,18 +1193,19 @@ mod tests {
     fn temporary_cpu_escape_is_not_hidden_by_matching_endpoint_checks() -> (usize, usize) {
         let original = affinity().unwrap();
         let mut clock = GuestClock {
+            placement: CounterPlacement::PinEachEntry,
             tracking: true,
             ..Default::default()
         };
         let interval = clock.begin().unwrap();
-        let cpu = interval.affinity.cpu;
+        let cpu = interval.affinity.as_ref().unwrap().cpu;
         let other = (0..libc::CPU_SETSIZE as usize)
             .find(|&candidate| candidate != cpu && unsafe { libc::CPU_ISSET(candidate, &original) })
             .expect("CPU residency test requires two permitted CPUs");
         let mut set = unsafe { std::mem::zeroed() };
         unsafe { libc::CPU_SET(other, &mut set) };
         set_affinity(&set).unwrap();
-        assert!(interval.affinity.check().is_err());
+        assert!(interval.affinity.as_ref().unwrap().check().is_err());
         for value in 0..1_000_000 {
             std::hint::black_box(value);
         }
@@ -1108,7 +1214,7 @@ mod tests {
             libc::CPU_SET(cpu, &mut set);
         }
         set_affinity(&set).unwrap();
-        assert!(interval.affinity.check().is_ok());
+        assert!(interval.affinity.as_ref().unwrap().check().is_ok());
         let error = interval.finish().unwrap_err();
         assert!(error.to_string().contains("residency"), "{error}");
         assert!(clock.read().is_err());
@@ -1128,6 +1234,7 @@ mod tests {
             raw_event: 0,
         };
         let mut clock = GuestClock {
+            placement: CounterPlacement::PinEachEntry,
             tracking: true,
             total: 9,
             binding: Some(binding),
@@ -1177,11 +1284,11 @@ mod tests {
         };
         let mut interval = CountInterval {
             clock: &mut clock,
-            affinity: CpuAffinity::enter().unwrap(),
+            affinity: Some(CpuAffinity::enter().unwrap()),
             finished: false,
         };
         // The real sched_setaffinity syscall rejects an empty saved mask.
-        unsafe { libc::CPU_ZERO(&mut interval.affinity.saved) };
+        unsafe { libc::CPU_ZERO(&mut interval.affinity.as_mut().unwrap().saved) };
         let error = interval.finish().unwrap_err();
         rescue.restore().unwrap();
         assert!(error.to_string().contains("set host CPU affinity"));
