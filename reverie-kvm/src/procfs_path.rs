@@ -619,7 +619,7 @@ pub(super) fn resolve(
         let directory = match parent.as_slice() {
             b"/proc" => component == b"sys",
             b"/proc/sys" => component == b"kernel",
-            b"/proc/sys/kernel" => component == b"pty",
+            b"/proc/sys/kernel" => matches!(component.as_slice(), b"pty" | b"random"),
             _ => {
                 let task_directory = matches!(components.as_slice(), [root, pid]
                     if root == b"proc" && parse_proc_id(pid).is_some())

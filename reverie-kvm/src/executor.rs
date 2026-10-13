@@ -17758,6 +17758,24 @@ const SYNTHETIC_REGULAR_PROC_PATHS: &[&[u8]] = &[
     b"/proc/vmstat",
     b"/proc/sys/kernel/osrelease",
     b"/proc/self/maps",
+    b"/proc/self/smaps",
+    b"/proc/self/statm",
+    b"/proc/self/io",
+    b"/proc/self/numa_maps",
+    b"/proc/self/arch_status",
+    b"/proc/zoneinfo",
+    b"/proc/buddyinfo",
+    b"/proc/diskstats",
+    b"/proc/modules",
+    b"/proc/swaps",
+    b"/proc/interrupts",
+    b"/proc/softirqs",
+    b"/proc/schedstat",
+    b"/proc/key-users",
+    b"/proc/sys/kernel/random/uuid",
+    b"/proc/sys/kernel/overflowuid",
+    b"/proc/sys/kernel/overflowgid",
+    b"/proc/sys/kernel/pty/nr",
 ];
 
 fn synthetic_dev(minor: u32) -> libc::dev_t {
@@ -17788,9 +17806,15 @@ fn is_synthetic_proc_directory_inode(inode: u64) -> bool {
 }
 
 fn synthetic_proc_pwrite_errno(inode: u64) -> libc::c_int {
+    // seq_file opens clear FMODE_PWRITE (ESPIPE); these files are not
+    // seq_files, so pwrite reaches the read-only descriptor check (EBADF).
     if [
         b"/proc/self/cmdline".as_slice(),
         b"/proc/sys/kernel/osrelease".as_slice(),
+        b"/proc/sys/kernel/random/uuid".as_slice(),
+        b"/proc/sys/kernel/overflowuid".as_slice(),
+        b"/proc/sys/kernel/overflowgid".as_slice(),
+        b"/proc/sys/kernel/pty/nr".as_slice(),
     ]
     .iter()
     .any(|path| synthetic_proc_inode(path) == inode)
@@ -17971,6 +17995,7 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
             "processes 1\n",
             "procs_running 1\n",
             "procs_blocked 0\n",
+            "softirq 0 0 0 0 0 0 0 0 0 0 0\n",
         )
         .as_bytes()
         .to_vec(),
@@ -18045,6 +18070,98 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
         // ("6.0.0", see fn uname) and /proc/version above.
         b"/proc/sys/kernel/osrelease" => b"6.0.0\n".to_vec(),
         b"/proc/self/maps" => proc_self_maps_content(state),
+        b"/proc/self/smaps" => proc_self_smaps_content(state),
+        // The counter files below report no activity, memory use, devices or
+        // modules beyond the fixed persona above, already in the values and
+        // layout the Tool's procfs normalization emits, so that normalization
+        // leaves them unchanged.
+        b"/proc/self/statm" => b"0 0 0 0 0 0 0\n".to_vec(),
+        b"/proc/self/io" => concat!(
+            "rchar: 0\n",
+            "wchar: 0\n",
+            "syscr: 0\n",
+            "syscw: 0\n",
+            "read_bytes: 0\n",
+            "write_bytes: 0\n",
+            "cancelled_write_bytes: 0\n",
+        )
+        .as_bytes()
+        .to_vec(),
+        // Linux omits the page counters of a mapping with no resident pages,
+        // which is what smaps reports for the stack.
+        b"/proc/self/numa_maps" => {
+            format!("{:08x} default stack\n", proc_self_stack_range().0).into_bytes()
+        }
+        // Linux prints AVX512_elapsed_ms only on a CPU with AVX-512F; the
+        // persona CPU in /proc/cpuinfo has none.
+        b"/proc/self/arch_status" => Vec::new(),
+        b"/proc/zoneinfo" => concat!(
+            "Node 0, zone   Normal\n",
+            "  pages free     0\n",
+            "        boost    0\n",
+            "        min      0\n",
+            "        low      0\n",
+            "        high     0\n",
+            "        spanned  0\n",
+            "        present  0\n",
+            "        managed  0\n",
+            "        protection: (0, 0, 0, 0, 0)\n",
+            "      nr_free_pages 0\n",
+            "  pagesets\n",
+            "    cpu: 0\n",
+            "              count: 0\n",
+            "              high:  0\n",
+            "              batch: 0\n",
+            "  vm stats threshold: 0\n",
+            "  node_unreclaimable:  0\n",
+            "  start_pfn:           0\n",
+        )
+        .as_bytes()
+        .to_vec(),
+        // One count per page order 0..=10 (Linux 6.0 MAX_ORDER).
+        b"/proc/buddyinfo" => b"Node 0, zone Normal 0 0 0 0 0 0 0 0 0 0 0\n".to_vec(),
+        // The 17 counters after major, minor and name; tools that hide idle
+        // devices (iostat) need the one read and one write of eight sectors.
+        b"/proc/diskstats" => b"253 0 vda 1 0 8 0 1 0 8 0 0 0 0 0 0 0 0 0 0\n".to_vec(),
+        // No module is loaded.
+        b"/proc/modules" => Vec::new(),
+        // No swap is configured, matching SwapTotal in /proc/meminfo.
+        b"/proc/swaps" => b"Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n".to_vec(),
+        b"/proc/interrupts" => concat!(
+            "           CPU0       \n",
+            "  0:          0 IO-APIC 2-edge timer\n",
+            "NMI:          0 Non-maskable interrupts\n",
+            "LOC:          0 Local timer interrupts\n",
+            "ERR:          0\n",
+            "MIS:          0\n",
+        )
+        .as_bytes()
+        .to_vec(),
+        b"/proc/softirqs" => concat!(
+            "                    CPU0       \n",
+            "          HI:          0\n",
+            "       TIMER:          0\n",
+            "      NET_TX:          0\n",
+            "      NET_RX:          0\n",
+            "       BLOCK:          0\n",
+            "    IRQ_POLL:          0\n",
+            "     TASKLET:          0\n",
+            "       SCHED:          0\n",
+            "     HRTIMER:          0\n",
+            "         RCU:          0\n",
+        )
+        .as_bytes()
+        .to_vec(),
+        // A single CPU has no scheduling domains.
+        b"/proc/schedstat" => b"version 15\ntimestamp 0\ncpu0 0 0 0 0 0 0 0 0 0\n".to_vec(),
+        // Linux always lists root, the guest's user, with its default quotas.
+        b"/proc/key-users" => b"0: 0 0/0 0/1000000 0/25000000\n".to_vec(),
+        // Any valid version-4 UUID; the Tool replaces it with one drawn from
+        // its deterministic random source on every open.
+        b"/proc/sys/kernel/random/uuid" => b"00000000-0000-4000-8000-000000000000\n".to_vec(),
+        b"/proc/sys/kernel/overflowuid" | b"/proc/sys/kernel/overflowgid" => b"65534\n".to_vec(),
+        // The Tool reports its own count of open pseudoterminals.
+        b"/proc/sys/kernel/pty/nr" => b"0\n".to_vec(),
         _ => return None,
     };
     Some(content)
@@ -18101,11 +18218,59 @@ fn proc_self_cmdline_content(state: &LoadedStaticElf) -> Vec<u8> {
 // AUTONOMOUS-BOT-IMPLEMENTED: Expose only the deterministic guest stack map.
 // TODO-HUMAN-REVIEW(PR-223): Review the minimal synthetic process map surface.
 fn proc_self_maps_content(_state: &LoadedStaticElf) -> Vec<u8> {
+    let (stack_start, stack_end) = proc_self_stack_range();
+    format!("{stack_start:012x}-{stack_end:012x} rw-p 00000000 00:00 0 [stack]\n").into_bytes()
+}
+
+fn proc_self_stack_range() -> (u64, u64) {
     // The ELF loader places the stack in the window at the top of the user
     // address space, below Linux's TASK_SIZE.
-    let stack_start = crate::memory::USER_ADDRESS_END - STACK_LIMIT;
-    let stack_end = crate::memory::USER_STACK_TOP;
-    format!("{stack_start:012x}-{stack_end:012x} rw-p 00000000 00:00 0 [stack]\n").into_bytes()
+    (
+        crate::memory::USER_ADDRESS_END - STACK_LIMIT,
+        crate::memory::USER_STACK_TOP,
+    )
+}
+
+/// The maps entries, each followed by Linux 6.0's per-mapping fields. Static
+/// fields keep the kernel's layout; resident-page accounting is reported as
+/// zero, in the form the Tool's smaps normalization emits.
+fn proc_self_smaps_content(state: &LoadedStaticElf) -> Vec<u8> {
+    const ACCOUNTING_FIELDS: &[&str] = &[
+        "Rss",
+        "Pss",
+        "Pss_Dirty",
+        "Shared_Clean",
+        "Shared_Dirty",
+        "Private_Clean",
+        "Private_Dirty",
+        "Referenced",
+        "Anonymous",
+        "LazyFree",
+        "AnonHugePages",
+        "ShmemPmdMapped",
+        "FilePmdMapped",
+        "Shared_Hugetlb",
+        "Private_Hugetlb",
+        "Swap",
+        "SwapPss",
+        "Locked",
+    ];
+    let (stack_start, stack_end) = proc_self_stack_range();
+    let mut content = proc_self_maps_content(state);
+    content.extend_from_slice(
+        format!(
+            "Size:           {:8} kB\nKernelPageSize: {:8} kB\nMMUPageSize:    {:8} kB\n",
+            (stack_end - stack_start) >> 10,
+            PAGE_SIZE >> 10,
+            PAGE_SIZE >> 10,
+        )
+        .as_bytes(),
+    );
+    for field in ACCOUNTING_FIELDS {
+        content.extend_from_slice(format!("{field}:\t0 kB\n").as_bytes());
+    }
+    content.extend_from_slice(b"THPeligible:    0\nVmFlags: rd wr mr mw me gd ac \n");
+    content
 }
 
 /// The size a path stat reports. Read-time files report zero, as Linux does
@@ -27708,7 +27873,7 @@ mod tests {
         );
 
         // An unlisted /proc path is not part of the synthesized surface.
-        assert!(synthetic_proc_content(&state, b"/proc/self/smaps").is_none());
+        assert!(synthetic_proc_content(&state, b"/proc/kallsyms").is_none());
         assert!(synthetic_proc_content(&state, b"/etc/passwd").is_none());
 
         let fd = open_readonly(&mut memory, &mut state, "/proc/uptime");
@@ -27759,6 +27924,116 @@ mod tests {
         assert_eq!(
             synthetic_proc_path_for_inode(synthetic_proc_inode(b"/proc/sys/kernel/osrelease")),
             Some(b"/proc/sys/kernel/osrelease".as_slice())
+        );
+    }
+
+    #[test]
+    fn synthetic_proc_counter_and_sysctl_files_read_through_the_guest_path() {
+        const STAT: u64 = 0x2000;
+        const PATHS: &[&str] = &[
+            "/proc/self/smaps",
+            "/proc/self/statm",
+            "/proc/self/io",
+            "/proc/self/numa_maps",
+            "/proc/self/arch_status",
+            "/proc/zoneinfo",
+            "/proc/buddyinfo",
+            "/proc/diskstats",
+            "/proc/modules",
+            "/proc/swaps",
+            "/proc/interrupts",
+            "/proc/softirqs",
+            "/proc/schedstat",
+            "/proc/key-users",
+            "/proc/sys/kernel/random/uuid",
+            "/proc/sys/kernel/overflowuid",
+            "/proc/sys/kernel/overflowgid",
+            "/proc/sys/kernel/pty/nr",
+        ];
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        for &path in PATHS {
+            let content = synthetic_proc_content(&state, path.as_bytes()).unwrap();
+            assert_eq!(
+                synthetic_proc_content(&state, path.as_bytes()).unwrap(),
+                content,
+                "{path} must be stable across reads"
+            );
+            assert_eq!(
+                synthetic_proc_path_for_inode(synthetic_proc_inode(path.as_bytes())),
+                Some(path.as_bytes())
+            );
+            let fd = open_readonly(&mut memory, &mut state, path);
+            assert!(fd >= 0, "open {path}: {fd}");
+            assert_eq!(
+                read_fd_to_end(&mut memory, &mut state, fd),
+                content,
+                "{path}"
+            );
+            assert_eq!(close(&mut state, fd as u64), 0);
+            write_c_string(&mut memory, 0x100, path);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_newfstatat,
+                    [libc::AT_FDCWD as u64, 0x100, STAT, 0, 0, 0],
+                ),
+                0,
+                "stat {path}"
+            );
+            let stat: libc::stat = read_struct(&memory, STAT);
+            assert_eq!(stat.st_mode, libc::S_IFREG | 0o444, "{path}");
+            assert_eq!(stat.st_size as usize, content.len(), "{path}");
+        }
+        write_c_string(&mut memory, 0x100, "/proc/sys/kernel/random");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_newfstatat,
+                [libc::AT_FDCWD as u64, 0x100, STAT, 0, 0, 0],
+            ),
+            0
+        );
+        let stat: libc::stat = read_struct(&memory, STAT);
+        assert_eq!(stat.st_mode & libc::S_IFMT, libc::S_IFDIR);
+        assert_eq!(
+            open_readonly(&mut memory, &mut state, "/proc/sys/kernel/random/boot_id"),
+            negative_errno(libc::ENOENT),
+            "only the listed files of the directory exist"
+        );
+
+        // A version-4 UUID line, the shape Linux returns and the Tool replaces.
+        let uuid = synthetic_proc_content(&state, b"/proc/sys/kernel/random/uuid").unwrap();
+        assert_eq!(uuid.len(), 37);
+        assert_eq!((uuid[14], uuid[19], uuid[36]), (b'4', b'8', b'\n'));
+        for index in [8, 13, 18, 23] {
+            assert_eq!(uuid[index], b'-');
+        }
+
+        // smaps extends each maps entry; every resident-page field is zero.
+        let maps = synthetic_proc_content(&state, b"/proc/self/maps").unwrap();
+        let smaps = synthetic_proc_content(&state, b"/proc/self/smaps").unwrap();
+        let smaps = std::str::from_utf8(&smaps).unwrap();
+        assert!(smaps.as_bytes().starts_with(&maps));
+        assert!(smaps.contains("\nSize:               8188 kB\n"));
+        assert!(smaps.contains("\nPrivate_Dirty:\t0 kB\n"));
+        assert!(smaps.ends_with("\nVmFlags: rd wr mr mw me gd ac \n"));
+        let numa_maps = synthetic_proc_content(&state, b"/proc/self/numa_maps").unwrap();
+        assert_eq!(
+            numa_maps.split(|byte| *byte == b' ').next(),
+            maps.split(|byte| *byte == b'-').next(),
+            "numa_maps names the mapping by its start address"
+        );
+
+        // /proc/stat carries every row Linux prints, softirq included.
+        let stat = synthetic_proc_content(&state, b"/proc/stat").unwrap();
+        assert!(
+            stat.ends_with(b"\nsoftirq 0 0 0 0 0 0 0 0 0 0 0\n"),
+            "{}",
+            String::from_utf8_lossy(&stat)
         );
     }
 
