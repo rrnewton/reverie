@@ -22737,6 +22737,7 @@ mod tests {
     include!("executor/random_device_stream_tests.rs");
     include!("executor/random_device_carrier_tests.rs");
     include!("executor/procfs_regression_tests.rs");
+    include!("executor/procfs_enumeration_tests.rs");
     use std::collections::BTreeMap;
     use std::io::Read;
     use std::io::Seek;

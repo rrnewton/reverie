@@ -929,10 +929,13 @@ pub(super) fn extended(stat: &libc::stat) -> libc::statx {
 /// process directory takes `TGID_OFFSET + pid`.
 const FIRST_PROCESS_ENTRY: i64 = 256;
 const TGID_OFFSET: i64 = FIRST_PROCESS_ENTRY + 2;
-/// The position after the last entry of any directory. A position names an
-/// entry rather than counting the entries before it, so a reader resumes at
-/// the right place after an entry it already passed disappears.
-const END_OF_DIRECTORY: i64 = TGID_OFFSET + i32::MAX as i64 + 1;
+/// Linux's `PID_MAX_LIMIT`, above every PID, TID and descriptor number.
+const PID_MAX_LIMIT: i64 = 4 * 1024 * 1024;
+/// The position after the last entry of any directory, where Linux leaves the
+/// root. A position names an entry rather than counting the entries before
+/// it, so a reader resumes at the right place after an entry it already
+/// passed disappears. Every position fits the host /proc root's offset limit.
+const END_OF_DIRECTORY: i64 = TGID_OFFSET + PID_MAX_LIMIT;
 
 /// Names a process or task directory may hold, in the order of Linux's
 /// `tgid_base_stuff`. Only those that resolve for the directory are listed.
