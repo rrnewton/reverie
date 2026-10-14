@@ -560,6 +560,7 @@ fn error_case(blocked: bool, tracked: bool, selected: [bool; 2]) {
     let guard = signal::fault::Guard::arm(configured);
     let phases = Arc::new(Mutex::new(Vec::new()));
     let before_phases = phases.clone();
+    let before_gate = gate.clone();
     probe
         .prepare
         .on_cleanup(CleanupPhase::BeforeWithdraw, move |id| {
@@ -568,7 +569,16 @@ fn error_case(blocked: bool, tracked: bool, selected: [bool; 2]) {
             // The fault-control producer queues real signals while masked. The
             // sender/withdrawal authorization is covered by the separate race
             // controls; this case isolates safe drain despite a reported error.
+            // It records its sends as a closer does, so the drain runs.
             if selected[1] {
+                before_gate
+                    .state
+                    .lock()
+                    .unwrap()
+                    .members
+                    .get_mut(&id.participant)
+                    .unwrap()
+                    .kicked = true;
                 let sends = AtomicUsize::new(0);
                 send_three(unsafe { libc::pthread_self() }, &sends).unwrap();
                 assert_eq!(sends.load(Ordering::SeqCst), 3);
