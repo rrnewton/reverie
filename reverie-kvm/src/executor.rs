@@ -7366,6 +7366,11 @@ impl ElfExecutor {
     }
 
     fn take_exit_with_parent_death(&mut self, guest_death: bool) -> Option<ProcessExit> {
+        // The syscall loop asks after every guest syscall, and there is
+        // almost never an exit. The status is this executor's own field, so
+        // it can be read without the signal transaction; when there is none,
+        // the locked path below would return None without changing anything.
+        self.exit_status?;
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let status = self.exit_status.take()?;
