@@ -5558,6 +5558,14 @@ impl KvmBackend {
             // borrowed elsewhere in the loop body.
             let thread_ownership = self.thread_ownership;
             let subscribed_syscalls = SubscribedSyscalls::new(subscriptions);
+            // Only a closed gate or a cancellation makes vcpu.run() return
+            // None, and only then does this loop need a wake. Subscribing to
+            // the gate marks its change future taken, so its next change (this
+            // vCPU's own exit) would allocate a fresh channel. So an entry
+            // subscribes only after an attempt found admission closed, and then
+            // takes both subscriptions before the same checks, until an entry
+            // succeeds: a change after those checks still wakes it.
+            let mut subscribe_entry_wait = false;
             loop {
                 self.check_entry_owner()?;
                 #[cfg(test)]
@@ -5565,8 +5573,8 @@ impl KvmBackend {
                     entry_wait_observation::Site::ToolMain,
                     entry_wait_observation::Boundary::BeforeSubscription,
                 );
-                let changed = memory.entry_gate().subscribe();
-                let cancelled = self.entry_cancellation();
+                let entry_wait = subscribe_entry_wait
+                    .then(|| (memory.entry_gate().subscribe(), self.entry_cancellation()));
                 #[cfg(test)]
                 entry_wait_observation::observe(
                     entry_wait_observation::Site::ToolMain,
@@ -5576,10 +5584,7 @@ impl KvmBackend {
                     .entry_gate()
                     .admit_operation()
                     .map_err(|failure| failure.error())?;
-                if wait_for_failure(global_state.as_ref(), failure_subscription.clone())
-                    .now_or_never()
-                    .is_some()
-                {
+                if Pin::new(&mut callback_failure).now_or_never().is_some() {
                     return Err(Error::RunAborted);
                 }
                 if let Some(status) = self.guest_thread_group_exit_status() {
@@ -5593,15 +5598,18 @@ impl KvmBackend {
                     return Ok(self.cancelled_tool_thread_status(executor));
                 }
                 let vcpu_exit = match self.vcpu.run() {
-                    Ok(Some(exit)) => exit,
+                    Ok(Some(exit)) => {
+                        subscribe_entry_wait = false;
+                        exit
+                    }
                     Ok(None) => {
-                        let stop = pin!(wait_for_failure(
-                            global_state.as_ref(),
-                            failure_subscription.clone()
-                        ));
+                        let Some((changed, cancelled)) = entry_wait else {
+                            subscribe_entry_wait = true;
+                            continue;
+                        };
                         let _ = futures::future::select(
                             futures::future::select(changed, cancelled),
-                            stop,
+                            Pin::new(&mut callback_failure),
                         )
                         .await;
                         continue;
