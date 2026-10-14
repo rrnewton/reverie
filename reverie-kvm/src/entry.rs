@@ -1392,6 +1392,7 @@ impl CopyAccess {
         CopyRetirement {
             change: Some(change),
             origin: Some(std::mem::take(&mut self.origin)),
+            lazy: self.lazy,
             _gate: self.gate.clone(),
         }
     }
@@ -1431,6 +1432,9 @@ impl Drop for CopyAccess {
 pub(crate) struct CopyRetirement {
     change: Option<ChangeSignal>,
     origin: Option<EntryOrigin>,
+    /// Retired from a lazily admitted copy, so `origin` is empty until
+    /// [`Self::keep_issuer`] supplies it.
+    lazy: bool,
     _gate: Arc<EntryGate>,
 }
 
@@ -1443,6 +1447,18 @@ impl std::fmt::Debug for CopyRetirement {
 }
 
 impl CopyRetirement {
+    /// A retirement queued beyond its issuer's borrow must keep the issuing
+    /// context alive until it is delivered, as an eagerly admitted copy's
+    /// stored origin does: destroying a last FailureContext can wake its
+    /// subscriber synchronously, which must not happen while the queue's
+    /// owner still holds its locks. A lazily admitted copy stored nothing,
+    /// so its issuer supplies the origin here; an eager copy already has it.
+    pub(crate) fn keep_issuer(&mut self, origin: impl FnOnce() -> EntryOrigin) {
+        if std::mem::take(&mut self.lazy) {
+            self.origin = Some(origin());
+        }
+    }
+
     pub(crate) fn notify(mut self) {
         self.notify_pending();
     }

@@ -132,7 +132,7 @@ impl std::ops::Deref for MemoryCopyAccess<'_> {
 impl Drop for MemoryCopyAccess<'_> {
     fn drop(&mut self) {
         let memory = self.memory;
-        let notification = self
+        let mut notification = self
             .copy
             .take()
             .unwrap()
@@ -140,6 +140,9 @@ impl Drop for MemoryCopyAccess<'_> {
         {
             let mut deferred = self.memory.mapping.deferred.lock().unwrap();
             if deferred.active.is_some() || deferred.scopes != 0 {
+                // Queued past this borrow: keep the issuing context alive
+                // until delivery, as a stored origin would.
+                notification.keep_issuer(|| memory.entry_origin());
                 deferred.notifications.push(notification);
                 return;
             }

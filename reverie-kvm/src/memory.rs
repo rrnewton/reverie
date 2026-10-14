@@ -4915,6 +4915,35 @@ mod tests {
         }
 
         #[test]
+        fn queued_lazy_copy_retirement_keeps_its_issuing_context_alive() {
+            // Alias A defers notifications while alias B, which alone owns a
+            // FailureContext, completes a copy. B's retirement is queued past
+            // its borrow. If B then drops its context, the queued retirement
+            // must still keep it alive, so it is destroyed only on delivery,
+            // after A's scope ends, never while A still holds its locks.
+            let deferring = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
+            let mut issuer = deferring.clone();
+            let global = Arc::new(());
+            let run = crate::failure::RunFailure::new(&global);
+            issuer.set_failure_context(Some(FailureContext::new(
+                run.clone(),
+                reverie::Pid::from_raw(3),
+                reverie::Pid::from_raw(5),
+            )));
+            let alone = Arc::strong_count(&run);
+            let scope = deferring.defer_notifications();
+            issuer.read_raw(BASE, &mut [0; 8]).unwrap();
+            issuer.set_failure_context(None);
+            assert_eq!(
+                Arc::strong_count(&run),
+                alone,
+                "the queued retirement released its issuing context"
+            );
+            drop(scope);
+            assert_eq!(Arc::strong_count(&run), alone - 1);
+        }
+
+        #[test]
         fn retained_memory_copy_keeps_its_issuing_callback_generation() {
             use crate::entry::owner::DriverScope;
 
