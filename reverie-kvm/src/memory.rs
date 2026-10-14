@@ -1155,7 +1155,7 @@ impl GuestMemory {
         self.check_copy_failure()?;
         self.mapping
             .entry_gate
-            .copy_blocking(self.entry_origin())
+            .copy_blocking_lazy(|| self.entry_origin())
             .map(|copy| MemoryCopyAccess::new(self, copy))
             .map_err(|failure| failure.error())
     }
@@ -1197,7 +1197,7 @@ impl GuestMemory {
         let Some(copy) = self
             .mapping
             .entry_gate
-            .try_copy(self.entry_origin())
+            .try_copy_lazy(|| self.entry_origin())
             .map_err(|failure| failure.error())?
         else {
             return Ok(None);
@@ -2313,7 +2313,7 @@ impl GuestMemory {
         let Some(copy) = self
             .mapping
             .entry_gate
-            .try_copy(self.entry_origin())
+            .try_copy_lazy(|| self.entry_origin())
             .map_err(|failure| failure.error())?
         else {
             return Ok(None);
@@ -2721,7 +2721,7 @@ impl UserMemory {
             self.memory
                 .mapping
                 .entry_gate
-                .retain_operand(copy)
+                .retain_operand_with(copy, || self.memory.entry_origin())
                 .map_err(|failure| failure.error())
         })?;
         let mut alias = UserWriteAlias {
@@ -2930,7 +2930,7 @@ impl UserMemory {
             .memory
             .mapping
             .entry_gate
-            .retain_operand(copy)
+            .retain_operand_with(copy, || self.memory.entry_origin())
             .map_err(|failure| failure.error())?;
         Ok(HostMemoryOperand {
             _memory: self.memory.clone(),

@@ -131,7 +131,12 @@ impl std::ops::Deref for MemoryCopyAccess<'_> {
 
 impl Drop for MemoryCopyAccess<'_> {
     fn drop(&mut self) {
-        let notification = self.copy.take().unwrap().retire_deferred();
+        let memory = self.memory;
+        let notification = self
+            .copy
+            .take()
+            .unwrap()
+            .retire_deferred_with(|| memory.entry_origin());
         {
             let mut deferred = self.memory.mapping.deferred.lock().unwrap();
             if deferred.active.is_some() || deferred.scopes != 0 {
@@ -1029,7 +1034,7 @@ impl GuestMemory {
         let copy = self.copy_access()?;
         let retained = self
             .entry_gate()
-            .retain_operand(&copy)
+            .retain_operand_with(&copy, || self.entry_origin())
             .map_err(|failure| failure.error())?;
         let (spans, hole) = {
             let state = self.mapping.address_space.lock().unwrap();
