@@ -3230,8 +3230,51 @@ impl FileTableState {
         })
     }
 
+    /// Whether `install` would leave `state`'s descriptor fields exactly as
+    /// they are: the same entries by identity (so every host fd is kept) and
+    /// the same descriptor facts. Reads only; allocates nothing.
+    fn installed_matches(&self, state: &LoadedStaticElf) -> bool {
+        fn same_arcs<K: Ord, V>(
+            a: &std::collections::BTreeMap<K, Arc<V>>,
+            b: &std::collections::BTreeMap<K, Arc<V>>,
+        ) -> bool {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|((ka, va), (kb, vb))| ka == kb && Arc::ptr_eq(va, vb))
+        }
+        self.same_stdin_entry(state)
+            && self.files.keys().eq(state.files.keys())
+            && same_arcs(&self.fd_entry_ids, &state.fd_entry_ids)
+            && Arc::ptr_eq(&self.epoll_domain, &state.epoll_domain)
+            && Arc::ptr_eq(&self.poll_table_id, &state.poll_table_id)
+            && same_arcs(&self.native_poll_fds, &state.native_poll_fds)
+            && same_arcs(&self.pipe_owners, &state.pipe_owners)
+            && self.random_device_fds == state.random_device_fds
+            && same_arcs(
+                &self.random_device_descriptions,
+                &state.random_device_descriptions,
+            )
+            && self.stdout_alias_fds == state.stdout_alias_fds
+            && self.stderr_alias_fds == state.stderr_alias_fds
+            && self.cloexec_fds == state.cloexec_fds
+            && self.closed_standard_fds == state.closed_standard_fds
+            && self.proc_files == state.proc_files
+            && self.synthetic_proc_nofollow_fds == state.synthetic_proc_nofollow_fds
+            && same_arcs(&self.fdinfo_files, &state.fdinfo_files)
+            && same_arcs(&self.fd_object_inodes, &state.fd_object_inodes)
+    }
+
     // TODO-HUMAN-REVIEW(PR-235): Review stable host-fd preservation during table sync.
     fn install(&self, state: &mut LoadedStaticElf) -> std::io::Result<()> {
+        // Every guest syscall installs the shared table, and it almost never
+        // changed. Installing over an equal state rebuilds every collection
+        // to the same contents, keeps every host fd, and retires no file; its
+        // only other effect is the retirement flush below, kept here.
+        if self.installed_matches(state) {
+            state.file_retirement.retire(std::iter::empty());
+            return Ok(());
+        }
         // Finish every required fallible clone before replacing state.
         // An unchanged entry keeps its actual host fd for epoll MOD/DEL. Inode
         // equality cannot prove this: closing and reopening a linked file keeps
@@ -26243,6 +26286,41 @@ mod tests {
         };
         replacement.inherit_process_state(state);
         assert_eq!(replacement.regular_create_directory_policy, detected);
+    }
+
+    #[test]
+    fn an_unchanged_file_table_install_keeps_state_and_a_changed_one_restores_it() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, state.mmap_limit as usize).unwrap();
+        let fd = open_with_flags(&mut memory, &mut state, "/proc/uptime", libc::O_PATH);
+        let shared = FileTableState::try_from_elf(&state).unwrap();
+        assert!(shared.installed_matches(&state));
+        // Installing over an equal state keeps every entry and its host fd.
+        let host_before = host_fd(&state, fd as i32);
+        shared.install(&mut state).unwrap();
+        assert!(shared.installed_matches(&state));
+        assert_eq!(host_fd(&state, fd as i32), host_before);
+        // A descriptor the table does not have makes the states differ, and
+        // a full install removes it again.
+        let copy = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [fd as u64, 0, 0, 0, 0, 0],
+        );
+        assert!(copy >= 0);
+        assert!(!shared.installed_matches(&state));
+        shared.install(&mut state).unwrap();
+        assert!(shared.installed_matches(&state));
+        assert!(!state.files.contains_key(&(copy as i32)));
+        assert_eq!(host_fd(&state, fd as i32), host_before);
+        // So does a changed descriptor fact with the same entries.
+        state.cloexec_fds.insert(fd as i32);
+        assert!(!shared.installed_matches(&state));
+        shared.install(&mut state).unwrap();
+        assert!(!state.cloexec_fds.contains(&(fd as i32)));
+        assert!(shared.installed_matches(&state));
     }
 
     #[test]
