@@ -716,6 +716,9 @@ fn error_case(blocked: bool, tracked: bool, selected: [bool; 2]) {
     assert!(
         matches!(error.primary(), Error::EntryControl { source, .. } if source.raw_os_error() == Some(expected_errno))
     );
+    // A setup failure precedes the unblock; a cleanup failure leaves the
+    // unblocked mask every entry leaves.
+    assert_eq!(mask_bits(), if selected[0] { original } else { entered });
     assert!(!pending_reserved());
     let ran = usize::from(!selected[0]);
     assert_runs(&probe, tracked, ran, ran);

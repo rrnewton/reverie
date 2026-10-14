@@ -25,6 +25,15 @@
 //! sender. A kicked entry's cleanup first makes sure every recorded kick has
 //! been delivered, then refuses any instance beyond them, and refuses a kick
 //! that was never delivered (signal 64 blocked again on this thread).
+//!
+//! Two consequences belong to the embedding contract. A foreign signal 64 is
+//! not left pending: the handler takes it at once, which can interrupt a host
+//! call this thread is making, and the thread's next entry refuses. And code
+//! that blocks signal 64 again on a vCPU thread breaks prompt interruption:
+//! a kick then cannot end a `KVM_RUN` that is already running. Entries
+//! re-check that signal 64 is unblocked every [`RECHECK_ENTRIES`] entries and
+//! refuse if it was blocked again, which bounds how long that can go unseen
+//! without a per-entry system call.
 
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -49,7 +58,14 @@ thread_local! {
     static RECORDED: Cell<u64> = const { Cell::new(0) };
     /// The participant whose entry last unblocked the reserved signal here.
     static UNBLOCKED_FOR: Cell<u64> = const { Cell::new(0) };
+    /// Entries since this thread last unblocked or re-checked the signal.
+    static SINCE_CHECK: Cell<u32> = const { Cell::new(0) };
 }
+
+/// How many entries of one participant on one thread may pass before the next
+/// re-checks that signal 64 is still unblocked: one system call per this many
+/// entries.
+pub(super) const RECHECK_ENTRIES: u32 = 1024;
 
 extern "C" fn interrupt(_signal: libc::c_int) {
     // A const-initialized thread local without a destructor is a plain TLS
@@ -152,16 +168,24 @@ fn only_reserved_signal() -> libc::sigset_t {
     }
 }
 
-/// Unblock the reserved signal for `key`'s first entry on this thread. Linux
-/// delivers an instance already pending here before the call returns, so the
-/// entry's check that follows counts it.
+/// Unblock the reserved signal for `key`'s first entry on this thread, and
+/// again every [`RECHECK_ENTRIES`] entries after that. Linux delivers an
+/// instance already pending here before the call returns, so the entry's
+/// check that follows counts it. A re-check that finds the signal blocked
+/// again by someone else refuses.
 fn unblock(key: u64) -> Result<()> {
-    if UNBLOCKED_FOR.get() == key {
-        return Ok(());
+    let same = UNBLOCKED_FOR.get() == key;
+    if same {
+        let since = SINCE_CHECK.get() + 1;
+        if since < RECHECK_ENTRIES {
+            SINCE_CHECK.set(since);
+            return Ok(());
+        }
     }
     let set = only_reserved_signal();
-    // SAFETY: the set is initialized; the change affects only this thread.
-    let error = unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut()) };
+    // SAFETY: both sets are valid storage; the change affects only this thread.
+    let mut previous = unsafe { std::mem::zeroed() };
+    let error = unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, &mut previous) };
     if error != 0 {
         return Err(failure(
             "unblock reserved host signal",
@@ -169,6 +193,13 @@ fn unblock(key: u64) -> Result<()> {
         ));
     }
     UNBLOCKED_FOR.set(key);
+    SINCE_CHECK.set(0);
+    // SAFETY: previous is the libc sigset pthread_sigmask just wrote.
+    if same && unsafe { libc::sigismember(&previous, SIGNAL) } == 1 {
+        return Err(protocol_failure(
+            "reserved host signal blocked again on a vCPU thread",
+        ));
+    }
     Ok(())
 }
 
@@ -187,10 +218,15 @@ fn deliver_pending() {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ImmediateExit(std::ptr::NonNull<u8>);
 
-// SAFETY: the pointer is used only for single-byte atomic accesses: stores by
-// a closer under the registry lock while its entry is published as running,
-// and by the entry's own thread after withdrawal. The kernel reads the byte
-// with READ_ONCE at each KVM_RUN. A shared reference permits nothing more.
+// SAFETY: this crate accesses the byte only atomically: stores by a closer
+// under the registry lock while its entry is published as running, and by the
+// entry's own thread after withdrawal. The kernel reads it with READ_ONCE at
+// each KVM_RUN. One access is not atomic: kvm-ioctls' VcpuFd::run forms a
+// `&mut kvm_run` over the whole mapped page after KVM_RUN returns, while a
+// closer may still store this byte until withdrawal. That is formally a data
+// race on memory the kernel also writes; it is the same single-byte store
+// QEMU makes, and kvm-ioctls never reads or writes immediate_exit through that
+// reference. A shared reference to this type permits nothing more.
 unsafe impl Send for ImmediateExit {}
 // SAFETY: as for Send.
 unsafe impl Sync for ImmediateExit {}
@@ -208,8 +244,7 @@ impl ImmediateExit {
 
     pub(super) fn set(self, value: bool) {
         // SAFETY: the byte lives in the vCPU's mapped kvm_run page, which the
-        // caller's entry keeps alive, and every access to it is atomic or the
-        // kernel's READ_ONCE.
+        // caller's entry keeps alive; see the Send impl for its accesses.
         unsafe { AtomicU8::from_ptr(self.0.as_ptr()) }.store(u8::from(value), Ordering::Relaxed);
     }
 
@@ -266,11 +301,11 @@ impl Control {
         }
         let kicked = kicks != 0;
         if kicked {
-            let recorded = RECORDED.get().saturating_add(kicks as u64);
-            RECORDED.set(recorded);
-            if delivered() < recorded {
-                deliver_pending();
-            }
+            RECORDED.set(RECORDED.get().saturating_add(kicks as u64));
+            // Always, even when the counts already agree: a stray delivered
+            // during the entry could stand in for a kick still in flight,
+            // which would otherwise land later in an unrelated host call.
+            deliver_pending();
         }
         let (delivered, recorded) = (delivered(), RECORDED.get());
         if delivered > recorded {
@@ -418,6 +453,7 @@ mod tests {
                 "ignored",
                 "foreign",
                 "replaced",
+                "reblocked",
             ] {
                 let output = std::process::Command::new(std::env::current_exe().unwrap())
                     .args([
@@ -490,6 +526,30 @@ mod tests {
                 assert_eq!(libc::sigaction(SIGNAL, std::ptr::null(), &mut action), 0);
                 assert_eq!(action.sa_sigaction, foreign_handler as *const () as usize);
             }
+            return;
+        }
+        if case == "reblocked" {
+            let key = participant_key();
+            Control::arm(key).unwrap().finish(0).unwrap();
+            // Something else blocks signal 64 again on this vCPU thread.
+            unsafe {
+                libc::pthread_sigmask(
+                    libc::SIG_BLOCK,
+                    &only_reserved_signal(),
+                    std::ptr::null_mut(),
+                );
+            }
+            // Entries inside the re-check window issue no system call and do
+            // not see it; the entry that re-checks refuses, and leaves the
+            // signal unblocked again.
+            for _ in 1..RECHECK_ENTRIES {
+                Control::arm(key).unwrap().finish(0).unwrap();
+            }
+            assert_eq!(
+                operation(&Control::arm(key).err().unwrap()),
+                "reserved host signal blocked again on a vCPU thread"
+            );
+            assert!(!contains(&current_mask(), SIGNAL));
             return;
         }
         let mut original = current_mask();
