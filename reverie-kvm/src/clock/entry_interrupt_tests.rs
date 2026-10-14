@@ -495,8 +495,202 @@ fn kvm_signal_mask_is_reissued_only_when_the_thread_mask_changes() {
     assert_eq!(ioctls(), 2);
     enter(&mut backend);
     assert_eq!(ioctls(), 2);
-    // Unblocking delivers or discards the pending SIGURG on this thread only.
+    // Unblocking delivers or discards the pending SIGURG on this thread only,
+    // and the next entry follows the unblocked mask back.
     change_sigurg(libc::SIG_UNBLOCK);
+    enter(&mut backend);
+    assert_eq!(ioctls(), 3);
+    // None of these entries was kicked or failed, so none drained.
+    assert_eq!(probe.prepare.drains.load(Ordering::SeqCst), 0);
+    // SAFETY: restore this thread's complete original mask.
+    unsafe {
+        let mut mask = std::mem::zeroed();
+        libc::sigemptyset(&mut mask);
+        for signal in 1..=64 {
+            if saved_mask & (1 << (signal - 1)) != 0 {
+                libc::sigaddset(&mut mask, signal);
+            }
+        }
+        assert_eq!(
+            libc::pthread_sigmask(libc::SIG_SETMASK, &mask, std::ptr::null_mut()),
+            0
+        );
+    }
+}
+
+#[test]
+fn an_unrecorded_reserved_signal_fails_the_entry_before_guest_progress() {
+    let saved_mask = mask_bits();
+    let mut backend =
+        crate::KvmBackend::new(0x10000).expect("entry signal control requires /dev/kvm");
+    // inc byte ptr [0x2000]; hlt, restarted on the same vCPU.
+    backend
+        .install_real_mode_program(PROGRAM, &[0xfe, 0x06, 0x00, 0x20, 0xf4])
+        .unwrap();
+    backend.memory.write_raw(MARKER, &[0]).unwrap();
+    let start = backend.vcpu.get_regs().unwrap();
+    let gate = backend.memory.entry_gate();
+    let probe = Arc::new(RunProbe::default());
+    backend.vcpu.set_run_probe(probe.clone());
+    probe.arm();
+    // Read through the retained backing: once the refusal fails the gate,
+    // production memory access correctly refuses. Only KVM wrote this byte.
+    let marker = |backend: &crate::KvmBackend| {
+        let physical = backend.memory.host_address() + MARKER - backend.memory.guest_base();
+        // SAFETY: the backend keeps this mapping alive and no vCPU is running.
+        unsafe { std::ptr::read_volatile(physical as *const u8) }
+    };
+    // An ordinary exit with no recorded kick does not drain.
+    assert!(matches!(backend.vcpu.run().unwrap(), Some(VcpuExit::Hlt)));
+    assert_eq!(marker(&backend), 1);
+    assert_eq!(probe.prepare.drains.load(Ordering::SeqCst), 0);
+    assert!(gate.pending_failure().is_none());
+    // An instance nobody recorded, queued while the thread blocks it, is
+    // deliverable inside KVM_RUN: the entry fails with EINTR before the guest
+    // runs, and the failed run's drain consumes and refuses it.
+    // SAFETY: a thread-directed signal to this live test thread.
+    assert_eq!(unsafe { libc::pthread_kill(libc::pthread_self(), 64) }, 0);
+    assert!(reserved_pending());
+    backend.vcpu.set_regs(&start).unwrap();
+    let error = match backend.vcpu.run() {
+        Err(error) => error,
+        Ok(exit) => panic!("an unrecorded reserved signal admitted {exit:?}"),
+    };
+    assert!(matches!(
+        error.primary(),
+        Error::EntryControl {
+            operation: "unexplained reserved host signal during entry",
+            ..
+        }
+    ));
+    assert_eq!(marker(&backend), 1, "the guest ran despite the refusal");
+    assert_eq!(probe.prepare.drains.load(Ordering::SeqCst), 1);
+    assert!(!reserved_pending());
+    assert!(gate.pending_failure().is_some());
+    assert_eq!(mask_bits(), saved_mask | (1 << 63));
+    drop(backend);
+    // SAFETY: restore this thread's complete original mask.
+    unsafe {
+        let mut mask = std::mem::zeroed();
+        libc::sigemptyset(&mut mask);
+        for signal in 1..=64 {
+            if saved_mask & (1 << (signal - 1)) != 0 {
+                libc::sigaddset(&mut mask, signal);
+            }
+        }
+        assert_eq!(
+            libc::pthread_sigmask(libc::SIG_SETMASK, &mask, std::ptr::null_mut()),
+            0
+        );
+    }
+}
+
+#[test]
+fn an_unrecorded_reserved_signal_after_a_hypercall_exit_runs_only_its_completion() {
+    let saved_mask = mask_bits();
+    let mut backend =
+        crate::KvmBackend::new(16 * 1024 * 1024).expect("entry signal control requires /dev/kvm");
+    install_counted_program(&mut backend, &finite_program(1 << 10));
+    reaches_getpid(&mut backend.vcpu);
+    let at_exit = backend.vcpu.get_regs().unwrap();
+    // An unrecorded instance arrives between entries and stays pending. The
+    // next KVM_RUN first completes the outstanding hypercall exit (the VMCALL
+    // is skipped), then sees the signal and fails with EINTR before any guest
+    // instruction runs; the drain refuses the entry by name.
+    // SAFETY: a thread-directed signal to this live test thread.
+    assert_eq!(unsafe { libc::pthread_kill(libc::pthread_self(), 64) }, 0);
+    assert!(reserved_pending());
+    let error = match backend.vcpu.run() {
+        Err(error) => error,
+        Ok(exit) => panic!("an unrecorded reserved signal admitted {exit:?}"),
+    };
+    assert!(matches!(
+        error.primary(),
+        Error::EntryControl {
+            operation: "unexplained reserved host signal during entry",
+            ..
+        }
+    ));
+    assert!(!reserved_pending());
+    // Exactly the completion: RIP moved past the 3-byte VMCALL and no
+    // further. A guest instruction would have left the hypercall stub.
+    let raw: &kvm_ioctls::VcpuFd = &backend.vcpu;
+    let after = raw.get_regs().unwrap();
+    assert_eq!(after.rip, at_exit.rip + 3);
+    assert_eq!(after.rsp, at_exit.rsp);
+    drop(backend);
+    // SAFETY: restore this thread's complete original mask.
+    unsafe {
+        let mut mask = std::mem::zeroed();
+        libc::sigemptyset(&mut mask);
+        for signal in 1..=64 {
+            if saved_mask & (1 << (signal - 1)) != 0 {
+                libc::sigaddset(&mut mask, signal);
+            }
+        }
+        assert_eq!(
+            libc::pthread_sigmask(libc::SIG_SETMASK, &mask, std::ptr::null_mut()),
+            0
+        );
+    }
+}
+
+#[test]
+fn an_unrecorded_reserved_signal_with_a_recorded_kick_is_still_refused() {
+    let saved_mask = mask_bits();
+    let mut backend =
+        crate::KvmBackend::new(0x10000).expect("entry signal control requires /dev/kvm");
+    // inc byte ptr [0x2000]; hlt.
+    backend
+        .install_real_mode_program(PROGRAM, &[0xfe, 0x06, 0x00, 0x20, 0xf4])
+        .unwrap();
+    backend.memory.write_raw(MARKER, &[0]).unwrap();
+    let start = backend.vcpu.get_regs().unwrap();
+    let gate = backend.memory.entry_gate();
+    // An ordinary first entry installs the handler and leaves signal 64
+    // blocked on this thread, so the instance below queues instead of
+    // taking the default action.
+    assert!(matches!(backend.vcpu.run().unwrap(), Some(VcpuExit::Hlt)));
+    backend.vcpu.set_regs(&start).unwrap();
+    let closing: Arc<Mutex<Option<CloseFuture>>> = Arc::new(Mutex::new(None));
+    let hook_closing = closing.clone();
+    let hook_gate = gate.clone();
+    let probe = Arc::new(RunProbe::default());
+    *probe.after_prepare.lock().unwrap() = Some(Box::new(move || {
+        // A closer records its kick and sends after publication. The drain
+        // will find two instances against one recorded kick.
+        let future: CloseFuture = Box::pin(hook_gate.try_close().unwrap().unwrap().finish());
+        *hook_closing.lock().unwrap() = Some(future);
+    }));
+    backend.vcpu.set_run_probe(probe.clone());
+    probe.arm();
+    // An instance nobody recorded is already queued before the entry.
+    // SAFETY: a thread-directed signal to this live test thread.
+    assert_eq!(unsafe { libc::pthread_kill(libc::pthread_self(), 64) }, 0);
+    assert!(reserved_pending());
+    let marker = |backend: &crate::KvmBackend| {
+        let physical = backend.memory.host_address() + MARKER - backend.memory.guest_base();
+        // SAFETY: the backend keeps this mapping alive and no vCPU is running.
+        unsafe { std::ptr::read_volatile(physical as *const u8) }
+    };
+    let error = match backend.vcpu.run() {
+        Err(error) => error,
+        Ok(exit) => panic!("an unrecorded reserved signal hid behind a kick: {exit:?}"),
+    };
+    assert!(matches!(
+        error.primary(),
+        Error::EntryControl {
+            operation: "unexplained reserved host signal during entry",
+            ..
+        }
+    ));
+    assert_eq!(marker(&backend), 1, "the guest ran despite the refusal");
+    assert_eq!(probe.prepare.drains.load(Ordering::SeqCst), 1);
+    assert!(!reserved_pending());
+    assert!(gate.pending_failure().is_some());
+    assert_eq!(mask_bits(), saved_mask | (1 << 63));
+    drop(closing.lock().unwrap().take());
+    drop(backend);
     // SAFETY: restore this thread's complete original mask.
     unsafe {
         let mut mask = std::mem::zeroed();
