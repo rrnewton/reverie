@@ -6013,15 +6013,13 @@ impl KvmBackend {
                         self.check_entry_owner()?;
                         expose_tool_scratch(&memory, tool_stack_top)?;
                         let boundary = {
-                            let mut stop = pin!(wait_for_failure(
-                                global_state.as_ref(),
-                                failure_subscription.clone(),
-                            ));
+                            let stop = Pin::new(&mut callback_failure);
+                            let stop: Pin<&mut (dyn Future<Output = ()> + Send)> = stop;
                             CompletedSyscallBoundary::capture_admitted(
                                 self,
                                 frame_address,
                                 None,
-                                stop.as_mut(),
+                                stop,
                             )
                             .await?
                         };
