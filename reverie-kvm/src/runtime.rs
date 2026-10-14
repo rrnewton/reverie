@@ -5271,6 +5271,15 @@ impl KvmBackend {
         }
         let tool_stack_top = self.tool_stack_top();
         let failure_subscription = self.failure_subscription(executor.is_traced_tree_root());
+        // One failure wait for every Tool callback this thread runs. Building
+        // one takes the GlobalTool's failure waiter (Detcore locks its
+        // scheduler for it) and two subscriptions, once per guest syscall;
+        // polling a kept one only renews its waker. It stays Ready once it
+        // has fired, so every later callback still sees the failure first.
+        let mut callback_failure = crate::failure::StickyFailure::new(Box::pin(wait_for_failure(
+            global_state.as_ref(),
+            failure_subscription.clone(),
+        )));
         let mut _registration = None;
         let mut auxv = executor.auxv().to_vec();
         // Clones share the MAP_SHARED guest mapping; a mutable handle lets the
@@ -6060,10 +6069,7 @@ impl KvmBackend {
                                 || tool.handle_syscall_event(&mut guest, syscall),
                                 handler_signal,
                                 pending_child_starts.clone(),
-                                wait_for_failure(
-                                    global_state.as_ref(),
-                                    failure_subscription.clone(),
-                                ),
+                                Pin::new(&mut callback_failure),
                                 callback_watch.clone(),
                             )
                             .await

@@ -468,6 +468,36 @@ impl FailureContext {
     }
 }
 
+/// A failure wait that can be polled again after it fires: it stays Ready.
+/// An `async fn`'s future must not be polled after it completes, but a wait
+/// kept for a thread's whole syscall loop is checked once per syscall.
+pub(crate) struct StickyFailure<F> {
+    wait: Option<F>,
+}
+
+impl<F: Future<Output = ()> + Unpin> StickyFailure<F> {
+    pub(crate) fn new(wait: F) -> Self {
+        Self { wait: Some(wait) }
+    }
+}
+
+impl<F: Future<Output = ()> + Unpin> Future for StickyFailure<F> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+        let Some(wait) = self.wait.as_mut() else {
+            return Poll::Ready(());
+        };
+        match Pin::new(wait).poll(context) {
+            Poll::Ready(()) => {
+                self.wait = None;
+                Poll::Ready(())
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 pub(crate) async fn wait_for_failure<G: GlobalTool>(
     global: &G,
     local: Option<FailureSubscription>,
