@@ -9115,23 +9115,56 @@ fn read(
         }
         return Ok(host_read_zero(file.as_raw_fd(), args[1]));
     }
-    if let Err(error) = ensure_read_capable(file) {
-        return Ok(error);
-    }
-    if let Err(error) = ensure_readable(file) {
-        return Ok(error);
-    }
     let host_fd = file.as_raw_fd();
-    if let Some(result) = signalfd_read(memory, state, fd, args[1], requested_length) {
-        return Ok(result);
+    // Linux checks the descriptor (EBADF, then EINVAL without FMODE_CAN_READ)
+    // before the destination. The checks below exist only to keep those
+    // errors ahead of the EFAULT this code derives itself. When the
+    // destination has a writable prefix, the host read goes to a valid host
+    // buffer and raises EINVAL itself, so the readv probe and the second
+    // fcntl are skipped (the probe also raised a spurious IN_ACCESS that a
+    // Linux read does not). The access mode is still read first: it needs no
+    // filesystem I/O, and an O_PATH or write-only descriptor keeps the checked
+    // path and its immediate EBADF. So do a directory, which the checked path
+    // answers with EISDIR on every filesystem whatever its read op would do,
+    // a signalfd, whose records are virtual, and any failed query.
+    let unchecked_mode = if requested_length != 0
+        && signalfd_mask(state, fd).is_none()
+        && range_is_valid(memory, args[1], args[2])
+        && memory
+            .user()
+            .user_accessible_prefix(args[1], length)
+            .is_ok_and(|writable| writable != 0)
+        && fd_status_flags(host_fd).is_ok_and(|flags| {
+            flags & libc::O_PATH == 0 && flags & libc::O_ACCMODE != libc::O_WRONLY
+        }) {
+        fd_mode(host_fd)
+            .ok()
+            .filter(|mode| mode & libc::S_IFMT != libc::S_IFDIR)
+    } else {
+        None
+    };
+    if unchecked_mode.is_none() {
+        if let Err(error) = ensure_read_capable(file) {
+            return Ok(error);
+        }
+        if let Err(error) = ensure_readable(file) {
+            return Ok(error);
+        }
+        if let Some(result) = signalfd_read(memory, state, fd, args[1], requested_length) {
+            return Ok(result);
+        }
+        if !range_is_valid(memory, args[1], args[2]) {
+            return Ok(negative_errno(libc::EFAULT));
+        }
+        if requested_length == 0 {
+            return Ok(0);
+        }
     }
-    if !range_is_valid(memory, args[1], args[2]) {
-        return Ok(negative_errno(libc::EFAULT));
-    }
-    if requested_length == 0 {
-        return Ok(0);
-    }
-    match host_fd_is_inotify(host_fd) {
+    let is_inotify = match unchecked_mode {
+        Some(mode) => host_fd_mode_is_inotify(host_fd, mode),
+        None => host_fd_is_inotify(host_fd),
+    };
+    match is_inotify {
         // Linux's readv calls inotify's read once with the same buffer and
         // count, so the staged readv path applies scalar read semantics.
         Ok(true) => {
@@ -49637,6 +49670,7 @@ mod tests {
     ];
 
     include!("executor/read_zero_refusal_tests.rs");
+    include!("executor/descriptor_check_order_tests.rs");
 
     fn read_zero_memory() -> GuestMemory {
         let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
