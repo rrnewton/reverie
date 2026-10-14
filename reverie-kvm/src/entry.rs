@@ -39,7 +39,9 @@ pub(crate) use signal::InstalledMask;
 
 #[cfg(feature = "native-test-support")]
 pub(crate) fn check_reserved_signal_handler() -> crate::Result<()> {
-    signal::Mask::block()?.finish()
+    signal::Mask::block()?
+        .finish(false, RunOutcome::Failed)
+        .map(drop)
 }
 
 #[cfg(test)]
@@ -94,6 +96,9 @@ pub(crate) struct PrepareProbe {
     /// `KVM_SET_SIGNAL_MASK` ioctls actually issued; an entry whose thread
     /// mask is unchanged reuses the vCPU's installed mask.
     pub(crate) mask_ioctls: std::sync::atomic::AtomicUsize,
+    /// Entry cleanups that drained the reserved signal: only after a
+    /// recorded kick or a failed `KVM_RUN`.
+    pub(crate) drains: std::sync::atomic::AtomicUsize,
     pub(crate) closed_admissions: std::sync::atomic::AtomicUsize,
     pub(crate) closed_waits: std::sync::atomic::AtomicUsize,
     pub(crate) pending_subscriptions: std::sync::atomic::AtomicUsize,
@@ -316,6 +321,10 @@ struct Member {
     generation: Option<MappingGeneration>,
     activity: Activity,
     origin: EntryOrigin,
+    /// A closer sent the reserved signal to this member's current entry.
+    /// Set under the registry lock before the send and taken by withdrawal,
+    /// after which no closer can send to it.
+    kicked: bool,
 }
 
 struct State {
@@ -668,6 +677,7 @@ impl EntryGate {
                                 generation: None,
                                 activity: Activity::Stopped,
                                 origin: EntryOrigin::default(),
+                                kicked: false,
                             },
                         );
                         Ok(Participant {
@@ -886,8 +896,11 @@ impl EntryGate {
         // Keep an operation's unwind from poisoning the registry mutex:
         // entry destructors still need it to withdraw and retire their target.
         let send_error = catch_unwind(AssertUnwindSafe(|| {
-            state.members.values().find_map(|member| {
+            state.members.values_mut().find_map(|member| {
                 if let Activity::Running(thread) = member.activity {
+                    // Record before sending: the entry drains only a kick it
+                    // can see recorded, or after KVM_RUN fails.
+                    member.kicked = true;
                     send(thread).err()
                 } else {
                     None
@@ -1018,12 +1031,13 @@ impl Participant {
         match admitted {
             Ok(true) => Ok(Some(guard)),
             Ok(false) => {
-                guard.finish(Ok(()))?;
+                // Never Running, so no closer sent to it and no KVM_RUN ran.
+                guard.finish(Ok(()), RunOutcome::Exited)?;
                 Ok(None)
             }
             Err(error) => {
                 // Retain a mask cleanup error alongside the original failure.
-                let _ = guard.finish(Ok(()));
+                let _ = guard.finish(Ok(()), RunOutcome::Failed);
                 Err(error)
             }
         }
@@ -1114,8 +1128,9 @@ impl Entry<'_> {
     }
 
     /// Must precede the final drain. A closer cannot send after this returns.
-    /// Retirement stays counted through the caller's mask drain.
-    pub(crate) fn withdraw(&mut self) {
+    /// Retirement stays counted through the caller's mask drain. Returns
+    /// whether a closer sent the reserved signal to this entry.
+    pub(crate) fn withdraw(&mut self) -> bool {
         #[cfg(test)]
         let mut state = {
             let hook = self
@@ -1149,6 +1164,7 @@ impl Entry<'_> {
             Activity::Setup | Activity::Running(_)
         ));
         member.activity = Activity::Retiring;
+        std::mem::take(&mut member.kicked)
     }
 
     /// Called only after clock cleanup, withdrawal and final drain.
@@ -1189,6 +1205,20 @@ impl Drop for Entry<'_> {
     }
 }
 
+/// How the entry's `KVM_RUN` ended, which decides whether its cleanup must
+/// drain the reserved signal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RunOutcome {
+    /// `KVM_RUN` returned an exit, or never ran. An instance pending while
+    /// it ran would have made it fail with EINTR, so cleanup drains only a
+    /// recorded kick. An unrecorded instance that arrives after the exit stays
+    /// pending (the signal is blocked) and fails this thread's next entry.
+    Exited,
+    /// `KVM_RUN` failed (EINTR included), setup failed, or the entry unwound.
+    /// An instance may be queued that no closer recorded.
+    Failed,
+}
+
 /// Owns the same-thread mask from setup through final withdrawal and drain.
 /// CountedVcpu must finish its clock interval before calling finish.
 pub(crate) struct RunEntry<'a> {
@@ -1197,11 +1227,11 @@ pub(crate) struct RunEntry<'a> {
 }
 
 impl RunEntry<'_> {
-    pub(crate) fn finish(mut self, clock: crate::Result<()>) -> GateResult<()> {
-        self.cleanup(clock)
+    pub(crate) fn finish(mut self, clock: crate::Result<()>, run: RunOutcome) -> GateResult<()> {
+        self.cleanup(clock, run)
     }
 
-    fn cleanup(&mut self, clock: crate::Result<()>) -> GateResult<()> {
+    fn cleanup(&mut self, clock: crate::Result<()>, run: RunOutcome) -> GateResult<()> {
         let mut entry = self.entry.take().unwrap();
         #[cfg(test)]
         let probe = entry.participant.prepare_probe.clone();
@@ -1214,12 +1244,18 @@ impl RunEntry<'_> {
         if let Some(probe) = &probe {
             probe.cleanup_hook(CleanupPhase::BeforeWithdraw, identity);
         }
-        entry.withdraw();
+        let kicked = entry.withdraw();
         #[cfg(test)]
         if let Some(probe) = &probe {
             probe.cleanup_hook(CleanupPhase::AfterWithdraw, identity);
         }
-        let mask = self.mask.take().unwrap().finish();
+        let mask = self.mask.take().unwrap().finish(kicked, run);
+        // Every error comes from draining, so anything but Ok(false) drained.
+        #[cfg(test)]
+        if let (false, Some(probe)) = (matches!(mask, Ok(false)), &probe) {
+            probe.increment(&probe.drains);
+        }
+        let mask = mask.map(drop);
         let cleanup = match (clock, mask) {
             (Ok(()), result) | (result, Ok(())) => result,
             (Err(primary), Err(cleanup)) => Err(primary.with_cleanup(vec![cleanup])),
@@ -1235,9 +1271,10 @@ impl RunEntry<'_> {
 impl Drop for RunEntry<'_> {
     fn drop(&mut self) {
         if self.entry.is_some() {
-            let _ = self.cleanup(Err(protocol_failure(
-                "guest entry unwound or was abandoned",
-            )));
+            let _ = self.cleanup(
+                Err(protocol_failure("guest entry unwound or was abandoned")),
+                RunOutcome::Failed,
+            );
         }
     }
 }
@@ -2657,8 +2694,11 @@ mod tests {
         assert!(participant.try_enter().is_err());
         assert!(gate.try_copy(None).is_err());
         assert!(gate.try_close().is_err());
-        // A second mask guard refuses a stale queued control signal.
-        signal::Mask::block().unwrap().finish().unwrap();
+        // A second mask guard's drain finds no stale queued control signal.
+        signal::Mask::block()
+            .unwrap()
+            .finish(false, RunOutcome::Failed)
+            .unwrap();
         assert_eq!(mask_bits(), original_mask | (1 << 63));
         drop(participant);
         assert!(gate.state.lock().unwrap().members.is_empty());
@@ -2750,7 +2790,7 @@ mod tests {
             close_observed.try_recv(),
             Err(std::sync::mpsc::TryRecvError::Empty)
         ));
-        entry.finish(Ok(())).unwrap();
+        entry.finish(Ok(()), RunOutcome::Failed).unwrap();
         close_observed
             .recv_timeout(std::time::Duration::from_secs(2))
             .unwrap();
@@ -2766,7 +2806,7 @@ mod tests {
             .prepare(&vcpu, &mut installed)
             .unwrap()
             .unwrap()
-            .finish(Ok(()))
+            .finish(Ok(()), RunOutcome::Exited)
             .unwrap();
         drop(vcpu);
         drop(vm);
