@@ -43,7 +43,7 @@ pub(crate) use signal::delivered_for_test;
 
 #[cfg(feature = "native-test-support")]
 pub(crate) fn check_reserved_signal_handler() -> crate::Result<()> {
-    signal::Control::arm(signal::participant_key())?
+    signal::Control::arm(signal::participant_key(), None)?
         .finish(0)
         .map(drop)
 }
@@ -326,9 +326,6 @@ struct Member {
     /// current entry. Counted under the registry lock before each send and
     /// taken by withdrawal, after which no closer can send to it.
     kicks: usize,
-    /// The running entry's vCPU `immediate_exit` byte, which a closer sets
-    /// before each send. Present only from activation until withdrawal.
-    immediate_exit: Option<ImmediateExit>,
 }
 
 struct State {
@@ -741,7 +738,6 @@ impl EntryGate {
                                 activity: Activity::Stopped,
                                 origin: EntryOrigin::default(),
                                 kicks: 0,
-                                immediate_exit: None,
                             },
                         );
                         Ok(Participant {
@@ -964,13 +960,8 @@ impl EntryGate {
             state.members.values_mut().find_map(|member| {
                 if let Activity::Running(thread) = member.activity {
                     // Record before sending: the entry's cleanup refuses any
-                    // instance beyond the kicks recorded. Set immediate_exit
-                    // first, so an instance handled before KVM_RUN still keeps
-                    // the guest from running.
+                    // instance beyond the kicks recorded.
                     member.kicks = member.kicks.saturating_add(1);
-                    if let Some(immediate_exit) = member.immediate_exit {
-                        immediate_exit.set(true);
-                    }
                     send(thread).err()
                 } else {
                     None
@@ -1070,7 +1061,7 @@ impl Participant {
             }
             return Ok(None);
         };
-        let control = match signal::Control::arm(key) {
+        let control = match signal::Control::arm(key, immediate_exit) {
             Ok(control) => control,
             Err(error) => {
                 entry.withdraw();
@@ -1081,7 +1072,6 @@ impl Participant {
         let mut guard = RunEntry {
             entry: Some(entry),
             control: Some(control),
-            immediate_exit,
         };
         // The test hook runs after signal setup and outside the registry lock.
         // The real final admission check and publication remain together below.
@@ -1089,7 +1079,7 @@ impl Participant {
         if let Some(probe) = &probe {
             probe.activate_hook();
         }
-        let admitted = guard.entry.as_mut().unwrap().activate(immediate_exit);
+        let admitted = guard.entry.as_mut().unwrap().activate();
         #[cfg(test)]
         if let (Ok(true), Some(probe)) = (&admitted, &probe) {
             probe.increment(&probe.activations);
@@ -1147,7 +1137,7 @@ pub(crate) struct Entry<'a> {
 impl Entry<'_> {
     /// The final open check and target publication occur under the registry
     /// lock.
-    pub(crate) fn activate(&mut self, immediate_exit: Option<ImmediateExit>) -> GateResult<bool> {
+    pub(crate) fn activate(&mut self) -> GateResult<bool> {
         let mut state = self.participant.gate.state.lock().unwrap();
         state.check()?;
         let member = state.members.get(&self.participant.id).unwrap();
@@ -1163,7 +1153,6 @@ impl Entry<'_> {
         // serialized sender path.
         member.activity = Activity::Running(unsafe { libc::pthread_self() });
         member.generation = Some(self.generation);
-        member.immediate_exit = immediate_exit;
         Ok(true)
     }
 
@@ -1204,7 +1193,6 @@ impl Entry<'_> {
             Activity::Setup | Activity::Running(_)
         ));
         member.activity = Activity::Retiring;
-        member.immediate_exit = None;
         std::mem::take(&mut member.kicks)
     }
 
@@ -1252,7 +1240,6 @@ impl Drop for Entry<'_> {
 pub(crate) struct RunEntry<'a> {
     entry: Option<Entry<'a>>,
     control: Option<signal::Control>,
-    immediate_exit: Option<ImmediateExit>,
 }
 
 impl RunEntry<'_> {
@@ -1277,13 +1264,6 @@ impl RunEntry<'_> {
         #[cfg(test)]
         if let Some(probe) = &probe {
             probe.cleanup_hook(CleanupPhase::AfterWithdraw, identity);
-        }
-        // Only a closer sets immediate_exit, and none can after withdrawal.
-        // Clear it so the vCPU's next KVM_RUN enters the guest.
-        if kicks != 0
-            && let Some(immediate_exit) = self.immediate_exit
-        {
-            immediate_exit.set(false);
         }
         let signal = self.control.take().unwrap().finish(kicks);
         #[cfg(test)]
@@ -1706,7 +1686,7 @@ mod tests {
         assert_quiescent_refusal_is_quiet(&gate);
         // This only records this thread's identity. The quiescent operation
         // must never send its reserved signal to the unmasked test thread.
-        assert!(entry.activate(None).unwrap());
+        assert!(entry.activate().unwrap());
         assert_quiescent_refusal_is_quiet(&gate);
         entry.withdraw();
         assert_quiescent_refusal_is_quiet(&gate);
@@ -2031,7 +2011,7 @@ mod tests {
 
         drop(gate.try_copy(None).unwrap().unwrap());
         let mut entry = participant.try_enter().unwrap().unwrap();
-        assert!(entry.activate(None).unwrap());
+        assert!(entry.activate().unwrap());
         entry.withdraw();
         entry.acknowledge(Ok(())).unwrap();
         assert!(
@@ -2446,7 +2426,7 @@ mod tests {
         let close = gate.try_close().unwrap().unwrap();
         let mut closed = pin!(close.finish());
         assert!(poll(closed.as_mut()).is_pending());
-        assert!(!entry.activate(None).unwrap());
+        assert!(!entry.activate().unwrap());
         drop(copy);
         assert!(poll(closed.as_mut()).is_pending());
         entry.withdraw();
@@ -2464,7 +2444,7 @@ mod tests {
         let gate = EntryGate::new();
         let mut participant = gate.register().unwrap();
         let mut entry = participant.try_enter().unwrap().unwrap();
-        assert!(entry.activate(None).unwrap());
+        assert!(entry.activate().unwrap());
         entry.withdraw();
         let close = gate
             .try_close_with(|_| panic!("sent to an already withdrawn target"))
@@ -2482,7 +2462,7 @@ mod tests {
         let mut participant = gate.register().unwrap();
         let id = participant.id;
         let mut entry = participant.try_enter().unwrap().unwrap();
-        assert!(entry.activate(None).unwrap());
+        assert!(entry.activate().unwrap());
         let changed = gate.subscribe();
         let failure =
             match gate.try_close_with(|_| Err(std::io::Error::from_raw_os_error(libc::ESRCH))) {
@@ -2529,7 +2509,7 @@ mod tests {
         let mut participant = gate.register().unwrap();
         let id = participant.id;
         let mut entry = participant.try_enter().unwrap().unwrap();
-        assert!(entry.activate(None).unwrap());
+        assert!(entry.activate().unwrap());
         drop(entry);
         drop(participant);
         let state = gate.state.lock().unwrap();
@@ -2644,15 +2624,14 @@ mod tests {
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             let key = participant.key;
             let entry = participant.try_enter().unwrap().unwrap();
-            let control = signal::Control::arm(key).unwrap();
+            let control = signal::Control::arm(key, None).unwrap();
             let mut guard = RunEntry {
                 entry: Some(entry),
                 control: Some(control),
-                immediate_exit: None,
             };
             match case.as_str() {
                 "send" => {
-                    assert!(guard.entry.as_mut().unwrap().activate(None).unwrap());
+                    assert!(guard.entry.as_mut().unwrap().activate().unwrap());
                     let _ = gate.try_close_with(|thread| {
                         // Deliver a real control signal before the injected
                         // unwind. Cleanup must still account for it.
@@ -2713,7 +2692,7 @@ mod tests {
         assert!(gate.try_copy(None).is_err());
         assert!(gate.try_close().is_err());
         // A later entry on this thread finds the kick explained.
-        signal::Control::arm(participant.key)
+        signal::Control::arm(participant.key, None)
             .unwrap()
             .finish(0)
             .unwrap();
@@ -2809,7 +2788,8 @@ mod tests {
             close_observed.try_recv(),
             Err(std::sync::mpsc::TryRecvError::Empty)
         ));
-        // The closer set immediate_exit; cleanup clears it for the next run.
+        // The kick's handler set immediate_exit; cleanup clears it for the
+        // next run.
         assert!(immediate_exit.get());
         entry.finish(Ok(())).unwrap();
         assert!(!immediate_exit.get());

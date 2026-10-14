@@ -150,7 +150,7 @@ pub(crate) struct CountedVcpu {
     /// `set_msrs`, ...). `run` takes `&mut self`, so no raw borrow taken before
     /// an exit can still be alive after it.
     synced_exit: std::sync::atomic::AtomicBool,
-    /// `fd`'s `kvm_run.immediate_exit` byte, which a closer sets.
+    /// `fd`'s `kvm_run.immediate_exit` byte, which the kick handler sets.
     immediate_exit: crate::entry::ImmediateExit,
     participant: Participant,
     // Keep the Mapping alive independently of the backend field's drop order.

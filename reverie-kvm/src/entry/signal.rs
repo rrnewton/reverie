@@ -9,15 +9,16 @@
 //! The embedding process reserves Linux signal 64 for KVM entry control.
 //! SIGURG remains the independent worker-cancellation signal.
 //!
-//! A closer interrupts a running vCPU as QEMU does: under the registry lock it
-//! sets the vCPU's `kvm_run.immediate_exit` byte and then sends signal 64 to
-//! the vCPU's thread. Signal 64 is unblocked on a vCPU thread from its first
-//! entry on, and its handler only counts the delivery. An instance arriving
-//! inside `KVM_RUN` ends it with EINTR. One arriving before `KVM_RUN` runs
-//! the handler outside it, and `immediate_exit` then makes `KVM_RUN` return
-//! EINTR without entering the guest. `KVM_RUN` therefore runs under the
-//! thread's own signal mask, with no KVM signal mask to keep in sync, and an
-//! entry issues no host syscall besides `KVM_RUN` itself.
+//! A closer interrupts a running vCPU by sending signal 64 to its thread, and
+//! the thread's handler stops the vCPU as QEMU's and Firecracker's do. Signal
+//! 64 is unblocked on a vCPU thread from its first entry on. The handler
+//! counts the delivery and, while an entry is published on the thread, sets
+//! that vCPU's `kvm_run.immediate_exit` byte. An instance arriving inside
+//! `KVM_RUN` ends it with EINTR. One arriving after the entry's signal setup
+//! but before `KVM_RUN` runs the handler outside it, and `immediate_exit` then
+//! makes `KVM_RUN` return EINTR without entering the guest. `KVM_RUN`
+//! therefore runs under the thread's own signal mask, with no KVM signal mask
+//! to keep in sync, and an entry issues no host syscall besides `KVM_RUN`.
 //!
 //! Each thread counts the instances its handler took and the kicks closers
 //! recorded against its entries, and the two must agree. An entry refuses to
@@ -39,6 +40,7 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -60,6 +62,9 @@ thread_local! {
     static UNBLOCKED_FOR: Cell<u64> = const { Cell::new(0) };
     /// Entries since this thread last unblocked or re-checked the signal.
     static SINCE_CHECK: Cell<u32> = const { Cell::new(0) };
+    /// The `immediate_exit` byte of the vCPU whose entry is published on this
+    /// thread, or null. Only this thread and its signal handler touch it.
+    static PUBLISHED_EXIT: AtomicPtr<u8> = const { AtomicPtr::new(std::ptr::null_mut()) };
 }
 
 /// How many entries of one participant on one thread may pass before the next
@@ -68,9 +73,16 @@ thread_local! {
 pub(super) const RECHECK_ENTRIES: u32 = 1024;
 
 extern "C" fn interrupt(_signal: libc::c_int) {
-    // A const-initialized thread local without a destructor is a plain TLS
-    // access, and x86-64's atomic increment performs no allocation or locking.
+    // A const-initialized thread local without a destructor, in a crate linked
+    // into an executable, is a plain initial-exec TLS access: no allocation,
+    // locking or lazy registration. These are single atomic instructions.
     DELIVERED.with(|delivered| delivered.fetch_add(1, Ordering::Relaxed));
+    let published = PUBLISHED_EXIT.with(|exit| exit.load(Ordering::Relaxed));
+    if !published.is_null() {
+        // SAFETY: an entry publishes the byte only while its vCPU's kvm_run
+        // mapping is alive, and unpublishes it on this same thread first.
+        unsafe { AtomicU8::from_ptr(published) }.store(1, Ordering::Relaxed);
+    }
 }
 
 fn delivered() -> u64 {
@@ -212,23 +224,24 @@ fn deliver_pending() {
     unsafe { libc::syscall(libc::SYS_getppid) };
 }
 
-/// The `immediate_exit` byte of one vCPU's shared `kvm_run` page. A closer
-/// sets it, under the registry lock, before it sends the reserved signal, so
-/// a kick that lands before `KVM_RUN` still keeps the guest from running.
+/// The `immediate_exit` byte of one vCPU's shared `kvm_run` page, which the
+/// kick handler sets so that a kick landing before `KVM_RUN` still keeps the
+/// guest from running.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ImmediateExit(std::ptr::NonNull<u8>);
 
-// SAFETY: this crate accesses the byte only atomically: stores by a closer
-// under the registry lock while its entry is published as running, and by the
-// entry's own thread after withdrawal. The kernel reads it with READ_ONCE at
-// each KVM_RUN. One access is not atomic: kvm-ioctls' VcpuFd::run forms a
-// `&mut kvm_run` over the whole mapped page after KVM_RUN returns, while a
-// closer may still store this byte until withdrawal. That is formally a data
-// race on memory the kernel also writes; it is the same single-byte store
-// QEMU makes, and kvm-ioctls never reads or writes immediate_exit through that
-// reference. A shared reference to this type permits nothing more.
+// SAFETY: the byte is accessed only on the thread running an entry for its
+// vCPU: by that thread's signal handler while the entry is published, and by
+// the entry's cleanup after unpublishing. Both use single-byte atomics, and the
+// kernel reads the byte with READ_ONCE at each KVM_RUN. kvm-ioctls'
+// VcpuFd::run forms a `&mut kvm_run` over the mapped page after KVM_RUN
+// returns, and a late handler run can store this byte while it exists. That
+// is the store Firecracker makes through kvm-ioctls from the same handler
+// position, kvm-ioctls never touches immediate_exit through that reference,
+// and the kernel itself writes this page. Moving the value between threads
+// moves only the address.
 unsafe impl Send for ImmediateExit {}
-// SAFETY: as for Send.
+// SAFETY: as for Send; a shared reference permits only copying the address.
 unsafe impl Sync for ImmediateExit {}
 
 impl ImmediateExit {
@@ -242,26 +255,32 @@ impl ImmediateExit {
         ))
     }
 
-    pub(super) fn set(self, value: bool) {
+    fn clear(self) {
         // SAFETY: the byte lives in the vCPU's mapped kvm_run page, which the
         // caller's entry keeps alive; see the Send impl for its accesses.
-        unsafe { AtomicU8::from_ptr(self.0.as_ptr()) }.store(u8::from(value), Ordering::Relaxed);
+        unsafe { AtomicU8::from_ptr(self.0.as_ptr()) }.store(0, Ordering::Relaxed);
     }
 
     #[cfg(test)]
     pub(crate) fn get(self) -> bool {
-        // SAFETY: as for set.
+        // SAFETY: as for clear.
         unsafe { AtomicU8::from_ptr(self.0.as_ptr()) }.load(Ordering::Relaxed) != 0
     }
 }
 
-/// One entry's reserved-signal accounting on its own thread.
+/// One entry's reserved-signal accounting on its own thread. While it lives,
+/// the handler stops the entry's vCPU.
 pub(super) struct Control {
+    immediate_exit: Option<ImmediateExit>,
+    /// Deliveries on this thread when the entry published its vCPU.
+    published_at: u64,
     _same_thread: PhantomData<Rc<()>>,
 }
 
 impl Control {
-    pub(super) fn arm(key: u64) -> Result<Self> {
+    /// `immediate_exit` belongs to the vCPU this entry runs; tests that run
+    /// no vCPU pass None.
+    pub(super) fn arm(key: u64, immediate_exit: Option<ImmediateExit>) -> Result<Self> {
         #[cfg(test)]
         if let Some(error) = fault::take(0) {
             return Err(crate::Error::SharedFailure(error));
@@ -271,14 +290,34 @@ impl Control {
         // Every instance a closer sent to an earlier entry was delivered and
         // counted before that entry acknowledged, and no closer can know this
         // entry before it is published. An extra instance has no sender.
-        if delivered() != RECORDED.get() {
+        let published_at = delivered();
+        if published_at != RECORDED.get() {
             return Err(protocol_failure(
                 "unexplained reserved host signal before entry",
             ));
         }
+        // From here on any instance, a kick or a stray, stops this vCPU's
+        // next KVM_RUN before it enters the guest.
+        let exit = immediate_exit.map_or(std::ptr::null_mut(), |exit| exit.0.as_ptr());
+        PUBLISHED_EXIT.with(|published| published.store(exit, Ordering::Relaxed));
         Ok(Self {
+            immediate_exit,
+            published_at,
             _same_thread: PhantomData,
         })
+    }
+
+    /// Stop the handler from touching this entry's vCPU, then clear any
+    /// immediate_exit it set so the vCPU's next KVM_RUN enters the guest.
+    /// The handler runs on this thread, so it either finished before the
+    /// unpublish or sees null after it.
+    fn unpublish(&mut self) {
+        PUBLISHED_EXIT.with(|published| published.store(std::ptr::null_mut(), Ordering::Relaxed));
+        if let Some(exit) = self.immediate_exit.take()
+            && delivered() != self.published_at
+        {
+            exit.clear();
+        }
     }
 
     /// The registry must have withdrawn the send target before this call;
@@ -287,7 +326,7 @@ impl Control {
     /// thread or already delivered (the signal is real-time, so instances do
     /// not merge). A send that failed after being counted has already failed
     /// the gate. Returns whether the entry was kicked.
-    pub(super) fn finish(self, kicks: usize) -> Result<bool> {
+    pub(super) fn finish(mut self, kicks: usize) -> Result<bool> {
         #[cfg(test)]
         if let Some(error) = fault::take(1) {
             // The one-shot is removed before recursion. Perform the real
@@ -307,6 +346,7 @@ impl Control {
             // which would otherwise land later in an unrelated host call.
             deliver_pending();
         }
+        self.unpublish();
         let (delivered, recorded) = (delivered(), RECORDED.get());
         if delivered > recorded {
             return Err(protocol_failure(
@@ -317,6 +357,13 @@ impl Control {
             return Err(protocol_failure("recorded kick was not delivered"));
         }
         Ok(kicked)
+    }
+}
+
+impl Drop for Control {
+    fn drop(&mut self) {
+        // Idempotent; finish already did this on every ordinary path.
+        self.unpublish();
     }
 }
 
@@ -485,7 +532,7 @@ mod tests {
                 libc::sigemptyset(&mut action.sa_mask);
                 assert_eq!(libc::sigaction(SIGNAL, &action, std::ptr::null_mut()), 0);
             }
-            let error = match Control::arm(participant_key()) {
+            let error = match Control::arm(participant_key(), None) {
                 Err(error) => error,
                 Ok(_) => panic!("replaced another signal owner"),
             };
@@ -501,7 +548,7 @@ mod tests {
         }
         if case == "replaced" {
             let key = participant_key();
-            Control::arm(key).unwrap().finish(0).unwrap();
+            Control::arm(key, None).unwrap().finish(0).unwrap();
             unsafe {
                 let mut action: libc::sigaction = std::mem::zeroed();
                 action.sa_sigaction = foreign_handler as *const () as usize;
@@ -510,8 +557,8 @@ mod tests {
             }
             // The disposition is checked at each thread's first entry. This
             // thread already passed it; a new thread's first entry refuses.
-            Control::arm(key).unwrap().finish(0).unwrap();
-            let error = std::thread::spawn(move || match Control::arm(key) {
+            Control::arm(key, None).unwrap().finish(0).unwrap();
+            let error = std::thread::spawn(move || match Control::arm(key, None) {
                 Err(error) => error,
                 Ok(_) => panic!("accepted a replacement signal owner"),
             })
@@ -530,7 +577,7 @@ mod tests {
         }
         if case == "reblocked" {
             let key = participant_key();
-            Control::arm(key).unwrap().finish(0).unwrap();
+            Control::arm(key, None).unwrap().finish(0).unwrap();
             // Something else blocks signal 64 again on this vCPU thread.
             unsafe {
                 libc::pthread_sigmask(
@@ -543,10 +590,10 @@ mod tests {
             // not see it; the entry that re-checks refuses, and leaves the
             // signal unblocked again.
             for _ in 1..RECHECK_ENTRIES {
-                Control::arm(key).unwrap().finish(0).unwrap();
+                Control::arm(key, None).unwrap().finish(0).unwrap();
             }
             assert_eq!(
-                operation(&Control::arm(key).err().unwrap()),
+                operation(&Control::arm(key, None).err().unwrap()),
                 "reserved host signal blocked again on a vCPU thread"
             );
             assert!(!contains(&current_mask(), SIGNAL));
@@ -569,7 +616,10 @@ mod tests {
         if case == "overflowed" {
             // An ordinary entry installs the handler; the caller's mask still
             // blocks signal 64 for the next participant on this thread.
-            Control::arm(participant_key()).unwrap().finish(0).unwrap();
+            Control::arm(participant_key(), None)
+                .unwrap()
+                .finish(0)
+                .unwrap();
             unsafe {
                 libc::pthread_sigmask(
                     libc::SIG_BLOCK,
@@ -603,7 +653,7 @@ mod tests {
             }
             assert!(pending(SIGNAL));
             let before = delivered();
-            let error = match Control::arm(participant_key()) {
+            let error = match Control::arm(participant_key(), None) {
                 Err(error) => error,
                 Ok(_) => panic!("accepted an unexplained signal at the limit"),
             };
@@ -621,7 +671,7 @@ mod tests {
                 assert_eq!(libc::pthread_kill(libc::pthread_self(), SIGNAL), 0);
             }
             assert!(pending(SIGNAL));
-            let error = match Control::arm(participant_key()) {
+            let error = match Control::arm(participant_key(), None) {
                 Err(error) => error,
                 Ok(_) => panic!("accepted an unexplained pending signal"),
             };
@@ -632,7 +682,7 @@ mod tests {
             assert_eq!(delivered(), 1);
             assert!(!contains(&current_mask(), SIGNAL));
             // Refusal is sticky until the instance is explained.
-            assert!(Control::arm(participant_key()).is_err());
+            assert!(Control::arm(participant_key(), None).is_err());
             return;
         }
         let send = |count: usize| {
@@ -646,7 +696,7 @@ mod tests {
         // Instances sent after setup stand in for kicks during the entry. A
         // thread-directed signal to the calling thread is delivered before
         // pthread_kill returns, now that the entry unblocked it.
-        let control = Control::arm(key).unwrap();
+        let control = Control::arm(key, None).unwrap();
         assert!(!contains(&current_mask(), SIGNAL));
         send(3);
         unsafe {
@@ -666,23 +716,23 @@ mod tests {
             );
         }
         // An unkicked entry issues nothing and accepts.
-        assert!(!Control::arm(key).unwrap().finish(0).unwrap());
+        assert!(!Control::arm(key, None).unwrap().finish(0).unwrap());
         // An instance during an entry that no closer kicked is refused at
         // its cleanup, and keeps refusing the thread's next entry.
-        let control = Control::arm(key).unwrap();
+        let control = Control::arm(key, None).unwrap();
         send(1);
         assert_eq!(
             operation(&control.finish(0).unwrap_err()),
             "unexplained reserved host signal during entry"
         );
         assert_eq!(
-            operation(&Control::arm(key).err().unwrap()),
+            operation(&Control::arm(key, None).err().unwrap()),
             "unexplained reserved host signal before entry"
         );
         accept_delivered_for_test();
         // An instance beyond the recorded kicks has no sender: one kick with
         // two instances is refused.
-        let control = Control::arm(key).unwrap();
+        let control = Control::arm(key, None).unwrap();
         send(2);
         assert_eq!(
             operation(&control.finish(1).unwrap_err()),
@@ -691,7 +741,7 @@ mod tests {
         accept_delivered_for_test();
         // A kick that cannot be delivered, because something blocked signal
         // 64 on this thread again, is refused rather than presumed handled.
-        let control = Control::arm(key).unwrap();
+        let control = Control::arm(key, None).unwrap();
         unsafe {
             libc::pthread_sigmask(
                 libc::SIG_BLOCK,
@@ -707,7 +757,12 @@ mod tests {
         assert!(pending(SIGNAL));
         // A new participant on this thread unblocks it again, which
         // delivers the kick and squares the accounting.
-        assert!(!Control::arm(participant_key()).unwrap().finish(0).unwrap());
+        assert!(
+            !Control::arm(participant_key(), None)
+                .unwrap()
+                .finish(0)
+                .unwrap()
+        );
         assert!(!pending(SIGNAL));
     }
 }

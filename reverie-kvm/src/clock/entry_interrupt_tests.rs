@@ -701,6 +701,79 @@ fn an_unrecorded_reserved_signal_after_a_hypercall_exit_is_refused_before_kvm_ru
     }
 }
 
+/// A stray arriving after the entry's signal setup and before KVM_RUN is
+/// taken by the handler outside KVM_RUN. It must still keep the guest from
+/// running (the handler sets immediate_exit), as a pending instance did when
+/// the signal was blocked outside KVM_RUN, and cleanup refuses it.
+#[test]
+fn an_unrecorded_reserved_signal_after_activation_stops_the_guest_and_is_refused() {
+    let saved_mask = mask_bits();
+    let mut backend =
+        crate::KvmBackend::new(0x10000).expect("entry signal control requires /dev/kvm");
+    // inc byte ptr [0x2000]; hlt.
+    backend
+        .install_real_mode_program(PROGRAM, &[0xfe, 0x06, 0x00, 0x20, 0xf4])
+        .unwrap();
+    backend.memory.write_raw(MARKER, &[0]).unwrap();
+    let start = backend.vcpu.get_regs().unwrap();
+    let gate = backend.memory.entry_gate();
+    assert!(matches!(backend.vcpu.run().unwrap(), Some(VcpuExit::Hlt)));
+    backend.vcpu.set_regs(&start).unwrap();
+    let probe = Arc::new(RunProbe::default());
+    let before = delivered();
+    *probe.after_prepare.lock().unwrap() = Some(Box::new(move || {
+        // After publication, with no closer: the handler runs now.
+        // SAFETY: a thread-directed signal to this live test thread.
+        assert_eq!(unsafe { libc::pthread_kill(libc::pthread_self(), 64) }, 0);
+        assert_eq!(delivered(), before + 1);
+    }));
+    backend.vcpu.set_run_probe(probe.clone());
+    probe.arm();
+    let marker = |backend: &crate::KvmBackend| {
+        let physical = backend.memory.host_address() + MARKER - backend.memory.guest_base();
+        // SAFETY: the backend keeps this mapping alive and no vCPU is running.
+        unsafe { std::ptr::read_volatile(physical as *const u8) }
+    };
+    let error = match backend.vcpu.run() {
+        Err(error) => error,
+        Ok(exit) => panic!("an unrecorded reserved signal admitted {exit:?}"),
+    };
+    assert!(matches!(
+        error.primary(),
+        Error::EntryControl {
+            operation: "unexplained reserved host signal during entry",
+            ..
+        }
+    ));
+    // KVM_RUN returned EINTR without running a guest instruction.
+    assert!(matches!(
+        error,
+        Error::WithCleanup { ref cleanup, .. }
+            if cleanup.iter().any(|error| matches!(&**error, Error::Kvm(error) if error.errno() == libc::EINTR))
+    ));
+    assert_eq!(marker(&backend), 1, "the guest ran after the stray");
+    assert_eq!(probe.prepare.kicked_cleanups.load(Ordering::SeqCst), 0);
+    assert!(!backend.vcpu.immediate_exit.get());
+    assert!(gate.pending_failure().is_some());
+    assert_eq!(mask_bits(), saved_mask & !(1 << 63));
+    drop(backend);
+    crate::entry::accept_delivered_for_test();
+    // SAFETY: restore this thread's complete original mask.
+    unsafe {
+        let mut mask = std::mem::zeroed();
+        libc::sigemptyset(&mut mask);
+        for signal in 1..=64 {
+            if saved_mask & (1 << (signal - 1)) != 0 {
+                libc::sigaddset(&mut mask, signal);
+            }
+        }
+        assert_eq!(
+            libc::pthread_sigmask(libc::SIG_SETMASK, &mask, std::ptr::null_mut()),
+            0
+        );
+    }
+}
+
 #[test]
 fn an_unrecorded_reserved_signal_with_a_recorded_kick_is_still_refused() {
     let saved_mask = mask_bits();
