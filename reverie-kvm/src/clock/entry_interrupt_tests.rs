@@ -522,6 +522,7 @@ fn kvm_run_follows_a_thread_mask_change_made_without_notice() {
         let vcpu_thread = unsafe { libc::pthread_self() };
         let memory = backend.memory.clone();
         let controller_gate = gate.clone();
+        let (returned, has_returned) = std::sync::mpsc::channel::<()>();
         let result = std::thread::scope(|scope| {
             let controller = scope.spawn(move || {
                 let deadline = Instant::now() + Duration::from_secs(5);
@@ -536,13 +537,26 @@ fn kvm_run_follows_a_thread_mask_change_made_without_notice() {
                 }
                 // SAFETY: the vCPU thread is alive for this whole scope.
                 assert_eq!(unsafe { libc::pthread_kill(vcpu_thread, libc::SIGURG) }, 0);
-                // A blocked SIGURG cannot end the entry; close the gate so
-                // the entry ends by a recorded kick. An unblocked one ends
-                // it first, and this close then finds no running target.
-                std::thread::sleep(Duration::from_millis(200));
+                if blocked {
+                    // A blocked SIGURG cannot end the entry. Give it time to
+                    // (wrongly) do so, then close the gate so the entry ends
+                    // by a recorded kick.
+                    std::thread::sleep(Duration::from_millis(200));
+                } else {
+                    // An unblocked SIGURG ends the entry. Close only after
+                    // run returned, so withdrawal has happened and this close
+                    // finds no running target. A run that never returns is a
+                    // failure; the kick then keeps the test from hanging.
+                    let waited = has_returned.recv_timeout(Duration::from_secs(10));
+                    if waited.is_err() {
+                        let _ = controller_gate.try_close();
+                        panic!("an unblocked SIGURG did not end KVM_RUN");
+                    }
+                }
                 controller_gate.try_close().unwrap().unwrap()
             });
             let result = backend.vcpu.run();
+            let _ = returned.send(());
             (result, controller.join().unwrap())
         });
         let (result, closing) = result;

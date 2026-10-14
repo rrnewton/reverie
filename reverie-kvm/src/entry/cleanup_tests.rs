@@ -411,10 +411,15 @@ fn race_case(kind: Race, blocked: bool, tracked: bool) {
                             .expect("sender did not finish after actual withdrawal contention"),
                     );
                     // The instance is delivered or still pending, never lost.
-                    assert_eq!(
-                        signal::delivered_for_test() + u64::from(pending_reserved()),
-                        base + 1
-                    );
+                    // Read pending first: delivery is the only transition, so
+                    // an instance not pending then is already counted.
+                    let pending_then = pending_reserved();
+                    let delivered_now = signal::delivered_for_test();
+                    if pending_then {
+                        assert!(delivered_now == base || delivered_now == base + 1);
+                    } else {
+                        assert_eq!(delivered_now, base + 1);
+                    }
                     assert_eq!(after_sends.load(Ordering::SeqCst), 1);
                 }
                 Race::LateSend => {
