@@ -686,9 +686,10 @@ mod tests {
     use super::*;
 
     /// A wait kept across callbacks: polled Pending with a noop waker (as a
-    /// boundary capture's now_or_never does), then the failure is published,
-    /// then polled with a real waker. It must report Ready then and on every
-    /// later poll, never re-polling the finished wait.
+    /// boundary capture's now_or_never does), then with a callback's real
+    /// waker, then the failure is published. The real waker must be woken,
+    /// and the wait must report Ready on every later poll, never re-polling
+    /// the finished wait.
     #[test]
     fn a_kept_failure_wait_stays_ready_after_it_fires() {
         use std::sync::atomic::AtomicUsize;
