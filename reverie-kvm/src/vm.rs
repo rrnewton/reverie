@@ -1647,6 +1647,10 @@ impl KvmBackend {
         self.entry_driver.clone()
     }
 
+    pub(crate) fn entry_driver_ref(&self) -> Option<&crate::entry::owner::DriverOwner> {
+        self.entry_driver.as_ref()
+    }
+
     pub(crate) fn set_operation_origin(
         &mut self,
         origin: Option<crate::entry::owner::OperationOrigin>,
