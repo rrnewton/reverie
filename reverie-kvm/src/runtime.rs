@@ -5015,6 +5015,13 @@ impl KvmBackend {
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
         if fault.is_none() && executor.signal_controlled() && executor.delivery_permit().is_none() {
+            // Most syscall returns have nothing to deliver. Skip the Detcore
+            // permit round trip and the locked selection when the boundary
+            // provably selects nothing and changes nothing; see
+            // signal_boundary_is_empty.
+            if executor.signal_boundary_is_empty() {
+                return Ok(CallbackOutcome::Completed(None));
+            }
             let identity = executor.signal_task_identity().ok_or_else(|| {
                 Error::UnexpectedVcpuExit("signal return lost task generation".to_owned())
             })?;
