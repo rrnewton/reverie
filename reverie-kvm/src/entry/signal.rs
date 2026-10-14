@@ -272,8 +272,6 @@ impl ImmediateExit {
 /// the handler stops the entry's vCPU.
 pub(super) struct Control {
     immediate_exit: Option<ImmediateExit>,
-    /// Deliveries on this thread when the entry published its vCPU.
-    published_at: u64,
     _same_thread: PhantomData<Rc<()>>,
 }
 
@@ -287,35 +285,37 @@ impl Control {
         }
         install_handler()?;
         unblock(key)?;
+        // Publish first: from here on any instance, a kick or a stray, stops
+        // this vCPU's next KVM_RUN before it enters the guest. The fence keeps
+        // the compiler from moving the count read above the publication, so an
+        // instance either is counted below or finds the vCPU published.
+        let exit = immediate_exit.map_or(std::ptr::null_mut(), |exit| exit.0.as_ptr());
+        PUBLISHED_EXIT.with(|published| published.store(exit, Ordering::Relaxed));
+        std::sync::atomic::compiler_fence(Ordering::SeqCst);
+        let mut control = Self {
+            immediate_exit,
+            _same_thread: PhantomData,
+        };
         // Every instance a closer sent to an earlier entry was delivered and
         // counted before that entry acknowledged, and no closer can know this
         // entry before it is published. An extra instance has no sender.
-        let published_at = delivered();
-        if published_at != RECORDED.get() {
+        if delivered() != RECORDED.get() {
+            control.unpublish();
             return Err(protocol_failure(
                 "unexplained reserved host signal before entry",
             ));
         }
-        // From here on any instance, a kick or a stray, stops this vCPU's
-        // next KVM_RUN before it enters the guest.
-        let exit = immediate_exit.map_or(std::ptr::null_mut(), |exit| exit.0.as_ptr());
-        PUBLISHED_EXIT.with(|published| published.store(exit, Ordering::Relaxed));
-        Ok(Self {
-            immediate_exit,
-            published_at,
-            _same_thread: PhantomData,
-        })
+        Ok(control)
     }
 
     /// Stop the handler from touching this entry's vCPU, then clear any
     /// immediate_exit it set so the vCPU's next KVM_RUN enters the guest.
     /// The handler runs on this thread, so it either finished before the
-    /// unpublish or sees null after it.
+    /// unpublish or sees null after it; the fence keeps the clear after it.
     fn unpublish(&mut self) {
         PUBLISHED_EXIT.with(|published| published.store(std::ptr::null_mut(), Ordering::Relaxed));
-        if let Some(exit) = self.immediate_exit.take()
-            && delivered() != self.published_at
-        {
+        std::sync::atomic::compiler_fence(Ordering::SeqCst);
+        if let Some(exit) = self.immediate_exit.take() {
             exit.clear();
         }
     }
