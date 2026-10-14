@@ -1294,7 +1294,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
 
     fn check_ordinary_operation(&self) -> Result<()> {
         self.entry_watch
-            .check_operation(self.memory.entry_origin().operation.as_ref())
+            .check_operation(self.memory.operation_origin())
     }
 
     async fn admit_ordinary_operation(&self) {
