@@ -3694,7 +3694,7 @@ static int enumeration(int descriptor, int guest) {
 }
 
 static int contents(int descriptor, int baseline, int guest) {
-    const char *paths[] = {"version", "sys/kernel/osrelease", "self/cmdline"};
+    const char *paths[] = {"mounts", "self/mountinfo", "self/cmdline"};
     for (unsigned index = 0; index < sizeof(paths) / sizeof(paths[0]); ++index) {
         int actual = openat(descriptor, paths[index], O_RDONLY);
         int expected = openat(baseline, paths[index], O_RDONLY);
