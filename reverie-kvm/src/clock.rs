@@ -561,9 +561,42 @@ struct CounterIdentity {
 /// `CounterIdentity::cpu` of an event that follows its task across CPUs.
 const FOLLOWS_TASK: usize = usize::MAX;
 
+/// Bumped in the child of every `fork()`, where each thread-local cached task
+/// ID below names the parent's thread rather than the child's.
+static TID_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+extern "C" fn forget_cached_tids() {
+    TID_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// This thread's Linux task ID, read once per thread. Every counted entry
+/// names it in the counter identity, so caching it removes a `gettid` from
+/// each guest syscall. A thread's task ID never changes; only a `fork()` child
+/// sees a different one, and the fork handler retires every cached value.
 fn host_tid() -> libc::pid_t {
+    static REGISTER: std::sync::Once = std::sync::Once::new();
+    REGISTER.call_once(|| {
+        // SAFETY: the child handler only increments an atomic, which is
+        // async-signal-safe. A failed registration (ENOMEM) cannot be
+        // recovered here, so it is checked: without it a fork child would
+        // keep stale task IDs.
+        let error = unsafe { libc::pthread_atfork(None, None, Some(forget_cached_tids)) };
+        assert_eq!(error, 0, "pthread_atfork for the cached task ID failed");
+    });
+    thread_local! {
+        static CACHED: std::cell::Cell<Option<(u64, libc::pid_t)>> =
+            const { std::cell::Cell::new(None) };
+    }
+    let generation = TID_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
+    if let Some((cached_generation, tid)) = CACHED.get()
+        && cached_generation == generation
+    {
+        return tid;
+    }
     // SAFETY: gettid has no pointer arguments and returns this Linux task ID.
-    unsafe { libc::syscall(libc::SYS_gettid) as libc::pid_t }
+    let tid = unsafe { libc::syscall(libc::SYS_gettid) as libc::pid_t };
+    CACHED.set(Some((generation, tid)));
+    tid
 }
 
 fn current_raw_event() -> Result<u64> {
@@ -1630,6 +1663,44 @@ mod tests {
         assert!(clock.read().is_err());
         assert_eq!(clock.total, 9);
         assert!(same_affinity(&affinity().unwrap(), &original));
+    }
+
+    fn gettid() -> libc::pid_t {
+        // SAFETY: gettid has no pointer arguments.
+        unsafe { libc::syscall(libc::SYS_gettid) as libc::pid_t }
+    }
+
+    #[test]
+    fn cached_host_tid_is_each_threads_own_and_survives_fork() {
+        let mine = host_tid();
+        assert_eq!(mine, gettid());
+        assert_eq!(host_tid(), mine);
+        let other = std::thread::spawn(|| (host_tid(), gettid()))
+            .join()
+            .unwrap();
+        assert_eq!(other.0, other.1);
+        assert_ne!(other.0, mine);
+        // A fork child's only thread is a new task: it must not reuse the
+        // parent thread's cached task ID. The child does only async-signal-safe
+        // work after one thread-local read, then exits without unwinding.
+        // SAFETY: the child calls only host_tid, gettid and _exit.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            let ok = host_tid() == gettid() && host_tid() != mine;
+            // SAFETY: terminate the child immediately with the verdict.
+            unsafe { libc::_exit(if ok { 0 } else { 1 }) };
+        }
+        let mut status = 0;
+        // SAFETY: wait for the exact child created above.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "fork child reused a cached tid"
+        );
+        assert_eq!(host_tid(), mine);
     }
 }
 
