@@ -685,6 +685,55 @@ mod tests {
 
     use super::*;
 
+    /// A wait kept across callbacks: polled Pending with a noop waker (as a
+    /// boundary capture's now_or_never does), then the failure is published,
+    /// then polled with a real waker. It must report Ready then and on every
+    /// later poll, never re-polling the finished wait.
+    #[test]
+    fn a_kept_failure_wait_stays_ready_after_it_fires() {
+        use std::sync::atomic::AtomicUsize;
+
+        #[derive(Default)]
+        struct Wakes(AtomicUsize);
+        impl futures::task::ArcWake for Wakes {
+            fn wake_by_ref(arc: &Arc<Self>) {
+                arc.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let (sender, receiver) = oneshot::channel::<()>();
+        let subscription: FailureSubscription = receiver.shared();
+        let mut kept = StickyFailure::new(Box::pin(async move {
+            let _ = subscription.await;
+        }));
+        let noop = noop_waker();
+        assert!(
+            Pin::new(&mut kept)
+                .poll(&mut Context::from_waker(&noop))
+                .is_pending()
+        );
+        let wakes = Arc::new(Wakes::default());
+        let waker = futures::task::waker(wakes.clone());
+        assert!(
+            Pin::new(&mut kept)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        sender.send(()).unwrap();
+        assert_eq!(
+            wakes.0.load(Ordering::SeqCst),
+            1,
+            "the real waker was not woken"
+        );
+        for _ in 0..3 {
+            assert!(
+                Pin::new(&mut kept)
+                    .poll(&mut Context::from_waker(&noop))
+                    .is_ready()
+            );
+        }
+    }
+
     #[test]
     fn repeated_secondary_entry_snapshots_report_once_without_losing_late_cleanup() {
         use std::sync::atomic::AtomicUsize;

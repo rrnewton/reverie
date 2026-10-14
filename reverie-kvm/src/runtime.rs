@@ -5276,6 +5276,8 @@ impl KvmBackend {
         // scheduler for it) and two subscriptions, once per guest syscall;
         // polling a kept one only renews its waker. It stays Ready once it
         // has fired, so every later callback still sees the failure first.
+        // It is dropped when this function returns, not after each callback;
+        // its parts (shared receiver clones) cannot panic when dropped.
         let mut callback_failure = crate::failure::StickyFailure::new(Box::pin(wait_for_failure(
             global_state.as_ref(),
             failure_subscription.clone(),
