@@ -2445,13 +2445,27 @@ async fn drive_handler_completion_inner<T>(
     // future, including an inline RPC that was pending when failure arrived.
     let mut future = Box::pin(future);
     let mut failure = Box::pin(failure);
-    let private_watch = watch.clone();
-    let mut private_failure = Box::pin(async move {
-        match private_watch {
-            Some(watch) => watch.wait().await,
-            None => std::future::pending::<()>().await,
-        }
-    });
+    // The driver watch's wake is registered only once the callback suspends.
+    // Most callbacks complete on their first poll, and registering subscribes
+    // to the gate's failure and the owner's change channel, which costs a
+    // subscription, a waker registration and, at the owner's next change, a
+    // fresh channel. Its sticky state is still checked before and after the
+    // callback's first poll, exactly as before.
+    let mut private_failure: Option<Pin<Box<dyn Future<Output = ()> + Send>>> = None;
+    let register_private_wake =
+        |private_failure: &mut Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+         context: &mut std::task::Context<'_>| {
+            let private_failure = private_failure.get_or_insert_with(|| {
+                let watch = watch.clone();
+                Box::pin(async move {
+                    match watch {
+                        Some(watch) => watch.wait().await,
+                        None => std::future::pending::<()>().await,
+                    }
+                })
+            });
+            let _ = private_failure.as_mut().poll(context);
+        };
     let mut selected = None;
     let mut select = |outcome| {
         selected = Some(outcome);
@@ -2460,8 +2474,11 @@ async fn drive_handler_completion_inner<T>(
     // This driver only borrows the callback. Its caught poll cannot destroy the
     // callback allocation or an outcome already moved out of the signal slot.
     let caught = catch_owned_future(poll_fn(|context| {
-        // Register the private wake before rechecking the sticky obligation.
-        let _ = private_failure.as_mut().poll(context);
+        // Once registered, renew the private wake before rechecking the
+        // sticky obligation: this poll may carry a new waker.
+        if private_failure.is_some() {
+            register_private_wake(&mut private_failure, context);
+        }
         if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
             let prior = handler_signal
                 .lock()
@@ -2516,6 +2533,11 @@ async fn drive_handler_completion_inner<T>(
         match result {
             Poll::Ready(result) => select(HandlerOutcome::Returned(result)),
             Poll::Pending => {
+                // Register the private wake before the sticky recheck below,
+                // so a failure published after that recheck still wakes us.
+                if private_failure.is_none() {
+                    register_private_wake(&mut private_failure, context);
+                }
                 if matches!(failure_order, HandlerFailureOrder::AfterReadyCleanup)
                     && failure.as_mut().poll(context).is_ready()
                 {
