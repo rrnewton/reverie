@@ -1421,6 +1421,10 @@ impl Drop for CopyAccess {
         if !self.retired {
             // A lazily admitted copy is owned by an issuer that retires it
             // with its origin; this fallback has only the empty one.
+            debug_assert!(
+                !self.lazy || std::thread::panicking(),
+                "a lazily admitted copy was dropped without its issuer's retirement"
+            );
             notify(self.retire(EntryOrigin::default));
         }
     }
