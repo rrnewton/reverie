@@ -5276,8 +5276,7 @@ impl KvmBackend {
         // scheduler for it) and two subscriptions, once per guest syscall;
         // polling a kept one only renews its waker. It stays Ready once it
         // has fired, so every later callback still sees the failure first.
-        // It is dropped when this function returns, not after each callback;
-        // its parts (shared receiver clones) cannot panic when dropped.
+        // It is destroyed under a catch after the execution completes.
         let mut callback_failure = crate::failure::StickyFailure::new(Box::pin(wait_for_failure(
             global_state.as_ref(),
             failure_subscription.clone(),
@@ -6477,7 +6476,16 @@ impl KvmBackend {
                 }
             }
         };
-        let caught = crate::failure::owned_future::catch_owned_future(execution).await;
+        let mut caught = crate::failure::owned_future::catch_owned_future(execution).await;
+        // The kept failure wait outlived every callback that borrowed it.
+        // Destroy it under a catch, as each callback's own wait was: a
+        // GlobalTool's wait future may panic when dropped, and that panic
+        // must join the execution's panics rather than discard its outcome.
+        if let Err(payload) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(callback_failure)))
+        {
+            caught.panics.push(payload);
+        }
         let outcome: Result<ToolProcessExit> =
             self.finish_tool_execution_completion(caught, "Tool execution");
         self.restore_entry_origin();
