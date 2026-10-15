@@ -461,6 +461,47 @@ mod shared_file_dispatch_tests {
         assert_eq!(std::fs::read(replacement).unwrap(), replacement_bytes);
     }
 
+    /// MAP_FIXED_NOREPLACE of an ordinary file maps a shared view exactly at a
+    /// vacant address and refuses one over a mapped page (EEXIST), keeping
+    /// it (https://github.com/rrnewton/hermit/issues/4428).
+    #[test]
+    fn noreplace_maps_a_shared_file_view_only_at_a_vacant_address() {
+        let mut f = Fixture::new();
+        let fd = f.open(true);
+        let noreplace = |f: &mut Fixture, address: u64| {
+            syscall_result(
+                &mut f.memory,
+                &mut f.state,
+                libc::SYS_mmap,
+                [
+                    address,
+                    PAGE_SIZE,
+                    (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                    (libc::MAP_SHARED | libc::MAP_FIXED_NOREPLACE) as u64,
+                    fd as u64,
+                    0,
+                ],
+            )
+        };
+        let vacant = f.state.mmap_base + 8 * PAGE_SIZE;
+        assert_eq!(noreplace(&mut f, vacant), vacant as i64);
+        assert!(
+            f.memory
+                .range_contains_shared_file(vacant, PAGE_SIZE as usize)
+        );
+        let mut actual = vec![0; PAGE_SIZE as usize];
+        f.memory.user().read(vacant, &mut actual).unwrap();
+        assert_eq!(actual, f.expected[..PAGE_SIZE as usize]);
+        // Over that view, and over a private page.
+        assert_eq!(noreplace(&mut f, vacant), negative_errno(libc::EEXIST));
+        let private = f.private();
+        f.memory.user().copy_to_user(private, b"private!").unwrap();
+        assert_eq!(noreplace(&mut f, private), negative_errno(libc::EEXIST));
+        let mut kept = [0; 8];
+        f.memory.user().read(private, &mut kept).unwrap();
+        assert_eq!(&kept, b"private!");
+    }
+
     #[test]
     fn readonly_shared_mprotect_write_denial_preserves_image_and_generation() {
         let mut f = Fixture::new();

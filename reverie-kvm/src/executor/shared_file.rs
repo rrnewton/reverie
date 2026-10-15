@@ -93,9 +93,12 @@ pub(super) fn mmap_with_shared_files(
     let Some(length) = align_up(args[1], PAGE_SIZE) else {
         return Ok(negative_errno(libc::ENOMEM));
     };
-    let fixed = flags & libc::MAP_FIXED as u64 != 0;
-    if fixed && !args[0].is_multiple_of(PAGE_SIZE) {
-        return Ok(negative_errno(libc::EINVAL));
+    // MAP_FIXED_NOREPLACE places as MAP_FIXED does and refuses an occupied
+    // range (EEXIST) rather than replace it.
+    let noreplace = flags & libc::MAP_FIXED_NOREPLACE as u64 != 0;
+    let fixed = flags & libc::MAP_FIXED as u64 != 0 || noreplace;
+    if let Some(errno) = super::fixed_mapping_address_error(fixed, args[0], length) {
+        return Ok(negative_errno(errno));
     }
     if !is_anonymous && !args[5].is_multiple_of(PAGE_SIZE) {
         return Ok(negative_errno(libc::EINVAL));
@@ -136,6 +139,9 @@ pub(super) fn mmap_with_shared_files(
     if address < BOOT_RESERVED_END || end > state.mmap_limit {
         return Ok(negative_errno(libc::ENOMEM));
     }
+    if noreplace && let Some(errno) = super::noreplace_error(memory, state, args, address, end) {
+        return Ok(negative_errno(errno));
+    }
     let Ok(length) = usize::try_from(length) else {
         return Ok(negative_errno(libc::ENOMEM));
     };
@@ -162,12 +168,14 @@ pub(super) fn mmap_with_shared_files(
         return Ok(result);
     }
 
-    // These ignored compatibility flags require no extra VM semantics. Other
-    // flags (locking, population, huge pages, grows-down, NOREPLACE, and so on)
+    // These ignored compatibility flags require no extra VM semantics, and
+    // MAP_FIXED_NOREPLACE's range is vacant by now, so it maps as MAP_FIXED.
+    // Other flags (locking, population, huge pages, grows-down, and so on)
     // require their own faithful implementation before file-view replacement.
     let supported_flags = (libc::MAP_PRIVATE
         | libc::MAP_SHARED
         | libc::MAP_FIXED
+        | libc::MAP_FIXED_NOREPLACE
         | libc::MAP_ANONYMOUS
         | libc::MAP_DENYWRITE
         | libc::MAP_EXECUTABLE) as u64;
