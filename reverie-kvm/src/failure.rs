@@ -498,6 +498,42 @@ impl<F: Future<Output = ()> + Unpin> Future for StickyFailure<F> {
     }
 }
 
+/// A failure wait one thread keeps for every RPC its Tool callbacks send,
+/// instead of building one per RPC. Building one takes the GlobalTool's
+/// failure waiter (Detcore locks its scheduler for it, and boxes the future)
+/// and polls a fresh subscription. It is shared by reference with the guest
+/// handle that sends the RPCs, so the mutex is only for `Sync`: one host
+/// thread polls it, one poll at a time, never across an await.
+pub(crate) struct KeptRpcFailure<F> {
+    wait: Mutex<StickyFailure<F>>,
+}
+
+impl<F: Future<Output = ()> + Unpin> KeptRpcFailure<F> {
+    pub(crate) fn new(wait: F) -> Self {
+        Self {
+            wait: Mutex::new(StickyFailure::new(wait)),
+        }
+    }
+}
+
+/// The polling side of [`KeptRpcFailure`], object-safe so a guest handle can
+/// hold it without naming the wait's type.
+pub(crate) trait RpcFailure: Sync {
+    /// Polls the kept wait: Ready once a failure has been published, and on
+    /// every poll after that.
+    fn poll_failure(&self, context: &mut Context<'_>) -> Poll<()>;
+}
+
+impl<F: Future<Output = ()> + Unpin + Send> RpcFailure for KeptRpcFailure<F> {
+    fn poll_failure(&self, context: &mut Context<'_>) -> Poll<()> {
+        let mut wait = self
+            .wait
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Pin::new(&mut *wait).poll(context)
+    }
+}
+
 pub(crate) async fn wait_for_failure<G: GlobalTool>(
     global: &G,
     local: Option<FailureSubscription>,
