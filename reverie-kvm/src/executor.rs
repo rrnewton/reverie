@@ -20050,7 +20050,10 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     let Some(length) = align_up(args[1], PAGE_SIZE) else {
         return negative_errno(libc::ENOMEM);
     };
-    let fixed = flags & libc::MAP_FIXED as u64 != 0;
+    // MAP_FIXED_NOREPLACE maps exactly at the address, as MAP_FIXED does,
+    // but fails with EEXIST rather than replace anything there (do_mmap).
+    let noreplace = flags & libc::MAP_FIXED_NOREPLACE as u64 != 0;
+    let fixed = flags & libc::MAP_FIXED as u64 != 0 || noreplace;
     if fixed && !args[0].is_multiple_of(PAGE_SIZE) {
         return negative_errno(libc::EINVAL);
     }
@@ -20092,6 +20095,10 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     };
     if address < BOOT_RESERVED_END || end > state.mmap_limit {
         return negative_errno(libc::ENOMEM);
+    }
+    // `find_vma_intersection`: any page of the range already mapped.
+    if noreplace && memory.find_unmapped_user_range(address, end, length) != Some(address) {
+        return negative_errno(libc::EEXIST);
     }
     let Ok(length) = usize::try_from(length) else {
         return negative_errno(libc::ENOMEM);
@@ -55617,6 +55624,67 @@ mod tests {
         memory.write(moved, b"replaced").unwrap();
         assert_eq!(dontneed(&mut memory, &mut state, moved, PAGE_SIZE), 0);
         assert_eq!(page_bytes(&memory, moved), [0; 8]);
+    }
+
+    /// MAP_FIXED_NOREPLACE maps exactly at a vacant address and fails with
+    /// EEXIST over any mapped page, keeping that mapping, as Linux's do_mmap
+    /// does (https://github.com/rrnewton/hermit/issues/4428). It was taken as
+    /// a hint, and an occupied range got a mapping elsewhere.
+    #[test]
+    fn map_fixed_noreplace_refuses_an_occupied_range_and_maps_a_vacant_one() {
+        let (_root, mut state, mut memory) = madvise_memory(12);
+        let noreplace =
+            (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED_NOREPLACE) as u64;
+        let map_at = |memory: &mut GuestMemory, state: &mut LoadedStaticElf, address, pages| {
+            syscall_result(
+                memory,
+                state,
+                libc::SYS_mmap,
+                [
+                    address,
+                    pages * PAGE_SIZE,
+                    (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                    noreplace,
+                    -1_i32 as u64,
+                    0,
+                ],
+            )
+        };
+        let mapped = madvise_map(
+            &mut memory,
+            &mut state,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            2,
+        );
+        memory.write(mapped, b"occupied").unwrap();
+        // The whole range, and a range that only overlaps its second page.
+        assert_eq!(
+            map_at(&mut memory, &mut state, mapped, 2),
+            negative_errno(libc::EEXIST)
+        );
+        assert_eq!(
+            map_at(&mut memory, &mut state, mapped + PAGE_SIZE, 2),
+            negative_errno(libc::EEXIST)
+        );
+        assert_eq!(&page_bytes(&memory, mapped), b"occupied");
+        // Unaligned, as for MAP_FIXED.
+        assert_eq!(
+            map_at(&mut memory, &mut state, mapped + 1, 1),
+            negative_errno(libc::EINVAL)
+        );
+        // Vacant: mapped exactly there.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munmap,
+                [mapped, 2 * PAGE_SIZE, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(map_at(&mut memory, &mut state, mapped, 2), mapped as i64);
+        assert_eq!(page_bytes(&memory, mapped), [0; 8]);
     }
 
     /// Linux backs `MAP_SHARED | MAP_ANONYMOUS` with one shmem object that a
