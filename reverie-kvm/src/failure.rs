@@ -22,6 +22,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
 
 use futures::FutureExt;
 use futures::channel::oneshot;
@@ -498,6 +500,147 @@ impl<F: Future<Output = ()> + Unpin> Future for StickyFailure<F> {
     }
 }
 
+/// A failure wait one thread keeps for every RPC its Tool callbacks send,
+/// instead of building one per RPC. Building one takes the GlobalTool's
+/// failure waiter (Detcore locks its scheduler for it, and boxes the future)
+/// and polls a fresh subscription. It is shared by reference with the guest
+/// handle that sends the RPCs; the mutexes are for `Sync`, and neither is
+/// held across an await.
+///
+/// The wait itself holds one waker, but a Tool may have several RPCs pending
+/// at once (each in its own task under `FuturesUnordered`, say). So the wait
+/// is only ever polled with `fan_out`, and each pending RPC registers its
+/// own waker as an [`RpcFailureListener`]; a failure wakes all of them.
+pub(crate) struct KeptRpcFailure<F> {
+    wait: Mutex<StickyFailure<F>>,
+    listeners: Arc<RpcListeners>,
+    fan_out: Waker,
+}
+
+impl<F: Future<Output = ()> + Unpin> KeptRpcFailure<F> {
+    pub(crate) fn new(wait: F) -> Self {
+        let listeners = Arc::new(RpcListeners::default());
+        Self {
+            wait: Mutex::new(StickyFailure::new(wait)),
+            fan_out: Waker::from(listeners.clone()),
+            listeners,
+        }
+    }
+}
+
+/// The wakers of the RPCs currently listening to a [`KeptRpcFailure`], by
+/// slot. A slot is free from its listener's drop until the next `listen`.
+#[derive(Default)]
+struct RpcListeners {
+    slots: Mutex<ListenerSlots>,
+}
+
+#[derive(Default)]
+struct ListenerSlots {
+    wakers: Vec<Option<Waker>>,
+    free: Vec<usize>,
+}
+
+impl RpcListeners {
+    fn slots(&self) -> std::sync::MutexGuard<'_, ListenerSlots> {
+        self.slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl Wake for RpcListeners {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        // Wake outside the lock: a waker may poll, or register, in place.
+        let wakers: Vec<Waker> = self.slots().wakers.iter().flatten().cloned().collect();
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+}
+
+/// The polling side of [`KeptRpcFailure`], object-safe so a guest handle can
+/// hold it without naming the wait's type. Use it through
+/// [`RpcFailureListener`].
+pub(crate) trait RpcFailure: Sync {
+    /// Takes a listener slot.
+    fn listen(&self) -> usize;
+    /// Records the listener's waker, then polls the kept wait: Ready once a
+    /// failure has been published, and on every poll after that.
+    fn poll_failure(&self, listener: usize, context: &mut Context<'_>) -> Poll<()>;
+    /// Frees the listener's slot.
+    fn unlisten(&self, listener: usize);
+}
+
+impl<F: Future<Output = ()> + Unpin + Send> RpcFailure for KeptRpcFailure<F> {
+    fn listen(&self) -> usize {
+        let mut slots = self.listeners.slots();
+        match slots.free.pop() {
+            Some(listener) => listener,
+            None => {
+                slots.wakers.push(None);
+                slots.wakers.len() - 1
+            }
+        }
+    }
+
+    fn poll_failure(&self, listener: usize, context: &mut Context<'_>) -> Poll<()> {
+        // Register before polling, so a failure published during or after
+        // the poll finds this waker.
+        {
+            let mut slots = self.listeners.slots();
+            let slot = &mut slots.wakers[listener];
+            if !slot
+                .as_ref()
+                .is_some_and(|waker| waker.will_wake(context.waker()))
+            {
+                *slot = Some(context.waker().clone());
+            }
+        }
+        let mut wait = self
+            .wait
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Pin::new(&mut *wait).poll(&mut Context::from_waker(&self.fan_out))
+    }
+
+    fn unlisten(&self, listener: usize) {
+        let mut slots = self.listeners.slots();
+        slots.wakers[listener] = None;
+        slots.free.push(listener);
+    }
+}
+
+/// One RPC's registration with a thread's [`KeptRpcFailure`], from before
+/// its first poll until it completes or is dropped.
+pub(crate) struct RpcFailureListener<'a> {
+    failure: &'a dyn RpcFailure,
+    listener: usize,
+}
+
+impl<'a> RpcFailureListener<'a> {
+    pub(crate) fn new(failure: &'a dyn RpcFailure) -> Self {
+        Self {
+            failure,
+            listener: failure.listen(),
+        }
+    }
+
+    pub(crate) fn poll(&self, context: &mut Context<'_>) -> Poll<()> {
+        self.failure.poll_failure(self.listener, context)
+    }
+}
+
+impl Drop for RpcFailureListener<'_> {
+    fn drop(&mut self) {
+        self.failure.unlisten(self.listener);
+    }
+}
+
 pub(crate) async fn wait_for_failure<G: GlobalTool>(
     global: &G,
     local: Option<FailureSubscription>,
@@ -733,6 +876,50 @@ mod tests {
                     .is_ready()
             );
         }
+    }
+
+    /// Two RPCs listen to one kept wait with different wakers, as tasks of
+    /// a `FuturesUnordered` would. B is polled last and then completes; a
+    /// failure published after that must still wake A. Polling the wait
+    /// with each RPC's own waker would leave only B's, dead, registered.
+    #[test]
+    fn a_kept_rpc_failure_wakes_every_pending_listener() {
+        use std::sync::atomic::AtomicUsize;
+
+        #[derive(Default)]
+        struct Wakes(AtomicUsize);
+        impl futures::task::ArcWake for Wakes {
+            fn wake_by_ref(arc: &Arc<Self>) {
+                arc.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let (sender, receiver) = oneshot::channel::<()>();
+        let subscription: FailureSubscription = receiver.shared();
+        let kept = KeptRpcFailure::new(Box::pin(async move {
+            let _ = subscription.await;
+        }));
+        let wakes_a = Arc::new(Wakes::default());
+        let waker_a = futures::task::waker(wakes_a.clone());
+        let wakes_b = Arc::new(Wakes::default());
+        let waker_b = futures::task::waker(wakes_b.clone());
+        let a = RpcFailureListener::new(&kept);
+        let b = RpcFailureListener::new(&kept);
+        assert!(a.poll(&mut Context::from_waker(&waker_a)).is_pending());
+        assert!(b.poll(&mut Context::from_waker(&waker_b)).is_pending());
+        drop(b);
+        sender.send(()).unwrap();
+        assert_eq!(wakes_a.0.load(Ordering::SeqCst), 1, "A was not woken");
+        assert_eq!(wakes_b.0.load(Ordering::SeqCst), 0, "B had completed");
+        assert!(a.poll(&mut Context::from_waker(&noop_waker())).is_ready());
+        // A listener that arrives after the failure, reusing B's slot, sees
+        // it at once.
+        let late = RpcFailureListener::new(&kept);
+        assert_eq!(late.listener, 1);
+        assert!(
+            late.poll(&mut Context::from_waker(&noop_waker()))
+                .is_ready()
+        );
     }
 
     #[test]
