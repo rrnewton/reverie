@@ -8518,7 +8518,7 @@ fn write(
         .get(&fd)
         .expect("owned descriptor disappeared")
         .as_raw_fd();
-    let (written, sigpipe) = suppress_host_sigpipe_reporting(|| {
+    let (written, sigpipe) = suppress_host_sigpipe_reporting(bytes.len(), || {
         // SAFETY: bytes is a live host buffer and host_fd is a live backing descriptor.
         unsafe { libc::write(host_fd, bytes.as_ptr().cast::<libc::c_void>(), bytes.len()) as i64 }
     });
@@ -8599,21 +8599,122 @@ fn signal_is_pending(signal: libc::c_int) -> Result<bool, libc::c_int> {
 
 #[cfg(test)]
 fn write_without_sigpipe(fd: RawFd, bytes: &[u8]) -> i64 {
-    suppress_host_sigpipe(|| {
+    suppress_host_sigpipe(bytes.len(), || {
         // SAFETY: bytes is a live host buffer and fd is a live backing descriptor.
         unsafe { libc::write(fd, bytes.as_ptr().cast::<libc::c_void>(), bytes.len()) as i64 }
     })
 }
 
 #[cfg(test)]
-fn suppress_host_sigpipe(operation: impl FnOnce() -> i64) -> i64 {
-    suppress_host_sigpipe_reporting(operation).0
+fn suppress_host_sigpipe(requested: usize, operation: impl FnOnce() -> i64) -> i64 {
+    suppress_host_sigpipe_reporting(requested, operation).0
+}
+
+thread_local! {
+    /// Set while a [`SigpipeHold`] keeps SIGPIPE blocked on this thread.
+    static SIGPIPE_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn sigpipe_set() -> Result<libc::sigset_t, libc::c_int> {
+    let mut set = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+    // SAFETY: set is writable; sigemptyset initializes it and sigaddset adds
+    // a valid signal to the initialized set.
+    unsafe {
+        if libc::sigemptyset(set.as_mut_ptr()) != 0
+            || libc::sigaddset(set.as_mut_ptr(), libc::SIGPIPE) != 0
+        {
+            return Err(std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO));
+        }
+        Ok(set.assume_init())
+    }
+}
+
+/// Keeps SIGPIPE blocked on this host thread for a whole guest thread loop,
+/// so a guest write no longer blocks and restores it around every host write
+/// (two host syscalls per write). Dropping it on its own thread unblocks
+/// SIGPIPE again unless it was already blocked. The loop's future must be
+/// Send; if it were ever dropped on another thread, its thread keeps SIGPIPE
+/// blocked and held, which stays consistent: a thread is marked held only
+/// while SIGPIPE is blocked on it, and an unmarked thread blocks SIGPIPE
+/// around each write.
+pub(crate) struct SigpipeHold {
+    unblock: bool,
+    was_held: bool,
+    thread: std::thread::ThreadId,
+}
+
+impl SigpipeHold {
+    /// None if the mask cannot be changed; writes then keep blocking SIGPIPE
+    /// around each host write.
+    pub(crate) fn new() -> Option<Self> {
+        let set = sigpipe_set().ok()?;
+        let mut previous = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+        // SAFETY: set is initialized and previous is writable.
+        if unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &set, previous.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        // SAFETY: pthread_sigmask initialized previous on success.
+        let previous = unsafe { previous.assume_init() };
+        // SAFETY: previous is initialized and SIGPIPE is a valid signal.
+        let unblock = unsafe { libc::sigismember(&previous, libc::SIGPIPE) } != 1;
+        Some(Self {
+            unblock,
+            was_held: SIGPIPE_HELD.replace(true),
+            thread: std::thread::current().id(),
+        })
+    }
+}
+
+impl Drop for SigpipeHold {
+    fn drop(&mut self) {
+        if std::thread::current().id() != self.thread {
+            return;
+        }
+        SIGPIPE_HELD.set(self.was_held);
+        if self.unblock
+            && let Ok(set) = sigpipe_set()
+        {
+            // SAFETY: set is initialized; the previous mask is not needed.
+            unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut()) };
+        }
+    }
+}
+
+/// Takes a SIGPIPE pending for this thread, if any, without waiting.
+fn take_pending_sigpipe() -> Result<Option<libc::siginfo_t>, libc::c_int> {
+    let set = sigpipe_set()?;
+    let zero = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    loop {
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
+        // SAFETY: set and zero are initialized and info is writable.
+        let signal = unsafe { libc::sigtimedwait(&set, info.as_mut_ptr(), &zero) };
+        if signal == libc::SIGPIPE {
+            // SAFETY: sigtimedwait filled info for the signal it returned.
+            return Ok(Some(unsafe { info.assume_init() }));
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EAGAIN) => return Ok(None),
+            Some(libc::EINTR) => continue,
+            error => return Err(error.unwrap_or(libc::EIO)),
+        }
+    }
 }
 
 /// `suppress_host_sigpipe`, also reporting whether the host kernel raised
 /// SIGPIPE for this operation: the decision Linux would have made for the
-/// guest.
-fn suppress_host_sigpipe_reporting(operation: impl FnOnce() -> i64) -> (i64, bool) {
+/// guest. `requested` is the byte count the operation asked to write.
+fn suppress_host_sigpipe_reporting(
+    requested: usize,
+    operation: impl FnOnce() -> i64,
+) -> (i64, bool) {
+    if SIGPIPE_HELD.get() {
+        return held_sigpipe_reporting(requested, operation);
+    }
     // A guest backing pipe must not deliver SIGPIPE into the supervisor. Block it in this thread,
     // then synchronously consume the signal generated by this write while preserving a signal that
     // was already pending before the write.
@@ -8697,6 +8798,42 @@ fn suppress_host_sigpipe_reporting(operation: impl FnOnce() -> i64) -> (i64, boo
                 .as_ref()
                 .is_some_and(|error| error.raw_os_error() == Some(libc::EPIPE)));
     (error.map_or(written, io_error), generated)
+}
+
+/// `suppress_host_sigpipe_reporting` on a thread whose [`SigpipeHold`] keeps
+/// SIGPIPE blocked. Linux raises SIGPIPE for a write only when it fails with
+/// EPIPE or a pipe write stops short (`pipe_write` breaks out with bytes left
+/// when the last reader is gone; stream sockets raise it only with EPIPE). A
+/// write that completes, or fails otherwise, therefore costs no signal
+/// syscall. After a short or EPIPE write, one zero-timeout sigtimedwait takes
+/// the pending SIGPIPE. The kernel's own `send_sig(SIGPIPE, current, 0)`
+/// names this process as its sender, and nothing else in this process sends
+/// SIGPIPE to a thread running a guest (KVM gives host descriptors no fasync
+/// owner, and it kicks threads with other signals). A SIGPIPE from another
+/// process cannot be told apart from the write's own when both are pending,
+/// since a standard signal queues once; then EPIPE is the evidence, as when a
+/// SIGPIPE was already pending before an unheld write.
+fn held_sigpipe_reporting(requested: usize, operation: impl FnOnce() -> i64) -> (i64, bool) {
+    let written = operation();
+    let error = (written < 0).then(std::io::Error::last_os_error);
+    let epipe = error
+        .as_ref()
+        .is_some_and(|error| error.raw_os_error() == Some(libc::EPIPE));
+    let short = error.is_none() && (written as u64) < requested as u64;
+    let result = error.map_or(written, io_error);
+    if !epipe && !short {
+        return (result, false);
+    }
+    match take_pending_sigpipe() {
+        Ok(None) => (result, false),
+        Ok(Some(info)) => {
+            // SAFETY: a SIGPIPE's siginfo carries its sender's PID; a kernel
+            // send_sig and every kill variant fill it.
+            let own = unsafe { info.si_pid() } == std::process::id() as libc::pid_t;
+            (result, own || epipe)
+        }
+        Err(error) => (negative_errno(error), false),
+    }
 }
 
 fn host_write(fd: RawFd, bytes: &[u8]) -> i64 {
@@ -9663,7 +9800,8 @@ fn invoke_vectored_write_reporting(
     host_iovecs: &mut [libc::iovec],
     args: &[u64; 6],
 ) -> (i64, bool) {
-    suppress_host_sigpipe_reporting(|| {
+    let requested = host_iovecs.iter().map(|iovec| iovec.iov_len).sum();
+    suppress_host_sigpipe_reporting(requested, || {
         // SAFETY: every host iovec points into a live buffer for its declared
         // length, and host_fd belongs to the translated guest descriptor. The
         // positioned syscalls receive their complete x86-64 argument shape.
@@ -45329,6 +45467,157 @@ mod tests {
         assert_eq!(
             state.proc_files.get(&(dup_copy as libc::c_int)),
             Some(&inode)
+        );
+    }
+
+    /// Writes on a thread holding SIGPIPE (SigpipeHold), in a child process
+    /// whose SIGPIPE disposition is the default, so any SIGPIPE delivered to
+    /// it kills it: a write that raises SIGPIPE reports it and leaves none
+    /// pending; a complete write leaves another process's pending SIGPIPE
+    /// alone; a short write that raised none reports none and takes the
+    /// other process's; EPIPE still reports one when another process's was
+    /// pending; and dropping the hold unblocks SIGPIPE again.
+    #[test]
+    fn held_sigpipe_writes_report_only_their_own_sigpipe() {
+        const CHILD_ENV: &str = "REVERIE_KVM_HELD_SIGPIPE_CHILD";
+
+        fn pipe() -> [RawFd; 2] {
+            let mut fds = [-1; 2];
+            // SAFETY: fds has room for both descriptors.
+            assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+            fds
+        }
+        fn close(fd: RawFd) {
+            // SAFETY: fd is live and owned by this child.
+            assert_eq!(unsafe { libc::close(fd) }, 0);
+        }
+        fn held_write(fd: RawFd, bytes: &[u8]) -> (i64, bool) {
+            suppress_host_sigpipe_reporting(bytes.len(), || {
+                // SAFETY: bytes is a live buffer and fd a live descriptor.
+                unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) as i64 }
+            })
+        }
+        /// A SIGPIPE sent to this thread by another process.
+        fn sigpipe_from_another_process() {
+            let (pid, tid) = (std::process::id() as libc::pid_t, unsafe { libc::gettid() });
+            // SAFETY: the child makes only async-signal-safe syscalls.
+            let child = unsafe { libc::fork() };
+            assert!(child >= 0);
+            if child == 0 {
+                // SAFETY: tgkill and _exit are async-signal-safe.
+                unsafe {
+                    libc::syscall(libc::SYS_tgkill, pid, tid, libc::SIGPIPE);
+                    libc::_exit(0);
+                }
+            }
+            let mut status = 0;
+            // SAFETY: child is this process's own child.
+            assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+            assert_eq!(status, 0);
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(true));
+        }
+        fn sigpipe_blocked() -> bool {
+            let mut mask = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+            // SAFETY: a null set only reads the mask into the writable mask.
+            unsafe {
+                assert_eq!(
+                    libc::pthread_sigmask(libc::SIG_SETMASK, std::ptr::null(), mask.as_mut_ptr()),
+                    0
+                );
+                libc::sigismember(mask.as_ptr(), libc::SIGPIPE) == 1
+            }
+        }
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            // SAFETY: this process exists only for this regression.
+            unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+            assert!(!sigpipe_blocked());
+            let hold = SigpipeHold::new().expect("SIGPIPE hold");
+            assert!(sigpipe_blocked());
+
+            // EPIPE: the write raised SIGPIPE; it is reported and taken.
+            let fds = pipe();
+            close(fds[0]);
+            assert_eq!(
+                held_write(fds[1], b"broken"),
+                (negative_errno(libc::EPIPE), true)
+            );
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(false));
+            close(fds[1]);
+
+            // A positive partial count when the reader goes away mid-write.
+            let fds = pipe();
+            // SAFETY: F_SETPIPE_SZ accepts the requested byte capacity.
+            let capacity =
+                unsafe { libc::fcntl(fds[1], libc::F_SETPIPE_SZ, PAGE_SIZE as libc::c_int) };
+            assert!(capacity > 0);
+            let read_fd = fds[0];
+            let reader = std::thread::spawn(move || {
+                // SAFETY: ownership of the read descriptor moves here.
+                let mut reader = unsafe { std::fs::File::from_raw_fd(read_fd) };
+                let mut bytes = vec![0; capacity as usize];
+                reader.read_exact(&mut bytes).unwrap();
+            });
+            let payload = vec![b'p'; capacity as usize * 16];
+            let (written, raised) = held_write(fds[1], &payload);
+            reader.join().unwrap();
+            assert!(written > 0 && written < payload.len() as i64, "{written}");
+            assert!(raised);
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(false));
+            close(fds[1]);
+
+            // Another process's SIGPIPE survives a complete write, which
+            // makes no signal syscall.
+            sigpipe_from_another_process();
+            let fds = pipe();
+            assert_eq!(held_write(fds[1], b"whole"), (5, false));
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(true));
+
+            // A short nonblocking write to a full pipe raises nothing; the
+            // other sender's SIGPIPE is taken but not reported.
+            // SAFETY: fds[1] is live; O_NONBLOCK is a valid status flag.
+            assert_eq!(
+                unsafe { libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK) },
+                0
+            );
+            let flood = vec![b'f'; 1 << 20];
+            let (written, raised) = held_write(fds[1], &flood);
+            assert!(written > 0 && written < flood.len() as i64, "{written}");
+            assert!(!raised);
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(false));
+            close(fds[0]);
+            close(fds[1]);
+
+            // EPIPE with another process's SIGPIPE already pending: Linux's
+            // own cannot queue behind it, so EPIPE is the evidence.
+            sigpipe_from_another_process();
+            let fds = pipe();
+            close(fds[0]);
+            assert_eq!(
+                held_write(fds[1], b"still-broken"),
+                (negative_errno(libc::EPIPE), true)
+            );
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(false));
+            close(fds[1]);
+
+            drop(hold);
+            assert!(!sigpipe_blocked());
+            assert!(!SIGPIPE_HELD.get());
+            return;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("executor::tests::held_sigpipe_writes_report_only_their_own_sigpipe")
+            .arg("--exact")
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("failed to run isolated held-SIGPIPE regression");
+        assert!(
+            output.status.success(),
+            "isolated held-SIGPIPE regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 

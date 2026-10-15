@@ -5314,6 +5314,9 @@ impl KvmBackend {
             self.set_tool_failure(Some(failure.for_thread(tid)));
         }
         executor.observe_ignored_signals_with_tool();
+        // SIGPIPE stays blocked while this thread runs its guest, instead of
+        // around every guest write; restored when the loop returns.
+        let _sigpipe_hold = crate::executor::SigpipeHold::new();
         // The configuration bound admits observation; the mode installed for
         // the run, shared by every process through its signal registry,
         // decides it.
