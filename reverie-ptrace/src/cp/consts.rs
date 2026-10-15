@@ -14,7 +14,14 @@ pub const TRAMPOLINE_BASE: usize = PRIVATE_PAGE_OFFSET;
 pub const TRAMPOLINE_SIZE: usize = 0x1000;
 
 /// total private page size
-pub const PRIVATE_PAGE_SIZE: usize = TRAMPOLINE_SIZE;
+/// A read-write page after the trampoline, for data Reverie's own
+/// injections pass to the kernel (a SIGTRAP repair's `struct sigaction`,
+/// <https://github.com/rrnewton/hermit/issues/4409>). The trampoline page is
+/// made read-only once populated; this one stays writable.
+pub const SCRATCH_BASE: usize = TRAMPOLINE_BASE + TRAMPOLINE_SIZE;
+pub const SCRATCH_SIZE: usize = 0x1000;
+
+pub const PRIVATE_PAGE_SIZE: usize = TRAMPOLINE_SIZE + SCRATCH_SIZE;
 
 /// The size of the `ud2` instruction on x86_64.
 #[cfg(target_arch = "x86_64")]

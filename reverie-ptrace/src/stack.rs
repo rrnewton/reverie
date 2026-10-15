@@ -24,12 +24,12 @@ use super::regs::RegAccess;
 // NB: leaf function can use redzone without explicit stack allocation, as
 // a result it is not safe to just adjust stack pointer. 128B of stack
 // space is mostly wasted -- to avoid the corner case when redzone is used.
-const REDZONE_SIZE: usize = 128;
+pub(crate) const REDZONE_SIZE: usize = 128;
 
 // TODO: track actual guest stack size complexity.
 // Right now this just uses a conservatively low number and we assume the
 // guest stack is bigger than that.
-const STACK_CAPACITY: usize = 1024 - REDZONE_SIZE;
+pub(crate) const STACK_CAPACITY: usize = 1024 - REDZONE_SIZE;
 
 /// RAII token recording that a task's single guest stack is currently checked
 /// out. Acquiring flips the per-task flag; dropping the token -- whether from an
