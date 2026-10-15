@@ -61,6 +61,8 @@
 #define SHAPE_PRIVATE 3
 #define SHAPE_TWO_INJECTS 4
 #define SHAPE_TWO_PRIVATE 5
+#define SHAPE_BLOCK_ALL 6
+#define SHAPE_PRIVATE_CALL 7
 #define SEND_SIGUSR1 0x100
 #define SEND_SIGWINCH 0x200
 #define SEND_QUEUE 0x400
@@ -535,6 +537,86 @@ static void mode_sigtrap_profile(void) {
   }
 }
 
+static void trap_handler(int sig) {
+  (void)sig;
+}
+
+/* SIGTRAP's whole action and mask bit, as a line that names the handler,
+ * the flags this mode sets and whether sa_mask holds SIGUSR2. */
+static void sigtrap_full_state(const char* tag) {
+  struct sigaction sa;
+  sigset_t set;
+  if (sigaction(SIGTRAP, NULL, &sa) != 0 ||
+      sigprocmask(SIG_SETMASK, NULL, &set) != 0)
+    die("read sigtrap state");
+  const char* disp = sa.sa_handler == SIG_IGN    ? "ign"
+      : sa.sa_handler == SIG_DFL                 ? "dfl"
+      : sa.sa_handler == trap_handler            ? "trap_handler"
+                                                 : "other";
+  say("%s sigtrap=%s flags=%#lx usr2-in-mask=%d blocked=%d\n",
+      tag,
+      disp,
+      (unsigned long)(sa.sa_flags & (SA_RESTART | SA_NODEFER)),
+      sigismember(&sa.sa_mask, SIGUSR2),
+      sigismember(&set, SIGTRAP));
+}
+
+static void sigtrap_set(void (*action)(int), int block) {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_handler = action;
+  sa.sa_flags = SA_RESTART | SA_NODEFER;
+  sigemptyset(&sa.sa_mask);
+  sigaddset(&sa.sa_mask, SIGUSR2);
+  if (sigaction(SIGTRAP, &sa, NULL) != 0)
+    die("set sigtrap");
+  sigset_t set;
+  sigemptyset(&set);
+  sigaddset(&set, SIGTRAP);
+  if (sigprocmask(block ? SIG_BLOCK : SIG_UNBLOCK, &set, NULL) != 0)
+    die("mask sigtrap");
+}
+
+/* Each SIGTRAP state through each handler shape: natively the call leaves
+ * the action (handler, flags, mask) and the mask bit as they were
+ * (https://github.com/rrnewton/hermit/issues/4409). */
+static void mode_sigtrap_states(void) {
+  for (int i = 0; i < 3; i++)
+    SITE(SYS_getppid, 0, 0, 0, 0, 0);
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+  } states[] = {
+      {"ign-blocked", SIG_IGN, 1},
+      {"ign", SIG_IGN, 0},
+      {"handler-blocked", trap_handler, 1},
+      {"handler", trap_handler, 0},
+      {"dfl-blocked", SIG_DFL, 1},
+  };
+  static const struct {
+    const char* name;
+    long shape;
+  } shapes[] = {
+      {"inject", SHAPE_INJECT},
+      {"tail", SHAPE_TAIL},
+      {"emulate", SHAPE_EMULATE},
+      {"private", SHAPE_PRIVATE},
+      {"two-injects", SHAPE_TWO_INJECTS},
+      {"two-private", SHAPE_TWO_PRIVATE},
+      {"block-all", SHAPE_BLOCK_ALL},
+  };
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    for (unsigned j = 0; j < sizeof shapes / sizeof shapes[0]; j++) {
+      sigtrap_set(states[i].action, states[i].block);
+      SITEM(SYS_getppid, 0, 0, 0, 0, 0, shapes[j].shape);
+      char tag[64];
+      snprintf(tag, sizeof tag, "%s %s", states[i].name, shapes[j].name);
+      sigtrap_full_state(tag);
+    }
+  }
+}
+
 /* What a sleep's remaining time says, without its host-dependent digits.
  * rem is zeroed before each call, so "unwritten" means the kernel never
  * copied a remaining time out (the sleep was not interrupted). The tracer
@@ -867,6 +949,119 @@ static void exec_self(const char* mode) {
   char* args[] = {"/proc/self/exe", (char*)mode, main_argv[2], NULL};
   execve(args[0], args, environ);
   die("execve");
+}
+
+/* SIGTRAP's state across a guest fork run in place: Reverie single-steps the
+ * parent from its clone event stop. Both processes read the state back. */
+static void mode_sigtrap_fork(void) {
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+  } states[] = {
+      {"ign-blocked", SIG_IGN, 1},
+      {"ign", SIG_IGN, 0},
+      {"handler-blocked", trap_handler, 1},
+  };
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    sigtrap_set(states[i].action, states[i].block);
+    char tag[64];
+    pid_t pid = fork();
+    if (pid < 0)
+      die("fork");
+    if (pid == 0) {
+      snprintf(tag, sizeof tag, "fork child %s", states[i].name);
+      sigtrap_full_state(tag);
+      _exit(0);
+    }
+    int status;
+    if (waitpid(pid, &status, 0) != pid)
+      die("wait fork child");
+    snprintf(tag, sizeof tag, "fork parent %s", states[i].name);
+    sigtrap_full_state(tag);
+  }
+}
+
+/* The kernel's struct sigaction, as rt_sigaction takes it. */
+struct ksigaction {
+  void (*handler)(int);
+  unsigned long flags;
+  void (*restorer)(void);
+  unsigned long mask;
+};
+
+/* Calls that set SIGTRAP's action or the mask, injected on the private page
+ * (SHAPE_PRIVATE_CALL), with SIGTRAP blocked or not. */
+static void mode_sigtrap_private_calls(void) {
+  warm();
+  static const struct {
+    const char* name;
+    void (*action)(int);
+  } actions[] = {{"ign", SIG_IGN}, {"handler", trap_handler}};
+  for (unsigned i = 0; i < sizeof actions / sizeof actions[0]; i++) {
+    sigtrap_set(SIG_DFL, 1);
+    struct ksigaction k = {
+        .handler = actions[i].action,
+        .flags = SA_RESTART | SA_NODEFER | 0x04000000 /* SA_RESTORER */,
+        .restorer = (void (*)(void))trap_handler,
+        .mask = 1UL << (SIGUSR2 - 1),
+    };
+    long r = SITEM(SYS_rt_sigaction, SIGTRAP, (long)&k, 0, 8, 0, SHAPE_PRIVATE_CALL);
+    if (r != 0)
+      die("private rt_sigaction");
+    char tag[64];
+    snprintf(tag, sizeof tag, "private-sigaction %s", actions[i].name);
+    sigtrap_full_state(tag);
+  }
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+  } states[] = {
+      {"handler-blocked", trap_handler, 1},
+      {"ign-blocked", SIG_IGN, 1},
+      {"handler", trap_handler, 0},
+  };
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    sigtrap_set(states[i].action, states[i].block);
+    struct timespec ts = {0, 0};
+    unsigned long temporary = 1UL << (SIGTRAP - 1);
+    long r = SITEM(SYS_ppoll, 0, 0, (long)&ts, (long)&temporary, 8, SHAPE_PRIVATE_CALL);
+    if (r != 0)
+      die("private ppoll");
+    char tag[64];
+    snprintf(tag, sizeof tag, "private-ppoll %s", states[i].name);
+    sigtrap_full_state(tag);
+  }
+}
+
+/* SIGTRAP states that survive exec natively: exec keeps SIG_IGN (clearing
+ * every action's flags and mask) and the blocked mask. Mode sigtrap_exec_N
+ * reads back state N - 1, which the previous image set before exec, before
+ * any Tool injection, then sets state N and execs itself as N + 1. Reverie's
+ * pre-init single-step of each new image must leave the state
+ * (https://github.com/rrnewton/hermit/issues/4409). */
+static void mode_sigtrap_exec(int n) {
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+  } states[] = {
+      {"ign-blocked", SIG_IGN, 1},
+      {"ign", SIG_IGN, 0},
+      {"dfl-blocked", SIG_DFL, 1},
+  };
+  if (n > 0) {
+    char tag[64];
+    snprintf(tag, sizeof tag, "exec %s", states[n - 1].name);
+    sigtrap_full_state(tag);
+  }
+  if (n == (int)(sizeof states / sizeof states[0]))
+    return;
+  sigtrap_set(states[n].action, states[n].block);
+  char mode[32];
+  snprintf(mode, sizeof mode, "sigtrap_exec_%d", n + 1);
+  exec_self(mode);
 }
 
 /* SIGCHLD stays blocked (and is inherited blocked) from chld_block() to
@@ -1629,6 +1824,66 @@ static void mode_perf_marker(void) {
     if (tl_c)
       tl_sum++;
     say("marker %d getpid=%d r11=%#lx\n", c, r == getpid(), tp_nz_r11);
+  }
+}
+
+/* Each SIGTRAP state across a precise timer's single-steps: the timer is
+ * armed PM_BRANCHES + 1 branches out and fires in the branch loop, whose
+ * last branches it single-steps
+ * (https://github.com/rrnewton/hermit/issues/4409). */
+static void mode_sigtrap_timer(void) {
+  warm();
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+  } states[] = {
+      {"ign-blocked", SIG_IGN, 1},
+      {"ign", SIG_IGN, 0},
+      {"handler-blocked", trap_handler, 1},
+      {"handler", trap_handler, 0},
+      {"dfl-blocked", SIG_DFL, 1},
+  };
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    sigtrap_set(states[i].action, states[i].block);
+    SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1, ARM_TIMER);
+    for (volatile int j = 0; j < 3 * PM_BRANCHES; j++)
+      ;
+    char tag[64];
+    snprintf(tag, sizeof tag, "timer %s", states[i].name);
+    sigtrap_full_state(tag);
+  }
+}
+
+static volatile long sigreturn_k;
+
+/* Arms a precise timer sigreturn_k branches out from inside a SIGUSR1
+ * handler, so that its single-steps run the handler's return: every signal
+ * delivery is a stop the Tool sees, which would cancel a timer armed
+ * before it. */
+static void arming_handler(int sig) {
+  (void)sig;
+  SITEM(SYS_getppid, 0, 0, 0, 0, sigreturn_k, ARM_TIMER);
+}
+
+/* A guest rt_sigreturn single-stepped by a precise timer, from a frame whose
+ * mask blocks SIGTRAP while SIGTRAP is caught. */
+static void mode_sigtrap_sigreturn_timer(void) {
+  warm();
+  struct sigaction usr1;
+  memset(&usr1, 0, sizeof usr1);
+  usr1.sa_handler = arming_handler;
+  if (sigaction(SIGUSR1, &usr1, NULL) != 0)
+    die("install SIGUSR1");
+  sigtrap_set(trap_handler, 1);
+  for (int k = 1; k <= 8; k++) {
+    sigreturn_k = k;
+    raise(SIGUSR1);
+    for (volatile int j = 0; j < 16; j++)
+      ;
+    char tag[64];
+    snprintf(tag, sizeof tag, "sigreturn k=%d", k);
+    sigtrap_full_state(tag);
   }
 }
 
@@ -2595,6 +2850,20 @@ int main(int argc, char** argv) {
     mode_self_raise();
   else if (!strcmp(m, "sigtrap_profile"))
     mode_sigtrap_profile();
+  else if (!strcmp(m, "sigtrap_states"))
+    mode_sigtrap_states();
+  else if (!strcmp(m, "sigtrap_timer"))
+    mode_sigtrap_timer();
+  else if (!strcmp(m, "sigtrap_sigreturn_timer"))
+    mode_sigtrap_sigreturn_timer();
+  else if (!strcmp(m, "sigtrap_fork"))
+    mode_sigtrap_fork();
+  else if (!strcmp(m, "sigtrap_private_calls"))
+    mode_sigtrap_private_calls();
+  else if (!strcmp(m, "sigtrap_exec"))
+    mode_sigtrap_exec(0);
+  else if (!strncmp(m, "sigtrap_exec_", 13))
+    mode_sigtrap_exec(atoi(m + 13));
   else if (!strcmp(m, "restart"))
     mode_restart();
   else if (!strcmp(m, "raw_clone_parent_ppid"))

@@ -56,6 +56,7 @@ pub mod liteinst_census;
 mod perf;
 mod poll_on_wake;
 pub mod regs;
+mod sigtrap_state;
 mod stack;
 mod stats;
 mod task;
