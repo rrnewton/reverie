@@ -8706,15 +8706,27 @@ fn suppress_host_sigpipe_reporting(
     // SAFETY: pthread_sigmask initialized previous on success.
     let previous = unsafe { previous.assume_init() };
 
-    let had_pending_sigpipe = match signal_is_pending(libc::SIGPIPE) {
-        Ok(pending) => pending,
-        Err(error) => {
-            // SAFETY: previous contains the signal mask saved above.
-            unsafe {
-                libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut());
+    // A SIGPIPE can be pending here only if this thread already blocked it.
+    // While it is unblocked, Linux does not leave one pending: it delivers it
+    // on the way back to user space (the default action ends the process, a
+    // handler runs) or, when the process ignores it, discards it when it is
+    // raised. So only a thread that blocks SIGPIPE itself pays for the check;
+    // a KVM guest thread, which Hermit runs with SIGPIPE unblocked, does not.
+    // SAFETY: previous is initialized and SIGPIPE is a valid signal.
+    let already_blocked = unsafe { libc::sigismember(&previous, libc::SIGPIPE) } == 1;
+    let had_pending_sigpipe = if already_blocked {
+        match signal_is_pending(libc::SIGPIPE) {
+            Ok(pending) => pending,
+            Err(error) => {
+                // SAFETY: previous contains the signal mask saved above.
+                unsafe {
+                    libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut());
+                }
+                return (negative_errno(error), false);
             }
-            return (negative_errno(error), false);
         }
+    } else {
+        false
     };
 
     let written = operation();
@@ -45712,6 +45724,64 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    /// A thread that already blocks SIGPIPE and has one pending keeps it
+    /// pending across these writes, and the write reports SIGPIPE only on the
+    /// EPIPE evidence: the pending check still runs for such a thread (a
+    /// thread with SIGPIPE unblocked skips it, since nothing can be pending
+    /// there).
+    #[test]
+    fn a_sigpipe_pending_in_a_blocking_thread_is_kept() {
+        std::thread::spawn(|| {
+            let mut only_sigpipe = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+            // SAFETY: the set is initialized before the mask reads it.
+            unsafe {
+                libc::sigemptyset(only_sigpipe.as_mut_ptr());
+                libc::sigaddset(only_sigpipe.as_mut_ptr(), libc::SIGPIPE);
+                assert_eq!(
+                    libc::pthread_sigmask(
+                        libc::SIG_BLOCK,
+                        only_sigpipe.as_ptr(),
+                        std::ptr::null_mut()
+                    ),
+                    0
+                );
+                assert_eq!(
+                    libc::syscall(
+                        libc::SYS_tgkill,
+                        std::process::id() as libc::pid_t,
+                        libc::gettid(),
+                        libc::SIGPIPE,
+                    ),
+                    0
+                );
+            }
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(true));
+
+            let mut fds = [-1; 2];
+            // SAFETY: fds has room for both descriptors.
+            assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+            let write = |fd: RawFd, bytes: &[u8]| {
+                suppress_host_sigpipe_reporting(None, || {
+                    // SAFETY: bytes is a live buffer and fd a live descriptor.
+                    unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) as i64 }
+                })
+            };
+            assert_eq!(write(fds[1], b"whole"), (5, false));
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(true));
+            // SAFETY: fds[0] is live and owned here.
+            assert_eq!(unsafe { libc::close(fds[0]) }, 0);
+            assert_eq!(
+                write(fds[1], b"broken"),
+                (negative_errno(libc::EPIPE), true)
+            );
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(true));
+            // SAFETY: fds[1] is live and owned here.
+            assert_eq!(unsafe { libc::close(fds[1]) }, 0);
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
