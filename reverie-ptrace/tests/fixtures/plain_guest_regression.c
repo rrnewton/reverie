@@ -31,6 +31,7 @@
 #include <linux/seccomp.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <sched.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -61,6 +62,8 @@
 #define SHAPE_PRIVATE 3
 #define SHAPE_TWO_INJECTS 4
 #define SHAPE_TWO_PRIVATE 5
+#define SHAPE_BLOCK_ALL 6
+#define SHAPE_PRIVATE_CALL 7
 #define SEND_SIGUSR1 0x100
 #define SEND_SIGWINCH 0x200
 #define SEND_QUEUE 0x400
@@ -535,6 +538,86 @@ static void mode_sigtrap_profile(void) {
   }
 }
 
+static void trap_handler(int sig) {
+  (void)sig;
+}
+
+/* SIGTRAP's whole action and mask bit, as a line that names the handler,
+ * the flags this mode sets and whether sa_mask holds SIGUSR2. */
+static void sigtrap_full_state(const char* tag) {
+  struct sigaction sa;
+  sigset_t set;
+  if (sigaction(SIGTRAP, NULL, &sa) != 0 ||
+      sigprocmask(SIG_SETMASK, NULL, &set) != 0)
+    die("read sigtrap state");
+  const char* disp = sa.sa_handler == SIG_IGN    ? "ign"
+      : sa.sa_handler == SIG_DFL                 ? "dfl"
+      : sa.sa_handler == trap_handler            ? "trap_handler"
+                                                 : "other";
+  say("%s sigtrap=%s flags=%#lx usr2-in-mask=%d blocked=%d\n",
+      tag,
+      disp,
+      (unsigned long)(sa.sa_flags & (SA_RESTART | SA_NODEFER)),
+      sigismember(&sa.sa_mask, SIGUSR2),
+      sigismember(&set, SIGTRAP));
+}
+
+static void sigtrap_set(void (*action)(int), int block) {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_handler = action;
+  sa.sa_flags = SA_RESTART | SA_NODEFER;
+  sigemptyset(&sa.sa_mask);
+  sigaddset(&sa.sa_mask, SIGUSR2);
+  if (sigaction(SIGTRAP, &sa, NULL) != 0)
+    die("set sigtrap");
+  sigset_t set;
+  sigemptyset(&set);
+  sigaddset(&set, SIGTRAP);
+  if (sigprocmask(block ? SIG_BLOCK : SIG_UNBLOCK, &set, NULL) != 0)
+    die("mask sigtrap");
+}
+
+/* Each SIGTRAP state through each handler shape: natively the call leaves
+ * the action (handler, flags, mask) and the mask bit as they were
+ * (https://github.com/rrnewton/hermit/issues/4409). */
+static void mode_sigtrap_states(void) {
+  for (int i = 0; i < 3; i++)
+    SITE(SYS_getppid, 0, 0, 0, 0, 0);
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+  } states[] = {
+      {"ign-blocked", SIG_IGN, 1},
+      {"ign", SIG_IGN, 0},
+      {"handler-blocked", trap_handler, 1},
+      {"handler", trap_handler, 0},
+      {"dfl-blocked", SIG_DFL, 1},
+  };
+  static const struct {
+    const char* name;
+    long shape;
+  } shapes[] = {
+      {"inject", SHAPE_INJECT},
+      {"tail", SHAPE_TAIL},
+      {"emulate", SHAPE_EMULATE},
+      {"private", SHAPE_PRIVATE},
+      {"two-injects", SHAPE_TWO_INJECTS},
+      {"two-private", SHAPE_TWO_PRIVATE},
+      {"block-all", SHAPE_BLOCK_ALL},
+  };
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    for (unsigned j = 0; j < sizeof shapes / sizeof shapes[0]; j++) {
+      sigtrap_set(states[i].action, states[i].block);
+      SITEM(SYS_getppid, 0, 0, 0, 0, 0, shapes[j].shape);
+      char tag[64];
+      snprintf(tag, sizeof tag, "%s %s", states[i].name, shapes[j].name);
+      sigtrap_full_state(tag);
+    }
+  }
+}
+
 /* What a sleep's remaining time says, without its host-dependent digits.
  * rem is zeroed before each call, so "unwritten" means the kernel never
  * copied a remaining time out (the sleep was not interrupted). The tracer
@@ -867,6 +950,222 @@ static void exec_self(const char* mode) {
   char* args[] = {"/proc/self/exe", (char*)mode, main_argv[2], NULL};
   execve(args[0], args, environ);
   die("execve");
+}
+
+/* SIGTRAP's state across a guest fork run in place: Reverie single-steps the
+ * parent from its clone event stop. Both processes read the state back. */
+static void mode_sigtrap_fork(void) {
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+  } states[] = {
+      {"ign-blocked", SIG_IGN, 1},
+      {"ign", SIG_IGN, 0},
+      {"handler-blocked", trap_handler, 1},
+  };
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    sigtrap_set(states[i].action, states[i].block);
+    char tag[64];
+    pid_t pid = fork();
+    if (pid < 0)
+      die("fork");
+    if (pid == 0) {
+      snprintf(tag, sizeof tag, "fork child %s", states[i].name);
+      sigtrap_full_state(tag);
+      _exit(0);
+    }
+    int status;
+    if (waitpid(pid, &status, 0) != pid)
+      die("wait fork child");
+    snprintf(tag, sizeof tag, "fork parent %s", states[i].name);
+    sigtrap_full_state(tag);
+  }
+}
+
+/* The kernel's struct sigaction, as rt_sigaction takes it. */
+struct ksigaction {
+  void (*handler)(int);
+  unsigned long flags;
+  void (*restorer)(void);
+  unsigned long mask;
+};
+
+/* Calls that set SIGTRAP's action or the mask, injected on the private page
+ * (SHAPE_PRIVATE_CALL), with SIGTRAP blocked or not. */
+static void mode_sigtrap_private_calls(void) {
+  warm();
+  static const struct {
+    const char* name;
+    void (*action)(int);
+  } actions[] = {{"ign", SIG_IGN}, {"handler", trap_handler}};
+  for (unsigned i = 0; i < sizeof actions / sizeof actions[0]; i++) {
+    sigtrap_set(SIG_DFL, 1);
+    struct ksigaction k = {
+        .handler = actions[i].action,
+        .flags = SA_RESTART | SA_NODEFER | 0x04000000 /* SA_RESTORER */,
+        .restorer = (void (*)(void))trap_handler,
+        .mask = 1UL << (SIGUSR2 - 1),
+    };
+    long r = SITEM(SYS_rt_sigaction, SIGTRAP, (long)&k, 0, 8, 0, SHAPE_PRIVATE_CALL);
+    if (r != 0)
+      die("private rt_sigaction");
+    char tag[64];
+    snprintf(tag, sizeof tag, "private-sigaction %s", actions[i].name);
+    sigtrap_full_state(tag);
+  }
+  /* The same SIG_IGN from a page the guest made write-only, which the kernel
+   * reads but process_vm_readv cannot. */
+  {
+    sigtrap_set(SIG_DFL, 1);
+    struct ksigaction k = {
+        .handler = SIG_IGN,
+        .flags = SA_RESTART | SA_NODEFER | 0x04000000 /* SA_RESTORER */,
+        .restorer = (void (*)(void))trap_handler,
+        .mask = 1UL << (SIGUSR2 - 1),
+    };
+    void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (page == MAP_FAILED)
+      die("write-only action mmap");
+    memcpy(page, &k, sizeof k);
+    if (mprotect(page, 4096, PROT_WRITE) != 0)
+      die("write-only action mprotect");
+    long r = SITEM(SYS_rt_sigaction, SIGTRAP, (long)page, 0, 8, 0, SHAPE_PRIVATE_CALL);
+    if (r != 0)
+      die("private rt_sigaction from a write-only page");
+    sigtrap_full_state("private-sigaction-writeonly ign");
+    munmap(page, 4096);
+  }
+  /* SIG_DFL from a page the guest made inaccessible, over SIG_IGN: the
+   * kernel cannot read it and fails with EFAULT before installing anything,
+   * so SIG_IGN stays, although ptrace can read the page. */
+  {
+    sigtrap_set(SIG_IGN, 1);
+    struct ksigaction k = {
+        .handler = SIG_DFL,
+        .flags = 0x04000000 /* SA_RESTORER */,
+        .restorer = (void (*)(void))trap_handler,
+        .mask = 0,
+    };
+    void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (page == MAP_FAILED)
+      die("inaccessible action mmap");
+    memcpy(page, &k, sizeof k);
+    if (mprotect(page, 4096, PROT_NONE) != 0)
+      die("inaccessible action mprotect");
+    long r = SITEM(SYS_rt_sigaction, SIGTRAP, (long)page, 0, 8, 0, SHAPE_PRIVATE_CALL);
+    char tag[64];
+    snprintf(tag, sizeof tag, "private-sigaction-noaccess dfl r=%s", r == -EFAULT ? "efault" : "other");
+    sigtrap_full_state(tag);
+    munmap(page, 4096);
+  }
+  /* SIG_DFL from a page whose protection key denies access, over SIG_IGN:
+   * procfs maps lists it rw-p and ptrace reads it, but the kernel's copy
+   * honours the thread's protection keys and fails with EFAULT before
+   * installing anything, so SIG_IGN stays. Without an oldact, then with one.
+   * Then a valid SIG_IGN act (which every step's trap resets) with an oldact
+   * the kernel cannot write: it installs act, then fails with EFAULT. */
+  {
+    struct ksigaction k = {
+        .handler = SIG_DFL,
+        .flags = 0x04000000 /* SA_RESTORER */,
+        .restorer = (void (*)(void))trap_handler,
+        .mask = 0,
+    };
+    int pkey = pkey_alloc(0, 0);
+    if (pkey < 0) {
+      say("private-sigaction-pkey unavailable\n");
+      say("private-sigaction-pkey-oldact unavailable\n");
+    } else {
+      void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+      if (page == MAP_FAILED)
+        die("pkey action mmap");
+      memcpy(page, &k, sizeof k);
+      if (pkey_mprotect(page, 4096, PROT_READ | PROT_WRITE, pkey) != 0)
+        die("pkey_mprotect");
+      static struct ksigaction old;
+      for (int with_old = 0; with_old < 2; with_old++) {
+        sigtrap_set(SIG_IGN, 1);
+        pkey_set(pkey, PKEY_DISABLE_ACCESS);
+        long r = SITEM(SYS_rt_sigaction, SIGTRAP, (long)page, with_old ? (long)&old : 0, 8, 0,
+                       SHAPE_PRIVATE_CALL);
+        pkey_set(pkey, 0);
+        char tag[64];
+        snprintf(tag, sizeof tag, "private-sigaction-pkey%s dfl r=%s", with_old ? "-oldact" : "",
+                 r == -EFAULT ? "efault" : "other");
+        sigtrap_full_state(tag);
+      }
+      munmap(page, 4096);
+      pkey_free(pkey);
+    }
+  }
+  {
+    sigtrap_set(SIG_DFL, 1);
+    struct ksigaction k = {
+        .handler = SIG_IGN,
+        .flags = SA_RESTART | SA_NODEFER | 0x04000000 /* SA_RESTORER */,
+        .restorer = (void (*)(void))trap_handler,
+        .mask = 1UL << (SIGUSR2 - 1),
+    };
+    void* readonly = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (readonly == MAP_FAILED)
+      die("read-only oldact mmap");
+    long r = SITEM(SYS_rt_sigaction, SIGTRAP, (long)&k, (long)readonly, 8, 0, SHAPE_PRIVATE_CALL);
+    char tag[64];
+    snprintf(tag, sizeof tag, "private-sigaction-badoldact ign r=%s",
+             r == -EFAULT ? "efault" : "other");
+    sigtrap_full_state(tag);
+    munmap(readonly, 4096);
+  }
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+  } states[] = {
+      {"handler-blocked", trap_handler, 1},
+      {"ign-blocked", SIG_IGN, 1},
+      {"handler", trap_handler, 0},
+  };
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    sigtrap_set(states[i].action, states[i].block);
+    struct timespec ts = {0, 0};
+    unsigned long temporary = 1UL << (SIGTRAP - 1);
+    long r = SITEM(SYS_ppoll, 0, 0, (long)&ts, (long)&temporary, 8, SHAPE_PRIVATE_CALL);
+    if (r != 0)
+      die("private ppoll");
+    char tag[64];
+    snprintf(tag, sizeof tag, "private-ppoll %s", states[i].name);
+    sigtrap_full_state(tag);
+  }
+}
+
+/* SIGTRAP states that survive exec natively: exec keeps SIG_IGN (clearing
+ * every action's flags and mask) and the blocked mask. Mode sigtrap_exec_N
+ * reads back state N - 1, which the previous image set before exec, before
+ * any Tool injection, then sets state N and execs itself as N + 1. Reverie's
+ * pre-init single-step of each new image must leave the state
+ * (https://github.com/rrnewton/hermit/issues/4409). */
+static void mode_sigtrap_exec(int n) {
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+  } states[] = {
+      {"ign-blocked", SIG_IGN, 1},
+      {"ign", SIG_IGN, 0},
+      {"dfl-blocked", SIG_DFL, 1},
+  };
+  if (n > 0) {
+    char tag[64];
+    snprintf(tag, sizeof tag, "exec %s", states[n - 1].name);
+    sigtrap_full_state(tag);
+  }
+  if (n == (int)(sizeof states / sizeof states[0]))
+    return;
+  sigtrap_set(states[n].action, states[n].block);
+  char mode[32];
+  snprintf(mode, sizeof mode, "sigtrap_exec_%d", n + 1);
+  exec_self(mode);
 }
 
 /* SIGCHLD stays blocked (and is inherited blocked) from chld_block() to
@@ -1629,6 +1928,711 @@ static void mode_perf_marker(void) {
     if (tl_c)
       tl_sum++;
     say("marker %d getpid=%d r11=%#lx\n", c, r == getpid(), tp_nz_r11);
+  }
+}
+
+/* Each SIGTRAP state across a precise timer's single-steps: the timer is
+ * armed PM_BRANCHES + 1 branches out and fires in the branch loop, whose
+ * last branches it single-steps
+ * (https://github.com/rrnewton/hermit/issues/4409). */
+static void mode_sigtrap_timer(void) {
+  warm();
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+  } states[] = {
+      {"ign-blocked", SIG_IGN, 1},
+      {"ign", SIG_IGN, 0},
+      {"handler-blocked", trap_handler, 1},
+      {"handler", trap_handler, 0},
+      {"dfl-blocked", SIG_DFL, 1},
+  };
+  for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+    sigtrap_set(states[i].action, states[i].block);
+    SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1, ARM_TIMER);
+    for (volatile int j = 0; j < 3 * PM_BRANCHES; j++)
+      ;
+    char tag[64];
+    snprintf(tag, sizeof tag, "timer %s", states[i].name);
+    sigtrap_full_state(tag);
+  }
+}
+
+static volatile long sigreturn_k;
+
+/* Arms a precise timer sigreturn_k branches out from inside a SIGUSR1
+ * handler, so that its single-steps run the handler's return: every signal
+ * delivery is a stop the Tool sees, which would cancel a timer armed
+ * before it. */
+static void arming_handler(int sig) {
+  (void)sig;
+  SITEM(SYS_getppid, 0, 0, 0, 0, sigreturn_k, ARM_TIMER);
+}
+
+/* A guest rt_sigreturn single-stepped by a precise timer, from a frame whose
+ * mask blocks SIGTRAP while SIGTRAP is caught. */
+static void mode_sigtrap_sigreturn_timer(void) {
+  warm();
+  struct sigaction usr1;
+  memset(&usr1, 0, sizeof usr1);
+  usr1.sa_handler = arming_handler;
+  if (sigaction(SIGUSR1, &usr1, NULL) != 0)
+    die("install SIGUSR1");
+  sigtrap_set(trap_handler, 1);
+  for (int k = 1; k <= 8; k++) {
+    sigreturn_k = k;
+    raise(SIGUSR1);
+    for (volatile int j = 0; j < 16; j++)
+      ;
+    char tag[64];
+    snprintf(tag, sizeof tag, "sigreturn k=%d", k);
+    sigtrap_full_state(tag);
+  }
+}
+
+static void quiet_usr1(int sig) {
+  (void)sig;
+}
+
+/* SIGTRAP's state across a mask-swapping wait that a handled SIGUSR1
+ * interrupts, injected on the private page (SHAPE_PRIVATE_CALL). SIGUSR1 is
+ * blocked and pending before the call, so the wait returns at once with its
+ * temporary mask's restore pending, and the SIGUSR1 is delivered as the
+ * guest resumes. The temporary mask holds SIGTRAP in the -tmask states. */
+static void mode_sigtrap_interrupted_waits(void) {
+  warm();
+  struct sigaction usr1;
+  memset(&usr1, 0, sizeof usr1);
+  usr1.sa_handler = quiet_usr1;
+  if (sigaction(SIGUSR1, &usr1, NULL) != 0)
+    die("install SIGUSR1");
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+    int tmask;
+  } states[] = {
+      {"ign", SIG_IGN, 0, 0},
+      {"ign-tmask", SIG_IGN, 0, 1},
+      {"handler-tmask", trap_handler, 0, 1},
+      {"handler-blocked", trap_handler, 1, 1},
+  };
+  static const char* const ops[] = {"sigsuspend", "ppoll"};
+  sigset_t usr1_set;
+  sigemptyset(&usr1_set);
+  sigaddset(&usr1_set, SIGUSR1);
+  for (int op = 0; op < 2; op++) {
+    for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+      sigtrap_set(states[i].action, states[i].block);
+      if (sigprocmask(SIG_BLOCK, &usr1_set, NULL) != 0)
+        die("block SIGUSR1");
+      raise(SIGUSR1);
+      unsigned long temporary = states[i].tmask ? 1UL << (SIGTRAP - 1) : 0;
+      struct timespec ts = {5, 0};
+      long r = op == 0
+          ? SITEM(SYS_rt_sigsuspend, (long)&temporary, 8, 0, 0, 0, SHAPE_PRIVATE_CALL)
+          : SITEM(SYS_ppoll, 0, 0, (long)&ts, (long)&temporary, 8, SHAPE_PRIVATE_CALL);
+      if (sigprocmask(SIG_UNBLOCK, &usr1_set, NULL) != 0)
+        die("unblock SIGUSR1");
+      char tag[64];
+      snprintf(tag, sizeof tag, "wait %s %s r=%s", ops[op], states[i].name,
+               r == -EINTR ? "eintr" : "other");
+      sigtrap_full_state(tag);
+    }
+  }
+}
+
+/* SIG_IGN, a guest fork (whose parent Reverie steps from its clone event
+ * stop), then the guest installs a handler with a call the Tool may run in
+ * place, then a private injection: the handler stays. */
+static void mode_sigtrap_fork_then_sigaction(void) {
+  sigtrap_set(SIG_IGN, 0);
+  pid_t pid = fork();
+  if (pid < 0)
+    die("fork");
+  if (pid == 0)
+    _exit(0);
+  sigtrap_full_state("stale after-fork");
+  sigtrap_set(trap_handler, 0);
+  sigtrap_full_state("stale after-sigaction");
+  SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_PRIVATE);
+  sigtrap_full_state("stale after-private");
+  int status;
+  if (waitpid(pid, &status, 0) != pid)
+    die("wait");
+}
+
+/* A guest int3 inside a precise timer's single-stepped window, with SIGTRAP
+ * caught and blocked, or ignored: its own force_sig resets SIGTRAP, and the
+ * child dies by SIGTRAP, as natively. Each encoding: int3; behind an
+ * operand-size prefix; behind REX prefixes that are not last, which the CPU
+ * ignores; and int3 in an execute-only page. Every encoding runs the same
+ * way, as a snippet (the encoding, then ret) called through a pointer chosen
+ * before the counted loop, so that its int3 is the same number of branches
+ * out, which the timer offsets c = 2 to 5 put inside the single-stepped
+ * window. */
+static void mode_sigtrap_int3_timer(void) {
+  warm();
+  static const struct {
+    const char* name;
+    const char* bytes;
+    size_t len;
+  } encodings[] = {
+      {"cc", "\xcc\xc3", 2},
+      {"66cc", "\x66\xcc\xc3", 3},
+      {"4848cc", "\x48\x48\xcc\xc3", 4},
+      {"4866cc", "\x48\x66\xcc\xc3", 4},
+      {"xo-cc", "\xcc\xc3", 2},
+  };
+  enum { ENCODINGS = sizeof encodings / sizeof encodings[0] };
+  unsigned char* code =
+      mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (code == MAP_FAILED)
+    die("snippet mmap");
+  void (*snippets[ENCODINGS])(void);
+  for (unsigned e = 0; e < ENCODINGS; e++) {
+    /* The execute-only snippet has the second page to itself. */
+    unsigned char* at = e == ENCODINGS - 1 ? code + 4096 : code + 64 * e;
+    memcpy(at, encodings[e].bytes, encodings[e].len);
+    snippets[e] = (void (*)(void))at;
+  }
+  if (mprotect(code, 4096, PROT_READ | PROT_EXEC) != 0 ||
+      mprotect(code + 4096, 4096, PROT_EXEC) != 0)
+    die("snippet mprotect");
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+    int arm;
+  } cases[] = {
+      {"handler-blocked-notimer", trap_handler, 1, 0},
+      {"handler-blocked", trap_handler, 1, 1},
+      {"ign", SIG_IGN, 0, 1},
+      {"ign-blocked", SIG_IGN, 1, 1},
+  };
+  for (unsigned e = 0; e < ENCODINGS; e++)
+  for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    for (int c = 2; c < 6; c++) {
+      pid_t pid = fork();
+      if (pid < 0)
+        die("fork");
+      if (pid == 0) {
+        /* No core dump. The host's core pattern can pipe every dump to a
+         * collector, which only a limit of exactly 1 stops (a limit of 0 does
+         * not, and PR_SET_DUMPABLE would close the tracer's procfs reads). The
+         * child still dies by SIGTRAP. */
+        struct rlimit core = {1, 1};
+        if (setrlimit(RLIMIT_CORE, &core) != 0)
+          die("RLIMIT_CORE");
+        void (*volatile snippet)(void) = snippets[e];
+        sigtrap_set(cases[i].action, cases[i].block);
+        if (cases[i].arm)
+          SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1 + c, ARM_TIMER);
+        for (volatile int j = 0; j < PM_BRANCHES; j++)
+          ;
+        snippet();
+        _exit(0);
+      }
+      int status;
+      if (waitpid(pid, &status, 0) != pid)
+        die("wait int3 child");
+      say("int3 %s %s c=%d signaled=%d sig=%d\n",
+          encodings[e].name,
+          cases[i].name,
+          c,
+          WIFSIGNALED(status),
+          WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+    }
+  }
+}
+
+/* SIGTRAP blocked with one pending, then a private injection, which Reverie
+ * must single-step: the run ends with a named failure. */
+static void mode_sigtrap_pending_at_step(void) {
+  sigtrap_set(trap_handler, 1);
+  if (syscall(SYS_tgkill, getpid(), syscall(SYS_gettid), SIGTRAP) != 0)
+    die("tgkill SIGTRAP");
+  SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_PRIVATE);
+  say("pending SIGTRAP survived a private injection\n");
+}
+
+/* Calls the shared site with getppid, `marker` in r9, on the stack `sp`. */
+extern long tight_stack_site(void* sp, long marker);
+__asm__(".text\n.globl tight_stack_site\n.type tight_stack_site,@function\n"
+        "tight_stack_site:\n"
+        "push %r12\nmov %rsp,%r12\nmov %rdi,%rsp\n"
+        "push %rsi\n"
+        "mov $110,%edi\nxor %esi,%esi\nxor %edx,%edx\nxor %ecx,%ecx\n"
+        "xor %r8d,%r8d\nxor %r9d,%r9d\ncall tp_site_fn\n"
+        "mov %r12,%rsp\npop %r12\nret\n"
+        ".size tight_stack_site,.-tight_stack_site\n");
+
+/* An emulated call with SIGTRAP ignored and blocked, on a one-page stack
+ * between inaccessible guard pages, `offset` bytes above the lower guard.
+ * Reverie's SIGTRAP repair keeps its scratch out of guest memory: the call
+ * succeeds, and 32 canary bytes where a scratch below the red zone and a
+ * Tool's stack would sit stay unchanged. */
+static void mode_sigtrap_tight_stack(void) {
+  warm();
+  unsigned char* map = mmap(NULL, 12288, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (map == MAP_FAILED || mprotect(map + 4096, 4096, PROT_READ | PROT_WRITE) != 0)
+    die("tight stack mapping");
+  unsigned char* base = map + 4096;
+  static const int offsets[] = {512, 2048};
+  for (unsigned i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
+    sigtrap_set(SIG_IGN, 1);
+    memset(base, 0xa5, 4096);
+    void* sp = base + offsets[i];
+    long r = tight_stack_site(sp, TP_MAGIC | ((++tp_seq) << 16) | SHAPE_EMULATE);
+    int changed = -1;
+    uintptr_t canary = (((uintptr_t)sp - 16) - 1056) & ~(uintptr_t)15;
+    if (canary >= (uintptr_t)base) {
+      changed = 0;
+      for (unsigned b = 0; b < 32; b++)
+        changed += ((volatile unsigned char*)canary)[b] != 0xa5;
+    }
+    char tag[64];
+    snprintf(tag, sizeof tag, "tight %d r=%ld changed=%d", offsets[i], r, changed);
+    sigtrap_full_state(tag);
+  }
+  munmap(map, 12288);
+}
+
+static _Atomic int observer_request;
+static _Atomic int observer_done;
+static _Atomic int observer_round;
+static _Atomic uintptr_t observer_seen;
+
+/* Reads SIGTRAP's action in each round, while the interrupted thread's
+ * SIGUSR1 handler waits for it without a syscall. */
+static void* sigtrap_observer(void* unused) {
+  (void)unused;
+  for (int n = 1; n <= 8; n++) {
+    while (atomic_load_explicit(&observer_request, memory_order_acquire) != n)
+      __asm__ volatile("pause");
+    struct sigaction sa;
+    if (sigaction(SIGTRAP, NULL, &sa) != 0)
+      _exit(76);
+    atomic_store(&observer_seen, (uintptr_t)sa.sa_handler);
+    atomic_store_explicit(&observer_done, n, memory_order_release);
+  }
+  return NULL;
+}
+
+static void observed_usr1(int sig) {
+  (void)sig;
+  int n = atomic_load(&observer_round);
+  atomic_store_explicit(&observer_request, n, memory_order_release);
+  while (atomic_load_explicit(&observer_done, memory_order_acquire) != n)
+    __asm__ volatile("pause");
+}
+
+static int sigtrap_observer_process(void* unused) {
+  sigtrap_observer(unused);
+  return 0;
+}
+
+/* The interrupted waits of mode_sigtrap_interrupted_waits, with an observer
+ * that reads SIGTRAP's action while the first thread's SIGUSR1 handler runs,
+ * before that thread makes another syscall: the action a Reverie trap reset
+ * must already be repaired for the observer. The observer is a sibling
+ * thread, or (`process`) another process that shares the address space and
+ * the signal actions (CLONE_VM | CLONE_SIGHAND, without CLONE_THREAD). */
+static void sigtrap_interrupted_waits_observed(int process) {
+  warm();
+  struct sigaction usr1;
+  memset(&usr1, 0, sizeof usr1);
+  usr1.sa_handler = observed_usr1;
+  if (sigaction(SIGUSR1, &usr1, NULL) != 0)
+    die("install SIGUSR1");
+  pthread_t observer;
+  pid_t observer_pid = -1;
+  static char observer_stack[65536] __attribute__((aligned(16)));
+  if (process) {
+    observer_pid = clone(sigtrap_observer_process, observer_stack + sizeof observer_stack,
+                         CLONE_VM | CLONE_SIGHAND | SIGCHLD, NULL);
+    if (observer_pid < 0)
+      die("observer process");
+  } else if (pthread_create(&observer, NULL, sigtrap_observer, NULL) != 0)
+    die("observer thread");
+  static const struct {
+    const char* name;
+    void (*action)(int);
+    int block;
+    int tmask;
+  } states[] = {
+      {"ign", SIG_IGN, 0, 0},
+      {"ign-tmask", SIG_IGN, 0, 1},
+      {"handler-tmask", trap_handler, 0, 1},
+      {"handler-blocked", trap_handler, 1, 1},
+  };
+  static const char* const ops[] = {"sigsuspend", "ppoll"};
+  sigset_t usr1_set;
+  sigemptyset(&usr1_set);
+  sigaddset(&usr1_set, SIGUSR1);
+  for (int op = 0; op < 2; op++) {
+    for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+      sigtrap_set(states[i].action, states[i].block);
+      atomic_store(&observer_round, op * 4 + (int)i + 1);
+      if (sigprocmask(SIG_BLOCK, &usr1_set, NULL) != 0)
+        die("block SIGUSR1");
+      raise(SIGUSR1);
+      unsigned long temporary = states[i].tmask ? 1UL << (SIGTRAP - 1) : 0;
+      struct timespec ts = {5, 0};
+      long r = op == 0
+          ? SITEM(SYS_rt_sigsuspend, (long)&temporary, 8, 0, 0, 0, SHAPE_PRIVATE_CALL)
+          : SITEM(SYS_ppoll, 0, 0, (long)&ts, (long)&temporary, 8, SHAPE_PRIVATE_CALL);
+      if (sigprocmask(SIG_UNBLOCK, &usr1_set, NULL) != 0)
+        die("unblock SIGUSR1");
+      uintptr_t seen = atomic_load(&observer_seen);
+      say("observed %s %s r=%s sibling=%s\n",
+          ops[op],
+          states[i].name,
+          r == -EINTR ? "eintr" : "other",
+          seen == (uintptr_t)SIG_DFL       ? "dfl"
+              : seen == (uintptr_t)SIG_IGN ? "ign"
+              : seen == (uintptr_t)trap_handler ? "trap_handler"
+                                                : "other");
+    }
+  }
+  if (process) {
+    int status;
+    if (waitpid(observer_pid, &status, 0) != observer_pid || !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 0)
+      die("wait observer process");
+  } else if (pthread_join(observer, NULL) != 0)
+    die("join observer");
+}
+
+static void mode_sigtrap_interrupted_waits_observed(void) {
+  sigtrap_interrupted_waits_observed(0);
+}
+
+static void mode_sigtrap_interrupted_waits_observed_process(void) {
+  sigtrap_interrupted_waits_observed(1);
+}
+
+/* A caught, unblocked SIGTRAP through each handler shape: no step can reset
+ * it, so Reverie makes no repair injection. */
+static void mode_sigtrap_caught_unblocked(void) {
+  warm();
+  static const long shapes[] = {SHAPE_INJECT, SHAPE_TAIL, SHAPE_EMULATE,
+                                SHAPE_PRIVATE, SHAPE_TWO_INJECTS, SHAPE_TWO_PRIVATE};
+  for (unsigned j = 0; j < sizeof shapes / sizeof shapes[0]; j++) {
+    sigtrap_set(trap_handler, 0);
+    SITEM(SYS_getppid, 0, 0, 0, 0, 0, shapes[j]);
+    char tag[32];
+    snprintf(tag, sizeof tag, "caught shape=%ld", shapes[j]);
+    sigtrap_full_state(tag);
+  }
+}
+
+/* A guest int3 right after a wait that a handled SIGUSR1 interrupted, with a
+ * caught, unblocked SIGTRAP and SIGTRAP in the wait's temporary mask. The
+ * step after the wait reset SIGTRAP, and the repair can run only once the
+ * thread reaches its next syscall (the restore is pending until the SIGUSR1
+ * is delivered), so the int3 meets SIG_DFL and kills the child. Natively the
+ * handler runs and the child exits 0. A phase-0 limit, pinned here. */
+static void mode_sigtrap_int3_after_interrupted_wait(void) {
+  warm();
+  for (int op = 0; op < 2; op++) {
+    pid_t pid = fork();
+    if (pid < 0)
+      die("fork");
+    if (pid == 0) {
+      struct rlimit core = {1, 1};
+      if (setrlimit(RLIMIT_CORE, &core) != 0)
+        die("RLIMIT_CORE");
+      struct sigaction usr1;
+      memset(&usr1, 0, sizeof usr1);
+      usr1.sa_handler = quiet_usr1;
+      if (sigaction(SIGUSR1, &usr1, NULL) != 0)
+        die("install SIGUSR1");
+      sigtrap_set(trap_handler, 0);
+      sigset_t usr1_set;
+      sigemptyset(&usr1_set);
+      sigaddset(&usr1_set, SIGUSR1);
+      if (sigprocmask(SIG_BLOCK, &usr1_set, NULL) != 0)
+        die("block SIGUSR1");
+      raise(SIGUSR1);
+      unsigned long temporary = 1UL << (SIGTRAP - 1);
+      struct timespec ts = {5, 0};
+      if (op == 0)
+        SITEM(SYS_rt_sigsuspend, (long)&temporary, 8, 0, 0, 0, SHAPE_PRIVATE_CALL);
+      else
+        SITEM(SYS_ppoll, 0, 0, (long)&ts, (long)&temporary, 8, SHAPE_PRIVATE_CALL);
+      __asm__ volatile("int3");
+      _exit(0);
+    }
+    int status;
+    if (waitpid(pid, &status, 0) != pid)
+      die("wait int3-after-wait child");
+    say("after-wait %s signaled=%d sig=%d exited=%d\n",
+        op == 0 ? "sigsuspend" : "ppoll",
+        WIFSIGNALED(status),
+        WIFSIGNALED(status) ? WTERMSIG(status) : 0,
+        WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+  }
+}
+
+static _Atomic int window_in_handler, window_sibling_done;
+
+static void window_spinning_usr1(int sig) {
+  (void)sig;
+  atomic_store(&window_in_handler, 1);
+  while (!atomic_load(&window_sibling_done))
+    __asm__ volatile("pause");
+}
+
+static void* window_sibling_int3(void* arg) {
+  (void)arg;
+  while (!atomic_load(&window_in_handler))
+    __asm__ volatile("pause");
+  __asm__ volatile("int3");
+  atomic_store(&window_sibling_done, 1);
+  return NULL;
+}
+
+static volatile int window_callback_done;
+
+static void window_int3_handler(int sig) {
+  (void)sig;
+  __asm__ volatile("int3");
+  window_callback_done = 1;
+}
+
+/* Reports how a window child ended. */
+static void window_report(const char* tag, pid_t pid) {
+  int status;
+  if (waitpid(pid, &status, 0) != pid)
+    die("wait window child");
+  say("%s signaled=%d sig=%d exited=%d\n",
+      tag,
+      WIFSIGNALED(status),
+      WIFSIGNALED(status) ? WTERMSIG(status) : 0,
+      WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+}
+
+/* The same window, met by another thread: a wait that a handled SIGUSR1
+ * interrupted, with a caught, unblocked SIGTRAP in the wait's temporary mask
+ * (tmask=1) or not (tmask=0), whose handler spins without a syscall while a
+ * sibling executes int3. With tmask=1 the int3 meets SIG_DFL and kills the
+ * child; natively, and with tmask=0, the handler runs and it exits 0. Then a
+ * POSIX-timer signal whose Tool callback injects (SIGXCPU: between block-all
+ * rt_sigprocmask injections, whose trap resets SIGTRAP; SIGPROF: getpid,
+ * which the shield covers), and whose guest handler executes int3 before any
+ * syscall: the repair waits for a stop outside the callback, so with SIGXCPU
+ * the int3 meets SIG_DFL. Phase-0 limits, pinned here. */
+static void mode_sigtrap_int3_in_the_other_windows(void) {
+  warm();
+  for (int op = 0; op < 2; op++) {
+    for (int tmask = 0; tmask < 2; tmask++) {
+      pid_t pid = fork();
+      if (pid < 0)
+        die("fork");
+      if (pid == 0) {
+        struct rlimit core = {1, 1};
+        if (setrlimit(RLIMIT_CORE, &core) != 0)
+          die("RLIMIT_CORE");
+        struct sigaction usr1;
+        memset(&usr1, 0, sizeof usr1);
+        usr1.sa_handler = window_spinning_usr1;
+        if (sigaction(SIGUSR1, &usr1, NULL) != 0)
+          die("install SIGUSR1");
+        sigtrap_set(trap_handler, 0);
+        pthread_t sibling;
+        if (pthread_create(&sibling, NULL, window_sibling_int3, NULL) != 0)
+          die("pthread_create");
+        sigset_t usr1_set;
+        sigemptyset(&usr1_set);
+        sigaddset(&usr1_set, SIGUSR1);
+        if (pthread_sigmask(SIG_BLOCK, &usr1_set, NULL) != 0)
+          die("block SIGUSR1");
+        if (syscall(SYS_tgkill, getpid(), syscall(SYS_gettid), SIGUSR1) != 0)
+          die("tgkill SIGUSR1");
+        unsigned long temporary = tmask ? 1UL << (SIGTRAP - 1) : 0;
+        struct timespec ts = {5, 0};
+        if (op == 0)
+          SITEM(SYS_rt_sigsuspend, (long)&temporary, 8, 0, 0, 0, SHAPE_PRIVATE_CALL);
+        else
+          SITEM(SYS_ppoll, 0, 0, (long)&ts, (long)&temporary, 8, SHAPE_PRIVATE_CALL);
+        pthread_join(sibling, NULL);
+        _exit(0);
+      }
+      char tag[64];
+      snprintf(tag, sizeof tag, "sibling %s tmask=%d", op == 0 ? "sigsuspend" : "ppoll", tmask);
+      window_report(tag, pid);
+    }
+  }
+  static const struct {
+    const char* name;
+    int signo;
+  } signals[] = {{"prof", SIGPROF}, {"xcpu", SIGXCPU}};
+  for (unsigned s = 0; s < sizeof signals / sizeof signals[0]; s++) {
+    pid_t pid = fork();
+    if (pid < 0)
+      die("fork");
+    if (pid == 0) {
+      struct rlimit core = {1, 1};
+      if (setrlimit(RLIMIT_CORE, &core) != 0)
+        die("RLIMIT_CORE");
+      sigtrap_set(trap_handler, 0);
+      struct sigaction sa;
+      memset(&sa, 0, sizeof sa);
+      sa.sa_handler = window_int3_handler;
+      sigemptyset(&sa.sa_mask);
+      if (sigaction(signals[s].signo, &sa, NULL) != 0)
+        die("install window handler");
+      struct sigevent sev;
+      memset(&sev, 0, sizeof sev);
+      sev.sigev_notify = SIGEV_SIGNAL;
+      sev.sigev_signo = signals[s].signo;
+      timer_t timer;
+      if (timer_create(CLOCK_MONOTONIC, &sev, &timer) != 0)
+        die("timer_create");
+      struct itimerspec spec = {{0, 0}, {0, 2000000}};
+      if (timer_settime(timer, 0, &spec, NULL) != 0)
+        die("timer_settime");
+      /* Waits without keeping a value in rax: an injection from a signal
+       * callback leaves its return there when the signal stopped user code
+       * (restore_context keeps the injection's rax outside a held-signal
+       * callback), a separate Reverie defect that would otherwise end this
+       * child by SIGSEGV now and then. */
+      __asm__ volatile("1: pause\n\tcmpl $0, %0\n\tje 1b" : : "m"(window_callback_done) : "memory", "cc");
+      _exit(0);
+    }
+    char tag[32];
+    snprintf(tag, sizeof tag, "callback %s", signals[s].name);
+    window_report(tag, pid);
+  }
+}
+
+/* Reads /proc/self/maps into buf; returns its length. */
+static size_t read_maps(char* buf, size_t size) {
+  int fd = open("/proc/self/maps", O_RDONLY);
+  if (fd < 0)
+    die("open maps");
+  size_t len = 0;
+  ssize_t n;
+  while (len + 1 < size && (n = read(fd, buf + len, size - 1 - len)) > 0)
+    len += (size_t)n;
+  close(fd);
+  buf[len] = 0;
+  return len;
+}
+
+/* A SIGTRAP repair uses a page the kernel places where nothing is mapped,
+ * and removes it: the guest's mappings are the same before and after a
+ * private injection that resets an ignored SIGTRAP, Reverie's private range
+ * is the trampoline page alone, and a guest page at the address after it,
+ * which an earlier design used as a fixed scratch page, holding that design's
+ * marker bytes, is never written. */
+static void mode_sigtrap_scratch_overlay(void) {
+  static char before[65536], after[65536];
+  read_maps(before, sizeof before);
+  for (char* line = strtok(before, "\n"); line; line = strtok(NULL, "\n")) {
+    if (!strncmp(line, "71", 2)) {
+      char range[64], perms[8];
+      if (sscanf(line, "%63s %7s", range, perms) == 2)
+        say("overlay maps %s %s\n", range, perms);
+    }
+  }
+  sigtrap_set(SIG_IGN, 0);
+  read_maps(before, sizeof before);
+  SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_PRIVATE);
+  read_maps(after, sizeof after);
+  int same = !strcmp(before, after);
+  char tag[96];
+  snprintf(tag, sizeof tag, "overlay repaired maps-same=%d", same);
+  sigtrap_full_state(tag);
+  unsigned char* want = (unsigned char*)0x71001000;
+  unsigned char* page =
+      mmap(want, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+  if (page != want)
+    die("guest page at 0x71001000");
+  memset(page, 0xa5, 4096);
+  memcpy(page, "reverie scratch", 16);
+  unsigned char copy[4096];
+  memcpy(copy, page, sizeof copy);
+  SITEM(SYS_getppid, 0, 0, 0, 0, 0, SHAPE_PRIVATE);
+  int changed = 0;
+  for (int i = 0; i < 4096; i++)
+    changed += page[i] != copy[i];
+  snprintf(tag, sizeof tag, "overlay guest-page changed=%d", changed);
+  sigtrap_full_state(tag);
+}
+
+static volatile int callback_hits;
+static volatile int callback_code;
+static volatile long callback_value;
+
+static void callback_handler(int sig, siginfo_t* info, void* context) {
+  (void)sig;
+  (void)context;
+  callback_code = info->si_code;
+  callback_value = (long)info->si_value.sival_ptr;
+  callback_hits++;
+}
+
+/* One POSIX-timer signal (value 1234) per SIGTRAP state, which the Tool's
+ * callback answers with injections before resuming it
+ * (handle_signal_event): SIGPROF with getpid, SIGXCPU with getpid between
+ * block-all rt_sigprocmask injections. The handler must run once, with the
+ * timer's siginfo, and SIGTRAP's action must be the guest's afterwards. */
+static void mode_sigtrap_signal_callback(void) {
+  warm();
+  static const struct {
+    const char* name;
+    int signo;
+  } signals[] = {{"prof", SIGPROF}, {"xcpu", SIGXCPU}};
+  static const struct {
+    const char* name;
+    void (*action)(int);
+  } states[] = {{"dfl", SIG_DFL}, {"ign", SIG_IGN}, {"handler", trap_handler}};
+  for (unsigned s = 0; s < sizeof signals / sizeof signals[0]; s++) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = callback_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(signals[s].signo, &sa, NULL) != 0)
+      die("install callback handler");
+    for (unsigned i = 0; i < sizeof states / sizeof states[0]; i++) {
+      sigtrap_set(states[i].action, 0);
+      callback_hits = 0;
+      callback_code = 0;
+      callback_value = 0;
+      struct sigevent sev;
+      memset(&sev, 0, sizeof sev);
+      sev.sigev_notify = SIGEV_SIGNAL;
+      sev.sigev_signo = signals[s].signo;
+      sev.sigev_value.sival_ptr = (void*)1234;
+      timer_t timer;
+      if (timer_create(CLOCK_MONOTONIC, &sev, &timer) != 0)
+        die("timer_create");
+      struct itimerspec spec = {{0, 0}, {0, 2000000}};
+      if (timer_settime(timer, 0, &spec, NULL) != 0)
+        die("timer_settime");
+      while (callback_hits == 0)
+        ;
+      /* Long enough for a second delivery, had there been one. */
+      usleep(20000);
+      timer_delete(timer);
+      struct sigaction now;
+      if (sigaction(SIGTRAP, NULL, &now) != 0)
+        die("read SIGTRAP");
+      say("callback %s %s hits=%d code=%d value=%ld sigtrap=%s\n",
+          signals[s].name,
+          states[i].name,
+          callback_hits,
+          callback_code,
+          callback_value,
+          now.sa_handler == SIG_IGN          ? "ign"
+              : now.sa_handler == SIG_DFL    ? "dfl"
+              : now.sa_handler == trap_handler ? "trap_handler"
+                                               : "other");
+    }
   }
 }
 
@@ -2595,6 +3599,44 @@ int main(int argc, char** argv) {
     mode_self_raise();
   else if (!strcmp(m, "sigtrap_profile"))
     mode_sigtrap_profile();
+  else if (!strcmp(m, "sigtrap_states"))
+    mode_sigtrap_states();
+  else if (!strcmp(m, "sigtrap_timer"))
+    mode_sigtrap_timer();
+  else if (!strcmp(m, "sigtrap_interrupted_waits"))
+    mode_sigtrap_interrupted_waits();
+  else if (!strcmp(m, "sigtrap_tight_stack"))
+    mode_sigtrap_tight_stack();
+  else if (!strcmp(m, "sigtrap_signal_callback"))
+    mode_sigtrap_signal_callback();
+  else if (!strcmp(m, "sigtrap_interrupted_waits_observed"))
+    mode_sigtrap_interrupted_waits_observed();
+  else if (!strcmp(m, "sigtrap_caught_unblocked"))
+    mode_sigtrap_caught_unblocked();
+  else if (!strcmp(m, "sigtrap_int3_after_interrupted_wait"))
+    mode_sigtrap_int3_after_interrupted_wait();
+  else if (!strcmp(m, "sigtrap_fork_then_sigaction"))
+    mode_sigtrap_fork_then_sigaction();
+  else if (!strcmp(m, "sigtrap_int3_timer"))
+    mode_sigtrap_int3_timer();
+  else if (!strcmp(m, "sigtrap_int3_in_the_other_windows"))
+    mode_sigtrap_int3_in_the_other_windows();
+  else if (!strcmp(m, "sigtrap_scratch_overlay"))
+    mode_sigtrap_scratch_overlay();
+  else if (!strcmp(m, "sigtrap_interrupted_waits_observed_process"))
+    mode_sigtrap_interrupted_waits_observed_process();
+  else if (!strcmp(m, "sigtrap_pending_at_step"))
+    mode_sigtrap_pending_at_step();
+  else if (!strcmp(m, "sigtrap_sigreturn_timer"))
+    mode_sigtrap_sigreturn_timer();
+  else if (!strcmp(m, "sigtrap_fork"))
+    mode_sigtrap_fork();
+  else if (!strcmp(m, "sigtrap_private_calls"))
+    mode_sigtrap_private_calls();
+  else if (!strcmp(m, "sigtrap_exec"))
+    mode_sigtrap_exec(0);
+  else if (!strncmp(m, "sigtrap_exec_", 13))
+    mode_sigtrap_exec(atoi(m + 13));
   else if (!strcmp(m, "restart"))
     mode_restart();
   else if (!strcmp(m, "raw_clone_parent_ppid"))
