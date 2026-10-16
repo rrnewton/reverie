@@ -353,6 +353,9 @@ struct ProbeExecutor {
     ledger: Vec<reverie::SignalDequeue>,
 }
 impl LinuxProvider for ProbeExecutor {
+    type Memory = GuestMemory;
+    type Error = crate::Error;
+
     fn execute(&mut self, request: &SyscallRequest, _: &GuestMemory) -> Result<ProviderOutcome> {
         assert_eq!(request.number(), libc::SYS_close as u64);
         assert_eq!(request.args()[0], 9);

@@ -80,6 +80,9 @@ struct NoInstructions<'a> {
     failure: FailureContext,
 }
 impl LinuxProvider for NoInstructions<'_> {
+    type Memory = GuestMemory;
+    type Error = crate::Error;
+
     fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<ProviderOutcome> {
         panic!("native Tool control must not inject a guest instruction")
     }

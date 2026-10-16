@@ -70,6 +70,8 @@ use crate::signal::event_for_process;
 use crate::signal::event_for_thread;
 #[cfg(test)]
 use crate::signal::signal_info_user;
+#[cfg(test)]
+use crate::syscall::SyscallRequestExt;
 
 #[path = "process_signal_publication.rs"]
 mod process_signal_publication;
@@ -1356,7 +1358,7 @@ fn execute_basic_syscall_inner(
 }
 
 // TODO-HUMAN-REVIEW(PR-172): Review host-backed futex address and timeout translation.
-fn futex<M: GuestMemoryAccess>(memory: &M, args: &[u64; 6]) -> i64 {
+fn futex<M: GuestMemoryAccess<Error = crate::Error>>(memory: &M, args: &[u64; 6]) -> i64 {
     let operation = args[1] as libc::c_int;
     let command = operation & libc::FUTEX_CMD_MASK;
     // sys_futex imports and validates timeout-bearing commands before
@@ -1548,7 +1550,7 @@ fn get_robust_list(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u6
     0
 }
 
-fn guest_host_address<M: GuestMemoryAccess>(
+fn guest_host_address<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &M,
     guest_address: u64,
     length: usize,
@@ -2801,7 +2803,12 @@ impl FdinfoTarget {
 }
 
 impl FdinfoDescription {
-    fn read<M: GuestMemoryAccess>(&self, memory: &mut M, args: &[u64; 6], positioned: bool) -> i64 {
+    fn read<M: GuestMemoryAccess<Error = crate::Error>>(
+        &self,
+        memory: &mut M,
+        args: &[u64; 6],
+        positioned: bool,
+    ) -> i64 {
         let Ok(count) = usize::try_from(args[2]) else {
             return negative_errno(libc::EINVAL);
         };
@@ -8796,7 +8803,7 @@ fn host_write(fd: RawFd, bytes: &[u8]) -> i64 {
     }
 }
 
-fn prepare_host_read<M: GuestMemoryAccess + AddressSpace>(
+fn prepare_host_read<M: GuestMemoryAccess<Error = crate::Error> + AddressSpace>(
     memory: &M,
     address: u64,
     length: usize,
@@ -9280,7 +9287,7 @@ fn read(
     Ok(host_read(memory, host_fd, args[1], length))
 }
 
-fn pread64<M: GuestMemoryAccess + AddressSpace>(
+fn pread64<M: GuestMemoryAccess<Error = crate::Error> + AddressSpace>(
     memory: &mut M,
     state: &LoadedStaticElf,
     args: &[u64; 6],
@@ -10021,7 +10028,7 @@ fn vectored_io(
     staged_vectored_transfer(memory, state, number, host_fd, &guest_iovecs, args, reading)
 }
 
-fn staged_vectored_transfer<M: GuestMemoryAccess + AddressSpace>(
+fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + AddressSpace>(
     memory: &mut M,
     state: &LoadedStaticElf,
     number: libc::c_long,
@@ -12706,7 +12713,7 @@ fn ppoll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     poll_with_timeout(memory, state, args, timeout)
 }
 
-fn poll_with_timeout<M: GuestMemoryAccess>(
+fn poll_with_timeout<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &mut M,
     state: &LoadedStaticElf,
     args: &[u64; 6],
@@ -13066,7 +13073,11 @@ fn epoll_pwait2_missing_fd(output: u64, raw_count: u64) -> i64 {
 /// Immediate, unmasked readiness for a proven native eventfd interest set.
 /// Unknown/imported/nested/escaped descriptions and changed registration
 /// bindings remain unsupported; this is not general epoll virtualization.
-fn epoll_pwait2<M: GuestMemoryAccess>(memory: &M, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn epoll_pwait2<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &M,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+) -> i64 {
     // Linux fs/eventpoll.c copies/validates timeout before mask and descriptors.
     let zero_timeout = if args[3] == 0 {
         false
@@ -14499,7 +14510,7 @@ enum SocketNameOperation {
     Peer,
 }
 
-fn socket_name<M: GuestMemoryAccess>(
+fn socket_name<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &mut M,
     state: &LoadedStaticElf,
     args: &[u64; 6],
@@ -14840,7 +14851,7 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
 }
 
 // TODO-HUMAN-REVIEW(PR-218): Review bounded recvfrom buffer and peer-address copyback semantics.
-fn recvfrom<M: GuestMemoryAccess + AddressSpace>(
+fn recvfrom<M: GuestMemoryAccess<Error = crate::Error> + AddressSpace>(
     memory: &mut M,
     state: &LoadedStaticElf,
     args: &[u64; 6],
@@ -16015,7 +16026,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
 // General FIONREAD support was withdrawn in 345681e44bf9d07f8c9f52138ce2682633adfffe:
 // SCM_RIGHTS does not retain synthetic proc-file semantics. Only an actual host
 // pipe/FIFO can use this operation without that missing descriptor metadata.
-fn pipe_fionread<M: GuestMemoryAccess>(
+fn pipe_fionread<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &M,
     state: &LoadedStaticElf,
     guest_fd: libc::c_int,
@@ -16207,7 +16218,7 @@ fn forward_terminal_ioctl(
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#54): Confirm the fixed root-plus-overflow-group KVM persona.
-fn getgroups<M: GuestMemoryAccess>(memory: &mut M, args: &[u64; 6]) -> i64 {
+fn getgroups<M: GuestMemoryAccess<Error = crate::Error>>(memory: &mut M, args: &[u64; 6]) -> i64 {
     let size = args[0] as libc::c_int;
     if size < 0 {
         return negative_errno(libc::EINVAL);
@@ -16232,7 +16243,10 @@ fn getgroups<M: GuestMemoryAccess>(memory: &mut M, args: &[u64; 6]) -> i64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-145): Review fixed-root saved-ID output and fault ordering.
-fn get_fixed_root_ids<M: GuestMemoryAccess>(memory: &mut M, args: &[u64; 6]) -> i64 {
+fn get_fixed_root_ids<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &mut M,
+    args: &[u64; 6],
+) -> i64 {
     let root_id = libc::uid_t::from(0_u8).to_ne_bytes();
     for address in &args[..3] {
         if memory.write_exact(*address, &root_id).is_err() {
@@ -18677,7 +18691,7 @@ fn synthetic_guest_fd_symlink_statx(guest_fd: libc::c_int) -> libc::statx {
     stat
 }
 
-fn getdents64<M: GuestMemoryAccess>(
+fn getdents64<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &mut M,
     state: &LoadedStaticElf,
     args: &[u64; 6],
@@ -19217,7 +19231,7 @@ fn arch_prctl(
 // launchers can inspect and mutate their persona without touching supervisor
 // credentials.
 // TODO-HUMAN-REVIEW(PR-181): Review deterministic capability prctls.
-fn prctl<M: GuestMemoryAccess>(
+fn prctl<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &mut M,
     state: &mut LoadedStaticElf,
     args: &[u64; 6],
@@ -19344,7 +19358,7 @@ fn prctl<M: GuestMemoryAccess>(
     }
 }
 
-fn set_prctl_name<M: GuestMemoryAccess>(
+fn set_prctl_name<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &M,
     state: &mut LoadedStaticElf,
     address: u64,
@@ -19403,7 +19417,11 @@ fn prctl_cap_ambient(state: &mut LoadedStaticElf, operation: u64, capability: u6
 }
 
 // TODO-HUMAN-REVIEW(PR-181): Review the virtual capability ABI and masks.
-fn capget<M: GuestMemoryAccess>(memory: &mut M, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn capget<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &mut M,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+) -> i64 {
     if args[0] == 0 {
         return negative_errno(libc::EFAULT);
     }
@@ -19441,7 +19459,11 @@ fn capget<M: GuestMemoryAccess>(memory: &mut M, state: &LoadedStaticElf, args: &
 }
 
 // TODO-HUMAN-REVIEW(PR-181): Review deterministic capability mutation.
-fn capset<M: GuestMemoryAccess>(memory: &M, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn capset<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &M,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+) -> i64 {
     if args[0] == 0 || args[1] == 0 {
         return negative_errno(libc::EFAULT);
     }
@@ -19470,7 +19492,7 @@ fn capset<M: GuestMemoryAccess>(memory: &M, state: &mut LoadedStaticElf, args: &
     0
 }
 
-fn read_capability_header<M: GuestMemoryAccess>(
+fn read_capability_header<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &M,
     address: u64,
 ) -> Result<(u32, i32), ()> {
@@ -19504,7 +19526,7 @@ fn capability_data_bytes(effective: u64, permitted: u64, inheritable: u64) -> [u
     bytes
 }
 
-fn read_capability_data<M: GuestMemoryAccess>(
+fn read_capability_data<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &M,
     address: u64,
 ) -> Result<(u64, u64, u64), ()> {
@@ -20668,7 +20690,10 @@ fn munlock_guest_range<M: AddressSpace>(memory: &M, address: u64, length: u64) -
     0
 }
 
-fn mincore<M: GuestMemoryAccess + AddressSpace>(memory: &mut M, args: &[u64; 6]) -> i64 {
+fn mincore<M: GuestMemoryAccess<Error = crate::Error> + AddressSpace>(
+    memory: &mut M,
+    args: &[u64; 6],
+) -> i64 {
     let address = args[0];
     let length = args[1];
     if length == 0 || !address.is_multiple_of(PAGE_SIZE) || !range_is_valid(memory, address, length)
@@ -20693,7 +20718,7 @@ fn mincore<M: GuestMemoryAccess + AddressSpace>(memory: &mut M, args: &[u64; 6])
     }
 }
 
-fn getcpu<M: GuestMemoryAccess>(memory: &mut M, args: &[u64; 6]) -> i64 {
+fn getcpu<M: GuestMemoryAccess<Error = crate::Error>>(memory: &mut M, args: &[u64; 6]) -> i64 {
     if args[0] != 0 {
         let result = write_struct(memory, args[0], &0_u32);
         if result != 0 {
@@ -20706,7 +20731,7 @@ fn getcpu<M: GuestMemoryAccess>(memory: &mut M, args: &[u64; 6]) -> i64 {
     0
 }
 
-fn sched_getaffinity<M: GuestMemoryAccess>(
+fn sched_getaffinity<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &mut M,
     state: &LoadedStaticElf,
     args: &[u64; 6],
@@ -20762,7 +20787,10 @@ fn sched_target_result(state: &LoadedStaticElf, pid: libc::c_int) -> Result<(), 
 }
 
 // TODO-HUMAN-REVIEW(PR-119): Review guest sched_param memory validation.
-fn read_sched_param<M: GuestMemoryAccess>(memory: &M, address: u64) -> Result<libc::c_int, i64> {
+fn read_sched_param<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &M,
+    address: u64,
+) -> Result<libc::c_int, i64> {
     if address == 0 {
         return Err(negative_errno(libc::EINVAL));
     }
@@ -20774,7 +20802,7 @@ fn read_sched_param<M: GuestMemoryAccess>(memory: &M, address: u64) -> Result<li
 }
 
 // TODO-HUMAN-REVIEW(PR-119): Review guest sched_param output validation.
-fn write_sched_param<M: GuestMemoryAccess>(
+fn write_sched_param<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &mut M,
     address: u64,
     priority: libc::c_int,
@@ -20842,7 +20870,7 @@ fn sched_getscheduler(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
 
 // TODO-HUMAN-REVIEW(PR-110): Review virtual sched_setscheduler behavior.
 // TODO-HUMAN-REVIEW(PR-119): Review stateful scheduler mutation and errno ordering.
-fn sched_setscheduler<M: GuestMemoryAccess>(
+fn sched_setscheduler<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &M,
     state: &mut LoadedStaticElf,
     args: &[u64; 6],
@@ -20874,7 +20902,7 @@ fn sched_setscheduler<M: GuestMemoryAccess>(
 
 // TODO-HUMAN-REVIEW(PR-110): Review virtual sched_getparam behavior.
 // TODO-HUMAN-REVIEW(PR-119): Review scheduler parameter query errno ordering.
-fn sched_getparam<M: GuestMemoryAccess>(
+fn sched_getparam<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &mut M,
     state: &LoadedStaticElf,
     args: &[u64; 6],
@@ -20894,7 +20922,7 @@ fn sched_getparam<M: GuestMemoryAccess>(
 
 // TODO-HUMAN-REVIEW(PR-110): Review virtual sched_setparam behavior.
 // TODO-HUMAN-REVIEW(PR-119): Review scheduler parameter mutation errno ordering.
-fn sched_setparam<M: GuestMemoryAccess>(
+fn sched_setparam<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &M,
     state: &mut LoadedStaticElf,
     args: &[u64; 6],
@@ -21028,7 +21056,7 @@ fn setpriority(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review bounded sched_getattr ABI writes.
-fn sched_getattr<M: GuestMemoryAccess>(
+fn sched_getattr<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &mut M,
     state: &LoadedStaticElf,
     args: &[u64; 6],
@@ -21063,7 +21091,7 @@ fn sched_getattr<M: GuestMemoryAccess>(
 }
 
 // TODO-HUMAN-REVIEW(PR-180): Review virtual-TID random stream separation.
-fn getrandom<M: GuestMemoryAccess>(
+fn getrandom<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &mut M,
     state: &mut LoadedStaticElf,
     address: u64,
@@ -21165,11 +21193,11 @@ fn deterministic_random_device_byte(seed: u64, index: u64) -> u8 {
 // their sleep requests, but do not block the supervisor on host wall time;
 // subscribed root-process sleeps continue to use Detcore's time model.
 // TODO-HUMAN-REVIEW(PR-182): Review nonblocking KVM child sleeps.
-fn nanosleep<M: GuestMemoryAccess>(memory: &M, args: &[u64; 6]) -> i64 {
+fn nanosleep<M: GuestMemoryAccess<Error = crate::Error>>(memory: &M, args: &[u64; 6]) -> i64 {
     validate_sleep_request(memory, args[0])
 }
 
-fn clock_nanosleep<M: GuestMemoryAccess>(memory: &M, args: &[u64; 6]) -> i64 {
+fn clock_nanosleep<M: GuestMemoryAccess<Error = crate::Error>>(memory: &M, args: &[u64; 6]) -> i64 {
     let clock_id = args[0] as libc::clockid_t;
     if clock_id == libc::CLOCK_THREAD_CPUTIME_ID {
         return negative_errno(libc::EOPNOTSUPP);
@@ -21187,7 +21215,10 @@ fn clock_nanosleep<M: GuestMemoryAccess>(memory: &M, args: &[u64; 6]) -> i64 {
     validate_sleep_request(memory, args[2])
 }
 
-fn validate_sleep_request<M: GuestMemoryAccess>(memory: &M, address: u64) -> i64 {
+fn validate_sleep_request<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &M,
+    address: u64,
+) -> i64 {
     if address == 0 {
         return negative_errno(libc::EFAULT);
     }
@@ -21202,7 +21233,7 @@ fn validate_sleep_request<M: GuestMemoryAccess>(memory: &M, address: u64) -> i64
     }
 }
 
-fn clock_gettime<M: GuestMemoryAccess>(
+fn clock_gettime<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &mut M,
     state: &mut LoadedStaticElf,
     args: &[u64; 6],
@@ -21225,7 +21256,10 @@ fn clock_gettime<M: GuestMemoryAccess>(
 /// store returns EFAULT, leaving an already stored `tv_sec` in place. `tz` is
 /// then copied with `copy_to_user`, which stores the writable prefix before
 /// it faults.
-fn gettimeofday<M: GuestMemoryAccess>(memory: &mut M, args: &[u64; 6]) -> i64 {
+fn gettimeofday<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &mut M,
+    args: &[u64; 6],
+) -> i64 {
     const TV_USEC_OFFSET: u64 = std::mem::offset_of!(libc::timeval, tv_usec) as u64;
     if args[0] != 0 {
         let stored = memory.put_user_u64(args[0], 0).is_ok()
@@ -21253,7 +21287,11 @@ fn gettimeofday<M: GuestMemoryAccess>(memory: &mut M, args: &[u64; 6]) -> i64 {
 /// `tloc` when it is not null. As Linux's `put_user`, the store writes all
 /// eight bytes or none, only to writable pages (shared-file pages included),
 /// and a failed store returns EFAULT. Reading the clock does not advance it.
-fn time<M: GuestMemoryAccess>(memory: &mut M, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn time<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &mut M,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+) -> i64 {
     let seconds = state.logical_clock_ns / 1_000_000_000;
     if args[0] != 0 && memory.put_user_u64(args[0], seconds).is_err() {
         return negative_errno(libc::EFAULT);
@@ -21437,7 +21475,11 @@ fn personality(state: &mut LoadedStaticElf, raw: u64) -> i64 {
     i64::from(previous)
 }
 
-fn uname<M: GuestMemoryAccess>(memory: &mut M, state: &LoadedStaticElf, address: u64) -> i64 {
+fn uname<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &mut M,
+    state: &LoadedStaticElf,
+    address: u64,
+) -> i64 {
     // Linux's UNAME26 rule maps a 6.0.0 release to 2.6.(0 + 60).
     // Keep this transformation tied to the existing lower virtual release.
     let release: &[u8] = if state.linux_personality & PERSONALITY_UNAME26 != 0 {
@@ -21463,7 +21505,7 @@ fn uname<M: GuestMemoryAccess>(memory: &mut M, state: &LoadedStaticElf, address:
     write_bytes(memory, address, &utsname)
 }
 
-fn prlimit64<M: GuestMemoryAccess>(memory: &mut M, args: &[u64; 6]) -> i64 {
+fn prlimit64<M: GuestMemoryAccess<Error = crate::Error>>(memory: &mut M, args: &[u64; 6]) -> i64 {
     if args[2] != 0 {
         return negative_errno(libc::EPERM);
     }
@@ -22538,7 +22580,7 @@ fn waitid_options_supported(raw: u64) -> bool {
     options & libc::WEXITED != 0 && options & !allowed == 0
 }
 
-fn finish_waitid<M: GuestMemoryAccess>(
+fn finish_waitid<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &M,
     args: &[u64; 6],
     event: Option<&GuestWaitidSiginfo>,
@@ -22673,18 +22715,30 @@ fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     waitid_result(memory, state, args).expect("raw waitid fixture has a coherent family ledger")
 }
 
-fn write_u64<M: GuestMemoryAccess>(memory: &mut M, address: u64, value: u64) -> i64 {
+fn write_u64<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &mut M,
+    address: u64,
+    value: u64,
+) -> i64 {
     write_bytes(memory, address, &value.to_le_bytes())
 }
 
-fn write_bytes<M: GuestMemoryAccess>(memory: &mut M, address: u64, bytes: &[u8]) -> i64 {
+fn write_bytes<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &mut M,
+    address: u64,
+    bytes: &[u8],
+) -> i64 {
     match memory.write_exact(address, bytes) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::EFAULT),
     }
 }
 
-fn write_struct<T>(memory: &mut impl GuestMemoryAccess, address: u64, value: &T) -> i64 {
+fn write_struct<T>(
+    memory: &mut impl GuestMemoryAccess<Error = crate::Error>,
+    address: u64,
+    value: &T,
+) -> i64 {
     // SAFETY: Linux ABI structs are initialized plain data. The byte view is
     // bounded to value and copied into guest memory before value is dropped.
     let bytes = unsafe {
@@ -22697,7 +22751,7 @@ fn write_struct<T>(memory: &mut impl GuestMemoryAccess, address: u64, value: &T)
 }
 
 fn read_guest_bytes<const N: usize>(
-    memory: &impl GuestMemoryAccess,
+    memory: &impl GuestMemoryAccess<Error = crate::Error>,
     address: u64,
 ) -> Result<[u8; N], i64> {
     let mut bytes = [0; N];
@@ -22707,7 +22761,10 @@ fn read_guest_bytes<const N: usize>(
     Ok(bytes)
 }
 
-fn read_guest_struct<T>(memory: &impl GuestMemoryAccess, address: u64) -> Result<T, i64> {
+fn read_guest_struct<T>(
+    memory: &impl GuestMemoryAccess<Error = crate::Error>,
+    address: u64,
+) -> Result<T, i64> {
     let mut value = std::mem::MaybeUninit::<T>::zeroed();
     // SAFETY: value is writable for exactly size_of::<T>() bytes and is not
     // observed until guest memory has initialized the complete byte range.
@@ -22754,7 +22811,7 @@ fn read_c_string_errno(error: ReadCStringError) -> i64 {
     }
 }
 
-fn read_c_string<M: GuestMemoryAccess>(
+fn read_c_string<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &M,
     address: u64,
     limit: usize,
@@ -22826,7 +22883,7 @@ struct CloneRequest {
     tls: Option<u64>,
 }
 
-fn read_clone3<M: GuestMemoryAccess>(
+fn read_clone3<M: GuestMemoryAccess<Error = crate::Error>>(
     memory: &M,
     address: u64,
     size: u64,
@@ -22891,7 +22948,10 @@ fn read_clone3<M: GuestMemoryAccess>(
     })
 }
 
-fn read_string_array<M: GuestMemoryAccess>(memory: &M, address: u64) -> Result<Vec<String>, i64> {
+fn read_string_array<M: GuestMemoryAccess<Error = crate::Error>>(
+    memory: &M,
+    address: u64,
+) -> Result<Vec<String>, i64> {
     const MAX_ENTRIES: usize = 4096;
     const MAX_STRING_BYTES: usize = 128 * 1024;
 

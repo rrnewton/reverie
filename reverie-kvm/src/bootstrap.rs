@@ -1085,6 +1085,7 @@ fn frame_word_address_u64(syscall_frame_address: u64, word: usize) -> u64 {
 mod tests {
     use super::*;
     use crate::SyscallRequest;
+    use crate::syscall::SyscallRequestExt;
 
     /// The memoized hypercall offset and return byte equal a fresh build of
     /// the trampoline for every input, including after the inputs change

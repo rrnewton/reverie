@@ -30,6 +30,9 @@ struct QueueExecutor {
     calls: usize,
 }
 impl LinuxProvider for QueueExecutor {
+    type Memory = GuestMemory;
+    type Error = crate::Error;
+
     fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<ProviderOutcome> {
         panic!("queue operation executed a guest syscall")
     }
@@ -176,6 +179,9 @@ fn process_alarm_signal_into_guest_forwards_complete_outcomes_without_guest_effe
 
 struct UnsupportedExecutor;
 impl LinuxProvider for UnsupportedExecutor {
+    type Memory = GuestMemory;
+    type Error = crate::Error;
+
     fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<ProviderOutcome> {
         panic!("refusal executed a guest syscall")
     }
