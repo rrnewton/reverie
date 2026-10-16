@@ -141,9 +141,7 @@ fn blocking_flock_refusal(
     request: &SyscallRequest,
     result: i64,
 ) -> Option<reverie::UnsupportedRefusal> {
-    (request.number() == libc::SYS_flock as u64
-        && flock_may_block(request.args()[1] as u32)
-        && result == negative_errno(libc::ENOSYS))
+    (request.number() == libc::SYS_flock as u64 && result == negative_errno(libc::ENOSYS))
     .then(|| {
         reverie::UnsupportedRefusal::new(
             reverie::UnsupportedOperation::BlockingFlock,
@@ -16315,22 +16313,23 @@ fn is_credential_identity_noop_syscall(number: u64) -> bool {
 /// host lock only once every sibling thread has made its next syscall and
 /// dropped its private copy. Until then another description still sees the
 /// lock (EWOULDBLOCK), where Linux would already have released it.
-fn flock(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    // The kernel's flock takes `unsigned int fd, unsigned int cmd`.
-    let operation = args[1] as u32;
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        // No host description stands behind this guest descriptor. Ask the
-        // kernel with one it can never resolve, so its own checks decide:
-        // EINVAL for a malformed operation, success for LOCK_MAND, else EBADF.
-        // It cannot block, because the descriptor lookup fails first.
-        // SAFETY: flock takes no pointers.
-        return zero_or_errno(unsafe { libc::flock(-1, operation as libc::c_int) });
-    };
-    if flock_may_block(operation) {
-        return negative_errno(libc::ENOSYS);
+fn flock(_state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    // SCRATCH VARIANT C (measurement only, never lands): refuse every flock
+    // before any host effect, and record the hit for the corpus comparison.
+    use std::io::Write as _;
+    let cell = std::env::var("E2E_FIXTURE_DIR").unwrap_or_else(|_| "<no-cell>".to_owned());
+    if let Ok(mut log) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/home/newton/work/dev-hermit/worktrees/slots/kvm-20261012/ignored/runs-a1-cells/c-flock-hits.log")
+    {
+        let _ = log.write_all(
+            format!("{cell}\tpid={}\tfd={}\top={:#x}\n", std::process::id(), args[0] as i32, args[1] as u32)
+                .as_bytes(),
+        );
     }
-    // SAFETY: host_fd names a live descriptor; flock takes no pointers.
-    zero_or_errno(unsafe { libc::flock(host_fd, operation as libc::c_int) })
+    let _ = flock_may_block;
+    negative_errno(libc::ENOSYS)
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
