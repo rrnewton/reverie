@@ -106,6 +106,7 @@ const TEST_COMPARE_EXCHANGE_ENV: &str = "HERMIT_DBT_TEST_COMPARE_EXCHANGE";
 const TEST_PPID_ENV: &str = "HERMIT_DBT_TEST_PPID";
 const TEST_BACKTRACE_ENV: &str = "HERMIT_DBT_TEST_BACKTRACE";
 const TEST_INJECT_INVALID_CLONE_ENV: &str = "HERMIT_DBT_TEST_INJECT_INVALID_CLONE";
+const TEST_INJECT_WAITS_ENV: &str = "HERMIT_DBT_TEST_INJECT_WAITS";
 const COUNTER1_ENV: &str = "HERMIT_DBT_COUNTER1";
 const COUNTER2_ENV: &str = "HERMIT_DBT_COUNTER2";
 const CHUNKY_PRINT_ENV: &str = "HERMIT_DBT_CHUNKY_PRINT";
@@ -146,6 +147,8 @@ static TEST_BACKTRACE_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(TEST_B
 static TEST_INJECT_INVALID_CLONE_ENABLED: LazyLock<bool> =
     LazyLock::new(|| env_flag(TEST_INJECT_INVALID_CLONE_ENV));
 static TEST_INJECT_INVALID_CLONE_DONE: AtomicBool = AtomicBool::new(false);
+static TEST_INJECT_WAITS_ENABLED: LazyLock<bool> =
+    LazyLock::new(|| env_flag(TEST_INJECT_WAITS_ENV));
 static COUNTER1_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(COUNTER1_ENV));
 static COUNTER2_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(COUNTER2_ENV));
 static CHUNKY_PRINT_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(CHUNKY_PRINT_ENV));
@@ -285,6 +288,12 @@ pub(crate) fn emit_counter1_exact_summary() {
 /// Whether the exact backend-neutral counter2 tool is selected.
 pub(crate) fn counter2_exact_enabled() -> bool {
     *COUNTER2_EXACT_ENABLED
+}
+
+/// Whether the inject-waits regression tool is active; it also reports each
+/// runtime thread exit, so tests can count them.
+pub(crate) fn inject_waits_enabled() -> bool {
+    *TEST_INJECT_WAITS_ENABLED
 }
 
 /// Exact counter2 process-local tool instance.
@@ -620,6 +629,32 @@ impl Tool for InjectInvalidCloneTool {
             }
         }
         guest.tail_inject(syscall).await
+    }
+}
+
+/// Regression tool that runs the guest's `select` and `pselect6` through
+/// [`Guest::inject`], as Detcore does for a blocking wait on an external
+/// descriptor, and returns the injected result. Everything else runs normally.
+/// The injected wait executes inside DynamoRIO rather than from the code cache,
+/// so a synch against this thread cannot succeed until the call returns
+/// (<https://github.com/rrnewton/hermit/issues/4483>).
+#[derive(Clone, Copy, Debug, Default)]
+struct InjectWaitsTool;
+
+#[reverie::tool]
+impl Tool for InjectWaitsTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        match syscall.number() {
+            Sysno::select | Sysno::pselect6 => Ok(guest.inject(syscall).await?),
+            _ => guest.tail_inject(syscall).await,
+        }
     }
 }
 
@@ -1402,6 +1437,7 @@ enum ActiveTool {
     Ppid,
     Backtrace,
     InjectInvalidClone,
+    InjectWaits,
     Counter1,
     Counter2,
     ChunkyPrint,
@@ -1414,6 +1450,8 @@ fn active_tool() -> Option<ActiveTool> {
         Some(ActiveTool::RewriteExit)
     } else if *TEST_INJECT_INVALID_CLONE_ENABLED {
         Some(ActiveTool::InjectInvalidClone)
+    } else if *TEST_INJECT_WAITS_ENABLED {
+        Some(ActiveTool::InjectWaits)
     } else if *TEST_SET_REG_ENABLED {
         Some(ActiveTool::SetReg)
     } else if *TEST_COMPARE_EXCHANGE_ENABLED {
@@ -1850,6 +1888,17 @@ pub(crate) fn run_active_tool(
         ),
         ActiveTool::InjectInvalidClone => dispatch(
             &InjectInvalidCloneTool,
+            context,
+            tid,
+            pid,
+            branches,
+            syscall,
+            invoke_syscall,
+            read_registers,
+            write_registers,
+        ),
+        ActiveTool::InjectWaits => dispatch(
+            &InjectWaitsTool,
             context,
             tid,
             pid,

@@ -388,6 +388,11 @@ void
 signal_end_injected_sigpipe(dcontext_t *dcontext);
 reg_t
 signal_wait_injected_sigsuspend(dcontext_t *dcontext);
+int64
+signal_reissue_wait_start_ns(int sysnum);
+reg_t
+signal_reissue_injected_wait(dcontext_t *dcontext, int sysnum, reg_t *args,
+                             int64 start_ns, reg_t first);
 struct _dr_syscall_invoke_result_t;
 void
 signal_finish_injected_sigsuspend(dcontext_t *dcontext,

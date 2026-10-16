@@ -781,6 +781,33 @@ check_wait_at_safe_spot(dcontext_t *dcontext, thread_synch_permission_t cur_stat
     }
 }
 
+static volatile int terminating_synch_count;
+static volatile bool process_terminating;
+
+void
+synch_terminating_begin(void)
+{
+    ATOMIC_INC(int, terminating_synch_count);
+}
+
+void
+synch_terminating_end(void)
+{
+    ATOMIC_DEC(int, terminating_synch_count);
+}
+
+void
+synch_set_process_terminating(bool terminating)
+{
+    process_terminating = terminating;
+}
+
+bool
+synch_terminating_in_progress(void)
+{
+    return process_terminating || terminating_synch_count > 0;
+}
+
 /* adjusts the pending synch count */
 void
 adjust_wait_at_safe_spot(dcontext_t *dcontext, int amt)
@@ -789,6 +816,12 @@ adjust_wait_at_safe_spot(dcontext_t *dcontext, int amt)
     ASSERT(tsd->pending_synch_count >= 0);
     spinmutex_lock(tsd->synch_lock);
     ATOMIC_ADD(int, tsd->pending_synch_count, amt);
+    /* Reverie: the ASSERT above is debug-only. A negative count means an
+     * unbalanced synch exit, so report it in release builds too. */
+    if (tsd->pending_synch_count < 0) {
+        print_file(STDERR, "reverie-dbt: pending_synch_count below zero tid=%d\n",
+                   dcontext->owning_thread);
+    }
     spinmutex_unlock(tsd->synch_lock);
 }
 
@@ -1525,6 +1558,12 @@ synch_with_all_exit:
                 ASSERT(threads[i]->dcontext != NULL);
                 tsd = (thread_synch_data_t *)threads[i]->dcontext->synch_field;
                 tsd->synch_with_success = (synch_array[i] == SYNCH_WITH_ALL_SYNCHED);
+                /* Undo the notification of a thread that was never synched,
+                 * as the abort path does; otherwise its pending_synch_count
+                 * stays raised and its next safe spot waits for a synch that
+                 * has already ended. */
+                if (synch_array[i] == SYNCH_WITH_ALL_NOTIFIED)
+                    adjust_wait_at_safe_spot(threads[i]->dcontext, -1);
             }
         }
     }
@@ -1584,6 +1623,13 @@ synch_with_all_abort:
                 synch_array[i] = SYNCH_WITH_ALL_NEW;
             } else if (synch_array[i] == SYNCH_WITH_ALL_NOTIFIED) {
                 adjust_wait_at_safe_spot(threads[i]->dcontext, -1);
+                /* The exit path below must not decrement this thread again. */
+                synch_array[i] = SYNCH_WITH_ALL_NEW;
+                if (DYNAMO_OPTION(reverie_test_hooks)) {
+                    print_file(STDERR,
+                               "reverie-dbt-test: synch abort released a notified "
+                               "thread\n");
+                }
             }
         }
     }

@@ -81,6 +81,7 @@ pub struct DbtRunner {
     drrun: PathBuf,
     client: PathBuf,
     client_arguments: Vec<OsString>,
+    dynamorio_options: Vec<OsString>,
     diagnostic_file: Option<Arc<File>>,
     evidence: Option<Arc<EvidenceSession>>,
     evidence_log_level: DbtEvidenceLogLevel,
@@ -146,6 +147,7 @@ impl DbtRunner {
             drrun,
             client,
             client_arguments: Vec::new(),
+            dynamorio_options: Vec::new(),
             diagnostic_file: None,
             evidence: None,
             evidence_log_level: DbtEvidenceLogLevel::Info,
@@ -185,6 +187,14 @@ impl DbtRunner {
     /// Adds an argument passed to the native client in every instrumented process image.
     pub fn client_argument(mut self, argument: impl Into<OsString>) -> Self {
         self.client_arguments.push(argument.into());
+        self
+    }
+
+    /// Adds an option for DynamoRIO itself, placed before the client on the
+    /// `drrun` command line. Each call adds one word, so an option that takes a
+    /// value needs two calls.
+    pub fn dynamorio_option(mut self, option: impl Into<OsString>) -> Self {
+        self.dynamorio_options.push(option.into());
         self
     }
 
@@ -977,6 +987,7 @@ impl DbtRunner {
             // The value must be hex: DynamoRIO parses address options so.
             .args(["-vm_max_offset", "0x0"])
             .args(["-stack_size", "2M"])
+            .args(&self.dynamorio_options)
             .arg("-c")
             .arg(&self.client)
             .arg("-diagnostic_fd")
@@ -1843,6 +1854,7 @@ mod tests {
             drrun: PathBuf::from("/opt/dynamorio/bin64/drrun"),
             client: PathBuf::from("/opt/reverie/libreverie_dbt_client.so"),
             client_arguments: Vec::new(),
+            dynamorio_options: Vec::new(),
             diagnostic_file: None,
             evidence: None,
             evidence_log_level: DbtEvidenceLogLevel::Info,
@@ -1972,6 +1984,36 @@ mod tests {
             .map(OsStr::new)
         );
     }
+    #[test]
+    fn dynamorio_options_precede_the_client() {
+        let wrapped = runner()
+            .dynamorio_option("-reset_at_nth_thread")
+            .dynamorio_option("3")
+            .client_argument("-test-fork-timing")
+            .command(&Command::new("/bin/true"), None);
+        assert_eq!(
+            wrapped.get_args().collect::<Vec<_>>(),
+            [
+                "-quiet",
+                "-disable_rseq",
+                "-vm_max_offset",
+                "0x0",
+                "-stack_size",
+                "2M",
+                "-reset_at_nth_thread",
+                "3",
+                "-c",
+                "/opt/reverie/libreverie_dbt_client.so",
+                "-diagnostic_fd",
+                "198",
+                "-test-fork-timing",
+                "--",
+                "/bin/true",
+            ]
+            .map(OsStr::new)
+        );
+    }
+
     #[test]
     fn wraps_guest_program_arguments_directory_and_environment() {
         let mut guest = Command::new("/bin/echo");

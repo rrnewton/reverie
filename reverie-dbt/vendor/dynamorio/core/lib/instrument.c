@@ -5044,6 +5044,13 @@ dr_get_itimer(int which)
 #endif /* UNIX */
 
 DR_API
+bool
+dr_threads_terminating(void)
+{
+    return synch_terminating_in_progress();
+}
+
+DR_API
 void
 dr_track_where_am_i(void)
 {

@@ -1656,6 +1656,9 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_exit(
     tid: i32,
     _invoke_syscall: SyscallInvoker,
 ) {
+    if tools::inject_waits_enabled() {
+        tools::emit_line(&format!("reverie-dbt-test: runtime thread exit tid={tid}"));
+    }
     if tools::counter2_exact_enabled() {
         let thread_syscalls = unsafe { (*counters).observed_syscalls };
         let _ = run_tool_thread_exit(

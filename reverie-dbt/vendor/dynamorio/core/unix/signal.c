@@ -3135,6 +3135,227 @@ signal_wait_injected_sigsuspend(dcontext_t *dcontext)
     return result;
 }
 
+/* https://github.com/rrnewton/hermit/issues/4483:
+ * a returning injected select or pselect6 can be interrupted by
+ * DR's own suspend signal, for example on every round of the synch that a fork
+ * from another thread performs. Linux never restarts these calls, so returning
+ * that EINTR would surface an interruption no application signal caused.
+ *
+ * The call is re-issued while no pending application signal would have ended
+ * it on Linux. Guest arguments are copied in before, and written back after,
+ * the physical block, so guest memory is touched only with signals unblocked.
+ * The kernel wait mask is the call's effective application mask (which during
+ * a masked pselect6 is the temporary mask) minus the signals DR itself must
+ * receive. pselect6 installs it atomically, so a signal arriving after the
+ * pending check interrupts the wait instead of being lost.
+ *
+ * While DynamoRIO is terminating threads (process exit, exit_group), the EINTR
+ * is returned instead: the thread must leave the call and reach a safe spot to
+ * exit itself, as it did before the re-issue existed.
+ *
+ * poll and epoll_wait are not on the list: in DBT run mode Detcore never issues
+ * them as a blocking native wait. rt_sigsuspend has its own loop above.
+ */
+#define REISSUE_NS_MAX ((int64)0x7fffffffffffffffLL)
+#ifndef STICKY_TIMEOUTS
+#    define STICKY_TIMEOUTS 0x4000000 /* linux/personality.h */
+#endif
+
+static int64
+reissue_now_ns(void)
+{
+    struct timespec now;
+    if (dynamorio_syscall(SYS_clock_gettime, 2, 1 /* CLOCK_MONOTONIC */, &now) != 0)
+        return 0;
+    return (int64)now.tv_sec * 1000000000LL + now.tv_nsec;
+}
+
+static bool
+reissue_allowlisted(int sysnum)
+{
+    return sysnum == SYS_select || sysnum == SYS_pselect6;
+}
+
+int64
+signal_reissue_wait_start_ns(int sysnum)
+{
+    /* Only STICKY_TIMEOUTS needs the start time, but the personality is read
+     * only if the call is interrupted. */
+    return reissue_allowlisted(sysnum) ? reissue_now_ns() : 0;
+}
+
+/* Whether a pending record would have ended the wait on Linux. */
+static bool
+pending_signal_ends_wait(thread_sig_info_t *info, int sig, sigpending_t *pending)
+{
+    if (!pending->unblocked_at_receipt && kernel_sigismember(&info->app_sigblocked, sig))
+        return false;
+    /* Linux discards an ignored signal at generation (sig_ignored), so it never
+     * interrupts a wait. DR queues a SIG_DFL default-ignore signal because its
+     * own handler is installed, and runs the default action at delivery. */
+    if (info->sighand->action[sig] == NULL ||
+        info->sighand->action[sig]->handler == (handler_t)SIG_DFL) {
+        if (default_action[sig] == DEFAULT_IGNORE ||
+            default_action[sig] == DEFAULT_CONTINUE)
+            return false;
+    } else if (info->sighand->action[sig]->handler == (handler_t)SIG_IGN)
+        return false;
+    return true;
+}
+
+static bool
+eligible_signal_pending(thread_sig_info_t *info)
+{
+    bool eligible = false;
+    info->accessing_sigpending = true;
+    __asm__ __volatile__("" : : : "memory");
+    for (int sig = 1; sig <= MAX_SIGNUM && !eligible; ++sig) {
+        for (sigpending_t *pending = info->sigpending[sig]; pending != NULL;
+             pending = pending->next) {
+            if (pending_signal_ends_wait(info, sig, pending)) {
+                eligible = true;
+                break;
+            }
+        }
+    }
+    __asm__ __volatile__("" : : : "memory");
+    info->accessing_sigpending = false;
+    return eligible;
+}
+
+/* Signals DR must receive while the re-issued call waits: the suspend signal,
+ * which also carries thread termination, and the alarm signal of any itimer DR
+ * or a client has armed for this thread. */
+static void
+remove_dr_signals_from_wait_mask(thread_sig_info_t *info, kernel_sigset_t *mask)
+{
+    static const int itimer_signal[NUM_ITIMERS] = { SIGALRM, SIGVTALRM, SIGPROF };
+    kernel_sigdelset(mask, SUSPEND_SIGNAL);
+    if (info->itimer == NULL)
+        return;
+    for (int which = 0; which < NUM_ITIMERS; which++) {
+        if ((*info->itimer)[which].dr.value > 0 || (*info->itimer)[which].dr.interval > 0)
+            kernel_sigdelset(mask, itimer_signal[which]);
+    }
+}
+
+static void
+timespec_from_ns(int64 ns, struct timespec *ts)
+{
+    if (ns < 0)
+        ns = 0;
+    ts->tv_sec = ns / 1000000000LL;
+    ts->tv_nsec = ns % 1000000000LL;
+}
+
+reg_t
+signal_reissue_injected_wait(dcontext_t *dcontext, int sysnum, reg_t *args,
+                             int64 start_ns, reg_t first)
+{
+    thread_sig_info_t *info = (thread_sig_info_t *)dcontext->signal_field;
+    if ((ptr_int_t)first != -EINTR || !reissue_allowlisted(sysnum))
+        return first;
+    /* Both calls take the timeout as their fifth argument. */
+    void *guest_timeout = (void *)args[4];
+    /* The flag is part of the thread's personality, so it is read per call. */
+    bool sticky = guest_timeout != NULL &&
+        (dynamorio_syscall(SYS_personality, 1, 0xffffffff) & STICKY_TIMEOUTS) != 0;
+    struct timeval tv;
+    struct timespec ts;
+    int64 deadline_ns = -1;
+    if (guest_timeout != NULL) {
+        int64 sec, nsec;
+        if (sysnum == SYS_select) {
+            if (!d_r_safe_read(guest_timeout, sizeof(tv), &tv))
+                return (reg_t)-EFAULT;
+            /* kern_select's normalization: whole seconds out of usec. */
+            if (tv.tv_sec < 0 || tv.tv_usec < 0)
+                return (reg_t)-EINVAL;
+            sec = tv.tv_sec + tv.tv_usec / 1000000;
+            nsec = (tv.tv_usec % 1000000) * 1000;
+        } else {
+            if (!d_r_safe_read(guest_timeout, sizeof(ts), &ts))
+                return (reg_t)-EFAULT;
+            if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000L)
+                return (reg_t)-EINVAL;
+            sec = ts.tv_sec;
+            nsec = ts.tv_nsec;
+        }
+        if (sticky) {
+            /* The kernel does not update a sticky timeout, so each re-issue
+             * gets the time left of the original one, on a private clock. */
+            /* As poll_select_set_timeout's timespec64_add_safe: saturate
+             * the deadline rather than overflow. */
+            if (sec > (REISSUE_NS_MAX - start_ns - nsec) / 1000000000LL)
+                deadline_ns = REISSUE_NS_MAX;
+            else
+                deadline_ns = start_ns + sec * 1000000000LL + nsec;
+        } else {
+            ts.tv_sec = sec;
+            ts.tv_nsec = nsec;
+        }
+    }
+
+    kernel_sigset_t blocked, physical, wait_mask;
+    kernel_sigfillset(&blocked);
+    if (sigprocmask_syscall(SIG_SETMASK, &blocked, &physical, sizeof(blocked)) != 0)
+        return first;
+    reg_t result = first;
+    uint reissues = 0;
+    bool eligible = false;
+    bool alarm_waits = false; /* SIGALRM blocked during the last re-issue */
+    for (;;) {
+        if (synch_terminating_in_progress()) {
+            result = (reg_t)-EINTR;
+            break;
+        }
+        eligible = eligible_signal_pending(info);
+        if (eligible) {
+            result = (reg_t)-EINTR;
+            break;
+        }
+        wait_mask = info->app_sigblocked;
+        remove_dr_signals_from_wait_mask(info, &wait_mask);
+        alarm_waits = kernel_sigismember(&wait_mask, SIGALRM);
+        struct {
+            const kernel_sigset_t *set;
+            size_t size;
+        } mask_arg = { &wait_mask, sizeof(wait_mask) };
+        void *timeout = NULL;
+        if (deadline_ns >= 0) {
+            timespec_from_ns(deadline_ns - reissue_now_ns(), &ts);
+            timeout = &ts;
+        } else if (guest_timeout != NULL) {
+            /* Non-sticky pselect6 waits on the guest's own timespec, which
+             * the kernel updates as it does natively. */
+            timeout = sysnum == SYS_pselect6 ? guest_timeout : (void *)&ts;
+        }
+        result = dynamorio_syscall(SYS_pselect6, 6, args[0], args[1], args[2], args[3],
+                                   timeout, &mask_arg);
+        reissues++;
+        if ((ptr_int_t)result != -EINTR)
+            break;
+    }
+    if (sigprocmask_syscall(SIG_SETMASK, &physical, NULL, sizeof(physical)) != 0) {
+        CLIENT_ASSERT(false, "re-issued injected wait could not restore physical mask");
+        os_terminate(dcontext, TERMINATE_PROCESS);
+    }
+    /* select reports the time left as a truncated timeval, as kern_select
+     * does; a failed copy is ignored there too. */
+    if (sysnum == SYS_select && guest_timeout != NULL && !sticky) {
+        tv.tv_sec = ts.tv_sec;
+        tv.tv_usec = ts.tv_nsec / 1000;
+        safe_write_ex(guest_timeout, sizeof(tv), &tv, NULL);
+    }
+    if (DYNAMO_OPTION(reverie_test_hooks)) {
+        print_file(STDERR,
+                   "reverie-dbt-test: injected wait reissued nr=%d count=%u "
+                   "result=%ld eligible=%d sticky=%d alarm_blocked=%d\n",
+                   sysnum, reissues, (long)result, eligible, sticky, alarm_waits);
+    }
+    return result;
+}
+
 void
 signal_finish_injected_sigsuspend(dcontext_t *dcontext,
                                   dr_syscall_invoke_result_t *result)

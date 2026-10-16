@@ -1295,6 +1295,8 @@ synch_with_threads_at_exit(thread_synch_state_t synch_res, bool pre_exit)
      * loop to a stack-free loop (xref i#95).
      */
     IF_UNIX(dynamo_exiting = true;) /* include execve-exited vfork threads */
+    /* Reverie: the process exit is terminal; this stays set until re-init. */
+    synch_set_process_terminating(true);
     DEBUG_DECLARE(ok =)
     synch_with_all_threads(synch_res, &threads, &num_threads,
                            /* Case 6821: other synch-all-thread uses that
@@ -1628,6 +1630,7 @@ dynamo_exit_post_detach(void)
 #ifdef UNIX
     dynamo_exiting = false;
 #endif
+    synch_set_process_terminating(false);
     dynamo_exited = false;
     dynamo_exited_all_other_threads = false;
     dynamo_exited_and_cleaned = false;
