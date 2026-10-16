@@ -110,6 +110,8 @@ use crate::signal::XsaveImage;
 use crate::stats::KvmBackendStats;
 use crate::stats::KvmExitCollector;
 use crate::syscall::FRAME_SIZE;
+use crate::syscall::SyscallRequestExt;
+use crate::syscall::SyscallRequestFrame;
 
 /// KVM currently permits userspace exits for this standardized hypercall.
 /// The prototype uses it as a transport opcode and places the syscall frame

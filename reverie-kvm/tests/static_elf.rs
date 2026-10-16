@@ -71,6 +71,7 @@ use reverie_kvm::KvmBackend;
 use reverie_kvm::KvmBackendStats;
 use reverie_kvm::KvmExitReason;
 use reverie_kvm::StraceTool;
+use reverie_kvm::SyscallRequestExt;
 
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 

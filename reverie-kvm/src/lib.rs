@@ -71,6 +71,7 @@ pub use runtime::native_test_support;
 pub use stats::KvmBackendStats;
 pub use stats::KvmExitReason;
 pub use syscall::SyscallRequest;
+pub use syscall::SyscallRequestExt;
 pub use tools::CounterTool;
 pub use tools::HierarchicalCounter;
 pub use tools::HierarchicalCounterTool;

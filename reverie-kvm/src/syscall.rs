@@ -8,7 +8,6 @@
 
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallArgs;
-use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 
 use crate::Error;
@@ -32,72 +31,48 @@ pub(crate) const IRET_FRAME_WORD: usize = 14;
 const FRAME_WORDS: usize = 19;
 pub(crate) const FRAME_SIZE: usize = WORD_SIZE * FRAME_WORDS;
 
-/// A Linux syscall request transported from guest to host memory.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SyscallRequest {
-    number: u64,
-    args: [u64; 6],
-}
+pub use reverie_linux_provider::SyscallRequest;
 
-impl SyscallRequest {
-    /// Creates a request from a Linux syscall number and its six ABI arguments.
-    pub const fn new(number: u64, args: [u64; 6]) -> Self {
-        Self { number, args }
-    }
-
-    /// Creates a transport request from a shared Reverie syscall.
-    pub fn from_syscall<S: SyscallInfo>(syscall: S) -> Self {
-        let (number, args) = syscall.into_parts();
-        Self::new(
-            number as u64,
-            [
-                args.arg0 as u64,
-                args.arg1 as u64,
-                args.arg2 as u64,
-                args.arg3 as u64,
-                args.arg4 as u64,
-                args.arg5 as u64,
-            ],
-        )
-    }
-
-    /// Returns the Linux syscall number.
-    pub const fn number(&self) -> u64 {
-        self.number
-    }
-
-    /// Returns the six Linux syscall arguments.
-    pub const fn args(&self) -> &[u64; 6] {
-        &self.args
-    }
-
+/// The guest-transport operations of a [`SyscallRequest`]: decoding it into a
+/// typed Reverie syscall and writing it as a transport frame into KVM guest
+/// memory. They were inherent methods before the request type moved to the
+/// reverie-linux-provider crate (step U6a of the provider seam), which cannot
+/// name reverie-kvm's [`GuestMemory`] or [`Error`]; this trait keeps the same
+/// method names and signatures.
+pub trait SyscallRequestExt {
     /// Decodes this raw transport frame through Reverie's complete syscall table.
     ///
     /// A number outside the architecture syscall table is rejected instead of
     /// being forwarded as an untyped request.
-    pub fn into_syscall(self) -> Result<Syscall> {
-        let number = usize::try_from(self.number)
+    fn into_syscall(self) -> Result<Syscall>;
+
+    /// Encodes the request at a guest-physical address.
+    fn write_to(self, memory: &mut GuestMemory, guest_address: u64) -> Result<()>;
+}
+
+impl SyscallRequestExt for SyscallRequest {
+    fn into_syscall(self) -> Result<Syscall> {
+        let number = usize::try_from(self.number())
             .ok()
             .and_then(Sysno::new)
-            .ok_or(Error::InvalidSyscallNumber(self.number))?;
-        let args = self.args.map(|argument| argument as usize);
+            .ok_or(Error::InvalidSyscallNumber(self.number()))?;
+        let args = self.args().map(|argument| argument as usize);
         Ok(Syscall::from_raw(
             number,
             SyscallArgs::new(args[0], args[1], args[2], args[3], args[4], args[5]),
         ))
     }
 
-    /// Encodes the request at a guest-physical address.
-    pub fn write_to(self, memory: &mut GuestMemory, guest_address: u64) -> Result<()> {
+    fn write_to(self, memory: &mut GuestMemory, guest_address: u64) -> Result<()> {
         let mut frame = [0; FRAME_SIZE];
         let words = [
-            self.number,
-            self.args[0],
-            self.args[1],
-            self.args[2],
-            self.args[3],
-            self.args[4],
-            self.args[5],
+            self.number(),
+            self.args()[0],
+            self.args()[1],
+            self.args()[2],
+            self.args()[3],
+            self.args()[4],
+            self.args()[5],
         ];
         for (index, value) in words.into_iter().enumerate() {
             let start = index * WORD_SIZE;
@@ -105,8 +80,18 @@ impl SyscallRequest {
         }
         memory.write(guest_address, &frame)
     }
+}
 
-    pub(crate) fn read_from(memory: &GuestMemory, guest_address: u64) -> Result<Self> {
+/// The transport-frame reads and result stores the backend performs on a
+/// [`SyscallRequest`] in guest memory (crate-private).
+pub(crate) trait SyscallRequestFrame: Sized {
+    fn read_from(memory: &GuestMemory, guest_address: u64) -> Result<Self>;
+
+    fn write_result(memory: &mut GuestMemory, guest_address: u64, result: i64) -> Result<()>;
+}
+
+impl SyscallRequestFrame for SyscallRequest {
+    fn read_from(memory: &GuestMemory, guest_address: u64) -> Result<Self> {
         let mut frame = [0; FRAME_SIZE];
         memory.read_raw(guest_address, &mut frame)?;
         let mut words = [0; REQUEST_WORDS];
@@ -120,11 +105,7 @@ impl SyscallRequest {
         ))
     }
 
-    pub(crate) fn write_result(
-        memory: &mut GuestMemory,
-        guest_address: u64,
-        result: i64,
-    ) -> Result<()> {
+    fn write_result(memory: &mut GuestMemory, guest_address: u64, result: i64) -> Result<()> {
         memory.write_raw(
             guest_address + (RESULT_WORD * WORD_SIZE) as u64,
             &result.to_le_bytes(),
@@ -134,6 +115,8 @@ impl SyscallRequest {
 
 #[cfg(test)]
 mod tests {
+    use reverie::syscalls::SyscallInfo;
+
     use super::*;
 
     #[test]
