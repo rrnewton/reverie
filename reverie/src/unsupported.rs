@@ -35,6 +35,9 @@ pub enum UnsupportedOperation {
     /// lifetime to the guest's description, so that a forwarded host lock
     /// would be held or released at the wrong time.
     Flock,
+    /// `execve` or `execveat` on a backend that cannot replace the process
+    /// image at all. No replacement image ran; the caller runs on unchanged.
+    Exec,
 }
 
 /// A backend's refusal of an injected syscall that it cannot perform, as
