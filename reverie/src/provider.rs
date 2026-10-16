@@ -132,7 +132,10 @@ pub enum ProviderOutcome {
 pub trait LinuxProvider: Send + Sync {
     /// The issuing task's guest memory as the backend hands it to the
     /// provider for one call.
-    type Memory: ?Sized;
+    ///
+    /// It is [`Sync`] because [`LinuxProvider::execute`]'s future holds a
+    /// shared reference to it and must itself be [`Send`].
+    type Memory: ?Sized + Sync;
     /// A broken backend or provider invariant that ends the run.
     type Error;
 
@@ -152,8 +155,9 @@ pub trait LinuxProvider: Send + Sync {
     /// the ptrace backend waits for a tracee stop. The returned future is
     /// [`Send`], because the backend awaits it inside `Guest::inject`, whose
     /// future is `Send` ([`Guest`](crate::Guest) is a `Send` trait with `Send`
-    /// futures). This is unlike [`Backend::run`](crate::Backend::run), whose
-    /// future need not be `Send`. The backend polls the future on the issuing
+    /// futures). That is why [`LinuxProvider::Memory`] must be [`Sync`]: the
+    /// future holds `&Self::Memory`. This is unlike
+    /// [`Backend::run`](crate::Backend::run), whose future need not be `Send`. The backend polls the future on the issuing
     /// task's host thread. A provider that never awaits completes on the first
     /// poll, so making the method `async` adds no suspension point to it. A
     /// provider that does await must assume the backend can drop the future at
