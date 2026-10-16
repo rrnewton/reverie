@@ -351,6 +351,32 @@ rust_library(
 )
 
 rust_library(
+    name = "reverie-kvm-core",
+    srcs = glob(["reverie-kvm-core/src/**/*.rs"]),
+    autocargo = {
+        "cargo_toml_config": {
+            "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-kvm-core"),
+            "features": {
+                "default": [],
+                "native-test-support": [],
+                "test-support": [],
+            },
+        },
+        "cargo_toml_dir": "reverie-kvm-core",
+    },
+    deps = [
+        "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:goblin",
+        "fbsource//third-party/rust:kvm-bindings",
+        "fbsource//third-party/rust:kvm-ioctls",
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:thiserror",
+        ":reverie",
+        ":reverie-linux-provider",
+    ],
+)
+
+rust_library(
     name = "reverie-linux-provider",
     srcs = glob(["reverie-linux-provider/src/**/*.rs"]),
     autocargo = {
@@ -381,10 +407,11 @@ rust_library(
             "package": dict(_PUBLIC_CRATE_METADATA, documentation = "https://docs.rs/reverie-kvm", build = "build.rs"),
             "dependencies_override": {
                 "build-dependencies": {"cc": {"version": "1.5.1"}},
+                "dev-dependencies": {"reverie-kvm-core": {"features": ["test-support"]}},
             },
             "features": {
                 "default": [],
-                "native-test-support": [],
+                "native-test-support": ["reverie-kvm-core/native-test-support"],
             },
         },
         "cargo_toml_dir": "reverie-kvm",
@@ -398,6 +425,7 @@ rust_library(
         "fbsource//third-party/rust:perf-event-open-sys",
         "fbsource//third-party/rust:thiserror",
         ":reverie",
+        ":reverie-kvm-core",
         ":reverie-kvm-terminal-read",
         ":reverie-linux-provider",
     ],

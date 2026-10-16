@@ -64,6 +64,7 @@ use crate::executor::conventional_exit_code;
 use crate::failure::FailureCheck;
 use crate::failure::FailureContext;
 use crate::failure::RunFailure;
+use crate::failure::is_peer_cancelled_tool_worker;
 use crate::failure::wait_for_failure;
 use crate::memory::RegionKind;
 
@@ -3056,20 +3057,6 @@ impl From<ProcessExit> for ToolProcessExit {
             disposition: ToolExitDisposition::GuestExit,
         }
     }
-}
-
-/// A published run failure can interrupt a permitted CLONE_THREAD worker even
-/// before the backend's ordinary cancellation flag becomes visible.
-pub(crate) fn is_peer_cancelled_tool_worker<R>(
-    identity: (Pid, Pid),
-    start_permitted: bool,
-    outcome: &Result<R>,
-) -> bool {
-    start_permitted
-        && identity.0 != identity.1
-        && outcome
-            .as_ref()
-            .is_err_and(|error| matches!(error.primary(), Error::RunAborted))
 }
 
 /// Keep the interrupted worker's error tree for final cleanup while preserving

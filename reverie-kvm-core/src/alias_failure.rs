@@ -2,7 +2,7 @@
 // separate bounded process; the interposer remains dormant until explicitly armed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i32)]
-pub(crate) enum Case {
+pub enum Case {
     Reservation = 1,
     SecondExtent = 2,
     Foreign = 3,
@@ -17,7 +17,7 @@ pub(crate) enum Case {
 }
 
 impl Case {
-    pub(crate) fn setup_succeeds(self) -> bool {
+    pub fn setup_succeeds(self) -> bool {
         matches!(
             self,
             Case::AtomicCollision
@@ -45,22 +45,22 @@ impl Case {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct AliasAddresses {
-    pub(crate) base: usize,
-    pub(crate) length: usize,
-    pub(crate) wrong: usize,
-    pub(crate) ambiguous: usize,
-    pub(crate) operation: usize,
+pub struct AliasAddresses {
+    pub base: usize,
+    pub length: usize,
+    pub wrong: usize,
+    pub ambiguous: usize,
+    pub operation: usize,
 }
 
 #[derive(Debug)]
-pub(crate) struct AliasObservation {
-    pub(crate) case: Case,
-    pub(crate) addresses: AliasAddresses,
-    pub(crate) counters: [u64; 32],
+pub struct AliasObservation {
+    pub case: Case,
+    pub addresses: AliasAddresses,
+    pub counters: [u64; 32],
 }
 
-pub(crate) struct Fault {
+pub struct Fault {
     case: Case,
     arm: unsafe extern "C" fn(i32),
     finish: unsafe extern "C" fn(),
@@ -101,11 +101,11 @@ impl Drop for TestDirectory {
 }
 
 // Retain the original two stages for every existing caller.
-pub(crate) fn child(test: &str) -> Option<Fault> {
+pub fn child(test: &str) -> Option<Fault> {
     child_cases(test, &[Case::Reservation, Case::SecondExtent])
 }
 
-pub(crate) fn child_case(test: &str, case: Case) -> Option<Fault> {
+pub fn child_case(test: &str, case: Case) -> Option<Fault> {
     child_cases(test, &[case])
 }
 
@@ -161,7 +161,9 @@ fn child_cases(test: &str, cases: &[Case]) -> Option<Fault> {
             || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
             std::path::PathBuf::from,
         )
-        .join("tests/fixtures/getdents_alias_failure.c");
+        // The fixture lives in reverie-kvm-core; both it and reverie-kvm, whose
+        // tests also use this module, are workspace siblings.
+        .join("../reverie-kvm-core/tests/fixtures/getdents_alias_failure.c");
     let build = std::process::Command::new("timeout")
         .args([
             "--kill-after=2s",
@@ -229,27 +231,27 @@ fn child_cases(test: &str, cases: &[Case]) -> Option<Fault> {
 }
 
 impl Fault {
-    pub(crate) fn case(&self) -> Case {
+    pub fn case(&self) -> Case {
         self.case
     }
-    pub(crate) fn succeeds(&self) -> bool {
+    pub fn succeeds(&self) -> bool {
         self.case == Case::AtomicCollision
     }
-    pub(crate) fn arm(&self) {
+    pub fn arm(&self) {
         let operation = self.operation.get() + 1;
         assert!(operation == 1 || (self.case == Case::PersistentCleanup && operation <= 3));
         self.operation.set(operation);
         // SAFETY: symbols belong to the retained, bounded child fixture.
         unsafe { (self.arm)(self.case as i32) };
     }
-    pub(crate) fn pages(&self) -> usize {
+    pub fn pages(&self) -> usize {
         if matches!(self.case, Case::MiddleExtent | Case::SuffixCleanup) {
             5
         } else {
             3
         }
     }
-    pub(crate) fn addresses(&self) -> AliasAddresses {
+    pub fn addresses(&self) -> AliasAddresses {
         // SAFETY: the fixture returns scalar addresses, never Rust references.
         let values = std::array::from_fn::<_, 5, _>(|i| unsafe { (self.address)(i as i32) });
         assert_eq!(values[4], self.operation.get());
@@ -263,7 +265,7 @@ impl Fault {
     }
     /// Native unit tests bind an ID from an independently queried ledger record.
     /// Integration tests cannot inspect that private ledger and pass no ID.
-    pub(crate) fn cause<'a>(
+    pub fn cause<'a>(
         &self,
         error: &'a crate::Error,
         retention_id: Option<usize>,
@@ -275,7 +277,7 @@ impl Fault {
         let expected = CaseCause::for_case(self.case, addresses, retention_id)?;
         alias_case_cause(error, expected)
     }
-    pub(crate) fn assert_fired(&self) -> AliasObservation {
+    pub fn assert_fired(&self) -> AliasObservation {
         // Finish observes before the fixture's own allocator releases its marker.
         unsafe { (self.finish)() };
         let counts = std::array::from_fn::<_, 32, _>(|i| unsafe { (self.count)(i as i32) });
@@ -349,7 +351,7 @@ impl Fault {
     }
 }
 
-pub(crate) const AMBIGUOUS_PHASE: &str =
+pub const AMBIGUOUS_PHASE: &str =
     "failed writable-alias MAP_FIXED target retained until process exit (ownership unknown)";
 
 #[derive(Clone, Copy)]
@@ -493,19 +495,19 @@ fn alias_case_cause(error: &crate::Error, expected: CaseCause) -> Option<&crate:
 
 // Ownership may repeat a cause, but every leaf must retain that exact cause.
 // Context-bearing errors are not ownership envelopes and must remain visible.
-pub(crate) fn mapping_cause(error: &crate::Error) -> Option<&crate::Error> {
+pub fn mapping_cause(error: &crate::Error) -> Option<&crate::Error> {
     mapping_cause_for_errno(error, libc::ENOMEM)
 }
 
 // Historical pure EEXIST predicate control remains strict. AtomicCollision
 // is a successful operation and never calls this failure classifier.
-pub(crate) fn mapping_collision_cause(error: &crate::Error) -> Option<&crate::Error> {
+pub fn mapping_collision_cause(error: &crate::Error) -> Option<&crate::Error> {
     mapping_cause_for_errno(error, libc::EEXIST)
 }
 
 const UNEXPECTED_ADDRESS: &str = "MAP_FIXED installed a writable alias at an unexpected address";
 
-pub(crate) fn mapping_unexpected_address_cause(error: &crate::Error) -> Option<&crate::Error> {
+pub fn mapping_unexpected_address_cause(error: &crate::Error) -> Option<&crate::Error> {
     mapping_cause_expected(error, ExpectedCause::UnexpectedAddress)
 }
 

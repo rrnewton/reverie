@@ -448,7 +448,7 @@ mod entry_public_tests {
         backend
             .memory
             .set_test_syscall_dispatch_observer(Arc::new(move |request| {
-                dispatch_observed.dispatched(request);
+                dispatch_observed.dispatched(SyscallRequest::from_provider(request));
             }));
         {
             let mut active = ACTIVE.lock().unwrap();

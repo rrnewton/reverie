@@ -28,16 +28,17 @@ mod clock;
 mod cpuid;
 mod cpuid_instruction;
 mod elf;
-mod entry;
-mod error;
+mod entry_driver;
+pub(crate) use reverie_kvm_core::entry;
+pub(crate) use reverie_kvm_core::error;
 mod executor;
-mod failure;
+pub(crate) use reverie_kvm_core::failure;
 mod fdinfo;
-mod memory;
+pub(crate) use reverie_kvm_core::memory;
 pub mod native_exit_broker;
 mod proc_mounts;
 mod provider;
-mod provider_memory;
+pub(crate) use reverie_kvm_core::provider_memory;
 mod runtime;
 mod signal;
 mod stats;
@@ -53,8 +54,9 @@ mod vm;
 mod broker_library_tests;
 
 #[cfg(test)]
-#[path = "../tests/support/alias_failure.rs"]
-mod alias_failure;
+use reverie_kvm_core::alias_failure;
+#[cfg(test)]
+mod entry_cleanup_tests;
 
 pub use cpuid::CpuidPolicy;
 pub use error::Error;
@@ -62,6 +64,7 @@ pub use memory::GuestMemory;
 pub use reverie::syscalls::Syscall;
 pub use reverie::syscalls::SyscallInfo;
 pub use reverie::syscalls::Sysno;
+pub use reverie_kvm_core::Result;
 pub use runtime::KvmStack;
 pub use runtime::KvmStackGuard;
 pub use runtime::SyscallExecutor;
@@ -81,6 +84,3 @@ pub use tools::StraceTool;
 pub use tools::SyscallCounter;
 pub use vm::KvmBackend;
 pub use vm::VMCALL_SYSCALL_TRANSPORT;
-
-/// Result type used by the KVM backend prototype.
-pub type Result<T> = std::result::Result<T, Error>;

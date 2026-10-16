@@ -13,7 +13,7 @@ use super::*;
 /// has been released. The monotonically distinct owner prevents an old Drop
 /// from clearing a successor that acquired the allocator between the unlock
 /// and the deferred-record check.
-pub(crate) struct AllocationGuard<'a> {
+pub struct AllocationGuard<'a> {
     memory: &'a GuestMemory,
     guard: Option<MutexGuard<'a, ()>>,
     id: u128,
@@ -80,7 +80,7 @@ impl Drop for AllocationGuard<'_> {
 /// A synchronous, nestable notification fence for caller-owned locks such as
 /// the executor's shared file table. Hold this outside those lock guards and
 /// drop it after them. It never owns a lock, waits, or spans an async callback.
-pub(crate) struct DeferredNotifications<'a> {
+pub struct DeferredNotifications<'a> {
     memory: &'a GuestMemory,
 }
 
@@ -151,15 +151,15 @@ impl Drop for MemoryCopyAccess<'_> {
     }
 }
 
-pub(crate) struct SharedFileRangePlan {
-    pub(crate) address: u64,
-    pub(crate) length: usize,
-    pub(crate) file: OwnedFd,
-    pub(crate) offset: u64,
-    pub(crate) readable: bool,
-    pub(crate) writable: bool,
-    pub(crate) max_writable: bool,
-    pub(crate) cursors: Option<AllocationCursors>,
+pub struct SharedFileRangePlan {
+    pub address: u64,
+    pub length: usize,
+    pub file: OwnedFd,
+    pub offset: u64,
+    pub readable: bool,
+    pub writable: bool,
+    pub max_writable: bool,
+    pub cursors: Option<AllocationCursors>,
 }
 
 /// Where a publication's new HVA view comes from.
@@ -174,17 +174,17 @@ enum InstallSource {
     Inherited(NonNull<u8>),
 }
 
-pub(crate) struct PrivateRangePlan<'a> {
-    pub(crate) address: u64,
-    pub(crate) length: usize,
-    pub(crate) contents: Option<&'a [u8]>,
+pub struct PrivateRangePlan<'a> {
+    pub address: u64,
+    pub length: usize,
+    pub contents: Option<&'a [u8]>,
     /// None retires user access; it does not zero the outgoing file.
-    pub(crate) permissions: Option<(bool, bool)>,
-    pub(crate) cursors: Option<AllocationCursors>,
+    pub permissions: Option<(bool, bool)>,
+    pub cursors: Option<AllocationCursors>,
 }
 
 impl GuestMemory {
-    pub(crate) fn defer_notifications(&self) -> DeferredNotifications<'_> {
+    pub fn defer_notifications(&self) -> DeferredNotifications<'_> {
         let mut deferred = self.mapping.deferred.lock().unwrap();
         deferred.scopes = deferred
             .scopes
@@ -210,7 +210,7 @@ impl GuestMemory {
         }
     }
 
-    pub(crate) fn allocation_guard(&self) -> AllocationGuard<'_> {
+    pub fn allocation_guard(&self) -> AllocationGuard<'_> {
         let guard = self
             .mapping
             .allocation
@@ -236,7 +236,7 @@ impl GuestMemory {
     /// Capture only after the caller's own address/backing/copy guards retire.
     /// An enclosing layout transaction queues the same Arc until its allocator
     /// unlock; trait adapters still return EIO rather than fabricate EFAULT.
-    pub(crate) fn capture_shared_file_error(&self, error: Error) -> Error {
+    pub fn capture_shared_file_error(&self, error: Error) -> Error {
         // SharedFailure is an ownership wrapper used by unrelated failures
         // too. Only an actual shared-file primary belongs to this terminal
         // path; preserve the caller's wrappers and cleanup evidence below.
@@ -275,7 +275,7 @@ impl GuestMemory {
             .error()
     }
 
-    pub(crate) fn contains_shared_file(&self) -> bool {
+    pub fn contains_shared_file(&self) -> bool {
         self.mapping
             .address_space
             .lock()
@@ -288,7 +288,7 @@ impl GuestMemory {
     /// Whether any page is a retained shared view: an ordinary file, or
     /// shared anonymous memory that a fork has made reachable from another
     /// address space. Such a page can only be replaced by a publication.
-    pub(crate) fn contains_retained_shared(&self) -> bool {
+    pub fn contains_retained_shared(&self) -> bool {
         self.mapping
             .address_space
             .lock()
@@ -298,7 +298,7 @@ impl GuestMemory {
             .any(|page| page._slice.backing.kind.retained_shared())
     }
 
-    pub(crate) fn range_contains_retained_shared(&self, address: u64, length: usize) -> bool {
+    pub fn range_contains_retained_shared(&self, address: u64, length: usize) -> bool {
         if length == 0 {
             return false;
         }
@@ -312,7 +312,7 @@ impl GuestMemory {
             .any(|(_, page)| page._slice.backing.kind.retained_shared())
     }
 
-    pub(crate) fn range_contains_shared_file(&self, address: u64, length: usize) -> bool {
+    pub fn range_contains_shared_file(&self, address: u64, length: usize) -> bool {
         if length == 0 {
             return false;
         }
@@ -326,7 +326,7 @@ impl GuestMemory {
             .any(|(_, page)| matches!(page._slice.backing.kind, BackingKind::OrdinaryFile { .. }))
     }
 
-    pub(crate) fn file_write_permitted(&self, address: u64, length: usize) -> bool {
+    pub fn file_write_permitted(&self, address: u64, length: usize) -> bool {
         if length == 0 {
             return true;
         }
@@ -350,7 +350,7 @@ impl GuestMemory {
 
     /// The executor supplies an independently owned descriptor retained while
     /// its ordinary-file classification is still protected by the file table.
-    pub(crate) fn publish_shared_file_range<'a>(
+    pub fn publish_shared_file_range<'a>(
         &'a self,
         allocation: AllocationGuard<'a>,
         plan: SharedFileRangePlan,
@@ -426,7 +426,7 @@ impl GuestMemory {
         )
     }
 
-    pub(crate) fn publish_private_range<'a>(
+    pub fn publish_private_range<'a>(
         &'a self,
         allocation: AllocationGuard<'a>,
         plan: PrivateRangePlan<'_>,
@@ -839,7 +839,7 @@ impl GuestMemory {
         };
         let parent_state = self.mapping.address_space.lock().unwrap().clone();
         let child = Self::new(self.guest_base(), self.len())?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let child = {
             let mut child = child;
             child.test_shared_map = self.test_shared_map.clone();
@@ -925,8 +925,8 @@ impl GuestMemory {
         Ok(child)
     }
 
-    #[cfg(test)]
-    pub(crate) fn fail_shared_snapshot_duplication_for_test(&mut self) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fail_shared_snapshot_duplication_for_test(&mut self) {
         self.test_shared_map = Some(Arc::new(|_, _| {
             Some(Err(io::Error::from_raw_os_error(libc::ENOMEM)))
         }));
@@ -966,7 +966,7 @@ impl GuestMemory {
         Ok(())
     }
 
-    pub(crate) fn retire_shared_files_for_exec(&self) -> Result<()> {
+    pub fn retire_shared_files_for_exec(&self) -> Result<()> {
         loop {
             let allocation = self.allocation_guard();
             let range = {
@@ -1009,12 +1009,7 @@ impl GuestMemory {
     /// Synchronize mapped file spans in address order. Holes are remembered
     /// while later mapped spans are visited, as Linux msync does. No address,
     /// allocation or backing mutex spans the potentially blocking host call.
-    pub(crate) fn sync_shared_file_range(
-        &self,
-        address: u64,
-        length: usize,
-        flags: i32,
-    ) -> Result<i64> {
+    pub fn sync_shared_file_range(&self, address: u64, length: usize, flags: i32) -> Result<i64> {
         self.check_copy_failure()?;
         if !address.is_multiple_of(PAGE_SIZE as u64)
             || flags & !(libc::MS_SYNC | libc::MS_ASYNC | libc::MS_INVALIDATE) != 0
@@ -1093,7 +1088,7 @@ impl GuestMemory {
         for (host, length, _backing, _offset) in spans {
             // The retained operand prevents replacement, and each span retains
             // its file description. Linux owns writeback and errno; no retry.
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             if let Some(errno) = self
                 .test_shared_sync
                 .as_ref()
@@ -1226,7 +1221,7 @@ impl GuestMemory {
     /// Called before KVM slot/vCPU registration. Serializing this record with
     /// publication closes the unattached-memory race without holding an
     /// allocator across entry registration or its callbacks.
-    pub(crate) fn record_kvm_sync_mmu(&self, supported: bool) -> Result<()> {
+    pub fn record_kvm_sync_mmu(&self, supported: bool) -> Result<()> {
         let _allocation = self.allocation_guard();
         self.check_copy_failure()?;
         if !supported && self.contains_retained_shared() {
@@ -1242,7 +1237,7 @@ impl UserMemory {
     /// Check scalar copyout before a syscall consumes its own state. The
     /// eventual scalar store repeats this check; preflight does not promise
     /// rollback of arbitrary intervening syscall effects.
-    pub(crate) fn preflight_atomic_store(&self, address: u64, length: usize) -> Result<()> {
+    pub fn preflight_atomic_store(&self, address: u64, length: usize) -> Result<()> {
         self.memory.with_copy(|copy| {
             let physical = self.translate_admitted(address, length, copy)?;
             if self.user_writable_prefix_admitted(address, length, copy)? != length {
@@ -1306,7 +1301,7 @@ impl GuestMemory {
         target: usize,
         length: usize,
     ) -> io::Result<*mut libc::c_void> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(result) = self
             .test_shared_map
             .as_ref()
@@ -1344,7 +1339,7 @@ impl GuestMemory {
         slice: &BackingSlice,
         protection: i32,
     ) -> io::Result<*mut libc::c_void> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(result) = self
             .test_shared_map
             .as_ref()

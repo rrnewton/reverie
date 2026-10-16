@@ -263,7 +263,11 @@ mod read_zero_guest_tests {
             .memory
             .set_test_syscall_dispatch_observer(Arc::new(move |observed| {
                 if observed.number() == libc::SYS_read as u64 {
-                    assert_eq!(*observed, request, "exact refused read arguments");
+                    assert_eq!(
+                        *SyscallRequest::from_provider(observed),
+                        request,
+                        "exact refused read arguments"
+                    );
                     assert_eq!(
                         observed_dispatches.fetch_add(1, Ordering::SeqCst),
                         0,

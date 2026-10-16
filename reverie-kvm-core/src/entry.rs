@@ -32,77 +32,74 @@ use futures::future::Shared;
 use crate::Error;
 use crate::failure::FailureContext;
 
-pub(crate) mod driver;
-pub(crate) mod owner;
-mod signal;
-pub(crate) use signal::ImmediateExit;
-#[cfg(test)]
-pub(crate) use signal::accept_delivered_for_test;
-#[cfg(test)]
-pub(crate) use signal::delivered_for_test;
+pub mod driver;
+pub mod owner;
+pub mod signal;
+pub use signal::ImmediateExit;
+#[cfg(any(test, feature = "test-support"))]
+pub use signal::accept_delivered_for_test;
+#[cfg(any(test, feature = "test-support"))]
+pub use signal::delivered_for_test;
 
 #[cfg(feature = "native-test-support")]
-pub(crate) fn check_reserved_signal_handler() -> crate::Result<()> {
+pub fn check_reserved_signal_handler() -> crate::Result<()> {
     signal::Control::arm(signal::participant_key(), None)?
         .finish(0)
         .map(drop)
 }
 
-#[cfg(test)]
-mod cleanup_tests;
-
 type Change = Shared<oneshot::Receiver<()>>;
-type GateResult<T> = Result<T, Arc<PendingFailure>>;
+pub type GateResult<T> = Result<T, Arc<PendingFailure>>;
 
 /// One installed guest-physical backing image. Every vCPU entry and short host
 /// copy is admitted against exactly one generation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MappingGeneration(u64);
+pub struct MappingGeneration(u64);
 
 impl MappingGeneration {
-    pub(crate) const INITIAL: Self = Self(0);
+    pub const INITIAL: Self = Self(0);
 
     fn next(self) -> Option<Self> {
         self.0.checked_add(1).map(Self)
     }
 
-    #[cfg(test)]
-    pub(crate) fn get(self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn get(self) -> u64 {
         self.0
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CleanupPhase {
+pub enum CleanupPhase {
     BeforeWithdraw,
     AfterWithdraw,
     BeforeAcknowledge,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CleanupIdentity {
-    pub(crate) participant: u64,
-    pub(crate) run: u64,
+pub struct CleanupIdentity {
+    pub participant: u64,
+    pub run: u64,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type CleanupHook = Box<dyn FnOnce(CleanupIdentity) + Send>;
 
 /// Observations of actual admission, activation and receiver polling.
 /// Test controllers arm this only after ordinary driver setup has completed.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
-pub(crate) struct PrepareProbe {
-    pub(crate) armed: std::sync::atomic::AtomicBool,
+pub struct PrepareProbe {
+    pub armed: std::sync::atomic::AtomicBool,
     /// Entries that passed the final admission check under the registry lock.
-    pub(crate) activations: std::sync::atomic::AtomicUsize,
+    pub activations: std::sync::atomic::AtomicUsize,
     /// Entry cleanups that found a recorded kick.
-    pub(crate) kicked_cleanups: std::sync::atomic::AtomicUsize,
-    pub(crate) closed_admissions: std::sync::atomic::AtomicUsize,
-    pub(crate) closed_waits: std::sync::atomic::AtomicUsize,
-    pub(crate) pending_subscriptions: std::sync::atomic::AtomicUsize,
+    pub kicked_cleanups: std::sync::atomic::AtomicUsize,
+    pub closed_admissions: std::sync::atomic::AtomicUsize,
+    pub closed_waits: std::sync::atomic::AtomicUsize,
+    pub pending_subscriptions: std::sync::atomic::AtomicUsize,
     subscription_notice: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     wait_notice: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     before_activate: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -110,9 +107,9 @@ pub(crate) struct PrepareProbe {
     withdraw_contended: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl PrepareProbe {
-    pub(crate) fn on_withdraw_contention(&self, hook: impl FnOnce() + Send + 'static) {
+    pub fn on_withdraw_contention(&self, hook: impl FnOnce() + Send + 'static) {
         let previous = self
             .withdraw_contended
             .lock()
@@ -124,7 +121,7 @@ impl PrepareProbe {
         );
     }
 
-    pub(crate) fn on_cleanup(
+    pub fn on_cleanup(
         &self,
         phase: CleanupPhase,
         hook: impl FnOnce(CleanupIdentity) + Send + 'static,
@@ -140,7 +137,7 @@ impl PrepareProbe {
         }
     }
 
-    pub(crate) fn before_activate(&self, hook: impl FnOnce() + Send + 'static) {
+    pub fn before_activate(&self, hook: impl FnOnce() + Send + 'static) {
         let previous = self.before_activate.lock().unwrap().replace(Box::new(hook));
         assert!(
             previous.is_none(),
@@ -157,15 +154,15 @@ impl PrepareProbe {
 
     /// One notice per actual subscription that has been polled Pending after
     /// denied admission. Repeated polls keep their separate raw observation.
-    pub(crate) fn set_subscription_notice(&self, sender: std::sync::mpsc::Sender<()>) {
+    pub fn set_subscription_notice(&self, sender: std::sync::mpsc::Sender<()>) {
         *self.subscription_notice.lock().unwrap() = Some(sender);
     }
 
-    pub(crate) fn set_wait_notice(&self, sender: std::sync::mpsc::Sender<()>) {
+    pub fn set_wait_notice(&self, sender: std::sync::mpsc::Sender<()>) {
         *self.wait_notice.lock().unwrap() = Some(sender);
     }
 
-    pub(crate) fn increment(&self, counter: &std::sync::atomic::AtomicUsize) {
+    pub fn increment(&self, counter: &std::sync::atomic::AtomicUsize) {
         if self.armed.load(std::sync::atomic::Ordering::Acquire) {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
@@ -196,16 +193,16 @@ impl PrepareProbe {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone)]
-pub(crate) struct ObservedChange {
+pub struct ObservedChange {
     change: Change,
     probe: Option<Arc<PrepareProbe>>,
     // Clones represent the same subscription and share its first-Pending bit.
     pending_observed: Arc<std::sync::atomic::AtomicBool>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl std::future::Future for ObservedChange {
     type Output = Result<(), oneshot::Canceled>;
 
@@ -223,7 +220,7 @@ impl std::future::Future for ObservedChange {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl futures::future::FusedFuture for ObservedChange {
     fn is_terminated(&self) -> bool {
         futures::future::FusedFuture::is_terminated(&self.change)
@@ -234,9 +231,9 @@ impl futures::future::FusedFuture for ObservedChange {
 /// Mapping and of the optional run-wide publisher. Direct invocations have
 /// an owner even when they have no FailureContext.
 #[derive(Clone, Default)]
-pub(crate) struct EntryOrigin {
-    pub(crate) failure: Option<FailureContext>,
-    pub(crate) operation: Option<owner::OperationOrigin>,
+pub struct EntryOrigin {
+    pub failure: Option<FailureContext>,
+    pub operation: Option<owner::OperationOrigin>,
 }
 
 impl From<Option<FailureContext>> for EntryOrigin {
@@ -251,29 +248,29 @@ impl From<Option<FailureContext>> for EntryOrigin {
 /// Capturing a failure must not call a Tool while an inline RPC still owns
 /// Tool locks. The driver drops that callback before publishing this cause.
 /// Keep the issuing context even if a peer is first to observe the failure.
-pub(crate) struct PendingFailure {
-    pub(crate) origin: Option<crate::failure::FailureObservation>,
-    pub(crate) operation: Option<owner::OperationOrigin>,
+pub struct PendingFailure {
+    pub origin: Option<crate::failure::FailureObservation>,
+    pub operation: Option<owner::OperationOrigin>,
     primary: Arc<Error>,
     cleanup: Mutex<Vec<Arc<Error>>>,
     owner_registered: std::sync::atomic::AtomicBool,
 }
 
 impl PendingFailure {
-    pub(crate) fn owner_registered(&self) -> bool {
+    pub fn owner_registered(&self) -> bool {
         self.owner_registered
             .load(std::sync::atomic::Ordering::Acquire)
     }
     /// Keep the original shared identities when composing repeated observations.
     /// This is a snapshot; the owning driver must retain this PendingFailure
     /// itself until its final completion so later cleanup is still observable.
-    pub(crate) fn causes(&self) -> Vec<Arc<Error>> {
+    pub fn causes(&self) -> Vec<Arc<Error>> {
         let mut causes = vec![self.primary.clone()];
         causes.extend(self.cleanup.lock().unwrap().iter().cloned());
         causes
     }
 
-    pub(crate) fn error(&self) -> Error {
+    pub fn error(&self) -> Error {
         let cleanup = self.cleanup.lock().unwrap().clone();
         if cleanup.is_empty() {
             Error::SharedFailure(self.primary.clone())
@@ -296,47 +293,40 @@ impl std::fmt::Debug for PendingFailure {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The private unchanged-mapping close protocol has no production closer yet"
-    )
-)]
-enum Admission {
+pub enum Admission {
     Open,
     Closing(u64),
     Closed(u64),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Activity {
+pub enum Activity {
     Stopped,
     Setup,
     Running(libc::pthread_t),
     Retiring,
 }
 
-struct Member {
-    run: u64,
+pub struct Member {
+    pub run: u64,
     generation: Option<MappingGeneration>,
-    activity: Activity,
+    pub activity: Activity,
     origin: EntryOrigin,
     /// How many times a closer sent the reserved signal to this member's
     /// current entry. Counted under the registry lock before each send and
     /// taken by withdrawal, after which no closer can send to it.
-    kicks: usize,
+    pub kicks: usize,
 }
 
-struct State {
-    admission: Admission,
+pub struct State {
+    pub admission: Admission,
     // An ordinary shared-file image is supported only by its existing vCPU.
     // A quiescent close reserves this before any mapping can be installed.
     single_member_domain: bool,
     generation: MappingGeneration,
     next_member: u64,
     next_close: u64,
-    members: BTreeMap<u64, Member>,
+    pub members: BTreeMap<u64, Member>,
     copies: usize,
     retained_operands: usize,
     failure: Option<Arc<PendingFailure>>,
@@ -360,9 +350,9 @@ struct State {
     /// with [`EntryGate::failure_recorded`] so `pending_failure` can skip the
     /// lock while no failure exists.
     failure_recorded: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     copy_waits: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     copy_waiters: Vec<std::thread::ThreadId>,
 }
 
@@ -532,7 +522,7 @@ fn notify(change: ChangeSignal) {
     }
 }
 
-fn failure(operation: &'static str, source: std::io::Error) -> Error {
+pub fn failure(operation: &'static str, source: std::io::Error) -> Error {
     Error::EntryControl { operation, source }
 }
 
@@ -540,37 +530,37 @@ fn protocol_failure(operation: &'static str) -> Error {
     failure(operation, std::io::Error::other(operation))
 }
 
-pub(crate) struct EntryGate {
-    state: Mutex<State>,
+pub struct EntryGate {
+    pub state: Mutex<State>,
     /// The same flag as `State::failure_recorded`. A failure is recorded once
     /// and never cleared, so reading false is equivalent to taking the lock
     /// before the failure was recorded; any thread that learned of the
     /// failure through a synchronizing operation reads true.
     failure_recorded: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     prepare_probe: Mutex<Option<Arc<PrepareProbe>>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TestMemberState {
-    pub(crate) id: u64,
-    pub(crate) run: u64,
-    pub(crate) generation: Option<MappingGeneration>,
-    pub(crate) stopped: bool,
+pub struct TestMemberState {
+    pub id: u64,
+    pub run: u64,
+    pub generation: Option<MappingGeneration>,
+    pub stopped: bool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TestGateState {
-    pub(crate) open: bool,
-    pub(crate) closed: bool,
-    pub(crate) generation: MappingGeneration,
-    pub(crate) copies: usize,
-    pub(crate) retained_operands: usize,
-    pub(crate) copy_waits: usize,
-    pub(crate) copy_waiters: Vec<std::thread::ThreadId>,
-    pub(crate) members: Vec<TestMemberState>,
+pub struct TestGateState {
+    pub open: bool,
+    pub closed: bool,
+    pub generation: MappingGeneration,
+    pub copies: usize,
+    pub retained_operands: usize,
+    pub copy_waits: usize,
+    pub copy_waiters: Vec<std::thread::ThreadId>,
+    pub members: Vec<TestMemberState>,
 }
 
 impl std::fmt::Debug for EntryGate {
@@ -586,8 +576,8 @@ impl std::fmt::Debug for EntryGate {
 }
 
 impl EntryGate {
-    #[cfg(test)]
-    pub(crate) fn test_state(&self) -> TestGateState {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_state(&self) -> TestGateState {
         let state = self.state.lock().unwrap();
         TestGateState {
             open: state.admission == Admission::Open,
@@ -610,11 +600,11 @@ impl EntryGate {
         }
     }
 
-    pub(crate) fn new() -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         let (failed_sender, failed) = oneshot::channel();
         let failure_recorded = Arc::new(std::sync::atomic::AtomicBool::new(false));
         Arc::new(Self {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             prepare_probe: Mutex::new(None),
             failure_recorded: failure_recorded.clone(),
             state: Mutex::new(State {
@@ -635,21 +625,21 @@ impl EntryGate {
                 owner_notifications: Vec::new(),
                 retired_origins: Vec::new(),
                 failure_recorded: failure_recorded.clone(),
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 copy_waits: 0,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 copy_waiters: Vec::new(),
             }),
         })
     }
 
-    #[cfg(not(test))]
-    pub(crate) fn subscribe(&self) -> Change {
+    #[cfg(not(any(test, feature = "test-support")))]
+    pub fn subscribe(&self) -> Change {
         self.state.lock().unwrap().subscribe()
     }
 
-    #[cfg(test)]
-    pub(crate) fn subscribe(&self) -> ObservedChange {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn subscribe(&self) -> ObservedChange {
         let change = self.state.lock().unwrap().subscribe();
         let probe = self.prepare_probe.lock().unwrap().clone();
         ObservedChange {
@@ -663,17 +653,17 @@ impl EntryGate {
     /// Unlike [`Self::subscribe`] it is not completed by the ordinary changes
     /// every copy, entry and exit makes, so a waiter that only cares about
     /// failure (`EntryDriverWatch`) is not woken by each of them.
-    pub(crate) fn subscribe_failure(&self) -> Change {
+    pub fn subscribe_failure(&self) -> Change {
         self.state.lock().unwrap().failed.clone()
     }
 
-    #[cfg(test)]
-    pub(crate) fn notify_unchanged_for_test(&self) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn notify_unchanged_for_test(&self) {
         let sender = self.state.lock().unwrap().changed();
         notify(sender);
     }
 
-    pub(crate) fn pending_failure(&self) -> Option<Arc<PendingFailure>> {
+    pub fn pending_failure(&self) -> Option<Arc<PendingFailure>> {
         // Every guest-memory copy checks this, usually more than once.
         if !self
             .failure_recorded
@@ -684,7 +674,7 @@ impl EntryGate {
         self.state.lock().unwrap().failure.clone()
     }
 
-    pub(crate) fn generation(&self) -> GateResult<MappingGeneration> {
+    pub fn generation(&self) -> GateResult<MappingGeneration> {
         let state = self.state.lock().unwrap();
         state.check()?;
         Ok(state.generation)
@@ -692,15 +682,11 @@ impl EntryGate {
 
     /// Serialize an operation's admission with poison capture, then release
     /// the lock before any RPC, syscall, callback poll, or asynchronous wait.
-    pub(crate) fn admit_operation(&self) -> GateResult<()> {
+    pub fn admit_operation(&self) -> GateResult<()> {
         self.state.lock().unwrap().check()
     }
 
-    pub(crate) fn poison(
-        &self,
-        origin: impl Into<EntryOrigin>,
-        error: Error,
-    ) -> Arc<PendingFailure> {
+    pub fn poison(&self, origin: impl Into<EntryOrigin>, error: Error) -> Arc<PendingFailure> {
         let (failure, sender) = {
             let mut state = self.state.lock().unwrap();
             let failure = state.fail(origin, error);
@@ -713,7 +699,7 @@ impl EntryGate {
     /// Registration while closed is allowed, but grants no entry or access.
     /// The ordinary shared-file domain is the exception: its existing member
     /// is exclusive, and bypassing the syscall-level refusal is terminal.
-    pub(crate) fn register(self: &Arc<Self>) -> GateResult<Participant> {
+    pub fn register(self: &Arc<Self>) -> GateResult<Participant> {
         let result = {
             let mut state = self.state.lock().unwrap();
             state.check()?;
@@ -744,7 +730,7 @@ impl EntryGate {
                             gate: self.clone(),
                             id,
                             key: signal::participant_key(),
-                            #[cfg(test)]
+                            #[cfg(any(test, feature = "test-support"))]
                             prepare_probe: None,
                         })
                     }
@@ -763,7 +749,7 @@ impl EntryGate {
 
     /// Quietly inspect the capability restriction before a fork or snapshot
     /// can create a new participant or copy a shared-file image.
-    pub(crate) fn single_member_domain_active(&self) -> bool {
+    pub fn single_member_domain_active(&self) -> bool {
         self.state.lock().unwrap().single_member_domain
     }
 
@@ -775,7 +761,7 @@ impl EntryGate {
     ///
     /// The domain reservation and member check occur under the same lock, so
     /// registration cannot slip between the check and the first file mapping.
-    pub(crate) fn try_close_quiescent_single(self: &Arc<Self>) -> GateResult<Option<Closed>> {
+    pub fn try_close_quiescent_single(self: &Arc<Self>) -> GateResult<Option<Closed>> {
         self.try_close_quiescent_members(1)
     }
 
@@ -783,7 +769,7 @@ impl EntryGate {
     /// This has the same copy, retained-pointer and domain checks as the live
     /// single-member path, but requires that no participant exists at all.
     /// The first real participant can register only after this close reopens.
-    pub(crate) fn try_close_quiescent_unattached(self: &Arc<Self>) -> GateResult<Option<Closed>> {
+    pub fn try_close_quiescent_unattached(self: &Arc<Self>) -> GateResult<Option<Closed>> {
         self.try_close_quiescent_members(0)
     }
 
@@ -814,8 +800,8 @@ impl EntryGate {
         }))
     }
 
-    #[cfg(test)]
-    pub(crate) fn try_copy(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn try_copy(
         self: &Arc<Self>,
         origin: impl Into<EntryOrigin>,
     ) -> GateResult<Option<CopyAccess>> {
@@ -831,8 +817,8 @@ impl EntryGate {
     /// As `try_copy`, for an issuer that can rebuild its origin on
     /// demand. The copy stores no origin, so admitting it clones nothing;
     /// `origin` runs only to attribute a failure, and every failure path of
-    /// the returned copy must be given it again (see [`CopyAccess::lazy`]).
-    pub(crate) fn try_copy_lazy(
+    /// the returned copy must be given it again (see `CopyAccess::lazy`).
+    pub fn try_copy_lazy(
         self: &Arc<Self>,
         origin: impl FnOnce() -> EntryOrigin,
     ) -> GateResult<Option<CopyAccess>> {
@@ -847,7 +833,7 @@ impl EntryGate {
     /// Synchronous memory APIs wait without holding address-state or backing
     /// locks. An existing enclosing allocation transaction may remain held;
     /// the unchanged-mapping closer never acquires that allocation lock.
-    pub(crate) fn copy_blocking(
+    pub fn copy_blocking(
         self: &Arc<Self>,
         origin: impl Into<EntryOrigin>,
     ) -> GateResult<CopyAccess> {
@@ -856,7 +842,7 @@ impl EntryGate {
 
     /// As [`Self::copy_blocking`], with the origin rebuilt only on failure;
     /// see [`Self::try_copy_lazy`].
-    pub(crate) fn copy_blocking_lazy(
+    pub fn copy_blocking_lazy(
         self: &Arc<Self>,
         origin: impl FnOnce() -> EntryOrigin,
     ) -> GateResult<CopyAccess> {
@@ -874,7 +860,7 @@ impl EntryGate {
                 return self.admit_copy(state, origin);
             }
             let changed = state.copy_changed.clone();
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             {
                 state.copy_waits += 1;
                 state.copy_waiters.push(std::thread::current().id());
@@ -882,7 +868,7 @@ impl EntryGate {
             state.blocked_copiers += 1;
             state = changed.wait(state).unwrap();
             state.blocked_copiers -= 1;
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             state
                 .copy_waiters
                 .retain(|thread| *thread != std::thread::current().id());
@@ -919,18 +905,15 @@ impl EntryGate {
     /// waits only for short copies, so ordinary unchanged fences do not wait on
     /// a blocking kernel operation. Mapping publication checks this count and
     /// fails before changing the backing image.
-    #[cfg(test)]
-    pub(crate) fn retain_operand(
-        self: &Arc<Self>,
-        copy: &CopyAccess,
-    ) -> GateResult<RetainedOperand> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn retain_operand(self: &Arc<Self>, copy: &CopyAccess) -> GateResult<RetainedOperand> {
         assert!(!copy.lazy, "a lazily admitted copy must supply its origin");
         self.retain_operand_with(copy, || copy.origin.clone())
     }
 
     /// As `retain_operand`, for a lazily admitted copy, whose origin
     /// the retained operand keeps for its own failure paths.
-    pub(crate) fn retain_operand_with(
+    pub fn retain_operand_with(
         self: &Arc<Self>,
         copy: &CopyAccess,
         origin: impl FnOnce() -> EntryOrigin,
@@ -959,14 +942,7 @@ impl EntryGate {
         })
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The private unchanged-mapping close protocol has no production closer yet"
-        )
-    )]
-    pub(crate) fn try_close(self: &Arc<Self>) -> GateResult<Option<Closing>> {
+    pub fn try_close(self: &Arc<Self>) -> GateResult<Option<Closing>> {
         self.try_close_with(|thread| {
             // SAFETY: the registry mutex remains held through pthread_kill.
             // Entry return withdraws this exact target under the same mutex
@@ -980,14 +956,7 @@ impl EntryGate {
         })
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The private unchanged-mapping close protocol has no production closer yet"
-        )
-    )]
-    fn try_close_with(
+    pub fn try_close_with(
         self: &Arc<Self>,
         mut send: impl FnMut(libc::pthread_t) -> std::io::Result<()>,
     ) -> GateResult<Option<Closing>> {
@@ -1044,30 +1013,30 @@ impl EntryGate {
     }
 }
 
-pub(crate) struct Participant {
+pub struct Participant {
     gate: Arc<EntryGate>,
     id: u64,
     /// Process-unique; see [`signal::participant_key`].
     key: u64,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     prepare_probe: Option<Arc<PrepareProbe>>,
 }
 
 impl Participant {
-    #[cfg(test)]
-    pub(crate) fn set_prepare_probe(&mut self, probe: Arc<PrepareProbe>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_prepare_probe(&mut self, probe: Arc<PrepareProbe>) {
         *self.gate.prepare_probe.lock().unwrap() = Some(probe.clone());
         self.prepare_probe = Some(probe);
     }
 
-    pub(crate) fn set_origin(&mut self, origin: impl Into<EntryOrigin>) {
+    pub fn set_origin(&mut self, origin: impl Into<EntryOrigin>) {
         let mut state = self.gate.state.lock().unwrap();
         let member = state.members.get_mut(&self.id).unwrap();
         assert_eq!(member.activity, Activity::Stopped);
         member.origin = origin.into();
     }
 
-    pub(crate) fn try_enter(&mut self) -> GateResult<Option<Entry<'_>>> {
+    pub fn try_enter(&mut self) -> GateResult<Option<Entry<'_>>> {
         let mut state = self.gate.state.lock().unwrap();
         state.check()?;
         if state.admission != Admission::Open {
@@ -1098,15 +1067,15 @@ impl Participant {
 
     /// `immediate_exit` belongs to the vCPU this entry runs; tests that run
     /// no vCPU pass None.
-    pub(crate) fn prepare(
+    pub fn prepare(
         &mut self,
         immediate_exit: Option<ImmediateExit>,
     ) -> GateResult<Option<RunEntry<'_>>> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let probe = self.prepare_probe.clone();
         let key = self.key;
         let Some(mut entry) = self.try_enter()? else {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             if let Some(probe) = &probe {
                 probe.increment(&probe.closed_admissions);
             }
@@ -1126,12 +1095,12 @@ impl Participant {
         };
         // The test hook runs after signal setup and outside the registry lock.
         // The real final admission check and publication remain together below.
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(probe) = &probe {
             probe.activate_hook();
         }
         let admitted = guard.entry.as_mut().unwrap().activate();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let (Ok(true), Some(probe)) = (&admitted, &probe) {
             probe.increment(&probe.activations);
         }
@@ -1177,7 +1146,7 @@ impl Drop for Participant {
 /// This guard cannot move between pthreads and must not cross an async suspension.
 /// Its caller owns signal accounting and clock cleanup. A lost guard
 /// leaves failed accounting; it cannot manufacture a successful fence.
-pub(crate) struct Entry<'a> {
+pub struct Entry<'a> {
     participant: &'a mut Participant,
     run: u64,
     generation: MappingGeneration,
@@ -1188,7 +1157,7 @@ pub(crate) struct Entry<'a> {
 impl Entry<'_> {
     /// The final open check and target publication occur under the registry
     /// lock.
-    pub(crate) fn activate(&mut self) -> GateResult<bool> {
+    pub fn activate(&mut self) -> GateResult<bool> {
         let mut state = self.participant.gate.state.lock().unwrap();
         state.check()?;
         let member = state.members.get(&self.participant.id).unwrap();
@@ -1210,8 +1179,8 @@ impl Entry<'_> {
     /// Must precede signal cleanup. A closer cannot send after this returns.
     /// Retirement stays counted through the caller's signal cleanup. Returns
     /// how many times a closer sent the reserved signal to this entry.
-    pub(crate) fn withdraw(&mut self) -> usize {
-        #[cfg(test)]
+    pub fn withdraw(&mut self) -> usize {
+        #[cfg(any(test, feature = "test-support"))]
         let mut state = {
             let hook = self
                 .participant
@@ -1235,7 +1204,7 @@ impl Entry<'_> {
                 self.participant.gate.state.lock().unwrap()
             }
         };
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         let mut state = self.participant.gate.state.lock().unwrap();
         let member = state.members.get_mut(&self.participant.id).unwrap();
         assert_eq!(member.run, self.run);
@@ -1248,7 +1217,7 @@ impl Entry<'_> {
     }
 
     /// Called only after clock cleanup, withdrawal and signal cleanup.
-    pub(crate) fn acknowledge(mut self, cleanup: crate::Result<()>) -> GateResult<()> {
+    pub fn acknowledge(mut self, cleanup: crate::Result<()>) -> GateResult<()> {
         let mut state = self.participant.gate.state.lock().unwrap();
         let member = state.members.get_mut(&self.participant.id).unwrap();
         assert_eq!(member.run, self.run);
@@ -1288,36 +1257,36 @@ impl Drop for Entry<'_> {
 /// Owns the same-thread signal accounting from setup through final
 /// withdrawal. CountedVcpu must finish its clock interval before calling
 /// finish.
-pub(crate) struct RunEntry<'a> {
+pub struct RunEntry<'a> {
     entry: Option<Entry<'a>>,
     control: Option<signal::Control>,
 }
 
 impl RunEntry<'_> {
-    pub(crate) fn finish(mut self, clock: crate::Result<()>) -> GateResult<()> {
+    pub fn finish(mut self, clock: crate::Result<()>) -> GateResult<()> {
         self.cleanup(clock)
     }
 
     fn cleanup(&mut self, clock: crate::Result<()>) -> GateResult<()> {
         let mut entry = self.entry.take().unwrap();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let probe = entry.participant.prepare_probe.clone();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let identity = CleanupIdentity {
             participant: entry.participant.id,
             run: entry.run,
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(probe) = &probe {
             probe.cleanup_hook(CleanupPhase::BeforeWithdraw, identity);
         }
         let kicks = entry.withdraw();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(probe) = &probe {
             probe.cleanup_hook(CleanupPhase::AfterWithdraw, identity);
         }
         let signal = self.control.take().unwrap().finish(kicks);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let (true, Some(probe)) = (kicks != 0, &probe) {
             probe.increment(&probe.kicked_cleanups);
         }
@@ -1326,7 +1295,7 @@ impl RunEntry<'_> {
             (Ok(()), result) | (result, Ok(())) => result,
             (Err(primary), Err(cleanup)) => Err(primary.with_cleanup(vec![cleanup])),
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(probe) = &probe {
             probe.cleanup_hook(CleanupPhase::BeforeAcknowledge, identity);
         }
@@ -1344,7 +1313,7 @@ impl Drop for RunEntry<'_> {
     }
 }
 
-pub(crate) struct CopyAccess {
+pub struct CopyAccess {
     gate: Arc<EntryGate>,
     origin: EntryOrigin,
     /// Admitted with [`EntryGate::try_copy_lazy`] or
@@ -1376,18 +1345,15 @@ impl CopyAccess {
     /// Retire the actual access now, while deferring every notification and
     /// the issuing context's destruction until the caller releases its locks.
     /// The returned token owns no memory or allocation transaction.
-    #[cfg(test)]
-    pub(crate) fn retire_deferred(self) -> CopyRetirement {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn retire_deferred(self) -> CopyRetirement {
         assert!(!self.lazy, "a lazily admitted copy must supply its origin");
         self.retire_deferred_with(|| unreachable!("a stored origin is used"))
     }
 
     /// As `retire_deferred`, with `origin` attributing an unwinding
     /// retirement of a lazily admitted copy.
-    pub(crate) fn retire_deferred_with(
-        mut self,
-        origin: impl FnOnce() -> EntryOrigin,
-    ) -> CopyRetirement {
+    pub fn retire_deferred_with(mut self, origin: impl FnOnce() -> EntryOrigin) -> CopyRetirement {
         let change = self.retire(origin);
         CopyRetirement {
             change: Some(change),
@@ -1433,7 +1399,7 @@ impl Drop for CopyAccess {
 /// Linear notification ownership after a copy's count has already retired.
 /// Dropping an unqueued token remains safe and notifies as a fallback; a caller
 /// holding memory locks must retain the token until after releasing them.
-pub(crate) struct CopyRetirement {
+pub struct CopyRetirement {
     change: Option<ChangeSignal>,
     origin: Option<EntryOrigin>,
     /// Retired from a lazily admitted copy, so `origin` is empty until
@@ -1457,13 +1423,13 @@ impl CopyRetirement {
     /// subscriber synchronously, which must not happen while the queue's
     /// owner still holds its locks. A lazily admitted copy stored nothing,
     /// so its issuer supplies the origin here; an eager copy already has it.
-    pub(crate) fn keep_issuer(&mut self, origin: impl FnOnce() -> EntryOrigin) {
+    pub fn keep_issuer(&mut self, origin: impl FnOnce() -> EntryOrigin) {
         if std::mem::take(&mut self.lazy) {
             self.origin = Some(origin());
         }
     }
 
-    pub(crate) fn notify(mut self) {
+    pub fn notify(mut self) {
         self.notify_pending();
     }
 
@@ -1484,7 +1450,7 @@ impl Drop for CopyRetirement {
     }
 }
 
-pub(crate) struct RetainedOperand {
+pub struct RetainedOperand {
     gate: Arc<EntryGate>,
     origin: EntryOrigin,
     generation: MappingGeneration,
@@ -1519,28 +1485,14 @@ impl Drop for RetainedOperand {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The private unchanged-mapping close protocol has no production closer yet"
-    )
-)]
-pub(crate) struct Closing {
+pub struct Closing {
     gate: Arc<EntryGate>,
     id: u64,
     complete: bool,
 }
 
 impl Closing {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The private unchanged-mapping close protocol has no production closer yet"
-        )
-    )]
-    pub(crate) async fn finish(mut self) -> GateResult<Closed> {
+    pub async fn finish(mut self) -> GateResult<Closed> {
         loop {
             let changed = {
                 let mut state = self.gate.state.lock().unwrap();
@@ -1576,9 +1528,9 @@ impl Drop for Closing {
 /// Exclusive stopped-address-space token. Dropping it reopens admission. A
 /// mapping change is authorized only through [`Closed::publish`], which binds
 /// the external change and the next admitted generation.
-pub(crate) struct Closed {
+pub struct Closed {
     gate: Arc<EntryGate>,
-    id: u64,
+    pub id: u64,
     published: bool,
     // Only a quiescent single-member close can change this capability. A
     // clean abandoned plan restores the previous state; a poisoned one cannot
@@ -1592,7 +1544,7 @@ impl Closed {
     /// The reservation stays active until successful publication commits this
     /// value. In particular, retiring the last file view cannot admit another
     /// participant while the old image is still installed.
-    pub(crate) fn set_single_member_domain(&mut self, active: bool) -> GateResult<()> {
+    pub fn set_single_member_domain(&mut self, active: bool) -> GateResult<()> {
         let state = self.gate.state.lock().unwrap();
         state.check()?;
         assert_eq!(state.admission, Admission::Closed(self.id));
@@ -1605,7 +1557,7 @@ impl Closed {
         Ok(())
     }
 
-    pub(crate) fn belongs_to(&self, gate: &Arc<EntryGate>) -> bool {
+    pub fn belongs_to(&self, gate: &Arc<EntryGate>) -> bool {
         Arc::ptr_eq(&self.gate, gate)
     }
 
@@ -1617,7 +1569,7 @@ impl Closed {
     /// Success requires the memory owner's opaque installed-view receipt. Its
     /// private constructor binds generation advancement to retained backing and
     /// pointer-provenance metadata instead of trusting an arbitrary callback.
-    pub(crate) fn publish(
+    pub fn publish(
         &mut self,
         origin: impl Into<EntryOrigin>,
         expected: MappingGeneration,
@@ -2920,7 +2872,7 @@ mod tests {
         drop(memory);
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[test]
 fn captured_owner_is_visible_before_wake_outside_registry_lock() {
     use std::future::Future;

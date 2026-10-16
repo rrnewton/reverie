@@ -3988,7 +3988,7 @@ impl KvmBackend {
                                         child.report_tool_failure("Tool worker retirement", error)
                                     });
                                     let peer_cancelled =
-                                        crate::runtime::is_peer_cancelled_tool_worker(
+                                        crate::failure::is_peer_cancelled_tool_worker(
                                             (tgid, child_tid_pid),
                                             !cancel,
                                             &result,

@@ -18,24 +18,24 @@ use crate::Error;
 use crate::Result;
 
 #[derive(Default)]
-pub(crate) struct ToolPanics {
+pub struct ToolPanics {
     pending: Mutex<Vec<PanicPayload>>,
     worker_execution_panicked: AtomicBool,
 }
 
 impl ToolPanics {
-    pub(crate) fn take(&self) -> Vec<PanicPayload> {
+    pub fn take(&self) -> Vec<PanicPayload> {
         std::mem::take(&mut *self.pending.lock().expect("KVM Tool panic lock poisoned"))
     }
 
-    pub(crate) fn append(&self, mut payloads: Vec<PanicPayload>) {
+    pub fn append(&self, mut payloads: Vec<PanicPayload>) {
         self.pending
             .lock()
             .expect("KVM Tool panic lock poisoned")
             .append(&mut payloads);
     }
 
-    pub(crate) fn drop_value<T>(&self, value: T, phase: &'static str) -> Result<()> {
+    pub fn drop_value<T>(&self, value: T, phase: &'static str) -> Result<()> {
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(value))).err();
         self.finish(
             CaughtFuture {
@@ -49,11 +49,11 @@ impl ToolPanics {
     /// Only this worker's execution catches set this disposition. Payloads
     /// transferred from children or caught while consuming cleanup must not
     /// suppress this owner's still-owed exit hooks.
-    pub(crate) fn worker_execution_panicked(&self) -> bool {
+    pub fn worker_execution_panicked(&self) -> bool {
         self.worker_execution_panicked.load(Ordering::Acquire)
     }
 
-    pub(crate) fn finish_worker_execution<R>(
+    pub fn finish_worker_execution<R>(
         &self,
         caught: CaughtFuture<Result<R>>,
         phase: &'static str,
@@ -67,11 +67,7 @@ impl ToolPanics {
 
     /// Keep both an already returned error and any polling/destruction panic.
     /// A derived cancellation cannot hide a newly caught real panic.
-    pub(crate) fn finish<R>(
-        &self,
-        caught: CaughtFuture<Result<R>>,
-        phase: &'static str,
-    ) -> Result<R> {
+    pub fn finish<R>(&self, caught: CaughtFuture<Result<R>>, phase: &'static str) -> Result<R> {
         self.finish_with_panic_kind(caught, phase, false)
     }
 

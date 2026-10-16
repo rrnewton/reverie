@@ -15,13 +15,13 @@ use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::task::Poll;
 
-pub(crate) type PanicPayload = Box<dyn Any + Send + 'static>;
+pub type PanicPayload = Box<dyn Any + Send + 'static>;
 
-pub(crate) struct CaughtFuture<R> {
+pub struct CaughtFuture<R> {
     /// A returned value survives even if destroying the future panics.
-    pub(crate) output: Option<R>,
+    pub output: Option<R>,
     /// Original payloads, in polling-then-destruction order.
-    pub(crate) panics: Vec<PanicPayload>,
+    pub panics: Vec<PanicPayload>,
 }
 
 /// Construct one future inside a catch, then catch its polling and destruction.
@@ -30,7 +30,7 @@ pub(crate) struct CaughtFuture<R> {
 /// that call in `build`; evaluating it before calling this helper is too late.
 /// A construction panic has no returned future or output to poll or destroy.
 /// As with `catch_owned_future`, a double panic during unwinding can abort.
-pub(crate) async fn catch_owned_future_from<B, F>(build: B) -> CaughtFuture<F::Output>
+pub async fn catch_owned_future_from<B, F>(build: B) -> CaughtFuture<F::Output>
 where
     B: FnOnce() -> F,
     F: Future,
@@ -54,7 +54,7 @@ where
 /// owns those decisions and any cleanup that must follow. Dropping this helper
 /// while it is pending does not run this completion protocol. A double panic
 /// during unwinding can abort the process and cannot be recovered here.
-pub(crate) async fn catch_owned_future<F: Future>(future: F) -> CaughtFuture<F::Output> {
+pub async fn catch_owned_future<F: Future>(future: F) -> CaughtFuture<F::Output> {
     let mut owned = Some(Box::pin(future));
     let mut panics = Vec::new();
     let output = poll_fn(|cx| {
