@@ -743,6 +743,18 @@ fn execute_basic_syscall_inner(
 ) -> SyscallAction {
     let args = request.args();
     let number = request.number();
+    // A2 PROOF ONLY (not for landing): record every syscall that reaches the
+    // executor's local dispatch, by any path (Tool inject or tool-less).
+    if let Some(path) = std::env::var_os("REVERIE_KVM_EXECUTOR_TRACE") {
+        use std::io::Write as _;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = file.write_all(format!("{number}\n").as_bytes());
+        }
+    }
     let capture_output = output.is_some();
     let capture_metadata = output.as_ref().map(|output| output.metadata());
 
