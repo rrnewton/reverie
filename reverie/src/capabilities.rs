@@ -214,6 +214,35 @@ pub struct BackendCapabilities {
     /// it wakes a modeled waiter, instead of depending on when the kernel's
     /// own cleanup runs.
     pub supports_guest_memory_compare_exchange: bool,
+
+    /// At a syscall stop the backend hands the kernel's signal delivery a
+    /// restart errno (such as `ERESTARTNOHAND`), which the kernel turns into
+    /// `EINTR` or a restart as Linux does, and it reports a thread's signal
+    /// state in `/proc` (measured on ptrace,
+    /// <https://github.com/rrnewton/hermit/issues/3146>). A tool may then let a
+    /// guest signal end a blocked wait the way Linux ends it. Without it a
+    /// restart errno could reach guest code, so a tool keeps such waits from
+    /// being interrupted by signals.
+    ///
+    /// This and the two fields after it were added after serialized
+    /// capabilities existed; a serialization without them reads them as
+    /// false, the value the host-side settings they replace had by default.
+    #[serde(default)]
+    pub supports_blocked_wait_signal_interruption: bool,
+
+    /// The backend arms a preemption timer and delivers its events, so a
+    /// tool's time slice really preempts a thread that makes no syscall
+    /// (<https://github.com/rrnewton/hermit/issues/4068>).
+    #[serde(default)]
+    pub delivers_preemption_timer_events: bool,
+
+    /// Guest code can run while a tool handler is between two of its injected
+    /// syscalls: the backend runs an accepted native guest signal handler
+    /// inside the tool's handler, and passes that handler's syscalls to
+    /// Linux. A tool must then not make two injected calls that need a
+    /// descriptor number to stay unchanged between them.
+    #[serde(default)]
+    pub runs_guest_code_between_injections: bool,
 }
 
 impl BackendCapabilities {
@@ -244,6 +273,9 @@ impl BackendCapabilities {
         emulates_child_waits: false,
         virtualizes_guest_sigalrm: false,
         supports_guest_memory_compare_exchange: false,
+        supports_blocked_wait_signal_interruption: true,
+        delivers_preemption_timer_events: true,
+        runs_guest_code_between_injections: false,
     };
 
     /// `reverie-e9patch`: the guest is rewritten ahead of time and then run
@@ -259,6 +291,9 @@ impl BackendCapabilities {
         supports_parked_write_signal_interruption: false,
         reports_child_exit_publication: false,
         virtualizes_guest_sigalrm: true,
+        supports_blocked_wait_signal_interruption: false,
+        delivers_preemption_timer_events: false,
+        runs_guest_code_between_injections: true,
         ..Self::PTRACE
     };
 
@@ -277,6 +312,9 @@ impl BackendCapabilities {
         runs_exit_robust_list: false,
         supports_parked_write_signal_interruption: false,
         reports_child_exit_publication: false,
+        supports_blocked_wait_signal_interruption: false,
+        delivers_preemption_timer_events: false,
+        runs_guest_code_between_injections: true,
         ..Self::PTRACE
     };
 
@@ -292,6 +330,8 @@ impl BackendCapabilities {
         supports_parked_write_signal_interruption: false,
         reports_child_exit_publication: false,
         supports_guest_memory_compare_exchange: true,
+        supports_blocked_wait_signal_interruption: false,
+        delivers_preemption_timer_events: false,
         ..Self::PTRACE
     };
 
@@ -307,6 +347,8 @@ impl BackendCapabilities {
         provides_process_signal_control: true,
         emulates_child_waits: true,
         reports_child_exit_publication: false,
+        supports_blocked_wait_signal_interruption: false,
+        delivers_preemption_timer_events: false,
         ..Self::PTRACE
     };
 }
@@ -349,6 +391,9 @@ mod tests {
             "emulates_child_waits": false,
             "virtualizes_guest_sigalrm": false,
             "supports_guest_memory_compare_exchange": false,
+            "supports_blocked_wait_signal_interruption": true,
+            "delivers_preemption_timer_events": true,
+            "runs_guest_code_between_injections": false,
         })
     }
 
@@ -387,6 +432,9 @@ mod tests {
                 "supports_parked_write_signal_interruption": false,
                 "reports_child_exit_publication": false,
                 "virtualizes_guest_sigalrm": true,
+                "supports_blocked_wait_signal_interruption": false,
+                "delivers_preemption_timer_events": false,
+                "runs_guest_code_between_injections": true,
             }))
         );
     }
@@ -408,6 +456,9 @@ mod tests {
                 "runs_exit_robust_list": false,
                 "supports_parked_write_signal_interruption": false,
                 "reports_child_exit_publication": false,
+                "supports_blocked_wait_signal_interruption": false,
+                "delivers_preemption_timer_events": false,
+                "runs_guest_code_between_injections": true,
             }))
         );
     }
@@ -426,6 +477,8 @@ mod tests {
                 "supports_parked_write_signal_interruption": false,
                 "reports_child_exit_publication": false,
                 "supports_guest_memory_compare_exchange": true,
+                "supports_blocked_wait_signal_interruption": false,
+                "delivers_preemption_timer_events": false,
             }))
         );
     }
@@ -444,6 +497,8 @@ mod tests {
                 "provides_process_signal_control": true,
                 "emulates_child_waits": true,
                 "reports_child_exit_publication": false,
+                "supports_blocked_wait_signal_interruption": false,
+                "delivers_preemption_timer_events": false,
             }))
         );
     }
