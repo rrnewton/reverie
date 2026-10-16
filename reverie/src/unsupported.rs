@@ -24,6 +24,11 @@ pub enum UnsupportedOperation {
     /// original operation, live cut or controlled successor launch chain.
     /// No replacement image ran; ordinary exec preparation can roll back.
     NativeExec,
+    /// A blocking `flock(2)` request: `LOCK_SH` or `LOCK_EX` without
+    /// `LOCK_NB`. A backend that refuses it took no lock, released none and
+    /// left any lock the open file description already held in place.
+    /// `LOCK_NB` and `LOCK_UN` requests are not refused.
+    BlockingFlock,
 }
 
 /// A backend's refusal of an injected syscall that it cannot perform, as
