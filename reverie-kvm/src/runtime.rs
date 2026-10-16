@@ -1627,6 +1627,18 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     async fn daemonize(&mut self) {}
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> std::result::Result<i64, Errno> {
+        // A2 PROOF ONLY (not for landing): record every syscall the Tool
+        // forwards to reverie-kvm.
+        if let Some(path) = std::env::var_os("REVERIE_KVM_INJECT_TRACE") {
+            use std::io::Write as _;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(file, "{}", syscall.number());
+            }
+        }
         self.admit_ordinary_operation().await;
         self.executor.invalidate_polled_read_attempt();
         self.unsupported_refusal = None;
