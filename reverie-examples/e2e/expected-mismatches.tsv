@@ -55,6 +55,7 @@ awk	liteinst	mismatch	(no aligned start) -> geteuid=ok	https://github.com/rrnewt
 perl	liteinst	mismatch	(no aligned start) -> rt_sigaction=ok	https://github.com/rrnewton/hermit/issues/4485
 python3	liteinst	mismatch	openat=3 -> openat=5	https://github.com/rrnewton/hermit/issues/4485
 sh-pipe	liteinst	mismatch	brk=ok -> getresuid=ok	https://github.com/rrnewton/hermit/issues/4485
+direct	liteinst	mismatch	openat=3 -> openat=5	https://github.com/rrnewton/hermit/issues/4485
 echo	in-guest-trap	mismatch	brk=ok -> fstat=ok	https://github.com/rrnewton/hermit/issues/4485
 cat-hostname	in-guest-trap	mismatch	brk=ok -> fstat=ok	https://github.com/rrnewton/hermit/issues/4485
 ls-root	in-guest-trap	mismatch	brk=ok -> ioctl=ENOTTY	https://github.com/rrnewton/hermit/issues/4485
@@ -76,7 +77,9 @@ awk	in-guest-trap	mismatch	(no aligned start) -> geteuid=ok	https://github.com/r
 perl	in-guest-trap	mismatch	(no aligned start) -> rt_sigaction=ok	https://github.com/rrnewton/hermit/issues/4485
 python3	in-guest-trap	mismatch	openat=3 -> openat=5	https://github.com/rrnewton/hermit/issues/4485
 sh-pipe	in-guest-trap	mismatch	brk=ok -> getresuid=ok	https://github.com/rrnewton/hermit/issues/4485
+direct	in-guest-trap	mismatch	openat=3 -> openat=5	https://github.com/rrnewton/hermit/issues/4485
 # e9patch's direct path hosts a tool only in a program whose own executable makes syscalls; the corpus's
-# programs make theirs through libc (and gzip is a script).
+# programs make theirs through libc (and gzip is a script). The `direct` cell (direct_guest.rs) is such a
+# program, linked without PIE, and matches.
 *	e9patch	no_result	recorder exit status: 1: Error: direct e9patch Tool hosting requires at least one recovered syscall site	https://github.com/rrnewton/hermit/issues/4485
 gzip-hostname	e9patch	no_result	recorder exit status: 1: Error: direct e9patch Tool hosting requires an ELF main executable	https://github.com/rrnewton/hermit/issues/4485

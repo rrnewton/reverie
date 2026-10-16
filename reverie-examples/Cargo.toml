@@ -79,6 +79,10 @@ name = "reverie-e2e-compare"
 path = "e2e/compare.rs"
 
 [[bin]]
+name = "reverie-e2e-direct"
+path = "e2e/direct_guest.rs"
+
+[[bin]]
 name = "strace"
 path = "strace/main.rs"
 

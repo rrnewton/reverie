@@ -268,15 +268,23 @@ fn record(
     parse_record(&text).ok_or_else(|| (false, "unreadable record".to_owned()))
 }
 
-fn read_corpus(path: &Path) -> Vec<Cell> {
+/// A corpus program written with this prefix is the binary of that name
+/// beside the recorder, built with it (`$BIN/reverie-e2e-direct`).
+const BESIDE_THE_RECORDER: &str = "$BIN/";
+
+fn read_corpus(path: &Path, recorder: &Path) -> Vec<Cell> {
     let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let binaries = recorder.parent().expect("the recorder's directory");
     text.lines()
         .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
         .map(|line| {
             let mut fields = line.split('\t').map(str::to_owned);
             let name = fields.next().expect("a cell name");
-            let argv: Vec<String> = fields.collect();
+            let mut argv: Vec<String> = fields.collect();
             assert!(!argv.is_empty(), "cell {name} has no command");
+            if let Some(binary) = argv[0].strip_prefix(BESIDE_THE_RECORDER) {
+                argv[0] = binaries.join(binary).to_string_lossy().into_owned();
+            }
             Cell { name, argv }
         })
         .collect()
@@ -343,7 +351,7 @@ fn main() {
         }
     }
     let recorder = recorder.expect("--recorder");
-    let cells = read_corpus(&corpus.expect("--corpus"));
+    let cells = read_corpus(&corpus.expect("--corpus"), &recorder);
     let ledger = read_ledger(&expected.expect("--expected"));
     let artifacts = artifacts.expect("--artifacts");
     fs::create_dir_all(&artifacts).expect("artifacts directory");

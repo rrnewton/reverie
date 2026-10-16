@@ -23,6 +23,13 @@ the check fails. A row that no longer describes what a backend does fails too.
   processes over a socket. A backend that cannot run the tool refuses by name
   (`REFUSED:`).
 - `../backend.rs`: the run-time backend selector the tools share.
+- `direct_guest.rs` (binary `reverie-e2e-direct`, corpus cell `direct`): a
+  program whose own executable makes its syscalls, ending with `exit_group`.
+  e9patch's direct path hosts a tool only in such a program, and every other
+  corpus program makes its calls through libc. It is linked without PIE
+  (`../build.rs`), because e9patch's direct path does not run a PIE
+  executable. The corpus names it `$BIN/reverie-e2e-direct`: `$BIN/` is the
+  recorder's directory.
 - `compare.rs` (binary `reverie-e2e-compare`): runs each program of `corpus.tsv` natively twice (an unstable
   native baseline is its own verdict) and on each backend, compares call by
   call, and checks every verdict other than `match` against
@@ -38,7 +45,7 @@ other hosts (library versions, `/proc` contents), so `cargo test` runs only
 the environment-independent part (`../tests/recorder.rs`).
 
 ```text
-cargo build -p reverie-examples --lib --bin recorder --bin reverie-e2e-compare
+cargo build -p reverie-examples --lib --bin recorder --bin reverie-e2e-compare --bin reverie-e2e-direct
 cargo build -p reverie-sabre-strace
 reverie-dbt/scripts/build-client.sh
 export SABRE_BINARY="$(target/debug/reverie-sabre-strace --print-sabre)"
