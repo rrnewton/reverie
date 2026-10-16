@@ -29,6 +29,9 @@ struct QueueExecutor {
     calls: usize,
 }
 impl LinuxProvider for QueueExecutor {
+    type Memory = GuestMemory;
+    type Error = crate::Error;
+
     fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<ProviderOutcome> {
         panic!("queue operation executed a guest syscall")
     }

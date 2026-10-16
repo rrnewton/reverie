@@ -596,7 +596,7 @@ pub(crate) struct UserMemory {
 /// This contract belongs to HostMemoryOperand; UserWriteAlias below instead
 /// holds permission and host-copy locks through its scoped kernel operation.
 #[derive(Debug)]
-pub(crate) struct HostMemoryOperand {
+pub struct HostMemoryOperand {
     _memory: GuestMemory,
     _retained: RetainedOperand,
     address: usize,
@@ -872,7 +872,7 @@ pub(crate) fn retained_write_aliases_for_test() -> Vec<RetainedWriteAliasSnapsho
 /// reenter guest memory or acquire its allocation lock. Filesystem latency is
 /// not bounded: a stalled syscall keeps these locks held. This does not hold a
 /// short-copy admission.
-pub(crate) struct UserWriteAlias<'a> {
+pub struct UserWriteAlias<'a> {
     // Explicit retirement makes every field optional: finish, construction
     // failure, plain Drop and unwind all use the same exactly-once finalizer.
     mapping: Option<Box<WriteAliasMapping>>,
@@ -3164,13 +3164,6 @@ impl UserMemory {
     /// writability check and the exchange run under one copy admission and
     /// one address-space lock, as a permission-aware copyout does. A word on
     /// truncate-capable file backing is refused as an atomic scalar store is.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no executor handler performs a guest compare-exchange yet; futex words still go to the host kernel"
-        )
-    )]
     pub(crate) fn compare_exchange_u32(
         &self,
         guest_address: u64,

@@ -19,6 +19,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::*;
+use crate::syscall::SyscallRequestFrame;
 
 const PROGRAM: u64 = 0x1000;
 const MARKER: u64 = 0x2000;

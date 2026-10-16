@@ -66,6 +66,8 @@ use crate::failure::FailureContext;
 use crate::failure::RunFailure;
 use crate::failure::wait_for_failure;
 use crate::memory::RegionKind;
+use crate::syscall::SyscallRequestExt;
+use crate::syscall::SyscallRequestFrame;
 
 /// Bounded test observations around the existing wait registration boundary.
 /// Registration is current-host scoped and invokes no closure under its borrow.
@@ -331,7 +333,9 @@ pub(crate) struct ToolContext<'a, T: Tool> {
 /// checks, the traced-parent query behind `Guest::ppid`, and the completion
 /// of process actions. The trait is generic over the Tool only because
 /// `complete_injection` starts child Tool instances.
-trait GuestSyscallExecutor<T: Tool>: LinuxProvider + LinuxEmuSignalControl + LinuxEmuMemoryMap {
+trait GuestSyscallExecutor<T: Tool>:
+    LinuxProvider<Memory = GuestMemory, Error = Error> + LinuxEmuSignalControl + LinuxEmuMemoryMap
+{
     fn read_clock(&self) -> Result<u64>;
 
     fn has_cpuid_interception(&self) -> bool {
@@ -396,6 +400,9 @@ struct DirectSyscallExecutor<'a> {
 /// it has always answered; it shows that `KvmGuest::inject` works with a
 /// provider other than the static-ELF executor.
 impl LinuxProvider for DirectSyscallExecutor<'_> {
+    type Memory = GuestMemory;
+    type Error = crate::Error;
+
     fn execute(
         &mut self,
         request: &SyscallRequest,
@@ -650,6 +657,9 @@ impl Drop for StaticElfSyscallExecutor<'_> {
 ///   from the Tool. That deviates from the provider contract and is
 ///   scheduled for deletion, not for preservation.
 impl LinuxProvider for StaticElfSyscallExecutor<'_> {
+    type Memory = GuestMemory;
+    type Error = crate::Error;
+
     fn execute(
         &mut self,
         request: &SyscallRequest,
@@ -1641,7 +1651,8 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         }
         self.admit_ordinary_operation().await;
         // The syscall itself goes only through the run's Linux provider.
-        let provider: &mut dyn LinuxProvider = &mut *self.executor;
+        let provider: &mut dyn LinuxProvider<Memory = GuestMemory, Error = Error> =
+            &mut *self.executor;
         let raw = match provider.execute(&request, &self.memory) {
             Ok(ProviderOutcome::Return(raw)) => {
                 self.unsupported_refusal = provider.take_unsupported_refusal();
@@ -7289,6 +7300,9 @@ mod tests {
     struct FailingSyscallExecutor;
 
     impl LinuxProvider for FailingSyscallExecutor {
+        type Memory = GuestMemory;
+        type Error = crate::Error;
+
         fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<ProviderOutcome> {
             Err(Error::FamilyWaitLedgerMismatch {
                 parent: reverie::SignalProcessId {
@@ -7313,6 +7327,9 @@ mod tests {
     }
 
     impl LinuxProvider for SideEffectingExecutor {
+        type Memory = GuestMemory;
+        type Error = crate::Error;
+
         fn execute(
             &mut self,
             request: &SyscallRequest,
@@ -7382,6 +7399,9 @@ mod tests {
     }
 
     impl LinuxProvider for PermissiveSideEffectingExecutor {
+        type Memory = GuestMemory;
+        type Error = crate::Error;
+
         fn execute(
             &mut self,
             request: &SyscallRequest,
@@ -7492,6 +7512,9 @@ mod tests {
     );
 
     impl LinuxProvider for RefusingThenSupportingProvider {
+        type Memory = GuestMemory;
+        type Error = crate::Error;
+
         fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<ProviderOutcome> {
             self.executed += 1;
             if self.executed == 1 {
