@@ -10,7 +10,7 @@
 //!
 //! [`LinuxProvider`], [`ProviderOutcome`], [`SyscallRequest`],
 //! [`GuestMemoryAccess`], [`AddressSpace`] and the types they use now live in
-//! Reverie's core, as [`reverie::provider`]. This crate only re-exports that
+//! Reverie's core, as [`reverie::provider`](mod@reverie::provider). This crate only re-exports that
 //! module, unchanged, for one release so that existing imports keep compiling;
 //! import from `reverie::provider` instead. It will then be deleted
 //! (<https://github.com/rrnewton/hermit/issues/4485>).
