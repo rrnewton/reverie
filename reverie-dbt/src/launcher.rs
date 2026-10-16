@@ -650,13 +650,23 @@ impl DbtRunner {
         }
         let mut global = Arc::new(global);
         let requested = Arc::new(AtomicBool::new(false));
-        let server = RpcServer::bind_with_readiness(
+        let mut server = RpcServer::bind_with_readiness(
             &socket,
             Arc::clone(&global),
             config,
             Arc::clone(&requested),
         )
         .map_err(|error| io::Error::other(error.to_string()))?;
+        // Every guest connection carries the identity of the process that
+        // opened it, so the tool can bind a registration to that process and
+        // not to a number a request names
+        // (https://github.com/rrnewton/hermit/issues/4362, part 2 step 1).
+        // DBT opens one connection per thread and reconnects after fork (the
+        // cached connection's pid check), so a request's connection is always
+        // its own process's.
+        server
+            .require_connection_identity()
+            .map_err(|error| io::Error::other(error.to_string()))?;
 
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-247): Review native external-global capability propagation.

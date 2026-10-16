@@ -27,6 +27,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use reverie::ConnectionIdentity;
 use reverie::GlobalTool;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
@@ -129,6 +130,18 @@ fn peer_pidfd(stream: &impl AsRawFd) -> std::io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+/// The identity of the process that opened `stream`, when the server
+/// identifies connections ([`RpcServer::require_connection_identity`]).
+fn identify_connection(
+    identify: bool,
+    stream: &UnixStream,
+) -> Result<Option<ConnectionIdentity>, RpcError> {
+    if !identify {
+        return Ok(None);
+    }
+    crate::peer_identity::identify(peer_pidfd(stream)?).map(Some)
+}
+
 /// Runs `admission`, if any, on an accepted connection.
 fn admit_connection(
     admission: Option<&Arc<dyn ConnectionAdmission>>,
@@ -160,6 +173,7 @@ pub struct RpcServer<G: GlobalTool> {
     connections: ConnectionMonitor,
     issues: Option<RpcIssueMonitor>,
     admission: Option<Arc<dyn ConnectionAdmission>>,
+    identify_connections: bool,
     initial_image: Option<InitialImageSetup>,
     native_successor: Option<Arc<dyn SuccessorAdmission>>,
 }
@@ -183,6 +197,7 @@ struct ConnectionSetup {
     readiness: Option<Arc<AtomicBool>>,
     connection_readiness: Option<Arc<AtomicBool>>,
     admitted: Option<Admitted>,
+    identity: Option<ConnectionIdentity>,
     handshake: Option<HandshakeFrames>,
     native_close: Option<Arc<dyn SuccessorAdmission>>,
 }
@@ -410,6 +425,7 @@ where
             connections: ConnectionMonitor::new(),
             issues: None,
             admission: None,
+            identify_connections: false,
             initial_image: None,
             native_successor: None,
         })
@@ -451,6 +467,7 @@ where
             connections: ConnectionMonitor::new(),
             issues: None,
             admission: None,
+            identify_connections: false,
             initial_image: None,
             native_successor: None,
         })
@@ -506,6 +523,7 @@ where
             connections: ConnectionMonitor::new(),
             issues: None,
             admission: None,
+            identify_connections: false,
             initial_image: None,
             native_successor: None,
         })
@@ -515,6 +533,33 @@ where
     /// see [`ConnectionAdmission`].
     pub fn set_connection_admission(&mut self, admission: Arc<dyn ConnectionAdmission>) {
         self.admission = Some(admission);
+    }
+
+    /// Identifies the process that opened each later connection and hands it
+    /// to the global tool with every request from that connection, through
+    /// [`GlobalTool::receive_rpc_with_identity`]
+    /// (https://github.com/rrnewton/hermit/issues/4362, part 2 step 1).
+    ///
+    /// On accept, the server takes the connecting process's pidfd
+    /// (`SO_PEERPIDFD`, recorded by the kernel at `connect`) and asks the
+    /// kernel for its thread-group id (`PIDFD_GET_INFO`). A connection whose
+    /// process was reaped before it was accepted is refused unserved. Unlike
+    /// [`ConnectionAdmission`], no request is bound to a sender id: a
+    /// request's `from` is passed through as sent, and the tool decides what
+    /// the identity must match.
+    ///
+    /// Fails, naming the requirement, on a kernel without `PIDFD_GET_INFO`
+    /// (before Linux 6.13). It cannot be combined with a
+    /// [`ConnectionAdmission`] or image admission.
+    pub fn require_connection_identity(&mut self) -> Result<(), RpcError> {
+        if self.admission.is_some() || self.initial_image.is_some() {
+            return Err(RpcError::Io(std::io::Error::other(
+                "per-connection identity cannot be combined with connection or image admission",
+            )));
+        }
+        crate::peer_identity::check_kernel_support()?;
+        self.identify_connections = true;
+        Ok(())
     }
 
     /// Require InitialImage redemption on every connection to this server.
@@ -534,6 +579,11 @@ where
         if self.admission.is_none() || self.issues.is_none() {
             return Err(crate::initial_image::invalid(
                 "InitialImage requires process admission and retained connection issues",
+            ));
+        }
+        if self.identify_connections {
+            return Err(crate::initial_image::invalid(
+                "InitialImage cannot be combined with per-connection identity",
             ));
         }
         self.initial_image = Some(InitialImageSetup {
@@ -645,6 +695,7 @@ where
                 };
                 let retain_issues = self.issues.is_some();
                 let admission = self.admission.clone();
+                let identify_connections = self.identify_connections;
                 let initial_image = self.initial_image.clone();
                 let native_successor = self.native_successor.clone();
                 connections.spawn(async move {
@@ -652,6 +703,7 @@ where
                     let future = async move {
                         let mut stream = stream;
                         let admitted = admit_connection(admission.as_ref(), &stream)?;
+                        let identity = identify_connection(identify_connections, &stream)?;
                         let config_bytes = match initial_image {
                             Some(hook) => Some(
                                 image_handshake(
@@ -672,6 +724,7 @@ where
                                 readiness,
                                 connection_readiness,
                                 admitted,
+                                identity,
                                 handshake: config_bytes,
                                 native_close: native_successor,
                             },
@@ -728,6 +781,7 @@ where
         };
         let result = async {
             let admitted = admit_connection(self.admission.as_ref(), &stream)?;
+            let identity = identify_connection(self.identify_connections, &stream)?;
             let config = self.config.clone();
             let config_bytes = match &self.initial_image {
                 Some(hook) => Some(
@@ -749,6 +803,7 @@ where
                     readiness: self.readiness.clone(),
                     connection_readiness: self.connection_readiness.clone(),
                     admitted,
+                    identity,
                     handshake: config_bytes,
                     native_close: self.native_successor.clone(),
                 },
@@ -932,6 +987,7 @@ where
         readiness,
         connection_readiness,
         mut admitted,
+        identity,
         handshake,
         native_close,
     } = setup;
@@ -1007,7 +1063,14 @@ where
         if let Some(readiness) = &readiness {
             readiness.store(true, Ordering::Release);
         }
-        let response = global.receive_rpc(from, request).await;
+        let response = match &identity {
+            Some(identity) => {
+                global
+                    .receive_rpc_with_identity(from, request, identity.clone())
+                    .await
+            }
+            None => global.receive_rpc(from, request).await,
+        };
         let response_bytes = encode(&response)?;
         write_message(&mut stream, &response_bytes).await?;
     }

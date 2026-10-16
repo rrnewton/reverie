@@ -58,6 +58,7 @@ mod backend;
 pub mod backend_stats;
 mod backtrace;
 mod capabilities;
+mod connection_identity;
 mod dispatch_stats;
 mod error;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -86,6 +87,7 @@ pub use backend::*;
 pub use backend_stats::*;
 pub use backtrace::*;
 pub use capabilities::*;
+pub use connection_identity::ConnectionIdentity;
 pub use dispatch_stats::*;
 pub use error::*;
 pub use guest::*;
