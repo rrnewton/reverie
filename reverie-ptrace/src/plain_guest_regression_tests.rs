@@ -536,6 +536,13 @@ const SHAPE_EMULATE: u64 = 2;
 const SHAPE_PRIVATE: u64 = 3;
 const SHAPE_TWO_INJECTS: u64 = 4;
 const SHAPE_TWO_PRIVATE: u64 = 5;
+/// Blocks every signal with an injected `rt_sigprocmask`, injects the call,
+/// and restores the mask, as Detcore's disposition check
+/// (`block_signals_for_disposition`) brackets its calls.
+const SHAPE_BLOCK_ALL: u64 = 6;
+/// Injects a getpid first, which takes the pending syscall's place, then the
+/// call itself, which therefore runs on the private page, single-stepped.
+const SHAPE_PRIVATE_CALL: u64 = 7;
 const SEND_SIGUSR1: u64 = 0x100;
 const SEND_SIGWINCH: u64 = 0x200;
 const SEND_QUEUE: u64 = 0x400;
@@ -1057,6 +1064,45 @@ impl Tool for GuestTool {
                     ))
                     .await;
                 Ok(first?)
+            }
+            SHAPE_BLOCK_ALL => {
+                use reverie::Stack;
+                let mut stack = guest.stack().await;
+                let all: u64 = !0;
+                let all_addr = stack.push(all);
+                let old_addr = stack.reserve::<u64>();
+                let _guard = stack.commit()?;
+                let block = reverie::syscalls::RtSigprocmask::new()
+                    .with_how(libc::SIG_SETMASK)
+                    .with_set(Some(all_addr.cast()))
+                    .with_oldset(Some(old_addr.cast()))
+                    .with_sigsetsize(8);
+                guest.inject(block).await?;
+                let result = guest.inject(call).await;
+                let restore = reverie::syscalls::RtSigprocmask::new()
+                    .with_how(libc::SIG_SETMASK)
+                    .with_set(Some(reverie::syscalls::Addr::from(old_addr).cast()))
+                    .with_oldset(None)
+                    .with_sigsetsize(8);
+                guest.inject(restore).await?;
+                guest
+                    .send_rpc(format!(
+                        "syscall {name} = {} under all blocked",
+                        errno_value(&result)
+                    ))
+                    .await;
+                Ok(result?)
+            }
+            SHAPE_PRIVATE_CALL => {
+                guest.inject(reverie::syscalls::Getpid::new()).await?;
+                let result = guest.inject(call).await;
+                guest
+                    .send_rpc(format!(
+                        "syscall {name} = {} privately",
+                        errno_value(&result)
+                    ))
+                    .await;
+                Ok(result?)
             }
             SHAPE_TWO_PRIVATE => {
                 let first = guest.inject(reverie::syscalls::Getpid::new()).await;
@@ -1760,13 +1806,15 @@ async fn unknown_numbers_return_enosys_without_a_tool_event() {
     }
 }
 
-/// Each Tool handler shape single-steps a fixed number of times, so the
-/// guest sees a fixed SIGTRAP disposition, mask and trap number after each:
-/// a shape that single-steps resets SIGTRAP to its default and unblocks it,
-/// and the last trap the SIGUSR1 frame records is the step's debug trap (1)
-/// instead of the syscall's (13). In the fixture's order of the shapes
-/// (exact inject, tail, emulate, private inject, two injects, two private
-/// injects) the steps are 0, 0, 1, 2, 1 and 3.
+/// Each Tool handler shape single-steps a fixed number of times. The guest's
+/// ignored and blocked SIGTRAP stays so after every shape, stepped or not
+/// (<https://github.com/rrnewton/hermit/issues/4409>;
+/// `sigtrap_state_survives_each_handler_shape` covers the other states).
+/// The last trap the SIGUSR1 frame records still differs: after a shape
+/// that single-steps it is the step's debug trap (1) instead of the
+/// syscall's (13), a documented difference. In the fixture's order of the
+/// shapes (exact inject, tail, emulate, private inject, two injects, two
+/// private injects) the steps are 0, 0, 1, 2, 1 and 3.
 #[tokio::test(flavor = "current_thread")]
 async fn sigtrap_profile_follows_each_handler_shape() {
     let [inject, _] = run_both_configurations("sigtrap_profile").await;
@@ -1780,11 +1828,8 @@ async fn sigtrap_profile_follows_each_handler_shape() {
         ("two-injects", "ppid", true),
         ("two-private", "pid", true),
     ] {
-        let (disposition, blocked, trapno) = if stepped {
-            ("dfl", 0, 1)
-        } else {
-            ("ign", 1, 13)
-        };
+        let (disposition, blocked) = ("ign", 1);
+        let trapno = if stepped { 1 } else { 13 };
         guest_visible.push(format!("{shape} getppid={result}"));
         guest_visible.push(format!("{shape} sigtrap={disposition} blocked={blocked}"));
         guest_visible.push(format!(
@@ -1802,6 +1847,51 @@ async fn sigtrap_profile_follows_each_handler_shape() {
     let steps = steps_per_shape(&inject);
     eprintln!("steps per shape: {steps:?}");
     assert_eq!(steps, expected, "step profile");
+}
+
+/// A guest's SIGTRAP state survives every Tool handler shape, as it does
+/// natively (https://github.com/rrnewton/hermit/issues/4409). Linux reports
+/// each `PTRACE_SINGLESTEP` with `force_sig`, which resets a blocked or
+/// ignored SIGTRAP to `SIG_DFL` and unblocks it. Five states (ignored or
+/// caught, blocked or not, and default blocked) go through each shape, and
+/// the guest reads back the handler, the flags and `sa_mask` it set, and the
+/// mask bit. The step profile is asserted too, so the stepping shapes are
+/// known to have stepped.
+#[tokio::test(flavor = "current_thread")]
+async fn sigtrap_state_survives_each_handler_shape() {
+    let [inject, _] = run_both_configurations("sigtrap_states").await;
+    let shapes = [
+        "inject",
+        "tail",
+        "emulate",
+        "private",
+        "two-injects",
+        "two-private",
+        "block-all",
+    ];
+    let mut expected = Vec::new();
+    for (state, action, blocked) in [
+        ("ign-blocked", "ign", 1),
+        ("ign", "ign", 0),
+        ("handler-blocked", "trap_handler", 1),
+        ("handler", "trap_handler", 0),
+        ("dfl-blocked", "dfl", 1),
+    ] {
+        for shape in shapes {
+            expected.push(format!(
+                "{state} {shape} sigtrap={action} flags=0x50000000 usr2-in-mask=1 \
+                 blocked={blocked}"
+            ));
+        }
+    }
+    let lines: Vec<&str> = inject
+        .report
+        .lines()
+        .filter(|line| !line.starts_with("mode ") && *line != "done")
+        .collect();
+    assert_eq!(lines, expected, "{}", inject.report);
+    let steps = steps_per_shape(&inject);
+    assert_eq!(steps, [0, 0, 1, 2, 1, 3, 4].repeat(5), "step profile");
 }
 
 /// Steps taken by each tagged call: the cumulative count at the next
@@ -2876,6 +2966,169 @@ async fn a_perf_marker_timer_steps_onto_the_next_syscall() {
         }
     })
     .await;
+}
+
+/// A guest's ignored or blocked SIGTRAP survives exec as it does natively
+/// (<https://github.com/rrnewton/hermit/issues/4409>). Reverie single-steps an
+/// `mmap` of its private page in every new image before the guest's first
+/// instruction (`setup_special_mmap_page`); each image reads the state its
+/// predecessor set before any Tool injection. Exec keeps `SIG_IGN` and the
+/// mask, and clears every action's flags and `sa_mask`.
+#[tokio::test(flavor = "current_thread")]
+async fn sigtrap_state_survives_reverie_preinit_at_exec() {
+    let [inject, _] = run_both_configurations("sigtrap_exec").await;
+    let lines: Vec<&str> = inject
+        .report
+        .lines()
+        .filter(|line| line.starts_with("exec "))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "exec ign-blocked sigtrap=ign flags=0 usr2-in-mask=0 blocked=1",
+            "exec ign sigtrap=ign flags=0 usr2-in-mask=0 blocked=0",
+            "exec dfl-blocked sigtrap=dfl flags=0 usr2-in-mask=0 blocked=1",
+        ],
+        "{}",
+        inject.report
+    );
+}
+
+/// A guest's SIGTRAP state survives a guest `fork` run in place, whose parent
+/// Reverie single-steps from its clone event stop (`handle_new_task`), in
+/// both the parent and the child
+/// (<https://github.com/rrnewton/hermit/issues/4409>).
+#[tokio::test(flavor = "current_thread")]
+async fn sigtrap_state_survives_a_guest_fork() {
+    let [inject, _] = run_both_configurations("sigtrap_fork").await;
+    let mut expected = Vec::new();
+    for (state, action, blocked) in [
+        ("ign-blocked", "ign", 1),
+        ("ign", "ign", 0),
+        ("handler-blocked", "trap_handler", 1),
+    ] {
+        for who in ["child", "parent"] {
+            expected.push(format!(
+                "fork {who} {state} sigtrap={action} flags=0x50000000 usr2-in-mask=1 \
+                 blocked={blocked}"
+            ));
+        }
+    }
+    let lines: Vec<&str> = inject
+        .report
+        .lines()
+        .filter(|line| line.starts_with("fork "))
+        .collect();
+    assert_eq!(lines, expected, "{}", inject.report);
+}
+
+/// Calls that set SIGTRAP's action or the blocked mask, injected on the
+/// private page and single-stepped, leave what they set
+/// (<https://github.com/rrnewton/hermit/issues/4409>):
+/// - `rt_sigaction(SIGTRAP, act)` with SIGTRAP blocked: the trap after the
+///   call resets `act`, and the repair writes back `act`, not the action
+///   before the call;
+/// - `ppoll` with SIGTRAP in its temporary mask and a zero timeout: the kernel
+///   restores the guest's mask before the step's trap, which then sees
+///   SIGTRAP blocked only if the guest blocks it.
+#[tokio::test(flavor = "current_thread")]
+async fn sigtrap_state_survives_private_calls_that_set_it() {
+    let [inject, _] = run_both_configurations("sigtrap_private_calls").await;
+    let lines: Vec<&str> = inject
+        .report
+        .lines()
+        .filter(|line| line.starts_with("private-"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "private-sigaction ign sigtrap=ign flags=0x50000000 usr2-in-mask=1 blocked=1",
+            "private-sigaction handler sigtrap=trap_handler flags=0x50000000 usr2-in-mask=1 blocked=1",
+            "private-ppoll handler-blocked sigtrap=trap_handler flags=0x50000000 usr2-in-mask=1 blocked=1",
+            "private-ppoll ign-blocked sigtrap=ign flags=0x50000000 usr2-in-mask=1 blocked=1",
+            "private-ppoll handler sigtrap=trap_handler flags=0x50000000 usr2-in-mask=1 blocked=0",
+        ],
+        "{}",
+        inject.report
+    );
+}
+
+/// A guest's SIGTRAP state survives a precise timer's single-steps
+/// (<https://github.com/rrnewton/hermit/issues/4409>). For each of five states
+/// (ignored or caught, blocked or not, and default blocked) the timer fires
+/// once in a branch loop it single-steps the end of. Every one of the five
+/// timer sequences stepped (`TIMER_SEQUENCES_STEPPED_FOR_TEST`), and the
+/// guest reads back the handler, flags, `sa_mask` and mask bit it set.
+#[tokio::test(flavor = "current_thread")]
+async fn sigtrap_state_survives_timer_steps() {
+    use std::sync::atomic::Ordering;
+    if !crate::perf::is_perf_supported() {
+        eprintln!("skipping: perf counters are not supported here");
+        return;
+    }
+    let before = crate::task::TIMER_SEQUENCES_STEPPED_FOR_TEST.load(Ordering::SeqCst);
+    let run = run_guest("sigtrap_timer", false).await;
+    let stepped = crate::task::TIMER_SEQUENCES_STEPPED_FOR_TEST.load(Ordering::SeqCst) - before;
+    assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+    let timers = timer_events(&run);
+    assert_eq!(timers.len(), 5, "{timers:#?}");
+    assert_eq!(stepped, 5, "timer sequences that stepped: {timers:#?}");
+    let expected: Vec<String> = [
+        ("ign-blocked", "ign", 1),
+        ("ign", "ign", 0),
+        ("handler-blocked", "trap_handler", 1),
+        ("handler", "trap_handler", 0),
+        ("dfl-blocked", "dfl", 1),
+    ]
+    .into_iter()
+    .map(|(state, action, blocked)| {
+        format!("timer {state} sigtrap={action} flags=0x50000000 usr2-in-mask=1 blocked={blocked}")
+    })
+    .collect();
+    let lines: Vec<&str> = run
+        .report
+        .lines()
+        .filter(|line| line.starts_with("timer "))
+        .collect();
+    assert_eq!(lines, expected, "{}", run.report);
+}
+
+/// A caught, blocked SIGTRAP survives a timer step over a guest
+/// `rt_sigreturn` whose frame blocks SIGTRAP: the step clears SIGTRAP from the
+/// frame for its trap and blocks it again after
+/// (<https://github.com/rrnewton/hermit/issues/4409>). The Tool sends SIGUSR1 at
+/// each arming call, so the timer, 1 to 8 branches out, single-steps the
+/// handler and its return; at least one step must have met such a frame
+/// (`FRAME_SHIELDS_FOR_TEST`).
+#[tokio::test(flavor = "current_thread")]
+async fn sigtrap_state_survives_a_timer_step_over_sigreturn() {
+    use std::sync::atomic::Ordering;
+    if !crate::perf::is_perf_supported() {
+        eprintln!("skipping: perf counters are not supported here");
+        return;
+    }
+    let before = crate::task::FRAME_SHIELDS_FOR_TEST.load(Ordering::SeqCst);
+    let run = run_guest("sigtrap_sigreturn_timer", false).await;
+    let shields = crate::task::FRAME_SHIELDS_FOR_TEST.load(Ordering::SeqCst) - before;
+    assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+    eprintln!("sigreturn timer events: {:#?}", timer_events(&run));
+    assert!(
+        shields > 0,
+        "no timer step met a SIGTRAP-blocking rt_sigreturn frame"
+    );
+    let expected: Vec<String> = (1..=8)
+        .map(|k| {
+            format!(
+                "sigreturn k={k} sigtrap=trap_handler flags=0x50000000 usr2-in-mask=1 blocked=1"
+            )
+        })
+        .collect();
+    let lines: Vec<&str> = run
+        .report
+        .lines()
+        .filter(|line| line.starts_with("sigreturn "))
+        .collect();
+    assert_eq!(lines, expected, "{}", run.report);
 }
 
 /// A timer single-step that reaches an untraced number (500) steps over it,
