@@ -2827,10 +2827,10 @@ mod tests {
         );
 
         let complete_clone = source
-            .split_once("static int32_t complete_clone_identity(")
+            .split_once("static int32_t complete_clone_birth(")
             .unwrap()
             .1
-            .split_once("static bool pending_identity_is_process")
+            .split_once("\n}\n")
             .unwrap()
             .0;
         assert!(
@@ -2959,7 +2959,7 @@ mod tests {
                 .find("evidence_callback_leave();")
                 .unwrap();
         let mode_validation = background
-            .find("virtual_identity_state->magic != VIRTUAL_IDENTITY_MAGIC")
+            .find("task_state->magic != TASK_STATE_MAGIC")
             .unwrap();
         let startup_refusal = background.find("if (startup_status != 0)").unwrap();
         let background_final = background
@@ -3105,7 +3105,7 @@ mod tests {
         );
 
         let original = source
-            .split_once("static bool prepare_original_identity_syscall(")
+            .split_once("static bool prepare_original_task_syscall(")
             .unwrap()
             .1
             .split_once("static void post_syscall")
@@ -3137,7 +3137,7 @@ mod tests {
             .find("int32_t registration = reverie_dbt_runtime_process_clone_result(")
             .unwrap();
         let identity = post
-            .find("complete_clone_identity(counters, syscall_result)")
+            .find("complete_clone_birth(counters, syscall_result)")
             .unwrap();
         assert!(result < invariant);
         assert!(invariant < guard);
@@ -3162,7 +3162,7 @@ mod tests {
         let callback = pre.find("reverie_dbt_runtime_pre_syscall(").unwrap();
         let suppressed = pre.find("if (action == 1)").unwrap();
         let deferred = pre.find("if (action == 2)").unwrap();
-        let original = pre.find("prepare_original_identity_syscall(").unwrap();
+        let original = pre.find("prepare_original_task_syscall(").unwrap();
         assert!(stale < scrub);
         assert!(stale < arguments);
         assert!(stale < clone_metadata);
@@ -3175,7 +3175,7 @@ mod tests {
             .split_once("static bool prepare_clone_identity(")
             .unwrap()
             .1
-            .split_once("static int32_t complete_clone_identity")
+            .split_once("static int32_t complete_clone_birth")
             .unwrap()
             .0;
         let defensive_stale = prepare
