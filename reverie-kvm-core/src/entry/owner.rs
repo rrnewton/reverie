@@ -28,11 +28,11 @@ use super::PendingFailure;
 use crate::Error;
 use crate::Result;
 
-pub(crate) type OwnerSubscription = Shared<oneshot::Receiver<()>>;
+pub type OwnerSubscription = Shared<oneshot::Receiver<()>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub(crate) enum DriverLifecycle {
+pub enum DriverLifecycle {
     Active,
     /// Capture registration was closed, not publication or effect settlement.
     Retired,
@@ -81,7 +81,7 @@ impl Change {
 /// Dropping this value also disconnects receivers, so move it out of the gate
 /// lock before either notifying or dropping it.
 #[must_use = "notify only after releasing the entry gate and owner locks"]
-pub(crate) struct OwnerNotification {
+pub struct OwnerNotification {
     previous: Option<Change>,
     // The upgrade may become the last owner after capture unlocks its mutex.
     // Its current sender must not be dropped while the caller holds the gate.
@@ -89,7 +89,7 @@ pub(crate) struct OwnerNotification {
 }
 
 impl OwnerNotification {
-    pub(crate) fn notify(self) {
+    pub fn notify(self) {
         let Self {
             previous,
             keepalive,
@@ -155,27 +155,31 @@ struct DriverState {
 
 /// One lexical guard per actual invocation/worker. Clone DriverOwner, not this.
 #[must_use = "retain the lexical driver scope until registration is retired"]
-pub(crate) struct DriverScope {
+pub struct DriverScope {
     state: Option<Arc<DriverState>>,
 }
 
 #[derive(Clone)]
-pub(crate) struct DriverOwner {
+pub struct DriverOwner {
     state: Arc<DriverState>,
 }
 
 /// Closing registration returns every queued cause to its existing owner.
 /// Even a successful result says nothing about Tool publication or effects.
 #[must_use = "retain pending causes and deliver the deferred notification"]
-pub(crate) struct DriverRetirement {
-    pub(crate) lifecycle: DriverLifecycle,
-    pub(crate) pending: Vec<Arc<PendingFailure>>,
-    pub(crate) notification: OwnerNotification,
-    pub(crate) result: Result<()>,
+pub struct DriverRetirement {
+    pub lifecycle: DriverLifecycle,
+    pub pending: Vec<Arc<PendingFailure>>,
+    pub notification: OwnerNotification,
+    pub result: Result<()>,
 }
 
 impl DriverScope {
-    pub(crate) fn new() -> Self {
+    #[expect(
+        clippy::new_without_default,
+        reason = "a driver scope is created only by its driver, never as a default value"
+    )]
+    pub fn new() -> Self {
         Self {
             state: Some(Arc::new(DriverState {
                 witness: Arc::new(RetirementWitness {
@@ -193,13 +197,13 @@ impl DriverScope {
         }
     }
 
-    pub(crate) fn owner(&self) -> DriverOwner {
+    pub fn owner(&self) -> DriverOwner {
         DriverOwner {
             state: self.state.as_ref().unwrap().clone(),
         }
     }
 
-    pub(crate) fn retire(mut self) -> DriverRetirement {
+    pub fn retire(mut self) -> DriverRetirement {
         let state = self.state.take().unwrap();
         let mut data = state.data.lock().unwrap();
         let (lifecycle, result) = if data.callbacks.is_empty() {
@@ -241,17 +245,17 @@ impl Drop for DriverScope {
 }
 
 impl DriverOwner {
-    pub(crate) fn lifecycle(&self) -> DriverLifecycle {
+    pub fn lifecycle(&self) -> DriverLifecycle {
         self.state.witness.lifecycle()
     }
 
     /// Subscribe before rechecking pending causes or lifecycle. Readiness,
     /// including a disconnected sender, authorizes only that recheck.
-    pub(crate) fn subscribe(&self) -> OwnerSubscription {
+    pub fn subscribe(&self) -> OwnerSubscription {
         self.state.data.lock().unwrap().subscribe()
     }
 
-    pub(crate) fn pending(&self) -> Vec<Arc<PendingFailure>> {
+    pub fn pending(&self) -> Vec<Arc<PendingFailure>> {
         if !self.state.has_pending.load(Ordering::Acquire) {
             return Vec::new();
         }
@@ -259,14 +263,14 @@ impl DriverOwner {
     }
 
     /// Transfer obligations to this driver's outer error path, not a peer.
-    #[cfg(test)]
-    pub(crate) fn take_pending(&self) -> Vec<Arc<PendingFailure>> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn take_pending(&self) -> Vec<Arc<PendingFailure>> {
         let mut data = self.state.data.lock().unwrap();
         self.state.has_pending.store(false, Ordering::Release);
         std::mem::take(&mut data.pending)
     }
 
-    pub(crate) fn origin(&self) -> OperationOrigin {
+    pub fn origin(&self) -> OperationOrigin {
         OperationOrigin {
             owner: Arc::downgrade(&self.state),
             witness: self.state.witness.clone(),
@@ -274,7 +278,7 @@ impl DriverOwner {
         }
     }
 
-    pub(crate) fn begin_callback(&self, parent: Option<&OperationOrigin>) -> Result<CallbackScope> {
+    pub fn begin_callback(&self, parent: Option<&OperationOrigin>) -> Result<CallbackScope> {
         let mut data = self.state.data.lock().unwrap();
         if self.lifecycle() != DriverLifecycle::Active {
             return Err(protocol(
@@ -336,13 +340,13 @@ struct CallbackGeneration {
 /// nested/inline futures. The guard does not own or drop those futures itself.
 /// Unwind records destruction; neither path settles effects or calls a Tool.
 #[must_use = "keep the scope outside and alive through its owned callback future"]
-pub(crate) struct CallbackScope {
+pub struct CallbackScope {
     origin: OperationOrigin,
     sender: Option<oneshot::Sender<()>>,
 }
 
 impl CallbackScope {
-    pub(crate) fn origin(&self) -> OperationOrigin {
+    pub fn origin(&self) -> OperationOrigin {
         self.origin.clone()
     }
 }
@@ -380,7 +384,7 @@ impl Drop for CallbackScope {
 /// No strong path from an origin back to DriverState. PendingFailure may own
 /// this value while the driver owns that pending failure without a cycle.
 #[derive(Clone)]
-pub(crate) struct OperationOrigin {
+pub struct OperationOrigin {
     owner: Weak<DriverState>,
     witness: Arc<RetirementWitness>,
     callback: Option<Arc<CallbackGeneration>>,
@@ -399,49 +403,49 @@ impl std::fmt::Debug for OperationOrigin {
 }
 
 #[derive(Debug)]
-pub(crate) struct CaptureRejected {
-    pub(crate) failure: Arc<PendingFailure>,
-    #[cfg(test)]
-    pub(crate) lifecycle: DriverLifecycle,
-    #[cfg(test)]
-    pub(crate) owner_available: bool,
+pub struct CaptureRejected {
+    pub failure: Arc<PendingFailure>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub lifecycle: DriverLifecycle,
+    #[cfg(any(test, feature = "test-support"))]
+    pub owner_available: bool,
     /// Defer this even when rejecting capture: it may retain the last owner.
-    pub(crate) notification: OwnerNotification,
+    pub notification: OwnerNotification,
 }
 
 impl OperationOrigin {
     /// Observe the existing driver without registering a new callback or
     /// acquiring a publisher. The caller must retain this only for its own
     /// operation lifetime; origins and pending failures still point weakly.
-    pub(crate) fn driver_owner(&self) -> Option<DriverOwner> {
+    pub fn driver_owner(&self) -> Option<DriverOwner> {
         self.owner.upgrade().map(|state| DriverOwner { state })
     }
 
     /// Subscribe before inspecting lifecycle. Disconnection is only a reason
     /// to recheck abandonment, never evidence of completed publication.
-    pub(crate) fn subscribe(&self) -> Option<OwnerSubscription> {
+    pub fn subscribe(&self) -> Option<OwnerSubscription> {
         self.owner
             .upgrade()
             .map(|owner| owner.data.lock().unwrap().subscribe())
     }
 
-    pub(crate) fn lifecycle(&self) -> DriverLifecycle {
+    pub fn lifecycle(&self) -> DriverLifecycle {
         self.witness.lifecycle()
     }
 
     /// An identity is meaningful only together with this driver's identity.
-    #[cfg(test)]
-    pub(crate) fn callback_id(&self) -> Option<u64> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn callback_id(&self) -> Option<u64> {
         self.callback.as_ref().map(|callback| callback.id)
     }
 
-    pub(crate) fn same_driver(&self, other: &Self) -> bool {
+    pub fn same_driver(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.witness, &other.witness)
     }
 
     /// Origins without callback receipts do not identify a callback.
-    #[cfg(test)]
-    pub(crate) fn same_callback(&self, other: &Self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn same_callback(&self, other: &Self) -> bool {
         self.same_driver(other)
             && match (&self.callback, &other.callback) {
                 (Some(left), Some(right)) => Arc::ptr_eq(left, right),
@@ -451,8 +455,8 @@ impl OperationOrigin {
 
     /// No callback means there is no callback destruction to await. Driver
     /// retirement and executor settlement must still be checked independently.
-    #[cfg(test)]
-    pub(crate) fn callback_dropped(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn callback_dropped(&self) -> bool {
         let mut callback = self.callback.as_deref();
         while let Some(generation) = callback {
             if !generation.destroyed.load(Ordering::Acquire) {
@@ -463,7 +467,7 @@ impl OperationOrigin {
         true
     }
 
-    pub(crate) async fn wait_callback_drop(&self) -> Result<()> {
+    pub async fn wait_callback_drop(&self) -> Result<()> {
         let mut callback = self.callback.clone();
         while let Some(generation) = callback {
             if !generation.destroyed.load(Ordering::Acquire) {
@@ -480,15 +484,15 @@ impl OperationOrigin {
     /// Call while capturing the gate's pending cause. No notification is sent
     /// here: the returned notification must be delivered after the gate lock.
     /// Rejection returns the same typed Arc; the caller still owns that cause.
-    pub(crate) fn capture(
+    pub fn capture(
         &self,
         failure: Arc<PendingFailure>,
     ) -> std::result::Result<OwnerNotification, CaptureRejected> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.capture_inner(failure, || {})
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         {
             self.capture_inner(failure)
         }
@@ -497,14 +501,14 @@ impl OperationOrigin {
     fn capture_inner(
         &self,
         failure: Arc<PendingFailure>,
-        #[cfg(test)] after_unlock: impl FnOnce(),
+        #[cfg(any(test, feature = "test-support"))] after_unlock: impl FnOnce(),
     ) -> std::result::Result<OwnerNotification, CaptureRejected> {
         let Some(owner) = self.owner.upgrade() else {
             return Err(CaptureRejected {
                 failure,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 lifecycle: self.lifecycle(),
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 owner_available: false,
                 notification: OwnerNotification {
                     previous: None,
@@ -516,13 +520,13 @@ impl OperationOrigin {
         let lifecycle = self.lifecycle();
         if lifecycle != DriverLifecycle::Active {
             drop(data);
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             after_unlock();
             return Err(CaptureRejected {
                 failure,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 lifecycle,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 owner_available: true,
                 notification: OwnerNotification {
                     previous: None,
@@ -545,7 +549,7 @@ impl OperationOrigin {
             data.changed()
         };
         drop(data);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         after_unlock();
         notification.keepalive = Some(owner);
         Ok(notification)

@@ -291,7 +291,7 @@ fn panic_promotes_wrapped_abort_and_publishes_its_complete_effects_subtree() {
         },
         "callback destruction",
     );
-    assert!(!crate::runtime::is_peer_cancelled_tool_worker(
+    assert!(!crate::failure::is_peer_cancelled_tool_worker(
         (Pid::from_raw(71), Pid::from_raw(72)),
         true,
         &outcome,

@@ -98,16 +98,8 @@ const MAX_HOST_IO: usize = 16 * 1024 * 1024;
 const MAX_CAPTURED_OUTPUT: usize = 64 * 1024 * 1024;
 const PAGE_SIZE: u64 = 4096;
 const MAX_RW_COUNT: usize = (i32::MAX as usize) & !(PAGE_SIZE as usize - 1);
-/// The guest's user address limit, which the executor's range checks
-/// enforce.
-pub(crate) const X86_64_GUEST_USER_LIMIT: u64 = (1_u64 << 47) - PAGE_SIZE;
-/// The range rule `KvmGuest` reports as `Guest::user_address_limit`: the
-/// executor's limit, and its vectored-I/O import (`decode_guest_iovecs`)
-/// shortens a lone vector to `MAX_RW_COUNT` before checking it.
-pub(crate) const GUEST_USER_ADDRESS_LIMIT: reverie::UserAddressLimit = reverie::UserAddressLimit {
-    max_end: X86_64_GUEST_USER_LIMIT,
-    caps_single_vector: true,
-};
+pub(crate) use reverie_kvm_core::layout::GUEST_USER_ADDRESS_LIMIT;
+pub(crate) use reverie_kvm_core::layout::X86_64_GUEST_USER_LIMIT;
 /// Diagnostic carried by this backend's typed refusal of an exec from a thread
 /// that is not its group's leader.
 pub(crate) const NONLEADER_EXEC_REFUSAL: &str = "KVM nonleader exec is unsupported";
@@ -3492,7 +3484,15 @@ fn accept_flags(request: &SyscallRequest) -> Option<Result<libc::c_int, i64>> {
     }
 }
 
-impl AllocationCursors {
+/// Builds the arena's allocation cursors from the loaded image's state. An
+/// extension trait because `AllocationCursors` now lives in reverie-kvm-core
+/// (step U6b of the provider seam), where an inherent impl cannot name
+/// `LoadedStaticElf`.
+trait AllocationCursorsFromElf {
+    fn from_elf(state: &LoadedStaticElf) -> Self;
+}
+
+impl AllocationCursorsFromElf for AllocationCursors {
     fn from_elf(state: &LoadedStaticElf) -> Self {
         Self {
             program_break: state.program_break,
@@ -8062,7 +8062,7 @@ impl ElfExecutor {
         terminal_read: Option<&mut crate::terminal_read::ReadContext>,
     ) -> crate::Result<i64> {
         #[cfg(test)]
-        memory.observe_test_syscall_dispatch(request);
+        memory.observe_test_syscall_dispatch(request.as_provider());
         if let Some(receipt) = self.state.consumed_child_wait.as_ref() {
             return Err(crate::Error::ChildWaitLedgerEffectPending {
                 parent: self.admitted_signal_identity().process,

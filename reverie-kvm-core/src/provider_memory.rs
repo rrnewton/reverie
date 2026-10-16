@@ -17,15 +17,15 @@
 //! crate in step U6a. The syscall executor's handlers are generic over them
 //! with the error type fixed to [`crate::Error`].
 
-pub(crate) use reverie_linux_provider::Access;
-pub(crate) use reverie_linux_provider::AddressSpace;
-pub(crate) use reverie_linux_provider::Discarded;
-pub(crate) use reverie_linux_provider::GuestMemoryAccess;
-pub(crate) use reverie_linux_provider::LentOperand;
-pub(crate) use reverie_linux_provider::LentOperandMut;
-pub(crate) use reverie_linux_provider::MapError;
-pub(crate) use reverie_linux_provider::RangeState;
-pub(crate) use reverie_linux_provider::UserLayout;
+pub use reverie_linux_provider::Access;
+pub use reverie_linux_provider::AddressSpace;
+pub use reverie_linux_provider::Discarded;
+pub use reverie_linux_provider::GuestMemoryAccess;
+pub use reverie_linux_provider::LentOperand;
+pub use reverie_linux_provider::LentOperandMut;
+pub use reverie_linux_provider::MapError;
+pub use reverie_linux_provider::RangeState;
+pub use reverie_linux_provider::UserLayout;
 
 use crate::GuestMemory;
 use crate::Result;
@@ -60,7 +60,7 @@ impl LentOperandMut for UserWriteAlias<'_> {
 /// that dispatch holds. The view is a plain shared borrow, so handlers generic
 /// over the traits still monomorphise to direct calls.
 #[derive(Clone, Copy)]
-pub(crate) struct ProviderMemory<'a>(pub(crate) &'a GuestMemory);
+pub struct ProviderMemory<'a>(pub &'a GuestMemory);
 
 /// Today's implementation over the KVM guest arena. Each method delegates to
 /// the existing `UserMemory` operation, which admits the copy through the
@@ -141,7 +141,7 @@ impl GuestMemoryAccess for ProviderMemory<'_> {
     /// Executor handlers still check the limit through a numeric constant;
     /// `KvmGuest` reports the same constant.
     fn user_address_limit(&self) -> reverie::UserAddressLimit {
-        crate::executor::GUEST_USER_ADDRESS_LIMIT
+        crate::layout::GUEST_USER_ADDRESS_LIMIT
     }
 }
 
@@ -164,7 +164,7 @@ impl GuestMemoryAccess for ProviderMemory<'_> {
 impl AddressSpace for ProviderMemory<'_> {
     fn layout(&self) -> UserLayout {
         UserLayout {
-            reserved_end: crate::bootstrap::BOOT_RESERVED_END,
+            reserved_end: crate::layout::BOOT_RESERVED_END,
         }
     }
 
@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(bytes(&memory, RW + 32, 3), b"xyz");
         assert_eq!(
             ProviderMemory(&memory).user_address_limit(),
-            crate::executor::GUEST_USER_ADDRESS_LIMIT
+            crate::layout::GUEST_USER_ADDRESS_LIMIT
         );
     }
 
@@ -470,7 +470,7 @@ mod tests {
         let memory = memory();
         assert_eq!(
             ProviderMemory(&memory).layout().reserved_end,
-            crate::bootstrap::BOOT_RESERVED_END
+            crate::layout::BOOT_RESERVED_END
         );
         assert!(ProviderMemory(&memory).is_addressable(RW, 3 * PAGE_SIZE));
         assert_eq!(

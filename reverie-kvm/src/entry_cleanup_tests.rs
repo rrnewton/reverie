@@ -8,6 +8,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -15,10 +17,12 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
+use futures::FutureExt;
 use kvm_ioctls::VcpuExit;
 
-use super::*;
+use crate::Error;
 use crate::clock::RunProbe;
+use crate::entry::*;
 use crate::vm::KvmBackend;
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -761,7 +765,7 @@ fn error_case(blocked: bool, tracked: bool, selected: [bool; 2]) {
 #[test]
 fn late_kick_after_successful_exit_is_accounted_before_acknowledgement() {
     isolated(
-        "entry::cleanup_tests::late_kick_after_successful_exit_is_accounted_before_acknowledgement",
+        "entry_cleanup_tests::late_kick_after_successful_exit_is_accounted_before_acknowledgement",
         |blocked| {
             for tracked in [false, true] {
                 race_case(Race::LateSend, blocked, tracked);
@@ -773,7 +777,7 @@ fn late_kick_after_successful_exit_is_accounted_before_acknowledgement() {
 #[test]
 fn withdrawn_real_entry_has_no_sender_until_final_cleanup_acknowledges() {
     isolated(
-        "entry::cleanup_tests::withdrawn_real_entry_has_no_sender_until_final_cleanup_acknowledges",
+        "entry_cleanup_tests::withdrawn_real_entry_has_no_sender_until_final_cleanup_acknowledges",
         |blocked| {
             for tracked in [false, true] {
                 race_case(Race::Withdrawn, blocked, tracked);
@@ -785,7 +789,7 @@ fn withdrawn_real_entry_has_no_sender_until_final_cleanup_acknowledges() {
 #[test]
 fn real_withdrawal_waits_for_serialized_sender_and_accounts_its_kick() {
     isolated(
-        "entry::cleanup_tests::real_withdrawal_waits_for_serialized_sender_and_accounts_its_kick",
+        "entry_cleanup_tests::real_withdrawal_waits_for_serialized_sender_and_accounts_its_kick",
         |blocked| {
             for tracked in [false, true] {
                 race_case(Race::Serialized, blocked, tracked);
@@ -797,7 +801,7 @@ fn real_withdrawal_waits_for_serialized_sender_and_accounts_its_kick() {
 #[test]
 fn signal_operation_errors_poison_after_safe_real_cleanup_and_preserve_causes() {
     isolated(
-        "entry::cleanup_tests::signal_operation_errors_poison_after_safe_real_cleanup_and_preserve_causes",
+        "entry_cleanup_tests::signal_operation_errors_poison_after_safe_real_cleanup_and_preserve_causes",
         |blocked| {
             for tracked in [false, true] {
                 // A setup failure leaves no cleanup to fail, so the two

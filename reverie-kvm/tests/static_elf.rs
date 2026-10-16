@@ -74,7 +74,8 @@ use reverie_kvm::StraceTool;
 
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 
-#[path = "support/alias_failure.rs"]
+// Shared with reverie-kvm-core, which owns the module since step U6b.
+#[path = "../../reverie-kvm-core/src/alias_failure.rs"]
 mod alias_failure;
 
 #[path = "support/broker_test_client.rs"]

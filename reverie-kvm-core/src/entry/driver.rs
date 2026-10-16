@@ -19,17 +19,15 @@ use super::EntryGate;
 use super::PendingFailure;
 use super::owner::DriverLifecycle;
 use super::owner::DriverOwner;
-use super::owner::DriverScope;
 use crate::Error;
 use crate::Result;
 use crate::failure::references_shared_error;
-use crate::vm::KvmBackend;
 
 /// Invocation-scoped observations of real public worker boundaries. An entry
 /// is keyed by the actual host thread (the join target for physical joins).
 /// Observers run after the registry lock is released and must not block.
-#[cfg(test)]
-pub(crate) mod test_observation {
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_observation {
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::thread::ThreadId;
@@ -39,7 +37,7 @@ pub(crate) mod test_observation {
     use crate::entry::PendingFailure;
 
     #[derive(Clone)]
-    pub(crate) enum Event {
+    pub enum Event {
         Copy(Arc<EntryGate>, EntryOrigin),
         ForeignPending(Arc<PendingFailure>),
         JoinStarted {
@@ -56,9 +54,9 @@ pub(crate) mod test_observation {
     type Observer = Arc<dyn Fn(Event) + Send + Sync>;
     static OBSERVERS: Mutex<Vec<(ThreadId, Observer)>> = Mutex::new(Vec::new());
 
-    pub(crate) struct Guard(ThreadId);
+    pub struct Guard(ThreadId);
     impl Guard {
-        pub(crate) fn current(observer: Observer) -> Self {
+        pub fn current(observer: Observer) -> Self {
             let thread = std::thread::current().id();
             let mut observers = OBSERVERS.lock().unwrap();
             assert!(!observers.iter().any(|(id, _)| *id == thread));
@@ -74,7 +72,7 @@ pub(crate) mod test_observation {
                 .retain(|(id, _)| *id != self.0);
         }
     }
-    pub(crate) fn emit(target: ThreadId, event: Event) {
+    pub fn emit(target: ThreadId, event: Event) {
         let observer = OBSERVERS
             .lock()
             .unwrap()
@@ -85,10 +83,10 @@ pub(crate) mod test_observation {
             observer(event);
         }
     }
-    pub(crate) fn current(event: Event) {
+    pub fn current(event: Event) {
         emit(std::thread::current().id(), event);
     }
-    pub(crate) fn join(target: ThreadId, process: bool, returned: bool) {
+    pub fn join(target: ThreadId, process: bool, returned: bool) {
         let joiner = std::thread::current().id();
         let event = if returned {
             Event::JoinReturned {
@@ -117,15 +115,15 @@ fn protocol(operation: &'static str) -> Error {
 /// The watch owns neither the callback nor its publisher. It can therefore be
 /// polled while the callback borrows its backend and executor mutably.
 #[derive(Clone)]
-pub(crate) struct EntryDriverWatch {
-    owner: Option<DriverOwner>,
-    gate: Arc<EntryGate>,
+pub struct EntryDriverWatch {
+    pub owner: Option<DriverOwner>,
+    pub gate: Arc<EntryGate>,
 }
 
 impl EntryDriverWatch {
     /// A callback may retain a view of a different mapping owned by this same
     /// driver. Observe that owner's obligations as well as this mapping's gate.
-    pub(crate) fn for_memory(memory: &crate::GuestMemory) -> Self {
+    pub fn for_memory(memory: &crate::GuestMemory) -> Self {
         let operation = memory.entry_origin().operation;
         Self {
             owner: operation.as_ref().and_then(|origin| origin.driver_owner()),
@@ -135,10 +133,7 @@ impl EntryDriverWatch {
 
     /// A retained operation view can outlive the owner allocation. Keep its
     /// weak retirement witness in the caller instead of inventing an owner.
-    pub(crate) fn check_operation(
-        &self,
-        operation: Option<&super::owner::OperationOrigin>,
-    ) -> Result<()> {
+    pub fn check_operation(&self, operation: Option<&super::owner::OperationOrigin>) -> Result<()> {
         let result = self.check();
         if self.owner.is_none()
             && operation.is_some_and(|operation| operation.lifecycle() != DriverLifecycle::Active)
@@ -152,11 +147,11 @@ impl EntryDriverWatch {
         }
     }
 
-    pub(crate) fn check(&self) -> Result<()> {
+    pub fn check(&self) -> Result<()> {
         check_entry(self.owner.as_ref(), &self.gate)
     }
 
-    pub(crate) async fn wait(&self) {
+    pub async fn wait(&self) {
         loop {
             // Both subscriptions precede the state checks. The gate's part of
             // `check` is only its failure, so subscribe to that alone: the
@@ -186,7 +181,7 @@ impl EntryDriverWatch {
 /// An EntryDriverWatch's sticky check, on borrowed parts: a driver's owner
 /// and its gate. KvmBackend::check_entry_owner runs it several times per
 /// guest syscall without building and dropping a watch each time.
-pub(crate) fn check_entry(owner: Option<&DriverOwner>, gate: &EntryGate) -> Result<()> {
+pub fn check_entry(owner: Option<&DriverOwner>, gate: &EntryGate) -> Result<()> {
     let owned = owner.map(DriverOwner::pending).unwrap_or_default();
     let result = fold_causes(Ok(()), owned.iter().flat_map(|failure| failure.causes()));
     let result = match gate.pending_failure() {
@@ -205,7 +200,7 @@ pub(crate) fn check_entry(owner: Option<&DriverOwner>, gate: &EntryGate) -> Resu
 
 /// Append shared causes once by identity. A private cause must survive a
 /// competing terminal notification, without discarding cancellation effects.
-pub(crate) fn fold_causes<R>(
+pub fn fold_causes<R>(
     mut result: Result<R>,
     causes: impl IntoIterator<Item = Arc<Error>>,
 ) -> Result<R> {
@@ -232,7 +227,7 @@ pub(crate) fn fold_causes<R>(
     result.map_err(|error| promote_independent(&error).unwrap_or(error))
 }
 
-pub(crate) fn combine_pending<R>(result: Result<R>, check: Result<()>) -> Result<R> {
+pub fn combine_pending<R>(result: Result<R>, check: Result<()>) -> Result<R> {
     match check {
         Ok(()) => result,
         Err(Error::SharedFailure(cause)) => fold_causes(result, [cause]),
@@ -366,7 +361,7 @@ fn promote_independent(error: &Error) -> Option<Error> {
     }
 }
 
-async fn route_foreign<R>(result: Result<R>, failure: &Arc<PendingFailure>) -> Result<R> {
+pub async fn route_foreign<R>(result: Result<R>, failure: &Arc<PendingFailure>) -> Result<R> {
     let operation = failure
         .operation
         .as_ref()
@@ -433,9 +428,9 @@ async fn route_foreign<R>(result: Result<R>, failure: &Arc<PendingFailure>) -> R
                     .with_cleanup(vec![Error::SharedFailure(result), failure.error()]),
             );
         };
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         let selected = select(terminal, changed.unwrap()).await;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let selected = {
             let mut waiting = Box::pin(select(terminal, changed.unwrap()));
             std::future::poll_fn(|cx| {
@@ -461,75 +456,6 @@ async fn route_foreign<R>(result: Result<R>, failure: &Arc<PendingFailure>) -> R
             }
             Either::Right(_) => {}
         }
-    }
-}
-
-impl KvmBackend {
-    pub(crate) fn entry_driver_watch(&self) -> EntryDriverWatch {
-        EntryDriverWatch {
-            owner: self.entry_driver_owner(),
-            gate: self.memory.entry_gate(),
-        }
-    }
-
-    pub(crate) fn check_entry_owner(&self) -> Result<()> {
-        check_entry(self.entry_driver_ref(), self.memory.entry_gate_ref())
-    }
-
-    /// Call only after this driver's ordinary callback borrow scope ended.
-    /// This yields for foreign publication; it never waits for physical joins
-    /// or runs another driver's effects, hook, or publisher.
-    pub(crate) async fn route_entry_outcome<R>(&self, result: Result<R>) -> Result<R> {
-        let owner = self.entry_driver_owner();
-        let owned = owner.as_ref().map(DriverOwner::pending).unwrap_or_default();
-        for failure in &owned {
-            if let Some(operation) = &failure.operation {
-                operation.wait_callback_drop().await?;
-            }
-        }
-        let result = fold_causes(result, owned.iter().flat_map(|failure| failure.causes()));
-        let Some(failure) = self.memory.entry_gate().pending_failure() else {
-            return result;
-        };
-        if failure.operation.as_ref().is_none_or(|origin| {
-            owner
-                .as_ref()
-                .is_some_and(|owner| origin.same_driver(&owner.origin()))
-        }) {
-            return fold_causes(result, failure.causes());
-        }
-        route_foreign(result, &failure).await
-    }
-
-    /// Close registration after the last owned operation and route. Retain
-    /// live causes in RunFailure until all worker cleanup has completed.
-    pub(crate) fn finish_entry_driver<R>(
-        &mut self,
-        scope: DriverScope,
-        result: Result<R>,
-    ) -> Result<R> {
-        let retirement = scope.retire();
-        let result = fold_causes(
-            result,
-            retirement
-                .pending
-                .iter()
-                .flat_map(|failure| failure.causes()),
-        );
-        if let Some(context) = &self.tool_failure {
-            for failure in retirement.pending {
-                context.run.retain_entry_failure(failure);
-            }
-        }
-        let result = combine_pending(result, retirement.result);
-        debug_assert!(matches!(
-            retirement.lifecycle,
-            DriverLifecycle::Retired | DriverLifecycle::Abandoned
-        ));
-        retirement.notification.notify();
-        self.entry_driver = None;
-        self.set_operation_origin(None);
-        result
     }
 }
 

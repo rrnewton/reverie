@@ -15,7 +15,7 @@ build = "build.rs"
 
 [features]
 default = []
-native-test-support = []
+native-test-support = ["reverie-kvm-core/native-test-support"]
 
 [dependencies]
 futures = { version = "0.3.31", features = ["async-await"] }
@@ -25,10 +25,12 @@ kvm-ioctls = "0.25.0"
 libc = "0.2.186"
 perf-event-open-sys = "5.0"
 reverie = { version = "0.4.1", path = "../reverie", package = "reverie-core" }
+reverie-kvm-core = { version = "0.4.1", path = "../reverie-kvm-core" }
 reverie-linux-provider = { version = "0.4.1", path = "../reverie-linux-provider" }
 thiserror = "2.0.18"
 
 [dev-dependencies]
+reverie-kvm-core = { version = "0.4.1", path = "../reverie-kvm-core", features = ["test-support"] }
 io-uring = "0.7.11"
 serde = { version = "1.0.219", features = ["derive"] }
 

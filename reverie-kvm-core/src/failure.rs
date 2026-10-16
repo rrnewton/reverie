@@ -8,8 +8,8 @@
 
 //! Run-owned failure notification and typed cause retention.
 
-pub(crate) mod owned_future;
-pub(crate) mod tool_panics;
+pub mod owned_future;
+pub mod tool_panics;
 
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -36,7 +36,7 @@ use reverie::Pid;
 
 use crate::Error;
 
-pub(crate) type FailureSubscription = Shared<oneshot::Receiver<()>>;
+pub type FailureSubscription = Shared<oneshot::Receiver<()>>;
 
 /// The synchronous read owner must join its C reader before destroying the
 /// actual Tool observer. A normal `select(...).await` drops its remaining
@@ -117,7 +117,7 @@ impl Future for TerminalReadWait {
     }
 }
 
-pub(crate) struct RunFailure {
+pub struct RunFailure {
     primary: Mutex<Option<(Arc<Error>, BackendFailure)>>,
     panic_cleanup: Mutex<Vec<RetainedPanicCleanup>>,
     entry_failures: Mutex<Vec<Arc<crate::entry::PendingFailure>>>,
@@ -137,7 +137,7 @@ struct RetainedPanicCleanup {
     _secondary_payloads: Vec<owned_future::PanicPayload>,
 }
 
-pub(crate) fn references_shared_error(error: &Error, target: &Arc<Error>) -> bool {
+pub fn references_shared_error(error: &Error, target: &Arc<Error>) -> bool {
     let shared =
         |error: &Arc<Error>| Arc::ptr_eq(error, target) || references_shared_error(error, target);
     match error {
@@ -166,7 +166,7 @@ fn shared_primary(error: &Error) -> Option<Arc<Error>> {
 }
 
 impl RunFailure {
-    pub(crate) fn new<G: GlobalTool + 'static>(global: &Arc<G>) -> Arc<Self> {
+    pub fn new<G: GlobalTool + 'static>(global: &Arc<G>) -> Arc<Self> {
         let (sender, receiver) = oneshot::channel();
         let global = Arc::downgrade(global);
         let terminal_global = global.clone();
@@ -193,21 +193,21 @@ impl RunFailure {
         })
     }
 
-    pub(crate) fn subscribe(&self) -> FailureSubscription {
+    pub fn subscribe(&self) -> FailureSubscription {
         self.receiver.clone()
     }
 
     /// An origin's registration may retire before another owned worker has
     /// finished appending cleanup to the poisoned Mapping. Preserve the live
     /// cause until public completion, after all owned joins have returned.
-    pub(crate) fn retain_entry_failure(&self, failure: Arc<crate::entry::PendingFailure>) {
+    pub fn retain_entry_failure(&self, failure: Arc<crate::entry::PendingFailure>) {
         let mut retained = self.entry_failures.lock().unwrap();
         if !retained.iter().any(|entry| Arc::ptr_eq(entry, &failure)) {
             retained.push(failure);
         }
     }
 
-    pub(crate) fn primary(&self) -> Option<Arc<Error>> {
+    pub fn primary(&self) -> Option<Arc<Error>> {
         self.primary
             .lock()
             .expect("KVM failure lock poisoned")
@@ -215,8 +215,8 @@ impl RunFailure {
             .map(|(cause, _)| cause.clone())
     }
 
-    #[cfg(test)]
-    pub(crate) fn published_primary(&self) -> Option<Arc<Error>> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn published_primary(&self) -> Option<Arc<Error>> {
         self.published
             .load(Ordering::Acquire)
             .then(|| self.primary())
@@ -284,7 +284,7 @@ impl RunFailure {
     /// Retain an already completed fork owner's diagnostics before it resumes
     /// its original panic. Publication and child completion belong to its
     /// caller; this transfer invokes no Tool hook and creates no notification.
-    pub(crate) fn retain_panic_cleanup(
+    pub fn retain_panic_cleanup(
         &self,
         error: Error,
         secondary_payloads: Vec<owned_future::PanicPayload>,
@@ -306,7 +306,7 @@ impl RunFailure {
     /// Called only after the run's owned workers and processes have returned.
     /// Terminal cleanup markers do not publish a second cause; retain the
     /// original typed cause here once its publisher has completed.
-    pub(crate) fn complete<R>(&self, result: crate::Result<R>) -> crate::Result<R> {
+    pub fn complete<R>(&self, result: crate::Result<R>) -> crate::Result<R> {
         let causes = self.entry_failures.lock().unwrap().clone();
         let result = crate::entry::driver::fold_causes(
             result,
@@ -353,8 +353,8 @@ impl RunFailure {
 }
 
 #[derive(Clone)]
-pub(crate) struct FailureContext {
-    pub(crate) run: Arc<RunFailure>,
+pub struct FailureContext {
+    pub run: Arc<RunFailure>,
     process: Arc<ProcessFailure>,
     pid: Pid,
     tid: Pid,
@@ -363,14 +363,14 @@ pub(crate) struct FailureContext {
 /// Entry failures may outlive their driver and be retained by RunFailure.
 /// An observer retains notification, never a callable publisher or a strong
 /// back-reference that would form a cycle with that completed-cause storage.
-pub(crate) struct FailureObservation {
-    #[cfg(test)]
-    pub(crate) run: std::sync::Weak<RunFailure>,
+pub struct FailureObservation {
+    #[cfg(any(test, feature = "test-support"))]
+    pub run: std::sync::Weak<RunFailure>,
     receiver: FailureSubscription,
 }
 
 impl FailureObservation {
-    pub(crate) fn subscribe(&self) -> FailureSubscription {
+    pub fn subscribe(&self) -> FailureSubscription {
         self.receiver.clone()
     }
 }
@@ -402,15 +402,15 @@ impl ProcessFailure {
 }
 
 impl FailureContext {
-    pub(crate) fn observe(&self) -> FailureObservation {
+    pub fn observe(&self) -> FailureObservation {
         FailureObservation {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             run: Arc::downgrade(&self.run),
             receiver: self.run.subscribe(),
         }
     }
 
-    pub(crate) fn new(run: Arc<RunFailure>, pid: Pid, tid: Pid) -> Self {
+    pub fn new(run: Arc<RunFailure>, pid: Pid, tid: Pid) -> Self {
         Self {
             run,
             process: ProcessFailure::new(),
@@ -419,11 +419,11 @@ impl FailureContext {
         }
     }
 
-    pub(crate) fn for_process(&self, pid: Pid) -> Self {
+    pub fn for_process(&self, pid: Pid) -> Self {
         Self::new(self.run.clone(), pid, pid)
     }
 
-    pub(crate) fn for_thread(&self, tid: Pid) -> Self {
+    pub fn for_thread(&self, tid: Pid) -> Self {
         Self {
             tid,
             ..self.clone()
@@ -434,7 +434,7 @@ impl FailureContext {
     /// can finish ordinary work after another process fails, unless its Tool
     /// explicitly terminates the shared global state. Its RPCs still observe
     /// the run-wide notification at the actual request boundary.
-    pub(crate) fn driver_subscription(&self, is_traced_tree_root: bool) -> FailureSubscription {
+    pub fn driver_subscription(&self, is_traced_tree_root: bool) -> FailureSubscription {
         if is_traced_tree_root {
             self.run.subscribe()
         } else {
@@ -446,11 +446,11 @@ impl FailureContext {
     /// original Rust worker. Preserve the ordinary driver's process scope;
     /// unrelated fork failures do not cancel it unless the Tool terminates
     /// global state. This is deliberately distinct from an RPC subscription.
-    pub(crate) fn terminal_wait(&self, is_traced_tree_root: bool) -> BoxFuture<'static, ()> {
+    pub fn terminal_wait(&self, is_traced_tree_root: bool) -> BoxFuture<'static, ()> {
         (self.run.terminal_wait)(self.driver_subscription(is_traced_tree_root))
     }
 
-    pub(crate) fn publish(&self, phase: &'static str, error: Error) -> Error {
+    pub fn publish(&self, phase: &'static str, error: Error) -> Error {
         let real_failure = !matches!(error.primary(), Error::RunAborted);
         let error = self.run.publish(
             BackendFailure {
@@ -473,12 +473,12 @@ impl FailureContext {
 /// A failure wait that can be polled again after it fires: it stays Ready.
 /// An `async fn`'s future must not be polled after it completes, but a wait
 /// kept for a thread's whole syscall loop is checked once per syscall.
-pub(crate) struct StickyFailure<F> {
+pub struct StickyFailure<F> {
     wait: Option<F>,
 }
 
 impl<F: Future<Output = ()> + Unpin> StickyFailure<F> {
-    pub(crate) fn new(wait: F) -> Self {
+    pub fn new(wait: F) -> Self {
         Self { wait: Some(wait) }
     }
 }
@@ -515,7 +515,7 @@ impl<F: Future<Output = ()> + Unpin> Future for StickyFailure<F> {
 /// Because the wait's waker never changes, it only has to be polled again
 /// after `fan_out` was woken: an RPC poll otherwise costs one slot update
 /// and two atomic loads, not a poll of the wait's subscriptions.
-pub(crate) struct KeptRpcFailure<F> {
+pub struct KeptRpcFailure<F> {
     wait: Mutex<StickyFailure<F>>,
     listeners: Arc<RpcListeners>,
     fan_out: Waker,
@@ -523,19 +523,19 @@ pub(crate) struct KeptRpcFailure<F> {
     /// before the wait is released.
     fired: AtomicBool,
     /// Runs right after a poll that found the wait Ready releases it.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     after_ready_release: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 
 impl<F: Future<Output = ()> + Unpin> KeptRpcFailure<F> {
-    pub(crate) fn new(wait: F) -> Self {
+    pub fn new(wait: F) -> Self {
         let listeners = Arc::new(RpcListeners::default());
         Self {
             wait: Mutex::new(StickyFailure::new(wait)),
             fan_out: Waker::from(listeners.clone()),
             listeners,
             fired: AtomicBool::new(false),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             after_ready_release: Mutex::new(None),
         }
     }
@@ -635,7 +635,7 @@ impl Wake for RpcListeners {
 
 /// What one RPC's poll of a [`KeptRpcFailure`] established.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FailureCheck {
+pub enum FailureCheck {
     /// A failure has been published.
     Failed,
     /// No failure as of this poll; the RPC's waker is registered for one.
@@ -649,7 +649,7 @@ pub(crate) enum FailureCheck {
 /// The polling side of [`KeptRpcFailure`], object-safe so a guest handle can
 /// hold it without naming the wait's type. Use it through
 /// [`RpcFailureListener`].
-pub(crate) trait RpcFailure: Sync {
+pub trait RpcFailure: Sync {
     /// Takes a listener slot.
     fn listen(&self) -> usize;
     /// Records the listener's waker, then checks the kept wait: Failed once
@@ -724,7 +724,7 @@ impl<F: Future<Output = ()> + Unpin + Send> RpcFailure for KeptRpcFailure<F> {
         }
         drop(wait);
         if ready {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             if let Some(hook) = self.after_ready_release.lock().unwrap().as_ref() {
                 hook();
             }
@@ -751,20 +751,20 @@ impl<F: Future<Output = ()> + Unpin + Send> RpcFailure for KeptRpcFailure<F> {
 
 /// One RPC's registration with a thread's [`KeptRpcFailure`], from before
 /// its first poll until it completes or is dropped.
-pub(crate) struct RpcFailureListener<'a> {
+pub struct RpcFailureListener<'a> {
     failure: &'a dyn RpcFailure,
     listener: usize,
 }
 
 impl<'a> RpcFailureListener<'a> {
-    pub(crate) fn new(failure: &'a dyn RpcFailure) -> Self {
+    pub fn new(failure: &'a dyn RpcFailure) -> Self {
         Self {
             failure,
             listener: failure.listen(),
         }
     }
 
-    pub(crate) fn poll(&self, context: &mut Context<'_>) -> FailureCheck {
+    pub fn poll(&self, context: &mut Context<'_>) -> FailureCheck {
         self.failure.poll_failure(self.listener, context)
     }
 }
@@ -775,10 +775,7 @@ impl Drop for RpcFailureListener<'_> {
     }
 }
 
-pub(crate) async fn wait_for_failure<G: GlobalTool>(
-    global: &G,
-    local: Option<FailureSubscription>,
-) {
+pub async fn wait_for_failure<G: GlobalTool>(global: &G, local: Option<FailureSubscription>) {
     let local = async {
         match local {
             Some(receiver) => {
@@ -792,8 +789,22 @@ pub(crate) async fn wait_for_failure<G: GlobalTool>(
 
 /// Per-host-thread fault admission for actual guest-worker spawn controls.
 /// The ordinary spawn and recovery path still receives the OS's real error.
-#[cfg(test)]
-pub(crate) mod spawn_refusal {
+/// A published run failure can interrupt a permitted CLONE_THREAD worker even
+/// before the backend's ordinary cancellation flag becomes visible.
+pub fn is_peer_cancelled_tool_worker<R>(
+    identity: (Pid, Pid),
+    start_permitted: bool,
+    outcome: &crate::Result<R>,
+) -> bool {
+    start_permitted
+        && identity.0 != identity.1
+        && outcome
+            .as_ref()
+            .is_err_and(|error| matches!(error.primary(), Error::RunAborted))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod spawn_refusal {
     use std::cell::RefCell;
     use std::sync::atomic::AtomicUsize;
 
@@ -804,14 +815,14 @@ pub(crate) mod spawn_refusal {
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
-    pub(crate) struct ObservedError {
-        pub(crate) raw_errno: Option<i32>,
-        pub(crate) kind: std::io::ErrorKind,
-        pub(crate) message: String,
+    pub struct ObservedError {
+        pub raw_errno: Option<i32>,
+        pub kind: std::io::ErrorKind,
+        pub message: String,
     }
 
     impl ObservedError {
-        pub(crate) fn read(error: &std::io::Error) -> Self {
+        pub fn read(error: &std::io::Error) -> Self {
             Self {
                 raw_errno: error.raw_os_error(),
                 kind: error.kind(),
@@ -821,28 +832,28 @@ pub(crate) mod spawn_refusal {
     }
 
     #[derive(Default)]
-    pub(crate) struct Probe {
+    pub struct Probe {
         consumed: AtomicUsize,
         error: Mutex<Option<ObservedError>>,
     }
 
     impl Probe {
-        pub(crate) fn consumed(&self) -> usize {
+        pub fn consumed(&self) -> usize {
             self.consumed.load(Ordering::SeqCst)
         }
-        pub(crate) fn error(&self) -> Option<ObservedError> {
+        pub fn error(&self) -> Option<ObservedError> {
             self.error.lock().unwrap().clone()
         }
     }
 
-    pub(crate) struct Guard {
+    pub struct Guard {
         probe: Arc<Probe>,
         prior: Option<Arc<Probe>>,
         thread: std::thread::ThreadId,
     }
 
     impl Guard {
-        pub(crate) fn arm(probe: Arc<Probe>) -> Self {
+        pub fn arm(probe: Arc<Probe>) -> Self {
             assert_eq!(probe.consumed(), 0, "spawn refusal probe cannot be reused");
             assert!(probe.error().is_none());
             let prior = NEXT.with(|next| next.replace(Some(probe.clone())));
@@ -909,14 +920,14 @@ pub(crate) mod spawn_refusal {
         }
     }
 
-    pub(crate) fn is_armed() -> bool {
+    pub fn is_armed() -> bool {
         NEXT.with(|next| next.borrow().is_some())
     }
 }
 
 /// Keep the initialized child state recoverable if the OS refuses the spawn.
 /// A successful worker takes sole ownership before doing any child work.
-pub(crate) fn spawn_owned<S, R, F>(
+pub fn spawn_owned<S, R, F>(
     builder: std::thread::Builder,
     state: S,
     run: F,
@@ -926,7 +937,7 @@ where
     R: Send + 'static,
     F: FnOnce(S) -> R + Send + 'static,
 {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     let (builder, refusal) = spawn_refusal::prepare(builder);
     let state = Arc::new(Mutex::new(Some(state)));
     let child_state = state.clone();
@@ -940,7 +951,7 @@ where
     }) {
         Ok(handle) => Ok(handle),
         Err(error) => {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             spawn_refusal::refused(refusal.as_deref(), &error);
             let state = state
                 .lock()

@@ -32,7 +32,7 @@
 //! call this thread is making, and the thread's next entry refuses. And code
 //! that blocks signal 64 again on a vCPU thread breaks prompt interruption:
 //! a kick then cannot end a `KVM_RUN` that is already running. Entries
-//! re-check that signal 64 is unblocked every [`RECHECK_ENTRIES`] entries and
+//! re-check that signal 64 is unblocked every `RECHECK_ENTRIES` entries and
 //! refuse if it was blocked again, which bounds how long that can go unseen
 //! without a per-entry system call.
 
@@ -228,7 +228,7 @@ fn deliver_pending() {
 /// kick handler sets so that a kick landing before `KVM_RUN` still keeps the
 /// guest from running.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ImmediateExit(std::ptr::NonNull<u8>);
+pub struct ImmediateExit(std::ptr::NonNull<u8>);
 
 // SAFETY: the byte is accessed only on the thread running an entry for its
 // vCPU: by that thread's signal handler while the entry is published, and by
@@ -261,7 +261,7 @@ impl ImmediateExit {
     ///
     /// The vCPU's `kvm_run` mapping must outlive every entry prepared with the
     /// result. The mapping's address does not change when the fd moves.
-    pub(crate) unsafe fn new(fd: &mut VcpuFd) -> Self {
+    pub unsafe fn new(fd: &mut VcpuFd) -> Self {
         Self(std::ptr::NonNull::from(
             &mut fd.get_kvm_run().immediate_exit,
         ))
@@ -273,8 +273,8 @@ impl ImmediateExit {
         unsafe { AtomicU8::from_ptr(self.0.as_ptr()) }.store(0, Ordering::Relaxed);
     }
 
-    #[cfg(test)]
-    pub(crate) fn get(self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn get(self) -> bool {
         // SAFETY: as for clear.
         unsafe { AtomicU8::from_ptr(self.0.as_ptr()) }.load(Ordering::Relaxed) != 0
     }
@@ -291,7 +291,7 @@ impl Control {
     /// `immediate_exit` belongs to the vCPU this entry runs; tests that run
     /// no vCPU pass None.
     pub(super) fn arm(key: u64, immediate_exit: Option<ImmediateExit>) -> Result<Self> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(error) = fault::take(0) {
             return Err(crate::Error::SharedFailure(error));
         }
@@ -339,7 +339,7 @@ impl Control {
     /// not merge). A send that failed after being counted has already failed
     /// the gate. Returns whether the entry was kicked.
     pub(super) fn finish(mut self, kicks: usize) -> Result<bool> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(error) = fault::take(1) {
             // The one-shot is removed before recursion. Perform the real
             // accounting, then exercise its error composition.
@@ -379,8 +379,8 @@ impl Drop for Control {
     }
 }
 
-#[cfg(test)]
-pub(super) mod fault {
+#[cfg(any(test, feature = "test-support"))]
+pub mod fault {
     use std::cell::RefCell;
     use std::marker::PhantomData;
     use std::rc::Rc;
@@ -392,19 +392,19 @@ pub(super) mod fault {
         static ACTIVE: RefCell<Option<Arc<Probe>>> = const { RefCell::new(None) };
     }
 
-    pub(in crate::entry) struct Probe {
+    pub struct Probe {
         errors: [Option<Arc<crate::Error>>; 2],
-        pub(in crate::entry) consumed: [AtomicUsize; 2],
+        pub consumed: [AtomicUsize; 2],
     }
 
-    pub(in crate::entry) struct Guard {
-        pub(in crate::entry) probe: Arc<Probe>,
+    pub struct Guard {
+        pub probe: Arc<Probe>,
         previous: Option<Arc<Probe>>,
         _same_thread: PhantomData<Rc<()>>,
     }
 
     impl Guard {
-        pub(in crate::entry) fn arm(errors: [Option<Arc<crate::Error>>; 2]) -> Self {
+        pub fn arm(errors: [Option<Arc<crate::Error>>; 2]) -> Self {
             let probe = Arc::new(Probe {
                 errors,
                 consumed: std::array::from_fn(|_| AtomicUsize::new(0)),
@@ -449,16 +449,16 @@ pub(super) mod fault {
 }
 
 /// Instances this thread's handler has taken, for tests.
-#[cfg(test)]
-pub(crate) fn delivered_for_test() -> u64 {
+#[cfg(any(test, feature = "test-support"))]
+pub fn delivered_for_test() -> u64 {
     delivered()
 }
 
 /// Treat every instance delivered to this thread so far as explained. A test
 /// that deliberately sends an unrecorded instance calls this before the
 /// thread's next entry, as it would otherwise refuse every later entry.
-#[cfg(test)]
-pub(crate) fn accept_delivered_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn accept_delivered_for_test() {
     RECORDED.set(delivered());
 }
 

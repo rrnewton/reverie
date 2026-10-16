@@ -498,7 +498,7 @@ impl Error {
         }
     }
 
-    pub(crate) fn retains_primary(&self, primary: &std::sync::Arc<Error>) -> bool {
+    pub fn retains_primary(&self, primary: &std::sync::Arc<Error>) -> bool {
         match self {
             Self::SignalEffects { cause: error, .. }
             | Self::SharedFailure(error)
@@ -513,7 +513,7 @@ impl Error {
     }
 
     /// Identity of the primary worker cause, never a secondary cleanup error.
-    pub(crate) fn worker_tid(&self) -> Option<i32> {
+    pub fn worker_tid(&self) -> Option<i32> {
         match self {
             Self::WorkerFailure { tid, .. } => Some(*tid),
             Self::SignalEffects { cause: error, .. }
@@ -525,14 +525,14 @@ impl Error {
         }
     }
 
-    pub(crate) fn cleanup(self, phase: &'static str) -> Self {
+    pub fn cleanup(self, phase: &'static str) -> Self {
         Self::Cleanup {
             phase,
             error: Arc::new(self),
         }
     }
 
-    pub(crate) fn with_cleanup(self, cleanup: Vec<Error>) -> Self {
+    pub fn with_cleanup(self, cleanup: Vec<Error>) -> Self {
         if cleanup.is_empty() {
             self
         } else {
@@ -543,7 +543,7 @@ impl Error {
         }
     }
 
-    pub(crate) fn combine(mut errors: Vec<Error>) -> crate::Result<()> {
+    pub fn combine(mut errors: Vec<Error>) -> crate::Result<()> {
         if errors.is_empty() {
             Ok(())
         } else {
@@ -556,7 +556,7 @@ impl Error {
     /// The first published Arc is authoritative. Shared aggregate children stay
     /// shared, so separating a cancellation marker cannot discard a real hook
     /// error or clone a non-Clone host error into a different cause.
-    pub(crate) fn complete_after_failure(self, first: Arc<Error>, first_tid: i32) -> Self {
+    pub fn complete_after_failure(self, first: Arc<Error>, first_tid: i32) -> Self {
         assert!(!matches!(first.primary(), Error::RunAborted));
         #[derive(Clone)]
         enum Context {

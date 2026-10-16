@@ -16,6 +16,7 @@ use reverie::Pid;
 
 use super::*;
 use crate::entry::EntryOrigin;
+use crate::entry::owner::DriverScope;
 use crate::failure::FailureContext;
 use crate::failure::RunFailure;
 
