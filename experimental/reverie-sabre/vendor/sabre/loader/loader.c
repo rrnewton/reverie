@@ -325,12 +325,17 @@ static int parse_shebang(const char *client_path,
  */
 #define SBR_LAUNCH_MAGIC "SABRE-LAUNCH-V1"
 #define SBR_LAUNCH_MAX_BYTES (64 * 1024)
+/* The name the launcher's own execve of the client would have given the
+ * kernel, which the kernel puts at the top of the initial stack and points
+ * AT_EXECFN at. The loader consumes it (see relayout_initial_stack). */
+#define SBR_EXECFN_SETTING "REVERIE_SABRE_EXECFN"
 
 struct launch_spec {
   char *bytes;
   const char *plugin;
   const char *client;
-  char **settings; /* NULL-terminated */
+  const char *execfn; /* NULL when the launcher sent none */
+  char **settings;    /* NULL-terminated */
   int setting_count;
 };
 
@@ -405,6 +410,11 @@ static bool read_launch_spec(struct launch_spec *spec) {
       sbr_bootstrap_option_from_launch(value + sizeof(SBR_BOOTSTRAP_ENV));
       continue;
     }
+    if (strncmp(value, SBR_EXECFN_SETTING "=", sizeof(SBR_EXECFN_SETTING)) ==
+        0) {
+      spec->execfn = value + sizeof(SBR_EXECFN_SETTING);
+      continue;
+    }
     /* The loader counts patches and dispatches on the same stats page as the
      * plugin, so both get this setting. */
     if (strncmp(value, SBR_BACKEND_STATS_ENV "=",
@@ -415,12 +425,138 @@ static bool read_launch_spec(struct launch_spec *spec) {
   }
   if (at != size)
     errx(EXIT_FAILURE, "launch specification has trailing bytes");
+  if (spec->execfn != NULL && spec->execfn[0] == '\0')
+    errx(EXIT_FAILURE, "launch specification names an empty exec filename");
   spec->bytes = bytes;
   spec->plugin = strings[0];
   spec->client = strings[1];
   spec->settings = settings;
   spec->setting_count = setting_count;
   return true;
+}
+
+/* Rebuilds the top of the initial stack as the kernel builds it for an exec
+ * of the client named `execfn` (fs/exec.c, create_elf_tables), and returns
+ * the new stack pointer, which points at argc.
+ *
+ * The kernel exec'd SaBRe, so its stack holds SaBRe's name at the top, where
+ * AT_EXECFN points, and every address below shifts by that name's length.
+ * From the top down the kernel lays out: an 8-byte end marker; the exec
+ * filename; the environment strings; the argv strings; then, below an
+ * alignment to 16, the platform string and the 16 AT_RANDOM bytes; then the
+ * auxv, the envp and argv arrays and argc, rounded down to 16. Rebuilding
+ * that with the client's name gives the client the stack an exec of its own
+ * would have given it.
+ *
+ * The client's name must be no longer than SaBRe's, so that everything moves
+ * up: below the old stack pointer are this loader's own frames. Launchers
+ * name SaBRe by a path padded with extra slashes to make sure of that.
+ */
+static stack_val_t *relayout_initial_stack(int argc, char **argv,
+                                           const char *execfn) {
+  char **envp = argv + argc + 1;
+  int envc = 0;
+  while (envp[envc] != NULL)
+    ++envc;
+  ElfW(auxv_t) *auxv = (ElfW(auxv_t) *)(envp + envc + 1);
+  int auxc = 0;
+  const char *old_execfn = NULL;
+  const char *platform = NULL;
+  const unsigned char *random = NULL;
+  for (; auxv[auxc].a_type != AT_NULL; ++auxc) {
+    switch (auxv[auxc].a_type) {
+    case AT_EXECFN:
+      old_execfn = (const char *)auxv[auxc].a_un.a_val;
+      break;
+    case AT_PLATFORM:
+      platform = (const char *)auxv[auxc].a_un.a_val;
+      break;
+    case AT_RANDOM:
+      random = (const unsigned char *)auxv[auxc].a_un.a_val;
+      break;
+    }
+  }
+  if (old_execfn == NULL || random == NULL)
+    errx(EXIT_FAILURE, "initial stack has no AT_EXECFN or AT_RANDOM");
+  size_t old_len = strlen(old_execfn) + 1;
+  size_t execfn_len = strlen(execfn) + 1;
+  if (execfn_len > old_len)
+    errx(EXIT_FAILURE,
+         "exec filename %s is longer than the name SaBRe was run by; the "
+         "launcher must name SaBRe by a path at least as long",
+         execfn);
+  uintptr_t top = (uintptr_t)old_execfn + old_len;
+  uintptr_t old_sp = (uintptr_t)(argv - 1);
+
+  size_t strings = execfn_len;
+  for (int i = 0; i < argc; ++i)
+    strings += strlen(argv[i]) + 1;
+  for (int i = 0; i < envc; ++i)
+    strings += strlen(envp[i]) + 1;
+  size_t platform_len = platform != NULL ? strlen(platform) + 1 : 0;
+
+  uintptr_t new_strings = top - strings;
+  uintptr_t p = new_strings & ~(uintptr_t)15;
+  uintptr_t new_platform = p - platform_len;
+  uintptr_t new_random = new_platform - 16;
+  uintptr_t sp = new_random - (size_t)(auxc + 1) * sizeof(ElfW(auxv_t));
+  size_t items = (size_t)(argc + 1) + (size_t)(envc + 1) + 1;
+  sp = (sp - items * sizeof(stack_val_t)) & ~(uintptr_t)15;
+  if (sp < old_sp)
+    errx(EXIT_FAILURE, "initial stack relayout would move below the old one");
+
+  /* Built in a zeroed copy first: the new layout overlaps the old. */
+  size_t span = top - sp;
+  unsigned char *image = calloc(1, span);
+  if (image == NULL)
+    err(EXIT_FAILURE, "cannot allocate the initial stack relayout");
+#define AT_NEW(address) (image + ((uintptr_t)(address) - sp))
+  stack_val_t *words = (stack_val_t *)image;
+  stack_val_t *new_argv = words + 1;
+  stack_val_t *new_envp = new_argv + argc + 1;
+  ElfW(auxv_t) *new_auxv = (ElfW(auxv_t) *)(new_envp + envc + 1);
+  words[0] = (stack_val_t)argc;
+  uintptr_t cursor = new_strings;
+  for (int i = 0; i < argc; ++i) {
+    size_t length = strlen(argv[i]) + 1;
+    memcpy(AT_NEW(cursor), argv[i], length);
+    new_argv[i] = cursor;
+    cursor += length;
+  }
+  new_argv[argc] = 0;
+  for (int i = 0; i < envc; ++i) {
+    size_t length = strlen(envp[i]) + 1;
+    memcpy(AT_NEW(cursor), envp[i], length);
+    new_envp[i] = cursor;
+    cursor += length;
+  }
+  new_envp[envc] = 0;
+  uintptr_t new_execfn = cursor;
+  memcpy(AT_NEW(new_execfn), execfn, execfn_len);
+  if (platform != NULL)
+    memcpy(AT_NEW(new_platform), platform, platform_len);
+  memcpy(AT_NEW(new_random), random, 16);
+  for (int i = 0; i <= auxc; ++i) {
+    new_auxv[i] = auxv[i];
+    switch (auxv[i].a_type) {
+    case AT_EXECFN:
+      new_auxv[i].a_un.a_val = new_execfn;
+      break;
+    case AT_PLATFORM:
+      new_auxv[i].a_un.a_val = new_platform;
+      break;
+    case AT_RANDOM:
+      new_auxv[i].a_un.a_val = new_random;
+      break;
+    }
+  }
+#undef AT_NEW
+  /* What lies between the old and the new stack pointer is free stack, as
+   * below a fresh exec's: clear it. */
+  memset((void *)old_sp, 0, sp - old_sp);
+  memcpy((void *)sp, image, span);
+  free(image);
+  return (stack_val_t *)sp;
 }
 
 // Returns the address of entry point and also populates a pointer
@@ -645,6 +781,15 @@ void load(int argc, char *argv[], void **new_entry, void **new_stack_top) {
   struct sigaction sa_ill = {.sa_sigaction = sigill_handler,
                              .sa_flags = SA_SIGINFO | SA_NODEFER};
   sigaction(SIGILL, &sa_ill, NULL);
+
+  if (launched && launch.execfn != NULL) {
+    /* The client's argv and environment are already the kernel's; only the
+     * exec filename at the top of the stack names SaBRe. */
+    *new_stack_top = relayout_initial_stack(argc, argv, launch.execfn);
+    *new_entry = (void *)entry;
+    sbr_bootstrap_image(*new_stack_top, *new_entry);
+    return;
+  }
 
   // Modify the original process stack to represent arguments modified
   // by the plugin.

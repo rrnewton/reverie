@@ -14,10 +14,16 @@
 //! `/proc/self/cmdline` and `/proc/self/environ` from them, as for an exec of
 //! the client itself. Everything SaBRe needs besides travels in an inherited,
 //! sealed memfd: the plugin path, the client path and the plugin's settings
-//! (`NAME=VALUE`), which the loader puts in SaBRe's own environment
+//! (`NAME=VALUE`), which the loader passes to the plugin as plugin arguments
 //! (reverie-sabre's `vendor/sabre/loader/loader.c`, `read_launch_spec`). The client path names
 //! an ELF image: for a script the launcher passes its interpreter and the argv
 //! the kernel would give it ([`resolve_script`]).
+//!
+//! The kernel puts the name it was asked to exec at the top of the initial
+//! stack and points `AT_EXECFN` at it. A launcher sends the client's name as
+//! the [`EXECFN_SETTING`] setting, and names SaBRe by a path at least as long
+//! ([`padded_exec_path`]); the loader then rebuilds the stack top for the
+//! client's name.
 
 use std::ffi::CStr;
 use std::ffi::CString;
@@ -28,6 +34,24 @@ use std::os::fd::OwnedFd;
 pub const MAGIC: &[u8] = b"SABRE-LAUNCH-V1\0";
 /// The largest specification the loader reads (`SBR_LAUNCH_MAX_BYTES`).
 pub const MAX_BYTES: usize = 64 * 1024;
+/// The setting naming the client as the launcher's own exec would have named
+/// it: the kernel's `AT_EXECFN` for the client (`SBR_EXECFN_SETTING`). The
+/// loader consumes it; the plugin never sees it.
+pub const EXECFN_SETTING: &str = "REVERIE_SABRE_EXECFN";
+
+/// `path`, an absolute path, lengthened to at least `min_len` bytes with extra
+/// slashes after its first, which Linux resolves as one. The loader can only
+/// move the initial stack up, so SaBRe must be exec'd by a name at least as
+/// long as the client's.
+pub fn padded_exec_path(path: &[u8], min_len: usize) -> Vec<u8> {
+    assert!(path.starts_with(b"/"), "the SaBRe path must be absolute");
+    let mut padded = path.to_vec();
+    if padded.len() < min_len {
+        let extra = min_len - padded.len();
+        padded.splice(1..1, std::iter::repeat_n(b'/', extra));
+    }
+    padded
+}
 
 /// The bytes of a specification: [`MAGIC`], the plugin path, the client path
 /// and each setting, each NUL-terminated, then an empty string. `None` if a
@@ -141,6 +165,26 @@ pub fn resolve_script(path: &CStr, argv: &[&CStr], first_bytes: &[u8]) -> (CStri
             path.to_owned(),
             argv.iter().map(|value| (*value).to_owned()).collect(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod padded_path_tests {
+    use super::padded_exec_path;
+
+    #[test]
+    fn padding_lengthens_with_slashes_and_never_shortens() {
+        assert_eq!(padded_exec_path(b"/s/sabre", 4), b"/s/sabre");
+        assert_eq!(padded_exec_path(b"/s/sabre", 8), b"/s/sabre");
+        assert_eq!(padded_exec_path(b"/s/sabre", 11), b"////s/sabre");
+        // Linux resolves the padded path to the same file.
+        let padded = padded_exec_path(b"/bin/sh", 20);
+        assert_eq!(padded.len(), 20);
+        let padded = std::str::from_utf8(&padded).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(padded).unwrap(),
+            std::fs::canonicalize("/bin/sh").unwrap()
+        );
     }
 }
 
