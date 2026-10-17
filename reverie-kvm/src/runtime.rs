@@ -8271,3 +8271,7 @@ mod exit_descriptor_tests;
 #[cfg(test)]
 #[path = "runtime/parent_death_tests.rs"]
 mod parent_death_tests;
+
+#[cfg(test)]
+#[path = "runtime/segment_slot_tests.rs"]
+mod segment_slot_tests;
