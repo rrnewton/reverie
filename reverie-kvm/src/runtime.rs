@@ -334,7 +334,9 @@ pub(crate) struct ToolContext<'a, T: Tool> {
 /// of process actions. The trait is generic over the Tool only because
 /// `complete_injection` starts child Tool instances.
 trait GuestSyscallExecutor<T: Tool>:
-    LinuxProvider<Context = GuestMemory, Error = Error> + LinuxEmuSignalControl + LinuxEmuMemoryMap
+    LinuxProvider<Context = GuestMemory, Plan = ProcessAction, Error = Error>
+    + LinuxEmuSignalControl
+    + LinuxEmuMemoryMap
 {
     fn read_clock(&self) -> Result<u64>;
 
@@ -375,6 +377,7 @@ trait GuestSyscallExecutor<T: Tool>:
     fn complete_injection<'a>(
         &'a mut self,
         _context: ToolContext<'a, T>,
+        _plan: Option<crate::executor::ProcessAction>,
     ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
     where
         T: 'a,
@@ -403,6 +406,7 @@ struct DirectSyscallExecutor<'a> {
 #[reverie::provider]
 impl LinuxProvider for DirectSyscallExecutor<'_> {
     type Context = GuestMemory;
+    type Plan = crate::executor::ProcessAction;
     type Error = crate::Error;
 
     async fn execute(
@@ -659,11 +663,15 @@ fn provider_disposition(error: Error) -> Result<ProviderOutcome> {
 ///   vCPU's host thread, which a blocking read still blocks, exactly as when
 ///   the method was synchronous, and so its future completes on the first
 ///   poll.
-/// - `Return`, `Cancelled` and `ThreadGroupExited` are produced; the last two
-///   come from the executor's dispositional errors through
-///   [`provider_disposition`]. A staged segment base, process action (fork,
-///   clone, exec) or exit is still left in the executor's side channels and
-///   consumed after `execute` by `complete_injection` and the vCPU loop.
+/// - `Return`, `Process`, `Cancelled` and `ThreadGroupExited` are produced.
+///   `Process` carries the process action (fork, clone, exec) a successful
+///   call staged, which `complete_injection` carries out. `Cancelled` and
+///   `ThreadGroupExited` come from the executor's dispositional errors
+///   through [`provider_disposition`]. A staged segment base or exit is still
+///   left in the executor's side channels, consumed after `execute` by the
+///   vCPU loop. The vCPU loop's own direct executor calls (an unsubscribed
+///   syscall, and runs with no Tool) still take process actions from the
+///   executor themselves.
 /// - `execute` still performs three backend admission checks before the
 ///   executor sees the request (the signal guard and prepared-signal state,
 ///   the lifecycle signal-mask preflight, and whether the callback context
@@ -690,6 +698,7 @@ fn provider_disposition(error: Error) -> Result<ProviderOutcome> {
 #[reverie::provider]
 impl LinuxProvider for StaticElfSyscallExecutor<'_> {
     type Context = GuestMemory;
+    type Plan = crate::executor::ProcessAction;
     type Error = crate::Error;
 
     async fn execute(
@@ -773,6 +782,18 @@ impl LinuxProvider for StaticElfSyscallExecutor<'_> {
         };
         self.last_result = Some(result);
         self.polled_read_attempt = Some((*request, result));
+        // A process action staged by a successful call goes to the backend in
+        // the outcome. KvmGuest::inject completes only a successful call, and
+        // until E2d its completion took the action from the executor at that
+        // point. Nothing executes in between: an injection attempted from a
+        // dequeue notification is refused before it reaches the executor. So
+        // taking it here hands over the same action. An unsuccessful call
+        // leaves any action in the executor, as before.
+        if raw_to_result(result).is_ok()
+            && let Some(plan) = self.executor.take_process_action()
+        {
+            return Ok(ProviderOutcome::Process { result, plan });
+        }
         Ok(ProviderOutcome::Return(result))
     }
 
@@ -1109,6 +1130,7 @@ where
     fn complete_injection<'a>(
         &'a mut self,
         context: ToolContext<'a, T>,
+        plan: Option<crate::executor::ProcessAction>,
     ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
     where
         T: 'a,
@@ -1124,7 +1146,7 @@ where
                     process_exited: false,
                 });
             }
-            let Some(action) = self.executor.take_process_action() else {
+            let Some(action) = plan else {
                 return Ok(if self.executor.has_pending_exit() {
                     InjectionCompletion::DoesNotReturn {
                         image_replaced: false,
@@ -1708,15 +1730,28 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         // The syscall itself goes only through the run's Linux provider. Its
         // `execute` future is awaited at once; today's providers never await
         // inside it, so it completes on its first poll.
-        let provider: &mut dyn LinuxProvider<Context = GuestMemory, Error = Error> =
+        let provider: &mut dyn LinuxProvider<Context = GuestMemory, Plan = ProcessAction, Error = Error> =
             &mut *self.executor;
         let outcome = provider
             .execute(self.tid, request.as_provider(), &mut self.memory)
             .await;
-        let raw = match outcome {
+        let (raw, plan) = match outcome {
             Ok(ProviderOutcome::Return(raw)) => {
                 self.unsupported_refusal = provider.take_unsupported_refusal();
-                raw
+                (raw, None)
+            }
+            Ok(ProviderOutcome::Process { result, plan }) => {
+                self.unsupported_refusal = provider.take_unsupported_refusal();
+                if raw_to_result(result).is_err() {
+                    // The provider contract: a process action accompanies
+                    // only a successful result. The static-ELF adapter hands
+                    // one over only then, so this is a broken invariant.
+                    self.signal_handler(HandlerSignal::RuntimeError(Error::UnexpectedVcpuExit(
+                        format!("KVM provider returned a process action with result {result}"),
+                    )));
+                    return std::future::pending().await;
+                }
+                (result, Some(plan))
             }
             Ok(ProviderOutcome::ThreadGroupExited { status }) => {
                 // The group exit is already committed, not a request to cancel
@@ -1755,7 +1790,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
                 subscriptions: self.subscriptions.clone(),
                 pending_child_starts: self.pending_child_starts.clone(),
             };
-            match self.executor.complete_injection(context).await {
+            match self.executor.complete_injection(context, plan).await {
                 Ok(InjectionCompletion::ThreadCancelled) => {
                     self.signal_handler(HandlerSignal::ThreadCancelled);
                     return std::future::pending().await;
@@ -7390,6 +7425,7 @@ mod tests {
     #[reverie::provider]
     impl LinuxProvider for FailingSyscallExecutor {
         type Context = GuestMemory;
+        type Plan = crate::executor::ProcessAction;
         type Error = crate::Error;
 
         async fn execute(
@@ -7423,6 +7459,7 @@ mod tests {
     #[reverie::provider]
     impl LinuxProvider for SideEffectingExecutor {
         type Context = GuestMemory;
+        type Plan = crate::executor::ProcessAction;
         type Error = crate::Error;
 
         async fn execute(
@@ -7472,6 +7509,7 @@ mod tests {
         fn complete_injection<'a>(
             &'a mut self,
             _context: ToolContext<'a, crate::StraceTool>,
+            _plan: Option<crate::executor::ProcessAction>,
         ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
         where
             crate::StraceTool: 'a,
@@ -7498,6 +7536,7 @@ mod tests {
     #[reverie::provider]
     impl LinuxProvider for PermissiveSideEffectingExecutor {
         type Context = GuestMemory;
+        type Plan = crate::executor::ProcessAction;
         type Error = crate::Error;
 
         async fn execute(
@@ -7536,6 +7575,7 @@ mod tests {
         fn complete_injection<'a>(
             &'a mut self,
             _context: ToolContext<'a, crate::StraceTool>,
+            _plan: Option<crate::executor::ProcessAction>,
         ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
         where
             crate::StraceTool: 'a,
@@ -7614,6 +7654,7 @@ mod tests {
     #[reverie::provider]
     impl LinuxProvider for RefusingThenSupportingProvider {
         type Context = GuestMemory;
+        type Plan = crate::executor::ProcessAction;
         type Error = crate::Error;
 
         async fn execute(
