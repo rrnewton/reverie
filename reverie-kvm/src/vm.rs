@@ -1552,6 +1552,12 @@ pub struct KvmBackend {
     // Public runs that never returned, with every child host thread their
     // roots still own. Once one exists, no run or image is admitted.
     pub(crate) abandoned_runs: Arc<Mutex<AbandonedRuns>>,
+    /// The FS or GS base staged during the current guest callback and applied
+    /// to the vCPU at the next return to the guest. One slot for both
+    /// registers: a later staged base replaces an earlier one, and an exec
+    /// discards it. It was the executor's `pending_segment` until provider step
+    /// E2e; the rule is unchanged.
+    pending_segment: Option<(SegmentBase, u64)>,
 }
 
 struct CompletedToolPanic {
@@ -1872,6 +1878,7 @@ impl KvmBackend {
             ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
             exit_collector: None,
             abandoned_runs: Arc::default(),
+            pending_segment: None,
         })
     }
 
@@ -2443,7 +2450,30 @@ impl KvmBackend {
         )?;
         self.memory.enable_user_access();
         executor.replace_after_exec(loaded);
+        // An exec discards a base staged for the old image, as
+        // replace_after_exec discards the executor's.
+        self.pending_segment = None;
         Ok(())
+    }
+
+    /// Stages an FS or GS base for the next return to the guest. A later base
+    /// replaces an earlier one; `None` leaves the slot as it is.
+    pub(crate) fn stage_segment(&mut self, segment: Option<(SegmentBase, u64)>) {
+        if segment.is_some() {
+            self.pending_segment = segment;
+        }
+    }
+
+    /// Moves a base the executor staged during a direct call (one that did
+    /// not go through the provider trait) into the backend's slot. Called
+    /// after every such call, before any reader.
+    pub(crate) fn harvest_segment(&mut self, executor: &mut ElfExecutor) {
+        self.stage_segment(executor.take_segment());
+    }
+
+    /// Takes the staged base, to apply it to the vCPU.
+    pub(crate) fn take_pending_segment(&mut self) -> Option<(SegmentBase, u64)> {
+        self.pending_segment.take()
     }
 
     /// Capture one complete parent read state only after admission. The owned
@@ -5201,8 +5231,9 @@ impl KvmBackend {
                                 Err(error) => return Err(error),
                             };
                         SyscallRequest::write_result(&mut self.memory, frame_address, result)?;
+                        self.harvest_segment(executor);
                         (
-                            executor.take_segment(),
+                            self.take_pending_segment(),
                             executor.take_process_action(),
                             Some((frame_address, result)),
                         )
