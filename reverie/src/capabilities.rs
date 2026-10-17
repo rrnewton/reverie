@@ -223,7 +223,7 @@ pub struct BackendCapabilities {
     /// Either the backend's runtime promotes them itself, because it performs
     /// those calls natively without the tool's handler (DBT), or the backend
     /// performs every such call only from the tool's handler for it, so the
-    /// handler promotes first (in-guest LiteInst). A tool may then keep such a
+    /// handler promotes first (in-guest LiteInst, SaBRe). A tool may then keep such a
     /// description's model (a timerfd's virtual-time expirations, say) inside
     /// the guest: every process that shares the description reaches the same
     /// copy. A backend whose tool runs outside the guest shares one copy
@@ -300,6 +300,7 @@ impl BackendCapabilities {
         supports_blocked_wait_signal_interruption: false,
         delivers_preemption_timer_events: false,
         runs_guest_code_between_injections: true,
+        promotes_open_files_before_native_lifecycle: true,
         ..Self::PTRACE
     };
 
@@ -441,6 +442,7 @@ mod tests {
                 "supports_blocked_wait_signal_interruption": false,
                 "delivers_preemption_timer_events": false,
                 "runs_guest_code_between_injections": true,
+                "promotes_open_files_before_native_lifecycle": true,
             }))
         );
     }
