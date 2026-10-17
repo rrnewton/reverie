@@ -1210,6 +1210,10 @@ where
         self.tid
     }
 
+    fn take_unsupported_refusal(&mut self) -> Option<reverie::UnsupportedRefusal> {
+        crate::utils::take_unsupported_refusal()
+    }
+
     fn pid(&self) -> Pid {
         self.pid
     }
@@ -1339,6 +1343,8 @@ where
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         let (number, args) = syscall.into_parts();
+        // A refusal belongs to the injection that recorded it.
+        let _ = crate::utils::take_unsupported_refusal();
         let terminal_original = self.original == Some((number, args))
             && self.special_inject.is_some()
             && matches!(number, Sysno::exit | Sysno::exit_group);

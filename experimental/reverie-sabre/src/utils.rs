@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::cell::Cell;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::mem::MaybeUninit;
@@ -358,6 +359,34 @@ fn sigmask(sig: libc::c_int) -> u64 {
     1 << (sig as u64).wrapping_sub(1)
 }
 
+thread_local! {
+    /// The typed refusal of the injection this thread ran last, for
+    /// `Guest::take_unsupported_refusal`.
+    static UNSUPPORTED_REFUSAL: Cell<Option<reverie::UnsupportedRefusal>> = const { Cell::new(None) };
+}
+
+/// Records that the syscall this thread is running was refused as
+/// unsupported, so the injecting Tool can tell it from a failure Linux would
+/// report with the same errno.
+pub(crate) fn record_unsupported_refusal(refusal: reverie::UnsupportedRefusal) {
+    UNSUPPORTED_REFUSAL.set(Some(refusal));
+}
+
+/// Takes the refusal [`record_unsupported_refusal`] recorded, clearing it.
+pub(crate) fn take_unsupported_refusal() -> Option<reverie::UnsupportedRefusal> {
+    UNSUPPORTED_REFUSAL.take()
+}
+
+/// SaBRe reserves [`CONTROLLED_EXIT_SIGNAL`] to end the guest's processes in a
+/// controlled way, so a guest disposition for it other than `SIG_DFL` could
+/// not take effect.
+const RESERVED_SIGNAL_REFUSAL: reverie::UnsupportedRefusal = reverie::UnsupportedRefusal::new(
+    reverie::UnsupportedOperation::ReservedSignal,
+    Errno::EINVAL,
+    "the SaBRe backend reserves SIGSTKFLT as its controlled exit signal, so a guest \
+     handler or SIG_IGN for it cannot take effect",
+);
+
 /// Preserve Reverie's central handler while exposing the guest-facing action
 /// through the normal `rt_sigaction` ABI. Signals not mediated by Reverie are
 /// passed directly to the kernel.
@@ -392,6 +421,15 @@ pub fn sys_rt_sigaction(
     };
 
     let old_action = match new_action {
+        // Its guest-facing disposition stays SIG_DFL, so resetting it to that
+        // changes nothing; any other disposition is refused by name.
+        Some(action) if signal_value == CONTROLLED_EXIT_SIGNAL => {
+            if action.handler != libc::SIG_DFL {
+                record_unsupported_refusal(RESERVED_SIGNAL_REFUSAL);
+                return Err(Errno::EINVAL);
+            }
+            signal::registered_guest_handler(signal_value)?
+        }
         Some(action) => signal::register_guest_handler(signal_value, action.into_libc())?,
         None => signal::registered_guest_handler(signal_value)?,
     };
@@ -470,6 +508,65 @@ mod vfork_tests {
         assert!(!is_vfork(Sysno::clone, libc::CLONE_VM as usize));
         assert!(!is_vfork(Sysno::clone, libc::CLONE_VFORK as usize));
         assert!(!is_vfork(Sysno::fork, 0));
+    }
+}
+
+#[cfg(test)]
+mod reserved_signal_tests {
+    use super::*;
+
+    extern "C" fn handler(_: libc::c_int) {}
+
+    fn action(handler: libc::sighandler_t) -> KernelSigaction {
+        let mut action: KernelSigaction = unsafe { core::mem::zeroed() };
+        action.handler = handler;
+        action
+    }
+
+    /// A handler or SIG_IGN for SaBRe's controlled exit signal is refused with
+    /// EINVAL and a typed refusal the injecting Tool can take, once.
+    #[test]
+    fn a_disposition_for_the_controlled_exit_signal_is_refused_by_name() {
+        let size = core::mem::size_of::<KernelSigset>();
+        for disposition in [
+            handler as extern "C" fn(libc::c_int) as libc::sighandler_t,
+            libc::SIG_IGN,
+        ] {
+            let new_action = action(disposition);
+            assert_eq!(
+                sys_rt_sigaction(
+                    CONTROLLED_EXIT_SIGNAL,
+                    &new_action,
+                    core::ptr::null_mut(),
+                    size
+                ),
+                Err(Errno::EINVAL)
+            );
+            let refusal = take_unsupported_refusal().expect("a typed refusal");
+            assert_eq!(
+                refusal.operation,
+                reverie::UnsupportedOperation::ReservedSignal
+            );
+            assert_eq!(refusal.errno, Errno::EINVAL);
+            assert!(refusal.diagnostic.contains("SIGSTKFLT"));
+            assert!(take_unsupported_refusal().is_none());
+        }
+    }
+
+    /// A wrong sigset size is Linux's EINVAL, not a refusal.
+    #[test]
+    fn a_bad_size_is_not_a_refusal() {
+        let new_action = action(handler as extern "C" fn(libc::c_int) as libc::sighandler_t);
+        assert_eq!(
+            sys_rt_sigaction(
+                CONTROLLED_EXIT_SIGNAL,
+                &new_action,
+                core::ptr::null_mut(),
+                4
+            ),
+            Err(Errno::EINVAL)
+        );
+        assert!(take_unsupported_refusal().is_none());
     }
 }
 
