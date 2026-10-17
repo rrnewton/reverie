@@ -375,6 +375,14 @@ trait GuestSyscallExecutor<T: Tool>:
         None
     }
 
+    /// The stack pointer the issuing task's current image started with, at
+    /// its argc, which the loader laid out before the image's first
+    /// instruction (`Guest::initial_stack_pointer`). `None` for an adapter
+    /// that loaded no image.
+    fn initial_stack_pointer(&self) -> Option<u64> {
+        None
+    }
+
     fn complete_injection<'a>(
         &'a mut self,
         _context: ToolContext<'a, T>,
@@ -1120,6 +1128,12 @@ where
         self.executor.parent_pid()
     }
 
+    // TODO-HUMAN-REVIEW(#4213): Review reporting the loader's initial stack
+    // pointer to the Tool (`Guest::initial_stack_pointer`).
+    fn initial_stack_pointer(&self) -> Option<u64> {
+        Some(self.executor.initial_stack_pointer())
+    }
+
     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
         self.signal_injection_allowed(request)
     }
@@ -1558,6 +1572,12 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
 
     fn auxv(&self) -> Auxv {
         Auxv::from_entries(self.auxv.iter().copied())
+    }
+
+    // The loader builds the image's initial stack itself, so its stack
+    // pointer is known exactly, for every task of the image.
+    fn initial_stack_pointer(&self) -> Option<u64> {
+        self.executor.initial_stack_pointer()
     }
 
     fn thread_state_mut(&mut self) -> &mut T::ThreadState {
