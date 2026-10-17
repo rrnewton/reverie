@@ -18,10 +18,10 @@ const ARCH_SET_FS: u64 = 0x1002;
 /// The base the vCPU loop would apply when the handler returns, taken as
 /// the loop takes it.
 fn staged_segment(
-    _backend: &mut KvmBackend,
-    executor: &mut ElfExecutor,
+    backend: &mut KvmBackend,
+    _executor: &mut ElfExecutor,
 ) -> Option<(SegmentBase, u64)> {
-    executor.take_segment()
+    backend.take_pending_segment()
 }
 
 /// A backend with a minimal static ELF installed, and that image's executor.
