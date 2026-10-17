@@ -164,3 +164,77 @@ fn without_an_exec_the_fs_base_set_in_a_handler_stays_staged() {
         "staged: {staged:?}"
     );
 }
+
+/// A base for the next tests' startup callback, inside the 16 MiB arena so
+/// arch_prctl accepts it, and distinct from anything an image sets up.
+const STARTUP_STALE_FS: u64 = 0x80_0000;
+
+/// A Tool whose startup callback sets FS and then exits the guest, so the
+/// run ends before any vCPU entry applies the base.
+#[derive(Default)]
+struct StartupFsThenExitTool;
+
+#[reverie::tool]
+impl reverie::Tool for StartupFsThenExitTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_thread_start<G: reverie::Guest<Self>>(
+        &self,
+        guest: &mut G,
+    ) -> std::result::Result<(), reverie::Error> {
+        assert_eq!(
+            guest.inject(arch_prctl_set_fs(STARTUP_STALE_FS)).await,
+            Ok(0)
+        );
+        guest
+            .tail_inject(reverie::syscalls::ExitGroup::new().with_status(0))
+            .await
+    }
+}
+
+/// A Tool that observes nothing.
+#[derive(Default)]
+struct QuietTool;
+
+#[reverie::tool]
+impl reverie::Tool for QuietTool {
+    type GlobalState = ();
+    type ThreadState = ();
+}
+
+/// Codex's scenario, end to end. A first Tool run's startup callback sets FS
+/// and exits before any vCPU entry. The same backend then installs a new
+/// image and runs it with another Tool. The vCPU's FS base after the second
+/// run must not be the first run's base: that base belonged to a task
+/// lifetime that ended, as it did on the base, where it died with the first
+/// run's executor.
+#[test]
+fn a_startup_callback_base_does_not_reach_the_next_run_on_the_same_backend() {
+    // mov eax, 60; xor edi, edi; syscall
+    let exit0 = [0xb8, 60, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05];
+    let mut backend = KvmBackend::new(MEMORY_SIZE).expect("segment slot tests require /dev/kvm");
+    backend
+        .install_static_elf(&crate::vm::minimal_test_elf(&exit0), "/bin/startup-fs")
+        .unwrap();
+    let first = futures::executor::block_on(
+        backend.run_static_elf_with_tool_completion::<StartupFsThenExitTool>((), false),
+    )
+    .unwrap();
+    let (status, _, _) = first.result.unwrap();
+    assert_eq!(status, reverie::ExitStatus::Exited(0));
+    backend
+        .install_static_elf(&crate::vm::minimal_test_elf(&exit0), "/bin/startup-fs-next")
+        .unwrap();
+    let second = futures::executor::block_on(
+        backend.run_static_elf_with_tool_completion::<QuietTool>((), false),
+    )
+    .unwrap();
+    let (status, _, _) = second.result.unwrap();
+    assert_eq!(status, reverie::ExitStatus::Exited(0));
+    let fs = backend.vcpu.get_sregs().unwrap().fs.base;
+    assert_ne!(
+        fs, STARTUP_STALE_FS,
+        "the second run's vCPU took the first run's staged FS base"
+    );
+}
