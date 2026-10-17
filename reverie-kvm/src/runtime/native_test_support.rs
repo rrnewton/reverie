@@ -83,6 +83,7 @@ struct NoInstructions<'a> {
 #[reverie::provider]
 impl LinuxProvider for NoInstructions<'_> {
     type Context = GuestMemory;
+    type Plan = crate::executor::ProcessAction;
     type Error = crate::Error;
 
     async fn execute(
