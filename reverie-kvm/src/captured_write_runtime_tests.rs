@@ -30,6 +30,7 @@ struct Unsupported;
 #[reverie::provider]
 impl LinuxProvider for Unsupported {
     type Context = GuestMemory;
+    type Plan = crate::executor::ProcessAction;
     type Error = crate::Error;
 
     async fn execute(
@@ -59,6 +60,7 @@ struct Capable {
 #[reverie::provider]
 impl LinuxProvider for Capable {
     type Context = GuestMemory;
+    type Plan = crate::executor::ProcessAction;
     type Error = crate::Error;
 
     async fn execute(
