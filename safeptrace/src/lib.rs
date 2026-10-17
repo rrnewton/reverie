@@ -556,6 +556,16 @@ impl Event {
 #[cfg(target_arch = "x86_64")]
 const PTRACE_SINGLEBLOCK: libc::c_uint = 33;
 
+/// The `PTRACE_PEEKUSER`/`PTRACE_POKEUSER` offset of x86 debug register
+/// `index` in `struct user`.
+#[cfg(target_arch = "x86_64")]
+fn debug_register_offset(index: usize) -> Result<usize, Errno> {
+    if index >= 8 {
+        return Err(Errno::EINVAL);
+    }
+    Ok(core::mem::offset_of!(libc::user, u_debugreg) + index * core::mem::size_of::<u64>())
+}
+
 fn ptrace_resume_raw(request: libc::c_uint, pid: Pid, sig: i32) -> Result<(), Errno> {
     Errno::result(unsafe {
         libc::ptrace(
@@ -1581,6 +1591,50 @@ impl Stopped {
             .on_held_tid(|| {
                 Errno::result(unsafe {
                     libc::ptrace(libc::PTRACE_SETSIGINFO, self.0.as_raw(), 0, bytes.as_ptr())
+                })
+            })
+            .map_err(|err| self.map_err(err))
+            .map(drop)
+    }
+
+    /// Reads x86 debug register `index` (0 to 7) of the tracee, with
+    /// `PTRACE_PEEKUSER` at `struct user`'s `u_debugreg`. Linux shows DR4
+    /// and DR5 as zero and DR6 as the thread's virtual status.
+    #[cfg(target_arch = "x86_64")]
+    pub fn debug_register(&self, index: usize) -> Result<u64, Error> {
+        let offset = debug_register_offset(index).map_err(Error::Errno)?;
+        self.1
+            .on_held_tid(|| {
+                // PEEKUSER returns the word itself, so only errno tells an
+                // error from a register holding -1.
+                // SAFETY: errno is this thread's.
+                unsafe { *libc::__errno_location() = 0 };
+                let value =
+                    unsafe { libc::ptrace(libc::PTRACE_PEEKUSER, self.0.as_raw(), offset, 0) };
+                // SAFETY: as above.
+                match unsafe { *libc::__errno_location() } {
+                    0 => Ok(value as u64),
+                    errno => Err(Errno::new(errno)),
+                }
+            })
+            .map_err(|err| self.map_err(err))
+    }
+
+    /// Writes x86 debug register `index` (0 to 3, 6 or 7) of the tracee, with
+    /// `PTRACE_POKEUSER`. Linux validates the value, and backs an enabled
+    /// address register with a hardware breakpoint of this thread alone.
+    #[cfg(target_arch = "x86_64")]
+    pub fn set_debug_register(&self, index: usize, value: u64) -> Result<(), Error> {
+        let offset = debug_register_offset(index).map_err(Error::Errno)?;
+        self.1
+            .on_held_tid(|| {
+                Errno::result(unsafe {
+                    libc::ptrace(
+                        libc::PTRACE_POKEUSER,
+                        self.0.as_raw(),
+                        offset,
+                        value as *mut libc::c_void,
+                    )
                 })
             })
             .map_err(|err| self.map_err(err))

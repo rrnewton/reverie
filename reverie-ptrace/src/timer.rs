@@ -198,6 +198,11 @@ pub(crate) enum StepUnit {
     /// target (see [`TimerImpl::step_unit`]).
     #[cfg(target_arch = "x86_64")]
     Block,
+    /// The rest of one `rep` string instruction: resumed (`PTRACE_CONT`) to
+    /// the hardware execution breakpoint the timer armed at `end`, the
+    /// address after it (see [`TimerImpl::rep_run`]).
+    #[cfg(target_arch = "x86_64")]
+    Rep { end: u64 },
 }
 
 /// Steps of each unit taken toward precise event targets, and lookups in the
@@ -209,6 +214,24 @@ pub(crate) static BLOCK_BOUND_HITS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 pub(crate) static BLOCK_BOUND_MISSES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+pub(crate) static REP_RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// When set to `0`, a `rep` string instruction in the stretch the timer
+/// single steps is stepped one iteration at a time, as before rep runs
+/// existed. Any other value, or none, leaves rep runs on.
+pub const REP_RUN_ENV: &str = "REVERIE_REP_RUN";
+
+/// Timers step `rep` string instructions one iteration at a time while this
+/// is set, as with `REVERIE_REP_RUN=0`, for tests that compare the two.
+pub(crate) static REP_RUNS_OFF_FOR_TESTS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_arch = "x86_64")]
+fn rep_runs_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var(REP_RUN_ENV).map_or(true, |v| v.trim() != "0"))
+        && !REP_RUNS_OFF_FOR_TESTS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// When set to `0`, every step toward a precise event's target is a single
 /// instruction step, as before block steps existed. Any other value, or none,
@@ -3142,7 +3165,7 @@ impl TimerImpl {
         let mut guest_trap_flag = regs.eflags & TRAP_FLAG != 0;
         // Steps of each unit this approach takes, for the log.
         #[cfg_attr(not(target_arch = "x86_64"), allow(unused_mut))]
-        let (mut instruction_steps, mut block_steps) = (0u64, 0u64);
+        let (mut instruction_steps, mut block_steps, mut rep_runs) = (0u64, 0u64, 0u64);
         loop {
             if !current
                 .is_behind(target_rcb, target_instr)
@@ -3173,6 +3196,18 @@ impl TimerImpl {
                 current.rcbs(),
                 target_rcb,
             );
+            #[cfg(target_arch = "x86_64")]
+            let unit = match unit {
+                StepUnit::Instruction => rep_run(
+                    &task,
+                    &regs,
+                    &start,
+                    guest_trap_flag,
+                    current.rcbs(),
+                    target_rcb,
+                )?,
+                unit => unit,
+            };
             #[cfg(not(target_arch = "x86_64"))]
             let unit = StepUnit::Instruction;
             match unit {
@@ -3185,15 +3220,26 @@ impl TimerImpl {
                     block_steps += 1;
                     &BLOCK_STEPS
                 }
+                #[cfg(target_arch = "x86_64")]
+                StepUnit::Rep { .. } => {
+                    rep_runs += 1;
+                    &REP_RUNS
+                }
             }
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let wait = step(task, unit)?.next_state_with_owner(waits).await?;
+            // The breakpoint belongs to this one run: disarm it at whatever
+            // stop the run ended, before anything else sees the thread.
+            #[cfg(target_arch = "x86_64")]
+            if let (StepUnit::Rep { .. }, Wait::Stopped(stopped, _)) = (unit, &wait) {
+                stopped.set_debug_register(7, 0)?;
+            }
             observe(&wait)?;
             task = match wait {
                 // a successful single step results in SIGTRAP stop
                 #[cfg(target_arch = "x86_64")]
                 Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP))
-                    if matches!(is_step_report(&new_task, &start), Ok(true)) =>
+                    if matches!(is_step_report(&new_task, &start, unit), Ok(true)) =>
                 {
                     new_task
                 }
@@ -3268,8 +3314,8 @@ impl TimerImpl {
             current.single_step_with_clock(clock);
         }
         debug!(
-            "Timer reached its target {} with {} block steps and {} single steps",
-            current, block_steps, instruction_steps
+            "Timer reached its target {} with {} block steps, {} rep runs and {} single steps",
+            current, block_steps, rep_runs, instruction_steps
         );
         Ok(task)
     }
@@ -3344,13 +3390,141 @@ fn block_step_reached_target(unit: StepUnit, clock: u64, target_rcb: u64) -> boo
         return false;
     }
     warn!(
-        "A block step reached the precise timer target {} (clock {}), which its decoded bound \
-         rules out; delivering the timer event at the observed counter",
-        target_rcb, clock
+        "A {:?} step reached the precise timer target {} (clock {}), which it rules out; \
+         delivering the timer event at the observed counter",
+        unit, target_rcb, clock
     );
     get_pmu_config().emit_skid_overshoot_marker(clock, target_rcb);
     reverie::record_skid_overshoot();
     true
+}
+
+/// The fewest iterations a `rep` string instruction must have left for the
+/// timer to run it to its end at a breakpoint rather than step each one:
+/// arming and disarming costs a few ptrace calls, about as much as a few
+/// steps.
+#[cfg(target_arch = "x86_64")]
+const REP_RUN_MIN_ITERATIONS: u64 = 8;
+
+/// The unit of a step from `start`, `clock` RCBs into a precise event whose
+/// target is `target_rcb`, that would otherwise be a single step: the rest of
+/// a `rep` string instruction, with a hardware execution breakpoint armed
+/// after it, or a single step.
+///
+/// A single step runs one iteration of a `rep` string instruction, so one
+/// with N iterations left costs N stops. Its iterations retire no
+/// conditional branch (measured on an AMD EPYC 9D85: `rep movsb`, `rep
+/// stosb` and `repe cmpsb` of up to 100,000 iterations each left the RCB
+/// counter where it was), so while the clock is short of the target, running
+/// the instruction to its end leaves it short, and the last stretch is
+/// single stepped as before, to the same delivery point. The instruction
+/// count matters only once the clock is at the target (a requested
+/// instruction offset), and then every step stays a single step.
+///
+/// The breakpoint is the thread's own debug register 0 (DR7 local enable,
+/// execute), so no code is written and no other thread sees it. It is used
+/// only if DR7 enables nothing else, and it is disarmed at whatever stop the
+/// run ends. The run is refused, and the step a single step, under the same
+/// conditions as a block step, and for a count below
+/// [`REP_RUN_MIN_ITERATIONS`].
+#[cfg(target_arch = "x86_64")]
+fn rep_run(
+    task: &Stopped,
+    regs: &Regs,
+    start: &StepStart,
+    guest_trap_flag: bool,
+    clock: u64,
+    target_rcb: u64,
+) -> Result<StepUnit, TraceError> {
+    if !rep_runs_enabled()
+        || guest_trap_flag
+        || start.instruction != FlagsInstruction::Other
+        || regs.orig_rax as i32 != -1
+        || regs.cs != USER64_CS
+        || clock >= target_rcb
+    {
+        return Ok(StepUnit::Instruction);
+    }
+    let mut window = CodeWindow([0; 2 * BLOCK_WINDOW]);
+    let len = read_code(task, regs.rip, &mut window.0[..MAX_INSTRUCTION_BYTES]);
+    let Some((instruction_len, address_32)) = decode_rep_string(regs.rip, &window.0[..len]) else {
+        return Ok(StepUnit::Instruction);
+    };
+    let count = if address_32 {
+        regs.rcx & u64::from(u32::MAX)
+    } else {
+        regs.rcx
+    };
+    if count < REP_RUN_MIN_ITERATIONS || task.debug_register(7)? != 0 {
+        return Ok(StepUnit::Instruction);
+    }
+    let end = regs.rip + instruction_len as u64;
+    task.set_debug_register(0, end)?;
+    // L0, execute, one byte.
+    task.set_debug_register(7, 1)?;
+    Ok(StepUnit::Rep { end })
+}
+
+/// The longest x86 instruction, in bytes.
+#[cfg(target_arch = "x86_64")]
+const MAX_INSTRUCTION_BYTES: usize = 15;
+
+/// The length of the instruction at the start of `code`, whose first byte is
+/// at `ip`, and whether it addresses with 32 bits (counting in ecx), if it is
+/// a `rep`, `repe` or `repne` string instruction that runs in user mode:
+/// `movs`, `stos`, `lods`, `cmps` or `scas`.
+#[cfg(target_arch = "x86_64")]
+fn decode_rep_string(ip: u64, code: &[u8]) -> Option<(usize, bool)> {
+    use iced_x86::Decoder;
+    use iced_x86::DecoderOptions;
+    use iced_x86::Mnemonic;
+    use iced_x86::OpKind;
+
+    let mut decoder = Decoder::with_ip(64, code, ip, DecoderOptions::NONE);
+    if !decoder.can_decode() {
+        return None;
+    }
+    let instruction = decoder.decode();
+    if instruction.is_invalid()
+        || !(instruction.has_rep_prefix()
+            || instruction.has_repe_prefix()
+            || instruction.has_repne_prefix())
+    {
+        return None;
+    }
+    let string = matches!(
+        instruction.mnemonic(),
+        Mnemonic::Movsb
+            | Mnemonic::Movsw
+            | Mnemonic::Movsd
+            | Mnemonic::Movsq
+            | Mnemonic::Stosb
+            | Mnemonic::Stosw
+            | Mnemonic::Stosd
+            | Mnemonic::Stosq
+            | Mnemonic::Lodsb
+            | Mnemonic::Lodsw
+            | Mnemonic::Lodsd
+            | Mnemonic::Lodsq
+            | Mnemonic::Cmpsb
+            | Mnemonic::Cmpsw
+            | Mnemonic::Cmpsd
+            | Mnemonic::Cmpsq
+            | Mnemonic::Scasb
+            | Mnemonic::Scasw
+            | Mnemonic::Scasd
+            | Mnemonic::Scasq
+    );
+    if !string {
+        return None;
+    }
+    let address_32 = (0..instruction.op_count()).any(|operand| {
+        matches!(
+            instruction.op_kind(operand),
+            OpKind::MemorySegESI | OpKind::MemorySegEDI | OpKind::MemoryESEDI
+        )
+    });
+    Some((decoder.position(), address_32))
 }
 
 /// The code segment selector of 64-bit user code on x86-64 Linux
@@ -3922,7 +4096,11 @@ fn remove_stepping_trap_flag(
 /// AMD EPYC runs two loads and a `syscall` in one step), so
 /// `start.instruction` is the first instruction after the loads.
 #[cfg(target_arch = "x86_64")]
-fn is_step_report(task: &Stopped, start: &StepStart) -> Result<bool, TraceError> {
+fn is_step_report(task: &Stopped, start: &StepStart, unit: StepUnit) -> Result<bool, TraceError> {
+    // A rep run reports at its breakpoint: TRAP_HWBKPT with rip there.
+    if let StepUnit::Rep { end } = unit {
+        return Ok(task.getsiginfo()?.si_code == libc::TRAP_HWBKPT && task.getregs()?.rip == end);
+    }
     Ok(match task.getsiginfo()?.si_code {
         libc::TRAP_TRACE => true,
         libc::TRAP_BRKPT => matches!(start.instruction, FlagsInstruction::Syscall { .. }),
@@ -6105,5 +6283,36 @@ mod block_bound_tests {
     #[test]
     fn a_full_window_without_a_transfer_is_undecided() {
         assert_eq!(bound(&[0x90; BLOCK_WINDOW]), UNDECIDED);
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod rep_string_tests {
+    use super::decode_rep_string;
+
+    const IP: u64 = 0x40_1000;
+
+    #[test]
+    fn finds_rep_string_instructions_and_their_length() {
+        // rep movsb, rep stosq, repe cmpsb, repne scasb, rep lodsd.
+        assert_eq!(decode_rep_string(IP, &[0xf3, 0xa4, 0x90]), Some((2, false)));
+        assert_eq!(decode_rep_string(IP, &[0xf3, 0x48, 0xab]), Some((3, false)));
+        assert_eq!(decode_rep_string(IP, &[0xf3, 0xa6]), Some((2, false)));
+        assert_eq!(decode_rep_string(IP, &[0xf2, 0xae]), Some((2, false)));
+        assert_eq!(decode_rep_string(IP, &[0xf3, 0xad]), Some((2, false)));
+        // An address-size prefix counts in ecx.
+        assert_eq!(decode_rep_string(IP, &[0x67, 0xf3, 0xa4]), Some((3, true)));
+    }
+
+    #[test]
+    fn refuses_everything_else() {
+        // movsb without rep, rep nop (pause), rep ret, rep insb (a port
+        // instruction, which faults in user mode), and a cut-off instruction.
+        assert_eq!(decode_rep_string(IP, &[0xa4]), None);
+        assert_eq!(decode_rep_string(IP, &[0xf3, 0x90]), None);
+        assert_eq!(decode_rep_string(IP, &[0xf3, 0xc3]), None);
+        assert_eq!(decode_rep_string(IP, &[0xf3, 0x6c]), None);
+        assert_eq!(decode_rep_string(IP, &[0xf3, 0x48]), None);
+        assert_eq!(decode_rep_string(IP, &[]), None);
     }
 }

@@ -97,6 +97,8 @@ pub struct PreciseTimerSteps {
     pub instruction: u64,
     /// Block steps (`PTRACE_SINGLEBLOCK`).
     pub block: u64,
+    /// Rep runs: the rest of a `rep` string instruction run to a breakpoint.
+    pub rep: u64,
     /// Block bounds found in the cache, with their code unchanged.
     pub bound_hits: u64,
     /// Block bounds decoded afresh.
@@ -109,6 +111,7 @@ impl std::ops::Sub for PreciseTimerSteps {
         Self {
             instruction: self.instruction - earlier.instruction,
             block: self.block - earlier.block,
+            rep: self.rep - earlier.rep,
             bound_hits: self.bound_hits - earlier.bound_hits,
             bound_misses: self.bound_misses - earlier.bound_misses,
         }
@@ -121,6 +124,7 @@ pub fn precise_timer_steps() -> PreciseTimerSteps {
     PreciseTimerSteps {
         instruction: crate::timer::INSTRUCTION_STEPS.load(Relaxed),
         block: crate::timer::BLOCK_STEPS.load(Relaxed),
+        rep: crate::timer::REP_RUNS.load(Relaxed),
         bound_hits: crate::timer::BLOCK_BOUND_HITS.load(Relaxed),
         bound_misses: crate::timer::BLOCK_BOUND_MISSES.load(Relaxed),
     }
@@ -132,6 +136,14 @@ pub fn precise_timer_steps() -> PreciseTimerSteps {
 /// the two in one process; it affects every timer in the process.
 pub fn set_block_steps(enabled: bool) {
     crate::timer::BLOCK_STEPS_OFF_FOR_TESTS.store(!enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Makes this process's timers run a `rep` string instruction in the
+/// single-stepped stretch to its end at a breakpoint (`enabled`, the
+/// default), or step it one iteration at a time, as `REVERIE_REP_RUN=0`
+/// does. It affects every timer in the process.
+pub fn set_rep_runs(enabled: bool) {
+    crate::timer::REP_RUNS_OFF_FOR_TESTS.store(!enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Makes every hit in this process's block bound caches re-read and decode

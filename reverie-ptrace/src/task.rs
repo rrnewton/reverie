@@ -4027,6 +4027,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 StepUnit::Instruction => lease.step(None),
                 #[cfg(target_arch = "x86_64")]
                 StepUnit::Block => lease.block_step(),
+                // Resumed to the breakpoint the timer armed after the
+                // instruction.
+                #[cfg(target_arch = "x86_64")]
+                StepUnit::Rep { .. } => lease.resume(None),
             }
         };
         let newborn_owner = self.global_state.newborn_owner();
