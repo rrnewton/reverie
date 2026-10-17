@@ -128,7 +128,7 @@ fn initial_exec_preflight_requires_original_context_and_keeps_enrollment_after_r
     let mut executor = cleanup.executor(executor());
     let _run = adopt(&executor);
     executor.enable_signal_dequeues();
-    let memory = GuestMemory::new(0, 4096).unwrap();
+    let mut memory = GuestMemory::new(0, 4096).unwrap();
     executor.bind_address_space(&memory);
     let mut completed = false;
     let original = SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0x200, 0x300, 0, 0, 0]);
@@ -183,13 +183,15 @@ fn initial_exec_preflight_requires_original_context_and_keeps_enrollment_after_r
             &e, original.into_syscall().unwrap()).is_err(), "missing original is not an unenrolled proof");
         assert!(
             matches!(
-                futures::executor::block_on(
+                futures::executor::block_on({
+                    let task = reverie::Pid::from_raw(e.executor.task_tid());
                     <StaticElfSyscallExecutor<'_> as LinuxProvider>::execute(
                         &mut e,
+                        task,
                         original.as_provider(),
-                        &memory
+                        &mut memory,
                     )
-                ),
+                }),
                 Err(crate::Error::ParentDeathSignal { .. })
             ),
             "injection cannot bypass the enrolled synthetic-initial refusal"
@@ -235,7 +237,7 @@ fn initial_exec_preflight_requires_original_context_and_keeps_enrollment_after_r
 fn default_preflight_refuses_but_live_unopted_static_executor_continues() {
     let mut backend = KvmBackend::new(0x10000).expect("preflight control requires /dev/kvm");
     let mut executor = executor();
-    let memory = GuestMemory::new(0, 4096).unwrap();
+    let mut memory = GuestMemory::new(0, 4096).unwrap();
     let mut completed = false;
     let original = SyscallRequest::new(libc::SYS_getuid as u64, [0; 6]);
     let site = executor.begin_signal_callback().unwrap();
@@ -257,11 +259,15 @@ fn default_preflight_refuses_but_live_unopted_static_executor_continues() {
         assert_eq!(<StaticElfSyscallExecutor<'_> as LinuxEmuSignalControl>::parent_death_syscall_preflight(
             &e, original.into_syscall().unwrap()).unwrap(), reverie::ParentDeathSyscallAdmission::Unenrolled);
         assert_eq!(
-            futures::executor::block_on(<StaticElfSyscallExecutor<'_> as LinuxProvider>::execute(
-                &mut e,
-                original.as_provider(),
-                &memory
-            ))
+            futures::executor::block_on({
+                let task = reverie::Pid::from_raw(e.executor.task_tid());
+                <StaticElfSyscallExecutor<'_> as LinuxProvider>::execute(
+                    &mut e,
+                    task,
+                    original.as_provider(),
+                    &mut memory,
+                )
+            })
             .unwrap(),
             ProviderOutcome::Return(0)
         );
