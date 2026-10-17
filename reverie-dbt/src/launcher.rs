@@ -50,6 +50,10 @@ const PATH_ENV: &str = "PATH";
 /// guest's initial environment (with its own `DYNAMORIO_*` variables) and passes
 /// on to the children it follows.
 const HIDE_ENV_PREFIXES_ENV: &str = "DYNAMORIO_HIDE_ENV_PREFIXES";
+/// Tells the bundled DynamoRIO that the tool answers the guest's `brk(2)`
+/// itself ([`DbtRunner::tool_answers_brk`]). A `DYNAMORIO_*` variable, so the
+/// guest never sees it.
+const TOOL_ANSWERS_BRK_ENV: &str = "DYNAMORIO_TOOL_ANSWERS_BRK";
 /// The prefix of the runtime's private environment variables, such as
 /// [`crate::sync_rpc::RPC_SOCKET_ENV`] and Hermit's Detcore configuration. The
 /// launcher has DynamoRIO hide every variable with this prefix from the guest,
@@ -88,6 +92,7 @@ pub struct DbtRunner {
     isolated_process_group: bool,
     terminate_process_group_on_exit: bool,
     defer_evidence_finish: bool,
+    tool_answers_brk: bool,
 }
 
 // A blocking socket-to-pipe splice can hold the child's stdin pipe mutex
@@ -153,12 +158,24 @@ impl DbtRunner {
             isolated_process_group: false,
             terminate_process_group_on_exit: false,
             defer_evidence_finish: false,
+            tool_answers_brk: false,
         })
     }
 
     /// Enables or disables the instrumentation summary written at process exit.
     pub fn summary(mut self, enabled: bool) -> Self {
         self.summary = enabled;
+        self
+    }
+
+    /// Declares that the tool answers the guest's `brk(2)` itself, without
+    /// the kernel's program break. DynamoRIO then reserves nothing for the
+    /// break: no region of its own to emulate it in, no nudge of the kernel's
+    /// break, and no inaccessible page after the guest image, where the
+    /// break starts. Without this, DynamoRIO answers `brk` from its own
+    /// emulation.
+    pub fn tool_answers_brk(mut self, enabled: bool) -> Self {
+        self.tool_answers_brk = enabled;
         self
     }
 
@@ -1119,6 +1136,9 @@ impl DbtRunner {
             }
         }
         command.env(HIDE_ENV_PREFIXES_ENV, PRIVATE_ENV_PREFIX);
+        if self.tool_answers_brk {
+            command.env(TOOL_ANSWERS_BRK_ENV, "1");
+        }
         // A PID namespace's init contains the run by the namespace
         // (`terminate_run`); elsewhere the run gets its own process group.
         if self.manages_process_group() && !is_namespace_init() {
@@ -1930,6 +1950,7 @@ mod tests {
             isolated_process_group: false,
             terminate_process_group_on_exit: false,
             defer_evidence_finish: false,
+            tool_answers_brk: false,
         }
     }
 
@@ -2374,6 +2395,25 @@ mod tests {
                 (OsStr::new("ONLY"), Some(OsStr::new("guest")))
             ]
         );
+    }
+
+    #[test]
+    fn a_tool_that_answers_brk_tells_dynamorio_to_reserve_nothing() {
+        let guest = Command::new("/usr/bin/env");
+        let environment = BTreeMap::from([(OsString::from("ONLY"), OsString::from("guest"))]);
+        let has = |runner: DbtRunner| {
+            runner
+                .command(&guest, Some(&environment))
+                .get_envs()
+                .any(|(key, value)| {
+                    key == OsStr::new(TOOL_ANSWERS_BRK_ENV) && value == Some(OsStr::new("1"))
+                })
+        };
+        assert!(!has(runner()));
+        assert!(has(runner().tool_answers_brk(true)));
+        assert!(!has(runner()
+            .tool_answers_brk(true)
+            .tool_answers_brk(false)));
     }
 
     #[test]
