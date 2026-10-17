@@ -8,6 +8,8 @@
 
 //! Adapter from SaBRe callbacks to Reverie's shared tool interface.
 
+use std::any::TypeId;
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::future::Future;
@@ -409,6 +411,9 @@ where
 impl<T> RemoteReverieAdapter<T>
 where
     T: ReverieTool,
+    // The callbacks name their connection by its global state's `TypeId`
+    // (`blocking_global_rpc`).
+    T::GlobalState: 'static,
 {
     /// Connects the root guest thread and constructs the process-local tool
     /// from the coordinator's config handshake.
@@ -508,6 +513,7 @@ where
             rpc,
             exit_handled,
         } = &mut *state;
+        let _active_rpc = ActiveRemoteRpc::enter(rpc.as_ref());
         let mut guest = SabreGuest::new(
             tid,
             pid,
@@ -554,6 +560,7 @@ where
             rpc,
             exit_handled,
         } = &mut *state;
+        let _active_rpc = ActiveRemoteRpc::enter(rpc.as_ref());
         let mut guest = SabreGuest::new(
             tid,
             pid,
@@ -609,6 +616,7 @@ where
             rpc,
             exit_handled,
         } = &mut *state;
+        let _active_rpc = ActiveRemoteRpc::enter(rpc.as_ref());
         let tail = TailResult::default();
         let mut guest = SabreGuest::new(
             tid,
@@ -648,6 +656,7 @@ where
             rpc,
             exit_handled,
         } = &mut *state;
+        let _active_rpc = ActiveRemoteRpc::enter(rpc.as_ref());
         let mut guest = SabreGuest::new(
             tid,
             current_pid(),
@@ -688,6 +697,7 @@ where
             rpc,
             exit_handled,
         } = &mut *state;
+        let _active_rpc = ActiveRemoteRpc::enter(rpc.as_ref());
         let mut guest = SabreGuest::new(
             tid,
             current_pid(),
@@ -728,6 +738,7 @@ where
                 return;
             }
         };
+        let _active_rpc = ActiveRemoteRpc::enter(rpc.as_ref());
         match poll_once(
             self.tool
                 .clone()
@@ -762,6 +773,7 @@ where
         let Some(thread_state) = state.thread_state.take() else {
             return;
         };
+        let _active_rpc = ActiveRemoteRpc::enter(state.rpc.as_ref());
         match poll_once(self.tool.on_exit_thread(
             tid,
             state.rpc.as_ref(),
@@ -852,6 +864,78 @@ where
         child,
         Some((handoff.parent_tid, &parent_state)),
     )))
+}
+
+thread_local! {
+    /// The calling thread's coordinator connection while one of its remote
+    /// Tool callbacks runs, for [`blocking_global_rpc`]: the client, the
+    /// global state type it speaks, and the process that owns it.
+    static ACTIVE_REMOTE_RPC: Cell<Option<(*const (), TypeId, i32)>> = const { Cell::new(None) };
+}
+
+/// Names the calling thread's connection as the active one for the length of
+/// a remote Tool callback, and restores the previous one when it ends.
+struct ActiveRemoteRpc(Option<(*const (), TypeId, i32)>);
+
+impl ActiveRemoteRpc {
+    fn enter<G: GlobalTool + 'static>(client: &BlockingRpcClient<G>) -> Self {
+        let entry = (
+            client as *const BlockingRpcClient<G> as *const (),
+            TypeId::of::<G>(),
+            current_pid().as_raw(),
+        );
+        Self(ACTIVE_REMOTE_RPC.replace(Some(entry)))
+    }
+}
+
+impl Drop for ActiveRemoteRpc {
+    fn drop(&mut self) {
+        ACTIVE_REMOTE_RPC.set(self.0);
+    }
+}
+
+/// Sends `request` to the coordinator's global state and waits for its
+/// response, from the Tool's own synchronous code running inside one of this
+/// thread's remote Tool callbacks but outside the callback's own `send_rpc`:
+/// for example from a synchronous method a callback calls, where no
+/// [`reverie::Guest`] is at hand. It uses the calling thread's existing
+/// coordinator connection and adds no descriptor.
+///
+/// Fails, without sending, outside a remote Tool callback of this thread, when
+/// `G` is not the global state the callback's connection speaks, and in a
+/// forked child that resumed from its parent's callback without unwinding it
+/// (the connection named there is the parent's). A request already in flight
+/// on this thread's connection cannot exist here: a callback's own `send_rpc`
+/// completes before the callback's synchronous code goes on.
+pub fn blocking_global_rpc<G: GlobalTool + 'static>(
+    request: G::Request,
+) -> io::Result<G::Response> {
+    let Some((client, global, owner)) = ACTIVE_REMOTE_RPC.get() else {
+        return Err(io::Error::other(
+            "no remote SaBRe Tool callback is running on this thread",
+        ));
+    };
+    if global != TypeId::of::<G>() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the requested global state is not the one this callback's connection speaks",
+        ));
+    }
+    if owner != current_pid().as_raw() {
+        return Err(io::Error::other(
+            "the active coordinator connection belongs to the parent of this forked process",
+        ));
+    }
+    // SAFETY: `ActiveRemoteRpc::enter` stored a `BlockingRpcClient<G>` for this
+    // exact `G` (checked above), borrowed from the thread state that the running
+    // callback holds locked for at least as long as its guard lives; the guard
+    // restores the slot before that borrow ends. The process check above
+    // excludes the one way a guard can outlive its callback (a fork child that
+    // never unwinds).
+    let client = unsafe { &*(client as *const BlockingRpcClient<G>) };
+    client
+        .try_send_rpc(request)
+        .map_err(|error| io::Error::other(error.to_string()))
 }
 
 fn remote_rpc_error(error: RpcError) -> Errno {
@@ -2463,6 +2547,84 @@ mod tests {
 
         assert!(server_thread.join().unwrap().is_ok());
         assert_eq!(global.total.load(Ordering::SeqCst), 12);
+    }
+
+    /// A Tool whose syscall handler reaches the global state from its own
+    /// synchronous code, as Detcore's shared open-file channel does.
+    #[derive(Default)]
+    struct SyncRpcTool;
+
+    #[reverie::tool]
+    impl ReverieTool for SyncRpcTool {
+        type GlobalState = RemoteCounter;
+        type ThreadState = ();
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            _guest: &mut G,
+            _syscall: Syscall,
+        ) -> Result<i64, Error> {
+            // The wrong global state is refused without sending anything.
+            assert!(super::blocking_global_rpc::<()>(()).is_err());
+            Ok(super::blocking_global_rpc::<RemoteCounter>(5).unwrap() as i64)
+        }
+    }
+
+    #[test]
+    fn blocking_global_rpc_uses_the_running_callbacks_connection() {
+        // Outside any remote callback there is no connection to use.
+        assert!(super::blocking_global_rpc::<RemoteCounter>(1).is_err());
+        let global = Arc::new(RemoteCounter::default());
+        let server_global = global.clone();
+        let path = std::path::Path::new("/tmp").join(format!(
+            "reverie-sabre-rpc-{}-{}.sock",
+            std::process::id(),
+            RPC_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let server_path = path.clone();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+        let server_thread = thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let server = reverie_rpc_transport::RpcServer::bind(
+                        &server_path,
+                        server_global,
+                        "remote-cfg".to_string(),
+                    )
+                    .unwrap();
+                    ready_tx.send(()).unwrap();
+                    server.serve_one().await
+                })
+        });
+        ready_rx.recv().unwrap();
+
+        let adapter = RemoteReverieAdapter::<SyncRpcTool>::connect(&path).unwrap();
+        let syscall = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+        assert_eq!(adapter.handle_syscall(syscall), Ok(5));
+        assert_eq!(adapter.handle_syscall(syscall), Ok(10));
+        // The callback's guard restored the empty slot.
+        assert!(super::blocking_global_rpc::<RemoteCounter>(1).is_err());
+        drop(adapter);
+        assert!(server_thread.join().unwrap().is_ok());
+        assert_eq!(global.total.load(Ordering::SeqCst), 10);
+    }
+
+    #[test]
+    fn blocking_global_rpc_refuses_a_connection_another_process_named() {
+        // A forked child that resumed inside its parent's callback still holds
+        // the parent's entry; it must be refused before the client is touched.
+        let stale = (
+            std::ptr::null::<()>(),
+            std::any::TypeId::of::<RemoteCounter>(),
+            super::current_pid().as_raw() + 1,
+        );
+        super::ACTIVE_REMOTE_RPC.set(Some(stale));
+        let result = super::blocking_global_rpc::<RemoteCounter>(1);
+        super::ACTIVE_REMOTE_RPC.set(None);
+        assert!(result.is_err());
     }
 
     #[test]
